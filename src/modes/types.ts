@@ -1,43 +1,51 @@
 import type { ParsedGitHubContext } from "../github/context";
+import type { GenericContext } from "../core/prompt";
 
-export type ModeName = "tag" | "agent";
+export type ModeName = "tag" | "agent" | "slack";
 
 export type ModeContext = {
-  mode: ModeName;
-  githubContext: ParsedGitHubContext;
-  commentId?: number;
+  mode?: ModeName;
+  githubContext?: ParsedGitHubContext;
+  commentId?: number | string;
   baseBranch?: string;
   claudeBranch?: string;
+  mcpConfigPath?: string;
+  genericContext?: GenericContext;
+  platform?: "github" | "slack";
+  trackingInfo?: {
+    channelId?: string;
+    messageTs?: string;
+    threadTs?: string;
+  };
 };
 
 export type ModeData = {
-  commentId?: number;
+  commentId?: number | string;
   baseBranch?: string;
   claudeBranch?: string;
+  platform?: "github" | "slack";
 };
 
 /**
- * Mode interface for claude-code-action execution modes.
+ * Mode interface for claude-code execution modes.
  * Each mode defines its own behavior for trigger detection, prompt generation,
- * and tracking comment creation.
+ * and tracking comment/message creation.
  *
  * Current modes include:
- * - 'tag': Traditional implementation triggered by mentions/assignments
- * - 'agent': For automation with no trigger checking
+ * - 'tag': Traditional GitHub implementation triggered by mentions/assignments
+ * - 'agent': For GitHub automation with no trigger checking
+ * - 'slack': For Slack integration with app mentions and message triggers
  */
 export type Mode = {
   name: ModeName;
-  description: string;
+  description?: string;
 
   /**
-   * Determines if this mode should trigger based on the GitHub context
+   * Determines if this mode should trigger based on the context
+   * For GitHub modes, this receives ParsedGitHubContext
+   * For Slack modes, this is typically handled by event handlers
    */
-  shouldTrigger(context: ParsedGitHubContext): boolean;
-
-  /**
-   * Prepares the mode context with any additional data needed for prompt generation
-   */
-  prepareContext(context: ParsedGitHubContext, data?: ModeData): ModeContext;
+  shouldTrigger?(context: any): Promise<boolean> | boolean;
 
   /**
    * Returns the list of tools that should be allowed for this mode
@@ -50,7 +58,7 @@ export type Mode = {
   getDisallowedTools(): string[];
 
   /**
-   * Determines if this mode should create a tracking comment
+   * Determines if this mode should create a tracking comment (GitHub only)
    */
-  shouldCreateTrackingComment(): boolean;
+  shouldCreateTrackingComment?(): boolean;
 };

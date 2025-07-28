@@ -1,5 +1,5 @@
 /**
- * Mode Registry for claude-code-action
+ * Mode Registry for claude-code
  *
  * This module provides access to all available execution modes.
  *
@@ -7,15 +7,15 @@
  * 1. Add the mode name to VALID_MODES below
  * 2. Create the mode implementation in a new directory (e.g., src/modes/new-mode/)
  * 3. Import and add it to the modes object below
- * 4. Update action.yml description to mention the new mode
  */
 
 import type { Mode, ModeName } from "./types";
 import { tagMode } from "./tag";
 import { agentMode } from "./agent";
+import { createSlackModeFromEnv } from "./slack";
 
 export const DEFAULT_MODE = "tag" as const;
-export const VALID_MODES = ["tag", "agent"] as const;
+export const VALID_MODES = ["tag", "agent", "slack"] as const;
 
 /**
  * All available modes.
@@ -24,6 +24,7 @@ export const VALID_MODES = ["tag", "agent"] as const;
 const modes = {
   tag: tagMode,
   agent: agentMode,
+  slack: createSlackModeFromEnv(),
 } as const satisfies Record<ModeName, Mode>;
 
 /**

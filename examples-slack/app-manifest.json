@@ -1,0 +1,58 @@
+{
+  "display_information": {
+    "name": "Claude Code",
+    "description": "AI-powered code assistant that helps with programming tasks, code reviews, and technical questions directly in Slack.",
+    "background_color": "#1a1a1a",
+    "long_description": "Claude Code brings the power of Anthropic's Claude AI directly to your Slack workspace. Get instant help with programming questions, code reviews, debugging, and technical explanations. Claude can read files, write code, run commands, and provide detailed technical assistance right in your Slack channels.\n\nFeatures:\n• Code review and analysis\n• Programming help and explanations\n• File operations and code generation\n• Real-time progress updates\n• Thread-based conversations\n• Emoji status indicators"
+  },
+  "features": {
+    "app_home": {
+      "home_tab_enabled": false,
+      "messages_tab_enabled": true,
+      "messages_tab_read_only_enabled": false
+    },
+    "bot_user": {
+      "display_name": "Claude Code",
+      "always_online": true
+    }
+  },
+  "oauth_config": {
+    "scopes": {
+      "bot": [
+        "app_mentions:read",
+        "channels:history",
+        "channels:read",
+        "chat:write",
+        "chat:write.public",
+        "groups:history",
+        "groups:read",
+        "im:history",
+        "im:read",
+        "im:write",
+        "mpim:history",
+        "mpim:read",
+        "mpim:write",
+        "reactions:read",
+        "reactions:write",
+        "users:read"
+      ]
+    }
+  },
+  "settings": {
+    "event_subscriptions": {
+      "bot_events": [
+        "app_mention",
+        "message.channels",
+        "message.groups",
+        "message.im",
+        "message.mpim"
+      ]
+    },
+    "interactivity": {
+      "is_enabled": false
+    },
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": true,
+    "token_rotation_enabled": false
+  }
+}

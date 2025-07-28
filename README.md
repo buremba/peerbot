@@ -1,107 +1,248 @@
 # Claude Code Slack
 
-A powerful [Claude Code](https://claude.ai/code) Slack application that brings AI-powered programming assistance directly to your Slack workspace. Claude can answer questions, implement code changes, provide code reviews, and help with technical problems through natural Slack conversations.
+A powerful [Claude Code](https://claude.ai/code) Slack application that brings AI-powered programming assistance directly to your Slack workspace with **Kubernetes-based scaling** and **persistent thread conversations**.
 
-## Features
+## 🎯 Key Features
 
-- 🤖 **Interactive Code Assistant**: Claude can answer questions about code, architecture, and programming
-- 🔍 **Code Review**: Analyzes code snippets and suggests improvements
-- ✨ **Code Implementation**: Can implement fixes, refactoring, and new features
-- 💬 **Slack Integration**: Works seamlessly with channels, threads, and direct messages
-- 🛠️ **Flexible Tool Access**: Access to file operations and development tools
-- 📋 **Real-time Updates**: Messages update in real-time as Claude works on your request
-- 🎯 **Status Indicators**: Emoji reactions show work status (⏳ working, ✅ completed, ❌ error)
-- 🧵 **Thread Support**: Maintains context in threaded conversations
+### 💬 **Thread-Based Persistent Conversations**
+- Each Slack thread becomes a dedicated AI coding session
+- Full conversation history preserved across interactions
+- Resume work exactly where you left off
 
-## Quick Start
+### 🏗️ **Kubernetes-Powered Architecture**
+- **Dispatcher-Worker Pattern**: Scalable, isolated execution
+- **Per-User Containers**: Each session gets dedicated resources
+- **5-Minute Sessions**: Focused, efficient coding sessions
+- **Auto-Scaling**: Handles multiple users simultaneously
+
+### 👤 **Individual GitHub Workspaces**  
+- **Personal Repositories**: Each user gets `user-{username}` repository
+- **Automatic Git Operations**: Code commits and branch management
+- **GitHub.dev Integration**: Direct links to online code editor
+- **Pull Request Creation**: Easy code review workflow
+
+### 🔄 **Real-Time Progress Streaming**
+- Live updates as Claude works on your code
+- Worker resource monitoring (CPU, memory, timeout)
+- Transparent execution with detailed progress logs
+
+### 🛡️ **Enterprise-Ready**
+- **GCS Persistence**: Conversation history in Google Cloud Storage
+- **RBAC Security**: Kubernetes role-based access control
+- **Workload Identity**: Secure GCP integration
+- **Monitoring & Observability**: Full Kubernetes monitoring stack
+
+## 🚀 Architecture Overview
+
+```
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+│   Dispatcher    │    │   Worker Jobs   │    │  GCS + GitHub   │
+│   (Long-lived)  │───▶│   (Ephemeral)   │───▶│  (Persistence)  │
+│                 │    │                 │    │                 │
+│ • Slack Events  │    │ • User Workspace│    │ • Conversations │
+│ • Thread Routing│    │ • Claude CLI    │    │ • Code Changes  │
+│ • Job Spawning  │    │ • 5min Timeout  │    │ • Session Data  │
+└─────────────────┘    └─────────────────┘    └─────────────────┘
+```
+
+## 📋 Deployment Options
+
+Choose your deployment approach:
+
+### 🎯 **Option 1: Kubernetes (Recommended)**
+Full-featured deployment with per-user isolation and persistence
+
+**Benefits:**
+- ✅ Per-user containers and GitHub repositories  
+- ✅ Thread-based conversation persistence
+- ✅ Horizontal scaling for large teams
+- ✅ Enterprise security and monitoring
+- ✅ GCS backup and recovery
+
+**Prerequisites:**
+- Google Kubernetes Engine (GKE) cluster
+- Google Cloud Storage bucket
+- GitHub organization for user repositories
+
+📖 **[→ Kubernetes Deployment Guide](./docs/kubernetes-deployment.md)**
+
+### 🔧 **Option 2: Single Container (Legacy)**
+Simple deployment for small teams and development
+
+**Benefits:**
+- ✅ Quick setup and testing
+- ✅ Minimal infrastructure requirements
+- ❌ Shared execution environment
+- ❌ No conversation persistence
+- ❌ Limited scaling
+
+📖 **[→ Single Container Setup](#single-container-setup)**
+
+---
+
+## 🐳 Kubernetes Quick Start
 
 ### Prerequisites
 
-- A Slack workspace where you can install apps
-- [Anthropic API key](https://console.anthropic.com/) for Claude access
+- **GKE Autopilot Cluster**: Managed Kubernetes environment
+- **Google Cloud Storage**: For conversation persistence  
+- **GitHub Organization**: For user repositories
+- **Slack App**: With proper permissions and tokens
+
+### 1. Deploy with Helm
+
+```bash
+# Clone repository
+git clone https://github.com/buremba/claude-code-slack.git
+cd claude-code-slack
+
+# Install PeerBot with Helm
+helm upgrade --install peerbot charts/peerbot \
+  --namespace peerbot \
+  --create-namespace \
+  --set secrets.slackBotToken="xoxb-your-slack-token" \
+  --set secrets.githubToken="ghp_your-github-token" \
+  --set config.gcsBucketName="peerbot-conversations-prod" \
+  --set config.gcsProjectId="your-gcp-project" \
+  --wait
+```
+
+### 2. Verify Deployment
+
+```bash
+# Check pods are running
+kubectl get pods -n peerbot
+
+# View dispatcher logs
+kubectl logs deployment/peerbot-dispatcher -n peerbot
+
+# Monitor worker jobs
+kubectl get jobs -n peerbot -w
+```
+
+### 3. Test the Bot
+
+Mention the bot in Slack:
+
+```
+@peerbotai help me create a React component for user authentication
+```
+
+**Expected Response:**
+```
+🤖 Claude is working on your request...
+
+Worker Environment:
+• Pod: claude-worker-auth-abc123
+• CPU: 2000m Memory: 4Gi  
+• Timeout: 5 minutes
+• Repository: user-yourname
+
+GitHub Workspace:
+• Repository: user-yourname
+• 📝 Edit on GitHub.dev
+• 🔄 Create Pull Request
+
+Progress updates will appear below...
+```
+
+📖 **For detailed setup:** [Kubernetes Deployment Guide](./docs/kubernetes-deployment.md)
+
+---
+
+## 🔧 Single Container Setup
+
+For development and small teams:
+
+### Prerequisites
+
 - [Bun](https://bun.sh/) runtime installed
+- [Anthropic API key](https://console.anthropic.com/) for Claude access
+- Slack workspace with app installation permissions
 
-### 1. Create a Slack App
-
-The easiest way is to use our pre-configured app manifest:
+### 1. Create Slack App
 
 1. Go to [api.slack.com/apps](https://api.slack.com/apps)
 2. Click **"Create New App"** → **"From an app manifest"**
-3. Select your workspace
-4. Copy the contents of [`examples-slack/app-manifest.json`](./examples-slack/app-manifest.json) and paste it
-5. Review the configuration and click **"Create"**
+3. Copy contents of [`examples-slack/app-manifest.json`](./examples-slack/app-manifest.json)
+4. Get your tokens: Bot Token (xoxb-), App Token (xapp-), Signing Secret
 
-### 2. Get Your Tokens
+### 2. Setup Application
 
-After creating the app:
+```bash
+# Clone and install
+git clone https://github.com/buremba/claude-code-slack.git
+cd claude-code-slack
+bun install
 
-1. **Bot User OAuth Token**: Go to **"OAuth & Permissions"** → copy the **"Bot User OAuth Token"** (starts with `xoxb-`)
-2. **App-Level Token**: Go to **"Basic Information"** → **"App-Level Tokens"** → **"Generate Token and Scopes"**
-   - Name: `socket_mode`
-   - Scopes: `connections:write`
-   - Copy the generated token (starts with `xapp-`)
-3. **Signing Secret**: Go to **"Basic Information"** → copy the **"Signing Secret"**
+# Configure environment
+cp .env.example .env
+# Edit .env with your tokens
 
-### 3. Install the App
+# Start in development mode
+bun run dev:slack
+```
 
-1. Go to **"OAuth & Permissions"** → **"Install to Workspace"**
-2. Review permissions and click **"Allow"**
-3. Invite the bot to channels where you want to use it: `/invite @Claude Code`
+📖 **For detailed setup:** [Slack Integration Guide](./docs/slack-integration.md)
 
-### 4. Set Up the Application
+---
 
-1. **Clone this repository:**
-   ```bash
-   git clone https://github.com/anthropics/claude-code-slack.git
-   cd claude-code-slack
-   ```
+## 🎯 User Experience
 
-2. **Install dependencies:**
-   ```bash
-   bun install
-   ```
+### Thread-Based Conversations
 
-3. **Configure environment variables:**
-   ```bash
-   cp .env.example .env
-   ```
-   
-   Edit `.env` and fill in your values:
-   ```env
-   SLACK_BOT_TOKEN=xoxb-your-bot-token-here
-   SLACK_APP_TOKEN=xapp-your-app-token-here  
-   SLACK_SIGNING_SECRET=your-signing-secret-here
-   ANTHROPIC_API_KEY=sk-ant-your-anthropic-api-key-here
-   ```
+**Key Feature**: Each Slack thread = persistent conversation
 
-4. **Start the application:**
-   ```bash
-   bun run dev:slack
-   ```
+```
+User: @peerbotai create a simple REST API in Python
 
-### 5. Test It Out
+Bot: 🤖 Claude is working on your request...
+     [Creates user repository and starts worker]
 
-In any channel where the bot is present:
+Bot: ✅ Created Flask API with user model, CRUD endpoints, 
+     and Docker configuration.
+     📝 View on GitHub.dev | 🔄 Create PR
 
-- **Mention the bot**: `@Claude Code help me debug this function`
-- **Use trigger phrase**: `@claude can you review this code?`
-- **Direct message**: Send a DM to the bot
+User: (in same thread) Can you add authentication?
 
-## Configuration
+Bot: 🤖 Resuming conversation...
+     [Loads previous context and adds auth]
 
-### Environment Variables
+Bot: ✅ Added JWT authentication with login/register endpoints.
+     📝 View changes | 🔄 Updated PR
+```
+
+### User Repositories
+
+Each user gets a dedicated GitHub repository:
+
+- **Repository**: `peerbot-community/user-{username}`
+- **Structure**: Projects, scripts, docs, workspace folders
+- **Branches**: Session-specific branches (e.g., `claude/session-20250128`)
+- **Integration**: Direct GitHub.dev links for online editing
+
+## 📚 Configuration
+
+### Kubernetes Configuration
+
+| Component | Setting | Description |
+|-----------|---------|-------------|
+| **Slack** | `slack.triggerPhrase` | Bot trigger phrase (default: `@peerbotai`) |
+| **GitHub** | `github.organization` | GitHub org for user repos |
+| **GCS** | `gcs.bucketName` | Conversation storage bucket |
+| **Worker** | `worker.resources` | CPU/memory limits per session |
+| **Session** | `session.timeoutMinutes` | Session timeout (default: 5min) |
+
+### Single Container Configuration
 
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `SLACK_BOT_TOKEN` | ✅ | Bot User OAuth Token from Slack |
 | `SLACK_APP_TOKEN` | ✅ | App-Level Token for Socket Mode |
-| `SLACK_SIGNING_SECRET` | ✅ | Signing Secret for request verification |
 | `ANTHROPIC_API_KEY` | ✅ | Your Anthropic API key |
 | `SLACK_TRIGGER_PHRASE` | ❌ | Custom trigger phrase (default: `@claude`) |
-| `ENABLE_STATUS_REACTIONS` | ❌ | Enable emoji status indicators (default: `true`) |
-| `ENABLE_PROGRESS_UPDATES` | ❌ | Enable real-time message updates (default: `true`) |
 
-See [`.env.example`](./.env.example) for all available configuration options.
+See [`.env.example`](./.env.example) for all available options.
 
 ### Permissions and Access Control
 
@@ -265,17 +406,31 @@ NODE_ENV=development
 - 🔧 [Claude Code Documentation](https://docs.anthropic.com/claude/docs/claude-code)
 - 🐛 [Report Issues](https://github.com/anthropics/claude-code-slack/issues)
 
-## Migration from GitHub Actions
+## 📖 Documentation
 
-If you're migrating from the GitHub Actions version of Claude Code:
+- **[🐳 Kubernetes Deployment Guide](./docs/kubernetes-deployment.md)** - Complete GKE setup with Helm
+- **[💬 Slack Integration Setup](./docs/slack-integration.md)** - Slack app configuration and usage
+- **[🏗️ Architecture Deep Dive](#)** - Technical architecture and design decisions
+- **[🔧 Development Guide](#)** - Contributing and local development setup
 
-1. The core Claude functionality remains the same
-2. Replace GitHub-specific triggers with Slack mentions
-3. Update environment variables to use Slack tokens instead of GitHub tokens
-4. Thread-based conversations replace PR comment chains
-5. Emoji reactions replace GitHub status indicators
+## 🔄 Migration from GitHub Actions
 
-See the [migration guide](./docs/migration.md) for detailed steps.
+Upgrading from the original GitHub Actions Claude Code:
+
+### New Features ✨
+- **Thread Persistence**: Conversations continue across messages
+- **User Isolation**: Individual repositories and containers
+- **Scalability**: Multiple concurrent users supported
+- **Real-time Updates**: Live progress streaming
+- **Enterprise Security**: RBAC, Workload Identity, audit logs
+
+### Breaking Changes ⚠️
+- **Environment Variables**: New Kubernetes-based configuration
+- **Deployment**: Requires Kubernetes cluster instead of single container
+- **GitHub Structure**: User repositories instead of direct PR operations
+- **Trigger Method**: Slack mentions instead of PR comments
+
+📖 **Migration assistance available in our [upgrade guide](#)**
 
 ## Contributing
 

@@ -1,0 +1,22 @@
+apiVersion: v2
+name: peerbot
+description: Claude Code Slack Bot - Kubernetes deployment for thread-based AI conversations
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+keywords:
+  - claude
+  - slack
+  - ai
+  - bot
+  - kubernetes
+  - conversations
+home: https://github.com/buremba/claude-code-slack
+sources:
+  - https://github.com/buremba/claude-code-slack
+maintainers:
+  - name: Claude Code Team
+    email: noreply@anthropic.com
+annotations:
+  category: Communication
+  licenses: MIT

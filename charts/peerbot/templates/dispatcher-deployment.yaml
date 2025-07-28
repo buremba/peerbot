@@ -1,0 +1,162 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "peerbot.fullname" . }}-dispatcher
+  labels:
+    {{- include "peerbot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: dispatcher
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.dispatcher.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "peerbot.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: dispatcher
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "peerbot.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: dispatcher
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "peerbot.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: dispatcher
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.global.imageRegistry }}{{ .Values.dispatcher.image.repository }}:{{ .Values.dispatcher.image.tag }}"
+          imagePullPolicy: {{ .Values.dispatcher.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.dispatcher.service.targetPort }}
+              protocol: TCP
+          livenessProbe:
+            {{- toYaml .Values.dispatcher.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.dispatcher.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.dispatcher.resources | nindent 12 }}
+          env:
+            # Slack configuration
+            - name: SLACK_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "peerbot.fullname" . }}-secrets
+                  key: slack-bot-token
+            - name: SLACK_SIGNING_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "peerbot.fullname" . }}-secrets
+                  key: slack-signing-secret
+                  optional: true
+            - name: SLACK_HTTP_MODE
+              value: {{ if .Values.slack.socketMode }}"false"{{ else }}"true"{{ end }}
+            - name: PORT
+              value: "{{ .Values.dispatcher.service.targetPort }}"
+            - name: SLACK_TRIGGER_PHRASE
+              value: "{{ .Values.slack.triggerPhrase }}"
+            - name: SLACK_ALLOW_DIRECT_MESSAGES
+              value: "{{ .Values.slack.allowDirectMessages }}"
+            - name: SLACK_ALLOW_PRIVATE_CHANNELS
+              value: "{{ .Values.slack.allowPrivateChannels }}"
+            - name: ENABLE_STATUS_REACTIONS
+              value: "{{ .Values.slack.enableStatusReactions }}"
+            - name: ENABLE_PROGRESS_UPDATES
+              value: "{{ .Values.slack.enableProgressUpdates }}"
+            
+            # Kubernetes configuration
+            - name: KUBERNETES_NAMESPACE
+              value: "{{ .Values.kubernetes.namespace }}"
+            - name: WORKER_IMAGE
+              value: "{{ .Values.global.imageRegistry }}{{ .Values.worker.image.repository }}:{{ .Values.worker.image.tag }}"
+            - name: WORKER_CPU
+              value: "{{ .Values.worker.resources.requests.cpu }}"
+            - name: WORKER_MEMORY
+              value: "{{ .Values.worker.resources.requests.memory }}"
+            - name: WORKER_TIMEOUT_SECONDS
+              value: "{{ .Values.worker.job.timeoutSeconds }}"
+            
+            # GitHub configuration
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "peerbot.fullname" . }}-secrets
+                  key: github-token
+            - name: GITHUB_ORGANIZATION
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "peerbot.fullname" . }}-config
+                  key: github-organization
+            
+            # GCS configuration
+            - name: GCS_BUCKET_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "peerbot.fullname" . }}-config
+                  key: gcs-bucket-name
+            - name: GOOGLE_CLOUD_PROJECT
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "peerbot.fullname" . }}-config
+                  key: gcs-project-id
+                  optional: true
+            - name: GOOGLE_APPLICATION_CREDENTIALS
+              value: "/etc/gcs/key.json"
+            
+            # Claude configuration
+            - name: MODEL
+              value: "{{ .Values.claude.model }}"
+            - name: TIMEOUT_MINUTES
+              value: "{{ .Values.claude.timeoutMinutes }}"
+            - name: ALLOWED_TOOLS
+              value: "{{ .Values.claude.allowedTools }}"
+            
+            # Session configuration
+            - name: SESSION_TIMEOUT_MINUTES
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "peerbot.fullname" . }}-config
+                  key: session-timeout-minutes
+            
+            # Application configuration
+            - name: NODE_ENV
+              value: "{{ .Values.dispatcher.config.nodeEnv }}"
+            - name: LOG_LEVEL
+              value: "{{ .Values.dispatcher.config.logLevel }}"
+          
+          volumeMounts:
+            - name: gcs-key
+              mountPath: /etc/gcs
+              readOnly: true
+      
+      volumes:
+        - name: gcs-key
+          secret:
+            secretName: {{ include "peerbot.fullname" . }}-secrets
+            items:
+              - key: gcs-service-account
+                path: key.json
+            optional: true
+      
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

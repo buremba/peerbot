@@ -1,0 +1,91 @@
+{{- if .Values.rbac.create -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "peerbot.serviceAccountName" . }}
+  labels:
+    {{- include "peerbot.labels" . | nindent 4 }}
+  {{- with .Values.serviceAccount.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "peerbot.fullname" . }}-job-manager
+  labels:
+    {{- include "peerbot.labels" . | nindent 4 }}
+rules:
+  # Jobs management
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "update", "patch", "delete"]
+  
+  # Pods monitoring (for job status)
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  
+  # Events reading (for job debugging)
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "peerbot.fullname" . }}-job-manager
+  labels:
+    {{- include "peerbot.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "peerbot.fullname" . }}-job-manager
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "peerbot.serviceAccountName" . }}
+    namespace: {{ .Values.kubernetes.namespace }}
+
+---
+{{- if .Values.worker.job }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "peerbot.fullname" . }}-worker
+  namespace: {{ .Values.kubernetes.namespace }}
+  labels:
+    {{- include "peerbot.labels" . | nindent 4 }}
+rules:
+  # ConfigMaps and Secrets access for workers
+  - apiGroups: [""]
+    resources: ["configmaps", "secrets"]
+    verbs: ["get", "list"]
+  
+  # Self-monitoring for graceful shutdown
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list"]
+    resourceNames: []
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "peerbot.fullname" . }}-worker
+  namespace: {{ .Values.kubernetes.namespace }}
+  labels:
+    {{- include "peerbot.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "peerbot.fullname" . }}-worker
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "peerbot.serviceAccountName" . }}
+    namespace: {{ .Values.kubernetes.namespace }}
+{{- end }}
+
+{{- end }}

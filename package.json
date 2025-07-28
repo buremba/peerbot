@@ -2,6 +2,11 @@
   "name": "@anthropic-ai/claude-code-slack",
   "version": "1.0.0",
   "private": true,
+  "workspaces": [
+    "packages/core-runner",
+    "packages/dispatcher", 
+    "packages/worker"
+  ],
   "scripts": {
     "format": "prettier --write .",
     "format:check": "prettier --check .",
@@ -10,7 +15,15 @@
     "typecheck": "tsc --noEmit",
     "dev:slack": "bun run src/entrypoints/slack-main.ts",
     "start:slack": "NODE_ENV=production bun run src/entrypoints/slack-main.ts",
-    "build:slack": "bun build src/entrypoints/slack-main.ts --outdir dist --target bun"
+    "build:slack": "bun build src/entrypoints/slack-main.ts --outdir dist --target bun",
+    "build:packages": "bun run --filter='packages/*' build",
+    "test:packages": "bun run --filter='packages/*' test",
+    "typecheck:packages": "bun run --filter='packages/*' typecheck",
+    "dev:dispatcher": "bun run packages/dispatcher/src/index.ts",
+    "dev:worker": "bun run packages/worker/src/index.ts",
+    "docker:build": "docker build -f docker/dispatcher.Dockerfile -t claude-dispatcher . && docker build -f docker/worker.Dockerfile -t claude-worker .",
+    "k8s:deploy": "helm upgrade --install peerbot charts/peerbot",
+    "k8s:uninstall": "helm uninstall peerbot"
   },
   "dependencies": {
     "@slack/bolt": "^3.19.0",
@@ -19,6 +32,8 @@
     "@octokit/graphql": "^8.2.2",
     "@octokit/rest": "^21.1.1",
     "@octokit/webhooks-types": "^7.6.1",
+    "@google-cloud/storage": "^7.14.0",
+    "@kubernetes/client-node": "^1.0.0",
     "node-fetch": "^3.3.2",
     "zod": "^3.24.4"
   },

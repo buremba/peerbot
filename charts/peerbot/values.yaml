@@ -1,0 +1,199 @@
+# Default values for peerbot Helm chart
+# This is a YAML-formatted file.
+
+# Global settings
+global:
+  imageRegistry: ""
+  imagePullSecrets: []
+
+# Dispatcher (Slack event handler) configuration
+dispatcher:
+  replicaCount: 1
+  
+  image:
+    repository: claude-dispatcher
+    tag: latest
+    pullPolicy: Always
+  
+  service:
+    type: ClusterIP
+    port: 3000
+    targetPort: 3000
+  
+  # Resource limits for GKE Autopilot
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: 1000m
+      memory: 2Gi
+  
+  # Environment-specific configuration
+  config:
+    logLevel: INFO
+    nodeEnv: production
+  
+  # Health checks
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: 3000
+    initialDelaySeconds: 30
+    periodSeconds: 30
+    timeoutSeconds: 10
+    failureThreshold: 3
+  
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: 3000
+    initialDelaySeconds: 15
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+# Worker (ephemeral job) configuration
+worker:
+  image:
+    repository: claude-worker
+    tag: latest
+    pullPolicy: Always
+  
+  # Default resources for worker jobs
+  resources:
+    requests:
+      cpu: 1000m
+      memory: 2Gi
+    limits:
+      cpu: 2000m
+      memory: 4Gi
+  
+  # Job settings
+  job:
+    timeoutSeconds: 300  # 5 minutes
+    ttlSecondsAfterFinished: 300  # Clean up after 5 minutes
+    backoffLimit: 0  # No retries
+  
+  # Workspace configuration
+  workspace:
+    sizeLimit: 10Gi
+
+# Slack configuration
+slack:
+  # Socket mode vs HTTP mode
+  socketMode: true
+  port: 3000
+  
+  # Bot configuration
+  triggerPhrase: "@peerbotai"
+  
+  # Permissions
+  allowDirectMessages: true
+  allowPrivateChannels: false
+  
+  # Rate limiting and features
+  enableStatusReactions: true
+  enableProgressUpdates: true
+
+# GitHub configuration
+github:
+  organization: "peerbot-community"
+
+# Google Cloud Storage configuration
+gcs:
+  bucketName: "peerbot-conversations-prod"
+
+# Claude configuration
+claude:
+  # Default Claude options
+  model: "claude-3-5-sonnet-20241022"
+  timeoutMinutes: "5"
+  allowedTools: ""
+  
+# Session management
+session:
+  timeoutMinutes: 5
+
+# Kubernetes configuration
+kubernetes:
+  namespace: default
+
+# Service Account and RBAC
+serviceAccount:
+  create: true
+  name: claude-worker
+  annotations:
+    # For GKE Workload Identity
+    iam.gke.io/gcp-service-account: claude-code-bot@your-project.iam.gserviceaccount.com
+
+rbac:
+  create: true
+
+# Secrets management
+secrets:
+  # These should be set via Helm values or external secret management
+  slackBotToken: ""
+  slackSigningSecret: ""
+  githubToken: ""
+  gcsServiceAccount: ""  # Base64 encoded service account JSON
+
+# ConfigMap data
+config:
+  # Non-sensitive configuration
+  gcsBucketName: "peerbot-conversations-prod"
+  gcsProjectId: ""
+  githubOrganization: "peerbot-community"
+  sessionTimeoutMinutes: "5"
+
+# Ingress configuration (optional)
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: peerbot.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# Monitoring and observability
+monitoring:
+  enabled: false
+  serviceMonitor:
+    enabled: false
+  
+# Autoscaling (for dispatcher only)
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: 80
+
+# Pod disruption budget
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# Node selector and tolerations
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Pod security context
+podSecurityContext:
+  fsGroup: 1001
+  runAsNonRoot: true
+  runAsUser: 1001
+
+# Container security context
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+  runAsNonRoot: true
+  runAsUser: 1001
+  capabilities:
+    drop:
+      - ALL

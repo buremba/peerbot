@@ -23,9 +23,42 @@ export class GcsStorage {
   }
 
   /**
+   * Validate session key to prevent security issues
+   */
+  private validateSessionKey(sessionKey: string): void {
+    if (!sessionKey || typeof sessionKey !== 'string') {
+      throw new GcsError("validateSessionKey", "Session key must be a non-empty string", new Error("Invalid session key type"));
+    }
+    
+    if (sessionKey.length > 100) {
+      throw new GcsError("validateSessionKey", "Session key too long (max 100 characters)", new Error("Session key too long"));
+    }
+    
+    // Prevent path traversal and malicious patterns
+    const maliciousPatterns = [
+      /\.\./,           // Parent directory traversal
+      /[\\\/]/,         // Path separators (forward or backward slash)
+      /[\x00-\x1f]/,    // Control characters
+      /[<>:"|?*]/,      // Invalid filename characters
+    ];
+    
+    for (const pattern of maliciousPatterns) {
+      if (pattern.test(sessionKey)) {
+        throw new GcsError("validateSessionKey", "Session key contains invalid characters or patterns", new Error("Invalid session key pattern"));
+      }
+    }
+    
+    // Allow only alphanumeric, dots, hyphens, and underscores
+    if (!/^[a-zA-Z0-9._-]+$/.test(sessionKey)) {
+      throw new GcsError("validateSessionKey", "Session key must contain only alphanumeric characters, dots, hyphens, and underscores", new Error("Invalid session key format"));
+    }
+  }
+
+  /**
    * Generate GCS path for session data
    */
   private getSessionPath(sessionKey: string): string {
+    this.validateSessionKey(sessionKey);
     const date = new Date();
     const year = date.getFullYear();
     const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -38,6 +71,7 @@ export class GcsStorage {
    * Generate GCS path for conversation history
    */
   private getConversationPath(sessionKey: string): string {
+    this.validateSessionKey(sessionKey);
     const date = new Date();
     const year = date.getFullYear();
     const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -50,6 +84,7 @@ export class GcsStorage {
    * Generate GCS path for metadata
    */
   private getMetadataPath(sessionKey: string): string {
+    this.validateSessionKey(sessionKey);
     const date = new Date();
     const year = date.getFullYear();
     const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -62,6 +97,7 @@ export class GcsStorage {
    * Save session state to GCS
    */
   async saveSessionState(sessionState: SessionState): Promise<string> {
+    this.validateSessionKey(sessionState.sessionKey);
     try {
       const bucket = this.storage.bucket(this.bucketName);
       const sessionPath = this.getSessionPath(sessionState.sessionKey);
@@ -129,6 +165,7 @@ export class GcsStorage {
    * Load session state from GCS
    */
   async loadSessionState(sessionKey: string): Promise<SessionState | null> {
+    this.validateSessionKey(sessionKey);
     try {
       const bucket = this.storage.bucket(this.bucketName);
       const sessionPath = this.getSessionPath(sessionKey);
@@ -175,6 +212,7 @@ export class GcsStorage {
    * Check if session exists in GCS
    */
   async sessionExists(sessionKey: string): Promise<boolean> {
+    this.validateSessionKey(sessionKey);
     try {
       const bucket = this.storage.bucket(this.bucketName);
       const sessionPath = this.getSessionPath(sessionKey);
@@ -191,6 +229,7 @@ export class GcsStorage {
    * Delete session from GCS
    */
   async deleteSession(sessionKey: string): Promise<void> {
+    this.validateSessionKey(sessionKey);
     try {
       const bucket = this.storage.bucket(this.bucketName);
       const sessionPath = this.getSessionPath(sessionKey);

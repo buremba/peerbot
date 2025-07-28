@@ -8,11 +8,21 @@ import type {
   KubernetesError
 } from "../types";
 
+interface RateLimitEntry {
+  count: number;
+  windowStart: number;
+}
+
 export class KubernetesJobManager {
   private k8sApi: k8s.BatchV1Api;
   private k8sCoreApi: k8s.CoreV1Api;
   private activeJobs = new Map<string, string>(); // sessionKey -> jobName
+  private rateLimitMap = new Map<string, RateLimitEntry>(); // userId -> rate limit data
   private config: KubernetesConfig;
+  
+  // Rate limiting configuration
+  private readonly RATE_LIMIT_MAX_JOBS = 5; // Max jobs per user per window
+  private readonly RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000; // 15 minutes window
 
   constructor(config: KubernetesConfig) {
     this.config = config;
@@ -34,12 +44,72 @@ export class KubernetesJobManager {
 
     this.k8sApi = kc.makeApiClient(k8s.BatchV1Api);
     this.k8sCoreApi = kc.makeApiClient(k8s.CoreV1Api);
+    
+    // Start cleanup timer for rate limit entries
+    this.startRateLimitCleanup();
+  }
+
+  /**
+   * Check if user is within rate limits
+   */
+  private checkRateLimit(userId: string): boolean {
+    const now = Date.now();
+    const entry = this.rateLimitMap.get(userId);
+    
+    if (!entry) {
+      // First request for this user
+      this.rateLimitMap.set(userId, { count: 1, windowStart: now });
+      return true;
+    }
+    
+    // Check if we're in a new window
+    if (now - entry.windowStart >= this.RATE_LIMIT_WINDOW_MS) {
+      // Reset for new window
+      entry.count = 1;
+      entry.windowStart = now;
+      return true;
+    }
+    
+    // Check if under limit
+    if (entry.count < this.RATE_LIMIT_MAX_JOBS) {
+      entry.count++;
+      return true;
+    }
+    
+    // Rate limit exceeded
+    console.warn(`Rate limit exceeded for user ${userId}: ${entry.count} jobs in current window`);
+    return false;
+  }
+
+  /**
+   * Start periodic cleanup of expired rate limit entries
+   */
+  private startRateLimitCleanup(): void {
+    const cleanupInterval = 5 * 60 * 1000; // Clean up every 5 minutes
+    
+    setInterval(() => {
+      const now = Date.now();
+      for (const [userId, entry] of this.rateLimitMap.entries()) {
+        if (now - entry.windowStart >= this.RATE_LIMIT_WINDOW_MS) {
+          this.rateLimitMap.delete(userId);
+        }
+      }
+    }, cleanupInterval);
   }
 
   /**
    * Create a worker job for the user request
    */
   async createWorkerJob(request: WorkerJobRequest): Promise<string> {
+    // Check rate limits first
+    if (!this.checkRateLimit(request.userId)) {
+      throw new KubernetesError(
+        "createWorkerJob",
+        `Rate limit exceeded for user ${request.userId}. Maximum ${this.RATE_LIMIT_MAX_JOBS} jobs per ${this.RATE_LIMIT_WINDOW_MS / 1000 / 60} minutes`,
+        new Error("Rate limit exceeded")
+      );
+    }
+
     const jobName = this.generateJobName(request.sessionKey);
     
     try {

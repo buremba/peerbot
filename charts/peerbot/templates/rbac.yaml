@@ -12,37 +12,44 @@ metadata:
 
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
+kind: Role
 metadata:
   name: {{ include "peerbot.fullname" . }}-job-manager
+  namespace: {{ .Values.kubernetes.namespace }}
   labels:
     {{- include "peerbot.labels" . | nindent 4 }}
 rules:
-  # Jobs management
+  # Jobs management - restricted to this namespace only
   - apiGroups: ["batch"]
     resources: ["jobs"]
-    verbs: ["create", "get", "list", "watch", "update", "patch", "delete"]
+    verbs: ["create", "get", "list", "watch", "delete"]
   
-  # Pods monitoring (for job status)
+  # Pods monitoring (for job status) - restricted to this namespace only
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "watch"]
   
-  # Events reading (for job debugging)
+  # Events reading (for job debugging) - restricted to this namespace only
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["get", "list", "watch"]
+  
+  # ConfigMaps and Secrets access for dispatcher
+  - apiGroups: [""]
+    resources: ["configmaps", "secrets"]
+    verbs: ["get", "list"]
 
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
+kind: RoleBinding
 metadata:
   name: {{ include "peerbot.fullname" . }}-job-manager
+  namespace: {{ .Values.kubernetes.namespace }}
   labels:
     {{- include "peerbot.labels" . | nindent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
+  kind: Role
   name: {{ include "peerbot.fullname" . }}-job-manager
 subjects:
   - kind: ServiceAccount
@@ -59,16 +66,21 @@ metadata:
   labels:
     {{- include "peerbot.labels" . | nindent 4 }}
 rules:
-  # ConfigMaps and Secrets access for workers
+  # ConfigMaps and Secrets access for workers - specific resources only
   - apiGroups: [""]
-    resources: ["configmaps", "secrets"]
-    verbs: ["get", "list"]
+    resources: ["configmaps"]
+    verbs: ["get"]
+    resourceNames: ["claude-config"]
   
-  # Self-monitoring for graceful shutdown
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+    resourceNames: ["claude-secrets"]
+  
+  # Self-monitoring for graceful shutdown - read-only access to own job
   - apiGroups: ["batch"]
     resources: ["jobs"]
-    verbs: ["get", "list"]
-    resourceNames: []
+    verbs: ["get"]
 
 ---
 apiVersion: rbac.authorization.k8s.io/v1

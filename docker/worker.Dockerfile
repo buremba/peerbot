@@ -13,10 +13,26 @@ RUN apk add --no-cache \
     ca-certificates \
     openssh-client
 
-# Install Claude CLI
-RUN curl -fsSL https://claude.ai/install.sh | sh && \
+# Install Claude CLI with checksum verification
+# TODO: Replace with actual checksums when available from official Claude releases
+ARG CLAUDE_INSTALL_SCRIPT_URL="https://claude.ai/install.sh"
+ARG CLAUDE_INSTALL_SCRIPT_CHECKSUM=""
+RUN set -ex && \
+    # Download install script
+    curl -fsSL "${CLAUDE_INSTALL_SCRIPT_URL}" -o /tmp/claude-install.sh && \
+    # Verify checksum if provided
+    if [ -n "${CLAUDE_INSTALL_SCRIPT_CHECKSUM}" ]; then \
+        echo "${CLAUDE_INSTALL_SCRIPT_CHECKSUM}  /tmp/claude-install.sh" | sha256sum -c -; \
+    else \
+        echo "WARNING: Claude CLI install script checksum not verified"; \
+    fi && \
+    # Execute install script
+    chmod +x /tmp/claude-install.sh && \
+    /tmp/claude-install.sh && \
     mv /root/.local/bin/claude /usr/local/bin/claude && \
-    chmod +x /usr/local/bin/claude
+    chmod +x /usr/local/bin/claude && \
+    # Cleanup
+    rm -f /tmp/claude-install.sh
 
 # Create app directory
 WORKDIR /app
@@ -50,10 +66,25 @@ RUN apk add --no-cache \
     ca-certificates \
     openssh-client
 
-# Install Claude CLI (production)
-RUN curl -fsSL https://claude.ai/install.sh | sh && \
+# Install Claude CLI (production) with checksum verification
+ARG CLAUDE_INSTALL_SCRIPT_URL="https://claude.ai/install.sh"
+ARG CLAUDE_INSTALL_SCRIPT_CHECKSUM=""
+RUN set -ex && \
+    # Download install script
+    curl -fsSL "${CLAUDE_INSTALL_SCRIPT_URL}" -o /tmp/claude-install.sh && \
+    # Verify checksum if provided
+    if [ -n "${CLAUDE_INSTALL_SCRIPT_CHECKSUM}" ]; then \
+        echo "${CLAUDE_INSTALL_SCRIPT_CHECKSUM}  /tmp/claude-install.sh" | sha256sum -c -; \
+    else \
+        echo "WARNING: Claude CLI install script checksum not verified"; \
+    fi && \
+    # Execute install script
+    chmod +x /tmp/claude-install.sh && \
+    /tmp/claude-install.sh && \
     mv /root/.local/bin/claude /usr/local/bin/claude && \
-    chmod +x /usr/local/bin/claude
+    chmod +x /usr/local/bin/claude && \
+    # Cleanup
+    rm -f /tmp/claude-install.sh
 
 # Create non-root user
 RUN addgroup -g 1001 -S claude && \

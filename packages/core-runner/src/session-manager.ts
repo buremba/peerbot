@@ -22,9 +22,42 @@ export class SessionManager {
   }
 
   /**
+   * Validate session key to prevent security issues
+   */
+  private validateSessionKey(sessionKey: string): void {
+    if (!sessionKey || typeof sessionKey !== 'string') {
+      throw new SessionError(sessionKey, "INVALID_KEY", "Session key must be a non-empty string");
+    }
+    
+    if (sessionKey.length > 100) {
+      throw new SessionError(sessionKey, "INVALID_KEY", "Session key too long (max 100 characters)");
+    }
+    
+    // Prevent path traversal and malicious patterns
+    const maliciousPatterns = [
+      /\.\./,           // Parent directory traversal
+      /[\\\/]/,         // Path separators (forward or backward slash)
+      /[\x00-\x1f]/,    // Control characters
+      /[<>:"|?*]/,      // Invalid filename characters
+    ];
+    
+    for (const pattern of maliciousPatterns) {
+      if (pattern.test(sessionKey)) {
+        throw new SessionError(sessionKey, "INVALID_KEY", "Session key contains invalid characters or patterns");
+      }
+    }
+    
+    // Allow only alphanumeric, dots, hyphens, and underscores
+    if (!/^[a-zA-Z0-9._-]+$/.test(sessionKey)) {
+      throw new SessionError(sessionKey, "INVALID_KEY", "Session key must contain only alphanumeric characters, dots, hyphens, and underscores");
+    }
+  }
+
+  /**
    * Create a new session
    */
   async createSession(sessionKey: string, context: SessionContext): Promise<SessionState> {
+    this.validateSessionKey(sessionKey);
     const now = Date.now();
     
     const sessionState: SessionState = {
@@ -55,6 +88,7 @@ export class SessionManager {
    * Recover session from GCS
    */
   async recoverSession(sessionKey: string): Promise<SessionState> {
+    this.validateSessionKey(sessionKey);
     try {
       // Check if session is already active in memory
       const activeSession = this.activeSessions.get(sessionKey);
@@ -94,6 +128,7 @@ export class SessionManager {
    * Get current session state
    */
   getSession(sessionKey: string): SessionState | null {
+    this.validateSessionKey(sessionKey);
     return this.activeSessions.get(sessionKey) || null;
   }
 
@@ -101,6 +136,7 @@ export class SessionManager {
    * Add message to conversation
    */
   async addMessage(sessionKey: string, message: ConversationMessage): Promise<void> {
+    this.validateSessionKey(sessionKey);
     const session = this.activeSessions.get(sessionKey);
     if (!session) {
       throw new SessionError(sessionKey, "SESSION_NOT_FOUND", "Session not found");
@@ -116,6 +152,7 @@ export class SessionManager {
    * Update session progress
    */
   async updateProgress(sessionKey: string, update: ProgressUpdate): Promise<void> {
+    this.validateSessionKey(sessionKey);
     const session = this.activeSessions.get(sessionKey);
     if (!session) {
       return; // Session might have timed out
@@ -144,6 +181,7 @@ export class SessionManager {
    * Start timeout monitoring for session
    */
   startTimeoutMonitoring(sessionKey: string): Promise<void> {
+    this.validateSessionKey(sessionKey);
     return new Promise((resolve) => {
       const timeoutMs = this.timeoutMinutes * 60 * 1000;
       
@@ -179,6 +217,7 @@ export class SessionManager {
    * Reset session timeout (called on activity)
    */
   resetTimeout(sessionKey: string): void {
+    this.validateSessionKey(sessionKey);
     const existingTimeout = this.sessionTimeouts.get(sessionKey);
     if (existingTimeout) {
       clearTimeout(existingTimeout);
@@ -193,6 +232,7 @@ export class SessionManager {
    * Clear session timeout
    */
   clearTimeout(sessionKey: string): void {
+    this.validateSessionKey(sessionKey);
     const timeoutId = this.sessionTimeouts.get(sessionKey);
     if (timeoutId) {
       clearTimeout(timeoutId);
@@ -205,6 +245,7 @@ export class SessionManager {
    * Persist session to GCS
    */
   async persistSession(sessionKey: string): Promise<string> {
+    this.validateSessionKey(sessionKey);
     const session = this.activeSessions.get(sessionKey);
     if (!session) {
       throw new SessionError(sessionKey, "SESSION_NOT_FOUND", "Session not found for persistence");
@@ -228,6 +269,7 @@ export class SessionManager {
    * Check if session exists in GCS
    */
   async sessionExistsInGcs(sessionKey: string): Promise<boolean> {
+    this.validateSessionKey(sessionKey);
     return this.gcsStorage.sessionExists(sessionKey);
   }
 
@@ -235,6 +277,7 @@ export class SessionManager {
    * Clean up session resources
    */
   async cleanup(sessionKey: string): Promise<void> {
+    this.validateSessionKey(sessionKey);
     const session = this.activeSessions.get(sessionKey);
     
     if (session) {

@@ -1,0 +1,26 @@
+{
+  "name": "@claude-code-slack/worker",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Ephemeral worker that runs Claude Code sessions in Kubernetes Jobs",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/index.js",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@claude-code-slack/core-runner": "workspace:*",
+    "@slack/web-api": "^7.6.0",
+    "@octokit/rest": "^21.1.1",
+    "node-fetch": "^3.3.2",
+    "zod": "^3.24.4"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.8.3"
+  }
+}

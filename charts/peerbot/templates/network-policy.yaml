@@ -1,0 +1,147 @@
+{{- if .Values.networkPolicy.enabled -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "peerbot.fullname" . }}-network-policy
+  namespace: {{ .Values.kubernetes.namespace }}
+  labels:
+    {{- include "peerbot.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: {{ include "peerbot.name" . }}
+  policyTypes:
+  - Ingress
+  - Egress
+  
+  # Ingress rules - only allow traffic from within namespace and to dispatcher
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: {{ .Values.kubernetes.namespace }}
+    - podSelector:
+        matchLabels:
+          app: {{ include "peerbot.name" . }}
+    ports:
+    - protocol: TCP
+      port: 3000  # Dispatcher port
+  
+  # Allow ingress from ingress controller (if using ingress)
+  {{- if .Values.ingress.enabled }}
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: ingress-nginx  # Adjust based on your ingress controller
+    ports:
+    - protocol: TCP
+      port: 3000
+  {{- end }}
+
+  # Egress rules - restrict outbound traffic
+  egress:
+  # Allow DNS resolution
+  - to: []
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  
+  # Allow HTTPS to external APIs (Slack, GitHub, Claude, GCS)
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 443
+  
+  # Allow HTTP for package downloads and redirects
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 80
+  
+  # Allow communication within the namespace
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: {{ .Values.kubernetes.namespace }}
+  
+  # Allow communication to Kubernetes API server
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 6443
+    - protocol: TCP
+      port: 443
+
+---
+# Separate policy for worker pods with more restrictive rules
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "peerbot.fullname" . }}-worker-network-policy
+  namespace: {{ .Values.kubernetes.namespace }}
+  labels:
+    {{- include "peerbot.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: claude-worker
+  policyTypes:
+  - Ingress
+  - Egress
+  
+  # Workers should not accept any ingress traffic
+  ingress: []
+  
+  # Workers can only make specific egress connections
+  egress:
+  # Allow DNS resolution
+  - to: []
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  
+  # Allow HTTPS to external APIs
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 443
+  
+  # Allow HTTP for package downloads
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 80
+  
+  # Allow communication to GCS (if using custom ports)
+  {{- if .Values.gcs.customPorts }}
+  {{- range .Values.gcs.customPorts }}
+  - to: []
+    ports:
+    - protocol: TCP
+      port: {{ . }}
+  {{- end }}
+  {{- end }}
+
+---
+# Deny-all default policy (optional, uncomment if you want default deny)
+{{- if .Values.networkPolicy.defaultDeny }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "peerbot.fullname" . }}-default-deny
+  namespace: {{ .Values.kubernetes.namespace }}
+  labels:
+    {{- include "peerbot.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+  # No rules means deny all
+{{- end }}
+
+{{- end }}

@@ -175,7 +175,12 @@ autoscaling:
 # Pod disruption budget
 podDisruptionBudget:
   enabled: true
-  minAvailable: 1
+  dispatcher:
+    minAvailable: 1
+    # maxUnavailable: 1  # Alternative to minAvailable
+  worker:
+    # minAvailable: 1
+    maxUnavailable: "50%"
 
 # Node selector and tolerations
 nodeSelector: {}
@@ -197,3 +202,105 @@ securityContext:
   capabilities:
     drop:
       - ALL
+
+# Security Policies
+networkPolicy:
+  enabled: true
+  defaultDeny: false  # Set to true for default deny-all policy
+
+resourceQuota:
+  enabled: true
+  requests:
+    cpu: "2"
+    memory: "4Gi"
+    storage: "50Gi"
+  limits:
+    cpu: "4"
+    memory: "8Gi"
+  counts:
+    pods: 20
+    jobs: 15
+    configmaps: 10
+    secrets: 10
+    services: 5
+    pvcs: 5
+    loadbalancers: 1
+    nodeports: 0
+  storageClass: ""  # Optional: restrict to specific storage class
+
+workerQuota:
+  enabled: true
+  requests:
+    cpu: "1"
+    memory: "2Gi"
+  limits:
+    cpu: "2"
+    memory: "4Gi"
+  counts:
+    pods: 10
+    jobs: 8
+
+limitRange:
+  enabled: true
+  container:
+    default:
+      cpu: "500m"
+      memory: "1Gi"
+      storage: "5Gi"
+    defaultRequest:
+      cpu: "100m"
+      memory: "256Mi"
+      storage: "1Gi"
+    max:
+      cpu: "2"
+      memory: "4Gi"
+      storage: "20Gi"
+    min:
+      cpu: "10m"
+      memory: "32Mi"
+      storage: "100Mi"
+    maxLimitRequestRatio:
+      cpu: 10
+      memory: 4
+  pod:
+    max:
+      cpu: "2"
+      memory: "4Gi"
+      storage: "20Gi"
+    min:
+      cpu: "10m"
+      memory: "32Mi"
+  pvc:
+    max:
+      storage: "100Gi"
+    min:
+      storage: "1Gi"
+  worker:
+    default:
+      cpu: "1"
+      memory: "2Gi"
+      storage: "10Gi"
+    defaultRequest:
+      cpu: "200m"
+      memory: "512Mi"
+      storage: "2Gi"
+    max:
+      cpu: "2"
+      memory: "4Gi"
+      storage: "20Gi"
+    min:
+      cpu: "50m"
+      memory: "128Mi"
+      storage: "500Mi"
+    maxLimitRequestRatio:
+      cpu: 5
+      memory: 3
+
+podSecurityPolicy:
+  enabled: false  # Deprecated in K8s 1.21+, removed in 1.25+
+
+podSecurityStandards:
+  enabled: true  # For K8s 1.23+
+  enforce: "restricted"
+  audit: "restricted"
+  warn: "restricted"

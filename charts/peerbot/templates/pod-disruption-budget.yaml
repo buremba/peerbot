@@ -1,0 +1,46 @@
+{{- if .Values.podDisruptionBudget.enabled -}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "peerbot.fullname" . }}-dispatcher-pdb
+  namespace: {{ .Values.kubernetes.namespace }}
+  labels:
+    {{- include "peerbot.labels" . | nindent 4 }}
+    component: dispatcher
+spec:
+  # Ensure at least one dispatcher pod is always available
+  {{- if .Values.podDisruptionBudget.dispatcher.minAvailable }}
+  minAvailable: {{ .Values.podDisruptionBudget.dispatcher.minAvailable }}
+  {{- else }}
+  maxUnavailable: {{ .Values.podDisruptionBudget.dispatcher.maxUnavailable | default 1 }}
+  {{- end }}
+  selector:
+    matchLabels:
+      app: {{ include "peerbot.name" . }}
+      component: dispatcher
+
+---
+# PDB for worker jobs - allow more disruption since they are transient
+{{- if .Values.worker.job }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "peerbot.fullname" . }}-worker-pdb
+  namespace: {{ .Values.kubernetes.namespace }}
+  labels:
+    {{- include "peerbot.labels" . | nindent 4 }}
+    component: worker
+spec:
+  # Allow more aggressive disruption for worker pods
+  {{- if .Values.podDisruptionBudget.worker.minAvailable }}
+  minAvailable: {{ .Values.podDisruptionBudget.worker.minAvailable }}
+  {{- else }}
+  maxUnavailable: {{ .Values.podDisruptionBudget.worker.maxUnavailable | default "50%" }}
+  {{- end }}
+  selector:
+    matchLabels:
+      app: claude-worker
+      component: worker
+{{- end }}
+
+{{- end }}

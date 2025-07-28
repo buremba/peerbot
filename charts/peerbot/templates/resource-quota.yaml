@@ -1,0 +1,62 @@
+{{- if .Values.resourceQuota.enabled -}}
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: {{ include "peerbot.fullname" . }}-resource-quota
+  namespace: {{ .Values.kubernetes.namespace }}
+  labels:
+    {{- include "peerbot.labels" . | nindent 4 }}
+spec:
+  hard:
+    # Compute resource limits
+    requests.cpu: {{ .Values.resourceQuota.requests.cpu | default "2" }}
+    requests.memory: {{ .Values.resourceQuota.requests.memory | default "4Gi" }}
+    limits.cpu: {{ .Values.resourceQuota.limits.cpu | default "4" }}
+    limits.memory: {{ .Values.resourceQuota.limits.memory | default "8Gi" }}
+    
+    # Storage limits
+    requests.storage: {{ .Values.resourceQuota.requests.storage | default "50Gi" }}
+    {{- if .Values.resourceQuota.storageClass }}
+    {{ .Values.resourceQuota.storageClass }}.storageclass.storage.k8s.io/requests.storage: {{ .Values.resourceQuota.requests.storage | default "50Gi" }}
+    {{- end }}
+    
+    # Object count limits
+    count/pods: {{ .Values.resourceQuota.counts.pods | default "20" }}
+    count/jobs.batch: {{ .Values.resourceQuota.counts.jobs | default "15" }}
+    count/configmaps: {{ .Values.resourceQuota.counts.configmaps | default "10" }}
+    count/secrets: {{ .Values.resourceQuota.counts.secrets | default "10" }}
+    count/services: {{ .Values.resourceQuota.counts.services | default "5" }}
+    count/persistentvolumeclaims: {{ .Values.resourceQuota.counts.pvcs | default "5" }}
+    
+    # Prevent resource-intensive objects
+    count/services.loadbalancers: {{ .Values.resourceQuota.counts.loadbalancers | default "1" }}
+    count/services.nodeports: {{ .Values.resourceQuota.counts.nodeports | default "0" }}
+
+---
+# Separate quota for worker jobs to prevent resource exhaustion
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: {{ include "peerbot.fullname" . }}-worker-quota
+  namespace: {{ .Values.kubernetes.namespace }}
+  labels:
+    {{- include "peerbot.labels" . | nindent 4 }}
+spec:
+  # Apply quota only to worker pods
+  scopeSelector:
+    matchExpressions:
+    - scopeName: PriorityClass
+      operator: In
+      values: ["worker-priority"]
+  hard:
+    # Stricter limits for worker pods
+    requests.cpu: {{ .Values.workerQuota.requests.cpu | default "1" }}
+    requests.memory: {{ .Values.workerQuota.requests.memory | default "2Gi" }}
+    limits.cpu: {{ .Values.workerQuota.limits.cpu | default "2" }}
+    limits.memory: {{ .Values.workerQuota.limits.memory | default "4Gi" }}
+    
+    # Limit concurrent worker jobs
+    count/pods: {{ .Values.workerQuota.counts.pods | default "10" }}
+    count/jobs.batch: {{ .Values.workerQuota.counts.jobs | default "8" }}
+
+{{- end }}

@@ -1,0 +1,95 @@
+{{- if .Values.limitRange.enabled -}}
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: {{ include "peerbot.fullname" . }}-limit-range
+  namespace: {{ .Values.kubernetes.namespace }}
+  labels:
+    {{- include "peerbot.labels" . | nindent 4 }}
+spec:
+  limits:
+  # Container-level limits
+  - type: Container
+    default:
+      # Default resource limits for containers without explicit limits
+      cpu: {{ .Values.limitRange.container.default.cpu | default "500m" }}
+      memory: {{ .Values.limitRange.container.default.memory | default "1Gi" }}
+      ephemeral-storage: {{ .Values.limitRange.container.default.storage | default "5Gi" }}
+    defaultRequest:
+      # Default resource requests for containers without explicit requests
+      cpu: {{ .Values.limitRange.container.defaultRequest.cpu | default "100m" }}
+      memory: {{ .Values.limitRange.container.defaultRequest.memory | default "256Mi" }}
+      ephemeral-storage: {{ .Values.limitRange.container.defaultRequest.storage | default "1Gi" }}
+    max:
+      # Maximum resources any single container can request
+      cpu: {{ .Values.limitRange.container.max.cpu | default "2" }}
+      memory: {{ .Values.limitRange.container.max.memory | default "4Gi" }}
+      ephemeral-storage: {{ .Values.limitRange.container.max.storage | default "20Gi" }}
+    min:
+      # Minimum resources any container must request
+      cpu: {{ .Values.limitRange.container.min.cpu | default "10m" }}
+      memory: {{ .Values.limitRange.container.min.memory | default "32Mi" }}
+      ephemeral-storage: {{ .Values.limitRange.container.min.storage | default "100Mi" }}
+    maxLimitRequestRatio:
+      # Maximum ratio between limit and request
+      cpu: {{ .Values.limitRange.container.maxLimitRequestRatio.cpu | default "10" }}
+      memory: {{ .Values.limitRange.container.maxLimitRequestRatio.memory | default "4" }}
+
+  # Pod-level limits
+  - type: Pod
+    max:
+      # Maximum resources any single pod can request
+      cpu: {{ .Values.limitRange.pod.max.cpu | default "2" }}
+      memory: {{ .Values.limitRange.pod.max.memory | default "4Gi" }}
+      ephemeral-storage: {{ .Values.limitRange.pod.max.storage | default "20Gi" }}
+    min:
+      # Minimum resources any pod must request
+      cpu: {{ .Values.limitRange.pod.min.cpu | default "10m" }}
+      memory: {{ .Values.limitRange.pod.min.memory | default "32Mi" }}
+
+  # PersistentVolumeClaim limits
+  - type: PersistentVolumeClaim
+    max:
+      storage: {{ .Values.limitRange.pvc.max.storage | default "100Gi" }}
+    min:
+      storage: {{ .Values.limitRange.pvc.min.storage | default "1Gi" }}
+
+---
+# Separate, stricter limits for worker containers
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: {{ include "peerbot.fullname" . }}-worker-limit-range
+  namespace: {{ .Values.kubernetes.namespace }}
+  labels:
+    {{- include "peerbot.labels" . | nindent 4 }}
+    component: worker
+spec:
+  limits:
+  # More restrictive limits for worker containers
+  - type: Container
+    # Apply to containers with worker label
+    selector:
+      matchLabels:
+        component: worker
+    default:
+      cpu: {{ .Values.limitRange.worker.default.cpu | default "1" }}
+      memory: {{ .Values.limitRange.worker.default.memory | default "2Gi" }}
+      ephemeral-storage: {{ .Values.limitRange.worker.default.storage | default "10Gi" }}
+    defaultRequest:
+      cpu: {{ .Values.limitRange.worker.defaultRequest.cpu | default "200m" }}
+      memory: {{ .Values.limitRange.worker.defaultRequest.memory | default "512Mi" }}
+      ephemeral-storage: {{ .Values.limitRange.worker.defaultRequest.storage | default "2Gi" }}
+    max:
+      cpu: {{ .Values.limitRange.worker.max.cpu | default "2" }}
+      memory: {{ .Values.limitRange.worker.max.memory | default "4Gi" }}
+      ephemeral-storage: {{ .Values.limitRange.worker.max.storage | default "20Gi" }}
+    min:
+      cpu: {{ .Values.limitRange.worker.min.cpu | default "50m" }}
+      memory: {{ .Values.limitRange.worker.min.memory | default "128Mi" }}
+      ephemeral-storage: {{ .Values.limitRange.worker.min.storage | default "500Mi" }}
+    maxLimitRequestRatio:
+      cpu: {{ .Values.limitRange.worker.maxLimitRequestRatio.cpu | default "5" }}
+      memory: {{ .Values.limitRange.worker.maxLimitRequestRatio.memory | default "3" }}
+
+{{- end }}

@@ -1,5 +1,5 @@
 # Dockerfile for Claude Code Worker
-FROM node:20-alpine AS base
+FROM oven/bun:1-alpine AS base
 
 # Install system dependencies including Claude CLI
 RUN apk add --no-cache \
@@ -13,26 +13,8 @@ RUN apk add --no-cache \
     ca-certificates \
     openssh-client
 
-# Install Claude CLI with checksum verification
-# TODO: Replace with actual checksums when available from official Claude releases
-ARG CLAUDE_INSTALL_SCRIPT_URL="https://claude.ai/install.sh"
-ARG CLAUDE_INSTALL_SCRIPT_CHECKSUM=""
-RUN set -ex && \
-    # Download install script
-    curl -fsSL "${CLAUDE_INSTALL_SCRIPT_URL}" -o /tmp/claude-install.sh && \
-    # Verify checksum if provided
-    if [ -n "${CLAUDE_INSTALL_SCRIPT_CHECKSUM}" ]; then \
-        echo "${CLAUDE_INSTALL_SCRIPT_CHECKSUM}  /tmp/claude-install.sh" | sha256sum -c -; \
-    else \
-        echo "WARNING: Claude CLI install script checksum not verified"; \
-    fi && \
-    # Execute install script
-    chmod +x /tmp/claude-install.sh && \
-    /tmp/claude-install.sh && \
-    mv /root/.local/bin/claude /usr/local/bin/claude && \
-    chmod +x /usr/local/bin/claude && \
-    # Cleanup
-    rm -f /tmp/claude-install.sh
+# Claude CLI installation will be handled by worker at runtime
+# The worker will install/update Claude CLI as needed
 
 # Create app directory
 WORKDIR /app
@@ -40,21 +22,23 @@ WORKDIR /app
 # Copy package files
 COPY package.json bun.lock ./
 COPY packages/core-runner/package.json ./packages/core-runner/
+COPY packages/dispatcher/package.json ./packages/dispatcher/
 COPY packages/worker/package.json ./packages/worker/
 
 # Install dependencies
-RUN npm install
+RUN bun install --frozen-lockfile
 
 # Copy source code
 COPY packages/core-runner/ ./packages/core-runner/
 COPY packages/worker/ ./packages/worker/
 COPY tsconfig.json ./
 
-# Build the packages
-RUN npm run build:packages
+# Build the packages using Bun's transpiler
+RUN bun build packages/core-runner/src/index.ts --outdir packages/core-runner/dist --target bun --splitting && \
+    bun build packages/worker/src/index.ts --outdir packages/worker/dist --target bun --splitting
 
 # Production stage
-FROM node:20-alpine AS production
+FROM oven/bun:1-alpine AS production
 
 # Install runtime dependencies
 RUN apk add --no-cache \
@@ -66,25 +50,8 @@ RUN apk add --no-cache \
     ca-certificates \
     openssh-client
 
-# Install Claude CLI (production) with checksum verification
-ARG CLAUDE_INSTALL_SCRIPT_URL="https://claude.ai/install.sh"
-ARG CLAUDE_INSTALL_SCRIPT_CHECKSUM=""
-RUN set -ex && \
-    # Download install script
-    curl -fsSL "${CLAUDE_INSTALL_SCRIPT_URL}" -o /tmp/claude-install.sh && \
-    # Verify checksum if provided
-    if [ -n "${CLAUDE_INSTALL_SCRIPT_CHECKSUM}" ]; then \
-        echo "${CLAUDE_INSTALL_SCRIPT_CHECKSUM}  /tmp/claude-install.sh" | sha256sum -c -; \
-    else \
-        echo "WARNING: Claude CLI install script checksum not verified"; \
-    fi && \
-    # Execute install script
-    chmod +x /tmp/claude-install.sh && \
-    /tmp/claude-install.sh && \
-    mv /root/.local/bin/claude /usr/local/bin/claude && \
-    chmod +x /usr/local/bin/claude && \
-    # Cleanup
-    rm -f /tmp/claude-install.sh
+# Claude CLI installation will be handled by worker at runtime
+# The worker will install/update Claude CLI as needed
 
 # Create non-root user
 RUN addgroup -g 1001 -S claude && \
@@ -102,8 +69,8 @@ COPY --from=base --chown=claude:claude /app/node_modules ./node_modules
 COPY --from=base --chown=claude:claude /app/package.json ./
 
 # Copy scripts and make executable
-COPY --chown=claude:claude packages/worker/scripts/ ./scripts/
-RUN chmod +x ./scripts/*.sh
+COPY --chown=claude:claude packages/worker/scripts/ ./packages/worker/scripts/
+RUN chmod +x ./packages/worker/scripts/*.sh || true
 
 # Switch to non-root user
 USER claude
@@ -115,8 +82,7 @@ WORKDIR /workspace
 ENV NODE_ENV=production
 ENV WORKSPACE_DIR=/workspace
 
-# Verify Claude CLI installation
-RUN claude --version || (echo "Claude CLI not properly installed" && exit 1)
+# Claude CLI will be verified at runtime
 
-# Default command (will be overridden by entrypoint)
-CMD ["/app/scripts/entrypoint.sh"]
+# Default command
+CMD ["bun", "run", "/app/packages/worker/dist/index.js"]

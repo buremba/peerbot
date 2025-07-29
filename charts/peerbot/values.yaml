@@ -38,7 +38,7 @@ dispatcher:
   livenessProbe:
     httpGet:
       path: /health
-      port: 3000
+      port: 8080
     initialDelaySeconds: 30
     periodSeconds: 30
     timeoutSeconds: 10
@@ -46,8 +46,8 @@ dispatcher:
   
   readinessProbe:
     httpGet:
-      path: /health
-      port: 3000
+      path: /ready
+      port: 8080
     initialDelaySeconds: 15
     periodSeconds: 10
     timeoutSeconds: 5
@@ -60,14 +60,14 @@ worker:
     tag: latest
     pullPolicy: Always
   
-  # Default resources for worker jobs
+  # Optimized resources for worker jobs (reduced by ~50%)
   resources:
     requests:
-      cpu: 1000m
-      memory: 2Gi
+      cpu: 500m
+      memory: 1Gi
     limits:
-      cpu: 2000m
-      memory: 4Gi
+      cpu: 1500m
+      memory: 3Gi
   
   # Job settings
   job:
@@ -166,11 +166,43 @@ monitoring:
   
 # Autoscaling (for dispatcher only)
 autoscaling:
-  enabled: false
-  minReplicas: 1
+  enabled: false  # Disabled in favor of KEDA
+  minReplicas: 0  # Scale to zero when idle
   maxReplicas: 3
-  targetCPUUtilizationPercentage: 80
-  targetMemoryUtilizationPercentage: 80
+  targetCPUUtilizationPercentage: 50  # Lower threshold for quicker scale-up
+  targetMemoryUtilizationPercentage: 70
+  # Scale down behavior - aggressive for scale-to-zero
+  scaleDown:
+    stabilizationWindowSeconds: 300  # 5 minutes stability before scaling down
+    percent: 100  # Can scale down 100% (to zero)
+    pods: 1  # Scale down 1 pod at a time
+    periodSeconds: 60  # Check every minute
+  # Scale up behavior - quick response
+  scaleUp:
+    stabilizationWindowSeconds: 0  # No delay for scaling up
+    percent: 100  # Can double the pods
+    pods: 2  # Or add 2 pods at once
+    periodSeconds: 15  # Check every 15 seconds
+
+# KEDA autoscaling (alternative to HPA, better for scale-to-zero)
+keda:
+  enabled: true  # Enable KEDA for true scale-to-zero
+  pollingInterval: 30  # Check every 30 seconds
+  cooldownPeriod: 300  # 5 minutes before scaling to zero
+  idleReplicaCount: 0  # Scale to zero when idle
+  minReplicaCount: 0
+  maxReplicaCount: 5
+  triggers:
+    cpu:
+      utilizationPercentage: 50
+    memory:
+      utilizationPercentage: 70
+    # Example Prometheus trigger for custom metrics
+    prometheus:
+      serverAddress: http://prometheus:9090
+      metricName: slack_messages_pending
+      threshold: "1"
+      query: sum(rate(slack_messages_received_total[1m]))
 
 # Pod disruption budget
 podDisruptionBudget:
@@ -186,6 +218,15 @@ podDisruptionBudget:
 nodeSelector: {}
 tolerations: []
 affinity: {}
+
+# Spot instance configuration for workers
+workerNodeSelector:
+  cloud.google.com/gke-spot: "true"
+workerTolerations:
+  - key: cloud.google.com/gke-spot
+    operator: Equal
+    value: "true"
+    effect: NoSchedule
 
 # Pod security context
 podSecurityContext:
@@ -211,12 +252,12 @@ networkPolicy:
 resourceQuota:
   enabled: true
   requests:
-    cpu: "2"
-    memory: "4Gi"
-    storage: "50Gi"
+    cpu: "1"      # Reduced from 2
+    memory: "2Gi" # Reduced from 4Gi
+    storage: "20Gi" # Reduced from 50Gi
   limits:
-    cpu: "4"
-    memory: "8Gi"
+    cpu: "2"      # Reduced from 4
+    memory: "4Gi" # Reduced from 8Gi
   counts:
     pods: 20
     jobs: 15
@@ -231,11 +272,11 @@ resourceQuota:
 workerQuota:
   enabled: true
   requests:
-    cpu: "1"
-    memory: "2Gi"
+    cpu: "0.5"    # Reduced from 1
+    memory: "1Gi" # Reduced from 2Gi
   limits:
-    cpu: "2"
-    memory: "4Gi"
+    cpu: "1.5"    # Reduced from 2
+    memory: "3Gi" # Reduced from 4Gi
   counts:
     pods: 10
     jobs: 8
@@ -277,17 +318,17 @@ limitRange:
       storage: "1Gi"
   worker:
     default:
-      cpu: "1"
-      memory: "2Gi"
-      storage: "10Gi"
+      cpu: "500m"    # Reduced from 1
+      memory: "1Gi"  # Reduced from 2Gi
+      storage: "5Gi" # Reduced from 10Gi
     defaultRequest:
-      cpu: "200m"
-      memory: "512Mi"
-      storage: "2Gi"
+      cpu: "100m"    # Reduced from 200m
+      memory: "256Mi" # Reduced from 512Mi
+      storage: "1Gi"  # Reduced from 2Gi
     max:
-      cpu: "2"
-      memory: "4Gi"
-      storage: "20Gi"
+      cpu: "1.5"     # Reduced from 2
+      memory: "3Gi"  # Reduced from 4Gi
+      storage: "10Gi" # Reduced from 20Gi
     min:
       cpu: "50m"
       memory: "128Mi"

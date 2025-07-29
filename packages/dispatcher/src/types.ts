@@ -2,9 +2,11 @@
 
 import type { LogLevel } from "@slack/bolt";
 import type { ClaudeExecutionOptions } from "@claude-code-slack/core-runner";
+import type { SlackTokenManager } from "./slack/token-manager";
 
 export interface SlackConfig {
   token: string;
+  tokenManager?: SlackTokenManager;
   appToken?: string;
   signingSecret?: string;
   socketMode?: boolean;
@@ -118,6 +120,9 @@ export interface JobTemplateData {
   recoveryMode: string; // "true" or "false"
   // Environment variables from config
   slackToken: string;
+  slackRefreshToken?: string;
+  slackClientId?: string;
+  slackClientSecret?: string;
   githubToken: string;
   gcsBucket: string;
   gcsKeyFile?: string;

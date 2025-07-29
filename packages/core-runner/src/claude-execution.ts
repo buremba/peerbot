@@ -8,8 +8,7 @@ import { spawn } from "child_process";
 import type { 
   ClaudeExecutionOptions, 
   ClaudeExecutionResult, 
-  ProgressCallback,
-  SessionContext
+  ProgressCallback
 } from "./types";
 
 const execAsync = promisify(exec);
@@ -112,8 +111,7 @@ function prepareRunConfig(
 export async function runClaudeWithProgress(
   promptPath: string,
   options: ClaudeExecutionOptions,
-  onProgress?: ProgressCallback,
-  context?: SessionContext,
+  onProgress?: ProgressCallback
 ): Promise<ClaudeExecutionResult> {
   const config = prepareRunConfig(promptPath, options);
 

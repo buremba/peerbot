@@ -97,7 +97,7 @@ describe("Slack Event Handlers", () => {
         bot_id: "B123456",
       };
 
-      const isBot = mockEvent.bot_id || mockEvent.user === "U987654";
+      const isBot = !!mockEvent.bot_id || mockEvent.user === "U987654";
       expect(isBot).toBe(true);
 
       // Bot messages should be ignored

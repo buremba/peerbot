@@ -1,11 +1,11 @@
 #!/usr/bin/env bun
 
 import { Storage } from "@google-cloud/storage";
+import { GcsError } from "../types";
 import type { 
   GcsConfig, 
   SessionState, 
-  ConversationMetadata,
-  GcsError 
+  ConversationMetadata
 } from "../types";
 
 export class GcsStorage {

@@ -1,0 +1,69 @@
+spec:
+  template:
+    spec:
+      containers:
+      - name: dispatcher
+        env:
+        - name: SLACK_BOT_TOKEN
+          valueFrom:
+            secretKeyRef:
+              key: slack-bot-token
+              name: peerbot-secrets
+        - name: SLACK_REFRESH_TOKEN
+          valueFrom:
+            secretKeyRef:
+              key: slack-refresh-token
+              name: peerbot-secrets
+        - name: SLACK_CLIENT_ID
+          valueFrom:
+            secretKeyRef:
+              key: slack-client-id
+              name: peerbot-secrets
+        - name: SLACK_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              key: slack-client-secret
+              name: peerbot-secrets
+        - name: SLACK_SIGNING_SECRET
+          valueFrom:
+            secretKeyRef:
+              key: slack-signing-secret
+              name: peerbot-secrets
+              optional: true
+        - name: SLACK_APP_TOKEN
+          valueFrom:
+            secretKeyRef:
+              key: slack-app-token
+              name: peerbot-secrets
+              optional: true
+        - name: SLACK_HTTP_MODE
+          value: "true"
+        - name: PORT
+          value: "3000"
+        - name: SLACK_TRIGGER_PHRASE
+          value: '@peercloud'
+        - name: SLACK_ALLOW_DIRECT_MESSAGES
+          value: "true"
+        - name: SLACK_ALLOW_PRIVATE_CHANNELS
+          value: "false"
+        - name: ENABLE_STATUS_REACTIONS
+          value: "true"
+        - name: ENABLE_PROGRESS_UPDATES
+          value: "true"
+        - name: KUBERNETES_NAMESPACE
+          value: "peerbot"
+        - name: WORKER_IMAGE
+          value: "gcr.io/spile-461023/claude-worker:latest"
+        - name: GITHUB_TOKEN
+          valueFrom:
+            secretKeyRef:
+              key: github-token
+              name: peerbot-secrets
+        - name: GITHUB_ORGANIZATION
+          value: "PeerBot-Community"
+        - name: GCS_BUCKET_NAME
+          value: "peerbot-conversations-prod"
+        - name: GOOGLE_CLOUD_PROJECT
+          value: "peerbot-428607"
+        - name: SESSION_TIMEOUT_MINUTES
+          value: "5"

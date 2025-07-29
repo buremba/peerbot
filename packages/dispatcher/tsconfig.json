@@ -6,8 +6,12 @@
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext"
+    "module": "CommonJS",
+    "moduleResolution": "node",
+    "esModuleInterop": true,
+    "verbatimModuleSyntax": false,
+    "noEmit": false,
+    "allowImportingTsExtensions": false
   },
   "include": [
     "src/**/*"
@@ -15,6 +19,7 @@
   "exclude": [
     "dist",
     "node_modules",
-    "**/*.test.ts"
+    "**/*.test.ts",
+    "**/__tests__/**"
   ]
 }

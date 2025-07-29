@@ -1,0 +1,126 @@
+name: Build and Deploy to GKE
+
+on:
+  push:
+    branches:
+      - main
+      - staging
+      - develop
+  pull_request:
+    branches:
+      - main
+
+env:
+  PROJECT_ID: spile-461023
+  GKE_CLUSTER: spile-cluster
+  GKE_ZONE: us-central1
+  DEPLOYMENT_NAME: peerbot
+  NAMESPACE: peerbot
+  IMAGE_DISPATCHER: claude-dispatcher
+  IMAGE_WORKER: claude-worker
+
+jobs:
+  setup-build-publish-deploy:
+    name: Setup, Build, Publish, and Deploy
+    runs-on: ubuntu-latest
+    environment: production
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    # Authenticate via credentials json
+    - id: 'auth'
+      uses: 'google-github-actions/auth@v2'
+      with:
+        credentials_json: '${{ secrets.GCP_CREDENTIALS }}'
+
+    - name: 'Set up Cloud SDK'
+      uses: 'google-github-actions/setup-gcloud@v2'
+      with:
+        version: '>= 363.0.0'
+
+    # Configure Docker to use the gcloud command-line tool as a credential
+    # helper for authentication
+    - run: |-
+        gcloud --quiet auth configure-docker
+
+    # Get the GKE credentials so we can deploy to the cluster
+    - name: Set up GKE credentials
+      uses: google-github-actions/get-gke-credentials@v2
+      with:
+        cluster_name: ${{ env.GKE_CLUSTER }}
+        location: ${{ env.GKE_ZONE }}
+
+    # Set up Bun
+    - name: Setup Bun
+      uses: oven-sh/setup-bun@v2
+      with:
+        bun-version: latest
+
+    # Build the Docker images
+    - name: Build
+      run: |-
+        docker build \
+          --tag "gcr.io/$PROJECT_ID/$IMAGE_DISPATCHER:$GITHUB_SHA" \
+          --tag "gcr.io/$PROJECT_ID/$IMAGE_DISPATCHER:latest" \
+          --build-arg GITHUB_SHA="$GITHUB_SHA" \
+          --build-arg GITHUB_REF="$GITHUB_REF" \
+          -f docker/dispatcher.Dockerfile \
+          .
+        docker build \
+          --tag "gcr.io/$PROJECT_ID/$IMAGE_WORKER:$GITHUB_SHA" \
+          --tag "gcr.io/$PROJECT_ID/$IMAGE_WORKER:latest" \
+          --build-arg GITHUB_SHA="$GITHUB_SHA" \
+          --build-arg GITHUB_REF="$GITHUB_REF" \
+          -f docker/worker.Dockerfile \
+          .
+
+    # Push the Docker images to Google Container Registry
+    - name: Publish
+      run: |-
+        docker push "gcr.io/$PROJECT_ID/$IMAGE_DISPATCHER:$GITHUB_SHA"
+        docker push "gcr.io/$PROJECT_ID/$IMAGE_DISPATCHER:latest"
+        docker push "gcr.io/$PROJECT_ID/$IMAGE_WORKER:$GITHUB_SHA"
+        docker push "gcr.io/$PROJECT_ID/$IMAGE_WORKER:latest"
+
+    # Install KEDA if not already installed
+    - name: Install KEDA
+      if: github.ref == 'refs/heads/main'
+      run: |-
+        if ! kubectl get deployment -n keda keda-operator &>/dev/null; then
+          echo "Installing KEDA for scale-to-zero support..."
+          kubectl apply --server-side -f https://github.com/kedacore/keda/releases/download/v2.13.0/keda-2.13.0.yaml
+          kubectl wait --for=condition=ready pod -l app=keda-operator -n keda --timeout=300s
+        else
+          echo "KEDA is already installed"
+        fi
+
+    # Deploy the application to the GKE cluster
+    - name: Deploy
+      if: github.ref == 'refs/heads/main'
+      run: |-
+        helm upgrade --install $DEPLOYMENT_NAME charts/peerbot \
+          --namespace $NAMESPACE \
+          --create-namespace \
+          --values charts/peerbot/values-prod-http-mode.yaml \
+          --set dispatcher.image.tag=$GITHUB_SHA \
+          --set worker.image.tag=$GITHUB_SHA \
+          --wait
+
+    # Apply GCS lifecycle policy
+    - name: Apply GCS Lifecycle Policy
+      if: github.ref == 'refs/heads/main'
+      run: |-
+        echo "Applying GCS lifecycle policy for cost optimization..."
+        gsutil lifecycle set gcs-lifecycle-policy.json gs://peerbot-conversations-prod || true
+
+    # Run tests
+    - name: Run Tests
+      run: |-
+        bun install
+        bun test

@@ -294,7 +294,7 @@ export class SlackEventHandlers {
 
 **GitHub Workspace:**
 • Repository: [${username}](${repositoryUrl})
-• 📝 [Edit on GitHub.dev](https://github.dev/${this.config.github.organization}/${username})
+• 📝 [Edit on GitHub.dev](${repositoryUrl.replace('github.com', 'github.dev')})
 • 🔄 [Compare & PR](${repositoryUrl}/compare)
 
 *Progress updates will appear below...*`;

@@ -3,9 +3,21 @@
 import { Octokit } from "@octokit/rest";
 import type { 
   GitHubConfig,
-  UserRepository,
-  GitHubRepositoryError
+  UserRepository
 } from "../types";
+
+// Define custom error class
+class GitHubRepositoryError extends Error {
+  constructor(
+    public operation: string,
+    public username: string,
+    message: string,
+    public cause?: Error
+  ) {
+    super(message);
+    this.name = 'GitHubRepositoryError';
+  }
+}
 
 export class GitHubRepositoryManager {
   private octokit: Octokit;
@@ -36,39 +48,62 @@ export class GitHubRepositoryManager {
       const repositoryName = username; // Repository name matches username
       
       // Check if repository exists
-      let repository: UserRepository;
+      let repository: UserRepository | undefined;
       
+      // First, try to find the repository under the configured organization/user
+      const possibleOwners = [this.config.organization];
+      
+      // Also check if it exists under the authenticated user
       try {
-        const repoResponse = await this.octokit.rest.repos.get({
-          owner: this.config.organization,
-          repo: repositoryName,
-        });
-        
-        // Repository exists, create repository info
-        repository = {
-          username,
-          repositoryName,
-          repositoryUrl: repoResponse.data.html_url,
-          cloneUrl: repoResponse.data.clone_url,
-          createdAt: new Date(repoResponse.data.created_at).getTime(),
-          lastUsed: Date.now(),
-        };
-        
-        console.log(`Found existing repository for user ${username}: ${repository.repositoryUrl}`);
-        
-      } catch (error: any) {
-        if (error.status === 404) {
-          // Repository doesn't exist, create it
-          repository = await this.createUserRepository(username);
-        } else {
-          throw error;
+        const authUser = await this.octokit.rest.users.getAuthenticated();
+        if (authUser.data.login !== this.config.organization) {
+          possibleOwners.push(authUser.data.login);
         }
+      } catch (e) {
+        console.warn('Could not get authenticated user:', e);
+      }
+      
+      let foundRepo = false;
+      for (const owner of possibleOwners) {
+        try {
+          const repoResponse = await this.octokit.rest.repos.get({
+            owner: owner,
+            repo: repositoryName,
+          });
+          
+          // Repository exists, create repository info
+          repository = {
+            username,
+            repositoryName,
+            repositoryUrl: repoResponse.data.html_url,
+            cloneUrl: repoResponse.data.clone_url,
+            createdAt: new Date(repoResponse.data.created_at).getTime(),
+            lastUsed: Date.now(),
+          };
+          
+          console.log(`Found existing repository for user ${username} under ${owner}: ${repository.repositoryUrl}`);
+          foundRepo = true;
+          break;
+          
+        } catch (error: any) {
+          if (error.status !== 404) {
+            throw error;
+          }
+        }
+      }
+      
+      if (!foundRepo) {
+        // Repository doesn't exist anywhere, create it
+        repository = await this.createUserRepository(username);
       }
 
       // Cache repository info
-      this.repositories.set(username, repository);
-      
-      return repository;
+      if (repository) {
+        this.repositories.set(username, repository);
+        return repository;
+      } else {
+        throw new Error(`Failed to find or create repository for user ${username}`);
+      }
 
     } catch (error) {
       throw new GitHubRepositoryError(
@@ -89,24 +124,50 @@ export class GitHubRepositoryManager {
       
       console.log(`Creating repository for user ${username}...`);
       
-      const repoResponse = await this.octokit.rest.repos.createInOrg({
-        org: this.config.organization,
-        name: repositoryName,
-        description: `Personal workspace for ${username} - Claude Code Slack Bot`,
-        private: false,
-        has_issues: true,
-        has_projects: false,
-        has_wiki: false,
-        auto_init: true,
-        gitignore_template: "Node",
-        license_template: "mit",
-      });
+      // Check if the configured organization is actually a user account
+      let repoResponse;
+      try {
+        // First try to create in org
+        repoResponse = await this.octokit.rest.repos.createInOrg({
+          org: this.config.organization,
+          name: repositoryName,
+          description: `Personal workspace for ${username} - Claude Code Slack Bot`,
+          private: false,
+          has_issues: true,
+          has_projects: false,
+          has_wiki: false,
+          auto_init: true,
+          gitignore_template: "Node",
+          license_template: "mit",
+        });
+      } catch (orgError: any) {
+        // If org creation fails with 404, try creating for authenticated user
+        if (orgError.status === 404) {
+          console.log(`Organization ${this.config.organization} not found, trying to create repo for authenticated user...`);
+          repoResponse = await this.octokit.rest.repos.createForAuthenticatedUser({
+            name: repositoryName,
+            description: `Personal workspace for ${username} - Claude Code Slack Bot`,
+            private: false,
+            has_issues: true,
+            has_projects: false,
+            has_wiki: false,
+            auto_init: true,
+            gitignore_template: "Node",
+            license_template: "mit",
+          });
+        } else {
+          throw orgError;
+        }
+      }
 
       // Create initial README
       const readmeContent = this.generateInitialReadme(username);
       
+      // Use the actual owner from the response
+      const owner = repoResponse.data.owner.login;
+      
       await this.octokit.rest.repos.createOrUpdateFileContents({
-        owner: this.config.organization,
+        owner: owner,
         repo: repositoryName,
         path: "README.md",
         message: "Initial setup by Claude Code Slack Bot",
@@ -114,7 +175,7 @@ export class GitHubRepositoryManager {
       });
 
       // Create initial directory structure
-      await this.createInitialStructure(repositoryName);
+      await this.createInitialStructure(owner, repositoryName);
 
       const repository: UserRepository = {
         username,
@@ -192,7 +253,7 @@ Try asking Claude to:
   /**
    * Create initial directory structure
    */
-  private async createInitialStructure(repositoryName: string): Promise<void> {
+  private async createInitialStructure(owner: string, repositoryName: string): Promise<void> {
     const directories = [
       {
         path: "projects/examples/.gitkeep",
@@ -215,7 +276,7 @@ Try asking Claude to:
     for (const dir of directories) {
       try {
         await this.octokit.rest.repos.createOrUpdateFileContents({
-          owner: this.config.organization,
+          owner: owner,
           repo: repositoryName,
           path: dir.path,
           message: `Create ${dir.path.split('/')[0]} directory`,

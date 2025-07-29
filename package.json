@@ -4,7 +4,7 @@
   "private": true,
   "workspaces": [
     "packages/core-runner",
-    "packages/dispatcher", 
+    "packages/dispatcher",
     "packages/worker"
   ],
   "scripts": {
@@ -41,6 +41,7 @@
     "@types/bun": "1.2.11",
     "@types/node": "^20.0.0",
     "@types/node-fetch": "^2.6.12",
+    "dotenv": "^17.2.1",
     "prettier": "3.5.3",
     "typescript": "^5.8.3"
   }

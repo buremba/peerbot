@@ -4,9 +4,10 @@ import * as k8s from "@kubernetes/client-node";
 import type { 
   KubernetesConfig,
   WorkerJobRequest,
-  JobTemplateData,
-  KubernetesError
+  JobTemplateData
 } from "../types";
+import { KubernetesError } from "../types";
+import type { SlackTokenManager } from "../slack/token-manager";
 
 interface RateLimitEntry {
   count: number;
@@ -19,13 +20,15 @@ export class KubernetesJobManager {
   private activeJobs = new Map<string, string>(); // sessionKey -> jobName
   private rateLimitMap = new Map<string, RateLimitEntry>(); // userId -> rate limit data
   private config: KubernetesConfig;
+  private tokenManager?: SlackTokenManager;
   
   // Rate limiting configuration
   private readonly RATE_LIMIT_MAX_JOBS = 5; // Max jobs per user per window
   private readonly RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000; // 15 minutes window
 
-  constructor(config: KubernetesConfig) {
+  constructor(config: KubernetesConfig, tokenManager?: SlackTokenManager) {
     this.config = config;
+    this.tokenManager = tokenManager;
 
     // Initialize Kubernetes client
     const kc = new k8s.KubeConfig();
@@ -33,13 +36,9 @@ export class KubernetesJobManager {
     if (config.kubeconfig) {
       kc.loadFromFile(config.kubeconfig);
     } else {
-      // Try to load from cluster (for in-cluster deployment)
-      try {
-        kc.loadFromCluster();
-      } catch (error) {
-        // Fallback to default config
-        kc.loadFromDefault();
-      }
+      // Always use in-cluster config when running in Kubernetes
+      // This properly sets up the service account token and CA certificate
+      kc.loadFromCluster();
     }
 
     this.k8sApi = kc.makeApiClient(k8s.BatchV1Api);
@@ -124,7 +123,10 @@ export class KubernetesJobManager {
       const jobManifest = this.createJobManifest(jobName, request);
 
       // Create the job
-      await this.k8sApi.createNamespacedJob(this.config.namespace, jobManifest);
+      await this.k8sApi.createNamespacedJob({
+        namespace: this.config.namespace,
+        body: jobManifest
+      });
       
       // Track the job
       this.activeJobs.set(request.sessionKey, jobName);
@@ -216,6 +218,18 @@ export class KubernetesJobManager {
           },
           spec: {
             restartPolicy: "Never",
+            // Use spot instances for workers to save costs
+            nodeSelector: {
+              "cloud.google.com/gke-spot": "true",
+            },
+            tolerations: [
+              {
+                key: "cloud.google.com/gke-spot",
+                operator: "Equal",
+                value: "true",
+                effect: "NoSchedule",
+              },
+            ],
             containers: [
               {
                 name: "claude-worker",
@@ -282,6 +296,36 @@ export class KubernetesJobManager {
                       secretKeyRef: {
                         name: "claude-secrets",
                         key: "slack-bot-token",
+                      },
+                    },
+                  },
+                  {
+                    name: "SLACK_REFRESH_TOKEN",
+                    valueFrom: {
+                      secretKeyRef: {
+                        name: "claude-secrets",
+                        key: "slack-refresh-token",
+                        optional: true,
+                      },
+                    },
+                  },
+                  {
+                    name: "SLACK_CLIENT_ID",
+                    valueFrom: {
+                      secretKeyRef: {
+                        name: "claude-secrets",
+                        key: "slack-client-id",
+                        optional: true,
+                      },
+                    },
+                  },
+                  {
+                    name: "SLACK_CLIENT_SECRET",
+                    valueFrom: {
+                      secretKeyRef: {
+                        name: "claude-secrets",
+                        key: "slack-client-secret",
+                        optional: true,
                       },
                     },
                   },
@@ -368,8 +412,11 @@ export class KubernetesJobManager {
       try {
         attempts++;
         
-        const jobResponse = await this.k8sApi.readNamespacedJob(jobName, this.config.namespace);
-        const job = jobResponse.body;
+        const jobResponse = await this.k8sApi.readNamespacedJob({
+          name: jobName,
+          namespace: this.config.namespace
+        });
+        const job = jobResponse;
         
         const status = job.status;
         
@@ -410,15 +457,13 @@ export class KubernetesJobManager {
    */
   async deleteJob(jobName: string): Promise<void> {
     try {
-      await this.k8sApi.deleteNamespacedJob(
-        jobName,
-        this.config.namespace,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        "Background" // Delete in background
-      );
+      await this.k8sApi.deleteNamespacedJob({
+        name: jobName,
+        namespace: this.config.namespace,
+        body: {
+          propagationPolicy: "Background"
+        }
+      });
       
       console.log(`Deleted job: ${jobName}`);
     } catch (error) {
@@ -431,8 +476,11 @@ export class KubernetesJobManager {
    */
   async getJobStatus(jobName: string): Promise<string> {
     try {
-      const response = await this.k8sApi.readNamespacedJob(jobName, this.config.namespace);
-      const job = response.body;
+      const response = await this.k8sApi.readNamespacedJob({
+        name: jobName,
+        namespace: this.config.namespace
+      });
+      const job = response;
       
       if (job.status?.succeeded) return "succeeded";
       if (job.status?.failed) return "failed";

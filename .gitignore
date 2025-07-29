@@ -2,3 +2,7 @@
 node_modules
 
 **/.claude/settings.local.json
+
+# Environment files
+.env
+.env.*

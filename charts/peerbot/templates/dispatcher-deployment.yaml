@@ -40,10 +40,20 @@ spec:
             - name: http
               containerPort: {{ .Values.dispatcher.service.targetPort }}
               protocol: TCP
+          {{- if not .Values.slack.socketMode }}
           livenessProbe:
-            {{- toYaml .Values.dispatcher.livenessProbe | nindent 12 }}
+            httpGet:
+              path: /health
+              port: {{ .Values.slack.port }}
+            initialDelaySeconds: 30
+            periodSeconds: 10
           readinessProbe:
-            {{- toYaml .Values.dispatcher.readinessProbe | nindent 12 }}
+            httpGet:
+              path: /ready
+              port: {{ .Values.slack.port }}
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          {{- end }}
           resources:
             {{- toYaml .Values.dispatcher.resources | nindent 12 }}
           env:
@@ -58,6 +68,12 @@ spec:
                 secretKeyRef:
                   name: {{ include "peerbot.fullname" . }}-secrets
                   key: slack-signing-secret
+                  optional: true
+            - name: SLACK_APP_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "peerbot.fullname" . }}-secrets
+                  key: slack-app-token
                   optional: true
             - name: SLACK_HTTP_MODE
               value: {{ if .Values.slack.socketMode }}"false"{{ else }}"true"{{ end }}

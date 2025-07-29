@@ -1,7 +1,9 @@
 #!/usr/bin/env bun
 
 import { WebClient } from "@slack/web-api";
-import type { SlackConfig, SlackError } from "./types";
+import type { SlackConfig } from "./types";
+import { SlackError } from "./types";
+import type { SlackTokenManager } from "./slack/token-manager";
 
 export class SlackIntegration {
   private client: WebClient;
@@ -11,10 +13,24 @@ export class SlackIntegration {
   private lastUpdateTime = 0;
   private updateQueue: string[] = [];
   private isProcessingQueue = false;
+  private tokenManager?: SlackTokenManager;
 
   constructor(config: SlackConfig) {
     this.config = config;
-    this.client = new WebClient(config.token);
+    this.tokenManager = config.tokenManager;
+    
+    if (this.tokenManager) {
+      // Use authorize function to get dynamic token
+      this.client = new WebClient(undefined, {
+        authorize: async () => {
+          const token = await this.tokenManager!.getValidToken();
+          return { botToken: token };
+        },
+      });
+    } else {
+      // Fall back to static token
+      this.client = new WebClient(config.token);
+    }
     
     // Get response location from environment
     this.responseChannel = process.env.SLACK_RESPONSE_CHANNEL!;

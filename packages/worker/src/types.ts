@@ -1,5 +1,7 @@
 #!/usr/bin/env bun
 
+import type { SlackTokenManager } from "./slack/token-manager";
+
 export interface WorkerConfig {
   sessionKey: string;
   userId: string;
@@ -14,6 +16,9 @@ export interface WorkerConfig {
   recoveryMode: boolean;
   slack: {
     token: string;
+    refreshToken?: string;
+    clientId?: string;
+    clientSecret?: string;
   };
   workspace: {
     baseDirectory: string;
@@ -33,6 +38,10 @@ export interface WorkspaceSetupConfig {
 
 export interface SlackConfig {
   token: string;
+  refreshToken?: string;
+  clientId?: string;
+  clientSecret?: string;
+  tokenManager?: SlackTokenManager;
 }
 
 export interface GitRepository {

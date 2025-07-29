@@ -38,8 +38,13 @@ export class ClaudeSessionRunner {
   constructor(config: {
     gcsBucket: string;
     gcsKeyFile?: string;
+    timeoutMinutes?: number;
   }) {
-    this.sessionManager = new SessionManager(config);
+    this.sessionManager = new SessionManager({
+      bucketName: config.gcsBucket,
+      keyFile: config.gcsKeyFile,
+      timeoutMinutes: config.timeoutMinutes
+    });
   }
 
   /**
@@ -71,7 +76,7 @@ export class ClaudeSessionRunner {
       const promptPath = await createPromptFile(context, sessionState.conversation);
 
       // Start session timeout monitoring
-      const timeoutPromise = this.sessionManager.startTimeoutMonitoring(sessionKey);
+      this.sessionManager.startTimeoutMonitoring(sessionKey);
 
       // Execute Claude with progress monitoring
       const result = await runClaudeWithProgress(
@@ -88,8 +93,7 @@ export class ClaudeSessionRunner {
           if (onProgress) {
             await onProgress(update);
           }
-        },
-        context
+        }
       );
 
       // Add Claude's response to conversation

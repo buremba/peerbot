@@ -1,12 +1,12 @@
 #!/usr/bin/env bun
 
 import { GcsStorage } from "./storage/gcs";
+import { SessionError } from "./types";
 import type { 
   SessionState, 
   SessionContext, 
   ConversationMessage, 
   ProgressUpdate,
-  SessionError,
   GcsConfig 
 } from "./types";
 

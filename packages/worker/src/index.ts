@@ -3,6 +3,7 @@
 import { ClaudeSessionRunner } from "@claude-code-slack/core-runner";
 import { WorkspaceManager } from "./workspace-setup";
 import { SlackIntegration } from "./slack-integration";
+import { SlackTokenManager } from "./slack/token-manager";
 import type { WorkerConfig, WorkerError } from "./types";
 
 export class ClaudeWorker {
@@ -10,6 +11,7 @@ export class ClaudeWorker {
   private workspaceManager: WorkspaceManager;
   private slackIntegration: SlackIntegration;
   private config: WorkerConfig;
+  private tokenManager?: SlackTokenManager;
 
   constructor(config: WorkerConfig) {
     this.config = config;
@@ -21,7 +23,24 @@ export class ClaudeWorker {
     });
 
     this.workspaceManager = new WorkspaceManager(config.workspace);
-    this.slackIntegration = new SlackIntegration(config.slack);
+    
+    // Initialize token manager if refresh token is available
+    if (config.slack.refreshToken && config.slack.clientId && config.slack.clientSecret) {
+      this.tokenManager = new SlackTokenManager(
+        config.slack.clientId,
+        config.slack.clientSecret,
+        config.slack.refreshToken,
+        config.slack.token
+      );
+      
+      // Initialize Slack integration with token manager
+      this.slackIntegration = new SlackIntegration({
+        ...config.slack,
+        tokenManager: this.tokenManager
+      });
+    } else {
+      this.slackIntegration = new SlackIntegration(config.slack);
+    }
   }
 
   /**
@@ -240,6 +259,9 @@ async function main() {
       recoveryMode: process.env.RECOVERY_MODE === "true",
       slack: {
         token: process.env.SLACK_BOT_TOKEN!,
+        refreshToken: process.env.SLACK_REFRESH_TOKEN,
+        clientId: process.env.SLACK_CLIENT_ID,
+        clientSecret: process.env.SLACK_CLIENT_SECRET,
       },
       workspace: {
         baseDirectory: "/workspace",
@@ -311,5 +333,4 @@ if (import.meta.main) {
   main();
 }
 
-export { ClaudeWorker };
 export type { WorkerConfig } from "./types";

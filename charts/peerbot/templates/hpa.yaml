@@ -1,0 +1,59 @@
+{{- if .Values.autoscaling.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "peerbot.fullname" . }}-dispatcher
+  labels:
+    {{- include "peerbot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: dispatcher
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "peerbot.fullname" . }}-dispatcher
+  minReplicas: {{ .Values.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.autoscaling.maxReplicas }}
+  metrics:
+    {{- if .Values.autoscaling.targetCPUUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.autoscaling.targetCPUUtilizationPercentage }}
+    {{- end }}
+    {{- if .Values.autoscaling.targetMemoryUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.autoscaling.targetMemoryUtilizationPercentage }}
+    {{- end }}
+    {{- if .Values.autoscaling.customMetrics }}
+    {{- toYaml .Values.autoscaling.customMetrics | nindent 4 }}
+    {{- end }}
+  behavior:
+    scaleDown:
+      # Scale down more aggressively when idle
+      stabilizationWindowSeconds: {{ .Values.autoscaling.scaleDown.stabilizationWindowSeconds | default 300 }}
+      policies:
+      - type: Percent
+        value: {{ .Values.autoscaling.scaleDown.percent | default 100 }}
+        periodSeconds: {{ .Values.autoscaling.scaleDown.periodSeconds | default 60 }}
+      - type: Pods
+        value: {{ .Values.autoscaling.scaleDown.pods | default 1 }}
+        periodSeconds: {{ .Values.autoscaling.scaleDown.periodSeconds | default 60 }}
+      selectPolicy: Max
+    scaleUp:
+      # Scale up quickly when there's demand
+      stabilizationWindowSeconds: {{ .Values.autoscaling.scaleUp.stabilizationWindowSeconds | default 0 }}
+      policies:
+      - type: Percent
+        value: {{ .Values.autoscaling.scaleUp.percent | default 100 }}
+        periodSeconds: {{ .Values.autoscaling.scaleUp.periodSeconds | default 15 }}
+      - type: Pods
+        value: {{ .Values.autoscaling.scaleUp.pods | default 2 }}
+        periodSeconds: {{ .Values.autoscaling.scaleUp.periodSeconds | default 15 }}
+      selectPolicy: Max
+{{- end }}

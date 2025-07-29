@@ -1,5 +1,5 @@
 # Dockerfile for Claude Code Slack Dispatcher
-FROM node:20-alpine AS base
+FROM oven/bun:1-alpine AS base
 
 # Install system dependencies
 RUN apk add --no-cache \
@@ -15,20 +15,22 @@ WORKDIR /app
 COPY package.json bun.lock ./
 COPY packages/core-runner/package.json ./packages/core-runner/
 COPY packages/dispatcher/package.json ./packages/dispatcher/
+COPY packages/worker/package.json ./packages/worker/
 
 # Install dependencies
-RUN npm install
+RUN bun install --frozen-lockfile
 
 # Copy source code
 COPY packages/core-runner/ ./packages/core-runner/
 COPY packages/dispatcher/ ./packages/dispatcher/
 COPY tsconfig.json ./
 
-# Build the packages
-RUN npm run build:packages
+# Build the packages using Bun's transpiler
+RUN bun build packages/core-runner/src/index.ts --outdir packages/core-runner/dist --target bun --splitting && \
+    bun build packages/dispatcher/src/index.ts --outdir packages/dispatcher/dist --target bun --splitting
 
 # Production stage
-FROM node:20-alpine AS production
+FROM oven/bun:1-alpine AS production
 
 # Install runtime dependencies
 RUN apk add --no-cache \
@@ -67,4 +69,4 @@ ENV PORT=3000
 ENV LOG_LEVEL=INFO
 
 # Start the dispatcher
-CMD ["node", "packages/dispatcher/dist/index.js"]
+CMD ["bun", "run", "packages/dispatcher/dist/index.js"]

@@ -1,58 +1,73 @@
 {
   "display_information": {
-    "name": "Claude Code",
-    "description": "AI-powered code assistant that helps with programming tasks, code reviews, and technical questions directly in Slack.",
-    "background_color": "#1a1a1a",
-    "long_description": "Claude Code brings the power of Anthropic's Claude AI directly to your Slack workspace. Get instant help with programming questions, code reviews, debugging, and technical explanations. Claude can read files, write code, run commands, and provide detailed technical assistance right in your Slack channels.\n\nFeatures:\n• Code review and analysis\n• Programming help and explanations\n• File operations and code generation\n• Real-time progress updates\n• Thread-based conversations\n• Emoji status indicators"
+      "name": "PeerCloud",
+      "description": "Hire AI peers to work with you, using your environments",
+      "background_color": "#4a154b",
+      "long_description": "This bot integrates Claude Code SDK with Slack to provide AI-powered coding assistance directly in your workspace. You can generate apps/AI peers that will appear as new handles."
   },
   "features": {
-    "app_home": {
-      "home_tab_enabled": false,
-      "messages_tab_enabled": true,
-      "messages_tab_read_only_enabled": false
-    },
-    "bot_user": {
-      "display_name": "Claude Code",
-      "always_online": true
-    }
+      "app_home": {
+          "home_tab_enabled": true,
+          "messages_tab_enabled": true,
+          "messages_tab_read_only_enabled": false
+      },
+      "bot_user": {
+          "display_name": "PeerCloud",
+          "always_online": true
+      },
+      "shortcuts": [
+          {
+              "name": "Create a project",
+              "type": "global",
+              "callback_id": "create_project",
+              "description": "Creates a project"
+          }
+      ]
   },
   "oauth_config": {
-    "scopes": {
-      "bot": [
-        "app_mentions:read",
-        "channels:history",
-        "channels:read",
-        "chat:write",
-        "chat:write.public",
-        "groups:history",
-        "groups:read",
-        "im:history",
-        "im:read",
-        "im:write",
-        "mpim:history",
-        "mpim:read",
-        "mpim:write",
-        "reactions:read",
-        "reactions:write",
-        "users:read"
-      ]
-    }
+      "redirect_urls": [
+          "https://slack.peerbot.ai/slack/oauth_redirect"
+      ],
+      "scopes": {
+          "bot": [
+              "app_mentions:read",
+              "assistant:write",
+              "channels:history",
+              "channels:read",
+              "chat:write",
+              "chat:write.public",
+              "groups:history",
+              "groups:read",
+              "im:history",
+              "im:read",
+              "im:write",
+              "mpim:read",
+              "reactions:read",
+              "reactions:write",
+              "users:read",
+              "commands"
+          ]
+      }
   },
   "settings": {
-    "event_subscriptions": {
-      "bot_events": [
-        "app_mention",
-        "message.channels",
-        "message.groups",
-        "message.im",
-        "message.mpim"
-      ]
-    },
-    "interactivity": {
-      "is_enabled": false
-    },
-    "org_deploy_enabled": false,
-    "socket_mode_enabled": true,
-    "token_rotation_enabled": false
+      "event_subscriptions": {
+          "request_url": "https://slack.peerbot.ai/slack/events",
+          "bot_events": [
+              "app_home_opened",
+              "app_mention",
+              "member_joined_channel",
+              "message.channels",
+              "message.groups",
+              "message.im"
+          ]
+      },
+      "interactivity": {
+          "is_enabled": true,
+          "request_url": "https://slack.peerbot.ai/slack/interactive",
+          "message_menu_options_url": "https://slack.peerbot.ai/slack/interactive/options-load"
+      },
+      "org_deploy_enabled": false,
+      "socket_mode_enabled": false,
+      "token_rotation_enabled": false
   }
 }

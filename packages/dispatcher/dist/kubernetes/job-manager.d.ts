@@ -1,16 +1,14 @@
 #!/usr/bin/env bun
 import type { KubernetesConfig, WorkerJobRequest } from "../types";
-import type { SlackTokenManager } from "../slack/token-manager";
 export declare class KubernetesJobManager {
     private k8sApi;
     private k8sCoreApi;
     private activeJobs;
     private rateLimitMap;
     private config;
-    private tokenManager?;
     private readonly RATE_LIMIT_MAX_JOBS;
     private readonly RATE_LIMIT_WINDOW_MS;
-    constructor(config: KubernetesConfig, tokenManager?: SlackTokenManager);
+    constructor(config: KubernetesConfig);
     /**
      * Check if user is within rate limits
      */

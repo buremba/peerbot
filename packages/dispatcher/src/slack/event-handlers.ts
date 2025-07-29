@@ -14,6 +14,7 @@ import { SessionManager } from "@claude-code-slack/core-runner";
 export class SlackEventHandlers {
   private activeSessions = new Map<string, ThreadSession>();
   private userMappings = new Map<string, string>(); // slackUserId -> githubUsername
+  private recentEvents = new Map<string, number>(); // eventKey -> timestamp
 
   constructor(
     private app: App,
@@ -25,13 +26,62 @@ export class SlackEventHandlers {
   }
 
   /**
+   * Check if this is a duplicate event
+   */
+  private isDuplicateEvent(userId: string, messageTs: string, text: string): boolean {
+    const eventKey = `${userId}-${messageTs}-${text.substring(0, 50)}`;
+    const now = Date.now();
+    const lastSeen = this.recentEvents.get(eventKey);
+    
+    // If we've seen this event in the last 5 seconds, it's a duplicate
+    if (lastSeen && now - lastSeen < 5000) {
+      console.log(`Duplicate event detected: ${eventKey}`);
+      return true;
+    }
+    
+    // Store this event
+    this.recentEvents.set(eventKey, now);
+    
+    // Clean up old events (older than 10 seconds)
+    for (const [key, timestamp] of this.recentEvents.entries()) {
+      if (now - timestamp > 10000) {
+        this.recentEvents.delete(key);
+      }
+    }
+    
+    return false;
+  }
+
+  /**
    * Setup Slack event handlers
    */
   private setupEventHandlers(): void {
     // Handle app mentions
     this.app.event("app_mention", async ({ event, client, say }) => {
+      console.log("=== APP_MENTION HANDLER TRIGGERED ===");
+      console.log("Raw event object keys:", Object.keys(event));
+      console.log("Event user field:", event.user);
+      
       try {
         const context = this.extractSlackContext(event);
+        console.log("Extracted context:", context);
+        
+        // Check if we have a valid user ID
+        if (!context.userId) {
+          console.error("No user ID found in app_mention event. Context:", context);
+          console.error("Full event object:", JSON.stringify(event, null, 2));
+          await say({
+            thread_ts: context.threadTs,
+            text: "❌ Error: Unable to identify user. Please try again.",
+          });
+          return;
+        }
+        
+        // Check for duplicate events
+        if (this.isDuplicateEvent(context.userId, context.messageTs, context.text)) {
+          console.log("Skipping duplicate app_mention event");
+          return;
+        }
         
         // Check permissions
         if (!this.isUserAllowed(context.userId)) {
@@ -58,11 +108,57 @@ export class SlackEventHandlers {
 
     // Handle direct messages
     this.app.message(async ({ message, client, say }) => {
+      console.log("=== MESSAGE HANDLER TRIGGERED ===");
+      console.log("Message channel_type:", message.channel_type);
+      console.log("Message subtype:", message.subtype);
+      console.log("Message object keys:", Object.keys(message));
+      console.log("Message user field:", message.user);
+      
       // Only handle direct messages, not channel messages
-      if (message.channel_type !== "im") return;
+      if (message.channel_type !== "im") {
+        console.log("Ignoring non-DM message");
+        return;
+      }
+      
+      // Ignore message subtypes that are not actual user messages
+      const ignoredSubtypes = [
+        'message_changed',
+        'message_deleted',
+        'bot_message',
+        'thread_broadcast',
+        'channel_join',
+        'channel_leave',
+        'assistant_app_thread'
+      ];
+      
+      if (message.subtype && ignoredSubtypes.includes(message.subtype)) {
+        console.log(`Ignoring message with subtype: ${message.subtype}`);
+        return;
+      }
+      
+      // Also ignore messages from bots (including our own bot)
+      if (message.bot_id) {
+        console.log("Ignoring bot message");
+        return;
+      }
       
       try {
         const context = this.extractSlackContext(message);
+        console.log("Extracted context from message:", context);
+        
+        // Check if we have a valid user ID
+        if (!context.userId) {
+          console.error("No user ID found in message event. Context:", context);
+          console.error("Full message object:", JSON.stringify(message, null, 2));
+          await say("❌ Error: Unable to identify user. Please try again.");
+          return;
+        }
+        
+        // Check for duplicate events
+        if (this.isDuplicateEvent(context.userId, context.messageTs, context.text)) {
+          console.log("Skipping duplicate message event");
+          return;
+        }
         
         // Check permissions
         if (!this.isUserAllowed(context.userId)) {
@@ -167,15 +263,38 @@ export class SlackEventHandlers {
       threadSession.status = "starting";
       
       console.log(`Created worker job ${jobName} for session ${sessionKey}`);
+      
+      // Update the initial message with job details
+      const updatedMessage = this.formatInitialResponse(sessionKey, username, repository.repositoryUrl, jobName);
+      await client.chat.update({
+        channel: context.channelId,
+        ts: initialResponse.ts!,
+        text: updatedMessage,
+      });
 
     } catch (error) {
       console.error(`Failed to handle request for session ${sessionKey}:`, error);
+      
+      // Format error message with debugging info
+      let errorMessage = `❌ **Error:** ${error instanceof Error ? error.message : "Unknown error occurred"}`;
+      
+      // If we have a job name, add debugging commands
+      const session = this.activeSessions.get(sessionKey);
+      if (session?.jobName) {
+        errorMessage += `\n\n${this.formatKubectlCommands(session.jobName, this.config.kubernetes.namespace)}`;
+      }
+      
+      // Add generic debugging tips
+      errorMessage += `\n\n**💡 Troubleshooting Tips:**
+• Check dispatcher logs: \`kubectl logs -n ${this.config.kubernetes.namespace} -l app.kubernetes.io/component=dispatcher --tail=100\`
+• Check events: \`kubectl get events -n ${this.config.kubernetes.namespace} --sort-by='.lastTimestamp'\`
+• Check job quota: \`kubectl describe resourcequota -n ${this.config.kubernetes.namespace}\``;
       
       // Post error message
       await client.chat.postMessage({
         channel: context.channelId,
         thread_ts: context.threadTs,
-        text: `❌ **Error:** ${error instanceof Error ? error.message : "Unknown error occurred"}`,
+        text: errorMessage,
       });
       
       // Clean up session
@@ -187,6 +306,25 @@ export class SlackEventHandlers {
    * Extract Slack context from event
    */
   private extractSlackContext(event: any): SlackContext {
+    // Comprehensive debug logging
+    console.log("=== FULL SLACK EVENT DEBUG ===");
+    console.log("Event type:", event.type);
+    console.log("Event subtype:", event.subtype);
+    console.log("Event user:", event.user);
+    console.log("Event bot_id:", event.bot_id);
+    console.log("Event channel:", event.channel);
+    console.log("Event channel_type:", event.channel_type);
+    console.log("Event team:", event.team);
+    console.log("Event ts:", event.ts);
+    console.log("Event thread_ts:", event.thread_ts);
+    console.log("Full event JSON:", JSON.stringify(event, null, 2));
+    console.log("=== END EVENT DEBUG ===");
+    
+    // Check if this is a bot message we should ignore
+    if (event.bot_id || event.subtype === 'bot_message') {
+      console.log("Ignoring bot message");
+    }
+    
     return {
       channelId: event.channel,
       userId: event.user,
@@ -202,7 +340,7 @@ export class SlackEventHandlers {
    */
   private extractUserRequest(text: string): string {
     // Remove bot mention and clean up text
-    const triggerPhrase = this.config.slack.triggerPhrase || "@peerbotai";
+    const triggerPhrase = "@peerbotai";
     
     // Remove the trigger phrase and clean up
     let cleaned = text.replace(new RegExp(`<@[^>]+>|${triggerPhrase}`, "gi"), "").trim();
@@ -237,7 +375,13 @@ export class SlackEventHandlers {
   /**
    * Get or create GitHub username mapping for Slack user
    */
-  private async getOrCreateUserMapping(slackUserId: string, client: any): Promise<string> {
+  private async getOrCreateUserMapping(slackUserId: string | undefined, client: any): Promise<string> {
+    // Handle undefined user ID
+    if (!slackUserId) {
+      console.error("Slack user ID is undefined");
+      return "user-unknown";
+    }
+    
     // Check if mapping already exists
     const existingMapping = this.userMappings.get(slackUserId);
     if (existingMapping) {
@@ -271,8 +415,10 @@ export class SlackEventHandlers {
       console.error(`Failed to get user info for ${slackUserId}:`, error);
       
       // Fallback to generic username
-      const fallbackUsername = `user-${slackUserId.substring(0, 8)}`;
-      this.userMappings.set(slackUserId, fallbackUsername);
+      const fallbackUsername = slackUserId ? `user-${slackUserId.substring(0, 8)}` : "user-unknown";
+      if (slackUserId) {
+        this.userMappings.set(slackUserId, fallbackUsername);
+      }
       return fallbackUsername;
     }
   }
@@ -280,30 +426,81 @@ export class SlackEventHandlers {
   /**
    * Format initial response message
    */
-  private formatInitialResponse(sessionKey: string, username: string, repositoryUrl: string): string {
-    const workerId = `claude-worker-${sessionKey.substring(0, 8)}`;
+  private formatInitialResponse(sessionKey: string, username: string, repositoryUrl: string, jobName?: string): string {
+    const workerId = jobName || `claude-worker-${sessionKey.substring(0, 8)}`;
+    const namespace = this.config.kubernetes.namespace;
     
-    return `🤖 **Claude is working on your request...**
+    // Get commit ID from environment or use a default
+    const commitId = process.env.GITHUB_SHA?.substring(0, 7) || process.env.GIT_COMMIT?.substring(0, 7) || 'unknown';
+    
+    let message = `🤖 **Claude is working on your request...**
 
 **Worker Environment:**
 • Pod: \`${workerId}\`
-• Namespace: \`${this.config.kubernetes.namespace}\`
+• Namespace: \`${namespace}\`
 • CPU: \`${this.config.kubernetes.cpu}\` Memory: \`${this.config.kubernetes.memory}\`
 • Timeout: \`${this.config.sessionTimeoutMinutes} minutes\`
 • Repository: \`${username}\`
+• Commit: \`${commitId}\`
 
 **GitHub Workspace:**
 • Repository: [${username}](${repositoryUrl})
 • 📝 [Edit on GitHub.dev](${repositoryUrl.replace('github.com', 'github.dev')})
-• 🔄 [Compare & PR](${repositoryUrl}/compare)
+• 🔄 [Compare & PR](${repositoryUrl}/compare)`;
+
+    if (jobName) {
+      message += `
+
+**📊 Monitor Progress:**
+• \`kubectl logs -n ${namespace} job/${jobName} -f\`
+• \`kubectl describe job/${jobName} -n ${namespace}\`
+• \`kubectl get pods -n ${namespace} -l job-name=${jobName}\``;
+      
+      // Add Google Cloud Console link if on GKE
+      const projectId = process.env.GOOGLE_CLOUD_PROJECT || "spile-461023";
+      
+      message += `
+
+**🔗 Quick Links:**
+• [GKE Workloads](https://console.cloud.google.com/kubernetes/workload/overview?project=${projectId}&pageState=(%22savedViews%22:(%22i%22:%225d96be3b8e484ad689354ab3fe0f7b4f%22,%22c%22:%5B%5D,%22n%22:%5B%22${namespace}%22%5D)))
+• [Cloud Logging](https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_pod%22%0Aresource.labels.namespace_name%3D%22${namespace}%22%0Aresource.labels.pod_name%3D~%22${jobName}.*%22?project=${projectId})`;
+    }
+
+    message += `
 
 *Progress updates will appear below...*`;
+    
+    return message;
+  }
+
+  /**
+   * Format kubectl commands for debugging
+   */
+  private formatKubectlCommands(jobName: string, namespace: string): string {
+    return `
+**🛠️ Debugging Commands:**
+\`\`\`bash
+# Watch job logs in real-time
+kubectl logs -n ${namespace} job/${jobName} -f
+
+# Get job status
+kubectl get job/${jobName} -n ${namespace} -o wide
+
+# Get pod details
+kubectl get pods -n ${namespace} -l job-name=${jobName} -o wide
+
+# Describe job for events
+kubectl describe job/${jobName} -n ${namespace}
+
+# Get pod logs if job failed
+kubectl logs -n ${namespace} -l job-name=${jobName} --tail=100
+\`\`\``;
   }
 
   /**
    * Handle job completion notification
    */
-  async handleJobCompletion(sessionKey: string, success: boolean, message?: string): Promise<void> {
+  async handleJobCompletion(sessionKey: string, success: boolean): Promise<void> {
     const session = this.activeSessions.get(sessionKey);
     if (!session) return;
 

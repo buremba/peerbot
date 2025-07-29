@@ -43,22 +43,27 @@ class KubernetesJobManager {
     activeJobs = new Map(); // sessionKey -> jobName
     rateLimitMap = new Map(); // userId -> rate limit data
     config;
-    tokenManager;
     // Rate limiting configuration
     RATE_LIMIT_MAX_JOBS = 5; // Max jobs per user per window
     RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000; // 15 minutes window
-    constructor(config, tokenManager) {
+    constructor(config) {
         this.config = config;
-        this.tokenManager = tokenManager;
         // Initialize Kubernetes client
         const kc = new k8s.KubeConfig();
         if (config.kubeconfig) {
             kc.loadFromFile(config.kubeconfig);
         }
         else {
-            // Always use in-cluster config when running in Kubernetes
-            // This properly sets up the service account token and CA certificate
-            kc.loadFromCluster();
+            try {
+                // Always use in-cluster config when running in Kubernetes
+                // This properly sets up the service account token and CA certificate
+                kc.loadFromCluster();
+                console.log("✅ Successfully loaded in-cluster Kubernetes configuration");
+            }
+            catch (error) {
+                console.error("❌ Failed to load in-cluster config:", error);
+                throw new Error("Failed to initialize Kubernetes client: " + error.message);
+            }
         }
         this.k8sApi = kc.makeApiClient(k8s.BatchV1Api);
         this.k8sCoreApi = kc.makeApiClient(k8s.CoreV1Api);
@@ -69,11 +74,13 @@ class KubernetesJobManager {
      * Check if user is within rate limits
      */
     checkRateLimit(userId) {
+        // Use a default ID for undefined users to prevent them from bypassing rate limits
+        const effectiveUserId = userId || "anonymous";
         const now = Date.now();
-        const entry = this.rateLimitMap.get(userId);
+        const entry = this.rateLimitMap.get(effectiveUserId);
         if (!entry) {
             // First request for this user
-            this.rateLimitMap.set(userId, { count: 1, windowStart: now });
+            this.rateLimitMap.set(effectiveUserId, { count: 1, windowStart: now });
             return true;
         }
         // Check if we're in a new window
@@ -89,7 +96,7 @@ class KubernetesJobManager {
             return true;
         }
         // Rate limit exceeded
-        console.warn(`Rate limit exceeded for user ${userId}: ${entry.count} jobs in current window`);
+        console.warn(`Rate limit exceeded for user ${effectiveUserId}: ${entry.count} jobs in current window`);
         return false;
     }
     /**
@@ -291,36 +298,6 @@ class KubernetesJobManager {
                                         },
                                     },
                                     {
-                                        name: "SLACK_REFRESH_TOKEN",
-                                        valueFrom: {
-                                            secretKeyRef: {
-                                                name: "claude-secrets",
-                                                key: "slack-refresh-token",
-                                                optional: true,
-                                            },
-                                        },
-                                    },
-                                    {
-                                        name: "SLACK_CLIENT_ID",
-                                        valueFrom: {
-                                            secretKeyRef: {
-                                                name: "claude-secrets",
-                                                key: "slack-client-id",
-                                                optional: true,
-                                            },
-                                        },
-                                    },
-                                    {
-                                        name: "SLACK_CLIENT_SECRET",
-                                        valueFrom: {
-                                            secretKeyRef: {
-                                                name: "claude-secrets",
-                                                key: "slack-client-secret",
-                                                optional: true,
-                                            },
-                                        },
-                                    },
-                                    {
                                         name: "GITHUB_TOKEN",
                                         valueFrom: {
                                             secretKeyRef: {
@@ -385,7 +362,7 @@ class KubernetesJobManager {
                                 },
                             },
                         ],
-                        serviceAccountName: "claude-worker",
+                        serviceAccountName: "peerbot-sa",
                     },
                 },
             },

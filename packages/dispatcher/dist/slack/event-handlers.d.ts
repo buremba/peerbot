@@ -40,9 +40,13 @@ export declare class SlackEventHandlers {
      */
     private formatInitialResponse;
     /**
+     * Format kubectl commands for debugging
+     */
+    private formatKubectlCommands;
+    /**
      * Handle job completion notification
      */
-    handleJobCompletion(sessionKey: string, success: boolean, message?: string): Promise<void>;
+    handleJobCompletion(sessionKey: string, success: boolean): Promise<void>;
     /**
      * Handle job timeout
      */

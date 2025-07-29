@@ -23,6 +23,7 @@ export class DockerJobManager implements AgentManager {
   private rateLimitMap = new Map<string, RateLimitEntry>(); // userId -> rate limit data
   private config: DockerConfig;
   private tokenManager?: SlackTokenManager;
+  private rateLimitCleanupInterval?: NodeJS.Timeout;
   
   // Rate limiting configuration - same as Kubernetes implementation
   private readonly RATE_LIMIT_MAX_JOBS = 5; // Max jobs per user per window
@@ -83,7 +84,7 @@ export class DockerJobManager implements AgentManager {
   private startRateLimitCleanup(): void {
     const cleanupInterval = 5 * 60 * 1000; // Clean up every 5 minutes
     
-    setInterval(() => {
+    this.rateLimitCleanupInterval = setInterval(() => {
       const now = Date.now();
       for (const [userId, entry] of this.rateLimitMap.entries()) {
         if (now - entry.windowStart >= this.RATE_LIMIT_WINDOW_MS) {
@@ -233,9 +234,15 @@ export class DockerJobManager implements AgentManager {
    */
   private parseMemory(memory: string): number {
     const match = memory.match(/^(\d+(?:\.\d+)?)([KMGT]?i?)$/);
-    if (!match) return 0;
+    if (!match) {
+      throw new Error(`Invalid memory specification: ${memory}. Expected format: number[KMGT][i] (e.g., "2Gi", "512Mi")`);
+    }
     
     const value = parseFloat(match[1]);
+    if (value <= 0) {
+      throw new Error(`Memory value must be positive: ${memory}`);
+    }
+    
     const unit = match[2].toUpperCase();
     
     const multipliers: { [key: string]: number } = {
@@ -280,10 +287,8 @@ export class DockerJobManager implements AgentManager {
         
         console.log(`Container ${container.id} finished with status code: ${result.StatusCode}`);
         
-        // Remove from active containers after a brief delay
-        setTimeout(() => {
-          this.activeContainers.delete(sessionKey);
-        }, 5000);
+        // Remove from active containers immediately after status update
+        this.activeContainers.delete(sessionKey);
       }
     } catch (error) {
       console.error(`Error monitoring container ${container.id}:`, error);
@@ -301,18 +306,27 @@ export class DockerJobManager implements AgentManager {
       // Stop the container if running
       try {
         await container.stop();
-      } catch (error) {
-        // Container might already be stopped
-        console.log(`Container ${containerName} was already stopped`);
+      } catch (error: any) {
+        // Check if container is already stopped or doesn't exist
+        if (error?.statusCode === 304 || error?.statusCode === 404 || 
+            (error?.message && error.message.includes('is not running'))) {
+          console.log(`Container ${containerName} was already stopped`);
+        } else {
+          console.warn(`Error stopping container ${containerName}:`, error);
+        }
       }
       
       // Remove the container if not auto-removed
       if (!this.config.removeContainers) {
         try {
           await container.remove();
-        } catch (error) {
-          // Container might already be removed
-          console.log(`Container ${containerName} was already removed`);
+        } catch (error: any) {
+          // Check if container is already removed or doesn't exist
+          if (error?.statusCode === 404) {
+            console.log(`Container ${containerName} was already removed`);
+          } else {
+            console.warn(`Error removing container ${containerName}:`, error);
+          }
         }
       }
       
@@ -371,6 +385,12 @@ export class DockerJobManager implements AgentManager {
    */
   async cleanup(): Promise<void> {
     console.log(`Cleaning up ${this.activeContainers.size} active containers...`);
+    
+    // Clear the rate limit cleanup interval
+    if (this.rateLimitCleanupInterval) {
+      clearInterval(this.rateLimitCleanupInterval);
+      this.rateLimitCleanupInterval = undefined;
+    }
     
     const promises = Array.from(this.activeContainers.values()).map(containerInfo =>
       this.deleteJob(containerInfo.containerId).catch(error => 

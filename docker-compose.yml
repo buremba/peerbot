@@ -11,14 +11,17 @@ services:
       - "3000:3000"
     volumes:
       # Mount Docker socket for container management
+      # WARNING: This gives containers full Docker daemon access. Consider using
+      # Docker-in-Docker or rootless Docker for better security in production.
       - /var/run/docker.sock:/var/run/docker.sock
       # Mount workspace directory for development
-      - /tmp/claude-workspaces:/tmp/claude-workspaces
+      # Use dedicated directory instead of /tmp for better security
+      - ./workspaces:/tmp/claude-workspaces
     environment:
       # Infrastructure configuration
       - INFRASTRUCTURE_MODE=docker
       - DOCKER_SOCKET_PATH=/var/run/docker.sock
-      - WORKSPACE_HOST_DIR=/tmp/claude-workspaces
+      - WORKSPACE_HOST_DIR=./workspaces
       - DOCKER_NETWORK=claude-network
       
       # Slack configuration (socket mode by default)

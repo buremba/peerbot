@@ -6,7 +6,6 @@ export declare class SlackDispatcher {
     private jobManager;
     private repoManager;
     private config;
-    private tokenManager?;
     constructor(config: DispatcherConfig);
     /**
      * Start the dispatcher

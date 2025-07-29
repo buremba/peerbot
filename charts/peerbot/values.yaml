@@ -168,7 +168,7 @@ monitoring:
 autoscaling:
   enabled: false  # Disabled in favor of KEDA
   minReplicas: 0  # Scale to zero when idle
-  maxReplicas: 3
+  maxReplicas: 1
   targetCPUUtilizationPercentage: 50  # Lower threshold for quicker scale-up
   targetMemoryUtilizationPercentage: 70
   # Scale down behavior - aggressive for scale-to-zero
@@ -191,7 +191,7 @@ keda:
   cooldownPeriod: 300  # 5 minutes before scaling to zero
   idleReplicaCount: 0  # Scale to zero when idle
   minReplicaCount: 0
-  maxReplicaCount: 5
+  maxReplicaCount: 1
   triggers:
     cpu:
       utilizationPercentage: 50

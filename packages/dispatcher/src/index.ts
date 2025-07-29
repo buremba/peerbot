@@ -16,40 +16,27 @@ export class SlackDispatcher {
   private jobManager: AgentManager;
   private repoManager: GitHubRepositoryManager;
   private config: DispatcherConfig;
-  private tokenManager?: SlackTokenManager;
 
   constructor(config: DispatcherConfig) {
     this.config = config;
-    this.tokenManager = config.slack.tokenManager;
 
     // Initialize Slack app with authorize function if token manager is available
     const appConfig: any = {
-      token: config.slack.token,
       appToken: config.slack.appToken,
       signingSecret: config.slack.signingSecret,
       socketMode: config.slack.socketMode !== false,
       port: config.slack.port || 3000,
       logLevel: config.logLevel || LogLevel.INFO,
       ignoreSelf: true,
-      // Enable request logging
-      installerOptions: {
-        port: config.slack.port || 3000,
-      },
       // Process events even without responding
       processBeforeResponse: true,
     };
 
-    // If token manager is available, use authorize function instead of static token
-    if (this.tokenManager) {
-      delete appConfig.token; // Remove static token
-      appConfig.authorize = async () => {
-        const token = await this.tokenManager!.getValidToken();
-        return {
-          botToken: token,
-          botId: config.slack.botUserId,
-          botUserId: config.slack.botUserId,
-        };
-      };
+    // Use static token
+    if (config.slack.token) {
+      appConfig.token = config.slack.token;
+    } else {
+      throw new Error("SLACK_BOT_TOKEN is required");
     }
 
     this.app = new App(appConfig);
@@ -121,10 +108,6 @@ export class SlackDispatcher {
       await this.app.stop();
       await this.jobManager.cleanup();
       
-      // Stop token manager if it exists
-      if (this.tokenManager) {
-        this.tokenManager.stop();
-      }
       
       console.log("Slack dispatcher stopped");
     } catch (error) {
@@ -233,48 +216,8 @@ async function main() {
   try {
     console.log("🚀 Starting Claude Code Slack Dispatcher");
 
-    // Initialize token manager if refresh token is available
-    let tokenManager: SlackTokenManager | undefined;
-    let botToken = process.env.SLACK_BOT_TOKEN;
-    
-    if (process.env.SLACK_REFRESH_TOKEN && process.env.SLACK_CLIENT_ID && process.env.SLACK_CLIENT_SECRET) {
-      console.log("🔄 Initializing token rotation...");
-      
-      // If no bot token, get one using refresh token
-      if (!botToken) {
-        const params = new URLSearchParams({
-          client_id: process.env.SLACK_CLIENT_ID,
-          client_secret: process.env.SLACK_CLIENT_SECRET,
-          grant_type: 'refresh_token',
-          refresh_token: process.env.SLACK_REFRESH_TOKEN
-        });
-
-        const response = await fetch('https://slack.com/api/oauth.v2.access', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-          },
-          body: params.toString()
-        });
-
-        const data = await response.json() as any;
-        
-        if (data.ok && data.access_token) {
-          botToken = data.access_token;
-          console.log("✅ Successfully obtained initial access token");
-        } else {
-          throw new Error(`Failed to get initial access token: ${data.error}`);
-        }
-      }
-      
-      // Initialize token manager
-      tokenManager = new SlackTokenManager(
-        process.env.SLACK_CLIENT_ID,
-        process.env.SLACK_CLIENT_SECRET,
-        process.env.SLACK_REFRESH_TOKEN,
-        botToken!
-      );
-    }
+    // Get bot token from environment
+    const botToken = process.env.SLACK_BOT_TOKEN;
 
     // Determine infrastructure mode
     const infrastructureMode = (process.env.INFRASTRUCTURE_MODE || "kubernetes") as "kubernetes" | "docker";
@@ -282,14 +225,12 @@ async function main() {
     // Load configuration from environment
     const config: DispatcherConfig = {
       slack: {
-        token: botToken || process.env.SLACK_BOT_TOKEN!,
-        tokenManager,
+        token: botToken!,
         appToken: process.env.SLACK_APP_TOKEN,
         signingSecret: process.env.SLACK_SIGNING_SECRET,
         socketMode: process.env.SLACK_HTTP_MODE !== "true",
         port: parseInt(process.env.PORT || "3000"),
         botUserId: process.env.SLACK_BOT_USER_ID,
-        triggerPhrase: process.env.SLACK_TRIGGER_PHRASE || "@peerbotai",
         allowedUsers: process.env.SLACK_ALLOWED_USERS?.split(","),
         allowedChannels: process.env.SLACK_ALLOWED_CHANNELS?.split(","),
       },
@@ -335,7 +276,7 @@ async function main() {
 
     // Validate required configuration
     if (!config.slack.token) {
-      throw new Error("Either SLACK_BOT_TOKEN or SLACK_REFRESH_TOKEN with SLACK_CLIENT_ID and SLACK_CLIENT_SECRET is required");
+      throw new Error("SLACK_BOT_TOKEN is required");
     }
     if (!config.github.token) {
       throw new Error("GITHUB_TOKEN is required");

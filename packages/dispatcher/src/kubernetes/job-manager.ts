@@ -21,15 +21,13 @@ export class KubernetesJobManager implements AgentManager {
   private activeJobs = new Map<string, string>(); // sessionKey -> jobName
   private rateLimitMap = new Map<string, RateLimitEntry>(); // userId -> rate limit data
   private config: KubernetesConfig;
-  private tokenManager?: SlackTokenManager;
   
   // Rate limiting configuration
   private readonly RATE_LIMIT_MAX_JOBS = 5; // Max jobs per user per window
   private readonly RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000; // 15 minutes window
 
-  constructor(config: KubernetesConfig, tokenManager?: SlackTokenManager) {
+  constructor(config: KubernetesConfig) {
     this.config = config;
-    this.tokenManager = tokenManager;
 
     // Initialize Kubernetes client
     const kc = new k8s.KubeConfig();
@@ -37,9 +35,15 @@ export class KubernetesJobManager implements AgentManager {
     if (config.kubeconfig) {
       kc.loadFromFile(config.kubeconfig);
     } else {
-      // Always use in-cluster config when running in Kubernetes
-      // This properly sets up the service account token and CA certificate
-      kc.loadFromCluster();
+      try {
+        // Always use in-cluster config when running in Kubernetes
+        // This properly sets up the service account token and CA certificate
+        kc.loadFromCluster();
+        console.log("✅ Successfully loaded in-cluster Kubernetes configuration");
+      } catch (error) {
+        console.error("❌ Failed to load in-cluster config:", error);
+        throw new Error("Failed to initialize Kubernetes client: " + (error as Error).message);
+      }
     }
 
     this.k8sApi = kc.makeApiClient(k8s.BatchV1Api);
@@ -52,13 +56,16 @@ export class KubernetesJobManager implements AgentManager {
   /**
    * Check if user is within rate limits
    */
-  private checkRateLimit(userId: string): boolean {
+  private checkRateLimit(userId: string | undefined): boolean {
+    // Use a default ID for undefined users to prevent them from bypassing rate limits
+    const effectiveUserId = userId || "anonymous";
+    
     const now = Date.now();
-    const entry = this.rateLimitMap.get(userId);
+    const entry = this.rateLimitMap.get(effectiveUserId);
     
     if (!entry) {
       // First request for this user
-      this.rateLimitMap.set(userId, { count: 1, windowStart: now });
+      this.rateLimitMap.set(effectiveUserId, { count: 1, windowStart: now });
       return true;
     }
     
@@ -77,7 +84,7 @@ export class KubernetesJobManager implements AgentManager {
     }
     
     // Rate limit exceeded
-    console.warn(`Rate limit exceeded for user ${userId}: ${entry.count} jobs in current window`);
+    console.warn(`Rate limit exceeded for user ${effectiveUserId}: ${entry.count} jobs in current window`);
     return false;
   }
 
@@ -219,10 +226,7 @@ export class KubernetesJobManager implements AgentManager {
           },
           spec: {
             restartPolicy: "Never",
-            // Use spot instances for workers to save costs
-            nodeSelector: {
-              "cloud.google.com/gke-spot": "true",
-            },
+            // Prefer spot instances but allow running on any node
             tolerations: [
               {
                 key: "cloud.google.com/gke-spot",
@@ -301,36 +305,6 @@ export class KubernetesJobManager implements AgentManager {
                     },
                   },
                   {
-                    name: "SLACK_REFRESH_TOKEN",
-                    valueFrom: {
-                      secretKeyRef: {
-                        name: "claude-secrets",
-                        key: "slack-refresh-token",
-                        optional: true,
-                      },
-                    },
-                  },
-                  {
-                    name: "SLACK_CLIENT_ID",
-                    valueFrom: {
-                      secretKeyRef: {
-                        name: "claude-secrets",
-                        key: "slack-client-id",
-                        optional: true,
-                      },
-                    },
-                  },
-                  {
-                    name: "SLACK_CLIENT_SECRET",
-                    valueFrom: {
-                      secretKeyRef: {
-                        name: "claude-secrets",
-                        key: "slack-client-secret",
-                        optional: true,
-                      },
-                    },
-                  },
-                  {
                     name: "GITHUB_TOKEN",
                     valueFrom: {
                       secretKeyRef: {
@@ -343,7 +317,7 @@ export class KubernetesJobManager implements AgentManager {
                     name: "GCS_BUCKET_NAME",
                     valueFrom: {
                       configMapKeyRef: {
-                        name: "claude-config",
+                        name: "peerbot-config",
                         key: "gcs-bucket-name",
                       },
                     },
@@ -352,7 +326,7 @@ export class KubernetesJobManager implements AgentManager {
                     name: "GOOGLE_CLOUD_PROJECT",
                     valueFrom: {
                       configMapKeyRef: {
-                        name: "claude-config",
+                        name: "peerbot-config",
                         key: "gcs-project-id",
                         optional: true,
                       },
@@ -395,7 +369,7 @@ export class KubernetesJobManager implements AgentManager {
                 },
               },
             ],
-            serviceAccountName: "claude-worker",
+            serviceAccountName: "peerbot-sa",
           },
         },
       },

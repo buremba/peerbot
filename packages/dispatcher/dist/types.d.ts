@@ -1,16 +1,13 @@
 #!/usr/bin/env bun
 import type { LogLevel } from "@slack/bolt";
 import type { ClaudeExecutionOptions } from "@claude-code-slack/core-runner";
-import type { SlackTokenManager } from "./slack/token-manager";
 export interface SlackConfig {
     token: string;
-    tokenManager?: SlackTokenManager;
     appToken?: string;
     signingSecret?: string;
     socketMode?: boolean;
     port?: number;
     botUserId?: string;
-    triggerPhrase?: string;
     allowedUsers?: string[];
     allowedChannels?: string[];
     blockedUsers?: string[];
@@ -107,9 +104,6 @@ export interface JobTemplateData {
     claudeOptions: string;
     recoveryMode: string;
     slackToken: string;
-    slackRefreshToken?: string;
-    slackClientId?: string;
-    slackClientSecret?: string;
     githubToken: string;
     gcsBucket: string;
     gcsKeyFile?: string;

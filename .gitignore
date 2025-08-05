@@ -7,3 +7,9 @@ node_modules
 .env
 .env.*
 .tmp/*
+charts/peerbot/values-local.yaml
+
+# Build output
+packages/dispatcher/dist/
+packages/worker/dist/
+packages/core-runner/dist/

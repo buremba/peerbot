@@ -17,16 +17,12 @@ export interface ExecuteClaudeSessionOptions {
   context: SessionContext;
   options: ClaudeExecutionOptions;
   onProgress?: ProgressCallback;
-  recoveryOptions?: {
-    fromGcs?: boolean;
-    gcsPath?: string;
-  };
 }
 
 export interface SessionExecutionResult extends ClaudeExecutionResult {
   sessionKey: string;
-  persistedToGcs?: boolean;
-  gcsPath?: string;
+  persisted?: boolean;
+  storagePath?: string;
 }
 
 /**
@@ -36,33 +32,28 @@ export class ClaudeSessionRunner {
   private sessionManager: SessionManager;
 
   constructor(config: {
-    gcsBucket: string;
-    gcsKeyFile?: string;
     timeoutMinutes?: number;
-  }) {
+  } = {}) {
     this.sessionManager = new SessionManager({
-      bucketName: config.gcsBucket,
-      keyFile: config.gcsKeyFile,
       timeoutMinutes: config.timeoutMinutes
     });
   }
 
   /**
-   * Execute a Claude session with conversation persistence
+   * Execute a Claude session with conversation history
    */
   async executeSession(options: ExecuteClaudeSessionOptions): Promise<SessionExecutionResult> {
-    const { sessionKey, userPrompt, context, options: claudeOptions, onProgress, recoveryOptions } = options;
+    const { sessionKey, userPrompt, context, options: claudeOptions, onProgress } = options;
 
     try {
-      // Initialize or recover session
-      let sessionState: SessionState;
+      // Create session with conversation history from context
+      console.log(`Creating session ${sessionKey} with ${context.conversationHistory?.length || 0} messages from history`);
+      const sessionState = await this.sessionManager.createSession(sessionKey, context);
       
-      if (recoveryOptions?.fromGcs) {
-        console.log(`Recovering session ${sessionKey} from GCS...`);
-        sessionState = await this.sessionManager.recoverSession(sessionKey);
-      } else {
-        console.log(`Creating new session ${sessionKey}...`);
-        sessionState = await this.sessionManager.createSession(sessionKey, context);
+      // Add conversation history to session if provided
+      if (context.conversationHistory && context.conversationHistory.length > 0) {
+        sessionState.conversation = [...context.conversationHistory];
+        console.log(`Loaded ${context.conversationHistory.length} messages into session`);
       }
 
       // Add user message to conversation
@@ -93,7 +84,8 @@ export class ClaudeSessionRunner {
           if (onProgress) {
             await onProgress(update);
           }
-        }
+        },
+        context.workingDirectory // Pass working directory
       );
 
       // Add Claude's response to conversation
@@ -105,29 +97,19 @@ export class ClaudeSessionRunner {
         });
       }
 
-      // Persist final session state to GCS
-      const gcsPath = await this.sessionManager.persistSession(sessionKey);
-
       // Clean up session timeout
       this.sessionManager.clearTimeout(sessionKey);
 
       return {
         ...result,
         sessionKey,
-        persistedToGcs: true,
-        gcsPath,
+        persisted: false, // No persistence needed - Slack is the source of truth
+        storagePath: "slack://thread", // Indicate data is in Slack
       };
 
     } catch (error) {
       console.error(`Session ${sessionKey} execution failed:`, error);
       
-      // Try to persist error state
-      try {
-        await this.sessionManager.persistSession(sessionKey);
-      } catch (persistError) {
-        console.error(`Failed to persist session on error:`, persistError);
-      }
-
       // Clean up
       this.sessionManager.clearTimeout(sessionKey);
 
@@ -149,17 +131,18 @@ export class ClaudeSessionRunner {
   }
 
   /**
-   * Get current session state
+   * Get current session state (always returns null in stateless mode)
    */
-  async getSessionState(sessionKey: string): Promise<SessionState | null> {
-    return this.sessionManager.getSession(sessionKey);
+  async getSessionState(_sessionKey: string): Promise<SessionState | null> {
+    // Always return null since we don't store sessions
+    return null;
   }
 
   /**
-   * Check if session exists in GCS
+   * Check if session exists (always returns false in stateless mode)
    */
   async sessionExists(sessionKey: string): Promise<boolean> {
-    return this.sessionManager.sessionExistsInGcs(sessionKey);
+    return this.sessionManager.sessionExists(sessionKey);
   }
 }
 
@@ -175,4 +158,3 @@ export type {
 export { SessionManager } from "./session-manager";
 export { runClaudeWithProgress } from "./claude-execution";
 export { createPromptFile } from "./prompt-generation";
-export { GcsStorage } from "./storage/gcs";

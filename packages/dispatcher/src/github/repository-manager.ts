@@ -317,9 +317,9 @@ Try asking Claude to:
           username,
           repositoryName: repo.name,
           repositoryUrl: repo.html_url,
-          cloneUrl: repo.clone_url,
-          createdAt: new Date(repo.created_at).getTime(),
-          lastUsed: new Date(repo.updated_at).getTime(),
+          cloneUrl: repo.clone_url || '',
+          createdAt: repo.created_at ? new Date(repo.created_at).getTime() : Date.now(),
+          lastUsed: repo.updated_at ? new Date(repo.updated_at).getTime() : Date.now(),
         };
 
         userRepositories.push(userRepo);

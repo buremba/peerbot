@@ -13,7 +13,7 @@ export interface WorkerConfig {
   slackResponseChannel: string;
   slackResponseTs: string;
   claudeOptions: string; // JSON string
-  recoveryMode: boolean;
+  conversationHistory?: string; // JSON string
   slack: {
     token: string;
     refreshToken?: string;
@@ -23,11 +23,6 @@ export interface WorkerConfig {
   workspace: {
     baseDirectory: string;
     githubToken: string;
-  };
-  gcs: {
-    bucketName: string;
-    keyFile?: string;
-    projectId?: string;
   };
 }
 

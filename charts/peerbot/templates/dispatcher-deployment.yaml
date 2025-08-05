@@ -44,13 +44,13 @@ spec:
           livenessProbe:
             httpGet:
               path: /health
-              port: {{ .Values.slack.port }}
+              port: 8080
             initialDelaySeconds: 30
             periodSeconds: 10
           readinessProbe:
             httpGet:
               path: /ready
-              port: {{ .Values.slack.port }}
+              port: 8080
             initialDelaySeconds: 10
             periodSeconds: 5
           {{- end }}
@@ -79,8 +79,6 @@ spec:
               value: {{ if .Values.slack.socketMode }}"false"{{ else }}"true"{{ end }}
             - name: PORT
               value: "{{ .Values.dispatcher.service.targetPort }}"
-            - name: SLACK_TRIGGER_PHRASE
-              value: "{{ .Values.slack.triggerPhrase }}"
             - name: SLACK_ALLOW_DIRECT_MESSAGES
               value: "{{ .Values.slack.allowDirectMessages }}"
             - name: SLACK_ALLOW_PRIVATE_CHANNELS
@@ -114,20 +112,13 @@ spec:
                   name: {{ include "peerbot.fullname" . }}-config
                   key: github-organization
             
-            # GCS configuration
-            - name: GCS_BUCKET_NAME
-              valueFrom:
-                configMapKeyRef:
-                  name: {{ include "peerbot.fullname" . }}-config
-                  key: gcs-bucket-name
+
             - name: GOOGLE_CLOUD_PROJECT
               valueFrom:
                 configMapKeyRef:
                   name: {{ include "peerbot.fullname" . }}-config
                   key: gcs-project-id
                   optional: true
-            - name: GOOGLE_APPLICATION_CREDENTIALS
-              value: "/etc/gcs/key.json"
             
             # Claude configuration
             - name: MODEL
@@ -149,20 +140,6 @@ spec:
               value: "{{ .Values.dispatcher.config.nodeEnv }}"
             - name: LOG_LEVEL
               value: "{{ .Values.dispatcher.config.logLevel }}"
-          
-          volumeMounts:
-            - name: gcs-key
-              mountPath: /etc/gcs
-              readOnly: true
-      
-      volumes:
-        - name: gcs-key
-          secret:
-            secretName: {{ include "peerbot.fullname" . }}-secrets
-            items:
-              - key: gcs-service-account
-                path: key.json
-            optional: true
       
       {{- with .Values.nodeSelector }}
       nodeSelector:

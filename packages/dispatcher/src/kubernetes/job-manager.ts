@@ -30,20 +30,49 @@ export class KubernetesJobManager {
     // Initialize Kubernetes client
     const kc = new k8s.KubeConfig();
     
+    // Check if we're running in a Kubernetes pod
+    const inCluster = process.env.KUBERNETES_SERVICE_HOST && process.env.KUBERNETES_SERVICE_PORT;
+    
     if (config.kubeconfig) {
+      // Explicit kubeconfig path provided
       kc.loadFromFile(config.kubeconfig);
+      console.log(`✅ Loaded Kubernetes configuration from ${config.kubeconfig}`);
     } else {
-      try {
-        // Always use in-cluster config when running in Kubernetes
-        // This properly sets up the service account token and CA certificate
-        kc.loadFromCluster();
-        console.log("✅ Successfully loaded in-cluster Kubernetes configuration");
-      } catch (error) {
-        console.error("❌ Failed to load in-cluster config:", error);
-        throw new Error("Failed to initialize Kubernetes client: " + (error as Error).message);
+      
+      if (inCluster) {
+        try {
+          kc.loadFromCluster();
+          console.log("✅ Successfully loaded in-cluster Kubernetes configuration");
+        } catch (error) {
+          console.error("❌ Failed to load in-cluster config:", error);
+          throw new Error("Failed to load in-cluster Kubernetes configuration: " + (error as Error).message);
+        }
+      } else {
+        // Running locally, use default kubeconfig
+        try {
+          kc.loadFromDefault();
+          console.log("✅ Loaded Kubernetes configuration from default kubeconfig");
+        } catch (error) {
+          console.error("❌ Failed to load default kubeconfig:", error);
+          console.error("   Make sure you have kubectl configured or set KUBECONFIG environment variable");
+          throw new Error("Failed to load Kubernetes configuration. Please ensure kubectl is configured.");
+        }
       }
     }
 
+    // For local development with Docker Desktop, we may need to skip TLS verification
+    // This is safe for local development but should not be used in production
+    if (!inCluster && process.env.NODE_ENV !== 'production') {
+      const clusters = kc.getClusters();
+      clusters.forEach(cluster => {
+        if (cluster.server && (cluster.server.includes('127.0.0.1') || cluster.server.includes('localhost'))) {
+          // Use type assertion to modify the readonly property
+          (cluster as any).skipTLSVerify = true;
+          console.log(`⚠️  Skipping TLS verification for cluster: ${cluster.name}`);
+        }
+      });
+    }
+    
     this.k8sApi = kc.makeApiClient(k8s.BatchV1Api);
     this.k8sCoreApi = kc.makeApiClient(k8s.CoreV1Api);
     
@@ -183,13 +212,10 @@ export class KubernetesJobManager {
       slackResponseChannel: request.slackResponseChannel,
       slackResponseTs: request.slackResponseTs,
       claudeOptions: JSON.stringify(request.claudeOptions),
-      recoveryMode: request.recoveryMode ? "true" : "false",
+      conversationHistory: JSON.stringify(request.conversationHistory || []),
       // These will be injected from secrets/configmaps
       slackToken: "", 
       githubToken: "",
-      gcsBucket: "",
-      gcsKeyFile: "",
-      gcsProjectId: "",
     };
 
     return {
@@ -290,14 +316,15 @@ export class KubernetesJobManager {
                     value: templateData.claudeOptions,
                   },
                   {
-                    name: "RECOVERY_MODE",
-                    value: templateData.recoveryMode,
+                    name: "CONVERSATION_HISTORY",
+                    value: templateData.conversationHistory,
                   },
+                  // Worker needs Slack token to send progress updates
                   {
                     name: "SLACK_BOT_TOKEN",
                     valueFrom: {
                       secretKeyRef: {
-                        name: "claude-secrets",
+                        name: "peerbot-secrets",
                         key: "slack-bot-token",
                       },
                     },
@@ -306,27 +333,17 @@ export class KubernetesJobManager {
                     name: "GITHUB_TOKEN",
                     valueFrom: {
                       secretKeyRef: {
-                        name: "claude-secrets",
+                        name: "peerbot-secrets",
                         key: "github-token",
                       },
                     },
                   },
                   {
-                    name: "GCS_BUCKET_NAME",
+                    name: "CLAUDE_CODE_OAUTH_TOKEN",
                     valueFrom: {
-                      configMapKeyRef: {
-                        name: "peerbot-config",
-                        key: "gcs-bucket-name",
-                      },
-                    },
-                  },
-                  {
-                    name: "GOOGLE_CLOUD_PROJECT",
-                    valueFrom: {
-                      configMapKeyRef: {
-                        name: "peerbot-config",
-                        key: "gcs-project-id",
-                        optional: true,
+                      secretKeyRef: {
+                        name: "peerbot-secrets",
+                        key: "claude-code-oauth-token",
                       },
                     },
                   },
@@ -336,14 +353,9 @@ export class KubernetesJobManager {
                     name: "workspace",
                     mountPath: "/workspace",
                   },
-                  {
-                    name: "gcs-key",
-                    mountPath: "/etc/gcs",
-                    readOnly: true,
-                  },
                 ],
                 workingDir: "/workspace",
-                command: ["/app/scripts/entrypoint.sh"],
+                command: ["bun", "run", "/app/packages/worker/dist/index.js"],
               },
             ],
             volumes: [
@@ -351,19 +363,6 @@ export class KubernetesJobManager {
                 name: "workspace",
                 emptyDir: {
                   sizeLimit: "10Gi",
-                },
-              },
-              {
-                name: "gcs-key",
-                secret: {
-                  secretName: "claude-secrets",
-                  items: [
-                    {
-                      key: "gcs-service-account",
-                      path: "key.json",
-                    },
-                  ],
-                  optional: true,
                 },
               },
             ],
@@ -462,6 +461,80 @@ export class KubernetesJobManager {
       return "pending";
     } catch (error) {
       return "unknown";
+    }
+  }
+
+  /**
+   * Get job name for a session
+   */
+  async getJobForSession(sessionKey: string): Promise<string | null> {
+    return this.activeJobs.get(sessionKey) || null;
+  }
+
+  /**
+   * Get logs from a worker pod
+   */
+  async getJobLogs(jobName: string): Promise<string | null> {
+    try {
+      // Find pods for this job
+      const podsResponse = await this.k8sCoreApi.listNamespacedPod({
+        namespace: this.config.namespace,
+        labelSelector: `job-name=${jobName}`
+      });
+      
+      if (!podsResponse.items || podsResponse.items.length === 0) {
+        console.log(`No pods found for job ${jobName}`);
+        return null;
+      }
+      
+      const pod = podsResponse.items[0];
+      const podName = pod?.metadata?.name;
+      
+      if (!podName) {
+        console.log(`Pod name not found for job ${jobName}`);
+        return null;
+      }
+      
+      // Get logs from the pod
+      const logsResponse = await this.k8sCoreApi.readNamespacedPodLog({
+        name: podName,
+        namespace: this.config.namespace,
+        container: "claude-worker",
+        tailLines: 10000 // Get last 10k lines
+      });
+      
+      return logsResponse;
+    } catch (error) {
+      console.error(`Failed to get logs for job ${jobName}:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * Extract session data from pod logs
+   */
+  extractSessionFromLogs(logs: string): any | null {
+    try {
+      // Look for session data markers in logs
+      const sessionMarker = "SESSION_DATA_START";
+      const sessionEndMarker = "SESSION_DATA_END";
+      
+      const startIndex = logs.indexOf(sessionMarker);
+      const endIndex = logs.indexOf(sessionEndMarker);
+      
+      if (startIndex === -1 || endIndex === -1) {
+        return null;
+      }
+      
+      const sessionJson = logs.substring(
+        startIndex + sessionMarker.length,
+        endIndex
+      ).trim();
+      
+      return JSON.parse(sessionJson);
+    } catch (error) {
+      console.error("Failed to extract session from logs:", error);
+      return null;
     }
   }
 

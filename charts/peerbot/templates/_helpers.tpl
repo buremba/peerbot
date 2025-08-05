@@ -75,11 +75,6 @@ Common environment variables for workers
     secretKeyRef:
       name: {{ include "peerbot.fullname" . }}-secrets
       key: github-token
-- name: GCS_BUCKET_NAME
-  valueFrom:
-    configMapKeyRef:
-      name: {{ include "peerbot.fullname" . }}-config
-      key: gcs-bucket-name
 - name: GOOGLE_CLOUD_PROJECT
   valueFrom:
     configMapKeyRef:

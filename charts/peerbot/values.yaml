@@ -16,7 +16,7 @@ dispatcher:
     pullPolicy: Always
   
   service:
-    type: ClusterIP
+    type: NodePort
     port: 3000
     targetPort: 3000
   
@@ -100,9 +100,7 @@ slack:
 github:
   organization: "peerbot-community"
 
-# Google Cloud Storage configuration
-gcs:
-  bucketName: "peerbot-conversations-prod"
+# Storage: Using in-memory session storage only
 
 # Claude configuration
 claude:
@@ -136,7 +134,6 @@ secrets:
   slackBotToken: ""
   slackSigningSecret: ""
   githubToken: ""
-  gcsServiceAccount: ""  # Base64 encoded service account JSON
 
 # ConfigMap data
 config:

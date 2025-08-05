@@ -56,6 +56,8 @@ export class SlackEventHandlers {
    * Setup Slack event handlers
    */
   private setupEventHandlers(): void {
+    console.log("Setting up Slack event handlers...");
+    
     // Handle app mentions
     this.app.event("app_mention", async ({ event, client, say }) => {
       console.log("=== APP_MENTION HANDLER TRIGGERED ===");
@@ -112,19 +114,16 @@ export class SlackEventHandlers {
       console.log("Message channel_type:", message.channel_type);
       console.log("Message subtype:", message.subtype);
       console.log("Message object keys:", Object.keys(message));
-      console.log("Message user field:", message.user);
+      console.log("Message user field:", (message as any).user);
       
-      // Only handle direct messages, not channel messages
-      if (message.channel_type !== "im") {
-        console.log("Ignoring non-DM message");
-        return;
-      }
+      // Handle both DMs and channel messages where the bot is mentioned
+      // For channel messages, we rely on the app_mention handler above
+      // This handler will process DMs and bot_message subtypes (for bot-to-bot communication)
       
       // Ignore message subtypes that are not actual user messages
       const ignoredSubtypes = [
         'message_changed',
         'message_deleted',
-        'bot_message',
         'thread_broadcast',
         'channel_join',
         'channel_leave',
@@ -136,11 +135,7 @@ export class SlackEventHandlers {
         return;
       }
       
-      // Also ignore messages from bots (including our own bot)
-      if (message.bot_id) {
-        console.log("Ignoring bot message");
-        return;
-      }
+      // Allow bot messages - removed bot filtering to enable bot-to-bot communication
       
       try {
         const context = this.extractSlackContext(message);
@@ -212,20 +207,32 @@ export class SlackEventHandlers {
       // Get or create user's GitHub username mapping
       const username = await this.getOrCreateUserMapping(context.userId, client);
       
+      // Fetch conversation history from Slack if this is a thread
+      const conversationHistory = await this.fetchConversationHistory(
+        context.channelId,
+        context.threadTs,
+        client
+      );
+      
+      console.log(`Session ${sessionKey} - fetched ${conversationHistory.length} messages from thread`);
+      
       // Ensure user repository exists
       const repository = await this.repoManager.ensureUserRepository(username);
       
-      // Post initial response
+      // If this is not already a thread, use the current message timestamp as thread_ts
+      const threadTs = context.threadTs || context.messageTs;
+      
+      // Post initial response - ALWAYS in thread
       const initialResponse = await client.chat.postMessage({
         channel: context.channelId,
-        thread_ts: context.threadTs,
+        thread_ts: threadTs,
         text: this.formatInitialResponse(sessionKey, username, repository.repositoryUrl),
       });
 
-      // Create thread session
+      // Create thread session - ensure we always have a threadTs
       const threadSession: ThreadSession = {
         sessionKey,
-        threadTs: context.threadTs,
+        threadTs: threadTs,
         channelId: context.channelId,
         userId: context.userId,
         username,
@@ -237,13 +244,13 @@ export class SlackEventHandlers {
 
       this.activeSessions.set(sessionKey, threadSession);
 
-      // Prepare worker job request
+      // Prepare worker job request with conversation history
       const jobRequest: WorkerJobRequest = {
         sessionKey,
         userId: context.userId,
         username,
         channelId: context.channelId,
-        threadTs: context.threadTs,
+        threadTs: threadTs, // Always pass the thread timestamp
         userPrompt: userRequest,
         repositoryUrl: repository.repositoryUrl,
         slackResponseChannel: context.channelId,
@@ -252,7 +259,7 @@ export class SlackEventHandlers {
           ...this.config.claude,
           timeoutMinutes: this.config.sessionTimeoutMinutes.toString(),
         },
-        recoveryMode: !!context.threadTs, // Recover if this is a thread
+        conversationHistory, // Pass the fetched conversation history
       };
 
       // Start worker job
@@ -290,10 +297,11 @@ export class SlackEventHandlers {
 • Check events: \`kubectl get events -n ${this.config.kubernetes.namespace} --sort-by='.lastTimestamp'\`
 • Check job quota: \`kubectl describe resourcequota -n ${this.config.kubernetes.namespace}\``;
       
-      // Post error message
+      // Post error message - ALWAYS in thread
+      const threadTs = context.threadTs || context.messageTs;
       await client.chat.postMessage({
         channel: context.channelId,
-        thread_ts: context.threadTs,
+        thread_ts: threadTs,
         text: errorMessage,
       });
       
@@ -311,7 +319,7 @@ export class SlackEventHandlers {
     console.log("Event type:", event.type);
     console.log("Event subtype:", event.subtype);
     console.log("Event user:", event.user);
-    console.log("Event bot_id:", event.bot_id);
+    console.log("Event bot_id:", (event as any).bot_id);
     console.log("Event channel:", event.channel);
     console.log("Event channel_type:", event.channel_type);
     console.log("Event team:", event.team);
@@ -320,9 +328,9 @@ export class SlackEventHandlers {
     console.log("Full event JSON:", JSON.stringify(event, null, 2));
     console.log("=== END EVENT DEBUG ===");
     
-    // Check if this is a bot message we should ignore
-    if (event.bot_id || event.subtype === 'bot_message') {
-      console.log("Ignoring bot message");
+    // Log if this is a bot message (but don't ignore it)
+    if ((event as any).bot_id || event.subtype === 'bot_message') {
+      console.log("Processing bot message from bot_id:", (event as any).bot_id);
     }
     
     return {
@@ -340,10 +348,8 @@ export class SlackEventHandlers {
    */
   private extractUserRequest(text: string): string {
     // Remove bot mention and clean up text
-    const triggerPhrase = "@peerbotai";
-    
-    // Remove the trigger phrase and clean up
-    let cleaned = text.replace(new RegExp(`<@[^>]+>|${triggerPhrase}`, "gi"), "").trim();
+    // Only remove Slack's formatted mentions like <@U123456>
+    let cleaned = text.replace(/<@[^>]+>/g, "").trim();
     
     if (!cleaned) {
       return "Hello! How can I help you today?";
@@ -370,6 +376,46 @@ export class SlackEventHandlers {
     
     // Default to allow if no restrictions specified
     return true;
+  }
+
+  /**
+   * Fetch conversation history from Slack thread
+   */
+  private async fetchConversationHistory(
+    channelId: string, 
+    threadTs: string | undefined,
+    client: any
+  ): Promise<Array<{ role: string; content: string; timestamp: number }>> {
+    if (!threadTs) {
+      return [];
+    }
+
+    try {
+      const result = await client.conversations.replies({
+        channel: channelId,
+        ts: threadTs,
+        limit: 100, // Get up to 100 messages in the thread
+      });
+
+      if (!result.messages || result.messages.length === 0) {
+        return [];
+      }
+
+      // Convert Slack messages to conversation format
+      const conversation = result.messages
+        .filter((msg: any) => msg.text && msg.user) // Filter out system messages
+        .map((msg: any) => ({
+          role: msg.user === this.config.slack.botUserId ? 'assistant' : 'user',
+          content: msg.text,
+          timestamp: parseFloat(msg.ts) * 1000, // Convert Slack timestamp to milliseconds
+        }));
+
+      console.log(`Fetched ${conversation.length} messages from thread ${threadTs}`);
+      return conversation;
+    } catch (error) {
+      console.error(`Failed to fetch conversation history: ${error}`);
+      return [];
+    }
   }
 
   /**
@@ -457,13 +503,14 @@ export class SlackEventHandlers {
 • \`kubectl get pods -n ${namespace} -l job-name=${jobName}\``;
       
       // Add Google Cloud Console link if on GKE
-      const projectId = process.env.GOOGLE_CLOUD_PROJECT || "spile-461023";
-      
+      const projectId = process.env.GOOGLE_CLOUD_PROJECT;
+      if (projectId) {
       message += `
 
 **🔗 Quick Links:**
 • [GKE Workloads](https://console.cloud.google.com/kubernetes/workload/overview?project=${projectId}&pageState=(%22savedViews%22:(%22i%22:%225d96be3b8e484ad689354ab3fe0f7b4f%22,%22c%22:%5B%5D,%22n%22:%5B%22${namespace}%22%5D)))
 • [Cloud Logging](https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_pod%22%0Aresource.labels.namespace_name%3D%22${namespace}%22%0Aresource.labels.pod_name%3D~%22${jobName}.*%22?project=${projectId})`;
+      }
     }
 
     message += `
@@ -549,7 +596,8 @@ kubectl logs -n ${namespace} -l job-name=${jobName} --tail=100
   /**
    * Cleanup all sessions
    */
-  cleanup(): void {
+  async cleanup(): Promise<void> {
+    // Clear local maps
     this.activeSessions.clear();
     this.userMappings.clear();
   }

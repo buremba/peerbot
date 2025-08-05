@@ -111,7 +111,8 @@ function prepareRunConfig(
 export async function runClaudeWithProgress(
   promptPath: string,
   options: ClaudeExecutionOptions,
-  onProgress?: ProgressCallback
+  onProgress?: ProgressCallback,
+  workingDirectory?: string
 ): Promise<ClaudeExecutionResult> {
   const config = prepareRunConfig(promptPath, options);
 
@@ -159,6 +160,7 @@ export async function runClaudeWithProgress(
 
   const claudeProcess = spawn("claude", config.claudeArgs, {
     stdio: ["pipe", "pipe", "inherit"],
+    cwd: workingDirectory || process.cwd(),
     env: {
       ...process.env,
       ...config.env,

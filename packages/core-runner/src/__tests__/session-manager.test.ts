@@ -327,14 +327,6 @@ describe("SessionManager", () => {
         sessionManager.persistSession("non-existent")
       ).rejects.toThrow("Session not found for persistence");
     });
-
-    it("should handle GCS errors during persistence", async () => {
-      mockGcsStorage.saveSessionState.mockRejectedValue(new Error("GCS write failed"));
-
-      await expect(
-        sessionManager.persistSession(sessionKey)
-      ).rejects.toThrow("Failed to persist session to GCS");
-    });
   });
 
   describe("Session Cleanup", () => {

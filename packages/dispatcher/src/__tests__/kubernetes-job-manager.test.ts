@@ -284,7 +284,6 @@ describe("KubernetesJobManager", () => {
         "USER_PROMPT",
         "SLACK_BOT_TOKEN",
         "GITHUB_TOKEN",
-        "GCS_BUCKET_NAME",
       ];
 
       for (const envName of requiredEnvs) {
@@ -301,13 +300,13 @@ describe("KubernetesJobManager", () => {
       
       const slackTokenEnv = container.env.find((env: any) => env.name === "SLACK_BOT_TOKEN");
       expect(slackTokenEnv.valueFrom.secretKeyRef).toEqual({
-        name: "claude-secrets",
+        name: "peerbot-secrets",
         key: "slack-bot-token",
       });
 
       const githubTokenEnv = container.env.find((env: any) => env.name === "GITHUB_TOKEN");
       expect(githubTokenEnv.valueFrom.secretKeyRef).toEqual({
-        name: "claude-secrets",
+        name: "peerbot-secrets",
         key: "github-token",
       });
     });

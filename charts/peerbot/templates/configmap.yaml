@@ -7,9 +7,7 @@ metadata:
 data:
   # GCS Configuration
   gcs-bucket-name: {{ .Values.config.gcsBucketName | quote }}
-  {{- if .Values.config.gcsProjectId }}
   gcs-project-id: {{ .Values.config.gcsProjectId | quote }}
-  {{- end }}
   
   # GitHub Configuration
   github-organization: {{ .Values.config.githubOrganization | quote }}

@@ -1,0 +1,49 @@
+FROM node:20-alpine
+
+WORKDIR /app
+
+# Install runtime dependencies
+RUN apk add --no-cache \
+    git \
+    curl \
+    bash \
+    openssh-client \
+    jq
+
+# Install bun
+RUN curl -fsSL https://bun.sh/install | bash
+ENV PATH="/root/.bun/bin:${PATH}"
+
+# Install Claude Code CLI globally using bun and ensure it's in PATH
+RUN bun install -g @anthropic-ai/claude-code@1.0.59 && \
+    echo "Checking bun bin directory..." && \
+    ls -la ~/.bun/bin/ && \
+    echo "Testing claude command..." && \
+    ~/.bun/bin/claude --version && \
+    ln -sf /root/.bun/bin/claude /usr/local/bin/claude && \
+    chmod +x /usr/local/bin/claude && \
+    echo "Claude symlinked to /usr/local/bin/claude" && \
+    ls -la /usr/local/bin/claude && \
+    /usr/local/bin/claude --version
+
+# Copy package files
+COPY package.json ./
+COPY tsconfig.json ./
+COPY packages/worker/package.json ./packages/worker/
+COPY packages/core-runner/package.json ./packages/core-runner/
+COPY packages/dispatcher/package.json ./packages/dispatcher/
+
+# Install dependencies
+RUN bun install --frozen-lockfile
+
+# Copy all source code
+COPY packages/ ./packages/
+
+# Create workspace directory
+RUN mkdir -p /workspace && chmod 777 /workspace
+
+# Set working directory to worker
+WORKDIR /app/packages/worker
+
+# Run directly with bun (no build step needed)
+ENTRYPOINT ["bun", "run", "src/index.ts"]

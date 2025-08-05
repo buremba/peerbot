@@ -217,7 +217,6 @@ The system uses these configuration options:
 | `SLACK_TRIGGER_PHRASE` | Phrase to trigger the bot | `@peerbotai` |
 | `GITHUB_TOKEN` | GitHub personal access token | Required |
 | `GITHUB_ORGANIZATION` | GitHub org for user repos | `peerbot-community` |
-| `GCS_BUCKET_NAME` | GCS bucket for conversations | `peerbot-conversations-prod` |
 | `SESSION_TIMEOUT_MINUTES` | Worker timeout in minutes | `5` |
 | `WORKER_CPU` | CPU request for workers | `2000m` |
 | `WORKER_MEMORY` | Memory request for workers | `4Gi` |

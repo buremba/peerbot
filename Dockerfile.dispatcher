@@ -1,0 +1,32 @@
+FROM node:20-alpine
+
+WORKDIR /app
+
+# Install bun for build step
+RUN apk add --no-cache curl bash && \
+    curl -fsSL https://bun.sh/install | bash
+ENV PATH="/root/.bun/bin:${PATH}"
+
+# Copy all package files
+COPY package.json ./
+COPY packages/dispatcher/package.json ./packages/dispatcher/
+COPY packages/core-runner/package.json ./packages/core-runner/
+COPY packages/worker/package.json ./packages/worker/
+
+# Install dependencies
+RUN bun install
+
+# Copy source code for dispatcher and core-runner only
+COPY packages/dispatcher/ ./packages/dispatcher/
+COPY packages/core-runner/ ./packages/core-runner/
+
+# Build
+WORKDIR /app/packages/dispatcher
+RUN bun run build.ts
+
+# Runtime
+ENV NODE_ENV=production
+EXPOSE 3000
+
+# Use Node.js instead of Bun for runtime (better WebSocket support)
+CMD ["node", "dist/src/index.js"]

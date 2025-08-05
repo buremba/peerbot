@@ -42,6 +42,7 @@ export interface SessionContext {
   repositoryUrl?: string;
   workingDirectory?: string;
   customInstructions?: string;
+  conversationHistory?: ConversationMessage[];
 }
 
 export interface ConversationMessage {
@@ -75,13 +76,7 @@ export interface SessionState {
   };
 }
 
-// GCS storage types
-export interface GcsConfig {
-  bucketName: string;
-  keyFile?: string;
-  projectId?: string;
-}
-
+// Conversation metadata types
 export interface ConversationMetadata {
   sessionKey: string;
   createdAt: number;
@@ -141,16 +136,6 @@ export class SessionError extends Error {
   }
 }
 
-export class GcsError extends Error {
-  constructor(
-    public operation: string,
-    message: string,
-    public cause?: Error
-  ) {
-    super(message);
-    this.name = "GcsError";
-  }
-}
 
 export class WorkerError extends Error {
   constructor(

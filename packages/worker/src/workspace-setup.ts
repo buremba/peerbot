@@ -181,6 +181,7 @@ export class WorkspaceManager {
     }
   }
 
+
   /**
    * Get repository information
    */

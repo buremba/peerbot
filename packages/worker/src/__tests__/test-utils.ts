@@ -20,8 +20,6 @@ export function createMockEnvironment(overrides: Record<string, string> = {}) {
     SLACK_RESPONSE_TS: "1234567890.123456",
     SLACK_BOT_TOKEN: "xoxb-test-token",
     GITHUB_TOKEN: "ghp_test_token",
-    GCS_BUCKET_NAME: "test-bucket",
-    GOOGLE_CLOUD_PROJECT: "test-project",
     WORKSPACE_DIR: "/workspace",
     RECOVERY_MODE: "false",
     CLAUDE_OPTIONS: JSON.stringify({ model: "claude-3-sonnet", temperature: 0.7 }),

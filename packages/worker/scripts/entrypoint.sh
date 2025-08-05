@@ -34,7 +34,6 @@ required_vars=(
     "CLAUDE_OPTIONS"
     "SLACK_BOT_TOKEN"
     "GITHUB_TOKEN"
-    "GCS_BUCKET_NAME"
 )
 
 echo "🔍 Validating environment variables..."

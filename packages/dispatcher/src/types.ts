@@ -33,17 +33,10 @@ export interface GitHubConfig {
   repoTemplate?: string;
 }
 
-export interface GcsConfig {
-  bucketName: string;
-  keyFile?: string;
-  projectId?: string;
-}
-
 export interface DispatcherConfig {
   slack: SlackConfig;
   kubernetes: KubernetesConfig;
   github: GitHubConfig;
-  gcs: GcsConfig;
   claude: Partial<ClaudeExecutionOptions>;
   sessionTimeoutMinutes: number;
   logLevel?: LogLevel;
@@ -71,7 +64,7 @@ export interface WorkerJobRequest {
   slackResponseChannel: string;
   slackResponseTs: string;
   claudeOptions: ClaudeExecutionOptions;
-  recoveryMode?: boolean;
+  conversationHistory?: Array<{ role: string; content: string; timestamp: number }>;
 }
 
 export interface ThreadSession {
@@ -114,13 +107,10 @@ export interface JobTemplateData {
   slackResponseChannel: string;
   slackResponseTs: string;
   claudeOptions: string; // JSON string
-  recoveryMode: string; // "true" or "false"
+  conversationHistory: string; // JSON string
   // Environment variables from config
   slackToken: string;
   githubToken: string;
-  gcsBucket: string;
-  gcsKeyFile?: string;
-  gcsProjectId?: string;
 }
 
 // Error types

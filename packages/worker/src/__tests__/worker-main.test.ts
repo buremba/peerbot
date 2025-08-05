@@ -25,7 +25,6 @@ describe("Worker Main", () => {
     SLACK_RESPONSE_TS: "1234567890.123456",
     SLACK_BOT_TOKEN: "xoxb-test-token",
     GITHUB_TOKEN: "ghp_test_token",
-    GCS_BUCKET_NAME: "test-bucket",
     WORKSPACE_DIR: "/workspace",
     RECOVERY_MODE: "false",
   };

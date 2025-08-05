@@ -70,12 +70,12 @@ rules:
   - apiGroups: [""]
     resources: ["configmaps"]
     verbs: ["get"]
-    resourceNames: ["claude-config"]
+    resourceNames: ["peerbot-config"]
   
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["get"]
-    resourceNames: ["claude-secrets"]
+    resourceNames: ["peerbot-secrets"]
   
   # Self-monitoring for graceful shutdown - read-only access to own job
   - apiGroups: ["batch"]

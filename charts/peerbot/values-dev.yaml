@@ -1,0 +1,149 @@
+# Development values for local Docker Desktop deployment
+
+global:
+  imageRegistry: ""
+
+dispatcher:
+  replicaCount: 1
+  image:
+    repository: peerbot-dispatcher
+    pullPolicy: IfNotPresent
+    tag: ""  # Skaffold will manage this
+  
+  service:
+    type: ClusterIP
+    port: 3000
+    targetPort: 3000
+  
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+  
+  config:
+    nodeEnv: "development"
+    logLevel: "DEBUG"
+
+worker:
+  image:
+    repository: claude-worker
+    tag: latest
+    pullPolicy: IfNotPresent
+  
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "1"
+      memory: "2Gi"
+  
+  job:
+    timeoutSeconds: 300
+    backoffLimit: 0
+    ttlSecondsAfterFinished: 300
+  
+  workspace:
+    sizeLimit: "10Gi"
+
+slack:
+  socketMode: true
+  httpMode: false
+  port: 3000
+  allowDirectMessages: true
+  allowPrivateChannels: true
+  enableStatusReactions: true
+  enableProgressUpdates: true
+
+github:
+  organization: "peerbot-community"
+
+gcs:
+  bucketName: "peerbot-conversations-dev"
+  projectId: ""
+
+claude:
+  model: "claude-3-5-sonnet-20241022"
+  timeoutMinutes: "5"
+  allowedTools: ""
+
+session:
+  timeoutMinutes: 5
+
+kubernetes:
+  namespace: peerbot
+
+serviceAccount:
+  create: true
+  name: ""
+
+rbac:
+  create: true
+
+secrets:
+  create: false  # We'll create them manually
+  slackBotToken: ""
+  slackAppToken: ""
+  slackSigningSecret: ""
+  githubToken: ""
+
+config:
+  githubOrganization: "peerbot-community"
+  gcsBucketName: "peerbot-conversations-dev"
+  gcsProjectId: ""
+  sessionTimeoutMinutes: "5"
+
+# Disable production features for local development
+ingress:
+  enabled: false
+
+monitoring:
+  enabled: false
+
+autoscaling:
+  enabled: false
+
+keda:
+  enabled: false
+
+podDisruptionBudget:
+  enabled: false
+
+networkPolicy:
+  enabled: false
+  defaultDeny: false
+
+resourceQuota:
+  enabled: false
+
+workerQuota:
+  enabled: false
+
+limitRange:
+  enabled: false
+
+podSecurityPolicy:
+  enabled: false
+
+podSecurityStandards:
+  enforce: "restricted"
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+    - ALL
+  readOnlyRootFilesystem: false
+  runAsNonRoot: true
+  runAsUser: 1000
+
+workerNodeSelector: {}
+workerTolerations: []

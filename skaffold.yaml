@@ -1,0 +1,37 @@
+apiVersion: skaffold/v4beta6
+kind: Config
+metadata:
+  name: claude-code-slack
+build:
+  artifacts:
+  - image: peerbot-dispatcher
+    context: .
+    docker:
+      dockerfile: Dockerfile.dispatcher
+  local:
+    push: false
+    useBuildkit: true
+deploy:
+  helm:
+    releases:
+    - name: peerbot
+      chartPath: charts/peerbot
+      namespace: peerbot
+      createNamespace: true
+      skipBuildDependencies: true
+      valuesFiles:
+      - charts/peerbot/values-local.yaml
+      setValueTemplates:
+        dispatcher.image.repository: peerbot-dispatcher
+        dispatcher.image.tag: "{{.IMAGE_TAG_peerbot_dispatcher}}"
+      setValues:
+        dispatcher.socketMode: "true"
+        dispatcher.httpMode: "false"
+        ingress.enabled: "false"
+        service.type: ClusterIP
+portForward:
+- resourceType: deployment
+  resourceName: peerbot-dispatcher
+  namespace: peerbot
+  port: 3000
+  localPort: 3000

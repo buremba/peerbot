@@ -4,7 +4,7 @@ import { ClaudeSessionRunner } from "@claude-code-slack/core-runner";
 import { WorkspaceManager } from "./workspace-setup";
 import { SlackIntegration } from "./slack-integration";
 import { SlackTokenManager } from "./slack/token-manager";
-import type { WorkerConfig, WorkerError } from "./types";
+import type { WorkerConfig } from "./types";
 
 export class ClaudeWorker {
   private sessionRunner: ClaudeSessionRunner;
@@ -17,10 +17,7 @@ export class ClaudeWorker {
     this.config = config;
 
     // Initialize components
-    this.sessionRunner = new ClaudeSessionRunner({
-      gcsBucket: config.gcs.bucketName,
-      gcsKeyFile: config.gcs.keyFile,
-    });
+    this.sessionRunner = new ClaudeSessionRunner();
 
     this.workspaceManager = new WorkspaceManager(config.workspace);
     
@@ -60,7 +57,6 @@ export class ClaudeWorker {
 • Session: \`${this.config.sessionKey}\`
 • User: \`${this.config.username}\`
 • Repository: \`${this.config.repositoryUrl}\`
-• Recovery Mode: \`${this.config.recoveryMode ? "Yes" : "No"}\`
 
 Setting up workspace...`
       );
@@ -89,7 +85,13 @@ Starting Claude session...`
       const userPrompt = Buffer.from(this.config.userPrompt, "base64").toString("utf-8");
       console.log(`User prompt: ${userPrompt.substring(0, 100)}...`);
 
-      // Prepare session context
+      // Parse conversation history if provided
+      const conversationHistory = this.config.conversationHistory 
+        ? JSON.parse(this.config.conversationHistory)
+        : [];
+      console.log(`Loaded ${conversationHistory.length} messages from conversation history`);
+
+      // Prepare session context with conversation history
       const sessionContext = {
         platform: "slack" as const,
         channelId: this.config.channelId,
@@ -100,17 +102,16 @@ Starting Claude session...`
         repositoryUrl: this.config.repositoryUrl,
         workingDirectory: `/workspace/${this.config.username}`,
         customInstructions: this.generateCustomInstructions(),
+        conversationHistory, // Include the parsed conversation history
       };
 
-      // Execute Claude session
+      // Execute Claude session with conversation history
       const result = await this.sessionRunner.executeSession({
         sessionKey: this.config.sessionKey,
         userPrompt,
         context: sessionContext,
         options: JSON.parse(this.config.claudeOptions),
-        recoveryOptions: {
-          fromGcs: this.config.recoveryMode,
-        },
+        // No recovery options needed - conversation history is already in context
         onProgress: async (update) => {
           // Stream progress to Slack
           if (update.type === "output" && update.data) {
@@ -128,7 +129,7 @@ Starting Claude session...`
 
 **Results:**
 • Duration: \`${duration}s\`
-• Session persisted to GCS
+• Session persisted successfully
 • Changes committed to repository
 
 **GitHub Links:**
@@ -185,7 +186,7 @@ The session state has been preserved for debugging.`
 - Working in: /workspace/${this.config.username}  
 - Repository: ${this.config.repositoryUrl}
 - Session: ${this.config.sessionKey}
-- Recovery Mode: ${this.config.recoveryMode ? "Enabled" : "Disabled"}
+- Thread: ${this.config.threadTs || "New conversation"}
 
 **Your capabilities:**
 - Read, write, and execute files in the workspace
@@ -200,11 +201,8 @@ The session state has been preserved for debugging.`
 - Be concise but thorough in your responses
 - Focus on solving the user's specific request
 
-**Session persistence:**
-${this.config.recoveryMode 
-  ? "This is a resumed conversation. Previous context has been loaded from GCS."
-  : "This is a new conversation. No previous context exists."
-}`;
+**Session context:**
+This is ${this.config.threadTs ? "a continued conversation in a thread" : "a new conversation"}.`;
   }
 
   /**
@@ -256,7 +254,7 @@ async function main() {
       slackResponseChannel: process.env.SLACK_RESPONSE_CHANNEL!,
       slackResponseTs: process.env.SLACK_RESPONSE_TS!,
       claudeOptions: process.env.CLAUDE_OPTIONS!,
-      recoveryMode: process.env.RECOVERY_MODE === "true",
+      conversationHistory: process.env.CONVERSATION_HISTORY,
       slack: {
         token: process.env.SLACK_BOT_TOKEN!,
         refreshToken: process.env.SLACK_REFRESH_TOKEN,
@@ -267,11 +265,6 @@ async function main() {
         baseDirectory: "/workspace",
         githubToken: process.env.GITHUB_TOKEN!,
       },
-      gcs: {
-        bucketName: process.env.GCS_BUCKET_NAME!,
-        keyFile: process.env.GOOGLE_APPLICATION_CREDENTIALS,
-        projectId: process.env.GOOGLE_CLOUD_PROJECT,
-      },
     };
 
     // Validate required configuration
@@ -279,20 +272,56 @@ async function main() {
       "SESSION_KEY", "USER_ID", "USERNAME", "CHANNEL_ID", 
       "REPOSITORY_URL", "USER_PROMPT", "SLACK_RESPONSE_CHANNEL", 
       "SLACK_RESPONSE_TS", "CLAUDE_OPTIONS", "SLACK_BOT_TOKEN",
-      "GITHUB_TOKEN", "GCS_BUCKET_NAME"
+      "GITHUB_TOKEN"
     ];
 
+    const missingVars: string[] = [];
     for (const key of required) {
       if (!process.env[key]) {
-        throw new Error(`Required environment variable ${key} is not set`);
+        missingVars.push(key);
       }
+    }
+
+    if (missingVars.length > 0) {
+      const errorMessage = `Missing required environment variables: ${missingVars.join(", ")}`;
+      console.error(`❌ ${errorMessage}`);
+      
+      // Try to update Slack if we have enough config
+      if (process.env.SLACK_BOT_TOKEN && process.env.SLACK_RESPONSE_CHANNEL && process.env.SLACK_RESPONSE_TS) {
+        try {
+          const slackIntegration = new SlackIntegration({
+            token: process.env.SLACK_BOT_TOKEN,
+            refreshToken: process.env.SLACK_REFRESH_TOKEN,
+            clientId: process.env.SLACK_CLIENT_ID,
+            clientSecret: process.env.SLACK_CLIENT_SECRET,
+          });
+          
+          await slackIntegration.updateProgress(
+            `💥 **Worker failed to start**
+            
+**Kubernetes Configuration Error:**
+• ${errorMessage}
+• This usually means the Kubernetes secrets are not properly configured
+
+**Troubleshooting:**
+1. Check if \`peerbot-secrets\` exists in the namespace
+2. Verify all required keys are present in the secret
+3. Check RBAC permissions for the service account
+
+Contact your administrator to resolve this issue.`
+          );
+        } catch (slackError) {
+          console.error("Failed to send error to Slack:", slackError);
+        }
+      }
+      
+      throw new Error(errorMessage);
     }
 
     console.log("Configuration loaded:");
     console.log(`- Session: ${config.sessionKey}`);
     console.log(`- User: ${config.username}`);
     console.log(`- Repository: ${config.repositoryUrl}`);
-    console.log(`- Recovery Mode: ${config.recoveryMode}`);
 
     // Create and execute worker
     worker = new ClaudeWorker(config);
@@ -303,6 +332,41 @@ async function main() {
 
   } catch (error) {
     console.error("❌ Worker execution failed:", error);
+    
+    // Try to report error to Slack if possible
+    if (process.env.SLACK_BOT_TOKEN && process.env.SLACK_RESPONSE_CHANNEL && process.env.SLACK_RESPONSE_TS) {
+      try {
+        const slackIntegration = new SlackIntegration({
+          token: process.env.SLACK_BOT_TOKEN,
+          refreshToken: process.env.SLACK_REFRESH_TOKEN,
+          clientId: process.env.SLACK_CLIENT_ID,
+          clientSecret: process.env.SLACK_CLIENT_SECRET,
+        });
+        
+        const errorMessage = error instanceof Error ? error.message : "Unknown error";
+        const isKubernetesError = errorMessage.includes("environment variable") || 
+                                 errorMessage.includes("secret") ||
+                                 errorMessage.includes("permission");
+        
+        await slackIntegration.updateProgress(
+          `💥 **Worker failed**
+          
+**Error:** ${errorMessage}
+${isKubernetesError ? `
+**This appears to be a Kubernetes configuration issue:**
+• Check if \`peerbot-secrets\` exists and contains all required keys
+• Verify RBAC permissions for the service account
+• Check pod events: \`kubectl describe pod <pod-name>\`
+` : ""}
+**Debug Info:**
+• Session: \`${process.env.SESSION_KEY || "unknown"}\`
+• User: \`${process.env.USERNAME || "unknown"}\`
+• Pod: \`${process.env.HOSTNAME || "unknown"}\``
+        );
+      } catch (slackError) {
+        console.error("Failed to send error to Slack:", slackError);
+      }
+    }
     
     // Cleanup if worker was created
     if (worker) {
@@ -329,8 +393,6 @@ process.on("SIGINT", async () => {
 });
 
 // Start the worker
-if (import.meta.main) {
-  main();
-}
+main();
 
 export type { WorkerConfig } from "./types";

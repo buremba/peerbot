@@ -5,6 +5,8 @@ metadata:
   labels:
     {{- include "peerbot.labels" . | nindent 4 }}
     app.kubernetes.io/component: dispatcher
+  annotations:
+    cloud.google.com/backend-config: '{"default": "peerbot-backend-config"}'
 spec:
   type: {{ .Values.dispatcher.service.type }}
   ports:

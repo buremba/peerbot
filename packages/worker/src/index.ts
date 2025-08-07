@@ -4,6 +4,7 @@ import { ClaudeSessionRunner } from "@claude-code-slack/core-runner";
 import { WorkspaceManager } from "./workspace-setup";
 import { SlackIntegration } from "./slack-integration";
 import { SlackTokenManager } from "./slack/token-manager";
+import { extractFinalResponse } from "./claude-output-parser";
 import type { WorkerConfig } from "./types";
 
 export class ClaudeWorker {
@@ -41,49 +42,105 @@ export class ClaudeWorker {
   }
 
   /**
+   * Check if this is a simple query that doesn't need repository access
+   */
+  private isSimpleQuery(prompt: string): boolean {
+    // Simple queries are typically short and don't mention files/code
+    const lowerPrompt = prompt.toLowerCase();
+    
+    // Keywords that indicate need for repository
+    const needsRepoKeywords = [
+      'file', 'code', 'function', 'class', 'method', 'variable',
+      'repository', 'repo', 'git', 'commit', 'branch', 'pull request',
+      'pr', 'implement', 'fix', 'bug', 'feature', 'refactor', 'test',
+      'build', 'compile', 'run', 'execute', 'debug', 'deploy',
+      'create', 'add', 'update', 'modify', 'change', 'edit'
+    ];
+    
+    // Check if prompt is short and doesn't contain repo-related keywords
+    const isShort = prompt.length < 100;
+    const hasRepoKeywords = needsRepoKeywords.some(keyword => 
+      lowerPrompt.includes(keyword)
+    );
+    
+    return isShort && !hasRepoKeywords;
+  }
+
+  /**
    * Execute the worker job
    */
   async execute(): Promise<void> {
-    const startTime = Date.now();
+    const executeStartTime = Date.now();
+    // Get original message timestamp for reactions (defined outside try block)
+    const originalMessageTs = process.env.ORIGINAL_MESSAGE_TS;
     
     try {
       console.log(`🚀 Starting Claude worker for session: ${this.config.sessionKey}`);
+      console.log(`[TIMING] Worker execute() started at: ${new Date(executeStartTime).toISOString()}`);
       
-      // Update initial Slack message with worker details
-      await this.slackIntegration.updateProgress(
-        `🔧 **Worker starting...**
-
-**Container Details:**
-• Session: \`${this.config.sessionKey}\`
-• User: \`${this.config.username}\`
-• Repository: \`${this.config.repositoryUrl}\`
-
-Setting up workspace...`
-      );
-
-      // Setup workspace
-      console.log("Setting up workspace...");
-      await this.workspaceManager.setupWorkspace(
-        this.config.repositoryUrl,
-        this.config.username
-      );
-
-      // Update progress
-      await this.slackIntegration.updateProgress(
-        `📁 **Workspace ready**
-
-Repository cloned to \`/workspace/${this.config.username}\`
-
-**GitHub Links:**
-• 📝 [Edit on GitHub.dev](https://github.dev/${this.getRepoPath()})
-• 🔄 [Compare & PR](${this.config.repositoryUrl}/compare)
-
-Starting Claude session...`
-      );
-
-      // Decode user prompt
+      // Add "gear" reaction to indicate worker is running
+      if (originalMessageTs) {
+        console.log(`Adding gear reaction to message ${originalMessageTs}`);
+        await this.slackIntegration.removeReaction("eyes", originalMessageTs);
+        await this.slackIntegration.addReaction("gear", originalMessageTs);
+      }
+      
+      // Create context header block (this should match what dispatcher created)
+      const pwd = process.cwd(); // Get current working directory
+      const contextBlock = {
+        type: "context",
+        elements: [
+          {
+            type: "mrkdwn",
+            text: `🔖 ${this.config.sessionKey}`
+          },
+          {
+            type: "mrkdwn",
+            text: `📁 <${this.config.repositoryUrl.replace('github.com', 'github.dev')}|${this.config.username}>`
+          },
+          {
+            type: "mrkdwn",
+            text: `🔀 <${this.config.repositoryUrl}/compare|Create Pull Request>`
+          },
+          {
+            type: "mrkdwn",
+            text: `📂 ${pwd}`
+          }
+        ]
+      };
+      
+      // Set context block for all future updates
+      this.slackIntegration.setContextBlock(contextBlock);
+      
+      // Decode user prompt first
       const userPrompt = Buffer.from(this.config.userPrompt, "base64").toString("utf-8");
       console.log(`User prompt: ${userPrompt.substring(0, 100)}...`);
+      
+      // Check if this is a simple query that doesn't need repository
+      const isSimpleQuery = this.isSimpleQuery(userPrompt);
+      
+      if (!isSimpleQuery) {
+        // Update initial Slack message with simple status
+        await this.slackIntegration.updateProgress("💻 Setting up workspace...");
+
+        // Setup workspace
+        console.log("Setting up workspace...");
+        await this.workspaceManager.setupWorkspace(
+          this.config.repositoryUrl,
+          this.config.username
+        );
+      } else {
+        console.log("Skipping workspace setup for simple query");
+        // Create a minimal workspace directory
+        const fs = await import('fs/promises');
+        const path = await import('path');
+        const workspaceDir = path.join('/workspace', this.config.username);
+        await fs.mkdir(workspaceDir, { recursive: true });
+        process.chdir(workspaceDir);
+      }
+
+      // Update progress with simple status
+      await this.slackIntegration.updateProgress("🚀 Starting Claude session...");
 
       // Parse conversation history if provided
       const conversationHistory = this.config.conversationHistory 
@@ -106,6 +163,11 @@ Starting Claude session...`
       };
 
       // Execute Claude session with conversation history
+      console.log(`[TIMING] Starting Claude session at: ${new Date().toISOString()}`);
+      const claudeStartTime = Date.now();
+      console.log(`[TIMING] Total worker startup time: ${claudeStartTime - executeStartTime}ms`);
+      
+      let firstOutputLogged = false;
       const result = await this.sessionRunner.executeSession({
         sessionKey: this.config.sessionKey,
         userPrompt,
@@ -113,6 +175,11 @@ Starting Claude session...`
         options: JSON.parse(this.config.claudeOptions),
         // No recovery options needed - conversation history is already in context
         onProgress: async (update) => {
+          // Log timing for first output
+          if (!firstOutputLogged && update.type === "output") {
+            console.log(`[TIMING] First Claude output at: ${new Date().toISOString()} (${Date.now() - claudeStartTime}ms after Claude start)`);
+            firstOutputLogged = true;
+          }
           // Stream progress to Slack
           if (update.type === "output" && update.data) {
             await this.slackIntegration.streamProgress(update.data);
@@ -121,55 +188,65 @@ Starting Claude session...`
       });
 
       // Handle final result
-      const duration = Math.round((Date.now() - startTime) / 1000);
+      
+      console.log("=== FINAL RESULT DEBUG ===");
+      console.log("result.success:", result.success);
+      console.log("result.output exists:", !!result.output);
+      console.log("result.output length:", result.output?.length);
+      console.log("result.output sample:", result.output?.substring(0, 300));
+      console.log("About to update Slack...");
       
       if (result.success) {
-        await this.slackIntegration.updateProgress(
-          `✅ **Session completed successfully!**
-
-**Results:**
-• Duration: \`${duration}s\`
-• Session persisted successfully
-• Changes committed to repository
-
-**GitHub Links:**
-• 📝 [View changes on GitHub.dev](https://github.dev/${this.getRepoPath()})
-• 🔄 [Create Pull Request](${this.config.repositoryUrl}/compare)
-• 📊 [Repository](${this.config.repositoryUrl})
-
-${result.output ? `**Claude's Response:**\n${result.output}` : ""}`
-        );
+        console.log("Calling slackIntegration.updateProgress...");
+        // Update with Claude's response and completion status
+        const claudeResponse = this.formatClaudeResponse(result.output);
+        if (claudeResponse) {
+          await this.slackIntegration.updateProgress(claudeResponse);
+        } else {
+          await this.slackIntegration.updateProgress("✅ Completed");
+        }
+        
+        // Update reaction to success
+        console.log(`Updating reaction to success. originalMessageTs: ${originalMessageTs}`);
+        if (originalMessageTs) {
+          console.log(`Removing gear and adding check mark reaction to ${originalMessageTs}`);
+          await this.slackIntegration.removeReaction("gear", originalMessageTs);
+          await this.slackIntegration.addReaction("white_check_mark", originalMessageTs);
+        } else {
+          console.log('No originalMessageTs found, skipping reaction update');
+        }
       } else {
+        const errorMsg = result.error || "Unknown error";
         await this.slackIntegration.updateProgress(
-          `❌ **Session failed**
-
-**Error Details:**
-• Duration: \`${duration}s\`
-• Error: \`${result.error || "Unknown error"}\`
-• Exit Code: \`${result.exitCode}\`
-
-The session state has been preserved for debugging.`
+          `❌ Session failed: ${errorMsg}`
         );
+        
+        // Update reaction to error
+        if (originalMessageTs) {
+          await this.slackIntegration.removeReaction("gear", originalMessageTs);
+          await this.slackIntegration.addReaction("x", originalMessageTs);
+        }
       }
 
-      console.log(`Worker completed in ${duration}s with ${result.success ? "success" : "failure"}`);
+      console.log(`Worker completed with ${result.success ? "success" : "failure"}`);
 
     } catch (error) {
-      const duration = Math.round((Date.now() - startTime) / 1000);
       console.error("Worker execution failed:", error);
       
       // Update Slack with error
       await this.slackIntegration.updateProgress(
-        `💥 **Worker crashed**
-
-**Error Details:**
-• Duration: \`${duration}s\`  
-• Error: \`${error instanceof Error ? error.message : "Unknown error"}\`
-
-The session state has been preserved for debugging.`
+        `💥 Worker crashed: ${error instanceof Error ? error.message : "Unknown error"}`
       ).catch(slackError => {
         console.error("Failed to update Slack with error:", slackError);
       });
+      
+      // Update reaction to error
+      const originalMessageTs = process.env.ORIGINAL_MESSAGE_TS;
+      if (originalMessageTs) {
+        await this.slackIntegration.removeReaction("gear", originalMessageTs).catch(() => {});
+        await this.slackIntegration.removeReaction("eyes", originalMessageTs).catch(() => {});
+        await this.slackIntegration.addReaction("x", originalMessageTs).catch(() => {});
+      }
 
       // Re-throw to ensure container exits with error code
       throw error;
@@ -180,7 +257,37 @@ The session state has been preserved for debugging.`
    * Generate custom instructions for Claude
    */
   private generateCustomInstructions(): string {
-    return `You are Claude Code running in a Kubernetes worker container for user ${this.config.username}.
+    return `
+You are Claude Code running in a pod on K8S for user ${this.config.username}. 
+You MUST generate Markdown content that will be rendered in user's messaging app. Here is fence code blocks feature:
+- You can add \`action\` to the code block to indicate a button should be rendered at the end of the message to trigger the action with its label. You must have at least one or more blocks with action_id for the user to take action from your message as the next steps.
+- The \`confirm\` flag enables a dialog to be shown the user before the action is executed. 
+- The \`show\` flag enables the content to be shown to the user.
+- The blockkit type will be rendered natively in Slack. The action_id supports following types:
+1. blockkit: Renders the native Slack components. Use it to collect input from the user in a structured way when confirm is true and show is false. If the value of show is true, the content will be rendered in the message, don't use it if you use inputs, checkboxes, or and user inputs.
+2. bash/shell: Runs the script in the container.
+3. python: Uses \`uv\` to install dependencies and run the script. You MUST use shebang on top of the script to define dependencies if the project is not a Python project. 
+5. javascript/typescript: Runs the script in the container via \`bun run\`.
+
+\`\`\`blockkit { action: "Example Button", confirm: false, show: true }
+{
+  "blocks": [
+    {
+      "type": "actions",
+      "elements": [
+        {
+          "type": "button",
+          "text": {
+            "type": "plain_text",
+            "text": "Click Me"
+          },
+          "action_id": "button_click"
+        }
+      ]
+    }
+  ]
+  }
+\`\`\`
 
 **Environment:**
 - Working in: /workspace/${this.config.username}  
@@ -190,27 +297,38 @@ The session state has been preserved for debugging.`
 
 **Your capabilities:**
 - Read, write, and execute files in the workspace
-- Commit changes to the user's GitHub repository
+- Interact with GIT repository on Github on users behalf
 - Use any available development tools
 - Access the internet for research
 
 **Important guidelines:**
-- Work efficiently within the 5-minute timeout
-- All file changes will be automatically committed
+- All file changes will be automatically committed to the branch named after the session key
 - Progress updates are streamed to Slack in real-time
 - Be concise but thorough in your responses
 - Focus on solving the user's specific request
 
 **Session context:**
-This is ${this.config.threadTs ? "a continued conversation in a thread" : "a new conversation"}.`;
+This is ${this.config.threadTs ? "a continued conversation in a thread" : "a new conversation"}.`
+.trim();
   }
 
-  /**
-   * Get repository path for GitHub links
-   */
-  private getRepoPath(): string {
-    const url = new URL(this.config.repositoryUrl);
-    return url.pathname.substring(1); // Remove leading slash
+
+  private formatClaudeResponse(output: string | undefined): string {
+    console.log("=== formatClaudeResponse DEBUG ===");
+    console.log("output exists?", !!output);
+    console.log("output length:", output?.length);
+    console.log("output first 200 chars:", output?.substring(0, 200));
+    
+    if (!output) {
+      return "";
+    }
+    
+    const extracted = extractFinalResponse(output);
+    console.log("extracted response:", extracted);
+    console.log("extracted length:", extracted.length);
+    
+    // Return the raw extracted markdown - slack-integration will handle conversion
+    return extracted || "";
   }
 
   /**
@@ -237,10 +355,12 @@ This is ${this.config.threadTs ? "a continued conversation in a thread" : "a new
  * Main entry point
  */
 async function main() {
+  const workerStartTime = Date.now();
   let worker: ClaudeWorker | null = null;
   
   try {
     console.log("🚀 Starting Claude Code Worker");
+    console.log(`[TIMING] Worker process started at: ${new Date(workerStartTime).toISOString()}`);
 
     // Load configuration from environment
     const config: WorkerConfig = {
@@ -297,18 +417,7 @@ async function main() {
           });
           
           await slackIntegration.updateProgress(
-            `💥 **Worker failed to start**
-            
-**Kubernetes Configuration Error:**
-• ${errorMessage}
-• This usually means the Kubernetes secrets are not properly configured
-
-**Troubleshooting:**
-1. Check if \`peerbot-secrets\` exists in the namespace
-2. Verify all required keys are present in the secret
-3. Check RBAC permissions for the service account
-
-Contact your administrator to resolve this issue.`
+            `💥 Worker failed to start: ${errorMessage}`
           );
         } catch (slackError) {
           console.error("Failed to send error to Slack:", slackError);
@@ -344,24 +453,9 @@ Contact your administrator to resolve this issue.`
         });
         
         const errorMessage = error instanceof Error ? error.message : "Unknown error";
-        const isKubernetesError = errorMessage.includes("environment variable") || 
-                                 errorMessage.includes("secret") ||
-                                 errorMessage.includes("permission");
         
         await slackIntegration.updateProgress(
-          `💥 **Worker failed**
-          
-**Error:** ${errorMessage}
-${isKubernetesError ? `
-**This appears to be a Kubernetes configuration issue:**
-• Check if \`peerbot-secrets\` exists and contains all required keys
-• Verify RBAC permissions for the service account
-• Check pod events: \`kubectl describe pod <pod-name>\`
-` : ""}
-**Debug Info:**
-• Session: \`${process.env.SESSION_KEY || "unknown"}\`
-• User: \`${process.env.USERNAME || "unknown"}\`
-• Pod: \`${process.env.HOSTNAME || "unknown"}\``
+          `💥 Worker failed: ${errorMessage}`
         );
       } catch (slackError) {
         console.error("Failed to send error to Slack:", slackError);

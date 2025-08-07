@@ -15,7 +15,7 @@ const execAsync = promisify(exec);
 
 const PIPE_PATH = `${process.env.RUNNER_TEMP || "/tmp"}/claude_prompt_pipe`;
 const EXECUTION_FILE = `${process.env.RUNNER_TEMP || "/tmp"}/claude-execution-output.json`;
-const BASE_ARGS = ["-p", "--verbose", "--output-format", "stream-json"];
+const BASE_ARGS = ["-p", "--verbose", "--output-format", "stream-json", "--dangerously-skip-permissions"];
 
 function parseCustomEnvVars(claudeEnv?: string): Record<string, string> {
   if (!claudeEnv || claudeEnv.trim() === "") {

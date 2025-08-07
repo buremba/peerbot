@@ -8,6 +8,10 @@ build:
     context: .
     docker:
       dockerfile: Dockerfile.dispatcher
+  - image: claude-worker
+    context: .
+    docker:
+      dockerfile: Dockerfile.worker
   local:
     push: false
     useBuildkit: true
@@ -24,6 +28,8 @@ deploy:
       setValueTemplates:
         dispatcher.image.repository: peerbot-dispatcher
         dispatcher.image.tag: "{{.IMAGE_TAG_peerbot_dispatcher}}"
+        worker.image.repository: claude-worker
+        worker.image.tag: "{{.IMAGE_TAG_claude_worker}}"
       setValues:
         dispatcher.socketMode: "true"
         dispatcher.httpMode: "false"

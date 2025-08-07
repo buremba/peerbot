@@ -10,6 +10,7 @@ export interface SlackConfig {
   socketMode?: boolean;
   port?: number;
   botUserId?: string;
+  botId?: string;
   allowedUsers?: string[];
   allowedChannels?: string[];
   blockedUsers?: string[];
@@ -63,6 +64,7 @@ export interface WorkerJobRequest {
   repositoryUrl: string;
   slackResponseChannel: string;
   slackResponseTs: string;
+  originalMessageTs?: string; // Original user message timestamp for reactions
   claudeOptions: ClaudeExecutionOptions;
   conversationHistory?: Array<{ role: string; content: string; timestamp: number }>;
 }
@@ -106,6 +108,7 @@ export interface JobTemplateData {
   userPrompt: string;
   slackResponseChannel: string;
   slackResponseTs: string;
+  originalMessageTs?: string; // Original user message timestamp for reactions
   claudeOptions: string; // JSON string
   conversationHistory: string; // JSON string
   // Environment variables from config

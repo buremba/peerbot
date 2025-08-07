@@ -34,7 +34,7 @@ export class SlackDispatcher {
         token: config.slack.token,
         receiver,
         logLevel: config.logLevel || LogLevel.DEBUG,
-        ignoreSelf: true,
+        ignoreSelf: false, // We need to receive action events from our own messages
       });
       
       console.log("Initialized Slack app in HTTP mode with ExpressReceiver");
@@ -46,7 +46,7 @@ export class SlackDispatcher {
         appToken: config.slack.appToken,
         port: config.slack.port || 3000,
         logLevel: config.logLevel || LogLevel.INFO,
-        ignoreSelf: true,
+        ignoreSelf: false, // We need to receive action events from our own messages
         processBeforeResponse: true,
       };
       
@@ -63,12 +63,6 @@ export class SlackDispatcher {
     // Initialize managers
     this.jobManager = new KubernetesJobManager(config.kubernetes);
     this.repoManager = new GitHubRepositoryManager(config.github);
-    new SlackEventHandlers(
-      this.app,
-      this.jobManager,
-      this.repoManager,
-      config
-    );
 
     this.setupErrorHandling();
     this.setupGracefulShutdown();
@@ -91,6 +85,9 @@ export class SlackDispatcher {
     try {
       // Setup health endpoints for Kubernetes FIRST
       setupHealthEndpoints();
+      
+      // Get bot's own user ID and bot ID dynamically before starting
+      await this.initializeBotInfo(this.config);
       
       // We'll test auth after starting the server
       console.log("Starting Slack app with token:", {
@@ -211,6 +208,35 @@ export class SlackDispatcher {
   /**
    * Setup error handling
    */
+  private async initializeBotInfo(config: DispatcherConfig): Promise<void> {
+    try {
+      // Get bot's own user ID and bot ID using auth.test
+      const authResult = await this.app.client.auth.test({
+        token: config.slack.token
+      });
+      
+      const botUserId = authResult.user_id as string;
+      const botId = authResult.bot_id as string;
+      
+      console.log(`Bot initialized - User ID: ${botUserId}, Bot ID: ${botId}`);
+      
+      // Store bot info in config for event handlers to use
+      config.slack.botUserId = botUserId;
+      config.slack.botId = botId;
+      
+      // Now initialize event handlers with bot info
+      new SlackEventHandlers(
+        this.app,
+        this.jobManager,
+        this.repoManager,
+        config
+      );
+    } catch (error) {
+      console.error("Failed to get bot info:", error);
+      throw new Error("Failed to initialize bot - could not get bot user ID");
+    }
+  }
+
   private setupErrorHandling(): void {
     this.app.error(async (error) => {
       console.error("Slack app error:", error);

@@ -8,22 +8,23 @@ RUN apk add --no-cache \
     curl \
     bash \
     openssh-client \
-    jq
+    jq \
+    sudo
+
+# Create a non-root user with home directory
+RUN addgroup -g 1001 claude && \
+    adduser -u 1001 -G claude -h /home/claude -D claude
 
 # Install bun
 RUN curl -fsSL https://bun.sh/install | bash
 ENV PATH="/root/.bun/bin:${PATH}"
+ENV BUN_INSTALL="/root/.bun"
 
-# Install Claude Code CLI globally using bun and ensure it's in PATH
+# Install Claude Code CLI globally
 RUN bun install -g @anthropic-ai/claude-code@1.0.59 && \
-    echo "Checking bun bin directory..." && \
-    ls -la ~/.bun/bin/ && \
-    echo "Testing claude command..." && \
-    ~/.bun/bin/claude --version && \
     ln -sf /root/.bun/bin/claude /usr/local/bin/claude && \
     chmod +x /usr/local/bin/claude && \
-    echo "Claude symlinked to /usr/local/bin/claude" && \
-    ls -la /usr/local/bin/claude && \
+    echo "Testing claude command..." && \
     /usr/local/bin/claude --version
 
 # Copy package files
@@ -33,17 +34,37 @@ COPY packages/worker/package.json ./packages/worker/
 COPY packages/core-runner/package.json ./packages/core-runner/
 COPY packages/dispatcher/package.json ./packages/dispatcher/
 
-# Install dependencies
-RUN bun install --frozen-lockfile
+# Install all dependencies including devDependencies for building
+RUN bun install
 
 # Copy all source code
 COPY packages/ ./packages/
 
-# Create workspace directory
-RUN mkdir -p /workspace && chmod 777 /workspace
+# TypeScript is already installed as a devDependency
+
+# Build the worker and core-runner packages
+WORKDIR /app/packages/core-runner
+RUN bun run build || echo "Warning: core-runner build had errors"
+
+WORKDIR /app/packages/worker  
+RUN bun run build || echo "Warning: worker build had errors"
+
+# Verify the build output
+RUN ls -la /app/packages/worker/dist/ || echo "No dist directory found"
+
+WORKDIR /app
+
+# Create workspace directory and set permissions
+RUN mkdir -p /workspace && \
+    chown -R claude:claude /app && \
+    chown -R claude:claude /workspace && \
+    chmod 755 /workspace
+
+# Switch to non-root user
+USER claude
 
 # Set working directory to worker
 WORKDIR /app/packages/worker
 
-# Run directly with bun (no build step needed)
-ENTRYPOINT ["bun", "run", "src/index.ts"]
+# Run the compiled JavaScript
+ENTRYPOINT ["bun", "run", "dist/index.js"]

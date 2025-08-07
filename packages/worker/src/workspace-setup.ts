@@ -2,14 +2,14 @@
 
 import { exec } from "child_process";
 import { promisify } from "util";
-import { mkdir, stat, readdir, rm } from "fs/promises";
+import { mkdir, stat, rm } from "fs/promises";
 import { join } from "path";
 import type { 
   WorkspaceSetupConfig, 
   WorkspaceInfo, 
-  GitRepository,
-  WorkspaceError 
+  GitRepository
 } from "./types";
+import { WorkspaceError } from "./types";
 
 const execAsync = promisify(exec);
 
@@ -91,7 +91,7 @@ export class WorkspaceManager {
       // Use GitHub token for authentication
       const authenticatedUrl = this.addGitHubAuth(repositoryUrl);
       
-      const { stdout, stderr } = await execAsync(
+      const { stderr } = await execAsync(
         `git clone "${authenticatedUrl}" "${targetDirectory}"`,
         { timeout: 60000 } // 1 minute timeout
       );

@@ -1,4 +1,3 @@
-import { WebClient } from '@slack/web-api';
 
 export class SlackTokenManager {
   private clientId: string;
@@ -44,7 +43,7 @@ export class SlackTokenManager {
         body: params.toString()
       });
 
-      const data = await response.json();
+      const data = await response.json() as any;
       
       if (data.ok) {
         this.currentToken = data.access_token;
@@ -64,7 +63,7 @@ export class SlackTokenManager {
         
         return this.currentToken;
       } else {
-        throw new Error(`Failed to refresh token: ${data.error}`);
+        throw new Error(`Failed to refresh token: ${(data as any).error}`);
       }
     } catch (error) {
       console.error('Error refreshing token:', error);

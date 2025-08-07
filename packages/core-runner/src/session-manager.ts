@@ -104,12 +104,12 @@ export class SessionManager {
    * Generate session key from context
    */
   static generateSessionKey(context: SessionContext): string {
-    if (context.threadTs) {
-      // Thread-based session
-      return `${context.channelId}-${context.threadTs}`;
-    } else {
-      // New conversation
-      return `${context.channelId}-${context.messageTs}`;
-    }
+    // Generate a shorter session key using just the last parts
+    const channelPart = context.channelId.slice(-4); // Last 4 chars of channel
+    const timestamp = context.threadTs || context.messageTs || '';
+    const tsPart = timestamp.split('.')[0]?.slice(-6) || '000000'; // Last 6 digits of timestamp
+    const randomPart = Math.random().toString(36).substring(2, 5); // 3 random chars
+    
+    return `${channelPart}-${tsPart}-${randomPart}`;
   }
 }

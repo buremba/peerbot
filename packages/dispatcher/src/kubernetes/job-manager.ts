@@ -21,7 +21,7 @@ export class KubernetesJobManager {
   private config: KubernetesConfig;
   
   // Rate limiting configuration
-  private readonly RATE_LIMIT_MAX_JOBS = 5; // Max jobs per user per window
+  private readonly RATE_LIMIT_MAX_JOBS = process.env.DISABLE_RATE_LIMIT === 'true' ? 999 : 5; // Max jobs per user per window
   private readonly RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000; // 15 minutes window
 
   constructor(config: KubernetesConfig) {
@@ -78,6 +78,11 @@ export class KubernetesJobManager {
     
     // Start cleanup timer for rate limit entries
     this.startRateLimitCleanup();
+    
+    // Restore active jobs from Kubernetes on startup
+    this.restoreActiveJobs().catch(error => {
+      console.error("Failed to restore active jobs on startup:", error);
+    });
   }
 
   /**
@@ -132,6 +137,77 @@ export class KubernetesJobManager {
   }
 
   /**
+   * Restore active jobs from Kubernetes on startup
+   */
+  private async restoreActiveJobs(): Promise<void> {
+    try {
+      console.log("Restoring active jobs from Kubernetes...");
+      
+      // List all claude-worker jobs
+      const jobsResponse = await this.k8sApi.listNamespacedJob({
+        namespace: this.config.namespace,
+        labelSelector: "app=claude-worker"
+      });
+      
+      let activeCount = 0;
+      for (const job of jobsResponse.items) {
+        const jobName = job.metadata?.name;
+        const status = job.status;
+        const annotations = job.metadata?.annotations || {};
+        const sessionKey = annotations["claude.ai/session-key"];
+        
+        // Check if job is still active (not completed or failed)
+        if (jobName && sessionKey && !status?.succeeded && !status?.failed) {
+          this.activeJobs.set(sessionKey, jobName);
+          activeCount++;
+          console.log(`Restored active job ${jobName} for session ${sessionKey}`);
+        }
+      }
+      
+      console.log(`✅ Restored ${activeCount} active jobs from Kubernetes on startup`);
+    } catch (error) {
+      console.error("Error restoring active jobs:", error);
+    }
+  }
+
+  /**
+   * Find an existing job for a session by checking Kubernetes labels
+   */
+  private async findExistingJobForSession(sessionKey: string): Promise<string | null> {
+    try {
+      // Create a safe label value from the session key
+      const labelValue = sessionKey.replace(/[^a-z0-9]/gi, "-").toLowerCase();
+      
+      // List jobs with the session-key label
+      const jobsResponse = await this.k8sApi.listNamespacedJob({
+        namespace: this.config.namespace,
+        labelSelector: `session-key=${labelValue}`
+      });
+      
+      // Find active jobs (not completed or failed)
+      for (const job of jobsResponse.items) {
+        const jobName = job.metadata?.name;
+        const status = job.status;
+        
+        // Check if job is still active (not completed or failed)
+        if (jobName && !status?.succeeded && !status?.failed) {
+          // Also check the annotation to verify it's the exact session
+          const annotations = job.metadata?.annotations || {};
+          if (annotations["claude.ai/session-key"] === sessionKey) {
+            console.log(`Found existing active job ${jobName} for session ${sessionKey}`);
+            return jobName;
+          }
+        }
+      }
+      
+      return null;
+    } catch (error) {
+      console.error(`Error checking for existing job for session ${sessionKey}:`, error);
+      return null;
+    }
+  }
+
+  /**
    * Create a worker job for the user request
    */
   async createWorkerJob(request: WorkerJobRequest): Promise<string> {
@@ -147,11 +223,21 @@ export class KubernetesJobManager {
     const jobName = this.generateJobName(request.sessionKey);
     
     try {
-      // Check if job already exists
+      // Check if job already exists in memory
       const existingJobName = this.activeJobs.get(request.sessionKey);
       if (existingJobName) {
         console.log(`Job already exists for session ${request.sessionKey}: ${existingJobName}`);
         return existingJobName;
+      }
+
+      // Check if a job already exists in Kubernetes for this session
+      // This handles the case where the dispatcher was restarted
+      const existingJob = await this.findExistingJobForSession(request.sessionKey);
+      if (existingJob) {
+        console.log(`Found existing Kubernetes job for session ${request.sessionKey}: ${existingJob}`);
+        // Track it in memory for this instance
+        this.activeJobs.set(request.sessionKey, existingJob);
+        return existingJob;
       }
 
       // Create job manifest
@@ -211,6 +297,7 @@ export class KubernetesJobManager {
       userPrompt: Buffer.from(request.userPrompt).toString("base64"), // Base64 encode for safety
       slackResponseChannel: request.slackResponseChannel,
       slackResponseTs: request.slackResponseTs,
+      originalMessageTs: request.originalMessageTs,
       claudeOptions: JSON.stringify(request.claudeOptions),
       conversationHistory: JSON.stringify(request.conversationHistory || []),
       // These will be injected from secrets/configmaps
@@ -263,7 +350,7 @@ export class KubernetesJobManager {
               {
                 name: "claude-worker",
                 image: this.config.workerImage,
-                imagePullPolicy: "Always",
+                imagePullPolicy: process.env.NODE_ENV === 'production' ? "Always" : "IfNotPresent",
                 resources: {
                   requests: {
                     cpu: this.config.cpu,
@@ -312,6 +399,10 @@ export class KubernetesJobManager {
                     value: templateData.slackResponseTs,
                   },
                   {
+                    name: "ORIGINAL_MESSAGE_TS",
+                    value: templateData.originalMessageTs || "",
+                  },
+                  {
                     name: "CLAUDE_OPTIONS",
                     value: templateData.claudeOptions,
                   },
@@ -347,6 +438,10 @@ export class KubernetesJobManager {
                       },
                     },
                   },
+                  {
+                    name: "CLAUDE_CODE_DANGEROUSLY_SKIP_PERMISSIONS",
+                    value: "1",
+                  },
                 ],
                 volumeMounts: [
                   {
@@ -354,8 +449,8 @@ export class KubernetesJobManager {
                     mountPath: "/workspace",
                   },
                 ],
-                workingDir: "/workspace",
-                command: ["bun", "run", "/app/packages/worker/dist/index.js"],
+                workingDir: "/app/packages/worker",
+                command: ["bun", "run", "dist/index.js"],
               },
             ],
             volumes: [
@@ -366,13 +461,87 @@ export class KubernetesJobManager {
                 },
               },
             ],
-            serviceAccountName: "peerbot-sa",
+            serviceAccountName: "claude-worker",
           },
         },
       },
     };
   }
 
+  /**
+   * Get job status
+   */
+  async getJobStatus(jobName: string): Promise<string> {
+    try {
+      const jobResponse = await this.k8sApi.readNamespacedJob({
+        name: jobName,
+        namespace: this.config.namespace
+      });
+      
+      const job = jobResponse;
+      const status = job.status;
+      
+      // Check conditions for more detailed status
+      if (status?.conditions) {
+        for (const condition of status.conditions) {
+          if (condition.type === "Complete" && condition.status === "True") {
+            return "completed";
+          }
+          if (condition.type === "Failed" && condition.status === "True") {
+            return "failed";
+          }
+        }
+      }
+      
+      // Check basic status
+      if (status?.succeeded && status.succeeded > 0) {
+        return "completed";
+      }
+      
+      if (status?.failed && status.failed > 0) {
+        return "failed";
+      }
+      
+      if (status?.active && status.active > 0) {
+        return "running";
+      }
+      
+      // Check if pod is starting
+      try {
+        const podsResponse = await this.k8sCoreApi.listNamespacedPod({
+          namespace: this.config.namespace,
+          labelSelector: `job-name=${jobName}`
+        });
+        
+        if (podsResponse.items && podsResponse.items.length > 0) {
+          const pod = podsResponse.items[0];
+          const phase = pod.status?.phase;
+          
+          if (phase === "Pending") {
+            return "starting";
+          }
+          if (phase === "Running") {
+            return "running";
+          }
+          if (phase === "Succeeded") {
+            return "completed";
+          }
+          if (phase === "Failed") {
+            return "failed";
+          }
+        }
+      } catch (podError) {
+        console.error(`Error checking pod status for job ${jobName}:`, podError);
+      }
+      
+      return "pending";
+      
+    } catch (error) {
+      console.error(`Error getting job status for ${jobName}:`, error);
+      return "error";
+    }
+  }
+  
   /**
    * Monitor job status
    */

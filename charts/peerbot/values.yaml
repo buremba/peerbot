@@ -11,7 +11,7 @@ dispatcher:
   replicaCount: 1
   
   image:
-    repository: claude-dispatcher
+    repository: peerbot-dispatcher
     tag: latest
     pullPolicy: Always
   

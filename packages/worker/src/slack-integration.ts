@@ -3,38 +3,32 @@
 import { WebClient } from "@slack/web-api";
 import type { SlackConfig } from "./types";
 import { SlackError } from "./types";
-import type { SlackTokenManager } from "./slack/token-manager";
+import { markdownToSlackWithBlocks } from "./slack/blockkit-parser";
 
 export class SlackIntegration {
   private client: WebClient;
-  private config: SlackConfig;
   private responseChannel: string;
   private responseTs: string;
   private lastUpdateTime = 0;
   private updateQueue: string[] = [];
   private isProcessingQueue = false;
-  private tokenManager?: SlackTokenManager;
+  private contextBlock: any = null; // Store the context header block
 
   constructor(config: SlackConfig) {
-    this.config = config;
-    this.tokenManager = config.tokenManager;
     
-    if (this.tokenManager) {
-      // Use authorize function to get dynamic token
-      this.client = new WebClient(undefined, {
-        authorize: async () => {
-          const token = await this.tokenManager!.getValidToken();
-          return { botToken: token };
-        },
-      });
-    } else {
-      // Fall back to static token
-      this.client = new WebClient(config.token);
-    }
+    // Initialize with static token, will refresh if needed
+    this.client = new WebClient(config.token);
     
     // Get response location from environment
     this.responseChannel = process.env.SLACK_RESPONSE_CHANNEL!;
     this.responseTs = process.env.SLACK_RESPONSE_TS!;
+  }
+
+  /**
+   * Set the context block that should persist across updates
+   */
+  setContextBlock(block: any): void {
+    this.contextBlock = block;
   }
 
   /**
@@ -67,10 +61,8 @@ export class SlackIntegration {
     try {
       // Only stream certain types of updates to avoid spam
       if (this.shouldStreamUpdate(data)) {
-        const content = this.formatProgressData(data);
-        if (content) {
-          await this.updateProgress(`🔄 **Working...**\n\n\`\`\`\n${content}\n\`\`\``);
-        }
+        // Simple working status - no need to show details
+        await this.updateProgress(`💭 Working...`);
       }
     } catch (error) {
       console.error("Failed to stream progress:", error);
@@ -113,12 +105,45 @@ export class SlackIntegration {
    */
   private async performUpdate(content: string): Promise<void> {
     try {
-      await this.client.chat.update({
+      // Convert markdown to Slack format with blocks support
+      const slackMessage = markdownToSlackWithBlocks(content);
+      
+      // Build blocks array with context header if available
+      let blocks: any[] = [];
+      
+      // Add context block if it exists (preserve it from dispatcher)
+      if (this.contextBlock) {
+        blocks.push(this.contextBlock);
+        blocks.push({ type: "divider" });
+      }
+      
+      // Add content blocks from the message
+      if (slackMessage.blocks && slackMessage.blocks.length > 0) {
+        blocks.push(...slackMessage.blocks);
+      } else if (slackMessage.text) {
+        // If no blocks, create a section with the text
+        blocks.push({
+          type: "section",
+          text: {
+            type: "mrkdwn",
+            text: slackMessage.text
+          }
+        });
+      }
+      
+      const updateOptions: any = {
         channel: this.responseChannel,
         ts: this.responseTs,
-        text: content,
-        parse: "none", // Disable parsing to preserve formatting
-      });
+        text: slackMessage.text || content,
+        mrkdwn: true,
+      };
+      
+      // Only add blocks if we have them
+      if (blocks.length > 0) {
+        updateOptions.blocks = blocks;
+      }
+      
+      await this.client.chat.update(updateOptions);
 
     } catch (error: any) {
       // Handle specific Slack errors
@@ -155,46 +180,20 @@ export class SlackIntegration {
     return false;
   }
 
-  /**
-   * Format progress data for display
-   */
-  private formatProgressData(data: any): string | null {
-    try {
-      if (typeof data === "string") {
-        return data.substring(0, 200); // Limit length
-      }
-      
-      if (typeof data === "object") {
-        if (data.content) {
-          return data.content.substring(0, 200);
-        }
-        
-        if (data.type && data.message) {
-          return `${data.type}: ${data.message}`;
-        }
-        
-        // Fallback to JSON representation
-        return JSON.stringify(data, null, 2).substring(0, 200);
-      }
-      
-      return String(data).substring(0, 200);
-      
-    } catch (error) {
-      console.error("Failed to format progress data:", error);
-      return null;
-    }
-  }
 
   /**
    * Post a new message (for errors or additional info)
    */
   async postMessage(content: string, threadTs?: string): Promise<void> {
     try {
+      // Convert markdown to Slack format with blocks support
+      const slackMessage = markdownToSlackWithBlocks(content);
+      
       await this.client.chat.postMessage({
         channel: this.responseChannel,
         thread_ts: threadTs || this.responseTs,
-        text: content,
-        parse: "none",
+        text: slackMessage.text,
+        blocks: slackMessage.blocks,
       });
 
     } catch (error) {
@@ -217,8 +216,13 @@ export class SlackIntegration {
         name: emoji,
       });
 
-    } catch (error) {
-      console.error(`Failed to add reaction ${emoji}:`, error);
+    } catch (error: any) {
+      // Ignore "already_reacted" errors - they're expected
+      if (error?.data?.error === 'already_reacted') {
+        console.log(`Reaction ${emoji} already present`);
+      } else {
+        console.error(`Failed to add reaction ${emoji}:`, error?.data?.error || error?.message || error);
+      }
       // Don't throw - reactions are not critical
     }
   }
@@ -234,8 +238,13 @@ export class SlackIntegration {
         name: emoji,
       });
 
-    } catch (error) {
-      console.error(`Failed to remove reaction ${emoji}:`, error);
+    } catch (error: any) {
+      // Ignore "no_reaction" errors - reaction might not be there
+      if (error?.data?.error === 'no_reaction') {
+        console.log(`Reaction ${emoji} not present to remove`);
+      } else {
+        console.error(`Failed to remove reaction ${emoji}:`, error?.data?.error || error?.message || error);
+      }
       // Don't throw - reactions are not critical
     }
   }
@@ -284,7 +293,7 @@ export class SlackIntegration {
   async sendTyping(): Promise<void> {
     try {
       // Post a temporary "typing" message that we'll update
-      await this.updateProgress("⌨️ **Claude is thinking...**");
+      await this.updateProgress("💭 Claude is thinking...");
 
     } catch (error) {
       console.error("Failed to send typing indicator:", error);

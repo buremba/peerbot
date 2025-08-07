@@ -175,7 +175,7 @@ export function updateCommentBody(input: CommentUpdateInput): string {
   const prUrl =
     prLinkFromContent || (prLink ? prLink.match(/\(([^)]+)\)/)?.[1] : "");
   if (prUrl) {
-    links += ` • [Create PR ➔](${prUrl})`;
+    links += ` • [Create Pull Request ➔](${prUrl})`;
   }
 
   // Build the new body with blank line between header and separator

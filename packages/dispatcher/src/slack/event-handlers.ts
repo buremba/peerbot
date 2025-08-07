@@ -15,6 +15,7 @@ export class SlackEventHandlers {
   private activeSessions = new Map<string, ThreadSession>();
   private userMappings = new Map<string, string>(); // slackUserId -> githubUsername
   private recentEvents = new Map<string, number>(); // eventKey -> timestamp
+  private messageReactions = new Map<string, { channel: string; ts: string }>(); // sessionKey -> message info
 
   constructor(
     private app: App,
@@ -60,7 +61,11 @@ export class SlackEventHandlers {
     
     // Handle app mentions
     this.app.event("app_mention", async ({ event, client, say }) => {
+      const handlerStartTime = Date.now();
       console.log("=== APP_MENTION HANDLER TRIGGERED ===");
+      console.log(`[TIMING] Handler triggered at: ${new Date(handlerStartTime).toISOString()}`);
+      console.log(`[TIMING] Message timestamp: ${event.ts} (${new Date(parseFloat(event.ts) * 1000).toISOString()})`);
+      console.log(`[TIMING] Slack->Handler delay: ${handlerStartTime - (parseFloat(event.ts) * 1000)}ms`);
       console.log("Raw event object keys:", Object.keys(event));
       console.log("Event user field:", event.user);
       
@@ -94,15 +99,134 @@ export class SlackEventHandlers {
           return;
         }
 
+        // Add "eyes" emoji to indicate we're processing the message
+        try {
+          await client.reactions.add({
+            channel: context.channelId,
+            timestamp: context.messageTs,
+            name: "eyes",
+          });
+        } catch (reactionError) {
+          console.error("Failed to add processing reaction:", reactionError);
+        }
+
         // Extract user request (remove bot mention)
         const userRequest = this.extractUserRequest(context.text);
         
+        console.log(`[TIMING] Starting handleUserRequest at: ${new Date().toISOString()}`);
         await this.handleUserRequest(context, userRequest, client);
         
       } catch (error) {
         console.error("Error handling app mention:", error);
+        
+        // Try to add error reaction
+        try {
+          await client.reactions.add({
+            channel: event.channel,
+            timestamp: event.ts,
+            name: "x",
+          });
+        } catch (reactionError) {
+          console.error("Failed to add error reaction:", reactionError);
+        }
+        
         await say({
           thread_ts: event.thread_ts,
+          text: `❌ Error: ${error instanceof Error ? error.message : "Unknown error occurred"}`,
+        });
+      }
+    });
+
+    // Handle view submissions (dialog/modal submissions)
+    this.app.view(/.*/, async ({ ack, body, view, client }) => {
+      console.log("=== VIEW SUBMISSION HANDLER TRIGGERED ===");
+      console.log("View ID:", view.id);
+      console.log("View callback_id:", view.callback_id);
+      
+      // Acknowledge the view submission
+      await ack();
+      
+      try {
+        const userId = body.user.id;
+        const metadata = view.private_metadata ? JSON.parse(view.private_metadata) : {};
+        const channelId = metadata.channel_id;
+        const threadTs = metadata.thread_ts;
+        
+        // Extract user inputs from the view state
+        const userInput = this.extractViewInputs(view.state.values);
+        
+        console.log(`Processing view submission from user ${userId}`);
+        console.log(`User input: ${userInput}`);
+        
+        // Post the user's input as a message in the thread
+        if (channelId && threadTs) {
+          await client.chat.postMessage({
+            channel: channelId,
+            thread_ts: threadTs,
+            text: userInput,
+            user: userId
+          });
+          
+          // Continue the Claude session with the user's input
+          const context = {
+            channelId,
+            userId,
+            userDisplayName: body.user.name || 'Unknown User',
+            teamId: body.team?.id || '',
+            messageTs: threadTs,
+            threadTs: threadTs,
+            text: userInput,
+          };
+          
+          await this.handleUserRequest(context, userInput, client);
+        }
+        
+      } catch (error) {
+        console.error("Error handling view submission:", error);
+      }
+    });
+    
+    // Handle interactive actions (button clicks, select menus, etc.)
+    console.log("Registering action handler for all interactive components...");
+    this.app.action(/.*/, async ({ action, ack, client, body }) => {
+      console.log("=== ACTION HANDLER TRIGGERED ===");
+      console.log("Action ID:", (action as any).action_id);
+      console.log("Action type:", action.type);
+      
+      // Acknowledge the action immediately
+      await ack();
+      
+      try {
+        const actionId = (action as any).action_id;
+        const userId = body.user.id;
+        const channelId = (body as any).channel?.id || (body as any).container?.channel_id;
+        const messageTs = (body as any).message?.ts || (body as any).container?.message_ts;
+        
+        console.log(`Handling action ${actionId} from user ${userId}`);
+        
+        // Check permissions
+        if (!this.isUserAllowed(userId)) {
+          await client.chat.postEphemeral({
+            channel: channelId,
+            user: userId,
+            text: "Sorry, you don't have permission to use this action.",
+          });
+          return;
+        }
+        
+        // Handle different action types
+        await this.handleBlockAction(actionId, userId, channelId, messageTs, body, client);
+        
+      } catch (error) {
+        console.error("Error handling action:", error);
+        
+        // Send error message as ephemeral
+        const userId = body.user.id;
+        const channelId = (body as any).channel?.id || (body as any).container?.channel_id;
+        
+        await client.chat.postEphemeral({
+          channel: channelId,
+          user: userId,
           text: `❌ Error: ${error instanceof Error ? error.message : "Unknown error occurred"}`,
         });
       }
@@ -115,6 +239,22 @@ export class SlackEventHandlers {
       console.log("Message subtype:", message.subtype);
       console.log("Message object keys:", Object.keys(message));
       console.log("Message user field:", (message as any).user);
+      
+      // Skip our own bot's messages to prevent loops
+      const botUserId = this.config.slack.botUserId;
+      const botId = this.config.slack.botId;
+      if ((message as any).user === botUserId || (message as any).bot_id === botId) {
+        console.log(`Skipping our own bot's message (user: ${botUserId}, bot: ${botId})`);
+        return;
+      }
+      
+      // IMPORTANT: Skip channel messages with bot mentions immediately
+      // These are handled by the app_mention handler to prevent duplicate processing
+      const messageText = (message as any).text || '';
+      if (message.channel_type === 'channel' && messageText.includes(`<@${botUserId}>`)) {
+        console.log("Skipping channel message with bot mention - handled by app_mention");
+        return;
+      }
       
       // Handle both DMs and channel messages where the bot is mentioned
       // For channel messages, we rely on the app_mention handler above
@@ -161,7 +301,7 @@ export class SlackEventHandlers {
           return;
         }
 
-        const userRequest = context.text;
+        const userRequest = this.extractUserRequest(context.text);
         await this.handleUserRequest(context, userRequest, client);
         
       } catch (error) {
@@ -179,6 +319,9 @@ export class SlackEventHandlers {
     userRequest: string,
     client: any
   ): Promise<void> {
+    const requestStartTime = Date.now();
+    console.log(`[TIMING] handleUserRequest started at: ${new Date(requestStartTime).toISOString()}`);
+    
     // Generate session key (thread-based or new)
     const sessionKey = SessionManager.generateSessionKey({
       platform: "slack",
@@ -199,6 +342,7 @@ export class SlackEventHandlers {
         channel: context.channelId,
         thread_ts: context.threadTs,
         text: "⏳ I'm already working on this thread. Please wait for the current task to complete.",
+        mrkdwn: true,
       });
       return;
     }
@@ -208,11 +352,20 @@ export class SlackEventHandlers {
       const username = await this.getOrCreateUserMapping(context.userId, client);
       
       // Fetch conversation history from Slack if this is a thread
-      const conversationHistory = await this.fetchConversationHistory(
+      let conversationHistory = await this.fetchConversationHistory(
         context.channelId,
         context.threadTs,
         client
       );
+      
+      // If this is a new conversation (not a thread), add the current message to history
+      if (!context.threadTs) {
+        conversationHistory = [{
+          role: 'user',
+          content: userRequest,
+          timestamp: parseFloat(context.messageTs) * 1000
+        }];
+      }
       
       console.log(`Session ${sessionKey} - fetched ${conversationHistory.length} messages from thread`);
       
@@ -223,10 +376,13 @@ export class SlackEventHandlers {
       const threadTs = context.threadTs || context.messageTs;
       
       // Post initial response - ALWAYS in thread
+      console.log(`[TIMING] Posting initial response at: ${new Date().toISOString()}`);
+      const initialBlocks = this.formatInitialResponseBlocks(sessionKey, username, repository.repositoryUrl);
       const initialResponse = await client.chat.postMessage({
         channel: context.channelId,
         thread_ts: threadTs,
-        text: this.formatInitialResponse(sessionKey, username, repository.repositoryUrl),
+        text: "🔄 Creating pod...",
+        blocks: initialBlocks,
       });
 
       // Create thread session - ensure we always have a threadTs
@@ -243,6 +399,12 @@ export class SlackEventHandlers {
       };
 
       this.activeSessions.set(sessionKey, threadSession);
+      
+      // Store message info for reaction updates
+      this.messageReactions.set(sessionKey, {
+        channel: context.channelId,
+        ts: context.messageTs,
+      });
 
       // Prepare worker job request with conversation history
       const jobRequest: WorkerJobRequest = {
@@ -255,6 +417,7 @@ export class SlackEventHandlers {
         repositoryUrl: repository.repositoryUrl,
         slackResponseChannel: context.channelId,
         slackResponseTs: initialResponse.ts!,
+        originalMessageTs: context.messageTs, // Pass original message timestamp for reactions
         claudeOptions: {
           ...this.config.claude,
           timeoutMinutes: this.config.sessionTimeoutMinutes.toString(),
@@ -263,27 +426,50 @@ export class SlackEventHandlers {
       };
 
       // Start worker job
+      console.log(`[TIMING] Creating worker job at: ${new Date().toISOString()}`);
+      const jobCreateStart = Date.now();
       const jobName = await this.jobManager.createWorkerJob(jobRequest);
+      console.log(`[TIMING] Worker job created in ${Date.now() - jobCreateStart}ms`);
       
       // Update session with job info
       threadSession.jobName = jobName;
       threadSession.status = "starting";
       
+      // Start monitoring job for status updates
+      this.monitorJobStatus(sessionKey, jobName, context.channelId, context.messageTs, client);
+      
       console.log(`Created worker job ${jobName} for session ${sessionKey}`);
       
       // Update the initial message with job details
-      const updatedMessage = this.formatInitialResponse(sessionKey, username, repository.repositoryUrl, jobName);
+      const updatedBlocks = this.formatInitialResponseBlocks(sessionKey, username, repository.repositoryUrl, jobName, "🚀 Starting Claude session...");
       await client.chat.update({
         channel: context.channelId,
         ts: initialResponse.ts!,
-        text: updatedMessage,
+        text: "🚀 Starting Claude session...",
+        blocks: updatedBlocks,
       });
 
     } catch (error) {
       console.error(`Failed to handle request for session ${sessionKey}:`, error);
       
+      // Try to update reaction to error
+      try {
+        await client.reactions.remove({
+          channel: context.channelId,
+          timestamp: context.messageTs,
+          name: "eyes",
+        });
+        await client.reactions.add({
+          channel: context.channelId,
+          timestamp: context.messageTs,
+          name: "x",
+        });
+      } catch (reactionError) {
+        console.error("Failed to update error reaction:", reactionError);
+      }
+      
       // Format error message with debugging info
-      let errorMessage = `❌ **Error:** ${error instanceof Error ? error.message : "Unknown error occurred"}`;
+      let errorMessage = `❌ *Error:* ${error instanceof Error ? error.message : "Unknown error occurred"}`;
       
       // If we have a job name, add debugging commands
       const session = this.activeSessions.get(sessionKey);
@@ -292,7 +478,7 @@ export class SlackEventHandlers {
       }
       
       // Add generic debugging tips
-      errorMessage += `\n\n**💡 Troubleshooting Tips:**
+      errorMessage += `\n\n*💡 Troubleshooting Tips:*
 • Check dispatcher logs: \`kubectl logs -n ${this.config.kubernetes.namespace} -l app.kubernetes.io/component=dispatcher --tail=100\`
 • Check events: \`kubectl get events -n ${this.config.kubernetes.namespace} --sort-by='.lastTimestamp'\`
 • Check job quota: \`kubectl describe resourcequota -n ${this.config.kubernetes.namespace}\``;
@@ -303,6 +489,7 @@ export class SlackEventHandlers {
         channel: context.channelId,
         thread_ts: threadTs,
         text: errorMessage,
+        mrkdwn: true,
       });
       
       // Clean up session
@@ -470,54 +657,45 @@ export class SlackEventHandlers {
   }
 
   /**
-   * Format initial response message
+   * Format initial response message as blocks
    */
-  private formatInitialResponse(sessionKey: string, username: string, repositoryUrl: string, jobName?: string): string {
-    const workerId = jobName || `claude-worker-${sessionKey.substring(0, 8)}`;
-    const namespace = this.config.kubernetes.namespace;
+  private formatInitialResponseBlocks(sessionKey: string, username: string, repositoryUrl: string, _jobName?: string, statusText: string = "🔄 Creating pod..."): any[] {
+    const blocks: any[] = [];
     
-    // Get commit ID from environment or use a default
-    const commitId = process.env.GITHUB_SHA?.substring(0, 7) || process.env.GIT_COMMIT?.substring(0, 7) || 'unknown';
+    // Context header with key info
+    blocks.push({
+      type: "context",
+      elements: [
+        {
+          type: "mrkdwn",
+          text: `🔖 ${sessionKey}`
+        },
+        {
+          type: "mrkdwn",
+          text: `📁 <${repositoryUrl.replace('github.com', 'github.dev')}|${username}>`
+        },
+        {
+          type: "mrkdwn",
+          text: `🔀 <${repositoryUrl}/compare|Create PR>`
+        }
+      ]
+    });
     
-    let message = `🤖 **Claude is working on your request...**
-
-**Worker Environment:**
-• Pod: \`${workerId}\`
-• Namespace: \`${namespace}\`
-• CPU: \`${this.config.kubernetes.cpu}\` Memory: \`${this.config.kubernetes.memory}\`
-• Timeout: \`${this.config.sessionTimeoutMinutes} minutes\`
-• Repository: \`${username}\`
-• Commit: \`${commitId}\`
-
-**GitHub Workspace:**
-• Repository: [${username}](${repositoryUrl})
-• 📝 [Edit on GitHub.dev](${repositoryUrl.replace('github.com', 'github.dev')})
-• 🔄 [Compare & PR](${repositoryUrl}/compare)`;
-
-    if (jobName) {
-      message += `
-
-**📊 Monitor Progress:**
-• \`kubectl logs -n ${namespace} job/${jobName} -f\`
-• \`kubectl describe job/${jobName} -n ${namespace}\`
-• \`kubectl get pods -n ${namespace} -l job-name=${jobName}\``;
-      
-      // Add Google Cloud Console link if on GKE
-      const projectId = process.env.GOOGLE_CLOUD_PROJECT;
-      if (projectId) {
-      message += `
-
-**🔗 Quick Links:**
-• [GKE Workloads](https://console.cloud.google.com/kubernetes/workload/overview?project=${projectId}&pageState=(%22savedViews%22:(%22i%22:%225d96be3b8e484ad689354ab3fe0f7b4f%22,%22c%22:%5B%5D,%22n%22:%5B%22${namespace}%22%5D)))
-• [Cloud Logging](https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_pod%22%0Aresource.labels.namespace_name%3D%22${namespace}%22%0Aresource.labels.pod_name%3D~%22${jobName}.*%22?project=${projectId})`;
+    // Divider
+    blocks.push({
+      type: "divider"
+    });
+    
+    // Status message
+    blocks.push({
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: statusText
       }
-    }
-
-    message += `
-
-*Progress updates will appear below...*`;
+    });
     
-    return message;
+    return blocks;
   }
 
   /**
@@ -525,8 +703,8 @@ export class SlackEventHandlers {
    */
   private formatKubectlCommands(jobName: string, namespace: string): string {
     return `
-**🛠️ Debugging Commands:**
-\`\`\`bash
+*🛠️ Debugging Commands:*
+\`\`\`
 # Watch job logs in real-time
 kubectl logs -n ${namespace} job/${jobName} -f
 
@@ -545,9 +723,141 @@ kubectl logs -n ${namespace} -l job-name=${jobName} --tail=100
   }
 
   /**
+   * Monitor job status and update reactions
+   */
+  private async monitorJobStatus(
+    sessionKey: string,
+    jobName: string,
+    channelId: string,
+    messageTs: string,
+    client: any
+  ): Promise<void> {
+    const maxAttempts = 120; // Monitor for up to 10 minutes (5s intervals)
+    let attempts = 0;
+    let lastStatus: string | null = null;
+    
+    const checkStatus = async () => {
+      try {
+        attempts++;
+        
+        // Get job status from job manager
+        const jobStatus = await this.jobManager.getJobStatus(jobName);
+        
+        // Update reaction based on status change
+        if (jobStatus !== lastStatus) {
+          console.log(`Job ${jobName} status changed: ${lastStatus} -> ${jobStatus}`);
+          
+          // Remove previous reaction if exists
+          if (lastStatus) {
+            const previousEmoji = this.getEmojiForStatus(lastStatus);
+            if (previousEmoji) {
+              try {
+                await client.reactions.remove({
+                  channel: channelId,
+                  timestamp: messageTs,
+                  name: previousEmoji,
+                });
+              } catch (e) {
+                // Ignore removal errors
+              }
+            }
+          }
+          
+          // Add new reaction
+          const newEmoji = this.getEmojiForStatus(jobStatus);
+          if (newEmoji) {
+            try {
+              await client.reactions.add({
+                channel: channelId,
+                timestamp: messageTs,
+                name: newEmoji,
+              });
+            } catch (e) {
+              console.error(`Failed to add ${newEmoji} reaction:`, e);
+            }
+          }
+          
+          lastStatus = jobStatus;
+        }
+        
+        // Check if job is complete
+        if (jobStatus === "completed" || jobStatus === "failed" || jobStatus === "error") {
+          console.log(`Job ${jobName} monitoring complete with status: ${jobStatus}`);
+          const session = this.activeSessions.get(sessionKey);
+          if (session) {
+            session.status = jobStatus as any;
+            session.lastActivity = Date.now();
+          }
+          
+          // Clean up session after delay
+          setTimeout(() => {
+            this.activeSessions.delete(sessionKey);
+            this.messageReactions.delete(sessionKey);
+          }, 60000);
+          
+          return; // Stop monitoring
+        }
+        
+        // Continue monitoring if not complete and under max attempts
+        if (attempts < maxAttempts) {
+          setTimeout(checkStatus, 5000); // Check every 5 seconds
+        } else {
+          console.log(`Job ${jobName} monitoring timeout after ${maxAttempts} attempts`);
+          // Set timeout reaction
+          try {
+            await client.reactions.remove({
+              channel: channelId,
+              timestamp: messageTs,
+              name: this.getEmojiForStatus(lastStatus) || "eyes",
+            });
+            await client.reactions.add({
+              channel: channelId,
+              timestamp: messageTs,
+              name: "hourglass",
+            });
+          } catch (e) {
+            console.error("Failed to set timeout reaction:", e);
+          }
+        }
+      } catch (error) {
+        console.error(`Error monitoring job ${jobName}:`, error);
+        // Continue monitoring on error
+        if (attempts < maxAttempts) {
+          setTimeout(checkStatus, 5000);
+        }
+      }
+    };
+    
+    // Start monitoring
+    setTimeout(checkStatus, 1000); // Start checking after 1 second
+  }
+  
+  /**
+   * Get emoji for job status
+   */
+  private getEmojiForStatus(status: string): string | null {
+    switch (status) {
+      case "pending":
+      case "starting":
+        return "eyes";
+      case "running":
+        return "gear";
+      case "completed":
+        return "white_check_mark";
+      case "failed":
+      case "error":
+        return "x";
+      case "timeout":
+        return "hourglass";
+      default:
+        return null;
+    }
+  }
+  
+  /**
    * Handle job completion notification
    */
-  async handleJobCompletion(sessionKey: string, success: boolean): Promise<void> {
+  async handleJobCompletion(sessionKey: string, success: boolean, client?: any): Promise<void> {
     const session = this.activeSessions.get(sessionKey);
     if (!session) return;
 
@@ -556,6 +866,28 @@ kubectl logs -n ${namespace} -l job-name=${jobName} --tail=100
 
     // Log completion
     console.log(`Job completed for session ${sessionKey}: ${success ? "success" : "failure"}`);
+    
+    // Update reaction on original message
+    const messageInfo = this.messageReactions.get(sessionKey);
+    if (messageInfo && client) {
+      try {
+        // Remove "eyes" reaction
+        await client.reactions.remove({
+          channel: messageInfo.channel,
+          timestamp: messageInfo.ts,
+          name: "eyes",
+        });
+        
+        // Add completion reaction
+        await client.reactions.add({
+          channel: messageInfo.channel,
+          timestamp: messageInfo.ts,
+          name: success ? "white_check_mark" : "x",
+        });
+      } catch (reactionError) {
+        console.error("Failed to update completion reaction:", reactionError);
+      }
+    }
     
     // Clean up session after some time
     setTimeout(() => {
@@ -591,6 +923,375 @@ kubectl logs -n ${namespace} -l job-name=${jobName} --tail=100
    */
   getActiveSessionCount(): number {
     return this.activeSessions.size;
+  }
+
+  /**
+   * Handle block actions from interactive components
+   */
+  private async handleBlockAction(
+    actionId: string,
+    userId: string,
+    channelId: string,
+    messageTs: string,
+    body: any,
+    client: any
+  ): Promise<void> {
+    console.log(`Processing action: ${actionId}`);
+    console.log('Action body type:', body.type);
+    console.log('Action body:', JSON.stringify(body, null, 2).substring(0, 500));
+    
+    // Get user's GitHub username
+    const githubUsername = await this.getOrCreateUserMapping(userId, client);
+    
+    // Extract action value (script content) if present
+    const action = body.actions?.[0];
+    const scriptContent = action?.value;
+    
+    // Check if this is a blockkit action that should open a dialog
+    if (actionId.startsWith('blockkit_') && action?.type === 'button') {
+      // Extract the blockkit content from the button value
+      const blockContent = scriptContent;
+      if (blockContent) {
+        try {
+          const blocks = JSON.parse(blockContent);
+          
+          // Check if this should open a modal/dialog
+          if (action.confirm || blocks.type === 'modal') {
+            // Open a modal with the blockkit content
+            await client.views.open({
+              trigger_id: (body as any).trigger_id,
+              view: {
+                type: 'modal',
+                callback_id: actionId,
+                title: {
+                  type: 'plain_text',
+                  text: action.text?.text || 'Input Required'
+                },
+                blocks: blocks.blocks || blocks,
+                submit: {
+                  type: 'plain_text',
+                  text: 'Submit'
+                },
+                close: {
+                  type: 'plain_text',
+                  text: 'Cancel'
+                },
+                private_metadata: JSON.stringify({
+                  channel_id: channelId,
+                  thread_ts: messageTs,
+                  action_id: actionId
+                })
+              }
+            });
+            return;
+          }
+        } catch (e) {
+          console.error('Failed to parse blockkit content:', e);
+        }
+      }
+    }
+    
+    // Check if this is a script execution action (starts with language prefix)
+    if (actionId.startsWith('bash_') || actionId.startsWith('python_') || 
+        actionId.startsWith('javascript_') || actionId.startsWith('typescript_')) {
+      
+      const language = actionId.split('_')[0] || '';
+      await this.handleScriptExecution(
+        language,
+        scriptContent || '',
+        userId,
+        githubUsername,
+        channelId,
+        messageTs,
+        client
+      );
+      return;
+    }
+    
+    // Handle predefined actions
+    switch (actionId) {
+      case "deploy_production":
+        await this.handleDeployAction(userId, githubUsername, channelId, messageTs, client, "production");
+        break;
+        
+      case "deploy_staging":
+        await this.handleDeployAction(userId, githubUsername, channelId, messageTs, client, "staging");
+        break;
+        
+      case "run_tests":
+        await this.handleRunTestsAction(userId, githubUsername, channelId, messageTs, client);
+        break;
+        
+      case "create_pr":
+        await this.handleCreatePRAction(userId, githubUsername, channelId, messageTs, client);
+        break;
+        
+      case "approve_changes":
+        await this.handleApproveAction(userId, githubUsername, channelId, messageTs, client);
+        break;
+        
+      default:
+        // For custom actions, create a new Claude session with the action as a command
+        await this.handleCustomAction(actionId, userId, githubUsername, channelId, messageTs, client, body);
+        break;
+    }
+  }
+  
+  /**
+   * Handle deployment actions
+   */
+  private async handleDeployAction(
+    userId: string,
+    githubUsername: string,
+    channelId: string,
+    messageTs: string,
+    client: any,
+    environment: string
+  ): Promise<void> {
+    // Create a new Claude session to handle the deployment
+    const deployCommand = `Deploy the current changes to ${environment}`;
+    await this.createActionWorkerJob(userId, githubUsername, channelId, messageTs, deployCommand, client);
+  }
+  
+  /**
+   * Handle run tests action
+   */
+  private async handleRunTestsAction(
+    userId: string,
+    githubUsername: string,
+    channelId: string,
+    messageTs: string,
+    client: any
+  ): Promise<void> {
+    const testCommand = "Run all tests and show me the results";
+    await this.createActionWorkerJob(userId, githubUsername, channelId, messageTs, testCommand, client);
+  }
+  
+  /**
+   * Handle create PR action
+   */
+  private async handleCreatePRAction(
+    userId: string,
+    githubUsername: string,
+    channelId: string,
+    messageTs: string,
+    client: any
+  ): Promise<void> {
+    const prCommand = "Create a pull request with the current changes";
+    await this.createActionWorkerJob(userId, githubUsername, channelId, messageTs, prCommand, client);
+  }
+  
+  /**
+   * Handle approve action
+   */
+  private async handleApproveAction(
+    userId: string,
+    _githubUsername: string,
+    channelId: string,
+    _messageTs: string,
+    client: any
+  ): Promise<void> {
+    // Send confirmation message
+    await client.chat.postEphemeral({
+      channel: channelId,
+      user: userId,
+      text: "✅ Changes approved! The modifications have been marked as reviewed.",
+    });
+  }
+  
+  /**
+   * Handle script execution actions
+   */
+  private async handleScriptExecution(
+    language: string,
+    scriptContent: string,
+    userId: string,
+    githubUsername: string,
+    channelId: string,
+    messageTs: string,
+    client: any
+  ): Promise<void> {
+    // Construct command based on language
+    let command = '';
+    switch (language) {
+      case 'bash':
+        command = `Run the following bash script:\n\`\`\`bash\n${scriptContent}\n\`\`\``;
+        break;
+      case 'python':
+        command = `Run the following Python script using uv:\n\`\`\`python\n${scriptContent}\n\`\`\``;
+        break;
+      case 'javascript':
+      case 'typescript':
+        command = `Run the following ${language} script using bun:\n\`\`\`${language}\n${scriptContent}\n\`\`\``;
+        break;
+      default:
+        command = `Execute: ${scriptContent}`;
+    }
+    
+    // Create a worker job to execute the script
+    await this.createActionWorkerJob(userId, githubUsername, channelId, messageTs, command, client);
+  }
+  
+  /**
+   * Get user display name
+   */
+  private async getUserDisplayName(userId: string, client: any): Promise<string> {
+    try {
+      const userInfo = await client.users.info({ user: userId });
+      return userInfo.user?.real_name || userInfo.user?.name || "Unknown User";
+    } catch (error) {
+      console.error(`Failed to get user info for ${userId}:`, error);
+      return "Unknown User";
+    }
+  }
+
+  /**
+   * Handle custom actions
+   */
+  private async handleCustomAction(
+    actionId: string,
+    userId: string,
+    githubUsername: string,
+    channelId: string,
+    messageTs: string,
+    client: any,
+    body?: any
+  ): Promise<void> {
+    // Get the actual button that was clicked
+    const action = body?.actions?.[0];
+    const buttonText = action?.text?.text || actionId.replace(/_/g, " ");
+    const buttonValue = action?.value || "";
+    
+    // Check if this is in a thread (indicates ongoing conversation)
+    const threadTs = body?.message?.thread_ts || messageTs;
+    
+    // Post a message indicating what the user clicked
+    const clickMessage = await client.chat.postMessage({
+      channel: channelId,
+      thread_ts: threadTs,
+      text: `🔘 <@${userId}> clicked: "${buttonText}"`,
+      blocks: [
+        {
+          type: "context",
+          elements: [
+            {
+              type: "mrkdwn",
+              text: `<@${userId}> selected *${buttonText}*`
+            }
+          ]
+        }
+      ]
+    });
+    
+    // Construct a meaningful prompt for Claude
+    let prompt = `The user clicked the "${buttonText}" button`;
+    if (buttonValue && buttonValue !== actionId) {
+      prompt += ` (value: ${buttonValue})`;
+    }
+    if (actionId && actionId !== buttonText.replace(/\s+/g, "_")) {
+      prompt += ` [action_id: ${actionId}]`;
+    }
+    prompt += `. Please proceed with this selection and help them accordingly.`;
+    
+    // Create context for continuing the conversation
+    const context: SlackContext = {
+      channelId,
+      userId,
+      userDisplayName: await this.getUserDisplayName(userId, client),
+      teamId: (body as any).team?.id || "",
+      messageTs: clickMessage.ts as string,
+      threadTs: threadTs,
+      text: prompt,
+    };
+    
+    // Handle as a continuation of the conversation
+    await this.handleUserRequest(context, prompt, client);
+  }
+  
+  /**
+   * Create a worker job for an action
+   */
+  private async createActionWorkerJob(
+    userId: string,
+    _githubUsername: string,
+    channelId: string,
+    messageTs: string,
+    command: string,
+    client: any
+  ): Promise<void> {
+    // Get user info for context
+    const userInfo = await client.users.info({ user: userId });
+    const userDisplayName = userInfo.user?.real_name || userInfo.user?.name || "Unknown User";
+    
+    // Create context for the action
+    const context: SlackContext = {
+      channelId,
+      userId,
+      userDisplayName,
+      teamId: "", // Will be filled if needed
+      messageTs,
+      threadTs: messageTs, // Use message as thread
+      text: command,
+    };
+    
+    // Handle the request as a new command
+    await this.handleUserRequest(context, command, client);
+  }
+
+  /**
+   * Extract user inputs from view state
+   */
+  private extractViewInputs(stateValues: any): string {
+    const inputs: string[] = [];
+    
+    // Iterate through all blocks and actions to extract values
+    for (const blockId in stateValues) {
+      const block = stateValues[blockId];
+      for (const actionId in block) {
+        const action = block[actionId];
+        
+        // Handle different input types
+        if (action.type === 'plain_text_input') {
+          inputs.push(action.value || '');
+        } else if (action.type === 'static_select') {
+          const selected = action.selected_option;
+          if (selected) {
+            inputs.push(`Selected: ${selected.text?.text || selected.value}`);
+          }
+        } else if (action.type === 'multi_static_select') {
+          const selected = action.selected_options || [];
+          const values = selected.map((opt: any) => opt.text?.text || opt.value);
+          if (values.length > 0) {
+            inputs.push(`Selected: ${values.join(', ')}`);
+          }
+        } else if (action.type === 'checkboxes') {
+          const selected = action.selected_options || [];
+          const values = selected.map((opt: any) => opt.text?.text || opt.value);
+          if (values.length > 0) {
+            inputs.push(`Checked: ${values.join(', ')}`);
+          }
+        } else if (action.type === 'radio_buttons') {
+          const selected = action.selected_option;
+          if (selected) {
+            inputs.push(`Selected: ${selected.text?.text || selected.value}`);
+          }
+        } else if (action.type === 'datepicker') {
+          if (action.selected_date) {
+            inputs.push(`Date: ${action.selected_date}`);
+          }
+        } else if (action.type === 'timepicker') {
+          if (action.selected_time) {
+            inputs.push(`Time: ${action.selected_time}`);
+          }
+        } else if (action.value) {
+          // Generic fallback for any input with a value
+          inputs.push(action.value);
+        }
+      }
+    }
+    
+    // Join all inputs or return a default message
+    return inputs.length > 0 ? inputs.join('\n') : 'Form submitted';
   }
 
   /**

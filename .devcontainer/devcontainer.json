@@ -62,7 +62,7 @@
   "remoteEnv": {
     "PATH": "${containerEnv:PATH}:/home/vscode/.bun/bin",
     "BUN_INSTALL": "/home/vscode/.bun",
-    "PYTHONPATH": "/workspaces/${localWorkspaceFolderBasename}/src",
+    "PYTHONPATH": "/workspaces/${localWorkspaceFolderBasename}",
     "NODE_ENV": "development"
   },
   "postCreateCommand": ".devcontainer/postCreateCommand.sh",

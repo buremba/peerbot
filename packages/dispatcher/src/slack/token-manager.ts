@@ -26,7 +26,7 @@ export class SlackTokenManager {
   }
 
   async refreshAccessToken(): Promise<string> {
-    console.log('Refreshing Slack access token...');
+    logger.info('Refreshing Slack access token...');
     
     const params = new URLSearchParams({
       client_id: this.clientId,
@@ -57,7 +57,7 @@ export class SlackTokenManager {
         const expiresIn = data.expires_in || (12 * 60 * 60); // Default to 12 hours
         this.tokenExpiresAt = Date.now() + (expiresIn * 1000);
         
-        console.log(`✅ Token refreshed successfully. Expires in ${expiresIn} seconds`);
+        logger.info(`✅ Token refreshed successfully. Expires in ${expiresIn} seconds`);
         
         // Reschedule next refresh
         this.scheduleTokenRefresh();
@@ -67,7 +67,7 @@ export class SlackTokenManager {
         throw new Error(`Failed to refresh token: ${data.error}`);
       }
     } catch (error) {
-      console.error('Error refreshing token:', error);
+      logger.error('Error refreshing token:', error);
       throw error;
     }
   }
@@ -81,10 +81,10 @@ export class SlackTokenManager {
     const refreshIn = this.tokenExpiresAt - Date.now() - (30 * 60 * 1000);
     
     if (refreshIn > 0) {
-      console.log(`Scheduling token refresh in ${Math.round(refreshIn / 1000 / 60)} minutes`);
+      logger.info(`Scheduling token refresh in ${Math.round(refreshIn / 1000 / 60)} minutes`);
       this.refreshTimer = setTimeout(() => {
         this.refreshAccessToken().catch(error => {
-          console.error('Failed to refresh token:', error);
+          logger.error('Failed to refresh token:', error);
           // Retry in 5 minutes
           setTimeout(() => this.refreshAccessToken(), 5 * 60 * 1000);
         });
@@ -92,7 +92,7 @@ export class SlackTokenManager {
     } else {
       // Token already expired or about to expire, refresh immediately
       this.refreshAccessToken().catch(error => {
-        console.error('Failed to refresh token:', error);
+        logger.error('Failed to refresh token:', error);
       });
     }
   }

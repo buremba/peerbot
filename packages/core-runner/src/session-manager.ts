@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
 import { SessionError } from "./types";
+import logger from "./logger";
 import type { 
   SessionState, 
   SessionContext, 
@@ -13,7 +14,7 @@ import type {
  */
 export class SessionManager {
   constructor(_config: { timeoutMinutes?: number }) {
-    console.log("SessionManager initialized (stateless - using Slack as source of truth)");
+    logger.info("SessionManager initialized (stateless - using Slack as source of truth)");
   }
 
   /**
@@ -40,7 +41,7 @@ export class SessionManager {
       });
     }
 
-    console.log(`Created session state: ${sessionKey}`);
+    logger.info(`Created session state: ${sessionKey}`);
     return sessionState;
   }
 
@@ -48,21 +49,21 @@ export class SessionManager {
    * Add message to conversation
    */
   async addMessage(sessionKey: string, message: ConversationMessage): Promise<void> {
-    console.log(`Would add ${message.role} message to session ${sessionKey} (no-op in stateless mode)`);
+    logger.info(`Would add ${message.role} message to session ${sessionKey} (no-op in stateless mode)`);
   }
 
   /**
    * Update session progress (no-op in stateless mode)
    */
   async updateProgress(sessionKey: string, update: ProgressUpdate): Promise<void> {
-    console.log(`Progress update for ${sessionKey}: ${update.type}`);
+    logger.info(`Progress update for ${sessionKey}: ${update.type}`);
   }
 
   /**
    * No-op methods for compatibility
    */
   startTimeoutMonitoring(sessionKey: string): Promise<void> {
-    console.log(`Timeout monitoring for ${sessionKey} (no-op in stateless mode)`);
+    logger.info(`Timeout monitoring for ${sessionKey} (no-op in stateless mode)`);
     return Promise.resolve();
   }
 
@@ -75,7 +76,7 @@ export class SessionManager {
   }
 
   async persistSession(sessionKey: string): Promise<string> {
-    console.log(`Session ${sessionKey} - no persistence needed (Slack is source of truth)`);
+    logger.info(`Session ${sessionKey} - no persistence needed (Slack is source of truth)`);
     return `slack://thread/${sessionKey}`;
   }
 
@@ -93,11 +94,11 @@ export class SessionManager {
   }
 
   async cleanup(sessionKey: string): Promise<void> {
-    console.log(`Cleanup for ${sessionKey} (no-op in stateless mode)`);
+    logger.info(`Cleanup for ${sessionKey} (no-op in stateless mode)`);
   }
 
   async cleanupSession(sessionKey: string): Promise<void> {
-    console.log(`Cleanup for ${sessionKey} (no-op in stateless mode)`);
+    logger.info(`Cleanup for ${sessionKey} (no-op in stateless mode)`);
   }
 
   /**

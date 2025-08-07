@@ -1,4 +1,5 @@
 import http from 'http';
+import logger from './logger';
 
 let healthServer: http.Server | null = null;
 
@@ -22,6 +23,6 @@ export function setupHealthEndpoints() {
   // Listen on a different port for health checks
   const healthPort = 8080;
   healthServer.listen(healthPort, () => {
-    console.log(`Health check server listening on port ${healthPort}`);
+    logger.info(`Health check server listening on port ${healthPort}`);
   });
 }

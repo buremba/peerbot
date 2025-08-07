@@ -2,6 +2,7 @@
 
 import { writeFile } from "fs/promises";
 import { join } from "path";
+import logger from "./logger";
 import type { SessionContext, ConversationMessage } from "./types";
 
 const TEMP_DIR = process.env.RUNNER_TEMP || "/tmp";
@@ -166,7 +167,7 @@ export async function createPromptFile(
   const promptPath = join(TEMP_DIR, `claude-prompt-${Date.now()}.md`);
   await writeFile(promptPath, promptContent, "utf-8");
   
-  console.log(`Created prompt file: ${promptPath} (${promptContent.length} characters)`);
+  logger.info(`Created prompt file: ${promptPath} (${promptContent.length} characters)`);
   return promptPath;
 }
 
@@ -185,6 +186,6 @@ Please provide a helpful and concise response.`;
   const promptPath = join(TEMP_DIR, `claude-simple-prompt-${Date.now()}.md`);
   await writeFile(promptPath, promptContent, "utf-8");
   
-  console.log(`Created simple prompt file: ${promptPath}`);
+  logger.info(`Created simple prompt file: ${promptPath}`);
   return promptPath;
 }

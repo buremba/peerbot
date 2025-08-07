@@ -4,6 +4,7 @@ import { WebClient } from "@slack/web-api";
 import type { SlackConfig } from "./types";
 import { SlackError } from "./types";
 import { markdownToSlackWithBlocks } from "./slack/blockkit-parser";
+import logger from "./logger";
 
 export class SlackIntegration {
   private client: WebClient;
@@ -49,7 +50,7 @@ export class SlackIntegration {
       this.lastUpdateTime = now;
 
     } catch (error) {
-      console.error("Failed to update Slack progress:", error);
+      logger.error("Failed to update Slack progress:", error);
       // Don't throw - worker should continue even if Slack updates fail
     }
   }
@@ -65,7 +66,7 @@ export class SlackIntegration {
         await this.updateProgress(`💭 Working...`);
       }
     } catch (error) {
-      console.error("Failed to stream progress:", error);
+      logger.error("Failed to stream progress:", error);
     }
   }
 
@@ -148,11 +149,11 @@ export class SlackIntegration {
     } catch (error: any) {
       // Handle specific Slack errors
       if (error.code === "message_not_found") {
-        console.error("Slack message not found - it may have been deleted");
+        logger.error("Slack message not found - it may have been deleted");
       } else if (error.code === "channel_not_found") {
-        console.error("Slack channel not found - bot may not have access");
+        logger.error("Slack channel not found - bot may not have access");
       } else if (error.code === "not_in_channel") {
-        console.error("Bot is not in the channel");
+        logger.error("Bot is not in the channel");
       } else {
         throw new SlackError(
           "updateMessage",
@@ -219,9 +220,9 @@ export class SlackIntegration {
     } catch (error: any) {
       // Ignore "already_reacted" errors - they're expected
       if (error?.data?.error === 'already_reacted') {
-        console.log(`Reaction ${emoji} already present`);
+        logger.info(`Reaction ${emoji} already present`);
       } else {
-        console.error(`Failed to add reaction ${emoji}:`, error?.data?.error || error?.message || error);
+        logger.error(`Failed to add reaction ${emoji}:`, error?.data?.error || error?.message || error);
       }
       // Don't throw - reactions are not critical
     }
@@ -241,9 +242,9 @@ export class SlackIntegration {
     } catch (error: any) {
       // Ignore "no_reaction" errors - reaction might not be there
       if (error?.data?.error === 'no_reaction') {
-        console.log(`Reaction ${emoji} not present to remove`);
+        logger.info(`Reaction ${emoji} not present to remove`);
       } else {
-        console.error(`Failed to remove reaction ${emoji}:`, error?.data?.error || error?.message || error);
+        logger.error(`Failed to remove reaction ${emoji}:`, error?.data?.error || error?.message || error);
       }
       // Don't throw - reactions are not critical
     }
@@ -296,7 +297,7 @@ export class SlackIntegration {
       await this.updateProgress("💭 Claude is thinking...");
 
     } catch (error) {
-      console.error("Failed to send typing indicator:", error);
+      logger.error("Failed to send typing indicator:", error);
     }
   }
 

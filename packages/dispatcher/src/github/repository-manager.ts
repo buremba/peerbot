@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
 import { Octokit } from "@octokit/rest";
+import logger from "../logger";
 import type { 
   GitHubConfig,
   UserRepository
@@ -60,7 +61,7 @@ export class GitHubRepositoryManager {
           possibleOwners.push(authUser.data.login);
         }
       } catch (e) {
-        console.warn('Could not get authenticated user:', e);
+        logger.warn('Could not get authenticated user:', e);
       }
       
       let foundRepo = false;
@@ -81,7 +82,7 @@ export class GitHubRepositoryManager {
             lastUsed: Date.now(),
           };
           
-          console.log(`Found existing repository for user ${username} under ${owner}: ${repository.repositoryUrl}`);
+          logger.info(`Found existing repository for user ${username} under ${owner}: ${repository.repositoryUrl}`);
           foundRepo = true;
           break;
           
@@ -122,7 +123,7 @@ export class GitHubRepositoryManager {
     try {
       const repositoryName = username;
       
-      console.log(`Creating repository for user ${username}...`);
+      logger.info(`Creating repository for user ${username}...`);
       
       // Check if the configured organization is actually a user account
       let repoResponse;
@@ -143,7 +144,7 @@ export class GitHubRepositoryManager {
       } catch (orgError: any) {
         // If org creation fails with 404, try creating for authenticated user
         if (orgError.status === 404) {
-          console.log(`Organization ${this.config.organization} not found, trying to create repo for authenticated user...`);
+          logger.info(`Organization ${this.config.organization} not found, trying to create repo for authenticated user...`);
           repoResponse = await this.octokit.rest.repos.createForAuthenticatedUser({
             name: repositoryName,
             description: `Personal workspace for ${username} - Claude Code Slack Bot`,
@@ -186,7 +187,7 @@ export class GitHubRepositoryManager {
         lastUsed: Date.now(),
       };
 
-      console.log(`Created repository for user ${username}: ${repository.repositoryUrl}`);
+      logger.info(`Created repository for user ${username}: ${repository.repositoryUrl}`);
       
       return repository;
 
@@ -283,7 +284,7 @@ Try asking Claude to:
           content: Buffer.from(dir.content).toString("base64"),
         });
       } catch (error) {
-        console.warn(`Failed to create ${dir.path}:`, error);
+        logger.warn(`Failed to create ${dir.path}:`, error);
       }
     }
   }
@@ -331,7 +332,7 @@ Try asking Claude to:
       return userRepositories;
 
     } catch (error) {
-      console.error("Failed to list user repositories:", error);
+      logger.error("Failed to list user repositories:", error);
       return [];
     }
   }
@@ -384,7 +385,7 @@ Try asking Claude to:
       });
       return true;
     } catch (error) {
-      console.error(`Failed to access organization ${this.config.organization}:`, error);
+      logger.error(`Failed to access organization ${this.config.organization}:`, error);
       return false;
     }
   }

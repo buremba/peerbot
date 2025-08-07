@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
 import * as k8s from "@kubernetes/client-node";
+import logger from "../logger";
 import type { 
   KubernetesConfig,
   WorkerJobRequest,
@@ -36,25 +37,25 @@ export class KubernetesJobManager {
     if (config.kubeconfig) {
       // Explicit kubeconfig path provided
       kc.loadFromFile(config.kubeconfig);
-      console.log(`✅ Loaded Kubernetes configuration from ${config.kubeconfig}`);
+      logger.info(`✅ Loaded Kubernetes configuration from ${config.kubeconfig}`);
     } else {
       
       if (inCluster) {
         try {
           kc.loadFromCluster();
-          console.log("✅ Successfully loaded in-cluster Kubernetes configuration");
+          logger.info("✅ Successfully loaded in-cluster Kubernetes configuration");
         } catch (error) {
-          console.error("❌ Failed to load in-cluster config:", error);
+          logger.error("❌ Failed to load in-cluster config:", error);
           throw new Error("Failed to load in-cluster Kubernetes configuration: " + (error as Error).message);
         }
       } else {
         // Running locally, use default kubeconfig
         try {
           kc.loadFromDefault();
-          console.log("✅ Loaded Kubernetes configuration from default kubeconfig");
+          logger.info("✅ Loaded Kubernetes configuration from default kubeconfig");
         } catch (error) {
-          console.error("❌ Failed to load default kubeconfig:", error);
-          console.error("   Make sure you have kubectl configured or set KUBECONFIG environment variable");
+          logger.error("❌ Failed to load default kubeconfig:", error);
+          logger.error("   Make sure you have kubectl configured or set KUBECONFIG environment variable");
           throw new Error("Failed to load Kubernetes configuration. Please ensure kubectl is configured.");
         }
       }
@@ -68,7 +69,7 @@ export class KubernetesJobManager {
         if (cluster.server && (cluster.server.includes('127.0.0.1') || cluster.server.includes('localhost'))) {
           // Use type assertion to modify the readonly property
           (cluster as any).skipTLSVerify = true;
-          console.log(`⚠️  Skipping TLS verification for cluster: ${cluster.name}`);
+          logger.info(`⚠️  Skipping TLS verification for cluster: ${cluster.name}`);
         }
       });
     }
@@ -81,7 +82,7 @@ export class KubernetesJobManager {
     
     // Restore active jobs from Kubernetes on startup
     this.restoreActiveJobs().catch(error => {
-      console.error("Failed to restore active jobs on startup:", error);
+      logger.error("Failed to restore active jobs on startup:", error);
     });
   }
 
@@ -116,7 +117,7 @@ export class KubernetesJobManager {
     }
     
     // Rate limit exceeded
-    console.warn(`Rate limit exceeded for user ${effectiveUserId}: ${entry.count} jobs in current window`);
+    logger.warn(`Rate limit exceeded for user ${effectiveUserId}: ${entry.count} jobs in current window`);
     return false;
   }
 
@@ -141,7 +142,7 @@ export class KubernetesJobManager {
    */
   private async restoreActiveJobs(): Promise<void> {
     try {
-      console.log("Restoring active jobs from Kubernetes...");
+      logger.info("Restoring active jobs from Kubernetes...");
       
       // List all claude-worker jobs
       const jobsResponse = await this.k8sApi.listNamespacedJob({
@@ -160,13 +161,13 @@ export class KubernetesJobManager {
         if (jobName && sessionKey && !status?.succeeded && !status?.failed) {
           this.activeJobs.set(sessionKey, jobName);
           activeCount++;
-          console.log(`Restored active job ${jobName} for session ${sessionKey}`);
+          logger.info(`Restored active job ${jobName} for session ${sessionKey}`);
         }
       }
       
-      console.log(`✅ Restored ${activeCount} active jobs from Kubernetes on startup`);
+      logger.info(`✅ Restored ${activeCount} active jobs from Kubernetes on startup`);
     } catch (error) {
-      console.error("Error restoring active jobs:", error);
+      logger.error("Error restoring active jobs:", error);
     }
   }
 
@@ -194,7 +195,7 @@ export class KubernetesJobManager {
           // Also check the annotation to verify it's the exact session
           const annotations = job.metadata?.annotations || {};
           if (annotations["claude.ai/session-key"] === sessionKey) {
-            console.log(`Found existing active job ${jobName} for session ${sessionKey}`);
+            logger.info(`Found existing active job ${jobName} for session ${sessionKey}`);
             return jobName;
           }
         }
@@ -202,7 +203,7 @@ export class KubernetesJobManager {
       
       return null;
     } catch (error) {
-      console.error(`Error checking for existing job for session ${sessionKey}:`, error);
+      logger.error(`Error checking for existing job for session ${sessionKey}:`, error);
       return null;
     }
   }
@@ -226,7 +227,7 @@ export class KubernetesJobManager {
       // Check if job already exists in memory
       const existingJobName = this.activeJobs.get(request.sessionKey);
       if (existingJobName) {
-        console.log(`Job already exists for session ${request.sessionKey}: ${existingJobName}`);
+        logger.info(`Job already exists for session ${request.sessionKey}: ${existingJobName}`);
         return existingJobName;
       }
 
@@ -234,7 +235,7 @@ export class KubernetesJobManager {
       // This handles the case where the dispatcher was restarted
       const existingJob = await this.findExistingJobForSession(request.sessionKey);
       if (existingJob) {
-        console.log(`Found existing Kubernetes job for session ${request.sessionKey}: ${existingJob}`);
+        logger.info(`Found existing Kubernetes job for session ${request.sessionKey}: ${existingJob}`);
         // Track it in memory for this instance
         this.activeJobs.set(request.sessionKey, existingJob);
         return existingJob;
@@ -252,7 +253,7 @@ export class KubernetesJobManager {
       // Track the job
       this.activeJobs.set(request.sessionKey, jobName);
       
-      console.log(`Created Kubernetes job: ${jobName} for session ${request.sessionKey}`);
+      logger.info(`Created Kubernetes job: ${jobName} for session ${request.sessionKey}`);
       
       // Start monitoring the job
       this.monitorJob(jobName, request.sessionKey);
@@ -467,80 +468,6 @@ export class KubernetesJobManager {
       },
     };
   }
-
-  /**
-   * Get job status
-   */
-  async getJobStatus(jobName: string): Promise<string> {
-    try {
-      const jobResponse = await this.k8sApi.readNamespacedJob({
-        name: jobName,
-        namespace: this.config.namespace
-      });
-      
-      const job = jobResponse;
-      const status = job.status;
-      
-      // Check conditions for more detailed status
-      if (status?.conditions) {
-        for (const condition of status.conditions) {
-          if (condition.type === "Complete" && condition.status === "True") {
-            return "completed";
-          }
-          if (condition.type === "Failed" && condition.status === "True") {
-            return "failed";
-          }
-        }
-      }
-      
-      // Check basic status
-      if (status?.succeeded && status.succeeded > 0) {
-        return "completed";
-      }
-      
-      if (status?.failed && status.failed > 0) {
-        return "failed";
-      }
-      
-      if (status?.active && status.active > 0) {
-        return "running";
-      }
-      
-      // Check if pod is starting
-      try {
-        const podsResponse = await this.k8sCoreApi.listNamespacedPod({
-          namespace: this.config.namespace,
-          labelSelector: `job-name=${jobName}`
-        });
-        
-        if (podsResponse.items && podsResponse.items.length > 0) {
-          const pod = podsResponse.items[0];
-          const phase = pod.status?.phase;
-          
-          if (phase === "Pending") {
-            return "starting";
-          }
-          if (phase === "Running") {
-            return "running";
-          }
-          if (phase === "Succeeded") {
-            return "completed";
-          }
-          if (phase === "Failed") {
-            return "failed";
-          }
-        }
-      } catch (podError) {
-        console.error(`Error checking pod status for job ${jobName}:`, podError);
-      }
-      
-      return "pending";
-      
-    } catch (error) {
-      console.error(`Error getting job status for ${jobName}:`, error);
-      return "error";
-    }
-  }
   
   /**
    * Monitor job status
@@ -562,20 +489,20 @@ export class KubernetesJobManager {
         const status = job.status;
         
         if (status?.succeeded) {
-          console.log(`Job ${jobName} completed successfully`);
+          logger.info(`Job ${jobName} completed successfully`);
           this.activeJobs.delete(sessionKey);
           return;
         }
         
         if (status?.failed) {
-          console.log(`Job ${jobName} failed`);
+          logger.info(`Job ${jobName} failed`);
           this.activeJobs.delete(sessionKey);
           return;
         }
         
         // Check if job timed out
         if (attempts >= maxAttempts) {
-          console.log(`Job ${jobName} monitoring timed out`);
+          logger.info(`Job ${jobName} monitoring timed out`);
           this.activeJobs.delete(sessionKey);
           return;
         }
@@ -584,7 +511,7 @@ export class KubernetesJobManager {
         setTimeout(checkStatus, 10000); // Check every 10 seconds
         
       } catch (error) {
-        console.error(`Error monitoring job ${jobName}:`, error);
+        logger.error(`Error monitoring job ${jobName}:`, error);
         this.activeJobs.delete(sessionKey);
       }
     };
@@ -606,9 +533,9 @@ export class KubernetesJobManager {
         }
       });
       
-      console.log(`Deleted job: ${jobName}`);
+      logger.info(`Deleted job: ${jobName}`);
     } catch (error) {
-      console.error(`Failed to delete job ${jobName}:`, error);
+      logger.error(`Failed to delete job ${jobName}:`, error);
     }
   }
 
@@ -652,7 +579,7 @@ export class KubernetesJobManager {
       });
       
       if (!podsResponse.items || podsResponse.items.length === 0) {
-        console.log(`No pods found for job ${jobName}`);
+        logger.info(`No pods found for job ${jobName}`);
         return null;
       }
       
@@ -660,7 +587,7 @@ export class KubernetesJobManager {
       const podName = pod?.metadata?.name;
       
       if (!podName) {
-        console.log(`Pod name not found for job ${jobName}`);
+        logger.info(`Pod name not found for job ${jobName}`);
         return null;
       }
       
@@ -674,7 +601,7 @@ export class KubernetesJobManager {
       
       return logsResponse;
     } catch (error) {
-      console.error(`Failed to get logs for job ${jobName}:`, error);
+      logger.error(`Failed to get logs for job ${jobName}:`, error);
       return null;
     }
   }
@@ -702,7 +629,7 @@ export class KubernetesJobManager {
       
       return JSON.parse(sessionJson);
     } catch (error) {
-      console.error("Failed to extract session from logs:", error);
+      logger.error("Failed to extract session from logs:", error);
       return null;
     }
   }
@@ -732,17 +659,17 @@ export class KubernetesJobManager {
    * Cleanup all jobs
    */
   async cleanup(): Promise<void> {
-    console.log(`Cleaning up ${this.activeJobs.size} active jobs...`);
+    logger.info(`Cleaning up ${this.activeJobs.size} active jobs...`);
     
     const promises = Array.from(this.activeJobs.values()).map(jobName =>
       this.deleteJob(jobName).catch(error => 
-        console.error(`Failed to delete job ${jobName}:`, error)
+        logger.error(`Failed to delete job ${jobName}:`, error)
       )
     );
     
     await Promise.allSettled(promises);
     this.activeJobs.clear();
     
-    console.log("Job cleanup completed");
+    logger.info("Job cleanup completed");
   }
 }

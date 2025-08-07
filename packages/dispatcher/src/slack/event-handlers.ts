@@ -10,12 +10,15 @@ import type {
   WorkerJobRequest
 } from "../types";
 import { SessionManager } from "@claude-code-slack/core-runner";
+import logger from "../logger";
 
 export class SlackEventHandlers {
   private activeSessions = new Map<string, ThreadSession>();
   private userMappings = new Map<string, string>(); // slackUserId -> githubUsername
   private recentEvents = new Map<string, number>(); // eventKey -> timestamp
   private messageReactions = new Map<string, { channel: string; ts: string }>(); // sessionKey -> message info
+  private repositoryCache = new Map<string, { repository: any; timestamp: number }>(); // username -> {repository, timestamp}
+  private readonly CACHE_TTL = 5 * 60 * 1000; // 5 minutes cache TTL
 
   constructor(
     private app: App,
@@ -24,6 +27,7 @@ export class SlackEventHandlers {
     private config: DispatcherConfig
   ) {
     this.setupEventHandlers();
+    this.startCachePrewarming();
   }
 
   /**
@@ -36,7 +40,7 @@ export class SlackEventHandlers {
     
     // If we've seen this event in the last 5 seconds, it's a duplicate
     if (lastSeen && now - lastSeen < 5000) {
-      console.log(`Duplicate event detected: ${eventKey}`);
+      logger.info(`Duplicate event detected: ${eventKey}`);
       return true;
     }
     
@@ -57,26 +61,26 @@ export class SlackEventHandlers {
    * Setup Slack event handlers
    */
   private setupEventHandlers(): void {
-    console.log("Setting up Slack event handlers...");
+    logger.info("Setting up Slack event handlers...");
     
     // Handle app mentions
     this.app.event("app_mention", async ({ event, client, say }) => {
       const handlerStartTime = Date.now();
-      console.log("=== APP_MENTION HANDLER TRIGGERED ===");
-      console.log(`[TIMING] Handler triggered at: ${new Date(handlerStartTime).toISOString()}`);
-      console.log(`[TIMING] Message timestamp: ${event.ts} (${new Date(parseFloat(event.ts) * 1000).toISOString()})`);
-      console.log(`[TIMING] Slack->Handler delay: ${handlerStartTime - (parseFloat(event.ts) * 1000)}ms`);
-      console.log("Raw event object keys:", Object.keys(event));
-      console.log("Event user field:", event.user);
+      logger.info("=== APP_MENTION HANDLER TRIGGERED ===");
+      logger.info(`[TIMING] Handler triggered at: ${new Date(handlerStartTime).toISOString()}`);
+      logger.info(`[TIMING] Message timestamp: ${event.ts} (${new Date(parseFloat(event.ts) * 1000).toISOString()})`);
+      logger.info(`[TIMING] Slack->Handler delay: ${handlerStartTime - (parseFloat(event.ts) * 1000)}ms`);
+      logger.debug("Raw event object keys:", Object.keys(event));
+      logger.debug("Event user field:", event.user);
       
       try {
         const context = this.extractSlackContext(event);
-        console.log("Extracted context:", context);
+        logger.debug("Extracted context:", context);
         
         // Check if we have a valid user ID
         if (!context.userId) {
-          console.error("No user ID found in app_mention event. Context:", context);
-          console.error("Full event object:", JSON.stringify(event, null, 2));
+          logger.error("No user ID found in app_mention event. Context:", context);
+          logger.error("Full event object:", JSON.stringify(event, null, 2));
           await say({
             thread_ts: context.threadTs,
             text: "❌ Error: Unable to identify user. Please try again.",
@@ -86,7 +90,7 @@ export class SlackEventHandlers {
         
         // Check for duplicate events
         if (this.isDuplicateEvent(context.userId, context.messageTs, context.text)) {
-          console.log("Skipping duplicate app_mention event");
+          logger.info("Skipping duplicate app_mention event");
           return;
         }
         
@@ -107,17 +111,17 @@ export class SlackEventHandlers {
             name: "eyes",
           });
         } catch (reactionError) {
-          console.error("Failed to add processing reaction:", reactionError);
+          logger.error("Failed to add processing reaction:", reactionError);
         }
 
         // Extract user request (remove bot mention)
         const userRequest = this.extractUserRequest(context.text);
         
-        console.log(`[TIMING] Starting handleUserRequest at: ${new Date().toISOString()}`);
+        logger.info(`[TIMING] Starting handleUserRequest at: ${new Date().toISOString()}`);
         await this.handleUserRequest(context, userRequest, client);
         
       } catch (error) {
-        console.error("Error handling app mention:", error);
+        logger.error("Error handling app mention:", error);
         
         // Try to add error reaction
         try {
@@ -127,7 +131,7 @@ export class SlackEventHandlers {
             name: "x",
           });
         } catch (reactionError) {
-          console.error("Failed to add error reaction:", reactionError);
+          logger.error("Failed to add error reaction:", reactionError);
         }
         
         await say({
@@ -139,9 +143,9 @@ export class SlackEventHandlers {
 
     // Handle view submissions (dialog/modal submissions)
     this.app.view(/.*/, async ({ ack, body, view, client }) => {
-      console.log("=== VIEW SUBMISSION HANDLER TRIGGERED ===");
-      console.log("View ID:", view.id);
-      console.log("View callback_id:", view.callback_id);
+      logger.info("=== VIEW SUBMISSION HANDLER TRIGGERED ===");
+      logger.info("View ID:", view.id);
+      logger.info("View callback_id:", view.callback_id);
       
       // Acknowledge the view submission
       await ack();
@@ -155,8 +159,8 @@ export class SlackEventHandlers {
         // Extract user inputs from the view state
         const userInput = this.extractViewInputs(view.state.values);
         
-        console.log(`Processing view submission from user ${userId}`);
-        console.log(`User input: ${userInput}`);
+        logger.info(`Processing view submission from user ${userId}`);
+        logger.info(`User input: ${userInput}`);
         
         // Post the user's input as a message in the thread
         if (channelId && threadTs) {
@@ -182,16 +186,16 @@ export class SlackEventHandlers {
         }
         
       } catch (error) {
-        console.error("Error handling view submission:", error);
+        logger.error("Error handling view submission:", error);
       }
     });
     
     // Handle interactive actions (button clicks, select menus, etc.)
-    console.log("Registering action handler for all interactive components...");
+    logger.info("Registering action handler for all interactive components...");
     this.app.action(/.*/, async ({ action, ack, client, body }) => {
-      console.log("=== ACTION HANDLER TRIGGERED ===");
-      console.log("Action ID:", (action as any).action_id);
-      console.log("Action type:", action.type);
+      logger.info("=== ACTION HANDLER TRIGGERED ===");
+      logger.info("Action ID:", (action as any).action_id);
+      logger.info("Action type:", action.type);
       
       // Acknowledge the action immediately
       await ack();
@@ -202,7 +206,7 @@ export class SlackEventHandlers {
         const channelId = (body as any).channel?.id || (body as any).container?.channel_id;
         const messageTs = (body as any).message?.ts || (body as any).container?.message_ts;
         
-        console.log(`Handling action ${actionId} from user ${userId}`);
+        logger.info(`Handling action ${actionId} from user ${userId}`);
         
         // Check permissions
         if (!this.isUserAllowed(userId)) {
@@ -218,7 +222,7 @@ export class SlackEventHandlers {
         await this.handleBlockAction(actionId, userId, channelId, messageTs, body, client);
         
       } catch (error) {
-        console.error("Error handling action:", error);
+        logger.error("Error handling action:", error);
         
         // Send error message as ephemeral
         const userId = body.user.id;
@@ -234,17 +238,17 @@ export class SlackEventHandlers {
 
     // Handle direct messages
     this.app.message(async ({ message, client, say }) => {
-      console.log("=== MESSAGE HANDLER TRIGGERED ===");
-      console.log("Message channel_type:", message.channel_type);
-      console.log("Message subtype:", message.subtype);
-      console.log("Message object keys:", Object.keys(message));
-      console.log("Message user field:", (message as any).user);
+      logger.info("=== MESSAGE HANDLER TRIGGERED ===");
+      logger.debug("Message channel_type:", message.channel_type);
+      logger.debug("Message subtype:", message.subtype);
+      logger.debug("Message object keys:", Object.keys(message));
+      logger.debug("Message user field:", (message as any).user);
       
       // Skip our own bot's messages to prevent loops
       const botUserId = this.config.slack.botUserId;
       const botId = this.config.slack.botId;
       if ((message as any).user === botUserId || (message as any).bot_id === botId) {
-        console.log(`Skipping our own bot's message (user: ${botUserId}, bot: ${botId})`);
+        logger.debug(`Skipping our own bot's message (user: ${botUserId}, bot: ${botId})`);
         return;
       }
       
@@ -252,7 +256,7 @@ export class SlackEventHandlers {
       // These are handled by the app_mention handler to prevent duplicate processing
       const messageText = (message as any).text || '';
       if (message.channel_type === 'channel' && messageText.includes(`<@${botUserId}>`)) {
-        console.log("Skipping channel message with bot mention - handled by app_mention");
+        logger.debug("Skipping channel message with bot mention - handled by app_mention");
         return;
       }
       
@@ -271,7 +275,7 @@ export class SlackEventHandlers {
       ];
       
       if (message.subtype && ignoredSubtypes.includes(message.subtype)) {
-        console.log(`Ignoring message with subtype: ${message.subtype}`);
+        logger.debug(`Ignoring message with subtype: ${message.subtype}`);
         return;
       }
       
@@ -279,19 +283,19 @@ export class SlackEventHandlers {
       
       try {
         const context = this.extractSlackContext(message);
-        console.log("Extracted context from message:", context);
+        logger.debug("Extracted context from message:", context);
         
         // Check if we have a valid user ID
         if (!context.userId) {
-          console.error("No user ID found in message event. Context:", context);
-          console.error("Full message object:", JSON.stringify(message, null, 2));
+          logger.error("No user ID found in message event. Context:", context);
+          logger.error("Full message object:", JSON.stringify(message, null, 2));
           await say("❌ Error: Unable to identify user. Please try again.");
           return;
         }
         
         // Check for duplicate events
         if (this.isDuplicateEvent(context.userId, context.messageTs, context.text)) {
-          console.log("Skipping duplicate message event");
+          logger.info("Skipping duplicate message event");
           return;
         }
         
@@ -305,7 +309,7 @@ export class SlackEventHandlers {
         await this.handleUserRequest(context, userRequest, client);
         
       } catch (error) {
-        console.error("Error handling direct message:", error);
+        logger.error("Error handling direct message:", error);
         await say(`❌ Error: ${error instanceof Error ? error.message : "Unknown error occurred"}`);
       }
     });
@@ -320,7 +324,7 @@ export class SlackEventHandlers {
     client: any
   ): Promise<void> {
     const requestStartTime = Date.now();
-    console.log(`[TIMING] handleUserRequest started at: ${new Date(requestStartTime).toISOString()}`);
+    logger.info(`[TIMING] handleUserRequest started at: ${new Date(requestStartTime).toISOString()}`);
     
     // Generate session key (thread-based or new)
     const sessionKey = SessionManager.generateSessionKey({
@@ -333,7 +337,7 @@ export class SlackEventHandlers {
       messageTs: context.messageTs,
     });
 
-    console.log(`Handling request for session: ${sessionKey}`);
+    logger.info(`Handling request for session: ${sessionKey}`);
 
     // Check if session is already active
     const existingSession = this.activeSessions.get(sessionKey);
@@ -348,44 +352,44 @@ export class SlackEventHandlers {
     }
 
     try {
-      // Get or create user's GitHub username mapping
-      const username = await this.getOrCreateUserMapping(context.userId, client);
+      // Parallel API calls for better performance
+      const parallelStartTime = Date.now();
       
-      // Fetch conversation history from Slack if this is a thread
-      let conversationHistory = await this.fetchConversationHistory(
-        context.channelId,
-        context.threadTs,
-        client
-      );
+      // Start all parallel operations
+      const [username, conversationHistory] = await Promise.all([
+        // Get or create user's GitHub username mapping
+        this.getOrCreateUserMapping(context.userId, client),
+        
+        // Fetch conversation history from Slack if this is a thread
+        context.threadTs 
+          ? this.fetchConversationHistory(context.channelId, context.threadTs, client)
+          : Promise.resolve([{
+              role: 'user',
+              content: userRequest,
+              timestamp: parseFloat(context.messageTs) * 1000
+            }])
+      ]);
       
-      // If this is a new conversation (not a thread), add the current message to history
-      if (!context.threadTs) {
-        conversationHistory = [{
-          role: 'user',
-          content: userRequest,
-          timestamp: parseFloat(context.messageTs) * 1000
-        }];
+      logger.info(`[TIMING] Parallel operations took ${Date.now() - parallelStartTime}ms`);
+      logger.info(`Session ${sessionKey} - fetched ${conversationHistory.length} messages from thread`);
+      
+      // Check repository cache first
+      let repository;
+      const cachedRepo = this.repositoryCache.get(username);
+      if (cachedRepo && Date.now() - cachedRepo.timestamp < this.CACHE_TTL) {
+        repository = cachedRepo.repository;
+        logger.info(`Using cached repository for ${username}`);
+      } else {
+        // Ensure user repository exists
+        repository = await this.repoManager.ensureUserRepository(username);
+        // Cache the repository info
+        this.repositoryCache.set(username, { repository, timestamp: Date.now() });
       }
-      
-      console.log(`Session ${sessionKey} - fetched ${conversationHistory.length} messages from thread`);
-      
-      // Ensure user repository exists
-      const repository = await this.repoManager.ensureUserRepository(username);
       
       // If this is not already a thread, use the current message timestamp as thread_ts
       const threadTs = context.threadTs || context.messageTs;
       
-      // Post initial response - ALWAYS in thread
-      console.log(`[TIMING] Posting initial response at: ${new Date().toISOString()}`);
-      const initialBlocks = this.formatInitialResponseBlocks(sessionKey, username, repository.repositoryUrl);
-      const initialResponse = await client.chat.postMessage({
-        channel: context.channelId,
-        thread_ts: threadTs,
-        text: "🔄 Creating pod...",
-        blocks: initialBlocks,
-      });
-
-      // Create thread session - ensure we always have a threadTs
+      // Create thread session BEFORE posting to Slack
       const threadSession: ThreadSession = {
         sessionKey,
         threadTs: threadTs,
@@ -406,30 +410,39 @@ export class SlackEventHandlers {
         ts: context.messageTs,
       });
 
-      // Prepare worker job request with conversation history
+      // Post initial Slack response first (fast operation)
+      logger.info(`[TIMING] Posting initial response at: ${new Date().toISOString()}`);
+      const initialResponse = await client.chat.postMessage({
+        channel: context.channelId,
+        thread_ts: threadTs,
+        text: "🚀 Starting Claude session...",
+        blocks: this.formatInitialResponseBlocks(sessionKey, username, repository.repositoryUrl, undefined, "🚀 Starting Claude session..."),
+      });
+      
+      // Now create the Kubernetes job with the Slack response timestamp
+      logger.info(`[TIMING] Creating worker job at: ${new Date().toISOString()}`);
+      const jobCreateStart = Date.now();
+      
       const jobRequest: WorkerJobRequest = {
         sessionKey,
         userId: context.userId,
         username,
         channelId: context.channelId,
-        threadTs: threadTs, // Always pass the thread timestamp
+        threadTs: threadTs,
         userPrompt: userRequest,
         repositoryUrl: repository.repositoryUrl,
         slackResponseChannel: context.channelId,
-        slackResponseTs: initialResponse.ts!,
-        originalMessageTs: context.messageTs, // Pass original message timestamp for reactions
+        slackResponseTs: initialResponse.ts!, // Now we have the actual timestamp
+        originalMessageTs: context.messageTs,
         claudeOptions: {
           ...this.config.claude,
           timeoutMinutes: this.config.sessionTimeoutMinutes.toString(),
         },
-        conversationHistory, // Pass the fetched conversation history
+        conversationHistory,
       };
 
-      // Start worker job
-      console.log(`[TIMING] Creating worker job at: ${new Date().toISOString()}`);
-      const jobCreateStart = Date.now();
       const jobName = await this.jobManager.createWorkerJob(jobRequest);
-      console.log(`[TIMING] Worker job created in ${Date.now() - jobCreateStart}ms`);
+      logger.info(`[TIMING] Worker job created in ${Date.now() - jobCreateStart}ms`);
       
       // Update session with job info
       threadSession.jobName = jobName;
@@ -438,19 +451,10 @@ export class SlackEventHandlers {
       // Start monitoring job for status updates
       this.monitorJobStatus(sessionKey, jobName, context.channelId, context.messageTs, client);
       
-      console.log(`Created worker job ${jobName} for session ${sessionKey}`);
-      
-      // Update the initial message with job details
-      const updatedBlocks = this.formatInitialResponseBlocks(sessionKey, username, repository.repositoryUrl, jobName, "🚀 Starting Claude session...");
-      await client.chat.update({
-        channel: context.channelId,
-        ts: initialResponse.ts!,
-        text: "🚀 Starting Claude session...",
-        blocks: updatedBlocks,
-      });
+      logger.info(`Created worker job ${jobName} for session ${sessionKey}`);
 
     } catch (error) {
-      console.error(`Failed to handle request for session ${sessionKey}:`, error);
+      logger.error(`Failed to handle request for session ${sessionKey}:`, error);
       
       // Try to update reaction to error
       try {
@@ -465,7 +469,7 @@ export class SlackEventHandlers {
           name: "x",
         });
       } catch (reactionError) {
-        console.error("Failed to update error reaction:", reactionError);
+        logger.error("Failed to update error reaction:", reactionError);
       }
       
       // Format error message with debugging info
@@ -502,22 +506,22 @@ export class SlackEventHandlers {
    */
   private extractSlackContext(event: any): SlackContext {
     // Comprehensive debug logging
-    console.log("=== FULL SLACK EVENT DEBUG ===");
-    console.log("Event type:", event.type);
-    console.log("Event subtype:", event.subtype);
-    console.log("Event user:", event.user);
-    console.log("Event bot_id:", (event as any).bot_id);
-    console.log("Event channel:", event.channel);
-    console.log("Event channel_type:", event.channel_type);
-    console.log("Event team:", event.team);
-    console.log("Event ts:", event.ts);
-    console.log("Event thread_ts:", event.thread_ts);
-    console.log("Full event JSON:", JSON.stringify(event, null, 2));
-    console.log("=== END EVENT DEBUG ===");
+    logger.debug("=== FULL SLACK EVENT DEBUG ===");
+    logger.debug("Event type:", event.type);
+    logger.debug("Event subtype:", event.subtype);
+    logger.debug("Event user:", event.user);
+    logger.debug("Event bot_id:", (event as any).bot_id);
+    logger.debug("Event channel:", event.channel);
+    logger.debug("Event channel_type:", event.channel_type);
+    logger.debug("Event team:", event.team);
+    logger.debug("Event ts:", event.ts);
+    logger.debug("Event thread_ts:", event.thread_ts);
+    logger.debug("Full event JSON:", JSON.stringify(event, null, 2));
+    logger.debug("=== END EVENT DEBUG ===");
     
     // Log if this is a bot message (but don't ignore it)
     if ((event as any).bot_id || event.subtype === 'bot_message') {
-      console.log("Processing bot message from bot_id:", (event as any).bot_id);
+      logger.debug("Processing bot message from bot_id:", (event as any).bot_id);
     }
     
     return {
@@ -597,10 +601,10 @@ export class SlackEventHandlers {
           timestamp: parseFloat(msg.ts) * 1000, // Convert Slack timestamp to milliseconds
         }));
 
-      console.log(`Fetched ${conversation.length} messages from thread ${threadTs}`);
+      logger.info(`Fetched ${conversation.length} messages from thread ${threadTs}`);
       return conversation;
     } catch (error) {
-      console.error(`Failed to fetch conversation history: ${error}`);
+      logger.error(`Failed to fetch conversation history: ${error}`);
       return [];
     }
   }
@@ -611,7 +615,7 @@ export class SlackEventHandlers {
   private async getOrCreateUserMapping(slackUserId: string | undefined, client: any): Promise<string> {
     // Handle undefined user ID
     if (!slackUserId) {
-      console.error("Slack user ID is undefined");
+      logger.error("Slack user ID is undefined");
       return "user-unknown";
     }
     
@@ -641,11 +645,11 @@ export class SlackEventHandlers {
       // Store mapping
       this.userMappings.set(slackUserId, username);
       
-      console.log(`Created user mapping: ${slackUserId} -> ${username}`);
+      logger.info(`Created user mapping: ${slackUserId} -> ${username}`);
       return username;
       
     } catch (error) {
-      console.error(`Failed to get user info for ${slackUserId}:`, error);
+      logger.error(`Failed to get user info for ${slackUserId}:`, error);
       
       // Fallback to generic username
       const fallbackUsername = slackUserId ? `user-${slackUserId.substring(0, 8)}` : "user-unknown";
@@ -745,7 +749,7 @@ kubectl logs -n ${namespace} -l job-name=${jobName} --tail=100
         
         // Update reaction based on status change
         if (jobStatus !== lastStatus) {
-          console.log(`Job ${jobName} status changed: ${lastStatus} -> ${jobStatus}`);
+          logger.info(`Job ${jobName} status changed: ${lastStatus} -> ${jobStatus}`);
           
           // Remove previous reaction if exists
           if (lastStatus) {
@@ -773,7 +777,7 @@ kubectl logs -n ${namespace} -l job-name=${jobName} --tail=100
                 name: newEmoji,
               });
             } catch (e) {
-              console.error(`Failed to add ${newEmoji} reaction:`, e);
+              logger.error(`Failed to add ${newEmoji} reaction:`, e);
             }
           }
           
@@ -782,7 +786,7 @@ kubectl logs -n ${namespace} -l job-name=${jobName} --tail=100
         
         // Check if job is complete
         if (jobStatus === "completed" || jobStatus === "failed" || jobStatus === "error") {
-          console.log(`Job ${jobName} monitoring complete with status: ${jobStatus}`);
+          logger.info(`Job ${jobName} monitoring complete with status: ${jobStatus}`);
           const session = this.activeSessions.get(sessionKey);
           if (session) {
             session.status = jobStatus as any;
@@ -802,7 +806,7 @@ kubectl logs -n ${namespace} -l job-name=${jobName} --tail=100
         if (attempts < maxAttempts) {
           setTimeout(checkStatus, 5000); // Check every 5 seconds
         } else {
-          console.log(`Job ${jobName} monitoring timeout after ${maxAttempts} attempts`);
+          logger.warn(`Job ${jobName} monitoring timeout after ${maxAttempts} attempts`);
           // Set timeout reaction
           try {
             await client.reactions.remove({
@@ -816,11 +820,11 @@ kubectl logs -n ${namespace} -l job-name=${jobName} --tail=100
               name: "hourglass",
             });
           } catch (e) {
-            console.error("Failed to set timeout reaction:", e);
+            logger.error("Failed to set timeout reaction:", e);
           }
         }
       } catch (error) {
-        console.error(`Error monitoring job ${jobName}:`, error);
+        logger.error(`Error monitoring job ${jobName}:`, error);
         // Continue monitoring on error
         if (attempts < maxAttempts) {
           setTimeout(checkStatus, 5000);
@@ -865,7 +869,7 @@ kubectl logs -n ${namespace} -l job-name=${jobName} --tail=100
     session.lastActivity = Date.now();
 
     // Log completion
-    console.log(`Job completed for session ${sessionKey}: ${success ? "success" : "failure"}`);
+    logger.info(`Job completed for session ${sessionKey}: ${success ? "success" : "failure"}`);
     
     // Update reaction on original message
     const messageInfo = this.messageReactions.get(sessionKey);
@@ -885,7 +889,7 @@ kubectl logs -n ${namespace} -l job-name=${jobName} --tail=100
           name: success ? "white_check_mark" : "x",
         });
       } catch (reactionError) {
-        console.error("Failed to update completion reaction:", reactionError);
+        logger.error("Failed to update completion reaction:", reactionError);
       }
     }
     
@@ -905,7 +909,7 @@ kubectl logs -n ${namespace} -l job-name=${jobName} --tail=100
     session.status = "timeout";
     session.lastActivity = Date.now();
 
-    console.log(`Job timed out for session ${sessionKey}`);
+    logger.warn(`Job timed out for session ${sessionKey}`);
     
     // Clean up immediately
     this.activeSessions.delete(sessionKey);
@@ -936,9 +940,9 @@ kubectl logs -n ${namespace} -l job-name=${jobName} --tail=100
     body: any,
     client: any
   ): Promise<void> {
-    console.log(`Processing action: ${actionId}`);
-    console.log('Action body type:', body.type);
-    console.log('Action body:', JSON.stringify(body, null, 2).substring(0, 500));
+    logger.info(`Processing action: ${actionId}`);
+    logger.debug('Action body type:', body.type);
+    logger.debug('Action body:', JSON.stringify(body, null, 2).substring(0, 500));
     
     // Get user's GitHub username
     const githubUsername = await this.getOrCreateUserMapping(userId, client);
@@ -986,7 +990,7 @@ kubectl logs -n ${namespace} -l job-name=${jobName} --tail=100
             return;
           }
         } catch (e) {
-          console.error('Failed to parse blockkit content:', e);
+          logger.error('Failed to parse blockkit content:', e);
         }
       }
     }
@@ -1140,7 +1144,7 @@ kubectl logs -n ${namespace} -l job-name=${jobName} --tail=100
       const userInfo = await client.users.info({ user: userId });
       return userInfo.user?.real_name || userInfo.user?.name || "Unknown User";
     } catch (error) {
-      console.error(`Failed to get user info for ${userId}:`, error);
+      logger.error(`Failed to get user info for ${userId}:`, error);
       return "Unknown User";
     }
   }
@@ -1151,7 +1155,7 @@ kubectl logs -n ${namespace} -l job-name=${jobName} --tail=100
   private async handleCustomAction(
     actionId: string,
     userId: string,
-    githubUsername: string,
+    _githubUsername: string,
     channelId: string,
     messageTs: string,
     client: any,
@@ -1295,11 +1299,28 @@ kubectl logs -n ${namespace} -l job-name=${jobName} --tail=100
   }
 
   /**
+   * Pre-warm caches for frequently used data
+   */
+  private startCachePrewarming(): void {
+    // Clean up stale cache entries periodically
+    setInterval(() => {
+      const now = Date.now();
+      for (const [username, cached] of this.repositoryCache.entries()) {
+        if (now - cached.timestamp > this.CACHE_TTL) {
+          this.repositoryCache.delete(username);
+          logger.info(`Evicted stale repository cache for ${username}`);
+        }
+      }
+    }, 60000); // Check every minute
+  }
+
+  /**
    * Cleanup all sessions
    */
   async cleanup(): Promise<void> {
     // Clear local maps
     this.activeSessions.clear();
     this.userMappings.clear();
+    this.repositoryCache.clear();
   }
 }

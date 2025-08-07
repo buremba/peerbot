@@ -1,5 +1,6 @@
 import { App, Installation, InstallationQuery } from "@slack/bolt";
 import type { IncomingMessage, ServerResponse } from "http";
+import logger from "../logger";
 
 export interface OAuthConfig {
   clientId: string;
@@ -27,7 +28,7 @@ class SimpleInstallationStore {
       this.installations.set(key, installation);
     }
     
-    console.log("✅ Stored installation for:", installation.team?.name || installation.enterprise?.name);
+    logger.info("✅ Stored installation for:", installation.team?.name || installation.enterprise?.name);
   }
 
   async fetchInstallation(query: InstallationQuery<boolean>): Promise<Installation> {
@@ -61,7 +62,7 @@ class SimpleInstallationStore {
     }
 
     this.installations.delete(key);
-    console.log("🗑️ Deleted installation for:", key);
+    logger.info("🗑️ Deleted installation for:", key);
   }
 }
 
@@ -77,7 +78,7 @@ export class OAuthHandler {
     // OAuth configuration is handled in the App constructor
     // This method is for any additional OAuth-related setup
     
-    console.log("🔐 OAuth configured with scopes:", this.config.scopes.join(", "));
+    logger.info("🔐 OAuth configured with scopes:", this.config.scopes.join(", "));
     
     // Add success/failure handlers
     this.setupOAuthHandlers(app);
@@ -101,18 +102,18 @@ export class OAuthHandler {
         callbackOptions: {
           success: async (installation: Installation, _options: any, _req: IncomingMessage, res: ServerResponse) => {
             // Custom success handling
-            console.log("✅ Installation successful for team:", installation.team?.name);
+            logger.info("✅ Installation successful for team:", installation.team?.name);
             
             // Store tokens in environment or database
             if (installation.bot?.token) {
-              console.log("Bot token obtained:", installation.bot.token.substring(0, 20) + "...");
+              logger.info("Bot token obtained:", installation.bot.token.substring(0, 20) + "...");
               
               // You can store this in your database or update Kubernetes secrets here
               // For now, we'll just log it
-              console.log("\n📝 Update your .env with:");
-              console.log(`SLACK_BOT_TOKEN=${installation.bot.token}`);
-              console.log(`SLACK_TEAM_ID=${installation.team?.id}`);
-              console.log(`SLACK_BOT_USER_ID=${installation.bot.userId}`);
+              logger.info("\n📝 Update your .env with:");
+              logger.info(`SLACK_BOT_TOKEN=${installation.bot.token}`);
+              logger.info(`SLACK_TEAM_ID=${installation.team?.id}`);
+              logger.info(`SLACK_BOT_USER_ID=${installation.bot.userId}`);
             }
             
             // Redirect to success page
@@ -143,7 +144,7 @@ export class OAuthHandler {
           },
           failure: async (error: Error, _options: any, _req: IncomingMessage, res: ServerResponse) => {
             // Custom failure handling
-            console.error("❌ Installation failed:", error);
+            logger.error("❌ Installation failed:", error);
             
             res.writeHead(500, { 'Content-Type': 'text/html' });
             res.end(`
@@ -180,7 +181,7 @@ export class OAuthHandler {
    */
   private setupOAuthHandlers(_app: App): void {
     // You can add additional OAuth-related routes here if needed
-    console.log("✅ OAuth handlers configured");
+    logger.info("✅ OAuth handlers configured");
   }
 
   /**

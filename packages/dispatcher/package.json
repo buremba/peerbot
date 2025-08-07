@@ -14,11 +14,12 @@
   },
   "dependencies": {
     "@claude-code-slack/core-runner": "workspace:*",
-    "@slack/bolt": "^3.19.0",
-    "@slack/web-api": "^7.6.0",
     "@kubernetes/client-node": "^1.0.0",
     "@octokit/rest": "^21.1.1",
+    "@slack/bolt": "^3.19.0",
+    "@slack/web-api": "^7.6.0",
     "node-fetch": "^3.3.2",
+    "winston": "^3.17.0",
     "zod": "^3.24.4"
   },
   "devDependencies": {

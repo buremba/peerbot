@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
 import { marked, MarkedExtension } from "marked";
+import logger from "../logger";
 
 interface BlockMetadata {
   action?: string;        // Button label for the action
@@ -90,7 +91,7 @@ function parseBlockMetadata(info: string): { language: string; metadata: BlockMe
     metadata.type = metadata.type || language; // Store the language as type if not set
     return { language, metadata };
   } catch (e) {
-    console.error('Failed to parse metadata:', e);
+    logger.error('Failed to parse metadata:', e);
     return { language: language || '', metadata: { type: language } };
   }
 }
@@ -171,8 +172,9 @@ class BlockKitRenderer {
             blocks: language === 'blockkit' ? this.parseBlockKitContent(token.text) : undefined
           });
           
-          // If show flag is true, include the code in text output
-          if (metadata.show) {
+          // If show flag is true AND it's NOT blockkit, include the code in text output
+          // For blockkit with show:true, we render the blocks directly, so no need for raw code
+          if (metadata.show && language !== 'blockkit') {
             return `\`\`\`${language}\n${token.text}\n\`\`\``;
           }
           return ''; // Don't include in text output
@@ -290,8 +292,8 @@ class BlockKitRenderer {
       const parsed = JSON.parse(jsonContent);
       return parsed.blocks || [parsed];
     } catch (e) {
-      console.error('Failed to parse blockkit JSON:', e);
-      console.error('Content attempted:', content.substring(0, 200));
+      logger.error('Failed to parse blockkit JSON:', e);
+      logger.error('Content attempted:', content.substring(0, 200));
       return undefined;
     }
   }

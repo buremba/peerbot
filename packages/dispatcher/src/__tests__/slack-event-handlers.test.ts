@@ -421,23 +421,5 @@ describe("Slack Event Handlers", () => {
       expect(errorMessage.text).toContain("❌");
       expect(errorMessage.blocks[0].text.text).toContain("try again");
     });
-
-    it("should format progress updates", () => {
-      const progressUpdate = {
-        text: "🔄 Claude is working on your request...",
-        blocks: [
-          {
-            type: "section",
-            text: {
-              type: "mrkdwn",
-              text: "Progress: Reading files and analyzing code",
-            },
-          },
-        ],
-      };
-
-      expect(progressUpdate.text).toContain("🔄");
-      expect(progressUpdate.blocks[0].text.text).toContain("Progress:");
-    });
   });
 });

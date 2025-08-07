@@ -8,6 +8,7 @@ import { KubernetesJobManager } from "./kubernetes/job-manager";
 import { GitHubRepositoryManager } from "./github/repository-manager";
 import { setupHealthEndpoints } from "./simple-http";
 import type { DispatcherConfig } from "./types";
+import logger from "./logger";
 
 export class SlackDispatcher {
   private app: App;
@@ -37,7 +38,7 @@ export class SlackDispatcher {
         ignoreSelf: false, // We need to receive action events from our own messages
       });
       
-      console.log("Initialized Slack app in HTTP mode with ExpressReceiver");
+      logger.info("Initialized Slack app in HTTP mode with ExpressReceiver");
     } else {
       // Socket mode
       const appConfig: any = {
@@ -57,7 +58,7 @@ export class SlackDispatcher {
       }
       
       this.app = new App(appConfig);
-      console.log("Initialized Slack app in Socket mode");
+      logger.info("Initialized Slack app in Socket mode");
     }
 
     // Initialize managers
@@ -70,9 +71,9 @@ export class SlackDispatcher {
     // Add global middleware to log all events
     this.app.use(async ({ payload, next }) => {
       const event = (payload as any).event || payload;
-      console.log(`[Slack Event] Type: ${event?.type}, Subtype: ${event?.subtype}`);
+      logger.debug(`[Slack Event] Type: ${event?.type}, Subtype: ${event?.subtype}`);
       if (event) {
-        console.log(`[Slack Event Details]`, JSON.stringify(event).substring(0, 200));
+        logger.debug(`[Slack Event Details]`, JSON.stringify(event).substring(0, 200));
       }
       await next();
     });
@@ -90,7 +91,7 @@ export class SlackDispatcher {
       await this.initializeBotInfo(this.config);
       
       // We'll test auth after starting the server
-      console.log("Starting Slack app with token:", {
+      logger.info("Starting Slack app with token:", {
         firstChars: this.config.slack.token?.substring(0, 10),
         length: this.config.slack.token?.length,
         signingSecretLength: this.config.slack.signingSecret?.length,
@@ -106,10 +107,10 @@ export class SlackDispatcher {
         
         // Add request logging middleware
         expressApp.use((req: any, _res: any, next: any) => {
-          console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
-          console.log('Headers:', req.headers);
+          logger.debug(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
+          logger.debug('Headers:', req.headers);
           if (req.method === 'POST' && req.body) {
-            console.log('Body:', JSON.stringify(req.body).substring(0, 200));
+            logger.debug('Body:', JSON.stringify(req.body).substring(0, 200));
           }
           next();
         });
@@ -125,39 +126,39 @@ export class SlackDispatcher {
           });
         });
         
-        console.log("Express routes after Slack app start:");
+        logger.debug("Express routes after Slack app start:");
         expressApp._router.stack.forEach((middleware: any) => {
           if (middleware.route) {
-            console.log(`- ${Object.keys(middleware.route.methods).join(', ').toUpperCase()} ${middleware.route.path}`);
+            logger.debug(`- ${Object.keys(middleware.route.methods).join(', ').toUpperCase()} ${middleware.route.path}`);
           } else if (middleware.name === 'router') {
-            console.log('- Router middleware');
+            logger.debug('- Router middleware');
           }
         });
       } else {
         // In socket mode, just start
-        console.log("Starting Slack app in Socket Mode...");
+        logger.info("Starting Slack app in Socket Mode...");
         try {
           await this.app.start();
-          console.log("✅ Socket Mode connection established!");
+          logger.info("✅ Socket Mode connection established!");
         } catch (socketError) {
-          console.error("❌ Failed to start Socket Mode:", socketError);
+          logger.error("❌ Failed to start Socket Mode:", socketError);
           throw socketError;
         }
       }
       
       const mode = this.config.slack.socketMode ? "Socket Mode" : `HTTP on port ${this.config.slack.port}`;
-      console.log(`🚀 Slack Dispatcher is running in ${mode}! (Local Dev with Skaffold)`);
+      logger.info(`🚀 Slack Dispatcher is running in ${mode}! (Local Dev with Skaffold)`);
       
       // Log configuration
-      console.log("Configuration:");
-      console.log(`- Kubernetes Namespace: ${this.config.kubernetes.namespace}`);
-      console.log(`- Worker Image: ${this.config.kubernetes.workerImage}`);
-      console.log(`- GitHub Organization: ${this.config.github.organization}`);
-      console.log(`- Session Timeout: ${this.config.sessionTimeoutMinutes} minutes`);
-      console.log(`- Signing Secret: ${this.config.slack.signingSecret?.substring(0, 8)}...`);
+      logger.info("Configuration:");
+      logger.info(`- Kubernetes Namespace: ${this.config.kubernetes.namespace}`);
+      logger.info(`- Worker Image: ${this.config.kubernetes.workerImage}`);
+      logger.info(`- GitHub Organization: ${this.config.github.organization}`);
+      logger.info(`- Session Timeout: ${this.config.sessionTimeoutMinutes} minutes`);
+      logger.info(`- Signing Secret: ${this.config.slack.signingSecret?.substring(0, 8)}...`);
       
     } catch (error) {
-      console.error("Failed to start Slack dispatcher:", error);
+      logger.error("Failed to start Slack dispatcher:", error);
       process.exit(1);
     }
   }
@@ -171,9 +172,9 @@ export class SlackDispatcher {
       await this.jobManager.cleanup();
       
       
-      console.log("Slack dispatcher stopped");
+      logger.info("Slack dispatcher stopped");
     } catch (error) {
-      console.error("Error stopping Slack dispatcher:", error);
+      logger.error("Error stopping Slack dispatcher:", error);
     }
   }
 
@@ -218,7 +219,7 @@ export class SlackDispatcher {
       const botUserId = authResult.user_id as string;
       const botId = authResult.bot_id as string;
       
-      console.log(`Bot initialized - User ID: ${botUserId}, Bot ID: ${botId}`);
+      logger.info(`Bot initialized - User ID: ${botUserId}, Bot ID: ${botId}`);
       
       // Store bot info in config for event handlers to use
       config.slack.botUserId = botUserId;
@@ -232,15 +233,15 @@ export class SlackDispatcher {
         config
       );
     } catch (error) {
-      console.error("Failed to get bot info:", error);
+      logger.error("Failed to get bot info:", error);
       throw new Error("Failed to initialize bot - could not get bot user ID");
     }
   }
 
   private setupErrorHandling(): void {
     this.app.error(async (error) => {
-      console.error("Slack app error:", error);
-      console.error("Error details:", {
+      logger.error("Slack app error:", error);
+      logger.error("Error details:", {
         message: error.message,
         code: (error as any).code,
         data: (error as any).data,
@@ -249,13 +250,13 @@ export class SlackDispatcher {
     });
 
     process.on("unhandledRejection", (reason, promise) => {
-      console.error("Unhandled Rejection at:", promise, "reason:", reason);
+      logger.error("Unhandled Rejection at:", promise, "reason:", reason);
       // Don't exit on unhandled rejections during startup
       // The app might still work despite some initialization errors
     });
 
     process.on("uncaughtException", (error) => {
-      console.error("Uncaught Exception:", error);
+      logger.error("Uncaught Exception:", error);
       process.exit(1);
     });
   }
@@ -265,7 +266,7 @@ export class SlackDispatcher {
    */
   private setupGracefulShutdown(): void {
     const cleanup = async () => {
-      console.log("Shutting down Slack dispatcher...");
+      logger.info("Shutting down Slack dispatcher...");
       
       // Stop accepting new jobs
       await this.stop();
@@ -273,10 +274,10 @@ export class SlackDispatcher {
       // Wait for active jobs to complete (with timeout)
       const activeJobs = this.jobManager.getActiveJobCount();
       if (activeJobs > 0) {
-        console.log(`Waiting for ${activeJobs} active jobs to complete...`);
+        logger.info(`Waiting for ${activeJobs} active jobs to complete...`);
         
         const timeout = setTimeout(() => {
-          console.log("Timeout reached, forcing shutdown");
+          logger.warn("Timeout reached, forcing shutdown");
           process.exit(0);
         }, 60000); // 1 minute timeout
         
@@ -288,7 +289,7 @@ export class SlackDispatcher {
         clearTimeout(timeout);
       }
       
-      console.log("Slack dispatcher shutdown complete");
+      logger.info("Slack dispatcher shutdown complete");
       process.exit(0);
     };
 
@@ -305,7 +306,7 @@ async function main() {
     // Load environment variables from project root
     const envPath = join(__dirname, '../../../.env');
     dotenvConfig({ path: envPath });
-    console.log("🚀 Starting Claude Code Slack Dispatcher");
+    logger.info("🚀 Starting Claude Code Slack Dispatcher");
 
     // Get bot token from environment
     const botToken = process.env.SLACK_BOT_TOKEN;
@@ -354,16 +355,16 @@ async function main() {
     const dispatcher = new SlackDispatcher(config);
     await dispatcher.start();
 
-    console.log("✅ Claude Code Slack Dispatcher is running!");
+    logger.info("✅ Claude Code Slack Dispatcher is running!");
 
     // Handle health checks
     process.on("SIGUSR1", () => {
       const status = dispatcher.getStatus();
-      console.log("Health check:", JSON.stringify(status, null, 2));
+      logger.info("Health check:", JSON.stringify(status, null, 2));
     });
 
   } catch (error) {
-    console.error("❌ Failed to start Slack Dispatcher:", error);
+    logger.error("❌ Failed to start Slack Dispatcher:", error);
     process.exit(1);
   }
 }

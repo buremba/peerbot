@@ -4,6 +4,7 @@ import { exec } from "child_process";
 import { promisify } from "util";
 import { mkdir, stat, rm } from "fs/promises";
 import { join } from "path";
+import logger from "./logger";
 import type { 
   WorkspaceSetupConfig, 
   WorkspaceInfo, 
@@ -26,7 +27,7 @@ export class WorkspaceManager {
    */
   async setupWorkspace(repositoryUrl: string, username: string): Promise<WorkspaceInfo> {
     try {
-      console.log(`Setting up workspace for ${username}...`);
+      logger.info(`Setting up workspace for ${username}...`);
       
       const userDirectory = join(this.config.baseDirectory, username);
       
@@ -37,21 +38,21 @@ export class WorkspaceManager {
       const userDirExists = await this.directoryExists(userDirectory);
       
       if (userDirExists) {
-        console.log(`User directory ${userDirectory} already exists, checking if it's a git repository...`);
+        logger.info(`User directory ${userDirectory} already exists, checking if it's a git repository...`);
         
         // Check if it's a git repository
         const isGitRepo = await this.isGitRepository(userDirectory);
         
         if (isGitRepo) {
-          console.log("Existing git repository found, updating...");
+          logger.info("Existing git repository found, updating...");
           await this.updateRepository(userDirectory);
         } else {
-          console.log("Directory exists but is not a git repository, removing and re-cloning...");
+          logger.info("Directory exists but is not a git repository, removing and re-cloning...");
           await rm(userDirectory, { recursive: true, force: true });
           await this.cloneRepository(repositoryUrl, userDirectory);
         }
       } else {
-        console.log("User directory does not exist, cloning repository...");
+        logger.info("User directory does not exist, cloning repository...");
         await this.cloneRepository(repositoryUrl, userDirectory);
       }
 
@@ -69,7 +70,7 @@ export class WorkspaceManager {
         setupComplete: true,
       };
 
-      console.log(`Workspace setup completed for ${username} at ${userDirectory}`);
+      logger.info(`Workspace setup completed for ${username} at ${userDirectory}`);
       return this.workspaceInfo;
 
     } catch (error) {
@@ -86,7 +87,7 @@ export class WorkspaceManager {
    */
   private async cloneRepository(repositoryUrl: string, targetDirectory: string): Promise<void> {
     try {
-      console.log(`Cloning repository ${repositoryUrl} to ${targetDirectory}...`);
+      logger.info(`Cloning repository ${repositoryUrl} to ${targetDirectory}...`);
       
       // Use GitHub token for authentication
       const authenticatedUrl = this.addGitHubAuth(repositoryUrl);
@@ -97,10 +98,10 @@ export class WorkspaceManager {
       );
       
       if (stderr && !stderr.includes("Cloning into")) {
-        console.warn("Git clone warnings:", stderr);
+        logger.warn("Git clone warnings:", stderr);
       }
       
-      console.log("Repository cloned successfully");
+      logger.info("Repository cloned successfully");
       
     } catch (error) {
       throw new WorkspaceError(
@@ -116,7 +117,7 @@ export class WorkspaceManager {
    */
   private async updateRepository(repositoryDirectory: string): Promise<void> {
     try {
-      console.log(`Updating repository at ${repositoryDirectory}...`);
+      logger.info(`Updating repository at ${repositoryDirectory}...`);
       
       // Fetch latest changes
       await execAsync("git fetch origin", { 
@@ -138,7 +139,7 @@ export class WorkspaceManager {
         });
       }
       
-      console.log("Repository updated successfully");
+      logger.info("Repository updated successfully");
       
     } catch (error) {
       throw new WorkspaceError(
@@ -154,7 +155,7 @@ export class WorkspaceManager {
    */
   private async setupGitConfig(repositoryDirectory: string, username: string): Promise<void> {
     try {
-      console.log(`Setting up git configuration for ${username}...`);
+      logger.info(`Setting up git configuration for ${username}...`);
       
       // Set user name and email
       await execAsync(`git config user.name "Claude Code Bot (${username})"`, {
@@ -170,7 +171,7 @@ export class WorkspaceManager {
         cwd: repositoryDirectory,
       });
       
-      console.log("Git configuration completed");
+      logger.info("Git configuration completed");
       
     } catch (error) {
       throw new WorkspaceError(
@@ -232,7 +233,7 @@ export class WorkspaceManager {
       return repositoryUrl;
       
     } catch (error) {
-      console.warn("Failed to parse repository URL, using as-is:", error);
+      logger.warn("Failed to parse repository URL, using as-is:", error);
       return repositoryUrl;
     }
   }
@@ -299,7 +300,7 @@ export class WorkspaceManager {
     try {
       const branchName = `claude/session-${sessionKey.replace(/[^a-z0-9]/gi, "-").toLowerCase()}`;
       
-      console.log(`Creating session branch: ${branchName}`);
+      logger.info(`Creating session branch: ${branchName}`);
       
       // Create and checkout new branch
       await execAsync(`git checkout -b "${branchName}"`, {
@@ -308,7 +309,7 @@ export class WorkspaceManager {
       
       this.workspaceInfo.repository.branch = branchName;
       
-      console.log(`Session branch created: ${branchName}`);
+      logger.info(`Session branch created: ${branchName}`);
       return branchName;
       
     } catch (error) {
@@ -337,7 +338,7 @@ export class WorkspaceManager {
       // Check if there are changes to commit
       try {
         await execAsync("git diff --cached --exit-code", { cwd: repoDir });
-        console.log("No changes to commit");
+        logger.info("No changes to commit");
         return;
       } catch (error) {
         // Changes exist, proceed with commit
@@ -353,7 +354,7 @@ export class WorkspaceManager {
         timeout: 30000 
       });
       
-      console.log(`Changes committed and pushed to ${branch}`);
+      logger.info(`Changes committed and pushed to ${branch}`);
       
     } catch (error) {
       throw new WorkspaceError(
@@ -369,21 +370,21 @@ export class WorkspaceManager {
    */
   async cleanup(): Promise<void> {
     try {
-      console.log("Cleaning up workspace...");
+      logger.info("Cleaning up workspace...");
       
       if (this.workspaceInfo) {
         // Commit any final changes
         try {
           await this.commitAndPush("Final session cleanup by Claude Code Worker");
         } catch (error) {
-          console.warn("Failed to commit final changes:", error);
+          logger.warn("Failed to commit final changes:", error);
         }
       }
       
-      console.log("Workspace cleanup completed");
+      logger.info("Workspace cleanup completed");
       
     } catch (error) {
-      console.error("Error during workspace cleanup:", error);
+      logger.error("Error during workspace cleanup:", error);
     }
   }
 

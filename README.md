@@ -120,32 +120,6 @@ kubectl logs deployment/peerbot-dispatcher -n peerbot
 kubectl get jobs -n peerbot -w
 ```
 
-### 3. Test the Bot
-
-Mention the bot in Slack:
-
-```
-@peerbotai help me create a React component for user authentication
-```
-
-**Expected Response:**
-```
-🤖 Claude is working on your request...
-
-Worker Environment:
-• Pod: claude-worker-auth-abc123
-• CPU: 2000m Memory: 4Gi  
-• Timeout: 5 minutes
-• Repository: user-yourname
-
-GitHub Workspace:
-• Repository: user-yourname
-• 📝 Edit on GitHub.dev
-• 🔄 Create Pull Request
-
-Progress updates will appear below...
-```
-
 📖 **For detailed setup:** [Kubernetes Deployment Guide](./docs/kubernetes-deployment.md)
 
 ---
@@ -188,29 +162,6 @@ bun run dev:slack
 ---
 
 ## 🎯 User Experience
-
-### Thread-Based Conversations
-
-**Key Feature**: Each Slack thread = persistent conversation
-
-```
-User: @peerbotai create a simple REST API in Python
-
-Bot: 🤖 Claude is working on your request...
-     [Creates user repository and starts worker]
-
-Bot: ✅ Created Flask API with user model, CRUD endpoints, 
-     and Docker configuration.
-     📝 View on GitHub.dev | 🔄 Create PR
-
-User: (in same thread) Can you add authentication?
-
-Bot: 🤖 Resuming conversation...
-     [Loads previous context and adds auth]
-
-Bot: ✅ Added JWT authentication with login/register endpoints.
-     📝 View changes | 🔄 Updated PR
-```
 
 ### User Repositories
 

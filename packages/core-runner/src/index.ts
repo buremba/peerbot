@@ -3,6 +3,7 @@
 import { runClaudeWithProgress } from "./claude-execution";
 import { SessionManager } from "./session-manager";
 import { createPromptFile } from "./prompt-generation";
+import logger from "./logger";
 import type { 
   ClaudeExecutionOptions, 
   ClaudeExecutionResult, 
@@ -47,13 +48,13 @@ export class ClaudeSessionRunner {
 
     try {
       // Create session with conversation history from context
-      console.log(`Creating session ${sessionKey} with ${context.conversationHistory?.length || 0} messages from history`);
+      logger.info(`Creating session ${sessionKey} with ${context.conversationHistory?.length || 0} messages from history`);
       const sessionState = await this.sessionManager.createSession(sessionKey, context);
       
       // Add conversation history to session if provided
       if (context.conversationHistory && context.conversationHistory.length > 0) {
         sessionState.conversation = [...context.conversationHistory];
-        console.log(`Loaded ${context.conversationHistory.length} messages into session`);
+        logger.info(`Loaded ${context.conversationHistory.length} messages into session`);
       }
 
       // Add user message to conversation
@@ -108,7 +109,7 @@ export class ClaudeSessionRunner {
       };
 
     } catch (error) {
-      console.error(`Session ${sessionKey} execution failed:`, error);
+      logger.error(`Session ${sessionKey} execution failed:`, error);
       
       // Clean up
       this.sessionManager.clearTimeout(sessionKey);

@@ -6,6 +6,7 @@ import { SlackIntegration } from "./slack-integration";
 import { SlackTokenManager } from "./slack/token-manager";
 import { extractFinalResponse } from "./claude-output-parser";
 import type { WorkerConfig } from "./types";
+import logger from "./logger";
 
 export class ClaudeWorker {
   private sessionRunner: ClaudeSessionRunner;
@@ -75,12 +76,12 @@ export class ClaudeWorker {
     const originalMessageTs = process.env.ORIGINAL_MESSAGE_TS;
     
     try {
-      console.log(`🚀 Starting Claude worker for session: ${this.config.sessionKey}`);
-      console.log(`[TIMING] Worker execute() started at: ${new Date(executeStartTime).toISOString()}`);
+      logger.info(`🚀 Starting Claude worker for session: ${this.config.sessionKey}`);
+      logger.info(`[TIMING] Worker execute() started at: ${new Date(executeStartTime).toISOString()}`);
       
       // Add "gear" reaction to indicate worker is running
       if (originalMessageTs) {
-        console.log(`Adding gear reaction to message ${originalMessageTs}`);
+        logger.info(`Adding gear reaction to message ${originalMessageTs}`);
         await this.slackIntegration.removeReaction("eyes", originalMessageTs);
         await this.slackIntegration.addReaction("gear", originalMessageTs);
       }
@@ -114,7 +115,7 @@ export class ClaudeWorker {
       
       // Decode user prompt first
       const userPrompt = Buffer.from(this.config.userPrompt, "base64").toString("utf-8");
-      console.log(`User prompt: ${userPrompt.substring(0, 100)}...`);
+      logger.info(`User prompt: ${userPrompt.substring(0, 100)}...`);
       
       // Check if this is a simple query that doesn't need repository
       const isSimpleQuery = this.isSimpleQuery(userPrompt);
@@ -124,13 +125,13 @@ export class ClaudeWorker {
         await this.slackIntegration.updateProgress("💻 Setting up workspace...");
 
         // Setup workspace
-        console.log("Setting up workspace...");
+        logger.info("Setting up workspace...");
         await this.workspaceManager.setupWorkspace(
           this.config.repositoryUrl,
           this.config.username
         );
       } else {
-        console.log("Skipping workspace setup for simple query");
+        logger.info("Skipping workspace setup for simple query");
         // Create a minimal workspace directory
         const fs = await import('fs/promises');
         const path = await import('path');
@@ -146,7 +147,7 @@ export class ClaudeWorker {
       const conversationHistory = this.config.conversationHistory 
         ? JSON.parse(this.config.conversationHistory)
         : [];
-      console.log(`Loaded ${conversationHistory.length} messages from conversation history`);
+      logger.info(`Loaded ${conversationHistory.length} messages from conversation history`);
 
       // Prepare session context with conversation history
       const sessionContext = {
@@ -163,9 +164,9 @@ export class ClaudeWorker {
       };
 
       // Execute Claude session with conversation history
-      console.log(`[TIMING] Starting Claude session at: ${new Date().toISOString()}`);
+      logger.info(`[TIMING] Starting Claude session at: ${new Date().toISOString()}`);
       const claudeStartTime = Date.now();
-      console.log(`[TIMING] Total worker startup time: ${claudeStartTime - executeStartTime}ms`);
+      logger.info(`[TIMING] Total worker startup time: ${claudeStartTime - executeStartTime}ms`);
       
       let firstOutputLogged = false;
       const result = await this.sessionRunner.executeSession({
@@ -177,7 +178,7 @@ export class ClaudeWorker {
         onProgress: async (update) => {
           // Log timing for first output
           if (!firstOutputLogged && update.type === "output") {
-            console.log(`[TIMING] First Claude output at: ${new Date().toISOString()} (${Date.now() - claudeStartTime}ms after Claude start)`);
+            logger.info(`[TIMING] First Claude output at: ${new Date().toISOString()} (${Date.now() - claudeStartTime}ms after Claude start)`);
             firstOutputLogged = true;
           }
           // Stream progress to Slack
@@ -189,15 +190,15 @@ export class ClaudeWorker {
 
       // Handle final result
       
-      console.log("=== FINAL RESULT DEBUG ===");
-      console.log("result.success:", result.success);
-      console.log("result.output exists:", !!result.output);
-      console.log("result.output length:", result.output?.length);
-      console.log("result.output sample:", result.output?.substring(0, 300));
-      console.log("About to update Slack...");
+      logger.info("=== FINAL RESULT DEBUG ===");
+      logger.info("result.success:", result.success);
+      logger.info("result.output exists:", !!result.output);
+      logger.info("result.output length:", result.output?.length);
+      logger.info("result.output sample:", result.output?.substring(0, 300));
+      logger.info("About to update Slack...");
       
       if (result.success) {
-        console.log("Calling slackIntegration.updateProgress...");
+        logger.info("Calling slackIntegration.updateProgress...");
         // Update with Claude's response and completion status
         const claudeResponse = this.formatClaudeResponse(result.output);
         if (claudeResponse) {
@@ -207,13 +208,13 @@ export class ClaudeWorker {
         }
         
         // Update reaction to success
-        console.log(`Updating reaction to success. originalMessageTs: ${originalMessageTs}`);
+        logger.info(`Updating reaction to success. originalMessageTs: ${originalMessageTs}`);
         if (originalMessageTs) {
-          console.log(`Removing gear and adding check mark reaction to ${originalMessageTs}`);
+          logger.info(`Removing gear and adding check mark reaction to ${originalMessageTs}`);
           await this.slackIntegration.removeReaction("gear", originalMessageTs);
           await this.slackIntegration.addReaction("white_check_mark", originalMessageTs);
         } else {
-          console.log('No originalMessageTs found, skipping reaction update');
+          logger.info('No originalMessageTs found, skipping reaction update');
         }
       } else {
         const errorMsg = result.error || "Unknown error";
@@ -228,16 +229,16 @@ export class ClaudeWorker {
         }
       }
 
-      console.log(`Worker completed with ${result.success ? "success" : "failure"}`);
+      logger.info(`Worker completed with ${result.success ? "success" : "failure"}`);
 
     } catch (error) {
-      console.error("Worker execution failed:", error);
+      logger.error("Worker execution failed:", error);
       
       // Update Slack with error
       await this.slackIntegration.updateProgress(
         `💥 Worker crashed: ${error instanceof Error ? error.message : "Unknown error"}`
       ).catch(slackError => {
-        console.error("Failed to update Slack with error:", slackError);
+        logger.error("Failed to update Slack with error:", slackError);
       });
       
       // Update reaction to error
@@ -269,7 +270,7 @@ You MUST generate Markdown content that will be rendered in user's messaging app
 3. python: Uses \`uv\` to install dependencies and run the script. You MUST use shebang on top of the script to define dependencies if the project is not a Python project. 
 5. javascript/typescript: Runs the script in the container via \`bun run\`.
 
-\`\`\`blockkit { action: "Example Button", confirm: false, show: true }
+\`\`\`blockkit { action: "Example Button", confirm: false, show: false }
 {
   "blocks": [
     {
@@ -314,18 +315,18 @@ This is ${this.config.threadTs ? "a continued conversation in a thread" : "a new
 
 
   private formatClaudeResponse(output: string | undefined): string {
-    console.log("=== formatClaudeResponse DEBUG ===");
-    console.log("output exists?", !!output);
-    console.log("output length:", output?.length);
-    console.log("output first 200 chars:", output?.substring(0, 200));
+    logger.info("=== formatClaudeResponse DEBUG ===");
+    logger.info("output exists?", !!output);
+    logger.info("output length:", output?.length);
+    logger.info("output first 200 chars:", output?.substring(0, 200));
     
     if (!output) {
       return "";
     }
     
     const extracted = extractFinalResponse(output);
-    console.log("extracted response:", extracted);
-    console.log("extracted length:", extracted.length);
+    logger.info("extracted response:", extracted);
+    logger.info("extracted length:", extracted.length);
     
     // Return the raw extracted markdown - slack-integration will handle conversion
     return extracted || "";
@@ -336,7 +337,7 @@ This is ${this.config.threadTs ? "a continued conversation in a thread" : "a new
    */
   async cleanup(): Promise<void> {
     try {
-      console.log("Cleaning up worker resources...");
+      logger.info("Cleaning up worker resources...");
       
       // Cleanup session runner
       await this.sessionRunner.cleanupSession(this.config.sessionKey);
@@ -344,9 +345,9 @@ This is ${this.config.threadTs ? "a continued conversation in a thread" : "a new
       // Cleanup workspace
       await this.workspaceManager.cleanup();
       
-      console.log("Worker cleanup completed");
+      logger.info("Worker cleanup completed");
     } catch (error) {
-      console.error("Error during cleanup:", error);
+      logger.error("Error during cleanup:", error);
     }
   }
 }
@@ -359,8 +360,8 @@ async function main() {
   let worker: ClaudeWorker | null = null;
   
   try {
-    console.log("🚀 Starting Claude Code Worker");
-    console.log(`[TIMING] Worker process started at: ${new Date(workerStartTime).toISOString()}`);
+    logger.info("🚀 Starting Claude Code Worker");
+    logger.info(`[TIMING] Worker process started at: ${new Date(workerStartTime).toISOString()}`);
 
     // Load configuration from environment
     const config: WorkerConfig = {
@@ -404,7 +405,7 @@ async function main() {
 
     if (missingVars.length > 0) {
       const errorMessage = `Missing required environment variables: ${missingVars.join(", ")}`;
-      console.error(`❌ ${errorMessage}`);
+      logger.error(`❌ ${errorMessage}`);
       
       // Try to update Slack if we have enough config
       if (process.env.SLACK_BOT_TOKEN && process.env.SLACK_RESPONSE_CHANNEL && process.env.SLACK_RESPONSE_TS) {
@@ -420,27 +421,27 @@ async function main() {
             `💥 Worker failed to start: ${errorMessage}`
           );
         } catch (slackError) {
-          console.error("Failed to send error to Slack:", slackError);
+          logger.error("Failed to send error to Slack:", slackError);
         }
       }
       
       throw new Error(errorMessage);
     }
 
-    console.log("Configuration loaded:");
-    console.log(`- Session: ${config.sessionKey}`);
-    console.log(`- User: ${config.username}`);
-    console.log(`- Repository: ${config.repositoryUrl}`);
+    logger.info("Configuration loaded:");
+    logger.info(`- Session: ${config.sessionKey}`);
+    logger.info(`- User: ${config.username}`);
+    logger.info(`- Repository: ${config.repositoryUrl}`);
 
     // Create and execute worker
     worker = new ClaudeWorker(config);
     await worker.execute();
 
-    console.log("✅ Worker execution completed successfully");
+    logger.info("✅ Worker execution completed successfully");
     process.exit(0);
 
   } catch (error) {
-    console.error("❌ Worker execution failed:", error);
+    logger.error("❌ Worker execution failed:", error);
     
     // Try to report error to Slack if possible
     if (process.env.SLACK_BOT_TOKEN && process.env.SLACK_RESPONSE_CHANNEL && process.env.SLACK_RESPONSE_TS) {
@@ -458,7 +459,7 @@ async function main() {
           `💥 Worker failed: ${errorMessage}`
         );
       } catch (slackError) {
-        console.error("Failed to send error to Slack:", slackError);
+        logger.error("Failed to send error to Slack:", slackError);
       }
     }
     
@@ -467,7 +468,7 @@ async function main() {
       try {
         await worker.cleanup();
       } catch (cleanupError) {
-        console.error("Error during cleanup:", cleanupError);
+        logger.error("Error during cleanup:", cleanupError);
       }
     }
     
@@ -477,12 +478,12 @@ async function main() {
 
 // Handle process signals
 process.on("SIGTERM", async () => {
-  console.log("Received SIGTERM, shutting down gracefully...");
+  logger.info("Received SIGTERM, shutting down gracefully...");
   process.exit(0);
 });
 
 process.on("SIGINT", async () => {
-  console.log("Received SIGINT, shutting down gracefully...");
+  logger.info("Received SIGINT, shutting down gracefully...");
   process.exit(0);
 });
 

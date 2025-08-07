@@ -1,4 +1,4 @@
-#\!/usr/bin/env node
+#!/usr/bin/env node
 const https = require('https');
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '.env.qa') });
@@ -39,4 +39,3 @@ function post(method, body) {
   console.log('Message sent:', msg.ts);
   console.log('Check: kubectl get pods -n peerbot | grep claude-worker');
 })().catch(console.error);
-EOF < /dev/null

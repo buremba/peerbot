@@ -5,6 +5,7 @@ import { promisify } from "util";
 import { unlink, writeFile, stat } from "fs/promises";
 import { createWriteStream } from "fs";
 import { spawn } from "child_process";
+import logger from "./logger";
 import type { 
   ClaudeExecutionOptions, 
   ClaudeExecutionResult, 
@@ -135,16 +136,16 @@ export async function runClaudeWithProgress(
     // Ignore error
   }
 
-  console.log(`Prompt file size: ${promptSize} bytes`);
+  logger.info(`Prompt file size: ${promptSize} bytes`);
 
   // Log custom environment variables if any
   if (Object.keys(config.env).length > 0) {
     const envKeys = Object.keys(config.env).join(", ");
-    console.log(`Custom environment variables: ${envKeys}`);
+    logger.info(`Custom environment variables: ${envKeys}`);
   }
 
   // Output to console
-  console.log(`Running Claude with prompt from file: ${config.promptPath}`);
+  logger.info(`Running Claude with prompt from file: ${config.promptPath}`);
 
   // Start sending prompt to pipe in background
   const catProcess = spawn("cat", [config.promptPath], {
@@ -154,7 +155,7 @@ export async function runClaudeWithProgress(
   catProcess.stdout.pipe(pipeStream);
 
   catProcess.on("error", (error) => {
-    console.error("Error reading prompt file:", error);
+    logger.error("Error reading prompt file:", error);
     pipeStream.destroy();
   });
 
@@ -169,7 +170,7 @@ export async function runClaudeWithProgress(
 
   // Handle Claude process errors
   claudeProcess.on("error", (error) => {
-    console.error("Error spawning Claude process:", error);
+    logger.error("Error spawning Claude process:", error);
     pipeStream.destroy();
   });
 
@@ -209,7 +210,7 @@ export async function runClaudeWithProgress(
 
   // Handle stdout errors
   claudeProcess.stdout.on("error", (error) => {
-    console.error("Error reading Claude stdout:", error);
+    logger.error("Error reading Claude stdout:", error);
   });
 
   // Pipe from named pipe to Claude
@@ -218,7 +219,7 @@ export async function runClaudeWithProgress(
 
   // Handle pipe process errors
   pipeProcess.on("error", (error) => {
-    console.error("Error reading from named pipe:", error);
+    logger.error("Error reading from named pipe:", error);
     claudeProcess.kill("SIGTERM");
   });
 
@@ -242,7 +243,7 @@ export async function runClaudeWithProgress(
     // Set a timeout for the process
     const timeoutId = setTimeout(() => {
       if (!resolved) {
-        console.error(
+        logger.error(
           `Claude process timed out after ${timeoutMs / 1000} seconds`,
         );
         claudeProcess.kill("SIGTERM");
@@ -269,7 +270,7 @@ export async function runClaudeWithProgress(
 
     claudeProcess.on("error", (error) => {
       if (!resolved) {
-        console.error("Claude process error:", error);
+        logger.error("Claude process error:", error);
         clearTimeout(timeoutId);
         resolved = true;
         resolve(1);
@@ -308,7 +309,7 @@ export async function runClaudeWithProgress(
       await writeFile(EXECUTION_FILE, jsonOutput);
       executionFile = EXECUTION_FILE;
 
-      console.log(`Log saved to ${EXECUTION_FILE}`);
+      logger.info(`Log saved to ${EXECUTION_FILE}`);
 
       // Call completion callback
       if (onProgress) {
@@ -319,7 +320,7 @@ export async function runClaudeWithProgress(
         });
       }
     } catch (e) {
-      console.warn(`Failed to process output for execution metrics: ${e}`);
+      logger.warn(`Failed to process output for execution metrics: ${e}`);
     }
 
     return {

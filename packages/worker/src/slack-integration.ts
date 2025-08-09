@@ -106,6 +106,9 @@ export class SlackIntegration {
    */
   private async performUpdate(content: string): Promise<void> {
     try {
+      logger.info(`performUpdate called with content length: ${content.length}`);
+      logger.info(`Response channel: ${this.responseChannel}, TS: ${this.responseTs}`);
+      
       // Convert markdown to Slack format with blocks support
       const slackMessage = markdownToSlackWithBlocks(content);
       
@@ -144,7 +147,12 @@ export class SlackIntegration {
         updateOptions.blocks = blocks;
       }
       
-      await this.client.chat.update(updateOptions);
+      logger.info(`Updating Slack message with ${blocks.length} blocks`);
+      const result = await this.client.chat.update(updateOptions);
+      logger.info(`Slack update result: ${result.ok}`);
+      if (!result.ok) {
+        logger.error(`Slack update failed with error: ${result.error}`);
+      }
 
     } catch (error: any) {
       // Handle specific Slack errors

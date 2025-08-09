@@ -25,7 +25,7 @@ export class WorkspaceManager {
   /**
    * Setup workspace by cloning repository
    */
-  async setupWorkspace(repositoryUrl: string, username: string): Promise<WorkspaceInfo> {
+  async setupWorkspace(repositoryUrl: string, username: string, sessionKey?: string): Promise<WorkspaceInfo> {
     try {
       logger.info(`Setting up workspace for ${username}...`);
       
@@ -45,7 +45,7 @@ export class WorkspaceManager {
         
         if (isGitRepo) {
           logger.info("Existing git repository found, updating...");
-          await this.updateRepository(userDirectory);
+          await this.updateRepository(userDirectory, sessionKey);
         } else {
           logger.info("Directory exists but is not a git repository, removing and re-cloning...");
           await rm(userDirectory, { recursive: true, force: true });
@@ -115,7 +115,7 @@ export class WorkspaceManager {
   /**
    * Update existing repository
    */
-  private async updateRepository(repositoryDirectory: string): Promise<void> {
+  private async updateRepository(repositoryDirectory: string, sessionKey?: string): Promise<void> {
     try {
       logger.info(`Updating repository at ${repositoryDirectory}...`);
       
@@ -125,7 +125,50 @@ export class WorkspaceManager {
         timeout: 30000 
       });
       
-      // Reset to origin/main (or origin/master)
+      // If sessionKey provided, check if session branch exists
+      if (sessionKey) {
+        // Use the thread timestamp directly in the branch name
+        const branchName = `claude/${sessionKey.replace(/\./g, "-")}`;
+        
+        try {
+          // Check if the branch exists on remote
+          const { stdout } = await execAsync(
+            `git ls-remote --heads origin ${branchName}`,
+            { cwd: repositoryDirectory, timeout: 10000 }
+          );
+          
+          if (stdout.trim()) {
+            logger.info(`Session branch ${branchName} exists on remote, checking it out...`);
+            
+            // Branch exists on remote, check it out
+            try {
+              // Try to checkout existing local branch
+              await execAsync(`git checkout "${branchName}"`, {
+                cwd: repositoryDirectory,
+                timeout: 10000
+              });
+              // Pull latest changes
+              await execAsync(`git pull origin "${branchName}"`, {
+                cwd: repositoryDirectory,
+                timeout: 30000
+              });
+            } catch (checkoutError) {
+              // Local branch doesn't exist, create it from remote
+              await execAsync(`git checkout -b "${branchName}" "origin/${branchName}"`, {
+                cwd: repositoryDirectory,
+                timeout: 10000
+              });
+            }
+            
+            logger.info(`Successfully checked out session branch ${branchName}`);
+            return;
+          }
+        } catch (error) {
+          logger.info(`Session branch not found on remote, will use main/master`);
+        }
+      }
+      
+      // No session branch or sessionKey not provided, reset to main/master
       try {
         await execAsync("git reset --hard origin/main", { 
           cwd: repositoryDirectory,
@@ -298,18 +341,51 @@ export class WorkspaceManager {
     }
 
     try {
-      const branchName = `claude/session-${sessionKey.replace(/[^a-z0-9]/gi, "-").toLowerCase()}`;
+      // Use the thread timestamp directly in the branch name
+      // Replace dots with dashes for git branch naming conventions
+      const branchName = `claude/${sessionKey.replace(/\./g, "-")}`;
       
-      logger.info(`Creating session branch: ${branchName}`);
+      logger.info(`Checking if session branch exists: ${branchName}`);
       
-      // Create and checkout new branch
-      await execAsync(`git checkout -b "${branchName}"`, {
-        cwd: this.workspaceInfo.userDirectory,
-      });
+      // Check if branch already exists locally or remotely
+      try {
+        // Try to checkout existing branch
+        await execAsync(`git checkout "${branchName}"`, {
+          cwd: this.workspaceInfo.userDirectory,
+        });
+        logger.info(`Session branch ${branchName} already exists locally, checked out`);
+      } catch (checkoutError) {
+        // Branch doesn't exist locally, check remote
+        try {
+          const { stdout } = await execAsync(
+            `git ls-remote --heads origin ${branchName}`,
+            { cwd: this.workspaceInfo.userDirectory, timeout: 10000 }
+          );
+          
+          if (stdout.trim()) {
+            // Branch exists on remote, checkout from remote
+            await execAsync(`git checkout -b "${branchName}" "origin/${branchName}"`, {
+              cwd: this.workspaceInfo.userDirectory,
+            });
+            logger.info(`Session branch ${branchName} exists on remote, checked out`);
+          } else {
+            // Branch doesn't exist anywhere, create new
+            await execAsync(`git checkout -b "${branchName}"`, {
+              cwd: this.workspaceInfo.userDirectory,
+            });
+            logger.info(`Created new session branch: ${branchName}`);
+          }
+        } catch (error) {
+          // Error checking remote, create new branch
+          await execAsync(`git checkout -b "${branchName}"`, {
+            cwd: this.workspaceInfo.userDirectory,
+          });
+          logger.info(`Created new session branch: ${branchName}`);
+        }
+      }
       
       this.workspaceInfo.repository.branch = branchName;
       
-      logger.info(`Session branch created: ${branchName}`);
       return branchName;
       
     } catch (error) {

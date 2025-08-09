@@ -14,6 +14,7 @@ export class ClaudeWorker {
   private slackIntegration: SlackIntegration;
   private config: WorkerConfig;
   private tokenManager?: SlackTokenManager;
+  private autoPushInterval?: NodeJS.Timeout;
 
   constructor(config: WorkerConfig) {
     this.config = config;
@@ -39,6 +40,37 @@ export class ClaudeWorker {
       });
     } else {
       this.slackIntegration = new SlackIntegration(config.slack);
+    }
+  }
+
+  /**
+   * Start automatic git push interval
+   */
+  private startAutoPush(): void {
+    // Check and push changes every 30 seconds
+    this.autoPushInterval = setInterval(async () => {
+      try {
+        const status = await this.workspaceManager.getRepositoryStatus();
+        if (status.hasChanges) {
+          logger.info("Auto-push: Detected changes, committing and pushing...");
+          await this.workspaceManager.commitAndPush(
+            `Auto-save: ${status.changedFiles.length} file(s) modified`
+          );
+          logger.info("Auto-push: Changes pushed successfully");
+        }
+      } catch (error) {
+        logger.warn("Auto-push failed:", error);
+      }
+    }, 30000); // Every 30 seconds
+  }
+
+  /**
+   * Stop automatic git push interval
+   */
+  private stopAutoPush(): void {
+    if (this.autoPushInterval) {
+      clearInterval(this.autoPushInterval);
+      this.autoPushInterval = undefined;
     }
   }
 
@@ -86,9 +118,8 @@ export class ClaudeWorker {
         await this.slackIntegration.addReaction("gear", originalMessageTs);
       }
       
-      // Create context header block (this should match what dispatcher created)
-      const pwd = process.cwd(); // Get current working directory
-      const contextBlock = {
+      // Create initial context block without branch URLs (branch doesn't exist yet)
+      let contextBlock = {
         type: "context",
         elements: [
           {
@@ -97,20 +128,20 @@ export class ClaudeWorker {
           },
           {
             type: "mrkdwn",
-            text: `📁 <${this.config.repositoryUrl.replace('github.com', 'github.dev')}|${this.config.username}>`
+            text: `📁 ${this.config.username}`
           },
           {
             type: "mrkdwn",
-            text: `🔀 <${this.config.repositoryUrl}/compare|Create Pull Request>`
+            text: `🔀 Setting up...`
           },
           {
             type: "mrkdwn",
-            text: `📂 ${pwd}`
+            text: `📂 /workspace/${this.config.username}`
           }
         ]
       };
       
-      // Set context block for all future updates
+      // Set initial context block
       this.slackIntegration.setContextBlock(contextBlock);
       
       // Decode user prompt first
@@ -128,8 +159,46 @@ export class ClaudeWorker {
         logger.info("Setting up workspace...");
         await this.workspaceManager.setupWorkspace(
           this.config.repositoryUrl,
-          this.config.username
+          this.config.username,
+          this.config.sessionKey
         );
+        
+        // Create or checkout session branch
+        logger.info("Setting up session branch...");
+        await this.workspaceManager.createSessionBranch(this.config.sessionKey);
+        
+        // Now that branch exists, update context block with proper URLs
+        const branchName = `claude/${this.config.sessionKey.replace(/\./g, "-")}`;
+        const pwd = process.cwd();
+        
+        contextBlock = {
+          type: "context",
+          elements: [
+            {
+              type: "mrkdwn",
+              text: `🔖 ${this.config.sessionKey}`
+            },
+            {
+              type: "mrkdwn",
+              text: `📁 <${this.config.repositoryUrl.replace('github.com', 'github.dev')}/tree/${branchName}|${this.config.username}>`
+            },
+            {
+              type: "mrkdwn",
+              text: `🔀 <${this.config.repositoryUrl}/compare/main...${branchName}|Create Pull Request>`
+            },
+            {
+              type: "mrkdwn",
+              text: `📂 ${pwd}`
+            }
+          ]
+        };
+        
+        // Update context block with proper URLs
+        this.slackIntegration.setContextBlock(contextBlock);
+        
+        // Start automatic git push
+        logger.info("Starting automatic git push monitoring...");
+        this.startAutoPush();
       } else {
         logger.info("Skipping workspace setup for simple query");
         // Create a minimal workspace directory
@@ -197,6 +266,22 @@ export class ClaudeWorker {
       logger.info("result.output sample:", result.output?.substring(0, 300));
       logger.info("About to update Slack...");
       
+      // Stop auto-push before final operations
+      this.stopAutoPush();
+      
+      // Do a final push of any remaining changes
+      try {
+        const status = await this.workspaceManager.getRepositoryStatus();
+        if (status.hasChanges) {
+          logger.info("Final push: Committing remaining changes...");
+          await this.workspaceManager.commitAndPush(
+            `Session complete: ${status.changedFiles.length} file(s) modified`
+          );
+        }
+      } catch (pushError) {
+        logger.warn("Final push failed:", pushError);
+      }
+      
       if (result.success) {
         logger.info("Calling slackIntegration.updateProgress...");
         // Update with Claude's response and completion status
@@ -233,6 +318,21 @@ export class ClaudeWorker {
 
     } catch (error) {
       logger.error("Worker execution failed:", error);
+      
+      // Stop auto-push on error
+      this.stopAutoPush();
+      
+      // Try to push any pending changes before failing
+      try {
+        const status = await this.workspaceManager.getRepositoryStatus();
+        if (status?.hasChanges) {
+          await this.workspaceManager.commitAndPush(
+            `Session error: Saving ${status.changedFiles.length} file(s) before exit`
+          );
+        }
+      } catch (pushError) {
+        logger.warn("Error push failed:", pushError);
+      }
       
       // Update Slack with error
       await this.slackIntegration.updateProgress(
@@ -294,19 +394,11 @@ You MUST generate Markdown content that will be rendered in user's messaging app
 - Working in: /workspace/${this.config.username}  
 - Repository: ${this.config.repositoryUrl}
 - Session: ${this.config.sessionKey}
-- Thread: ${this.config.threadTs || "New conversation"}
-
-**Your capabilities:**
-- Read, write, and execute files in the workspace
-- Interact with GIT repository on Github on users behalf
-- Use any available development tools
-- Access the internet for research
 
 **Important guidelines:**
-- All file changes will be automatically committed to the branch named after the session key
-- Progress updates are streamed to Slack in real-time
-- Be concise but thorough in your responses
+- You're working on branch: claude/${this.config.sessionKey.replace(/\./g, "-")}
 - Focus on solving the user's specific request
+- If you make any changes to the files, let the user know that they can click "Create Pull Request" button to review and merge the changes. All file changes are automatically saved and pushed to GitHub after you're done.
 
 **Session context:**
 This is ${this.config.threadTs ? "a continued conversation in a thread" : "a new conversation"}.`
@@ -316,17 +408,17 @@ This is ${this.config.threadTs ? "a continued conversation in a thread" : "a new
 
   private formatClaudeResponse(output: string | undefined): string {
     logger.info("=== formatClaudeResponse DEBUG ===");
-    logger.info("output exists?", !!output);
-    logger.info("output length:", output?.length);
-    logger.info("output first 200 chars:", output?.substring(0, 200));
+    logger.info(`output exists? ${!!output}`);
+    logger.info(`output length: ${output?.length}`);
+    logger.info(`output first 200 chars: ${output?.substring(0, 200)}`);
     
     if (!output) {
       return "";
     }
     
     const extracted = extractFinalResponse(output);
-    logger.info("extracted response:", extracted);
-    logger.info("extracted length:", extracted.length);
+    logger.info(`extracted response: ${extracted}`);
+    logger.info(`extracted length: ${extracted.length}`);
     
     // Return the raw extracted markdown - slack-integration will handle conversion
     return extracted || "";
@@ -339,10 +431,13 @@ This is ${this.config.threadTs ? "a continued conversation in a thread" : "a new
     try {
       logger.info("Cleaning up worker resources...");
       
+      // Stop auto-push if still running
+      this.stopAutoPush();
+      
       // Cleanup session runner
       await this.sessionRunner.cleanupSession(this.config.sessionKey);
       
-      // Cleanup workspace
+      // Cleanup workspace (this also does a final commit/push)
       await this.workspaceManager.cleanup();
       
       logger.info("Worker cleanup completed");

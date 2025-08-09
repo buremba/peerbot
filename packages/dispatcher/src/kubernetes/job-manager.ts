@@ -273,9 +273,15 @@ export class KubernetesJobManager {
    * Generate unique job name
    */
   private generateJobName(sessionKey: string): string {
-    const timestamp = Date.now().toString(36);
-    const sessionHash = sessionKey.replace(/[^a-z0-9]/gi, "").toLowerCase().substring(0, 8);
-    return `claude-worker-${sessionHash}-${timestamp}`;
+    // Use the session key (which is now the thread timestamp) directly
+    // Replace dots with dashes for Kubernetes naming conventions
+    const safeSessionKey = sessionKey.replace(/\./g, "-").toLowerCase();
+    
+    // For Kubernetes job names, we need to ensure uniqueness even if the same thread is processed multiple times
+    // Add a short timestamp suffix to handle multiple executions in the same thread
+    const timestamp = Date.now().toString(36).slice(-4);
+    
+    return `claude-worker-${safeSessionKey}-${timestamp}`;
   }
 
   /**

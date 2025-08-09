@@ -25,36 +25,36 @@ const logger = winston.createLogger({
 
 // Ensure logger methods work in bundled environment by adding console.log fallback
 const logMethods = {
-  error: (...args: any[]) => {
-    console.error('[dispatcher]', ...args);
+  error: (message: any, ...args: any[]) => {
+    console.error('[dispatcher]', message, ...args);
     try {
-      logger.error(...args);
+      logger.error(message, ...args);
     } catch (e) {
       // Fallback if Winston fails
     }
   },
-  warn: (...args: any[]) => {
-    console.warn('[dispatcher]', ...args);
+  warn: (message: any, ...args: any[]) => {
+    console.warn('[dispatcher]', message, ...args);
     try {
-      logger.warn(...args);
+      logger.warn(message, ...args);
     } catch (e) {
       // Fallback if Winston fails
     }
   },
-  info: (...args: any[]) => {
-    console.log('[dispatcher]', ...args);
+  info: (message: any, ...args: any[]) => {
+    console.log('[dispatcher]', message, ...args);
     try {
-      logger.info(...args);
+      logger.info(message, ...args);
     } catch (e) {
       // Fallback if Winston fails
     }
   },
-  debug: (...args: any[]) => {
+  debug: (message: any, ...args: any[]) => {
     if (process.env.LOG_LEVEL === 'debug') {
-      console.log('[dispatcher] [debug]', ...args);
+      console.log('[dispatcher] [debug]', message, ...args);
     }
     try {
-      logger.debug(...args);
+      logger.debug(message, ...args);
     } catch (e) {
       // Fallback if Winston fails
     }

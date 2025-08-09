@@ -1,5 +1,7 @@
 // Token manager for handling Slack OAuth token rotation
 
+import logger from "../logger";
+
 export class SlackTokenManager {
   private clientId: string;
   private clientSecret: string;

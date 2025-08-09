@@ -235,7 +235,6 @@ export function createSlackModeFromEnv(): SlackMode {
 
   return new SlackMode({
     slackToken,
-    triggerPhrase: process.env.SLACK_TRIGGER_PHRASE || "@bot",
     customInstructions: process.env.SLACK_CUSTOM_INSTRUCTIONS,
     allowedTools: process.env.SLACK_ALLOWED_TOOLS?.split(",").map(t => t.trim()),
     disallowedTools: process.env.SLACK_DISALLOWED_TOOLS?.split(",").map(t => t.trim()),

@@ -305,6 +305,17 @@ export class SlackEventHandlers {
           return;
         }
 
+        // Add "eyes" emoji to indicate we're processing the message
+        try {
+          await client.reactions.add({
+            channel: context.channelId,
+            timestamp: context.messageTs,
+            name: "eyes",
+          });
+        } catch (reactionError) {
+          logger.error("Failed to add processing reaction:", reactionError);
+        }
+
         const userRequest = this.extractUserRequest(context.text);
         await this.handleUserRequest(context, userRequest, client);
         

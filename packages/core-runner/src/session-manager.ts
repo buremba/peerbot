@@ -105,12 +105,18 @@ export class SessionManager {
    * Generate session key from context
    */
   static generateSessionKey(context: SessionContext): string {
-    // Generate a shorter session key using just the last parts
-    const channelPart = context.channelId.slice(-4); // Last 4 chars of channel
+    // Use thread timestamp as the session key (if in a thread)
+    // Otherwise use message timestamp
     const timestamp = context.threadTs || context.messageTs || '';
-    const tsPart = timestamp.split('.')[0]?.slice(-6) || '000000'; // Last 6 digits of timestamp
-    const randomPart = Math.random().toString(36).substring(2, 5); // 3 random chars
     
-    return `${channelPart}-${tsPart}-${randomPart}`;
+    // If we have a thread timestamp, use it directly as the session key
+    // This ensures consistency across all worker executions in the same thread
+    if (context.threadTs) {
+      return context.threadTs;
+    }
+    
+    // For non-threaded messages, use message timestamp
+    // This should rarely happen as bot typically creates threads
+    return timestamp || `session-${Date.now()}`;
   }
 }

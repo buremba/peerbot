@@ -128,6 +128,9 @@ async function runTest() {
     console.log(`✅ Sent: "${message}"`);
     console.log(`   Timestamp: ${msg.ts}\n`);
     
+    // Wait a bit for the bot to start processing
+    await new Promise(resolve => setTimeout(resolve, 3000));
+    
     // Check for checkmark reaction on original message
     const hasCheckmark = await checkForReaction(targetChannel, msg.ts, 'white_check_mark');
     

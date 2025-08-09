@@ -7,6 +7,24 @@ A powerful [Claude Code](https://claude.ai/code) Slack application that brings A
 - Install [Skaffold](https://skaffold.dev/)
 - Install [Docker Desktop with Kubernetes Enabled](https://docs.docker.com/desktop/)
 - Run `make dev`
+- Create `.env` file as follows:
+
+```
+SLACK_SIGNING_SECRET=
+SLACK_BOT_TOKEN=
+SLACK_APP_TOKEN=
+GITHUB_TOKEN= (personal access token for the bot to interact with git)
+CLAUDE_CODE_OAUTH_TOKEN= (claude setup-token)
+```
+
+-- If you need to run QA tests (`./test-bot.js`), create `.env.qa` as follows:
+
+```
+SLACK_SIGNING_SECRET=
+SLACK_BOT_TOKEN=
+SLACK_APP_TOKEN=
+SLACK_TRIGGER_PHRASE=@peerqa
+```
 
 
 ## 🎯 Key Features

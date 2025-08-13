@@ -15,17 +15,22 @@ RUN apk add --no-cache \
 RUN addgroup -g 1001 claude && \
     adduser -u 1001 -G claude -h /home/claude -D claude
 
-# Install bun
+# Install bun globally for all users
 RUN curl -fsSL https://bun.sh/install | bash
 ENV PATH="/root/.bun/bin:${PATH}"
 ENV BUN_INSTALL="/root/.bun"
 
-# Install Claude Code CLI globally
+# Install Claude Code CLI globally and make it accessible to all users
 RUN bun install -g @anthropic-ai/claude-code@1.0.59 && \
     ln -sf /root/.bun/bin/claude /usr/local/bin/claude && \
     chmod +x /usr/local/bin/claude && \
+    chmod +x /root/.bun/bin/claude && \
     echo "Testing claude command..." && \
     /usr/local/bin/claude --version
+
+# Ensure the non-root user can also access bun and claude
+RUN echo 'export PATH="/root/.bun/bin:$PATH"' >> /home/claude/.bashrc && \
+    echo 'export BUN_INSTALL="/root/.bun"' >> /home/claude/.bashrc
 
 # Copy package files
 COPY package.json ./

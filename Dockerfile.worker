@@ -29,8 +29,13 @@ RUN bun install -g @anthropic-ai/claude-code@1.0.59 && \
     /usr/local/bin/claude --version
 
 # Ensure the non-root user can also access bun and claude
+# Add to both bashrc and global environment for broader compatibility
 RUN echo 'export PATH="/root/.bun/bin:$PATH"' >> /home/claude/.bashrc && \
     echo 'export BUN_INSTALL="/root/.bun"' >> /home/claude/.bashrc
+
+# Add environment variables for non-root user access
+ENV PATH="/root/.bun/bin:${PATH}" \
+    BUN_INSTALL="/root/.bun"
 
 # Copy package files
 COPY package.json ./

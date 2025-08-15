@@ -117,7 +117,7 @@ done
 echo "🤖 Checking Claude CLI installation..."
 if command -v claude >/dev/null 2>&1; then
     claude_version=$(timeout 10 claude --version 2>/dev/null || echo "unknown")
-    echo "  ✅ Claude CLI: $version"
+    echo "  ✅ Claude CLI: $claude_version"
     
     # Test Claude CLI basic functionality
     if timeout 10 claude --help >/dev/null 2>&1; then
@@ -150,4 +150,4 @@ echo "  - Recovery: ${RECOVERY_MODE:-false}"
 
 # Start the worker process
 echo "🚀 Executing Claude Worker..."
-exec node /app/dist/index.js
+exec bun run dist/index.js

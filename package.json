@@ -9,6 +9,7 @@
     "packages/core-runner",
     "packages/dispatcher",
     "packages/orchestrator",
+    "packages/shared-logger",
     "packages/worker"
   ],
   "scripts": {

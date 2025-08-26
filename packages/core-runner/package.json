@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-code": "^1.0.0",
+    "@claude-code-slack/shared-logger": "workspace:*",
     "@google-cloud/storage": "^7.14.0",
     "@modelcontextprotocol/sdk": "^1.11.0",
     "@octokit/rest": "^21.1.1",

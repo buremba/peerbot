@@ -2,9 +2,6 @@
   "name": "@anthropic-ai/claude-code-slack",
   "version": "1.0.0",
   "private": true,
-  "bin": {
-    "peerbot": "./bin/peerbot"
-  },
   "workspaces": [
     "packages/core-runner",
     "packages/dispatcher",
@@ -17,9 +14,6 @@
     "install-hooks": "bun run scripts/install-hooks.sh",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
-    "dev:slack": "bun run src/entrypoints/slack-main.ts",
-    "start:slack": "NODE_ENV=production bun run src/entrypoints/slack-main.ts",
-    "build:slack": "bun build src/entrypoints/slack-main.ts --outdir dist --target bun",
     "build:packages": "bun run --filter='packages/*' build",
     "test:packages": "bun run --filter='packages/*' test",
     "typecheck:packages": "bun run --filter='packages/*' typecheck",

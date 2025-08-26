@@ -40,35 +40,37 @@ export interface WorkspaceInfo {
 }
 
 // Error types
-export class WorkerError extends Error {
+import { BaseError } from "../../../src/shared/types";
+
+export class WorkerError extends BaseError {
   constructor(
-    public operation: string,
+    operation: string,
     message: string,
-    public cause?: Error
+    cause?: Error
   ) {
-    super(message);
+    super(operation, message, cause);
     this.name = "WorkerError";
   }
 }
 
-export class WorkspaceError extends Error {
+export class WorkspaceError extends BaseError {
   constructor(
-    public operation: string,
+    operation: string,
     message: string,
-    public cause?: Error
+    cause?: Error
   ) {
-    super(message);
+    super(operation, message, cause);
     this.name = "WorkspaceError";
   }
 }
 
-export class SlackError extends Error {
+export class SlackError extends BaseError {
   constructor(
-    public operation: string,
+    operation: string,
     message: string,
-    public cause?: Error
+    cause?: Error
   ) {
-    super(message);
+    super(operation, message, cause);
     this.name = "SlackError";
   }
 }

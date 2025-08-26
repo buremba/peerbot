@@ -2,10 +2,10 @@ import PgBoss from 'pg-boss';
 import * as k8s from '@kubernetes/client-node';
 import { 
   OrchestratorConfig, 
-  WorkerDeploymentRequest, 
   OrchestratorError,
   ErrorCode 
 } from './types';
+import { WorkerDeploymentRequest } from '../../../src/shared/types';
 import { DeploymentManager } from './deployment-manager';
 
 export class QueueConsumer {

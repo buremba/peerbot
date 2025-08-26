@@ -31,16 +31,6 @@ export interface OrchestratorConfig {
   };
 }
 
-export interface WorkerDeploymentRequest {
-  userId: string;
-  botId: string;
-  agentSessionId: string;
-  threadId: string;
-  platform: string;
-  platformUserId: string;
-  environmentVariables?: Record<string, string>;
-}
-
 export interface QueueJob {
   id: string;
   name: string;

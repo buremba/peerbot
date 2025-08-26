@@ -45,17 +45,6 @@ export interface DispatcherConfig {
   queues: QueueConfig;
 }
 
-export interface SlackContext {
-  channelId: string;
-  userId: string;
-  userDisplayName?: string;
-  teamId: string;
-  threadTs?: string;
-  messageTs: string;
-  text: string;
-  messageUrl?: string;
-}
-
 export interface WorkerJobRequest {
   sessionKey: string;
   userId: string;
@@ -71,20 +60,6 @@ export interface WorkerJobRequest {
   resumeSessionId?: string; // Claude session ID to resume from
 }
 
-export interface WorkerDeploymentRequest {
-  userId: string;
-  botId: string;
-  agentSessionId: string;
-  threadId: string;
-  platform: string;
-  platformUserId: string;
-  messageId: string;
-  messageText: string;
-  channelId: string;
-  platformMetadata: Record<string, any>;
-  claudeOptions: Record<string, any>;
-  environmentVariables?: Record<string, string>;
-}
 
 export interface ThreadSession {
   sessionKey: string;
@@ -111,26 +86,27 @@ export interface UserRepository {
 
 
 // Error types
-export class DispatcherError extends Error {
+import { BaseError } from "../../../src/shared/types";
+
+export class DispatcherError extends BaseError {
   constructor(
-    public operation: string,
+    operation: string,
     message: string,
-    public cause?: Error
+    cause?: Error
   ) {
-    super(message);
+    super(operation, message, cause);
     this.name = "DispatcherError";
   }
 }
 
-
-export class GitHubRepositoryError extends Error {
+export class GitHubRepositoryError extends BaseError {
   constructor(
-    public operation: string,
+    operation: string,
     public username: string,
     message: string,
-    public cause?: Error
+    cause?: Error
   ) {
-    super(message);
+    super(operation, message, cause);
     this.name = "GitHubRepositoryError";
   }
 }

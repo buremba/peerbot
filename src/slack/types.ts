@@ -1,17 +1,9 @@
 #!/usr/bin/env bun
 
 // Slack-specific types and interfaces
+import type { SlackContext } from "../shared/types";
 
-export interface SlackContext {
-  channelId: string;
-  userId: string;
-  userDisplayName?: string;
-  teamId: string;
-  threadTs?: string;
-  messageTs: string;
-  text: string;
-  messageUrl?: string;
-}
+export type { SlackContext };
 
 export interface SlackRunContext {
   context: SlackContext;

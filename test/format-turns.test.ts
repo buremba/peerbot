@@ -11,7 +11,7 @@ import {
   type Turn,
   type ToolUse,
   type ToolResult,
-} from "../src/entrypoints/format-turns";
+} from "../src/core/formatter";
 
 describe("detectContentType", () => {
   test("detects JSON objects", () => {

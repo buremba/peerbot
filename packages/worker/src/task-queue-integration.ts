@@ -22,6 +22,10 @@ interface ThreadResponsePayload {
   originalMessageTs?: string; // User's original message timestamp for reactions
   gitBranch?: string; // Current git branch for Edit button URLs
   botResponseTs?: string; // Bot's response message timestamp for updates
+  envChanges?: boolean; // Flag indicating environment was modified
+  modifiedFiles?: string[]; // Files changed (e.g. [".devcontainer/devcontainer.json"])
+  currentCommit?: string; // Current git HEAD after changes
+  repositoryUrl?: string; // Repository URL for rebuild context
 }
 
 export class QueueIntegration {
@@ -593,6 +597,128 @@ export class QueueIntegration {
     this.isProcessingQueue = false;
     this.currentTodos = [];
     this.currentToolExecution = "";
+  }
+
+  /**
+   * Signal environment changes that require rebuild
+   */
+  async signalEnvironmentChange(modifiedFiles: string[], repositoryUrl?: string): Promise<void> {
+    if (!this.isConnected) {
+      logger.warn("Queue not connected, skipping environment change signal");
+      return;
+    }
+
+    try {
+      // Get current commit ID
+      const currentCommit = await this.getCurrentCommitId();
+      if (!currentCommit) {
+        logger.warn("Could not determine current commit ID, skipping environment change signal");
+        return;
+      }
+
+      const payload: ThreadResponsePayload = {
+        messageId: `env-change-${Date.now()}`,
+        channelId: this.responseChannel,
+        threadTs: this.responseTs,
+        userId: process.env.USER_ID || 'unknown',
+        isDone: false,
+        timestamp: Date.now(),
+        envChanges: true,
+        modifiedFiles,
+        currentCommit,
+        repositoryUrl: repositoryUrl || process.env.REPOSITORY_URL,
+        originalMessageTs: process.env.ORIGINAL_MESSAGE_TS,
+        botResponseTs: this.botResponseTs
+      };
+
+      const jobId = await this.pgBoss.send('thread_response', payload, {
+        priority: 10, // Very high priority for environment changes
+        retryLimit: 5,
+        retryDelay: 5,
+        expireInHours: 1,
+      });
+      
+      logger.info(`Sent environment change signal to queue with job id: ${jobId} - files: ${modifiedFiles.join(', ')}`);
+
+    } catch (error: any) {
+      logger.error("Failed to send environment change signal to queue:", error);
+      // Don't throw - worker should continue even if signal fails
+    }
+  }
+
+  /**
+   * Check for devcontainer changes and signal if needed
+   */
+  async checkAndSignalDevcontainerChanges(): Promise<void> {
+    try {
+      const devcontainerFiles = [
+        '.devcontainer/devcontainer.json',
+        '.devcontainer.json',
+        'devcontainer.json'
+      ];
+
+      // Check if any devcontainer files were modified
+      for (const file of devcontainerFiles) {
+        if (await this.isFileRecentlyModified(file)) {
+          logger.info(`Devcontainer change detected in ${file}`);
+          await this.signalEnvironmentChange([file]);
+          break; // Only signal once per check cycle
+        }
+      }
+
+    } catch (error) {
+      logger.warn('Failed to check for devcontainer changes:', error);
+    }
+  }
+
+  /**
+   * Get current git commit ID
+   */
+  private async getCurrentCommitId(): Promise<string | null> {
+    try {
+      const workspaceDir = process.env.USER_ID ? `/workspace/${process.env.USER_ID}` : process.cwd();
+      
+      const commitId = execSync('git rev-parse HEAD', { 
+        encoding: 'utf-8',
+        cwd: workspaceDir
+      }).trim();
+      
+      return commitId || null;
+    } catch (error) {
+      logger.warn('Could not get current commit ID:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Check if a file was recently modified (within the last session)
+   */
+  private async isFileRecentlyModified(filePath: string): Promise<boolean> {
+    try {
+      const workspaceDir = process.env.USER_ID ? `/workspace/${process.env.USER_ID}` : process.cwd();
+      const fullPath = `${workspaceDir}/${filePath}`;
+      
+      // Check if file exists
+      try {
+        await import('fs').then(fs => fs.promises.access(fullPath));
+      } catch {
+        return false; // File doesn't exist
+      }
+
+      // Check git status to see if file has uncommitted changes
+      const status = execSync(`git status --porcelain "${filePath}"`, {
+        encoding: 'utf-8',
+        cwd: workspaceDir,
+        stdio: 'pipe'
+      }).trim();
+
+      // File is modified if it appears in git status
+      return status.length > 0;
+      
+    } catch (error) {
+      logger.debug(`Could not check modification status for ${filePath}:`, error);
+      return false;
+    }
   }
 
   /**

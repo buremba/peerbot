@@ -266,6 +266,10 @@ export class ClaudeWorker {
         
         logger.info(`Sending final message via queue: ${finalMessage}...`);
         await this.queueIntegration.updateProgress(finalMessage);
+        
+        // Check for devcontainer changes before signaling completion
+        await this.queueIntegration.checkAndSignalDevcontainerChanges();
+        
         await this.queueIntegration.signalDone(finalMessage);
         
         // Hide stop button and update reaction to success

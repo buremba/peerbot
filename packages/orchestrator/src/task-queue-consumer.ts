@@ -114,9 +114,36 @@ export class QueueConsumer {
     try {
       const deploymentName = `peerbot-worker-${data.threadId}`;
       const isNewThread = !data.routingMetadata?.targetThreadId; // New thread if no parent thread
+      const isRebuildRequest = data.type === 'rebuild_request';
       const teamId = data.platformMetadata?.teamId;
       
-      if (isNewThread) {
+      if (isRebuildRequest) {
+        // Handle rebuild request - recreate deployment with new image
+        console.log(`Rebuild request for thread ${data.threadId} - commit: ${data.commitId}`);
+        
+        await Sentry.startSpan(
+          {
+            name: "orchestrator.rebuild_worker_deployment",
+            op: "orchestrator.deployment_management",
+            attributes: {
+              "user.id": data.userId,
+              "thread.id": data.threadId,
+              "deployment.name": deploymentName,
+              "commit.id": data.commitId
+            }
+          },
+          async () => {
+            // Create progress callback for status updates
+            const onProgress = async (message: string) => {
+              await this.sendStatusMessage(data, message);
+            };
+            
+            await this.rebuildWorkerDeployment(deploymentName, data, onProgress);
+          }
+        );
+        console.log(`✅ Rebuilt deployment: ${deploymentName}`);
+
+      } else if (isNewThread) {
         // New thread - create deployment
         console.log(`New thread ${data.threadId} - creating deployment ${deploymentName}`);
         
@@ -167,21 +194,23 @@ export class QueueConsumer {
         }
       }
 
-      // Send message to worker queue
-      await Sentry.startSpan(
-        { 
-          name: "orchestrator.send_to_worker_queue", 
-          op: "orchestrator.message_routing",
-          attributes: {
-            "user.id": data.userId,
-            "thread.id": data.threadId,
-            "deployment.name": deploymentName
+      // Send message to worker queue (skip for rebuild requests)
+      if (!isRebuildRequest) {
+        await Sentry.startSpan(
+          { 
+            name: "orchestrator.send_to_worker_queue", 
+            op: "orchestrator.message_routing",
+            attributes: {
+              "user.id": data.userId,
+              "thread.id": data.threadId,
+              "deployment.name": deploymentName
+            }
+          },
+          async () => {
+            await this.sendToWorkerQueue(data, deploymentName);
           }
-        },
-        async () => {
-          await this.sendToWorkerQueue(data, deploymentName);
-        }
-      );
+        );
+      }
 
       // Update deployment activity annotation for simplified tracking
       await this.deploymentManager.updateDeploymentActivity(deploymentName);
@@ -271,6 +300,47 @@ export class QueueConsumer {
   }
 
 
+
+  /**
+   * Rebuild worker deployment with new image based on commit changes
+   */
+  private async rebuildWorkerDeployment(deploymentName: string, data: any, onProgress?: (message: string) => void): Promise<void> {
+    try {
+      onProgress?.('🔄 Environment changes detected, rebuilding...');
+
+      // Generate new image with specific commit
+      const buildResult = await this.deploymentManager.devcontainerBuilder.build(
+        data.repositoryUrl, 
+        onProgress, 
+        data.commitId
+      );
+
+      onProgress?.(`✅ Built new image: ${buildResult.imageName} (commit: ${data.commitId.substring(0, 7)})`);
+
+      // Delete existing deployment
+      try {
+        const deployments = await this.deploymentManager.listDeployments();
+        const existingDeployment = deployments.find(d => d.deploymentName === deploymentName);
+        
+        if (existingDeployment) {
+          await this.deploymentManager.deleteDeployment(existingDeployment.deploymentId);
+          onProgress?.('🗑️ Removed old deployment');
+        }
+      } catch (deleteError) {
+        console.warn('Failed to delete existing deployment during rebuild:', deleteError);
+      }
+
+      // Create new deployment with updated image
+      const username = this.deploymentManager.databaseManager.generatePostgresUsername(data.userId);
+      await this.deploymentManager.createDeployment(deploymentName, username, data.userId, data, buildResult.imageName);
+      
+      onProgress?.('✅ Deployment recreated with updated environment');
+
+    } catch (error) {
+      console.error(`Failed to rebuild deployment ${deploymentName}:`, error);
+      throw error;
+    }
+  }
 
   /**
    * Send status message to Slack (placeholder implementation)

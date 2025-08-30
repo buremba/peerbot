@@ -9,6 +9,8 @@ export interface DevcontainerBuildResult {
   imageTag: string;
   hasDevcontainer: boolean;
   repoHash: string;
+  commitId: string;
+  repoUrlHash: string;
 }
 
 export interface DevcontainerConfig {
@@ -39,7 +41,7 @@ export class DevcontainerBuilder {
   /**
    * Build worker image with full devcontainer support
    */
-  async build(repoUrl: string, onProgress?: (message: string) => void): Promise<DevcontainerBuildResult> {
+  async build(repoUrl: string, onProgress?: (message: string) => void, commitId?: string): Promise<DevcontainerBuildResult> {
     const progress = (msg: string) => {
       console.log(`[DevcontainerBuilder] ${msg}`);
       onProgress?.(msg);
@@ -54,11 +56,15 @@ export class DevcontainerBuilder {
     try {
       // Shallow clone repository
       progress('📋 Applying devcontainer configuration...');
-      await this.cloneRepository(repoUrl, tempRepoDir);
+      await this.cloneRepository(repoUrl, tempRepoDir, commitId);
 
-      // Generate content hash for caching
+      // Get commit ID and generate hashes
+      const fullCommitId = commitId || await this.getCommitId(tempRepoDir);
+      const repoUrlHash = this.generateRepoUrlHash(repoUrl);
       const repoHash = await this.generateRepoHash(tempRepoDir);
-      const imageTag = `peerbot-worker-${repoHash}`;
+      
+      // Use new snapshot naming scheme: peerbot-snapshot-{repoUrlHash}-{commitId}
+      const imageTag = `peerbot-snapshot-${repoUrlHash}-${fullCommitId}`;
 
       // Check if devcontainer exists
       const devcontainerPath = path.join(tempRepoDir, '.devcontainer', 'devcontainer.json');
@@ -71,7 +77,7 @@ export class DevcontainerBuilder {
         const config = await this.parseDevcontainerConfig(devcontainerPath);
         
         // Build using devcontainers CLI
-        const imageName = await this.buildWithDevcontainerCli(tempRepoDir, imageTag, config);
+        const imageName = await this.buildWithDevcontainerCli(tempRepoDir, imageTag, config, repoUrl, fullCommitId);
         
         // Add peerbot integration to the built image
         await this.addPeerbotIntegration(imageName, progress);
@@ -82,13 +88,15 @@ export class DevcontainerBuilder {
           imageName,
           imageTag,
           hasDevcontainer: true,
-          repoHash
+          repoHash,
+          commitId: fullCommitId,
+          repoUrlHash
         };
       } else {
         // Use default Bun environment
         progress('📦 Setting up default Bun environment...');
         
-        const imageName = await this.buildDefaultImage(tempRepoDir, imageTag);
+        const imageName = await this.buildDefaultImage(tempRepoDir, imageTag, repoUrl, fullCommitId);
         
         progress('✅ Environment ready! Starting Claude Code...');
 
@@ -96,13 +104,15 @@ export class DevcontainerBuilder {
           imageName,
           imageTag,
           hasDevcontainer: false,
-          repoHash
+          repoHash,
+          commitId: fullCommitId,
+          repoUrlHash
         };
       }
     } finally {
       // Cleanup temp directory
       try {
-        await fs.rmdir(tempRepoDir, { recursive: true });
+        await fs.rm(tempRepoDir, { recursive: true });
       } catch (error) {
         console.warn('Failed to cleanup temp directory:', error);
       }
@@ -121,14 +131,30 @@ export class DevcontainerBuilder {
     }
   }
 
-  private async cloneRepository(repoUrl: string, targetDir: string): Promise<void> {
-    await this.runCommand('git', [
-      'clone',
-      '--depth', '1',
-      '--single-branch',
-      repoUrl,
-      targetDir
-    ]);
+  private async cloneRepository(repoUrl: string, targetDir: string, commitId?: string): Promise<void> {
+    if (commitId) {
+      // Clone specific commit
+      await this.runCommand('git', ['clone', repoUrl, targetDir]);
+      await this.runCommand('git', ['checkout', commitId], targetDir);
+    } else {
+      // Shallow clone latest
+      await this.runCommand('git', [
+        'clone',
+        '--depth', '1',
+        '--single-branch',
+        repoUrl,
+        targetDir
+      ]);
+    }
+  }
+
+  private async getCommitId(repoDir: string): Promise<string> {
+    const result = await this.runCommand('git', ['rev-parse', 'HEAD'], repoDir);
+    return result.stdout.trim();
+  }
+
+  private generateRepoUrlHash(repoUrl: string): string {
+    return crypto.createHash('sha256').update(repoUrl).digest('hex').substring(0, 8);
   }
 
   private async generateRepoHash(repoDir: string): Promise<string> {
@@ -163,7 +189,9 @@ export class DevcontainerBuilder {
   private async buildWithDevcontainerCli(
     repoDir: string,
     imageTag: string,
-    config: DevcontainerConfig
+    config: DevcontainerConfig,
+    repoUrl: string,
+    commitId: string
   ): Promise<string> {
     const imageName = `peerbot-worker:${imageTag}`;
     
@@ -175,10 +203,13 @@ export class DevcontainerBuilder {
       '--cache-from', 'peerbot-worker:latest'
     ]);
 
+    // Add git metadata labels to the image
+    await this.addGitLabelsToImage(imageName, repoUrl, commitId);
+
     return imageName;
   }
 
-  private async buildDefaultImage(repoDir: string, imageTag: string): Promise<string> {
+  private async buildDefaultImage(repoDir: string, imageTag: string, repoUrl: string, commitId: string): Promise<string> {
     // Create a minimal Dockerfile for default Bun environment
     const dockerfile = `
 FROM oven/bun:1.2.9
@@ -217,6 +248,9 @@ USER claude
 
     // Clean up dockerfile
     await fs.unlink(dockerfilePath);
+
+    // Add git metadata labels to the image
+    await this.addGitLabelsToImage(imageName, repoUrl, commitId);
 
     return imageName;
   }
@@ -291,6 +325,45 @@ WORKDIR /workspace
   private extractRepoName(repoUrl: string): string {
     const match = repoUrl.match(/\/([^\/]+?)(?:\.git)?$/);
     return match?.[1] || 'unknown';
+  }
+
+  private async addGitLabelsToImage(imageName: string, repoUrl: string, commitId: string): Promise<void> {
+    try {
+      // Extract branch name from git repo (will be 'HEAD' for detached)
+      const branchResult = await this.runCommand('docker', [
+        'run', '--rm', imageName,
+        'git', 'rev-parse', '--abbrev-ref', 'HEAD'
+      ]);
+      const branch = branchResult.stdout.trim();
+
+      // Add labels with git metadata
+      const dockerfile = `
+FROM ${imageName}
+
+LABEL "peerbot.repository.url"="${repoUrl}"
+LABEL "peerbot.repository.commit"="${commitId}"
+LABEL "peerbot.repository.branch"="${branch}"
+LABEL "peerbot.image.type"="snapshot"
+LABEL "peerbot.build.timestamp"="${new Date().toISOString()}"
+`;
+
+      const tempDockerfile = path.join(this.tempDir, `Dockerfile.labels-${Date.now()}`);
+      await fs.writeFile(tempDockerfile, dockerfile);
+
+      try {
+        await this.runCommand('docker', [
+          'build',
+          '-f', tempDockerfile,
+          '-t', imageName,
+          '.'
+        ]);
+      } finally {
+        await fs.unlink(tempDockerfile);
+      }
+    } catch (error) {
+      console.warn('Failed to add git labels to image:', error);
+      // Don't throw - labels are not critical
+    }
   }
 
   private async runCommand(

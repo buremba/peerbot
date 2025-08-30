@@ -18,9 +18,9 @@ export interface DeploymentInfo {
 export abstract class BaseDeploymentManager {
   protected config: OrchestratorConfig;
   protected dbPool: DatabasePool;
-  protected databaseManager: DatabaseManager;
+  public databaseManager: DatabaseManager;
   protected secretManager: BaseSecretManager;
-  protected devcontainerBuilder: DevcontainerBuilder;
+  public devcontainerBuilder: DevcontainerBuilder;
 
   constructor(config: OrchestratorConfig, dbPool: DatabasePool, secretManager: BaseSecretManager) {
     this.config = config;

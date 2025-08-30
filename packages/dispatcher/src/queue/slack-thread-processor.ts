@@ -197,6 +197,10 @@ interface ThreadResponsePayload {
   originalMessageTs?: string; // User's original message timestamp for reactions
   gitBranch?: string; // Current git branch for Edit button URLs
   botResponseTs?: string; // Bot's response message timestamp for updates
+  envChanges?: boolean; // Flag indicating environment was modified
+  modifiedFiles?: string[]; // Files changed (e.g. [".devcontainer/devcontainer.json"])
+  currentCommit?: string; // Current git HEAD after changes
+  repositoryUrl?: string; // Repository URL for rebuild context
 }
 
 /**
@@ -338,6 +342,12 @@ export class ThreadResponseConsumer {
         // Pass the existing bot message timestamp for error updates
         const botMessageTs = existingBotMessageTs || data.botResponseTs;
         await this.handleError(data, isFirstResponse, botMessageTs);
+      }
+
+      // Handle environment changes - forward rebuild request to orchestrator
+      if (data.envChanges && data.currentCommit && data.repositoryUrl) {
+        logger.info(`Environment change detected for thread ${data.threadTs}: ${data.modifiedFiles?.join(', ')}`);
+        await this.handleEnvironmentChange(data);
       }
 
       // Log completion
@@ -599,6 +609,49 @@ export class ThreadResponseConsumer {
     } catch (updateError: any) {
       logger.error(`Failed to send error message to Slack: ${updateError.message}`);
       throw updateError;
+    }
+  }
+
+  /**
+   * Handle environment change by forwarding rebuild request to orchestrator
+   */
+  private async handleEnvironmentChange(data: ThreadResponsePayload): Promise<void> {
+    try {
+      // Create rebuild request message for orchestrator
+      const rebuildRequest = {
+        type: 'rebuild_request',
+        threadId: data.threadTs,
+        userId: data.userId,
+        channelId: data.channelId,
+        repositoryUrl: data.repositoryUrl,
+        commitId: data.currentCommit,
+        modifiedFiles: data.modifiedFiles,
+        originalMessageTs: data.originalMessageTs,
+        platformMetadata: {
+          teamId: '',  // Will be filled in by dispatcher if needed
+          repositoryUrl: data.repositoryUrl,
+          botResponseTs: data.botResponseTs,
+          originalMessageTs: data.originalMessageTs
+        },
+        timestamp: Date.now()
+      };
+
+      // Send rebuild request to orchestrator via messages queue
+      const jobId = await this.pgBoss.send('messages', rebuildRequest, {
+        retryLimit: 3,
+        retryDelay: 5000,
+        priority: 5  // High priority for rebuild requests
+      });
+
+      if (jobId) {
+        logger.info(`Sent rebuild request to orchestrator: job ${jobId} for thread ${data.threadTs}`);
+      } else {
+        logger.error(`Failed to send rebuild request for thread ${data.threadTs}: pgBoss returned null`);
+      }
+
+    } catch (error) {
+      logger.error(`Failed to handle environment change for thread ${data.threadTs}:`, error);
+      // Don't throw - environment changes are not critical to message processing
     }
   }
 

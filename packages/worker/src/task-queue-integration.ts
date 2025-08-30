@@ -139,6 +139,41 @@ export class QueueIntegration {
   }
 
   /**
+   * Update progress with optional environment change detection
+   */
+  async updateProgressWithEnvCheck(content: string, checkForEnvChanges: boolean = false): Promise<void> {
+    try {
+      // Ensure we always have content to update with
+      if (!content || content.trim() === "") {
+        logger.warn("updateProgressWithEnvCheck called with empty content, using default message");
+        content = "✅ Task completed";
+      }
+      
+      // Check for devcontainer changes if requested
+      let envChangeInfo = null;
+      if (checkForEnvChanges) {
+        envChangeInfo = await this.detectDevcontainerChanges();
+      }
+
+      // Rate limiting: don't update more than once every 2 seconds
+      const now = Date.now();
+      if (now - this.lastUpdateTime < 2000) {
+        // Queue the update with environment info
+        this.updateQueue.push(JSON.stringify({ content, envChangeInfo }));
+        this.processQueue();
+        return;
+      }
+
+      await this.performUpdateWithEnv(content, envChangeInfo);
+      this.lastUpdateTime = now;
+
+    } catch (error) {
+      logger.error("Failed to send progress update with env check to queue:", error);
+      // Don't throw - worker should continue even if queue updates fail
+    }
+  }
+
+  /**
    * Stream progress updates (for real-time Claude output)
    */
   async streamProgress(data: any): Promise<void> {
@@ -214,7 +249,18 @@ export class QueueIntegration {
       this.updateQueue = []; // Clear queue
 
       if (latestUpdate) {
-        await this.performUpdate(latestUpdate);
+        // Handle both string and JSON updates (for environment changes)
+        try {
+          const updateObj = JSON.parse(latestUpdate);
+          if (updateObj.content && updateObj.envChangeInfo !== undefined) {
+            await this.performUpdateWithEnv(updateObj.content, updateObj.envChangeInfo);
+          } else {
+            await this.performUpdate(latestUpdate);
+          }
+        } catch {
+          // Not JSON, treat as regular string update
+          await this.performUpdate(latestUpdate);
+        }
         this.lastUpdateTime = Date.now();
       }
 
@@ -306,6 +352,13 @@ export class QueueIntegration {
    * Perform the actual queue update
    */
   private async performUpdate(content: string): Promise<void> {
+    await this.performUpdateWithEnv(content, null);
+  }
+
+  /**
+   * Perform queue update with optional environment change information
+   */
+  private async performUpdateWithEnv(content: string, envChangeInfo: { modifiedFiles: string[], currentCommit: string, repositoryUrl?: string } | null): Promise<void> {
     if (!this.isConnected) {
       logger.warn("Queue not connected, skipping update");
       return;
@@ -314,7 +367,7 @@ export class QueueIntegration {
     try {
       // Final safety check - ensure we have content
       if (!content || content.trim() === "") {
-        logger.warn("performUpdate called with empty content, using fallback");
+        logger.warn("performUpdateWithEnv called with empty content, using fallback");
         content = "✅ Task completed";
       }
       
@@ -331,15 +384,28 @@ export class QueueIntegration {
         botResponseTs: this.botResponseTs // Bot's response message for updates
       };
 
+      // Add environment change information if present
+      if (envChangeInfo) {
+        payload.envChanges = true;
+        payload.modifiedFiles = envChangeInfo.modifiedFiles;
+        payload.currentCommit = envChangeInfo.currentCommit;
+        payload.repositoryUrl = envChangeInfo.repositoryUrl;
+        logger.info(`Including environment changes in progress update: ${envChangeInfo.modifiedFiles.join(', ')}`);
+      }
+
       // Send to thread_response queue
+      const priority = envChangeInfo ? 10 : 0; // Higher priority for environment changes
       const jobId = await this.pgBoss.send('thread_response', payload, {
-        priority: 0,
+        priority,
         retryLimit: 3,
         retryDelay: 5,
         expireInHours: 1,
       });
-      
-      logger.info(`Sent progress update to queue with job id: ${jobId}`);
+
+      const logMessage = envChangeInfo ? 
+        `Sent progress update with env changes to queue with job id: ${jobId} - files: ${envChangeInfo.modifiedFiles.join(', ')}` :
+        `Sent progress update to queue with job id: ${jobId}`;
+      logger.info(logMessage);
 
     } catch (error: any) {
       logger.error("Failed to send update to thread_response queue:", error);
@@ -647,9 +713,9 @@ export class QueueIntegration {
   }
 
   /**
-   * Check for devcontainer changes and signal if needed
+   * Detect devcontainer changes and return change info (without sending separate signal)
    */
-  async checkAndSignalDevcontainerChanges(): Promise<void> {
+  async detectDevcontainerChanges(): Promise<{ modifiedFiles: string[], currentCommit: string, repositoryUrl?: string } | null> {
     try {
       const devcontainerFiles = [
         '.devcontainer/devcontainer.json',
@@ -657,15 +723,48 @@ export class QueueIntegration {
         'devcontainer.json'
       ];
 
+      const modifiedFiles: string[] = [];
+
       // Check if any devcontainer files were modified
       for (const file of devcontainerFiles) {
         if (await this.isFileRecentlyModified(file)) {
           logger.info(`Devcontainer change detected in ${file}`);
-          await this.signalEnvironmentChange([file]);
-          break; // Only signal once per check cycle
+          modifiedFiles.push(file);
         }
       }
 
+      if (modifiedFiles.length === 0) {
+        return null;
+      }
+
+      // Get current commit ID
+      const currentCommit = await this.getCurrentCommitId();
+      if (!currentCommit) {
+        logger.warn("Could not determine current commit ID for devcontainer changes");
+        return null;
+      }
+
+      return {
+        modifiedFiles,
+        currentCommit,
+        repositoryUrl: process.env.REPOSITORY_URL
+      };
+
+    } catch (error) {
+      logger.warn('Failed to detect devcontainer changes:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Check for devcontainer changes and signal if needed (deprecated - use updateProgressWithEnvCheck)
+   */
+  async checkAndSignalDevcontainerChanges(): Promise<void> {
+    try {
+      const envChangeInfo = await this.detectDevcontainerChanges();
+      if (envChangeInfo) {
+        await this.signalEnvironmentChange(envChangeInfo.modifiedFiles, envChangeInfo.repositoryUrl);
+      }
     } catch (error) {
       logger.warn('Failed to check for devcontainer changes:', error);
     }

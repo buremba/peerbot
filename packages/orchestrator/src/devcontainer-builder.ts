@@ -201,7 +201,10 @@ export class DevcontainerBuilder {
       '--workspace-folder', repoDir,
       '--image-name', imageName,
       '--cache-from', 'peerbot-worker:latest'
-    ]);
+    ], repoDir, { 
+      timeout: 600000, // 10-minute timeout for complex builds
+      isolateNetwork: false // DevContainer CLI needs network for base images
+    });
 
     // Add git metadata labels to the image
     await this.addGitLabelsToImage(imageName, repoUrl, commitId);
@@ -244,7 +247,10 @@ USER claude
       '-f', dockerfilePath,
       '-t', imageName,
       repoDir
-    ]);
+    ], undefined, {
+      timeout: 600000, // 10-minute timeout
+      isolateNetwork: false // Docker build needs network for base images
+    });
 
     // Clean up dockerfile
     await fs.unlink(dockerfilePath);
@@ -258,8 +264,14 @@ USER claude
   private async addPeerbotIntegration(imageName: string, progress: (msg: string) => void): Promise<void> {
     progress('🔧 Adding Peerbot integration...');
     
-    // Get the current directory to copy peerbot packages from
+    // Create restricted build context (Option 3: Security)
+    const restrictedContextDir = path.join(this.tempDir, `peerbot-context-${Date.now()}`);
+    await fs.mkdir(restrictedContextDir, { recursive: true });
+    
+    // Copy only necessary peerbot files to restricted context
     const peerbotRoot = process.cwd();
+    await this.copyDirectory(path.join(peerbotRoot, 'packages'), path.join(restrictedContextDir, 'packages'));
+    await this.copyDirectory(path.join(peerbotRoot, 'scripts'), path.join(restrictedContextDir, 'scripts'));
     
     // Create a new image layer with peerbot packages
     const dockerfile = `
@@ -270,7 +282,7 @@ RUN if ! command -v claude >/dev/null 2>&1; then \\
       npm install -g @anthropic-ai/claude-code; \\
     fi
 
-# Copy peerbot packages from host
+# Copy peerbot packages from restricted context
 COPY packages /app/packages
 COPY scripts /app/scripts
 
@@ -308,10 +320,15 @@ WORKDIR /workspace
         'build',
         '-f', tempDockerfile,
         '-t', imageName,
-        peerbotRoot  // Use peerbot root as build context
-      ]);
+        restrictedContextDir  // Use restricted context instead of full peerbot root
+      ], undefined, {
+        timeout: 600000, // 10-minute timeout
+        isolateNetwork: false // Docker build needs network for npm install
+      });
     } finally {
       await fs.unlink(tempDockerfile);
+      // Cleanup restricted context
+      await fs.rm(restrictedContextDir, { recursive: true }).catch(() => {});
     }
   }
 
@@ -327,6 +344,17 @@ WORKDIR /workspace
   private extractRepoName(repoUrl: string): string {
     const match = repoUrl.match(/\/([^\/]+?)(?:\.git)?$/);
     return match?.[1] || 'unknown';
+  }
+
+  private async copyDirectory(src: string, dest: string): Promise<void> {
+    try {
+      await fs.access(src);
+      await fs.mkdir(path.dirname(dest), { recursive: true });
+      await fs.cp(src, dest, { recursive: true });
+    } catch (error) {
+      // Skip if source doesn't exist (some repos might not have scripts folder)
+      console.warn(`Failed to copy ${src} to ${dest}:`, error);
+    }
   }
 
   private async addGitLabelsToImage(imageName: string, repoUrl: string, commitId: string): Promise<void> {
@@ -358,7 +386,10 @@ LABEL "peerbot.build.timestamp"="${new Date().toISOString()}"
           '-f', tempDockerfile,
           '-t', imageName,
           '.'
-        ]);
+        ], undefined, {
+          timeout: 300000, // 5-minute timeout for labels
+          isolateNetwork: true // Label builds don't need network
+        });
       } finally {
         await fs.unlink(tempDockerfile);
       }
@@ -371,14 +402,41 @@ LABEL "peerbot.build.timestamp"="${new Date().toISOString()}"
   private async runCommand(
     command: string,
     args: string[],
-    cwd?: string
+    cwd?: string,
+    options?: { timeout?: number; isolateNetwork?: boolean }
   ): Promise<{ stdout: string; stderr: string }> {
+    const timeout = options?.timeout || 300000; // 5-minute default timeout
+    
     return new Promise((resolve, reject) => {
+      // Create filtered environment (Option 1: Security)
+      const safeEnv = {
+        PATH: process.env.PATH || '',
+        HOME: process.env.HOME || '/tmp',
+        USER: process.env.USER || 'claude',
+        SHELL: process.env.SHELL || '/bin/bash',
+        TERM: process.env.TERM || 'xterm',
+        LANG: process.env.LANG || 'en_US.UTF-8'
+      };
+      
+      // Add network isolation for builds (Option 1: Network isolation)
+      if (options?.isolateNetwork) {
+        safeEnv.no_proxy = '*';
+        safeEnv.NO_PROXY = '*';
+        safeEnv.HTTP_PROXY = '';
+        safeEnv.HTTPS_PROXY = '';
+      }
+      
       const process = spawn(command, args, { 
         cwd,
         stdio: 'pipe',
-        env: { ...process.env }
+        env: safeEnv
       });
+      
+      // Option 2: Build timeout protection
+      const timeoutHandle = setTimeout(() => {
+        process.kill('SIGKILL');
+        reject(new Error(`Command timed out after ${timeout}ms: ${command} ${args.join(' ')}`));
+      }, timeout);
 
       let stdout = '';
       let stderr = '';
@@ -392,6 +450,7 @@ LABEL "peerbot.build.timestamp"="${new Date().toISOString()}"
       });
 
       process.on('close', (code) => {
+        clearTimeout(timeoutHandle);
         if (code === 0) {
           resolve({ stdout, stderr });
         } else {
@@ -400,6 +459,7 @@ LABEL "peerbot.build.timestamp"="${new Date().toISOString()}"
       });
 
       process.on('error', (error) => {
+        clearTimeout(timeoutHandle);
         reject(error);
       });
     });

@@ -29,6 +29,30 @@ WORKSPACE_DIR="/workspace"
 mkdir -p "$WORKSPACE_DIR"
 cd "$WORKSPACE_DIR"
 
+# Ensure Claude CLI sessions persist in the workspace volume
+# Create persistent Claude directory in workspace
+CLAUDE_PERSISTENT_DIR="/workspace/.claude-sessions"
+mkdir -p "$CLAUDE_PERSISTENT_DIR"
+
+# Get user's home directory and setup symlink for Claude CLI
+USER_HOME=$(getent passwd "$(whoami)" | cut -d: -f6)
+mkdir -p "$USER_HOME"
+
+# Remove existing .claude if it's not a symlink, then create symlink
+if [[ -d "$USER_HOME/.claude" ]] && [[ ! -L "$USER_HOME/.claude" ]]; then
+    echo "🔄 Moving existing Claude config to persistent storage..."
+    mv "$USER_HOME/.claude"/* "$CLAUDE_PERSISTENT_DIR/" 2>/dev/null || true
+    rm -rf "$USER_HOME/.claude"
+fi
+
+# Create symlink if it doesn't exist
+if [[ ! -L "$USER_HOME/.claude" ]]; then
+    echo "🔗 Creating Claude session persistence symlink..."
+    ln -sf "$CLAUDE_PERSISTENT_DIR" "$USER_HOME/.claude"
+fi
+
+echo "✅ Claude sessions will persist in: $CLAUDE_PERSISTENT_DIR"
+
 # Repository is pre-cloned in the image, just pull for updates
 if [[ -n "${REPOSITORY_URL:-}" ]] && [[ -d ".git" ]]; then
     echo "🔄 Pulling latest changes..."

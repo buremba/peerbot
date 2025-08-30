@@ -113,10 +113,10 @@ graph TB
 
 ### How Conversations Continue
 1. **Persistent Volume**: Single 10GB PVC shared across all workers
-2. **User Isolation**: Each user gets `/workspace/user-{username}/` directory
-3. **Claude Sessions**: All conversation history stored in `.claude/` subdirectory
+2. **User Isolation**: Each user gets `/workspace/user-{username}/` directory  
+3. **Claude Sessions**: Global session data stored in `/workspace/.claude-sessions/` and symlinked to `~/.claude`
 4. **Auto-Resume**: Workers use `claude --resume <session-id>` to continue conversations
-5. **No Data Loss**: Data persists even when worker pods terminate
+5. **No Data Loss**: Both project data and Claude sessions persist across worker pod restarts
 
 ### Background Process Management
 Workers include a background process management MCP server.
@@ -124,25 +124,23 @@ Workers include a background process management MCP server.
 ### Directory Structure
 ```
 /workspace/                     # PVC mount point (K8s) or local workspaces dir (Docker)
+├── .claude-sessions/          # Claude CLI global session data (symlinked from ~/.claude)
+│   ├── projects/              # Project contexts across all threads
+│   ├── sessions/              # Conversation history for all sessions
+│   └── settings.mcp.json      # MCP server configuration
 ├── U095ZLHKP98/               # Per-userId directory
 │   ├── 1756492073.980799/     # Per-thread workspace (threadId/timestamp)
 │   │   ├── .git/              # Cloned repository
-│   │   ├── .claude/           # Claude session data (auto-resume support)
-│   │   │   ├── projects/      # Project context  
-│   │   │   └── sessions/      # Conversation history
 │   │   └── [project files]    # User's code from repository
 │   └── 1756491379.629309/     # Another thread workspace
 │       ├── .git/
-│       ├── .claude/
 │       └── [project files]
 └── U09513HH1N1/               # Another user's workspace
     ├── 1756479858.121779/     # Thread-specific workspace
     │   ├── .git/
-    │   ├── .claude/
     │   └── [project files]
     └── 1756491388.020389/     # Another thread workspace
         ├── .git/
-        ├── .claude/
         └── [project files]
 ```
 

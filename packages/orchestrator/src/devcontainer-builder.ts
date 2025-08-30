@@ -274,11 +274,13 @@ RUN if ! command -v claude >/dev/null 2>&1; then \\
 COPY packages /app/packages
 COPY scripts /app/scripts
 
-# Set up MCP configuration for the container user
+# Set up MCP configuration with persistent storage symlink
 RUN USER_HOME=\\$(getent passwd \\$(whoami) | cut -d: -f6) && \\
-    mkdir -p "\\$USER_HOME/.claude" && \\
+    mkdir -p "/workspace/.claude-sessions" && \\
+    mkdir -p "\\$USER_HOME" && \\
+    ln -sf "/workspace/.claude-sessions" "\\$USER_HOME/.claude" && \\
     if [ -f "/app/packages/worker/mcp-config.json" ]; then \\
-      cp /app/packages/worker/mcp-config.json "\\$USER_HOME/.claude/settings.mcp.json"; \\
+      cp /app/packages/worker/mcp-config.json "/workspace/.claude-sessions/settings.mcp.json"; \\
     fi
 
 # Install dependencies and build peerbot packages

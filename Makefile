@@ -16,8 +16,8 @@ setup:
 	@echo "🚀 Starting PeerBot development setup..."
 	@./bin/setup-slack.sh
 
-# Start local development
-dev: build-worker
+# Start local development  
+dev:
 	@if [ ! -f .env ]; then \
 		echo "❌ .env file not found!"; \
 		echo ""; \
@@ -28,9 +28,8 @@ dev: build-worker
 	fi
 	@echo "🚀 Starting local development mode..."
 	@echo "   This will:"
-	@echo "   - Build worker Docker image"
 	@echo "   - Start orchestrator and dispatcher with hot reload"
-	@echo "   - Use Docker containers for workers"
+	@echo "   - Use devcontainer-built images for workers (built on demand)"
 	@echo ""
 	@if grep -q "DEPLOYMENT_MODE=" .env 2>/dev/null; then \
 		DEPLOYMENT_MODE=$$(grep "DEPLOYMENT_MODE=" .env | cut -d'=' -f2); \
@@ -55,16 +54,10 @@ dev: build-worker
 		bun --watch packages/orchestrator/src/index.ts & \
 		bun --watch packages/dispatcher/src/index.ts
 
-# Build worker image for Docker mode
+# Build base worker image for development (optional fallback)
 build-worker:
-	@echo "🔨 Building worker Docker image..."
-	@if [ "$$NODE_ENV" = "development" ]; then \
-		echo "📦 Building development image with volume mounts..."; \
-		docker build -f Dockerfile.worker.dev -t peerbot-worker:latest .; \
-	else \
-		echo "📦 Building production image..."; \
-		docker build -f Dockerfile.worker -t peerbot-worker:latest .; \
-	fi
+	@echo "ℹ️ Worker images are now built dynamically using devcontainers"
+	@echo "   Base images will be built on-demand when workers are created"
 
 # Catch-all target to prevent errors when passing arguments
 %:

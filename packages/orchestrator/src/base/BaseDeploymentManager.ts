@@ -2,6 +2,7 @@ import { DatabasePool } from '../db-connection-pool';
 import { DatabaseManager } from '../db-operations';
 import { BaseSecretManager } from './BaseSecretManager';
 import { OrchestratorConfig, OrchestratorError, ErrorCode } from '../types';
+import { DevcontainerBuilder } from '../devcontainer-builder';
 
 export interface DeploymentInfo {
   deploymentName: string;
@@ -19,17 +20,19 @@ export abstract class BaseDeploymentManager {
   protected dbPool: DatabasePool;
   protected databaseManager: DatabaseManager;
   protected secretManager: BaseSecretManager;
+  protected devcontainerBuilder: DevcontainerBuilder;
 
   constructor(config: OrchestratorConfig, dbPool: DatabasePool, secretManager: BaseSecretManager) {
     this.config = config;
     this.dbPool = dbPool;
     this.databaseManager = new DatabaseManager(dbPool);
     this.secretManager = secretManager;
+    this.devcontainerBuilder = new DevcontainerBuilder();
   }
 
   // Abstract methods that must be implemented by concrete classes
   abstract listDeployments(): Promise<DeploymentInfo[]>;
-  abstract createDeployment(deploymentName: string, username: string, userId: string, messageData?: any): Promise<void>;
+  abstract createDeployment(deploymentName: string, username: string, userId: string, messageData?: any, imageName?: string): Promise<void>;
   abstract scaleDeployment(deploymentName: string, replicas: number): Promise<void>;
   abstract deleteDeployment(deploymentId: string): Promise<void>;
   abstract updateDeploymentActivity(deploymentName: string): Promise<void>;
@@ -37,13 +40,18 @@ export abstract class BaseDeploymentManager {
   /**
    * Create worker deployment for handling messages
    */
-  async createWorkerDeployment(userId: string, threadId: string, teamId?: string, messageData?: any): Promise<void> {
+  async createWorkerDeployment(
+    userId: string, 
+    threadId: string, 
+    teamId?: string, 
+    messageData?: any, 
+    onProgress?: (message: string) => void
+  ): Promise<void> {
     const deploymentName = `peerbot-worker-${threadId}`;
     
     try {
       // Always ensure user credentials exist first
       const username = this.databaseManager.generatePostgresUsername(userId);
-      
       
       // Check if secret already exists and get existing password, or generate new one
       await this.secretManager.getOrCreateUserCredentials(username, 
@@ -58,7 +66,24 @@ export abstract class BaseDeploymentManager {
         return;
       }
 
-      await this.createDeployment(deploymentName, username, userId, messageData);
+      let imageName: string | undefined;
+
+      // Build custom image if repository URL is provided
+      const repositoryUrl = messageData?.platformMetadata?.repositoryUrl;
+      if (repositoryUrl) {
+        try {
+          const buildResult = await this.devcontainerBuilder.build(repositoryUrl, onProgress);
+          imageName = buildResult.imageName;
+          
+          onProgress?.(`✅ Built custom image: ${buildResult.imageName} (${buildResult.hasDevcontainer ? 'devcontainer' : 'default'})`);
+        } catch (error) {
+          console.warn(`Failed to build custom image for ${repositoryUrl}, using default:`, error);
+          onProgress?.(`⚠️ Using default image (custom build failed)`);
+          // Continue with default image
+        }
+      }
+
+      await this.createDeployment(deploymentName, username, userId, messageData, imageName);
       
     } catch (error) {
       throw new OrchestratorError(

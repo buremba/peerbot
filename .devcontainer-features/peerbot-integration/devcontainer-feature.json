@@ -1,0 +1,20 @@
+{
+  "id": "peerbot-integration",
+  "version": "1.0.0",
+  "name": "Peerbot Worker Integration",
+  "description": "Adds Peerbot worker packages and Claude Code CLI to devcontainer environment",
+  "documentationURL": "https://github.com/buremba/peerbot",
+  "options": {
+    "version": {
+      "type": "string",
+      "default": "latest",
+      "description": "Version of Claude Code CLI to install"
+    }
+  },
+  "installsAfter": ["ghcr.io/devcontainers/features/common-utils"],
+  "postCreateCommand": [
+    "npm install -g @anthropic-ai/claude-code",
+    "npm install -g /app/packages/worker",
+    "npm install -g /app/packages/shared"
+  ]
+}

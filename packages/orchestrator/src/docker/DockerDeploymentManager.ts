@@ -69,7 +69,7 @@ export class DockerDeploymentManager extends BaseDeploymentManager {
     }
   }
 
-  async createDeployment(deploymentName: string, username: string, userId: string, messageData?: any): Promise<void> {
+  async createDeployment(deploymentName: string, username: string, userId: string, messageData?: any, imageName?: string): Promise<void> {
     try {
       // Create workspace directory for this user (use absolute path)
       const workspaceDir = `${process.cwd()}/workspaces/${userId}`;
@@ -98,7 +98,7 @@ export class DockerDeploymentManager extends BaseDeploymentManager {
 
       const createOptions: Docker.ContainerCreateOptions = {
         name: deploymentName,
-        Image: `${this.config.worker.image.repository}:${this.config.worker.image.tag}`,
+        Image: imageName || `${this.config.worker.image.repository}:${this.config.worker.image.tag}`,
         Env: envVars,
         Labels: {
           'app.kubernetes.io/name': 'peerbot',

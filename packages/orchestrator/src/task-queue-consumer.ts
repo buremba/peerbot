@@ -131,7 +131,12 @@ export class QueueConsumer {
             }
           },
           async () => {
-            await this.deploymentManager.createWorkerDeployment(data.userId, data.threadId, teamId, data);
+            // Create progress callback for status updates
+            const onProgress = async (message: string) => {
+              await this.sendStatusMessage(data, message);
+            };
+            
+            await this.deploymentManager.createWorkerDeployment(data.userId, data.threadId, teamId, data, onProgress);
           }
         );
         console.log(`✅ Created deployment: ${deploymentName}`);
@@ -149,7 +154,12 @@ export class QueueConsumer {
         } catch (error) {
           // Deployment doesn't exist, recreate it
           console.log(`Deployment ${deploymentName} doesn't exist, recreating...`);
-          await this.deploymentManager.createWorkerDeployment(data.userId, data.threadId, teamId, data);
+          
+          const onProgress = async (message: string) => {
+            await this.sendStatusMessage(data, message);
+          };
+          
+          await this.deploymentManager.createWorkerDeployment(data.userId, data.threadId, teamId, data, onProgress);
           console.log(`✅ Recreated deployment: ${deploymentName}`);
 
           // Reconcile deployments after recreating
@@ -261,6 +271,23 @@ export class QueueConsumer {
   }
 
 
+
+  /**
+   * Send status message to Slack (placeholder implementation)
+   */
+  private async sendStatusMessage(messageData: any, statusMessage: string): Promise<void> {
+    try {
+      // For now, just log the status message
+      // In a real implementation, this would send a message to Slack
+      console.log(`[Status Update] Thread ${messageData.threadId}: ${statusMessage}`);
+      
+      // TODO: Implement actual Slack API call to update thread with status
+      // This could use the Slack Web API to post an ephemeral message or update the original message
+    } catch (error) {
+      console.error('Failed to send status message:', error);
+      // Don't throw - status messages are non-critical
+    }
+  }
 
   /**
    * Get queue statistics

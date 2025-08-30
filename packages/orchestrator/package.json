@@ -10,6 +10,7 @@
     "test": "bun test"
   },
   "dependencies": {
+    "@devcontainers/cli": "^0.60.0",
     "@kubernetes/client-node": "^0.21.0",
     "@sentry/node": "^10.6.0",
     "dockerode": "^4.0.7",

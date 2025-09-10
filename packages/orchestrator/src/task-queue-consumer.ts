@@ -11,7 +11,7 @@ export class QueueConsumer {
 
   constructor(
     config: OrchestratorConfig,
-    deploymentManager: BaseDeploymentManager
+    deploymentManager: BaseDeploymentManager,
   ) {
     this.config = config;
     this.deploymentManager = deploymentManager;
@@ -49,7 +49,7 @@ export class QueueConsumer {
       } catch (error) {
         console.warn(
           "⚠️  Failed to setup pgboss RLS:",
-          error instanceof Error ? error.message : String(error)
+          error instanceof Error ? error.message : String(error),
         );
       }
 
@@ -71,7 +71,7 @@ export class QueueConsumer {
             console.log("=== PG-BOSS JOB RECEIVED ===");
             console.log("Raw job:", JSON.stringify(job, null, 2));
             return this.handleMessage(job);
-          }
+          },
         );
       });
 
@@ -84,7 +84,7 @@ export class QueueConsumer {
         ErrorCode.QUEUE_JOB_PROCESSING_FAILED,
         `Failed to start queue consumer: ${error instanceof Error ? error.message : String(error)}`,
         { error },
-        true
+        true,
       );
     }
   }
@@ -109,12 +109,12 @@ export class QueueConsumer {
     console.log("Job data:", JSON.stringify(data, null, 2));
 
     console.log(
-      `Processing message job ${jobId} for user ${data?.userId}, thread ${data?.threadId}`
+      `Processing message job ${jobId} for user ${data?.userId}, thread ${data?.threadId}`,
     );
 
     try {
       // Create a more readable deployment name using user ID and last 6 chars of thread ID
-      const shortThreadId = data.threadId.replace('.', '-').slice(-10); // Last 10 chars, replace dot with dash
+      const shortThreadId = data.threadId.replace(".", "-").slice(-10); // Last 10 chars, replace dot with dash
       const shortUserId = data.userId.toLowerCase().slice(0, 8); // First 8 chars of user ID
       const deploymentName = `peerbot-worker-${shortUserId}-${shortThreadId}`;
       const isNewThread = !data.routingMetadata?.targetThreadId; // New thread if no parent thread
@@ -123,7 +123,7 @@ export class QueueConsumer {
       if (isNewThread) {
         // New thread - create deployment
         console.log(
-          `New thread ${data.threadId} - creating deployment ${deploymentName}`
+          `New thread ${data.threadId} - creating deployment ${deploymentName}`,
         );
 
         await Sentry.startSpan(
@@ -140,9 +140,9 @@ export class QueueConsumer {
             await this.deploymentManager.createWorkerDeployment(
               data.userId,
               data.threadId,
-              data
+              data,
             );
-          }
+          },
         );
         console.log(`✅ Created deployment: ${deploymentName}`);
 
@@ -152,7 +152,7 @@ export class QueueConsumer {
       } else {
         // Existing thread - ensure deployment is scaled to 1
         console.log(
-          `Existing thread ${data.threadId} - ensuring deployment ${deploymentName} is running`
+          `Existing thread ${data.threadId} - ensuring deployment ${deploymentName} is running`,
         );
 
         try {
@@ -161,12 +161,12 @@ export class QueueConsumer {
         } catch (_error) {
           // Deployment doesn't exist, recreate it
           console.log(
-            `Deployment ${deploymentName} doesn't exist, recreating...`
+            `Deployment ${deploymentName} doesn't exist, recreating...`,
           );
           await this.deploymentManager.createWorkerDeployment(
             data.userId,
             data.threadId,
-            data
+            data,
           );
           console.log(`✅ Recreated deployment: ${deploymentName}`);
 
@@ -189,7 +189,7 @@ export class QueueConsumer {
         },
         async () => {
           await this.sendToWorkerQueue(data, deploymentName);
-        }
+        },
       );
 
       // Update deployment activity annotation for simplified tracking
@@ -205,7 +205,7 @@ export class QueueConsumer {
         ErrorCode.QUEUE_JOB_PROCESSING_FAILED,
         `Failed to process message job: ${error instanceof Error ? error.message : String(error)}`,
         { jobId, data, error },
-        true
+        true,
       );
     }
   }
@@ -215,7 +215,7 @@ export class QueueConsumer {
    */
   private async sendToWorkerQueue(
     data: any,
-    deploymentName: string
+    deploymentName: string,
   ): Promise<void> {
     try {
       // Create thread-specific queue name: thread_message_[deploymentid]
@@ -242,17 +242,17 @@ export class QueueConsumer {
           retryLimit: this.config.queues.retryLimit,
           retryDelay: this.config.queues.retryDelay,
           priority: 10, // Thread messages have high priority
-        }
+        },
       );
 
       if (!jobId) {
         throw new Error(
-          `pgBoss.send() returned null/undefined for queue: ${threadQueueName}`
+          `pgBoss.send() returned null/undefined for queue: ${threadQueueName}`,
         );
       }
 
       console.log(
-        `✅ Sent message to thread queue ${threadQueueName} for thread ${data.threadId}, jobId: ${jobId}`
+        `✅ Sent message to thread queue ${threadQueueName} for thread ${data.threadId}, jobId: ${jobId}`,
       );
     } catch (error) {
       console.error(`❌ [ERROR] sendToWorkerQueue failed:`, error);
@@ -260,7 +260,7 @@ export class QueueConsumer {
         ErrorCode.QUEUE_JOB_PROCESSING_FAILED,
         `Failed to send message to thread queue: ${error instanceof Error ? error.message : String(error)}`,
         { deploymentName, data, error },
-        true
+        true,
       );
     }
   }
@@ -269,7 +269,9 @@ export class QueueConsumer {
    * Start background cleanup task for inactive threads
    */
   private startCleanupTask(): void {
-    console.log("🧹 Cleanup task will be handled by orchestrator main interval");
+    console.log(
+      "🧹 Cleanup task will be handled by orchestrator main interval",
+    );
   }
 
   /**

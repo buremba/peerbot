@@ -30,7 +30,7 @@ class PeerbotOrchestrator {
   }
 
   private createDeploymentManager(
-    config: OrchestratorConfig
+    config: OrchestratorConfig,
   ): BaseDeploymentManager {
     // Check for explicit deployment mode
     const deploymentMode = process.env.DEPLOYMENT_MODE;
@@ -45,7 +45,7 @@ class PeerbotOrchestrator {
     if (deploymentMode === "kubernetes" || deploymentMode === "k8s") {
       if (!this.isKubernetesAvailable()) {
         throw new Error(
-          "DEPLOYMENT_MODE=kubernetes but Kubernetes is not available"
+          "DEPLOYMENT_MODE=kubernetes but Kubernetes is not available",
         );
       }
       return new K8sDeploymentManager(config, this.dbPool);
@@ -61,7 +61,7 @@ class PeerbotOrchestrator {
     }
 
     throw new Error(
-      "Neither Kubernetes nor Docker is available. Please ensure one is installed and accessible."
+      "Neither Kubernetes nor Docker is available. Please ensure one is installed and accessible.",
     );
   }
 
@@ -140,7 +140,7 @@ class PeerbotOrchestrator {
       dbmateProcess.on("close", (code: any) => {
         if (code === 0) {
           console.log(
-            "✅ Database created and migrations applied successfully"
+            "✅ Database created and migrations applied successfully",
           );
           resolve();
         } else {
@@ -196,7 +196,7 @@ class PeerbotOrchestrator {
 
       // Stop queue consumer
       await this.queueConsumer.stop();
-      
+
       await this.dbPool.close();
     } catch (error) {
       console.error("❌ Error during shutdown:", error);
@@ -253,7 +253,7 @@ class PeerbotOrchestrator {
           res.end(
             JSON.stringify({
               error: error instanceof Error ? error.message : String(error),
-            })
+            }),
           );
         }
       } else if (req.method === "POST" && url.pathname.startsWith("/scale/")) {
@@ -283,7 +283,7 @@ class PeerbotOrchestrator {
                 // Scale the deployment using deployment manager
                 await this.deploymentManager.scaleDeployment(
                   deploymentName,
-                  replicas
+                  replicas,
                 );
 
                 const result = {
@@ -301,7 +301,7 @@ class PeerbotOrchestrator {
               } catch (error) {
                 console.error(
                   `Failed to scale deployment ${deploymentName}:`,
-                  error
+                  error,
                 );
                 res.statusCode = 500;
                 res.end(
@@ -310,7 +310,7 @@ class PeerbotOrchestrator {
                       error instanceof Error ? error.message : String(error),
                     deployment: deploymentName,
                     requestedReplicas: replicas,
-                  })
+                  }),
                 );
               }
             });
@@ -324,7 +324,7 @@ class PeerbotOrchestrator {
             JSON.stringify({
               error:
                 "Invalid scale endpoint format. Use POST /scale/{deploymentName}/{replicas}",
-            })
+            }),
           );
         }
       } else {
@@ -353,14 +353,17 @@ class PeerbotOrchestrator {
     this.cleanupInterval = setInterval(async () => {
       try {
         await this.deploymentManager.reconcileDeployments();
-        
-        if (this.queueConsumer && typeof this.queueConsumer.performCleanup === 'function') {
+
+        if (
+          this.queueConsumer &&
+          typeof this.queueConsumer.performCleanup === "function"
+        ) {
           await this.queueConsumer.performCleanup();
         }
       } catch (error) {
         console.error(
           "Error during consolidated cleanup - will retry on next interval:",
-          error instanceof Error ? error.message : String(error)
+          error instanceof Error ? error.message : String(error),
         );
         // Don't exit process - just log the error and continue
       }
@@ -427,7 +430,7 @@ async function main() {
         retryDelay: parseInt(process.env.PGBOSS_RETRY_DELAY || "30", 10),
         expireInSeconds: parseInt(
           process.env.PGBOSS_EXPIRE_SECONDS || "300",
-          10
+          10,
         ),
       },
       worker: {
@@ -448,7 +451,7 @@ async function main() {
         },
         idleCleanupMinutes: parseInt(
           process.env.WORKER_IDLE_CLEANUP_MINUTES || "60",
-          10
+          10,
         ),
         maxDeployments: parseInt(process.env.MAX_WORKER_DEPLOYMENTS || "", 10),
       },

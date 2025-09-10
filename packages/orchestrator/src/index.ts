@@ -188,13 +188,15 @@ class PeerbotOrchestrator {
     this.isRunning = false;
 
     try {
-      // Clear cleanup interval
+      // Clear cleanup interval first to prevent new cleanup operations
       if (this.cleanupInterval) {
         clearInterval(this.cleanupInterval);
         this.cleanupInterval = undefined;
       }
 
+      // Stop queue consumer
       await this.queueConsumer.stop();
+      
       await this.dbPool.close();
     } catch (error) {
       console.error("❌ Error during shutdown:", error);
@@ -351,9 +353,13 @@ class PeerbotOrchestrator {
     this.cleanupInterval = setInterval(async () => {
       try {
         await this.deploymentManager.reconcileDeployments();
+        
+        if (this.queueConsumer && typeof this.queueConsumer.performCleanup === 'function') {
+          await this.queueConsumer.performCleanup();
+        }
       } catch (error) {
         console.error(
-          "Error during deployment reconciliation - will retry on next interval:",
+          "Error during consolidated cleanup - will retry on next interval:",
           error instanceof Error ? error.message : String(error)
         );
         // Don't exit process - just log the error and continue

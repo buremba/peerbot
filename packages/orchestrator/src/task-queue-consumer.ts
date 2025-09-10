@@ -269,19 +269,15 @@ export class QueueConsumer {
    * Start background cleanup task for inactive threads
    */
   private startCleanupTask(): void {
-    const cleanupInterval = setInterval(async () => {
-      if (!this.isRunning) {
-        clearInterval(cleanupInterval);
-        return;
-      }
+    console.log("🧹 Cleanup task will be handled by orchestrator main interval");
+  }
 
-      console.log("🧹 Running worker deployment cleanup task...");
-      try {
-        await this.deploymentManager.reconcileDeployments();
-      } catch (error) {
-        console.error("Error during cleanup task:", error);
-      }
-    }, 60 * 1000); // Run every minute
+  /**
+   * Perform queue-specific cleanup operations
+   * Called by the orchestrator's consolidated cleanup interval
+   */
+  async performCleanup(): Promise<void> {
+    console.log("🧹 Queue cleanup check completed");
   }
 
   /**

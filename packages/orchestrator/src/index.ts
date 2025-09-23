@@ -42,14 +42,6 @@ class PeerbotOrchestrator {
       return new DockerDeploymentManager(config, this.dbPool);
     }
 
-    if (deploymentMode === "kata") {
-      if (!this.isKubernetesAvailable()) {
-        throw new Error("DEPLOYMENT_MODE=kata but Kubernetes is not available");
-      }
-      this.ensureKataRuntime(config);
-      return new K8sDeploymentManager(config, this.dbPool);
-    }
-
     if (deploymentMode === "kubernetes" || deploymentMode === "k8s") {
       if (!this.isKubernetesAvailable()) {
         throw new Error(

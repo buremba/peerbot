@@ -133,85 +133,6 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
     }
   }
 
-  private async ensurePersistentVolume(
-    deploymentName: string,
-    userId: string
-  ): Promise<void> {
-    const threadId = deploymentName
-      .replace("peerbot-worker-", "")
-      .replace(/[^a-zA-Z0-9]/g, "-")
-      .toLowerCase();
-    const pvcName = `peerbot-thread-workspace-${threadId}`;
-
-    try {
-      // Check if PVC already exists
-      await this.coreV1Api.readNamespacedPersistentVolumeClaim(
-        pvcName,
-        this.config.kubernetes.namespace
-      );
-      console.log(`📁 PVC ${pvcName} already exists`);
-    } catch (error: any) {
-      if (error.statusCode === 404) {
-        console.log(`📁 Creating new PVC: ${pvcName}`);
-        // PVC doesn't exist, create it
-        const pvc = {
-          apiVersion: "v1",
-          kind: "PersistentVolumeClaim",
-          metadata: {
-            name: pvcName,
-            namespace: this.config.kubernetes.namespace,
-            labels: {
-              "app.kubernetes.io/name": "peerbot",
-              "app.kubernetes.io/component": "thread-workspace",
-              "peerbot.io/user-id": userId,
-              "peerbot.io/thread-id": threadId,
-            },
-          },
-          spec: {
-            accessModes: ["ReadWriteOnce"],
-            resources: {
-              requests: {
-                storage: "1Gi",
-              },
-            },
-          },
-        };
-
-        try {
-          await this.coreV1Api.createNamespacedPersistentVolumeClaim(
-            this.config.kubernetes.namespace,
-            pvc
-          );
-          console.log(`✅ PVC ${pvcName} created successfully`);
-        } catch (pvcError: any) {
-          console.error(`❌ Failed to create PVC ${pvcName}:`, {
-            statusCode: pvcError.statusCode,
-            message: pvcError.message,
-            body: pvcError.body,
-          });
-
-          // Extract meaningful error message
-          let errorMessage = pvcError.message || "Unknown error";
-          if (pvcError.body?.message) {
-            errorMessage = pvcError.body.message;
-            // Check for quota exceeded
-            if (errorMessage.includes("exceeded quota")) {
-              errorMessage = `PVC quota exceeded: ${errorMessage}. Please clean up unused PVCs.`;
-            }
-          }
-          throw new Error(`Failed to create PVC: ${errorMessage}`);
-        }
-      } else {
-        console.error(`❌ Failed to check PVC ${pvcName}:`, {
-          statusCode: error.statusCode,
-          message: error.message,
-        });
-        throw new Error(
-          `Failed to check PVC: ${error.message || "Unknown error"}`
-        );
-      }
-    }
-  }
 
   async createDeployment(
     deploymentName: string,
@@ -224,16 +145,7 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
       `🚀 Creating K8s deployment: ${deploymentName} for user ${userId}`
     );
 
-    try {
-      // Create per-thread PVC for workspace persistence
-      await this.ensurePersistentVolume(deploymentName, userId);
-    } catch (error: any) {
-      console.error(
-        `Failed during PVC setup for ${deploymentName}:`,
-        error.message
-      );
-      throw error;
-    }
+    // PVCs are not used since we're using emptyDir for workspace storage
 
     // Get environment variables before creating the deployment spec
     const envVars = this.generateEnvironmentVariables(

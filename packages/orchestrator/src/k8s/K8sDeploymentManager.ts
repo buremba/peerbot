@@ -245,6 +245,122 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
       userEnvVars
     );
 
+    const podSpec: SimpleDeployment["spec"]["template"]["spec"] = {
+      serviceAccountName: "peerbot-worker",
+      initContainers: [
+        {
+          name: "fix-permissions",
+          image: "busybox:1.36",
+          command: ["sh", "-c"],
+          args: ["chown -R 1001:1001 /workspace && chmod -R 755 /workspace"],
+          securityContext: {
+            runAsUser: 0,
+            runAsNonRoot: false,
+          },
+          resources: {
+            requests: {
+              cpu: "10m",
+              memory: "32Mi",
+            },
+            limits: {
+              cpu: "50m",
+              memory: "64Mi",
+            },
+          },
+          volumeMounts: [
+            {
+              name: "workspace",
+              mountPath: "/workspace",
+            },
+          ],
+        },
+      ],
+      containers: [
+        {
+          name: "worker",
+          image: `${this.config.worker.image.repository}:${this.config.worker.image.tag}`,
+          imagePullPolicy: this.config.worker.image.pullPolicy || "Always",
+          // Override the entrypoint to set ANTHROPIC_API_KEY before running the worker
+          command: ["/bin/bash", "-c"],
+          args: [
+            `export ANTHROPIC_API_KEY="$PEERBOT_DATABASE_USERNAME:$PEERBOT_DATABASE_PASSWORD" && exec /app/entrypoint.sh`,
+          ],
+          securityContext: {
+            runAsUser: 1001,
+            runAsGroup: 1001,
+            runAsNonRoot: true,
+            readOnlyRootFilesystem: false,
+          },
+          env: [
+            // Get the database username for constructing ANTHROPIC_API_KEY
+            {
+              name: "PEERBOT_DATABASE_USERNAME",
+              valueFrom: {
+                secretKeyRef: {
+                  name: `peerbot-user-secret-${username.replace(/[^a-zA-Z0-9]/g, "-").toLowerCase()}`,
+                  key: "PEERBOT_DATABASE_USERNAME",
+                },
+              },
+            },
+            // Get the database password for constructing ANTHROPIC_API_KEY
+            {
+              name: "PEERBOT_DATABASE_PASSWORD",
+              valueFrom: {
+                secretKeyRef: {
+                  name: `peerbot-user-secret-${username.replace(/[^a-zA-Z0-9]/g, "-").toLowerCase()}`,
+                  key: "PEERBOT_DATABASE_PASSWORD",
+                },
+              },
+            },
+            // Common environment variables from base class (excluding secrets)
+            ...Object.entries(envVars).map(([key, value]) => ({
+              name: key,
+              value: value,
+            })),
+            // Pass NODE_ENV to worker pods
+            {
+              name: "NODE_ENV",
+              value: process.env.NODE_ENV || "production",
+            },
+            // K8s-specific secrets that can't be handled in base class
+            {
+              name: "GITHUB_TOKEN",
+              valueFrom: {
+                secretKeyRef: {
+                  name: "peerbot-secrets",
+                  key: "github-token",
+                  optional: true,
+                } as any,
+              },
+            },
+          ],
+          resources: {
+            requests: this.config.worker.resources.requests,
+            limits: this.config.worker.resources.limits,
+          },
+          volumeMounts: [
+            {
+              name: "workspace",
+              mountPath: "/workspace",
+            },
+          ],
+        },
+      ],
+      volumes: [
+        {
+          name: "workspace",
+          // Use ephemeral storage instead of PVC to avoid quota and multi-attach issues
+          emptyDir: {
+            sizeLimit: "2Gi",
+          },
+        },
+      ],
+    };
+
+    if (this.config.kubernetes.runtimeClassName) {
+      podSpec.runtimeClassName = this.config.kubernetes.runtimeClassName;
+    }
+
     const deployment: SimpleDeployment = {
       apiVersion: "apps/v1",
       kind: "Deployment",
@@ -288,120 +404,7 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
               "app.kubernetes.io/component": "worker",
             },
           },
-          spec: {
-            serviceAccountName: "peerbot-worker",
-            initContainers: [
-              {
-                name: "fix-permissions",
-                image: "busybox:1.36",
-                command: ["sh", "-c"],
-                args: [
-                  "chown -R 1001:1001 /workspace && chmod -R 755 /workspace",
-                ],
-                securityContext: {
-                  runAsUser: 0,
-                  runAsNonRoot: false,
-                },
-                resources: {
-                  requests: {
-                    cpu: "10m",
-                    memory: "32Mi",
-                  },
-                  limits: {
-                    cpu: "50m",
-                    memory: "64Mi",
-                  },
-                },
-                volumeMounts: [
-                  {
-                    name: "workspace",
-                    mountPath: "/workspace",
-                  },
-                ],
-              },
-            ],
-            containers: [
-              {
-                name: "worker",
-                image: `${this.config.worker.image.repository}:${this.config.worker.image.tag}`,
-                imagePullPolicy:
-                  this.config.worker.image.pullPolicy || "Always",
-                // Override the entrypoint to set ANTHROPIC_API_KEY before running the worker
-                command: ["/bin/bash", "-c"],
-                args: [
-                  `export ANTHROPIC_API_KEY="$PEERBOT_DATABASE_USERNAME:$PEERBOT_DATABASE_PASSWORD" && exec /app/entrypoint.sh`,
-                ],
-                securityContext: {
-                  runAsUser: 1001,
-                  runAsGroup: 1001,
-                  runAsNonRoot: true,
-                  readOnlyRootFilesystem: false,
-                },
-                env: [
-                  // Get the database username for constructing ANTHROPIC_API_KEY
-                  {
-                    name: "PEERBOT_DATABASE_USERNAME",
-                    valueFrom: {
-                      secretKeyRef: {
-                        name: `peerbot-user-secret-${username.replace(/[^a-zA-Z0-9]/g, "-").toLowerCase()}`,
-                        key: "PEERBOT_DATABASE_USERNAME",
-                      },
-                    },
-                  },
-                  // Get the database password for constructing ANTHROPIC_API_KEY
-                  {
-                    name: "PEERBOT_DATABASE_PASSWORD",
-                    valueFrom: {
-                      secretKeyRef: {
-                        name: `peerbot-user-secret-${username.replace(/[^a-zA-Z0-9]/g, "-").toLowerCase()}`,
-                        key: "PEERBOT_DATABASE_PASSWORD",
-                      },
-                    },
-                  },
-                  // Common environment variables from base class (excluding secrets)
-                  ...Object.entries(envVars).map(([key, value]) => ({
-                    name: key,
-                    value: value,
-                  })),
-                  // Pass NODE_ENV to worker pods
-                  {
-                    name: "NODE_ENV",
-                    value: process.env.NODE_ENV || "production",
-                  },
-                  // K8s-specific secrets that can't be handled in base class
-                  {
-                    name: "GITHUB_TOKEN",
-                    valueFrom: {
-                      secretKeyRef: {
-                        name: "peerbot-secrets",
-                        key: "github-token",
-                        optional: true,
-                      } as any,
-                    },
-                  },
-                ],
-                resources: {
-                  requests: this.config.worker.resources.requests,
-                  limits: this.config.worker.resources.limits,
-                },
-                volumeMounts: [
-                  {
-                    name: "workspace",
-                    mountPath: "/workspace",
-                  },
-                ],
-              },
-            ],
-            volumes: [
-              {
-                name: "workspace",
-                // Use ephemeral storage instead of PVC to avoid quota and multi-attach issues
-                emptyDir: {
-                  sizeLimit: "2Gi",
-                },
-              },
-            ],
-          },
+          spec: podSpec,
         },
       },
     };

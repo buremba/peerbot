@@ -24,6 +24,7 @@ export interface OrchestratorConfig {
   };
   kubernetes: {
     namespace: string;
+    runtimeClassName?: string;
   };
 }
 
@@ -161,6 +162,7 @@ export interface SimpleDeployment {
             type?: string;
           };
         }>;
+        runtimeClassName?: string;
       };
     };
   };

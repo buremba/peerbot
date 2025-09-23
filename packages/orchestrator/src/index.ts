@@ -42,17 +42,27 @@ class PeerbotOrchestrator {
       return new DockerDeploymentManager(config, this.dbPool);
     }
 
+    if (deploymentMode === "kata") {
+      if (!this.isKubernetesAvailable()) {
+        throw new Error("DEPLOYMENT_MODE=kata but Kubernetes is not available");
+      }
+      this.ensureKataRuntime(config);
+      return new K8sDeploymentManager(config, this.dbPool);
+    }
+
     if (deploymentMode === "kubernetes" || deploymentMode === "k8s") {
       if (!this.isKubernetesAvailable()) {
         throw new Error(
           "DEPLOYMENT_MODE=kubernetes but Kubernetes is not available"
         );
       }
+      this.ensureKataRuntime(config);
       return new K8sDeploymentManager(config, this.dbPool);
     }
 
     // Auto-detect deployment mode based on environment
     if (this.isKubernetesAvailable()) {
+      this.ensureKataRuntime(config);
       return new K8sDeploymentManager(config, this.dbPool);
     }
 
@@ -92,6 +102,13 @@ class PeerbotOrchestrator {
       });
     } catch {
       return false;
+    }
+  }
+
+  private ensureKataRuntime(config: OrchestratorConfig): void {
+    if (!config.kubernetes.runtimeClassName) {
+      config.kubernetes.runtimeClassName =
+        process.env.KUBERNETES_RUNTIME_CLASS || "kata";
     }
   }
 
@@ -448,6 +465,7 @@ async function main() {
       },
       kubernetes: {
         namespace: process.env.KUBERNETES_NAMESPACE || "peerbot",
+        runtimeClassName: process.env.KUBERNETES_RUNTIME_CLASS,
       },
     };
 

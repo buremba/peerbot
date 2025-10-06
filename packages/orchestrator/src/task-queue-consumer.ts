@@ -1,13 +1,12 @@
 import * as Sentry from "@sentry/node";
-import PgBoss from "pg-boss";
 import type { BaseDeploymentManager } from "./base/BaseDeploymentManager";
 import { ErrorCode, type OrchestratorConfig, OrchestratorError } from "./types";
-import { createLogger } from "@peerbot/shared";
+import { createLogger, createMessageQueue, type MessageQueue, type MessagePayload } from "@peerbot/shared";
 
 const logger = createLogger("orchestrator");
 
 export class QueueConsumer {
-  private pgBoss: PgBoss;
+  private messageQueue: MessageQueue;
   private deploymentManager: BaseDeploymentManager;
   private config: OrchestratorConfig;
   private isRunning = false;
@@ -19,61 +18,41 @@ export class QueueConsumer {
     this.config = config;
     this.deploymentManager = deploymentManager;
 
-    this.pgBoss = new PgBoss({
+    this.messageQueue = createMessageQueue({
+      provider: "postgresql",
       connectionString: config.queues.connectionString,
       retryLimit: config.queues.retryLimit,
       retryDelay: config.queues.retryDelay,
       expireInSeconds: config.queues.expireInSeconds,
       retentionDays: 7,
       deleteAfterDays: 30,
-      monitorStateIntervalSeconds: 60,
-      maintenanceIntervalSeconds: 30,
-      supervise: true, // Explicitly enable maintenance and monitoring
     });
   }
 
   async start(): Promise<void> {
     try {
-      await this.pgBoss.start();
+      await this.messageQueue.start();
       this.isRunning = true;
 
-      // Set up pgboss RLS policies now that pgboss has initialized
-      try {
-        const pool = (this.pgBoss as any).pool;
-        if (pool) {
-          const client = await pool.connect();
-          try {
-            await client.query("SELECT setup_pgboss_rls_on_demand()");
-            logger.info("✅ pgboss RLS policies configured");
-          } finally {
-            client.release();
-          }
-        }
-      } catch (error) {
-        logger.warn(
-          "⚠️  Failed to setup pgboss RLS:",
-          error instanceof Error ? error.message : String(error)
-        );
-      }
-
       // Create the messages queue if it doesn't exist
-      await this.pgBoss.createQueue("messages");
+      await this.messageQueue.createQueue("messages");
       logger.info("✅ Created/verified messages queue");
 
       // Subscribe to the single messages queue for all messages
-      await this.pgBoss.work("messages", async (job: any) => {
+      await this.messageQueue.work("messages", async (payload: MessagePayload) => {
         return await Sentry.startSpan(
           {
             name: "orchestrator.process_queue_job",
             op: "orchestrator.queue_processing",
             attributes: {
-              "job.id": job?.id || "unknown",
+              "user.id": payload.userId,
+              "thread.id": payload.threadId,
             },
           },
           async () => {
-            logger.info("=== PG-BOSS JOB RECEIVED ===");
-            logger.info("Raw job:", JSON.stringify(job, null, 2));
-            return this.handleMessage(job);
+            logger.info("=== MESSAGE QUEUE PAYLOAD RECEIVED ===");
+            logger.info("Message payload:", JSON.stringify(payload, null, 2));
+            return this.handleMessage(payload);
           }
         );
       });
@@ -94,25 +73,19 @@ export class QueueConsumer {
 
   async stop(): Promise<void> {
     this.isRunning = false;
-    await this.pgBoss.stop();
+    await this.messageQueue.stop();
   }
 
   /**
    * Handle all messages - creates deployment for new threads or routes to existing thread queues
    */
-  private async handleMessage(job: any): Promise<void> {
-    logger.info("=== ORCHESTRATOR RECEIVED JOB ===");
+  private async handleMessage(payload: MessagePayload): Promise<void> {
+    logger.info("=== ORCHESTRATOR RECEIVED MESSAGE ===");
 
-    // pgBoss passes job as array sometimes, get the first item
-    const actualJob = Array.isArray(job) ? job[0] : job;
-    const data = actualJob?.data || actualJob;
-    const jobId = actualJob?.id || "unknown";
-
-    logger.info("Processing job:", jobId);
-    logger.info("Job data:", JSON.stringify(data, null, 2));
+    logger.info("Processing message payload:", JSON.stringify(payload, null, 2));
 
     logger.info(
-      `Processing message job ${jobId} for user ${data?.userId}, thread ${data?.threadId}`
+      `Processing message for user ${payload.userId}, thread ${payload.threadId}`
     );
 
     try {
@@ -120,31 +93,31 @@ export class QueueConsumer {
       // This ensures ALL messages in a Slack thread use the SAME worker
       // Thread ID must be the thread_ts (root message timestamp), NOT individual message timestamps!
       const effectiveThreadId =
-        data.routingMetadata?.targetThreadId || data.threadId;
+        payload.routingMetadata?.targetThreadId || payload.threadId;
 
       // Create deployment name - MUST be consistent for entire thread
       // DO NOT use message timestamps - that creates multiple workers per thread!
       const shortThreadId = effectiveThreadId.replace(".", "-").slice(-10); // Last 10 chars, replace dot with dash
-      const shortUserId = data.userId.toLowerCase().slice(0, 8); // First 8 chars of user ID
+      const shortUserId = payload.userId.toLowerCase().slice(0, 8); // First 8 chars of user ID
       const deploymentName = `peerbot-worker-${shortUserId}-${shortThreadId}`;
 
       logger.info(
         `Thread routing - effectiveThreadId: ${effectiveThreadId}, deploymentName: ${deploymentName}`
       );
 
-      // 1) Send to thread queue immediately (pgboss persists; worker will drain on attach)
+      // 1) Send to thread queue immediately (message queue persists; worker will drain on attach)
       await Sentry.startSpan(
         {
           name: "orchestrator.send_to_worker_queue",
           op: "orchestrator.message_routing",
           attributes: {
-            "user.id": data.userId,
-            "thread.id": data.threadId,
+            "user.id": payload.userId,
+            "thread.id": payload.threadId,
             "deployment.name": deploymentName,
           },
         },
         async () => {
-          await this.sendToWorkerQueue(data, deploymentName);
+          await this.sendToWorkerQueue(payload, deploymentName);
         }
       );
 
@@ -219,7 +192,7 @@ export class QueueConsumer {
    * Send message to worker queue for the worker to consume
    */
   private async sendToWorkerQueue(
-    data: any,
+    payload: MessagePayload,
     deploymentName: string
   ): Promise<void> {
     try {
@@ -227,18 +200,18 @@ export class QueueConsumer {
       const threadQueueName = `thread_message_${deploymentName}`;
 
       // Create the thread-specific queue if it doesn't exist
-      await this.pgBoss.createQueue(threadQueueName);
+      await this.messageQueue.createQueue(threadQueueName);
 
       // Send message to thread-specific queue
-      const jobId = await this.pgBoss.send(
+      const jobId = await this.messageQueue.send(
         threadQueueName,
         {
-          ...data,
+          ...payload,
           // Add routing metadata
           routingMetadata: {
             deploymentName,
-            threadId: data.threadId,
-            userId: data.userId,
+            threadId: payload.threadId,
+            userId: payload.userId,
             timestamp: new Date().toISOString(),
           },
         },
@@ -252,12 +225,12 @@ export class QueueConsumer {
 
       if (!jobId) {
         throw new Error(
-          `pgBoss.send() returned null/undefined for queue: ${threadQueueName}`
+          `Message queue send() returned null/undefined for queue: ${threadQueueName}`
         );
       }
 
       logger.info(
-        `✅ Sent message to thread queue ${threadQueueName} for thread ${data.threadId}, jobId: ${jobId}`
+        `✅ Sent message to thread queue ${threadQueueName} for thread ${payload.threadId}, jobId: ${jobId}`
       );
     } catch (error) {
       logger.error(`❌ [ERROR] sendToWorkerQueue failed:`, error);
@@ -294,7 +267,7 @@ export class QueueConsumer {
    */
   async getQueueStats(): Promise<any> {
     try {
-      const stats = await this.pgBoss.getQueueSize("messages");
+      const stats = await this.messageQueue.getQueueStats("messages");
       return {
         messages: stats,
         isRunning: this.isRunning,

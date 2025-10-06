@@ -3,14 +3,13 @@ import {
   BaseDeploymentManager,
   type DeploymentInfo,
 } from "../base/BaseDeploymentManager";
-import type { DatabaseAdapter } from "@peerbot/shared";
+import type { DatabaseAdapter, createSecretManager } from "@peerbot/shared";
 import {
   ErrorCode,
   type OrchestratorConfig,
   OrchestratorError,
   type SimpleDeployment,
 } from "../types";
-import { K8sSecretManager } from "./K8sSecretManager";
 import { createLogger } from "@peerbot/shared";
 
 const logger = createLogger("k8s-deployment");
@@ -20,7 +19,10 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
   private coreV1Api: k8s.CoreV1Api;
 
   constructor(config: OrchestratorConfig, database: DatabaseAdapter) {
-    const secretManager = new K8sSecretManager(config);
+    const secretManager = createSecretManager({
+      provider: "postgresql",
+      database,
+    });
     super(config, database, secretManager);
 
     const kc = new k8s.KubeConfig();

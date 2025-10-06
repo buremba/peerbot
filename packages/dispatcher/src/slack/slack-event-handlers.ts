@@ -1,10 +1,9 @@
 #!/usr/bin/env bun
 
 import type { App } from "@slack/bolt";
-import { createLogger, type DatabaseAdapter } from "@peerbot/shared";
+import { createLogger, type DatabaseAdapter, type MessageQueue } from "@peerbot/shared";
 
 const logger = createLogger("slack-events");
-import type { QueueProducer } from "../queue/task-queue-producer";
 import type { DispatcherConfig } from "../types";
 import {
   setupFileHandlers,
@@ -29,12 +28,12 @@ export class SlackEventHandlers {
 
   constructor(
     private app: App,
-    queueProducer: QueueProducer,
+    messageQueue: MessageQueue,
     private config: DispatcherConfig,
     private database: DatabaseAdapter
   ) {
     // Initialize specialized handlers
-    this.messageHandler = new MessageHandler(queueProducer, config, database);
+    this.messageHandler = new MessageHandler(messageQueue, config, database);
     this.actionHandler = new ActionHandler(this.messageHandler, database);
     this.shortcutCommandHandler = new ShortcutCommandHandler(
       app,

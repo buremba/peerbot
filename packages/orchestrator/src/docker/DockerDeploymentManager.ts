@@ -4,13 +4,12 @@ import {
   BaseDeploymentManager,
   type DeploymentInfo,
 } from "../base/BaseDeploymentManager";
-import type { DatabaseAdapter } from "@peerbot/shared";
+import type { DatabaseAdapter, createSecretManager } from "@peerbot/shared";
 import {
   ErrorCode,
   type OrchestratorConfig,
   OrchestratorError,
 } from "../types";
-import { PostgresSecretManager } from "./PostgresSecretManager";
 import { createLogger } from "@peerbot/shared";
 
 const logger = createLogger("orchestrator");
@@ -20,7 +19,10 @@ export class DockerDeploymentManager extends BaseDeploymentManager {
   private gvisorAvailable = false;
 
   constructor(config: OrchestratorConfig, database: DatabaseAdapter) {
-    const secretManager = new PostgresSecretManager(config, database);
+    const secretManager = createSecretManager({
+      provider: "postgresql",
+      database,
+    });
     super(config, database, secretManager);
 
     // Explicitly use the Unix socket for Docker connection

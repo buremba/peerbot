@@ -1,11 +1,9 @@
-import type { DatabaseAdapter } from "@peerbot/shared";
-import { DatabaseManager } from "@peerbot/shared";
+import type { DatabaseAdapter, SecretManager } from "@peerbot/shared";
 import {
   ErrorCode,
   type OrchestratorConfig,
   OrchestratorError,
 } from "../types";
-import type { BaseSecretManager } from "./BaseSecretManager";
 import { createLogger } from "@peerbot/shared";
 import { buildModuleEnvVars } from "../module-integration";
 
@@ -25,22 +23,20 @@ export interface DeploymentInfo {
 export abstract class BaseDeploymentManager {
   protected config: OrchestratorConfig;
   protected database: DatabaseAdapter;
-  protected databaseManager: DatabaseManager;
-  protected secretManager: BaseSecretManager;
+  protected secretManager: SecretManager;
 
   constructor(
     config: OrchestratorConfig,
     database: DatabaseAdapter,
-    secretManager: BaseSecretManager
+    secretManager: SecretManager
   ) {
     this.config = config;
     this.database = database;
-    this.databaseManager = new DatabaseManager(database);
     this.secretManager = secretManager;
   }
 
   /**
-   * Get all environment variables for a user from database with context
+   * Get all environment variables for a user from secret manager with context
    * Priority: Channel+Repo > Channel > User+Repo > User
    */
   protected async getUserEnvironmentVariables(
@@ -49,10 +45,9 @@ export abstract class BaseDeploymentManager {
     repository?: string
   ): Promise<Record<string, string>> {
     try {
-      return await this.database.getEnvironmentVariables({
-        platformUserId: userId,
-        channelId,
-        repository,
+      return await this.secretManager.getSecrets({
+        userId,
+        context: { channelId, repository },
       });
     } catch (error) {
       logger.error(
@@ -101,15 +96,8 @@ export abstract class BaseDeploymentManager {
     );
 
     try {
-      // Always ensure user credentials exist first
-      const username = this.databaseManager.generatePostgresUsername(userId);
-
-      // Check if secret already exists and get existing password, or generate new one
-      await this.secretManager.getOrCreateUserCredentials(
-        username,
-        (username: string, password: string) =>
-          this.databaseManager.createPostgresUser(username, password)
-      );
+      // No longer need PostgreSQL user creation with abstractions
+      // Each user will use the shared database connection through abstractions
 
       // Check if deployment already exists by getting the list and filtering
       const deployments = await this.listDeployments();

@@ -12,6 +12,8 @@ import {
   createLogger,
   createDatabaseAdapter,
   type DatabaseAdapter,
+  createMessageQueue,
+  type MessageQueue,
 } from "@peerbot/shared";
 
 const logger = createLogger("dispatcher");
@@ -20,7 +22,6 @@ import {
   createAnthropicProxy,
 } from "./proxy/anthropic-proxy";
 import { ThreadResponseConsumer } from "./queue/slack-thread-processor";
-import { QueueProducer } from "./queue/task-queue-producer";
 import { setupHealthEndpoints } from "./simple-http";
 import { SlackEventHandlers } from "./slack/slack-event-handlers";
 import type { DispatcherConfig } from "./types";
@@ -28,7 +29,7 @@ import { moduleRegistry } from "../../../modules";
 
 export class SlackDispatcher {
   private app: App;
-  private queueProducer: QueueProducer;
+  private messageQueue: MessageQueue;
   private threadResponseConsumer?: ThreadResponseConsumer;
   private anthropicProxy?: AnthropicProxy;
   private config: DispatcherConfig;
@@ -95,13 +96,16 @@ export class SlackDispatcher {
       logger.info("Initialized Slack app in Socket mode");
     }
 
-    // Initialize shared database adapter and queue producer
+    // Initialize shared database adapter and message queue
     logger.info("Initializing queue mode");
     this.database = createDatabaseAdapter(config.queues.connectionString);
-    this.queueProducer = new QueueProducer(
-      config.queues.connectionString,
-      this.database
-    );
+    this.messageQueue = createMessageQueue({
+      provider: "postgresql",
+      connectionString: config.queues.connectionString,
+      retryLimit: config.queues.retryLimit,
+      retryDelay: config.queues.retryDelay,
+      expireInSeconds: config.queues.expireInSeconds,
+    });
     // ThreadResponseConsumer will be created after event handlers are initialized
 
     this.setupErrorHandling();
@@ -138,9 +142,9 @@ export class SlackDispatcher {
       await moduleRegistry.initAll();
       logger.info("✅ Modules initialized");
 
-      // Start queue producer
-      await this.queueProducer.start();
-      logger.info("✅ Queue producer started");
+      // Start message queue
+      await this.messageQueue.start();
+      logger.info("✅ Message queue started");
 
       // Get bot's own user ID and bot ID dynamically before starting
       await this.initializeBotInfo(this.config);
@@ -322,7 +326,7 @@ export class SlackDispatcher {
     try {
       await this.app.stop();
 
-      await this.queueProducer.stop();
+      await this.messageQueue.stop();
       if (this.threadResponseConsumer) {
         await this.threadResponseConsumer.stop();
       }
@@ -395,7 +399,7 @@ export class SlackDispatcher {
       logger.info("Initializing queue-based event handlers");
       new SlackEventHandlers(
         this.app,
-        this.queueProducer,
+        this.messageQueue,
         config,
         this.database
       );

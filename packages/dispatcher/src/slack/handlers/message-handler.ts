@@ -1,13 +1,8 @@
 import { SessionUtils } from "@peerbot/shared";
 import { createLogger } from "@peerbot/shared";
-import type { DatabaseAdapter } from "@peerbot/shared";
+import type { DatabaseAdapter, MessageQueue, MessagePayload } from "@peerbot/shared";
 
 const logger = createLogger("dispatcher");
-import type {
-  QueueProducer,
-  ThreadMessagePayload,
-  WorkerDeploymentPayload,
-} from "../../queue/task-queue-producer";
 import type {
   DispatcherConfig,
   SlackContext,
@@ -21,7 +16,7 @@ export class MessageHandler {
   private lastCleanupTime = Date.now();
 
   constructor(
-    private queueProducer: QueueProducer,
+    private messageQueue: MessageQueue,
     private config: DispatcherConfig,
     private database: DatabaseAdapter
   ) {
@@ -214,12 +209,11 @@ export class MessageHandler {
       const isNewConversation = !context.threadTs || !existingSession;
 
       if (isNewConversation) {
-        const deploymentPayload: WorkerDeploymentPayload = {
+        const deploymentPayload: MessagePayload = {
           userId: context.userId,
           botId: this.getBotId(),
           threadId: threadTs,
           platform: "slack",
-          platformUserId: context.userId,
           messageId: context.messageTs,
           messageText: userRequest,
           channelId: context.channelId,
@@ -231,6 +225,8 @@ export class MessageHandler {
             slackResponseTs: context.messageTs,
             originalMessageTs: context.messageTs,
             botResponseTs: threadSession.botResponseTs,
+            // Add platformUserId to metadata for backward compatibility
+            platformUserId: context.userId,
           },
           claudeOptions: {
             allowedTools: this.config.claude.allowedTools,
@@ -243,8 +239,7 @@ export class MessageHandler {
           },
         };
 
-        const jobId =
-          await this.queueProducer.enqueueMessage(deploymentPayload);
+        const jobId = await this.messageQueue.send("messages", deploymentPayload);
 
         logger.info(
           `Enqueued direct message job ${jobId} for session ${sessionKey}`
@@ -252,7 +247,7 @@ export class MessageHandler {
         threadSession.status = "pending";
       } else {
         // Enqueue to user-specific queue
-        const threadPayload: ThreadMessagePayload = {
+        const threadPayload: MessagePayload = {
           botId: this.getBotId(),
           userId: context.userId,
           threadId: threadTs,
@@ -279,7 +274,7 @@ export class MessageHandler {
           },
         };
 
-        const jobId = await this.queueProducer.enqueueMessage(threadPayload);
+        const jobId = await this.messageQueue.send("messages", threadPayload);
 
         logger.info(
           `Enqueued thread message job ${jobId} for thread ${threadTs}`

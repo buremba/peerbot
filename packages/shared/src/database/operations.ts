@@ -63,6 +63,9 @@ export interface DatabaseAdapter {
   saveEnvironmentVariables(
     options: SaveEnvironmentVariablesOptions
   ): Promise<SaveEnvironmentVariablesResult>;
+  deleteEnvironmentVariable(
+    options: GetEnvironmentVariableOptions
+  ): Promise<void>;
   updateJobStatus(
     jobId: string,
     status: string,
@@ -257,6 +260,36 @@ class PostgresDatabaseAdapter implements DatabaseAdapter {
     }
 
     return { stored, failed };
+  }
+
+  async deleteEnvironmentVariable(
+    options: GetEnvironmentVariableOptions
+  ): Promise<void> {
+    try {
+      await this.client.query(
+        `DELETE FROM user_environ 
+         WHERE user_id = (SELECT id FROM users WHERE platform_user_id = $1 AND platform = $2)
+           AND name = $3
+           AND ($4::varchar IS NULL OR channel_id = $4)
+           AND ($5::varchar IS NULL OR repository = $5)`,
+        [
+          options.platformUserId,
+          normalizePlatform(options.platform),
+          options.name,
+          options.channelId || null,
+          options.repository || null,
+        ]
+      );
+      logger.debug(
+        `Deleted environment variable ${options.name} for user ${options.platformUserId}`
+      );
+    } catch (error) {
+      logger.error(
+        `Failed to delete environment variable ${options.name}:`,
+        error
+      );
+      throw error;
+    }
   }
 
   async updateJobStatus(

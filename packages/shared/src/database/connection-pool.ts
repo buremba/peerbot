@@ -187,8 +187,19 @@ export function getDbPool(connectionString?: string): Pool {
     globalPool = new Pool({
       connectionString: connectionString || process.env.DATABASE_URL,
     });
+    
+    globalPool.on("error", (err) => {
+      logger.error("Global database pool error:", err);
+    });
   }
   return globalPool;
+}
+
+export async function closeGlobalPool(): Promise<void> {
+  if (globalPool) {
+    await globalPool.end();
+    globalPool = null;
+  }
 }
 
 export function createDatabaseClient(

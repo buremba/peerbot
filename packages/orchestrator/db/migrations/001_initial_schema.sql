@@ -192,5 +192,22 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+-- Create function to update job status (for pgboss job management)
+CREATE FUNCTION update_job_status(
+    p_job_id VARCHAR(100),
+    p_status VARCHAR(50),
+    p_output JSONB DEFAULT NULL,
+    p_error_message TEXT DEFAULT NULL
+)
+RETURNS VOID AS $$
+BEGIN
+    -- This function is a placeholder for pgboss job status updates
+    -- In practice, pgboss handles its own job status management
+    -- We'll just log the attempt for debugging purposes
+    RAISE NOTICE 'Job status update requested: job_id=%, status=%, output=%, error=%', 
+                 p_job_id, p_status, p_output, p_error_message;
+END;
+$$ LANGUAGE plpgsql;
+
 -- migrate:down
 -- Not needed for fresh start approach

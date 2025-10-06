@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 
-import { createLogger } from "@peerbot/shared";
+import { createLogger, type DatabaseAdapter } from "@peerbot/shared";
 import {
   extractEnvVariables,
   hasEnvVariables,
@@ -17,6 +17,7 @@ const logger = createLogger("dispatcher");
  * Handle blockkit form submissions
  */
 export async function handleBlockkitFormSubmission(
+  database: DatabaseAdapter,
   userId: string,
   view: any,
   client: any,
@@ -50,6 +51,7 @@ export async function handleBlockkitFormSubmission(
     if (envVars.length > 0) {
       const repository = metadata.repository || null;
       const result = await storeEnvVariables(
+        database,
         userId,
         envVars,
         channelId,

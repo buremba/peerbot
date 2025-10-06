@@ -1,9 +1,12 @@
 #!/usr/bin/env bun
 
 import * as Sentry from "@sentry/node";
-import { Pool } from "pg";
 import PgBoss from "pg-boss";
-import { createLogger } from "@peerbot/shared";
+import {
+  createLogger,
+  createDatabaseAdapter,
+  type DatabaseAdapter,
+} from "@peerbot/shared";
 
 const logger = createLogger("dispatcher");
 
@@ -55,36 +58,14 @@ export interface ThreadMessagePayload {
 
 export class QueueProducer {
   private pgBoss: PgBoss;
-  private pool?: Pool;
+  private database?: DatabaseAdapter;
+  private ownsDatabaseAdapter: boolean;
   private isConnected = false;
 
-  constructor(
-    connectionString: string,
-    databaseConfig?: {
-      host: string;
-      port: number;
-      database: string;
-      username: string;
-      password: string;
-      ssl?: boolean;
-    }
-  ) {
+  constructor(connectionString: string, databaseClient?: DatabaseAdapter) {
     this.pgBoss = new PgBoss(connectionString);
-
-    // Create separate pool for RLS context management
-    if (databaseConfig) {
-      this.pool = new Pool({
-        host: databaseConfig.host,
-        port: databaseConfig.port,
-        database: databaseConfig.database,
-        user: databaseConfig.username,
-        password: databaseConfig.password,
-        ssl: databaseConfig.ssl,
-        max: 10,
-        min: 1,
-        idleTimeoutMillis: 30000,
-      });
-    }
+    this.database = databaseClient ?? createDatabaseAdapter(connectionString);
+    this.ownsDatabaseAdapter = !databaseClient;
   }
 
   /**
@@ -113,8 +94,8 @@ export class QueueProducer {
     try {
       this.isConnected = false;
       await this.pgBoss.stop();
-      if (this.pool) {
-        await this.pool.end();
+      if (this.database && this.ownsDatabaseAdapter) {
+        await this.database.close();
       }
       logger.info("✅ Queue producer stopped");
     } catch (error) {
@@ -169,38 +150,6 @@ export class QueueProducer {
   }
 
   /**
-   * Execute a query with user context for RLS
-   */
-  async queryWithUserContext<T>(
-    userId: string,
-    query: string,
-    params?: any[]
-  ): Promise<{ rows: T[]; rowCount: number }> {
-    if (!this.pool) {
-      throw new Error(
-        "Database pool not available - queue producer not configured with database config"
-      );
-    }
-
-    const client = await this.pool.connect();
-
-    try {
-      // Set user context for RLS policies using PostgreSQL session configuration
-      await client.query("SELECT set_config('app.current_user_id', $1, true)", [
-        userId,
-      ]);
-
-      const result = await client.query(query, params);
-      return {
-        rows: result.rows,
-        rowCount: result.rowCount || 0,
-      };
-    } finally {
-      client.release();
-    }
-  }
-
-  /**
    * Update job status using the database function
    */
   async updateJobStatus(
@@ -208,7 +157,7 @@ export class QueueProducer {
     status: "pending" | "active" | "completed" | "failed",
     retryCount?: number
   ): Promise<void> {
-    if (!this.pool) {
+    if (!this.database) {
       logger.warn(
         `Cannot update job status for ${jobId} - database pool not available`
       );
@@ -216,10 +165,7 @@ export class QueueProducer {
     }
 
     try {
-      const query = "SELECT update_job_status($1, $2, $3)";
-      const params = [jobId, status, retryCount || null];
-
-      await this.pool.query(query, params);
+      await this.database.updateJobStatus(jobId, status, retryCount || null);
       logger.debug(`Updated job ${jobId} status to: ${status}`);
     } catch (error) {
       logger.error(`Failed to update job status for ${jobId}:`, error);

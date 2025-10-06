@@ -1,6 +1,6 @@
 import { SessionUtils } from "@peerbot/shared";
 import { createLogger } from "@peerbot/shared";
-import { decrypt } from "@peerbot/shared";
+import type { DatabaseAdapter } from "@peerbot/shared";
 
 const logger = createLogger("dispatcher");
 import type {
@@ -14,7 +14,6 @@ import type {
   ThreadSession,
 } from "../../types";
 // GitHubRepositoryManager imported dynamically when needed
-import { getDbPool } from "@peerbot/shared";
 
 export class MessageHandler {
   private activeSessions = new Map<string, ThreadSession>();
@@ -23,7 +22,8 @@ export class MessageHandler {
 
   constructor(
     private queueProducer: QueueProducer,
-    private config: DispatcherConfig
+    private config: DispatcherConfig,
+    private database: DatabaseAdapter
   ) {
     this.startCachePrewarming();
   }
@@ -44,79 +44,22 @@ export class MessageHandler {
     channelId?: string,
     repository?: string
   ): Promise<Record<string, string | undefined>> {
-    const dbPool = getDbPool(process.env.DATABASE_URL!);
-    const envVariables: Record<string, string | undefined> = {};
+    const envVariables = await this.database.getEnvironmentVariables({
+      platformUserId: userId,
+      channelId,
+      repository,
+    });
 
-    try {
-      // Get user ID from database
-      const userResult = await dbPool.query(
-        `SELECT id FROM users WHERE platform = 'slack' AND platform_user_id = $1`,
-        [userId.toUpperCase()]
+    if (Object.keys(envVariables).length > 0) {
+      logger.info(
+        `Found ${Object.keys(envVariables).length} environment variables for user ${userId}` +
+          (channelId ? ` in channel ${channelId}` : "") +
+          (repository ? ` for repository ${repository}` : "")
       );
+    }
 
-      if (userResult.rows.length === 0) {
-        logger.warn(`User ${userId} not found in database`);
-        return envVariables;
-      }
-
-      const userDbId = userResult.rows[0].id;
-      const isChannel = channelId && !channelId.startsWith("D");
-
-      // Query with priority ordering
-      const query = `
-        WITH prioritized AS (
-          SELECT 
-            name, 
-            value,
-            channel_id,
-            repository,
-            -- Priority ranking
-            CASE
-              WHEN channel_id = $2 AND repository = $3 THEN 1
-              WHEN channel_id = $2 AND repository IS NULL THEN 2
-              WHEN channel_id IS NULL AND repository = $3 THEN 3
-              WHEN channel_id IS NULL AND repository IS NULL THEN 4
-            END as priority
-          FROM user_environ
-          WHERE user_id = $1
-            AND (
-              (channel_id = $2 AND repository = $3) OR
-              (channel_id = $2 AND repository IS NULL) OR
-              (channel_id IS NULL AND repository = $3) OR
-              (channel_id IS NULL AND repository IS NULL)
-            )
-        )
-        SELECT DISTINCT ON (name) name, value, channel_id, repository
-        FROM prioritized
-        ORDER BY name, priority`;
-
-      const result = await dbPool.query(query, [
-        userDbId,
-        isChannel ? channelId : null,
-        repository || null,
-      ]);
-
-      // Decrypt all values
-      for (const row of result.rows) {
-        if (row.value) {
-          envVariables[row.name] = decrypt(row.value);
-        }
-      }
-
-      if (result.rows.length > 0) {
-        logger.info(
-          `Found ${result.rows.length} environment variables for user ${userId}` +
-            (channelId ? ` in channel ${channelId}` : "") +
-            (repository ? ` for repository ${repository}` : "")
-        );
-      }
-
-      // Log which repository is being used
-      if (envVariables.GITHUB_REPOSITORY) {
-        logger.info(`Using repository: ${envVariables.GITHUB_REPOSITORY}`);
-      }
-    } catch (error) {
-      logger.error(`Error fetching environment for user ${userId}:`, error);
+    if (envVariables.GITHUB_REPOSITORY) {
+      logger.info(`Using repository: ${envVariables.GITHUB_REPOSITORY}`);
     }
 
     return envVariables;

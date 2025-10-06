@@ -1,4 +1,4 @@
-import type { DatabasePool } from "@peerbot/shared";
+import type { DatabaseAdapter } from "@peerbot/shared";
 import { DatabaseManager } from "@peerbot/shared";
 import {
   ErrorCode,
@@ -6,7 +6,7 @@ import {
   OrchestratorError,
 } from "../types";
 import type { BaseSecretManager } from "./BaseSecretManager";
-import { decrypt, createLogger } from "@peerbot/shared";
+import { createLogger } from "@peerbot/shared";
 import { buildModuleEnvVars } from "../module-integration";
 
 const logger = createLogger("orchestrator");
@@ -24,18 +24,18 @@ export interface DeploymentInfo {
 
 export abstract class BaseDeploymentManager {
   protected config: OrchestratorConfig;
-  protected dbPool: DatabasePool;
+  protected database: DatabaseAdapter;
   protected databaseManager: DatabaseManager;
   protected secretManager: BaseSecretManager;
 
   constructor(
     config: OrchestratorConfig,
-    dbPool: DatabasePool,
+    database: DatabaseAdapter,
     secretManager: BaseSecretManager
   ) {
     this.config = config;
-    this.dbPool = dbPool;
-    this.databaseManager = new DatabaseManager(dbPool);
+    this.database = database;
+    this.databaseManager = new DatabaseManager(database);
     this.secretManager = secretManager;
   }
 
@@ -49,54 +49,11 @@ export abstract class BaseDeploymentManager {
     repository?: string
   ): Promise<Record<string, string>> {
     try {
-      const platformUserId = userId.toUpperCase();
-
-      // Query with priority ordering
-      const query = `
-        WITH prioritized AS (
-          SELECT 
-            name, 
-            value,
-            channel_id,
-            repository,
-            -- Priority ranking
-            CASE
-              WHEN channel_id = $2 AND repository = $3 THEN 1
-              WHEN channel_id = $2 AND repository IS NULL THEN 2
-              WHEN channel_id IS NULL AND repository = $3 THEN 3
-              WHEN channel_id IS NULL AND repository IS NULL THEN 4
-            END as priority
-          FROM user_environ
-          WHERE user_id = (
-            SELECT id FROM users
-            WHERE platform = 'slack' AND platform_user_id = $1
-          )
-          AND (
-            (channel_id = $2 AND repository = $3) OR
-            (channel_id = $2 AND repository IS NULL) OR
-            (channel_id IS NULL AND repository = $3) OR
-            (channel_id IS NULL AND repository IS NULL)
-          )
-        )
-        SELECT DISTINCT ON (name) name, value
-        FROM prioritized
-        ORDER BY name, priority`;
-
-      const result = await this.dbPool.query(query, [
-        platformUserId,
-        channelId || null,
-        repository || null,
-      ]);
-
-      const envVars: Record<string, string> = {};
-      for (const row of result.rows) {
-        if (row.value) {
-          // All values in database should be encrypted
-          envVars[row.name] = decrypt(row.value);
-        }
-      }
-
-      return envVars;
+      return await this.database.getEnvironmentVariables({
+        platformUserId: userId,
+        channelId,
+        repository,
+      });
     } catch (error) {
       logger.error(
         `Error fetching environment variables for user ${userId}:`,

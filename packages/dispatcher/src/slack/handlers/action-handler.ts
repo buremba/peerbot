@@ -1,8 +1,6 @@
-import { createLogger } from "@peerbot/shared";
-// import { getDbPool } from "@peerbot/shared"; // Currently unused
+import { createLogger, type DatabaseAdapter } from "@peerbot/shared";
 
 const logger = createLogger("dispatcher");
-import type { QueueProducer } from "../../queue/task-queue-producer";
 import type { SlackContext } from "../../types";
 import type { MessageHandler } from "./message-handler";
 // Dynamic module imports to avoid hardcoded dependencies
@@ -16,8 +14,8 @@ import {
 
 export class ActionHandler {
   constructor(
-    _queueProducer: QueueProducer,
-    private messageHandler: MessageHandler
+    private messageHandler: MessageHandler,
+    private database: DatabaseAdapter
   ) {}
 
   /**
@@ -91,6 +89,7 @@ export class ActionHandler {
 
           // Pass the fromHomeTab flag to ensure DM is sent when clicked from home
           await handleTryDemo(
+            this.database,
             userId,
             channelId,
             client,

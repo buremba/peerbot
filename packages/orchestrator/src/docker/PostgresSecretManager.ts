@@ -1,20 +1,20 @@
 import { BaseSecretManager } from "../base/BaseSecretManager";
-import type { DatabasePool } from "@peerbot/shared";
+import type { DatabaseAdapter } from "@peerbot/shared";
 import {
   ErrorCode,
   type OrchestratorConfig,
   OrchestratorError,
 } from "../types";
-import { createLogger, encrypt, decrypt } from "@peerbot/shared";
+import { createLogger } from "@peerbot/shared";
 
 const logger = createLogger("orchestrator");
 
 export class PostgresSecretManager extends BaseSecretManager {
-  private dbPool: DatabasePool;
+  private database: DatabaseAdapter;
 
-  constructor(config: OrchestratorConfig, dbPool: DatabasePool) {
+  constructor(config: OrchestratorConfig, database: DatabaseAdapter) {
     super(config);
-    this.dbPool = dbPool;
+    this.database = database;
   }
 
   /**
@@ -26,25 +26,15 @@ export class PostgresSecretManager extends BaseSecretManager {
   ): Promise<string> {
     try {
       // First ensure the user exists in the users table
-      const platformUserId = username.toUpperCase(); // Convert back to original format
-      const userResult = await this.dbPool.query(
-        `INSERT INTO users (platform, platform_user_id, created_at, updated_at) 
-         VALUES ('slack', $1, NOW(), NOW())
-         ON CONFLICT (platform, platform_user_id) 
-         DO UPDATE SET updated_at = NOW()
-         RETURNING id`,
-        [platformUserId]
-      );
-      const userId = userResult.rows[0].id;
+      const platformUserId = username.toUpperCase();
+      await this.database.ensureUser(platformUserId);
 
-      // Try to read existing credentials from database
-      const result = await this.dbPool.query(
-        `SELECT value as password FROM user_environ WHERE user_id = $1 AND name = 'PEERBOT_DATABASE_PASSWORD'`,
-        [userId]
-      );
+      const existingPassword = await this.database.getEnvironmentVariable({
+        platformUserId,
+        name: "PEERBOT_DATABASE_PASSWORD",
+      });
 
-      if (result.rows.length > 0 && result.rows[0].password) {
-        const existingPassword = decrypt(result.rows[0].password);
+      if (existingPassword) {
         logger.info(`Found existing credentials for user ${username}`);
         return existingPassword;
       }
@@ -74,37 +64,27 @@ export class PostgresSecretManager extends BaseSecretManager {
   ): Promise<void> {
     try {
       // First get the user_id from the users table
-      const platformUserId = username.toUpperCase(); // Convert back to original format
-      const userResult = await this.dbPool.query(
-        `SELECT id FROM users WHERE platform = 'slack' AND platform_user_id = $1`,
-        [platformUserId]
-      );
+      const platformUserId = username.toUpperCase();
 
-      if (userResult.rows.length === 0) {
-        throw new Error(`User not found: ${platformUserId}`);
-      }
+      const result = await this.database.saveEnvironmentVariables({
+        platformUserId,
+        variables: [
+          {
+            name: "PEERBOT_DATABASE_USERNAME",
+            value: username,
+            type: "system",
+          },
+          {
+            name: "PEERBOT_DATABASE_PASSWORD",
+            value: password,
+            type: "system",
+          },
+        ],
+      });
 
-      const userId = userResult.rows[0].id;
-
-      // Store each credential as a separate row in user_environ
-      const credentials = [
-        { name: "PEERBOT_DATABASE_USERNAME", value: username, type: "system" },
-        { name: "PEERBOT_DATABASE_PASSWORD", value: password, type: "system" },
-      ];
-
-      // Insert or update each environment variable (encrypt values)
-      for (const cred of credentials) {
-        await this.dbPool.query(
-          `
-          INSERT INTO user_environ (user_id, channel_id, repository, name, value, type, created_at, updated_at)
-          VALUES ($1, NULL, NULL, $2, $3, $4, NOW(), NOW())
-          ON CONFLICT (user_id, channel_id, repository, name)
-          DO UPDATE SET
-            value = EXCLUDED.value,
-            type = EXCLUDED.type,
-            updated_at = NOW()
-        `,
-          [userId, cred.name, encrypt(cred.value), cred.type]
+      if (result.failed.length > 0) {
+        throw new Error(
+          `Failed to store credentials: ${result.failed.join(", ")}`
         );
       }
 

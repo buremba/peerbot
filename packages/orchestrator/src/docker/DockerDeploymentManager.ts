@@ -4,7 +4,7 @@ import {
   BaseDeploymentManager,
   type DeploymentInfo,
 } from "../base/BaseDeploymentManager";
-import type { DatabasePool } from "@peerbot/shared";
+import type { DatabaseAdapter } from "@peerbot/shared";
 import {
   ErrorCode,
   type OrchestratorConfig,
@@ -19,9 +19,9 @@ export class DockerDeploymentManager extends BaseDeploymentManager {
   private docker: Docker;
   private gvisorAvailable = false;
 
-  constructor(config: OrchestratorConfig, dbPool: DatabasePool) {
-    const secretManager = new PostgresSecretManager(config, dbPool);
-    super(config, dbPool, secretManager);
+  constructor(config: OrchestratorConfig, database: DatabaseAdapter) {
+    const secretManager = new PostgresSecretManager(config, database);
+    super(config, database, secretManager);
 
     // Explicitly use the Unix socket for Docker connection
     this.docker = new Docker({ socketPath: "/var/run/docker.sock" });

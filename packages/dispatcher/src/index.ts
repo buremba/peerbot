@@ -8,7 +8,11 @@ initSentry();
 import { join } from "node:path";
 import { App, ExpressReceiver, LogLevel } from "@slack/bolt";
 import { config as dotenvConfig } from "dotenv";
-import { createLogger } from "@peerbot/shared";
+import {
+  createLogger,
+  createDatabaseAdapter,
+  type DatabaseAdapter,
+} from "@peerbot/shared";
 
 const logger = createLogger("dispatcher");
 import {
@@ -28,6 +32,7 @@ export class SlackDispatcher {
   private threadResponseConsumer?: ThreadResponseConsumer;
   private anthropicProxy?: AnthropicProxy;
   private config: DispatcherConfig;
+  private database: DatabaseAdapter;
 
   constructor(config: DispatcherConfig) {
     this.config = config;
@@ -90,9 +95,13 @@ export class SlackDispatcher {
       logger.info("Initialized Slack app in Socket mode");
     }
 
-    // Initialize queue producer - use DATABASE_URL for consistency
+    // Initialize shared database adapter and queue producer
     logger.info("Initializing queue mode");
-    this.queueProducer = new QueueProducer(config.queues.connectionString);
+    this.database = createDatabaseAdapter(config.queues.connectionString);
+    this.queueProducer = new QueueProducer(
+      config.queues.connectionString,
+      this.database
+    );
     // ThreadResponseConsumer will be created after event handlers are initialized
 
     this.setupErrorHandling();
@@ -318,6 +327,8 @@ export class SlackDispatcher {
         await this.threadResponseConsumer.stop();
       }
 
+      await this.database.close();
+
       logger.info("Slack dispatcher stopped");
     } catch (error) {
       logger.error("Error stopping Slack dispatcher:", error);
@@ -382,7 +393,12 @@ export class SlackDispatcher {
 
       // Initialize queue-based event handlers
       logger.info("Initializing queue-based event handlers");
-      new SlackEventHandlers(this.app, this.queueProducer, config);
+      new SlackEventHandlers(
+        this.app,
+        this.queueProducer,
+        config,
+        this.database
+      );
 
       // Now create ThreadResponseConsumer
       this.threadResponseConsumer = new ThreadResponseConsumer(

@@ -10,7 +10,11 @@ import { moduleRegistry } from "../../../modules";
 import { join } from "node:path";
 import { config as dotenvConfig } from "dotenv";
 import type { BaseDeploymentManager } from "./base/BaseDeploymentManager";
-import { createLogger, DatabasePool } from "@peerbot/shared";
+import {
+  createLogger,
+  createDatabaseAdapter,
+  type DatabaseAdapter,
+} from "@peerbot/shared";
 
 const logger = createLogger("orchestrator");
 import { DockerDeploymentManager } from "./docker/DockerDeploymentManager";
@@ -20,7 +24,7 @@ import type { OrchestratorConfig } from "./types";
 
 class PeerbotOrchestrator {
   private config: OrchestratorConfig;
-  private dbPool: DatabasePool;
+  private database: DatabaseAdapter;
   private deploymentManager: BaseDeploymentManager;
   private queueConsumer: QueueConsumer;
   private isRunning = false;
@@ -29,7 +33,7 @@ class PeerbotOrchestrator {
   constructor(config: OrchestratorConfig) {
     this.config = config;
 
-    this.dbPool = new DatabasePool(config.database);
+    this.database = createDatabaseAdapter(config.database);
     this.deploymentManager = this.createDeploymentManager(config);
     this.queueConsumer = new QueueConsumer(config, this.deploymentManager);
   }
@@ -44,7 +48,7 @@ class PeerbotOrchestrator {
       if (!this.isDockerAvailable()) {
         throw new Error("DEPLOYMENT_MODE=docker but Docker is not available");
       }
-      return new DockerDeploymentManager(config, this.dbPool);
+      return new DockerDeploymentManager(config, this.database);
     }
 
     if (deploymentMode === "kubernetes" || deploymentMode === "k8s") {
@@ -53,16 +57,16 @@ class PeerbotOrchestrator {
           "DEPLOYMENT_MODE=kubernetes but Kubernetes is not available"
         );
       }
-      return new K8sDeploymentManager(config, this.dbPool);
+      return new K8sDeploymentManager(config, this.database);
     }
 
     // Auto-detect deployment mode based on environment
     if (this.isKubernetesAvailable()) {
-      return new K8sDeploymentManager(config, this.dbPool);
+      return new K8sDeploymentManager(config, this.database);
     }
 
     if (this.isDockerAvailable()) {
-      return new DockerDeploymentManager(config, this.dbPool);
+      return new DockerDeploymentManager(config, this.database);
     }
 
     throw new Error(
@@ -203,7 +207,7 @@ class PeerbotOrchestrator {
       }
 
       await this.queueConsumer.stop();
-      await this.dbPool.close();
+      await this.database.close();
     } catch (error) {
       logger.error("❌ Error during shutdown:", error);
     }
@@ -230,7 +234,7 @@ class PeerbotOrchestrator {
       } else if (url.pathname === "/ready") {
         // Readiness check endpoint
         try {
-          await this.dbPool.query("SELECT 1");
+          await this.database.ping();
           const ready = {
             service: "peerbot-orchestrator",
             status: "ready",

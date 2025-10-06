@@ -3,6 +3,8 @@ import {
   DatabasePool,
   DatabaseError,
   getDbPool,
+  createDatabaseClient,
+  type DatabaseClient,
   type DatabasePoolConfig,
 } from "../../database/connection-pool";
 
@@ -70,5 +72,18 @@ describe("getDbPool factory function", () => {
 
     // Restore original env
     process.env.DATABASE_URL = originalEnv;
+  });
+});
+
+describe("createDatabaseClient", () => {
+  it("should create a database client instance", async () => {
+    const client: DatabaseClient = createDatabaseClient(
+      "postgresql://test:test@localhost:5432/test"
+    );
+
+    expect(client).toBeDefined();
+    expect(typeof client.query).toBe("function");
+
+    await client.close();
   });
 });

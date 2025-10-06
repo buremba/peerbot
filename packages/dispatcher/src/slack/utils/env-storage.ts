@@ -1,8 +1,6 @@
 #!/usr/bin/env bun
 
-import { encrypt } from "@peerbot/shared";
-import { getDbPool } from "@peerbot/shared";
-import { createLogger } from "@peerbot/shared";
+import { createLogger, type DatabaseAdapter } from "@peerbot/shared";
 
 const logger = createLogger("dispatcher");
 
@@ -60,70 +58,37 @@ export function hasEnvVariables(stateValues: any): boolean {
  * Stores environment variables in the database
  */
 export async function storeEnvVariables(
+  database: DatabaseAdapter,
   userId: string,
   envVars: EnvVariable[],
   channelId?: string,
   repository?: string
 ): Promise<{ stored: string[]; failed: string[] }> {
-  const dbPool = getDbPool(process.env.DATABASE_URL!);
-  const stored: string[] = [];
-  const failed: string[] = [];
+  const isChannel = channelId && !channelId.startsWith("D");
 
   try {
-    // Ensure user exists
-    await dbPool.query(
-      `INSERT INTO users (platform, platform_user_id)
-       VALUES ('slack', $1)
-       ON CONFLICT (platform, platform_user_id) DO NOTHING`,
-      [userId.toUpperCase()]
-    );
+    const result = await database.saveEnvironmentVariables({
+      platformUserId: userId,
+      channelId: isChannel ? channelId : null,
+      repository: repository || null,
+      defaultType: isChannel ? "channel" : "user",
+      variables: envVars.map((envVar) => ({
+        name: envVar.name,
+        value: envVar.value,
+      })),
+    });
 
-    // Get user ID
-    const userResult = await dbPool.query(
-      `SELECT id FROM users WHERE platform = 'slack' AND platform_user_id = $1`,
-      [userId.toUpperCase()]
-    );
-    const userDbId = userResult.rows[0]?.id;
-
-    if (!userDbId) {
-      throw new Error(`User not found: ${userId}`);
+    for (const name of result.stored) {
+      logger.info(`✅ Stored env variable: ${name} for user ${userId}`);
     }
 
-    // Determine storage context
-    const isChannel = channelId && !channelId.startsWith("D");
-    const storageType = isChannel ? "channel" : "user";
-
-    // Store each environment variable
-    for (const envVar of envVars) {
-      try {
-        const encryptedValue = encrypt(envVar.value);
-
-        await dbPool.query(
-          `INSERT INTO user_environ (user_id, channel_id, repository, name, value, type, created_at, updated_at)
-           VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
-           ON CONFLICT (user_id, channel_id, repository, name)
-           DO UPDATE SET value = EXCLUDED.value, type = EXCLUDED.type, updated_at = NOW()`,
-          [
-            userDbId,
-            isChannel ? channelId : null,
-            repository || null,
-            envVar.name,
-            encryptedValue,
-            storageType,
-          ]
-        );
-
-        stored.push(envVar.name);
-        logger.info(
-          `✅ Stored env variable: ${envVar.name} for user ${userId}`
-        );
-      } catch (error) {
-        logger.error(`Failed to store env variable ${envVar.name}:`, error);
-        failed.push(envVar.name);
-      }
+    if (result.failed.length > 0) {
+      logger.error(
+        `Failed to store env variables for user ${userId}: ${result.failed.join(", ")}`
+      );
     }
 
-    return { stored, failed };
+    return result;
   } catch (error) {
     logger.error(`Failed to store env variables for user ${userId}:`, error);
     return { stored: [], failed: envVars.map((v) => v.name) };

@@ -10,6 +10,32 @@ export interface DatabasePoolConfig {
   connectionTimeoutMillis?: number;
 }
 
+export interface DatabaseQueryResult<T = any> {
+  rows: T[];
+  rowCount: number;
+}
+
+export interface DatabaseSession {
+  query<T = any>(text: string, params?: any[]): Promise<DatabaseQueryResult<T>>;
+  release(): Promise<void> | void;
+}
+
+export interface DatabaseClient {
+  acquireSession(): Promise<DatabaseSession>;
+  query<T = any>(text: string, params?: any[]): Promise<DatabaseQueryResult<T>>;
+  queryWithUserContext<T = any>(
+    userId: string,
+    text: string,
+    params?: any[]
+  ): Promise<DatabaseQueryResult<T>>;
+  transactionWithUserContext<T>(
+    userId: string,
+    callback: (session: DatabaseSession) => Promise<T>
+  ): Promise<T>;
+  close(): Promise<void>;
+  getPool(): Pool;
+}
+
 /**
  * Generic database error for shared utilities
  */
@@ -32,7 +58,30 @@ export class DatabaseError extends Error {
   }
 }
 
-export class DatabasePool {
+class PostgresDatabaseSession implements DatabaseSession {
+  constructor(private client: PoolClient) {}
+
+  async query<T = any>(
+    text: string,
+    params?: any[]
+  ): Promise<DatabaseQueryResult<T>> {
+    try {
+      const result = await this.client.query(text, params);
+      return {
+        rows: result.rows as T[],
+        rowCount: result.rowCount ?? result.rows.length ?? 0,
+      };
+    } catch (error) {
+      throw DatabaseError.fromError(error);
+    }
+  }
+
+  async release(): Promise<void> {
+    this.client.release();
+  }
+}
+
+export class DatabasePool implements DatabaseClient {
   private pool: Pool;
 
   constructor(config: DatabasePoolConfig | string) {
@@ -51,57 +100,63 @@ export class DatabasePool {
     });
   }
 
-  async getClient(): Promise<PoolClient> {
+  async acquireSession(): Promise<DatabaseSession> {
     try {
-      return await this.pool.connect();
+      const client = await this.pool.connect();
+      return new PostgresDatabaseSession(client);
     } catch (error) {
       throw DatabaseError.fromError(error);
     }
   }
 
-  async query(text: string, params?: any[]): Promise<any> {
+  async query<T = any>(
+    text: string,
+    params?: any[]
+  ): Promise<DatabaseQueryResult<T>> {
     try {
       const result = await this.pool.query(text, params);
-      return result;
+      return {
+        rows: result.rows as T[],
+        rowCount: result.rowCount ?? result.rows.length ?? 0,
+      };
     } catch (error) {
       throw DatabaseError.fromError(error);
     }
   }
 
-  async queryWithUserContext(
+  async queryWithUserContext<T = any>(
     userId: string,
     text: string,
     params?: any[]
-  ): Promise<any> {
-    const client = await this.getClient();
+  ): Promise<DatabaseQueryResult<T>> {
+    const session = await this.acquireSession();
     try {
-      // Set user context for RLS
-      await client.query("SELECT set_config($1, $2, true)", [
+      await session.query("SELECT set_config($1, $2, true)", [
         "app.current_user_id",
         userId,
       ]);
-      const result = await client.query(text, params);
-      return result;
+      return await session.query<T>(text, params);
     } catch (error) {
       throw DatabaseError.fromError(error);
     } finally {
-      client.release();
+      await session.release();
     }
   }
 
   async transactionWithUserContext<T>(
     userId: string,
-    callback: (client: PoolClient) => Promise<T>
+    callback: (client: DatabaseSession) => Promise<T>
   ): Promise<T> {
-    const client = await this.getClient();
+    const client = await this.pool.connect();
+    const session = new PostgresDatabaseSession(client);
+
     try {
       await client.query("BEGIN");
-      // Set user context for RLS
       await client.query("SELECT set_config($1, $2, true)", [
         "app.current_user_id",
         userId,
       ]);
-      const result = await callback(client);
+      const result = await callback(session);
       await client.query("COMMIT");
       return result;
     } catch (error) {
@@ -109,28 +164,6 @@ export class DatabasePool {
       throw DatabaseError.fromError(error);
     } finally {
       client.release();
-    }
-  }
-
-  /**
-   * Update job status in database
-   */
-  async updateJobStatus(
-    jobId: string,
-    status: string,
-    output?: any,
-    errorMessage?: string
-  ): Promise<void> {
-    try {
-      await this.query("SELECT update_job_status($1, $2, $3, $4)", [
-        jobId,
-        status,
-        output ? JSON.stringify(output) : null,
-        errorMessage,
-      ]);
-    } catch (error) {
-      logger.error(`Failed to update job status for ${jobId}:`, error);
-      // Don't throw - job status updates are best effort
     }
   }
 
@@ -156,4 +189,10 @@ export function getDbPool(connectionString?: string): Pool {
     });
   }
   return globalPool;
+}
+
+export function createDatabaseClient(
+  config: DatabasePoolConfig | string
+): DatabaseClient {
+  return new DatabasePool(config);
 }

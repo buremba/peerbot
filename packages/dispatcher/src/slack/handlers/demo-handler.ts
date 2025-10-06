@@ -1,5 +1,4 @@
-import { createLogger } from "@peerbot/shared";
-import { getDbPool } from "@peerbot/shared";
+import { createLogger, type DatabaseAdapter } from "@peerbot/shared";
 
 const logger = createLogger("dispatcher");
 
@@ -7,6 +6,7 @@ const logger = createLogger("dispatcher");
  * Handle Try Demo action - sets up demo repository for user
  */
 export async function handleTryDemo(
+  database: DatabaseAdapter,
   userId: string,
   channelId: string,
   client: any,
@@ -27,32 +27,19 @@ export async function handleTryDemo(
       .replace(/\.git$/, "");
     const [owner, repo] = repoPath.split("/");
 
-    // Store in user_environ for the demo
-    const dbPool = getDbPool(process.env.DATABASE_URL!);
-
-    // First ensure user exists
-    await dbPool.query(
-      `INSERT INTO users (platform, platform_user_id) 
-       VALUES ('slack', $1) 
-       ON CONFLICT (platform, platform_user_id) DO NOTHING`,
-      [userId.toUpperCase()]
-    );
-
-    // Get user ID
-    const userResult = await dbPool.query(
-      `SELECT id FROM users WHERE platform = 'slack' AND platform_user_id = $1`,
-      [userId.toUpperCase()]
-    );
-    const userDbId = userResult.rows[0].id;
-
-    // Set demo repository (just like selecting any other repository)
-    await dbPool.query(
-      `INSERT INTO user_environ (user_id, channel_id, repository, name, value, type) 
-       VALUES ($1, $2, $3, 'GITHUB_REPOSITORY', $4, 'user') 
-       ON CONFLICT (user_id, channel_id, repository, name) 
-       DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
-      [userDbId, null, null, demoRepo]
-    );
+    // Store repository selection for the demo user
+    await database.saveEnvironmentVariables({
+      platformUserId: userId,
+      variables: [
+        {
+          name: "GITHUB_REPOSITORY",
+          value: demoRepo,
+          repository: demoRepo,
+          type: "user",
+          encrypt: false,
+        },
+      ],
+    });
 
     // If from home tab, open a DM conversation first
     let targetChannel = channelId;

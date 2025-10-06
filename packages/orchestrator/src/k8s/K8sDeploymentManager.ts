@@ -3,7 +3,7 @@ import {
   BaseDeploymentManager,
   type DeploymentInfo,
 } from "../base/BaseDeploymentManager";
-import type { DatabasePool } from "@peerbot/shared";
+import type { DatabaseAdapter } from "@peerbot/shared";
 import {
   ErrorCode,
   type OrchestratorConfig,
@@ -19,9 +19,9 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
   private appsV1Api: k8s.AppsV1Api;
   private coreV1Api: k8s.CoreV1Api;
 
-  constructor(config: OrchestratorConfig, dbPool: DatabasePool) {
+  constructor(config: OrchestratorConfig, database: DatabaseAdapter) {
     const secretManager = new K8sSecretManager(config);
-    super(config, dbPool, secretManager);
+    super(config, database, secretManager);
 
     const kc = new k8s.KubeConfig();
     try {

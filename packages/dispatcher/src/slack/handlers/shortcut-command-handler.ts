@@ -1,10 +1,8 @@
 import type { App } from "@slack/bolt";
-import { createLogger } from "@peerbot/shared";
-import { getDbPool } from "@peerbot/shared";
+import { createLogger, type DatabaseAdapter } from "@peerbot/shared";
 
 const logger = createLogger("dispatcher");
 import type { DispatcherConfig } from "../../types";
-import { encrypt } from "@peerbot/shared";
 import type { MessageHandler } from "./message-handler";
 import type { ActionHandler } from "./action-handler";
 import { openRepositoryModal } from "./repository-modal-utils";
@@ -15,7 +13,8 @@ export class ShortcutCommandHandler {
     private app: App,
     private config: DispatcherConfig,
     private messageHandler: MessageHandler,
-    private actionHandler: ActionHandler
+    private actionHandler: ActionHandler,
+    private database: DatabaseAdapter
   ) {}
 
   /**
@@ -514,29 +513,7 @@ export class ShortcutCommandHandler {
     repositoryUrl: string,
     channelId?: string
   ): Promise<void> {
-    const dbPool = getDbPool(this.config.queues.connectionString);
-
     try {
-      // First ensure user exists
-      await dbPool.query(
-        `INSERT INTO users (platform, platform_user_id)
-         VALUES ('slack', $1)
-         ON CONFLICT (platform, platform_user_id) DO NOTHING`,
-        [userId.toUpperCase()]
-      );
-
-      // Get user ID
-      const userResult = await dbPool.query(
-        `SELECT id FROM users WHERE platform = 'slack' AND platform_user_id = $1`,
-        [userId.toUpperCase()]
-      );
-      const userDbId = userResult.rows[0]?.id;
-
-      if (!userDbId) {
-        throw new Error(`Failed to get user ID for ${userId}`);
-      }
-
-      const encryptedUrl = encrypt(repositoryUrl);
       const isChannel = channelId && !channelId.startsWith("D");
 
       // Check if user is admin for channel-level save
@@ -545,22 +522,24 @@ export class ShortcutCommandHandler {
         saveToChannel = await this.isUserChannelAdmin(userId, channelId);
       }
 
-      // Save with appropriate context
-      // Repository column stores the actual repo URL for context
-      // GITHUB_REPOSITORY env var stores the selected/active repository
-      await dbPool.query(
-        `INSERT INTO user_environ (user_id, channel_id, repository, name, value, type, updated_at)
-         VALUES ($1, $2, $3, 'GITHUB_REPOSITORY', $4, $5, NOW())
-         ON CONFLICT (user_id, channel_id, repository, name)
-         DO UPDATE SET value = EXCLUDED.value, type = EXCLUDED.type, updated_at = NOW()`,
-        [
-          userDbId,
-          saveToChannel ? channelId : null, // Set channel_id if admin in channel
-          repositoryUrl, // Store the repository in its own column
-          encryptedUrl, // The encrypted value
-          saveToChannel ? "channel" : "user",
-        ]
-      );
+      const result = await this.database.saveEnvironmentVariables({
+        platformUserId: userId,
+        variables: [
+          {
+            name: "GITHUB_REPOSITORY",
+            value: repositoryUrl,
+            repository: repositoryUrl,
+            channelId: saveToChannel ? channelId : null,
+            type: saveToChannel ? "channel" : "user",
+          },
+        ],
+      });
+
+      if (result.failed.length > 0) {
+        throw new Error(
+          `Failed to store repository selection: ${result.failed.join(", ")}`
+        );
+      }
 
       const context = saveToChannel ? `channel ${channelId}` : `user ${userId}`;
       logger.info(`Saved repository for ${context}: ${repositoryUrl}`);
@@ -578,46 +557,30 @@ export class ShortcutCommandHandler {
     view: any,
     client: any
   ): Promise<void> {
-    const dbPool = getDbPool(this.config.queues.connectionString);
-
     try {
       // Extract input values
       const inputs = this.extractViewInputs(view.state.values);
       const envVars = this.parseEnvironmentVariables(inputs);
 
-      // Ensure user exists
-      await dbPool.query(
-        `INSERT INTO users (platform, platform_user_id)
-         VALUES ('slack', $1)
-         ON CONFLICT (platform, platform_user_id) DO NOTHING`,
-        [userId.toUpperCase()]
-      );
+      const result = await this.database.saveEnvironmentVariables({
+        platformUserId: userId,
+        defaultType: "user",
+        variables: Object.entries(envVars).map(([key, value]) => ({
+          name: key,
+          value,
+          type: "user",
+        })),
+      });
 
-      // Get user ID
-      const userResult = await dbPool.query(
-        `SELECT id FROM users WHERE platform = 'slack' AND platform_user_id = $1`,
-        [userId.toUpperCase()]
-      );
-      const userDbId = userResult.rows[0]?.id;
-
-      if (userDbId) {
-        // Save each environment variable (encrypted)
-        // These are user-level environment variables without specific repository context
-        for (const [key, value] of Object.entries(envVars)) {
-          const encryptedValue = encrypt(value);
-          await dbPool.query(
-            `INSERT INTO user_environ (user_id, channel_id, repository, name, value, type, updated_at)
-             VALUES ($1, NULL, NULL, $2, $3, 'user', NOW())
-             ON CONFLICT (user_id, channel_id, repository, name)
-             DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
-            [userDbId, key, encryptedValue]
-          );
-        }
-
-        logger.info(
-          `Saved ${Object.keys(envVars).length} environment variables for user ${userId}`
+      if (result.failed.length > 0) {
+        throw new Error(
+          `Failed to store environment variables: ${result.failed.join(", ")}`
         );
       }
+
+      logger.info(
+        `Saved ${Object.keys(envVars).length} environment variables for user ${userId}`
+      );
 
       // Send confirmation
       const im = await client.conversations.open({ users: userId });

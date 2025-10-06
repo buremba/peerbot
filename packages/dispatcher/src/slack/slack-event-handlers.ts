@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import type { App } from "@slack/bolt";
-import { createLogger } from "@peerbot/shared";
+import { createLogger, type DatabaseAdapter } from "@peerbot/shared";
 
 const logger = createLogger("slack-events");
 import type { QueueProducer } from "../queue/task-queue-producer";
@@ -30,16 +30,18 @@ export class SlackEventHandlers {
   constructor(
     private app: App,
     queueProducer: QueueProducer,
-    private config: DispatcherConfig
+    private config: DispatcherConfig,
+    private database: DatabaseAdapter
   ) {
     // Initialize specialized handlers
-    this.messageHandler = new MessageHandler(queueProducer, config);
-    this.actionHandler = new ActionHandler(queueProducer, this.messageHandler);
+    this.messageHandler = new MessageHandler(queueProducer, config, database);
+    this.actionHandler = new ActionHandler(this.messageHandler, database);
     this.shortcutCommandHandler = new ShortcutCommandHandler(
       app,
       config,
       this.messageHandler,
-      this.actionHandler
+      this.actionHandler,
+      database
     );
 
     // Set the ShortcutCommandHandler reference in MessageHandler so it can use sendContextAwareWelcome
@@ -373,6 +375,7 @@ export class SlackEventHandlers {
         );
 
         await handleBlockkitFormSubmission(
+          this.database,
           userId,
           view,
           client,
@@ -395,6 +398,7 @@ export class SlackEventHandlers {
         );
 
         await handleBlockkitFormSubmission(
+          this.database,
           userId,
           view,
           client,

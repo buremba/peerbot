@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.2.0](https://github.com/buremba/peerbot/compare/v2.1.0...v2.2.0) (2025-10-27)
+
+
+### Features
+
+* add 20-minute timeout to all GitHub Actions workflows ([0798d77](https://github.com/buremba/peerbot/commit/0798d777908090c285eeda35074739e54dae6bf7))
+
+
+### Bug Fixes
+
+* remove broken integration tests causing 6-hour CI timeout ([1abd9c4](https://github.com/buremba/peerbot/commit/1abd9c4f0d24d2752780dc55db20cb7bc1a20113))
+* update worker-job-router tests to match fire-and-forget architecture ([b7d00d2](https://github.com/buremba/peerbot/commit/b7d00d27311339312cf9aa2b08f87e5fe1ecb83a))
+
 ## [2.1.0](https://github.com/buremba/peerbot/compare/v2.0.0...v2.1.0) (2025-10-27)
 
 

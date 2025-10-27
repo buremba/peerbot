@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.2.1](https://github.com/buremba/peerbot/compare/v2.2.0...v2.2.1) (2025-10-27)
+
+
+### Bug Fixes
+
+* export ActionButton and ModuleSessionContext types and fix implicit any ([6d6bc01](https://github.com/buremba/peerbot/commit/6d6bc01ff53e912f5a6bc584b6e99b132a18fd75))
+
 ## [2.2.0](https://github.com/buremba/peerbot/compare/v2.1.0...v2.2.0) (2025-10-27)
 
 

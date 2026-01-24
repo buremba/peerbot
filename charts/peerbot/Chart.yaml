@@ -45,6 +45,6 @@ dependencies:
     condition: spegel.enabled
   # Redis for message queues and state management
   - name: redis
-    version: "~20.x"
+    version: "~24.x"
     repository: oci://registry-1.docker.io/bitnamicharts
     condition: redis.enabled

@@ -4,7 +4,7 @@
  * Adapted from clawdbot/src/web/inbound.ts
  */
 
-import { createLogger } from "@peerbot/core";
+import { createLogger, generateTraceId } from "@peerbot/core";
 import {
   type BaileysEventMap,
   extractMessageContent,
@@ -193,7 +193,19 @@ export class WhatsAppMessageHandler {
       return;
     }
 
-    const isGroup = isGroupJid(remoteJid);
+    // For @lid (linked device ID) JIDs, prefer remoteJidAlt for response routing
+    // @lid JIDs are internal WhatsApp IDs that may not route correctly for sending
+    const remoteJidAlt = (msg.key as { remoteJidAlt?: string })?.remoteJidAlt;
+    const responseJid =
+      remoteJid.endsWith("@lid") && remoteJidAlt ? remoteJidAlt : remoteJid;
+
+    if (remoteJidAlt) {
+      logger.info(
+        `Message from @lid JID, using remoteJidAlt for responses: ${remoteJid} -> ${responseJid}`
+      );
+    }
+
+    const isGroup = isGroupJid(responseJid);
     const participantJid = msg.key?.participant;
 
     // Get sender info
@@ -260,7 +272,7 @@ export class WhatsAppMessageHandler {
     let groupSubject: string | undefined;
     let groupParticipants: string[] | undefined;
     if (isGroup) {
-      const meta = await this.getGroupMeta(remoteJid);
+      const meta = await this.getGroupMeta(responseJid);
       groupSubject = meta.subject;
       groupParticipants = meta.participants;
     }
@@ -372,12 +384,12 @@ export class WhatsAppMessageHandler {
     // Extract reply context
     const replyContext = this.describeReplyContext(msg.message);
 
-    // Build context
+    // Build context - use responseJid for routing (handles @lid -> @s.whatsapp.net mapping)
     const context: WhatsAppContext = {
       senderJid: senderJid || remoteJid,
       senderE164: senderE164 ?? undefined,
       senderName: msg.pushName ?? undefined,
-      chatJid: remoteJid,
+      chatJid: responseJid, // Use responseJid for proper message routing
       isGroup,
       groupSubject,
       groupParticipants,
@@ -395,15 +407,16 @@ export class WhatsAppMessageHandler {
     logger.info(
       {
         from: senderE164 || senderJid,
-        chatJid: remoteJid,
+        chatJid: responseJid,
+        originalJid: remoteJid !== responseJid ? remoteJid : undefined,
         isGroup,
         body: body.substring(0, 100),
       },
       "Inbound message"
     );
 
-    // Store incoming message in conversation history
-    this.storeMessageInHistory(remoteJid, {
+    // Store incoming message in conversation history (use responseJid for consistency)
+    this.storeMessageInHistory(responseJid, {
       id,
       text: body,
       fromMe: false,
@@ -414,7 +427,7 @@ export class WhatsAppMessageHandler {
     });
 
     // Get conversation history for context
-    const conversationHistory = this.getConversationHistory(remoteJid);
+    const conversationHistory = this.getConversationHistory(responseJid);
 
     // Enqueue for processing
     await this.enqueueMessage(
@@ -493,6 +506,19 @@ export class WhatsAppMessageHandler {
     // For group chats, each message starts a new "thread"
     const threadId = context.quotedMessage?.id || messageId;
 
+    // Generate trace ID for end-to-end observability
+    const traceId = generateTraceId(messageId);
+
+    logger.info(
+      {
+        traceId,
+        messageId,
+        threadId,
+        userId: context.senderE164 || context.senderJid,
+      },
+      "Message received"
+    );
+
     // Resolve space ID for multi-tenant isolation
     const { spaceId } = resolveSpace({
       platform: "whatsapp",
@@ -520,6 +546,7 @@ export class WhatsAppMessageHandler {
       messageText: body,
       channelId: context.chatJid,
       platformMetadata: {
+        traceId, // Add trace ID for end-to-end tracing
         jid: context.chatJid,
         senderJid: context.senderJid,
         senderE164: context.senderE164,
@@ -542,6 +569,7 @@ export class WhatsAppMessageHandler {
     await this.queueProducer.enqueueMessage(payload);
     logger.info(
       {
+        traceId,
         messageId,
         threadId,
         chatJid: context.chatJid,

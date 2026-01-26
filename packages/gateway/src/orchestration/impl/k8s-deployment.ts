@@ -1,5 +1,10 @@
 import * as k8s from "@kubernetes/client-node";
-import { createLogger, ErrorCode, OrchestratorError } from "@peerbot/core";
+import {
+  createLogger,
+  ErrorCode,
+  extractTraceId,
+  OrchestratorError,
+} from "@peerbot/core";
 import {
   BaseDeploymentManager,
   type DeploymentInfo,
@@ -376,7 +381,11 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
    * Create a PersistentVolumeClaim for a space.
    * Multiple threads in the same space share the same PVC.
    */
-  private async createPVC(pvcName: string, spaceId: string): Promise<void> {
+  private async createPVC(
+    pvcName: string,
+    spaceId: string,
+    traceId?: string
+  ): Promise<void> {
     const pvc = {
       apiVersion: "v1",
       kind: "PersistentVolumeClaim",
@@ -403,14 +412,12 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
     };
 
     try {
-      logger.debug(
-        `Creating PVC: ${pvcName} in namespace ${this.config.kubernetes.namespace}`
-      );
+      logger.info({ traceId, pvcName, spaceId, size: "1Gi" }, "Creating PVC");
       await this.coreV1Api.createNamespacedPersistentVolumeClaim(
         this.config.kubernetes.namespace,
         pvc
       );
-      logger.info(`✅ Created PVC: ${pvcName}`);
+      logger.info({ traceId, pvcName }, "Created PVC");
     } catch (error) {
       const k8sError = error as {
         statusCode?: number;
@@ -437,16 +444,17 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
     messageData?: MessagePayload,
     userEnvVars: Record<string, string> = {}
   ): Promise<void> {
-    logger.info(
-      `🚀 Creating K8s deployment: ${deploymentName} for user ${userId}`
-    );
+    // Extract traceId for end-to-end observability
+    const traceId = messageData ? extractTraceId(messageData) : undefined;
+
+    logger.info({ traceId, deploymentName, userId }, "Creating K8s deployment");
 
     // Use spaceId for PVC naming (shared across threads in same space)
     // Fall back to deployment name for backwards compatibility
     const threadId = deploymentName.replace("peerbot-worker-", "");
     const spaceId = messageData?.spaceId || threadId;
     const pvcName = `peerbot-workspace-${spaceId}`;
-    await this.createPVC(pvcName, spaceId);
+    await this.createPVC(pvcName, spaceId, traceId);
 
     // Get environment variables before creating the deployment spec
     // Include secrets (same as Docker behavior) - secrets are passed via env vars
@@ -479,6 +487,7 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
               ...resolvePlatformDeploymentMetadata(messageData),
               "peerbot.io/created": new Date().toISOString(),
               "peerbot.io/space-id": spaceId,
+              ...(traceId ? { "peerbot.io/trace-id": traceId } : {}),
             },
             labels: { ...BASE_WORKER_LABELS },
           },
@@ -570,14 +579,22 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
     };
 
     try {
-      logger.info(`📦 Submitting deployment ${deploymentName} to K8s API...`);
+      logger.info(
+        { traceId, deploymentName },
+        "Submitting deployment to K8s API"
+      );
       const response = await this.appsV1Api.createNamespacedDeployment(
         this.config.kubernetes.namespace,
         deployment
       );
       const statusResponse = response as { response?: { statusCode?: number } };
       logger.info(
-        `✅ Deployment ${deploymentName} created successfully with status: ${statusResponse.response?.statusCode || "unknown"}`
+        {
+          traceId,
+          deploymentName,
+          status: statusResponse.response?.statusCode,
+        },
+        "Deployment created successfully"
       );
     } catch (error) {
       const k8sError = error as {

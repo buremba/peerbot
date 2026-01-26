@@ -2,7 +2,7 @@
  * SSE client for receiving jobs from dispatcher
  */
 
-import { createLogger } from "@peerbot/core";
+import { createLogger, extractTraceId } from "@peerbot/core";
 import { z } from "zod";
 import { InteractionClient } from "../common/interaction-client";
 import type { WorkerConfig, WorkerExecutor } from "../core/types";
@@ -102,6 +102,7 @@ export class GatewayClient {
   private currentWorker: WorkerExecutor | null = null;
   private abortController?: AbortController;
   private currentJobId?: string;
+  private currentTraceId?: string; // Trace ID for end-to-end observability
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 10;
   private messageBatcher: MessageBatcher;
@@ -119,6 +120,8 @@ export class GatewayClient {
     this.workerToken = workerToken;
     this.userId = userId;
     this.deploymentName = deploymentName;
+    // Get initial traceId from environment (set by deployment)
+    this.currentTraceId = process.env.TRACE_ID;
 
     this.interactionClient = new InteractionClient(dispatcherUrl, workerToken);
 
@@ -127,6 +130,11 @@ export class GatewayClient {
         await this.processBatchedMessages(messages);
       },
     });
+
+    logger.info(
+      { traceId: this.currentTraceId, deploymentName },
+      "Worker connected"
+    );
   }
 
   async start(): Promise<void> {
@@ -396,14 +404,23 @@ export class GatewayClient {
   }
 
   private async handleThreadMessage(data: MessagePayload): Promise<void> {
+    // Extract traceId from payload for observability
+    const traceId =
+      extractTraceId(data) || this.currentTraceId || process.env.TRACE_ID;
+    this.currentTraceId = traceId;
+
     if (data.jobId) {
       this.currentJobId = data.jobId;
-      logger.debug(`Received job ${data.jobId}`);
+      logger.info(
+        { traceId, jobId: data.jobId, messageId: data.messageId },
+        "Job received"
+      );
     }
 
     if (data.userId.toLowerCase() !== this.userId.toLowerCase()) {
       logger.warn(
-        `Received message for user ${data.userId}, but this worker is for user ${this.userId}`
+        { traceId, receivedUserId: data.userId, expectedUserId: this.userId },
+        "Received message for wrong user"
       );
       return;
     }
@@ -414,7 +431,10 @@ export class GatewayClient {
     };
 
     await this.messageBatcher.addMessage(queuedMessage);
-    logger.info("Message successfully handled");
+    logger.info(
+      { traceId, messageId: data.messageId, threadId: data.threadId },
+      "Message queued for processing"
+    );
   }
 
   private async processBatchedMessages(
@@ -463,6 +483,12 @@ export class GatewayClient {
     // Dynamic import to avoid circular dependency
     const { ClaudeWorker } = await import("../claude/worker");
 
+    const traceId =
+      extractTraceId(message.payload) ||
+      this.currentTraceId ||
+      process.env.TRACE_ID;
+    const startTime = Date.now();
+
     try {
       if (!process.env.USER_ID) {
         logger.warn(
@@ -472,6 +498,15 @@ export class GatewayClient {
       }
 
       const workerConfig = this.payloadToWorkerConfig(message.payload);
+
+      logger.info(
+        {
+          traceId,
+          messageId: message.payload.messageId,
+          model: message.payload.agentOptions?.model,
+        },
+        "Agent starting"
+      );
 
       // Worker will decide whether to continue session based on workspace state
       this.currentWorker = new ClaudeWorker(
@@ -499,18 +534,32 @@ export class GatewayClient {
 
       await this.currentWorker.execute();
 
+      const duration = Date.now() - startTime;
       this.currentJobId = undefined;
 
       // Reset error count on successful message processing
       this.eventErrorCount = 0;
 
       logger.info(
-        `✅ Successfully processed message ${message.payload.messageId} in thread ${message.payload.threadId}`
+        {
+          traceId,
+          messageId: message.payload.messageId,
+          threadId: message.payload.threadId,
+          duration,
+        },
+        "Agent completed"
       );
     } catch (error) {
+      const duration = Date.now() - startTime;
       logger.error(
-        `❌ Failed to process message ${message.payload.messageId}:`,
-        error
+        {
+          traceId,
+          messageId: message.payload.messageId,
+          threadId: message.payload.threadId,
+          duration,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        "Agent failed"
       );
 
       const workerTransport = this.currentWorker?.getWorkerTransport();
@@ -520,7 +569,10 @@ export class GatewayClient {
             error instanceof Error ? error : new Error(String(error));
           await workerTransport.signalError(enhancedError);
         } catch (errorSendError) {
-          logger.error("Failed to send error to dispatcher:", errorSendError);
+          logger.error(
+            { traceId, error: errorSendError },
+            "Failed to send error to dispatcher"
+          );
         }
       }
 
@@ -530,7 +582,10 @@ export class GatewayClient {
         try {
           await this.currentWorker.cleanup();
         } catch (cleanupError) {
-          logger.error("Error during worker cleanup:", cleanupError);
+          logger.error(
+            { traceId, error: cleanupError },
+            "Error during worker cleanup"
+          );
         }
         this.currentWorker = null;
       }
@@ -576,7 +631,7 @@ export class GatewayClient {
       platformMetadata: platformMetadata, // Include full platformMetadata for files and other metadata
       agentOptions: JSON.stringify(agentOptions),
       workspace: {
-        baseDirectory: "/workspace",
+        baseDirectory: process.env.WORKSPACE_DIR || "/workspace",
       },
     };
   }

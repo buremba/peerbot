@@ -4,7 +4,7 @@
  * plain text formatting, and typing indicators.
  */
 
-import { createLogger } from "@peerbot/core";
+import { createLogger, extractTraceId } from "@peerbot/core";
 import type { ThreadResponsePayload } from "../infrastructure/queue";
 import type { ResponseRenderer } from "../platform/response-renderer";
 import type { WhatsAppConfig } from "./config";
@@ -56,6 +56,9 @@ export class WhatsAppResponseRenderer implements ResponseRenderer {
       return null;
     }
 
+    // Extract traceId for observability
+    const traceId = extractTraceId(payload);
+
     const chatJid = this.getChatJid(payload);
     const key = `${chatJid}:${payload.threadId}`;
 
@@ -79,13 +82,13 @@ export class WhatsAppResponseRenderer implements ResponseRenderer {
       buffer.length >= MIN_CHUNK_SIZE &&
       timeSinceLastSend >= CHUNK_INTERVAL_MS
     ) {
-      await this.sendProgressiveChunk(chatJid, key, buffer);
+      await this.sendProgressiveChunk(chatJid, key, buffer, traceId);
     } else {
       // Keep showing typing while buffering
       await this.client.sendTyping(chatJid, this.config.typingTimeout);
 
       // Set up a timer to send chunk after 30s if still buffering
-      this.scheduleChunkTimer(chatJid, key);
+      this.scheduleChunkTimer(chatJid, key, traceId);
     }
 
     return null; // WhatsApp doesn't return message IDs during streaming
@@ -97,7 +100,8 @@ export class WhatsAppResponseRenderer implements ResponseRenderer {
   private async sendProgressiveChunk(
     chatJid: string,
     key: string,
-    content: string
+    content: string,
+    traceId?: string
   ): Promise<void> {
     // Clear any pending chunk timer
     this.clearChunkTimer(key);
@@ -108,12 +112,12 @@ export class WhatsAppResponseRenderer implements ResponseRenderer {
     try {
       await this.sendMessage(chatJid, chunkText);
       logger.info(
-        { chatJid, chunkLength: content.length },
+        { traceId, chatJid, chunkLength: content.length },
         "Sent progressive chunk"
       );
     } catch (err) {
       logger.error(
-        { error: String(err), chatJid },
+        { traceId, error: String(err), chatJid },
         "Failed to send progressive chunk"
       );
     }
@@ -126,14 +130,18 @@ export class WhatsAppResponseRenderer implements ResponseRenderer {
   /**
    * Schedule a timer to send chunk after interval.
    */
-  private scheduleChunkTimer(chatJid: string, key: string): void {
+  private scheduleChunkTimer(
+    chatJid: string,
+    key: string,
+    traceId?: string
+  ): void {
     // Don't schedule if already scheduled
     if (this.chunkTimers.has(key)) return;
 
     const timer = setTimeout(async () => {
       const buffer = this.responseBuffer.get(key) || "";
       if (buffer.length >= MIN_CHUNK_SIZE) {
-        await this.sendProgressiveChunk(chatJid, key, buffer);
+        await this.sendProgressiveChunk(chatJid, key, buffer, traceId);
       }
       this.chunkTimers.delete(key);
     }, CHUNK_INTERVAL_MS);
@@ -156,6 +164,7 @@ export class WhatsAppResponseRenderer implements ResponseRenderer {
     payload: ThreadResponsePayload,
     _sessionKey: string
   ): Promise<void> {
+    const traceId = extractTraceId(payload);
     const chatJid = this.getChatJid(payload);
     const key = `${chatJid}:${payload.threadId}`;
 
@@ -167,6 +176,10 @@ export class WhatsAppResponseRenderer implements ResponseRenderer {
     const buffered = this.responseBuffer.get(key);
     if (buffered?.trim()) {
       await this.sendMessage(chatJid, buffered);
+      logger.info(
+        { traceId, chatJid, threadId: payload.threadId },
+        "Sent final response"
+      );
     }
 
     // Cleanup all state for this response
@@ -180,6 +193,7 @@ export class WhatsAppResponseRenderer implements ResponseRenderer {
   ): Promise<void> {
     if (!payload.error) return;
 
+    const traceId = extractTraceId(payload);
     const chatJid = this.getChatJid(payload);
     const key = `${chatJid}:${payload.threadId}`;
 
@@ -194,6 +208,10 @@ export class WhatsAppResponseRenderer implements ResponseRenderer {
     // Send error message
     const errorMessage = `Error: ${payload.error}`;
     await this.sendMessage(chatJid, errorMessage);
+    logger.error(
+      { traceId, chatJid, threadId: payload.threadId, error: payload.error },
+      "Sent error response"
+    );
   }
 
   async handleStatusUpdate(payload: ThreadResponsePayload): Promise<void> {

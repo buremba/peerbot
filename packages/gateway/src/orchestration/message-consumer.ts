@@ -1,6 +1,8 @@
 import {
   createLogger,
   ErrorCode,
+  extractTraceId,
+  generateTraceId,
   OrchestratorError,
   retryWithBackoff,
 } from "@peerbot/core";
@@ -112,10 +114,23 @@ export class MessageConsumer {
     const data = job?.data;
     const jobId = job?.id || "unknown";
 
-    logger.info("Processing job:", jobId);
+    // Extract or generate trace ID for end-to-end observability
+    const traceId =
+      extractTraceId(data) || generateTraceId(data?.messageId || jobId);
+
+    // Add traceId to Sentry scope for correlation
+    Sentry.getCurrentScope().setTag("traceId", traceId);
+
+    logger.info({ traceId, jobId }, "Processing job");
 
     logger.info(
-      `Processing message job ${jobId} for user ${data?.userId}, thread ${data?.threadId}`
+      {
+        traceId,
+        jobId,
+        userId: data?.userId,
+        threadId: data?.threadId,
+      },
+      "Processing message job"
     );
 
     try {
@@ -222,44 +237,51 @@ export class MessageConsumer {
         }
       );
 
-      logger.info(`✅ Enqueued message to thread queue for ${deploymentName}`);
+      logger.info(
+        { traceId, deploymentName },
+        "Enqueued message to thread queue"
+      );
 
       // 2) Ensure worker exists in the background (don't block queue send)
-      this.ensureWorkerExists(deploymentName, data).catch((bgError) => {
-        // Capture error for monitoring and alerting
-        Sentry.captureException(bgError, {
-          tags: {
-            component: "deployment-creation",
-            deploymentName,
-            userId: data.userId,
-            threadId: data.threadId,
-          },
-          level: "error",
-        });
+      this.ensureWorkerExists(deploymentName, data, traceId).catch(
+        (bgError) => {
+          // Capture error for monitoring and alerting
+          Sentry.captureException(bgError, {
+            tags: {
+              component: "deployment-creation",
+              deploymentName,
+              userId: data.userId,
+              threadId: data.threadId,
+            },
+            level: "error",
+          });
 
-        logger.error(
-          `❌ Critical: Background worker creation failed for ${deploymentName}. Messages are queued but worker unavailable.`,
-          {
-            error: bgError instanceof Error ? bgError.message : String(bgError),
-            stack: bgError instanceof Error ? bgError.stack : undefined,
-            deploymentName,
-            userId: data.userId,
-            threadId: data.threadId,
-          }
-        );
+          logger.error(
+            {
+              traceId,
+              error:
+                bgError instanceof Error ? bgError.message : String(bgError),
+              stack: bgError instanceof Error ? bgError.stack : undefined,
+              deploymentName,
+              userId: data.userId,
+              threadId: data.threadId,
+            },
+            "Critical: Background worker creation failed. Messages are queued but worker unavailable."
+          );
 
-        // Track failed deployments for monitoring and potential retry
-        this.trackFailedDeployment(deploymentName, data, bgError).catch(
-          (trackError) => {
-            logger.error("Failed to track deployment failure:", trackError);
-          }
-        );
-      });
+          // Track failed deployments for monitoring and potential retry
+          this.trackFailedDeployment(deploymentName, data, bgError).catch(
+            (trackError) => {
+              logger.error("Failed to track deployment failure:", trackError);
+            }
+          );
+        }
+      );
 
-      logger.info(`✅ Message job ${jobId} queued successfully`);
+      logger.info({ traceId, jobId }, "Message job queued successfully");
     } catch (error) {
       Sentry.captureException(error);
-      logger.error(`❌ Message job ${jobId} failed:`, error);
+      logger.error({ traceId, jobId, error }, "Message job failed");
 
       // Re-throw for Redis retry handling
       throw new OrchestratorError(
@@ -322,7 +344,8 @@ export class MessageConsumer {
    */
   private async ensureWorkerExists(
     deploymentName: string,
-    data: MessagePayload
+    data: MessagePayload,
+    traceId: string
   ): Promise<void> {
     return retryWithBackoff(
       async () => {
@@ -335,38 +358,44 @@ export class MessageConsumer {
 
         if (isNewThread) {
           logger.info(
-            `New thread ${data.threadId} - creating deployment ${deploymentName}`
+            { traceId, threadId: data.threadId, deploymentName },
+            "New thread - creating deployment"
           );
           await this.deploymentManager.createWorkerDeployment(
             data.userId,
             data.threadId,
             data
           );
-          logger.info(`✅ Created deployment: ${deploymentName}`);
+          logger.info({ traceId, deploymentName }, "Created deployment");
         } else {
           logger.info(
-            `Existing thread ${data.threadId} - ensuring worker ${deploymentName} exists`
+            { traceId, threadId: data.threadId, deploymentName },
+            "Existing thread - ensuring worker exists"
           );
           try {
             await this.deploymentManager.scaleDeployment(deploymentName, 1);
-            logger.info(`✅ Scaled existing worker ${deploymentName} to 1`);
+            logger.info(
+              { traceId, deploymentName },
+              "Scaled existing worker to 1"
+            );
           } catch (_error) {
             logger.info(
-              `Worker ${deploymentName} doesn't exist, creating it for thread ${data.threadId}`
+              { traceId, threadId: data.threadId, deploymentName },
+              "Worker doesn't exist, creating it"
             );
             await this.deploymentManager.createWorkerDeployment(
               data.userId,
               data.threadId,
               data
             );
-            logger.info(`✅ Created worker: ${deploymentName}`);
+            logger.info({ traceId, deploymentName }, "Created worker");
           }
         }
 
         // Update deployment activity annotation for simplified tracking
         await this.deploymentManager.updateDeploymentActivity(deploymentName);
 
-        logger.info(`✅ Worker ${deploymentName} is ready`);
+        logger.info({ traceId, deploymentName }, "Worker is ready");
       },
       {
         maxRetries: 3,
@@ -375,7 +404,8 @@ export class MessageConsumer {
         jitter: true,
         onRetry: (attempt, error) => {
           logger.warn(
-            `Attempt ${attempt}/3 failed for ${deploymentName}: ${error.message}`
+            { traceId, deploymentName, attempt, maxAttempts: 3 },
+            `Retry attempt failed: ${error.message}`
           );
         },
       }

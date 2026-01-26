@@ -18,6 +18,7 @@ export interface WorkerTokenData {
   timestamp: number;
   platform?: string;
   sessionKey?: string;
+  traceId?: string; // Trace ID for end-to-end observability
 }
 
 /**
@@ -33,6 +34,7 @@ export function generateWorkerToken(
     spaceId?: string;
     platform?: string;
     sessionKey?: string;
+    traceId?: string; // Trace ID for end-to-end observability
   }
 ): string {
   // Validate required fields
@@ -51,6 +53,7 @@ export function generateWorkerToken(
     timestamp,
     platform: options.platform,
     sessionKey: options.sessionKey,
+    traceId: options.traceId, // Trace ID for observability
   };
 
   // Encrypt the payload

@@ -270,3 +270,9 @@ redis:
     podLabels:
       app.kubernetes.io/component: redis
   # Connection URL used by gateway: redis://peerbot-redis-master:6379
+
+# Grafana Loki datasource for log aggregation
+grafana:
+  enabled: false  # Enable to create Loki datasource ConfigMap
+  namespace: "monitoring"  # Namespace where Grafana is installed
+  lokiUrl: "http://loki:3100"  # URL to Loki service

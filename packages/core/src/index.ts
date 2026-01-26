@@ -17,6 +17,7 @@ export * from "./modules";
 export * from "./redis/base-store";
 // Observability
 export { getSentry, initSentry } from "./sentry";
+export { extractTraceId, generateTraceId, hasTraceId } from "./trace";
 // Core types
 export type {
   AgentOptions,

@@ -13,6 +13,7 @@ interface PlatformMetadata {
   ts?: string;
   thread_ts?: string;
   files?: unknown[];
+  traceId?: string; // Trace ID for end-to-end observability
   [key: string]: string | number | boolean | unknown[] | undefined;
 }
 

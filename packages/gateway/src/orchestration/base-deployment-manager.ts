@@ -1,6 +1,7 @@
 import {
   createLogger,
   ErrorCode,
+  extractTraceId,
   generateWorkerToken,
   OrchestratorError,
 } from "@peerbot/core";
@@ -223,11 +224,14 @@ export abstract class BaseDeploymentManager {
     // Check both top-level teamId (WhatsApp) and platformMetadata.teamId (Slack)
     const teamId = messageData.teamId || platformMetadata?.teamId;
     const spaceId = messageData.spaceId || threadId; // Fall back to threadId for backwards compatibility
+    // Extract traceId for end-to-end observability
+    const traceId = extractTraceId(messageData);
     const workerToken = generateWorkerToken(userId, threadId, deploymentName, {
       channelId,
       teamId,
       platform: messageData.platform,
       spaceId,
+      traceId,
     });
 
     // Get the dispatcher host for proxy configuration
@@ -262,6 +266,11 @@ export abstract class BaseDeploymentManager {
     // Add optional environment variables only if they exist
     if (messageData?.platformMetadata?.botResponseTs) {
       envVars.BOT_RESPONSE_TS = messageData.platformMetadata.botResponseTs;
+    }
+
+    // Add trace ID for end-to-end observability
+    if (traceId) {
+      envVars.TRACE_ID = traceId;
     }
 
     // Include secrets from process.env for Docker deployments

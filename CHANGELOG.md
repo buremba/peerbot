@@ -1,5 +1,31 @@
 # Changelog
 
+## [2.4.0](https://github.com/buremba/peerbot/compare/v2.3.0...v2.4.0) (2026-02-03)
+
+
+### Features
+
+* add direct sessions API for browser/CLI clients ([c34ab3c](https://github.com/buremba/peerbot/commit/c34ab3c0b4be5161e94eb98584f0819b36e2d872))
+* add direct sessions API for browser/CLI clients ([8f78d87](https://github.com/buremba/peerbot/commit/8f78d87b39f51f58b318b61f8f139b426e2b18dd))
+* add github package support and enable plan mode ([b9ccf5d](https://github.com/buremba/peerbot/commit/b9ccf5df45082d286ea0f8c988dd9a14a04f3e77))
+* add network isolation, HTTP proxy, and enhanced worker configuration ([d3a7db1](https://github.com/buremba/peerbot/commit/d3a7db15f0e78e2c59782937400a414e334771a7))
+* add platform-agnostic messaging API with self-queueing and MAX_TURNS protection ([c872522](https://github.com/buremba/peerbot/commit/c872522fdeeff6f00696cb746c2e615b72924dbb))
+* add user interaction system with forms and suggestions ([18db834](https://github.com/buremba/peerbot/commit/18db8342cb69bc1a76b426652640c60a040106e5))
+* implement multi-tenant space architecture ([abc195f](https://github.com/buremba/peerbot/commit/abc195f52d8aa02c4c04b5c27476906774fd4f6b))
+* implement multi-tenant space architecture ([16b8723](https://github.com/buremba/peerbot/commit/16b8723b218d3fd3bc4af0b83cc1600030350b9c))
+* improve first-time setup UX and add upgrade instructions ([e3df936](https://github.com/buremba/peerbot/commit/e3df936c6e1094155cad5d1ebbeeb8367d50c77a))
+* migrate gateway to Hono and remove Express from worker ([#94](https://github.com/buremba/peerbot/issues/94)) ([499ab1b](https://github.com/buremba/peerbot/commit/499ab1b992267017872e90ecb2a662186cd574e3))
+
+
+### Bug Fixes
+
+* address critical security and functionality issues in direct sessions API ([782f617](https://github.com/buremba/peerbot/commit/782f617ba4cc1f66f3d5e9a27366a5ae90845b13))
+* improve team ID handling in Slack events ([d083365](https://github.com/buremba/peerbot/commit/d083365b5eca36d305e611ffb4991cbcd248a453))
+* remove CLI_VERSION pinning, use latest for worker package ([9c33352](https://github.com/buremba/peerbot/commit/9c3335248df9ca1010a9931c8798616bf64d0305))
+* resolve K8s deployment issues ([9d48358](https://github.com/buremba/peerbot/commit/9d48358c38f66b95522b0cb288060fc664bf2aab))
+* resolve K8s deployment issues ([dcd6eff](https://github.com/buremba/peerbot/commit/dcd6eff4292c676d886b42991fab481949a58134))
+* restart stream on message_not_in_streaming_state error ([32db4a1](https://github.com/buremba/peerbot/commit/32db4a157777224a1f6cbc93854aa1d3471e7a28))
+
 ## [2.3.0](https://github.com/buremba/peerbot/compare/v2.2.1...v2.3.0) (2025-10-30)
 
 

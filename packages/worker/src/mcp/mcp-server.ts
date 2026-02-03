@@ -416,53 +416,106 @@ export function createMCPServer(manager: ProcessManagerApi): McpServer {
 // HTTP SERVER
 // ============================================================================
 
+/**
+ * Set CORS headers for MCP SSE endpoint
+ */
+function setCorsHeaders(res: import("node:http").ServerResponse): void {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Expose-Headers", "Mcp-Session-Id");
+}
+
+/**
+ * Parse JSON body from request
+ */
+function parseJsonBody(
+  req: import("node:http").IncomingMessage
+): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    req.on("data", (chunk) => {
+      body += chunk;
+    });
+    req.on("end", () => {
+      try {
+        resolve(body ? JSON.parse(body) : undefined);
+      } catch (e) {
+        reject(e);
+      }
+    });
+    req.on("error", reject);
+  });
+}
+
 export async function startHTTPServer(
   server: McpServer
 ): Promise<ProcessManagerInstance> {
+  const http = await import("node:http");
+  const { URL } = await import("node:url");
+
   const port = parseInt(process.env.MCP_PROCESS_MANAGER_PORT || "3001", 10);
-
-  const express = await import("express");
-  const cors = await import("cors");
-
-  const app = express.default();
-
-  app.use(
-    cors.default({
-      origin: "*",
-      methods: ["GET", "POST"],
-      allowedHeaders: ["Content-Type"],
-      exposedHeaders: ["Mcp-Session-Id"],
-    })
-  );
-
-  app.use(express.default.json());
-
   const transports: Record<string, SSEServerTransport> = {};
 
-  app.get("/sse", async (_req, res) => {
-    const transport = new SSEServerTransport("/messages", res);
-    transports[transport.sessionId] = transport;
+  const httpServer = http.createServer(async (req, res) => {
+    const url = new URL(req.url || "/", `http://localhost:${port}`);
 
-    res.on("close", () => {
-      delete transports[transport.sessionId];
-    });
+    // Set CORS headers for all requests
+    setCorsHeaders(res);
 
-    await server.connect(transport);
-  });
-
-  app.post("/messages", async (req, res) => {
-    const sessionId = req.query.sessionId as string;
-    const transport = transports[sessionId];
-    if (transport) {
-      await transport.handlePostMessage(req, res, req.body);
-    } else {
-      res.status(400).send("No transport found for sessionId");
+    // Handle preflight OPTIONS requests
+    if (req.method === "OPTIONS") {
+      res.writeHead(204);
+      res.end();
+      return;
     }
+
+    // GET /sse - SSE endpoint for MCP transport
+    if (req.method === "GET" && url.pathname === "/sse") {
+      const transport = new SSEServerTransport("/messages", res);
+      transports[transport.sessionId] = transport;
+
+      res.on("close", () => {
+        delete transports[transport.sessionId];
+      });
+
+      await server.connect(transport);
+      return;
+    }
+
+    // POST /messages - Message endpoint for MCP transport
+    if (req.method === "POST" && url.pathname === "/messages") {
+      const sessionId = url.searchParams.get("sessionId");
+      const transport = sessionId ? transports[sessionId] : undefined;
+
+      if (transport) {
+        const body = await parseJsonBody(req);
+        await transport.handlePostMessage(req, res, body);
+      } else {
+        res.writeHead(400, { "Content-Type": "text/plain" });
+        res.end("No transport found for sessionId");
+      }
+      return;
+    }
+
+    // 404 for unknown routes
+    res.writeHead(404, { "Content-Type": "text/plain" });
+    res.end("Not Found");
   });
 
-  const httpServer = app.listen(port, () => {
+  httpServer.listen(port, () => {
     logger.info(`[Process Manager MCP] HTTP server started on port ${port}`);
   });
+
+  const cleanup = () => {
+    for (const transport of Object.values(transports)) {
+      try {
+        transport.close?.();
+      } catch {
+        // Ignore close errors
+      }
+    }
+  };
 
   return {
     port,
@@ -470,23 +523,11 @@ export async function startHTTPServer(
     httpServer,
     close: async () => {
       httpServer.close();
-      Object.values(transports).forEach((transport) => {
-        try {
-          transport.close?.();
-        } catch (_e) {
-          // Ignore close errors
-        }
-      });
+      cleanup();
     },
     stop: async () => {
       httpServer.close();
-      Object.values(transports).forEach((transport) => {
-        try {
-          transport.close?.();
-        } catch (_e) {
-          // Ignore close errors
-        }
-      });
+      cleanup();
     },
   };
 }

@@ -1,0 +1,107 @@
+{{- if .Values.metrics.enabled }}
+# ServiceMonitor for Prometheus Operator / Grafana
+# Scrapes metrics from the gateway's /metrics endpoint
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "peerbot.fullname" . }}-gateway
+  namespace: {{ .Values.kubernetes.namespace }}
+  labels:
+    {{- include "peerbot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+    {{- with .Values.metrics.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "peerbot.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: gateway
+  namespaceSelector:
+    matchNames:
+      - {{ .Values.kubernetes.namespace }}
+  endpoints:
+    - port: health-proxy
+      path: /metrics
+      interval: {{ .Values.metrics.serviceMonitor.interval | default "30s" }}
+      scrapeTimeout: {{ .Values.metrics.serviceMonitor.scrapeTimeout | default "10s" }}
+      {{- if .Values.metrics.serviceMonitor.honorLabels }}
+      honorLabels: true
+      {{- end }}
+      {{- with .Values.metrics.serviceMonitor.metricRelabelings }}
+      metricRelabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.metrics.serviceMonitor.relabelings }}
+      relabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+---
+# PrometheusRule for alerting (optional)
+{{- if .Values.metrics.prometheusRule.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "peerbot.fullname" . }}-alerts
+  namespace: {{ .Values.kubernetes.namespace }}
+  labels:
+    {{- include "peerbot.labels" . | nindent 4 }}
+    {{- with .Values.metrics.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: peerbot.rules
+      rules:
+        # Alert if gateway is down
+        - alert: PeerbotGatewayDown
+          expr: up{job="{{ include "peerbot.fullname" . }}-gateway"} == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Peerbot gateway is down"
+            description: "The Peerbot gateway pod has been down for more than 5 minutes."
+
+        # Alert if worker deployments are failing
+        - alert: PeerbotWorkerDeploymentsFailing
+          expr: increase(peerbot_worker_deployments_failed_total[5m]) > 5
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Peerbot worker deployments are failing"
+            description: "More than 5 worker deployments have failed in the last 5 minutes."
+
+        # Alert if PVC cleanup is failing
+        - alert: PeerbotPvcCleanupFailing
+          expr: increase(peerbot_pvc_cleanup_failed_total[1h]) > 10
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Peerbot PVC cleanup is failing"
+            description: "PVC cleanup has failed more than 10 times in the last hour. Storage may be accumulating."
+
+        # Alert if message queue is backing up
+        - alert: PeerbotQueueBacklog
+          expr: peerbot_queue_length > 100
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Peerbot message queue has high backlog"
+            description: "The message queue has more than 100 pending messages for 5+ minutes."
+
+        # Alert if Redis connection is failing
+        - alert: PeerbotRedisConnectionFailing
+          expr: peerbot_redis_connection_errors_total > 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Peerbot cannot connect to Redis"
+            description: "The gateway is experiencing Redis connection errors."
+{{- end }}
+{{- end }}

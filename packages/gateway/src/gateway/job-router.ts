@@ -100,7 +100,7 @@ export class WorkerJobRouter {
         ? { payload: jobData, jobId: jobId }
         : { payload: { data: jobData }, jobId: jobId };
 
-    this.connectionManager.sendSSE(connection.res, "job", jobPayload);
+    this.connectionManager.sendSSE(connection.writer, "job", jobPayload);
     this.connectionManager.touchConnection(deploymentName);
 
     // Track job for monitoring but don't block queue

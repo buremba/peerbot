@@ -2,7 +2,14 @@
  * SSE client for receiving jobs from dispatcher
  */
 
-import { createLogger, extractTraceId } from "@peerbot/core";
+import { spawn } from "node:child_process";
+import {
+  createChildSpan,
+  createLogger,
+  extractTraceId,
+  flushTracing,
+  SpanStatusCode,
+} from "@peerbot/core";
 import { z } from "zod";
 import { InteractionClient } from "../common/interaction-client";
 import type { WorkerConfig, WorkerExecutor } from "../core/types";
@@ -39,7 +46,7 @@ const PlatformMetadataSchema = z
     )
   );
 
-// AgentOptions has known fields plus string index signature
+// AgentOptions has known fields plus arbitrary extra fields (including nested objects)
 const AgentOptionsSchema = z
   .object({
     model: z.string().optional(),
@@ -48,25 +55,19 @@ const AgentOptionsSchema = z
     allowedTools: z.union([z.string(), z.array(z.string())]).optional(),
     disallowedTools: z.union([z.string(), z.array(z.string())]).optional(),
     timeoutMinutes: z.union([z.number(), z.string()]).optional(),
+    // Additional settings passed through from gateway
+    networkConfig: z.any().optional(),
+    gitConfig: z.any().optional(),
+    envVars: z.any().optional(),
+    historyConfig: z.any().optional(),
   })
-  .and(
-    z.record(
-      z.string(),
-      z.union([
-        z.string(),
-        z.number(),
-        z.boolean(),
-        z.array(z.string()),
-        z.undefined(),
-      ])
-    )
-  );
+  .passthrough();
 
 const JobEventSchema = z.object({
   payload: z.object({
     botId: z.string(),
     userId: z.string(),
-    spaceId: z.string(),
+    agentId: z.string(),
     threadId: z.string(),
     platform: z.string(),
     channelId: z.string(),
@@ -103,6 +104,7 @@ export class GatewayClient {
   private abortController?: AbortController;
   private currentJobId?: string;
   private currentTraceId?: string; // Trace ID for end-to-end observability
+  private currentTraceparent?: string; // W3C traceparent for distributed tracing
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 10;
   private messageBatcher: MessageBatcher;
@@ -404,15 +406,38 @@ export class GatewayClient {
   }
 
   private async handleThreadMessage(data: MessagePayload): Promise<void> {
-    // Extract traceId from payload for observability
+    // Extract traceparent for distributed tracing
+    // Prefer platformMetadata.traceparent, fall back to TRACEPARENT env var
+    const traceparent =
+      (data.platformMetadata?.traceparent as string) || process.env.TRACEPARENT;
+    this.currentTraceparent = traceparent;
+
+    // Extract traceId for logging (backwards compatible)
     const traceId =
       extractTraceId(data) || this.currentTraceId || process.env.TRACE_ID;
     this.currentTraceId = traceId;
 
     if (data.jobId) {
       this.currentJobId = data.jobId;
+      // Create child span for job received (linked to parent via traceparent)
+      const span = createChildSpan("job_received", traceparent, {
+        "peerbot.job_id": data.jobId,
+        "peerbot.message_id": data.messageId,
+        "peerbot.thread_id": data.threadId,
+        "peerbot.job_type": data.jobType || "message",
+      });
+      span?.setStatus({ code: SpanStatusCode.OK });
+      span?.end();
+      // Flush job_received span immediately
+      void flushTracing();
       logger.info(
-        { traceId, jobId: data.jobId, messageId: data.messageId },
+        {
+          traceparent,
+          traceId,
+          jobId: data.jobId,
+          messageId: data.messageId,
+          jobType: data.jobType,
+        },
         "Job received"
       );
     }
@@ -425,6 +450,13 @@ export class GatewayClient {
       return;
     }
 
+    // Check job type and dispatch accordingly
+    if (data.jobType === "exec") {
+      await this.handleExecJob(data);
+      return;
+    }
+
+    // Default: message job
     const queuedMessage: QueuedMessage = {
       payload: data,
       timestamp: Date.now(),
@@ -435,6 +467,143 @@ export class GatewayClient {
       { traceId, messageId: data.messageId, threadId: data.threadId },
       "Message queued for processing"
     );
+  }
+
+  /**
+   * Handle exec job - spawn command in sandbox and stream output back
+   */
+  private async handleExecJob(data: MessagePayload): Promise<void> {
+    const { execId, execCommand, execCwd, execEnv, execTimeout } = data;
+    const traceId = this.currentTraceId;
+    const traceparent = this.currentTraceparent;
+
+    if (!execId || !execCommand) {
+      logger.error(
+        { traceId, execId },
+        "Invalid exec job: missing execId or execCommand"
+      );
+      return;
+    }
+
+    logger.info(
+      { traceId, execId, command: execCommand.substring(0, 100) },
+      "Executing command in sandbox"
+    );
+
+    // Create span for exec execution
+    const span = createChildSpan("exec_execution", traceparent, {
+      "peerbot.exec_id": execId,
+      "peerbot.command": execCommand.substring(0, 100),
+    });
+
+    // Determine working directory
+    const workingDir = execCwd || process.env.WORKSPACE_DIR || "/workspace";
+    const timeout = execTimeout || 300000; // 5 minutes default
+
+    // Create transport for sending responses back to gateway
+    const transport = new HttpWorkerTransport({
+      gatewayUrl: this.dispatcherUrl,
+      workerToken: this.workerToken,
+      userId: data.userId,
+      channelId: data.channelId,
+      threadId: data.threadId,
+      originalMessageTs: execId,
+      teamId: data.teamId || "api",
+      platform: data.platform,
+    });
+
+    let completed = false;
+
+    try {
+      // Spawn the command
+      const proc = spawn("sh", ["-c", execCommand], {
+        cwd: workingDir,
+        env: { ...process.env, ...execEnv },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+
+      // Setup timeout
+      const timeoutId = setTimeout(() => {
+        if (!completed) {
+          logger.warn(
+            { traceId, execId },
+            "Exec timeout reached, killing process"
+          );
+          proc.kill("SIGTERM");
+          setTimeout(() => {
+            if (!completed) {
+              proc.kill("SIGKILL");
+            }
+          }, 5000);
+        }
+      }, timeout);
+
+      // Stream stdout
+      proc.stdout?.on("data", (chunk: Buffer) => {
+        const content = chunk.toString();
+        transport.sendExecOutput(execId, "stdout", content).catch((err) => {
+          logger.error(
+            { traceId, execId, error: err },
+            "Failed to send stdout"
+          );
+        });
+      });
+
+      // Stream stderr
+      proc.stderr?.on("data", (chunk: Buffer) => {
+        const content = chunk.toString();
+        transport.sendExecOutput(execId, "stderr", content).catch((err) => {
+          logger.error(
+            { traceId, execId, error: err },
+            "Failed to send stderr"
+          );
+        });
+      });
+
+      // Wait for process to complete
+      const exitCode = await new Promise<number>((resolve, reject) => {
+        proc.on("close", (code) => {
+          completed = true;
+          clearTimeout(timeoutId);
+          resolve(code ?? 0);
+        });
+
+        proc.on("error", (error) => {
+          completed = true;
+          clearTimeout(timeoutId);
+          reject(error);
+        });
+      });
+
+      // Send completion
+      await transport.sendExecComplete(execId, exitCode);
+
+      span?.setAttribute("peerbot.exit_code", exitCode);
+      span?.setStatus({ code: SpanStatusCode.OK });
+      span?.end();
+      await flushTracing();
+
+      logger.info({ traceId, execId, exitCode }, "Exec completed");
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+
+      // Send error
+      await transport.sendExecError(execId, errorMessage).catch((err) => {
+        logger.error(
+          { traceId, execId, error: err },
+          "Failed to send exec error"
+        );
+      });
+
+      span?.setStatus({ code: SpanStatusCode.ERROR, message: errorMessage });
+      span?.end();
+      await flushTracing();
+
+      logger.error({ traceId, execId, error: errorMessage }, "Exec failed");
+    } finally {
+      this.currentJobId = undefined;
+    }
   }
 
   private async processBatchedMessages(
@@ -483,11 +652,24 @@ export class GatewayClient {
     // Dynamic import to avoid circular dependency
     const { ClaudeWorker } = await import("../claude/worker");
 
+    // Get traceparent for distributed tracing
+    const traceparent =
+      (message.payload.platformMetadata?.traceparent as string) ||
+      this.currentTraceparent ||
+      process.env.TRACEPARENT;
+
     const traceId =
       extractTraceId(message.payload) ||
       this.currentTraceId ||
       process.env.TRACE_ID;
-    const startTime = Date.now();
+
+    // Create child span for agent execution (linked to parent via traceparent)
+    const span = createChildSpan("agent_execution", traceparent, {
+      "peerbot.message_id": message.payload.messageId,
+      "peerbot.thread_id": message.payload.threadId,
+      "peerbot.user_id": message.payload.userId,
+      "peerbot.model": message.payload.agentOptions?.model || "default",
+    });
 
     try {
       if (!process.env.USER_ID) {
@@ -501,6 +683,7 @@ export class GatewayClient {
 
       logger.info(
         {
+          traceparent,
           traceId,
           messageId: message.payload.messageId,
           model: message.payload.agentOptions?.model,
@@ -534,29 +717,38 @@ export class GatewayClient {
 
       await this.currentWorker.execute();
 
-      const duration = Date.now() - startTime;
       this.currentJobId = undefined;
 
       // Reset error count on successful message processing
       this.eventErrorCount = 0;
 
+      // End span with success
+      span?.setStatus({ code: SpanStatusCode.OK });
+      span?.end();
+      // Flush traces immediately to ensure spans are exported before worker scales down
+      await flushTracing();
       logger.info(
         {
-          traceId,
+          traceparent,
           messageId: message.payload.messageId,
           threadId: message.payload.threadId,
-          duration,
         },
         "Agent completed"
       );
     } catch (error) {
-      const duration = Date.now() - startTime;
+      // End span with error
+      span?.setStatus({
+        code: SpanStatusCode.ERROR,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      span?.end();
+      // Flush traces on error too
+      await flushTracing();
       logger.error(
         {
-          traceId,
+          traceparent,
           messageId: message.payload.messageId,
           threadId: message.payload.threadId,
-          duration,
           error: error instanceof Error ? error.message : String(error),
         },
         "Agent failed"
@@ -611,7 +803,7 @@ export class GatewayClient {
     return {
       sessionKey: `session-${payload.threadId}`,
       userId: payload.userId,
-      spaceId: payload.spaceId,
+      agentId: payload.agentId,
       channelId: payload.channelId,
       threadId: payload.threadId,
       userPrompt: Buffer.from(payload.messageText).toString("base64"),

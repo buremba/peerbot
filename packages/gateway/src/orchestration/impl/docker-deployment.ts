@@ -67,14 +67,14 @@ export class DockerDeploymentManager extends BaseDeploymentManager {
 
   /**
    * Get the host address that workers should use to reach the gateway
-   * When gateway runs on host (sidecar mode), workers use host.docker.internal
+   * When gateway runs on host, workers use host.docker.internal
    * When gateway runs in container (docker-compose mode), workers use service name
    */
   private getHostAddress(): string {
     if (this.isRunningInContainer()) {
       return "gateway";
     }
-    // For host-mode development (sidecar), workers reach gateway via host.docker.internal
+    // For host-mode development, workers reach gateway via host.docker.internal
     return "host.docker.internal";
   }
 
@@ -131,8 +131,6 @@ export class DockerDeploymentManager extends BaseDeploymentManager {
 
       return containers.map((containerInfo: Docker.ContainerInfo) => {
         const deploymentName = containerInfo.Names[0]?.substring(1) || ""; // Remove leading '/'
-        // The deploymentId is now the full deployment name (includes user ID)
-        const deploymentId = deploymentName;
 
         // Get last activity from labels or fallback to creation time
         const lastActivityStr =
@@ -145,7 +143,6 @@ export class DockerDeploymentManager extends BaseDeploymentManager {
         const replicas = containerInfo.State === "running" ? 1 : 0;
         return buildDeploymentInfoSummary({
           deploymentName,
-          deploymentId,
           lastActivity,
           now,
           idleThresholdMinutes,
@@ -168,8 +165,8 @@ export class DockerDeploymentManager extends BaseDeploymentManager {
    * Uses named volumes for better isolation and security.
    * Multiple threads in the same space share the same volume.
    */
-  private async ensureVolume(spaceId: string): Promise<string> {
-    const volumeName = `peerbot-workspace-${spaceId}`;
+  private async ensureVolume(agentId: string): Promise<string> {
+    const volumeName = `peerbot-workspace-${agentId}`;
     let volumeCreated = false;
 
     try {
@@ -182,7 +179,7 @@ export class DockerDeploymentManager extends BaseDeploymentManager {
         await this.docker.createVolume({
           Name: volumeName,
           Labels: {
-            "peerbot.io/space-id": spaceId,
+            "peerbot.io/agent-id": agentId,
             "peerbot.io/created": new Date().toISOString(),
           },
         });
@@ -242,12 +239,8 @@ export class DockerDeploymentManager extends BaseDeploymentManager {
       (userEnvVarsRaw as Record<string, string> | undefined) ?? {};
 
     try {
-      // Extract thread ID from deployment name for deployment naming
-      const threadId = deploymentName.replace("peerbot-worker-", "");
-
-      // Use spaceId for volume naming (shared across threads in same space)
-      // Fall back to threadId for backwards compatibility
-      const spaceId = messageData?.spaceId || threadId;
+      // Use agentId for volume naming (shared across threads in same space)
+      const agentId = messageData?.agentId!;
 
       // Determine if running in Docker and resolve project paths
       const isRunningInDocker = process.env.DEPLOYMENT_MODE === "docker";
@@ -255,10 +248,10 @@ export class DockerDeploymentManager extends BaseDeploymentManager {
         ? process.env.PEERBOT_DEV_PROJECT_PATH || "/app"
         : path.join(process.cwd(), "..", "..");
 
-      const workspaceDir = `${projectRoot}/workspaces/${spaceId}`;
+      const workspaceDir = `${projectRoot}/workspaces/${agentId}`;
 
       // Ensure volume exists for production mode (space-scoped)
-      const volumeName = await this.ensureVolume(spaceId);
+      const volumeName = await this.ensureVolume(agentId);
 
       // Get common environment variables from base class
       const commonEnvVars = await this.generateEnvironmentVariables(
@@ -300,7 +293,7 @@ export class DockerDeploymentManager extends BaseDeploymentManager {
         Labels: {
           ...BASE_WORKER_LABELS,
           "peerbot.io/created": new Date().toISOString(),
-          "peerbot.io/space-id": spaceId,
+          "peerbot.io/agent-id": agentId,
           // Docker Compose labels to associate with the project
           "com.docker.compose.project": composeProjectName,
           "com.docker.compose.service": deploymentName, // Use unique service name
@@ -353,7 +346,7 @@ export class DockerDeploymentManager extends BaseDeploymentManager {
           ),
           // Always connect to internal network (network isolation always enabled)
           // In docker-compose mode: uses compose project prefix
-          // In sidecar mode: uses plain network name (WORKER_NETWORK env var)
+          // In host mode: uses plain network name (WORKER_NETWORK env var)
           NetworkMode:
             process.env.WORKER_NETWORK ||
             `${composeProjectName}_peerbot-internal`,
@@ -440,12 +433,7 @@ export class DockerDeploymentManager extends BaseDeploymentManager {
     }
   }
 
-  async deleteDeployment(deploymentId: string): Promise<void> {
-    // deploymentId should already be the full deployment name
-    const deploymentName = deploymentId.startsWith("peerbot-worker-")
-      ? deploymentId
-      : `peerbot-worker-${deploymentId}`;
-
+  async deleteDeployment(deploymentName: string): Promise<void> {
     try {
       const container = this.docker.getContainer(deploymentName);
 

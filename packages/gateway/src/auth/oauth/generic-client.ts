@@ -14,6 +14,7 @@ interface OAuthErrorResponse {
   error_description?: string;
   error_uri?: string;
 }
+
 import type { McpCredentialRecord } from "../mcp/credential-store";
 import { BaseOAuth2Client } from "./base-client";
 

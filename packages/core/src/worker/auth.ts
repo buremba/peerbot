@@ -13,7 +13,7 @@ export interface WorkerTokenData {
   threadId: string;
   channelId: string;
   teamId?: string; // Optional - not all platforms have teams
-  spaceId?: string; // Space ID for multi-tenant isolation
+  agentId?: string; // Space ID for multi-tenant isolation
   deploymentName: string;
   timestamp: number;
   platform?: string;
@@ -31,7 +31,7 @@ export function generateWorkerToken(
   options: {
     channelId: string;
     teamId?: string;
-    spaceId?: string;
+    agentId?: string;
     platform?: string;
     sessionKey?: string;
     traceId?: string; // Trace ID for end-to-end observability
@@ -48,7 +48,7 @@ export function generateWorkerToken(
     threadId,
     channelId: options.channelId,
     teamId: options.teamId, // Can be undefined - that's ok
-    spaceId: options.spaceId, // Space ID for multi-tenant credential lookup
+    agentId: options.agentId, // Space ID for multi-tenant credential lookup
     deploymentName,
     timestamp,
     platform: options.platform,

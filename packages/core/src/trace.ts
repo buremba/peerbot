@@ -2,6 +2,9 @@
  * Trace ID utilities for end-to-end message lifecycle observability.
  * Trace IDs propagate through the entire pipeline:
  * [WhatsApp Message] -> [Queue] -> [Worker Creation] -> [PVC Setup] -> [Agent Runtime] -> [Response]
+ *
+ * When OpenTelemetry is initialized, spans are sent to Tempo for waterfall visualization.
+ * Use createSpan/createChildSpan from ./otel.ts for actual span creation.
  */
 
 /**
@@ -26,23 +29,4 @@ export function extractTraceId(payload: {
   platformMetadata?: { traceId?: string };
 }): string | undefined {
   return payload?.traceId || payload?.platformMetadata?.traceId;
-}
-
-/**
- * Type guard to check if an object has a traceId.
- */
-export function hasTraceId(
-  obj: unknown
-): obj is { traceId: string } | { platformMetadata: { traceId: string } } {
-  if (typeof obj !== "object" || obj === null) return false;
-  const o = obj as Record<string, unknown>;
-  if (typeof o.traceId === "string") return true;
-  if (
-    typeof o.platformMetadata === "object" &&
-    o.platformMetadata !== null &&
-    typeof (o.platformMetadata as Record<string, unknown>).traceId === "string"
-  ) {
-    return true;
-  }
-  return false;
 }

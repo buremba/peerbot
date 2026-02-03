@@ -93,20 +93,33 @@ for i in "${!MESSAGES[@]}"; do
     ESCAPED_MESSAGE=$(printf '%s' "$MESSAGE" | jq -Rs .)
 
     # Build request body using jq for proper JSON
+    # Use TEST_AGENT_ID or generate a default test agent ID
+    AGENT_ID="${TEST_AGENT_ID:-test-agent}"
+
+    # Build base body
     if [ -n "$LAST_THREAD_ID" ]; then
         BODY=$(jq -n \
+            --arg agentId "$AGENT_ID" \
             --arg platform "$TEST_PLATFORM" \
             --arg channel "$CHANNEL" \
             --argjson message "$ESCAPED_MESSAGE" \
             --arg threadId "$LAST_THREAD_ID" \
-            '{platform: $platform, channel: $channel, message: $message, threadId: $threadId}')
+            '{agentId: $agentId, platform: $platform, channel: $channel, message: $message, threadId: $threadId}')
     else
         BODY=$(jq -n \
+            --arg agentId "$AGENT_ID" \
             --arg platform "$TEST_PLATFORM" \
             --arg channel "$CHANNEL" \
             --argjson message "$ESCAPED_MESSAGE" \
-            '{platform: $platform, channel: $channel, message: $message}')
+            '{agentId: $agentId, platform: $platform, channel: $channel, message: $message}')
     fi
+
+    # Add platform-specific routing info
+    case "$TEST_PLATFORM" in
+        whatsapp)
+            BODY=$(echo "$BODY" | jq --arg chat "$CHANNEL" '. + {whatsapp: {chat: $chat}}')
+            ;;
+    esac
 
     # Send message
     RESPONSE=$(curl -s -X POST http://localhost:8080/api/messaging/send \

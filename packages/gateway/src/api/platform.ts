@@ -6,11 +6,17 @@
  * Does not require external platform integration (no Slack, Discord, etc.)
  */
 
-import { createLogger, type InstructionProvider, type UserInteraction } from "@peerbot/core";
+import { randomUUID } from "node:crypto";
+import {
+  createLogger,
+  type InstructionProvider,
+  type UserInteraction,
+} from "@peerbot/core";
 import type { CoreServices, PlatformAdapter } from "../platform";
-import { ApiResponseRenderer } from "./response-renderer";
 import type { ResponseRenderer } from "../platform/response-renderer";
-import { broadcastToSession } from "../routes/public/sessions";
+import { broadcastToAgent } from "../routes/public/agent";
+import type { ThreadSession } from "../session";
+import { ApiResponseRenderer } from "./response-renderer";
 
 const logger = createLogger("api-platform");
 
@@ -34,17 +40,16 @@ export interface ApiPlatformConfig {
 export class ApiPlatform implements PlatformAdapter {
   readonly name = "api";
 
-  private services?: CoreServices;
   private responseRenderer?: ApiResponseRenderer;
   private isRunning = false;
-
-  constructor(private readonly config: ApiPlatformConfig = {}) {}
+  private services?: CoreServices;
 
   /**
    * Initialize with core services
    */
   async initialize(services: CoreServices): Promise<void> {
     logger.info("Initializing API platform...");
+
     this.services = services;
 
     // Create response renderer for routing worker responses to SSE clients
@@ -54,7 +59,7 @@ export class ApiPlatform implements PlatformAdapter {
     const interactionService = services.getInteractionService();
     interactionService.on("interaction:created", (interaction) => {
       // Only handle API platform interactions
-      if (interaction.teamId === "api" || interaction.spaceId?.startsWith("api-")) {
+      if (interaction.teamId === "api") {
         this.handleToolApproval(interaction).catch((error) => {
           logger.error("Failed to handle tool approval:", error);
         });
@@ -121,26 +126,27 @@ export class ApiPlatform implements PlatformAdapter {
   /**
    * Handle tool approval requests by sending them via SSE
    */
-  private async handleToolApproval(interaction: UserInteraction): Promise<void> {
-    const sessionId = interaction.threadId;
-    if (!sessionId) {
-      logger.warn("No session ID found for tool approval interaction");
+  private async handleToolApproval(
+    interaction: UserInteraction
+  ): Promise<void> {
+    const agentId = interaction.threadId;
+    if (!agentId) {
+      logger.warn("No agent ID found for tool approval interaction");
       return;
     }
 
     // Send tool approval request to SSE clients
-    broadcastToSession(sessionId, "tool_approval", {
+    broadcastToAgent(agentId, "tool_approval", {
       type: "tool_approval",
       interactionId: interaction.id,
-      title: interaction.title,
-      message: interaction.message,
-      fields: interaction.fields,
-      buttons: interaction.buttons,
+      interactionType: interaction.interactionType,
+      question: interaction.question,
+      options: interaction.options,
       expiresAt: interaction.expiresAt,
       timestamp: Date.now(),
     });
 
-    logger.info(`Sent tool approval to session ${sessionId}: ${interaction.id}`);
+    logger.info(`Sent tool approval to agent ${agentId}: ${interaction.id}`);
   }
 
   /**
@@ -163,5 +169,105 @@ export class ApiPlatform implements PlatformAdapter {
    */
   async setThreadStatus(): Promise<void> {
     // Status is sent via SSE events
+  }
+
+  /**
+   * Send a message via API platform
+   * Creates or reuses a session and queues the message for processing
+   *
+   * @param token - Auth token (used to derive userId)
+   * @param message - Message content
+   * @param options - Routing info (agentId = channelId = threadId for API)
+   */
+  async sendMessage(
+    token: string,
+    message: string,
+    options: {
+      agentId: string;
+      channelId: string;
+      threadId: string;
+      teamId: string;
+      files?: Array<{ buffer: Buffer; filename: string }>;
+    }
+  ): Promise<{
+    messageId: string;
+    eventsUrl?: string;
+    queued?: boolean;
+  }> {
+    if (!this.services) {
+      throw new Error("API platform not initialized");
+    }
+
+    const { agentId } = options;
+    const sessionManager = this.services.getSessionManager();
+    const queueProducer = this.services.getQueueProducer();
+    const messageId = randomUUID();
+    const userId = `api-${token.slice(0, 8) || "anonymous"}`;
+
+    // For API platform: agentId = channelId = threadId (all same)
+    // Try to get existing session or create new one
+    let session = await sessionManager.getSession(agentId);
+
+    if (!session) {
+      session = {
+        sessionKey: agentId,
+        threadId: agentId,
+        channelId: agentId,
+        userId,
+        threadCreator: userId,
+        lastActivity: Date.now(),
+        createdAt: Date.now(),
+        status: "created",
+        provider: "claude",
+      } as ThreadSession;
+
+      await sessionManager.setSession(session);
+      logger.info(`Created new API session: ${agentId}`);
+    }
+
+    // Update session activity
+    await sessionManager.touchSession(agentId);
+
+    // Prepare message with file info if provided
+    const platformMetadata: Record<string, any> = {
+      agentId,
+      source: "messaging-api",
+    };
+
+    if (options.files && options.files.length > 0) {
+      platformMetadata.fileCount = options.files.length;
+      platformMetadata.fileNames = options.files.map((f) => f.filename);
+      logger.info(
+        `Message includes ${options.files.length} file(s): ${platformMetadata.fileNames.join(", ")}`
+      );
+    }
+
+    // Enqueue message for worker processing
+    await queueProducer.enqueueMessage({
+      userId,
+      threadId: agentId,
+      messageId,
+      channelId: agentId,
+      teamId: "api",
+      agentId: agentId, // agentId is the isolation boundary
+      botId: "peerbot-api",
+      platform: "api",
+      messageText: message,
+      platformMetadata,
+      agentOptions: {
+        provider: session.provider || "claude",
+      },
+    });
+
+    logger.info(`Queued message ${messageId} for agent ${agentId}`);
+
+    const publicUrl = this.services.getPublicGatewayUrl();
+    const baseUrl = publicUrl || "http://localhost:8080";
+
+    return {
+      messageId,
+      eventsUrl: `${baseUrl}/api/v1/agents/${agentId}/events`,
+      queued: true,
+    };
   }
 }

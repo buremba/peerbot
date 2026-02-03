@@ -4,7 +4,6 @@
   "workspaces": [
     "packages/cli",
     "packages/gateway",
-    "packages/github",
     "packages/core",
     "packages/worker"
   ],

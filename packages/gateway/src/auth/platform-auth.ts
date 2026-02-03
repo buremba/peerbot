@@ -47,7 +47,7 @@ export interface PlatformAuthAdapter {
  * Registry for platform auth adapters.
  * Used by orchestration layer to route auth prompts to correct platform.
  */
-export class PlatformAuthRegistry {
+class PlatformAuthRegistry {
   private adapters = new Map<string, PlatformAuthAdapter>();
 
   register(platform: string, adapter: PlatformAuthAdapter): void {

@@ -8,10 +8,13 @@ import { ClaudeOAuthStateStore } from "../auth/claude/oauth-state-store";
 import { McpConfigService } from "../auth/mcp/config-service";
 import { McpCredentialStore } from "../auth/mcp/credential-store";
 import { McpInputStore } from "../auth/mcp/input-store";
+import { mcpConfigStore } from "../auth/mcp/mcp-config-store";
 import { McpOAuthModule } from "../auth/mcp/oauth-module";
 import { McpOAuthStateStore } from "../auth/mcp/oauth-state-store";
 import { McpProxy } from "../auth/mcp/proxy";
 import { OAuthDiscoveryService } from "../auth/oauth/discovery";
+import { AgentSettingsStore } from "../auth/settings";
+import { ChannelBindingService } from "../channels";
 import type { GatewayConfig } from "../config";
 import { WorkerGateway } from "../gateway";
 import { AnthropicProxy } from "../infrastructure/model-provider";
@@ -22,6 +25,12 @@ import {
   type RedisQueueConfig,
 } from "../infrastructure/queue";
 import { InteractionService } from "../interactions";
+import { GitFilesystemModule } from "../modules/git-filesystem";
+import {
+  ScheduledWakeupService,
+  setScheduledWakeupService,
+} from "../orchestration/scheduled-wakeup";
+import { networkConfigStore } from "../proxy/network-config-store";
 import { InstructionService } from "./instruction-service";
 import { RedisSessionStore, SessionManager } from "./session-manager";
 
@@ -70,9 +79,31 @@ export class CoreServices {
   private mcpProxy?: McpProxy;
 
   // ============================================================================
+  // OAuth Modules
+  // ============================================================================
+  private claudeOAuthModule?: ClaudeOAuthModule;
+  private mcpOAuthModule?: McpOAuthModule;
+
+  // ============================================================================
   // Worker Gateway
   // ============================================================================
   private workerGateway?: WorkerGateway;
+
+  // ============================================================================
+  // Agent Configuration Services
+  // ============================================================================
+  private agentSettingsStore?: AgentSettingsStore;
+  private channelBindingService?: ChannelBindingService;
+
+  // ============================================================================
+  // Modules
+  // ============================================================================
+  private gitFilesystemModule?: GitFilesystemModule;
+
+  // ============================================================================
+  // Scheduled Wakeup Service
+  // ============================================================================
+  private scheduledWakeupService?: ScheduledWakeupService;
 
   constructor(private readonly config: GatewayConfig) {}
 
@@ -84,20 +115,29 @@ export class CoreServices {
 
     // 1. Queue (foundation for everything else)
     await this.initializeQueue();
+    logger.debug("Queue initialized");
 
     // 2. Session management
     await this.initializeSessionServices();
+    logger.debug("Session services initialized");
 
     // 3. Claude authentication & API
     await this.initializeClaudeServices();
+    logger.debug("Claude services initialized");
 
     // 4. MCP ecosystem (depends on queue and Claude services)
     await this.initializeMcpServices();
+    logger.debug("MCP services initialized");
 
     // 5. Queue producer (depends on queue being ready)
     await this.initializeQueueProducer();
+    logger.debug("Queue producer initialized");
 
-    logger.info("✅ Core services initialized successfully");
+    // 6. Scheduled wakeup service (depends on queue)
+    await this.initializeScheduledWakeupService();
+    logger.debug("Scheduled wakeup service initialized");
+
+    logger.info("Core services initialized successfully");
   }
 
   // ============================================================================
@@ -140,6 +180,24 @@ export class CoreServices {
   }
 
   // ============================================================================
+  // Scheduled Wakeup Service Initialization
+  // ============================================================================
+
+  private async initializeScheduledWakeupService(): Promise<void> {
+    if (!this.queue) {
+      throw new Error(
+        "Queue must be initialized before scheduled wakeup service"
+      );
+    }
+
+    this.scheduledWakeupService = new ScheduledWakeupService(this.queue);
+    await this.scheduledWakeupService.start();
+    // Set global reference for BaseDeploymentManager cleanup
+    setScheduledWakeupService(this.scheduledWakeupService);
+    logger.info("✅ Scheduled wakeup service initialized");
+  }
+
+  // ============================================================================
   // 2. Session Services Initialization
   // ============================================================================
 
@@ -156,6 +214,16 @@ export class CoreServices {
 
     this.interactionService = new InteractionService(redisClient);
     logger.info("✅ Interaction service initialized");
+
+    // Initialize per-deployment config stores (Redis-backed)
+    await mcpConfigStore.initialize(redisClient);
+    await networkConfigStore.initialize(redisClient);
+    logger.info("✅ MCP/network config stores initialized");
+
+    // Initialize agent configuration stores
+    this.agentSettingsStore = new AgentSettingsStore(redisClient);
+    this.channelBindingService = new ChannelBindingService(redisClient);
+    logger.info("✅ Agent settings & channel binding services initialized");
   }
 
   // ============================================================================
@@ -186,7 +254,7 @@ export class CoreServices {
     // Register Claude OAuth module
     const systemTokenAvailable = !!this.config.anthropicProxy.anthropicApiKey;
     this.claudeOAuthStateStore = new ClaudeOAuthStateStore(redisClient);
-    const claudeOAuthModule = new ClaudeOAuthModule(
+    this.claudeOAuthModule = new ClaudeOAuthModule(
       this.claudeCredentialStore,
       this.claudeOAuthStateStore,
       this.claudeModelPreferenceStore,
@@ -194,7 +262,7 @@ export class CoreServices {
       this.config.mcp.publicGatewayUrl,
       systemTokenAvailable
     );
-    moduleRegistry.register(claudeOAuthModule);
+    moduleRegistry.register(this.claudeOAuthModule);
     logger.info(
       `✅ Claude OAuth module registered (system token: ${systemTokenAvailable ? "available" : "not available"})`
     );
@@ -257,8 +325,12 @@ export class CoreServices {
     });
 
     // Initialize instruction service (needed by WorkerGateway)
-    this.instructionService = new InstructionService(this.mcpConfigService);
-    logger.info("✅ Instruction service initialized");
+    // Pass agentSettingsStore so skills instructions can be fetched per-agent
+    this.instructionService = new InstructionService(
+      this.mcpConfigService,
+      this.agentSettingsStore
+    );
+    logger.info("Instruction service initialized");
 
     // Initialize worker gateway
     if (!this.sessionManager) {
@@ -279,7 +351,7 @@ export class CoreServices {
       this.instructionService,
       this.interactionService
     );
-    logger.info("✅ Worker gateway initialized");
+    logger.info("Worker gateway initialized");
 
     // Initialize MCP proxy
     this.mcpProxy = new McpProxy(
@@ -288,15 +360,15 @@ export class CoreServices {
       mcpInputStore,
       this.queue
     );
-    logger.info("✅ MCP proxy initialized");
+    logger.info("MCP proxy initialized");
 
     // Discover OAuth capabilities for all MCP servers
-    logger.info("🔍 Discovering OAuth capabilities for MCP servers...");
+    logger.info("Discovering OAuth capabilities for MCP servers...");
     await this.mcpConfigService.enrichWithDiscovery();
-    logger.info("✅ MCP OAuth discovery completed");
+    logger.info("MCP OAuth discovery completed");
 
     // Register MCP OAuth module
-    const mcpOAuthModule = new McpOAuthModule(
+    this.mcpOAuthModule = new McpOAuthModule(
       this.mcpConfigService,
       mcpCredentialStore,
       mcpOAuthStateStore,
@@ -304,13 +376,18 @@ export class CoreServices {
       this.config.mcp.publicGatewayUrl,
       this.config.mcp.callbackUrl
     );
-    moduleRegistry.register(mcpOAuthModule);
-    logger.info("✅ MCP OAuth module registered");
+    moduleRegistry.register(this.mcpOAuthModule);
+    logger.info("MCP OAuth module registered");
+
+    // Register Git Filesystem module
+    this.gitFilesystemModule = new GitFilesystemModule();
+    moduleRegistry.register(this.gitFilesystemModule);
+    logger.info("Git Filesystem module registered");
 
     // Discover and initialize all available modules
     await moduleRegistry.registerAvailableModules();
     await moduleRegistry.initAll();
-    logger.info("✅ Modules initialized");
+    logger.info("Modules initialized");
   }
 
   // ============================================================================
@@ -392,5 +469,33 @@ export class CoreServices {
     if (!this.interactionService)
       throw new Error("Interaction service not initialized");
     return this.interactionService;
+  }
+
+  getClaudeOAuthModule(): ClaudeOAuthModule | undefined {
+    return this.claudeOAuthModule;
+  }
+
+  getMcpOAuthModule(): McpOAuthModule | undefined {
+    return this.mcpOAuthModule;
+  }
+
+  getAgentSettingsStore(): AgentSettingsStore {
+    if (!this.agentSettingsStore)
+      throw new Error("Agent settings store not initialized");
+    return this.agentSettingsStore;
+  }
+
+  getChannelBindingService(): ChannelBindingService {
+    if (!this.channelBindingService)
+      throw new Error("Channel binding service not initialized");
+    return this.channelBindingService;
+  }
+
+  getGitFilesystemModule(): GitFilesystemModule | undefined {
+    return this.gitFilesystemModule;
+  }
+
+  getScheduledWakeupService(): ScheduledWakeupService | undefined {
+    return this.scheduledWakeupService;
   }
 }

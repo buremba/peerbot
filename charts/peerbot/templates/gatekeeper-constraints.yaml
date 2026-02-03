@@ -1,0 +1,360 @@
+{{- if .Values.gatekeeper.enabled }}
+# OPA Gatekeeper Constraint Templates and Constraints for Peerbot
+#
+# Prerequisites:
+# 1. Install Gatekeeper:
+#    kubectl apply -f https://raw.githubusercontent.com/open-policy-agent/gatekeeper/master/deploy/gatekeeper.yaml
+#
+# 2. Wait for Gatekeeper to be ready:
+#    kubectl wait --for=condition=Ready pods -l control-plane=controller-manager -n gatekeeper-system --timeout=60s
+
+---
+# ConstraintTemplate: Require containers to run as non-root
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: k8srequirenonroot
+  labels:
+    {{- include "peerbot.labels" . | nindent 4 }}
+  annotations:
+    description: "Requires containers to run as non-root user"
+spec:
+  crd:
+    spec:
+      names:
+        kind: K8sRequireNonRoot
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package k8srequirenonroot
+
+        violation[{"msg": msg}] {
+          container := input.review.object.spec.containers[_]
+          not container.securityContext.runAsNonRoot
+          msg := sprintf("Container %v must set securityContext.runAsNonRoot=true", [container.name])
+        }
+
+        violation[{"msg": msg}] {
+          container := input.review.object.spec.containers[_]
+          container.securityContext.runAsUser == 0
+          msg := sprintf("Container %v must not run as root (runAsUser=0)", [container.name])
+        }
+
+---
+# ConstraintTemplate: Require resource limits
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: k8srequireresourcelimits
+  labels:
+    {{- include "peerbot.labels" . | nindent 4 }}
+  annotations:
+    description: "Requires containers to have resource limits defined"
+spec:
+  crd:
+    spec:
+      names:
+        kind: K8sRequireResourceLimits
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package k8srequireresourcelimits
+
+        violation[{"msg": msg}] {
+          container := input.review.object.spec.containers[_]
+          not container.resources.limits.memory
+          msg := sprintf("Container %v must have memory limits defined", [container.name])
+        }
+
+        violation[{"msg": msg}] {
+          container := input.review.object.spec.containers[_]
+          not container.resources.limits.cpu
+          msg := sprintf("Container %v must have CPU limits defined", [container.name])
+        }
+
+---
+# ConstraintTemplate: Block privileged containers
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: k8sblockprivileged
+  labels:
+    {{- include "peerbot.labels" . | nindent 4 }}
+  annotations:
+    description: "Blocks privileged containers"
+spec:
+  crd:
+    spec:
+      names:
+        kind: K8sBlockPrivileged
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package k8sblockprivileged
+
+        violation[{"msg": msg}] {
+          container := input.review.object.spec.containers[_]
+          container.securityContext.privileged == true
+          msg := sprintf("Container %v cannot run as privileged", [container.name])
+        }
+
+        violation[{"msg": msg}] {
+          container := input.review.object.spec.containers[_]
+          container.securityContext.allowPrivilegeEscalation == true
+          msg := sprintf("Container %v cannot allow privilege escalation", [container.name])
+        }
+
+---
+# ConstraintTemplate: Require specific labels
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: k8srequiredlabels
+  labels:
+    {{- include "peerbot.labels" . | nindent 4 }}
+  annotations:
+    description: "Requires specific labels to be present"
+spec:
+  crd:
+    spec:
+      names:
+        kind: K8sRequiredLabels
+      validation:
+        openAPIV3Schema:
+          type: object
+          properties:
+            labels:
+              type: array
+              items:
+                type: string
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package k8srequiredlabels
+
+        violation[{"msg": msg}] {
+          provided := {label | input.review.object.metadata.labels[label]}
+          required := {label | label := input.parameters.labels[_]}
+          missing := required - provided
+          count(missing) > 0
+          msg := sprintf("Missing required labels: %v", [missing])
+        }
+
+---
+# ConstraintTemplate: Block images from untrusted registries
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: k8sallowedregistries
+  labels:
+    {{- include "peerbot.labels" . | nindent 4 }}
+  annotations:
+    description: "Only allows images from approved registries"
+spec:
+  crd:
+    spec:
+      names:
+        kind: K8sAllowedRegistries
+      validation:
+        openAPIV3Schema:
+          type: object
+          properties:
+            registries:
+              type: array
+              items:
+                type: string
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package k8sallowedregistries
+
+        violation[{"msg": msg}] {
+          container := input.review.object.spec.containers[_]
+          not registry_allowed(container.image)
+          msg := sprintf("Container %v uses image %v from untrusted registry. Allowed registries: %v", [container.name, container.image, input.parameters.registries])
+        }
+
+        registry_allowed(image) {
+          registry := input.parameters.registries[_]
+          startswith(image, registry)
+        }
+
+        # Allow images without registry prefix (docker.io default)
+        registry_allowed(image) {
+          not contains(image, "/")
+          "docker.io" == input.parameters.registries[_]
+        }
+
+---
+# ConstraintTemplate: Require read-only root filesystem
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: k8sreadonlyrootfs
+  labels:
+    {{- include "peerbot.labels" . | nindent 4 }}
+  annotations:
+    description: "Requires containers to have read-only root filesystem"
+spec:
+  crd:
+    spec:
+      names:
+        kind: K8sReadOnlyRootFs
+      validation:
+        openAPIV3Schema:
+          type: object
+          properties:
+            excludeContainers:
+              type: array
+              items:
+                type: string
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package k8sreadonlyrootfs
+
+        violation[{"msg": msg}] {
+          container := input.review.object.spec.containers[_]
+          not is_excluded(container.name)
+          not container.securityContext.readOnlyRootFilesystem
+          msg := sprintf("Container %v must set securityContext.readOnlyRootFilesystem=true", [container.name])
+        }
+
+        is_excluded(name) {
+          exclude := input.parameters.excludeContainers[_]
+          name == exclude
+        }
+
+---
+# ConstraintTemplate: Drop all capabilities
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: k8sdropallcapabilities
+  labels:
+    {{- include "peerbot.labels" . | nindent 4 }}
+  annotations:
+    description: "Requires containers to drop all capabilities"
+spec:
+  crd:
+    spec:
+      names:
+        kind: K8sDropAllCapabilities
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package k8sdropallcapabilities
+
+        violation[{"msg": msg}] {
+          container := input.review.object.spec.containers[_]
+          not drops_all(container)
+          msg := sprintf("Container %v must drop ALL capabilities (securityContext.capabilities.drop: ['ALL'])", [container.name])
+        }
+
+        drops_all(container) {
+          container.securityContext.capabilities.drop[_] == "ALL"
+        }
+
+{{- if .Values.gatekeeper.enforceConstraints }}
+---
+# Apply constraints to peerbot namespace
+# Constraint: Require non-root
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sRequireNonRoot
+metadata:
+  name: peerbot-require-nonroot
+  labels:
+    {{- include "peerbot.labels" . | nindent 4 }}
+spec:
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Pod"]
+    namespaces: ["{{ .Values.kubernetes.namespace }}"]
+
+---
+# Constraint: Require resource limits
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sRequireResourceLimits
+metadata:
+  name: peerbot-require-resource-limits
+  labels:
+    {{- include "peerbot.labels" . | nindent 4 }}
+spec:
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Pod"]
+    namespaces: ["{{ .Values.kubernetes.namespace }}"]
+
+---
+# Constraint: Block privileged containers
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sBlockPrivileged
+metadata:
+  name: peerbot-block-privileged
+  labels:
+    {{- include "peerbot.labels" . | nindent 4 }}
+spec:
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Pod"]
+    namespaces: ["{{ .Values.kubernetes.namespace }}"]
+
+---
+# Constraint: Require app.kubernetes.io/name label
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sRequiredLabels
+metadata:
+  name: peerbot-require-labels
+  labels:
+    {{- include "peerbot.labels" . | nindent 4 }}
+spec:
+  match:
+    kinds:
+      - apiGroups: ["apps"]
+        kinds: ["Deployment"]
+    namespaces: ["{{ .Values.kubernetes.namespace }}"]
+  parameters:
+    labels:
+      - "app.kubernetes.io/name"
+      - "app.kubernetes.io/component"
+
+---
+# Constraint: Only allow images from trusted registries
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sAllowedRegistries
+metadata:
+  name: peerbot-allowed-registries
+  labels:
+    {{- include "peerbot.labels" . | nindent 4 }}
+spec:
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Pod"]
+    namespaces: ["{{ .Values.kubernetes.namespace }}"]
+  parameters:
+    registries:
+      {{- toYaml .Values.gatekeeper.allowedRegistries | nindent 6 }}
+
+---
+# Constraint: Drop all capabilities (for workers only)
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sDropAllCapabilities
+metadata:
+  name: peerbot-drop-capabilities
+  labels:
+    {{- include "peerbot.labels" . | nindent 4 }}
+spec:
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Pod"]
+    namespaces: ["{{ .Values.kubernetes.namespace }}"]
+    labelSelector:
+      matchLabels:
+        app.kubernetes.io/component: worker
+{{- end }}
+{{- end }}

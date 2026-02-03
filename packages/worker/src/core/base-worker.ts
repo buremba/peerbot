@@ -60,6 +60,7 @@ export abstract class BaseWorker implements WorkerExecutor {
       originalMessageTs: config.responseId,
       botResponseTs: config.botResponseId,
       teamId: config.teamId,
+      platform: config.platform,
     });
   }
 
@@ -172,7 +173,7 @@ export abstract class BaseWorker implements WorkerExecutor {
         this.getCoreInstructionProvider(),
         {
           userId: this.config.userId,
-          spaceId: this.config.spaceId,
+          agentId: this.config.agentId,
           sessionKey: this.config.sessionKey,
           workingDirectory: this.workspaceManager.getCurrentWorkingDirectory(),
           availableProjects: listAppDirectories(

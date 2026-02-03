@@ -1,5 +1,11 @@
 import { createLogger, DEFAULTS } from "@peerbot/core";
 import type { WebClient } from "@slack/web-api";
+import {
+  type AgentSettingsStore,
+  buildSettingsUrl,
+  generateSettingsToken,
+} from "../../auth/settings";
+import type { ChannelBindingService } from "../../channels";
 import type {
   MessagePayload,
   QueueProducer,
@@ -15,6 +21,8 @@ const logger = createLogger("dispatcher");
 
 export class MessageHandler {
   private readonly SESSION_TTL = DEFAULTS.SESSION_TTL_MS;
+  private channelBindingService?: ChannelBindingService;
+  private agentSettingsStore?: AgentSettingsStore;
 
   constructor(
     private queueProducer: QueueProducer,
@@ -23,6 +31,74 @@ export class MessageHandler {
     private slackClient: WebClient,
     private interactionService: InteractionService
   ) {}
+
+  /**
+   * Set the channel binding service (optional)
+   */
+  setChannelBindingService(service: ChannelBindingService): void {
+    this.channelBindingService = service;
+  }
+
+  /**
+   * Set the agent settings store (optional)
+   */
+  setAgentSettingsStore(store: AgentSettingsStore): void {
+    this.agentSettingsStore = store;
+  }
+
+  /**
+   * Get agent options with settings applied
+   * Priority: agent settings > config defaults
+   */
+  private async getAgentOptionsWithSettings(
+    agentId: string
+  ): Promise<Record<string, any>> {
+    const baseOptions = {
+      ...this.config.agentOptions,
+      timeoutMinutes: this.config.sessionTimeoutMinutes.toString(),
+    };
+
+    if (!this.agentSettingsStore) {
+      return baseOptions;
+    }
+
+    const settings = await this.agentSettingsStore.getSettings(agentId);
+    if (!settings) {
+      return baseOptions;
+    }
+
+    logger.info(`Applying agent settings for ${agentId}`, {
+      model: settings.model,
+      hasNetworkConfig: !!settings.networkConfig,
+      hasGitConfig: !!settings.gitConfig,
+    });
+
+    // Merge settings into options
+    const mergedOptions: Record<string, any> = { ...baseOptions };
+
+    if (settings.model) {
+      mergedOptions.model = settings.model;
+    }
+
+    // Pass additional settings through agentOptions for worker to use
+    if (settings.networkConfig) {
+      mergedOptions.networkConfig = settings.networkConfig;
+    }
+
+    if (settings.gitConfig) {
+      mergedOptions.gitConfig = settings.gitConfig;
+    }
+
+    if (settings.envVars) {
+      mergedOptions.envVars = settings.envVars;
+    }
+
+    if (settings.historyConfig) {
+      mergedOptions.historyConfig = settings.historyConfig;
+    }
+
+    return mergedOptions;
+  }
 
   /**
    * Get bot ID from configuration
@@ -105,15 +181,71 @@ export class MessageHandler {
     // Check if this is a Direct Message channel (DMs start with 'D')
     const isDirectMessage = context.channelId.startsWith("D");
 
-    // Resolve space ID for multi-tenant isolation
-    const { spaceId } = resolveSpace({
-      platform: "slack",
-      userId: context.userId,
-      channelId: context.channelId,
-      isGroup: !isDirectMessage,
-    });
+    // Check for channel binding first (explicit agent assignment)
+    let agentId: string;
+    if (this.channelBindingService) {
+      const binding = await this.channelBindingService.getBinding(
+        "slack",
+        context.channelId,
+        context.teamId
+      );
+      if (binding) {
+        agentId = binding.agentId;
+        logger.info(
+          `Using bound agentId: ${agentId} for channel ${context.channelId}`
+        );
+      } else {
+        // Fall back to space-based resolution
+        const space = resolveSpace({
+          platform: "slack",
+          userId: context.userId,
+          channelId: context.channelId,
+          isGroup: !isDirectMessage,
+        });
+        agentId = space.agentId;
+        logger.info(
+          `Resolved agentId: ${agentId} (isGroup: ${!isDirectMessage})`
+        );
+      }
+    } else {
+      // Fall back to space-based resolution
+      const space = resolveSpace({
+        platform: "slack",
+        userId: context.userId,
+        channelId: context.channelId,
+        isGroup: !isDirectMessage,
+      });
+      agentId = space.agentId;
+      logger.info(
+        `Resolved agentId: ${agentId} (isGroup: ${!isDirectMessage})`
+      );
+    }
 
-    logger.info(`Resolved spaceId: ${spaceId} (isGroup: ${!isDirectMessage})`);
+    // Handle /configure command - send settings magic link
+    if (userRequest.trim().toLowerCase() === "/configure") {
+      logger.info(
+        `User ${context.userId} requested /configure for agent ${agentId}`
+      );
+      try {
+        const token = generateSettingsToken(agentId, context.userId, "slack");
+        const settingsUrl = buildSettingsUrl(token);
+
+        await client.chat.postMessage({
+          channel: context.channelId,
+          thread_ts: normalizedThreadTs,
+          text: `Here's your settings link (valid for 1 hour):\n${settingsUrl}\n\nUse this page to configure your agent's model, network access, git repository, and more.`,
+        });
+        logger.info(`Sent settings link to user ${context.userId}`);
+      } catch (error) {
+        logger.error("Failed to generate settings link", { error });
+        await client.chat.postMessage({
+          channel: context.channelId,
+          thread_ts: normalizedThreadTs,
+          text: "Sorry, I couldn't generate a settings link. Please try again later.",
+        });
+      }
+      return;
+    }
 
     // Only check thread ownership for non-DM channels
     if (!isDirectMessage) {
@@ -205,7 +337,6 @@ export class MessageHandler {
 
       // Create thread session with turn count
       const threadSession: ThreadSession = {
-        sessionKey,
         threadId: threadTs,
         channelId: context.channelId,
         userId: context.userId,
@@ -223,6 +354,9 @@ export class MessageHandler {
       const isNewConversation =
         context.messageTs === normalizedThreadTs && !existingSession;
 
+      // Fetch agent settings and merge with config defaults
+      const agentOptions = await this.getAgentOptionsWithSettings(agentId);
+
       if (isNewConversation) {
         await this.sessionManager.setSession(threadSession);
 
@@ -231,7 +365,7 @@ export class MessageHandler {
           botId: this.getBotId(),
           threadId: threadTs,
           teamId: context.teamId,
-          spaceId,
+          agentId,
           platform: "slack",
           messageId: context.messageTs,
           messageText: userRequest,
@@ -245,10 +379,7 @@ export class MessageHandler {
             botResponseId: threadSession.botResponseId,
             files: files || [],
           },
-          agentOptions: {
-            ...this.config.agentOptions,
-            timeoutMinutes: this.config.sessionTimeoutMinutes.toString(),
-          },
+          agentOptions,
         };
 
         const jobId =
@@ -273,7 +404,7 @@ export class MessageHandler {
           userId: context.userId,
           threadId: threadTs,
           teamId: context.teamId,
-          spaceId,
+          agentId,
           platform: "slack",
           channelId: context.channelId,
           messageId: context.messageTs,
@@ -287,10 +418,7 @@ export class MessageHandler {
             botResponseId: threadSession.botResponseId,
             files: files || [],
           },
-          agentOptions: {
-            ...this.config.agentOptions,
-            timeoutMinutes: this.config.sessionTimeoutMinutes.toString(),
-          },
+          agentOptions,
         };
 
         const jobId = await this.queueProducer.enqueueMessage(threadPayload);

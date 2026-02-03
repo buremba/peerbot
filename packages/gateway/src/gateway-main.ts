@@ -100,11 +100,11 @@ export class Gateway {
       platformRegistry
     );
     await this.unifiedConsumer.start();
-    logger.info("✅ Unified thread response consumer started");
+    logger.info("Unified thread response consumer started");
 
     this.isRunning = true;
     logger.info(
-      `✅ Gateway started successfully with ${this.platforms.size} platform(s)`
+      `Gateway started successfully with ${this.platforms.size} platform(s)`
     );
   }
 

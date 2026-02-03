@@ -13,25 +13,54 @@ export * from "./logger";
 // Module system
 export type { ActionButton, ModuleSessionContext } from "./modules";
 export * from "./modules";
+export type { OtelConfig, Span, Tracer } from "./otel";
+// OpenTelemetry tracing (Tempo integration)
+export {
+  createChildSpan,
+  createRootSpan,
+  createSpan,
+  flushTracing,
+  getCurrentSpan,
+  getTraceparent,
+  getTracer,
+  initTracing,
+  runInSpanContext,
+  SpanKind,
+  SpanStatusCode,
+  shutdownTracing,
+  withChildSpan,
+  withSpan,
+} from "./otel";
 // Redis & worker helpers
 export * from "./redis/base-store";
 // Observability
 export { getSentry, initSentry } from "./sentry";
-export { extractTraceId, generateTraceId, hasTraceId } from "./trace";
+export { extractTraceId, generateTraceId } from "./trace";
 // Core types
 export type {
+  AgentMcpConfig,
   AgentOptions,
   ConversationMessage,
   FieldSchema,
+  GitConfig,
+  HistoryConfig,
+  HistoryMessage,
+  HistoryTimeframe,
   InstructionContext,
   InstructionProvider,
   InteractionOptions,
   InteractionType,
   LogLevel,
+  McpServerConfig,
+  NetworkConfig,
+  NixConfig,
   PendingInteraction,
   SessionContext,
+  SkillConfig,
+  SkillsConfig,
   SuggestedPrompt,
   ThreadResponsePayload,
+  ToolsConfig,
   UserInteraction,
   UserInteractionResponse,
   UserSuggestion,

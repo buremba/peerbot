@@ -1,4 +1,4 @@
-import { createLogger } from "@peerbot/core";
+import { createLogger, type NetworkConfig } from "@peerbot/core";
 
 const logger = createLogger("network-allowlist");
 
@@ -68,4 +68,64 @@ export function loadDisallowedDomains(): string[] {
   }
 
   return domains;
+}
+
+// Cache global defaults to avoid repeated parsing
+let cachedGlobalAllowed: string[] | null = null;
+let cachedGlobalDenied: string[] | null = null;
+
+/**
+ * Get cached global defaults (lazy initialization)
+ */
+function getGlobalDefaults(): {
+  allowedDomains: string[];
+  deniedDomains: string[];
+} {
+  if (cachedGlobalAllowed === null) {
+    cachedGlobalAllowed = loadAllowedDomains();
+  }
+  if (cachedGlobalDenied === null) {
+    cachedGlobalDenied = loadDisallowedDomains();
+  }
+  return {
+    allowedDomains: cachedGlobalAllowed,
+    deniedDomains: cachedGlobalDenied,
+  };
+}
+
+/**
+ * Resolve network configuration by merging per-agent config with global defaults.
+ *
+ * If agentConfig is provided and has explicit values, use them.
+ * Otherwise, fall back to global defaults from environment variables.
+ *
+ * @param agentConfig - Optional per-agent network configuration
+ * @returns Resolved network configuration with both allowedDomains and deniedDomains
+ */
+export function resolveNetworkConfig(agentConfig?: NetworkConfig): {
+  allowedDomains: string[];
+  deniedDomains: string[];
+} {
+  const globalDefaults = getGlobalDefaults();
+
+  // If no agent config provided, use global defaults
+  if (!agentConfig) {
+    return {
+      allowedDomains: globalDefaults.allowedDomains,
+      deniedDomains: globalDefaults.deniedDomains,
+    };
+  }
+
+  // Agent config takes precedence if explicitly provided
+  // Note: We check for undefined specifically, as empty array [] is a valid explicit value (means deny all)
+  return {
+    allowedDomains:
+      agentConfig.allowedDomains !== undefined
+        ? agentConfig.allowedDomains
+        : globalDefaults.allowedDomains,
+    deniedDomains:
+      agentConfig.deniedDomains !== undefined
+        ? agentConfig.deniedDomains
+        : globalDefaults.deniedDomains,
+  };
 }

@@ -72,17 +72,3 @@ export const CLAUDE_PROVIDER: OAuthProviderConfig = {
 export const OAUTH_PROVIDERS: Record<string, OAuthProviderConfig> = {
   claude: CLAUDE_PROVIDER,
 };
-
-/**
- * Get OAuth provider config by ID
- * @throws Error if provider not found
- */
-export function getOAuthProvider(providerId: string): OAuthProviderConfig {
-  const provider = OAUTH_PROVIDERS[providerId];
-  if (!provider) {
-    throw new Error(
-      `Unknown OAuth provider: ${providerId}. Available: ${Object.keys(OAUTH_PROVIDERS).join(", ")}`
-    );
-  }
-  return provider;
-}

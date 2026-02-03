@@ -9,6 +9,8 @@ import type { ClaudeCredentialStore } from "./auth/claude/credential-store";
 import type { ClaudeModelPreferenceStore } from "./auth/claude/model-preference-store";
 import type { ClaudeOAuthStateStore } from "./auth/claude/oauth-state-store";
 import type { McpProxy } from "./auth/mcp/proxy";
+import type { AgentSettingsStore } from "./auth/settings";
+import type { ChannelBindingService } from "./channels";
 import type { WorkerGateway } from "./gateway";
 import type { AnthropicProxy } from "./infrastructure/model-provider";
 import type { IMessageQueue, QueueProducer } from "./infrastructure/queue";
@@ -38,6 +40,8 @@ export interface CoreServices {
   getSessionManager(): ISessionManager;
   getInstructionService(): InstructionService | undefined;
   getInteractionService(): InteractionService;
+  getAgentSettingsStore(): AgentSettingsStore;
+  getChannelBindingService(): ChannelBindingService;
 }
 
 // ============================================================================
@@ -146,31 +150,32 @@ export interface PlatformAdapter {
   isOwnBotToken?(token: string): boolean;
 
   /**
-   * Send a message to a channel or thread for testing/automation
-   * Uses an external bot token (not the configured platform token)
-   * Supports multiple file uploads, thread replies, and @me placeholder for bot mentions
+   * Send a message via the messaging API
+   * Uses polymorphic routing info extracted from the request
    *
-   * @param token - Bot token (e.g., xoxb- for Slack)
-   * @param channel - Channel ID or name
+   * @param token - Auth token from request
    * @param message - Message text to send (use @me to mention the bot)
-   * @param options - Optional parameters
-   * @param options.threadId - Thread ID to reply to (platform-agnostic)
+   * @param options - Routing and file options
+   * @param options.agentId - Universal session identifier
+   * @param options.channelId - Platform-specific channel (or agentId for API)
+   * @param options.threadId - Platform-specific thread (or agentId for API)
+   * @param options.teamId - Platform-specific team/workspace
    * @param options.files - Files to upload with the message (up to 10)
-   * @returns Message metadata including IDs and URL, plus queued flag
+   * @returns Message metadata
    */
   sendMessage?(
     token: string,
-    channel: string,
     message: string,
-    options?: {
-      threadId?: string;
+    options: {
+      agentId: string;
+      channelId: string;
+      threadId: string;
+      teamId: string;
       files?: Array<{ buffer: Buffer; filename: string }>;
     }
   ): Promise<{
-    channel: string;
     messageId: string;
-    threadId: string;
-    threadUrl?: string;
+    eventsUrl?: string;
     queued?: boolean;
   }>;
 
@@ -202,6 +207,43 @@ export interface PlatformAdapter {
    * @returns ResponseRenderer instance or undefined if platform handles responses differently
    */
   getResponseRenderer?(): ResponseRenderer | undefined;
+
+  /**
+   * Check if a channel ID represents a group/channel vs a DM.
+   * Used by space-resolver to determine space type.
+   *
+   * @param channelId - Channel identifier to check
+   * @returns True if this is a group/channel, false if DM
+   */
+  isGroupChannel?(channelId: string): boolean;
+
+  /**
+   * Get display information for the platform.
+   * Used in UI to show platform-specific icons and names.
+   *
+   * @returns Display info with name and icon (SVG or emoji)
+   */
+  getDisplayInfo?(): {
+    /** Human-readable platform name */
+    name: string;
+    /** SVG icon markup or emoji */
+    icon: string;
+    /** Optional logo URL */
+    logoUrl?: string;
+  };
+
+  /**
+   * Extract routing info from platform-specific request body.
+   * Used by messaging API to parse platform-specific fields.
+   *
+   * @param body - Request body with platform-specific fields
+   * @returns Routing info or null if platform fields are missing/invalid
+   */
+  extractRoutingInfo?(body: Record<string, unknown>): {
+    channelId: string;
+    threadId: string;
+    teamId?: string;
+  } | null;
 }
 
 // ============================================================================
@@ -227,6 +269,13 @@ export class PlatformRegistry {
    */
   get(name: string): PlatformAdapter | undefined {
     return this.platforms.get(name);
+  }
+
+  /**
+   * Get list of available platform names
+   */
+  getAvailablePlatforms(): string[] {
+    return Array.from(this.platforms.keys());
   }
 }
 

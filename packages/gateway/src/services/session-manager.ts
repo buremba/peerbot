@@ -3,7 +3,12 @@
 import { createLogger, DEFAULTS, REDIS_KEYS } from "@peerbot/core";
 import type Redis from "ioredis";
 import type { IMessageQueue } from "../infrastructure/queue";
-import type { ISessionManager, SessionStore, ThreadSession } from "../session";
+import {
+  computeSessionKey,
+  type ISessionManager,
+  type SessionStore,
+  type ThreadSession,
+} from "../session";
 
 const logger = createLogger("session-manager");
 
@@ -51,7 +56,6 @@ export class RedisSessionStore implements SessionStore {
     try {
       const key = this.getSessionKey(sessionKey);
 
-      // Serialize Map fields to plain objects
       // Store session with TTL in Redis
       await this.redis.setex(
         key,
@@ -60,17 +64,15 @@ export class RedisSessionStore implements SessionStore {
       );
 
       // Create thread index for fast lookups
-      if (session.threadId) {
-        const indexKey = this.getThreadIndexKey(
-          session.channelId,
-          session.threadId
-        );
-        await this.redis.setex(
-          indexKey,
-          this.DEFAULT_TTL_SECONDS,
-          JSON.stringify({ sessionKey })
-        );
-      }
+      const indexKey = this.getThreadIndexKey(
+        session.channelId,
+        session.threadId
+      );
+      await this.redis.setex(
+        indexKey,
+        this.DEFAULT_TTL_SECONDS,
+        JSON.stringify({ sessionKey })
+      );
 
       logger.debug(`Stored session ${sessionKey}`);
     } catch (error) {
@@ -153,16 +155,17 @@ export class SessionManager implements ISessionManager {
     threadId?: string,
     threadCreator?: string
   ): Promise<ThreadSession> {
-    const sessionKey = `${channelId}:${threadId || userId}`;
+    // threadId is required for the new schema
+    const effectiveThreadId = threadId || userId;
     const session: ThreadSession = {
-      sessionKey,
-      threadId,
+      threadId: effectiveThreadId,
       channelId,
       userId,
       threadCreator: threadCreator || userId,
       lastActivity: Date.now(),
       createdAt: Date.now(),
     };
+    const sessionKey = computeSessionKey(session);
     await this.store.set(sessionKey, session);
     return session;
   }
@@ -192,7 +195,8 @@ export class SessionManager implements ISessionManager {
    * Create or update a session
    */
   async setSession(session: ThreadSession): Promise<void> {
-    await this.store.set(session.sessionKey, session);
+    const sessionKey = computeSessionKey(session);
+    await this.store.set(sessionKey, session);
   }
 
   /**

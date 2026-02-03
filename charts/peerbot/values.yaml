@@ -15,6 +15,10 @@ secrets:
   encryptionKey: ""  # Optional: 32-char key for AES-GCM at-rest encryption
   claudeCodeOAuthToken: ""  # Required: Claude Code OAuth token
   whatsappCredentials: ""  # Optional: Base64-encoded WhatsApp credentials JSON
+  # GitHub App authentication for git workspace support
+  githubAppId: ""  # Optional: GitHub App ID for installation tokens
+  githubAppPrivateKey: ""  # Optional: GitHub App private key (PEM format)
+  githubPersonalAccessToken: ""  # Optional: Global PAT (alternative to GitHub App)
 
 # Bitnami Sealed Secrets - for production use with Git-stored encrypted secrets
 # See templates/sealed-secrets.yaml for setup instructions
@@ -112,10 +116,27 @@ claude:
   model: "claude-sonnet-4-20250514"
   timeoutMinutes: "5" # Default timeout
 
+# gVisor installation (runsc runtime for container isolation)
+# Note: K3s containerd v2 format requires manual setup - see docs/gvisor-setup.md
+gvisor:
+  install: false  # Disabled - requires manual containerd configuration for K3s
+
+# Git cache configuration for shared repository caching
+# Gateway maintains bare repo cache, workers use --reference clones for efficiency
+gitCache:
+  enabled: false  # Enable for git workspace support
+  # Persistent volume for gateway to store cached bare repos
+  persistence:
+    enabled: true
+    size: "10Gi"
+    storageClass: ""  # Use default storage class
+    # Mount path for cache (default: /var/cache/peerbot/git)
+    mountPath: "/var/cache/peerbot/git"
+
 # Disable static worker deployment - workers are created dynamically by dispatcher
 worker:
   enabled: false
-  runtimeClassName: "kata"
+  runtimeClassName: ""  # Empty uses default runtime; set to "gvisor" after manual setup
   image:
     repository: buremba/peerbot-worker-base
     pullPolicy: Always
@@ -276,3 +297,35 @@ grafana:
   enabled: false  # Enable to create Loki datasource ConfigMap
   namespace: "monitoring"  # Namespace where Grafana is installed
   lokiUrl: "http://loki:3100"  # URL to Loki service
+
+# Grafana Tempo for distributed tracing (waterfall view)
+tempo:
+  enabled: false  # Enable for Chrome DevTools-style trace visualization
+  # Tempo subchart configuration
+  tempo:
+    # Use local filesystem storage for simplicity (switch to S3/GCS in production)
+    storage:
+      trace:
+        backend: local
+        local:
+          path: /var/tempo/traces
+    # Receiver configuration for OTLP
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: "0.0.0.0:4317"
+          http:
+            endpoint: "0.0.0.0:4318"
+  # Enable persistence for trace storage
+  persistence:
+    enabled: true
+    size: 10Gi
+  # Resources
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"

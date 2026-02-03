@@ -32,8 +32,6 @@
       "@peerbot/core/*": ["packages/core/src/*"],
       "@peerbot/gateway": ["packages/gateway/src/index.ts"],
       "@peerbot/gateway/*": ["packages/gateway/src/*"],
-      "@peerbot/github": ["packages/github/src/index.ts"],
-      "@peerbot/github/*": ["packages/github/src/*"],
       "@peerbot/worker": ["packages/worker/src/index.ts"],
       "@peerbot/worker/*": ["packages/worker/src/*"]
     }

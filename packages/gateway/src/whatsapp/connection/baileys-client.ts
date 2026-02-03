@@ -105,6 +105,7 @@ export class BaileysClient extends EventEmitter<BaileysClientEvents> {
     this.isShuttingDown = false;
 
     // Load credentials from env - required for production
+    logger.debug("Loading WhatsApp credentials");
     const initialState = loadCredentialsFromEnv(this.config.credentials);
     if (!initialState) {
       throw new Error(
@@ -115,6 +116,7 @@ export class BaileysClient extends EventEmitter<BaileysClientEvents> {
 
     this.authState = createAuthState(initialState);
     await this.createSocket();
+    logger.debug("WhatsApp socket created");
   }
 
   /**
@@ -227,7 +229,7 @@ export class BaileysClient extends EventEmitter<BaileysClientEvents> {
       this.reconnectionManager.reset();
 
       const selfE164 = this.getSelfE164();
-      logger.info({ selfE164 }, "WhatsApp connected");
+      logger.info(`WhatsApp connected (selfE164=${selfE164})`);
       this.emit("connected");
 
       // Send available presence
@@ -260,17 +262,9 @@ export class BaileysClient extends EventEmitter<BaileysClientEvents> {
         lastDisconnect?.error instanceof Error
           ? lastDisconnect.error.message
           : String(lastDisconnect?.error || "unknown");
-      const errorOutput = (lastDisconnect?.error as any)?.output;
 
       logger.warn(
-        {
-          statusCode,
-          isLoggedOut,
-          errorMessage,
-          errorPayload: errorOutput?.payload,
-          errorStatusCode: errorOutput?.statusCode,
-        },
-        "WhatsApp disconnected"
+        `WhatsApp disconnected: statusCode=${statusCode}, isLoggedOut=${isLoggedOut}, errorMessage=${errorMessage}`
       );
       this.emit("disconnected", reason);
 
@@ -307,8 +301,7 @@ export class BaileysClient extends EventEmitter<BaileysClientEvents> {
 
     const delay = this.reconnectionManager.getCurrentDelay();
     logger.info(
-      { delay, attempt: this.reconnectionManager.getAttempts() + 1 },
-      "Scheduling reconnection"
+      `Scheduling reconnection (delay=${delay}ms, attempt=${this.reconnectionManager.getAttempts() + 1})`
     );
 
     const shouldRetry = await this.reconnectionManager.waitForNextAttempt();

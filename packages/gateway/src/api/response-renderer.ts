@@ -8,7 +8,7 @@
 import { createLogger } from "@peerbot/core";
 import type { ThreadResponsePayload } from "../infrastructure/queue/types";
 import type { ResponseRenderer } from "../platform/response-renderer";
-import { broadcastToSession } from "../routes/public/sessions";
+import { broadcastToAgent, broadcastToExec } from "../routes/public/agent";
 
 const logger = createLogger("api-response-renderer");
 
@@ -19,12 +19,25 @@ const logger = createLogger("api-response-renderer");
 export class ApiResponseRenderer implements ResponseRenderer {
   /**
    * Handle streaming delta content
-   * Broadcasts delta to SSE connections
+   * Broadcasts delta to SSE connections (agent or exec)
    */
   async handleDelta(
     payload: ThreadResponsePayload,
-    sessionKey: string
+    _sessionKey: string
   ): Promise<string | null> {
+    // Check if this is an exec response
+    if (payload.execId) {
+      const stream = payload.execStream || "stdout";
+      broadcastToExec(payload.execId, stream, {
+        content: payload.delta,
+        timestamp: payload.timestamp || Date.now(),
+      });
+      logger.debug(
+        `Broadcast exec ${stream} to ${payload.execId}: ${payload.delta?.length || 0} chars`
+      );
+      return payload.messageId;
+    }
+
     // Extract session ID from platformMetadata or thread ID
     const sessionId =
       (payload.platformMetadata?.sessionId as string) || payload.threadId;
@@ -35,7 +48,7 @@ export class ApiResponseRenderer implements ResponseRenderer {
     }
 
     // Broadcast delta to SSE clients
-    broadcastToSession(sessionId, "output", {
+    broadcastToAgent(sessionId, "output", {
       type: "delta",
       content: payload.delta,
       timestamp: payload.timestamp || Date.now(),
@@ -51,12 +64,24 @@ export class ApiResponseRenderer implements ResponseRenderer {
 
   /**
    * Handle completion of response processing
-   * Sends completion event to SSE clients
+   * Sends completion event to SSE clients (agent or exec)
    */
   async handleCompletion(
     payload: ThreadResponsePayload,
-    sessionKey: string
+    _sessionKey: string
   ): Promise<void> {
+    // Check if this is an exec completion
+    if (payload.execId && payload.execExitCode !== undefined) {
+      broadcastToExec(payload.execId, "exit", {
+        exitCode: payload.execExitCode,
+        timestamp: payload.timestamp || Date.now(),
+      });
+      logger.info(
+        `Broadcast exec completion to ${payload.execId}: exitCode=${payload.execExitCode}`
+      );
+      return;
+    }
+
     const sessionId =
       (payload.platformMetadata?.sessionId as string) || payload.threadId;
 
@@ -66,7 +91,7 @@ export class ApiResponseRenderer implements ResponseRenderer {
     }
 
     // Broadcast completion to SSE clients
-    broadcastToSession(sessionId, "complete", {
+    broadcastToAgent(sessionId, "complete", {
       type: "complete",
       messageId: payload.messageId,
       processedMessageIds: payload.processedMessageIds,
@@ -78,12 +103,24 @@ export class ApiResponseRenderer implements ResponseRenderer {
 
   /**
    * Handle error response
-   * Sends error event to SSE clients
+   * Sends error event to SSE clients (agent or exec)
    */
   async handleError(
     payload: ThreadResponsePayload,
-    sessionKey: string
+    _sessionKey: string
   ): Promise<void> {
+    // Check if this is an exec error
+    if (payload.execId) {
+      broadcastToExec(payload.execId, "error", {
+        message: payload.error,
+        timestamp: payload.timestamp || Date.now(),
+      });
+      logger.error(
+        `Broadcast exec error to ${payload.execId}: ${payload.error}`
+      );
+      return;
+    }
+
     const sessionId =
       (payload.platformMetadata?.sessionId as string) || payload.threadId;
 
@@ -93,7 +130,7 @@ export class ApiResponseRenderer implements ResponseRenderer {
     }
 
     // Broadcast error to SSE clients
-    broadcastToSession(sessionId, "error", {
+    broadcastToAgent(sessionId, "error", {
       type: "error",
       error: payload.error,
       messageId: payload.messageId,
@@ -116,7 +153,7 @@ export class ApiResponseRenderer implements ResponseRenderer {
     }
 
     // Broadcast status to SSE clients
-    broadcastToSession(sessionId, "status", {
+    broadcastToAgent(sessionId, "status", {
       type: "status",
       status: payload.statusUpdate,
       messageId: payload.messageId,
@@ -137,7 +174,7 @@ export class ApiResponseRenderer implements ResponseRenderer {
     }
 
     // Broadcast ephemeral content to SSE clients
-    broadcastToSession(sessionId, "ephemeral", {
+    broadcastToAgent(sessionId, "ephemeral", {
       type: "ephemeral",
       content: payload.content,
       messageId: payload.messageId,

@@ -17,7 +17,6 @@ const config: KnipConfig = {
     "scripts/**",
   ],
   ignoreBinaries: ["helm"],
-  ignoreDependencies: ["@peerbot/github"],
 };
 
 export default config;

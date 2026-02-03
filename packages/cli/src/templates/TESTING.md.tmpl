@@ -190,103 +190,9 @@ The `@me` placeholder ensures your code works across all platforms without modif
 
 ---
 
-## 2. Interaction API
+## 2. Complete E2E Testing Example
 
-Programmatically respond to bot interactions (buttons, radio buttons, forms).
-
-### Endpoint
-```
-POST http://localhost:{{GATEWAY_PORT}}/api/interactions/respond
-```
-
-### Use Case
-
-When your bot presents interactive elements (e.g., "Which option do you prefer?"), you can use this endpoint to simulate user clicks for E2E testing.
-
-### Request Format
-
-```json
-{
-  "interactionId": "ui_abc123def456",
-  "answer": "Option A"
-}
-```
-
-**Or for forms:**
-
-```json
-{
-  "interactionId": "ui_form789",
-  "formData": {
-    "field1": "value1",
-    "field2": "value2"
-  }
-}
-```
-
-### Parameters
-
-| Field | Description |
-|-------|-------------|
-| `interactionId` | Unique interaction ID (embedded in bot's message) |
-| `answer` | Answer text for radio buttons or buttons |
-| `formData` | Form field values (for form interactions) |
-
-**Note:** Provide either `answer` OR `formData`, not both.
-
-### Retrieving Interaction IDs
-
-Interaction IDs are embedded in bot responses:
-1. **Via QA Script**: Use `--interact 0` flag to detect and trigger interactions automatically
-2. **Via Message Metadata**: Parse Slack message blocks to extract `action_id` (format: `simple_radio_ui_<uuid>`)
-3. **Via Logs**: Check gateway logs for interaction creation messages
-
-### Example: Answer a Button
-
-```bash
-curl -X POST http://localhost:{{GATEWAY_PORT}}/api/interactions/respond \
-  -H "Content-Type: application/json" \
-  -d '{
-    "interactionId": "ui_abc123",
-    "answer": "Yes"
-  }'
-```
-
-### Response
-
-```json
-{
-  "success": true,
-  "message": "Interaction response processed",
-  "interactionId": "ui_abc123"
-}
-```
-
-### Constraints
-
-- **One-time use**: Each interaction can only be answered once
-- **Expiration**: Interactions expire after a timeout (default: 5 minutes)
-- **Validation**: The answer must match one of the provided options
-
-### Error Handling
-
-```json
-{
-  "success": false,
-  "error": "Interaction already responded to"
-}
-```
-
-Common errors:
-- `400`: Missing `interactionId` or invalid request format
-- `404`: Interaction not found or expired
-- `410`: Interaction expired
-
----
-
-## 3. Complete E2E Testing Example
-
-Testing a full conversation with interactions:
+Testing a full conversation:
 
 ```bash
 # Step 1: Send initial message
@@ -302,21 +208,7 @@ RESPONSE=$(curl -s -X POST http://localhost:{{GATEWAY_PORT}}/api/messaging/send 
 THREAD_ID=$(echo $RESPONSE | jq -r '.threadId')
 echo "Thread ID: $THREAD_ID"
 
-# Step 2: Wait for bot to respond with interactions
-sleep 5
-
-# Step 3: Fetch interaction ID from Slack or logs
-INTERACTION_ID="ui_abc123"  # Retrieved from message blocks
-
-# Step 4: Respond to interaction
-curl -X POST http://localhost:{{GATEWAY_PORT}}/api/interactions/respond \
-  -H "Content-Type: application/json" \
-  -d '{
-    "interactionId": "'"$INTERACTION_ID"'",
-    "answer": "Option 2"
-  }'
-
-# Step 5: Verify bot processes the interaction
+# Step 2: Verify bot response
 # (Check thread for follow-up message)
 ```
 
@@ -331,4 +223,3 @@ These APIs enable your AI agents to:
 - **Development**: Quickly test bot behavior without manual Slack interaction
 
 The messaging endpoint is **platform-agnostic** by design. While Slack is currently supported, the same API structure will work for Discord, Teams, and other platforms in the future.
-

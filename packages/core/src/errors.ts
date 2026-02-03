@@ -151,7 +151,7 @@ export class DispatcherError extends OperationError {
   override readonly name = "DispatcherError";
 }
 
-// ErrorCode enum from orchestrator package
+// ErrorCode enum for orchestration operations
 export enum ErrorCode {
   DATABASE_CONNECTION_FAILED = "DATABASE_CONNECTION_FAILED",
   KUBERNETES_API_ERROR = "KUBERNETES_API_ERROR",

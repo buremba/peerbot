@@ -8,11 +8,10 @@ ENV PATH="/usr/local/bin:${PATH}"
 
 WORKDIR /app
 
-# Set up workspace for gateway + core + github
+# Set up workspace for gateway + core
 COPY tsconfig.json ./
-RUN echo '{ "name": "@peerbot/gateway-build", "private": true, "workspaces": [ "packages/core", "packages/github", "packages/gateway" ] }' > package.json
+RUN echo '{ "name": "@peerbot/gateway-build", "private": true, "workspaces": [ "packages/core", "packages/gateway" ] }' > package.json
 COPY packages/core/package.json ./packages/core/
-COPY packages/github/package.json ./packages/github/
 COPY packages/gateway/package.json ./packages/gateway/
 
 # Install dependencies with Bun (faster than npm)
@@ -20,14 +19,10 @@ RUN --mount=type=cache,target=/root/.bun/install/cache bun install || true
 
 # Copy source code
 COPY packages/core/ ./packages/core/
-COPY packages/github/ ./packages/github/
 COPY packages/gateway/ ./packages/gateway/
 
-# Build core and github packages (gateway has type errors, run from source)
+# Build core package (gateway runs from source for faster iteration)
 WORKDIR /app/packages/core
-RUN bun run build
-
-WORKDIR /app/packages/github
 RUN bun run build
 
 # Install tsx for running TypeScript with Node.js

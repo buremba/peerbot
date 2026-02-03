@@ -38,11 +38,10 @@
     "@sentry/node": "^10.6.0",
     "@modelcontextprotocol/sdk": "^1.17.4",
     "@peerbot/core": "workspace:*",
-    "@peerbot/github": "workspace:*",
     "cors": "^2.8.5",
     "express": "^5.1.0",
     "form-data": "^4.0.4",
-    "zod": "^4.1.12"
+    "zod": "^3.24.1"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",

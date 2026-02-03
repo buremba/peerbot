@@ -5,3 +5,4 @@
 
 export { DockerDeploymentManager } from "./docker-deployment";
 export { K8sDeploymentManager } from "./k8s-deployment";
+export { LocalDeploymentManager } from "./local-deployment";

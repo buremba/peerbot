@@ -1,17 +1,35 @@
 #!/usr/bin/env bun
 
-import { createLogger, moduleRegistry } from "@peerbot/core";
+import { createLogger, initTracing, moduleRegistry } from "@peerbot/core";
 
 const logger = createLogger("worker");
 
 import { setupWorkspaceEnv } from "./core/workspace";
 import { GatewayClient } from "./gateway/sse-client";
 import { startProcessManager, stopProcessManager } from "./mcp/process-manager";
+import { GitFilesystemWorkerModule } from "./modules/git-filesystem";
 
 /**
  * Main entry point for gateway-based persistent worker
  */
 async function main() {
+  logger.info("Starting worker...");
+
+  // Initialize OpenTelemetry tracing for distributed tracing
+  // Worker traces are sent to Tempo via gateway proxy
+  const tempoEndpoint = process.env.TEMPO_ENDPOINT;
+  logger.debug(`TEMPO_ENDPOINT: ${tempoEndpoint}`);
+  if (tempoEndpoint) {
+    initTracing({
+      serviceName: "peerbot-worker",
+      tempoEndpoint,
+    });
+    logger.info(`Tracing initialized: peerbot-worker -> ${tempoEndpoint}`);
+  }
+
+  // Register built-in worker modules
+  moduleRegistry.register(new GitFilesystemWorkerModule());
+
   // Discover and register available modules
   await moduleRegistry.registerAvailableModules();
 
@@ -33,14 +51,12 @@ async function main() {
 
   try {
     // Get required environment variables
-    const deploymentName = process.env.DEPLOYMENT_NAME || process.env.HOSTNAME;
+    const deploymentName = process.env.DEPLOYMENT_NAME;
     const dispatcherUrl = process.env.DISPATCHER_URL;
     const workerToken = process.env.WORKER_TOKEN;
 
     if (!deploymentName) {
-      logger.error(
-        "❌ DEPLOYMENT_NAME or HOSTNAME environment variable is required"
-      );
+      logger.error("❌ DEPLOYMENT_NAME environment variable is required");
       process.exit(1);
     }
     if (!dispatcherUrl) {

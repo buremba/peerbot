@@ -9,6 +9,7 @@ import type {
 } from "../oauth/discovery";
 import type { McpCredentialStore } from "./credential-store";
 import type { McpInputStore } from "./input-store";
+import { mcpConfigStore } from "./mcp-config-store";
 
 const logger = createLogger("mcp-config-service");
 
@@ -100,13 +101,14 @@ export class McpConfigService {
 
   /**
    * Return MCP config tailored for a worker request.
-   * Returns ALL MCPs - worker will filter them based on status
+   * Returns ALL MCPs (global + per-agent) - worker will filter them based on status
    */
   async getWorkerConfig(options: {
     baseUrl: string;
     workerToken: string;
+    deploymentName?: string;
   }): Promise<WorkerMcpConfig> {
-    const { baseUrl, workerToken } = options;
+    const { baseUrl, workerToken, deploymentName } = options;
     const config = await this.loadConfig();
     const workerConfig: WorkerMcpConfig = { mcpServers: {} };
 
@@ -120,6 +122,7 @@ export class McpConfigService {
     const { userId } = tokenData;
     logger.info(`Building MCP config for user ${userId}`);
 
+    // Process global MCPs
     for (const [id, serverConfig] of Object.entries(config.rawServers)) {
       const cloned = cloneConfig(serverConfig);
       const httpServer = config.httpServers.get(id);
@@ -127,17 +130,62 @@ export class McpConfigService {
       if (httpServer) {
         // Configure HTTP MCP - send ALL MCPs, worker will filter based on status
         // Since Claude Code HTTP transport strips paths, use root URL with X-Mcp-Id header
-        logger.info(`🔧 Configuring MCP ${id}: baseUrl=${baseUrl}`);
+        logger.info(`🔧 Configuring global MCP ${id}: baseUrl=${baseUrl}`);
         cloned.url = baseUrl; // Use base URL only (e.g., http://gateway:8080)
         cloned.type = "sse"; // Mark as SSE server for SDK
         cloned.headers = mergeHeaders(cloned.headers, workerToken, id);
 
         logger.info(
-          `✅ Including MCP ${id} with URL=${cloned.url} and X-Mcp-Id header`
+          `✅ Including global MCP ${id} with URL=${cloned.url} and X-Mcp-Id header`
         );
       }
 
       workerConfig.mcpServers[id] = cloned;
+    }
+
+    // Merge per-agent MCPs if deploymentName provided
+    if (deploymentName) {
+      const agentMcpConfig = await mcpConfigStore.get(deploymentName);
+      if (agentMcpConfig?.mcpServers) {
+        for (const [id, serverConfig] of Object.entries(
+          agentMcpConfig.mcpServers
+        )) {
+          // Per-agent MCPs are additive - skip if global MCP with same ID exists
+          if (workerConfig.mcpServers[id]) {
+            logger.warn(
+              `Per-agent MCP ${id} skipped - global MCP with same ID exists`
+            );
+            continue;
+          }
+
+          const cloned = cloneConfig(serverConfig);
+
+          if (cloned.url) {
+            // HTTP/SSE MCP - proxy through gateway
+            logger.info(
+              `🔧 Configuring per-agent HTTP MCP ${id}: baseUrl=${baseUrl}`
+            );
+            // Store original URL for proxy forwarding (used by MCP proxy)
+            cloned.originalUrl = cloned.url;
+            cloned.url = baseUrl;
+            cloned.type = "sse";
+            cloned.headers = mergeHeaders(cloned.headers, workerToken, id);
+            cloned.perAgent = true; // Mark as per-agent for proxy routing
+            logger.info(`✅ Including per-agent HTTP MCP ${id}`);
+          } else if (cloned.command) {
+            // Stdio MCP - runs directly in worker container
+            logger.info(
+              `✅ Including per-agent stdio MCP ${id}: ${cloned.command}`
+            );
+          }
+
+          workerConfig.mcpServers[id] = cloned;
+        }
+
+        logger.info(
+          `Merged ${Object.keys(agentMcpConfig.mcpServers).length} per-agent MCPs for deployment ${deploymentName}`
+        );
+      }
     }
 
     logger.info(
@@ -149,6 +197,7 @@ export class McpConfigService {
           type: cfg.type,
           hasUrl: !!cfg.url,
           hasCommand: !!cfg.command,
+          perAgent: cfg.perAgent || false,
         })),
       }
     );
@@ -159,7 +208,7 @@ export class McpConfigService {
   /**
    * Get status of all MCPs for a specific space (auth/config state)
    */
-  async getMcpStatus(spaceId: string): Promise<McpStatus[]> {
+  async getMcpStatus(agentId: string): Promise<McpStatus[]> {
     const config = await this.loadConfig();
     const statuses: McpStatus[] = [];
 
@@ -180,7 +229,7 @@ export class McpConfigService {
       let authenticated = false;
       if (requiresAuth && this.credentialStore) {
         const credentials = await this.credentialStore.getCredentials(
-          spaceId,
+          agentId,
           id
         );
         authenticated = !!credentials?.accessToken;
@@ -189,7 +238,7 @@ export class McpConfigService {
       // Check configuration status
       let configured = false;
       if (requiresInput && this.inputStore) {
-        const inputs = await this.inputStore.getInputs(spaceId, id);
+        const inputs = await this.inputStore.getInputs(agentId, id);
         configured = !!inputs;
       }
 

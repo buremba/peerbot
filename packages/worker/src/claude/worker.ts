@@ -49,10 +49,16 @@ export class ClaudeWorker extends BaseWorker {
     try {
       logger.info(`Creating Claude SDK session ${this.config.sessionKey}`);
 
-      // Parse Claude options
-      const agentOptions: ClaudeExecutionOptions = JSON.parse(
-        this.config.agentOptions
-      );
+      // Parse Claude options (includes historyConfig from agent settings)
+      const rawOptions = JSON.parse(this.config.agentOptions) as Record<
+        string,
+        unknown
+      >;
+      const agentOptions = rawOptions as ClaudeExecutionOptions;
+      const historyConfig = rawOptions.historyConfig as
+        | { enabled?: boolean }
+        | undefined;
+      const historyEnabled = historyConfig?.enabled ?? false;
 
       // Check if Claude session exists in workspace
       const workspaceDir = this.getWorkingDirectory();
@@ -64,7 +70,7 @@ export class ClaudeWorker extends BaseWorker {
 
       logger.info(
         `Startup state: ${unansweredInteractions.length} unanswered interactions, ` +
-          `session exists: ${sessionExists}`
+          `session exists: ${sessionExists}, history: ${historyEnabled}`
       );
 
       // If there are unanswered interactions, add context note to system prompt
@@ -99,6 +105,8 @@ export class ClaudeWorker extends BaseWorker {
         {
           channelId: this.config.channelId,
           threadId: this.config.threadId || "",
+          platform: this.config.platform,
+          historyEnabled,
         },
         this.interactionClient
       );

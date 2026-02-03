@@ -12,7 +12,7 @@ export interface OAuthPlatformContext {
 
 interface ClaudeOAuthStateData {
   userId: string;
-  spaceId: string;
+  agentId: string;
   codeVerifier: string;
   context?: OAuthPlatformContext;
 }
@@ -45,11 +45,11 @@ export class ClaudeOAuthStateStore {
    */
   async create(
     userId: string,
-    spaceId: string,
+    agentId: string,
     codeVerifier: string,
     context?: OAuthPlatformContext
   ): Promise<string> {
-    return this.store.create({ userId, spaceId, codeVerifier, context });
+    return this.store.create({ userId, agentId, codeVerifier, context });
   }
 
   /**

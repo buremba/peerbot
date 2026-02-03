@@ -28,6 +28,7 @@ export class HttpWorkerTransport implements WorkerTransport {
   private jobId?: string;
   private moduleData?: Record<string, unknown>;
   private teamId: string;
+  private platform?: string;
   private accumulatedStreamContent: string[] = [];
   private lastStreamDelta: string = "";
 
@@ -40,6 +41,7 @@ export class HttpWorkerTransport implements WorkerTransport {
     this.originalMessageTs = config.originalMessageTs;
     this.botResponseTs = config.botResponseTs;
     this.teamId = config.teamId;
+    this.platform = config.platform;
     this.processedMessageIds = config.processedMessageIds || [];
   }
 
@@ -190,6 +192,57 @@ export class HttpWorkerTransport implements WorkerTransport {
     });
   }
 
+  /**
+   * Build base response payload with common fields
+   */
+  private buildExecResponse(
+    execId: string,
+    additionalFields: Partial<ResponseData>
+  ): ResponseData {
+    return {
+      messageId: this.originalMessageTs,
+      channelId: this.channelId,
+      threadId: this.threadId,
+      userId: this.userId,
+      teamId: this.teamId,
+      timestamp: Date.now(),
+      originalMessageId: this.originalMessageTs,
+      execId,
+      ...additionalFields,
+    };
+  }
+
+  /**
+   * Send exec output (stdout/stderr) to gateway
+   */
+  async sendExecOutput(
+    execId: string,
+    stream: "stdout" | "stderr",
+    content: string
+  ): Promise<void> {
+    await this.sendResponse(
+      this.buildExecResponse(execId, { delta: content, execStream: stream })
+    );
+  }
+
+  /**
+   * Send exec completion to gateway
+   */
+  async sendExecComplete(execId: string, exitCode: number): Promise<void> {
+    await this.sendResponse(
+      this.buildExecResponse(execId, { execExitCode: exitCode })
+    );
+  }
+
+  /**
+   * Send exec error to gateway
+   */
+  async sendExecError(execId: string, errorMessage: string): Promise<void> {
+    await this.sendResponse(
+      this.buildExecResponse(execId, { error: errorMessage })
+    );
+  }
+
   private async sendResponse(data: ResponseData): Promise<void> {
     const maxRetries = 3;
     let lastError: Error | null = null;
@@ -197,7 +250,13 @@ export class HttpWorkerTransport implements WorkerTransport {
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
         const responseUrl = `${this.gatewayUrl}/worker/response`;
-        const payload = this.jobId ? { jobId: this.jobId, ...data } : data;
+        const basePayload =
+          this.platform && !data.platform
+            ? { ...data, platform: this.platform }
+            : data;
+        const payload = this.jobId
+          ? { jobId: this.jobId, ...basePayload }
+          : basePayload;
 
         // Log the payload for debugging
         logger.info(

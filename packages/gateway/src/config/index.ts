@@ -161,12 +161,11 @@ export function buildGatewayConfig(): GatewayConfig {
   const connectionString = getRequiredEnv("QUEUE_URL");
 
   // Anthropic API key (now optional - can use per-user OAuth instead)
-  const anthropicApiKey =
-    process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_CODE_OAUTH_TOKEN || "";
+  const anthropicApiKey = process.env.ANTHROPIC_API_KEY || "";
 
   if (!anthropicApiKey) {
     logger.warn(
-      "No system ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN configured. " +
+      "No system ANTHROPIC_API_KEY configured. " +
         "Users will need to authenticate via Claude OAuth in Slack home tab."
     );
   }
@@ -177,7 +176,7 @@ export function buildGatewayConfig(): GatewayConfig {
     "PUBLIC_GATEWAY_URL",
     DEFAULTS.PUBLIC_GATEWAY_URL
   );
-  const callbackUrl = `${publicGatewayUrl}/mcp/oauth/callback`;
+  const callbackUrl = `${publicGatewayUrl}/api/v1/auth/mcp/callback`;
 
   // Build configuration
   const config: GatewayConfig = {

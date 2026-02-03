@@ -2,14 +2,16 @@
 
 import type { InstructionContext, WorkerTokenData } from "@peerbot/core";
 import { createLogger, verifyWorkerToken } from "@peerbot/core";
-import type { Request, Response } from "express";
+import type { Context } from "hono";
+import { Hono } from "hono";
+import { stream } from "hono/streaming";
 import type { McpConfigService } from "../auth/mcp/config-service";
 import type { IMessageQueue } from "../infrastructure/queue";
 import type { InteractionService } from "../interactions";
 import { generateDeploymentName } from "../orchestration/base-deployment-manager";
 import type { InstructionService } from "../services/instruction-service";
 import type { ISessionManager } from "../session";
-import { WorkerConnectionManager } from "./connection-manager";
+import { type SSEWriter, WorkerConnectionManager } from "./connection-manager";
 import { WorkerJobRouter } from "./job-router";
 
 const logger = createLogger("worker-gateway");
@@ -20,6 +22,7 @@ const logger = createLogger("worker-gateway");
  * Uses encrypted tokens for authentication and routing
  */
 export class WorkerGateway {
+  private app: Hono;
   private connectionManager: WorkerConnectionManager;
   private jobRouter: WorkerJobRouter;
   private queue: IMessageQueue;
@@ -54,25 +57,33 @@ export class WorkerGateway {
         logger.error("Error handling interaction response:", error);
       });
     });
+
+    // Setup Hono app
+    this.app = new Hono();
+    this.setupRoutes();
   }
 
   /**
-   * Setup routes on Express app
+   * Get the Hono app
    */
-  setupRoutes(app: any) {
+  getApp(): Hono {
+    return this.app;
+  }
+
+  /**
+   * Setup routes on Hono app
+   */
+  private setupRoutes() {
     // SSE endpoint for workers to receive jobs
-    app.get("/worker/stream", (req: Request, res: Response) =>
-      this.handleStreamConnection(req, res)
-    );
+    // Routes are mounted at /worker, so paths here should be relative
+    this.app.get("/stream", (c) => this.handleStreamConnection(c));
 
     // HTTP POST endpoint for workers to send responses
-    app.post("/worker/response", (req: Request, res: Response) =>
-      this.handleWorkerResponse(req, res)
-    );
+    this.app.post("/response", (c) => this.handleWorkerResponse(c));
 
     // Unified session context endpoint (includes MCP + instructions)
-    app.get("/worker/session-context", (req: Request, res: Response) =>
-      this.handleSessionContextRequest(req, res)
+    this.app.get("/session-context", (c) =>
+      this.handleSessionContextRequest(c)
     );
 
     logger.info("Worker gateway routes registered");
@@ -81,56 +92,82 @@ export class WorkerGateway {
   /**
    * Handle SSE connection from worker
    */
-  private async handleStreamConnection(req: Request, res: Response) {
-    const auth = this.authenticateWorker(req, res);
+  private async handleStreamConnection(c: Context): Promise<Response> {
+    const auth = this.authenticateWorker(c);
     if (!auth) {
-      return;
+      return c.json({ error: "Invalid token" }, 401);
     }
 
     const { deploymentName, userId, threadId } = auth.tokenData;
 
-    // Setup SSE
-    res.setHeader("Content-Type", "text/event-stream");
-    res.setHeader("Cache-Control", "no-cache");
-    res.setHeader("Connection", "keep-alive");
-    res.setHeader("X-Accel-Buffering", "no"); // Disable nginx/proxy buffering
-    res.flushHeaders();
+    // Create an SSE stream
+    return stream(c, async (streamWriter) => {
+      // Create an SSE writer adapter
+      const sseWriter: SSEWriter = {
+        write: (data: string): boolean => {
+          try {
+            streamWriter.write(data);
+            return true;
+          } catch {
+            return false;
+          }
+        },
+        end: () => {
+          try {
+            streamWriter.close();
+          } catch {
+            // Already closed
+          }
+        },
+        onClose: (callback: () => void) => {
+          // Handle abort signal
+          c.req.raw.signal.addEventListener("abort", callback);
+        },
+      };
 
-    // Disable socket buffering for immediate delivery
-    const socket = (res as any).socket || (res as any).connection;
-    if (socket) {
-      socket.setNoDelay(true); // Disable Nagle's algorithm
-    }
+      // Set SSE headers
+      c.header("Content-Type", "text/event-stream");
+      c.header("Cache-Control", "no-cache");
+      c.header("Connection", "keep-alive");
+      c.header("X-Accel-Buffering", "no");
 
-    // Register connection with connection manager
-    this.connectionManager.addConnection(deploymentName, userId, threadId, res);
+      // Register connection with connection manager
+      this.connectionManager.addConnection(
+        deploymentName,
+        userId,
+        threadId,
+        sseWriter
+      );
 
-    // Register BullMQ worker for this deployment (idempotent - safe to call multiple times)
-    await this.jobRouter.registerWorker(deploymentName);
+      // Register BullMQ worker for this deployment
+      await this.jobRouter.registerWorker(deploymentName);
+      await this.jobRouter.resumeWorker(deploymentName);
 
-    // Resume the BullMQ worker now that SSE connection is established
-    await this.jobRouter.resumeWorker(deploymentName);
+      // Send any pending interaction responses
+      await this.sendPendingInteractionResponses(threadId, deploymentName);
 
-    // Send any pending interaction responses (for reconnection recovery)
-    await this.sendPendingInteractionResponses(threadId, deploymentName);
-
-    // Handle client disconnect
-    req.on("close", () => {
-      // Pause the BullMQ worker when SSE connection is lost
-      this.jobRouter.pauseWorker(deploymentName).catch((err) => {
-        logger.error(`Failed to pause worker ${deploymentName}:`, err);
+      // Handle client disconnect
+      sseWriter.onClose(() => {
+        this.jobRouter.pauseWorker(deploymentName).catch((err) => {
+          logger.error(`Failed to pause worker ${deploymentName}:`, err);
+        });
+        this.connectionManager.removeConnection(deploymentName);
       });
-      this.connectionManager.removeConnection(deploymentName);
+
+      // Keep the connection open until client disconnects
+      await new Promise<void>((resolve) => {
+        c.req.raw.signal.addEventListener("abort", () => resolve());
+      });
     });
   }
 
   /**
    * Handle HTTP response from worker
    */
-  private async handleWorkerResponse(req: Request, res: Response) {
-    const auth = this.authenticateWorker(req, res);
+  private async handleWorkerResponse(c: Context): Promise<Response> {
+    const auth = this.authenticateWorker(c);
     if (!auth) {
-      return;
+      return c.json({ error: "Invalid token" }, 401);
     }
 
     const { deploymentName } = auth.tokenData;
@@ -139,7 +176,8 @@ export class WorkerGateway {
     this.connectionManager.touchConnection(deploymentName);
 
     try {
-      const { jobId, ...responseData } = req.body;
+      const body = await c.req.json();
+      const { jobId, ...responseData } = body;
 
       // Acknowledge job completion if jobId provided
       if (jobId) {
@@ -156,42 +194,45 @@ export class WorkerGateway {
         );
       }
 
-      // Send response to thread_response queue (teamId is now in payload from worker)
+      // Send response to thread_response queue
       await this.queue.send("thread_response", responseData);
 
-      res.json({ success: true });
+      return c.json({ success: true });
     } catch (error) {
       logger.error(`Error handling worker response: ${error}`);
-      res.status(500).json({ error: "Failed to process response" });
+      return c.json({ error: "Failed to process response" }, 500);
     }
   }
 
   /**
    * Unified session context endpoint
-   * Returns MCP config, platform instructions, and MCP status data
-   * Worker builds final instructions from this data
    */
-  private async handleSessionContextRequest(req: Request, res: Response) {
+  private async handleSessionContextRequest(c: Context): Promise<Response> {
     if (!this.mcpConfigService || !this.instructionService) {
-      res.status(503).json({ error: "session_context_unavailable" });
-      return;
+      return c.json({ error: "session_context_unavailable" }, 503);
     }
 
-    const auth = this.authenticateWorker(req, res);
+    const auth = this.authenticateWorker(c);
     if (!auth) {
-      return;
+      return c.json({ error: "Invalid token" }, 401);
     }
 
     try {
-      const { userId, platform, sessionKey, threadId, spaceId } =
-        auth.tokenData;
-      const baseUrl = this.getRequestBaseUrl(req);
+      const {
+        userId,
+        platform,
+        sessionKey,
+        threadId,
+        agentId,
+        deploymentName,
+      } = auth.tokenData;
+      const baseUrl = this.getRequestBaseUrl(c);
 
       // Build instruction context
       const instructionContext: InstructionContext = {
         userId,
-        spaceId: spaceId || threadId || "", // Fall back to threadId for backwards compatibility
-        sessionKey: sessionKey || "", // Use empty string if sessionKey is undefined
+        agentId: agentId || "",
+        sessionKey: sessionKey || "",
         workingDirectory: "/workspace",
         availableProjects: [],
       };
@@ -202,6 +243,7 @@ export class WorkerGateway {
           this.mcpConfigService.getWorkerConfig({
             baseUrl,
             workerToken: auth.token,
+            deploymentName,
           }),
           this.instructionService.getSessionContext(
             platform || "unknown",
@@ -214,7 +256,7 @@ export class WorkerGateway {
         `Session context for ${userId}: ${Object.keys(mcpConfig.mcpServers || {}).length} MCPs, ${contextData.platformInstructions.length} chars platform instructions, ${contextData.networkInstructions.length} chars network instructions, ${contextData.mcpStatus.length} MCP status entries, ${unansweredInteractions.length} unanswered interactions`
       );
 
-      res.json({
+      return c.json({
         mcpConfig,
         platformInstructions: contextData.platformInstructions,
         networkInstructions: contextData.networkInstructions,
@@ -223,20 +265,16 @@ export class WorkerGateway {
       });
     } catch (error) {
       logger.error("Failed to generate session context", { error });
-      res.status(500).json({ error: "session_context_error" });
+      return c.json({ error: "session_context_error" }, 500);
     }
   }
 
   private authenticateWorker(
-    req: Request,
-    res: Response
+    c: Context
   ): { tokenData: WorkerTokenData; token: string } | null {
-    const authHeader = req.headers.authorization;
+    const authHeader = c.req.header("authorization");
 
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      res
-        .status(401)
-        .json({ error: "Missing or invalid authorization header" });
       return null;
     }
 
@@ -245,20 +283,19 @@ export class WorkerGateway {
 
     if (!tokenData) {
       logger.warn("Invalid token");
-      res.status(401).json({ error: "Invalid token" });
       return null;
     }
 
     return { tokenData, token };
   }
 
-  private getRequestBaseUrl(req: Request): string {
-    const forwardedProto = req.headers["x-forwarded-proto"];
+  private getRequestBaseUrl(c: Context): string {
+    const forwardedProto = c.req.header("x-forwarded-proto");
     const protocolCandidate = Array.isArray(forwardedProto)
       ? forwardedProto[0]
       : forwardedProto?.split(",")[0];
-    const protocol = (protocolCandidate || req.protocol || "http").trim();
-    const host = req.get("host");
+    const protocol = (protocolCandidate || "http").trim();
+    const host = c.req.header("host");
     if (host) {
       return `${protocol}://${host}`;
     }
@@ -274,11 +311,8 @@ export class WorkerGateway {
 
   /**
    * Handle interaction response and send to worker via SSE
-   * If worker is not connected, store response in Redis for later retrieval
    */
   private async handleInteractionResponse(interaction: any): Promise<void> {
-    // Find the worker connection for this thread
-    // Use the same deployment name generation as orchestrator
     const deploymentName = generateDeploymentName(
       interaction.userId,
       interaction.threadId
@@ -293,9 +327,8 @@ export class WorkerGateway {
       return;
     }
 
-    // Send interaction response via SSE
     const success = this.connectionManager.sendSSE(
-      connection.res,
+      connection.writer,
       "interaction",
       {
         interactionId: interaction.id,
@@ -328,7 +361,6 @@ export class WorkerGateway {
       response: interaction.response,
     };
 
-    // Store with 1 hour TTL
     const redis = (this.interactionService as any).redis;
     await redis.set(key, JSON.stringify(response), "EX", 3600);
 
@@ -371,9 +403,8 @@ export class WorkerGateway {
       try {
         const responseData = JSON.parse(data);
 
-        // Send via SSE
         const success = this.connectionManager.sendSSE(
-          connection.res,
+          connection.writer,
           "interaction",
           responseData
         );
@@ -382,7 +413,6 @@ export class WorkerGateway {
           logger.info(
             `✅ Sent pending interaction response ${responseData.interactionId}`
           );
-          // Delete after successful delivery
           await redis.del(key);
         } else {
           logger.warn(

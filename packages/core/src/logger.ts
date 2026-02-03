@@ -1,6 +1,6 @@
-// Detect if we're in an environment where Winston Console transport doesn't work
-// Must be declared before any imports to avoid circular dependency issues
-const USE_SIMPLE_LOGGER = process.env.USE_SIMPLE_LOGGER === "true";
+// Use simple console.log-based logger by default (unbuffered, 12-factor compliant)
+// Set USE_WINSTON_LOGGER=true only if you need Winston features (file rotation, multiple transports)
+const USE_WINSTON_LOGGER = process.env.USE_WINSTON_LOGGER === "true";
 // Use JSON format for structured logging (better for Loki parsing in production)
 const USE_JSON_FORMAT = process.env.LOG_FORMAT === "json";
 
@@ -153,11 +153,12 @@ class SentryTransport extends winston.transports.Stream {
  * Creates a logger instance for a specific service
  * Provides consistent logging format across all packages with level and timestamp
  * @param serviceName The name of the service using the logger
- * @returns A winston logger instance (or simple console logger if USE_SIMPLE_LOGGER=true)
+ * @returns A console logger by default, or Winston logger if USE_WINSTON_LOGGER=true
  */
 export function createLogger(serviceName: string): Logger {
-  // Use simple console logger if Winston doesn't work in this environment
-  if (USE_SIMPLE_LOGGER) {
+  // Use simple console.log logger by default (unbuffered, 12-factor compliant)
+  // Set USE_WINSTON_LOGGER=true for Winston features (file rotation, multiple transports)
+  if (!USE_WINSTON_LOGGER) {
     return createConsoleLogger(serviceName);
   }
 

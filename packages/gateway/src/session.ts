@@ -1,4 +1,10 @@
-import type { SessionContext } from "@peerbot/core";
+import type {
+  AgentMcpConfig,
+  GitConfig,
+  NetworkConfig,
+  NixConfig,
+  SessionContext,
+} from "@peerbot/core";
 
 /**
  * Platform-agnostic session types and utilities
@@ -14,8 +20,7 @@ import type { SessionContext } from "@peerbot/core";
  * Tracks the state of a conversation thread across any platform
  */
 export interface ThreadSession {
-  sessionKey: string;
-  threadId?: string;
+  threadId: string; // Primary identifier (agentId for API platform)
   channelId: string;
   userId: string;
   threadCreator?: string; // Track the original thread creator
@@ -28,6 +33,36 @@ export interface ThreadSession {
   // API session parameters
   workingDirectory?: string;
   provider?: string;
+  /** Model to use for the agent (e.g., claude-sonnet-4-20250514) */
+  model?: string;
+  /** Per-agent network configuration for sandbox isolation */
+  networkConfig?: NetworkConfig;
+  /** Git repository configuration for workspace initialization */
+  gitConfig?: GitConfig;
+  /** Per-agent MCP configuration (additive to global MCPs) */
+  mcpConfig?: AgentMcpConfig;
+  /** Nix environment configuration for agent workspace */
+  nixConfig?: NixConfig;
+}
+
+/**
+ * Compute session key for Redis storage
+ * For API platform: just threadId (which equals agentId)
+ * For Slack/WhatsApp: channelId:threadId
+ */
+export function computeSessionKey(session: {
+  channelId: string;
+  threadId: string;
+}): string {
+  // For API platform, channelId starts with "api-" and we just use threadId
+  if (
+    session.channelId.startsWith("api-") ||
+    session.channelId === session.threadId
+  ) {
+    return session.threadId;
+  }
+  // For other platforms, use channelId:threadId
+  return `${session.channelId}:${session.threadId}`;
 }
 
 /**

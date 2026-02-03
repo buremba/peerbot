@@ -1,9 +1,22 @@
 #!/usr/bin/env bun
 
-import { createLogger } from "@peerbot/core";
+import {
+  type AgentMcpConfig,
+  createLogger,
+  type GitConfig,
+  type NetworkConfig,
+  type NixConfig,
+} from "@peerbot/core";
 import type { IMessageQueue } from "./types";
 
 const logger = createLogger("queue-producer");
+
+/**
+ * Job type for queue messages
+ * - message: Standard agent message execution
+ * - exec: Direct command execution in sandbox
+ */
+export type JobType = "message" | "exec";
 
 /**
  * Universal message payload for all queue stages
@@ -16,7 +29,7 @@ export interface MessagePayload {
   messageId: string; // Individual message ID
   channelId: string; // Platform channel ID
   teamId: string; // Team/workspace ID (required for all platforms)
-  spaceId: string; // Space ID for multi-tenant isolation (user-{hash} or group-{hash})
+  agentId: string; // Agent/session ID for isolation (universal identifier)
 
   // Bot & platform info (passed through to worker)
   botId: string; // Bot identifier
@@ -30,6 +43,28 @@ export interface MessagePayload {
 
   // Agent configuration (used by worker)
   agentOptions: Record<string, any>;
+
+  // Per-agent network configuration for sandbox isolation
+  networkConfig?: NetworkConfig;
+
+  // Git repository configuration for workspace initialization
+  gitConfig?: GitConfig;
+
+  // Per-agent MCP configuration (additive to global MCPs)
+  mcpConfig?: AgentMcpConfig;
+
+  // Nix environment configuration for agent workspace
+  nixConfig?: NixConfig;
+
+  // Job type (default: "message")
+  jobType?: JobType;
+
+  // Exec-specific fields (only used when jobType === "exec")
+  execId?: string; // Unique ID for exec job (for response routing)
+  execCommand?: string; // Command to execute
+  execCwd?: string; // Working directory for command
+  execEnv?: Record<string, string>; // Additional environment variables
+  execTimeout?: number; // Timeout in milliseconds
 }
 
 /**

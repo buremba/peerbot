@@ -5,7 +5,10 @@ import {
   generateWorkerToken,
   OrchestratorError,
 } from "@peerbot/core";
+import { mcpConfigStore } from "../auth/mcp/mcp-config-store";
 import type { MessagePayload } from "../infrastructure/queue/queue-producer";
+import { networkConfigStore } from "../proxy/network-config-store";
+import { getScheduledWakeupService } from "./scheduled-wakeup";
 
 // Re-export MessagePayload for use by deployment implementations
 export type { MessagePayload };
@@ -32,7 +35,7 @@ export function generateDeploymentName(
 // Type for module environment variable builder function
 export type ModuleEnvVarsBuilder = (
   userId: string,
-  spaceId: string,
+  agentId: string,
   envVars: Record<string, string>
 ) => Promise<Record<string, string>>;
 
@@ -75,7 +78,6 @@ export interface OrchestratorConfig {
 
 export interface DeploymentInfo {
   deploymentName: string;
-  deploymentId: string;
   lastActivity: Date;
   minutesIdle: number;
   daysSinceActivity: number;
@@ -116,7 +118,7 @@ export abstract class BaseDeploymentManager {
     deploymentName: string,
     replicas: number
   ): Promise<void>;
-  abstract deleteDeployment(deploymentId: string): Promise<void>;
+  abstract deleteDeployment(deploymentName: string): Promise<void>;
   abstract updateDeploymentActivity(deploymentName: string): Promise<void>;
 
   /**
@@ -223,19 +225,79 @@ export abstract class BaseDeploymentManager {
     // Generate worker authentication token with platform info
     // Check both top-level teamId (WhatsApp) and platformMetadata.teamId (Slack)
     const teamId = messageData.teamId || platformMetadata?.teamId;
-    const spaceId = messageData.spaceId || threadId; // Fall back to threadId for backwards compatibility
+    const agentId = messageData.agentId!;
     // Extract traceId for end-to-end observability
     const traceId = extractTraceId(messageData);
     const workerToken = generateWorkerToken(userId, threadId, deploymentName, {
       channelId,
       teamId,
       platform: messageData.platform,
-      spaceId,
+      agentId,
       traceId,
     });
 
     // Get the dispatcher host for proxy configuration
     const dispatcherHost = this.getDispatcherHost();
+
+    // Store per-deployment network config for proxy lookup
+    // The HTTP proxy extracts deploymentName from Proxy-Authorization header
+    // and looks up the config from networkConfigStore
+    if (messageData.networkConfig) {
+      await networkConfigStore.set(deploymentName, messageData.networkConfig);
+      logger.debug(
+        `Stored network config for ${deploymentName}: allowed=${messageData.networkConfig.allowedDomains?.length ?? 0}, denied=${messageData.networkConfig.deniedDomains?.length ?? 0}`
+      );
+    }
+
+    // Store per-deployment MCP config for session-context lookup
+    if (messageData.mcpConfig) {
+      await mcpConfigStore.set(deploymentName, messageData.mcpConfig);
+      logger.debug(
+        `Stored MCP config for ${deploymentName}: ${Object.keys(messageData.mcpConfig.mcpServers).length} servers`
+      );
+    }
+
+    // Extract git config for workspace initialization
+    // These are passed to worker and used by GitFilesystemModule.buildEnvVars()
+    const gitEnvVars: Record<string, string> = {};
+    if (messageData.gitConfig) {
+      const { repoUrl, branch, sparse } = messageData.gitConfig;
+      if (repoUrl) {
+        gitEnvVars.GIT_REPO_URL = repoUrl;
+      }
+      if (branch) {
+        gitEnvVars.GIT_BRANCH = branch;
+      }
+      if (sparse && sparse.length > 0) {
+        // Comma-separated list of sparse checkout paths
+        gitEnvVars.GIT_SPARSE_PATHS = sparse.join(",");
+      }
+      logger.debug(
+        `Git config for ${deploymentName}: repo=${repoUrl}, branch=${branch || "default"}, sparse=${sparse?.length || 0}`
+      );
+    }
+
+    // Extract nix config for environment setup
+    // These are passed to worker entrypoint to activate Nix environment
+    const nixEnvVars: Record<string, string> = {};
+    if (messageData.nixConfig) {
+      const { flakeUrl, packages } = messageData.nixConfig;
+      if (flakeUrl) {
+        nixEnvVars.NIX_FLAKE_URL = flakeUrl;
+      }
+      if (packages && packages.length > 0) {
+        // Comma-separated list of Nix packages
+        nixEnvVars.NIX_PACKAGES = packages.join(",");
+      }
+      logger.debug(
+        `Nix config for ${deploymentName}: flakeUrl=${flakeUrl || "none"}, packages=${packages?.length || 0}`
+      );
+    }
+
+    // Build proxy URL with deployment identification via Basic auth
+    // Format: http://<deploymentName>:<workerToken>@<host>:8118
+    // The proxy extracts deploymentName from username and looks up per-deployment config
+    const proxyUrl = `http://${deploymentName}:${workerToken}@${dispatcherHost}:8118`;
 
     let envVars: { [key: string]: string } = {
       USER_ID: userId,
@@ -247,7 +309,6 @@ export abstract class BaseDeploymentManager {
       LOG_LEVEL: "info",
       WORKSPACE_DIR: "/workspace",
       THREAD_ID: threadId,
-      SPACE_ID: spaceId,
       // Worker authentication and communication
       WORKER_TOKEN: workerToken,
       DISPATCHER_URL: this.getDispatcherUrl(),
@@ -257,9 +318,10 @@ export abstract class BaseDeploymentManager {
       DEBUG: "1",
       // HTTP proxy configuration for network isolation
       // Workers must route all external traffic through the gateway proxy
-      HTTP_PROXY: `http://${dispatcherHost}:8118`,
-      HTTPS_PROXY: `http://${dispatcherHost}:8118`,
-      // Don't proxy internal services
+      // Proxy-Authorization Basic auth identifies the deployment for per-agent network rules
+      HTTP_PROXY: proxyUrl,
+      HTTPS_PROXY: proxyUrl,
+      // Don't proxy internal services (base list, extended below)
       NO_PROXY: `${dispatcherHost},redis,localhost,127.0.0.1`,
     };
 
@@ -273,11 +335,33 @@ export abstract class BaseDeploymentManager {
       envVars.TRACE_ID = traceId;
     }
 
+    // Add Tempo endpoint for distributed tracing
+    const tempoEndpoint = process.env.TEMPO_ENDPOINT;
+    if (tempoEndpoint) {
+      envVars.TEMPO_ENDPOINT = tempoEndpoint;
+      // Extract tempo hostname and add to NO_PROXY so workers can send traces directly
+      try {
+        const tempoUrl = new URL(tempoEndpoint);
+        envVars.NO_PROXY = `${envVars.NO_PROXY},${tempoUrl.hostname}`;
+      } catch {
+        // If URL parsing fails, just add peerbot-tempo as fallback
+        envVars.NO_PROXY = `${envVars.NO_PROXY},peerbot-tempo`;
+      }
+    }
+
+    // Merge git environment variables before module processing
+    // This allows GitFilesystemModule.buildEnvVars() to access GIT_REPO_URL etc.
+    Object.assign(envVars, gitEnvVars);
+
+    // Merge nix environment variables
+    // Worker entrypoint reads NIX_FLAKE_URL and NIX_PACKAGES to activate Nix environment
+    Object.assign(envVars, nixEnvVars);
+
     // Include secrets from process.env for Docker deployments
     if (includeSecrets && this.moduleEnvVarsBuilder) {
       // Add module-specific environment variables
       try {
-        envVars = await this.moduleEnvVarsBuilder(userId, spaceId, envVars);
+        envVars = await this.moduleEnvVarsBuilder(userId, agentId, envVars);
       } catch (error) {
         logger.warn("Failed to build module environment variables:", error);
       }
@@ -309,14 +393,24 @@ export abstract class BaseDeploymentManager {
   /**
    * Delete a worker deployment and associated resources
    */
-  async deleteWorkerDeployment(deploymentId: string): Promise<void> {
+  async deleteWorkerDeployment(deploymentName: string): Promise<void> {
     try {
-      await this.deleteDeployment(deploymentId);
+      // Clean up per-deployment configs from stores
+      await networkConfigStore.delete(deploymentName);
+      await mcpConfigStore.delete(deploymentName);
+
+      // Clean up any scheduled wakeups for this deployment
+      const scheduledWakeupService = getScheduledWakeupService();
+      if (scheduledWakeupService) {
+        await scheduledWakeupService.cleanupForDeployment(deploymentName);
+      }
+
+      await this.deleteDeployment(deploymentName);
     } catch (error) {
       throw new OrchestratorError(
         ErrorCode.DEPLOYMENT_DELETE_FAILED,
-        `Failed to delete deployment for ${deploymentId}: ${error instanceof Error ? error.message : String(error)}`,
-        { deploymentId, error },
+        `Failed to delete deployment for ${deploymentName}: ${error instanceof Error ? error.message : String(error)}`,
+        { deploymentName, error },
         true
       );
     }
@@ -348,13 +442,12 @@ export abstract class BaseDeploymentManager {
 
       // Process each deployment based on its state
       for (const analysis of sortedDeployments) {
-        const { deploymentName, deploymentId, replicas, isIdle, isVeryOld } =
-          analysis;
+        const { deploymentName, replicas, isIdle, isVeryOld } = analysis;
 
         if (isVeryOld) {
           // Delete very old deployments (>= 7 days)
           try {
-            await this.deleteWorkerDeployment(deploymentId);
+            await this.deleteWorkerDeployment(deploymentName);
             processedCount++;
           } catch (error) {
             logger.error(
@@ -384,9 +477,9 @@ export abstract class BaseDeploymentManager {
         const excessCount = remainingDeployments.length - maxDeployments;
 
         const deploymentsToDelete = remainingDeployments.slice(0, excessCount);
-        for (const { deploymentName, deploymentId } of deploymentsToDelete) {
+        for (const { deploymentName } of deploymentsToDelete) {
           try {
-            await this.deleteWorkerDeployment(deploymentId);
+            await this.deleteWorkerDeployment(deploymentName);
             processedCount++;
           } catch (error) {
             logger.error(

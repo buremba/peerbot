@@ -17,7 +17,6 @@ import {
   platformFactoryRegistry,
 } from "../platform/platform-factory";
 import type { ResponseRenderer } from "../platform/response-renderer";
-import { resolveSpace } from "../spaces";
 import { WhatsAppAuthAdapter } from "./auth-adapter";
 import type { WhatsAppConfig } from "./config";
 import { BaileysClient } from "./connection/baileys-client";
@@ -119,22 +118,31 @@ export class WhatsAppPlatform implements PlatformAdapter {
     this.interactionRenderer.registerButtonHandler();
 
     // Create and register auth adapter
-    const stateStore = services.getClaudeOAuthStateStore();
     const publicGatewayUrl = services.getPublicGatewayUrl();
-    if (stateStore) {
-      this.authAdapter = new WhatsAppAuthAdapter(
-        this.client,
-        stateStore,
-        publicGatewayUrl
+    this.authAdapter = new WhatsAppAuthAdapter(this.client, publicGatewayUrl);
+    platformAuthRegistry.register("whatsapp", this.authAdapter);
+
+    // Connect auth adapter to message handler for auth response handling
+    if (this.messageHandler) {
+      this.messageHandler.setAuthAdapter(this.authAdapter);
+    }
+
+    logger.info("WhatsApp auth adapter registered");
+
+    // Wire up channel binding service for agent routing
+    const channelBindingService = services.getChannelBindingService();
+    if (channelBindingService && this.messageHandler) {
+      this.messageHandler.setChannelBindingService(channelBindingService);
+      logger.info(
+        "✅ Channel binding service wired to WhatsApp message handler"
       );
-      platformAuthRegistry.register("whatsapp", this.authAdapter);
+    }
 
-      // Connect auth adapter to message handler for auth response handling
-      if (this.messageHandler) {
-        this.messageHandler.setAuthAdapter(this.authAdapter);
-      }
-
-      logger.info("WhatsApp auth adapter registered");
+    // Wire up agent settings store for applying agent configuration
+    const agentSettingsStore = services.getAgentSettingsStore();
+    if (agentSettingsStore && this.messageHandler) {
+      this.messageHandler.setAgentSettingsStore(agentSettingsStore);
+      logger.info("✅ Agent settings store wired to WhatsApp message handler");
     }
 
     logger.info("WhatsApp platform initialized");
@@ -269,22 +277,22 @@ export class WhatsAppPlatform implements PlatformAdapter {
   }
 
   /**
-   * Send a message for testing/automation.
+   * Send a message via WhatsApp for testing/automation.
    * If sending to self (self-chat mode), queues message directly to worker.
    */
   async sendMessage(
-    _token: string, // Not used for WhatsApp
-    channel: string,
+    _token: string,
     message: string,
-    options?: {
-      threadId?: string;
+    options: {
+      agentId: string;
+      channelId: string;
+      threadId: string;
+      teamId: string;
       files?: Array<{ buffer: Buffer; filename: string }>;
     }
   ): Promise<{
-    channel: string;
     messageId: string;
-    threadId: string;
-    threadUrl?: string;
+    eventsUrl?: string;
     queued?: boolean;
   }> {
     if (!this.client?.isConnected()) {
@@ -296,12 +304,24 @@ export class WhatsAppPlatform implements PlatformAdapter {
 
     // Check if this is a self-chat message (sending to bot's own number)
     const selfE164 = this.client.getSelfE164();
-    const normalizedChannel = channel.startsWith("+") ? channel : `+${channel}`;
+
+    // Handle special "self" channel value - resolve to bot's actual number
+    const channel = options.channelId;
+    const resolvedChannel =
+      channel.toLowerCase() === "self" && selfE164 ? selfE164 : channel;
+    // Strip WhatsApp JID suffix (@s.whatsapp.net) if present for normalization
+    const channelWithoutJid = resolvedChannel.replace(
+      /@s\.whatsapp\.net$/i,
+      ""
+    );
+    const normalizedChannel = channelWithoutJid.startsWith("+")
+      ? channelWithoutJid
+      : `+${channelWithoutJid}`;
     const isSelfMessage =
       this.config.whatsapp.selfChatEnabled && normalizedChannel === selfE164;
 
     // Send the actual WhatsApp message
-    const result = await this.client.sendMessage(channel, {
+    const result = await this.client.sendMessage(resolvedChannel, {
       text: cleanMessage,
     });
 
@@ -309,31 +329,32 @@ export class WhatsAppPlatform implements PlatformAdapter {
     if (isSelfMessage) {
       const queueProducer = this.services.getQueueProducer();
       const messageId = result.messageId;
-      const threadId = options?.threadId || messageId;
 
-      // Use TEST_USER_ID if available, otherwise use bot's number
-      const testUserId = process.env.TEST_USER_ID || selfE164 || channel;
+      // For self-chat, use the phone number as userId for proper space resolution
+      // This ensures credentials are looked up correctly
+      const phoneUserId = selfE164 || normalizedChannel;
 
-      // Resolve spaceId for multi-tenant isolation (DM context for self-chat)
-      const { spaceId } = resolveSpace({
+      // Import resolveSpace for proper agentId
+      const { resolveSpace } = await import("../spaces");
+      const space = resolveSpace({
         platform: "whatsapp",
-        userId: testUserId,
-        channelId: channel,
+        userId: phoneUserId,
+        channelId: phoneUserId,
         isGroup: false,
       });
 
       const payload = {
-        userId: testUserId,
-        threadId,
+        userId: phoneUserId,
+        threadId: space.agentId, // Use resolved space as thread identifier
         messageId,
-        channelId: channel,
+        channelId: resolvedChannel,
         teamId: "whatsapp",
-        spaceId,
+        agentId: space.agentId, // agentId is the isolation boundary
         botId: selfE164 || "whatsapp-bot",
         platform: "whatsapp",
         messageText: cleanMessage,
         platformMetadata: {
-          remoteJid: `${channel.replace("+", "")}@s.whatsapp.net`,
+          remoteJid: `${resolvedChannel.replace("+", "")}@s.whatsapp.net`,
           isSelfChat: true,
           isFromMe: false, // Pretend it's from user for processing
         },
@@ -344,20 +365,53 @@ export class WhatsAppPlatform implements PlatformAdapter {
       };
 
       await queueProducer.enqueueMessage(payload);
-      logger.info(`Queued self-chat message ${messageId} to worker queue`);
+      logger.info(
+        `Queued self-chat message ${messageId} to worker queue (space: ${space.agentId})`
+      );
 
       return {
-        channel,
         messageId,
-        threadId,
         queued: true,
       };
     }
 
     return {
-      channel,
       messageId: result.messageId,
-      threadId: options?.threadId || result.messageId,
+    };
+  }
+
+  /**
+   * Check if channel ID represents a group vs DM.
+   * WhatsApp group JIDs end with @g.us
+   */
+  isGroupChannel(channelId: string): boolean {
+    return channelId.endsWith("@g.us");
+  }
+
+  /**
+   * Get display info for WhatsApp platform.
+   */
+  getDisplayInfo(): { name: string; icon: string; logoUrl?: string } {
+    return {
+      name: "WhatsApp",
+      icon: `<svg viewBox="0 0 24 24" fill="#25D366" xmlns="http://www.w3.org/2000/svg"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>`,
+    };
+  }
+
+  /**
+   * Extract routing info from WhatsApp-specific request body.
+   */
+  extractRoutingInfo(body: Record<string, unknown>): {
+    channelId: string;
+    threadId: string;
+    teamId?: string;
+  } | null {
+    const whatsapp = body.whatsapp as { chat?: string } | undefined;
+    if (!whatsapp?.chat) return null;
+
+    return {
+      channelId: whatsapp.chat,
+      threadId: "",
     };
   }
 }

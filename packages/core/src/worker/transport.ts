@@ -96,6 +96,9 @@ export interface WorkerTransportConfig {
   /** Team/workspace ID (required for all platforms) */
   teamId: string;
 
+  /** Platform identifier (slack, whatsapp, api, etc.) */
+  platform?: string;
+
   /** IDs of messages already processed (for deduplication) */
   processedMessageIds?: string[];
 }

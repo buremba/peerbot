@@ -16,18 +16,18 @@ help:
 	@echo "  make clean-workers                         - Remove worker containers only"
 	@echo ""
 	@echo "Development:"
-	@echo "  Use /process-management to start/stop sidecar processes (redis, packages, gateway)"
+	@echo "  redis-server                               - Start Redis"
+	@echo "  make watch-packages                        - Watch and rebuild packages"
+	@echo "  cd packages/gateway && bun run dev         - Run gateway with hot reload"
 
 # Build all TypeScript packages in dependency order
 build-packages:
 	@echo "📦 Building all TypeScript packages..."
 	@echo "   1️⃣  Building packages/core..."
 	@cd packages/core && bun run build
-	@echo "   2️⃣  Building packages/github..."
-	@cd packages/github && bun run build
-	@echo "   3️⃣  Building packages/gateway..."
+	@echo "   2️⃣  Building packages/gateway..."
 	@cd packages/gateway && bun run build
-	@echo "   4️⃣  Building packages/worker..."
+	@echo "   3️⃣  Building packages/worker..."
 	@cd packages/worker && bun run build
 	@echo "✅ All packages built successfully!"
 
@@ -152,9 +152,8 @@ logs:
 		echo "View logs with:"; \
 		echo "  kubectl logs -f <pod-name> -n peerbot"; \
 	else \
-		echo "For development, use /process-management to view logs:"; \
-		echo "  get_logs(\"gateway\")"; \
-		echo "  get_logs(\"redis\")"; \
+		echo "For development, view logs in the terminal where gateway is running"; \
+		echo "Or use: docker compose logs -f gateway"; \
 	fi
 
 # Stop worker containers
@@ -163,7 +162,6 @@ down:
 	@docker ps -q --filter "label=app.kubernetes.io/component=worker" | xargs -r docker stop 2>/dev/null || true
 	@docker ps -aq --filter "label=app.kubernetes.io/component=worker" | xargs -r docker rm 2>/dev/null || true
 	@echo "✅ Worker containers stopped"
-	@echo "Note: For sidecar processes (redis, gateway), use /process-management"
 
 # Clean up everything including volumes
 clean:

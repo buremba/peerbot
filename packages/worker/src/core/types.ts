@@ -39,7 +39,7 @@ export interface WorkerExecutor {
 export interface WorkerConfig {
   sessionKey: string;
   userId: string;
-  spaceId: string; // Space identifier for multi-tenant isolation
+  agentId: string; // Space identifier for multi-tenant isolation
   channelId: string;
   threadId?: string;
   userPrompt: string; // Base64 encoded

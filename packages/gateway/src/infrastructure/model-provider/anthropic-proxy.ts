@@ -1,6 +1,6 @@
 import { createLogger } from "@peerbot/core";
-import { type Request, type Response, Router } from "express";
-import fetch from "node-fetch";
+import type { Context } from "hono";
+import { Hono } from "hono";
 import type { ClaudeCredentialStore } from "../../auth/claude/credential-store";
 import { ClaudeOAuthClient } from "../../auth/oauth/claude-client";
 
@@ -13,11 +13,11 @@ interface AnthropicProxyConfig {
 }
 
 export class AnthropicProxy {
-  private router: Router;
+  private app: Hono;
   private config: AnthropicProxyConfig;
   private credentialStore?: ClaudeCredentialStore;
   private oauthClient: ClaudeOAuthClient;
-  private refreshLocks: Map<string, Promise<string | null>>; // spaceId -> refresh promise
+  private refreshLocks: Map<string, Promise<string | null>>; // agentId -> refresh promise
 
   constructor(
     config: AnthropicProxyConfig,
@@ -27,12 +27,12 @@ export class AnthropicProxy {
     this.credentialStore = credentialStore;
     this.oauthClient = new ClaudeOAuthClient();
     this.refreshLocks = new Map();
-    this.router = Router();
+    this.app = new Hono();
     this.setupRoutes();
   }
 
-  getRouter(): Router {
-    return this.router;
+  getApp(): Hono {
+    return this.app;
   }
 
   /**
@@ -40,31 +40,31 @@ export class AnthropicProxy {
    * Uses locking to prevent concurrent refresh attempts for the same space
    * Returns the new access token or null if refresh failed
    */
-  private async refreshSpaceToken(spaceId: string): Promise<string | null> {
+  private async refreshSpaceToken(agentId: string): Promise<string | null> {
     // Check if there's already a refresh in progress for this space
-    const existingRefresh = this.refreshLocks.get(spaceId);
+    const existingRefresh = this.refreshLocks.get(agentId);
     if (existingRefresh) {
-      logger.info(`Waiting for existing token refresh for space ${spaceId}`);
+      logger.info(`Waiting for existing token refresh for space ${agentId}`);
       return existingRefresh;
     }
 
     // Create a new refresh promise and store it
-    const refreshPromise = this.performTokenRefresh(spaceId);
-    this.refreshLocks.set(spaceId, refreshPromise);
+    const refreshPromise = this.performTokenRefresh(agentId);
+    this.refreshLocks.set(agentId, refreshPromise);
 
     try {
       const result = await refreshPromise;
       return result;
     } finally {
       // Clean up the lock after refresh completes (success or failure)
-      this.refreshLocks.delete(spaceId);
+      this.refreshLocks.delete(agentId);
     }
   }
 
   /**
    * Perform the actual token refresh
    */
-  private async performTokenRefresh(spaceId: string): Promise<string | null> {
+  private async performTokenRefresh(agentId: string): Promise<string | null> {
     if (!this.credentialStore) {
       logger.error("Cannot refresh token: credential store not available");
       return null;
@@ -72,13 +72,13 @@ export class AnthropicProxy {
 
     try {
       // Get current credentials to access refresh token
-      const credentials = await this.credentialStore.getCredentials(spaceId);
+      const credentials = await this.credentialStore.getCredentials(agentId);
       if (!credentials || !credentials.refreshToken) {
-        logger.warn(`No refresh token available for space ${spaceId}`);
+        logger.warn(`No refresh token available for space ${agentId}`);
         return null;
       }
 
-      logger.info(`Refreshing expired token for space ${spaceId}`);
+      logger.info(`Refreshing expired token for space ${agentId}`);
 
       // Use ClaudeOAuthClient to refresh the token
       const newCredentials = await this.oauthClient.refreshToken(
@@ -86,17 +86,17 @@ export class AnthropicProxy {
       );
 
       // Store the new credentials
-      await this.credentialStore.setCredentials(spaceId, newCredentials);
+      await this.credentialStore.setCredentials(agentId, newCredentials);
 
-      logger.info(`Successfully refreshed token for space ${spaceId}`);
+      logger.info(`Successfully refreshed token for space ${agentId}`);
       return newCredentials.accessToken;
     } catch (error) {
-      logger.error(`Failed to refresh token for space ${spaceId}`, { error });
+      logger.error(`Failed to refresh token for space ${agentId}`, { error });
 
       // If refresh failed, delete the invalid credentials
       try {
-        await this.credentialStore.deleteCredentials(spaceId);
-        logger.info(`Deleted invalid credentials for space ${spaceId}`);
+        await this.credentialStore.deleteCredentials(agentId);
+        logger.info(`Deleted invalid credentials for space ${agentId}`);
       } catch (deleteError) {
         logger.error(`Failed to delete invalid credentials`, { deleteError });
       }
@@ -107,49 +107,44 @@ export class AnthropicProxy {
 
   private setupRoutes(): void {
     // Health check for proxy
-    this.router.get("/health", (_req: Request, res: Response) => {
-      res.json({
+    this.app.get("/health", (c) => {
+      return c.json({
         service: "anthropic-proxy",
         status: this.config.enabled ? "enabled" : "disabled",
         timestamp: new Date().toISOString(),
       });
     });
 
-    // Proxy all requests that aren't health
-    this.router.use((req, res, next) => {
-      if (req.path === "/health") {
-        next();
-      } else {
-        this.handleProxyRequest(req, res);
-      }
+    // Proxy all other requests
+    this.app.all("/*", async (c) => {
+      return this.handleProxyRequest(c);
     });
   }
 
-  private async handleProxyRequest(req: Request, res: Response): Promise<void> {
+  private async handleProxyRequest(c: Context): Promise<Response> {
     if (!this.config.enabled) {
-      res.status(503).json({ error: "Anthropic proxy is disabled" });
-      return;
+      return c.json({ error: "Anthropic proxy is disabled" }, 503);
     }
 
     try {
       // Forward request to Anthropic API
-      await this.forwardToAnthropic(req, res);
+      return await this.forwardToAnthropic(c);
     } catch (error) {
       logger.error("Anthropic proxy error:", error);
-      res.status(500).json({ error: "Internal proxy error" });
+      return c.json({ error: "Internal proxy error" }, 500);
     }
   }
 
-  private async forwardToAnthropic(req: Request, res: Response): Promise<void> {
+  private async forwardToAnthropic(c: Context): Promise<Response> {
     // Authentication flow:
     // 1. Worker sends encrypted worker token via Claude SDK in x-api-key header
-    // 2. Validate token and extract spaceId
-    // 3. Use spaceId to get space's OAuth token (if available) or fall back to system API key
+    // 2. Validate token and extract agentId
+    // 3. Use agentId to get space's OAuth token (if available) or fall back to system API key
     // 4. Forward request to Anthropic with real credentials
-    const workerToken = req.headers["x-api-key"] as string | undefined;
+    const workerToken = c.req.header("x-api-key");
 
-    // Validate worker token and extract spaceId
-    let spaceId: string | undefined;
+    // Validate worker token and extract agentId
+    let agentId: string | undefined;
     if (workerToken && !workerToken.startsWith("sk-ant-")) {
       // This is a worker token, not an Anthropic API key
       const { verifyWorkerToken } = await import("@peerbot/core");
@@ -157,18 +152,20 @@ export class AnthropicProxy {
 
       if (!tokenData) {
         logger.warn("Invalid worker token received");
-        res.status(401).json({
-          error: {
-            type: "authentication_error",
-            message: "Invalid worker authentication token",
+        return c.json(
+          {
+            error: {
+              type: "authentication_error",
+              message: "Invalid worker authentication token",
+            },
           },
-        });
-        return;
+          401
+        );
       }
 
-      // Use spaceId from token for credential lookup (fall back to userId for backwards compat)
-      spaceId = tokenData.spaceId || tokenData.userId;
-      logger.info(`Authenticated worker request for space: ${spaceId}`);
+      // Use agentId from token for credential lookup (fall back to userId for backwards compat)
+      agentId = tokenData.agentId || tokenData.userId;
+      logger.info(`Authenticated worker request for space: ${agentId}`);
     }
 
     // Resolve API key/token: space token > system token > error
@@ -176,8 +173,8 @@ export class AnthropicProxy {
     let tokenSource: "space" | "system" | "none" = "none";
 
     // Check for space credentials first
-    if (spaceId && this.credentialStore) {
-      const credentials = await this.credentialStore.getCredentials(spaceId);
+    if (agentId && this.credentialStore) {
+      const credentials = await this.credentialStore.getCredentials(agentId);
       if (credentials) {
         // Check if token is expired (with 5 minute buffer)
         const expiryBuffer = 5 * 60 * 1000; // 5 minutes in milliseconds
@@ -185,7 +182,7 @@ export class AnthropicProxy {
 
         if (isExpired) {
           logger.info(
-            `Token expired for space ${spaceId}, attempting refresh`,
+            `Token expired for space ${agentId}, attempting refresh`,
             {
               expiresAt: new Date(credentials.expiresAt).toISOString(),
               now: new Date().toISOString(),
@@ -193,22 +190,22 @@ export class AnthropicProxy {
           );
 
           // Attempt to refresh the token
-          const refreshedToken = await this.refreshSpaceToken(spaceId);
+          const refreshedToken = await this.refreshSpaceToken(agentId);
           if (refreshedToken) {
             apiKey = refreshedToken;
             tokenSource = "space";
-            logger.info(`Using refreshed OAuth token for space ${spaceId}`);
+            logger.info(`Using refreshed OAuth token for space ${agentId}`);
           } else {
             // Refresh failed - will fall back to system token or return error
             logger.warn(
-              `Token refresh failed for space ${spaceId}, falling back`
+              `Token refresh failed for space ${agentId}, falling back`
             );
           }
         } else {
           // Token is still valid
           apiKey = credentials.accessToken;
           tokenSource = "space";
-          logger.info(`Using space OAuth token for ${spaceId}`);
+          logger.info(`Using space OAuth token for ${agentId}`);
         }
       }
     }
@@ -222,51 +219,52 @@ export class AnthropicProxy {
 
     // No credentials available - return error
     if (!apiKey) {
-      logger.warn(`No API key available for request`, { spaceId });
-      res.status(401).json({
-        error: {
-          type: "authentication_error",
-          message:
-            "No Claude authentication configured. Please login via Slack home tab or configure ANTHROPIC_API_KEY environment variable.",
+      logger.warn(`No API key available for request`, { agentId });
+      return c.json(
+        {
+          error: {
+            type: "authentication_error",
+            message:
+              "No Claude authentication configured. Please login via Slack home tab or configure ANTHROPIC_API_KEY environment variable.",
+          },
         },
-      });
-      return;
+        401
+      );
     }
 
     // Check if we're using OAuth token (sk-ant-oat01-) vs API key (sk-ant-api03-)
     const isOAuthToken = apiKey.startsWith("sk-ant-oat");
 
-    const anthropicUrl = `${this.config.anthropicBaseUrl || "https://api.anthropic.com"}${req.path}`;
+    const url = new URL(c.req.url);
+    const path = url.pathname.replace(/^\/api\/anthropic/, "");
+    const anthropicUrl = `${this.config.anthropicBaseUrl || "https://api.anthropic.com"}${path}`;
 
     // Add ?beta=true for OAuth tokens on /v1/messages
     let finalUrl = anthropicUrl;
     if (
       isOAuthToken &&
-      req.path === "/v1/messages" &&
+      path === "/v1/messages" &&
       !anthropicUrl.includes("beta=")
     ) {
       finalUrl += `${anthropicUrl.includes("?") ? "&" : "?"}beta=true`;
     }
 
     const headers: Record<string, string> = {};
-    let body =
-      req.method !== "GET" && req.method !== "HEAD" ? req.body : undefined;
+    const method = c.req.method;
+    let body: string | undefined;
+
+    if (method !== "GET" && method !== "HEAD") {
+      body = await c.req.text();
+    }
 
     logger.info(
-      `🔧 Original body type: ${typeof body}, length: ${body ? (typeof body === "string" ? body.length : JSON.stringify(body).length) : 0}`
+      `🔧 Original body type: ${typeof body}, length: ${body ? body.length : 0}`
     );
 
     if (isOAuthToken) {
       logger.info(
         `🔧 OAuth token detected - passthrough body (no tool override)`
       );
-
-      // Passthrough: do not modify request body or tools
-      body = body
-        ? typeof body === "string"
-          ? body
-          : JSON.stringify(body)
-        : undefined;
 
       // OAuth headers (Bearer, not x-api-key)
       headers.Authorization = `Bearer ${apiKey}`;
@@ -299,14 +297,13 @@ export class AnthropicProxy {
       // Standard API headers for regular API keys
       headers["x-api-key"] = apiKey;
       headers["Content-Type"] =
-        req.headers["content-type"] || "application/json";
-      headers["User-Agent"] = req.headers["user-agent"] || "peerbot-proxy/1.0";
+        c.req.header("content-type") || "application/json";
+      headers["User-Agent"] = c.req.header("user-agent") || "peerbot-proxy/1.0";
 
       // Forward additional headers that Anthropic might need
-      if (req.headers["anthropic-version"]) {
-        headers["anthropic-version"] = req.headers[
-          "anthropic-version"
-        ] as string;
+      const anthropicVersion = c.req.header("anthropic-version");
+      if (anthropicVersion) {
+        headers["anthropic-version"] = anthropicVersion;
       }
     }
 
@@ -315,7 +312,7 @@ export class AnthropicProxy {
     let requestMaxTokens = "unknown";
     let messageCount = 0;
     try {
-      const parsedBody = typeof body === "string" ? JSON.parse(body) : body;
+      const parsedBody = body ? JSON.parse(body) : undefined;
       requestModel = parsedBody?.model || "unknown";
       requestMaxTokens =
         parsedBody?.max_tokens || parsedBody?.maxTokens || "default";
@@ -333,9 +330,9 @@ export class AnthropicProxy {
 
     try {
       const response = await fetch(finalUrl, {
-        method: req.method,
+        method,
         headers,
-        body: body,
+        body,
       });
 
       const fetchDuration = Date.now() - fetchStartTime;
@@ -349,16 +346,10 @@ export class AnthropicProxy {
           "Anthropic rate limited the request – surfacing error to user as assistant message"
         );
 
-        const rawBody =
-          typeof body === "string"
-            ? body
-            : body
-              ? JSON.stringify(body)
-              : undefined;
         let requestedModel: string | undefined;
-        if (rawBody) {
+        if (body) {
           try {
-            requestedModel = JSON.parse(rawBody)?.model;
+            requestedModel = JSON.parse(body)?.model;
           } catch {
             requestedModel = undefined;
           }
@@ -401,20 +392,13 @@ export class AnthropicProxy {
           rate_limited: true,
         };
 
-        res
-          .status(200)
-          .setHeader("Content-Type", "application/json")
-          .json(rateLimitResponse);
-        return;
+        return c.json(rateLimitResponse, 200);
       }
 
-      // Forward status code
-      res.status(response.status);
-
-      // Forward response headers
-      response.headers.forEach((value: string, key: string) => {
+      // Build response headers
+      const responseHeaders = new Headers();
+      response.headers.forEach((value, key) => {
         // Skip certain headers that shouldn't be forwarded
-        // Also skip content-encoding since we're decompressing the response
         if (
           ![
             "transfer-encoding",
@@ -423,7 +407,7 @@ export class AnthropicProxy {
             "content-encoding",
           ].includes(key.toLowerCase())
         ) {
-          res.setHeader(key, value);
+          responseHeaders.set(key, value);
         }
       });
 
@@ -435,61 +419,33 @@ export class AnthropicProxy {
         logger.info(
           `📡 Starting stream pipe to client - model: ${requestModel}`
         );
-        // Set up streaming
-        res.setHeader("Cache-Control", "no-cache");
-        res.setHeader("Connection", "keep-alive");
+        responseHeaders.set("Cache-Control", "no-cache");
+        responseHeaders.set("Connection", "keep-alive");
 
-        // Pipe the response stream with error handling
         if (response.body) {
-          let firstChunkReceived = false;
-          let chunkCount = 0;
-          const streamStartTime = Date.now();
-
-          response.body.on("data", (chunk: Buffer) => {
-            chunkCount++;
-
-            if (!firstChunkReceived) {
-              firstChunkReceived = true;
-              const timeToFirstChunk = Date.now() - streamStartTime;
-              logger.info(
-                `📨 First stream chunk received from Anthropic after ${timeToFirstChunk}ms - chunkSize: ${chunk.length} bytes, model: ${requestModel}`
-              );
-            }
-
-            // Log every 10th chunk to track stream progress without spam
-            if (chunkCount % 10 === 0) {
-              logger.debug(
-                `📊 Stream progress: ${chunkCount} chunks received, latest size: ${chunk.length} bytes`
-              );
-            }
+          // Return the stream directly
+          return new Response(response.body as ReadableStream, {
+            status: response.status,
+            headers: responseHeaders,
           });
-
-          response.body.on("error", (error: Error) => {
-            logger.error(`❌ Stream error from Anthropic:`, error);
-          });
-
-          response.body.on("end", () => {
-            const streamDuration = Date.now() - streamStartTime;
-            logger.info(
-              `✅ Stream completed from Anthropic - duration: ${streamDuration}ms, totalChunks: ${chunkCount}, model: ${requestModel}`
-            );
-          });
-
-          response.body.pipe(res);
         } else {
           logger.error(`❌ No response body to stream`);
-          res.status(502).json({ error: "No response body from Anthropic" });
+          return c.json({ error: "No response body from Anthropic" }, 502);
         }
       } else {
         // Handle regular responses
         const responseText = await response.text();
-        res.send(responseText);
+        return new Response(responseText, {
+          status: response.status,
+          headers: responseHeaders,
+        });
       }
     } catch (error) {
       logger.error("Error forwarding to Anthropic API:", error);
-      res
-        .status(502)
-        .json({ error: "Bad gateway - failed to reach Anthropic API" });
+      return c.json(
+        { error: "Bad gateway - failed to reach Anthropic API" },
+        502
+      );
     }
   }
 }

@@ -65,7 +65,7 @@ export class ResourceParser {
  */
 export async function buildModuleEnvVars(
   userId: string,
-  spaceId: string,
+  agentId: string,
   baseEnv: Record<string, string>
 ): Promise<Record<string, string>> {
   let envVars = { ...baseEnv };
@@ -73,7 +73,7 @@ export async function buildModuleEnvVars(
   const orchestratorModules = moduleRegistry.getOrchestratorModules();
   for (const module of orchestratorModules) {
     if (module.buildEnvVars) {
-      envVars = await module.buildEnvVars(userId, spaceId, envVars);
+      envVars = await module.buildEnvVars(userId, agentId, envVars);
     }
   }
 
@@ -134,7 +134,6 @@ export function getVeryOldThresholdDays(config: OrchestratorConfig): number {
 
 export function buildDeploymentInfoSummary({
   deploymentName,
-  deploymentId,
   lastActivity,
   now,
   idleThresholdMinutes,
@@ -142,7 +141,6 @@ export function buildDeploymentInfoSummary({
   replicas,
 }: {
   deploymentName: string;
-  deploymentId: string;
   lastActivity: Date;
   now: number;
   idleThresholdMinutes: number;
@@ -154,7 +152,6 @@ export function buildDeploymentInfoSummary({
 
   return {
     deploymentName,
-    deploymentId,
     lastActivity,
     minutesIdle,
     daysSinceActivity,

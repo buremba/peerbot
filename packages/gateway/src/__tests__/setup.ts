@@ -47,6 +47,8 @@ export class MockResponse {
  */
 class MockRedisClient {
   private store = new Map<string, { value: string; ttl?: number }>();
+  private sets = new Map<string, Set<string>>();
+  private lists = new Map<string, string[]>();
   private currentTime = Date.now();
 
   async get(key: string): Promise<string | null> {
@@ -73,13 +75,77 @@ class MockRedisClient {
   }
 
   async del(key: string): Promise<number> {
-    const existed = this.store.has(key);
+    const existed =
+      this.store.has(key) || this.sets.has(key) || this.lists.has(key);
     this.store.delete(key);
+    this.sets.delete(key);
+    this.lists.delete(key);
     return existed ? 1 : 0;
+  }
+
+  // Set operations
+  async sadd(key: string, ...members: string[]): Promise<number> {
+    if (!this.sets.has(key)) {
+      this.sets.set(key, new Set());
+    }
+    const set = this.sets.get(key)!;
+    let added = 0;
+    for (const member of members) {
+      if (!set.has(member)) {
+        set.add(member);
+        added++;
+      }
+    }
+    return added;
+  }
+
+  async srem(key: string, ...members: string[]): Promise<number> {
+    const set = this.sets.get(key);
+    if (!set) return 0;
+    let removed = 0;
+    for (const member of members) {
+      if (set.delete(member)) {
+        removed++;
+      }
+    }
+    return removed;
+  }
+
+  async smembers(key: string): Promise<string[]> {
+    const set = this.sets.get(key);
+    return set ? Array.from(set) : [];
+  }
+
+  // List operations
+  async rpush(key: string, ...values: string[]): Promise<number> {
+    if (!this.lists.has(key)) {
+      this.lists.set(key, []);
+    }
+    const list = this.lists.get(key)!;
+    list.push(...values);
+    return list.length;
+  }
+
+  async lrange(key: string, start: number, stop: number): Promise<string[]> {
+    const list = this.lists.get(key);
+    if (!list) return [];
+    const end = stop === -1 ? list.length : stop + 1;
+    return list.slice(start, end);
+  }
+
+  async expire(key: string, seconds: number): Promise<number> {
+    if (this.store.has(key)) {
+      const entry = this.store.get(key)!;
+      entry.ttl = this.currentTime + seconds * 1000;
+      return 1;
+    }
+    return 0;
   }
 
   clear(): void {
     this.store.clear();
+    this.sets.clear();
+    this.lists.clear();
   }
 
   // Test helper to advance time

@@ -70,8 +70,14 @@ export class UnifiedThreadResponseConsumer {
       return;
     }
 
-    // Use platform field, fall back to teamId, then default to slack for backwards compatibility
-    const platformName = data.platform || data.teamId || "slack";
+    // Use platform field, fall back to teamId
+    const platformName = data.platform || data.teamId;
+    if (!platformName) {
+      logger.warn(
+        `Missing platform in thread response for message ${data.messageId}, skipping`
+      );
+      return;
+    }
 
     // Get platform adapter from registry
     const platform = this.platformRegistry.get(platformName);

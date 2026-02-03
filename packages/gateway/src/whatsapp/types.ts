@@ -146,16 +146,36 @@ export type MediaKind =
 
 /**
  * Helper to convert JID to E.164 format.
+ * Only works for @s.whatsapp.net JIDs (real phone numbers).
+ * Returns null for @lid (linked ID) JIDs which are internal WhatsApp IDs, not phone numbers.
  */
 export function jidToE164(jid: string): string | null {
   if (!jid) return null;
-  // Handle JID formats:
+
+  // @lid JIDs are internal WhatsApp linked IDs, not phone numbers
+  // They look like: 167564575514790@lid (very long numbers that aren't real phone numbers)
+  if (jid.endsWith("@lid")) {
+    return null;
+  }
+
+  // Only convert @s.whatsapp.net JIDs which contain real phone numbers
+  // Handle formats:
   // - 447512972810@s.whatsapp.net (standard)
   // - 447512972810:13@s.whatsapp.net (with device ID)
-  // - 167564575514790@lid (linked ID format)
+  if (!jid.endsWith("@s.whatsapp.net")) {
+    return null;
+  }
+
   const match = jid.match(/^(\d+)(?::\d+)?@/);
-  if (!match) return null;
-  return `+${match[1]}`;
+  if (!match || !match[1]) return null;
+
+  // Sanity check: phone numbers are typically 7-15 digits
+  const digits = match[1];
+  if (digits.length < 7 || digits.length > 15) {
+    return null;
+  }
+
+  return `+${digits}`;
 }
 
 /**
@@ -180,16 +200,4 @@ export function normalizeE164(phone: string): string {
  */
 export function isGroupJid(jid: string): boolean {
   return jid.endsWith("@g.us");
-}
-
-/**
- * Detect media kind from MIME type.
- */
-export function mediaKindFromMime(mimeType?: string | null): MediaKind {
-  if (!mimeType) return "unknown";
-  if (mimeType.startsWith("image/")) return "image";
-  if (mimeType.startsWith("video/")) return "video";
-  if (mimeType.startsWith("audio/")) return "audio";
-  if (mimeType === "image/webp") return "sticker";
-  return "document";
 }

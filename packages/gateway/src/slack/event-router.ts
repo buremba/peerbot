@@ -683,6 +683,24 @@ export class SlackEventHandlers {
   }
 
   /**
+   * Set the channel binding service for agent routing
+   */
+  setChannelBindingService(
+    service: import("../channels").ChannelBindingService
+  ): void {
+    this.messageHandler.setChannelBindingService(service);
+  }
+
+  /**
+   * Set the agent settings store for applying agent configuration
+   */
+  setAgentSettingsStore(
+    store: import("../auth/settings").AgentSettingsStore
+  ): void {
+    this.messageHandler.setAgentSettingsStore(store);
+  }
+
+  /**
    * Cleanup method for graceful shutdown
    */
   cleanup(): void {

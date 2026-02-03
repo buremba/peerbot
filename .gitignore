@@ -32,3 +32,4 @@ workspaces/*
 # SSH keys for Terraform
 charts/peerbot/provider/hetzner/ssh_key
 charts/peerbot/provider/hetzner/ssh_key.pub
+.github-app-private-key.pem

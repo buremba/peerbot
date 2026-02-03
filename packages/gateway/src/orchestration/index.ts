@@ -9,7 +9,11 @@ import type {
   OrchestratorConfig,
 } from "./base-deployment-manager";
 import { buildModuleEnvVars } from "./deployment-utils";
-import { DockerDeploymentManager, K8sDeploymentManager } from "./impl";
+import {
+  DockerDeploymentManager,
+  K8sDeploymentManager,
+  LocalDeploymentManager,
+} from "./impl";
 import { MessageConsumer } from "./message-consumer";
 
 const logger = createLogger("orchestrator");
@@ -61,6 +65,11 @@ export class Orchestrator {
   ): BaseDeploymentManager {
     const deploymentMode = process.env.DEPLOYMENT_MODE;
 
+    if (deploymentMode === "local") {
+      logger.info("🏠 Using local deployment mode (subprocess workers)");
+      return new LocalDeploymentManager(config, buildModuleEnvVars);
+    }
+
     if (deploymentMode === "docker") {
       if (!this.isDockerAvailable()) {
         logger.error("DEPLOYMENT_MODE=docker but Docker is not available");
@@ -83,15 +92,20 @@ export class Orchestrator {
 
     // Auto-detect deployment mode
     if (this.isKubernetesAvailable()) {
+      logger.info("🎯 Auto-detected Kubernetes, using K8s deployment mode");
       return new K8sDeploymentManager(config, buildModuleEnvVars);
     }
 
     if (this.isDockerAvailable()) {
+      logger.info("🐳 Auto-detected Docker, using Docker deployment mode");
       return new DockerDeploymentManager(config, buildModuleEnvVars);
     }
 
-    logger.error("Neither Kubernetes nor Docker is available");
-    throw new Error("Neither Kubernetes nor Docker is available");
+    // Fall back to local mode if nothing else is available
+    logger.info(
+      "🏠 No container runtime detected, falling back to local deployment mode"
+    );
+    return new LocalDeploymentManager(config, buildModuleEnvVars);
   }
 
   private isKubernetesAvailable(): boolean {
@@ -168,6 +182,12 @@ export class Orchestrator {
       }
 
       await this.queueConsumer.stop();
+
+      // Clean up local worker processes if using local deployment mode
+      if (this.deploymentManager instanceof LocalDeploymentManager) {
+        await this.deploymentManager.cleanup();
+      }
+
       logger.info("✅ Orchestrator stopped");
     } catch (error) {
       logger.error("❌ Error stopping orchestrator:", error);

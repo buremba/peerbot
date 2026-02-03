@@ -1,92 +1,68 @@
 /**
  * WhatsApp Auth Adapter - Platform-specific authentication handling.
- * Handles numbered provider selection and OAuth flow messaging.
+ * Sends settings link for authentication and configuration.
  */
 
 import { createLogger } from "@peerbot/core";
-import type {
-  ClaudeOAuthStateStore,
-  OAuthPlatformContext,
-} from "../auth/claude/oauth-state-store";
-import { ClaudeOAuthClient } from "../auth/oauth/claude-client";
 import type { AuthProvider, PlatformAuthAdapter } from "../auth/platform-auth";
+import {
+  buildSettingsUrl,
+  generateSettingsToken,
+} from "../auth/settings/token-service";
 import type { BaileysClient } from "./connection/baileys-client";
 
 const logger = createLogger("whatsapp-auth-adapter");
 
-interface PendingAuth {
-  userId: string;
-  spaceId: string;
-  providers: AuthProvider[];
-  createdAt: number;
-}
-
-// 5 minute TTL for pending auth sessions
-const PENDING_AUTH_TTL_MS = 5 * 60 * 1000;
-
 /**
  * WhatsApp-specific authentication adapter.
- * Renders auth prompts as numbered text lists and handles reply-based selection.
+ * Sends a settings link where users can configure Claude auth, MCP, network, git, etc.
  */
 export class WhatsAppAuthAdapter implements PlatformAuthAdapter {
-  private pendingAuthSessions = new Map<string, PendingAuth>();
-  private oauthClient = new ClaudeOAuthClient();
-
   constructor(
     private client: BaileysClient,
-    private stateStore: ClaudeOAuthStateStore,
-    private publicGatewayUrl: string
-  ) {
-    // Cleanup expired sessions periodically
-    setInterval(() => this.cleanupExpiredSessions(), 60 * 1000);
-  }
+    _publicGatewayUrl: string
+  ) {}
 
   /**
-   * Send authentication required prompt with numbered provider list.
+   * Send authentication required prompt with settings link.
+   * The settings page handles Claude OAuth, MCP config, network access, git, etc.
    */
   async sendAuthPrompt(
     userId: string,
     channelId: string,
-    _threadId: string, // Not used for WhatsApp
-    providers: AuthProvider[],
+    _threadId: string,
+    _providers: AuthProvider[],
     platformMetadata?: Record<string, unknown>
   ): Promise<void> {
-    // Use jid from metadata if available
     const chatJid = (platformMetadata?.jid as string) || channelId;
-    const spaceId = (platformMetadata?.spaceId as string) || channelId;
+    const agentId = (platformMetadata?.agentId as string) || channelId;
 
-    // Build numbered list message
-    const lines = [
-      "*Authentication Required*",
+    // Generate settings token (1 hour TTL)
+    const token = generateSettingsToken(agentId, userId, "whatsapp");
+    const settingsUrl = buildSettingsUrl(token);
+
+    const message = [
+      "*Setup Required*",
       "",
-      "Choose a provider to authenticate:",
-    ];
-
-    providers.forEach((provider, index) => {
-      lines.push(`${index + 1}. ${provider.name}`);
-    });
-
-    lines.push("");
-    lines.push("Reply with the number of your choice.");
-
-    const message = lines.join("\n");
+      "Configure your bot using this link:",
+      "",
+      settingsUrl,
+      "",
+      "You can set up:",
+      "- Claude authentication",
+      "- MCP servers",
+      "- Network access",
+      "- Git repository",
+      "- And more...",
+      "",
+      "_Link expires in 1 hour._",
+    ].join("\n");
 
     try {
       await this.client.sendMessage(chatJid, { text: message });
-      logger.info(
-        { chatJid, userId, spaceId, providerCount: providers.length },
-        "Sent auth prompt"
-      );
-
-      // Store pending auth session with spaceId for multi-tenant isolation
-      this.pendingAuthSessions.set(chatJid, {
-        userId,
-        spaceId,
-        providers,
-        createdAt: Date.now(),
-      });
+      logger.info({ chatJid, userId, agentId }, "Sent settings link");
     } catch (error) {
-      logger.error({ error, chatJid }, "Failed to send auth prompt");
+      logger.error({ error, chatJid }, "Failed to send settings link");
       throw error;
     }
   }
@@ -119,176 +95,20 @@ export class WhatsAppAuthAdapter implements PlatformAuthAdapter {
   }
 
   /**
-   * Handle potential auth response (numbered selection).
-   * Returns true if the message was handled as an auth response.
+   * No longer handling auth responses - settings page handles everything.
    */
   async handleAuthResponse(
-    channelId: string,
-    userId: string,
-    text: string
+    _channelId: string,
+    _userId: string,
+    _text: string
   ): Promise<boolean> {
-    const pending = this.pendingAuthSessions.get(channelId);
-    if (!pending) {
-      return false;
-    }
-
-    // Check if session expired
-    if (Date.now() - pending.createdAt > PENDING_AUTH_TTL_MS) {
-      this.pendingAuthSessions.delete(channelId);
-      return false;
-    }
-
-    // Parse selection (supports "1", "2", etc.)
-    const selection = this.parseSelection(text, pending.providers.length);
-    if (selection === null) {
-      return false;
-    }
-
-    const selectedProvider = pending.providers[selection];
-    if (!selectedProvider) {
-      return false;
-    }
-
-    logger.info(
-      { channelId, userId, selection, provider: selectedProvider.id },
-      "User selected auth provider"
-    );
-
-    // Remove pending session
-    this.pendingAuthSessions.delete(channelId);
-
-    // Initiate OAuth flow for selected provider
-    await this.initiateOAuth(
-      channelId,
-      pending.userId,
-      pending.spaceId,
-      selectedProvider
-    );
-
-    return true;
+    return false;
   }
 
   /**
-   * Parse user selection from text.
-   * Returns 0-indexed selection or null if invalid.
+   * No pending auth sessions anymore.
    */
-  private parseSelection(text: string, maxOptions: number): number | null {
-    const trimmed = text.trim().toLowerCase();
-
-    // Try parsing as number
-    const num = parseInt(trimmed, 10);
-    if (!Number.isNaN(num) && num >= 1 && num <= maxOptions) {
-      return num - 1;
-    }
-
-    // Try word-based selection
-    const wordToNum: Record<string, number> = {
-      one: 1,
-      two: 2,
-      three: 3,
-      four: 4,
-      first: 1,
-      second: 2,
-      third: 3,
-      fourth: 4,
-    };
-
-    const wordNum = wordToNum[trimmed];
-    if (wordNum && wordNum <= maxOptions) {
-      return wordNum - 1;
-    }
-
-    return null;
-  }
-
-  /**
-   * Initiate OAuth flow for selected provider.
-   */
-  private async initiateOAuth(
-    chatJid: string,
-    userId: string,
-    spaceId: string,
-    provider: AuthProvider
-  ): Promise<void> {
-    // Generate PKCE code verifier
-    const codeVerifier = this.oauthClient.generateCodeVerifier();
-
-    // Create platform context for callback routing
-    const context: OAuthPlatformContext = {
-      platform: "whatsapp",
-      channelId: chatJid,
-    };
-
-    // Store state with platform context and spaceId
-    const state = await this.stateStore.create(
-      userId,
-      spaceId,
-      codeVerifier,
-      context
-    );
-
-    // Build OAuth URL - redirect to Anthropic console callback
-    // User will get CODE#STATE to paste in our web form
-    const authUrl = this.oauthClient.buildAuthUrl(
-      state,
-      codeVerifier,
-      "https://console.anthropic.com/oauth/code/callback"
-    );
-
-    // Build callback URL for code entry
-    const callbackUrl = `${this.publicGatewayUrl}/auth/callback`;
-
-    // Send OAuth instructions
-    const message = [
-      `*Step 1:* Visit this link to authorize with ${provider.name}:`,
-      "",
-      authUrl,
-      "",
-      `*Step 2:* After authorizing, you'll see a code like \`ABC123#XYZ789\``,
-      "",
-      `*Step 3:* Go to this page and paste the code:`,
-      "",
-      callbackUrl,
-      "",
-      "_The code expires in 5 minutes._",
-    ].join("\n");
-
-    try {
-      await this.client.sendMessage(chatJid, { text: message });
-      logger.info(
-        { chatJid, userId, provider: provider.id, state },
-        "Sent OAuth instructions"
-      );
-    } catch (error) {
-      logger.error({ error, chatJid }, "Failed to send OAuth instructions");
-    }
-  }
-
-  /**
-   * Check if there's a pending auth session for this chat.
-   */
-  hasPendingAuth(channelId: string): boolean {
-    const pending = this.pendingAuthSessions.get(channelId);
-    if (!pending) return false;
-
-    // Check if expired
-    if (Date.now() - pending.createdAt > PENDING_AUTH_TTL_MS) {
-      this.pendingAuthSessions.delete(channelId);
-      return false;
-    }
-
-    return true;
-  }
-
-  /**
-   * Cleanup expired pending auth sessions.
-   */
-  private cleanupExpiredSessions(): void {
-    const now = Date.now();
-    for (const [key, session] of this.pendingAuthSessions) {
-      if (now - session.createdAt > PENDING_AUTH_TTL_MS) {
-        this.pendingAuthSessions.delete(key);
-      }
-    }
+  hasPendingAuth(_channelId: string): boolean {
+    return false;
   }
 }

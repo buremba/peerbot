@@ -1,10 +1,12 @@
 import { createLogger, verifyWorkerToken } from "@peerbot/core";
-import type { Request, Response } from "express";
+import type { Context } from "hono";
+import { Hono } from "hono";
 import type { IMessageQueue } from "../../infrastructure/queue";
 import { GenericOAuth2Client } from "../oauth/generic-client";
 import type { McpConfigService } from "./config-service";
 import type { McpCredentialStore } from "./credential-store";
 import type { McpInputStore } from "./input-store";
+import { mcpConfigStore } from "./mcp-config-store";
 import { substituteObject, substituteString } from "./string-substitution";
 
 const logger = createLogger("mcp-proxy");
@@ -13,6 +15,7 @@ export class McpProxy {
   private readonly oauth2Client = new GenericOAuth2Client();
   private readonly SESSION_TTL_SECONDS = 30 * 60; // 30 minutes
   private readonly redisClient: any;
+  private app: Hono;
 
   constructor(
     private readonly configService: McpConfigService,
@@ -21,111 +24,143 @@ export class McpProxy {
     queue: IMessageQueue
   ) {
     this.redisClient = queue.getRedisClient();
+    this.app = new Hono();
+    this.setupRoutes();
     logger.info("MCP proxy initialized with Redis session storage", {
       ttlMinutes: this.SESSION_TTL_SECONDS / 60,
     });
   }
 
-  setupRoutes(app: any) {
+  /**
+   * Get the Hono app
+   */
+  getApp(): Hono {
+    return this.app;
+  }
+
+  /**
+   * Check if this request is an MCP proxy request (has X-Mcp-Id header)
+   * Used by gateway to determine if root path requests should be handled by MCP proxy
+   */
+  isMcpRequest(c: Context): boolean {
+    return !!c.req.header("x-mcp-id");
+  }
+
+  private setupRoutes() {
     // Handle MCP HTTP protocol endpoints (Claude Code HTTP transport)
     // Claude Code HTTP transport POSTs to the exact URL configured
     // Since we configure http://gateway:8080, it POSTs to http://gateway:8080/
     // We use X-Mcp-Id header to identify which MCP server
 
     // Main endpoint - Claude Code POSTs JSON-RPC to root path
-    app.all("/", (req: Request, res: Response, next: any) => {
-      // Only handle requests with X-Mcp-Id header as MCP proxy requests
-      if (req.headers["x-mcp-id"]) {
-        return this.handleProxyRequest(req, res);
-      }
-      // Pass through other requests to next handler
-      next();
-    });
+    // Note: The root "/" check with X-Mcp-Id header is handled in gateway.ts
+    // This route handles requests already routed to /mcp/*
 
     // Legacy endpoints (if needed for other MCP transports)
-    app.all("/register", (req: Request, res: Response) =>
-      this.handleProxyRequest(req, res)
-    );
-    app.all("/message", (req: Request, res: Response) =>
-      this.handleProxyRequest(req, res)
-    );
+    this.app.all("/register", (c) => this.handleProxyRequest(c));
+    this.app.all("/message", (c) => this.handleProxyRequest(c));
 
     // Path-based routes (for SSE or other transports)
-    app.all("/mcp/:mcpId", (req: Request, res: Response) =>
-      this.handleProxyRequest(req, res)
-    );
-    app.all("/mcp/:mcpId/*", (req: Request, res: Response) =>
-      this.handleProxyRequest(req, res)
-    );
+    this.app.all("/:mcpId", (c) => this.handleProxyRequest(c));
+    this.app.all("/:mcpId/*", (c) => this.handleProxyRequest(c));
   }
 
-  private async handleProxyRequest(req: Request, res: Response) {
+  private async handleProxyRequest(c: Context): Promise<Response> {
     // Extract MCP ID from either URL path or X-Mcp-Id header
-    const mcpId = req.params.mcpId || (req.headers["x-mcp-id"] as string);
-    const sessionToken = this.extractSessionToken(req);
+    const mcpId = c.req.param("mcpId") || c.req.header("x-mcp-id");
+    const sessionToken = this.extractSessionToken(c);
 
     logger.info("Handling MCP proxy request", {
-      method: req.method,
-      path: req.path,
+      method: c.req.method,
+      path: c.req.path,
       mcpId,
       hasSessionToken: !!sessionToken,
     });
 
     if (!mcpId) {
-      this.sendJsonRpcError(res, -32600, "Missing MCP ID");
-      return;
+      return this.sendJsonRpcError(c, -32600, "Missing MCP ID");
     }
 
     if (!sessionToken) {
-      this.sendJsonRpcError(res, -32600, "Missing authentication token");
-      return;
+      return this.sendJsonRpcError(c, -32600, "Missing authentication token");
     }
 
     const tokenData = verifyWorkerToken(sessionToken);
     if (!tokenData) {
-      this.sendJsonRpcError(res, -32600, "Invalid authentication token");
-      return;
+      return this.sendJsonRpcError(c, -32600, "Invalid authentication token");
     }
 
-    const httpServer = await this.configService.getHttpServer(mcpId!);
+    // Try global MCP config first
+    let httpServer = await this.configService.getHttpServer(mcpId!);
+    let isPerAgentMcp = false;
+
+    // If not found in global config, check per-agent MCP config
+    if (!httpServer && tokenData.deploymentName) {
+      const agentMcpConfig = await mcpConfigStore.get(tokenData.deploymentName);
+      const perAgentMcp = agentMcpConfig?.mcpServers?.[mcpId!];
+      if (perAgentMcp?.url) {
+        // Create a minimal httpServer-like object for per-agent HTTP MCPs
+        httpServer = {
+          id: mcpId!,
+          upstreamUrl: perAgentMcp.url,
+          // Per-agent MCPs don't support OAuth/inputs through the proxy
+          // They connect directly to the upstream URL
+        } as any;
+        isPerAgentMcp = true;
+        logger.info(`Using per-agent MCP config for ${mcpId}`, {
+          deploymentName: tokenData.deploymentName,
+          upstreamUrl: perAgentMcp.url,
+        });
+      }
+    }
+
     if (!httpServer) {
-      this.sendJsonRpcError(res, -32601, `MCP server '${mcpId}' not found`);
-      return;
+      return this.sendJsonRpcError(
+        c,
+        -32601,
+        `MCP server '${mcpId}' not found`
+      );
     }
 
-    // Check authentication - OAuth or inputs
+    // Check authentication - OAuth or inputs (skip for per-agent MCPs)
     let credentials = null;
     let inputValues = null;
 
-    // Check if MCP requires OAuth (static or discovered)
-    const hasOAuth = !!httpServer.oauth;
-    const discoveredOAuth = await this.configService.getDiscoveredOAuth(mcpId!);
+    // Per-agent MCPs bypass OAuth/input checks - they connect directly to upstream
+    if (isPerAgentMcp) {
+      logger.info(`Per-agent MCP ${mcpId} - bypassing OAuth/input checks`);
+    }
+
+    // Check if MCP requires OAuth (static or discovered) - only for global MCPs
+    const hasOAuth = !isPerAgentMcp && !!httpServer.oauth;
+    const discoveredOAuth = !isPerAgentMcp
+      ? await this.configService.getDiscoveredOAuth(mcpId!)
+      : null;
     const hasDiscoveredOAuth = !!discoveredOAuth;
 
-    // Get spaceId from token data (fallback to userId for backwards compatibility)
-    const spaceId = tokenData.spaceId || tokenData.userId;
+    // Get agentId from token data (fallback to userId for backwards compatibility)
+    const agentId = tokenData.agentId || tokenData.userId;
 
     // Try OAuth credentials first (supports both static and discovered OAuth)
     if (hasOAuth || hasDiscoveredOAuth) {
-      credentials = await this.credentialStore.getCredentials(spaceId, mcpId!);
+      credentials = await this.credentialStore.getCredentials(agentId, mcpId!);
 
       if (!credentials || !credentials.accessToken) {
         logger.info("MCP OAuth credentials missing", {
-          spaceId,
+          agentId,
           mcpId,
         });
-        this.sendJsonRpcError(
-          res,
+        return this.sendJsonRpcError(
+          c,
           -32002,
           `MCP '${mcpId}' requires authentication. Please authenticate via the Slack app home tab.`
         );
-        return;
       }
 
       // Check if token is expired and attempt refresh
       if (credentials.expiresAt && credentials.expiresAt <= Date.now()) {
         logger.info("MCP access token expired, attempting refresh", {
-          spaceId,
+          agentId,
           mcpId,
           hasRefreshToken: !!credentials.refreshToken,
         });
@@ -177,7 +212,7 @@ export class McpProxy {
 
             // Store the new credentials (without TTL)
             await this.credentialStore.setCredentials(
-              spaceId,
+              agentId,
               mcpId!,
               refreshedCredentials
             );
@@ -186,7 +221,7 @@ export class McpProxy {
             credentials = refreshedCredentials;
 
             logger.info("Successfully refreshed MCP access token", {
-              spaceId,
+              agentId,
               mcpId,
             });
           } catch (error) {
@@ -195,63 +230,59 @@ export class McpProxy {
               errorMessage:
                 error instanceof Error ? error.message : String(error),
               errorStack: error instanceof Error ? error.stack : undefined,
-              spaceId,
+              agentId,
               mcpId,
             });
-            this.sendJsonRpcError(
-              res,
+            return this.sendJsonRpcError(
+              c,
               -32002,
               `MCP '${mcpId}' authentication expired. Please re-authenticate via the Slack app home tab.`
             );
-            return;
           }
         } else {
           logger.warn("MCP credentials expired with no refresh token", {
-            spaceId,
+            agentId,
             mcpId,
           });
-          this.sendJsonRpcError(
-            res,
+          return this.sendJsonRpcError(
+            c,
             -32002,
             `MCP '${mcpId}' authentication expired. Please re-authenticate via the Slack app home tab.`
           );
-          return;
         }
       }
     }
 
     // Load input values if MCP uses inputs
     if (httpServer.inputs && httpServer.inputs.length > 0) {
-      inputValues = await this.inputStore.getInputs(spaceId, mcpId!);
+      inputValues = await this.inputStore.getInputs(agentId, mcpId!);
 
       if (!inputValues) {
         logger.info("MCP input values missing", {
-          spaceId,
+          agentId,
           mcpId,
         });
-        this.sendJsonRpcError(
-          res,
+        return this.sendJsonRpcError(
+          c,
           -32002,
           `MCP '${mcpId}' requires configuration. Please configure via the Slack app home tab.`
         );
-        return;
       }
     }
 
     try {
-      await this.forwardRequestWithProtocolTranslation(
-        req,
-        res,
+      return await this.forwardRequestWithProtocolTranslation(
+        c,
         httpServer,
         credentials,
         inputValues || {},
-        spaceId,
+        agentId,
         mcpId!
       );
     } catch (error) {
       logger.error("Failed to proxy MCP request", { error, mcpId });
-      this.sendJsonRpcError(
-        res,
+      return this.sendJsonRpcError(
+        c,
         -32603,
         `Failed to connect to MCP '${mcpId}': ${error instanceof Error ? error.message : "Unknown error"}`
       );
@@ -263,61 +294,56 @@ export class McpProxy {
    * This allows the MCP SDK to handle errors gracefully instead of failing
    */
   private sendJsonRpcError(
-    res: Response,
+    c: Context,
     code: number,
     message: string,
     id: any = null
-  ): void {
-    res.status(200).json({
-      jsonrpc: "2.0",
-      id,
-      error: {
-        code,
-        message,
+  ): Response {
+    return c.json(
+      {
+        jsonrpc: "2.0",
+        id,
+        error: {
+          code,
+          message,
+        },
       },
-    });
+      200
+    );
   }
 
-  private extractSessionToken(req: Request): string | null {
-    const authHeader = req.headers.authorization;
+  private extractSessionToken(c: Context): string | null {
+    const authHeader = c.req.header("authorization");
     if (authHeader?.startsWith("Bearer ")) {
       return authHeader.substring(7);
     }
 
-    const tokenFromQuery = req.query.workerToken;
+    const tokenFromQuery = c.req.query("workerToken");
     if (typeof tokenFromQuery === "string") {
       return tokenFromQuery;
-    }
-
-    if (
-      Array.isArray(tokenFromQuery) &&
-      typeof tokenFromQuery[0] === "string"
-    ) {
-      return tokenFromQuery[0];
     }
 
     return null;
   }
 
   private async forwardRequestWithProtocolTranslation(
-    req: Request,
-    res: Response,
+    c: Context,
     httpServer: any,
     credentials: { accessToken: string; tokenType?: string } | null,
     inputValues: Record<string, string>,
-    spaceId: string,
+    agentId: string,
     mcpId: string
-  ): Promise<void> {
-    const sessionKey = `mcp:session:${spaceId}:${mcpId}`;
+  ): Promise<Response> {
+    const sessionKey = `mcp:session:${agentId}:${mcpId}`;
     const sessionId = await this.getSession(sessionKey);
 
     // Get request body
-    let bodyText = await this.getRequestBodyAsText(req);
+    let bodyText = await this.getRequestBodyAsText(c);
 
     logger.info("Proxying MCP request", {
       mcpId,
-      spaceId,
-      method: req.method,
+      agentId,
+      method: c.req.method,
       hasSession: !!sessionId,
       bodyLength: bodyText.length,
       hasInputValues: Object.keys(inputValues).length > 0,
@@ -355,7 +381,7 @@ export class McpProxy {
 
           logger.debug("Applied input substitution to request body", {
             mcpId,
-            spaceId,
+            agentId,
           });
         } catch {
           // If body is not JSON, apply string substitution directly
@@ -366,7 +392,7 @@ export class McpProxy {
 
     // Forward to upstream MCP - stream response directly back
     const response = await fetch(httpServer.upstreamUrl, {
-      method: req.method,
+      method: c.req.method,
       headers,
       body: bodyText || undefined,
     });
@@ -377,57 +403,38 @@ export class McpProxy {
       await this.setSession(sessionKey, newSessionId);
       logger.debug("Stored MCP session ID", {
         mcpId,
-        spaceId,
+        agentId,
         sessionId: newSessionId,
       });
     }
 
-    // Stream response back to Claude Code
+    // Build response headers
+    const responseHeaders = new Headers();
     const contentType = response.headers.get("content-type");
     if (contentType) {
-      res.setHeader("Content-Type", contentType);
+      responseHeaders.set("Content-Type", contentType);
     }
     if (newSessionId) {
-      res.setHeader("Mcp-Session-Id", newSessionId);
+      responseHeaders.set("Mcp-Session-Id", newSessionId);
     }
 
-    res.status(response.status);
-
-    // Stream the response body
-    if (response.body) {
-      const reader = response.body.getReader();
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          res.write(value);
-        }
-      } finally {
-        reader.releaseLock();
-      }
-    }
-
-    res.end();
+    // Return streaming response
+    return new Response(response.body, {
+      status: response.status,
+      headers: responseHeaders,
+    });
   }
 
-  private async getRequestBodyAsText(req: Request): Promise<string> {
-    if (req.method === "GET" || req.method === "HEAD") {
+  private async getRequestBodyAsText(c: Context): Promise<string> {
+    if (c.req.method === "GET" || c.req.method === "HEAD") {
       return "";
     }
 
-    if (Buffer.isBuffer(req.body)) {
-      return req.body.toString("utf-8");
+    try {
+      return await c.req.text();
+    } catch {
+      return "";
     }
-
-    if (typeof req.body === "string") {
-      return req.body;
-    }
-
-    if (req.body && typeof req.body === "object") {
-      return JSON.stringify(req.body);
-    }
-
-    return "";
   }
 
   /**

@@ -1,10 +1,13 @@
 import {
+  createChildSpan,
   createLogger,
   ErrorCode,
   extractTraceId,
   generateTraceId,
+  getTraceparent,
   OrchestratorError,
   retryWithBackoff,
+  SpanStatusCode,
 } from "@peerbot/core";
 import * as Sentry from "@sentry/node";
 import type { ClaudeCredentialStore } from "../auth/claude/credential-store";
@@ -114,35 +117,51 @@ export class MessageConsumer {
     const data = job?.data;
     const jobId = job?.id || "unknown";
 
-    // Extract or generate trace ID for end-to-end observability
+    // Extract traceparent for distributed tracing (from message ingestion)
+    const traceparent = data?.platformMetadata?.traceparent as
+      | string
+      | undefined;
+
+    // Extract or generate trace ID for logging (backwards compatible)
     const traceId =
       extractTraceId(data) || generateTraceId(data?.messageId || jobId);
 
     // Add traceId to Sentry scope for correlation
     Sentry.getCurrentScope().setTag("traceId", traceId);
 
-    logger.info({ traceId, jobId }, "Processing job");
+    // Create child span for queue processing (linked to message_received span)
+    const queueSpan = createChildSpan("queue_processing", traceparent, {
+      "peerbot.trace_id": traceId,
+      "peerbot.job_id": jobId,
+      "peerbot.user_id": data?.userId || "unknown",
+      "peerbot.thread_id": data?.threadId || "unknown",
+    });
+
+    // Get traceparent to pass to worker (for further context propagation)
+    const childTraceparent = getTraceparent(queueSpan) || traceparent;
 
     logger.info(
       {
+        traceparent,
         traceId,
         jobId,
         userId: data?.userId,
         threadId: data?.threadId,
       },
-      "Processing message job"
+      "Processing job with trace context"
     );
 
     try {
-      // Check if user has credentials or if system API key is available
+      // Check if agent has credentials or if system API key is available
+      // Credentials are stored by agentId (space-level), not userId
       if (this.credentialStore && !this.systemApiKey) {
         const hasCredentials = await this.credentialStore.hasCredentials(
-          data.userId
+          data.agentId
         );
 
         if (!hasCredentials) {
           logger.info(
-            `User ${data.userId} has no credentials - sending authentication prompt`
+            `Agent ${data.agentId} has no credentials - sending authentication prompt`
           );
 
           // Use platform auth adapter if available
@@ -157,7 +176,7 @@ export class MessageConsumer {
               data.platformMetadata
             );
             logger.info(
-              `✅ Sent platform-specific auth prompt to user ${data.userId} via ${data.platform} adapter`
+              `✅ Sent platform-specific auth prompt for agent ${data.agentId} via ${data.platform} adapter`
             );
           } else {
             // Fallback: Send Slack-style ephemeral message for platforms without adapter
@@ -200,7 +219,7 @@ export class MessageConsumer {
               processedMessageIds: [data.messageId],
             });
             logger.info(
-              `✅ Sent Slack-style auth prompt to user ${data.userId}`
+              `✅ Sent Slack-style auth prompt for agent ${data.agentId}`
             );
           }
 
@@ -238,48 +257,59 @@ export class MessageConsumer {
       );
 
       logger.info(
-        { traceId, deploymentName },
+        { traceId, traceparent: childTraceparent, deploymentName },
         "Enqueued message to thread queue"
       );
 
       // 2) Ensure worker exists in the background (don't block queue send)
-      this.ensureWorkerExists(deploymentName, data, traceId).catch(
-        (bgError) => {
-          // Capture error for monitoring and alerting
-          Sentry.captureException(bgError, {
-            tags: {
-              component: "deployment-creation",
-              deploymentName,
-              userId: data.userId,
-              threadId: data.threadId,
-            },
-            level: "error",
-          });
+      // Pass traceparent for propagation to worker deployment
+      this.ensureWorkerExists(
+        deploymentName,
+        data,
+        traceId,
+        childTraceparent
+      ).catch((bgError) => {
+        // Capture error for monitoring and alerting
+        Sentry.captureException(bgError, {
+          tags: {
+            component: "deployment-creation",
+            deploymentName,
+            userId: data.userId,
+            threadId: data.threadId,
+          },
+          level: "error",
+        });
 
-          logger.error(
-            {
-              traceId,
-              error:
-                bgError instanceof Error ? bgError.message : String(bgError),
-              stack: bgError instanceof Error ? bgError.stack : undefined,
-              deploymentName,
-              userId: data.userId,
-              threadId: data.threadId,
-            },
-            "Critical: Background worker creation failed. Messages are queued but worker unavailable."
-          );
+        logger.error(
+          {
+            traceId,
+            error: bgError instanceof Error ? bgError.message : String(bgError),
+            stack: bgError instanceof Error ? bgError.stack : undefined,
+            deploymentName,
+            userId: data.userId,
+            threadId: data.threadId,
+          },
+          "Critical: Background worker creation failed. Messages are queued but worker unavailable."
+        );
 
-          // Track failed deployments for monitoring and potential retry
-          this.trackFailedDeployment(deploymentName, data, bgError).catch(
-            (trackError) => {
-              logger.error("Failed to track deployment failure:", trackError);
-            }
-          );
-        }
-      );
+        // Track failed deployments for monitoring and potential retry
+        this.trackFailedDeployment(deploymentName, data, bgError).catch(
+          (trackError) => {
+            logger.error("Failed to track deployment failure:", trackError);
+          }
+        );
+      });
+
+      queueSpan?.setStatus({ code: SpanStatusCode.OK });
+      queueSpan?.end();
 
       logger.info({ traceId, jobId }, "Message job queued successfully");
     } catch (error) {
+      queueSpan?.setStatus({
+        code: SpanStatusCode.ERROR,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      queueSpan?.end();
       Sentry.captureException(error);
       logger.error({ traceId, jobId, error }, "Message job failed");
 
@@ -345,7 +375,8 @@ export class MessageConsumer {
   private async ensureWorkerExists(
     deploymentName: string,
     data: MessagePayload,
-    traceId: string
+    traceId: string,
+    traceparent?: string
   ): Promise<void> {
     return retryWithBackoff(
       async () => {
@@ -356,15 +387,24 @@ export class MessageConsumer {
           (d) => d.deploymentName === deploymentName
         );
 
+        // Ensure traceparent is in platformMetadata for worker deployment
+        const dataWithTrace: MessagePayload = {
+          ...data,
+          platformMetadata: {
+            ...data.platformMetadata,
+            traceparent: traceparent || data.platformMetadata?.traceparent,
+          },
+        };
+
         if (isNewThread) {
           logger.info(
-            { traceId, threadId: data.threadId, deploymentName },
+            { traceId, traceparent, threadId: data.threadId, deploymentName },
             "New thread - creating deployment"
           );
           await this.deploymentManager.createWorkerDeployment(
             data.userId,
             data.threadId,
-            data
+            dataWithTrace
           );
           logger.info({ traceId, deploymentName }, "Created deployment");
         } else {
@@ -386,7 +426,7 @@ export class MessageConsumer {
             await this.deploymentManager.createWorkerDeployment(
               data.userId,
               data.threadId,
-              data
+              dataWithTrace
             );
             logger.info({ traceId, deploymentName }, "Created worker");
           }

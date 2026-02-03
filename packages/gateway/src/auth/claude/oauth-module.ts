@@ -1,5 +1,6 @@
 import { BaseModule, createLogger, decrypt } from "@peerbot/core";
-import type { Request, Response } from "express";
+import type { Context } from "hono";
+import { Hono } from "hono";
 import type { IMessageQueue } from "../../infrastructure/queue";
 import { ClaudeOAuthClient } from "../oauth/claude-client";
 import type { ClaudeCredentialStore } from "./credential-store";
@@ -19,6 +20,7 @@ export class ClaudeOAuthModule extends BaseModule {
   private publicGatewayUrl: string;
   private systemTokenAvailable: boolean;
   private queue: IMessageQueue;
+  private app: Hono;
 
   constructor(
     private credentialStore: ClaudeCredentialStore,
@@ -34,6 +36,8 @@ export class ClaudeOAuthModule extends BaseModule {
     this.queue = queue;
     this.publicGatewayUrl = publicGatewayUrl;
     this.systemTokenAvailable = systemTokenAvailable;
+    this.app = new Hono();
+    this.setupRoutes();
   }
 
   isEnabled(): boolean {
@@ -42,23 +46,30 @@ export class ClaudeOAuthModule extends BaseModule {
   }
 
   /**
+   * Get the Hono app
+   */
+  getApp(): Hono {
+    return this.app;
+  }
+
+  /**
    * Build environment variables for worker deployment
    * Injects space's Claude OAuth token and user's model preference if available
    */
   async buildEnvVars(
     userId: string,
-    spaceId: string,
+    agentId: string,
     envVars: Record<string, string>
   ): Promise<Record<string, string>> {
     // Try to get space's credentials
-    const credentials = await this.credentialStore.getCredentials(spaceId);
+    const credentials = await this.credentialStore.getCredentials(agentId);
 
     if (credentials) {
       // Space has OAuth credentials - use their token
-      logger.info(`Injecting OAuth token for space ${spaceId}`);
+      logger.info(`Injecting OAuth token for space ${agentId}`);
       envVars.CLAUDE_CODE_OAUTH_TOKEN = credentials.accessToken;
     } else {
-      logger.debug(`No credentials for space ${spaceId}, using system token`);
+      logger.debug(`No credentials for space ${agentId}, using system token`);
       // System token (if any) will already be in envVars from base deployment
     }
 
@@ -77,20 +88,20 @@ export class ClaudeOAuthModule extends BaseModule {
 
   /**
    * Validate and decode the secure token generated for OAuth init links
-   * Returns the userId and spaceId if valid, null otherwise
+   * Returns the userId and agentId if valid, null otherwise
    */
   private validateSecureToken(
     token: string
-  ): { userId: string; spaceId: string } | null {
+  ): { userId: string; agentId: string } | null {
     try {
       const decrypted = decrypt(token);
       const data = JSON.parse(decrypted) as {
         userId?: string;
-        spaceId?: string;
+        agentId?: string;
         expiresAt?: number;
       };
 
-      if (!data.userId || !data.spaceId || !data.expiresAt) {
+      if (!data.userId || !data.agentId || !data.expiresAt) {
         logger.warn("Token missing required fields");
         return null;
       }
@@ -98,12 +109,12 @@ export class ClaudeOAuthModule extends BaseModule {
       if (Date.now() > data.expiresAt) {
         logger.warn("Token expired", {
           userId: data.userId,
-          spaceId: data.spaceId,
+          agentId: data.agentId,
         });
         return null;
       }
 
-      return { userId: data.userId, spaceId: data.spaceId };
+      return { userId: data.userId, agentId: data.agentId };
     } catch (error) {
       logger.error("Failed to validate secure token", { error });
       return null;
@@ -111,25 +122,28 @@ export class ClaudeOAuthModule extends BaseModule {
   }
 
   /**
-   * Register OAuth endpoints
+   * Setup OAuth routes on Hono app
    */
-  registerEndpoints(app: any): void {
+  private setupRoutes(): void {
     // Initialize OAuth flow
-    app.get("/claude/oauth/init", async (req: Request, res: Response) => {
-      await this.handleOAuthInit(req, res);
-    });
+    this.app.get("/init", (c) => this.handleOAuthInit(c));
 
     // OAuth callback endpoint
-    app.get("/claude/oauth/callback", async (req: Request, res: Response) => {
-      await this.handleOAuthCallback(req, res);
-    });
+    this.app.get("/callback", (c) => this.handleOAuthCallback(c));
 
     // Logout endpoint
-    app.post("/claude/oauth/logout", async (req: Request, res: Response) => {
-      await this.handleLogout(req, res);
-    });
+    this.app.post("/logout", (c) => this.handleLogout(c));
 
-    logger.info("Claude OAuth endpoints registered");
+    logger.info("Claude OAuth routes configured");
+  }
+
+  /**
+   * Register OAuth endpoints (for backward compatibility with module system)
+   */
+  registerEndpoints(_app: any): void {
+    // Routes are already registered in constructor via setupRoutes()
+    // This method is kept for module interface compatibility
+    logger.info("Claude OAuth endpoints registered via module system");
   }
 
   /**
@@ -138,7 +152,7 @@ export class ClaudeOAuthModule extends BaseModule {
    */
   async getAuthStatus(
     userId: string,
-    spaceId: string
+    agentId: string
   ): Promise<
     Array<{
       id: string;
@@ -150,7 +164,7 @@ export class ClaudeOAuthModule extends BaseModule {
     }>
   > {
     try {
-      const hasCredentials = await this.credentialStore.hasCredentials(spaceId);
+      const hasCredentials = await this.credentialStore.hasCredentials(agentId);
       const availableModels =
         await this.modelPreferenceStore.getAvailableModels();
       const currentModel =
@@ -199,12 +213,12 @@ export class ClaudeOAuthModule extends BaseModule {
   async handleAction(
     actionId: string,
     userId: string,
-    spaceId: string,
+    agentId: string,
     context: any
   ): Promise<boolean> {
     if (actionId === "claude_logout") {
-      await this.credentialStore.deleteCredentials(spaceId);
-      logger.info(`Space ${spaceId} logged out from Claude`);
+      await this.credentialStore.deleteCredentials(agentId);
+      logger.info(`Space ${agentId} logged out from Claude`);
 
       // Update home tab
       if (context.updateAppHome) {
@@ -239,7 +253,7 @@ export class ClaudeOAuthModule extends BaseModule {
       const codeVerifier = this.oauthClient.generateCodeVerifier();
 
       // Generate OAuth state for CSRF protection and store with code verifier
-      const state = await this.stateStore.create(userId, spaceId, codeVerifier);
+      const state = await this.stateStore.create(userId, agentId, codeVerifier);
 
       // Build Claude OAuth URL that redirects to console.anthropic.com callback
       const authUrl = this.oauthClient.buildAuthUrl(
@@ -273,7 +287,9 @@ export class ClaudeOAuthModule extends BaseModule {
       const loginContext = {
         state,
         source: isHomeTab ? "home_tab" : "ephemeral_message",
+        platform: "slack",
         channelId: context.channelId,
+        teamId: context.teamId,
         messageTs: threadTs,
       };
 
@@ -417,9 +433,9 @@ export class ClaudeOAuthModule extends BaseModule {
         state
       );
 
-      // Store credentials using spaceId for multi-tenant isolation
-      await this.credentialStore.setCredentials(stateData.spaceId, credentials);
-      logger.info(`OAuth successful for space ${stateData.spaceId} via modal`);
+      // Store credentials using agentId for multi-tenant isolation
+      await this.credentialStore.setCredentials(stateData.agentId, credentials);
+      logger.info(`OAuth successful for space ${stateData.agentId} via modal`);
 
       // Parse login context to determine where to send success message
       let loginContext: any = { source: "home_tab" };
@@ -466,6 +482,8 @@ export class ClaudeOAuthModule extends BaseModule {
       userId,
       channelId: loginContext.channelId || userId, // Use DM channel if no channelId
       threadId: loginContext.messageTs || undefined,
+      platform: loginContext.platform || "slack",
+      teamId: loginContext.teamId || "slack",
       ephemeral: true,
       content: message,
       processedMessageIds: [`auth_success_${Date.now()}`],
@@ -477,32 +495,30 @@ export class ClaudeOAuthModule extends BaseModule {
   /**
    * Handle OAuth initialization - redirect user to Claude login
    */
-  private async handleOAuthInit(req: Request, res: Response): Promise<void> {
-    const token = req.query.token as string;
+  private async handleOAuthInit(c: Context): Promise<Response> {
+    const token = c.req.query("token");
 
     if (!token) {
-      res.status(400).json({ error: "Missing token parameter" });
-      return;
+      return c.json({ error: "Missing token parameter" }, 400);
     }
 
     // Validate and decode token
     const tokenData = this.validateSecureToken(token);
     if (!tokenData) {
-      res.status(401).json({ error: "Invalid or expired token" });
-      return;
+      return c.json({ error: "Invalid or expired token" }, 401);
     }
 
-    const { userId, spaceId } = tokenData;
+    const { userId, agentId } = tokenData;
 
     try {
       // Generate PKCE code verifier
       const codeVerifier = this.oauthClient.generateCodeVerifier();
 
-      // Store state with code verifier and spaceId
-      const state = await this.stateStore.create(userId, spaceId, codeVerifier);
+      // Store state with code verifier and agentId
+      const state = await this.stateStore.create(userId, agentId, codeVerifier);
 
       // Build authorization URL
-      const callbackUrl = `${this.publicGatewayUrl}/claude/oauth/callback`;
+      const callbackUrl = `${this.publicGatewayUrl}/api/v1/auth/claude/callback`;
       const authUrl = this.oauthClient.buildAuthUrl(
         state,
         codeVerifier,
@@ -510,100 +526,101 @@ export class ClaudeOAuthModule extends BaseModule {
       );
 
       // Redirect to Claude OAuth
-      res.redirect(authUrl);
-      logger.info(`Initiated OAuth for space ${spaceId}`);
+      logger.info(`Initiated OAuth for space ${agentId}`);
+      return c.redirect(authUrl);
     } catch (error) {
-      logger.error("Failed to init OAuth", { error, spaceId });
-      res.status(500).json({ error: "Failed to initialize OAuth" });
+      logger.error("Failed to init OAuth", { error, agentId });
+      return c.json({ error: "Failed to initialize OAuth" }, 500);
     }
   }
 
   /**
    * Handle OAuth callback - exchange code for token and store credentials
    */
-  private async handleOAuthCallback(
-    req: Request,
-    res: Response
-  ): Promise<void> {
-    const { code, state, error, error_description } = req.query;
+  private async handleOAuthCallback(c: Context): Promise<Response> {
+    const code = c.req.query("code");
+    const state = c.req.query("state");
+    const error = c.req.query("error");
+    const error_description = c.req.query("error_description");
 
     // Handle OAuth errors (user denied, etc.)
     if (error) {
       logger.warn(`OAuth error: ${error}`, { error_description });
-      res.send(
-        this.renderErrorPage(error as string, error_description as string)
-      );
-      return;
+      return c.html(this.renderErrorPage(error, error_description || ""));
     }
 
     if (!code || !state) {
-      res
-        .status(400)
-        .send(this.renderErrorPage("invalid_request", "Missing code or state"));
-      return;
+      return c.html(
+        this.renderErrorPage("invalid_request", "Missing code or state"),
+        400
+      );
     }
 
     try {
       // Validate and consume state
-      const stateData = await this.stateStore.consume(state as string);
+      const stateData = await this.stateStore.consume(state);
       if (!stateData) {
-        res
-          .status(400)
-          .send(
-            this.renderErrorPage(
-              "invalid_state",
-              "Invalid or expired state parameter"
-            )
-          );
-        return;
+        return c.html(
+          this.renderErrorPage(
+            "invalid_state",
+            "Invalid or expired state parameter"
+          ),
+          400
+        );
       }
 
       // Exchange code for token using PKCE
-      const callbackUrl = `${this.publicGatewayUrl}/claude/oauth/callback`;
+      const callbackUrl = `${this.publicGatewayUrl}/api/v1/auth/claude/callback`;
       const credentials = await this.oauthClient.exchangeCodeForToken(
-        code as string,
+        code,
         stateData.codeVerifier,
         callbackUrl
       );
 
-      // Store credentials using spaceId for multi-tenant isolation
-      await this.credentialStore.setCredentials(stateData.spaceId, credentials);
+      // Store credentials using agentId for multi-tenant isolation
+      await this.credentialStore.setCredentials(stateData.agentId, credentials);
 
-      logger.info(`OAuth successful for space ${stateData.spaceId}`);
+      logger.info(`OAuth successful for space ${stateData.agentId}`);
 
       // Show success page
-      res.send(this.renderSuccessPage());
+      return c.html(this.renderSuccessPage());
     } catch (error) {
       logger.error("Failed to handle OAuth callback", { error });
-      res
-        .status(500)
-        .send(
-          this.renderErrorPage(
-            "server_error",
-            "Failed to complete authentication"
-          )
-        );
+      return c.html(
+        this.renderErrorPage(
+          "server_error",
+          "Failed to complete authentication"
+        ),
+        500
+      );
     }
   }
 
   /**
    * Handle logout - delete credentials
    */
-  private async handleLogout(req: Request, res: Response): Promise<void> {
-    const spaceId = req.body.spaceId || req.query.spaceId;
+  private async handleLogout(c: Context): Promise<Response> {
+    let agentId: string | undefined;
 
-    if (!spaceId) {
-      res.status(400).json({ error: "Missing spaceId" });
-      return;
+    // Try to get agentId from body or query
+    try {
+      const body = await c.req.json().catch(() => ({}));
+      agentId = body.agentId || c.req.query("agentId");
+    } catch {
+      agentId = c.req.query("agentId");
+    }
+
+    if (!agentId) {
+      return c.json({ error: "Missing agentId" }, 400);
     }
 
     try {
-      await this.credentialStore.deleteCredentials(spaceId as string);
-      logger.info(`Space ${spaceId} logged out from Claude`);
-      res.json({ success: true });
+      await this.credentialStore.deleteCredentials(agentId);
+      logger.info(`Space ${agentId} logged out from Claude`);
+      return c.json({ success: true });
     } catch (error) {
-      logger.error("Failed to logout", { error, spaceId });
-      res.status(500).json({ error: "Failed to logout" });
+      logger.error("Failed to logout", { error, agentId });
+      return c.json({ error: "Failed to logout" }, 500);
     }
   }
 

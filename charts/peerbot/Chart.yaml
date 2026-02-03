@@ -48,3 +48,8 @@ dependencies:
     version: "~24.x"
     repository: oci://registry-1.docker.io/bitnamicharts
     condition: redis.enabled
+  # Grafana Tempo for distributed tracing
+  - name: tempo
+    version: "~1.x"
+    repository: https://grafana.github.io/helm-charts
+    condition: tempo.enabled

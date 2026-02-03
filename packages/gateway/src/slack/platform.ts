@@ -45,6 +45,7 @@ export class SlackPlatform implements PlatformAdapter {
   private services!: CoreServices;
   private fileHandler?: SlackFileHandler;
   private interactionRenderer?: SlackInteractionRenderer;
+  private eventHandlers?: SlackEventHandlers;
 
   constructor(
     private readonly config: SlackPlatformConfig,
@@ -173,7 +174,7 @@ export class SlackPlatform implements PlatformAdapter {
     logger.info("✅ Interaction button handlers registered");
 
     // Initialize event handlers
-    new SlackEventHandlers(
+    this.eventHandlers = new SlackEventHandlers(
       this.app,
       services.getQueueProducer(),
       {
@@ -186,6 +187,20 @@ export class SlackPlatform implements PlatformAdapter {
       interactionService,
       this // Pass platform instance for auth status rendering
     );
+
+    // Wire up channel binding service for agent routing
+    const channelBindingService = services.getChannelBindingService();
+    if (channelBindingService) {
+      this.eventHandlers.setChannelBindingService(channelBindingService);
+      logger.info("✅ Channel binding service wired to Slack event handlers");
+    }
+
+    // Wire up agent settings store for applying agent configuration
+    const agentSettingsStore = services.getAgentSettingsStore();
+    if (agentSettingsStore) {
+      this.eventHandlers.setAgentSettingsStore(agentSettingsStore);
+      logger.info("✅ Agent settings store wired to Slack event handlers");
+    }
 
     logger.info("✅ Slack platform initialized");
   }
@@ -319,34 +334,37 @@ export class SlackPlatform implements PlatformAdapter {
   }
 
   /**
-   * Send a test message using external bot token
+   * Send a message via Slack
    * Supports channel name resolution, multiple file uploads, and @me placeholder
    */
   async sendMessage(
     token: string,
-    channel: string,
     message: string,
-    options?: {
-      threadId?: string;
+    options: {
+      agentId: string;
+      channelId: string;
+      threadId: string;
+      teamId: string;
       files?: Array<{ buffer: Buffer; filename: string }>;
     }
   ): Promise<{
-    channel: string;
     messageId: string;
-    threadId: string;
-    threadUrl?: string;
+    eventsUrl?: string;
     queued?: boolean;
   }> {
     const client = new WebClient(token);
 
     // Get bot user ID and team ID (single auth.test call)
     let botUserId: string | undefined;
-    let teamId: string | undefined;
+    let resolvedTeamId: string | undefined = options.teamId;
     try {
       const authResponse = await client.auth.test();
       if (authResponse.ok) {
         botUserId = authResponse.user_id;
-        teamId = authResponse.team_id;
+        // Use resolved team ID if not provided
+        if (!resolvedTeamId || resolvedTeamId === "unknown") {
+          resolvedTeamId = authResponse.team_id;
+        }
       }
     } catch (error) {
       logger.warn("Could not get bot info:", error);
@@ -359,35 +377,46 @@ export class SlackPlatform implements PlatformAdapter {
     }
 
     // Resolve channel name to ID if needed
-    let channelId = channel;
-    if (!channel.match(/^[CDG][A-Z0-9]+$/)) {
-      logger.info(`Resolving channel name "${channel}" to ID...`);
-      channelId = await this.resolveChannelName(client, channel);
-      logger.info(`Resolved channel "${channel}" to ID: ${channelId}`);
+    let channelId = options.channelId;
+    if (!channelId.match(/^[CDG][A-Z0-9]+$/)) {
+      logger.info(`Resolving channel name "${channelId}" to ID...`);
+      channelId = await this.resolveChannelName(client, channelId);
+      logger.info(
+        `Resolved channel "${options.channelId}" to ID: ${channelId}`
+      );
     }
 
     // Detect self-messaging: any message sent with bot's own token needs manual queueing
     // because Slack will mark it as from the bot user and our event handler filters those out
     const isSelfMessage = this.isOwnBotToken(token);
 
+    // Thread ID for Slack (use provided or will be set to message ts)
+    const slackThreadId =
+      options.threadId !== options.agentId ? options.threadId : undefined;
+
     // Handle file uploads
-    if (options?.files && options.files.length > 0) {
-      return await this.sendMessageWithFiles(
+    if (options.files && options.files.length > 0) {
+      const result = await this.sendMessageWithFiles(
         client,
         channelId,
         processedMessage,
         options.files,
-        options.threadId,
-        teamId,
+        slackThreadId,
+        resolvedTeamId,
         isSelfMessage
       );
+      return {
+        messageId: result.messageId,
+        eventsUrl: result.threadUrl,
+        queued: result.queued,
+      };
     }
 
     // Send regular message
     const response = await client.chat.postMessage({
       channel: channelId,
       text: processedMessage,
-      thread_ts: options?.threadId,
+      thread_ts: slackThreadId,
     });
 
     if (!response.ok || !response.ts) {
@@ -395,12 +424,12 @@ export class SlackPlatform implements PlatformAdapter {
     }
 
     const messageId = response.ts;
-    const threadId = options?.threadId || messageId;
+    const threadId = slackThreadId || messageId;
 
     // Build thread URL if we have team ID
-    let threadUrl: string | undefined;
-    if (teamId) {
-      threadUrl = `https://app.slack.com/client/${teamId}/${channelId}/thread/${threadId}`;
+    let eventsUrl: string | undefined;
+    if (resolvedTeamId) {
+      eventsUrl = `https://app.slack.com/client/${resolvedTeamId}/${channelId}/thread/${threadId}`;
     }
 
     // If self-messaging, manually queue since Slack won't send webhook
@@ -415,16 +444,14 @@ export class SlackPlatform implements PlatformAdapter {
         threadId,
         processedMessage,
         botUserId,
-        teamId
+        resolvedTeamId
       );
       queued = true;
     }
 
     return {
-      channel: channelId,
       messageId,
-      threadId,
-      threadUrl,
+      eventsUrl,
       queued,
     };
   }
@@ -637,13 +664,12 @@ export class SlackPlatform implements PlatformAdapter {
   ): Promise<void> {
     const queueProducer = this.services.getQueueProducer();
 
-    // Use TEST_USER_ID for testing, or fall back to SLACK_ADMIN_USER_ID, or bot's user
-    const testUserId =
-      process.env.TEST_USER_ID || process.env.SLACK_ADMIN_USER_ID || botUserId;
+    // Use TEST_USER_ID for testing, or fall back to bot's user
+    const testUserId = process.env.TEST_USER_ID || botUserId;
 
-    // Resolve spaceId for multi-tenant isolation
+    // Resolve agentId for multi-tenant isolation
     const isDirectMessage = channelId.startsWith("D");
-    const { spaceId } = resolveSpace({
+    const { agentId } = resolveSpace({
       platform: "slack",
       userId: testUserId,
       channelId,
@@ -657,7 +683,7 @@ export class SlackPlatform implements PlatformAdapter {
       botId: this.config.slack.botId || "",
       threadId,
       teamId: teamId || "",
-      spaceId,
+      agentId,
       messageId,
       messageText: message,
       channelId,
@@ -979,6 +1005,44 @@ export class SlackPlatform implements PlatformAdapter {
     });
 
     logger.info(`Successfully rendered auth status for user ${userId}`);
+  }
+
+  /**
+   * Check if channel ID represents a group/channel vs DM.
+   * Slack channel IDs: C = public channel, G = private channel, D = DM
+   */
+  isGroupChannel(channelId: string): boolean {
+    return channelId.startsWith("C") || channelId.startsWith("G");
+  }
+
+  /**
+   * Get display info for Slack platform.
+   */
+  getDisplayInfo(): { name: string; icon: string; logoUrl?: string } {
+    return {
+      name: "Slack",
+      icon: `<svg viewBox="0 0 124 124" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M26.4 78.6c0 7.1-5.8 12.9-12.9 12.9S.6 85.7.6 78.6s5.8-12.9 12.9-12.9h12.9v12.9zm6.5 0c0-7.1 5.8-12.9 12.9-12.9s12.9 5.8 12.9 12.9v32.3c0 7.1-5.8 12.9-12.9 12.9s-12.9-5.8-12.9-12.9V78.6z" fill="#E01E5A"/><path d="M45.8 26.4c-7.1 0-12.9-5.8-12.9-12.9S38.7.6 45.8.6s12.9 5.8 12.9 12.9v12.9H45.8zm0 6.5c7.1 0 12.9 5.8 12.9 12.9s-5.8 12.9-12.9 12.9H13.5C6.4 58.7.6 52.9.6 45.8s5.8-12.9 12.9-12.9h32.3z" fill="#36C5F0"/><path d="M97.6 45.8c0-7.1 5.8-12.9 12.9-12.9s12.9 5.8 12.9 12.9-5.8 12.9-12.9 12.9H97.6V45.8zm-6.5 0c0 7.1-5.8 12.9-12.9 12.9s-12.9-5.8-12.9-12.9V13.5c0-7.1 5.8-12.9 12.9-12.9s12.9 5.8 12.9 12.9v32.3z" fill="#2EB67D"/><path d="M78.2 97.6c7.1 0 12.9 5.8 12.9 12.9s-5.8 12.9-12.9 12.9-12.9-5.8-12.9-12.9V97.6h12.9zm0-6.5c-7.1 0-12.9-5.8-12.9-12.9s5.8-12.9 12.9-12.9h32.3c7.1 0 12.9 5.8 12.9 12.9s-5.8 12.9-12.9 12.9H78.2z" fill="#ECB22E"/></svg>`,
+    };
+  }
+
+  /**
+   * Extract routing info from Slack-specific request body.
+   */
+  extractRoutingInfo(body: Record<string, unknown>): {
+    channelId: string;
+    threadId: string;
+    teamId?: string;
+  } | null {
+    const slack = body.slack as
+      | { channel?: string; thread?: string; team?: string }
+      | undefined;
+    if (!slack?.channel) return null;
+
+    return {
+      channelId: slack.channel,
+      threadId: slack.thread || "",
+      teamId: slack.team,
+    };
   }
 
   /**

@@ -4,7 +4,7 @@ import { OAuthStateStore as BaseOAuthStateStore } from "../oauth/state-store";
 
 interface McpOAuthStateData {
   userId: string;
-  spaceId: string;
+  agentId: string;
   mcpId: string;
   nonce: string;
   redirectPath?: string;

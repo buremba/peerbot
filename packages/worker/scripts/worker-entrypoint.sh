@@ -93,6 +93,60 @@ if [ "${NODE_ENV}" = "development" ]; then
     fi
 fi
 
+# Source Nix profile if installed (non-interactive shells don't source /etc/profile.d)
+if [ -f /home/claude/.nix-profile/etc/profile.d/nix.sh ]; then
+    . /home/claude/.nix-profile/etc/profile.d/nix.sh
+    # Set NIX_PATH for nix-shell -p to find nixpkgs
+    export NIX_PATH="nixpkgs=/home/claude/.nix-defexpr/channels/nixpkgs"
+fi
+
+# Nix environment activation
+# Priority: API env vars > repo files
+activate_nix_env() {
+    local cmd="$1"
+
+    # Check if Nix is installed
+    if ! command -v nix &> /dev/null; then
+        echo "⚠️  Nix not installed, skipping environment activation"
+        exec $cmd
+    fi
+
+    # 1. API-provided flake URL takes highest priority
+    if [ -n "${NIX_FLAKE_URL:-}" ]; then
+        echo "🔧 Activating Nix flake environment: $NIX_FLAKE_URL"
+        exec nix develop "$NIX_FLAKE_URL" --command $cmd
+    fi
+
+    # 2. API-provided packages list
+    if [ -n "${NIX_PACKAGES:-}" ]; then
+        # Convert comma-separated to space-separated
+        local packages="${NIX_PACKAGES//,/ }"
+        echo "🔧 Activating Nix packages: $packages"
+        exec nix-shell -p $packages --command "$cmd"
+    fi
+
+    # 3. Check for nix files in workspace (git-based config)
+    if [ -f "$WORKSPACE_DIR/flake.nix" ]; then
+        echo "🔧 Detected flake.nix in workspace, activating..."
+        exec nix develop "$WORKSPACE_DIR" --command $cmd
+    fi
+
+    if [ -f "$WORKSPACE_DIR/shell.nix" ]; then
+        echo "🔧 Detected shell.nix in workspace, activating..."
+        exec nix-shell "$WORKSPACE_DIR/shell.nix" --command "$cmd"
+    fi
+
+    # 4. Check for simple .nix-packages file (one package per line)
+    if [ -f "$WORKSPACE_DIR/.nix-packages" ]; then
+        local packages=$(cat "$WORKSPACE_DIR/.nix-packages" | tr '\n' ' ')
+        echo "🔧 Detected .nix-packages file, activating: $packages"
+        exec nix-shell -p $packages --command "$cmd"
+    fi
+
+    # No nix config found, run directly
+    exec $cmd
+}
+
 # Start the worker process
 echo "🚀 Executing Claude Worker..."
 # Check if we're already in the worker directory
@@ -103,7 +157,7 @@ fi
 # In development mode, run from source to avoid path resolution issues with modules
 if [ "${NODE_ENV}" = "development" ]; then
     echo "📝 Running in development mode from source..."
-    exec bun run src/index.ts
+    activate_nix_env "bun run src/index.ts"
 else
-    exec bun run dist/index.js
+    activate_nix_env "bun run dist/index.js"
 fi

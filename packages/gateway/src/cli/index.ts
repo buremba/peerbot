@@ -1,6 +1,11 @@
 #!/usr/bin/env bun
 
-import { ConfigError, createLogger, initSentry } from "@peerbot/core";
+import {
+  ConfigError,
+  createLogger,
+  initSentry,
+  initTracing,
+} from "@peerbot/core";
 import { Command } from "commander";
 import {
   buildGatewayConfig,
@@ -56,6 +61,14 @@ async function main() {
       try {
         // Load environment variables
         loadEnvFile(options.env);
+
+        // Initialize OpenTelemetry tracing for Tempo (if configured)
+        initTracing({
+          serviceName: "peerbot-gateway",
+          serviceVersion: process.env.npm_package_version || "2.0.0",
+          tempoEndpoint: process.env.TEMPO_ENDPOINT, // e.g., "http://peerbot-tempo:4318/v1/traces"
+          enabled: !!process.env.TEMPO_ENDPOINT,
+        });
 
         // Build configuration from environment
         const config = buildGatewayConfig();

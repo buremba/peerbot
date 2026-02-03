@@ -2,19 +2,17 @@
 
 ### Package Architecture
 - **`packages/core`**: Shared code between gateway and worker (interfaces, utils, types). Any code reused by both must live here.
-- **`packages/gateway`**: Platform-agnostic gateway. Slack code under `src/slack/`. Future chat platforms (Discord, Teams) will live alongside as separate modules in dispatcher pattern.
+- **`packages/gateway`**: Platform-agnostic gateway. Slack code under `src/slack/`. Orchestration under `src/orchestration/`. Future chat platforms (Discord, Teams) will live alongside as separate modules in dispatcher pattern.
 - **`packages/worker`**: Claude-specific logic in `src/claude/`. Worker talks only to gateway and agent (Claude CLI). No Slack/platform knowledge.
-- **`packages/orchestrator`**: Deployment engine only. Talks to compute (Docker/K8s) and Redis queues. No platform knowledge.
 
 ### Module Boundaries
-- Gateway: Slack → `src/slack/`, future platforms → `src/dispatcher/{platform}/`
+- Gateway: Slack → `src/slack/`, orchestration → `src/orchestration/`, future platforms → `src/dispatcher/{platform}/`
 - Worker: Platform-agnostic, Claude logic isolated to `src/claude/`
 - Core: Shared interfaces, utils, types for gateway+worker
-- Orchestrator: Compute engine (Docker/K8s) + Redis only
 
 ### Repository Layout
-- Monorepo managed by Bun workspaces: `packages/gateway`, `packages/orchestrator`, `packages/worker`, `packages/core`.
-- Top-level: `Makefile`, `bin/` (CLI/setup), `sidecar.yaml`, `charts/peerbot` (Helm), `workspaces/`, `.env*`.
+- Monorepo managed by Bun workspaces: `packages/gateway`, `packages/worker`, `packages/core`.
+- Top-level: `Makefile`, `bin/` (CLI/setup), `charts/peerbot` (Helm), `workspaces/`, `.env*`.
 - TypeScript sources under `packages/*/src`. Tests in `packages/*/src/__tests__` and `packages/core/tests`.
 - **ALWAYS prefer `bun` commands over `npm`**
 - When fixing unused parameter errors, remove the parameter entirely if possible rather than prefixing with underscore
@@ -27,18 +25,24 @@ We currently use WhatsApp as the messaging platform (Slack support also availabl
 There is also a public endpoint in gateway to trigger running the agent.
 
 #### Orchestration
-- We support DockerDeploymentManager and KubernetesDeploymentManager.
+- **Deployment modes**: Kubernetes (production), Docker (development), Local (development without Docker)
 - All workers are sandboxed with your settings.
 
+**Local Deployment Mode** (`DEPLOYMENT_MODE=local`):
+- Workers run as child processes of the gateway (no Docker required)
+- Uses Anthropic Sandbox Runtime (`@anthropic-ai/sandbox-runtime`) for OS-level isolation
+- Sandboxing configuration via `SANDBOX_ENABLED`:
+  - `unset` (default): Auto-detect - enable if srt installed, warn if not
+  - `true`: Explicitly enable (fails if srt not installed)
+  - `false`: Disable sandboxing (escape hatch for troubleshooting)
+- Workers use HTTP proxy for network filtering (same as Docker/K8s modes)
+- Git operations require `GIT_TEMPLATE_DIR=""` (set automatically)
+- **Known limitation**: Complex git clone fails in sandbox; use git worktree pattern (gateway clones, creates worktree for worker)
+
 #### MCP
-- The users pass the PEERBOT_MCP_SERVERS_URL env (.peerbot/mcp.config.json) to enable MCP proxy in the gateway. 
-- The workers get the MCP settings from gateway's internal config endpoint and their JWT token from environment variables to perform MCP calls through proxy.
-- Peerbot includes following MCPs in the workers by default: // TODO explain them and make it concise
-- AskUser
--- put one example
-- UploadFile
-- [processmanager]
-- ? (add anything else)
+- Users pass the PEERBOT_MCP_SERVERS_URL env (pointing to `.peerbot/mcp.config.json`) to enable MCP proxy in the gateway.
+- Workers get MCP settings from gateway's internal config endpoint and use their JWT token to perform MCP calls through the proxy.
+- Built-in MCPs available to workers: AskUser (request user input), UploadFile (share files with user).
 
 #### Network
 
@@ -64,7 +68,7 @@ TypeScript packages must be compiled from `src/` → `dist/`. If you modify any 
 - The "is running" thread status indicator (with rotating messages) provides user feedback during processing; visible "Still processing" heartbeat messages are not sent to avoid clutter.
 - Anytime you make changes in the code, you MUST:
 
-1. Have the bot running via sidecar (`/process-management`) for development.
+1. Have the gateway running (see Development Mode below).
 2. Test the bot using the test script:
 ```bash
 ./scripts/test-bot.sh "@me test prompt"
@@ -73,7 +77,6 @@ The script automatically handles sending the message, waiting for response, and 
 ```bash
 ./scripts/test-bot.sh "@me first message" "follow up question" "another question"
 ```
-3. Check logs using `get_logs("gateway")` via `/process-management` to verify the bot works properly.
 
 - If you create ephemeral files, you MUST delete them when you're done with them.
 - Use Docker to build and run the Slack bot in development mode, K8S for production.
@@ -98,22 +101,25 @@ File attachments are fully supported in all message contexts (DM, app mentions, 
 ```
 
 ### Starting Development
-**Automatic!** Just open this project in Claude Code - sidecar auto-starts:
-1. Redis server (port 6379)
-2. Package watcher (rebuilds on changes)
-3. Gateway with hot reload (port 8080)
+```bash
+# Terminal 1: Start Redis
+redis-server
 
-A tmux session opens showing all process output.
+# Terminal 2: Watch and rebuild packages on changes
+make watch-packages
 
-### Managing Processes
-Use `/process-management` if needed:
-- `list_processes` - See status
-- `get_logs("gateway")` - View logs
-- `restart_process("gateway")` - Restart
+# Terminal 3: Run gateway with hot reload
+cd packages/gateway && bun run dev
+```
+
+Or use Docker Compose for a simpler setup:
+```bash
+docker compose up
+```
 
 ### Hot Reload
 - **Gateway**: Runs with `bun --watch`, auto-restarts on source changes
-- **Packages**: The `packages` process watches and rebuilds TypeScript packages
+- **Packages**: Use `make watch-packages` to auto-rebuild on changes
 - **Worker**: Run `make clean-workers` after worker code changes
 
 ### Testing
@@ -124,7 +130,7 @@ Use `/process-management` if needed:
 ## Deployment Instructions
 
 When making changes to the Slack bot:
-1. **Development**: Open project in Claude Code (auto-starts). View logs with `get_logs("gateway")`
+1. **Development**: Start gateway with `cd packages/gateway && bun run dev`
 2. **Kubernetes deployment**: Use `make deploy` for production deployment
 
 ## Environment Configuration
@@ -132,8 +138,8 @@ When making changes to the Slack bot:
 The `.env` file is the single source of truth for all secrets and configuration.
 
 ### Local Development
-- Sidecar automatically reloads gateway when `.env` changes (via `envFile: .env`)
-- No manual action needed
+- Gateway reads `.env` on startup
+- Restart gateway after `.env` changes: `cd packages/gateway && bun run dev`
 
 ### Kubernetes Deployment
 When `.env` changes, sync secrets to K8s using Sealed Secrets:
@@ -159,13 +165,27 @@ brew install kubeseal
 
 The gateway deployment has a checksum annotation that triggers automatic pod restart when secrets change via `helm upgrade`.
 
+### Secrets Strategy Matrix
+
+| Environment | Script | Approach | Git Safe |
+|-------------|--------|----------|----------|
+| **Production** | `./scripts/seal-env.sh --apply` | SealedSecrets | Yes - encrypted |
+| **Staging** | `./scripts/seal-env.sh --apply` | SealedSecrets | Yes - encrypted |
+| **Local K8s** | `./scripts/sync-env-to-k8s.sh` | Plain Secrets | No - dev only |
+| **Docker** | N/A (reads .env directly) | File mount | N/A |
+
+**Key Rules:**
+- **Production**: Always use SealedSecrets. Never commit plain secrets to Git.
+- **Local dev**: Use `sync-env-to-k8s.sh` for convenience (creates plain K8s secrets that disappear when cluster is deleted).
+- **Never mix**: Choose one strategy per cluster and stick with it.
+
 ## Development Configuration
 
 - Rate limiting is disabled in local development
 - Worker image built with `make build-worker` or `make setup`
 
 ### Docker Compose (Alternative)
-For quick demos without sidecar, docker-compose.yml is available:
+For running everything in containers:
 ```bash
 docker compose up
 ```
@@ -192,7 +212,7 @@ PUBLIC_GATEWAY_URL=https://your-domain.com
 
 2. **Configure OAuth callback URL** in your OAuth provider:
 ```
-https://buraks-macbook-pro.brill-kanyu.ts.net/mcp/oauth/callback
+${PUBLIC_GATEWAY_URL}/mcp/oauth/callback
 ```
 
 3. **Configure MCP servers** with OAuth (two options):
@@ -300,7 +320,7 @@ curl -X POST http://localhost:8080/api/messaging/send \
 ```
 
 ### Check Logs
-Use `/process-management`:
-```
-get_logs("gateway", tail=50)
+Gateway logs are output to the terminal where it's running. For Docker:
+```bash
+docker compose logs -f gateway
 ```

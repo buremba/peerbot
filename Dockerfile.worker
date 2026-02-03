@@ -33,6 +33,7 @@ RUN apt-get update && apt-get install -y \
     && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
     && apt-get update \
+    && apt-get install -y gh \
     && rm -rf /var/lib/apt/lists/* \
     && pip3 install matplotlib \
     && ln -sf /bin/bash /bin/sh
@@ -54,6 +55,22 @@ RUN addgroup --gid 1001 claude && \
     echo 'claude ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers && \
     usermod -aG docker claude
 
+# Install Nix (single-user mode for container simplicity)
+# This allows workers to use nix-shell or nix develop for custom environments
+RUN mkdir -p /nix && chown claude:claude /nix
+USER claude
+RUN curl -L https://nixos.org/nix/install | sh -s -- --no-daemon
+# Add nixpkgs channel for nix-shell -p to work
+RUN /home/claude/.nix-profile/bin/nix-channel --add https://nixos.org/channels/nixpkgs-unstable nixpkgs && \
+    /home/claude/.nix-profile/bin/nix-channel --update
+USER root
+# Add Nix to PATH and set NIX_PATH for all users
+RUN echo 'export PATH="/home/claude/.nix-profile/bin:$PATH"' >> /etc/profile.d/nix.sh && \
+    echo 'export NIX_PATH="nixpkgs=/home/claude/.nix-defexpr/channels/nixpkgs"' >> /etc/profile.d/nix.sh && \
+    chmod +x /etc/profile.d/nix.sh && \
+    echo 'export PATH="/home/claude/.nix-profile/bin:$PATH"' >> /home/claude/.bashrc && \
+    echo 'export NIX_PATH="nixpkgs=/home/claude/.nix-defexpr/channels/nixpkgs"' >> /home/claude/.bashrc
+
 RUN npm install -g @anthropic-ai/claude-code && \
     echo "NPM global packages:" && \
     npm list -g --depth=0 && \
@@ -68,14 +85,13 @@ RUN echo 'export PATH="/home/bun/.bun/bin:$PATH"' >> /home/claude/.bashrc && \
     echo 'export PATH="/root/.cargo/bin:$PATH"' >> /home/claude/.bashrc
 
 # Create minimal package.json for worker-only workspace
-RUN echo '{ "name": "@peerbot/worker-build", "private": true, "workspaces": [ "packages/core", "packages/github", "packages/worker" ] }' > package.json
+RUN echo '{ "name": "@peerbot/worker-build", "private": true, "workspaces": [ "packages/core", "packages/worker" ] }' > package.json
 
 # Copy dependency manifests
 COPY bun.lock ./bun.lock
 COPY tsconfig.json ./
 COPY packages/worker/package.json ./packages/worker/
 COPY packages/core/package.json ./packages/core/
-COPY packages/github/package.json ./packages/github/
 
 # Install all dependencies including devDependencies for building
 RUN --mount=type=cache,target=/root/.bun/install/cache bun install
@@ -84,15 +100,12 @@ RUN --mount=type=cache,target=/root/.bun/install/cache bun install
 COPY packages/ ./packages/
 COPY scripts/ ./scripts/
 
-# Build core and github packages in all modes (required for worker imports)
-# These must be built since worker imports from them via package.json main field
+# Build core package in all modes (required for worker imports)
+# This must be built since worker imports from it via package.json main field
 RUN echo "Building @peerbot/core package..."; \
     cd /app/packages/core && rm -f tsconfig.tsbuildinfo && bun run build && \
     # Create symlink so built core can resolve its dependencies from root node_modules \
-    ln -sf /app/node_modules /app/packages/core/node_modules && \
-    echo "Building @peerbot/github package..."; \
-    cd /app/packages/github && rm -f tsconfig.tsbuildinfo && bun run build && \
-    ln -sf /app/node_modules /app/packages/github/node_modules
+    ln -sf /app/node_modules /app/packages/core/node_modules
 
 # For production mode, also build worker during image creation
 # For dev mode, worker runs from source but still needs core built
@@ -112,11 +125,9 @@ RUN mkdir -p /workspace && \
     chmod 755 /workspace && \
     # Create dist directories for TypeScript compilation
     mkdir -p /app/packages/core/dist && \
-    mkdir -p /app/packages/github/dist && \
     mkdir -p /app/packages/worker/dist && \
     # Only chown specific directories that claude needs write access to
     chown -R claude:claude /app/packages/core/dist && \
-    chown -R claude:claude /app/packages/github/dist && \
     chown -R claude:claude /app/packages/worker/dist && \
     chown -R claude:claude /app/packages/worker/scripts 2>/dev/null || true && \
     chown -R claude:claude /app

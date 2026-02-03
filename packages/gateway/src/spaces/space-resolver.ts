@@ -8,7 +8,7 @@ export interface SpaceContext {
 }
 
 export interface ResolvedSpace {
-  spaceId: string;
+  agentId: string;
   spaceType: "user" | "group";
 }
 
@@ -33,31 +33,14 @@ export function resolveSpace(context: SpaceContext): ResolvedSpace {
   if (isGroup) {
     const hash = hashPlatformId(`${platform}:group:${channelId}`);
     return {
-      spaceId: `group-${hash}`,
+      agentId: `group-${hash}`,
       spaceType: "group",
     };
   }
 
   const hash = hashPlatformId(`${platform}:user:${userId}`);
   return {
-    spaceId: `user-${hash}`,
+    agentId: `user-${hash}`,
     spaceType: "user",
   };
-}
-
-/**
- * Detect if context represents a group/channel based on platform heuristics.
- * Use when isGroup is not explicitly available.
- */
-export function isGroupContext(platform: string, channelId: string): boolean {
-  switch (platform) {
-    case "slack":
-      // Slack: D = DM, C = channel, G = private channel
-      return channelId.startsWith("C") || channelId.startsWith("G");
-    case "whatsapp":
-      // WhatsApp: group JIDs end with @g.us
-      return channelId.endsWith("@g.us");
-    default:
-      return false;
-  }
 }

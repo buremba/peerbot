@@ -1,244 +1,209 @@
+#!/usr/bin/env bun
+
 import { Readable } from "node:stream";
 import { createLogger, verifyWorkerToken } from "@peerbot/core";
-import type { Request, Response } from "express";
-import { Router } from "express";
-import multer from "multer";
+import { Hono } from "hono";
 import type { IFileHandler } from "../../platform/file-handler";
 import type { ISessionManager } from "../../session";
 
 const logger = createLogger("file-routes");
 
-// Configure multer for memory storage (streaming)
-const upload = multer({
-  limits: {
-    fileSize: 100 * 1024 * 1024, // 100MB max
-  },
-});
+type WorkerContext = {
+  Variables: {
+    worker: any;
+  };
+};
 
 /**
- * Create internal file routes for worker file operations
+ * Create internal file routes (Hono)
  */
 export function createFileRoutes(
   fileHandler: IFileHandler,
   _sessionManager: ISessionManager
-): Router {
-  const router = Router();
+): Hono<WorkerContext> {
+  const router = new Hono<WorkerContext>();
+
+  // Worker authentication middleware
+  const authenticateWorker = async (c: any, next: () => Promise<void>) => {
+    const authHeader = c.req.header("authorization");
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      return c.json({ error: "Missing or invalid authorization" }, 401);
+    }
+    const workerToken = authHeader.substring(7);
+    const tokenData = verifyWorkerToken(workerToken);
+    if (!tokenData) {
+      return c.json({ error: "Invalid worker token" }, 401);
+    }
+    c.set("worker", tokenData);
+    await next();
+  };
 
   /**
    * Download file endpoint for workers
-   * GET /internal/files/download?fileId=xxx
+   * GET /download?fileId=xxx
    */
-  router.get("/download", async (req: Request, res: Response) => {
+  router.get("/download", authenticateWorker, async (c) => {
     try {
-      const { fileId } = req.query;
-      const authHeader = req.headers.authorization;
+      const fileId = c.req.query("fileId");
+      const worker = c.get("worker");
 
-      if (!fileId || typeof fileId !== "string") {
-        return res.status(400).json({ error: "Missing fileId parameter" });
-      }
-
-      if (!authHeader || !authHeader.startsWith("Bearer ")) {
-        return res
-          .status(401)
-          .json({ error: "Missing or invalid authorization" });
-      }
-
-      const workerToken = authHeader.substring(7);
-
-      // Validate worker token
-      const tokenData = verifyWorkerToken(workerToken);
-      if (!tokenData) {
-        return res.status(401).json({ error: "Invalid worker token" });
+      if (!fileId) {
+        return c.json({ error: "Missing fileId parameter" }, 400);
       }
 
       logger.info(
-        `Worker downloading file ${fileId} for thread ${tokenData.threadId}`
+        `Worker downloading file ${fileId} for thread ${worker.threadId}`
       );
 
-      // Get Slack bot token from environment
       const slackToken = process.env.SLACK_BOT_TOKEN;
       if (!slackToken) {
-        return res.status(500).json({ error: "Slack token not configured" });
+        return c.json({ error: "Slack token not configured" }, 500);
       }
 
-      // Download file from Slack
       const { stream, metadata } = await fileHandler.downloadFile(
         fileId,
         slackToken
       );
 
-      // Set appropriate headers
-      res.setHeader(
-        "Content-Type",
-        metadata.mimetype || "application/octet-stream"
-      );
-      res.setHeader("Content-Length", metadata.size.toString());
-      res.setHeader(
+      c.header("Content-Type", metadata.mimetype || "application/octet-stream");
+      c.header("Content-Length", metadata.size.toString());
+      c.header(
         "Content-Disposition",
         `attachment; filename="${metadata.name}"`
       );
 
-      // Stream file to worker
-      stream.pipe(res);
+      // Convert Node stream to web stream
+      const webStream = new ReadableStream({
+        start(controller) {
+          stream.on("data", (chunk: Buffer) => controller.enqueue(chunk));
+          stream.on("end", () => controller.close());
+          stream.on("error", (err: Error) => controller.error(err));
+        },
+      });
+
+      return new Response(webStream, {
+        headers: c.res.headers,
+      });
     } catch (error) {
       logger.error("Failed to download file:", error);
-      res.status(500).json({ error: "Failed to download file" });
+      return c.json({ error: "Failed to download file" }, 500);
     }
   });
 
   /**
    * Upload file endpoint for workers
-   * POST /internal/files/upload
+   * POST /upload
    */
-  router.post(
-    "/upload",
-    upload.single("file"),
-    async (req: Request, res: Response) => {
-      try {
-        const authHeader = req.headers.authorization;
+  router.post("/upload", authenticateWorker, async (c) => {
+    try {
+      const worker = c.get("worker");
+      const channelId = c.req.header("x-channel-id");
+      const threadId = c.req.header("x-thread-id");
 
-        if (!authHeader || !authHeader.startsWith("Bearer ")) {
-          return res
-            .status(401)
-            .json({ error: "Missing or invalid authorization" });
-        }
-
-        // Get channelId and threadId from headers
-        const channelId = req.headers["x-channel-id"] as string;
-        const threadId = req.headers["x-thread-id"] as string;
-
-        if (!channelId || !threadId) {
-          return res
-            .status(400)
-            .json({ error: "Missing channel or thread ID" });
-        }
-
-        if (!req.file) {
-          return res.status(400).json({ error: "No file provided" });
-        }
-
-        const workerToken = authHeader.substring(7);
-
-        // Validate worker token
-        const tokenData = verifyWorkerToken(workerToken);
-        if (!tokenData) {
-          return res.status(401).json({ error: "Invalid worker token" });
-        }
-
-        const filename = req.body.filename || req.file.originalname;
-        const initialComment = req.body.comment;
-
-        logger.info(
-          `Worker uploading file ${filename} for thread ${tokenData.threadId} to Slack thread ${threadId}`
-        );
-
-        // Convert buffer to stream
-        const fileStream = Readable.from(req.file.buffer);
-
-        // Upload to Slack
-        const result = await fileHandler.uploadFile(fileStream, {
-          filename,
-          channelId,
-          threadTs: threadId,
-          initialComment,
-        });
-
-        logger.info(`File uploaded successfully: ${result.fileId}`);
-
-        res.json({
-          success: true,
-          fileId: result.fileId,
-          permalink: result.permalink,
-          name: result.name,
-          size: result.size,
-        });
-      } catch (error) {
-        logger.error("Failed to upload file:", error);
-        res.status(500).json({ error: "Failed to upload file" });
+      if (!channelId || !threadId) {
+        return c.json({ error: "Missing channel or thread ID" }, 400);
       }
+
+      const formData = await c.req.formData();
+      const file = formData.get("file") as File | null;
+
+      if (!file) {
+        return c.json({ error: "No file provided" }, 400);
+      }
+
+      const filename = (formData.get("filename") as string) || file.name;
+      const initialComment = formData.get("comment") as string | null;
+
+      logger.info(
+        `Worker uploading file ${filename} for thread ${worker.threadId} to Slack thread ${threadId}`
+      );
+
+      const arrayBuffer = await file.arrayBuffer();
+      const fileStream = Readable.from(Buffer.from(arrayBuffer));
+
+      const result = await fileHandler.uploadFile(fileStream, {
+        filename,
+        channelId,
+        threadTs: threadId,
+        initialComment: initialComment || undefined,
+      });
+
+      logger.info(`File uploaded successfully: ${result.fileId}`);
+
+      return c.json({
+        success: true,
+        fileId: result.fileId,
+        permalink: result.permalink,
+        name: result.name,
+        size: result.size,
+      });
+    } catch (error) {
+      logger.error("Failed to upload file:", error);
+      return c.json({ error: "Failed to upload file" }, 500);
     }
-  );
+  });
 
   /**
    * Batch upload endpoint for multiple files
-   * POST /internal/files/upload-batch
+   * POST /upload-batch
    */
-  router.post(
-    "/upload-batch",
-    upload.array("files", 10),
-    async (req: Request, res: Response) => {
-      try {
-        const authHeader = req.headers.authorization;
+  router.post("/upload-batch", authenticateWorker, async (c) => {
+    try {
+      const worker = c.get("worker");
+      const channelId = c.req.header("x-channel-id");
+      const threadId = c.req.header("x-thread-id");
 
-        if (!authHeader || !authHeader.startsWith("Bearer ")) {
-          return res
-            .status(401)
-            .json({ error: "Missing or invalid authorization" });
-        }
-
-        const workerToken = authHeader.substring(7);
-
-        // Validate worker token
-        const tokenData = verifyWorkerToken(workerToken);
-        if (!tokenData) {
-          return res.status(401).json({ error: "Invalid worker token" });
-        }
-
-        const files = req.files as Express.Multer.File[];
-        if (!files || files.length === 0) {
-          return res.status(400).json({ error: "No files provided" });
-        }
-
-        // Get channel and thread from headers
-        const channelId = req.headers["x-channel-id"] as string;
-        const threadId = req.headers["x-thread-id"] as string;
-
-        if (!channelId || !threadId) {
-          return res
-            .status(400)
-            .json({ error: "Missing channel or thread ID" });
-        }
-        const results = [];
-
-        logger.info(
-          `Worker uploading ${files.length} files for thread ${tokenData.threadId}`
-        );
-
-        // Upload files in parallel (limited concurrency)
-        const uploadPromises = files.map(async (file, index) => {
-          const filename = req.body.filenames?.[index] || file.originalname;
-          const comment = req.body.comments?.[index];
-          const fileStream = Readable.from(file.buffer);
-
-          return fileHandler.uploadFile(fileStream, {
-            filename,
-            channelId,
-            threadTs: threadId,
-            initialComment: comment,
-          });
-        });
-
-        const uploadResults = await Promise.allSettled(uploadPromises);
-
-        for (const [index, result] of uploadResults.entries()) {
-          if (result.status === "fulfilled") {
-            results.push({ success: true, ...result.value });
-          } else {
-            logger.error(`Failed to upload file ${index}:`, result.reason);
-            results.push({
-              success: false,
-              error: result.reason?.message || "Upload failed",
-            });
-          }
-        }
-
-        res.json({ results });
-      } catch (error) {
-        logger.error("Failed to batch upload files:", error);
-        res.status(500).json({ error: "Failed to batch upload files" });
+      if (!channelId || !threadId) {
+        return c.json({ error: "Missing channel or thread ID" }, 400);
       }
+
+      const formData = await c.req.formData();
+      const fileEntries = formData.getAll("files");
+
+      if (!fileEntries || fileEntries.length === 0) {
+        return c.json({ error: "No files provided" }, 400);
+      }
+
+      logger.info(
+        `Worker uploading ${fileEntries.length} files for thread ${worker.threadId}`
+      );
+
+      const uploadPromises = fileEntries.map(async (entry, index) => {
+        if (!(entry instanceof File)) {
+          throw new Error(`Entry ${index} is not a file`);
+        }
+
+        const filename = entry.name;
+        const arrayBuffer = await entry.arrayBuffer();
+        const fileStream = Readable.from(Buffer.from(arrayBuffer));
+
+        return fileHandler.uploadFile(fileStream, {
+          filename,
+          channelId,
+          threadTs: threadId,
+        });
+      });
+
+      const uploadResults = await Promise.allSettled(uploadPromises);
+
+      const results = uploadResults.map((result, index) => {
+        if (result.status === "fulfilled") {
+          return { success: true, ...result.value };
+        } else {
+          logger.error(`Failed to upload file ${index}:`, result.reason);
+          return {
+            success: false,
+            error: result.reason?.message || "Upload failed",
+          };
+        }
+      });
+
+      return c.json({ results });
+    } catch (error) {
+      logger.error("Failed to batch upload files:", error);
+      return c.json({ error: "Failed to batch upload files" }, 500);
     }
-  );
+  });
 
   return router;
 }

@@ -4,7 +4,7 @@
 # Uses bun's built-in watch mode for fast rebuilds
 
 echo "👀 Starting package watch mode..."
-echo "   Watching: packages/{core,github,gateway,worker}/src/**/*.ts"
+echo "   Watching: packages/{core,gateway,worker}/src/**/*.ts"
 echo "   Press Ctrl+C to stop"
 echo ""
 
@@ -18,7 +18,6 @@ echo ""
 
 # Watch all packages in parallel using bun
 (cd packages/core && bun run build --watch) &
-(cd packages/github && bun run build --watch) &
 (cd packages/gateway && bun run build --watch) &
 (cd packages/worker && bun run build --watch) &
 

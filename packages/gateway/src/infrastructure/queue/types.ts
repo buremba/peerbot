@@ -19,6 +19,8 @@ export interface QueueOptions {
   retryDelay?: number;
   expireInSeconds?: number;
   singletonKey?: string;
+  /** Delay in milliseconds before the job is processed */
+  delayMs?: number;
 }
 
 export interface QueueStats {
@@ -117,4 +119,9 @@ export interface ThreadResponsePayload {
     state: string;
   };
   platformMetadata?: Record<string, unknown>; // Platform-specific metadata (e.g., sessionId for API)
+
+  // Exec-specific response fields (for jobType === "exec")
+  execId?: string; // Exec job ID for response routing
+  execStream?: "stdout" | "stderr"; // Which stream this delta is from
+  execExitCode?: number; // Process exit code (sent on completion)
 }

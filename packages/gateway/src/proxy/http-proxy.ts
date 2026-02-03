@@ -7,14 +7,93 @@ import {
   loadAllowedDomains,
   loadDisallowedDomains,
 } from "../config/network-allowlist";
+import {
+  networkConfigStore,
+  type ResolvedNetworkConfig,
+} from "./network-config-store";
 
 const logger = createLogger("http-proxy");
+
+// Cache for global defaults (used when no deployment identified)
+let globalConfig: ResolvedNetworkConfig | null = null;
+
+/**
+ * Get global network config (lazy loaded)
+ */
+function getGlobalConfig(): ResolvedNetworkConfig {
+  if (!globalConfig) {
+    globalConfig = {
+      allowedDomains: loadAllowedDomains(),
+      deniedDomains: loadDisallowedDomains(),
+    };
+  }
+  return globalConfig;
+}
+
+/**
+ * Extract deployment name from Proxy-Authorization Basic auth header.
+ * Workers send: HTTP_PROXY=http://<deploymentName>:<token>@gateway:8118
+ * This creates a Basic auth header with username=deploymentName
+ *
+ * @param req - HTTP request
+ * @returns Deployment name or null if not present
+ */
+function extractDeploymentName(req: http.IncomingMessage): string | null {
+  const authHeader = req.headers["proxy-authorization"];
+  if (!authHeader || typeof authHeader !== "string") {
+    return null;
+  }
+
+  // Parse Basic auth: "Basic base64(username:password)"
+  const match = authHeader.match(/^Basic\s+(.+)$/i);
+  if (!match || !match[1]) {
+    return null;
+  }
+
+  try {
+    const decoded = Buffer.from(match[1], "base64").toString("utf-8");
+    const colonIndex = decoded.indexOf(":");
+    if (colonIndex === -1) {
+      return null;
+    }
+    // Username is the deployment name
+    const deploymentName = decoded.substring(0, colonIndex);
+    return deploymentName || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Get network config for a request.
+ * Extracts deployment name from proxy auth and looks up config.
+ * Falls back to global config if no deployment identified.
+ *
+ * @param req - HTTP request
+ * @returns Network configuration to apply
+ */
+async function getNetworkConfigForRequest(
+  req: http.IncomingMessage
+): Promise<ResolvedNetworkConfig> {
+  const deploymentName = extractDeploymentName(req);
+
+  if (deploymentName) {
+    // Look up per-deployment config
+    return networkConfigStore.get(deploymentName);
+  }
+
+  // Fall back to global config
+  return getGlobalConfig();
+}
 
 /**
  * Check if a hostname matches any domain patterns
  * Supports exact matches and wildcard patterns (.example.com matches *.example.com)
  */
-function matchesDomainPattern(hostname: string, patterns: string[]): boolean {
+export function matchesDomainPattern(
+  hostname: string,
+  patterns: string[]
+): boolean {
   const lowerHostname = hostname.toLowerCase();
 
   for (const pattern of patterns) {
@@ -36,19 +115,24 @@ function matchesDomainPattern(hostname: string, patterns: string[]): boolean {
 }
 
 /**
- * Check if a hostname is allowed based on allowlist/blocklist configuration
+ * Check if a hostname is allowed based on allowlist/blocklist configuration.
+ * Rules (sandbox-runtime compatible):
+ * - deniedDomains are checked first (take precedence)
+ * - allowedDomains are checked second
+ * - If allowedDomains contains "*", unrestricted mode is enabled
+ * - If allowedDomains is empty, complete isolation (deny all)
  */
-function isHostnameAllowed(
+export function isHostnameAllowed(
   hostname: string,
   allowedDomains: string[],
-  disallowedDomains: string[]
+  deniedDomains: string[]
 ): boolean {
   // Unrestricted mode - allow all except explicitly disallowed
   if (isUnrestrictedMode(allowedDomains)) {
-    if (disallowedDomains.length === 0) {
+    if (deniedDomains.length === 0) {
       return true; // No blocklist, allow all
     }
-    return !matchesDomainPattern(hostname, disallowedDomains);
+    return !matchesDomainPattern(hostname, deniedDomains);
   }
 
   // Complete isolation mode - deny all
@@ -60,8 +144,8 @@ function isHostnameAllowed(
   const isAllowed = matchesDomainPattern(hostname, allowedDomains);
 
   // Even if allowed, check blocklist
-  if (isAllowed && disallowedDomains.length > 0) {
-    return !matchesDomainPattern(hostname, disallowedDomains);
+  if (isAllowed && deniedDomains.length > 0) {
+    return !matchesDomainPattern(hostname, deniedDomains);
   }
 
   return isAllowed;
@@ -77,16 +161,13 @@ function extractConnectHostname(url: string): string | null {
 }
 
 /**
- * Handle HTTPS CONNECT tunneling
- * Establishes TCP tunnel between client and target for encrypted traffic
+ * Handle HTTPS CONNECT tunneling with per-deployment network config
  */
-function handleConnect(
+async function handleConnect(
   req: http.IncomingMessage,
   clientSocket: import("stream").Duplex,
-  head: Buffer,
-  allowedDomains: string[],
-  disallowedDomains: string[]
-): void {
+  head: Buffer
+): Promise<void> {
   const url = req.url || "";
   const hostname = extractConnectHostname(url);
 
@@ -97,9 +178,16 @@ function handleConnect(
     return;
   }
 
+  // Get per-deployment or global config
+  const config = await getNetworkConfigForRequest(req);
+  const deploymentName = extractDeploymentName(req);
+
   // Check if hostname is allowed
-  if (!isHostnameAllowed(hostname, allowedDomains, disallowedDomains)) {
-    logger.warn(`Blocked CONNECT to ${hostname} (not in allowlist)`);
+  if (
+    !isHostnameAllowed(hostname, config.allowedDomains, config.deniedDomains)
+  ) {
+    const context = deploymentName ? ` (deployment: ${deploymentName})` : "";
+    logger.warn(`Blocked CONNECT to ${hostname}${context}`);
     try {
       clientSocket.write(
         "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\n\r\nDomain not allowed by proxy policy\r\n"
@@ -177,14 +265,12 @@ function handleConnect(
 }
 
 /**
- * Handle regular HTTP proxy requests (GET, POST, etc.)
+ * Handle regular HTTP proxy requests with per-deployment network config
  */
-function handleProxyRequest(
+async function handleProxyRequest(
   req: http.IncomingMessage,
-  res: http.ServerResponse,
-  allowedDomains: string[],
-  disallowedDomains: string[]
-): void {
+  res: http.ServerResponse
+): Promise<void> {
   const targetUrl = req.url;
 
   if (!targetUrl) {
@@ -196,7 +282,7 @@ function handleProxyRequest(
   let parsedUrl: URL;
   try {
     parsedUrl = new URL(targetUrl);
-  } catch (err) {
+  } catch {
     res.writeHead(400, { "Content-Type": "text/plain" });
     res.end("Bad Request: Invalid URL\n");
     return;
@@ -204,9 +290,16 @@ function handleProxyRequest(
 
   const hostname = parsedUrl.hostname;
 
+  // Get per-deployment or global config
+  const config = await getNetworkConfigForRequest(req);
+  const deploymentName = extractDeploymentName(req);
+
   // Check if hostname is allowed
-  if (!isHostnameAllowed(hostname, allowedDomains, disallowedDomains)) {
-    logger.warn(`Blocked request to ${hostname} (not in allowlist)`);
+  if (
+    !isHostnameAllowed(hostname, config.allowedDomains, config.deniedDomains)
+  ) {
+    const context = deploymentName ? ` (deployment: ${deploymentName})` : "";
+    logger.warn(`Blocked request to ${hostname}${context}`);
     res.writeHead(403, { "Content-Type": "text/plain" });
     res.end("Domain not allowed by proxy policy\n");
     return;
@@ -214,13 +307,17 @@ function handleProxyRequest(
 
   logger.debug(`Proxying ${req.method} ${hostname}${parsedUrl.pathname}`);
 
+  // Remove proxy-authorization header before forwarding
+  const forwardHeaders = { ...req.headers };
+  delete forwardHeaders["proxy-authorization"];
+
   // Forward the request
   const options: http.RequestOptions = {
     hostname: parsedUrl.hostname,
     port: parsedUrl.port || (parsedUrl.protocol === "https:" ? 443 : 80),
     path: parsedUrl.pathname + parsedUrl.search,
     method: req.method,
-    headers: req.headers,
+    headers: forwardHeaders,
   };
 
   const proxyReq = http.request(options, (proxyRes) => {
@@ -245,38 +342,60 @@ function handleProxyRequest(
 }
 
 /**
- * Start HTTP proxy server
+ * Start HTTP proxy server with per-deployment network config support.
+ *
+ * Workers identify themselves via Proxy-Authorization Basic auth:
+ *   HTTP_PROXY=http://<deploymentName>:<token>@gateway:8118
+ *
+ * The proxy extracts deploymentName and looks up the network config
+ * from NetworkConfigStore. Falls back to global config if not found.
  */
 export function startHttpProxy(port: number = 8118): http.Server {
-  const allowedDomains = loadAllowedDomains();
-  const disallowedDomains = loadDisallowedDomains();
+  const global = getGlobalConfig();
 
   const server = http.createServer((req, res) => {
-    handleProxyRequest(req, res, allowedDomains, disallowedDomains);
+    handleProxyRequest(req, res).catch((err) => {
+      logger.error("Error handling proxy request:", err);
+      if (!res.headersSent) {
+        res.writeHead(500, { "Content-Type": "text/plain" });
+        res.end("Internal proxy error\n");
+      }
+    });
   });
 
   // Handle CONNECT method for HTTPS tunneling
   server.on("connect", (req, clientSocket, head) => {
-    handleConnect(req, clientSocket, head, allowedDomains, disallowedDomains);
+    handleConnect(req, clientSocket, head).catch((err) => {
+      logger.error("Error handling CONNECT:", err);
+      try {
+        clientSocket.write("HTTP/1.1 500 Internal Server Error\r\n\r\n");
+        clientSocket.end();
+      } catch {
+        // Ignore
+      }
+    });
+  });
+
+  server.on("error", (err) => {
+    logger.error("HTTP proxy server error:", err);
   });
 
   server.listen(port, "0.0.0.0", () => {
     let mode: string;
-    if (isUnrestrictedMode(allowedDomains)) {
+    if (isUnrestrictedMode(global.allowedDomains)) {
       mode = "unrestricted";
-    } else if (allowedDomains.length > 0) {
+    } else if (global.allowedDomains.length > 0) {
       mode = "allowlist";
     } else {
       mode = "complete-isolation";
     }
 
     logger.info(
-      `🔒 HTTP proxy started on port ${port} (mode=${mode}, allowed=${allowedDomains.length}, disallowed=${disallowedDomains.length})`
+      `🔒 HTTP proxy started on port ${port} (global: mode=${mode}, allowed=${global.allowedDomains.length}, denied=${global.deniedDomains.length})`
     );
-  });
-
-  server.on("error", (err) => {
-    logger.error("HTTP proxy server error:", err);
+    logger.info(
+      `   Per-deployment configs supported via Proxy-Authorization header`
+    );
   });
 
   return server;

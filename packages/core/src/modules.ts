@@ -1,3 +1,7 @@
+import { createLogger } from "./logger";
+
+const logger = createLogger("modules");
+
 // ============================================================================
 // Module Type Definitions
 // ============================================================================
@@ -48,7 +52,7 @@ export interface OrchestratorModule<TModuleData = unknown>
   /** Build environment variables for worker container */
   buildEnvVars(
     userId: string,
-    spaceId: string,
+    agentId: string,
     baseEnv: Record<string, string>
   ): Promise<Record<string, string>>;
 
@@ -76,7 +80,7 @@ export interface DispatcherModule<TModuleData = unknown>
   handleAction(
     actionId: string,
     userId: string,
-    spaceId: string,
+    agentId: string,
     context: any
   ): Promise<boolean>;
 
@@ -158,7 +162,7 @@ export abstract class BaseModule<TModuleData = unknown>
 
   async buildEnvVars(
     _userId: string,
-    _spaceId: string,
+    _agentId: string,
     baseEnv: Record<string, string>
   ): Promise<Record<string, string>> {
     // Default: pass through unchanged
@@ -180,7 +184,7 @@ export abstract class BaseModule<TModuleData = unknown>
   async handleAction(
     _actionId: string,
     _userId: string,
-    _spaceId: string,
+    _agentId: string,
     _context: any
   ): Promise<boolean> {
     // Default: not handled
@@ -212,9 +216,9 @@ export interface IModuleRegistry {
  * For testing: create a new instance to avoid shared state
  *
  * @example
- * // In dispatcher/worker
- * import { GitHubModule } from '@peerbot/github';
- * moduleRegistry.register(new GitHubModule());
+ * // In gateway/worker
+ * import { MyModule } from './my-module';
+ * moduleRegistry.register(new MyModule());
  * await moduleRegistry.initAll();
  *
  * @example
@@ -235,25 +239,17 @@ export class ModuleRegistry implements IModuleRegistry {
    * Automatically discover and register available modules.
    * Tries to import module packages and registers them if available.
    *
-   * @param modulePackages - Optional list of module package names to try loading.
-   *                         Defaults to built-in modules. Users can extend this list
-   *                         with custom modules.
+   * @param modulePackages - List of module package names to try loading.
+   *                         Users can provide custom modules to register.
    *
    * @example
-   * // Use default built-in modules
-   * await moduleRegistry.registerAvailableModules();
-   *
-   * @example
-   * // Add custom modules
+   * // Register custom modules
    * await moduleRegistry.registerAvailableModules([
-   *   '@peerbot/github',
    *   '@mycompany/slack-module',
    *   '@mycompany/jira-module'
    * ]);
    */
-  async registerAvailableModules(
-    modulePackages: string[] = ["@peerbot/github"]
-  ): Promise<void> {
+  async registerAvailableModules(modulePackages: string[] = []): Promise<void> {
     for (const packageName of modulePackages) {
       try {
         // Dynamic import to avoid build-time dependencies
@@ -261,7 +257,6 @@ export class ModuleRegistry implements IModuleRegistry {
 
         // Try common export patterns
         const ModuleClass =
-          moduleExports.GitHubModule ||
           moduleExports.default ||
           Object.values(moduleExports).find(
             (exp) => typeof exp === "function" && exp.name.endsWith("Module")
@@ -271,13 +266,13 @@ export class ModuleRegistry implements IModuleRegistry {
           const moduleInstance = new (ModuleClass as any)();
           if (!this.modules.has(moduleInstance.name)) {
             this.register(moduleInstance);
-            console.debug(`✅ ${packageName} registered`);
+            logger.debug(`${packageName} registered`);
           }
         } else {
-          console.debug(`${packageName}: No module class found in exports`);
+          logger.debug(`${packageName}: No module class found in exports`);
         }
-      } catch (error) {
-        console.debug(`${packageName} not available`);
+      } catch {
+        logger.debug(`${packageName} not available`);
       }
     }
   }
@@ -285,7 +280,9 @@ export class ModuleRegistry implements IModuleRegistry {
   async initAll(): Promise<void> {
     for (const module of this.modules.values()) {
       if (module.init) {
+        logger.debug(`Initializing module: ${module.name}`);
         await module.init();
+        logger.debug(`Module ${module.name} initialized`);
       }
     }
   }
@@ -296,7 +293,7 @@ export class ModuleRegistry implements IModuleRegistry {
         try {
           module.registerEndpoints(app);
         } catch (error) {
-          console.error(
+          logger.error(
             `Failed to register endpoints for module ${module.name}:`,
             error
           );

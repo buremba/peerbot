@@ -146,6 +146,7 @@ export class RedisQueue implements IMessageQueue {
         age: 24 * 3600, // 24 hours
         count: 5000,
       },
+      delay: options?.delayMs,
     };
 
     // Handle expiration

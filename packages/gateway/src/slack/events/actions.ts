@@ -242,9 +242,9 @@ export class ActionHandler {
     let handled = false;
     const dispatcherModules = this.moduleRegistry.getDispatcherModules();
 
-    // Resolve spaceId from context for module actions
+    // Resolve agentId from context for module actions
     const isDirectMessage = channelId.startsWith("D");
-    const { spaceId } = resolveSpace({
+    const { agentId } = resolveSpace({
       platform: "slack",
       userId,
       channelId,
@@ -256,12 +256,12 @@ export class ActionHandler {
         const moduleHandled = await module.handleAction(
           actionId,
           userId,
-          spaceId,
+          agentId,
           {
             channelId,
             client,
             body,
-            spaceId,
+            agentId,
             updateAppHome: this.updateAppHome.bind(this),
             messageHandler: this.messageHandler,
           }
@@ -309,9 +309,9 @@ export class ActionHandler {
     );
 
     try {
-      // Resolve spaceId for the user's personal space (used for MCP credentials)
-      // Home tab is a user context, so we use user-{hash} spaceId
-      const { spaceId } = resolveSpace({
+      // Resolve agentId for the user's personal space (used for MCP credentials)
+      // Home tab is a user context, so we use user-{hash} agentId
+      const { agentId } = resolveSpace({
         platform: "slack",
         userId,
         channelId: userId, // Use userId as channelId for DM-like context
@@ -343,7 +343,7 @@ export class ActionHandler {
             ) {
               const providers = await (module as any).getAuthStatus(
                 userId,
-                spaceId
+                agentId
               );
               allProviders.push(...providers);
             } else if ("renderHomeTab" in module) {

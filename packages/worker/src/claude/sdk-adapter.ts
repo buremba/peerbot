@@ -2,7 +2,11 @@
 
 import type { Options as SDKOptions } from "@anthropic-ai/claude-agent-sdk";
 import { query } from "@anthropic-ai/claude-agent-sdk";
-import { createLogger, sanitizeForLogging } from "@peerbot/core";
+import {
+  createLogger,
+  sanitizeForLogging,
+  type ToolsConfig,
+} from "@peerbot/core";
 import type { InteractionClient } from "../common/interaction-client";
 import type { ProgressCallback } from "../core/types";
 import { ensureBaseUrl } from "../core/url-utils";
@@ -41,6 +45,8 @@ export interface ClaudeExecutionOptions {
   timeoutMinutes?: string | number;
   model?: string;
   continue?: boolean;
+  /** Tool permission config from agent settings */
+  toolsConfig?: ToolsConfig;
 }
 
 interface ClaudeExecutionResult {
@@ -65,7 +71,7 @@ const TOOL_APPROVAL_OPTIONS = [
 // Auto-allow non-destructive tools and Task (for autonomous subagent delegation)
 // Also auto-allow AskUserQuestion since it's specifically for asking the user questions
 // File operations (Write, Edit) are safe in sandboxed environment
-const AUTO_ALLOW_TOOLS = [
+const DEFAULT_AUTO_ALLOW_TOOLS = [
   "Bash",
   "Read",
   "Write",
@@ -78,7 +84,67 @@ const AUTO_ALLOW_TOOLS = [
   "Task",
   "mcp__peerbot__AskUserQuestion",
   "mcp__peerbot__UploadUserFile",
+  "mcp__peerbot__GetChannelHistory",
+  "mcp__peerbot__ScheduleReminder",
 ];
+
+/**
+ * Check if a tool name matches a pattern (Claude Code compatible).
+ * Supports:
+ * - Exact match: "Read"
+ * - Wildcard: "*" (matches all)
+ * - Prefix wildcard: "mcp__github__*" (matches mcp__github__list_repos, etc.)
+ * - Bash filter: "Bash(git:*)" (matches Bash with git commands)
+ */
+function matchesToolPattern(
+  toolName: string,
+  pattern: string,
+  toolInput?: any
+): boolean {
+  // Exact match
+  if (pattern === toolName) {
+    return true;
+  }
+
+  // Wildcard - matches everything
+  if (pattern === "*") {
+    return true;
+  }
+
+  // Prefix wildcard: "mcp__github__*" matches "mcp__github__list_repos"
+  if (pattern.endsWith("*")) {
+    const prefix = pattern.slice(0, -1);
+    if (toolName.startsWith(prefix)) {
+      return true;
+    }
+  }
+
+  // Bash command filter: "Bash(git:*)" matches Bash tool with git commands
+  const bashFilterMatch = pattern.match(/^Bash\(([^:]+):\*\)$/);
+  if (bashFilterMatch && toolName === "Bash") {
+    const commandPrefix = bashFilterMatch[1];
+    // Check if the command starts with the prefix
+    if (toolInput?.command && typeof toolInput.command === "string") {
+      const command = toolInput.command.trim();
+      return command.startsWith(commandPrefix);
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Check if a tool is allowed by the given patterns.
+ */
+function isToolInPatterns(
+  toolName: string,
+  patterns: string[],
+  toolInput?: any
+): boolean {
+  return patterns.some((pattern) =>
+    matchesToolPattern(toolName, pattern, toolInput)
+  );
+}
 
 // ============================================================================
 // SDK EXECUTION
@@ -92,7 +158,12 @@ export async function runClaudeWithSDK(
   options: ClaudeExecutionOptions,
   onProgress?: ProgressCallback,
   workingDirectory?: string,
-  customToolsConfig?: { channelId: string; threadId: string },
+  customToolsConfig?: {
+    channelId: string;
+    threadId: string;
+    platform?: string;
+    historyEnabled?: boolean;
+  },
   interactionClient?: InteractionClient
 ): Promise<ClaudeExecutionResult> {
   logger.info("Starting Claude SDK execution");
@@ -175,12 +246,20 @@ export async function runClaudeWithSDK(
 
     // Add system prompts
     // Merge gateway instructions (platform + MCP) with worker instructions
-    const mergedInstructions = [
+    const instructionParts = [
       gatewayInstructions, // From gateway (platform + MCP built from status)
       options.appendSystemPrompt, // From worker (core + projects + process manager)
-    ]
-      .filter(Boolean)
-      .join("\n\n");
+    ];
+
+    // Add history hint if enabled
+    if (customToolsConfig?.historyEnabled) {
+      instructionParts.push(`## Conversation History
+
+You have access to GetChannelHistory to view previous messages in this thread.
+Use it when the user references past discussions or you need context.`);
+    }
+
+    const mergedInstructions = instructionParts.filter(Boolean).join("\n\n");
 
     if (mergedInstructions) {
       // Always use merged instructions if available (gateway + worker custom instructions)
@@ -203,11 +282,19 @@ export async function runClaudeWithSDK(
         workerToken,
         customToolsConfig.channelId,
         customToolsConfig.threadId,
-        interactionClient
+        interactionClient,
+        {
+          platform: customToolsConfig.platform,
+          historyEnabled: customToolsConfig.historyEnabled,
+        }
       );
       allMcpServers.peerbot = customTools;
+      const tools = ["UploadUserFile", "AskUserQuestion"];
+      if (customToolsConfig.historyEnabled) {
+        tools.push("GetChannelHistory");
+      }
       logger.info(
-        "Added custom tools server: peerbot (with AskUserQuestion support)"
+        `Added custom tools server: peerbot (tools: ${tools.join(", ")})`
       );
 
       // Note: We don't add interaction tools MCP server anymore
@@ -324,7 +411,50 @@ export async function runClaudeWithSDK(
           };
         }
 
-        if (AUTO_ALLOW_TOOLS.includes(toolName)) {
+        // Tool permission check with toolsConfig support
+        const toolsConfig = options.toolsConfig;
+
+        // 1. Check deniedTools first (takes precedence)
+        if (
+          toolsConfig?.deniedTools &&
+          isToolInPatterns(toolName, toolsConfig.deniedTools, input)
+        ) {
+          logger.info(`Tool ${toolName} denied by toolsConfig.deniedTools`);
+          return {
+            behavior: "deny" as const,
+            message: "Tool is blocked by agent settings",
+            interrupt: false, // Don't interrupt, just deny this specific call
+          };
+        }
+
+        // 2. Check allowedTools
+        if (
+          toolsConfig?.allowedTools &&
+          isToolInPatterns(toolName, toolsConfig.allowedTools, input)
+        ) {
+          logger.info(
+            `Auto-allowing tool ${toolName} by toolsConfig.allowedTools`
+          );
+          return {
+            behavior: "allow" as const,
+            updatedInput: input,
+          };
+        }
+
+        // 3. If strictMode, only allowedTools are permitted (skip defaults)
+        if (toolsConfig?.strictMode) {
+          logger.info(
+            `Tool ${toolName} not in allowedTools (strictMode enabled)`
+          );
+          return {
+            behavior: "deny" as const,
+            message: "Tool not in allowed list (strict mode)",
+            interrupt: false,
+          };
+        }
+
+        // 4. Fall back to default auto-allow list
+        if (isToolInPatterns(toolName, DEFAULT_AUTO_ALLOW_TOOLS, input)) {
           logger.info(`Auto-allowing non-destructive tool: ${toolName}`);
           return {
             behavior: "allow" as const,
@@ -332,7 +462,7 @@ export async function runClaudeWithSDK(
           };
         }
 
-        // For destructive tools, ask the user via our interaction system
+        // For other tools, ask the user via our interaction system
         logger.info(`Tool ${toolName} requires user approval`);
 
         try {

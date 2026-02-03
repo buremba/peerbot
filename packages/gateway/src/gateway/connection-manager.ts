@@ -1,15 +1,23 @@
 #!/usr/bin/env bun
 
 import { createLogger } from "@peerbot/core";
-import type { Response } from "express";
 
 const logger = createLogger("worker-connection-manager");
+
+/**
+ * SSE Writer interface - abstracts the response object for SSE
+ */
+export interface SSEWriter {
+  write(data: string): boolean;
+  end(): void;
+  onClose(callback: () => void): void;
+}
 
 interface WorkerConnection {
   deploymentName: string;
   userId: string;
   threadId: string;
-  res: Response;
+  writer: SSEWriter;
   lastActivity: number;
   lastPing: number;
 }
@@ -41,13 +49,13 @@ export class WorkerConnectionManager {
     deploymentName: string,
     userId: string,
     threadId: string,
-    res: Response
+    writer: SSEWriter
   ): void {
     const connection: WorkerConnection = {
       deploymentName,
       userId,
       threadId,
-      res,
+      writer,
       lastActivity: Date.now(),
       lastPing: Date.now(),
     };
@@ -55,7 +63,7 @@ export class WorkerConnectionManager {
     this.connections.set(deploymentName, connection);
 
     // Send initial connection event
-    this.sendSSE(res, "connected", { deploymentName, userId, threadId });
+    this.sendSSE(writer, "connected", { deploymentName, userId, threadId });
 
     logger.info(
       `Worker ${deploymentName} connected (user: ${userId}, thread: ${threadId})`
@@ -69,7 +77,7 @@ export class WorkerConnectionManager {
     const connection = this.connections.get(deploymentName);
     if (connection) {
       try {
-        connection.res.end();
+        connection.writer.end();
       } catch (error) {
         // Connection may already be closed
         logger.debug(
@@ -109,12 +117,12 @@ export class WorkerConnectionManager {
   /**
    * Send SSE event to a worker
    */
-  sendSSE(res: Response, event: string, data: unknown): boolean {
+  sendSSE(writer: SSEWriter, event: string, data: unknown): boolean {
     try {
       // Combine into single write to avoid buffering issues
       // Format: event: <event>\ndata: <json>\n\n
       const message = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
-      const success = res.write(message);
+      const success = writer.write(message);
 
       if (!success) {
         logger.warn(
@@ -145,7 +153,7 @@ export class WorkerConnectionManager {
 
     for (const [deploymentName, connection] of this.connections.entries()) {
       try {
-        this.sendSSE(connection.res, "ping", { timestamp: now });
+        this.sendSSE(connection.writer, "ping", { timestamp: now });
         connection.lastPing = now;
       } catch (error) {
         logger.warn(`Failed to send ping to ${deploymentName}:`, error);

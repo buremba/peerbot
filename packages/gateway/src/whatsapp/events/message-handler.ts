@@ -12,6 +12,12 @@ import {
   type proto,
   type WAMessage,
 } from "@whiskeysockets/baileys";
+import {
+  type AgentSettingsStore,
+  buildSettingsUrl,
+  generateSettingsToken,
+} from "../../auth/settings";
+import type { ChannelBindingService } from "../../channels";
 import type {
   MessagePayload,
   QueueProducer,
@@ -67,6 +73,8 @@ export class WhatsAppMessageHandler {
   private isRunning = false;
   private authAdapter?: WhatsAppAuthAdapter;
   private fileHandler?: WhatsAppFileHandler;
+  private channelBindingService?: ChannelBindingService;
+  private agentSettingsStore?: AgentSettingsStore;
 
   constructor(
     private client: BaileysClient,
@@ -75,6 +83,71 @@ export class WhatsAppMessageHandler {
     _sessionManager: ISessionManager, // Reserved for future use
     private agentOptions: AgentOptions
   ) {}
+
+  /**
+   * Set the channel binding service (optional)
+   */
+  setChannelBindingService(service: ChannelBindingService): void {
+    this.channelBindingService = service;
+  }
+
+  /**
+   * Set the agent settings store (optional)
+   */
+  setAgentSettingsStore(store: AgentSettingsStore): void {
+    this.agentSettingsStore = store;
+  }
+
+  /**
+   * Get agent options with settings applied
+   * Priority: agent settings > config defaults
+   */
+  private async getAgentOptionsWithSettings(
+    agentId: string
+  ): Promise<Record<string, any>> {
+    const baseOptions = { ...this.agentOptions };
+
+    if (!this.agentSettingsStore) {
+      return baseOptions;
+    }
+
+    const settings = await this.agentSettingsStore.getSettings(agentId);
+    if (!settings) {
+      return baseOptions;
+    }
+
+    logger.info({ agentId, model: settings.model }, "Applying agent settings");
+
+    // Merge settings into options
+    const mergedOptions: Record<string, any> = { ...baseOptions };
+
+    if (settings.model) {
+      mergedOptions.model = settings.model;
+    }
+
+    // Pass additional settings through agentOptions for worker to use
+    if (settings.networkConfig) {
+      mergedOptions.networkConfig = settings.networkConfig;
+    }
+
+    if (settings.gitConfig) {
+      mergedOptions.gitConfig = settings.gitConfig;
+    }
+
+    if (settings.envVars) {
+      mergedOptions.envVars = settings.envVars;
+    }
+
+    if (settings.historyConfig) {
+      mergedOptions.historyConfig = settings.historyConfig;
+    }
+
+    if (settings.toolsConfig) {
+      mergedOptions.toolsConfig = settings.toolsConfig;
+    }
+
+    return mergedOptions;
+  }
 
   /**
    * Set the file handler for extracting media.
@@ -208,8 +281,8 @@ export class WhatsAppMessageHandler {
     const isGroup = isGroupJid(responseJid);
     const participantJid = msg.key?.participant;
 
-    // Get sender info
-    const senderJid = isGroup ? participantJid : remoteJid;
+    // Get sender info - use responseJid for non-groups to handle @lid -> @s.whatsapp.net resolution
+    const senderJid = isGroup ? participantJid : responseJid;
     const senderE164 = senderJid ? jidToE164(senderJid) : null;
 
     // Get self info
@@ -364,11 +437,12 @@ export class WhatsAppMessageHandler {
     logger.info(`Message ${id} has body: ${body.substring(0, 50)}...`);
 
     // Check if this is an auth response (e.g., "1" to select provider)
+    // Use responseJid (mapped JID) for consistency with auth prompt storage
     if (this.authAdapter && !isGroup) {
       const userId = senderE164 || senderJid || "";
       try {
         const handled = await this.authAdapter.handleAuthResponse(
-          remoteJid,
+          responseJid,
           userId,
           body
         );
@@ -426,7 +500,7 @@ export class WhatsAppMessageHandler {
         : Date.now(),
     });
 
-    // Get conversation history for context
+    // Get in-memory conversation history for context
     const conversationHistory = this.getConversationHistory(responseJid);
 
     // Enqueue for processing
@@ -502,9 +576,11 @@ export class WhatsAppMessageHandler {
       name?: string;
     }> = []
   ): Promise<void> {
-    // Use chat JID as channel, message ID as thread for routing
-    // For group chats, each message starts a new "thread"
-    const threadId = context.quotedMessage?.id || messageId;
+    // For 1:1 chats: use chatJid for conversation continuity (all messages share context)
+    // For groups: use quoted message ID or message ID (explicit reply threading)
+    const threadId = context.isGroup
+      ? context.quotedMessage?.id || messageId
+      : context.chatJid;
 
     // Generate trace ID for end-to-end observability
     const traceId = generateTraceId(messageId);
@@ -519,13 +595,59 @@ export class WhatsAppMessageHandler {
       "Message received"
     );
 
-    // Resolve space ID for multi-tenant isolation
-    const { spaceId } = resolveSpace({
-      platform: "whatsapp",
-      userId: context.senderE164 || context.senderJid,
-      channelId: context.chatJid,
-      isGroup: context.isGroup,
-    });
+    // Check for channel binding first (explicit agent assignment)
+    let agentId: string;
+    if (this.channelBindingService) {
+      const binding = await this.channelBindingService.getBinding(
+        "whatsapp",
+        context.chatJid
+      );
+      if (binding) {
+        agentId = binding.agentId;
+        logger.info(
+          `Using bound agentId: ${agentId} for chat ${context.chatJid}`
+        );
+      } else {
+        // Fall back to space-based resolution
+        const space = resolveSpace({
+          platform: "whatsapp",
+          userId: context.senderE164 || context.senderJid,
+          channelId: context.chatJid,
+          isGroup: context.isGroup,
+        });
+        agentId = space.agentId;
+      }
+    } else {
+      // Fall back to space-based resolution
+      const space = resolveSpace({
+        platform: "whatsapp",
+        userId: context.senderE164 || context.senderJid,
+        channelId: context.chatJid,
+        isGroup: context.isGroup,
+      });
+      agentId = space.agentId;
+    }
+
+    // Handle /configure command - send settings magic link
+    if (body.trim().toLowerCase() === "/configure") {
+      const userId = context.senderE164 || context.senderJid;
+      logger.info(`User ${userId} requested /configure for agent ${agentId}`);
+      try {
+        const token = generateSettingsToken(agentId, userId, "whatsapp");
+        const settingsUrl = buildSettingsUrl(token);
+
+        await this.client.sendMessage(context.chatJid, {
+          text: `Here's your settings link (valid for 1 hour):\n${settingsUrl}\n\nUse this page to configure your agent's model, network access, git repository, and more.`,
+        });
+        logger.info(`Sent settings link to user ${userId}`);
+      } catch (error) {
+        logger.error("Failed to generate settings link", { error });
+        await this.client.sendMessage(context.chatJid, {
+          text: "Sorry, I couldn't generate a settings link. Please try again later.",
+        });
+      }
+      return;
+    }
 
     // Build file metadata for payload
     const fileMetadata = files.map((f) => ({
@@ -535,18 +657,22 @@ export class WhatsAppMessageHandler {
       size: f.size,
     }));
 
+    // Fetch agent settings and merge with config defaults
+    const agentOptions = await this.getAgentOptionsWithSettings(agentId);
+
     const payload: MessagePayload = {
       platform: "whatsapp",
       userId: context.senderE164 || context.senderJid,
       botId: "whatsapp",
       threadId,
       teamId: context.isGroup ? context.chatJid : "whatsapp", // Group JID for groups, "whatsapp" for DMs
-      spaceId,
+      agentId,
       messageId,
       messageText: body,
       channelId: context.chatJid,
       platformMetadata: {
         traceId, // Add trace ID for end-to-end tracing
+        agentId, // Required for credential storage/lookup
         jid: context.chatJid,
         senderJid: context.senderJid,
         senderE164: context.senderE164,
@@ -561,9 +687,7 @@ export class WhatsAppMessageHandler {
         conversationHistory:
           conversationHistory.length > 0 ? conversationHistory : undefined,
       },
-      agentOptions: {
-        ...this.agentOptions,
-      },
+      agentOptions,
     };
 
     await this.queueProducer.enqueueMessage(payload);

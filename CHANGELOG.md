@@ -1,5 +1,42 @@
 # Changelog
 
+## [2.4.0](https://github.com/lobu-ai/lobu/compare/v2.3.0...v2.4.0) (2026-02-15)
+
+
+### Features
+
+* add direct sessions API for browser/CLI clients ([c34ab3c](https://github.com/lobu-ai/lobu/commit/c34ab3c0b4be5161e94eb98584f0819b36e2d872))
+* add direct sessions API for browser/CLI clients ([8f78d87](https://github.com/lobu-ai/lobu/commit/8f78d87b39f51f58b318b61f8f139b426e2b18dd))
+* add github package support and enable plan mode ([b9ccf5d](https://github.com/lobu-ai/lobu/commit/b9ccf5df45082d286ea0f8c988dd9a14a04f3e77))
+* add MCP registry service and discovery routes ([fbff9bf](https://github.com/lobu-ai/lobu/commit/fbff9bf0da6d18ea9e06b0ca1b678330c5d2bb09))
+* add network isolation, HTTP proxy, and enhanced worker configuration ([d3a7db1](https://github.com/lobu-ai/lobu/commit/d3a7db15f0e78e2c59782937400a414e334771a7))
+* add platform-agnostic messaging API with self-queueing and MAX_TURNS protection ([c872522](https://github.com/lobu-ai/lobu/commit/c872522fdeeff6f00696cb746c2e615b72924dbb))
+* add user interaction system with forms and suggestions ([18db834](https://github.com/lobu-ai/lobu/commit/18db8342cb69bc1a76b426652640c60a040106e5))
+* enable WhatsApp support in community deployment ([658bb25](https://github.com/lobu-ai/lobu/commit/658bb256ece4fc3bf3d61e238a2f4d850bcd8f34))
+* **gateway:** agent selector + per-user agent stores ([f1c0d85](https://github.com/lobu-ai/lobu/commit/f1c0d85f339a9b670078af2d821d56ad1911582c))
+* implement multi-tenant space architecture ([abc195f](https://github.com/lobu-ai/lobu/commit/abc195f52d8aa02c4c04b5c27476906774fd4f6b))
+* implement multi-tenant space architecture ([16b8723](https://github.com/lobu-ai/lobu/commit/16b8723b218d3fd3bc4af0b83cc1600030350b9c))
+* improve first-time setup UX and add upgrade instructions ([e3df936](https://github.com/lobu-ai/lobu/commit/e3df936c6e1094155cad5d1ebbeeb8367d50c77a))
+* migrate gateway to Hono and remove Express from worker ([#94](https://github.com/lobu-ai/lobu/issues/94)) ([499ab1b](https://github.com/lobu-ai/lobu/commit/499ab1b992267017872e90ecb2a662186cd574e3))
+
+
+### Bug Fixes
+
+* address critical security and functionality issues in direct sessions API ([782f617](https://github.com/lobu-ai/lobu/commit/782f617ba4cc1f66f3d5e9a27366a5ae90845b13))
+* correct session-manager tests to use proper session key format ([45af581](https://github.com/lobu-ai/lobu/commit/45af581e3ee97e0a8433362a9437c7634edbeb79))
+* disable Nix sandbox for arm64 QEMU builds ([e54e712](https://github.com/lobu-ai/lobu/commit/e54e712a5360899e67722159232e04a2b90bee8a))
+* handle empty HOME env in git cache fallback ([c00ebfe](https://github.com/lobu-ai/lobu/commit/c00ebfe5f0e55bb8b68e3a0a0e14378a8998affc))
+* improve team ID handling in Slack events ([d083365](https://github.com/lobu-ai/lobu/commit/d083365b5eca36d305e611ffb4991cbcd248a453))
+* include mcp-servers.json in gateway Docker image ([d0c9cd3](https://github.com/lobu-ai/lobu/commit/d0c9cd33cc09f4fb9fc80078b0c7d9b025880f52))
+* properly configure Nix sandbox for arm64 builds ([71daf7b](https://github.com/lobu-ai/lobu/commit/71daf7be81f94753f543f9b07a22351eb5f232d5))
+* remove CLI_VERSION pinning, use latest for worker package ([9c33352](https://github.com/lobu-ai/lobu/commit/9c3335248df9ca1010a9931c8798616bf64d0305))
+* repair failing tests and exclude workspaces from test discovery ([3227430](https://github.com/lobu-ai/lobu/commit/3227430cae3cebcf5e815c0274197615dff276b9))
+* resolve K8s deployment issues ([9d48358](https://github.com/lobu-ai/lobu/commit/9d48358c38f66b95522b0cb288060fc664bf2aab))
+* resolve K8s deployment issues ([dcd6eff](https://github.com/lobu-ai/lobu/commit/dcd6eff4292c676d886b42991fab481949a58134))
+* restart stream on message_not_in_streaming_state error ([32db4a1](https://github.com/lobu-ai/lobu/commit/32db4a157777224a1f6cbc93854aa1d3471e7a28))
+* skip arm64 worker build due to Nix/QEMU seccomp issue ([fa3f96c](https://github.com/lobu-ai/lobu/commit/fa3f96cfa86272cd6523162154745790a01183ca))
+* use writable temp directory for git cache fallback ([c45fc01](https://github.com/lobu-ai/lobu/commit/c45fc01a5ada190bf467b2ab27f71f770c4e927a))
+
 ## [2.3.0](https://github.com/termos-dev/termos/compare/v2.2.1...v2.3.0) (2025-10-30)
 
 

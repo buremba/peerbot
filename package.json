@@ -1,6 +1,6 @@
 {
   "name": "create-lobu",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "license": "BUSL-1.1",
   "workspaces": [
     "packages/cli",

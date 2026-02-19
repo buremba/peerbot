@@ -118,6 +118,17 @@ const updateConfigRoute = createRoute({
                 ),
               })
               .optional(),
+            pluginsConfig: z
+              .object({
+                plugins: z.array(
+                  z.object({
+                    source: z.string(),
+                    slot: z.enum(["tool"]),
+                    enabled: z.boolean().optional(),
+                  })
+                ),
+              })
+              .optional(),
             verboseLogging: z.boolean().optional(),
             githubUser: z
               .null()
@@ -311,6 +322,7 @@ export function createAgentConfigRoutes(
           conversationId: payload.sourceContext.conversationId,
           teamId: payload.sourceContext.teamId,
           previousSettings: existingSettings,
+          nextMcpServers: updates.mcpServers || existingSettings?.mcpServers,
         });
       }
 
@@ -475,6 +487,18 @@ function validateSettings(
     settings.skillsConfig = input.skillsConfig;
   }
 
+  if (input.pluginsConfig) {
+    settings.pluginsConfig = {
+      plugins: input.pluginsConfig.plugins
+        .filter((p) => typeof p.source === "string" && p.source.trim())
+        .map((p) => ({
+          source: p.source.trim(),
+          slot: p.slot,
+          enabled: p.enabled ?? true,
+        })),
+    };
+  }
+
   if (typeof input.verboseLogging === "boolean") {
     settings.verboseLogging = input.verboseLogging;
   }
@@ -508,6 +532,7 @@ async function maybeSendMcpInstalledNotifications(options: {
   conversationId: string;
   teamId?: string;
   previousSettings: AgentSettings | null;
+  nextMcpServers: AgentSettings["mcpServers"] | undefined;
 }): Promise<void> {
   const {
     queue,
@@ -519,12 +544,12 @@ async function maybeSendMcpInstalledNotifications(options: {
     conversationId,
     teamId,
     previousSettings,
+    nextMcpServers,
   } = options;
 
   const previousMcpIds = getEnabledHttpMcpIds(previousSettings?.mcpServers);
   const previousNotified = { ...(previousSettings?.mcpInstallNotified || {}) };
-  const latestSettings = await agentSettingsStore.getSettings(agentId);
-  const currentMcpIds = getEnabledHttpMcpIds(latestSettings?.mcpServers);
+  const currentMcpIds = getEnabledHttpMcpIds(nextMcpServers);
 
   const candidatesToNotify = Array.from(currentMcpIds).filter(
     (mcpId) => !previousMcpIds.has(mcpId) && !previousNotified[mcpId]
@@ -543,7 +568,7 @@ async function maybeSendMcpInstalledNotifications(options: {
         channelId,
         conversationId,
         userId,
-        teamId: teamId || platform || "unknown",
+        teamId: teamId || "no-team",
         platform,
         content: `MCP "${mcpId}" is installed and ready. You can use it in this chat on your next message.`,
         timestamp: Date.now(),

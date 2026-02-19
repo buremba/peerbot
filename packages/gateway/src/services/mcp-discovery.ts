@@ -8,6 +8,7 @@ const logger = createLogger("mcp-discovery-service");
 const DEFAULT_OFFICIAL_REGISTRY_URL =
   "https://registry.modelcontextprotocol.io/v0.1/servers";
 const DEFAULT_TIMEOUT_MS = 8000;
+const MAX_RECENT_CANDIDATE_KEYS = 2000;
 
 type DiscoverySource = "official" | "local";
 
@@ -120,10 +121,26 @@ export class McpDiscoveryService {
   }
 
   private cacheCandidate(candidate: DiscoveredMcpCandidate): void {
-    this.recentCandidates.set(candidate.id, candidate);
-    this.recentCandidates.set(candidate.id.toLowerCase(), candidate);
-    this.recentCandidates.set(candidate.canonicalId, candidate);
-    this.recentCandidates.set(candidate.canonicalId.toLowerCase(), candidate);
+    this.setCacheKey(candidate.id, candidate);
+    this.setCacheKey(candidate.id.toLowerCase(), candidate);
+    this.setCacheKey(candidate.canonicalId, candidate);
+    this.setCacheKey(candidate.canonicalId.toLowerCase(), candidate);
+  }
+
+  private setCacheKey(
+    key: string,
+    candidate: DiscoveredMcpCandidate
+  ): void {
+    if (this.recentCandidates.has(key)) {
+      this.recentCandidates.delete(key);
+    }
+    this.recentCandidates.set(key, candidate);
+
+    while (this.recentCandidates.size > MAX_RECENT_CANDIDATE_KEYS) {
+      const oldestKey = this.recentCandidates.keys().next().value;
+      if (!oldestKey) break;
+      this.recentCandidates.delete(oldestKey);
+    }
   }
 
   private async searchOfficialRegistry(

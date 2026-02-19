@@ -35,7 +35,10 @@ export function createMcpDiscoveryRoutes(
 ): Hono<WorkerContext> {
   const router = new Hono<WorkerContext>();
 
-  const authenticateWorker = async (c: any, next: () => Promise<void>) => {
+  const authenticateWorker = async (
+    c: any,
+    next: () => Promise<void>
+  ): Promise<Response | void> => {
     const authHeader = c.req.header("authorization");
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
       return c.json({ error: "Missing or invalid authorization" }, 401);

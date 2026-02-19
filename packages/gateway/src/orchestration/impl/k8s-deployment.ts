@@ -18,6 +18,7 @@ import {
   BASE_WORKER_LABELS,
   buildDeploymentInfoSummary,
   getVeryOldThresholdDays,
+  LOBU_FINALIZER,
   resolvePlatformDeploymentMetadata,
   WORKER_SECURITY,
   WORKER_SELECTOR_LABELS,
@@ -52,6 +53,8 @@ interface SimpleDeployment {
     name: string;
     namespace: string;
     labels?: Record<string, string>;
+    annotations?: Record<string, string>;
+    finalizers?: string[];
   };
   spec: {
     replicas: number;
@@ -96,6 +99,7 @@ interface SimpleDeployment {
           volumeMounts?: Array<{
             name: string;
             mountPath: string;
+            subPath?: string;
           }>;
         }>;
         containers: Array<{
@@ -139,6 +143,7 @@ interface SimpleDeployment {
           volumeMounts?: Array<{
             name: string;
             mountPath: string;
+            subPath?: string;
           }>;
         }>;
         volumes?: Array<{
@@ -161,9 +166,11 @@ interface SimpleDeployment {
 }
 
 export class K8sDeploymentManager extends BaseDeploymentManager {
+  private kc: k8s.KubeConfig;
   private appsV1Api: k8s.AppsV1Api;
   private coreV1Api: k8s.CoreV1Api;
   private nodeV1Api: k8s.NodeV1Api;
+  private informer: k8s.Informer<k8s.V1Deployment> | null = null;
 
   constructor(
     config: OrchestratorConfig,
@@ -216,6 +223,9 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
         true
       );
     }
+
+    // Store KubeConfig for informer creation
+    this.kc = kc;
 
     // Configure K8s API clients
     this.appsV1Api = kc.makeApiClient(k8s.AppsV1Api);
@@ -344,30 +354,52 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
       const response = k8sDeployments as {
         body?: { items?: k8s.V1Deployment[] };
       };
-      return (response.body?.items || []).map(
-        (deployment: k8s.V1Deployment) => {
-          const deploymentName = deployment.metadata?.name || "";
+      const results: DeploymentInfo[] = [];
 
-          // Get last activity from annotations or fallback to creation time
-          const lastActivityStr =
-            deployment.metadata?.annotations?.["lobu.io/last-activity"] ||
-            deployment.metadata?.annotations?.["lobu.io/created"] ||
-            deployment.metadata?.creationTimestamp;
+      for (const deployment of response.body?.items || []) {
+        const deploymentName = deployment.metadata?.name || "";
 
-          const lastActivity = lastActivityStr
-            ? new Date(lastActivityStr)
-            : new Date();
-          const replicas = deployment.spec?.replicas || 0;
-          return buildDeploymentInfoSummary({
+        // Clean up orphaned finalizers on Terminating deployments (avoids extra API call)
+        if (
+          deployment.metadata?.deletionTimestamp &&
+          deployment.metadata?.finalizers?.includes(LOBU_FINALIZER)
+        ) {
+          logger.info(
+            `Removing orphaned finalizer from Terminating deployment ${deploymentName}`
+          );
+          this.removeFinalizerFromResource("deployment", deploymentName).catch(
+            (err) =>
+              logger.warn(
+                `Failed to remove orphaned finalizer from ${deploymentName}:`,
+                err instanceof Error ? err.message : String(err)
+              )
+          );
+          continue; // Skip Terminating deployments from the active list
+        }
+
+        // Get last activity from annotations or fallback to creation time
+        const lastActivityStr =
+          deployment.metadata?.annotations?.["lobu.io/last-activity"] ||
+          deployment.metadata?.annotations?.["lobu.io/created"] ||
+          deployment.metadata?.creationTimestamp;
+
+        const lastActivity = lastActivityStr
+          ? new Date(lastActivityStr)
+          : new Date();
+        const replicas = deployment.spec?.replicas || 0;
+        results.push(
+          buildDeploymentInfoSummary({
             deploymentName,
             lastActivity,
             now,
             idleThresholdMinutes,
             veryOldDays,
             replicas,
-          });
-        }
-      );
+          })
+        );
+      }
+
+      return results;
     } catch (error) {
       throw new OrchestratorError(
         ErrorCode.DEPLOYMENT_CREATE_FAILED,
@@ -385,8 +417,11 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
   private async createPVC(
     pvcName: string,
     agentId: string,
-    traceparent?: string
+    traceparent?: string,
+    sizeOverride?: string
   ): Promise<void> {
+    const pvcSize =
+      sizeOverride || this.config.worker.persistence?.size || "1Gi";
     const pvc = {
       apiVersion: "v1",
       kind: "PersistentVolumeClaim",
@@ -398,12 +433,13 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
           "app.kubernetes.io/component": "worker-storage",
           "lobu.io/agent-id": agentId,
         },
+        finalizers: [LOBU_FINALIZER],
       },
       spec: {
         accessModes: ["ReadWriteOnce"],
         resources: {
           requests: {
-            storage: this.config.worker.persistence?.size || "1Gi",
+            storage: pvcSize,
           },
         },
         ...(this.config.worker.persistence?.storageClass
@@ -416,10 +452,13 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
     const span = createChildSpan("pvc_setup", traceparent, {
       "lobu.pvc_name": pvcName,
       "lobu.agent_id": agentId,
-      "lobu.pvc_size": this.config.worker.persistence?.size || "1Gi",
+      "lobu.pvc_size": pvcSize,
     });
 
-    logger.info({ traceparent, pvcName, agentId, size: "1Gi" }, "Creating PVC");
+    logger.info(
+      { traceparent, pvcName, agentId, size: pvcSize },
+      "Creating PVC"
+    );
 
     try {
       await this.coreV1Api.createNamespacedPersistentVolumeClaim(
@@ -476,7 +515,15 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
     // Use agentId for PVC naming (shared across threads in same space)
     const agentId = messageData?.agentId!;
     const pvcName = `lobu-workspace-${agentId}`;
-    await this.createPVC(pvcName, agentId, traceparent);
+
+    // Check if Nix packages are configured (need init container + subPath mounts)
+    const hasNixConfig =
+      (messageData?.nixConfig?.packages?.length ?? 0) > 0 ||
+      !!messageData?.nixConfig?.flakeUrl;
+
+    // Use larger PVC when Nix packages are configured (Chromium etc. need space)
+    const pvcSize = hasNixConfig ? "5Gi" : undefined;
+    await this.createPVC(pvcName, agentId, traceparent, pvcSize);
 
     // Get environment variables before creating the deployment spec
     // Include secrets (same as Docker behavior) - secrets are passed via env vars
@@ -489,13 +536,24 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
       userEnvVars
     );
 
+    const platform = messageData?.platform || "unknown";
+
     const deployment: SimpleDeployment = {
       apiVersion: "apps/v1",
       kind: "Deployment",
       metadata: {
         name: deploymentName,
         namespace: this.config.kubernetes.namespace,
-        labels: { ...BASE_WORKER_LABELS },
+        labels: {
+          ...BASE_WORKER_LABELS,
+          "lobu.io/platform": platform,
+          "lobu.io/agent-id": agentId,
+        },
+        annotations: {
+          "lobu.io/status": "running",
+          "lobu.io/created": new Date().toISOString(),
+        },
+        finalizers: [LOBU_FINALIZER],
       },
       spec: {
         replicas: 1,
@@ -511,7 +569,10 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
               "lobu.io/agent-id": agentId,
               ...(traceparent ? { "lobu.io/traceparent": traceparent } : {}),
             },
-            labels: { ...BASE_WORKER_LABELS },
+            labels: {
+              ...BASE_WORKER_LABELS,
+              "lobu.io/platform": platform,
+            },
           },
           spec: {
             serviceAccountName: "lobu-worker",
@@ -523,6 +584,39 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
               fsGroup: WORKER_SECURITY.GROUP_ID,
               fsGroupChangePolicy: "OnRootMismatch",
             },
+            // Init container to bootstrap Nix store from image to PVC (first time only)
+            ...(hasNixConfig
+              ? {
+                  initContainers: [
+                    {
+                      name: "nix-bootstrap",
+                      image: `${this.config.worker.image.repository}:${this.config.worker.image.tag}`,
+                      command: [
+                        "bash",
+                        "-c",
+                        "if [ ! -f /workspace/.nix-bootstrapped ]; then " +
+                          'echo "Bootstrapping Nix store to PVC..." && ' +
+                          "cp -a /nix/store /workspace/.nix-store && " +
+                          "cp -a /nix/var /workspace/.nix-var && " +
+                          "mkdir -p /workspace/.nix-store/.nix-pvc-mounted && " +
+                          "touch /workspace/.nix-bootstrapped && " +
+                          'echo "Nix bootstrap complete"; ' +
+                          'else echo "Nix store already bootstrapped"; fi',
+                      ],
+                      securityContext: {
+                        runAsUser: WORKER_SECURITY.USER_ID,
+                        runAsGroup: WORKER_SECURITY.GROUP_ID,
+                      },
+                      volumeMounts: [
+                        {
+                          name: "workspace",
+                          mountPath: "/workspace",
+                        },
+                      ],
+                    },
+                  ],
+                }
+              : {}),
             containers: [
               {
                 name: "worker",
@@ -572,6 +666,26 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
                     name: "bun-cache",
                     mountPath: "/home/bun/.cache",
                   },
+                  // /dev/shm for shared memory (needed by Chromium and other apps)
+                  {
+                    name: "dshm",
+                    mountPath: "/dev/shm",
+                  },
+                  // When Nix packages configured, mount PVC subpaths at /nix/store and /nix/var
+                  ...(hasNixConfig
+                    ? [
+                        {
+                          name: "workspace",
+                          mountPath: "/nix/store",
+                          subPath: ".nix-store",
+                        },
+                        {
+                          name: "workspace",
+                          mountPath: "/nix/var",
+                          subPath: ".nix-var",
+                        },
+                      ]
+                    : []),
                 ],
               },
             ],
@@ -596,6 +710,14 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
                 emptyDir: {
                   medium: "Memory",
                   sizeLimit: WORKER_SECURITY.BUN_CACHE_SIZE_LIMIT,
+                },
+              },
+              // Shared memory for Chromium and other apps requiring /dev/shm
+              {
+                name: "dshm",
+                emptyDir: {
+                  medium: "Memory",
+                  sizeLimit: "256Mi",
                 },
               },
             ],
@@ -710,6 +832,11 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
 
       if ((deployment as any).body?.spec?.replicas !== replicas) {
         const patch = {
+          metadata: {
+            annotations: {
+              "lobu.io/status": replicas > 0 ? "running" : "scaled-down",
+            },
+          },
           spec: {
             replicas: replicas,
           },
@@ -742,6 +869,9 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
   }
 
   async deleteDeployment(deploymentName: string): Promise<void> {
+    // Remove our finalizer before deleting so the resource can be garbage-collected
+    await this.removeFinalizerFromResource("deployment", deploymentName);
+
     // Delete the deployment with propagation policy
     try {
       await this.appsV1Api.deleteNamespacedDeployment(
@@ -768,6 +898,144 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
     // NOTE: Space PVCs are NOT deleted on deployment deletion
     // They are shared across threads in the same space and persist
     // for future conversations. Cleanup is done manually or via separate process.
+  }
+
+  /**
+   * Remove the lobu.io/cleanup finalizer from a deployment or PVC.
+   * No-ops if the finalizer is already absent.
+   */
+  private async removeFinalizerFromResource(
+    kind: "deployment" | "pvc",
+    name: string
+  ): Promise<void> {
+    try {
+      // Read current finalizers
+      let currentFinalizers: string[] | undefined;
+      if (kind === "deployment") {
+        const resource = await this.appsV1Api.readNamespacedDeployment(
+          name,
+          this.config.kubernetes.namespace
+        );
+        currentFinalizers = (resource as any).body?.metadata?.finalizers;
+      } else {
+        const resource =
+          await this.coreV1Api.readNamespacedPersistentVolumeClaim(
+            name,
+            this.config.kubernetes.namespace
+          );
+        currentFinalizers = (resource as any).body?.metadata?.finalizers;
+      }
+
+      if (!currentFinalizers || !currentFinalizers.includes(LOBU_FINALIZER)) {
+        return; // Finalizer not present, nothing to do
+      }
+
+      const updatedFinalizers = currentFinalizers.filter(
+        (f) => f !== LOBU_FINALIZER
+      );
+      const patch = {
+        metadata: {
+          finalizers: updatedFinalizers.length > 0 ? updatedFinalizers : null,
+        },
+      };
+
+      if (kind === "deployment") {
+        await this.appsV1Api.patchNamespacedDeployment(
+          name,
+          this.config.kubernetes.namespace,
+          patch,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          {
+            headers: {
+              "Content-Type": "application/merge-patch+json",
+            },
+          }
+        );
+      } else {
+        await this.coreV1Api.patchNamespacedPersistentVolumeClaim(
+          name,
+          this.config.kubernetes.namespace,
+          patch,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          {
+            headers: {
+              "Content-Type": "application/merge-patch+json",
+            },
+          }
+        );
+      }
+
+      logger.debug(`Removed finalizer from ${kind} ${name}`);
+    } catch (error) {
+      const k8sError = error as { statusCode?: number };
+      if (k8sError.statusCode === 404) {
+        // Resource already gone, nothing to do
+        return;
+      }
+      logger.warn(
+        `Failed to remove finalizer from ${kind} ${name}:`,
+        error instanceof Error ? error.message : String(error)
+      );
+      // Don't throw - finalizer removal failure should not block deletion
+    }
+  }
+
+  /**
+   * Clean up PVCs stuck in Terminating state with our finalizer.
+   * Deployment orphans are handled inline in reconcileDeployments to avoid
+   * a duplicate list API call.
+   */
+  private async cleanupOrphanedPvcFinalizers(): Promise<void> {
+    try {
+      const pvcs = await this.coreV1Api.listNamespacedPersistentVolumeClaim(
+        this.config.kubernetes.namespace,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        "app.kubernetes.io/component=worker-storage"
+      );
+
+      const pvcResponse = pvcs as {
+        body?: { items?: k8s.V1PersistentVolumeClaim[] };
+      };
+
+      for (const pvc of pvcResponse.body?.items || []) {
+        const name = pvc.metadata?.name;
+        const deletionTimestamp = pvc.metadata?.deletionTimestamp;
+        const finalizers = pvc.metadata?.finalizers;
+
+        if (name && deletionTimestamp && finalizers?.includes(LOBU_FINALIZER)) {
+          logger.info(
+            `Removing orphaned finalizer from Terminating PVC ${name}`
+          );
+          await this.removeFinalizerFromResource("pvc", name);
+        }
+      }
+    } catch (error) {
+      logger.warn(
+        "Failed to clean up orphaned PVC finalizers:",
+        error instanceof Error ? error.message : String(error)
+      );
+    }
+  }
+
+  /**
+   * Override reconcileDeployments to also clean up orphaned PVC finalizers.
+   * Deployment orphan cleanup is handled inside listDeployments() to avoid
+   * duplicate API calls (listDeployments already iterates raw K8s objects).
+   */
+  async reconcileDeployments(): Promise<void> {
+    await this.cleanupOrphanedPvcFinalizers();
+    await super.reconcileDeployments();
   }
 
   async updateDeploymentActivity(deploymentName: string): Promise<void> {
@@ -807,5 +1075,68 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
     const dispatcherService =
       process.env.DISPATCHER_SERVICE_NAME || "lobu-dispatcher";
     return `${dispatcherService}.${this.config.kubernetes.namespace}.svc.cluster.local`;
+  }
+
+  /**
+   * Start a watch-based informer for worker deployments.
+   * The informer maintains a local cache that is updated via K8s watch events,
+   * reducing the need for frequent list API calls.
+   */
+  async startInformer(): Promise<void> {
+    if (this.informer) return;
+
+    const namespace = this.config.kubernetes.namespace;
+    const listFn = () =>
+      this.appsV1Api.listNamespacedDeployment(
+        namespace,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        "app.kubernetes.io/component=worker"
+      );
+
+    try {
+      this.informer = k8s.makeInformer(
+        this.kc,
+        `/apis/apps/v1/namespaces/${namespace}/deployments`,
+        listFn,
+        "app.kubernetes.io/component=worker"
+      );
+
+      this.informer.on("error", (err: unknown) => {
+        logger.warn(
+          "Informer error, will auto-restart:",
+          err instanceof Error ? err.message : String(err)
+        );
+      });
+
+      await this.informer.start();
+      logger.info("K8s deployment informer started");
+    } catch (error) {
+      logger.warn(
+        "Failed to start informer, falling back to polling:",
+        error instanceof Error ? error.message : String(error)
+      );
+      this.informer = null;
+    }
+  }
+
+  /**
+   * Stop the informer and clear the cache.
+   */
+  async stopInformer(): Promise<void> {
+    if (this.informer) {
+      this.informer.stop();
+      this.informer = null;
+      logger.info("K8s deployment informer stopped");
+    }
+  }
+
+  /**
+   * Whether the informer is active and has a populated cache.
+   */
+  isInformerActive(): boolean {
+    return this.informer !== null;
   }
 }

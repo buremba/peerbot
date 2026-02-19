@@ -768,16 +768,25 @@ export function renderSettingsPage(
       }
 
       <!-- System Packages -->
-      <div class="bg-gray-50 rounded-lg p-3" x-data="{ open: false }">
+      <div class="bg-gray-50 rounded-lg p-3" x-data="{ open: ${payload.prefillNixPackages?.length ? "true" : "false"} }">
         <h3 class="flex items-center gap-2 text-sm font-medium text-gray-800 cursor-pointer select-none" @click="open = !open">
           <span>&#128230;</span>
           System Packages
+          ${payload.prefillNixPackages?.length ? '<span class="text-xs text-slate-600 font-normal">(action needed)</span>' : ""}
           <span class="ml-auto text-xs text-gray-400 transition-transform" :class="open ? '' : 'rotate-[-90deg]'">&#9660;</span>
         </h3>
         <div x-show="open" x-transition class="pt-3 space-y-3">
           <div>
             <label for="nixPackages" class="block text-xs font-medium text-gray-600 mb-1">Packages (one per line)</label>
-            <textarea id="nixPackages" name="nixPackages" placeholder="python311&#10;ffmpeg&#10;jq" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-xs font-mono min-h-[60px] resize-y focus:border-slate-600 focus:ring-1 focus:ring-slate-200 outline-none">${escapeHtml((s.nixConfig?.packages || []).join("\n"))}</textarea>
+            <textarea id="nixPackages" name="nixPackages" placeholder="python311&#10;ffmpeg&#10;jq" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-xs font-mono min-h-[60px] resize-y focus:border-slate-600 focus:ring-1 focus:ring-slate-200 outline-none">${escapeHtml(
+              (() => {
+                const existing = s.nixConfig?.packages || [];
+                const prefill = payload.prefillNixPackages || [];
+                const merged = [...new Set([...existing, ...prefill])];
+                return merged.join("\n");
+              })()
+            )}</textarea>
+            ${payload.prefillNixPackages?.length ? '<p class="text-xs text-slate-600 mt-1">&#11014;&#65039; Suggested packages have been pre-filled. Review and save to apply.</p>' : ""}
           </div>
         </div>
       </div>

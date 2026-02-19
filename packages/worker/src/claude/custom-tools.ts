@@ -707,9 +707,7 @@ export function createCustomToolsServer(
       "InstallMcpServer",
       "Generate a settings link that pre-fills one selected MCP server for explicit user confirmation.",
       {
-        mcpId: z
-          .string()
-          .describe("MCP ID from SearchMcpServers results"),
+        mcpId: z.string().describe("MCP ID from SearchMcpServers results"),
         reason: z
           .string()
           .optional()
@@ -824,6 +822,12 @@ export function createCustomToolsServer(
           .describe(
             "Optional list of skills to pre-fill for the user to enable (e.g., [{ repo: 'anthropics/skills/pdf', name: 'PDF Reader' }])"
           ),
+        prefillNixPackages: z
+          .array(z.string())
+          .optional()
+          .describe(
+            "Optional list of Nix packages to pre-fill in the system packages section (e.g., ['chromium', 'ffmpeg'])"
+          ),
         prefillMcpServers: z
           .array(
             z.object({
@@ -877,6 +881,7 @@ export function createCustomToolsServer(
               reason: args.reason,
               message: args.message,
               prefillEnvVars: args.prefillEnvVars,
+              prefillNixPackages: args.prefillNixPackages,
               prefillSkills: args.prefillSkills,
               prefillMcpServers: args.prefillMcpServers,
             }),

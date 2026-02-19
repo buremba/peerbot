@@ -290,6 +290,11 @@ export class DockerDeploymentManager extends BaseDeploymentManager {
         ([key, value]) => `${key}=${value}`
       );
 
+      // Check if Nix packages are configured (need writable rootfs for symlinks)
+      const hasNixConfig =
+        (messageData?.nixConfig?.packages?.length ?? 0) > 0 ||
+        !!messageData?.nixConfig?.flakeUrl;
+
       // Get the Docker Compose project name from environment or use default
       const composeProjectName = process.env.COMPOSE_PROJECT_NAME || "lobu";
 
@@ -383,15 +388,20 @@ export class DockerDeploymentManager extends BaseDeploymentManager {
           // This makes the root user inside container map to non-root on host
           UsernsMode: process.env.WORKER_USERNS_MODE || "",
           // Read-only root filesystem (worker can write to /workspace and /tmp)
+          // Disabled when Nix packages configured (entrypoint needs to symlink /nix/store)
           // Enabled by default for security, set WORKER_READONLY_ROOTFS=false to disable
-          ReadonlyRootfs: process.env.WORKER_READONLY_ROOTFS !== "false",
+          ReadonlyRootfs:
+            !hasNixConfig && process.env.WORKER_READONLY_ROOTFS !== "false",
           // Temporary filesystem for /tmp (writable, in-memory)
-          ...(process.env.WORKER_READONLY_ROOTFS !== "false" && {
-            Tmpfs: {
-              "/tmp": "rw,noexec,nosuid,size=100m",
-              "/home/bun/.cache": "rw,noexec,nosuid,size=200m",
-            },
-          }),
+          ...(!hasNixConfig &&
+            process.env.WORKER_READONLY_ROOTFS !== "false" && {
+              Tmpfs: {
+                "/tmp": "rw,noexec,nosuid,size=100m",
+                "/home/bun/.cache": "rw,noexec,nosuid,size=200m",
+              },
+            }),
+          // Shared memory for Chromium and other apps requiring /dev/shm
+          ShmSize: 268435456, // 256MB
           // Use gVisor runtime if available for enhanced isolation
           ...(this.gvisorAvailable && {
             Runtime: "runsc",

@@ -100,6 +100,24 @@ if [ -f /home/claude/.nix-profile/etc/profile.d/nix.sh ]; then
     export NIX_PATH="nixpkgs=/home/claude/.nix-defexpr/channels/nixpkgs"
 fi
 
+# Docker fallback: persist Nix store on workspace PVC via symlinks
+# (K8s uses init container + subPath mounts instead, detected by .nix-pvc-mounted marker)
+if [ -n "${NIX_PACKAGES:-}${NIX_FLAKE_URL:-}" ] && [ ! -d "/nix/store/.nix-pvc-mounted" ]; then
+    NIX_PVC_STORE="/workspace/.nix-store"
+    NIX_PVC_VAR="/workspace/.nix-var"
+    MARKER="/workspace/.nix-bootstrapped"
+    if [ ! -f "$MARKER" ]; then
+        echo "Bootstrapping Nix store to PVC..."
+        cp -a /nix/store "$NIX_PVC_STORE"
+        cp -a /nix/var "$NIX_PVC_VAR"
+        touch "$MARKER"
+    fi
+    rm -rf /nix/store /nix/var
+    ln -sf "$NIX_PVC_STORE" /nix/store
+    ln -sf "$NIX_PVC_VAR" /nix/var
+    echo "Nix store linked to PVC"
+fi
+
 # Nix environment activation
 # Priority: API env vars > repo files
 activate_nix_env() {

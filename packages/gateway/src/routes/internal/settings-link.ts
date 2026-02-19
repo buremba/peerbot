@@ -78,12 +78,14 @@ export function createSettingsLinkRoutes(): Hono<WorkerContext> {
         prefillEnvVars,
         prefillSkills,
         prefillMcpServers,
+        prefillNixPackages,
       } = body as {
         reason?: string;
         message?: string;
         prefillEnvVars?: string[];
         prefillSkills?: PrefillSkill[];
         prefillMcpServers?: PrefillMcpServer[];
+        prefillNixPackages?: string[];
       };
 
       const agentId = worker.agentId;
@@ -104,6 +106,7 @@ export function createSettingsLinkRoutes(): Hono<WorkerContext> {
         prefillEnvVarsCount: prefillEnvVars?.length || 0,
         prefillSkillsCount: prefillSkills?.length || 0,
         prefillMcpServersCount: prefillMcpServers?.length || 0,
+        prefillNixPackagesCount: prefillNixPackages?.length || 0,
       });
 
       // Generate token with 1 hour TTL and optional message/prefill
@@ -114,6 +117,7 @@ export function createSettingsLinkRoutes(): Hono<WorkerContext> {
         prefillEnvVars,
         prefillSkills,
         prefillMcpServers,
+        prefillNixPackages,
         sourceContext: {
           conversationId: worker.conversationId,
           channelId: worker.channelId,

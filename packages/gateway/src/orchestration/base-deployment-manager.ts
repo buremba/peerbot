@@ -298,6 +298,30 @@ export abstract class BaseDeploymentManager {
     // Get the dispatcher host for proxy configuration
     const dispatcherHost = this.getDispatcherHost();
 
+    // Auto-add Nix cache domains when Nix packages are configured
+    // Workers need to download packages from cache.nixos.org etc.
+    if (
+      messageData.nixConfig?.packages?.length ||
+      messageData.nixConfig?.flakeUrl
+    ) {
+      const NIX_DOMAINS = [
+        "cache.nixos.org",
+        "channels.nixos.org",
+        "releases.nixos.org",
+      ];
+      if (!messageData.networkConfig) {
+        messageData.networkConfig = {};
+      }
+      const existing = messageData.networkConfig.allowedDomains || [];
+      const toAdd = NIX_DOMAINS.filter((d) => !existing.includes(d));
+      if (toAdd.length > 0) {
+        messageData.networkConfig.allowedDomains = [...existing, ...toAdd];
+        logger.info(
+          `Added Nix cache domains to network allowlist for ${deploymentName}: ${toAdd.join(", ")}`
+        );
+      }
+    }
+
     // Store per-deployment network config for proxy lookup
     // The HTTP proxy extracts deploymentName from Proxy-Authorization header
     // and looks up the config from networkConfigStore

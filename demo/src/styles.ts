@@ -1,0 +1,73 @@
+import type { CSSProperties } from "react";
+
+export const colors = {
+  bg: "#0F1117",
+  bgSecondary: "#1A1D27",
+  bgTertiary: "#232633",
+  border: "#2D3148",
+  borderLight: "#3D4260",
+  text: "#E2E8F0",
+  textSecondary: "#94A3B8",
+  textMuted: "#64748B",
+  accent: "#4A9EFF",
+  accentDim: "rgba(74, 158, 255, 0.15)",
+  green: "#10B981",
+  greenDim: "rgba(16, 185, 129, 0.15)",
+  red: "#EF4444",
+  redDim: "rgba(239, 68, 68, 0.15)",
+  yellow: "#F59E0B",
+  yellowDim: "rgba(245, 158, 11, 0.15)",
+  purple: "#A855F7",
+  purpleDim: "rgba(168, 85, 247, 0.15)",
+  slackBg: "#1A1D21",
+  slackSidebar: "#19171D",
+  slackHover: "#222529",
+};
+
+export const layout: Record<string, CSSProperties> = {
+  container: {
+    fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, sans-serif",
+    background: colors.bg,
+    color: colors.text,
+    minHeight: "100vh",
+    display: "flex",
+    flexDirection: "column",
+    overflow: "hidden",
+  },
+  header: {
+    padding: "20px 32px",
+    borderBottom: `1px solid ${colors.border}`,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    flexShrink: 0,
+  },
+  main: {
+    display: "flex",
+    flex: 1,
+    overflow: "hidden",
+  },
+  diagramPanel: {
+    flex: 1,
+    position: "relative",
+    display: "flex",
+    flexDirection: "column",
+  },
+  slackPanel: {
+    width: 380,
+    borderLeft: `1px solid ${colors.border}`,
+    display: "flex",
+    flexDirection: "column",
+    background: colors.slackBg,
+    flexShrink: 0,
+  },
+  bottomBar: {
+    borderTop: `1px solid ${colors.border}`,
+    padding: "16px 32px",
+    display: "flex",
+    alignItems: "center",
+    gap: 16,
+    background: colors.bgSecondary,
+    flexShrink: 0,
+  },
+};

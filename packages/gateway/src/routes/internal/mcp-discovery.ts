@@ -38,7 +38,7 @@ export function createMcpDiscoveryRoutes(
   const authenticateWorker = async (
     c: any,
     next: () => Promise<void>
-  ): Promise<Response | void> => {
+  ): Promise<Response | undefined> => {
     const authHeader = c.req.header("authorization");
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
       return c.json({ error: "Missing or invalid authorization" }, 401);
@@ -64,7 +64,11 @@ export function createMcpDiscoveryRoutes(
       : 5;
 
     const results = await discoveryService.search(query, limit);
-    logger.info("MCP discovery search", { query, limit, count: results.length });
+    logger.info("MCP discovery search", {
+      query,
+      limit,
+      count: results.length,
+    });
 
     return c.json({
       results: results.map(toResponseCandidate),

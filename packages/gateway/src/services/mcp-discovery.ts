@@ -127,10 +127,7 @@ export class McpDiscoveryService {
     this.setCacheKey(candidate.canonicalId.toLowerCase(), candidate);
   }
 
-  private setCacheKey(
-    key: string,
-    candidate: DiscoveredMcpCandidate
-  ): void {
+  private setCacheKey(key: string, candidate: DiscoveredMcpCandidate): void {
     if (this.recentCandidates.has(key)) {
       this.recentCandidates.delete(key);
     }

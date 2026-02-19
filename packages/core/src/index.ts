@@ -64,6 +64,15 @@ export type {
   UserSuggestion,
 } from "./types";
 
+// Plugin types
+export type {
+  PluginConfig,
+  PluginManifest,
+  PluginSlot,
+  PluginsConfig,
+  ProviderRegistration,
+} from "./plugin-types";
+
 // Utilities
 export * from "./utils/encryption";
 export * from "./utils/env";

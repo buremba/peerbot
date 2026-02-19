@@ -123,7 +123,7 @@ const updateConfigRoute = createRoute({
                 plugins: z.array(
                   z.object({
                     source: z.string(),
-                    slot: z.enum(["tool"]),
+                    slot: z.enum(["tool", "provider"]),
                     enabled: z.boolean().optional(),
                   })
                 ),
@@ -279,7 +279,8 @@ export function createAgentConfigRoutes(
     if (!payload) return c.json({ error: "Unauthorized" }, 401);
 
     try {
-      const existingSettings = await config.agentSettingsStore.getSettings(agentId);
+      const existingSettings =
+        await config.agentSettingsStore.getSettings(agentId);
       const body = c.req.valid("json");
 
       const updates: Partial<AgentSettings> = {};
@@ -591,7 +592,8 @@ async function maybeSendMcpInstalledNotifications(options: {
   }
 
   const changed =
-    Object.keys(notifiedUpdates).length !== Object.keys(previousNotified).length;
+    Object.keys(notifiedUpdates).length !==
+    Object.keys(previousNotified).length;
   if (changed) {
     await agentSettingsStore.updateSettings(agentId, {
       mcpInstallNotified: notifiedUpdates,

@@ -169,7 +169,9 @@ export class McpConfigService {
 
       if (cloned.url) {
         // HTTP/SSE MCP - proxy through gateway
-        logger.info(`🔧 Configuring per-agent HTTP MCP ${id}: baseUrl=${baseUrl}`);
+        logger.info(
+          `🔧 Configuring per-agent HTTP MCP ${id}: baseUrl=${baseUrl}`
+        );
         // Store original URL for proxy forwarding (used by MCP proxy)
         cloned.originalUrl = cloned.url;
         cloned.url = baseUrl;
@@ -725,9 +727,7 @@ function toHttpServerConfig(
     inputs: Array.isArray(cloned.inputs)
       ? cloned.inputs.filter(
           (input: any) =>
-            input &&
-            typeof input === "object" &&
-            input.type === "promptString"
+            input && typeof input === "object" && input.type === "promptString"
         )
       : undefined,
     headers:

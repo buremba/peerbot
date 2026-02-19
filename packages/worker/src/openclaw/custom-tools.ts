@@ -557,8 +557,7 @@ export function createOpenClawCustomTools(params: {
       "Search for installable remote MCP servers. Returns up to 5 candidates.",
     parameters: Type.Object({
       query: Type.String({
-        description:
-          "What to search for (e.g., 'gmail', 'notion', 'github')",
+        description: "What to search for (e.g., 'gmail', 'notion', 'github')",
       }),
       limit: Type.Optional(
         Type.Number({
@@ -569,7 +568,10 @@ export function createOpenClawCustomTools(params: {
     execute: async (_toolCallId, args) => {
       try {
         const toolArgs = args as { query: string; limit?: number };
-        const result = await searchMcpServers(toolArgs.query, toolArgs.limit || 5);
+        const result = await searchMcpServers(
+          toolArgs.query,
+          toolArgs.limit || 5
+        );
         if (!result.results.length) {
           return buildTextResult(
             `No MCP servers found for "${toolArgs.query}". Try a broader query.`

@@ -27,7 +27,9 @@ export class Orchestrator {
   private deploymentManager: BaseDeploymentManager;
   private queueConsumer: MessageConsumer;
   private isRunning = false;
+  private shuttingDown = false;
   private cleanupInterval?: NodeJS.Timeout;
+  private activeReconciliation: Promise<void> | null = null;
 
   constructor(config: OrchestratorConfig) {
     this.config = config;
@@ -175,10 +177,15 @@ export class Orchestrator {
         await this.deploymentManager.validateWorkerImage();
       }
 
+      // Start K8s informer for watch-based reconciliation
+      if (this.deploymentManager instanceof K8sDeploymentManager) {
+        await this.deploymentManager.startInformer();
+      }
+
       // Start queue consumer
       await this.queueConsumer.start();
 
-      // Setup periodic cleanup
+      // Setup periodic cleanup (reduced interval when informer is active)
       this.setupIdleCleanup();
 
       this.isRunning = true;
@@ -193,14 +200,31 @@ export class Orchestrator {
     if (!this.isRunning) return;
 
     this.isRunning = false;
+    this.shuttingDown = true;
 
     try {
+      // Stop scheduling new reconciliation cycles
       if (this.cleanupInterval) {
         clearInterval(this.cleanupInterval);
         this.cleanupInterval = undefined;
       }
 
+      // Wait for in-flight reconciliation to finish (with 10s timeout)
+      if (this.activeReconciliation) {
+        logger.info("Waiting for in-flight reconciliation to complete...");
+        await Promise.race([
+          this.activeReconciliation,
+          new Promise<void>((resolve) => setTimeout(resolve, 10_000)),
+        ]);
+        this.activeReconciliation = null;
+      }
+
       await this.queueConsumer.stop();
+
+      // Stop K8s informer
+      if (this.deploymentManager instanceof K8sDeploymentManager) {
+        await this.deploymentManager.stopInformer();
+      }
 
       // Clean up local worker processes if using local deployment mode
       if (this.deploymentManager instanceof LocalDeploymentManager) {
@@ -215,21 +239,45 @@ export class Orchestrator {
 
   private setupIdleCleanup(): void {
     setTimeout(() => {
-      this.deploymentManager.reconcileDeployments().catch((error) => {
+      if (this.shuttingDown) return;
+      const p = this.deploymentManager.reconcileDeployments().catch((error) => {
         logger.error("❌ Initial deployment reconciliation failed:", error);
+      });
+      this.activeReconciliation = p;
+      p.finally(() => {
+        if (this.activeReconciliation === p) this.activeReconciliation = null;
       });
     }, this.config.cleanup.initialDelayMs);
 
+    // When informer is active, reduce polling to 5min safety-net interval
+    const hasInformer =
+      this.deploymentManager instanceof K8sDeploymentManager &&
+      this.deploymentManager.isInformerActive();
+    const intervalMs = hasInformer
+      ? Math.max(this.config.cleanup.intervalMs, 5 * 60 * 1000)
+      : this.config.cleanup.intervalMs;
+
+    if (hasInformer) {
+      logger.info(
+        `Informer active, reconciliation interval set to ${intervalMs / 1000}s (safety net)`
+      );
+    }
+
     this.cleanupInterval = setInterval(async () => {
+      if (this.shuttingDown) return;
       try {
-        await this.deploymentManager.reconcileDeployments();
+        const p = this.deploymentManager.reconcileDeployments();
+        this.activeReconciliation = p;
+        await p;
       } catch (error) {
         logger.error(
           "Error during deployment reconciliation:",
           error instanceof Error ? error.message : String(error)
         );
+      } finally {
+        this.activeReconciliation = null;
       }
-    }, this.config.cleanup.intervalMs);
+    }, intervalMs);
   }
 
   getStatus() {

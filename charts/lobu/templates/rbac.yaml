@@ -35,7 +35,7 @@ rules:
   # PersistentVolumeClaims for worker storage
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]
-    verbs: ["create", "get", "list", "delete"]
+    verbs: ["create", "get", "list", "delete", "patch"]
 
 ---
 apiVersion: rbac.authorization.k8s.io/v1

@@ -80,6 +80,8 @@ export async function buildModuleEnvVars(
   return envVars;
 }
 
+export const LOBU_FINALIZER = "lobu.io/cleanup";
+
 export const BASE_WORKER_LABELS = {
   "app.kubernetes.io/name": "lobu",
   "app.kubernetes.io/component": "worker",

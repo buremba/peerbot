@@ -939,6 +939,14 @@ export async function startGateway(
   // Setup graceful shutdown
   const cleanup = async () => {
     logger.info("Shutting down gateway...");
+
+    // Hard deadline: force exit after 30s if graceful shutdown stalls
+    const hardDeadline = setTimeout(() => {
+      logger.error("Graceful shutdown timed out after 30s, forcing exit");
+      process.exit(1);
+    }, 30_000);
+    hardDeadline.unref();
+
     await orchestrator.stop();
     await gateway.stop();
     if (httpServer) {

@@ -2,11 +2,12 @@
 
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { createLogger, type ToolsConfig } from "@lobu/core";
+import { createLogger, type PluginsConfig, type ToolsConfig } from "@lobu/core";
 import { getModel } from "@mariozechner/pi-ai";
 import {
   AuthStorage,
   createAgentSession,
+  ModelRegistry,
   SessionManager,
   SettingsManager,
 } from "@mariozechner/pi-coding-agent";
@@ -19,6 +20,7 @@ import type {
 } from "../core/types";
 import { createOpenClawCustomTools } from "./custom-tools";
 import { OpenClawCoreInstructionProvider } from "./instructions";
+import { loadPlugins } from "./plugin-loader";
 import { OpenClawProgressProcessor } from "./processor";
 import { getOpenClawSessionContext } from "./session-context";
 import {
@@ -166,6 +168,32 @@ Use it when the user references past discussions or you need context.`);
       platform: this.config.platform,
     });
 
+    // Load OpenClaw plugins (tools are captured as raw ToolDefinition — no bridging)
+    const pluginsConfig = rawOptions.pluginsConfig as PluginsConfig | undefined;
+    const loadedPlugins = await loadPlugins(pluginsConfig);
+    const pluginTools = loadedPlugins.flatMap((p) => p.tools);
+
+    if (pluginTools.length > 0) {
+      customTools.push(...pluginTools);
+      logger.info(
+        `Loaded ${pluginTools.length} tool(s) from ${loadedPlugins.length} plugin(s)`
+      );
+    }
+
+    // Apply plugin provider registrations to ModelRegistry
+    const modelRegistry = new ModelRegistry(authStorage);
+    const allProviders = loadedPlugins.flatMap((p) => p.providers);
+    for (const reg of allProviders) {
+      try {
+        modelRegistry.registerProvider(reg.name, reg.config as any);
+        logger.info(`Registered provider "${reg.name}" from plugin`);
+      } catch (err) {
+        logger.error(
+          `Failed to register provider "${reg.name}": ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    }
+
     logger.info(
       `Starting OpenClaw session: provider=${provider}, model=${modelId}, tools=${tools.length}, customTools=${customTools.length}`
     );
@@ -178,6 +206,7 @@ Use it when the user references past discussions or you need context.`);
       sessionManager,
       settingsManager,
       authStorage,
+      modelRegistry,
     });
 
     // Note: Using default streamFn (not streamSimple) for compatibility

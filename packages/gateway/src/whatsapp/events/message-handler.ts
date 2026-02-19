@@ -210,6 +210,11 @@ export class WhatsAppMessageHandler {
       mergedOptions.mcpServers = settings.mcpServers;
     }
 
+    // Plugin configuration
+    if (settings.pluginsConfig) {
+      mergedOptions.pluginsConfig = settings.pluginsConfig;
+    }
+
     // Verbose logging
     if (settings.verboseLogging !== undefined) {
       mergedOptions.verboseLogging = settings.verboseLogging;

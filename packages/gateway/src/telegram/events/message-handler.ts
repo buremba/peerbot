@@ -136,6 +136,9 @@ export class TelegramMessageHandler {
     if (settings.mcpServers) {
       mergedOptions.mcpServers = settings.mcpServers;
     }
+    if (settings.pluginsConfig) {
+      mergedOptions.pluginsConfig = settings.pluginsConfig;
+    }
     if (settings.verboseLogging !== undefined) {
       mergedOptions.verboseLogging = settings.verboseLogging;
     }

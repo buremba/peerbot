@@ -4,9 +4,6 @@
  * Bridges OpenClaw plugin registrations into the pi-coding-agent runtime:
  * - Tool plugins → ToolDefinition objects injected into createAgentSession
  * - Memory plugins → before_agent_start (recall) and agent_end (save) hooks
- * - Provider plugins → model registration (future)
- *
- * Channel plugins are handled gateway-side (see gateway/src/plugins/channel-adapter.ts).
  */
 
 import {
@@ -208,46 +205,6 @@ export function bridgeMemoryPlugin(
 }
 
 // ============================================================================
-// Provider Plugin Bridge
-// ============================================================================
-
-/**
- * Extract provider information from loaded plugins.
- * Returns model metadata that can be used for model selection.
- */
-export function bridgeProviderPlugins(plugins: LoadedPlugin[]): Array<{
-  pluginId: string;
-  models: Array<{ id: string; name: string; api?: string }>;
-}> {
-  const providers: Array<{
-    pluginId: string;
-    models: Array<{ id: string; name: string; api?: string }>;
-  }> = [];
-
-  for (const plugin of plugins) {
-    if (
-      plugin.registrations.slot !== "provider" ||
-      !plugin.registrations.provider
-    ) {
-      continue;
-    }
-
-    const provider = plugin.registrations.provider;
-    if (provider.models && provider.models.length > 0) {
-      providers.push({
-        pluginId: plugin.manifest.id,
-        models: provider.models,
-      });
-      logger.info(
-        `Provider plugin ${plugin.manifest.id}: ${provider.models.length} models available`
-      );
-    }
-  }
-
-  return providers;
-}
-
-// ============================================================================
 // Unified Bridge
 // ============================================================================
 
@@ -259,11 +216,6 @@ export interface PluginBridgeResult {
   tools: ToolDefinition[];
   /** Memory hooks for recall/save lifecycle */
   memory: MemoryHooks | null;
-  /** Provider model info */
-  providers: Array<{
-    pluginId: string;
-    models: Array<{ id: string; name: string; api?: string }>;
-  }>;
 }
 
 /**
@@ -273,6 +225,5 @@ export function bridgePlugins(plugins: LoadedPlugin[]): PluginBridgeResult {
   return {
     tools: bridgePluginTools(plugins),
     memory: bridgeMemoryPlugin(plugins),
-    providers: bridgeProviderPlugins(plugins),
   };
 }

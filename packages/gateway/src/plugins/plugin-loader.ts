@@ -2,9 +2,8 @@
  * OpenClaw Plugin Loader
  *
  * Discovers, validates, and loads OpenClaw plugins. Provides a shim
- * OpenClawPluginApi that captures all registrations (tools, channels,
- * memory, providers, services) so Lobu can route them to the appropriate
- * subsystems.
+ * OpenClawPluginApi that captures tool and memory registrations so Lobu
+ * can route them to the worker's agent session.
  *
  * Discovery sources:
  * - node_modules/@openclaw/*
@@ -18,10 +17,7 @@ import * as path from "node:path";
 import {
   createLogger,
   type LoadedPlugin,
-  type OpenClawChannelDef,
   type OpenClawMemoryDef,
-  type OpenClawProviderDef,
-  type OpenClawServiceDef,
   type OpenClawToolDef,
   type PluginConfig,
   type PluginManifest,
@@ -36,7 +32,7 @@ const logger = createLogger("plugin-loader");
 // ============================================================================
 
 /**
- * Creates a shim OpenClawPluginApi that captures all registrations
+ * Creates a shim OpenClawPluginApi that captures tool and memory registrations
  * from a plugin's register() or init() call.
  */
 function createPluginApiShim(
@@ -46,12 +42,7 @@ function createPluginApiShim(
   const registrations: PluginRegistrations = {
     id: pluginId,
     tools: [],
-    channels: [],
     memory: null,
-    provider: null,
-    services: [],
-    commands: new Map(),
-    gatewayMethods: new Map(),
   };
 
   const api = {
@@ -69,7 +60,6 @@ function createPluginApiShim(
     config: pluginConfig,
 
     runtime: {
-      // Stub runtime utilities -- plugins can check capabilities
       tts: null,
       stt: null,
     },
@@ -79,48 +69,39 @@ function createPluginApiShim(
       registrations.tools.push(definition);
     },
 
-    registerChannel(opts: { plugin: OpenClawChannelDef }) {
-      logger.info(`Plugin ${pluginId} registered channel: ${opts.plugin.id}`);
-      registrations.channels.push(opts.plugin);
-      registrations.slot = "channel";
-    },
-
-    registerProvider(config: OpenClawProviderDef) {
-      logger.info(`Plugin ${pluginId} registered provider: ${config.id}`);
-      registrations.provider = config;
-      registrations.slot = "provider";
-    },
-
-    registerService(config: OpenClawServiceDef) {
-      logger.info(`Plugin ${pluginId} registered service: ${config.type}`);
-      registrations.services.push(config);
-    },
-
-    registerGatewayMethod(
-      name: string,
-      handler: (...args: unknown[]) => unknown
-    ) {
-      logger.info(`Plugin ${pluginId} registered gateway method: ${name}`);
-      registrations.gatewayMethods.set(name, handler);
-    },
-
-    registerCommand(options: {
-      name: string;
-      handler: (...args: unknown[]) => unknown;
-    }) {
-      logger.info(`Plugin ${pluginId} registered command: ${options.name}`);
-      registrations.commands.set(options.name, options.handler);
-    },
-
-    registerCli() {
+    // Unsupported slot registrations — log and ignore
+    registerChannel() {
       logger.debug(
-        `Plugin ${pluginId} registered CLI (ignored in Lobu context)`
+        `Plugin ${pluginId} tried to register channel (not supported in Lobu)`
       );
     },
 
-    // Event subscription (no-op in shim -- lifecycle hooks handled separately)
-    on(event: string) {
-      logger.debug(`Plugin ${pluginId} subscribed to event: ${event}`);
+    registerProvider() {
+      logger.debug(
+        `Plugin ${pluginId} tried to register provider (not supported in Lobu)`
+      );
+    },
+
+    registerService() {
+      logger.debug(
+        `Plugin ${pluginId} tried to register service (not supported in Lobu)`
+      );
+    },
+
+    registerGatewayMethod() {
+      // no-op
+    },
+
+    registerCommand() {
+      // no-op
+    },
+
+    registerCli() {
+      // no-op
+    },
+
+    on() {
+      // no-op
     },
   };
 
@@ -155,7 +136,7 @@ async function readPluginManifest(
 
 /**
  * Discover OpenClaw plugins from a node_modules directory.
- * Scans @openclaw/_ and @_/openclaw-_ packages (community namespace).
+ * Scans @openclaw/* and @* /openclaw-* packages (community namespace).
  */
 async function discoverFromNodeModules(
   baseDir: string
@@ -178,7 +159,7 @@ async function discoverFromNodeModules(
       if (plugin) discovered.push(plugin);
     }
   } catch {
-    // @openclaw directory doesn't exist -- that's fine
+    // @openclaw directory doesn't exist
   }
 
   // Scan @*/openclaw-* packages (community namespace)
@@ -305,62 +286,15 @@ async function loadPlugin(
             logger: api.logger,
             configDir: process.env.HOME || "/tmp",
             workspaceDir: process.cwd(),
-            rpc: {}, // Stub -- will be wired at runtime
+            rpc: {},
           });
 
           // Capture slot-specific registrations from init result
-          if (exported.slot === "memory" || exported.kind === "memory") {
+          const slot = exported.slot || exported.kind;
+          if (slot === "memory") {
             registrations.memory = result as OpenClawMemoryDef;
             registrations.slot = "memory";
-          } else if (
-            exported.slot === "provider" ||
-            exported.kind === "provider"
-          ) {
-            registrations.provider = result as OpenClawProviderDef;
-            registrations.slot = "provider";
-          } else if (
-            exported.slot === "channel" ||
-            exported.kind === "channel"
-          ) {
-            // Channel plugins return { start, stop, send } from init
-            if (result && typeof result === "object") {
-              const channelResult = result as {
-                start?: () => Promise<void>;
-                stop?: () => Promise<void>;
-                send?: (envelope: unknown) => Promise<void>;
-              };
-              registrations.channels.push({
-                id: exported.id || pluginId,
-                meta: {
-                  id: exported.id || pluginId,
-                  label: exported.metadata?.name || pluginId,
-                  docsPath: "",
-                },
-                capabilities: { chatTypes: ["direct", "group"] },
-                config: {
-                  listAccountIds: () => ["default"],
-                  resolveAccount: () => ({}),
-                },
-                outbound: {
-                  deliveryMode: "direct",
-                  sendText: async (params) => {
-                    if (channelResult.send) {
-                      await channelResult.send(params);
-                    }
-                    return { ok: true };
-                  },
-                },
-                startAccount: channelResult.start
-                  ? async () => channelResult.start!()
-                  : undefined,
-                stopAccount: channelResult.stop
-                  ? async () => channelResult.stop!()
-                  : undefined,
-              });
-              registrations.slot = "channel";
-            }
-          } else if (exported.slot === "tool") {
-            // Tool plugins return tool definitions from init
+          } else if (slot === "tool") {
             if (Array.isArray(result)) {
               for (const tool of result) {
                 registrations.tools.push(tool as OpenClawToolDef);
@@ -390,7 +324,7 @@ async function loadPlugin(
   };
 
   logger.info(
-    `Plugin ${pluginId} loaded: ${registrations.tools.length} tools, ${registrations.channels.length} channels, memory=${!!registrations.memory}, provider=${!!registrations.provider}`
+    `Plugin ${pluginId} loaded: ${registrations.tools.length} tools, memory=${!!registrations.memory}`
   );
 
   return {
@@ -413,7 +347,6 @@ export interface PluginLoaderOptions {
 
 /**
  * Discover all available OpenClaw plugins (without loading them).
- * Returns plugin IDs and metadata for configuration UI.
  */
 export async function discoverPlugins(
   options?: PluginLoaderOptions
@@ -421,11 +354,9 @@ export async function discoverPlugins(
   const baseDir = options?.baseDir || process.cwd();
   const discovered: DiscoveredPlugin[] = [];
 
-  // Discover from node_modules
   const fromNpm = await discoverFromNodeModules(baseDir);
   discovered.push(...fromNpm);
 
-  // Discover from extension directories
   for (const dir of options?.extensionDirs || []) {
     const fromDir = await discoverFromExtensions(dir);
     discovered.push(...fromDir);
@@ -437,7 +368,6 @@ export async function discoverPlugins(
 
 /**
  * Load all enabled plugins from a PluginsConfig.
- * Returns loaded plugins organized by slot type.
  */
 export async function loadPlugins(
   pluginsConfig: PluginsConfig,
@@ -478,7 +408,7 @@ export async function loadPlugins(
 
     const plugin = await loadPlugin(found, config);
     if (plugin) {
-      // Check exclusive slot constraints
+      // Check exclusive slot constraints (memory is exclusive — one at a time)
       if (pluginsConfig.slots && plugin.registrations.slot) {
         const slotAssignment = pluginsConfig.slots[plugin.registrations.slot];
         if (slotAssignment && slotAssignment !== pluginId) {
@@ -521,5 +451,5 @@ export function getActiveMemoryPlugin(
   plugins: LoadedPlugin[]
 ): LoadedPlugin | undefined {
   const memoryPlugins = getPluginsBySlot(plugins, "memory");
-  return memoryPlugins[0]; // First one wins (slot assignment handled during loading)
+  return memoryPlugins[0];
 }

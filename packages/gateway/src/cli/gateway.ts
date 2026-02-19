@@ -855,52 +855,6 @@ export async function startGateway(
   gateway.registerPlatform(apiPlatform);
   logger.info("API platform registered");
 
-  // Load and register OpenClaw channel plugins
-  try {
-    const { loadPlugins, getPluginsBySlot } = await import(
-      "../plugins/plugin-loader"
-    );
-    const { createChannelAdapters } = await import(
-      "../plugins/channel-adapter"
-    );
-
-    // Load global plugin config from env or default
-    const globalPluginsConfigPath = process.env.LOBU_PLUGINS_CONFIG;
-    if (globalPluginsConfigPath) {
-      const { readFile } = await import("node:fs/promises");
-      const configContent = await readFile(globalPluginsConfigPath, "utf-8");
-      const pluginsConfig = JSON.parse(configContent);
-
-      const plugins = await loadPlugins(pluginsConfig, {
-        baseDir: process.cwd(),
-        extensionDirs: process.env.LOBU_EXTENSIONS_DIR
-          ? [process.env.LOBU_EXTENSIONS_DIR]
-          : [],
-      });
-
-      // Register channel plugins as platform adapters
-      const channelPlugins = getPluginsBySlot(plugins, "channel");
-      if (channelPlugins.length > 0) {
-        const adapters = createChannelAdapters(channelPlugins);
-        for (const adapter of adapters) {
-          gateway.registerPlatform(adapter);
-          logger.info(`OpenClaw channel plugin registered: ${adapter.name}`);
-        }
-      }
-
-      logger.info(
-        `OpenClaw plugins loaded: ${plugins.length} total, ${channelPlugins.length} channel adapters`
-      );
-    }
-  } catch (error) {
-    logger.debug(
-      "OpenClaw plugins: none loaded (this is normal if not configured)",
-      {
-        error: error instanceof Error ? error.message : String(error),
-      }
-    );
-  }
-
   // Start gateway
   await gateway.start();
   logger.info("Gateway started");

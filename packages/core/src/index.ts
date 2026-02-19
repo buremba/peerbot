@@ -67,12 +67,8 @@ export type {
 // Plugin types
 export type {
   LoadedPlugin,
-  OpenClawChannelDef,
-  OpenClawChannelOutbound,
   OpenClawMemoryDef,
   OpenClawMemoryResult,
-  OpenClawProviderDef,
-  OpenClawServiceDef,
   OpenClawToolDef,
   PluginConfig,
   PluginManifest,

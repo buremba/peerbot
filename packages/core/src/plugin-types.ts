@@ -2,11 +2,9 @@
  * OpenClaw Plugin System Types
  *
  * Defines the interfaces for loading, configuring, and bridging OpenClaw plugins
- * into Lobu's architecture. Supports all four plugin slot types:
+ * into Lobu's architecture. Supports two plugin slot types:
  * - tool: Agent capabilities (tools available during turns)
  * - memory: Context recall/save backends (exclusive slot - one active at a time)
- * - channel: Messaging platform integrations
- * - provider: AI model inference backends
  */
 
 // ============================================================================
@@ -14,11 +12,11 @@
 // ============================================================================
 
 /** Slot types supported by OpenClaw plugins */
-export type PluginSlot = "tool" | "memory" | "channel" | "provider";
+export type PluginSlot = "tool" | "memory";
 
 /** Individual plugin configuration in agent settings */
 export interface PluginConfig {
-  /** npm package name or local path (e.g., "@openclaw/msteams", "./extensions/matrix") */
+  /** npm package name or local path (e.g., "@openclaw/tool-websearch", "./extensions/memory-rag") */
   source: string;
   /** Whether this plugin is currently enabled */
   enabled: boolean;
@@ -45,8 +43,6 @@ export interface PluginManifest {
   description?: string;
   kind?: PluginSlot;
   configSchema?: Record<string, unknown>;
-  channels?: string[];
-  providers?: string[];
   skills?: string[];
 }
 
@@ -67,41 +63,6 @@ export interface OpenClawToolDef {
     content: Array<{ type: string; text: string }>;
     details?: unknown;
   }>;
-}
-
-/** Channel plugin outbound interface */
-export interface OpenClawChannelOutbound {
-  deliveryMode: "direct" | "buffered";
-  sendText: (params: {
-    text: string;
-    [key: string]: unknown;
-  }) => Promise<{ ok: boolean }>;
-  sendMedia?: (params: { [key: string]: unknown }) => Promise<{ ok: boolean }>;
-}
-
-/** Channel plugin as registered by OpenClaw plugins */
-export interface OpenClawChannelDef {
-  id: string;
-  meta: {
-    id: string;
-    label: string;
-    docsPath?: string;
-    blurb?: string;
-    aliases?: string[];
-  };
-  capabilities: {
-    chatTypes: Array<"direct" | "group" | "thread" | "channel">;
-    reactions?: boolean;
-    threads?: boolean;
-    media?: boolean;
-  };
-  config: {
-    listAccountIds: (cfg: unknown) => string[];
-    resolveAccount: (cfg: unknown, accountId?: string) => unknown;
-  };
-  outbound: OpenClawChannelOutbound;
-  startAccount?: (accountId: string) => Promise<void>;
-  stopAccount?: (accountId: string) => Promise<void>;
 }
 
 /** Memory plugin interface */
@@ -126,29 +87,6 @@ export interface OpenClawMemoryResult {
   metadata?: unknown;
 }
 
-/** Provider plugin interface */
-export interface OpenClawProviderDef {
-  id: string;
-  models?: Array<{
-    id: string;
-    name: string;
-    api?: string;
-    contextWindow?: number;
-    maxTokens?: number;
-  }>;
-  stream?: (messages: unknown[], options?: unknown) => AsyncIterable<unknown>;
-  validateAuth?: () => Promise<boolean>;
-}
-
-/** Service registration (background services, HTTP endpoints) */
-export interface OpenClawServiceDef {
-  type: "http" | "background";
-  path?: string;
-  handler?: (req: unknown, res: unknown) => Promise<void>;
-  start?: () => Promise<void>;
-  stop?: () => Promise<void>;
-}
-
 /**
  * Collected registrations from an OpenClaw plugin.
  * The plugin loader calls register(api) and captures all registrations here.
@@ -157,12 +95,7 @@ export interface PluginRegistrations {
   id: string;
   slot?: PluginSlot;
   tools: OpenClawToolDef[];
-  channels: OpenClawChannelDef[];
   memory: OpenClawMemoryDef | null;
-  provider: OpenClawProviderDef | null;
-  services: OpenClawServiceDef[];
-  commands: Map<string, (...args: unknown[]) => unknown>;
-  gatewayMethods: Map<string, (...args: unknown[]) => unknown>;
 }
 
 /**

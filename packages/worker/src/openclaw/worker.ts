@@ -172,7 +172,7 @@ Use it when the user references past discussions or you need context.`);
       platform: this.config.platform,
     });
 
-    // Load and bridge OpenClaw plugins (tool, memory, provider)
+    // Load and bridge OpenClaw plugins (tool + memory)
     let memoryHooks: MemoryHooks | null = null;
     const pluginsConfig = rawOptions.pluginsConfig as PluginsConfig | undefined;
     const loadedPlugins: LoadedPlugin[] = pluginsConfig
@@ -182,24 +182,15 @@ Use it when the user references past discussions or you need context.`);
     if (loadedPlugins.length > 0) {
       const bridged = bridgePlugins(loadedPlugins);
 
-      // Merge plugin tools with custom tools
       if (bridged.tools.length > 0) {
         customTools.push(...bridged.tools);
         logger.info(`Added ${bridged.tools.length} plugin tools`);
       }
 
-      // Store memory hooks for lifecycle integration
       memoryHooks = bridged.memory;
       if (memoryHooks) {
         logger.info(
           "Memory plugin active -- will recall before prompt and save after"
-        );
-      }
-
-      // Log provider plugins (model selection handled externally)
-      if (bridged.providers.length > 0) {
-        logger.info(
-          `Provider plugins available: ${bridged.providers.map((p) => p.pluginId).join(", ")}`
         );
       }
     }
@@ -446,12 +437,7 @@ Use it when the user references past discussions or you need context.`);
         const registrations: import("@lobu/core").PluginRegistrations = {
           id: pluginId,
           tools: [],
-          channels: [],
           memory: null,
-          provider: null,
-          services: [],
-          commands: new Map(),
-          gatewayMethods: new Map(),
         };
 
         const shimApi = {
@@ -470,28 +456,27 @@ Use it when the user references past discussions or you need context.`);
           registerTool: (def: any) => {
             registrations.tools.push(def);
           },
-          registerChannel: (opts: any) => {
-            registrations.channels.push(opts.plugin);
-            registrations.slot = "channel";
+          // Unsupported registrations — no-op in worker
+          registerChannel: () => {
+            // no-op
           },
-          registerProvider: (def: any) => {
-            registrations.provider = def;
-            registrations.slot = "provider";
+          registerProvider: () => {
+            // no-op
           },
-          registerService: (def: any) => {
-            registrations.services.push(def);
+          registerService: () => {
+            // no-op
           },
           registerGatewayMethod: () => {
-            // no-op in worker context
+            // no-op
           },
           registerCommand: () => {
-            // no-op in worker context
+            // no-op
           },
           registerCli: () => {
-            // no-op in worker context
+            // no-op
           },
           on: () => {
-            // no-op in worker context
+            // no-op
           },
         };
 
@@ -513,9 +498,6 @@ Use it when the user references past discussions or you need context.`);
             if (slot === "memory") {
               registrations.memory = result;
               registrations.slot = "memory";
-            } else if (slot === "provider") {
-              registrations.provider = result;
-              registrations.slot = "provider";
             } else if (slot === "tool" && Array.isArray(result)) {
               registrations.tools.push(...result);
               registrations.slot = "tool";

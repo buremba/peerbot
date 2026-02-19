@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import type React from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { Diagram } from "./components/Diagram";
 import { SlackPanel } from "./components/SlackPanel";
 import { StepIndicator } from "./components/StepIndicator";
@@ -56,7 +57,7 @@ const App: React.FC = () => {
       setCurrentStepIndex(index);
       setIsPlaying(false);
     },
-    [clearTimer],
+    [clearTimer]
   );
 
   const handleTogglePlay = useCallback(() => {
@@ -76,7 +77,7 @@ const App: React.FC = () => {
       setCurrentStepIndex(0);
       setIsPlaying(true);
     },
-    [clearTimer],
+    [clearTimer]
   );
 
   const currentStep = steps[currentStepIndex];
@@ -93,8 +94,7 @@ const App: React.FC = () => {
                 width: 32,
                 height: 32,
                 borderRadius: 8,
-                background:
-                  "linear-gradient(135deg, #10B981 0%, #059669 100%)",
+                background: "linear-gradient(135deg, #10B981 0%, #059669 100%)",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
@@ -170,19 +170,13 @@ const App: React.FC = () => {
 
             {/* SVG Diagram */}
             <div style={{ flex: 1, padding: "0 16px" }}>
-              <Diagram
-                currentStep={currentStep}
-                prompt={selectedPrompt}
-              />
+              <Diagram currentStep={currentStep} prompt={selectedPrompt} />
             </div>
           </div>
 
           {/* Slack chat panel */}
           <div style={layout.slackPanel}>
-            <SlackPanel
-              steps={steps}
-              currentStepIndex={currentStepIndex}
-            />
+            <SlackPanel steps={steps} currentStepIndex={currentStepIndex} />
           </div>
         </div>
 

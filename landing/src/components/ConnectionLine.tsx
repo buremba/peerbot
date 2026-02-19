@@ -1,4 +1,4 @@
-import React from "react";
+import type React from "react";
 import { colors } from "../styles";
 import { NODES } from "../nodes";
 

@@ -1,4 +1,4 @@
-import React from "react";
+import type React from "react";
 
 interface NodeIconProps {
   type: string;
@@ -12,7 +12,13 @@ export const NodeIcon: React.FC<NodeIconProps> = ({ type, size = 28 }) => {
   switch (type) {
     case "slack":
       return (
-        <svg width={s} height={s} viewBox="0 0 24 24" fill="none">
+        <svg
+          width={s}
+          height={s}
+          viewBox="0 0 24 24"
+          fill="none"
+          aria-hidden="true"
+        >
           <path
             d="M5.042 15.165a2.528 2.528 0 0 1-2.52 2.523A2.528 2.528 0 0 1 0 15.165a2.527 2.527 0 0 1 2.522-2.52h2.52v2.52zm1.271 0a2.527 2.527 0 0 1 2.521-2.52 2.527 2.527 0 0 1 2.521 2.52v6.313A2.528 2.528 0 0 1 8.834 24a2.528 2.528 0 0 1-2.521-2.522v-6.313z"
             fill="#E01E5A"
@@ -34,7 +40,13 @@ export const NodeIcon: React.FC<NodeIconProps> = ({ type, size = 28 }) => {
 
     case "gateway":
       return (
-        <svg width={s} height={s} viewBox="0 0 24 24" fill="none">
+        <svg
+          width={s}
+          height={s}
+          viewBox="0 0 24 24"
+          fill="none"
+          aria-hidden="true"
+        >
           <rect
             x="2"
             y="3"
@@ -79,7 +91,13 @@ export const NodeIcon: React.FC<NodeIconProps> = ({ type, size = 28 }) => {
 
     case "sandbox":
       return (
-        <svg width={s} height={s} viewBox="0 0 24 24" fill="none">
+        <svg
+          width={s}
+          height={s}
+          viewBox="0 0 24 24"
+          fill="none"
+          aria-hidden="true"
+        >
           <rect
             x="3"
             y="3"
@@ -110,7 +128,13 @@ export const NodeIcon: React.FC<NodeIconProps> = ({ type, size = 28 }) => {
 
     case "mcp":
       return (
-        <svg width={s} height={s} viewBox="0 0 24 24" fill="none">
+        <svg
+          width={s}
+          height={s}
+          viewBox="0 0 24 24"
+          fill="none"
+          aria-hidden="true"
+        >
           <circle cx="12" cy="12" r="9" stroke={color} strokeWidth="1.5" />
           <path
             d="M12 3c-3 3-3 6 0 9s3 6 0 9"
@@ -134,7 +158,13 @@ export const NodeIcon: React.FC<NodeIconProps> = ({ type, size = 28 }) => {
 
     case "llm":
       return (
-        <svg width={s} height={s} viewBox="0 0 24 24" fill="none">
+        <svg
+          width={s}
+          height={s}
+          viewBox="0 0 24 24"
+          fill="none"
+          aria-hidden="true"
+        >
           <path
             d="M12 3L20 7.5V16.5L12 21L4 16.5V7.5L12 3Z"
             stroke={color}
@@ -152,7 +182,13 @@ export const NodeIcon: React.FC<NodeIconProps> = ({ type, size = 28 }) => {
 
     default:
       return (
-        <svg width={s} height={s} viewBox="0 0 24 24" fill="none">
+        <svg
+          width={s}
+          height={s}
+          viewBox="0 0 24 24"
+          fill="none"
+          aria-hidden="true"
+        >
           <circle cx="12" cy="12" r="9" stroke={color} strokeWidth="1.5" />
         </svg>
       );

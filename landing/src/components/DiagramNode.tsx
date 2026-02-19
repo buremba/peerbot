@@ -1,4 +1,4 @@
-import React from "react";
+import type React from "react";
 import { motion } from "framer-motion";
 import type { NodePosition } from "../types";
 import { NodeIcon } from "./NodeIcon";
@@ -67,12 +67,7 @@ export const DiagramNode: React.FC<DiagramNodeProps> = ({
         />
 
         {/* Icon */}
-        <foreignObject
-          x={node.x - 14}
-          y={nodeY + 10}
-          width={28}
-          height={28}
-        >
+        <foreignObject x={node.x - 14} y={nodeY + 10} width={28} height={28}>
           <div
             style={{
               color: isActive ? colors.accent : colors.textSecondary,

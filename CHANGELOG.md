@@ -1,5 +1,20 @@
 # Changelog
 
+## [2.5.0](https://github.com/lobu-ai/lobu/compare/v2.4.0...v2.5.0) (2026-02-19)
+
+
+### Features
+
+* add multi-platform support to CLI init wizard ([2597712](https://github.com/lobu-ai/lobu/commit/2597712762c5caa506622c2b1b129b8daac04aca))
+* add Slack multi-workspace OAuth distribution ([137ec6a](https://github.com/lobu-ai/lobu/commit/137ec6af3105e24fdc1735e0f4a6cc7ca131e939))
+* refactor settings page to Alpine.js with pre-compiled Tailwind ([2126001](https://github.com/lobu-ai/lobu/commit/2126001d4e720eae0b99c7b22cd9fcb342ea174a))
+
+
+### Bug Fixes
+
+* delete existing webhook before starting Telegram long polling ([c6cd02c](https://github.com/lobu-ai/lobu/commit/c6cd02c8f2bc711934764823448723feda6d503f))
+* use strategic merge patch for K8s deployment scaling ([fde3201](https://github.com/lobu-ai/lobu/commit/fde320157297b6dae58d7f65e22c2dd743892137))
+
 ## [2.4.0](https://github.com/lobu-ai/lobu/compare/v2.3.0...v2.4.0) (2026-02-18)
 
 

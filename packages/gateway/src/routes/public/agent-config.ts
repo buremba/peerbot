@@ -115,6 +115,19 @@ const updateConfigRoute = createRoute({
                 ),
               })
               .optional(),
+            pluginsConfig: z
+              .object({
+                plugins: z.record(
+                  z.string(),
+                  z.object({
+                    source: z.string(),
+                    enabled: z.boolean(),
+                    config: z.record(z.string(), z.any()).optional(),
+                  })
+                ),
+                slots: z.record(z.string(), z.string()).optional(),
+              })
+              .optional(),
             verboseLogging: z.boolean().optional(),
             githubUser: z
               .null()
@@ -454,6 +467,10 @@ function validateSettings(
 
   if (input.skillsConfig) {
     settings.skillsConfig = input.skillsConfig;
+  }
+
+  if (input.pluginsConfig) {
+    settings.pluginsConfig = input.pluginsConfig;
   }
 
   if (typeof input.verboseLogging === "boolean") {

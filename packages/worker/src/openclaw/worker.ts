@@ -2,7 +2,12 @@
 
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { createLogger, type ToolsConfig } from "@lobu/core";
+import {
+  createLogger,
+  type LoadedPlugin,
+  type PluginsConfig,
+  type ToolsConfig,
+} from "@lobu/core";
 import { getModel } from "@mariozechner/pi-ai";
 import {
   AuthStorage,
@@ -19,6 +24,7 @@ import type {
 } from "../core/types";
 import { createOpenClawCustomTools } from "./custom-tools";
 import { OpenClawCoreInstructionProvider } from "./instructions";
+import { bridgePlugins, type MemoryHooks } from "./plugin-bridge";
 import { OpenClawProgressProcessor } from "./processor";
 import { getOpenClawSessionContext } from "./session-context";
 import {
@@ -166,6 +172,38 @@ Use it when the user references past discussions or you need context.`);
       platform: this.config.platform,
     });
 
+    // Load and bridge OpenClaw plugins (tool, memory, provider)
+    let memoryHooks: MemoryHooks | null = null;
+    const pluginsConfig = rawOptions.pluginsConfig as PluginsConfig | undefined;
+    const loadedPlugins: LoadedPlugin[] = pluginsConfig
+      ? await this.loadPlugins(pluginsConfig)
+      : [];
+
+    if (loadedPlugins.length > 0) {
+      const bridged = bridgePlugins(loadedPlugins);
+
+      // Merge plugin tools with custom tools
+      if (bridged.tools.length > 0) {
+        customTools.push(...bridged.tools);
+        logger.info(`Added ${bridged.tools.length} plugin tools`);
+      }
+
+      // Store memory hooks for lifecycle integration
+      memoryHooks = bridged.memory;
+      if (memoryHooks) {
+        logger.info(
+          "Memory plugin active -- will recall before prompt and save after"
+        );
+      }
+
+      // Log provider plugins (model selection handled externally)
+      if (bridged.providers.length > 0) {
+        logger.info(
+          `Provider plugins available: ${bridged.providers.map((p) => p.pluginId).join(", ")}`
+        );
+      }
+    }
+
     logger.info(
       `Starting OpenClaw session: provider=${provider}, model=${modelId}, tools=${tools.length}, customTools=${customTools.length}`
     );
@@ -277,8 +315,58 @@ Use it when the user references past discussions or you need context.`);
         });
       }, HEARTBEAT_INTERVAL_MS);
 
-      await session.prompt(userPrompt);
+      // Memory plugin: recall relevant context before prompting
+      let augmentedPrompt = userPrompt;
+      if (memoryHooks) {
+        try {
+          const recalled = await memoryHooks.recall(userPrompt);
+          if (recalled) {
+            augmentedPrompt = `${recalled}\n\n---\n\n${userPrompt}`;
+            logger.info(
+              `Prepended ${recalled.length} chars of recalled memory`
+            );
+          }
+        } catch (error) {
+          logger.error("Memory recall failed (continuing without):", { error });
+        }
+      }
+
+      await session.prompt(augmentedPrompt);
       await done;
+
+      // Memory plugin: save conversation context after response
+      if (memoryHooks) {
+        try {
+          const context = session.sessionManager?.buildSessionContext?.();
+          const lastMessages = context?.messages?.slice(-2) || [];
+          const saveContent = lastMessages
+            .map((m: any) => {
+              const role = m.role || "unknown";
+              const text =
+                typeof m.content === "string"
+                  ? m.content
+                  : Array.isArray(m.content)
+                    ? m.content
+                        .filter((b: any) => b.type === "text")
+                        .map((b: any) => b.text)
+                        .join("\n")
+                    : "";
+              return `${role}: ${text}`;
+            })
+            .join("\n\n");
+
+          if (saveContent.trim()) {
+            await memoryHooks.save(saveContent, {
+              conversationId: this.config.conversationId,
+              userId: this.config.userId,
+              timestamp: Date.now(),
+            });
+          }
+        } catch (error) {
+          logger.error("Memory save failed:", { error });
+        }
+      }
+
       session.dispose();
       return {
         success: true,
@@ -329,6 +417,127 @@ Use it when the user references past discussions or you need context.`);
 
   protected async cleanupSession(_sessionKey: string): Promise<void> {
     logger.info("Cleanup for OpenClaw session (no-op)");
+  }
+
+  /**
+   * Load OpenClaw plugins from the configured PluginsConfig.
+   * Uses dynamic import to load plugin entry points from node_modules or local paths.
+   */
+  private async loadPlugins(
+    pluginsConfig: PluginsConfig
+  ): Promise<LoadedPlugin[]> {
+    const loaded: LoadedPlugin[] = [];
+
+    for (const [pluginId, config] of Object.entries(pluginsConfig.plugins)) {
+      if (!config.enabled) continue;
+
+      try {
+        // Try to resolve the plugin module
+        const modulePath = config.source.startsWith(".")
+          ? path.resolve(this.getWorkingDirectory(), config.source)
+          : config.source;
+
+        logger.info(`Loading plugin: ${pluginId} from ${modulePath}`);
+
+        const module = await import(modulePath);
+        const exported = module.default || module;
+
+        // Create a shim API to capture registrations
+        const registrations: import("@lobu/core").PluginRegistrations = {
+          id: pluginId,
+          tools: [],
+          channels: [],
+          memory: null,
+          provider: null,
+          services: [],
+          commands: new Map(),
+          gatewayMethods: new Map(),
+        };
+
+        const shimApi = {
+          logger: {
+            info: (...args: unknown[]) =>
+              logger.info(`[plugin:${pluginId}]`, ...args),
+            warn: (...args: unknown[]) =>
+              logger.warn(`[plugin:${pluginId}]`, ...args),
+            error: (...args: unknown[]) =>
+              logger.error(`[plugin:${pluginId}]`, ...args),
+            debug: (...args: unknown[]) =>
+              logger.debug(`[plugin:${pluginId}]`, ...args),
+          },
+          config: config.config || {},
+          runtime: { tts: null, stt: null },
+          registerTool: (def: any) => {
+            registrations.tools.push(def);
+          },
+          registerChannel: (opts: any) => {
+            registrations.channels.push(opts.plugin);
+            registrations.slot = "channel";
+          },
+          registerProvider: (def: any) => {
+            registrations.provider = def;
+            registrations.slot = "provider";
+          },
+          registerService: (def: any) => {
+            registrations.services.push(def);
+          },
+          registerGatewayMethod: () => {
+            // no-op in worker context
+          },
+          registerCommand: () => {
+            // no-op in worker context
+          },
+          registerCli: () => {
+            // no-op in worker context
+          },
+          on: () => {
+            // no-op in worker context
+          },
+        };
+
+        if (typeof exported === "function") {
+          await exported(shimApi);
+        } else if (typeof exported === "object" && exported !== null) {
+          if (typeof exported.register === "function") {
+            await exported.register(shimApi);
+          } else if (typeof exported.init === "function") {
+            const result = await exported.init(config.config || {}, {
+              logger: shimApi.logger,
+              configDir: process.env.HOME || "/tmp",
+              workspaceDir: this.getWorkingDirectory(),
+              rpc: {},
+            });
+
+            // Route init result based on slot type
+            const slot = exported.slot || exported.kind;
+            if (slot === "memory") {
+              registrations.memory = result;
+              registrations.slot = "memory";
+            } else if (slot === "provider") {
+              registrations.provider = result;
+              registrations.slot = "provider";
+            } else if (slot === "tool" && Array.isArray(result)) {
+              registrations.tools.push(...result);
+              registrations.slot = "tool";
+            }
+          }
+        }
+
+        loaded.push({
+          manifest: { id: pluginId, name: pluginId },
+          config,
+          registrations,
+        });
+
+        logger.info(
+          `Plugin ${pluginId} loaded: ${registrations.tools.length} tools, memory=${!!registrations.memory}`
+        );
+      } catch (error) {
+        logger.error(`Failed to load plugin ${pluginId}:`, { error });
+      }
+    }
+
+    return loaded;
   }
 
   private buildPendingInteractionNote(

@@ -214,6 +214,9 @@ export class WhatsAppMessageHandler {
     if (settings.verboseLogging !== undefined) {
       mergedOptions.verboseLogging = settings.verboseLogging;
     }
+    if (settings.pluginsConfig) {
+      mergedOptions.pluginsConfig = settings.pluginsConfig;
+    }
 
     return mergedOptions;
   }

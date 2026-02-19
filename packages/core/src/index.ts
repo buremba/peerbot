@@ -64,6 +64,23 @@ export type {
   UserSuggestion,
 } from "./types";
 
+// Plugin types
+export type {
+  LoadedPlugin,
+  OpenClawChannelDef,
+  OpenClawChannelOutbound,
+  OpenClawMemoryDef,
+  OpenClawMemoryResult,
+  OpenClawProviderDef,
+  OpenClawServiceDef,
+  OpenClawToolDef,
+  PluginConfig,
+  PluginManifest,
+  PluginRegistrations,
+  PluginSlot,
+  PluginsConfig,
+} from "./plugin-types";
+
 // Utilities
 export * from "./utils/encryption";
 export * from "./utils/env";

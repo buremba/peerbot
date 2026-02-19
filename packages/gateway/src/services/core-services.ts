@@ -399,6 +399,7 @@ export class CoreServices {
       discoveryService: mcpDiscoveryService,
       credentialStore: mcpCredentialStore,
       inputStore: mcpInputStore,
+      agentSettingsStore: this.agentSettingsStore,
     });
 
     // Initialize instruction service (needed by WorkerGateway)

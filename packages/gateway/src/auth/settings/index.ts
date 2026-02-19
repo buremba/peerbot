@@ -4,6 +4,7 @@ export {
   generateSettingsToken,
   type PrefillMcpServer,
   type PrefillSkill,
+  type SettingsSourceContext,
   type SettingsTokenOptions,
   type SettingsTokenPayload,
   verifySettingsToken,

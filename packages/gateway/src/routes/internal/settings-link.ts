@@ -114,6 +114,12 @@ export function createSettingsLinkRoutes(): Hono<WorkerContext> {
         prefillEnvVars,
         prefillSkills,
         prefillMcpServers,
+        sourceContext: {
+          conversationId: worker.conversationId,
+          channelId: worker.channelId,
+          teamId: worker.teamId,
+          platform,
+        },
       });
       const url = buildSettingsUrl(token);
       const expiresAt = new Date(Date.now() + ttlMs).toISOString();

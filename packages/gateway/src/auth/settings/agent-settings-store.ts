@@ -24,6 +24,8 @@ export interface AgentSettings {
   nixConfig?: NixConfig;
   /** Additional MCP servers */
   mcpServers?: Record<string, McpServerConfig>;
+  /** Internal marker: MCP IDs already acknowledged to the user in chat */
+  mcpInstallNotified?: Record<string, number>;
   /** Environment variables passed to worker (KEY=VALUE pairs) */
   envVars?: Record<string, string>;
   /** Workspace identity/instruction files (markdown content) */

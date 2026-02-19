@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createLogger, verifyWorkerToken } from "@lobu/core";
 import { z } from "zod";
+import type { AgentSettingsStore } from "../settings/agent-settings-store";
 import type {
   DiscoveredOAuthMetadata,
   OAuthDiscoveryService,
@@ -72,6 +73,7 @@ interface McpConfigServiceOptions {
   discoveryService?: OAuthDiscoveryService;
   credentialStore?: McpCredentialStore;
   inputStore?: McpInputStore;
+  agentSettingsStore?: AgentSettingsStore;
 }
 
 export class McpConfigService {
@@ -80,12 +82,14 @@ export class McpConfigService {
   private discoveryService?: OAuthDiscoveryService;
   private credentialStore?: McpCredentialStore;
   private inputStore?: McpInputStore;
+  private agentSettingsStore?: AgentSettingsStore;
   private discoveryEnriched = false;
 
   constructor(options: McpConfigServiceOptions = {}) {
     this.discoveryService = options.discoveryService;
     this.credentialStore = options.credentialStore;
     this.inputStore = options.inputStore;
+    this.agentSettingsStore = options.agentSettingsStore;
     logger.info(
       `McpConfigService initialized with discovery: ${!!this.discoveryService}, credential store: ${!!this.credentialStore}, input store: ${!!this.inputStore}`
     );
@@ -119,7 +123,8 @@ export class McpConfigService {
       return workerConfig;
     }
 
-    const { userId } = tokenData;
+    const { userId, agentId } = tokenData;
+    const effectiveAgentId = agentId || userId;
     logger.info(`Building MCP config for user ${userId}`);
 
     // Process global MCPs
@@ -143,7 +148,52 @@ export class McpConfigService {
       workerConfig.mcpServers[id] = cloned;
     }
 
-    // Merge per-agent MCPs if deploymentName provided
+    // Merge per-agent MCPs from live agent settings (preferred, no deployment restart required)
+    const agentSettingsMcpServers =
+      (await this.getAgentMcpServers(effectiveAgentId)) || {};
+    for (const [id, serverConfig] of Object.entries(agentSettingsMcpServers)) {
+      // Per-agent MCPs are additive - skip if global MCP with same ID exists
+      if (workerConfig.mcpServers[id]) {
+        logger.warn(
+          `Per-agent MCP ${id} skipped - global MCP with same ID exists`
+        );
+        continue;
+      }
+
+      const cloned = cloneConfig(serverConfig);
+
+      if (cloned.enabled === false) {
+        logger.debug(`Skipping disabled per-agent MCP ${id}`);
+        continue;
+      }
+
+      if (cloned.url) {
+        // HTTP/SSE MCP - proxy through gateway
+        logger.info(`🔧 Configuring per-agent HTTP MCP ${id}: baseUrl=${baseUrl}`);
+        // Store original URL for proxy forwarding (used by MCP proxy)
+        cloned.originalUrl = cloned.url;
+        cloned.url = baseUrl;
+        cloned.type = "sse";
+        cloned.headers = mergeHeaders(cloned.headers, workerToken, id);
+        cloned.perAgent = true; // Mark as per-agent for proxy routing
+        logger.info(`✅ Including per-agent HTTP MCP ${id}`);
+      } else if (cloned.command) {
+        // Stdio MCP - runs directly in worker container
+        logger.info(
+          `✅ Including per-agent stdio MCP ${id}: ${cloned.command}`
+        );
+      }
+
+      workerConfig.mcpServers[id] = cloned;
+    }
+
+    if (Object.keys(agentSettingsMcpServers).length > 0) {
+      logger.info(
+        `Merged ${Object.keys(agentSettingsMcpServers).length} per-agent MCPs from settings for agent ${effectiveAgentId}`
+      );
+    }
+
+    // Legacy fallback: merge deployment-scoped MCPs if present
     if (deploymentName) {
       const agentMcpConfig = await mcpConfigStore.get(deploymentName);
       if (agentMcpConfig?.mcpServers) {
@@ -209,13 +259,15 @@ export class McpConfigService {
    * Get status of all MCPs for a specific space (auth/config state)
    */
   async getMcpStatus(agentId: string): Promise<McpStatus[]> {
-    const config = await this.loadConfig();
+    const httpServers = await this.getAllHttpServers(agentId);
     const statuses: McpStatus[] = [];
 
-    for (const [id, httpServer] of config.httpServers) {
+    for (const [id, httpServer] of httpServers) {
       // Check if MCP requires authentication
       const hasOAuth = !!httpServer.oauth;
-      const discoveredOAuth = await this.getDiscoveredOAuth(id);
+      const discoveredOAuth = hasOAuth
+        ? undefined
+        : await this.ensureDiscoveredOAuth(id, httpServer.upstreamUrl);
       const hasDiscoveredOAuth = !!discoveredOAuth;
       const hasLoginUrl = !!httpServer.loginUrl;
       const requiresAuth = hasOAuth || hasDiscoveredOAuth || hasLoginUrl;
@@ -258,17 +310,51 @@ export class McpConfigService {
   /**
    * Get HTTP proxy metadata for a specific MCP server.
    */
-  async getHttpServer(id: string): Promise<HttpMcpServerConfig | undefined> {
-    const config = await this.loadConfig();
-    return config.httpServers.get(id);
+  async getHttpServer(
+    id: string,
+    agentId?: string,
+    deploymentName?: string
+  ): Promise<HttpMcpServerConfig | undefined> {
+    const httpServers = await this.getAllHttpServers(agentId, deploymentName);
+    return httpServers.get(id);
   }
 
   /**
    * Get all HTTP proxy metadata for all MCP servers.
    */
-  async getAllHttpServers(): Promise<Map<string, HttpMcpServerConfig>> {
+  async getAllHttpServers(
+    agentId?: string,
+    deploymentName?: string
+  ): Promise<Map<string, HttpMcpServerConfig>> {
     const config = await this.loadConfig();
-    return config.httpServers;
+    const merged = new Map(config.httpServers);
+
+    if (agentId) {
+      const agentMcpServers = await this.getAgentMcpServers(agentId);
+      for (const [id, serverConfig] of Object.entries(agentMcpServers)) {
+        if (merged.has(id)) continue;
+        const httpServer = toHttpServerConfig(id, serverConfig);
+        if (httpServer) {
+          merged.set(id, httpServer);
+        }
+      }
+    }
+
+    // Legacy fallback: deployment-scoped MCPs
+    if (deploymentName) {
+      const agentMcpConfig = await mcpConfigStore.get(deploymentName);
+      for (const [id, serverConfig] of Object.entries(
+        agentMcpConfig?.mcpServers || {}
+      )) {
+        if (merged.has(id)) continue;
+        const httpServer = toHttpServerConfig(id, serverConfig);
+        if (httpServer) {
+          merged.set(id, httpServer);
+        }
+      }
+    }
+
+    return merged;
   }
 
   /**
@@ -293,6 +379,49 @@ export class McpConfigService {
     } catch (error) {
       logger.error(`getDiscoveredOAuth(${id}) failed`, { error });
       return undefined;
+    }
+  }
+
+  private async ensureDiscoveredOAuth(
+    id: string,
+    upstreamUrl: string
+  ): Promise<DiscoveredOAuthMetadata | undefined> {
+    const cached = await this.getDiscoveredOAuth(id);
+    if (cached) {
+      return cached;
+    }
+
+    if (!this.discoveryService) {
+      return undefined;
+    }
+
+    try {
+      const discovered = await this.discoveryService.discoverOAuthMetadata(
+        id,
+        upstreamUrl
+      );
+      return discovered || undefined;
+    } catch (error) {
+      logger.debug(`Dynamic OAuth discovery failed for ${id}`, { error });
+      return undefined;
+    }
+  }
+
+  private async getAgentMcpServers(
+    agentId: string
+  ): Promise<Record<string, any>> {
+    if (!this.agentSettingsStore) {
+      return {};
+    }
+
+    try {
+      const settings = await this.agentSettingsStore.getSettings(agentId);
+      return settings?.mcpServers || {};
+    } catch (error) {
+      logger.warn(`Failed to load per-agent MCP settings for ${agentId}`, {
+        error,
+      });
+      return {};
     }
   }
 
@@ -559,6 +688,54 @@ function normalizeConfig(config: RawMcpConfig) {
   }
 
   return { rawServers, httpServers };
+}
+
+function toHttpServerConfig(
+  id: string,
+  serverConfig: any
+): HttpMcpServerConfig | null {
+  if (!serverConfig || typeof serverConfig !== "object") {
+    return null;
+  }
+
+  if (serverConfig.enabled === false) {
+    return null;
+  }
+
+  const cloned = cloneConfig(serverConfig);
+  if (typeof cloned.url !== "string" || !isHttpUrl(cloned.url)) {
+    return null;
+  }
+
+  return {
+    id,
+    upstreamUrl: cloned.url,
+    oauth:
+      cloned.oauth && typeof cloned.oauth === "object"
+        ? {
+            authUrl: cloned.oauth.authUrl,
+            tokenUrl: cloned.oauth.tokenUrl,
+            clientId: cloned.oauth.clientId,
+            clientSecret: cloned.oauth.clientSecret,
+            scopes: cloned.oauth.scopes,
+            grantType: cloned.oauth.grantType || "authorization_code",
+            responseType: cloned.oauth.responseType || "code",
+          }
+        : undefined,
+    inputs: Array.isArray(cloned.inputs)
+      ? cloned.inputs.filter(
+          (input: any) =>
+            input &&
+            typeof input === "object" &&
+            input.type === "promptString"
+        )
+      : undefined,
+    headers:
+      cloned.headers && typeof cloned.headers === "object"
+        ? cloned.headers
+        : undefined,
+    loginUrl: typeof cloned.loginUrl === "string" ? cloned.loginUrl : undefined,
+  };
 }
 
 function cloneConfig(config: any) {

@@ -191,6 +191,16 @@ function setupServer(
     logger.info("Settings link routes enabled at :8080/internal/settings-link");
   }
 
+  // MCP discovery routes (worker MCP search/install helper endpoints)
+  {
+    const {
+      createMcpDiscoveryRoutes,
+    } = require("../routes/internal/mcp-discovery");
+    const mcpDiscoveryRouter = createMcpDiscoveryRoutes();
+    app.route("", mcpDiscoveryRouter);
+    logger.info("MCP discovery routes enabled at :8080/internal/mcp/*");
+  }
+
   // Audio routes (TTS synthesis for workers)
   if (coreServices) {
     const transcriptionService = coreServices.getTranscriptionService();
@@ -322,6 +332,7 @@ function setupServer(
 
       const agentConfigRouter = createAgentConfigRoutes({
         agentSettingsStore,
+        queue: coreServices.getQueue(),
         providerStores:
           Object.keys(providerStores).length > 0 ? providerStores : undefined,
         providerConnectedOverrides,

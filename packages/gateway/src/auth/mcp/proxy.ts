@@ -6,7 +6,6 @@ import { GenericOAuth2Client } from "../oauth/generic-client";
 import type { McpConfigService } from "./config-service";
 import type { McpCredentialStore } from "./credential-store";
 import type { McpInputStore } from "./input-store";
-import { mcpConfigStore } from "./mcp-config-store";
 import { substituteObject, substituteString } from "./string-substitution";
 import type { McpTool, McpToolCache } from "./tool-cache";
 
@@ -21,7 +20,6 @@ interface JsonRpcResponse {
 
 interface ResolvedMcp {
   httpServer: any;
-  isPerAgentMcp: boolean;
   credentials: { accessToken: string; tokenType?: string } | null;
   inputValues: Record<string, string>;
   agentId: string;
@@ -288,25 +286,11 @@ export class McpProxy {
 
     const agentId = auth.tokenData.agentId || auth.tokenData.userId;
 
-    // Get all global HTTP MCPs
-    const allHttpServers = await this.configService.getAllHttpServers();
-
-    // Also get per-agent MCPs
-    const perAgentMcpIds: string[] = [];
-    if (auth.tokenData.deploymentName) {
-      const agentMcpConfig = await mcpConfigStore.get(
-        auth.tokenData.deploymentName
-      );
-      if (agentMcpConfig?.mcpServers) {
-        for (const id of Object.keys(agentMcpConfig.mcpServers)) {
-          if (!allHttpServers.has(id)) {
-            perAgentMcpIds.push(id);
-          }
-        }
-      }
-    }
-
-    const allMcpIds = [...Array.from(allHttpServers.keys()), ...perAgentMcpIds];
+    const allHttpServers = await this.configService.getAllHttpServers(
+      agentId,
+      auth.tokenData.deploymentName
+    );
+    const allMcpIds = Array.from(allHttpServers.keys());
 
     const mcpServers: Record<string, { tools: McpTool[] }> = {};
 
@@ -356,34 +340,20 @@ export class McpProxy {
     mcpId: string,
     tokenData: any
   ): Promise<ResolvedMcp | null> {
-    // Try global MCP config first
-    let httpServer = await this.configService.getHttpServer(mcpId);
-    let isPerAgentMcp = false;
-
-    // If not found in global config, check per-agent MCP config
-    if (!httpServer && tokenData.deploymentName) {
-      const agentMcpConfig = await mcpConfigStore.get(tokenData.deploymentName);
-      const perAgentMcp = agentMcpConfig?.mcpServers?.[mcpId];
-      if (perAgentMcp?.url) {
-        httpServer = {
-          id: mcpId,
-          upstreamUrl: perAgentMcp.url,
-        } as any;
-        isPerAgentMcp = true;
-      }
-    }
-
+    const agentId = tokenData.agentId || tokenData.userId;
+    const httpServer = await this.configService.getHttpServer(
+      mcpId,
+      agentId,
+      tokenData.deploymentName
+    );
     if (!httpServer) return null;
 
-    const agentId = tokenData.agentId || tokenData.userId;
     let credentials = null;
     let inputValues: Record<string, string> = {};
 
-    // Check OAuth (skip for per-agent MCPs)
-    const hasOAuth = !isPerAgentMcp && !!httpServer.oauth;
-    const discoveredOAuth = !isPerAgentMcp
-      ? await this.configService.getDiscoveredOAuth(mcpId)
-      : null;
+    // Check OAuth (static or discovered)
+    const hasOAuth = !!httpServer.oauth;
+    const discoveredOAuth = await this.configService.getDiscoveredOAuth(mcpId);
     const hasDiscoveredOAuth = !!discoveredOAuth;
 
     if (hasOAuth || hasDiscoveredOAuth) {
@@ -415,7 +385,7 @@ export class McpProxy {
       inputValues = inputs;
     }
 
-    return { httpServer, isPerAgentMcp, credentials, inputValues, agentId };
+    return { httpServer, credentials, inputValues, agentId };
   }
 
   /**
@@ -610,26 +580,12 @@ export class McpProxy {
       return this.sendJsonRpcError(c, -32600, "Invalid authentication token");
     }
 
-    // Try global MCP config first
-    let httpServer = await this.configService.getHttpServer(mcpId!);
-    let isPerAgentMcp = false;
-
-    // If not found in global config, check per-agent MCP config
-    if (!httpServer && tokenData.deploymentName) {
-      const agentMcpConfig = await mcpConfigStore.get(tokenData.deploymentName);
-      const perAgentMcp = agentMcpConfig?.mcpServers?.[mcpId!];
-      if (perAgentMcp?.url) {
-        httpServer = {
-          id: mcpId!,
-          upstreamUrl: perAgentMcp.url,
-        } as any;
-        isPerAgentMcp = true;
-        logger.info(`Using per-agent MCP config for ${mcpId}`, {
-          deploymentName: tokenData.deploymentName,
-          upstreamUrl: perAgentMcp.url,
-        });
-      }
-    }
+    const agentId = tokenData.agentId || tokenData.userId;
+    const httpServer = await this.configService.getHttpServer(
+      mcpId!,
+      agentId,
+      tokenData.deploymentName
+    );
 
     if (!httpServer) {
       return this.sendJsonRpcError(
@@ -639,20 +595,12 @@ export class McpProxy {
       );
     }
 
-    // Check authentication - OAuth or inputs (skip for per-agent MCPs)
+    // Check authentication - OAuth or inputs
     let credentials = null;
     let inputValues = null;
-
-    if (isPerAgentMcp) {
-      logger.info(`Per-agent MCP ${mcpId} - bypassing OAuth/input checks`);
-    }
-
-    const hasOAuth = !isPerAgentMcp && !!httpServer.oauth;
-    const discoveredOAuth = !isPerAgentMcp
-      ? await this.configService.getDiscoveredOAuth(mcpId!)
-      : null;
+    const hasOAuth = !!httpServer.oauth;
+    const discoveredOAuth = await this.configService.getDiscoveredOAuth(mcpId!);
     const hasDiscoveredOAuth = !!discoveredOAuth;
-    const agentId = tokenData.agentId || tokenData.userId;
 
     if (hasOAuth || hasDiscoveredOAuth) {
       credentials = await this.credentialStore.getCredentials(agentId, mcpId!);

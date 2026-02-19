@@ -89,6 +89,72 @@ export function createOpenClawCustomTools(params: {
 }): ToolDefinition[] {
   const tools: ToolDefinition[] = [];
 
+  const searchMcpServers = async (query: string, limit = 5) => {
+    const response = await fetch(
+      `${params.gatewayUrl}/internal/mcp/search?q=${encodeURIComponent(query)}&limit=${Math.min(Math.max(limit, 1), 5)}`,
+      {
+        headers: {
+          Authorization: `Bearer ${params.workerToken}`,
+        },
+      }
+    );
+
+    if (!response.ok) {
+      const errorData = (await response
+        .json()
+        .catch(() => ({ error: response.statusText }))) as {
+        error?: string;
+      };
+      throw new Error(errorData.error || "Failed to search MCP registry");
+    }
+
+    return (await response.json()) as {
+      results: Array<{
+        id: string;
+        canonicalId: string;
+        name: string;
+        description: string;
+        source: string;
+      }>;
+    };
+  };
+
+  const getMcpById = async (mcpId: string) => {
+    const response = await fetch(
+      `${params.gatewayUrl}/internal/mcp/registry/${encodeURIComponent(mcpId)}`,
+      {
+        headers: {
+          Authorization: `Bearer ${params.workerToken}`,
+        },
+      }
+    );
+
+    if (!response.ok) {
+      const errorData = (await response
+        .json()
+        .catch(() => ({ error: response.statusText }))) as {
+        error?: string;
+      };
+      throw new Error(errorData.error || "Failed to load MCP details");
+    }
+
+    return (await response.json()) as {
+      mcp: {
+        id: string;
+        canonicalId: string;
+        name: string;
+        description: string;
+        source: string;
+        prefillMcpServer: {
+          id: string;
+          name?: string;
+          url?: string;
+          type?: "sse" | "stdio";
+        };
+      };
+    };
+  };
+
   tools.push({
     name: "UploadUserFile",
     label: "UploadUserFile",
@@ -484,6 +550,118 @@ export function createOpenClawCustomTools(params: {
   });
 
   // GetSettingsLink
+  tools.push({
+    name: "SearchMcpServers",
+    label: "SearchMcpServers",
+    description:
+      "Search for installable remote MCP servers. Returns up to 5 candidates.",
+    parameters: Type.Object({
+      query: Type.String({
+        description:
+          "What to search for (e.g., 'gmail', 'notion', 'github')",
+      }),
+      limit: Type.Optional(
+        Type.Number({
+          description: "Maximum candidates to return (default 5, max 5)",
+        })
+      ),
+    }),
+    execute: async (_toolCallId, args) => {
+      try {
+        const toolArgs = args as { query: string; limit?: number };
+        const result = await searchMcpServers(toolArgs.query, toolArgs.limit || 5);
+        if (!result.results.length) {
+          return buildTextResult(
+            `No MCP servers found for "${toolArgs.query}". Try a broader query.`
+          );
+        }
+
+        const formatted = result.results
+          .slice(0, 5)
+          .map(
+            (item, index) =>
+              `${index + 1}. ${item.name} (${item.id})\n   ${item.description || "No description"}\n   source: ${item.source}`
+          )
+          .join("\n\n");
+
+        return buildTextResult(
+          `Found ${Math.min(result.results.length, 5)} MCP candidate(s):\n\n${formatted}\n\nAsk the user which one they want, then call InstallMcpServer with the selected mcpId.`
+        );
+      } catch (error) {
+        logger.error("SearchMcpServers error:", error);
+        return buildTextResult(
+          `Error: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+    },
+  });
+
+  tools.push({
+    name: "InstallMcpServer",
+    label: "InstallMcpServer",
+    description:
+      "Generate a settings link that pre-fills one selected MCP server for explicit user confirmation.",
+    parameters: Type.Object({
+      mcpId: Type.String({
+        description: "MCP ID from SearchMcpServers results",
+      }),
+      reason: Type.Optional(
+        Type.String({
+          description: "Optional user-facing reason for this installation",
+        })
+      ),
+    }),
+    execute: async (_toolCallId, args) => {
+      try {
+        const toolArgs = args as { mcpId: string; reason?: string };
+        const mcp = await getMcpById(toolArgs.mcpId);
+        const reason =
+          toolArgs.reason ||
+          `Install MCP server "${mcp.mcp.name}" so it can be used in this agent`;
+
+        const response = await fetch(
+          `${params.gatewayUrl}/internal/settings-link`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${params.workerToken}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              reason,
+              prefillMcpServers: [mcp.mcp.prefillMcpServer],
+            }),
+          }
+        );
+
+        if (!response.ok) {
+          const errorData = (await response
+            .json()
+            .catch(() => ({ error: response.statusText }))) as {
+            error?: string;
+          };
+          return buildTextResult(
+            `Error: ${errorData.error || "Failed to generate install link"}`
+          );
+        }
+
+        const result = (await response.json()) as {
+          url: string;
+          expiresAt: string;
+        };
+
+        return buildTextResult(
+          `Install link generated for ${mcp.mcp.name} (${mcp.mcp.id}).\n\nURL: ${result.url}\n\nAsk the user to open the link and explicitly confirm installation.`
+        );
+      } catch (error) {
+        logger.error("InstallMcpServer error:", error);
+        return buildTextResult(
+          `Error: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+    },
+  });
+
   tools.push({
     name: "GetSettingsLink",
     label: "GetSettingsLink",

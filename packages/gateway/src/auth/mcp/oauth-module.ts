@@ -202,7 +202,10 @@ export class McpOAuthModule extends BaseModule {
       const mcpId = actionId.replace("mcp_configure_", "");
 
       try {
-        const httpServer = await this.configService.getHttpServer(mcpId);
+        const httpServer = await this.configService.getHttpServer(
+          mcpId,
+          agentId
+        );
         if (
           !httpServer ||
           !httpServer.inputs ||
@@ -352,7 +355,7 @@ export class McpOAuthModule extends BaseModule {
    * Get status of all configured MCP servers for a space
    */
   private async getMcpStatuses(agentId: string): Promise<McpStatus[]> {
-    const httpServers = await this.configService.getAllHttpServers();
+    const httpServers = await this.configService.getAllHttpServers(agentId);
     logger.info(
       `getMcpStatuses: Found ${httpServers.size} HTTP servers for space ${agentId}`
     );
@@ -447,7 +450,7 @@ export class McpOAuthModule extends BaseModule {
 
     try {
       // Get MCP config
-      const httpServer = await this.configService.getHttpServer(mcpId);
+      const httpServer = await this.configService.getHttpServer(mcpId, agentId);
       if (!httpServer) {
         return c.json({ error: "MCP not found" }, 404);
       }
@@ -605,7 +608,8 @@ export class McpOAuthModule extends BaseModule {
 
       // Get MCP config for token exchange
       const httpServer = await this.configService.getHttpServer(
-        stateData.mcpId
+        stateData.mcpId,
+        stateData.agentId
       );
       if (!httpServer) {
         return c.html(

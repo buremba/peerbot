@@ -1,4 +1,5 @@
-import React, { useEffect, useState, useRef } from "react";
+import type React from "react";
+import { useEffect, useState, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { colors } from "../styles";
 import type { FlowStep } from "../types";
@@ -74,6 +75,7 @@ export const SlackPanel: React.FC<SlackPanelProps> = ({
     }
   }, [currentStepIndex, steps]);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: scrollRef is a stable ref and does not need to be a dependency
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
@@ -307,9 +309,7 @@ const PermissionMessage: React.FC<{ text: string }> = ({ text }) => (
     >
       Permission Required
     </div>
-    <div
-      style={{ fontSize: 13, color: colors.text, marginBottom: 10 }}
-    >
+    <div style={{ fontSize: 13, color: colors.text, marginBottom: 10 }}>
       {text}
     </div>
     <div style={{ display: "flex", gap: 8 }}>
@@ -330,6 +330,7 @@ const PermissionMessage: React.FC<{ text: string }> = ({ text }) => (
         Allow for 1 hour
       </motion.button>
       <button
+        type="button"
         style={{
           background: "transparent",
           color: colors.textSecondary,
@@ -352,6 +353,7 @@ function renderMarkdownLight(text: string): React.ReactNode {
   return parts.map((part, i) => {
     if (part.startsWith("**") && part.endsWith("**")) {
       return (
+        // biome-ignore lint/suspicious/noArrayIndexKey: markdown parts are derived from static text and never reordered
         <strong key={i} style={{ fontWeight: 600 }}>
           {part.slice(2, -2)}
         </strong>

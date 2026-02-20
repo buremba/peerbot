@@ -50,7 +50,8 @@ export function buildSteps(prompt: PromptOption): FlowStep[] {
     {
       id: "check-sandbox",
       title: "Check sandbox status",
-      description: "Gateway checks if a sandbox is already running for this user",
+      description:
+        "Gateway checks if a sandbox is already running for this user",
       activeNodes: ["gateway"],
       callout: {
         node: "gateway",
@@ -62,7 +63,8 @@ export function buildSteps(prompt: PromptOption): FlowStep[] {
     {
       id: "check-snapshot",
       title: "Look up snapshot",
-      description: "Gateway checks if a pre-built snapshot exists for the agent",
+      description:
+        "Gateway checks if a pre-built snapshot exists for the agent",
       activeNodes: ["gateway"],
       callout: {
         node: "gateway",
@@ -110,8 +112,7 @@ export function buildSteps(prompt: PromptOption): FlowStep[] {
     {
       id: "deliver-message",
       title: "Deliver prompt to sandbox",
-      description:
-        "Gateway sends the user's message to the sandbox runtime",
+      description: "Gateway sends the user's message to the sandbox runtime",
       activeNodes: ["gateway", "sandbox"],
       packet: {
         from: "gateway",
@@ -312,7 +313,8 @@ export function buildSteps(prompt: PromptOption): FlowStep[] {
     {
       id: "done",
       title: "Complete",
-      description: "User sees the response in Slack — all processing happened in an isolated sandbox",
+      description:
+        "User sees the response in Slack — all processing happened in an isolated sandbox",
       activeNodes: ["slack"],
       slackEvent: {
         type: "bot",

@@ -1,4 +1,4 @@
-import React from "react";
+import type React from "react";
 import { AnimatePresence } from "framer-motion";
 import { NODES, CONNECTIONS } from "../nodes";
 import type { FlowStep, PromptOption } from "../types";
@@ -49,10 +49,12 @@ export const Diagram: React.FC<DiagramProps> = ({ currentStep, prompt }) => {
       viewBox="0 0 800 540"
       preserveAspectRatio="xMidYMid meet"
       style={{ display: "block" }}
+      aria-hidden="true"
     >
       {/* Defs for gradients */}
       <defs>
-        <linearGradient id="lineGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+        {/* biome-ignore lint/correctness/useUniqueElementIds: SVG gradient ID is scoped within this component's SVG element */}
+        <linearGradient id="diagram-lineGrad" x1="0%" y1="0%" x2="100%" y2="0%">
           <stop offset="0%" stopColor="rgba(74, 158, 255, 0.1)" />
           <stop offset="50%" stopColor="rgba(74, 158, 255, 0.3)" />
           <stop offset="100%" stopColor="rgba(74, 158, 255, 0.1)" />

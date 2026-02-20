@@ -73,7 +73,6 @@ export class McpDiscoveryService {
     const trimmed = query.trim();
     if (!trimmed) return [];
 
-    const cappedLimit = clamp(limit, 1, 5);
     const [official, local] = await Promise.all([
       this.searchOfficialRegistry(trimmed, 25),
       this.searchLocalRegistry(trimmed),
@@ -83,7 +82,7 @@ export class McpDiscoveryService {
     for (const candidate of merged) {
       this.cacheCandidate(candidate);
     }
-    return merged.slice(0, cappedLimit);
+    return merged.slice(0, limit);
   }
 
   async getById(id: string): Promise<DiscoveredMcpCandidate | null> {

@@ -6,6 +6,10 @@ import { createLogger } from "@lobu/core";
 import FormData from "form-data";
 import { z } from "zod";
 import type { InteractionClient } from "../common/interaction-client";
+import {
+  createMcpDiscoveryClient,
+  formatSearchResults,
+} from "../common/mcp-discovery-client";
 
 const logger = createLogger("custom-tools");
 
@@ -21,72 +25,7 @@ export function createCustomToolsServer(
   options?: { platform?: string }
 ) {
   const platform = options?.platform || "slack";
-
-  const searchMcpServers = async (query: string, limit = 5) => {
-    const response = await fetch(
-      `${gatewayUrl}/internal/mcp/search?q=${encodeURIComponent(query)}&limit=${Math.min(Math.max(limit, 1), 5)}`,
-      {
-        headers: {
-          Authorization: `Bearer ${workerToken}`,
-        },
-      }
-    );
-
-    if (!response.ok) {
-      const errorData = (await response
-        .json()
-        .catch(() => ({ error: response.statusText }))) as {
-        error?: string;
-      };
-      throw new Error(errorData.error || "Failed to search MCP registry");
-    }
-
-    return (await response.json()) as {
-      results: Array<{
-        id: string;
-        canonicalId: string;
-        name: string;
-        description: string;
-        source: string;
-      }>;
-    };
-  };
-
-  const getMcpById = async (mcpId: string) => {
-    const response = await fetch(
-      `${gatewayUrl}/internal/mcp/registry/${encodeURIComponent(mcpId)}`,
-      {
-        headers: {
-          Authorization: `Bearer ${workerToken}`,
-        },
-      }
-    );
-
-    if (!response.ok) {
-      const errorData = (await response
-        .json()
-        .catch(() => ({ error: response.statusText }))) as {
-        error?: string;
-      };
-      throw new Error(errorData.error || "Failed to load MCP details");
-    }
-
-    return (await response.json()) as {
-      mcp: {
-        id: string;
-        canonicalId: string;
-        name: string;
-        description: string;
-        source: string;
-        prefillMcpServer: {
-          id: string;
-          name?: string;
-          url?: string;
-          type?: "sse" | "stdio";
-        };
-      };
-    };
-  };
+  const mcpClient = createMcpDiscoveryClient(gatewayUrl, workerToken);
 
   const tools: any[] = [
     tool(
@@ -657,8 +596,8 @@ export function createCustomToolsServer(
       } as const,
       async (args) => {
         try {
-          const result = await searchMcpServers(args.query, args.limit || 5);
-          if (!result.results.length) {
+          const results = await mcpClient.search(args.query, args.limit || 5);
+          if (!results.length) {
             return {
               content: [
                 {
@@ -669,20 +608,12 @@ export function createCustomToolsServer(
             };
           }
 
-          const formatted = result.results
-            .slice(0, 5)
-            .map(
-              (item, index) =>
-                `${index + 1}. ${item.name} (${item.id})\n   ${item.description || "No description"}\n   source: ${item.source}`
-            )
-            .join("\n\n");
-
           return {
             content: [
               {
                 type: "text",
                 text:
-                  `Found ${Math.min(result.results.length, 5)} MCP candidate(s):\n\n${formatted}\n\n` +
+                  `Found ${Math.min(results.length, 5)} MCP candidate(s):\n\n${formatSearchResults(results)}\n\n` +
                   `Ask the user which one they want, then call InstallMcpServer with the selected mcpId.`,
               },
             ],
@@ -715,50 +646,13 @@ export function createCustomToolsServer(
       } as const,
       async (args) => {
         try {
-          const mcp = await getMcpById(args.mcpId);
-          const reason =
-            args.reason ||
-            `Install MCP server "${mcp.mcp.name}" so it can be used in this agent`;
-
-          const response = await fetch(`${gatewayUrl}/internal/settings-link`, {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${workerToken}`,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              reason,
-              prefillMcpServers: [mcp.mcp.prefillMcpServer],
-            }),
-          });
-
-          if (!response.ok) {
-            const errorData = (await response
-              .json()
-              .catch(() => ({ error: response.statusText }))) as {
-              error?: string;
-            };
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: `Error: ${errorData.error || "Failed to generate install link"}`,
-                },
-              ],
-            };
-          }
-
-          const result = (await response.json()) as {
-            url: string;
-            expiresAt: string;
-          };
-
+          const result = await mcpClient.install(args.mcpId, args.reason);
           return {
             content: [
               {
                 type: "text",
                 text:
-                  `Install link generated for ${mcp.mcp.name} (${mcp.mcp.id}).\n\n` +
+                  `Install link generated for ${result.mcp.name} (${result.mcp.id}).\n\n` +
                   `URL: ${result.url}\n\n` +
                   `Ask the user to open the link and explicitly confirm installation.`,
               },

@@ -1,9 +1,6 @@
 import { createLogger, verifyWorkerToken } from "@lobu/core";
 import { Hono } from "hono";
-import {
-  McpDiscoveryService,
-  type DiscoveredMcpCandidate,
-} from "../../services/mcp-discovery";
+import { McpDiscoveryService } from "../../services/mcp-discovery";
 
 const logger = createLogger("internal-mcp-discovery-routes");
 
@@ -16,19 +13,6 @@ type WorkerContext = {
     };
   };
 };
-
-function toResponseCandidate(candidate: DiscoveredMcpCandidate) {
-  return {
-    id: candidate.id,
-    canonicalId: candidate.canonicalId,
-    name: candidate.name,
-    description: candidate.description,
-    source: candidate.source,
-    url: candidate.url,
-    requiresAuth: candidate.requiresAuth,
-    prefillMcpServer: candidate.prefillMcpServer,
-  };
-}
 
 export function createMcpDiscoveryRoutes(
   discoveryService = new McpDiscoveryService()
@@ -70,10 +54,7 @@ export function createMcpDiscoveryRoutes(
       count: results.length,
     });
 
-    return c.json({
-      results: results.map(toResponseCandidate),
-      limit,
-    });
+    return c.json({ results, limit });
   });
 
   router.get("/internal/mcp/registry/:id", authenticateWorker, async (c) => {
@@ -82,7 +63,7 @@ export function createMcpDiscoveryRoutes(
     if (!result) {
       return c.json({ error: "MCP not found" }, 404);
     }
-    return c.json({ mcp: toResponseCandidate(result) });
+    return c.json({ mcp: result });
   });
 
   logger.info("Internal MCP discovery routes registered");

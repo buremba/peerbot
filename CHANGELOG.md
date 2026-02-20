@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.6.0](https://github.com/lobu-ai/lobu/compare/v2.5.0...v2.6.0) (2026-02-20)
+
+
+### Features
+
+* live per-agent MCP install flow with discovery and no worker restart ([#106](https://github.com/lobu-ai/lobu/issues/106)) ([435202b](https://github.com/lobu-ai/lobu/commit/435202b965f85a2085e604c463a74f6163111316))
+
+
+### Bug Fixes
+
+* resolve biome lint and format errors in landing/ ([#107](https://github.com/lobu-ai/lobu/issues/107)) ([40965cb](https://github.com/lobu-ai/lobu/commit/40965cbfe60039311fc6f00f66ebef157d3c4b0f))
+
 ## [2.5.0](https://github.com/lobu-ai/lobu/compare/v2.4.0...v2.5.0) (2026-02-19)
 
 

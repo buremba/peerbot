@@ -432,6 +432,18 @@ export class SlackResponseRenderer implements ResponseRenderer {
   ): Promise<void> {
     if (!payload.error) return;
 
+    // Stop any active stream before posting the error to avoid
+    // Slack streaming_state_conflict rejections.
+    if (this.streamSessionManager.hasSession(sessionKey)) {
+      try {
+        await this.streamSessionManager.completeSession(sessionKey);
+      } catch (stopError) {
+        logger.warn(
+          `Failed to stop active stream before error delivery: ${stopError}`
+        );
+      }
+    }
+
     const redisBotMessageTs = await this.getBotMessageTs(sessionKey);
     const existingBotMessageTs = payload.botResponseId || redisBotMessageTs;
     const isFirstResponse = !existingBotMessageTs;
@@ -448,8 +460,9 @@ export class SlackResponseRenderer implements ResponseRenderer {
       actionButtons
     );
 
+    const client = await this.getClientForTeam(payload.teamId);
+
     try {
-      const client = await this.getClientForTeam(payload.teamId);
       if (isFirstResponse) {
         await client.chat.postMessage({
           channel: payload.channelId,
@@ -473,6 +486,31 @@ export class SlackResponseRenderer implements ResponseRenderer {
         });
       }
     } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+
+      // Fallback: if update still hits a streaming conflict, post as new message
+      if (
+        errorMsg.includes("streaming_state_conflict") ||
+        errorMsg.includes("message_not_in_streaming_state")
+      ) {
+        logger.warn(
+          `Slack streaming conflict during error delivery, falling back to new message`
+        );
+        try {
+          await client.chat.postMessage({
+            channel: payload.channelId,
+            thread_ts: payload.conversationId,
+            text: errorResult.text,
+            mrkdwn: true,
+            blocks: errorResult.blocks,
+          });
+          return;
+        } catch (fallbackError) {
+          logger.error(`Fallback error message also failed: ${fallbackError}`);
+          throw fallbackError;
+        }
+      }
+
       logger.error(`Failed to send error message to Slack: ${error}`);
       throw error;
     }

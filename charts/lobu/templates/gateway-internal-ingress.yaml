@@ -39,7 +39,7 @@ spec:
               service:
                 name: {{ include "lobu.fullname" $ }}-gateway
                 port:
-                  number: {{ $.Values.gateway.service.port }}
+                  number: 8080
           {{- end }}
     {{- end }}
 {{- end }}

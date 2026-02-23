@@ -46,8 +46,6 @@ services:
       # Mount MCP config for live editing
       - ./examples:/app/examples:ro
     ports:
-      # Port 3000 needed for Slack HTTP mode (enabled when PUBLIC_GATEWAY_URL is set)
-      - "3000:3000"
       - "8080:8080"
       - "8118:8118" # HTTP proxy for workers
     networks:

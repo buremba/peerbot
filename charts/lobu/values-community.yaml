@@ -75,7 +75,6 @@ ingress:
 # Slack configuration
 slack:
   enabled: true  # Enable Slack platform
-  port: 3000
   allowDirectMessages: true
   allowPrivateChannels: true
   enableStatusReactions: true
@@ -145,8 +144,6 @@ gateway:
       cpu: "500m"
   service:
     type: ClusterIP
-    port: 3000
-    targetPort: 3000
   config:
     nodeEnv: "production"
     logLevel: "INFO"

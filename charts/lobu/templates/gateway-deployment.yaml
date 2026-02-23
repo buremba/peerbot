@@ -49,9 +49,6 @@ spec:
               exec bun packages/gateway/src/index.ts
           ports:
             - name: http
-              containerPort: {{ .Values.gateway.service.targetPort }}
-              protocol: TCP
-            - name: health
               containerPort: 8080
               protocol: TCP
             # HTTP proxy port for worker network isolation
@@ -85,10 +82,6 @@ spec:
           resources:
             {{- toYaml .Values.gateway.resources | nindent 12 }}
           env:
-            # Port configuration
-            - name: PORT
-              value: "{{ .Values.gateway.service.targetPort }}"
-
             {{- if .Values.slack.enabled }}
             # Slack configuration
             - name: SLACK_BOT_TOKEN

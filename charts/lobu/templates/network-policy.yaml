@@ -25,8 +25,8 @@ spec:
           app: {{ include "lobu.name" . }}
     ports:
     - protocol: TCP
-      port: 3000  # Dispatcher port
-  
+      port: 8080
+
   # Allow ingress from ingress controller (if using ingress)
   {{- if .Values.ingress.enabled }}
   - from:
@@ -35,7 +35,7 @@ spec:
           name: ingress-nginx  # Adjust based on your ingress controller
     ports:
     - protocol: TCP
-      port: 3000
+      port: 8080
   {{- end }}
 
   # Egress rules - restrict outbound traffic
@@ -148,9 +148,7 @@ spec:
     - protocol: TCP
       port: 8118  # HTTP proxy for external traffic (domain filtering)
     - protocol: TCP
-      port: 8080  # Gateway API (SSE, file uploads, health)
-    - protocol: TCP
-      port: 3000  # Slack events (if needed)
+      port: 8080  # Gateway API (SSE, file uploads, health, Slack events)
 
   # Allow traffic to Redis for message queues (Bitnami Redis subchart labels)
   - to:

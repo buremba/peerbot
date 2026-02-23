@@ -29,31 +29,6 @@ spec:
     - host: {{ .host | quote }}
       http:
         paths:
-          # Route /api paths to port 8080 (health, OAuth, proxy)
-          - path: /api
-            pathType: Prefix
-            backend:
-              service:
-                name: {{ include "lobu.fullname" $ }}-gateway
-                port:
-                  number: 8080
-          # Route /health to port 8080
-          - path: /health
-            pathType: Prefix
-            backend:
-              service:
-                name: {{ include "lobu.fullname" $ }}-gateway
-                port:
-                  number: 8080
-          # Route Slack HTTP endpoints to port 3000
-          - path: /slack
-            pathType: Prefix
-            backend:
-              service:
-                name: {{ include "lobu.fullname" $ }}-gateway
-                port:
-                  number: {{ $.Values.slack.port }}
-          # Route web pages to port 8080
           {{- range .paths }}
           - path: {{ .path }}
             pathType: {{ .pathType }}

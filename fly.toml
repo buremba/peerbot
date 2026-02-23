@@ -1,0 +1,38 @@
+app = "lobu-gateway"
+primary_region = "ams"
+
+[build]
+  dockerfile = "Dockerfile.gateway"
+
+[processes]
+  app = "bun packages/gateway/src/index.ts"
+
+[env]
+  NODE_ENV = "production"
+  DEPLOYMENT_MODE = "fly"
+  USE_SIMPLE_LOGGER = "true"
+  LOG_LEVEL = "DEBUG"
+  FLY_WORKER_APP_NAME = "divine-fog-3458"
+  SLACK_ALLOW_DIRECT_MESSAGES = "true"
+  SLACK_ALLOW_PRIVATE_CHANNELS = "true"
+  WORKER_ALLOWED_DOMAINS = "api.anthropic.com,statsig.anthropic.com,api.github.com,github.com,registry.npmjs.org,api.z.ai"
+  FLY_MACHINE_MEMORY_MB = "4096"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+[[http_service.checks]]
+  grace_period = "30s"
+  interval = "15s"
+  method = "GET"
+  timeout = "5s"
+  path = "/health"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

@@ -1,6 +1,8 @@
 #!/usr/bin/env bun
 
-import { serve } from "@hono/node-server";
+import type { Server } from "node:http";
+import { createServer } from "node:http";
+import { getRequestListener } from "@hono/node-server";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { createLogger } from "@lobu/core";
 import { apiReference } from "@scalar/hono-api-reference";
@@ -17,7 +19,7 @@ import type { WhatsAppConfig } from "../whatsapp/config";
 
 const logger = createLogger("gateway-startup");
 
-let httpServer: ReturnType<typeof serve> | null = null;
+let httpServer: Server | null = null;
 
 /**
  * Setup Hono server with all routes on port 8080
@@ -31,7 +33,8 @@ function setupServer(
   interactionService?: any,
   platformRegistry?: any,
   coreServices?: any,
-  telegramPlatform?: TelegramPlatform | null
+  telegramPlatform?: TelegramPlatform | null,
+  slackExpressApp?: any
 ) {
   if (httpServer) return;
 
@@ -587,14 +590,22 @@ Agents can be configured with custom MCP (Model Context Protocol) servers:
     });
   });
 
-  // Start the server
+  // Start the server — single port for everything
   const port = 8080;
-  httpServer = serve({
-    fetch: app.fetch,
-    port,
+  const honoListener = getRequestListener(app.fetch);
+
+  httpServer = createServer((incoming, outgoing) => {
+    // Route Slack event webhooks to the Bolt Express receiver
+    if (slackExpressApp && incoming.url?.startsWith("/slack/events")) {
+      slackExpressApp(incoming, outgoing);
+      return;
+    }
+    // Everything else goes through Hono
+    honoListener(incoming, outgoing);
   });
 
-  logger.info(`Hono server listening on port ${port}`);
+  httpServer.listen(port);
+  logger.info(`Server listening on port ${port}`);
 }
 
 /**
@@ -921,7 +932,7 @@ export async function startGateway(
     null;
   const sessionManager = coreServices.getSessionManager();
 
-  // Setup server on port 8080
+  // Setup server on port 8080 (single port for all HTTP traffic)
   setupServer(
     coreServices.getSecretProxy(),
     coreServices.getWorkerGateway(),
@@ -931,7 +942,8 @@ export async function startGateway(
     coreServices.getInteractionService(),
     gateway.getPlatformRegistry(),
     coreServices,
-    telegramPlatform
+    telegramPlatform,
+    slackPlatform?.getExpressApp()
   );
 
   logger.info("Lobu Gateway is running!");

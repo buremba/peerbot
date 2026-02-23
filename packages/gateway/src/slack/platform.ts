@@ -325,8 +325,12 @@ export class SlackPlatform implements PlatformAdapter {
       this.socketHealthMonitor.stop();
     }
 
-    // Stop Slack app
-    await this.app.stop();
+    // Stop Slack app (may throw in HTTP mode since we don't start a standalone server)
+    try {
+      await this.app.stop();
+    } catch {
+      // Expected in HTTP mode — receiver was never started as standalone server
+    }
 
     logger.info("✅ Slack platform stopped");
   }
@@ -859,11 +863,17 @@ export class SlackPlatform implements PlatformAdapter {
   }
 
   /**
-   * Initialize HTTP Mode
+   * Get the underlying Express app for mounting on the main server.
+   * Only available in HTTP mode.
+   */
+  getExpressApp(): any {
+    return this.receiver?.app;
+  }
+
+  /**
+   * Initialize HTTP Mode (registers middleware; does NOT start a separate server)
    */
   private async initializeHttpMode(): Promise<void> {
-    await this.app.start(this.config.slack.port || 3000);
-
     if (!this.receiver) {
       throw new Error("Receiver not initialized for HTTP mode");
     }
@@ -875,9 +885,7 @@ export class SlackPlatform implements PlatformAdapter {
       next();
     });
 
-    logger.info(
-      `✅ Slack HTTP mode started on port ${this.config.slack.port || 3000}`
-    );
+    logger.info("✅ Slack HTTP mode initialized (mounted on main server)");
   }
 
   /**

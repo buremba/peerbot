@@ -62,7 +62,11 @@ export class ClaudeOAuthModule
   // ---- ModelProviderModule methods ----
 
   getSecretEnvVarNames(): string[] {
-    return ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"];
+    return [
+      "ANTHROPIC_API_KEY",
+      "ANTHROPIC_AUTH_TOKEN",
+      "CLAUDE_CODE_OAUTH_TOKEN",
+    ];
   }
 
   async hasCredentials(agentId: string): Promise<boolean> {
@@ -71,7 +75,9 @@ export class ClaudeOAuthModule
 
   hasSystemKey(): boolean {
     return !!(
-      process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_CODE_OAUTH_TOKEN
+      process.env.ANTHROPIC_API_KEY ||
+      process.env.ANTHROPIC_AUTH_TOKEN ||
+      process.env.CLAUDE_CODE_OAUTH_TOKEN
     );
   }
 
@@ -83,7 +89,8 @@ export class ClaudeOAuthModule
     envVars: Record<string, string>
   ): Record<string, string> {
     if (!envVars.ANTHROPIC_API_KEY && !envVars.CLAUDE_CODE_OAUTH_TOKEN) {
-      const systemApiKey = process.env.ANTHROPIC_API_KEY;
+      const systemApiKey =
+        process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN;
       const systemOAuthToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
 
       if (systemApiKey) {

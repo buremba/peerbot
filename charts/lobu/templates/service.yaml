@@ -10,14 +10,10 @@ metadata:
 spec:
   type: {{ .Values.gateway.service.type }}
   ports:
-    - port: {{ .Values.gateway.service.port }}
-      targetPort: {{ .Values.gateway.service.targetPort }}
-      protocol: TCP
-      name: http
     - port: 8080
       targetPort: 8080
       protocol: TCP
-      name: health-proxy
+      name: http
     # HTTP proxy port for worker network isolation (domain filtering)
     - port: 8118
       targetPort: 8118

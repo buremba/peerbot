@@ -64,8 +64,8 @@ export class FlyDeploymentManager extends BaseDeploymentManager {
 
     this.apiToken = (process.env.FLY_API_TOKEN || "").trim();
     this.appName = (
-      process.env.FLY_APP_NAME ||
       process.env.FLY_WORKER_APP_NAME ||
+      process.env.FLY_APP_NAME ||
       ""
     ).trim();
     this.region = (process.env.FLY_REGION || "").trim() || undefined;
@@ -91,7 +91,7 @@ export class FlyDeploymentManager extends BaseDeploymentManager {
     if (!this.appName) {
       throw new OrchestratorError(
         ErrorCode.INVALID_CONFIGURATION,
-        "FLY_APP_NAME (or FLY_WORKER_APP_NAME) is required for DEPLOYMENT_MODE=fly",
+        "FLY_WORKER_APP_NAME (or FLY_APP_NAME) is required for DEPLOYMENT_MODE=fly",
         { deploymentMode: "fly" },
         false
       );
@@ -476,8 +476,8 @@ export class FlyDeploymentManager extends BaseDeploymentManager {
     const memoryMb = Number.isFinite(configuredMemoryMb)
       ? Math.max(configuredMemoryMb, 256)
       : this.parseMemoryToMb(
-          this.config.worker.resources.requests.memory ||
-            this.config.worker.resources.limits.memory
+          this.config.worker.resources.limits.memory ||
+            this.config.worker.resources.requests.memory
         );
 
     return {
@@ -657,7 +657,7 @@ export class FlyDeploymentManager extends BaseDeploymentManager {
     if (!response.ok) {
       throw new OrchestratorError(
         ErrorCode.DEPLOYMENT_CREATE_FAILED,
-        `Fly API request failed: ${response.status} ${response.statusText}`,
+        `Fly API request failed: ${response.status} ${response.statusText} - ${responseText.slice(0, 500)}`,
         {
           status: response.status,
           statusText: response.statusText,

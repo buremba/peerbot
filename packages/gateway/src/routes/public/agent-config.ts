@@ -5,7 +5,7 @@
  */
 
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
-import { createLogger } from "@lobu/core";
+import { type AuthProfile, createLogger } from "@lobu/core";
 import type { AgentMetadataStore } from "../../auth/agent-metadata-store";
 import type { ProviderCatalogService } from "../../auth/provider-catalog";
 import { collectModelValues } from "../../auth/provider-model-options";
@@ -25,6 +25,29 @@ const TAG = "Agents";
 const ErrorResponse = z.object({ error: z.string() });
 const TokenQuery = z.object({ token: z.string() });
 const logger = createLogger("agent-config-routes");
+const REDACTED_VALUE = "__LOBU_REDACTED__";
+const SENSITIVE_KEY_PATTERN =
+  /(?:credential|secret|token|password|api(?:_|-)?key|authorization)/i;
+
+interface RedactedFieldState {
+  redacted: true;
+  hasValue: boolean;
+}
+
+type SanitizedAuthProfile = Omit<AuthProfile, "credential" | "metadata"> & {
+  credential: string;
+  credentialRedacted: true;
+  metadata?: Omit<NonNullable<AuthProfile["metadata"]>, "refreshToken"> & {
+    refreshToken?: string;
+    refreshTokenRedacted?: true;
+  };
+};
+
+type PublicAgentSettings = Omit<AgentSettings, "envVars" | "authProfiles"> & {
+  envVars?: Record<string, string>;
+  envVarsMeta?: Record<string, RedactedFieldState>;
+  authProfiles?: SanitizedAuthProfile[];
+};
 
 // --- Route Definitions ---
 
@@ -266,7 +289,7 @@ export function createAgentConfigRoutes(
 
     return c.json({
       agentId,
-      settings: settings || {},
+      settings: sanitizeSettingsForResponse(settings),
       providers,
     });
   });
@@ -280,7 +303,10 @@ export function createAgentConfigRoutes(
       const existingSettings =
         await config.agentSettingsStore.getSettings(agentId);
       const availableModels = await collectModelValues(agentId, payload.userId);
-      const body = c.req.valid("json");
+      const body = restoreRedactedSentinels(
+        c.req.valid("json"),
+        existingSettings || {}
+      );
 
       const updates: Partial<AgentSettings> = {};
 
@@ -701,6 +727,113 @@ async function searchNixPackages(
     context = await resolveNixSearchContext();
     return runSearch(context);
   }
+}
+
+function sanitizeSettingsForResponse(
+  settings: AgentSettings | null
+): PublicAgentSettings | Record<string, never> {
+  if (!settings) return {};
+
+  const sanitized = redactSensitiveFields(settings) as PublicAgentSettings;
+  const envVars = settings.envVars || {};
+
+  if (Object.keys(envVars).length > 0) {
+    const redactedEnvVars: Record<string, string> = {};
+    const envVarsMeta: Record<string, RedactedFieldState> = {};
+
+    for (const [key, value] of Object.entries(envVars)) {
+      redactedEnvVars[key] = REDACTED_VALUE;
+      envVarsMeta[key] = { redacted: true, hasValue: value.length > 0 };
+    }
+
+    sanitized.envVars = redactedEnvVars;
+    sanitized.envVarsMeta = envVarsMeta;
+  }
+
+  if (Array.isArray(settings.authProfiles)) {
+    sanitized.authProfiles = settings.authProfiles.map(sanitizeAuthProfile);
+  }
+
+  return sanitized;
+}
+
+function sanitizeAuthProfile(profile: AuthProfile): SanitizedAuthProfile {
+  const hadRefreshToken = !!profile.metadata?.refreshToken;
+  const metadata = profile.metadata
+    ? (redactSensitiveFields(
+        profile.metadata
+      ) as SanitizedAuthProfile["metadata"])
+    : undefined;
+
+  if (metadata && hadRefreshToken) {
+    metadata.refreshTokenRedacted = true;
+  }
+
+  return {
+    ...profile,
+    credential: REDACTED_VALUE,
+    credentialRedacted: true,
+    metadata,
+  };
+}
+
+function redactSensitiveFields(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((entry) => redactSensitiveFields(entry));
+  }
+
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+
+  const input = value as Record<string, unknown>;
+  const output: Record<string, unknown> = {};
+
+  for (const [key, rawValue] of Object.entries(input)) {
+    if (
+      typeof rawValue === "string" &&
+      rawValue.length > 0 &&
+      SENSITIVE_KEY_PATTERN.test(key)
+    ) {
+      output[key] = REDACTED_VALUE;
+      continue;
+    }
+
+    output[key] = redactSensitiveFields(rawValue);
+  }
+
+  return output;
+}
+
+function restoreRedactedSentinels<T>(input: T, previous: unknown): T {
+  if (input === REDACTED_VALUE && typeof previous === "string") {
+    return previous as T;
+  }
+
+  if (Array.isArray(input)) {
+    const previousEntries = Array.isArray(previous) ? previous : [];
+    const restored = input.map((entry, index) =>
+      restoreRedactedSentinels(entry, previousEntries[index])
+    );
+    return restored as T;
+  }
+
+  if (!input || typeof input !== "object") {
+    return input;
+  }
+
+  const inputObject = input as Record<string, unknown>;
+  const previousObject =
+    previous && typeof previous === "object"
+      ? (previous as Record<string, unknown>)
+      : {};
+  const restored: Record<string, unknown> = {};
+
+  for (const [key, value] of Object.entries(inputObject)) {
+    restored[key] = restoreRedactedSentinels(value, previousObject[key]);
+  }
+
+  return restored as T;
 }
 
 // --- Validation ---

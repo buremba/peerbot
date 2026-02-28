@@ -3,7 +3,7 @@ import * as crypto from "node:crypto";
 import * as http from "node:http";
 import * as net from "node:net";
 import { generateWorkerToken } from "@lobu/core";
-import { startHttpProxy, stopHttpProxy } from "../proxy/http-proxy";
+import { __testOnly, startHttpProxy, stopHttpProxy } from "../proxy/http-proxy";
 
 // Generate a stable 32-byte encryption key for tests
 const TEST_ENCRYPTION_KEY = crypto.randomBytes(32).toString("base64");
@@ -247,6 +247,10 @@ describe("HTTP Proxy Domain Filtering (unrestricted mode)", () => {
     });
     expect(res.statusCode).toBe(403);
     expect(res.body).toContain("Target IP not allowed");
+  });
+
+  test("rejects request to IPv4-mapped IPv6 loopback (hex form)", async () => {
+    expect(__testOnly.isBlockedIpAddress("::ffff:7f00:1")).toBe(true);
   });
 
   test("rejects CONNECT when hostname resolves to loopback", async () => {

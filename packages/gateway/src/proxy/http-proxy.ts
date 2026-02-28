@@ -153,9 +153,43 @@ function parseMappedIpv4Address(ip: string): string | null {
   return net.isIP(mapped) === 4 ? mapped : null;
 }
 
+function parseMappedIpv4HexAddress(ip: string): string | null {
+  const normalized = ip.toLowerCase();
+  if (!normalized.startsWith("::ffff:")) {
+    return null;
+  }
+
+  const mapped = normalized.substring("::ffff:".length);
+  if (mapped.includes(".")) {
+    return null;
+  }
+
+  const parts = mapped.split(":");
+  if (parts.length !== 2) {
+    return null;
+  }
+
+  const high = Number.parseInt(parts[0] || "", 16);
+  const low = Number.parseInt(parts[1] || "", 16);
+  if (
+    Number.isNaN(high) ||
+    Number.isNaN(low) ||
+    high < 0 ||
+    high > 0xffff ||
+    low < 0 ||
+    low > 0xffff
+  ) {
+    return null;
+  }
+
+  return `${(high >> 8) & 0xff}.${high & 0xff}.${(low >> 8) & 0xff}.${low & 0xff}`;
+}
+
 function isBlockedIpAddress(ip: string): boolean {
   const ipv6WithoutZone = ip.split("%", 1)[0] || ip;
-  const mappedIpv4 = parseMappedIpv4Address(ipv6WithoutZone);
+  const mappedIpv4 =
+    parseMappedIpv4Address(ipv6WithoutZone) ||
+    parseMappedIpv4HexAddress(ipv6WithoutZone);
   if (mappedIpv4) {
     return blockedIpv4List.check(mappedIpv4, "ipv4");
   }
@@ -169,6 +203,10 @@ function isBlockedIpAddress(ip: string): boolean {
   }
   return false;
 }
+
+export const __testOnly = {
+  isBlockedIpAddress,
+};
 
 async function resolveAndValidateTarget(
   hostname: string

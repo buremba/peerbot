@@ -192,11 +192,13 @@ export function createAuthState(initialState: AuthState | null): {
 }
 
 /**
- * Log credentials update instruction for the user.
+ * Log credentials update without emitting credential material.
  */
-export function logCredentialsUpdateInstruction(serialized: string): void {
+export function logCredentialsUpdateInstruction(
+  serializedLength: number
+): void {
   logger.info(
-    "WhatsApp credentials updated. To persist, update your environment:"
+    { serializedLength },
+    "WhatsApp credentials updated in memory; persist via secure secret storage (WHATSAPP_CREDENTIALS)."
   );
-  logger.info(`WHATSAPP_CREDENTIALS=${serialized}`);
 }

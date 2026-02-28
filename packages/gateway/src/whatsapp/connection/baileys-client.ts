@@ -177,7 +177,7 @@ export class BaileysClient extends EventEmitter<BaileysClientEvents> {
       if (this.authState) {
         const serialized = await this.authState.saveCreds();
         this.emit("credentialsUpdated", serialized);
-        logCredentialsUpdateInstruction(serialized);
+        logCredentialsUpdateInstruction(serialized.length);
       }
     });
 

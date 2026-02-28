@@ -13,7 +13,30 @@ export function formatMcpName(mcpId: string): string {
  * HTML templates for OAuth flow
  */
 
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"'`]/g, (char) => {
+    switch (char) {
+      case "&":
+        return "&amp;";
+      case "<":
+        return "&lt;";
+      case ">":
+        return "&gt;";
+      case '"':
+        return "&quot;";
+      case "'":
+        return "&#39;";
+      case "`":
+        return "&#96;";
+      default:
+        return char;
+    }
+  });
+}
+
 export function renderOAuthSuccessPage(mcpName: string): string {
+  const safeMcpName = escapeHtml(mcpName);
+
   return `
     <!DOCTYPE html>
     <html>
@@ -55,7 +78,7 @@ export function renderOAuthSuccessPage(mcpName: string): string {
         <div class="container">
           <div class="success-icon">✅</div>
           <h1>Connected!</h1>
-          <p>Successfully authenticated with <strong>${mcpName}</strong></p>
+          <p>Successfully authenticated with <strong>${safeMcpName}</strong></p>
           <p>You can now close this window and return to the app.</p>
         </div>
       </body>
@@ -67,6 +90,11 @@ export function renderOAuthErrorPage(
   error: string,
   description?: string
 ): string {
+  const safeError = escapeHtml(error);
+  const safeDescription = escapeHtml(
+    description || "An error occurred during authentication"
+  );
+
   return `
     <!DOCTYPE html>
     <html>
@@ -117,8 +145,8 @@ export function renderOAuthErrorPage(
         <div class="container">
           <div class="error-icon">❌</div>
           <h1>Authentication Failed</h1>
-          <p>${description || "An error occurred during authentication"}</p>
-          <div class="error-code">${error}</div>
+          <p>${safeDescription}</p>
+          <div class="error-code">${safeError}</div>
           <p style="margin-top: 2rem;">Please close this window and try again.</p>
         </div>
       </body>

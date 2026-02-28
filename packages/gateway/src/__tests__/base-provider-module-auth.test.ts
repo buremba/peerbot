@@ -3,7 +3,10 @@ import {
   type BaseProviderConfig,
   BaseProviderModule,
 } from "../auth/base-provider-module";
-import { generateSettingsToken } from "../auth/settings/token-service";
+import {
+  generateChannelSettingsToken,
+  generateSettingsToken,
+} from "../auth/settings/token-service";
 
 const TEST_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString("base64");
 if (!process.env.ENCRYPTION_KEY) {
@@ -114,6 +117,23 @@ describe("BaseProviderModule auth protection", () => {
     const { manager, upsertCalls } = createAuthProfilesManagerMock();
     const module = new TestProviderModule(manager);
     const token = generateSettingsToken("agent-2", "user-1", "slack");
+
+    const response = await module
+      .getApp()
+      .request(`/save-key?token=${encodeURIComponent(token)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agentId: "agent-1", apiKey: "sk-test" }),
+      });
+
+    expect(response.status).toBe(401);
+    expect(upsertCalls).toHaveLength(0);
+  });
+
+  test("rejects channel-scoped token for save-key requests", async () => {
+    const { manager, upsertCalls } = createAuthProfilesManagerMock();
+    const module = new TestProviderModule(manager);
+    const token = generateChannelSettingsToken("user-1", "slack", "C123");
 
     const response = await module
       .getApp()

@@ -199,8 +199,10 @@ export abstract class BaseProviderModule
     const payload = verifySettingsToken(token);
     if (!payload) return false;
 
-    // Agent-bound tokens must match exactly.
-    if (payload.agentId && payload.agentId !== agentId) {
+    // Only allow agent-bound tokens for credential mutation endpoints.
+    // Channel-scoped tokens do not identify a specific agent and must not be
+    // accepted here to avoid cross-agent credential writes/deletes.
+    if (!payload.agentId || payload.agentId !== agentId) {
       return false;
     }
 

@@ -9,12 +9,20 @@
 
 import { createLogger } from "@lobu/core";
 import { Hono } from "hono";
+import type { AgentMetadataStore } from "../../auth/agent-metadata-store";
+import {
+  type SettingsTokenPayload,
+  verifySettingsToken,
+} from "../../auth/settings/token-service";
+import type { UserAgentsStore } from "../../auth/user-agents-store";
 import type { ChannelBindingService } from "../../channels";
 
 const logger = createLogger("channel-binding-routes");
 
 export interface ChannelBindingRoutesConfig {
   channelBindingService: ChannelBindingService;
+  userAgentsStore?: UserAgentsStore;
+  agentMetadataStore?: AgentMetadataStore;
 }
 
 /**
@@ -26,12 +34,47 @@ export function createChannelBindingRoutes(
 ): Hono {
   const router = new Hono();
 
+  const verifyToken = async (
+    token: string | undefined,
+    agentId: string
+  ): Promise<SettingsTokenPayload | null> => {
+    if (!token) return null;
+    const payload = verifySettingsToken(token);
+    if (!payload) return null;
+
+    if (payload.agentId) {
+      if (payload.agentId !== agentId) return null;
+    } else if (config.userAgentsStore) {
+      const owns = await config.userAgentsStore.ownsAgent(
+        payload.platform,
+        payload.userId,
+        agentId
+      );
+      if (!owns) {
+        if (config.agentMetadataStore) {
+          const metadata = await config.agentMetadataStore.getMetadata(agentId);
+          if (!metadata?.isWorkspaceAgent) return null;
+        } else {
+          return null;
+        }
+      }
+    } else {
+      return null;
+    }
+
+    return payload;
+  };
+
   // GET /api/v1/agents/{agentId}/channels - List all bindings for an agent
   router.get("/", async (c) => {
     const agentId = c.req.param("agentId");
 
     if (!agentId) {
       return c.json({ error: "Missing agentId" }, 400);
+    }
+
+    if (!(await verifyToken(c.req.query("token"), agentId))) {
+      return c.json({ error: "Unauthorized" }, 401);
     }
 
     try {
@@ -58,6 +101,11 @@ export function createChannelBindingRoutes(
 
     if (!agentId) {
       return c.json({ error: "Missing agentId" }, 400);
+    }
+
+    const authPayload = await verifyToken(c.req.query("token"), agentId);
+    if (!authPayload) {
+      return c.json({ error: "Unauthorized" }, 401);
     }
 
     try {
@@ -100,7 +148,8 @@ export function createChannelBindingRoutes(
         agentId,
         body.platform,
         body.channelId.trim(),
-        body.teamId?.trim()
+        body.teamId?.trim(),
+        { configuredBy: authPayload.userId }
       );
 
       logger.info(
@@ -135,6 +184,10 @@ export function createChannelBindingRoutes(
 
     if (!agentId || !platform || !channelId) {
       return c.json({ error: "Missing required parameters" }, 400);
+    }
+
+    if (!(await verifyToken(c.req.query("token"), agentId))) {
+      return c.json({ error: "Unauthorized" }, 401);
     }
 
     // Validate platform format

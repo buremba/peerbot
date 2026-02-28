@@ -433,6 +433,8 @@ function setupServer(
       } = require("../routes/public/channels");
       const channelBindingRouter = createChannelBindingRoutes({
         channelBindingService,
+        userAgentsStore: coreServices.getUserAgentsStore(),
+        agentMetadataStore: coreServices.getAgentMetadataStore(),
       });
       // Mount as a sub-router under /api/v1/agents/:agentId/channels
       app.route("/api/v1/agents/:agentId/channels", channelBindingRouter);

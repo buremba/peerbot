@@ -1855,7 +1855,14 @@ ${
           try {
             ps.status = 'Starting...';
 
-            var resp = await fetch('/api/v1/auth/' + provider + '/start', { method: 'POST' });
+            var resp = await fetch('/api/v1/auth/' + provider + '/start', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                agentId: this.agentId,
+                token: this.token
+              })
+            });
             var data = await resp.json();
 
             if (!resp.ok) throw new Error(data.error || 'Failed to start auth');
@@ -1887,7 +1894,8 @@ ${
               body: JSON.stringify({
                 deviceAuthId: ps.deviceAuthId,
                 userCode: ps.userCode,
-                agentId: this.agentId
+                agentId: this.agentId,
+                token: this.token
               })
             });
             var data = await resp.json();

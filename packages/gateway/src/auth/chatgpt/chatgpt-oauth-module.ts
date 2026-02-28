@@ -1,13 +1,21 @@
 import { createLogger, type ModelOption } from "@lobu/core";
+import type { AgentMetadataStore } from "../agent-metadata-store";
 import { BaseProviderModule } from "../base-provider-module";
 import type { AgentSettingsStore } from "../settings/agent-settings-store";
 import {
   AuthProfilesManager,
   createAuthProfileLabel,
 } from "../settings/auth-profiles-manager";
+import { verifySettingsToken } from "../settings/token-service";
+import type { UserAgentsStore } from "../user-agents-store";
 import { ChatGPTDeviceCodeClient } from "./device-code-client";
 
 const logger = createLogger("chatgpt-oauth-module");
+
+interface ChatGPTOAuthModuleOptions {
+  userAgentsStore?: UserAgentsStore;
+  agentMetadataStore?: AgentMetadataStore;
+}
 
 /**
  * ChatGPT OAuth Module - Handles device code authentication for ChatGPT.
@@ -16,8 +24,13 @@ const logger = createLogger("chatgpt-oauth-module");
  */
 export class ChatGPTOAuthModule extends BaseProviderModule {
   private deviceCodeClient: ChatGPTDeviceCodeClient;
+  private userAgentsStore?: UserAgentsStore;
+  private agentMetadataStore?: AgentMetadataStore;
 
-  constructor(agentSettingsStore: AgentSettingsStore) {
+  constructor(
+    agentSettingsStore: AgentSettingsStore,
+    options: ChatGPTOAuthModuleOptions = {}
+  ) {
     const authProfilesManager = new AuthProfilesManager(agentSettingsStore);
     super(
       {
@@ -42,6 +55,8 @@ export class ChatGPTOAuthModule extends BaseProviderModule {
     // Preserve existing module name
     this.name = "chatgpt-oauth";
     this.deviceCodeClient = new ChatGPTDeviceCodeClient();
+    this.userAgentsStore = options.userAgentsStore;
+    this.agentMetadataStore = options.agentMetadataStore;
   }
 
   getCliBackendConfig() {
@@ -128,6 +143,22 @@ export class ChatGPTOAuthModule extends BaseProviderModule {
     // Start device code flow
     this.app.post("/start", async (c) => {
       try {
+        const body = (await c.req.json().catch(() => ({}))) as {
+          agentId?: string;
+          token?: string;
+        };
+        const agentId = body.agentId?.trim();
+        const token = body.token?.trim();
+
+        if (!agentId || !token) {
+          return c.json({ error: "Missing agentId or token" }, 401);
+        }
+
+        const authorized = await this.isAuthorizedForAgent(token, agentId);
+        if (!authorized) {
+          return c.json({ error: "Unauthorized" }, 401);
+        }
+
         const result = await this.deviceCodeClient.requestDeviceCode();
         return c.json({
           userCode: result.userCode,
@@ -144,14 +175,27 @@ export class ChatGPTOAuthModule extends BaseProviderModule {
     // Poll for token
     this.app.post("/poll", async (c) => {
       try {
-        const body = await c.req.json();
-        const { deviceAuthId, userCode, agentId } = body;
+        const body = (await c.req.json().catch(() => ({}))) as {
+          deviceAuthId?: string;
+          userCode?: string;
+          agentId?: string;
+          token?: string;
+        };
+        const deviceAuthId = body.deviceAuthId?.trim();
+        const userCode = body.userCode?.trim();
+        const agentId = body.agentId?.trim();
+        const token = body.token?.trim();
 
-        if (!deviceAuthId || !userCode || !agentId) {
+        if (!deviceAuthId || !userCode || !agentId || !token) {
           return c.json(
-            { error: "Missing deviceAuthId, userCode, or agentId" },
+            { error: "Missing deviceAuthId, userCode, agentId, or token" },
             400
           );
+        }
+
+        const authorized = await this.isAuthorizedForAgent(token, agentId);
+        if (!authorized) {
+          return c.json({ error: "Unauthorized" }, 401);
         }
 
         const result = await this.deviceCodeClient.pollForToken(
@@ -194,5 +238,40 @@ export class ChatGPTOAuthModule extends BaseProviderModule {
     });
 
     logger.info("ChatGPT auth routes configured");
+  }
+
+  private async isAuthorizedForAgent(
+    token: string,
+    agentId: string
+  ): Promise<boolean> {
+    const payload = verifySettingsToken(token);
+    if (!payload) {
+      return false;
+    }
+
+    if (payload.agentId) {
+      return payload.agentId === agentId;
+    }
+
+    if (!this.userAgentsStore) {
+      logger.warn("UserAgentsStore unavailable for channel-based token auth");
+      return false;
+    }
+
+    const userOwnsAgent = await this.userAgentsStore.ownsAgent(
+      payload.platform,
+      payload.userId,
+      agentId
+    );
+    if (userOwnsAgent) {
+      return true;
+    }
+
+    if (!this.agentMetadataStore) {
+      return false;
+    }
+
+    const metadata = await this.agentMetadataStore.getMetadata(agentId);
+    return metadata?.isWorkspaceAgent === true;
   }
 }

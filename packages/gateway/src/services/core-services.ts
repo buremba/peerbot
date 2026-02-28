@@ -348,7 +348,10 @@ export class CoreServices {
     );
 
     // Register ChatGPT OAuth module
-    const chatgptOAuthModule = new ChatGPTOAuthModule(this.agentSettingsStore);
+    const chatgptOAuthModule = new ChatGPTOAuthModule(this.agentSettingsStore, {
+      userAgentsStore: this.userAgentsStore,
+      agentMetadataStore: this.agentMetadataStore,
+    });
     moduleRegistry.register(chatgptOAuthModule);
     logger.info(
       `✅ ChatGPT OAuth module registered (system token: ${chatgptOAuthModule.hasSystemKey() ? "available" : "not available"})`

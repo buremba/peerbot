@@ -240,6 +240,23 @@ describe("HTTP Proxy Startup", () => {
 describe("HTTP Proxy Domain Filtering (unrestricted mode)", () => {
   const deploymentName = "domain-test-worker";
 
+  test("rejects request to loopback IP literal", async () => {
+    const token = createValidToken(deploymentName);
+    const res = await rawProxyRequest("http://127.0.0.1/", {
+      proxyAuth: makeBasicAuth(deploymentName, token),
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.body).toContain("Target IP not allowed");
+  });
+
+  test("rejects CONNECT when hostname resolves to loopback", async () => {
+    const token = createValidToken(deploymentName);
+    const res = await connectRequest("localhost", 443, {
+      proxyAuth: makeBasicAuth(deploymentName, token),
+    });
+    expect(res.statusLine).toContain("403");
+  });
+
   test("allows request to any domain in unrestricted mode", async () => {
     const token = createValidToken(deploymentName);
     const res = await rawProxyRequest("http://example.com/", {

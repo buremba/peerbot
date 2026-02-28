@@ -1,4 +1,6 @@
 import crypto from "node:crypto";
+import type { LookupAddress } from "node:dns";
+import * as dns from "node:dns/promises";
 import * as http from "node:http";
 import * as net from "node:net";
 import { URL } from "node:url";
@@ -16,6 +18,45 @@ const logger = createLogger("http-proxy");
 interface ResolvedNetworkConfig {
   allowedDomains: string[];
   deniedDomains: string[];
+}
+
+interface TargetResolutionResult {
+  ok: boolean;
+  resolvedIp?: string;
+  statusCode?: number;
+  clientMessage?: string;
+  reason?: string;
+}
+
+const blockedIpv4Ranges: ReadonlyArray<readonly [string, number]> = [
+  ["0.0.0.0", 8],
+  ["10.0.0.0", 8],
+  ["100.64.0.0", 10],
+  ["127.0.0.0", 8],
+  ["169.254.0.0", 16],
+  ["172.16.0.0", 12],
+  ["192.168.0.0", 16],
+  ["198.18.0.0", 15],
+  ["224.0.0.0", 4],
+  ["240.0.0.0", 4],
+];
+
+const blockedIpv6Ranges: ReadonlyArray<readonly [string, number]> = [
+  ["fc00::", 7],
+  ["fe80::", 10],
+  ["ff00::", 8],
+];
+
+const blockedIpv4List = new net.BlockList();
+for (const [address, prefix] of blockedIpv4Ranges) {
+  blockedIpv4List.addSubnet(address, prefix, "ipv4");
+}
+
+const blockedIpv6List = new net.BlockList();
+blockedIpv6List.addAddress("::", "ipv6");
+blockedIpv6List.addAddress("::1", "ipv6");
+for (const [address, prefix] of blockedIpv6Ranges) {
+  blockedIpv6List.addSubnet(address, prefix, "ipv6");
 }
 
 // Cache for global defaults (used when no deployment identified)
@@ -100,6 +141,86 @@ async function checkDomainAccess(
 interface ProxyCredentials {
   deploymentName: string;
   token: string;
+}
+
+function parseMappedIpv4Address(ip: string): string | null {
+  const normalized = ip.toLowerCase();
+  if (!normalized.startsWith("::ffff:")) {
+    return null;
+  }
+
+  const mapped = normalized.substring("::ffff:".length);
+  return net.isIP(mapped) === 4 ? mapped : null;
+}
+
+function isBlockedIpAddress(ip: string): boolean {
+  const ipv6WithoutZone = ip.split("%", 1)[0] || ip;
+  const mappedIpv4 = parseMappedIpv4Address(ipv6WithoutZone);
+  if (mappedIpv4) {
+    return blockedIpv4List.check(mappedIpv4, "ipv4");
+  }
+
+  const family = net.isIP(ipv6WithoutZone);
+  if (family === 4) {
+    return blockedIpv4List.check(ipv6WithoutZone, "ipv4");
+  }
+  if (family === 6) {
+    return blockedIpv6List.check(ipv6WithoutZone, "ipv6");
+  }
+  return false;
+}
+
+async function resolveAndValidateTarget(
+  hostname: string
+): Promise<TargetResolutionResult> {
+  const ipFamily = net.isIP(hostname);
+  if (ipFamily !== 0) {
+    if (isBlockedIpAddress(hostname)) {
+      return {
+        ok: false,
+        statusCode: 403,
+        clientMessage: `403 Forbidden - Target IP not allowed: ${hostname}`,
+        reason: `target is local/private IP (${hostname})`,
+      };
+    }
+    return { ok: true, resolvedIp: hostname };
+  }
+
+  let addresses: LookupAddress[];
+  try {
+    addresses = await dns.lookup(hostname, { all: true, verbatim: true });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "unknown error";
+    return {
+      ok: false,
+      statusCode: 502,
+      clientMessage: `Bad Gateway: Could not resolve target host ${hostname}`,
+      reason: `DNS lookup failed for ${hostname}: ${message}`,
+    };
+  }
+
+  if (addresses.length === 0) {
+    return {
+      ok: false,
+      statusCode: 502,
+      clientMessage: `Bad Gateway: No DNS results for ${hostname}`,
+      reason: `DNS lookup returned no addresses for ${hostname}`,
+    };
+  }
+
+  const blockedAddress = addresses.find((addr) =>
+    isBlockedIpAddress(addr.address)
+  );
+  if (blockedAddress) {
+    return {
+      ok: false,
+      statusCode: 403,
+      clientMessage: `403 Forbidden - Target resolves to local/private IP: ${hostname}`,
+      reason: `${hostname} resolved to blocked IP ${blockedAddress.address}`,
+    };
+  }
+
+  return { ok: true, resolvedIp: addresses[0]?.address };
 }
 
 /**
@@ -303,7 +424,32 @@ async function handleConnect(
     return;
   }
 
-  logger.debug(`Allowing CONNECT to ${hostname}`);
+  const targetResolution = await resolveAndValidateTarget(hostname);
+  if (!targetResolution.ok) {
+    logger.warn(
+      `Blocked CONNECT to ${hostname} (deployment: ${deploymentName}) - ${targetResolution.reason}`
+    );
+    try {
+      clientSocket.write(
+        `HTTP/1.1 ${targetResolution.statusCode} ${
+          targetResolution.statusCode === 403 ? "Forbidden" : "Bad Gateway"
+        }\r\nContent-Type: text/plain\r\n\r\n${targetResolution.clientMessage}\r\n`
+      );
+      clientSocket.end();
+    } catch {
+      // Client may have already disconnected
+    }
+    return;
+  }
+
+  const resolvedIp = targetResolution.resolvedIp;
+  if (!resolvedIp) {
+    clientSocket.write("HTTP/1.1 500 Internal Server Error\r\n\r\n");
+    clientSocket.end();
+    return;
+  }
+
+  logger.debug(`Allowing CONNECT to ${hostname} via ${resolvedIp}`);
 
   // Parse host and port
   const [host, portStr] = url.split(":");
@@ -317,7 +463,7 @@ async function handleConnect(
   }
 
   // Establish connection to target
-  const targetSocket = net.connect(port, host, () => {
+  const targetSocket = net.connect(port, resolvedIp, () => {
     // Send success response to client
     clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
 
@@ -421,7 +567,28 @@ async function handleProxyRequest(
     return;
   }
 
-  logger.debug(`Proxying ${req.method} ${hostname}${parsedUrl.pathname}`);
+  const targetResolution = await resolveAndValidateTarget(hostname);
+  if (!targetResolution.ok) {
+    logger.warn(
+      `Blocked request to ${hostname} (deployment: ${deploymentName}) - ${targetResolution.reason}`
+    );
+    res.writeHead(targetResolution.statusCode ?? 502, {
+      "Content-Type": "text/plain",
+    });
+    res.end(`${targetResolution.clientMessage}\n`);
+    return;
+  }
+
+  const resolvedIp = targetResolution.resolvedIp;
+  if (!resolvedIp) {
+    res.writeHead(500, { "Content-Type": "text/plain" });
+    res.end("Internal proxy error\n");
+    return;
+  }
+
+  logger.debug(
+    `Proxying ${req.method} ${hostname}${parsedUrl.pathname} via ${resolvedIp}`
+  );
 
   // Remove proxy-authorization header before forwarding
   const forwardHeaders = { ...req.headers };
@@ -429,7 +596,7 @@ async function handleProxyRequest(
 
   // Forward the request
   const options: http.RequestOptions = {
-    hostname: parsedUrl.hostname,
+    hostname: resolvedIp,
     port: parsedUrl.port || (parsedUrl.protocol === "https:" ? 443 : 80),
     path: parsedUrl.pathname + parsedUrl.search,
     method: req.method,

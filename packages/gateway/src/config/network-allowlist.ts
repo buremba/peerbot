@@ -1,4 +1,4 @@
-import { createLogger, type NetworkConfig } from "@lobu/core";
+import { createLogger } from "@lobu/core";
 
 const logger = createLogger("network-allowlist");
 
@@ -68,75 +68,4 @@ export function loadDisallowedDomains(): string[] {
   }
 
   return domains;
-}
-
-// Cache global defaults to avoid repeated parsing
-let cachedGlobalAllowed: string[] | null = null;
-let cachedGlobalDenied: string[] | null = null;
-
-/**
- * Get cached global defaults (lazy initialization)
- */
-function getGlobalDefaults(): {
-  allowedDomains: string[];
-  deniedDomains: string[];
-} {
-  if (cachedGlobalAllowed === null) {
-    cachedGlobalAllowed = loadAllowedDomains();
-  }
-  if (cachedGlobalDenied === null) {
-    cachedGlobalDenied = loadDisallowedDomains();
-  }
-  return {
-    allowedDomains: cachedGlobalAllowed,
-    deniedDomains: cachedGlobalDenied,
-  };
-}
-
-/**
- * Resolve network configuration by merging per-agent config with global defaults.
- *
- * If agentConfig is provided and has explicit values, use them.
- * Otherwise, fall back to global defaults from environment variables.
- *
- * @param agentConfig - Optional per-agent network configuration
- * @returns Resolved network configuration with both allowedDomains and deniedDomains
- */
-export function resolveNetworkConfig(agentConfig?: NetworkConfig): {
-  allowedDomains: string[];
-  deniedDomains: string[];
-} {
-  const globalDefaults = getGlobalDefaults();
-
-  // If no agent config provided, use global defaults
-  if (!agentConfig) {
-    return {
-      allowedDomains: globalDefaults.allowedDomains,
-      deniedDomains: globalDefaults.deniedDomains,
-    };
-  }
-
-  // Per-agent config is additive: global domains are always included,
-  // per-agent domains extend them. This ensures operator-level infra domains
-  // (API providers, npm registry, nix cache) are always accessible.
-  return {
-    allowedDomains:
-      agentConfig.allowedDomains !== undefined
-        ? [
-            ...new Set([
-              ...globalDefaults.allowedDomains,
-              ...agentConfig.allowedDomains,
-            ]),
-          ]
-        : globalDefaults.allowedDomains,
-    deniedDomains:
-      agentConfig.deniedDomains !== undefined
-        ? [
-            ...new Set([
-              ...globalDefaults.deniedDomains,
-              ...agentConfig.deniedDomains,
-            ]),
-          ]
-        : globalDefaults.deniedDomains,
-  };
 }

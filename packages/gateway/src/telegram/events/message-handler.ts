@@ -12,6 +12,10 @@ import type { Bot } from "grammy";
 import type { AdminStatusCache } from "../../auth/admin-status-cache";
 import type { AgentMetadataStore } from "../../auth/agent-metadata-store";
 import type { AgentSettingsStore } from "../../auth/settings";
+import {
+  buildSettingsUrl,
+  generateChannelSettingsToken,
+} from "../../auth/settings/token-service";
 import type { UserAgentsStore } from "../../auth/user-agents-store";
 import type { ChannelBindingService } from "../../channels";
 import type { CommandDispatcher } from "../../commands/command-dispatcher";
@@ -20,10 +24,6 @@ import type {
   MessagePayload,
   QueueProducer,
 } from "../../infrastructure/queue/queue-producer";
-import {
-  buildSettingsUrl,
-  generateChannelSettingsToken,
-} from "../../auth/settings/token-service";
 import type { ISessionManager } from "../../session";
 import { resolveSpace } from "../../spaces";
 import type { TelegramConfig } from "../config";
@@ -124,9 +124,6 @@ export class TelegramMessageHandler {
     }
     if (settings.networkConfig) {
       mergedOptions.networkConfig = settings.networkConfig;
-    }
-    if (settings.gitConfig) {
-      mergedOptions.gitConfig = settings.gitConfig;
     }
     if (settings.nixConfig) {
       mergedOptions.nixConfig = settings.nixConfig;
@@ -440,13 +437,8 @@ export class TelegramMessageHandler {
 
     // Fetch agent settings and merge
     const agentOptions = await this.getAgentOptionsWithSettings(agentId);
-    const {
-      networkConfig,
-      gitConfig,
-      nixConfig,
-      mcpServers,
-      ...remainingOptions
-    } = agentOptions;
+    const { networkConfig, nixConfig, mcpServers, ...remainingOptions } =
+      agentOptions;
 
     const payload: MessagePayload = {
       platform: "telegram",
@@ -476,7 +468,6 @@ export class TelegramMessageHandler {
       },
       agentOptions: remainingOptions,
       networkConfig,
-      gitConfig,
       nixConfig,
       mcpConfig: mcpServers ? { mcpServers } : undefined,
     };

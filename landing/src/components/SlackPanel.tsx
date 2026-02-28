@@ -1,6 +1,6 @@
+import { AnimatePresence, motion } from "framer-motion";
 import type React from "react";
-import { useEffect, useState, useRef } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import { useEffect, useRef, useState } from "react";
 import { colors } from "../styles";
 import type { FlowStep } from "../types";
 
@@ -75,7 +75,6 @@ export const SlackPanel: React.FC<SlackPanelProps> = ({
     }
   }, [currentStepIndex, steps]);
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: scrollRef is a stable ref and does not need to be a dependency
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;

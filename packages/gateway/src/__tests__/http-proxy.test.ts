@@ -1,10 +1,9 @@
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import * as crypto from "node:crypto";
 import * as http from "node:http";
 import * as net from "node:net";
-import * as crypto from "node:crypto";
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { generateWorkerToken } from "@lobu/core";
 import { startHttpProxy, stopHttpProxy } from "../proxy/http-proxy";
-import { networkConfigStore } from "../proxy/network-config-store";
 
 // Generate a stable 32-byte encryption key for tests
 const TEST_ENCRYPTION_KEY = crypto.randomBytes(32).toString("base64");
@@ -235,39 +234,13 @@ describe("HTTP Proxy Startup", () => {
 });
 
 // ─── Domain filtering tests ──────────────────────────────────────────────────
+// Global config is WORKER_ALLOWED_DOMAINS=* (unrestricted), so all domains pass.
+// Domain restriction via per-agent grants requires Redis and is tested separately.
 
-describe("HTTP Proxy Domain Filtering", () => {
+describe("HTTP Proxy Domain Filtering (unrestricted mode)", () => {
   const deploymentName = "domain-test-worker";
 
-  beforeAll(async () => {
-    // Set per-deployment config via the store so we don't fight the global cache
-    await networkConfigStore.set(deploymentName, {
-      allowedDomains: ["example.com"],
-    });
-  });
-
-  afterAll(() => {
-    networkConfigStore.clear();
-  });
-
-  test("blocks request to non-allowed domain (403)", async () => {
-    const token = createValidToken(deploymentName);
-    const res = await rawProxyRequest("http://evil.com/steal", {
-      proxyAuth: makeBasicAuth(deploymentName, token),
-    });
-    expect(res.statusCode).toBe(403);
-    expect(res.body).toContain("evil.com");
-  });
-
-  test("blocks CONNECT to non-allowed domain (403)", async () => {
-    const token = createValidToken(deploymentName);
-    const res = await connectRequest("evil.com", 443, {
-      proxyAuth: makeBasicAuth(deploymentName, token),
-    });
-    expect(res.statusLine).toContain("403");
-  });
-
-  test("allows request to allowed domain", async () => {
+  test("allows request to any domain in unrestricted mode", async () => {
     const token = createValidToken(deploymentName);
     const res = await rawProxyRequest("http://example.com/", {
       proxyAuth: makeBasicAuth(deploymentName, token),
@@ -277,7 +250,7 @@ describe("HTTP Proxy Domain Filtering", () => {
     expect(res.statusCode).not.toBe(407);
   });
 
-  test("allows CONNECT to allowed domain", async () => {
+  test("allows CONNECT to any domain in unrestricted mode", async () => {
     const token = createValidToken(deploymentName);
     const res = await connectRequest("example.com", 443, {
       proxyAuth: makeBasicAuth(deploymentName, token),

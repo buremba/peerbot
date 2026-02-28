@@ -319,9 +319,6 @@ function setupServer(
     // Get shared dependencies
     const agentSettingsStore = coreServices.getAgentSettingsStore();
     const claudeOAuthStateStore = coreServices.getClaudeOAuthStateStore();
-    const gitFilesystemModule = coreServices.getGitFilesystemModule();
-    const githubAuth = gitFilesystemModule?.getGitHubAuth() || undefined;
-    const githubAppInstallUrl = process.env.GITHUB_APP_INSTALL_URL;
     const scheduledWakeupService = coreServices.getScheduledWakeupService();
 
     // Build provider stores and overrides dynamically from registered modules
@@ -343,9 +340,6 @@ function setupServer(
         userAgentsStore: coreServices.getUserAgentsStore(),
         agentMetadataStore: coreServices.getAgentMetadataStore(),
         channelBindingService: coreServices.getChannelBindingService(),
-        githubAuth,
-        githubAppInstallUrl,
-        githubOAuthClientId: process.env.GITHUB_CLIENT_ID,
       });
       app.route("", settingsPageRouter);
       logger.info("Settings HTML page enabled at :8080/settings");
@@ -378,12 +372,10 @@ function setupServer(
         providerConnectedOverrides,
         providerCatalogService: coreServices.getProviderCatalogService(),
         authProfilesManager: coreServices.getAuthProfilesManager(),
-        githubAuth,
-        githubAppInstallUrl,
-        githubOAuthClientId: process.env.GITHUB_CLIENT_ID,
         connectionManager: coreServices
           .getWorkerGateway()
           ?.getConnectionManager(),
+        grantStore: coreServices.getGrantStore(),
       });
       app.route("/api/v1/agents/:agentId/config", agentConfigRouter);
       logger.info(
@@ -407,14 +399,6 @@ function setupServer(
       );
     }
 
-    // GitHub utility routes (/api/v1/github)
-    if (githubAuth) {
-      const { createGitHubRoutes } = require("../routes/public/github");
-      const githubRouter = createGitHubRoutes({ githubAuth });
-      app.route("/api/v1/github", githubRouter);
-      logger.info("GitHub routes enabled at :8080/api/v1/github/*");
-    }
-
     // Integrations routes (unified skills + MCP registry)
     {
       const {
@@ -436,9 +420,6 @@ function setupServer(
           Object.keys(providerStores).length > 0 ? providerStores : undefined,
         oauthClients: { claude: claudeOAuthClient },
         oauthStateStore: claudeOAuthStateStore,
-        githubOAuthClientId: process.env.GITHUB_CLIENT_ID,
-        githubOAuthClientSecret: process.env.GITHUB_CLIENT_SECRET,
-        publicGatewayUrl: process.env.PUBLIC_GATEWAY_URL,
       });
       app.route("/api/v1/oauth", oauthRouter);
       logger.info("OAuth routes enabled at :8080/api/v1/oauth/*");
@@ -942,10 +923,19 @@ export async function startGateway(
   // Get core services
   const coreServices = gateway.getCoreServices();
 
+  // Wire grant store to HTTP proxy for domain grant checks
+  const grantStore = coreServices.getGrantStore();
+  if (grantStore) {
+    const { setProxyGrantStore } = await import("../proxy/http-proxy");
+    setProxyGrantStore(grantStore);
+    logger.info("Grant store connected to HTTP proxy");
+  }
+
   // Inject core services into orchestrator (provider modules carry their own credential stores)
   await orchestrator.injectCoreServices(
     coreServices.getQueue().getRedisClient(),
-    coreServices.getProviderCatalogService()
+    coreServices.getProviderCatalogService(),
+    coreServices.getGrantStore() ?? undefined
   );
   logger.info("Orchestrator configured with core services");
 

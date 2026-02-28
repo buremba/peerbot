@@ -44,7 +44,7 @@ export function registerBuiltInCommands(
       const settingsUrl = buildSettingsUrl(token);
       const ttlLabel = formatSettingsTokenTtl();
       await ctx.reply(
-        `Here's your settings link (valid for ${ttlLabel}):\n${settingsUrl}\n\nUse this page to configure your agent's model, network access, git repository, and more.`
+        `Here's your settings link (valid for ${ttlLabel}):\n${settingsUrl}\n\nUse this page to configure your agent's model, network access, and more.`
       );
     },
   });
@@ -86,10 +86,6 @@ export function registerBuiltInCommands(
         `MCP servers: ${mcpCount}`,
         `Skills: ${skillsCount}`,
       ];
-
-      if (settings?.gitConfig?.repoUrl) {
-        parts.push(`Git: ${settings.gitConfig.repoUrl}`);
-      }
 
       await ctx.reply(parts.join("\n"));
     },

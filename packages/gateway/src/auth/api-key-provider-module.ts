@@ -1,7 +1,7 @@
 import type { ModelOption } from "@lobu/core";
+import { BaseProviderModule } from "./base-provider-module";
 import type { AgentSettingsStore } from "./settings/agent-settings-store";
 import { AuthProfilesManager } from "./settings/auth-profiles-manager";
-import { BaseProviderModule } from "./base-provider-module";
 
 export interface ApiKeyProviderConfig {
   providerId: string;

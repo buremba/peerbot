@@ -16,7 +16,7 @@ const logger = createLogger("telegram-auth-adapter");
 
 /**
  * Telegram-specific authentication adapter.
- * Sends a settings link where users can configure Claude auth, MCP, network, git, etc.
+ * Sends a settings link where users can configure Claude auth, MCP, network, etc.
  */
 export class TelegramAuthAdapter implements PlatformAuthAdapter {
   constructor(

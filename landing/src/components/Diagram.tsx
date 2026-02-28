@@ -1,10 +1,10 @@
-import type React from "react";
 import { AnimatePresence } from "framer-motion";
-import { NODES, CONNECTIONS } from "../nodes";
+import type React from "react";
+import { CONNECTIONS, NODES } from "../nodes";
 import type { FlowStep, PromptOption } from "../types";
-import { DiagramNode } from "./DiagramNode";
-import { ConnectionLine } from "./ConnectionLine";
 import { AnimatedPacket } from "./AnimatedPacket";
+import { ConnectionLine } from "./ConnectionLine";
+import { DiagramNode } from "./DiagramNode";
 
 interface DiagramProps {
   currentStep: FlowStep;
@@ -53,7 +53,6 @@ export const Diagram: React.FC<DiagramProps> = ({ currentStep, prompt }) => {
     >
       {/* Defs for gradients */}
       <defs>
-        {/* biome-ignore lint/correctness/useUniqueElementIds: SVG gradient ID is scoped within this component's SVG element */}
         <linearGradient id="diagram-lineGrad" x1="0%" y1="0%" x2="100%" y2="0%">
           <stop offset="0%" stopColor="rgba(74, 158, 255, 0.1)" />
           <stop offset="50%" stopColor="rgba(74, 158, 255, 0.3)" />

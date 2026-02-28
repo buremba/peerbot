@@ -19,10 +19,6 @@ secrets:
   claudeCodeOAuthToken: ""  # Required: Claude Code OAuth token
   whatsappCredentials: ""  # Optional: Base64-encoded WhatsApp credentials JSON
   telegramBotToken: ""  # Optional: Telegram bot token (enables Telegram when set)
-  # GitHub App authentication for git workspace support
-  githubAppId: ""  # Optional: GitHub App ID for installation tokens
-  githubAppPrivateKey: ""  # Optional: GitHub App private key (PEM format)
-  githubPersonalAccessToken: ""  # Optional: Global PAT (alternative to GitHub App)
 
 # Bitnami Sealed Secrets - for production use with Git-stored encrypted secrets
 # See templates/sealed-secrets.yaml for setup instructions
@@ -124,18 +120,6 @@ claude:
 # Note: K3s containerd v2 format requires manual setup - see docs/gvisor-setup.md
 gvisor:
   install: false  # Disabled - requires manual containerd configuration for K3s
-
-# Git cache configuration for shared repository caching
-# Gateway maintains bare repo cache, workers use --reference clones for efficiency
-gitCache:
-  enabled: false  # Enable for git workspace support
-  # Persistent volume for gateway to store cached bare repos
-  persistence:
-    enabled: true
-    size: "10Gi"
-    storageClass: ""  # Use default storage class
-    # Mount path for cache (default: /var/cache/lobu/git)
-    mountPath: "/var/cache/lobu/git"
 
 # Disable static worker deployment - workers are created dynamically by dispatcher
 worker:

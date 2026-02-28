@@ -299,21 +299,15 @@ export class WorkerGateway {
         baseUrl
       );
 
-      const wsFileCount = [
-        contextData.workspaceFiles.identityMd,
-        contextData.workspaceFiles.soulMd,
-        contextData.workspaceFiles.userMd,
-      ].filter(Boolean).length;
       logger.info(
-        `Session context for ${userId}: ${Object.keys(mcpConfig.mcpServers || {}).length} MCPs, ${contextData.platformInstructions.length} chars platform instructions, ${contextData.networkInstructions.length} chars network instructions, ${wsFileCount} workspace files, ${contextData.enabledSkills.length} enabled skills, ${contextData.skillsInstructions.length} chars skills instructions, ${contextData.mcpStatus.length} MCP status entries, ${Object.keys(mcpTools).length} MCP tool lists, provider: ${providerConfig.defaultProvider || "none"}`
+        `Session context for ${userId}: ${Object.keys(mcpConfig.mcpServers || {}).length} MCPs, ${contextData.agentInstructions.length} chars agent instructions, ${contextData.platformInstructions.length} chars platform instructions, ${contextData.networkInstructions.length} chars network instructions, ${contextData.skillsInstructions.length} chars skills instructions, ${contextData.mcpStatus.length} MCP status entries, ${Object.keys(mcpTools).length} MCP tool lists, provider: ${providerConfig.defaultProvider || "none"}`
       );
 
       return c.json({
         mcpConfig,
+        agentInstructions: contextData.agentInstructions,
         platformInstructions: contextData.platformInstructions,
         networkInstructions: contextData.networkInstructions,
-        workspaceFiles: contextData.workspaceFiles,
-        enabledSkills: contextData.enabledSkills,
         skillsInstructions: contextData.skillsInstructions,
         mcpStatus: contextData.mcpStatus,
         mcpTools,

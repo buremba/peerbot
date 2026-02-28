@@ -455,12 +455,11 @@ export class DockerDeploymentManager extends BaseDeploymentManager {
           // In host mode: uses plain network name (WORKER_NETWORK env var)
           NetworkMode:
             process.env.WORKER_NETWORK || `${composeProjectName}_lobu-internal`,
-          // Linux support: add host.docker.internal mapping
-          // On macOS/Windows this is automatic, on Linux we need ExtraHosts
-          ...(process.platform === "linux" &&
-            !this.isRunningInContainer() && {
-              ExtraHosts: ["host.docker.internal:host-gateway"],
-            }),
+          // Add host.docker.internal mapping when gateway runs on host
+          // Required on Linux, and needed on macOS/Windows when using internal networks
+          ...(!this.isRunningInContainer() && {
+            ExtraHosts: ["host.docker.internal:host-gateway"],
+          }),
           // Security: Drop all capabilities and only add what's needed
           CapDrop: ["ALL"],
           CapAdd: process.env.WORKER_CAPABILITIES
@@ -521,6 +520,21 @@ export class DockerDeploymentManager extends BaseDeploymentManager {
           );
         }
         throw startError;
+      }
+
+      // In host mode, also connect the worker to the public network so it can
+      // reach the host gateway via host.docker.internal (internal network blocks host access)
+      if (!this.isRunningInContainer()) {
+        try {
+          const publicNetwork = this.docker.getNetwork(
+            `${composeProjectName}_lobu-public`
+          );
+          await publicNetwork.connect({ Container: container.id });
+        } catch (netErr) {
+          logger.warn(
+            `Could not connect ${deploymentName} to public network: ${netErr instanceof Error ? netErr.message : String(netErr)}`
+          );
+        }
       }
 
       logger.info(`✅ Created and started Docker container: ${deploymentName}`);

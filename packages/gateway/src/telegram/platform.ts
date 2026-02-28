@@ -2,13 +2,13 @@
  * Telegram platform adapter implementing PlatformAdapter interface.
  */
 
+import { Readable } from "node:stream";
 import {
   type CommandRegistry,
   type AgentOptions as CoreAgentOptions,
   createLogger,
   type UserSuggestion,
 } from "@lobu/core";
-import { Readable } from "node:stream";
 import { Bot } from "grammy";
 import type { Hono } from "hono";
 import { platformAuthRegistry } from "../auth/platform-auth";

@@ -2,6 +2,8 @@ import { createLogger, verifyWorkerToken } from "@lobu/core";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import type { IMessageQueue } from "../../infrastructure/queue";
+import { requiresToolApproval } from "../../permissions/approval-policy";
+import type { GrantStore } from "../../permissions/grant-store";
 import { GenericOAuth2Client } from "../oauth/generic-client";
 import type { McpConfigService } from "./config-service";
 import type { McpCredentialStore } from "./credential-store";
@@ -38,7 +40,8 @@ export class McpProxy {
     private readonly credentialStore: McpCredentialStore,
     private readonly inputStore: McpInputStore,
     queue: IMessageQueue,
-    toolCache?: McpToolCache
+    toolCache?: McpToolCache,
+    private readonly grantStore?: GrantStore
   ) {
     this.redisClient = queue.getRedisClient();
     this.toolCache = toolCache;
@@ -212,6 +215,43 @@ export class McpProxy {
     const resolved = await this.resolveMcpServer(mcpId, auth.tokenData);
     if (!resolved) {
       return c.json({ error: `MCP server '${mcpId}' not found` }, 404);
+    }
+
+    // Check tool approval based on annotations and grants
+    if (this.grantStore) {
+      const annotations = await this.getToolAnnotations(
+        mcpId,
+        toolName,
+        resolved.agentId,
+        auth.tokenData
+      );
+      if (requiresToolApproval(annotations)) {
+        const pattern = `/mcp/${mcpId}/tools/${toolName}`;
+        const hasGrant = await this.grantStore.hasGrant(
+          resolved.agentId,
+          pattern
+        );
+        if (!hasGrant) {
+          logger.info("Tool call blocked: requires approval", {
+            agentId: resolved.agentId,
+            mcpId,
+            toolName,
+            pattern,
+          });
+          return c.json(
+            {
+              content: [
+                {
+                  type: "text",
+                  text: `Tool call requires approval. Grant access via settings page for: ${mcpId} → ${toolName}`,
+                },
+              ],
+              isError: true,
+            },
+            403
+          );
+        }
+      }
     }
 
     let toolArguments: Record<string, unknown> = {};
@@ -812,6 +852,31 @@ export class McpProxy {
     } catch {
       return "";
     }
+  }
+
+  /**
+   * Look up tool annotations from the cache.
+   * Falls back to fetching tools if not cached.
+   */
+  private async getToolAnnotations(
+    mcpId: string,
+    toolName: string,
+    agentId: string,
+    tokenData: any
+  ): Promise<McpTool["annotations"] | undefined> {
+    // Check cache first
+    let tools: McpTool[] | null = null;
+    if (this.toolCache) {
+      tools = await this.toolCache.get(mcpId, agentId);
+    }
+
+    // Fetch if not cached
+    if (!tools) {
+      tools = await this.fetchToolsForMcp(mcpId, agentId, tokenData);
+    }
+
+    const tool = tools.find((t) => t.name === toolName);
+    return tool?.annotations;
   }
 
   private async getSession(key: string): Promise<string | null> {

@@ -594,7 +594,7 @@ export async function getSettingsLink(
       description?: string;
     }>;
     prefillNixPackages?: string[];
-    prefillAllowedDomains?: string[];
+    prefillGrants?: string[];
     prefillMcpServers?: Array<{
       id: string;
       name?: string;
@@ -624,7 +624,7 @@ export async function getSettingsLink(
           message: args.message,
           prefillEnvVars: args.prefillEnvVars,
           prefillNixPackages: args.prefillNixPackages,
-          prefillAllowedDomains: args.prefillAllowedDomains,
+          prefillGrants: args.prefillGrants,
           prefillSkills: args.prefillSkills,
           prefillMcpServers: args.prefillMcpServers,
         }),

@@ -57,7 +57,6 @@ const AgentOptionsSchema = z
     timeoutMinutes: z.union([z.number(), z.string()]).optional(),
     // Additional settings passed through from gateway
     networkConfig: z.any().optional(),
-    gitConfig: z.any().optional(),
     envVars: z.any().optional(),
   })
   .passthrough();

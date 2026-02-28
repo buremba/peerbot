@@ -34,12 +34,11 @@ import {
   type RedisQueueConfig,
 } from "../infrastructure/queue";
 import { InteractionService } from "../interactions";
-import { GitFilesystemModule } from "../modules/git-filesystem";
 import {
   ScheduledWakeupService,
   setScheduledWakeupService,
 } from "../orchestration/scheduled-wakeup";
-import { networkConfigStore } from "../proxy/network-config-store";
+import { GrantStore } from "../permissions/grant-store";
 import { SecretProxy } from "../proxy/secret-proxy";
 import { TokenRefreshJob } from "../proxy/token-refresh-job";
 import { InstructionService } from "./instruction-service";
@@ -92,6 +91,11 @@ export class CoreServices {
   private mcpProxy?: McpProxy;
 
   // ============================================================================
+  // Permissions
+  // ============================================================================
+  private grantStore?: GrantStore;
+
+  // ============================================================================
   // OAuth Modules
   // ============================================================================
   private mcpOAuthModule?: McpOAuthModule;
@@ -120,11 +124,6 @@ export class CoreServices {
   // Command Registry
   // ============================================================================
   private commandRegistry?: CommandRegistry;
-
-  // ============================================================================
-  // Modules
-  // ============================================================================
-  private gitFilesystemModule?: GitFilesystemModule;
 
   // ============================================================================
   // Scheduled Wakeup Service
@@ -247,8 +246,11 @@ export class CoreServices {
 
     // Initialize per-deployment config stores (Redis-backed)
     await mcpConfigStore.initialize(redisClient);
-    await networkConfigStore.initialize(redisClient);
-    logger.info("✅ MCP/network config stores initialized");
+    logger.info("✅ MCP config store initialized");
+
+    // Initialize grant store for unified permissions
+    this.grantStore = new GrantStore(redisClient);
+    logger.info("✅ Grant store initialized");
 
     // Initialize agent configuration stores
     this.agentSettingsStore = new AgentSettingsStore(redisClient);
@@ -500,7 +502,8 @@ export class CoreServices {
       mcpCredentialStore,
       mcpInputStore,
       this.queue,
-      mcpToolCache
+      mcpToolCache,
+      this.grantStore
     );
     logger.info("MCP proxy initialized");
 
@@ -538,11 +541,6 @@ export class CoreServices {
     );
     moduleRegistry.register(this.mcpOAuthModule);
     logger.info("MCP OAuth module registered");
-
-    // Register Git Filesystem module
-    this.gitFilesystemModule = new GitFilesystemModule();
-    moduleRegistry.register(this.gitFilesystemModule);
-    logger.info("Git Filesystem module registered");
 
     // Discover and initialize all available modules
     await moduleRegistry.registerAvailableModules();
@@ -665,10 +663,6 @@ export class CoreServices {
     return this.channelBindingService;
   }
 
-  getGitFilesystemModule(): GitFilesystemModule | undefined {
-    return this.gitFilesystemModule;
-  }
-
   getScheduledWakeupService(): ScheduledWakeupService | undefined {
     return this.scheduledWakeupService;
   }
@@ -709,5 +703,9 @@ export class CoreServices {
 
   getAuthProfilesManager(): AuthProfilesManager | undefined {
     return this.authProfilesManager;
+  }
+
+  getGrantStore(): GrantStore | undefined {
+    return this.grantStore;
   }
 }

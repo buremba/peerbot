@@ -1,9 +1,9 @@
 import type React from "react";
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Diagram } from "./components/Diagram";
+import { PromptSwitcher } from "./components/PromptSwitcher";
 import { SlackPanel } from "./components/SlackPanel";
 import { StepIndicator } from "./components/StepIndicator";
-import { PromptSwitcher } from "./components/PromptSwitcher";
 import { buildSteps, PROMPT_OPTIONS } from "./steps";
 import { colors, layout } from "./styles";
 

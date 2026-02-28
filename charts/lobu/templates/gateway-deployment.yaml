@@ -222,34 +222,6 @@ spec:
               value: "http://{{ .Release.Name }}-tempo:4318/v1/traces"
             {{- end }}
 
-            # GitHub App authentication for git workspace support
-            {{- if .Values.gitCache.enabled }}
-            - name: GIT_CACHE_DIR
-              value: "{{ .Values.gitCache.persistence.mountPath }}"
-            {{- if .Values.secrets.githubAppId }}
-            - name: GITHUB_APP_ID
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "lobu.fullname" . }}-secrets
-                  key: github-app-id
-                  optional: true
-            - name: GITHUB_APP_PRIVATE_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "lobu.fullname" . }}-secrets
-                  key: github-app-private-key
-                  optional: true
-            {{- end }}
-            {{- if .Values.secrets.githubPersonalAccessToken }}
-            - name: GITHUB_PERSONAL_ACCESS_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "lobu.fullname" . }}-secrets
-                  key: github-personal-access-token
-                  optional: true
-            {{- end }}
-            {{- end }}
-
             # Claude configuration
             - name: AGENT_DEFAULT_MODEL
               value: "{{ .Values.claude.model }}"
@@ -311,10 +283,6 @@ spec:
               mountPath: /etc/whatsapp
               readOnly: true
             {{- end }}
-            {{- if .Values.gitCache.enabled }}
-            - name: git-cache
-              mountPath: {{ .Values.gitCache.persistence.mountPath }}
-            {{- end }}
       volumes:
         # Tmpfs for temporary files (in-memory)
         - name: tmp
@@ -326,15 +294,6 @@ spec:
           secret:
             secretName: {{ include "lobu.fullname" . }}-whatsapp
             optional: true
-        {{- end }}
-        {{- if .Values.gitCache.enabled }}
-        - name: git-cache
-          {{- if .Values.gitCache.persistence.enabled }}
-          persistentVolumeClaim:
-            claimName: {{ include "lobu.fullname" . }}-git-cache
-          {{- else }}
-          emptyDir: {}
-          {{- end }}
         {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:

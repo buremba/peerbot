@@ -145,24 +145,6 @@ export interface NetworkConfig {
 }
 
 /**
- * Git repository configuration for agent workspace initialization.
- * Allows agents to work within a cloned git repository.
- *
- * Authentication priority:
- * 1. GitHub App (if GITHUB_APP_ID configured)
- * 2. Global PAT (if GITHUB_PERSONAL_ACCESS_TOKEN configured)
- * 3. No auth (public repos only)
- */
-export interface GitConfig {
-  /** Repository URL (e.g., https://github.com/owner/repo) */
-  repoUrl: string;
-  /** Branch to checkout (default: repo's default branch) */
-  branch?: string;
-  /** Sparse checkout paths - only checkout specific directories */
-  sparse?: string[];
-}
-
-/**
  * Nix environment configuration for agent workspace.
  * Allows agents to run with specific Nix packages or flakes.
  *
@@ -266,7 +248,6 @@ export interface AgentOptions {
   timeoutMinutes?: number | string;
   // Additional settings passed through from gateway (can be nested objects)
   networkConfig?: Record<string, unknown>;
-  gitConfig?: Record<string, unknown>;
   envVars?: Record<string, string>;
   [key: string]: unknown;
 }

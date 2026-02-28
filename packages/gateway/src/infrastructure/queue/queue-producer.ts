@@ -3,7 +3,6 @@
 import {
   type AgentMcpConfig,
   createLogger,
-  type GitConfig,
   type NetworkConfig,
   type NixConfig,
 } from "@lobu/core";
@@ -46,9 +45,6 @@ export interface MessagePayload {
 
   // Per-agent network configuration for sandbox isolation
   networkConfig?: NetworkConfig;
-
-  // Git repository configuration for workspace initialization
-  gitConfig?: GitConfig;
 
   // Per-agent MCP configuration (additive to global MCPs)
   mcpConfig?: AgentMcpConfig;

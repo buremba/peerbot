@@ -20,7 +20,6 @@ import type { AgentSettingsStore } from "../../auth/settings";
 import { verifySettingsToken } from "../../auth/settings/token-service";
 import type { UserAgentsStore } from "../../auth/user-agents-store";
 import type { ChannelBindingService } from "../../channels";
-import type { GitHubAppAuth } from "../../modules/git-filesystem/github-app";
 import type { ProviderMeta } from "./settings-page";
 import {
   renderErrorPage,
@@ -35,9 +34,6 @@ export interface SettingsPageConfig {
   userAgentsStore: UserAgentsStore;
   agentMetadataStore: AgentMetadataStore;
   channelBindingService: ChannelBindingService;
-  githubAuth?: GitHubAppAuth;
-  githubAppInstallUrl?: string;
-  githubOAuthClientId?: string;
 }
 
 function buildProviderMeta(
@@ -165,6 +161,18 @@ export function createSettingsPageRoutes(
           agents.push({ ...metadata, channelCount: bindings.length });
         }
       }
+
+      // Ensure the currently active agent appears in switcher even when it is
+      // not part of the user's direct agent list (e.g. workspace-bound agent).
+      if (
+        agentMetadata &&
+        !agents.some((agent) => agent.agentId === agentMetadata.agentId)
+      ) {
+        const bindings = await config.channelBindingService.listBindings(
+          agentMetadata.agentId
+        );
+        agents.unshift({ ...agentMetadata, channelCount: bindings.length });
+      }
     }
 
     // Ensure the payload has agentId for the template (may have been resolved from binding)
@@ -172,9 +180,6 @@ export function createSettingsPageRoutes(
 
     return c.html(
       renderSettingsPage(effectivePayload, settings, token, {
-        githubAppConfigured: !!config.githubAuth,
-        githubAppInstallUrl: config.githubAppInstallUrl,
-        githubOAuthConfigured: !!config.githubOAuthClientId,
         providers: installedProviders,
         catalogProviders,
         providerModelOptions,

@@ -1,7 +1,6 @@
 import {
   type AuthProfile,
   BaseRedisStore,
-  type GitConfig,
   type InstalledProvider,
   type McpServerConfig,
   type NetworkConfig,
@@ -21,8 +20,6 @@ export interface AgentSettings {
   model?: string;
   /** Network access configuration */
   networkConfig?: NetworkConfig;
-  /** Git repository configuration */
-  gitConfig?: GitConfig;
   /** Nix environment configuration */
   nixConfig?: NixConfig;
   /** Additional MCP servers */
@@ -49,14 +46,6 @@ export interface AgentSettings {
   installedProviders?: InstalledProvider[];
   /** Enable verbose logging (show tool calls, reasoning, etc.) */
   verboseLogging?: boolean;
-  /** Connected GitHub user info */
-  githubUser?: {
-    login: string;
-    id: number;
-    avatarUrl: string;
-    accessToken: string; // For user-scoped GitHub API calls
-    connectedAt: number;
-  };
   /** Last updated timestamp */
   updatedAt: number;
 }

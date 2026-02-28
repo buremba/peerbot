@@ -50,7 +50,7 @@ Settings page provider order is drag-sortable via handle, with per-provider mode
 
 ## TypeScript Build System
 
-TypeScript packages must be compiled from `src/` → `dist/`. If you modify any package source code, run `make build-packages` or use `make watch-packages` for auto-rebuild during development. `make dev` automatically builds packages before starting.
+TypeScript packages must be compiled from `src/` → `dist/`. If you modify any package source code, run `make build-packages`. `make dev` (docker compose watch) automatically builds and syncs changes.
 
 ## Instructions
 - You MUST only do what has been asked; nothing more, nothing less.
@@ -60,7 +60,7 @@ TypeScript packages must be compiled from `src/` → `dist/`. If you modify any 
 - The "is running" thread status indicator (with rotating messages) provides user feedback during processing; visible "Still processing" heartbeat messages are not sent to avoid clutter.
 - Anytime you make changes in the code, you MUST:
 
-1. Have the gateway running (see Development Mode below).
+1. Have the stack running (`make dev`).
 2. Test the bot using the test script:
 ```bash
 ./scripts/test-bot.sh "@me test prompt"
@@ -83,7 +83,6 @@ File attachments are fully supported in all message contexts (DM, app mentions, 
 ## Development Mode
 
 ### Prerequisites
-- Redis: `brew install redis`
 - Bun: installed
 - Docker Desktop: running
 
@@ -92,30 +91,15 @@ File attachments are fully supported in all message contexts (DM, app mentions, 
 ./scripts/setup-dev.sh
 ```
 
-### Starting Development (Local Gateway — Recommended)
+### Starting Development
 ```bash
-# Terminal 1: Start Redis
-redis-server
-
-# Terminal 2: Watch and rebuild packages on changes
-make watch-packages
-
-# Terminal 3: Run gateway with hot reload
-cd packages/gateway && bun run dev
+make dev
 ```
 
-This runs the gateway locally with `bun --watch` for instant restarts on source changes. Workers are still spawned as Docker containers (DEPLOYMENT_MODE=docker). The gateway reads `.env` from the project root automatically.
-
-### Starting Development (Docker Compose — Alternative)
-```bash
-docker compose -f docker/docker-compose.yml up
-```
-
-Use Docker Compose when you need to test the full containerized setup. Note: source changes require image rebuilds or `docker compose watch` (`make dev`).
+This runs `docker compose watch` which starts the full stack (gateway, Redis, etc.) and auto-syncs source changes into containers. No manual rebuilds needed.
 
 ### Hot Reload
-- **Gateway**: Runs with `bun --watch`, auto-restarts on source changes
-- **Packages**: Use `make watch-packages` to auto-rebuild on changes
+- **Gateway + Packages**: `docker compose watch` (`make dev`) auto-syncs source changes
 - **Worker**: Run `make clean-workers` after worker code changes
 
 ### Testing
@@ -123,8 +107,13 @@ Use Docker Compose when you need to test the full containerized setup. Note: sou
 ./scripts/test-bot.sh "@me test prompt"
 ```
 
+### Check Logs
+```bash
+docker compose -f docker/docker-compose.yml logs -f gateway
+```
+
 ### Deployment
-1. **Development**: Start gateway with `cd packages/gateway && bun run dev`
+1. **Development**: `make dev` (docker compose watch)
 2. **Kubernetes deployment**: Use `make deploy` for production deployment
 
 ## Environment Configuration
@@ -132,8 +121,8 @@ Use Docker Compose when you need to test the full containerized setup. Note: sou
 The `.env` file is the single source of truth for all secrets and configuration.
 
 ### Local Development
-- Gateway reads `.env` on startup
-- Restart gateway after `.env` changes: `cd packages/gateway && bun run dev`
+- Gateway reads `.env` on startup via Docker Compose
+- Restart after `.env` changes: `make dev` (or `docker compose -f docker/docker-compose.yml up`)
 - Settings link token TTL defaults to 1 hour; optional dev override: `SETTINGS_TOKEN_TTL_MS` (milliseconds, e.g. `4233600000` for 7 weeks).
 
 ### Kubernetes Deployment
@@ -178,12 +167,6 @@ The gateway deployment has a checksum annotation that triggers automatic pod res
 
 - Rate limiting is disabled in local development
 - Worker image built with `make build-worker` or `make setup`
-
-### Docker Compose (Alternative)
-For running everything in containers:
-```bash
-docker compose -f docker/docker-compose.yml up
-```
 ## Persistent Storage
 
 Worker deployments use persistent volumes for session continuity across scale-to-zero:
@@ -325,10 +308,4 @@ TEST_PLATFORM=telegram TEST_CHANNEL=@lobuaibot ./scripts/test-bot.sh "hello test
 Or use `tguser` CLI (requires `TG_API_ID` and `TG_API_HASH` from `.env`):
 ```bash
 tguser send @lobuaibot "hello test"
-```
-
-### Check Logs
-Gateway logs are output to the terminal where it's running. For Docker:
-```bash
-docker compose -f docker/docker-compose.yml logs -f gateway
 ```

@@ -57,13 +57,6 @@ const NetworkConfigSchema = z.object({
   deniedDomains: z.array(z.string()).optional(),
 });
 
-const GitConfigSchema = z.object({
-  repoUrl: z.string(),
-  branch: z.string().optional(),
-  token: z.string().optional(),
-  sparse: z.array(z.string()).optional(),
-});
-
 const McpServerConfigSchema = z.object({
   url: z.string().optional(),
   type: z.enum(["sse", "stdio"]).optional(),
@@ -84,7 +77,6 @@ const CreateAgentRequestSchema = z.object({
   model: z.string().optional(),
   agentId: z.string().optional(),
   networkConfig: NetworkConfigSchema.optional(),
-  git: GitConfigSchema.optional(),
   mcpServers: z.record(z.string(), McpServerConfigSchema).optional(),
   nix: NixConfigSchema.optional(),
 });
@@ -601,7 +593,6 @@ export function createAgentApi(
       model,
       agentId: requestedAgentId,
       networkConfig,
-      git: gitConfig,
       mcpServers,
       nix: nixConfig,
     } = body;
@@ -618,19 +609,6 @@ export function createAgentApi(
     if (networkConfig) {
       const error = validateNetworkConfig(networkConfig as NetworkConfig);
       if (error) return c.json({ success: false, error }, 400);
-    }
-
-    // Validate git config
-    if (gitConfig) {
-      if (
-        !gitConfig.repoUrl?.startsWith("https://") &&
-        !gitConfig.repoUrl?.startsWith("git@")
-      ) {
-        return c.json(
-          { success: false, error: "git.repoUrl must be HTTPS or SSH" },
-          400
-        );
-      }
     }
 
     // Validate MCP config
@@ -666,7 +644,6 @@ export function createAgentApi(
       provider,
       model,
       networkConfig: networkConfig as NetworkConfig | undefined,
-      gitConfig,
       mcpConfig: mcpServers
         ? { mcpServers: mcpServers as Record<string, McpServerConfig> }
         : undefined,

@@ -55,7 +55,6 @@ export type {
   AuthProfile,
   CliBackendConfig,
   ConversationMessage,
-  GitConfig,
   HistoryMessage,
   InstalledProvider,
   InstructionContext,

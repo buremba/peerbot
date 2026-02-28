@@ -8,7 +8,6 @@ import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import type { ClaudeOAuthStateStore } from "../../auth/oauth/state-store";
 import type { AgentSettingsStore } from "../../auth/settings";
 import { verifySettingsToken } from "../../auth/settings/token-service";
-import { renderErrorPage } from "./settings-page";
 
 const TAG = "OAuth";
 const ErrorResponse = z.object({ error: z.string() });
@@ -88,34 +87,11 @@ const providerLogoutRoute = createRoute({
   },
 });
 
-const githubLogoutRoute = createRoute({
-  method: "post",
-  path: "/github/logout",
-  tags: [TAG],
-  summary: "Disconnect GitHub account",
-  request: {
-    query: z.object({ token: z.string() }),
-  },
-  responses: {
-    200: {
-      description: "Disconnected",
-      content: { "application/json": { schema: SuccessResponse } },
-    },
-    401: {
-      description: "Unauthorized",
-      content: { "application/json": { schema: ErrorResponse } },
-    },
-  },
-});
-
 export interface OAuthRoutesConfig {
   providerStores?: Record<string, ProviderCredentialStore>;
   oauthClients?: Record<string, ProviderOAuthClient>;
   oauthStateStore?: ClaudeOAuthStateStore;
   agentSettingsStore: AgentSettingsStore;
-  githubOAuthClientId?: string;
-  githubOAuthClientSecret?: string;
-  publicGatewayUrl?: string;
 }
 
 export function createOAuthRoutes(config: OAuthRoutesConfig): OpenAPIHono {
@@ -154,137 +130,6 @@ export function createOAuthRoutes(config: OAuthRoutesConfig): OpenAPIHono {
     });
 
     return c.redirect(oauthClient.buildAuthUrl(state, codeVerifier));
-  });
-
-  // --- GitHub OAuth login redirect (excluded from docs) ---
-  app.get("/github/login", async (c) => {
-    const token = c.req.query("token");
-    const payload = verifyToken(token);
-    if (!payload) return c.json({ error: "Unauthorized" }, 401);
-    if (!config.githubOAuthClientId || !config.publicGatewayUrl) {
-      return c.json({ error: "GitHub OAuth not configured" }, 500);
-    }
-
-    const state = Buffer.from(
-      JSON.stringify({ settingsToken: token, timestamp: Date.now() })
-    ).toString("base64url");
-
-    const authUrl = new URL("https://github.com/login/oauth/authorize");
-    authUrl.searchParams.set("client_id", config.githubOAuthClientId);
-    authUrl.searchParams.set(
-      "redirect_uri",
-      `${config.publicGatewayUrl}/api/v1/oauth/github/callback`
-    );
-    authUrl.searchParams.set("scope", "read:user");
-    authUrl.searchParams.set("state", state);
-
-    return c.redirect(authUrl.toString());
-  });
-
-  // --- GitHub OAuth callback (excluded from docs) ---
-  app.get("/github/callback", async (c) => {
-    const code = c.req.query("code");
-    const state = c.req.query("state");
-    const error = c.req.query("error");
-
-    if (error)
-      return c.html(renderErrorPage(`GitHub OAuth failed: ${error}`), 400);
-    if (!code || !state)
-      return c.html(renderErrorPage("Missing code or state"), 400);
-
-    let stateData: { settingsToken: string; timestamp: number };
-    try {
-      stateData = JSON.parse(Buffer.from(state, "base64url").toString("utf-8"));
-    } catch {
-      return c.html(renderErrorPage("Invalid OAuth state"), 400);
-    }
-
-    if (Date.now() - stateData.timestamp > 10 * 60 * 1000) {
-      return c.html(renderErrorPage("OAuth state expired"), 400);
-    }
-
-    const rawPayload = verifySettingsToken(stateData.settingsToken);
-    if (!rawPayload || !rawPayload.agentId)
-      return c.html(renderErrorPage("Invalid settings token"), 401);
-    const payload = { ...rawPayload, agentId: rawPayload.agentId };
-
-    if (
-      !config.githubOAuthClientId ||
-      !config.githubOAuthClientSecret ||
-      !config.publicGatewayUrl
-    ) {
-      return c.html(renderErrorPage("GitHub OAuth not configured"), 500);
-    }
-
-    try {
-      const tokenResponse = await fetch(
-        "https://github.com/login/oauth/access_token",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Accept: "application/json",
-          },
-          body: JSON.stringify({
-            client_id: config.githubOAuthClientId,
-            client_secret: config.githubOAuthClientSecret,
-            code,
-            redirect_uri: `${config.publicGatewayUrl}/api/v1/oauth/github/callback`,
-          }),
-        }
-      );
-
-      const tokenData = (await tokenResponse.json()) as {
-        access_token?: string;
-        error?: string;
-      };
-      if (!tokenData.access_token) {
-        return c.html(
-          renderErrorPage(
-            `GitHub auth failed: ${tokenData.error || "Unknown"}`
-          ),
-          400
-        );
-      }
-
-      const userResponse = await fetch("https://api.github.com/user", {
-        headers: {
-          Authorization: `Bearer ${tokenData.access_token}`,
-          Accept: "application/vnd.github+json",
-          "User-Agent": "Lobu",
-        },
-      });
-
-      if (!userResponse.ok) {
-        return c.html(renderErrorPage("Failed to fetch GitHub user"), 500);
-      }
-
-      const userData = (await userResponse.json()) as {
-        login: string;
-        id: number;
-        avatar_url: string;
-      };
-
-      const currentSettings = await config.agentSettingsStore.getSettings(
-        payload.agentId
-      );
-      await config.agentSettingsStore.updateSettings(payload.agentId, {
-        ...currentSettings,
-        githubUser: {
-          login: userData.login,
-          id: userData.id,
-          avatarUrl: userData.avatar_url,
-          accessToken: tokenData.access_token,
-          connectedAt: Date.now(),
-        },
-      });
-
-      return c.redirect(
-        `/settings?token=${encodeURIComponent(stateData.settingsToken)}&github_connected=true`
-      );
-    } catch {
-      return c.html(renderErrorPage("GitHub authentication failed"), 500);
-    }
   });
 
   // --- Provider code exchange ---
@@ -339,21 +184,6 @@ export function createOAuthRoutes(config: OAuthRoutesConfig): OpenAPIHono {
     if (!store) return c.json({ error: "Unknown provider" }, 404);
 
     await store.deleteCredentials(payload.agentId);
-    return c.json({ success: true });
-  });
-
-  // --- GitHub logout ---
-  app.openapi(githubLogoutRoute, async (c): Promise<any> => {
-    const payload = verifyToken(c.req.valid("query").token);
-    if (!payload) return c.json({ error: "Unauthorized" }, 401);
-
-    const settings = await config.agentSettingsStore.getSettings(
-      payload.agentId
-    );
-    if (settings) {
-      const { githubUser: _, ...rest } = settings as any;
-      await config.agentSettingsStore.saveSettings(payload.agentId, rest);
-    }
     return c.json({ success: true });
   });
 

@@ -1,4 +1,4 @@
-import { createLogger, type AuthProfile } from "@lobu/core";
+import { type AuthProfile, createLogger } from "@lobu/core";
 import type { AgentSettingsStore } from "./agent-settings-store";
 
 const logger = createLogger("auth-profiles-manager");

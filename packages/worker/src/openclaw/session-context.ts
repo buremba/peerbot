@@ -33,6 +33,7 @@ export interface ProviderConfig {
 }
 
 interface SessionContextResponse {
+  agentInstructions: string;
   platformInstructions: string;
   networkInstructions: string;
   skillsInstructions: string;
@@ -134,7 +135,7 @@ export async function getOpenClawSessionContext(): Promise<{
     const data = (await response.json()) as SessionContextResponse;
 
     logger.info(
-      `Received session context: ${data.platformInstructions.length} chars platform instructions, ${data.mcpStatus.length} MCP status entries, provider: ${data.providerConfig?.defaultProvider || "none"}`
+      `Received session context: ${data.platformInstructions.length} chars platform instructions, ${data.mcpStatus.length} MCP status entries, provider: ${data.providerConfig?.defaultProvider || "none"}, cliBackends: ${data.providerConfig?.cliBackends?.map((b) => b.name).join(", ") || "none"}`
     );
 
     const mcpInstructions = buildMcpInstructions(data.mcpStatus);
@@ -144,6 +145,7 @@ export async function getOpenClawSessionContext(): Promise<{
         : "";
 
     const gatewayInstructions = [
+      data.agentInstructions,
       data.platformInstructions,
       data.networkInstructions,
       data.skillsInstructions,
@@ -154,7 +156,7 @@ export async function getOpenClawSessionContext(): Promise<{
       .join("\n\n");
 
     logger.info(
-      `Built gateway instructions: platform (${data.platformInstructions.length} chars) + network (${data.networkInstructions.length} chars) + skills (${(data.skillsInstructions || "").length} chars) + MCP (${mcpInstructions.length} chars)`
+      `Built gateway instructions: agent (${(data.agentInstructions || "").length} chars) + platform (${data.platformInstructions.length} chars) + network (${data.networkInstructions.length} chars) + skills (${(data.skillsInstructions || "").length} chars) + MCP (${mcpInstructions.length} chars)`
     );
 
     const result = {

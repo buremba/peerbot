@@ -1,1 +1,0 @@
-export { GitFilesystemWorkerModule } from "./module";

@@ -3,6 +3,10 @@ import type { WebClient } from "@slack/web-api";
 import type { AdminStatusCache } from "../../auth/admin-status-cache";
 import type { AgentMetadataStore } from "../../auth/agent-metadata-store";
 import type { AgentSettingsStore } from "../../auth/settings";
+import {
+  buildSettingsUrl,
+  generateChannelSettingsToken,
+} from "../../auth/settings/token-service";
 import type { UserAgentsStore } from "../../auth/user-agents-store";
 import type { ChannelBindingService } from "../../channels";
 import type { CommandDispatcher } from "../../commands/command-dispatcher";
@@ -11,10 +15,6 @@ import type {
   MessagePayload,
   QueueProducer,
 } from "../../infrastructure/queue/queue-producer";
-import {
-  buildSettingsUrl,
-  generateChannelSettingsToken,
-} from "../../auth/settings/token-service";
 import type { TranscriptionService } from "../../services/transcription-service";
 import type { ISessionManager, ThreadSession } from "../../session";
 import { generateSessionKey } from "../../session";
@@ -224,7 +224,6 @@ export class MessageHandler {
     logger.info(`Applying agent settings for ${agentId}`, {
       model: settings.model,
       hasNetworkConfig: !!settings.networkConfig,
-      hasGitConfig: !!settings.gitConfig,
       hasNixConfig: !!settings.nixConfig,
     });
 
@@ -241,10 +240,6 @@ export class MessageHandler {
     // Pass additional settings through agentOptions for worker to use
     if (settings.networkConfig) {
       mergedOptions.networkConfig = settings.networkConfig;
-    }
-
-    if (settings.gitConfig) {
-      mergedOptions.gitConfig = settings.gitConfig;
     }
     if (settings.nixConfig) {
       mergedOptions.nixConfig = settings.nixConfig;
@@ -520,13 +515,8 @@ export class MessageHandler {
         await this.sessionManager.setSession(threadSession);
 
         // Extract top-level configs from agentOptions for orchestration
-        const {
-          networkConfig,
-          gitConfig,
-          nixConfig,
-          mcpServers,
-          ...remainingOptions
-        } = agentOptions;
+        const { networkConfig, nixConfig, mcpServers, ...remainingOptions } =
+          agentOptions;
 
         const deploymentPayload: MessagePayload = {
           userId: context.userId,
@@ -550,7 +540,6 @@ export class MessageHandler {
           agentOptions: remainingOptions,
           // Set top-level configs for orchestration
           networkConfig,
-          gitConfig,
           nixConfig,
           mcpConfig: mcpServers ? { mcpServers } : undefined,
         };
@@ -572,13 +561,8 @@ export class MessageHandler {
         await this.sessionManager.setSession(threadSession);
 
         // Extract top-level configs from agentOptions for orchestration
-        const {
-          networkConfig,
-          gitConfig,
-          nixConfig,
-          mcpServers,
-          ...remainingOptions
-        } = agentOptions;
+        const { networkConfig, nixConfig, mcpServers, ...remainingOptions } =
+          agentOptions;
 
         // Enqueue to user-specific queue
         const threadPayload: MessagePayload = {
@@ -603,7 +587,6 @@ export class MessageHandler {
           agentOptions: remainingOptions,
           // Set top-level configs for orchestration
           networkConfig,
-          gitConfig,
           nixConfig,
           mcpConfig: mcpServers ? { mcpServers } : undefined,
         };

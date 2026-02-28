@@ -16,7 +16,7 @@ const logger = createLogger("whatsapp-auth-adapter");
 
 /**
  * WhatsApp-specific authentication adapter.
- * Sends a settings link where users can configure Claude auth, MCP, network, git, etc.
+ * Sends a settings link where users can configure Claude auth, MCP, network, etc.
  */
 export class WhatsAppAuthAdapter implements PlatformAuthAdapter {
   constructor(
@@ -26,7 +26,7 @@ export class WhatsAppAuthAdapter implements PlatformAuthAdapter {
 
   /**
    * Send authentication required prompt with settings link.
-   * The settings page handles Claude OAuth, MCP config, network access, git, etc.
+   * The settings page handles Claude OAuth, MCP config, network access, etc.
    */
   async sendAuthPrompt(
     userId: string,

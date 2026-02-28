@@ -1,5 +1,5 @@
-import { createLogger, moduleRegistry } from "@lobu/core";
 import type { ModelOption } from "@lobu/core";
+import { createLogger, moduleRegistry } from "@lobu/core";
 
 const logger = createLogger("provider-model-options");
 

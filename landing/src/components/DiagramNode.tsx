@@ -1,8 +1,8 @@
-import type React from "react";
 import { motion } from "framer-motion";
+import type React from "react";
+import { colors } from "../styles";
 import type { NodePosition } from "../types";
 import { NodeIcon } from "./NodeIcon";
-import { colors } from "../styles";
 
 interface DiagramNodeProps {
   node: NodePosition;

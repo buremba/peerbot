@@ -1,6 +1,6 @@
 import type React from "react";
-import { colors } from "../styles";
 import { NODES } from "../nodes";
+import { colors } from "../styles";
 
 interface ConnectionLineProps {
   from: string;

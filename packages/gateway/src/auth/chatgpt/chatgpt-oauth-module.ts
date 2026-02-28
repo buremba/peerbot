@@ -1,10 +1,10 @@
 import { createLogger, type ModelOption } from "@lobu/core";
+import { BaseProviderModule } from "../base-provider-module";
 import type { AgentSettingsStore } from "../settings/agent-settings-store";
 import {
   AuthProfilesManager,
   createAuthProfileLabel,
 } from "../settings/auth-profiles-manager";
-import { BaseProviderModule } from "../base-provider-module";
 import { ChatGPTDeviceCodeClient } from "./device-code-client";
 
 const logger = createLogger("chatgpt-oauth-module");

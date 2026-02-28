@@ -85,6 +85,9 @@ SECRET_ARGS=()
 # GitHub
 [[ -n "$GITHUB_CLIENT_SECRET" ]] && SECRET_ARGS+=(--from-literal=github-client-secret="$GITHUB_CLIENT_SECRET")
 
+# Telegram
+[[ -n "$TELEGRAM_BOT_TOKEN" ]] && SECRET_ARGS+=(--from-literal=telegram-bot-token="$TELEGRAM_BOT_TOKEN")
+
 # WhatsApp
 [[ -n "$WHATSAPP_CREDENTIALS" ]] && [[ -f "$WHATSAPP_CREDENTIALS" ]] && \
   SECRET_ARGS+=(--from-file=whatsapp-credentials="$WHATSAPP_CREDENTIALS")

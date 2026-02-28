@@ -9,8 +9,8 @@ import { createLogger, verifyWorkerToken } from "@lobu/core";
 import { Hono } from "hono";
 import {
   buildSettingsUrl,
-  getSettingsTokenTtlMs,
   generateSettingsToken,
+  getSettingsTokenTtlMs,
   type PrefillMcpServer,
   type PrefillSkill,
 } from "../../auth/settings/token-service";
@@ -80,7 +80,7 @@ export function createSettingsLinkRoutes(): Hono<WorkerContext> {
         prefillSkills,
         prefillMcpServers,
         prefillNixPackages,
-        prefillAllowedDomains,
+        prefillGrants,
       } = body as {
         reason?: string;
         message?: string;
@@ -88,7 +88,7 @@ export function createSettingsLinkRoutes(): Hono<WorkerContext> {
         prefillSkills?: PrefillSkill[];
         prefillMcpServers?: PrefillMcpServer[];
         prefillNixPackages?: string[];
-        prefillAllowedDomains?: string[];
+        prefillGrants?: string[];
       };
 
       const agentId = worker.agentId;
@@ -110,7 +110,7 @@ export function createSettingsLinkRoutes(): Hono<WorkerContext> {
         prefillSkillsCount: prefillSkills?.length || 0,
         prefillMcpServersCount: prefillMcpServers?.length || 0,
         prefillNixPackagesCount: prefillNixPackages?.length || 0,
-        prefillAllowedDomainsCount: prefillAllowedDomains?.length || 0,
+        prefillGrantsCount: prefillGrants?.length || 0,
       });
 
       // Generate token with configured TTL (defaults to 1 hour)
@@ -124,7 +124,7 @@ export function createSettingsLinkRoutes(): Hono<WorkerContext> {
         prefillSkills,
         prefillMcpServers,
         prefillNixPackages,
-        prefillAllowedDomains,
+        prefillGrants,
         sourceContext: {
           conversationId: worker.conversationId,
           channelId: worker.channelId,

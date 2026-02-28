@@ -2,22 +2,35 @@ import crypto from "node:crypto";
 import * as http from "node:http";
 import * as net from "node:net";
 import { URL } from "node:url";
-import { createLogger, verifyWorkerToken } from "@lobu/core";
 import type { WorkerTokenData } from "@lobu/core";
+import { createLogger, verifyWorkerToken } from "@lobu/core";
 import {
   isUnrestrictedMode,
   loadAllowedDomains,
   loadDisallowedDomains,
 } from "../config/network-allowlist";
-import {
-  networkConfigStore,
-  type ResolvedNetworkConfig,
-} from "./network-config-store";
+import type { GrantStore } from "../permissions/grant-store";
 
 const logger = createLogger("http-proxy");
 
+interface ResolvedNetworkConfig {
+  allowedDomains: string[];
+  deniedDomains: string[];
+}
+
 // Cache for global defaults (used when no deployment identified)
 let globalConfig: ResolvedNetworkConfig | null = null;
+
+// Module-level grant store reference for domain grant checks
+let proxyGrantStore: GrantStore | null = null;
+
+/**
+ * Set the grant store for the HTTP proxy to check domain grants.
+ * Called during gateway initialization.
+ */
+export function setProxyGrantStore(store: GrantStore): void {
+  proxyGrantStore = store;
+}
 
 /**
  * Get global network config (lazy loaded)
@@ -30,6 +43,58 @@ function getGlobalConfig(): ResolvedNetworkConfig {
     };
   }
   return globalConfig;
+}
+
+/**
+ * Unified domain access check: global config → grant store.
+ *
+ * 1. If denied by global blocklist → block
+ * 2. If allowed by global allowlist → check grantStore.isDenied() → allow/block
+ * 3. If not in global list → check grantStore.hasGrant() → allow/block
+ */
+async function checkDomainAccess(
+  hostname: string,
+  agentId: string | undefined
+): Promise<boolean> {
+  const global = getGlobalConfig();
+
+  // Global blocklist always takes precedence
+  if (
+    global.deniedDomains.length > 0 &&
+    matchesDomainPattern(hostname, global.deniedDomains)
+  ) {
+    return false;
+  }
+
+  // Check if globally allowed (unrestricted or in allowlist)
+  const globallyAllowed = isHostnameAllowed(
+    hostname,
+    global.allowedDomains,
+    global.deniedDomains
+  );
+
+  if (globallyAllowed) {
+    // Even if globally allowed, a per-agent deny grant can override
+    if (proxyGrantStore && agentId) {
+      const denied = await proxyGrantStore.isDenied(agentId, hostname);
+      if (denied) {
+        logger.debug(`Domain ${hostname} denied via grant (agent: ${agentId})`);
+        return false;
+      }
+    }
+    return true;
+  }
+
+  // Not globally allowed — check grant store for per-agent access
+  if (proxyGrantStore && agentId) {
+    const granted = await proxyGrantStore.hasGrant(agentId, hostname);
+    if (granted) {
+      logger.debug(`Domain ${hostname} allowed via grant (agent: ${agentId})`);
+      return true;
+    }
+  }
+
+  return false;
 }
 
 interface ProxyCredentials {
@@ -110,19 +175,6 @@ function validateProxyAuth(req: http.IncomingMessage): ValidatedProxy | null {
   }
 
   return { deploymentName: creds.deploymentName, tokenData };
-}
-
-/**
- * Get network config for a validated request.
- * Looks up per-deployment config or falls back to global.
- */
-async function getNetworkConfigForRequest(
-  deploymentName: string | null
-): Promise<ResolvedNetworkConfig> {
-  if (deploymentName) {
-    return networkConfigStore.get(deploymentName);
-  }
-  return getGlobalConfig();
 }
 
 /**
@@ -232,21 +284,17 @@ async function handleConnect(
     return;
   }
 
-  const { deploymentName } = auth;
+  const { deploymentName, tokenData } = auth;
 
-  // Get per-deployment or global config
-  const config = await getNetworkConfigForRequest(deploymentName);
-
-  // Check if hostname is allowed
-  if (
-    !isHostnameAllowed(hostname, config.allowedDomains, config.deniedDomains)
-  ) {
+  // Check domain access: global config → grant store
+  const allowed = await checkDomainAccess(hostname, tokenData.agentId);
+  if (!allowed) {
     logger.warn(
       `Blocked CONNECT to ${hostname} (deployment: ${deploymentName})`
     );
     try {
       clientSocket.write(
-        `HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\n\r\n403 Forbidden - Domain not allowed: ${hostname}. Use GetSettingsLink with prefillAllowedDomains to request access.\r\n`
+        `HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\n\r\n403 Forbidden - Domain not allowed: ${hostname}. Use GetSettingsLink with prefillGrants to request access.\r\n`
       );
       clientSocket.end();
     } catch {
@@ -358,21 +406,17 @@ async function handleProxyRequest(
     return;
   }
 
-  const { deploymentName } = auth;
+  const { deploymentName, tokenData } = auth;
 
-  // Get per-deployment or global config
-  const config = await getNetworkConfigForRequest(deploymentName);
-
-  // Check if hostname is allowed
-  if (
-    !isHostnameAllowed(hostname, config.allowedDomains, config.deniedDomains)
-  ) {
+  // Check domain access: global config → grant store
+  const allowed = await checkDomainAccess(hostname, tokenData.agentId);
+  if (!allowed) {
     logger.warn(
       `Blocked request to ${hostname} (deployment: ${deploymentName})`
     );
     res.writeHead(403, { "Content-Type": "text/plain" });
     res.end(
-      `403 Forbidden - Domain not allowed: ${hostname}. Use GetSettingsLink with prefillAllowedDomains to request access.\n`
+      `403 Forbidden - Domain not allowed: ${hostname}. Use GetSettingsLink with prefillGrants to request access.\n`
     );
     return;
   }

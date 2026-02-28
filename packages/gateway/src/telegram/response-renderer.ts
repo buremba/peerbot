@@ -263,8 +263,8 @@ export class TelegramResponseRenderer implements ResponseRenderer {
       return;
     }
 
-    // If HTML is too long, fall back to chunked plain text to avoid splitting
-    // HTML tags across messages (Telegram requires well-formed HTML per message).
+    // Message too long for a single HTML message. Chunk the plain text and
+    // convert each chunk individually so links/formatting still render.
     const plainChunks = this.chunkMessage(
       stream.buffer,
       this.config.messageChunkSize
@@ -274,26 +274,45 @@ export class TelegramResponseRenderer implements ResponseRenderer {
     }
 
     try {
+      const firstHtml = convertMarkdownToTelegramHtml(plainChunks[0]!);
       await this.bot.api.editMessageText(
         stream.chatId,
         stream.messageId,
-        plainChunks[0]!
+        firstHtml,
+        { parse_mode: "HTML" }
       );
     } catch (err) {
-      logger.debug(
-        { traceId, error: String(err), chatId: stream.chatId },
-        "Failed to edit first plain chunk"
-      );
+      // Fall back to plain text if HTML fails
+      try {
+        await this.bot.api.editMessageText(
+          stream.chatId,
+          stream.messageId,
+          plainChunks[0]!
+        );
+      } catch {
+        logger.debug(
+          { traceId, error: String(err), chatId: stream.chatId },
+          "Failed to edit first chunk"
+        );
+      }
     }
 
     for (let i = 1; i < plainChunks.length; i++) {
       try {
-        await this.bot.api.sendMessage(stream.chatId, plainChunks[i]!);
-      } catch (err) {
-        logger.debug(
-          { traceId, error: String(err), chatId: stream.chatId },
-          "Failed to send plain chunk"
-        );
+        const chunkHtml = convertMarkdownToTelegramHtml(plainChunks[i]!);
+        await this.bot.api.sendMessage(stream.chatId, chunkHtml, {
+          parse_mode: "HTML",
+        });
+      } catch {
+        // Fall back to plain text
+        try {
+          await this.bot.api.sendMessage(stream.chatId, plainChunks[i]!);
+        } catch (err) {
+          logger.debug(
+            { traceId, error: String(err), chatId: stream.chatId },
+            "Failed to send chunk"
+          );
+        }
       }
       if (i < plainChunks.length - 1) {
         await this.delay(500);

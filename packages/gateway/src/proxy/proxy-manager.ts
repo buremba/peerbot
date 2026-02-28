@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import type { Server } from "node:http";
 import { createLogger } from "@lobu/core";
 import { startHttpProxy, stopHttpProxy } from "./http-proxy";
@@ -8,18 +9,20 @@ let proxyServer: Server | null = null;
 
 /**
  * Determine the bind host for the proxy.
- * In local dev (DEPLOYMENT_MODE=docker, gateway running on host), bind to loopback
- * so the proxy isn't an open relay. Docker Desktop routes host.docker.internal
- * to host loopback, so workers in containers can still reach it.
- * In Docker Compose / K8s, bind to all interfaces so containers on lobu-internal can connect.
+ * DEPLOYMENT_MODE=docker is expected to run inside a container. Fail fast if not,
+ * then bind to all interfaces so workers on lobu-internal can connect.
  */
 function getProxyBindHost(): string {
   const deploymentMode = process.env.DEPLOYMENT_MODE;
 
-  // Local dev: gateway on host, workers in Docker containers
-  // Bind to loopback — Docker Desktop maps host.docker.internal → 127.0.0.1
-  if (deploymentMode === "docker" && !process.env.RUNNING_IN_CONTAINER) {
-    return "127.0.0.1";
+  if (deploymentMode === "docker") {
+    const runningInContainer =
+      existsSync("/.dockerenv") || existsSync("/run/.containerenv");
+    if (!runningInContainer) {
+      throw new Error(
+        "DEPLOYMENT_MODE=docker requires gateway to run inside a container"
+      );
+    }
   }
 
   // Docker Compose / K8s: bind to all interfaces

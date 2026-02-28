@@ -19,25 +19,11 @@ interface McpStatus {
   configured: boolean;
 }
 
-interface WorkspaceFiles {
-  identityMd?: string;
-  soulMd?: string;
-  userMd?: string;
-}
-
-interface EnabledSkill {
-  name: string;
-  repo: string;
-  description?: string;
-  content: string;
-}
-
 interface SessionContextData {
+  agentInstructions: string;
   platformInstructions: string;
   networkInstructions: string;
   skillsInstructions: string;
-  workspaceFiles: WorkspaceFiles;
-  enabledSkills: EnabledSkill[];
   mcpStatus: McpStatus[];
 }
 
@@ -151,7 +137,7 @@ You can access any external service without restrictions.`;
 
 **Internet Access:** Complete isolation (no external access)
 
-You do NOT have access to the internet. All external requests (curl, wget, npm, pip, etc.) will fail. Only local operations and MCP tools are available.`;
+You do NOT have access to the internet. All external requests (curl, wget, npm, pip, etc.) will fail. If you need network access, use GetSettingsLinkForDomain to request it. Only local operations and MCP tools are available.`;
     }
 
     // Allowlist mode
@@ -182,7 +168,7 @@ ${blockedList}`;
 
     instructions += `
 
-You can only access the allowed domains listed above. All other external requests will be blocked by the proxy. Plan your work accordingly and use available MCP tools when possible.`;
+You can only access the allowed domains listed above. All other external requests will be blocked by the proxy. If a domain is blocked, use GetSettingsLinkForDomain to request access (default grant: 1 hour). Plan your work accordingly and use available MCP tools when possible.`;
 
     return instructions;
   }
@@ -223,8 +209,6 @@ export class InstructionService {
 
   /**
    * Get session context data for a worker
-   * Returns platform instructions and MCP status data
-   * Worker will build final instructions from this data
    */
   async getSessionContext(
     platform: string,
@@ -259,40 +243,31 @@ export class InstructionService {
       logger.error("Failed to get network instructions:", error);
     }
 
-    // Get raw workspace files and enabled skills from agent settings
-    // Worker writes these to the filesystem before the session starts
-    let workspaceFiles: WorkspaceFiles = {};
-    let enabledSkills: EnabledSkill[] = [];
+    // Build agent instructions from identity/soul/user settings
+    let agentInstructions = "";
     if (this.agentSettingsStore && context.agentId) {
       try {
         const settings = await this.agentSettingsStore.getSettings(
           context.agentId
         );
         if (settings) {
-          workspaceFiles = {
-            identityMd: settings.identityMd,
-            soulMd: settings.soulMd,
-            userMd: settings.userMd,
-          };
-          enabledSkills = (settings.skillsConfig?.skills || [])
-            .filter((s) => s.enabled && s.content)
-            .map((s) => ({
-              name: s.name,
-              repo: s.repo,
-              description: s.description,
-              content: s.content!,
-            }));
+          const sections: string[] = [];
+          if (settings.identityMd?.trim()) {
+            sections.push(`## Agent Identity\n\n${settings.identityMd.trim()}`);
+          }
+          if (settings.soulMd?.trim()) {
+            sections.push(`## Agent Instructions\n\n${settings.soulMd.trim()}`);
+          }
+          if (settings.userMd?.trim()) {
+            sections.push(`## User Context\n\n${settings.userMd.trim()}`);
+          }
+          agentInstructions = sections.join("\n\n");
         }
-        const wsCount = [
-          settings?.identityMd,
-          settings?.soulMd,
-          settings?.userMd,
-        ].filter(Boolean).length;
         logger.info(
-          `Got ${wsCount} workspace files, ${enabledSkills.length} enabled skills from settings`
+          `Built agent instructions (${agentInstructions.length} chars)`
         );
       } catch (error) {
-        logger.error("Failed to get workspace files / skills:", error);
+        logger.error("Failed to build agent instructions:", error);
       }
     }
 
@@ -320,11 +295,10 @@ export class InstructionService {
     }
 
     return {
+      agentInstructions,
       platformInstructions,
       networkInstructions,
       skillsInstructions,
-      workspaceFiles,
-      enabledSkills,
       mcpStatus,
     };
   }

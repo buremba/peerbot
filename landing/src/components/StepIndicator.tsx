@@ -1,7 +1,7 @@
-import type React from "react";
 import { motion } from "framer-motion";
-import type { FlowStep } from "../types";
+import type React from "react";
 import { colors } from "../styles";
+import type { FlowStep } from "../types";
 
 interface StepIndicatorProps {
   steps: FlowStep[];

@@ -20,6 +20,8 @@ export function buildMcpToolInstructions(
     "",
     "Call tools via curl. Auth is handled automatically via the Bearer token.",
     "",
+    "**Tool approval:** Some tools require user approval before use. If a tool call returns HTTP 403, the tool requires a permission grant. Use GetSettingsLink to send the user a settings link where they can approve access, then wait and retry after approval.",
+    "",
   ];
 
   for (const mcpId of mcpIds) {

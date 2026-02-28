@@ -10,7 +10,7 @@ import {
 import type Redis from "ioredis";
 import { mcpConfigStore } from "../auth/mcp/mcp-config-store";
 import type { MessagePayload } from "../infrastructure/queue/queue-producer";
-import { networkConfigStore } from "../proxy/network-config-store";
+import type { GrantStore } from "../permissions/grant-store";
 import {
   deleteSecretMappings,
   generatePlaceholder,
@@ -166,6 +166,7 @@ export abstract class BaseDeploymentManager {
   protected providerModules: ModelProviderModule[];
   protected providerCatalogService?: import("../auth/provider-catalog").ProviderCatalogService;
   protected redisClient?: Redis;
+  protected grantStore?: GrantStore;
 
   constructor(
     config: OrchestratorConfig,
@@ -196,6 +197,13 @@ export abstract class BaseDeploymentManager {
     service: import("../auth/provider-catalog").ProviderCatalogService
   ): void {
     this.providerCatalogService = service;
+  }
+
+  /**
+   * Inject grant store for auto-adding domain grants at deployment time.
+   */
+  setGrantStore(store: GrantStore): void {
+    this.grantStore = store;
   }
 
   /**
@@ -362,39 +370,45 @@ export abstract class BaseDeploymentManager {
   }
 
   /**
-   * Auto-add Nix cache domains and persist network/MCP configs for the deployment.
+   * Auto-add Nix cache domains as grants and persist MCP configs for the deployment.
    */
   private async storeDeploymentConfigs(
     deploymentName: string,
     messageData: MessagePayload
   ): Promise<void> {
-    // Auto-add Nix cache domains when Nix packages are configured
+    const agentId = messageData.agentId;
+
+    // Sync networkConfig.allowedDomains to grant store
     if (
-      messageData.nixConfig?.packages?.length ||
-      messageData.nixConfig?.flakeUrl
+      this.grantStore &&
+      agentId &&
+      messageData.networkConfig?.allowedDomains?.length
+    ) {
+      for (const domain of messageData.networkConfig.allowedDomains) {
+        await this.grantStore.grant(agentId, domain, null);
+      }
+      logger.info(
+        `Synced network config domains as grants for ${deploymentName}: ${messageData.networkConfig.allowedDomains.join(", ")}`
+      );
+    }
+
+    // Auto-add Nix cache domains as permanent grants when Nix packages are configured
+    if (
+      this.grantStore &&
+      agentId &&
+      (messageData.nixConfig?.packages?.length ||
+        messageData.nixConfig?.flakeUrl)
     ) {
       const NIX_DOMAINS = [
         "cache.nixos.org",
         "channels.nixos.org",
         "releases.nixos.org",
       ];
-      if (!messageData.networkConfig) {
-        messageData.networkConfig = {};
+      for (const domain of NIX_DOMAINS) {
+        await this.grantStore.grant(agentId, domain, null);
       }
-      const existing = messageData.networkConfig.allowedDomains || [];
-      const toAdd = NIX_DOMAINS.filter((d) => !existing.includes(d));
-      if (toAdd.length > 0) {
-        messageData.networkConfig.allowedDomains = [...existing, ...toAdd];
-        logger.info(
-          `Added Nix cache domains to network allowlist for ${deploymentName}: ${toAdd.join(", ")}`
-        );
-      }
-    }
-
-    if (messageData.networkConfig) {
-      await networkConfigStore.set(deploymentName, messageData.networkConfig);
-      logger.debug(
-        `Stored network config for ${deploymentName}: allowed=${messageData.networkConfig.allowedDomains?.length ?? 0}, denied=${messageData.networkConfig.deniedDomains?.length ?? 0}`
+      logger.info(
+        `Added Nix cache domains as grants for ${deploymentName}: ${NIX_DOMAINS.join(", ")}`
       );
     }
 
@@ -403,6 +417,24 @@ export abstract class BaseDeploymentManager {
       logger.debug(
         `Stored MCP config for ${deploymentName}: ${Object.keys(messageData.mcpConfig.mcpServers).length} servers`
       );
+    }
+  }
+
+  /**
+   * Sync networkConfig.allowedDomains to the grant store for a running worker.
+   * Called on every message to pick up domains added via settings page.
+   */
+  async syncNetworkConfigGrants(messageData: MessagePayload): Promise<void> {
+    const agentId = messageData.agentId;
+    if (
+      !this.grantStore ||
+      !agentId ||
+      !messageData.networkConfig?.allowedDomains?.length
+    ) {
+      return;
+    }
+    for (const domain of messageData.networkConfig.allowedDomains) {
+      await this.grantStore.grant(agentId, domain, null);
     }
   }
 
@@ -479,18 +511,6 @@ export abstract class BaseDeploymentManager {
       } catch {
         envVars.NO_PROXY = `${envVars.NO_PROXY},lobu-tempo`;
       }
-    }
-
-    // Git config
-    if (messageData.gitConfig) {
-      const { repoUrl, branch, sparse } = messageData.gitConfig;
-      if (repoUrl) envVars.GIT_REPO_URL = repoUrl;
-      if (branch) envVars.GIT_BRANCH = branch;
-      if (sparse && sparse.length > 0)
-        envVars.GIT_SPARSE_PATHS = sparse.join(",");
-      logger.debug(
-        `Git config for ${deploymentName}: repo=${repoUrl}, branch=${branch || "default"}, sparse=${sparse?.length || 0}`
-      );
     }
 
     // Nix config
@@ -754,19 +774,14 @@ export abstract class BaseDeploymentManager {
     const hasCliBackendProviders = effectiveProviders.some((p) =>
       p.getCliBackendConfig?.()
     );
-    if (hasCliBackendProviders) {
+    if (hasCliBackendProviders && this.grantStore && agentId) {
       const NPM_DOMAINS = ["registry.npmjs.org", "registry.npmmirror.com"];
-      const currentConfig =
-        (await networkConfigStore.get(deploymentName)) ?? {};
-      const existing = currentConfig.allowedDomains || [];
-      const toAdd = NPM_DOMAINS.filter((d) => !existing.includes(d));
-      if (toAdd.length > 0) {
-        currentConfig.allowedDomains = [...existing, ...toAdd];
-        await networkConfigStore.set(deploymentName, currentConfig);
-        logger.info(
-          `Added npm registry domains to network allowlist for ${deploymentName}: ${toAdd.join(", ")}`
-        );
+      for (const domain of NPM_DOMAINS) {
+        await this.grantStore.grant(agentId, domain, null);
       }
+      logger.info(
+        `Added npm registry domains as grants for ${deploymentName}: ${NPM_DOMAINS.join(", ")}`
+      );
     }
 
     return envVars;
@@ -778,7 +793,6 @@ export abstract class BaseDeploymentManager {
   async deleteWorkerDeployment(deploymentName: string): Promise<void> {
     try {
       // Clean up per-deployment configs from stores
-      await networkConfigStore.delete(deploymentName);
       await mcpConfigStore.delete(deploymentName);
 
       // Clean up secret placeholder mappings

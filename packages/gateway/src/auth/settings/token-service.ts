@@ -73,8 +73,8 @@ export interface SettingsTokenPayload {
   prefillMcpServers?: PrefillMcpServer[];
   /** Optional Nix packages to pre-fill in the system packages section */
   prefillNixPackages?: string[];
-  /** Optional domains to pre-fill in the allowed domains list */
-  prefillAllowedDomains?: string[];
+  /** Optional domain patterns to pre-fill as grants */
+  prefillGrants?: string[];
   /** Optional source context for post-install notifications */
   sourceContext?: SettingsSourceContext;
 }
@@ -158,8 +158,8 @@ export interface SettingsTokenOptions {
   prefillMcpServers?: PrefillMcpServer[];
   /** Optional Nix packages to pre-fill in system packages section */
   prefillNixPackages?: string[];
-  /** Optional domains to pre-fill in the allowed domains list */
-  prefillAllowedDomains?: string[];
+  /** Optional domain patterns to pre-fill as grants */
+  prefillGrants?: string[];
   /** Optional source context for post-install notifications */
   sourceContext?: SettingsSourceContext;
 }
@@ -206,8 +206,8 @@ export function generateSettingsToken(
     ...(opts.prefillNixPackages?.length && {
       prefillNixPackages: opts.prefillNixPackages,
     }),
-    ...(opts.prefillAllowedDomains?.length && {
-      prefillAllowedDomains: opts.prefillAllowedDomains,
+    ...(opts.prefillGrants?.length && {
+      prefillGrants: opts.prefillGrants,
     }),
     ...(opts.sourceContext && { sourceContext: opts.sourceContext }),
   };

@@ -7,8 +7,8 @@
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import type { AgentMetadataStore } from "../../auth/agent-metadata-store";
 import {
-  verifySettingsToken,
   type SettingsTokenPayload,
+  verifySettingsToken,
 } from "../../auth/settings/token-service";
 import type { UserAgentsStore } from "../../auth/user-agents-store";
 import type { ScheduledWakeupService } from "../../orchestration/scheduled-wakeup";

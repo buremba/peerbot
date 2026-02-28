@@ -9,6 +9,7 @@ import {
 } from "@lobu/core";
 import type Redis from "ioredis";
 import type { ProviderCatalogService } from "../auth/provider-catalog";
+import type { GrantStore } from "../permissions/grant-store";
 import type {
   BaseDeploymentManager,
   OrchestratorConfig,
@@ -45,11 +46,17 @@ export class Orchestrator {
    */
   async injectCoreServices(
     redisClient?: Redis,
-    providerCatalogService?: ProviderCatalogService
+    providerCatalogService?: ProviderCatalogService,
+    grantStore?: GrantStore
   ): Promise<void> {
     // Inject Redis client into deployment manager for secret placeholder generation
     if (redisClient) {
       this.deploymentManager.setRedisClient(redisClient);
+    }
+
+    // Inject grant store for auto-adding domain grants at deployment time
+    if (grantStore) {
+      this.deploymentManager.setGrantStore(grantStore);
     }
 
     // Inject provider catalog service for per-agent provider resolution

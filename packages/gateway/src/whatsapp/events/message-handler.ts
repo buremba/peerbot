@@ -191,10 +191,6 @@ export class WhatsAppMessageHandler {
     if (settings.networkConfig) {
       mergedOptions.networkConfig = settings.networkConfig;
     }
-
-    if (settings.gitConfig) {
-      mergedOptions.gitConfig = settings.gitConfig;
-    }
     if (settings.nixConfig) {
       mergedOptions.nixConfig = settings.nixConfig;
     }
@@ -806,7 +802,7 @@ export class WhatsAppMessageHandler {
         const ttlLabel = formatSettingsTokenTtl();
 
         await this.client.sendMessage(context.chatJid, {
-          text: `Here's your settings link (valid for ${ttlLabel}):\n${settingsUrl}\n\nUse this page to configure your agent's model, network access, git repository, and more.`,
+          text: `Here's your settings link (valid for ${ttlLabel}):\n${settingsUrl}\n\nUse this page to configure your agent's model, network access, and more.`,
         });
         logger.info(`Sent settings link to user ${userId}`);
       } catch (error) {
@@ -920,13 +916,8 @@ The user sent a voice message but transcription failed. Let them know and sugges
     const agentOptions = await this.getAgentOptionsWithSettings(agentId);
 
     // Extract top-level configs from agentOptions for orchestration
-    const {
-      networkConfig,
-      gitConfig,
-      nixConfig,
-      mcpServers,
-      ...remainingOptions
-    } = agentOptions;
+    const { networkConfig, nixConfig, mcpServers, ...remainingOptions } =
+      agentOptions;
 
     const payload: MessagePayload = {
       platform: "whatsapp",
@@ -958,7 +949,6 @@ The user sent a voice message but transcription failed. Let them know and sugges
       agentOptions: remainingOptions,
       // Set top-level configs for orchestration
       networkConfig,
-      gitConfig,
       nixConfig,
       mcpConfig: mcpServers ? { mcpServers } : undefined,
     };

@@ -341,11 +341,31 @@ export class OpenClawWorker implements WorkerExecutor {
       string,
       unknown
     >;
-    const modelRef =
-      typeof rawOptions.model === "string" ? rawOptions.model : "";
     const verboseLogging = rawOptions.verboseLogging === true;
 
     this.progressProcessor.setVerboseLogging(verboseLogging);
+
+    // Fetch session context BEFORE model resolution so AGENT_DEFAULT_PROVIDER
+    // is available when resolveModelRef() needs a fallback provider.
+    const context = await getOpenClawSessionContext();
+    const pc = context.providerConfig;
+    if (pc.credentialEnvVarName) {
+      process.env.CREDENTIAL_ENV_VAR_NAME = pc.credentialEnvVarName;
+    }
+    if (pc.defaultProvider) {
+      process.env.AGENT_DEFAULT_PROVIDER = pc.defaultProvider;
+    }
+    if (pc.defaultModel) {
+      process.env.AGENT_DEFAULT_MODEL = pc.defaultModel;
+    }
+    if (pc.providerBaseUrlMappings) {
+      for (const [envVar, url] of Object.entries(pc.providerBaseUrlMappings)) {
+        process.env[envVar] = url;
+      }
+    }
+
+    const modelRef =
+      typeof rawOptions.model === "string" ? rawOptions.model : "";
 
     const { provider: rawProvider, modelId } = resolveModelRef(modelRef);
     // Map gateway slug to model-registry provider name (e.g. "z-ai" → "zai")
@@ -487,27 +507,6 @@ export class OpenClawWorker implements WorkerExecutor {
     const gatewayUrl = process.env.DISPATCHER_URL ?? "";
     const workerToken = process.env.WORKER_TOKEN ?? "";
 
-    // Fetch session context from gateway (includes dynamic provider config)
-    const context = await getOpenClawSessionContext();
-
-    // Apply dynamic provider config from session context to process.env
-    // so that existing code paths (resolveModelRef, credential injection) work.
-    const pc = context.providerConfig;
-    if (pc.credentialEnvVarName) {
-      process.env.CREDENTIAL_ENV_VAR_NAME = pc.credentialEnvVarName;
-    }
-    if (pc.defaultProvider) {
-      process.env.AGENT_DEFAULT_PROVIDER = pc.defaultProvider;
-    }
-    if (pc.defaultModel) {
-      process.env.AGENT_DEFAULT_MODEL = pc.defaultModel;
-    }
-    if (pc.providerBaseUrlMappings) {
-      for (const [envVar, url] of Object.entries(pc.providerBaseUrlMappings)) {
-        process.env[envVar] = url;
-      }
-    }
-
     // Credential injection — must happen AFTER session context applies
     // CREDENTIAL_ENV_VAR_NAME to process.env (above).
     const authStorage = new AuthStorage();
@@ -548,12 +547,27 @@ export class OpenClawWorker implements WorkerExecutor {
         : undefined;
     if (cliBackends?.length) {
       const agentList = cliBackends
-        .map(
-          (b) =>
-            `- ${b.name}: \`${b.command} ${(b.args || []).join(" ")} "prompt"\``
-        )
-        .join("\n");
-      instructionParts.push(`## Available Coding Agents\n${agentList}`);
+        .map((b) => {
+          const cmd = `${b.command} ${(b.args || []).join(" ")}`;
+          const aliases = [b.name, (b as any).providerId].filter(
+            (v, i, a) => v && a.indexOf(v) === i
+          );
+          return `### ${aliases.join(" / ")}
+Run via Bash exactly as shown (do NOT modify the command):
+\`\`\`bash
+${cmd} "YOUR_PROMPT_HERE"
+\`\`\``;
+        })
+        .join("\n\n");
+      instructionParts.push(
+        `## Available Coding Agents
+
+You have access to the following AI coding agents. When the user mentions any of these by name (e.g. "use claude", "ask chatgpt"), you MUST run the exact command shown below via the Bash tool. Do NOT attempt to install or locate the CLI yourself — the command handles everything.
+
+${agentList}
+
+Replace "YOUR_PROMPT_HERE" with the user's request. These agents can read/write files, install packages, and run commands in the working directory.`
+      );
     }
 
     instructionParts.push(`## Conversation History

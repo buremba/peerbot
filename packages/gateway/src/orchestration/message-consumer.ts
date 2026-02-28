@@ -12,8 +12,8 @@ import {
   SpanStatusCode,
 } from "@lobu/core";
 import * as Sentry from "@sentry/node";
-import type { ProviderCatalogService } from "../auth/provider-catalog";
 import { platformAuthRegistry } from "../auth/platform-auth";
+import type { ProviderCatalogService } from "../auth/provider-catalog";
 import type {
   IMessageQueue,
   QueueJob as SharedQueueJob,
@@ -21,8 +21,8 @@ import type {
 import { RedisQueue, type RedisQueueConfig } from "../infrastructure/queue";
 import { SystemMessageLimiter } from "../infrastructure/redis/system-message-limiter";
 import {
-  buildCanonicalConversationKey,
   type BaseDeploymentManager,
+  buildCanonicalConversationKey,
   generateDeploymentName,
   type MessagePayload,
   type OrchestratorConfig,
@@ -589,6 +589,8 @@ export class MessageConsumer {
             { traceId, conversationId, deploymentName },
             "Existing thread - ensuring worker exists"
           );
+          // Sync network config domains to grant store (picks up settings changes)
+          await this.deploymentManager.syncNetworkConfigGrants(dataWithTrace);
           try {
             await this.deploymentManager.scaleDeployment(deploymentName, 1);
             logger.info(

@@ -8,18 +8,18 @@ import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import { createLogger } from "@lobu/core";
 import type { AgentMetadataStore } from "../../auth/agent-metadata-store";
 import type { ProviderCatalogService } from "../../auth/provider-catalog";
+import { collectModelValues } from "../../auth/provider-model-options";
 import type { ProviderStatus } from "../../auth/provider-status";
 import type { AgentSettings, AgentSettingsStore } from "../../auth/settings";
 import type { AuthProfilesManager } from "../../auth/settings/auth-profiles-manager";
 import {
-  verifySettingsToken,
   type SettingsTokenPayload,
+  verifySettingsToken,
 } from "../../auth/settings/token-service";
 import type { UserAgentsStore } from "../../auth/user-agents-store";
 import type { WorkerConnectionManager } from "../../gateway/connection-manager";
 import type { IMessageQueue } from "../../infrastructure/queue";
-import type { GitHubAppAuth } from "../../modules/git-filesystem/github-app";
-import { collectModelValues } from "../../auth/provider-model-options";
+import type { GrantStore } from "../../permissions/grant-store";
 
 const TAG = "Agents";
 const ErrorResponse = z.object({ error: z.string() });
@@ -50,25 +50,6 @@ const getConfigRoute = createRoute({
                 systemConnected: z.boolean(),
               })
             ),
-            github: z.object({
-              configured: z.boolean(),
-              installUrl: z.string().nullable(),
-              installations: z.array(
-                z.object({
-                  id: z.number(),
-                  account: z.string(),
-                  accountType: z.string(),
-                  avatarUrl: z.string(),
-                })
-              ),
-              user: z
-                .object({
-                  login: z.string(),
-                  id: z.number(),
-                  avatarUrl: z.string(),
-                })
-                .nullable(),
-            }),
           }),
         },
       },
@@ -95,20 +76,6 @@ const updateConfigRoute = createRoute({
             soulMd: z.string().optional(),
             userMd: z.string().optional(),
             identityMd: z.string().optional(),
-            networkConfig: z
-              .object({
-                allowedDomains: z.array(z.string()).optional(),
-                deniedDomains: z.array(z.string()).optional(),
-              })
-              .optional(),
-            gitConfig: z
-              .object({
-                repoUrl: z.string().optional(),
-                branch: z.string().optional(),
-                sparse: z.array(z.string()).optional(),
-              })
-              .nullable()
-              .optional(),
             nixConfig: z
               .object({
                 flakeUrl: z.string().optional(),
@@ -144,10 +111,6 @@ const updateConfigRoute = createRoute({
               })
               .optional(),
             verboseLogging: z.boolean().optional(),
-            githubUser: z
-              .null()
-              .optional()
-              .openapi({ description: "Set to null to disconnect GitHub" }),
           }),
         },
       },
@@ -177,6 +140,21 @@ export interface ProviderCredentialStore {
   hasCredentials(agentId: string): Promise<boolean>;
 }
 
+interface NixPackageSuggestion {
+  name: string;
+  pname?: string;
+  description?: string;
+}
+
+interface NixSearchContext {
+  username: string;
+  password: string;
+  alias: string;
+  expiresAt: number;
+}
+
+let nixSearchContextCache: NixSearchContext | null = null;
+
 export interface AgentConfigRoutesConfig {
   agentSettingsStore: AgentSettingsStore;
   userAgentsStore?: UserAgentsStore;
@@ -188,11 +166,9 @@ export interface AgentConfigRoutesConfig {
   providerConnectedOverrides?: Record<string, boolean>;
   providerCatalogService?: ProviderCatalogService;
   authProfilesManager?: AuthProfilesManager;
-  githubAuth?: GitHubAppAuth;
-  githubAppInstallUrl?: string;
-  githubOAuthClientId?: string;
   queue?: IMessageQueue;
   connectionManager?: WorkerConnectionManager;
+  grantStore?: GrantStore;
 }
 
 export function createAgentConfigRoutes(
@@ -288,62 +264,10 @@ export function createAgentConfigRoutes(
       }
     }
 
-    // GitHub status
-    const github = {
-      configured: !!config.githubAuth,
-      installUrl: config.githubAppInstallUrl || null,
-      installations: [] as any[],
-      user: null as any,
-    };
-
-    const githubUser = (settings as any)?.githubUser;
-    if (githubUser) {
-      github.user = {
-        login: githubUser.login,
-        id: githubUser.id,
-        avatarUrl: githubUser.avatarUrl,
-      };
-    }
-
-    if (config.githubAuth) {
-      if (githubUser?.accessToken) {
-        const resp = await fetch("https://api.github.com/user/installations", {
-          headers: {
-            Authorization: `Bearer ${githubUser.accessToken}`,
-            Accept: "application/vnd.github+json",
-            "User-Agent": "Lobu",
-          },
-        });
-        if (resp.ok) {
-          const data = (await resp.json()) as {
-            installations: Array<{
-              id: number;
-              account: { login: string; type: string; avatar_url: string };
-            }>;
-          };
-          github.installations = data.installations.map((i) => ({
-            id: i.id,
-            account: i.account.login,
-            accountType: i.account.type,
-            avatarUrl: i.account.avatar_url,
-          }));
-        }
-      } else {
-        const installations = await config.githubAuth.listInstallations();
-        github.installations = installations.map((i) => ({
-          id: i.id,
-          account: i.account.login,
-          accountType: i.account.type,
-          avatarUrl: i.account.avatar_url,
-        }));
-      }
-    }
-
     return c.json({
       agentId,
       settings: settings || {},
       providers,
-      github,
     });
   });
 
@@ -359,18 +283,6 @@ export function createAgentConfigRoutes(
       const body = c.req.valid("json");
 
       const updates: Partial<AgentSettings> = {};
-
-      // Handle explicit null for githubUser (disconnect)
-      if (body.githubUser === null) {
-        updates.githubUser = undefined;
-        delete body.githubUser;
-      }
-
-      // Handle explicit null for gitConfig (clear)
-      if (body.gitConfig === null) {
-        updates.gitConfig = undefined;
-        delete body.gitConfig;
-      }
 
       // Handle explicit null for nixConfig (clear)
       if (body.nixConfig === null) {
@@ -411,6 +323,27 @@ export function createAgentConfigRoutes(
       return c.json({ success: true, agentId });
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : "Invalid" }, 400);
+    }
+  });
+
+  // GET /packages/search?q=python
+  app.get("/packages/search", async (c): Promise<any> => {
+    const agentId = c.req.param("agentId") || "";
+    const token = c.req.query("token");
+    const payload = await verifyToken(token, agentId);
+    if (!payload) return c.json({ error: "Unauthorized" }, 401);
+
+    const query = (c.req.query("q") || "").trim();
+    if (query.length < 2) return c.json({ packages: [] });
+
+    try {
+      const packages = await searchNixPackages(query);
+      return c.json({ packages });
+    } catch (error) {
+      logger.warn("Nix package search failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return c.json({ packages: [] });
     }
   });
 
@@ -541,7 +474,233 @@ export function createAgentConfigRoutes(
     }
   });
 
+  // ===== Grant Endpoints =====
+
+  if (config.grantStore) {
+    const grantStore = config.grantStore;
+
+    // GET /grants - List all active grants
+    app.get("/grants", async (c) => {
+      const agentId = c.req.param("agentId") || "";
+      const token = c.req.query("token");
+      const payload = await verifyToken(token, agentId);
+      if (!payload) return c.json({ error: "Unauthorized" }, 401);
+
+      const grants = await grantStore.listGrants(agentId);
+      return c.json(grants);
+    });
+
+    // POST /grants - Create a grant
+    app.post("/grants", async (c) => {
+      const agentId = c.req.param("agentId") || "";
+      const token = c.req.query("token");
+      const payload = await verifyToken(token, agentId);
+      if (!payload) return c.json({ error: "Unauthorized" }, 401);
+
+      const body = await c.req.json<{
+        pattern: string;
+        expiresAt: number | null;
+        denied?: boolean;
+      }>();
+      if (!body.pattern) {
+        return c.json({ error: "pattern is required" }, 400);
+      }
+
+      await grantStore.grant(
+        agentId,
+        body.pattern,
+        body.expiresAt ?? null,
+        body.denied
+      );
+      logger.info("Grant created via settings API", {
+        agentId,
+        pattern: body.pattern,
+        expiresAt: body.expiresAt,
+      });
+      return c.json({ success: true });
+    });
+
+    // DELETE /grants/:pattern - Revoke a grant
+    app.delete("/grants/:pattern", async (c) => {
+      const agentId = c.req.param("agentId") || "";
+      const pattern = decodeURIComponent(c.req.param("pattern") || "");
+      const token = c.req.query("token");
+      const payload = await verifyToken(token, agentId);
+      if (!payload) return c.json({ error: "Unauthorized" }, 401);
+
+      await grantStore.revoke(agentId, pattern);
+      logger.info("Grant revoked via settings API", { agentId, pattern });
+      return c.json({ success: true });
+    });
+  }
+
   return app;
+}
+
+async function resolveNixSearchContext(): Promise<NixSearchContext> {
+  if (nixSearchContextCache && nixSearchContextCache.expiresAt > Date.now()) {
+    return nixSearchContextCache;
+  }
+
+  const bundleResp = await fetch("https://search.nixos.org/bundle.js");
+  if (!bundleResp.ok) {
+    throw new Error(`Failed to fetch Nix search bundle: ${bundleResp.status}`);
+  }
+  const bundleText = await bundleResp.text();
+
+  const userMatch = bundleText.match(/elasticsearchUsername:"([^"]+)"/);
+  const passMatch = bundleText.match(/elasticsearchPassword:"([^"]+)"/);
+  const versionMatch = bundleText.match(
+    /elasticsearchMappingSchemaVersion:parseInt\("(\d+)"\)/
+  );
+  const channelsMatch = bundleText.match(
+    /nixosChannels:JSON\.parse\('([^']+)'\)/
+  );
+
+  if (!userMatch?.[1] || !passMatch?.[1]) {
+    throw new Error("Unable to parse Nix search credentials");
+  }
+
+  let preferredAlias: string | undefined;
+  if (versionMatch?.[1] && channelsMatch?.[1]) {
+    try {
+      const channelsData = JSON.parse(channelsMatch[1]) as {
+        default?: string;
+        channels?: Array<{ id?: string }>;
+      };
+      const unstableChannel = channelsData.channels?.find(
+        (channel) => channel.id === "unstable"
+      )?.id;
+      const channelId = unstableChannel || channelsData.default || "unstable";
+      preferredAlias = `latest-${versionMatch[1]}-nixos-${channelId}`;
+    } catch {
+      preferredAlias = undefined;
+    }
+  }
+
+  const authHeader = `Basic ${Buffer.from(
+    `${userMatch[1]}:${passMatch[1]}`
+  ).toString("base64")}`;
+  const aliasesResp = await fetch(
+    "https://search.nixos.org/backend/_cat/aliases?h=alias",
+    {
+      headers: {
+        Authorization: authHeader,
+      },
+    }
+  );
+
+  let alias = preferredAlias;
+  if (aliasesResp.ok) {
+    const aliasesText = await aliasesResp.text();
+    const aliases = aliasesText
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    alias =
+      aliases.find((value) => /^latest-\d+-nixos-unstable$/.test(value)) ||
+      alias ||
+      aliases.find((value) => /^latest-\d+-nixos-[\w.-]+$/.test(value));
+  }
+
+  if (!alias) {
+    throw new Error("Unable to resolve Nix search alias");
+  }
+
+  nixSearchContextCache = {
+    username: userMatch[1],
+    password: passMatch[1],
+    alias,
+    expiresAt: Date.now() + 10 * 60 * 1000,
+  };
+
+  return nixSearchContextCache;
+}
+
+async function searchNixPackages(
+  query: string
+): Promise<NixPackageSuggestion[]> {
+  const trimmedQuery = query.trim();
+  if (!trimmedQuery) return [];
+
+  const runSearch = async (context: NixSearchContext) => {
+    const authHeader = `Basic ${Buffer.from(
+      `${context.username}:${context.password}`
+    ).toString("base64")}`;
+
+    const searchResp = await fetch(
+      `https://search.nixos.org/backend/${encodeURIComponent(context.alias)}/_search`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: authHeader,
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify({
+          size: 10,
+          _source: [
+            "package_attr_name",
+            "package_pname",
+            "package_description",
+          ],
+          query: {
+            multi_match: {
+              query: trimmedQuery,
+              fields: [
+                "package_attr_name^4",
+                "package_pname^3",
+                "package_description",
+              ],
+            },
+          },
+        }),
+      }
+    );
+
+    if (!searchResp.ok) {
+      throw new Error(`Nix search failed: ${searchResp.status}`);
+    }
+
+    const data = (await searchResp.json()) as {
+      hits?: {
+        hits?: Array<{
+          _source?: {
+            package_attr_name?: string;
+            package_pname?: string;
+            package_description?: string;
+          };
+        }>;
+      };
+    };
+
+    const seen = new Set<string>();
+    const results: NixPackageSuggestion[] = [];
+    for (const hit of data.hits?.hits || []) {
+      const source = hit._source;
+      const name = source?.package_attr_name?.trim();
+      if (!name || seen.has(name)) continue;
+      seen.add(name);
+      results.push({
+        name,
+        pname: source?.package_pname || undefined,
+        description: source?.package_description || undefined,
+      });
+    }
+
+    return results;
+  };
+
+  let context = await resolveNixSearchContext();
+  try {
+    return await runSearch(context);
+  } catch {
+    // Retry once with fresh context in case alias changed.
+    nixSearchContextCache = null;
+    context = await resolveNixSearchContext();
+    return runSearch(context);
+  }
 }
 
 // --- Validation ---
@@ -577,37 +736,6 @@ async function validateSettings(
       }
       settings.model = cleanModel;
     }
-  }
-
-  if (input.networkConfig) {
-    settings.networkConfig = {
-      allowedDomains: input.networkConfig.allowedDomains
-        ?.filter((d) => typeof d === "string" && d.trim())
-        .map((d) => d.trim().toLowerCase()),
-      deniedDomains: input.networkConfig.deniedDomains
-        ?.filter((d) => typeof d === "string" && d.trim())
-        .map((d) => d.trim().toLowerCase()),
-    };
-  }
-
-  if (input.gitConfig) {
-    const repoUrl = input.gitConfig.repoUrl?.trim();
-    const branch = input.gitConfig.branch?.trim();
-    const sparse = input.gitConfig.sparse
-      ?.filter((p): p is string => typeof p === "string" && !!p.trim())
-      .map((p) => p.trim());
-
-    if (!repoUrl) {
-      throw new Error("gitConfig.repoUrl is required when gitConfig is set");
-    }
-    if (!repoUrl.startsWith("https://") && !repoUrl.startsWith("git@")) {
-      throw new Error("Repository URL must start with https:// or git@");
-    }
-    settings.gitConfig = {
-      repoUrl,
-      branch: branch || undefined,
-      sparse: sparse?.length ? sparse : undefined,
-    };
   }
 
   if (input.nixConfig) {

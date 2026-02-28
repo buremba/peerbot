@@ -71,9 +71,6 @@ export interface ProviderMeta {
 }
 
 export interface SettingsPageOptions {
-  githubAppConfigured: boolean;
-  githubAppInstallUrl?: string;
-  githubOAuthConfigured?: boolean;
   providers?: ProviderMeta[];
   catalogProviders?: ProviderMeta[];
   providerModelOptions?: Record<string, ModelOption[]>;
@@ -96,9 +93,6 @@ export function renderSettingsPage(
   options?: SettingsPageOptions
 ): string {
   const s: Partial<AgentSettings> = settings || {};
-  const githubAppConfigured = options?.githubAppConfigured ?? false;
-  const githubAppInstallUrl = options?.githubAppInstallUrl ?? "";
-  const githubOAuthConfigured = options?.githubOAuthConfigured ?? false;
   // Installed providers (already resolved in order by settings.ts)
   const providers: ProviderMeta[] = options?.providers ?? [];
 
@@ -110,13 +104,35 @@ export function renderSettingsPage(
 
   const providerOrder = providers.map((p) => p.id);
 
-  const envVarsValue = (() => {
+  const initialSecrets = (() => {
     const existingEnvVars = s.envVars || {};
     const prefillKeys = payload.prefillEnvVars || [];
-    const allKeys = new Set([...Object.keys(existingEnvVars), ...prefillKeys]);
-    return Array.from(allKeys)
-      .map((k) => `${k}=${existingEnvVars[k] || ""}`)
-      .join("\n");
+    const seen = new Set<string>();
+    const rows: Array<{ key: string; value: string }> = [];
+
+    for (const [rawKey, rawValue] of Object.entries(existingEnvVars)) {
+      const key = rawKey.trim();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      rows.push({
+        key,
+        value:
+          typeof rawValue === "string"
+            ? rawValue
+            : rawValue == null
+              ? ""
+              : String(rawValue),
+      });
+    }
+
+    for (const rawKey of prefillKeys) {
+      const key = (rawKey || "").trim();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      rows.push({ key, value: "" });
+    }
+
+    return rows;
   })();
 
   const showSwitcher = options?.showSwitcher ?? false;
@@ -124,13 +140,21 @@ export function renderSettingsPage(
   const agentName = options?.agentName ?? "";
   const agentDescription = options?.agentDescription ?? "";
   const hasChannelId = options?.hasChannelId ?? false;
+  const initialNixPackages = (() => {
+    const existing = s.nixConfig?.packages || [];
+    const prefill = payload.prefillNixPackages || [];
+    return Array.from(
+      new Set(
+        [...existing, ...prefill]
+          .map((pkg) => (typeof pkg === "string" ? pkg.trim() : ""))
+          .filter(Boolean)
+      )
+    );
+  })();
 
   const initialState = {
     token,
     agentId: payload.agentId,
-    githubOAuthConfigured,
-    githubAppConfigured,
-    githubAppInstallUrl,
     PROVIDERS: Object.fromEntries(
       providers.map((p) => [
         p.id,
@@ -158,12 +182,18 @@ export function renderSettingsPage(
     initialMcpServers: s.mcpServers || {},
     prefillSkills: payload.prefillSkills || [],
     prefillMcpServers: payload.prefillMcpServers || [],
-    prefillAllowedDomains: payload.prefillAllowedDomains || [],
+    prefillGrants: payload.prefillGrants || [],
     prefillNixPackages: payload.prefillNixPackages || [],
     prefillEnvVars: payload.prefillEnvVars || [],
+    initialSecrets,
+    initialNixPackages,
     agentName,
     agentDescription,
     hasChannelId,
+    verboseLogging: !!s.verboseLogging,
+    identityMd: s.identityMd || "",
+    soulMd: s.soulMd || "",
+    userMd: s.userMd || "",
   };
 
   return `<!DOCTYPE html>
@@ -307,11 +337,11 @@ ${agents
         </div>
       </div>
       <div class="space-y-2 mb-3">
-        <template x-if="prefillAllowedDomains.length > 0">
+        <template x-if="prefillGrants.length > 0">
           <div>
             <p class="text-xs font-medium text-amber-800 mb-1">&#127760; Network Access Domains</p>
             <div class="flex flex-wrap gap-1">
-              <template x-for="d in prefillAllowedDomains" :key="d">
+              <template x-for="d in prefillGrants" :key="d">
                 <span class="inline-block px-1.5 py-0.5 bg-white border border-amber-200 rounded text-xs font-mono text-amber-900" x-text="d"></span>
               </template>
             </div>
@@ -329,7 +359,7 @@ ${agents
         </template>
         <template x-if="prefillEnvVars.length > 0">
           <div>
-            <p class="text-xs font-medium text-amber-800 mb-1">&#128203; Environment Variables</p>
+            <p class="text-xs font-medium text-amber-800 mb-1">&#128203; Secrets</p>
             <div class="flex flex-wrap gap-1">
               <template x-for="v in prefillEnvVars" :key="v">
                 <span class="inline-block px-1.5 py-0.5 bg-white border border-amber-200 rounded text-xs font-mono text-amber-900" x-text="v"></span>
@@ -370,7 +400,7 @@ ${agents
           class="px-4 py-2 text-xs font-semibold rounded-lg bg-amber-600 text-white hover:bg-amber-700 transition-all disabled:opacity-60"
           x-text="approvingPrefills ? 'Approving...' : 'Approve All'">
         </button>
-        <button type="button" @click="prefillBannerDismissed = true; advancedOpen = true"
+        <button type="button" @click="prefillBannerDismissed = true; var u = new URL(window.location.href); u.searchParams.set('dismissed','1'); window.history.replaceState({}, '', u.toString())"
           class="px-4 py-2 text-xs font-medium rounded-lg border border-amber-300 text-amber-800 hover:bg-amber-100 transition-all">
           Dismiss
         </button>
@@ -379,13 +409,13 @@ ${agents
 
     <form @submit.prevent="saveSettings()" @keydown.enter="if ($event.target.tagName !== 'TEXTAREA' && $event.target.type !== 'submit') $event.preventDefault()" class="space-y-3">
       <!-- Model Selection -->
-      <div class="bg-gray-50 rounded-lg p-3" x-data="{ open: ${providers.length === 0 ? "true" : "false"} }">
-        <h3 class="flex items-center gap-2 text-sm font-medium text-gray-800 cursor-pointer select-none" @click="open = !open">
+      <div class="bg-gray-50 rounded-lg p-3">
+        <h3 class="flex items-center gap-2 text-sm font-medium text-gray-800 cursor-pointer select-none" @click="toggleSection('model')">
           <span>&#129302;</span>
-          Model
-          <span class="ml-auto text-xs text-gray-400 transition-transform" :class="open ? '' : 'rotate-[-90deg]'">&#9660;</span>
+          Models
+          <span class="ml-auto text-xs text-gray-400 transition-transform" :class="openSections.model ? '' : 'rotate-[-90deg]'">&#9660;</span>
         </h3>
-        <div x-show="open" x-transition class="pt-3">
+        <div x-show="openSections.model" x-transition class="pt-3">
           <div id="provider-list">
           ${
             providers.length === 0
@@ -671,72 +701,48 @@ ${agents
         </div>
       </div>
 
-      <!-- Agent Instructions -->
-      <div class="bg-gray-50 rounded-lg p-3" x-data="{ open: false }">
-        <h3 class="flex items-center gap-2 text-sm font-medium text-gray-800 cursor-pointer select-none" @click="open = !open">
+      <!-- Instructions -->
+      <div class="bg-gray-50 rounded-lg p-3">
+        <h3 class="flex items-center gap-2 text-sm font-medium text-gray-800 cursor-pointer select-none" @click="toggleSection('instructions')">
           <span>&#128220;</span>
-          Agent Instructions
-          <span class="ml-auto text-xs text-gray-400 transition-transform" :class="open ? '' : 'rotate-[-90deg]'">&#9660;</span>
+          Instructions
+          <span class="ml-auto text-xs text-gray-400 transition-transform" :class="openSections.instructions ? '' : 'rotate-[-90deg]'">&#9660;</span>
         </h3>
-        <div x-show="open" x-transition class="pt-3 space-y-3">
-          <p class="text-xs text-gray-500">Define your agent's identity, behavior rules, and user context. Supports Markdown with optional YAML frontmatter (auto-stripped).</p>
+        <div x-show="openSections.instructions" x-transition class="pt-3 space-y-3">
           <div>
             <label class="block text-xs font-medium text-gray-700 mb-1">IDENTITY.md <span class="text-gray-400">- Who the agent is</span></label>
-            <textarea id="identityMd" name="identityMd" placeholder="You are a helpful coding assistant named Alex.&#10;You specialize in TypeScript and React development." class="w-full px-3 py-2 border border-gray-200 rounded-lg text-xs font-mono min-h-[60px] resize-y focus:border-slate-600 focus:ring-1 focus:ring-slate-200 outline-none">${escapeHtml(s.identityMd || "")}</textarea>
+            <textarea id="identityMd" name="identityMd" x-model="identityMd" placeholder="You are a helpful coding assistant named Alex.&#10;You specialize in TypeScript and React development." class="w-full px-3 py-2 border border-gray-200 rounded-lg text-xs font-mono min-h-[60px] resize-y focus:border-slate-600 focus:ring-1 focus:ring-slate-200 outline-none"></textarea>
           </div>
           <div>
             <label class="block text-xs font-medium text-gray-700 mb-1">SOUL.md <span class="text-gray-400">- Behavior rules &amp; instructions</span></label>
-            <textarea id="soulMd" name="soulMd" placeholder="Always write tests before implementation.&#10;Prefer functional programming patterns.&#10;Never commit directly to main branch." class="w-full px-3 py-2 border border-gray-200 rounded-lg text-xs font-mono min-h-[80px] resize-y focus:border-slate-600 focus:ring-1 focus:ring-slate-200 outline-none">${escapeHtml(s.soulMd || "")}</textarea>
-            <!-- Browse Souls from ClawHub -->
-            <div class="mt-2">
-              <div class="relative">
-                <input type="text" x-model="soulSearch" @input.debounce.300ms="searchSouls()" @focus="if (!soulSearch.trim()) searchSouls(); else soulSearchVisible = true" placeholder="Browse community souls from ClawHub..." class="w-full px-3 py-1.5 border border-gray-200 rounded-lg text-xs focus:border-slate-600 focus:ring-1 focus:ring-slate-200 outline-none" :disabled="soulSearchLoading">
-                <div x-show="soulSearchVisible" @click.away="soulSearchVisible = false" class="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-48 overflow-y-auto">
-                  <template x-for="item in soulSearchResults" :key="item.slug">
-                    <div class="p-2 hover:bg-gray-50 cursor-pointer border-b border-gray-100 last:border-b-0" @click="loadSoul(item.slug)">
-                      <div class="flex items-center justify-between">
-                        <div class="flex-1 min-w-0">
-                          <p class="text-xs font-medium text-gray-800 truncate" x-text="item.displayName || item.slug"></p>
-                          <p class="text-xs text-gray-500 truncate" x-text="(item.summary || '').substring(0, 80)"></p>
-                        </div>
-                        <span class="text-xs text-slate-600 ml-2 shrink-0">Use</span>
-                      </div>
-                    </div>
-                  </template>
-                  <template x-if="soulSearchResults.length === 0 && soulSearchVisible">
-                    <div class="p-2 text-xs text-gray-500" x-text="soulSearchLoading ? 'Loading...' : 'No souls found'"></div>
-                  </template>
-                </div>
-              </div>
-              <p class="text-xs text-gray-400 mt-1">Browse <a href="https://clawhub.ai/souls" target="_blank" class="text-blue-600 hover:underline">ClawHub souls</a> to use as a starting point. Content will be loaded into the textarea above for editing.</p>
-            </div>
+            <textarea id="soulMd" name="soulMd" x-model="soulMd" placeholder="Always write tests before implementation.&#10;Prefer functional programming patterns.&#10;Never commit directly to main branch." class="w-full px-3 py-2 border border-gray-200 rounded-lg text-xs font-mono min-h-[80px] resize-y focus:border-slate-600 focus:ring-1 focus:ring-slate-200 outline-none"></textarea>
           </div>
           <div>
             <label class="block text-xs font-medium text-gray-700 mb-1">USER.md <span class="text-gray-400">- User-specific context</span></label>
-            <textarea id="userMd" name="userMd" placeholder="The user prefers concise responses.&#10;Their timezone is UTC+3.&#10;They use VS Code as their IDE." class="w-full px-3 py-2 border border-gray-200 rounded-lg text-xs font-mono min-h-[60px] resize-y focus:border-slate-600 focus:ring-1 focus:ring-slate-200 outline-none">${escapeHtml(s.userMd || "")}</textarea>
+            <textarea id="userMd" name="userMd" x-model="userMd" placeholder="The user prefers concise responses.&#10;Their timezone is UTC+3.&#10;They use VS Code as their IDE." class="w-full px-3 py-2 border border-gray-200 rounded-lg text-xs font-mono min-h-[60px] resize-y focus:border-slate-600 focus:ring-1 focus:ring-slate-200 outline-none"></textarea>
           </div>
         </div>
       </div>
 
-      <!-- Integrations Section (Skills + MCP) -->
-      <div class="bg-gray-50 rounded-lg p-3" x-data="{ open: false }">
-        <h3 class="flex items-center gap-2 text-sm font-medium text-gray-800 cursor-pointer select-none" @click="open = !open">
+      <!-- Skills and MCP Section -->
+      <div class="bg-gray-50 rounded-lg p-3">
+        <h3 class="flex items-center gap-2 text-sm font-medium text-gray-800 cursor-pointer select-none" @click="toggleSection('integrations')">
           <span>&#128268;</span>
-          Integrations
+          Skills and MCP
           <span x-show="skillsLoading || mcpsLoading" class="animate-spin text-slate-600">&#8635;</span>
           <span x-show="skills.length + mcpServerIds.length > 0" class="text-xs text-gray-400" x-text="'(' + (skills.length + mcpServerIds.length) + ')'"></span>
-          <span class="ml-auto text-xs text-gray-400 transition-transform" :class="open ? '' : 'rotate-[-90deg]'">&#9660;</span>
+          <span class="ml-auto text-xs text-gray-400 transition-transform" :class="openSections.integrations ? '' : 'rotate-[-90deg]'">&#9660;</span>
         </h3>
-        <div x-show="open" x-transition class="pt-3 space-y-3">
+        <div x-show="openSections.integrations" x-transition class="pt-3 space-y-3">
 
           <!-- Errors -->
           <div x-show="skillsError" x-transition class="bg-red-100 text-red-800 px-3 py-2 rounded-lg text-xs" x-text="skillsError"></div>
           <div x-show="mcpsError" x-transition class="bg-red-100 text-red-800 px-3 py-2 rounded-lg text-xs" x-text="mcpsError"></div>
 
-          <!-- Installed Integrations List -->
+          <!-- Installed Skills and MCP List -->
           <div class="space-y-2">
             <template x-if="skills.length === 0 && mcpServerIds.length === 0">
-              <p class="text-xs text-gray-500">No integrations configured yet.</p>
+              <p class="text-xs text-gray-500">No skills or MCP servers configured yet.</p>
             </template>
             <template x-for="skill in skills" :key="'skill-' + skill.repo">
               <div class="flex items-center justify-between p-2 bg-white rounded border border-gray-100">
@@ -779,7 +785,7 @@ ${agents
           <!-- Unified Search -->
           <div class="border-t border-gray-100 pt-2">
             <div class="relative mb-2">
-              <input type="text" x-model="integrationSearch" @input.debounce.300ms="searchIntegrations()" @focus="if (integrationSearch.trim() && !integrationSearch.trim().startsWith('http') && !integrationSearch.trim().includes('://')) integrationSearchVisible = true" placeholder="Search integrations or paste MCP URL..." class="w-full px-3 py-2 border border-gray-200 rounded-lg text-xs focus:border-slate-600 focus:ring-1 focus:ring-slate-200 outline-none">
+              <input type="text" x-model="integrationSearch" @input.debounce.300ms="searchIntegrations()" @focus="if (integrationSearch.trim() && !integrationSearch.trim().startsWith('http') && !integrationSearch.trim().includes('://')) integrationSearchVisible = true" placeholder="Search skills/MCP or paste MCP URL..." class="w-full px-3 py-2 border border-gray-200 rounded-lg text-xs focus:border-slate-600 focus:ring-1 focus:ring-slate-200 outline-none">
               <div x-show="integrationSearchVisible" @click.away="integrationSearchVisible = false" class="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-48 overflow-y-auto">
                 <template x-for="result in integrationSearchResults" :key="result.type + '-' + result.id">
                   <div class="p-2 hover:bg-gray-50 cursor-pointer border-b border-gray-100 last:border-b-0" @click="addIntegrationFromSearch(result)">
@@ -799,7 +805,7 @@ ${agents
                   </div>
                 </template>
                 <template x-if="integrationSearchResults.length === 0 && integrationSearchVisible">
-                  <div class="p-2 text-xs text-gray-500">No integrations found</div>
+                  <div class="p-2 text-xs text-gray-500">No skills or MCP servers found</div>
                 </template>
               </div>
             </div>
@@ -833,14 +839,14 @@ ${agents
       </div>
 
       <!-- Scheduled Reminders Section -->
-      <div class="bg-gray-50 rounded-lg p-3" x-data="{ open: false }">
-        <h3 class="flex items-center gap-2 text-sm font-medium text-gray-800 cursor-pointer select-none" @click="open = !open">
+      <div class="bg-gray-50 rounded-lg p-3">
+        <h3 class="flex items-center gap-2 text-sm font-medium text-gray-800 cursor-pointer select-none" @click="toggleSection('reminders')">
           <span>&#9200;</span>
           Scheduled Reminders
           <span x-show="schedulesLoading" class="animate-spin text-slate-600">&#8635;</span>
-          <span class="ml-auto text-xs text-gray-400 transition-transform" :class="open ? '' : 'rotate-[-90deg]'">&#9660;</span>
+          <span class="ml-auto text-xs text-gray-400 transition-transform" :class="openSections.reminders ? '' : 'rotate-[-90deg]'">&#9660;</span>
         </h3>
-        <div x-show="open" x-transition class="pt-3">
+        <div x-show="openSections.reminders" x-transition class="pt-3">
           <div x-show="schedulesError" x-transition class="bg-red-100 text-red-800 px-3 py-2 rounded-lg text-xs mb-2" x-text="schedulesError"></div>
           <div class="space-y-2">
             <template x-if="schedules.length === 0">
@@ -887,233 +893,166 @@ ${agents
         </div>
       </div>
 
-      <!-- Advanced Section -->
-      <div class="border border-gray-200 rounded-lg">
-        <h3 class="flex items-center gap-2 text-sm font-medium text-gray-800 cursor-pointer select-none p-3" @click="advancedOpen = !advancedOpen">
-          <span>&#9881;</span>
-          Advanced
-          <span class="ml-auto text-xs text-gray-400 transition-transform" :class="advancedOpen ? '' : 'rotate-[-90deg]'">&#9660;</span>
+      <!-- Permissions (unified domains + MCP tool grants) -->
+      <div class="bg-gray-50 rounded-lg p-3" x-data="permissionsSection()">
+        <h3 class="flex items-center gap-2 text-sm font-medium text-gray-800 cursor-pointer select-none" @click="toggleSection('permissions')">
+          <span>&#128274;</span>
+          Permissions
+          <span class="ml-auto text-xs text-gray-400 transition-transform" :class="openSections.permissions ? '' : 'rotate-[-90deg]'">&#9660;</span>
         </h3>
-        <div x-show="advancedOpen" x-transition class="px-3 pb-3 space-y-3">
-
-      <!-- Network Configuration -->
-      <div class="bg-gray-50 rounded-lg p-3" x-data="{ open: false }">
-        <h3 class="flex items-center gap-2 text-sm font-medium text-gray-800 cursor-pointer select-none" @click="open = !open">
-          <span>&#127760;</span>
-          Network Access
-          <span class="ml-auto text-xs text-gray-400 transition-transform" :class="open ? '' : 'rotate-[-90deg]'">&#9660;</span>
-        </h3>
-        <div x-show="open" x-transition class="pt-3 space-y-3">
-          <div>
-            <label for="allowedDomains" class="block text-xs font-medium text-gray-600 mb-1">Allowed Domains</label>
-            <textarea id="allowedDomains" name="allowedDomains" placeholder="github.com&#10;*.trusted.com" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-xs font-mono min-h-[60px] resize-y focus:border-slate-600 focus:ring-1 focus:ring-slate-200 outline-none">${escapeHtml(
-              (() => {
-                const existing = s.networkConfig?.allowedDomains || [];
-                const prefill = payload.prefillAllowedDomains || [];
-                const merged = [...new Set([...existing, ...prefill])];
-                return merged.join("\n");
-              })()
-            )}</textarea>
-          </div>
-          <div>
-            <label for="deniedDomains" class="block text-xs font-medium text-gray-600 mb-1">Denied Domains</label>
-            <textarea id="deniedDomains" name="deniedDomains" placeholder="malicious.com" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-xs font-mono min-h-[60px] resize-y focus:border-slate-600 focus:ring-1 focus:ring-slate-200 outline-none">${escapeHtml((s.networkConfig?.deniedDomains || []).join("\n"))}</textarea>
-          </div>
-        </div>
-      </div>
-
-      <!-- Git Configuration -->
-      ${
-        githubAppConfigured
-          ? `
-      <div class="bg-gray-50 rounded-lg p-3" x-data="{ open: false }">
-        <h3 class="flex items-center gap-2 text-sm font-medium text-gray-800 cursor-pointer select-none" @click="open = !open">
-          <span>&#128193;</span>
-          Git Repository
-          <span class="ml-auto text-xs text-gray-400 transition-transform" :class="open ? '' : 'rotate-[-90deg]'">&#9660;</span>
-        </h3>
-        <div x-show="open" x-transition class="pt-3 space-y-2">
-          <!-- GitHub User Connection -->
-          <div class="mb-3 pb-3 border-b border-gray-200">
-            <div x-show="githubUserLoading" class="text-center py-2">
-              <p class="text-xs text-gray-500">Checking GitHub connection...</p>
-            </div>
-            <div x-show="!githubUserLoading && !githubUser && githubOAuthConfigured" class="text-center py-2">
-              <p class="text-xs text-gray-600 mb-2">Connect your GitHub account to see your repositories</p>
-              <a :href="'/api/v1/oauth/github/login?token=' + encodeURIComponent(token)" class="inline-block px-4 py-2 text-xs font-medium rounded-lg bg-gray-900 text-white hover:bg-gray-800 transition-all">
-                <svg class="w-4 h-4 inline-block mr-1" viewBox="0 0 98 96" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M48.854 0C21.839 0 0 22 0 49.217c0 21.756 13.993 40.172 33.405 46.69 2.427.49 3.316-1.059 3.316-2.362 0-1.141-.08-5.052-.08-9.127-13.59 2.934-16.42-5.867-16.42-5.867-2.184-5.704-5.42-7.17-5.42-7.17-4.448-3.015.324-3.015.324-3.015 4.934.326 7.523 5.052 7.523 5.052 4.367 7.496 11.404 5.378 14.235 4.074.404-3.178 1.699-5.378 3.074-6.6-10.839-1.141-22.243-5.378-22.243-24.283 0-5.378 1.94-9.778 5.014-13.2-.485-1.222-2.184-6.275.486-13.038 0 0 4.125-1.304 13.426 5.052a46.97 46.97 0 0 1 12.214-1.63c4.125 0 8.33.571 12.213 1.63 9.302-6.356 13.427-5.052 13.427-5.052 2.67 6.763.97 11.816.485 13.038 3.155 3.422 5.015 7.822 5.015 13.2 0 18.905-11.404 23.06-22.324 24.283 1.78 1.548 3.316 4.481 3.316 9.126 0 6.6-.08 11.897-.08 13.526 0 1.304.89 2.853 3.316 2.364 19.412-6.52 33.405-24.935 33.405-46.691C97.707 22 75.788 0 48.854 0z" fill="currentColor"/></svg>
-                Connect with GitHub
-              </a>
-            </div>
-            <div x-show="!githubUserLoading && githubUser" class="flex items-center justify-between">
-              <div class="flex items-center gap-2">
-                <img :src="githubUser?.avatarUrl || ''" :alt="githubUser?.login || ''" class="w-6 h-6 rounded-full">
-                <div>
-                  <p class="text-xs font-medium text-gray-800" x-text="githubUser?.login || ''"></p>
-                  <p class="text-xs text-green-600">Connected</p>
-                </div>
-              </div>
-              <button type="button" @click="disconnectGitHub()" class="px-3 py-1.5 text-xs font-medium rounded-lg bg-red-100 text-red-700 hover:bg-red-200 transition-all">
-                Disconnect
+        <div x-show="openSections.permissions" x-transition class="pt-3 space-y-2">
+          <!-- Permission list -->
+          <template x-if="permissionItems.length === 0 && !permissionsLoading">
+            <p class="text-xs text-gray-500">No permissions configured yet. The agent will ask for confirmation before using browser tools, accessing online data, or running destructive MCP actions.</p>
+          </template>
+          <template x-if="permissionsLoading">
+            <p class="text-xs text-gray-400">Loading...</p>
+          </template>
+          <template x-for="(item, idx) in permissionItems" :key="item.pattern + item.type">
+            <div class="flex items-center gap-2 bg-white border border-gray-200 rounded-lg px-3 py-1.5">
+              <span class="flex-1 text-xs font-mono text-gray-800 truncate" :title="item.pattern" x-text="item.pattern"></span>
+              <span class="text-xs font-medium px-2 py-0.5 rounded-full whitespace-nowrap"
+                :class="badgeClass(item)"
+                x-text="badgeText(item)"></span>
+              <button type="button" @click="removePermission(item)" class="text-gray-400 hover:text-red-500 transition-colors" title="Remove">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
               </button>
             </div>
-            <div x-show="!githubUserLoading && !githubUser && !githubOAuthConfigured" class="text-center py-2">
-              <p class="text-xs text-gray-400">GitHub authentication not configured</p>
+          </template>
+
+          <!-- Add permission form -->
+          <div class="mt-2 border border-dashed border-gray-300 rounded-lg p-2 space-y-2" x-show="showAddForm">
+            <div>
+              <input type="text" x-model="newPattern" placeholder="e.g. api.openai.com, /mcp/gmail/tools/*" class="w-full px-2 py-1.5 border border-gray-200 rounded text-xs font-mono focus:border-slate-600 focus:ring-1 focus:ring-slate-200 outline-none">
+            </div>
+            <div class="flex items-center gap-3 text-xs">
+              <label class="flex items-center gap-1 cursor-pointer"><input type="radio" x-model="newAccess" value="always" class="accent-slate-700"> Always</label>
+              <label class="flex items-center gap-1 cursor-pointer"><input type="radio" x-model="newAccess" value="1h" class="accent-slate-700"> 1 hour</label>
+              <label class="flex items-center gap-1 cursor-pointer"><input type="radio" x-model="newAccess" value="session" class="accent-slate-700"> Session</label>
+              <label class="flex items-center gap-1 cursor-pointer"><input type="radio" x-model="newAccess" value="denied" class="accent-slate-700"> Denied</label>
+            </div>
+            <div class="flex gap-2">
+              <button type="button" @click="addPermission()" :disabled="!newPattern.trim()" class="px-3 py-1 text-xs font-medium rounded bg-slate-700 text-white hover:bg-slate-800 disabled:opacity-40 transition-all">Add</button>
+              <button type="button" @click="showAddForm = false" class="px-3 py-1 text-xs font-medium rounded border border-gray-300 text-gray-600 hover:bg-gray-100 transition-all">Cancel</button>
             </div>
           </div>
-
-          <!-- Loading state -->
-          <div x-show="gitLoading" class="text-center py-4">
-            <p class="text-xs text-gray-500">Loading GitHub installations...</p>
-          </div>
-
-          <!-- Install prompt -->
-          <div x-show="showInstallPrompt && !gitLoading" class="text-center py-4 border-2 border-dashed border-gray-200 rounded-lg">
-            <p class="text-xs text-gray-600 mb-2">Install the GitHub App to enable repository access</p>
-            <div class="flex items-center justify-center gap-2">
-              ${
-                githubAppInstallUrl
-                  ? `<a href="${escapeHtml(githubAppInstallUrl)}" target="_blank" class="inline-block px-4 py-2 text-xs font-medium rounded-lg bg-gray-900 text-white hover:bg-gray-800 transition-all">
-                Install on GitHub &rarr;
-              </a>`
-                  : `<p class="text-xs text-gray-400">Contact administrator to install the GitHub App</p>`
-              }
-              <button type="button" @click="refreshGitHub()" class="px-4 py-2 text-xs font-medium rounded-lg bg-slate-100 text-slate-800 hover:bg-slate-200 transition-all">
-                &#8635; Refresh
-              </button>
-            </div>
-            <p class="text-xs text-gray-400 mt-2">After installing, click Refresh to see your repositories</p>
-          </div>
-
-          <!-- Repo selection -->
-          <div x-show="showRepoSelection && !gitLoading" class="space-y-2">
-            <div>
-              <label for="gitOrg" class="block text-xs font-medium text-gray-600 mb-1">Organization / User</label>
-              <select id="gitOrg" name="gitOrg" @change="onOrgChange($event.target.value)" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-xs focus:border-slate-600 focus:ring-1 focus:ring-slate-200 outline-none">
-                <option value="">Select...</option>
-                <template x-for="inst in githubInstallations" :key="inst.id">
-                  <option :value="inst.id" :selected="inst.id == selectedOrg" x-text="inst.account + (inst.accountType === 'Organization' ? ' (org)' : '')"></option>
-                </template>
-              </select>
-            </div>
-            <div>
-              <label for="gitRepo" class="block text-xs font-medium text-gray-600 mb-1">Repository</label>
-              <select id="gitRepo" name="gitRepo" @change="onRepoChange($event.target)" :disabled="!selectedOrg" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-xs focus:border-slate-600 focus:ring-1 focus:ring-slate-200 outline-none">
-                <template x-if="!selectedOrg">
-                  <option value="">Select organization first...</option>
-                </template>
-                <template x-if="selectedOrg && repoOptions.length === 0">
-                  <option value="">Loading...</option>
-                </template>
-                <template x-if="selectedOrg && repoOptions.length > 0">
-                  <option value="">Select...</option>
-                </template>
-                <template x-for="repo in repoOptions" :key="repo.name">
-                  <option :value="repo.name" :data-full-name="repo.fullName" :data-owner="repo.owner" :data-default-branch="repo.defaultBranch" :selected="repo.name === selectedRepo" x-text="repo.name + (repo.private ? ' &#128274;' : '')"></option>
-                </template>
-              </select>
-            </div>
-            <div>
-              <label for="gitBranch" class="block text-xs font-medium text-gray-600 mb-1">Branch</label>
-              <select id="gitBranch" name="gitBranch" @change="onBranchChange($event.target.value)" :disabled="!selectedRepo" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-xs focus:border-slate-600 focus:ring-1 focus:ring-slate-200 outline-none">
-                <template x-if="!selectedRepo">
-                  <option value="">Select repository first...</option>
-                </template>
-                <template x-for="br in branchOptions" :key="br.name">
-                  <option :value="br.name" :selected="br.name === selectedBranch" x-text="br.name + (br.protected ? ' &#128737;&#65039;' : '') + (br.isDefault ? ' (default)' : '')"></option>
-                </template>
-              </select>
-            </div>
-            <div>
-              <label for="sparse" class="block text-xs font-medium text-gray-600 mb-1">Sparse Checkout (optional)</label>
-              <textarea id="sparse" name="sparse" placeholder="src/&#10;docs/" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-xs font-mono min-h-[50px] resize-y focus:border-slate-600 focus:ring-1 focus:ring-slate-200 outline-none">${escapeHtml((s.gitConfig?.sparse || []).join("\n"))}</textarea>
-              <p class="text-xs text-gray-400 mt-1">Only checkout specific directories (one per line)</p>
-            </div>
-          </div>
-
-          <!-- Hidden fields for form submission -->
-          <input type="hidden" id="repoUrl" name="repoUrl" :value="repoUrlValue">
-          <input type="hidden" id="branch" name="branch" :value="selectedBranch">
-          <input type="hidden" id="selectedInstallationId" name="selectedInstallationId" :value="currentInstallationId || ''">
+          <button type="button" x-show="!showAddForm" @click="showAddForm = true; newAccess = '1h'" class="text-xs text-slate-600 hover:text-slate-800 font-medium">+ Add permission</button>
         </div>
       </div>
-      `
-          : `
-      <div class="bg-gray-50 rounded-lg p-3" x-data="{ open: false }">
-        <h3 class="flex items-center gap-2 text-sm font-medium text-gray-800 cursor-pointer select-none" @click="open = !open">
-          <span>&#128193;</span>
-          Git Repository
-          <span class="ml-auto text-xs text-gray-400 transition-transform" :class="open ? '' : 'rotate-[-90deg]'">&#9660;</span>
-        </h3>
-        <div x-show="open" x-transition class="pt-3 space-y-2">
-          <p class="text-xs text-gray-500">GitHub App is not configured. You can still use a manual repository URL.</p>
-          <div>
-            <label for="repoUrl" class="block text-xs font-medium text-gray-600 mb-1">Repository URL</label>
-            <input id="repoUrl" name="repoUrl" type="text" placeholder="https://github.com/owner/repo" value="${escapeHtml(s.gitConfig?.repoUrl || "")}" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-xs font-mono focus:border-slate-600 focus:ring-1 focus:ring-slate-200 outline-none">
-          </div>
-          <div>
-            <label for="branch" class="block text-xs font-medium text-gray-600 mb-1">Branch (optional)</label>
-            <input id="branch" name="branch" type="text" placeholder="main" value="${escapeHtml(s.gitConfig?.branch || "")}" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-xs font-mono focus:border-slate-600 focus:ring-1 focus:ring-slate-200 outline-none">
-          </div>
-          <div>
-            <label for="sparse" class="block text-xs font-medium text-gray-600 mb-1">Sparse Checkout (optional)</label>
-            <textarea id="sparse" name="sparse" placeholder="src/&#10;docs/" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-xs font-mono min-h-[50px] resize-y focus:border-slate-600 focus:ring-1 focus:ring-slate-200 outline-none">${escapeHtml((s.gitConfig?.sparse || []).join("\n"))}</textarea>
-            <p class="text-xs text-gray-400 mt-1">Only checkout specific directories (one per line)</p>
-          </div>
-        </div>
-      </div>
-      `
-      }
 
       <!-- System Packages -->
-      <div class="bg-gray-50 rounded-lg p-3" x-data="{ open: false }">
-        <h3 class="flex items-center gap-2 text-sm font-medium text-gray-800 cursor-pointer select-none" @click="open = !open">
+      <div class="bg-gray-50 rounded-lg p-3">
+        <h3 class="flex items-center gap-2 text-sm font-medium text-gray-800 cursor-pointer select-none" @click="toggleSection('packages')">
           <span>&#128230;</span>
           System Packages
-          <span class="ml-auto text-xs text-gray-400 transition-transform" :class="open ? '' : 'rotate-[-90deg]'">&#9660;</span>
+          <span class="ml-auto text-xs text-gray-400 transition-transform" :class="openSections.packages ? '' : 'rotate-[-90deg]'">&#9660;</span>
         </h3>
-        <div x-show="open" x-transition class="pt-3 space-y-3">
-          <div>
-            <label for="nixPackages" class="block text-xs font-medium text-gray-600 mb-1">Packages (one per line)</label>
-            <textarea id="nixPackages" name="nixPackages" placeholder="python311&#10;ffmpeg&#10;jq" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-xs font-mono min-h-[60px] resize-y focus:border-slate-600 focus:ring-1 focus:ring-slate-200 outline-none">${escapeHtml(
-              (() => {
-                const existing = s.nixConfig?.packages || [];
-                const prefill = payload.prefillNixPackages || [];
-                const merged = [...new Set([...existing, ...prefill])];
-                return merged.join("\n");
-              })()
-            )}</textarea>
+        <div x-show="openSections.packages" x-transition class="pt-3 space-y-3">
+          <template x-if="nixPackages.length === 0">
+            <p class="text-xs text-gray-400 italic">No packages added.</p>
+          </template>
+          <template x-for="pkg in nixPackages" :key="pkg">
+            <div class="flex items-center gap-2 bg-white border border-gray-200 rounded-lg px-3 py-1.5">
+              <span class="flex-1 text-xs font-mono text-gray-800 break-all" x-text="pkg"></span>
+              <button type="button" @click="removeNixPackage(pkg)" class="text-xs font-medium text-red-600 hover:text-red-700 transition-colors" title="Uninstall package">
+                Uninstall
+              </button>
+            </div>
+          </template>
+
+          <div class="relative">
+            <input
+              id="nixPackageSearch"
+              type="text"
+              x-model="nixPackageQuery"
+              @input.debounce.300ms="searchNixPackages()"
+              @focus="if (nixPackageQuery.trim()) nixPackageSuggestionsVisible = true"
+              @keydown.enter.prevent="addNixPackageFromQuery()"
+              placeholder="Search Nix packages (e.g. python311)"
+              class="w-full px-3 py-2 border border-gray-200 rounded-lg text-xs font-mono focus:border-slate-600 focus:ring-1 focus:ring-slate-200 outline-none"
+            >
+
+            <div x-show="nixPackageSuggestionsVisible" @click.away="nixPackageSuggestionsVisible = false" class="absolute z-10 left-2 right-2 mt-0.5 bg-white border border-gray-200 rounded-lg shadow-lg max-h-56 overflow-y-auto">
+              <template x-if="nixPackageSearchLoading">
+                <div class="px-3 py-2 text-xs text-gray-500">Searching packages...</div>
+              </template>
+              <template x-for="suggestion in nixPackageSuggestions" :key="suggestion.name">
+                <button type="button" @click="addNixPackage(suggestion.name)" class="w-full text-left px-3 py-2 border-b border-gray-100 last:border-b-0 hover:bg-slate-50 transition-colors">
+                  <div class="text-xs font-mono text-gray-800" x-text="suggestion.name"></div>
+                  <div class="text-[11px] text-gray-500 truncate" x-text="suggestion.description || suggestion.pname || ''"></div>
+                </button>
+              </template>
+              <template x-if="!nixPackageSearchLoading && nixPackageQuery.trim() && nixPackageSuggestions.length === 0">
+                <div class="px-3 py-2 text-xs text-gray-500">No matching packages.</div>
+              </template>
+            </div>
           </div>
+          <p class="text-xs text-gray-400 mt-1">Install system tools from <a href="https://search.nixos.org/packages" target="_blank" class="text-blue-600 hover:underline">Nix Packages</a> to make them available in your workspace.</p>
         </div>
       </div>
 
-      <!-- Environment Variables -->
+      <!-- Secrets -->
       <div class="bg-gray-50 rounded-lg p-3">
-        <h3 class="flex items-center gap-2 text-sm font-medium text-gray-800 cursor-pointer select-none" @click="envVarsOpen = !envVarsOpen">
+        <h3 class="flex items-center gap-2 text-sm font-medium text-gray-800 cursor-pointer select-none" @click="toggleSection('envvars')">
           <span>&#128203;</span>
-          Environment Variables
-          <span class="ml-auto text-xs text-gray-400 transition-transform" :class="envVarsOpen ? '' : 'rotate-[-90deg]'">&#9660;</span>
+          Secrets
+          <span class="ml-auto text-xs text-gray-400 transition-transform" :class="openSections.envvars ? '' : 'rotate-[-90deg]'">&#9660;</span>
         </h3>
-        <div x-show="envVarsOpen" x-transition class="pt-3">
-          <textarea id="envVars" name="envVars" placeholder="API_KEY=your_key&#10;DEBUG=true" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-xs font-mono min-h-[60px] resize-y focus:border-slate-600 focus:ring-1 focus:ring-slate-200 outline-none">${escapeHtml(envVarsValue)}</textarea>
+        <div x-show="openSections.envvars" x-transition class="pt-3 space-y-2">
+          <template x-if="secrets.length === 0">
+            <p class="text-xs text-gray-400 italic">No secrets configured.</p>
+          </template>
+          <template x-for="(secret, idx) in secrets" :key="secret.id">
+            <div class="bg-white border border-gray-200 rounded-lg p-2">
+              <div class="flex items-center gap-2">
+                <input
+                  type="text"
+                  x-model="secret.key"
+                  placeholder="API_KEY"
+                  class="w-40 px-2 py-1.5 border border-gray-200 rounded text-xs font-mono focus:border-slate-600 focus:ring-1 focus:ring-slate-200 outline-none"
+                >
+                <span class="text-xs font-mono text-gray-500 select-none">=</span>
+                <input
+                  :type="secret.reveal ? 'text' : 'password'"
+                  @focus="secret.reveal = true"
+                  @blur="secret.reveal = false"
+                  x-model="secret.value"
+                  placeholder="secret value"
+                  class="flex-1 px-2 py-1.5 border border-gray-200 rounded text-xs font-mono focus:border-slate-600 focus:ring-1 focus:ring-slate-200 outline-none"
+                  autocomplete="new-password"
+                >
+                <button
+                  type="button"
+                  @click="removeSecret(secret.id)"
+                  class="px-2.5 py-1.5 text-xs font-medium bg-transparent border-0 text-red-700 hover:text-red-800 transition-colors"
+                >
+                  Remove
+                </button>
+              </div>
+            </div>
+          </template>
+          <button
+            type="button"
+            @click="addSecret('', '')"
+            class="text-xs text-slate-600 hover:text-slate-800 font-medium"
+          >
+            + Add secret
+          </button>
         </div>
       </div>
 
       <!-- Verbose Logging -->
       <div class="bg-gray-50 rounded-lg p-3">
         <label class="flex items-center gap-2 cursor-pointer">
-          <input type="checkbox" id="verboseLogging" name="verboseLogging" ${s.verboseLogging ? "checked" : ""} class="w-4 h-4 text-slate-600 rounded focus:ring-slate-500">
+          <input type="checkbox" id="verboseLogging" name="verboseLogging" x-model="verboseLogging" class="w-4 h-4 text-slate-600 rounded focus:ring-slate-500">
           <span class="text-sm font-medium text-gray-800">Verbose logging</span>
         </label>
         <p class="text-xs text-gray-500 mt-1 ml-6">Show tool calls, reasoning tokens, and detailed output</p>
       </div>
 
-        </div>
-      </div>
-
-      <button type="submit" :disabled="saving"
+      <button type="submit" :disabled="saving || !hasPendingSettingsChanges()"
         class="w-full py-3 bg-gradient-to-r from-slate-700 to-slate-800 text-white text-sm font-semibold rounded-lg hover:shadow-lg hover:-translate-y-0.5 active:translate-y-0 transition-all disabled:opacity-60 disabled:cursor-not-allowed disabled:transform-none"
-        x-text="saving ? 'Saving...' : 'Save Settings'">
+        x-text="saving ? 'Saving...' : (hasPendingSettingsChanges() ? 'Save Settings' : 'No Changes')">
       </button>
     </form>
   </div>
@@ -1126,9 +1065,6 @@ ${agents
         // Config
         token: __STATE__.token,
         agentId: __STATE__.agentId,
-        githubOAuthConfigured: __STATE__.githubOAuthConfigured,
-        githubAppConfigured: __STATE__.githubAppConfigured,
-        githubAppInstallUrl: __STATE__.githubAppInstallUrl,
         PROVIDERS: __STATE__.PROVIDERS,
 
         // Agent Identity
@@ -1143,6 +1079,11 @@ ${agents
         successMsg: '',
         errorMsg: '',
         saving: false,
+        initialSettingsSnapshot: null,
+        verboseLogging: !!__STATE__.verboseLogging,
+        identityMd: __STATE__.identityMd || '',
+        soulMd: __STATE__.soulMd || '',
+        userMd: __STATE__.userMd || '',
 
         // Providers
         providerState: {},
@@ -1156,39 +1097,39 @@ ${agents
         pendingProvider: null,
         deviceCodePollTimer: null,
 
-        // GitHub
-        githubUser: null,
-        githubUserLoading: true,
-        githubInstallations: [],
-        githubRepos: {},
-        currentInstallationId: null,
-        selectedOrg: '',
-        selectedRepo: '',
-        selectedBranch: '',
-        repoUrlValue: ${JSON.stringify(s.gitConfig?.repoUrl || "")},
-        repoOptions: [],
-        branchOptions: [],
-        gitLoading: false,
-        showInstallPrompt: false,
-        showRepoSelection: false,
-
         // Skills
         skills: __STATE__.initialSkills,
         skillsLoading: false,
         skillsError: '',
         curatedSkills: [],
 
-        // Soul search
-        soulSearch: '',
-        soulSearchResults: [],
-        soulSearchVisible: false,
-        soulSearchLoading: false,
-
         // MCPs
         mcpServers: __STATE__.initialMcpServers,
         mcpsLoading: false,
         mcpsError: '',
         curatedMcps: [],
+
+        // Secrets
+        secrets: Array.isArray(__STATE__.initialSecrets)
+          ? __STATE__.initialSecrets.map(function(secret, idx) {
+              return {
+                id: idx + 1,
+                key: secret && typeof secret.key === 'string' ? secret.key : '',
+                value: secret && typeof secret.value === 'string' ? secret.value : '',
+                reveal: false
+              };
+            })
+          : [],
+        nextSecretId: (Array.isArray(__STATE__.initialSecrets) ? __STATE__.initialSecrets.length : 0) + 1,
+
+        // Nix packages
+        nixPackages: Array.isArray(__STATE__.initialNixPackages)
+          ? __STATE__.initialNixPackages.slice()
+          : [],
+        nixPackageQuery: '',
+        nixPackageSuggestions: [],
+        nixPackageSuggestionsVisible: false,
+        nixPackageSearchLoading: false,
 
         // Unified integration search
         integrationSearch: '',
@@ -1203,18 +1144,17 @@ ${agents
         // Prefills
         prefillSkills: __STATE__.prefillSkills,
         prefillMcpServers: __STATE__.prefillMcpServers,
-        prefillAllowedDomains: __STATE__.prefillAllowedDomains,
+        prefillGrants: __STATE__.prefillGrants,
         prefillNixPackages: __STATE__.prefillNixPackages,
         prefillEnvVars: __STATE__.prefillEnvVars,
-        prefillBannerDismissed: false,
+        prefillBannerDismissed: new URL(window.location.href).searchParams.has('dismissed'),
         approvingPrefills: false,
 
-        // Section open states (lifted for programmatic control)
-        advancedOpen: false,
-        envVarsOpen: false,
+        // Section open states (unified, persisted in URL ?open=id,id)
+        openSections: {},
 
         get hasPrefills() {
-          return !!(this.prefillAllowedDomains.length || this.prefillNixPackages.length || this.prefillEnvVars.length || this.prefillSkills.length || this.prefillMcpServers.length);
+          return !!(this.prefillGrants.length || this.prefillNixPackages.length || this.prefillEnvVars.length || this.prefillSkills.length || this.prefillMcpServers.length);
         },
 
         get mcpServerIds() {
@@ -1258,27 +1198,187 @@ ${agents
           }
           this.primaryProvider = this.providerOrder.length ? this.providerOrder[0] : '';
 
-          // Check for github_connected query param
           var urlParams = new URLSearchParams(window.location.search);
-          if (urlParams.get('github_connected') === 'true') {
-            this.successMsg = 'GitHub account connected!';
-            var newUrl = window.location.pathname + '?token=' + encodeURIComponent(this.token);
-            window.history.replaceState({}, '', newUrl);
+
+          // Restore open accordion sections from URL
+          var openParam = urlParams.get('open');
+          if (openParam) {
+            openParam.split(',').forEach(function(id) {
+              this.openSections[id] = true;
+            }.bind(this));
           }
+${
+  providers.length === 0
+    ? `          // Auto-open model section when no providers configured
+          if (!openParam) this.openSections.model = true;`
+    : ""
+}
 
           this.checkProviders();
           this.initIntegrations();
           this.initSchedules();
-          if (this.githubAppConfigured) {
-            this.initGitHubUser();
+          this.initialSettingsSnapshot = this.buildSettingsSnapshot();
+        },
+
+        // === Section toggle + URL sync ===
+        toggleSection(id) {
+          this.openSections[id] = !this.openSections[id];
+          this.updateSectionsUrl();
+        },
+        updateSectionsUrl() {
+          var ids = Object.keys(this.openSections).filter(function(k) {
+            return this.openSections[k];
+          }.bind(this));
+          var url = new URL(window.location.href);
+          if (ids.length > 0) {
+            url.searchParams.set('open', ids.join(','));
           } else {
-            this.githubUserLoading = false;
+            url.searchParams.delete('open');
           }
+          window.history.replaceState({}, '', url.toString());
         },
 
         // === Helpers ===
         parseLines(text) {
           return text.split('\\n').map(function(l) { return l.trim(); }).filter(function(l) { return l; });
+        },
+
+        buildCurrentEnvVars() {
+          var envVars = {};
+          for (var i = 0; i < this.secrets.length; i++) {
+            var secret = this.secrets[i];
+            var key = this.normalizeSecretKey(secret && secret.key);
+            if (!key) continue;
+            if (envVars[key] === undefined) {
+              envVars[key] = (secret && secret.value) || '';
+            }
+          }
+          return envVars;
+        },
+
+        envVarsSignature(envVars) {
+          return Object.keys(envVars)
+            .sort()
+            .map(function(key) { return key + '=' + (envVars[key] || ''); })
+            .join('\\n');
+        },
+
+        nixPackagesSignature() {
+          return this.nixPackages
+            .map(function(pkg) { return (pkg || '').trim(); })
+            .filter(function(pkg) { return !!pkg; })
+            .join('\\n');
+        },
+
+        buildSettingsSnapshot() {
+          var envVars = this.buildCurrentEnvVars();
+
+          return {
+            identityMd: this.identityMd || '',
+            soulMd: this.soulMd || '',
+            userMd: this.userMd || '',
+            verboseLogging: !!this.verboseLogging,
+            primaryProvider: this.primaryProvider || '',
+            providerOrder: this.providerOrder.join(','),
+            nixPackages: this.nixPackagesSignature(),
+            envVars: this.envVarsSignature(envVars)
+          };
+        },
+
+        hasPendingSettingsChanges() {
+          if (!this.initialSettingsSnapshot) return false;
+          var current = this.buildSettingsSnapshot();
+          return JSON.stringify(current) !== JSON.stringify(this.initialSettingsSnapshot);
+        },
+
+        normalizeSecretKey(key) {
+          return (key || '').trim();
+        },
+
+        addSecret(key, value) {
+          this.secrets = this.secrets.concat([{
+            id: this.nextSecretId++,
+            key: this.normalizeSecretKey(key),
+            value: value || '',
+            reveal: false
+          }]);
+        },
+
+        removeSecret(id) {
+          this.secrets = this.secrets.filter(function(secret) {
+            return secret.id !== id;
+          });
+        },
+
+        normalizeNixPackageName(name) {
+          return (name || '').trim();
+        },
+
+        addNixPackage(name) {
+          var packageName = this.normalizeNixPackageName(name);
+          if (!packageName) return;
+          if (this.nixPackages.indexOf(packageName) !== -1) {
+            this.nixPackageQuery = '';
+            this.nixPackageSuggestions = [];
+            this.nixPackageSuggestionsVisible = false;
+            return;
+          }
+          this.nixPackages = this.nixPackages.concat([packageName]);
+          this.nixPackageQuery = '';
+          this.nixPackageSuggestions = [];
+          this.nixPackageSuggestionsVisible = false;
+        },
+
+        addNixPackageFromQuery() {
+          this.addNixPackage(this.nixPackageQuery);
+        },
+
+        removeNixPackage(name) {
+          this.nixPackages = this.nixPackages.filter(function(pkg) {
+            return pkg !== name;
+          });
+        },
+
+        async searchNixPackages() {
+          var query = this.normalizeNixPackageName(this.nixPackageQuery);
+          if (!query) {
+            this.nixPackageSuggestionsVisible = false;
+            this.nixPackageSuggestions = [];
+            this.nixPackageSearchLoading = false;
+            return;
+          }
+
+          this.nixPackageSuggestionsVisible = true;
+          this.nixPackageSearchLoading = true;
+          try {
+            var response = await fetch(
+              this.apiUrl('/config/packages/search') + '&q=' + encodeURIComponent(query)
+            );
+            var data = await response.json().catch(function() { return {}; });
+            if (!response.ok) throw new Error(data.error || 'Failed to search packages');
+
+            var suggestions = Array.isArray(data.packages) ? data.packages : [];
+            var seen = {};
+            var filtered = [];
+            for (var i = 0; i < suggestions.length; i++) {
+              var item = suggestions[i] || {};
+              var name = this.normalizeNixPackageName(item.name);
+              if (!name) continue;
+              if (this.nixPackages.indexOf(name) !== -1) continue;
+              if (seen[name]) continue;
+              seen[name] = true;
+              filtered.push({
+                name: name,
+                pname: typeof item.pname === 'string' ? item.pname : '',
+                description: typeof item.description === 'string' ? item.description : ''
+              });
+            }
+            this.nixPackageSuggestions = filtered;
+          } catch (e) {
+            this.nixPackageSuggestions = [];
+          } finally {
+            this.nixPackageSearchLoading = false;
+          }
         },
 
         formatInstalls(num) {
@@ -1552,64 +1652,25 @@ ${agents
           settings.model = '';
 
           // Workspace files
-          settings.identityMd = document.getElementById('identityMd').value;
-          settings.soulMd = document.getElementById('soulMd').value;
-          settings.userMd = document.getElementById('userMd').value;
-
-          // Network config
-          var allowedDomains = this.parseLines(document.getElementById('allowedDomains').value);
-          var deniedDomains = this.parseLines(document.getElementById('deniedDomains').value);
-          if (allowedDomains.length || deniedDomains.length) {
-            settings.networkConfig = {};
-            if (allowedDomains.length) settings.networkConfig.allowedDomains = allowedDomains;
-            if (deniedDomains.length) settings.networkConfig.deniedDomains = deniedDomains;
-          }
-
-          // Git config
-          var repoUrl = document.getElementById('repoUrl').value.trim();
-          var branch = document.getElementById('branch').value.trim();
-          var sparse = this.parseLines(document.getElementById('sparse').value);
-          if (repoUrl || branch || sparse.length) {
-            if (!repoUrl) {
-              this.errorMsg = 'Repository URL is required when Git config is set';
-              this.saving = false;
-              window.scrollTo({ top: 0, behavior: 'smooth' });
-              return;
-            }
-            settings.gitConfig = {};
-            settings.gitConfig.repoUrl = repoUrl;
-            if (branch) settings.gitConfig.branch = branch;
-            if (sparse.length) settings.gitConfig.sparse = sparse;
-          } else {
-            settings.gitConfig = null;
-          }
+          settings.identityMd = this.identityMd || '';
+          settings.soulMd = this.soulMd || '';
+          settings.userMd = this.userMd || '';
 
           // System packages
-          var nixPackages = this.parseLines(document.getElementById('nixPackages').value);
+          var nixPackages = this.nixPackages
+            .map(function(pkg) { return (pkg || '').trim(); })
+            .filter(function(pkg) { return !!pkg; });
           if (nixPackages.length) {
             settings.nixConfig = { packages: nixPackages };
           } else {
             settings.nixConfig = null;
           }
 
-          // Environment variables
-          var envVarsText = document.getElementById('envVars').value;
-          var envVarsLines = this.parseLines(envVarsText);
-          if (envVarsLines.length) {
-            settings.envVars = {};
-            for (var i = 0; i < envVarsLines.length; i++) {
-              var line = envVarsLines[i];
-              var eqIdx = line.indexOf('=');
-              if (eqIdx > 0) {
-                var key = line.slice(0, eqIdx).trim();
-                var value = line.slice(eqIdx + 1);
-                if (key) settings.envVars[key] = value;
-              }
-            }
-          }
+          // Secrets
+          settings.envVars = this.buildCurrentEnvVars();
 
           // Verbose logging
-          settings.verboseLogging = document.getElementById('verboseLogging').checked;
+          settings.verboseLogging = !!this.verboseLogging;
 
           try {
             var response = await fetch(this.apiUrl('/config'), {
@@ -1622,6 +1683,7 @@ ${agents
 
             if (response.ok) {
               this.successMsg = 'Settings saved!';
+              this.initialSettingsSnapshot = this.buildSettingsSnapshot();
               window.scrollTo({ top: 0, behavior: 'smooth' });
             } else {
               throw new Error(result.error || 'Failed to save settings');
@@ -1887,195 +1949,6 @@ ${agents
           this.checkProviders();
         },
 
-        // === GitHub App ===
-        async initGitHubUser() {
-          try {
-            var resp = await fetch(this.apiUrl('/config'));
-            var data = await resp.json();
-
-            this.githubUserLoading = false;
-
-            if (!this.githubOAuthConfigured) {
-              this.initGitHub();
-              return;
-            }
-
-            var githubUser = data.github?.user;
-            if (githubUser) {
-              this.githubUser = githubUser;
-              this.initGitHub();
-            }
-            // else: show connect button (handled by x-show)
-          } catch (e) {
-            console.error('Failed to check GitHub user:', e);
-            this.githubUserLoading = false;
-          }
-        },
-
-        async disconnectGitHub() {
-          if (!confirm('Disconnect your GitHub account?')) return;
-
-          try {
-            var resp = await fetch('/api/v1/oauth/github/logout?token=' + encodeURIComponent(this.token), {
-              method: 'POST'
-            });
-
-            if (resp.ok) {
-              this.githubUser = null;
-              this.gitLoading = false;
-              this.showInstallPrompt = false;
-              this.showRepoSelection = false;
-              this.successMsg = 'GitHub disconnected';
-            }
-          } catch (e) {
-            console.error('Failed to disconnect GitHub:', e);
-          }
-        },
-
-        async initGitHub() {
-          this.gitLoading = true;
-
-          try {
-            var resp = await fetch(this.apiUrl('/config'));
-            var data = await resp.json();
-
-            if (!data.github?.configured) {
-              this.gitLoading = false;
-              return;
-            }
-
-            this.githubInstallations = data.github?.installations || [];
-
-            if (this.githubInstallations.length === 0) {
-              this.gitLoading = false;
-              this.showInstallPrompt = true;
-              return;
-            }
-
-            // Check if there's a saved repo URL and try to pre-select
-            var savedRepoUrl = this.repoUrlValue;
-            if (savedRepoUrl) {
-              await this.preselectFromRepoUrl(savedRepoUrl);
-            }
-
-            this.gitLoading = false;
-            this.showRepoSelection = true;
-
-          } catch (e) {
-            console.error('Failed to init GitHub:', e);
-            this.gitLoading = false;
-          }
-        },
-
-        async preselectFromRepoUrl(repoUrl) {
-          var match = repoUrl.match(/github\\.com\\/([^\\/]+)\\/([^\\/]+)/);
-          if (!match) return;
-
-          var owner = match[1];
-          var repo = match[2];
-          var savedBranch = ${JSON.stringify(s.gitConfig?.branch || "")};
-
-          var installation = this.githubInstallations.find(function(i) {
-            return i.account.toLowerCase() === owner.toLowerCase();
-          });
-          if (!installation) return;
-
-          this.selectedOrg = installation.id;
-          await this.onOrgChange(installation.id);
-
-          // Select the repo
-          var foundRepo = this.repoOptions.find(function(r) {
-            return r.fullName.toLowerCase() === (owner + '/' + repo).toLowerCase();
-          });
-          if (foundRepo) {
-            this.selectedRepo = foundRepo.name;
-            await this.fetchBranches(foundRepo.owner, foundRepo.name, foundRepo.defaultBranch);
-          }
-
-          if (savedBranch) {
-            this.selectedBranch = savedBranch;
-          }
-        },
-
-        async onOrgChange(installationId) {
-          this.selectedRepo = '';
-          this.selectedBranch = '';
-          this.repoOptions = [];
-          this.branchOptions = [];
-          this.repoUrlValue = '';
-
-          if (!installationId) {
-            this.selectedOrg = '';
-            return;
-          }
-
-          this.selectedOrg = installationId;
-          this.currentInstallationId = installationId;
-
-          try {
-            var resp = await fetch('/api/v1/github/repos?token=' + encodeURIComponent(this.token) + '&installation_id=' + installationId);
-            var data = await resp.json();
-
-            this.githubRepos[installationId] = data.repos || [];
-            this.repoOptions = data.repos || [];
-          } catch (e) {
-            console.error('Failed to fetch repos:', e);
-            this.repoOptions = [];
-          }
-        },
-
-        async onRepoChange(target) {
-          var repoName = target.value;
-          this.branchOptions = [];
-          this.selectedBranch = '';
-
-          if (!repoName) {
-            this.selectedRepo = '';
-            this.repoUrlValue = '';
-            return;
-          }
-
-          var selectedOpt = target.selectedOptions?.[0];
-          var owner = selectedOpt?.dataset?.owner || '';
-          var fullName = selectedOpt?.dataset?.fullName || '';
-          var defaultBranch = selectedOpt?.dataset?.defaultBranch || 'main';
-
-          this.selectedRepo = repoName;
-          this.repoUrlValue = 'https://github.com/' + fullName;
-
-          await this.fetchBranches(owner, repoName, defaultBranch);
-        },
-
-        async fetchBranches(owner, repoName, defaultBranch) {
-          try {
-            var resp = await fetch('/api/v1/github/branches?token=' + encodeURIComponent(this.token) + '&owner=' + owner + '&repo=' + repoName + '&installation_id=' + this.currentInstallationId);
-            var data = await resp.json();
-
-            this.branchOptions = (data.branches || []).map(function(b) {
-              return {
-                name: b.name,
-                protected: b.protected,
-                isDefault: b.name === defaultBranch
-              };
-            });
-            this.selectedBranch = defaultBranch;
-          } catch (e) {
-            console.error('Failed to fetch branches:', e);
-            this.branchOptions = [];
-          }
-        },
-
-        onBranchChange(value) {
-          this.selectedBranch = value;
-        },
-
-        async refreshGitHub() {
-          this.gitLoading = true;
-          this.showInstallPrompt = false;
-          this.showRepoSelection = false;
-          await this.initGitHub();
-        },
-
         // === Integrations (Skills + MCPs) ===
         async initIntegrations() {
           try {
@@ -2200,49 +2073,6 @@ ${agents
           var self = this;
           self.skillsError = msg;
           setTimeout(function() { self.skillsError = ''; }, 5000);
-        },
-
-        // === Soul Search ===
-        async searchSouls() {
-          this.soulSearchLoading = true;
-          this.soulSearchVisible = true;
-          this.soulSearchResults = [];
-
-          try {
-            var url = this.soulSearch.trim()
-              ? 'https://wry-manatee-359.convex.site/api/v1/search?q=' + encodeURIComponent(this.soulSearch) + '&limit=8'
-              : 'https://wry-manatee-359.convex.site/api/v1/souls?limit=8';
-            var resp = await fetch(url);
-            var data = await resp.json();
-
-            this.soulSearchResults = this.soulSearch.trim() ? (data.results || []) : (data.items || []);
-          } catch (e) {
-            this.soulSearchResults = [];
-          } finally {
-            this.soulSearchLoading = false;
-          }
-        },
-
-        async loadSoul(slug) {
-          var textarea = document.getElementById('soulMd');
-          this.soulSearchVisible = false;
-          this.soulSearch = 'Loading ' + slug + '...';
-          this.soulSearchLoading = true;
-
-          try {
-            var resp = await fetch('https://wry-manatee-359.convex.site/api/v1/souls/' + encodeURIComponent(slug) + '/file?path=SOUL.md');
-            if (!resp.ok) throw new Error('Failed to fetch soul');
-            var content = await resp.text();
-            textarea.value = content;
-            textarea.style.minHeight = '200px';
-            this.soulSearch = '';
-          } catch (e) {
-            this.soulSearch = '';
-            this.errorMsg = 'Failed to load soul: ' + slug;
-            setTimeout(function() { this.errorMsg = ''; }.bind(this), 3000);
-          } finally {
-            this.soulSearchLoading = false;
-          }
         },
 
         // === MCPs ===
@@ -2525,17 +2355,21 @@ ${agents
             // If MCP requires env vars, add them
             if (mcp.envVars && mcp.envVars.length > 0) {
               var currentEnvVars = currentConfig.settings?.envVars || {};
-              var envVarsTextarea = document.getElementById('envVars');
-              var currentText = envVarsTextarea.value;
-
-              var newText = currentText;
               for (var i = 0; i < mcp.envVars.length; i++) {
                 var envVar = mcp.envVars[i];
-                if (!currentEnvVars[envVar] && currentText.indexOf(envVar + '=') === -1) {
-                  newText = newText.trim() + (newText.trim() ? '\\n' : '') + envVar + '=';
+                var normalizedKey = this.normalizeSecretKey(envVar);
+                if (!normalizedKey) continue;
+                var existsInForm = this.secrets.some(function(secret) {
+                  return this.normalizeSecretKey(secret && secret.key) === normalizedKey;
+                }.bind(this));
+                var existsInSavedConfig = Object.prototype.hasOwnProperty.call(
+                  currentEnvVars,
+                  normalizedKey
+                );
+                if (!existsInSavedConfig && !existsInForm) {
+                  this.addSecret(normalizedKey, '');
                 }
               }
-              envVarsTextarea.value = newText;
             }
 
             var resp = await fetch(this.apiUrl('/config'), {
@@ -2548,7 +2382,7 @@ ${agents
               var mcpName = mcp.name || mcp.id;
               var msg = 'MCP server "' + mcpName + '" added!';
               if (mcp.envVars && mcp.envVars.length > 0) {
-                msg += ' Please fill in the required environment variables below.';
+                msg += ' Please fill in the required secrets below.';
               }
               this.successMsg = msg;
               return true;
@@ -2571,48 +2405,33 @@ ${agents
           var hasEnvVars = this.prefillEnvVars.length > 0;
 
           try {
-            // 1. Merge domains and packages into existing values and PATCH
-            var patchPayload = {};
-            if (this.prefillAllowedDomains.length > 0) {
-              var domainsEl = document.getElementById('allowedDomains');
-              var existingDomains = this.parseLines(domainsEl.value);
-              var mergedDomains = existingDomains.slice();
-              for (var d = 0; d < this.prefillAllowedDomains.length; d++) {
-                if (mergedDomains.indexOf(this.prefillAllowedDomains[d]) === -1) {
-                  mergedDomains.push(this.prefillAllowedDomains[d]);
-                }
-              }
-              domainsEl.value = mergedDomains.join('\\n');
-              patchPayload.networkConfig = { allowedDomains: mergedDomains };
-              // Preserve denied domains
-              var deniedEl = document.getElementById('deniedDomains');
-              var denied = this.parseLines(deniedEl.value);
-              if (denied.length) patchPayload.networkConfig.deniedDomains = denied;
+            // 1. Create grants for pre-filled domains
+            for (var d = 0; d < this.prefillGrants.length; d++) {
+              await fetch(this.apiUrl('/grants'), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ pattern: this.prefillGrants[d], expiresAt: null })
+              });
             }
 
+            // 2. Save nix packages if any
             if (this.prefillNixPackages.length > 0) {
-              var pkgsEl = document.getElementById('nixPackages');
-              var existingPkgs = this.parseLines(pkgsEl.value);
-              var mergedPkgs = existingPkgs.slice();
+              var mergedPkgs = this.nixPackages.slice();
               for (var p = 0; p < this.prefillNixPackages.length; p++) {
-                if (mergedPkgs.indexOf(this.prefillNixPackages[p]) === -1) {
-                  mergedPkgs.push(this.prefillNixPackages[p]);
+                var packageName = this.normalizeNixPackageName(this.prefillNixPackages[p]);
+                if (packageName && mergedPkgs.indexOf(packageName) === -1) {
+                  mergedPkgs.push(packageName);
                 }
               }
-              pkgsEl.value = mergedPkgs.join('\\n');
-              patchPayload.nixConfig = { packages: mergedPkgs };
-            }
-
-            // Save domains/packages if any
-            if (patchPayload.networkConfig || patchPayload.nixConfig) {
-              var cfgResp = await fetch(this.apiUrl('/config'), {
+              this.nixPackages = mergedPkgs;
+              var nixResp = await fetch(this.apiUrl('/config'), {
                 method: 'PATCH',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(patchPayload)
+                body: JSON.stringify({ nixConfig: { packages: mergedPkgs } })
               });
-              if (!cfgResp.ok) {
-                var cfgErr = await cfgResp.json();
-                throw new Error(cfgErr.error || 'Failed to save network/package config');
+              if (!nixResp.ok) {
+                var nixErr = await nixResp.json();
+                throw new Error(nixErr.error || 'Failed to save package config');
               }
             }
 
@@ -2644,19 +2463,25 @@ ${agents
               }
             }
 
-            // 4. Handle env vars — add keys to textarea, expand sections
+            // 4. Handle env vars — add keys to secrets list, expand sections
             if (hasEnvVars) {
-              var envEl = document.getElementById('envVars');
-              var currentText = envEl.value;
+              var existingSecretKeys = {};
+              for (var es = 0; es < this.secrets.length; es++) {
+                var existingKey = this.normalizeSecretKey(
+                  this.secrets[es] && this.secrets[es].key
+                );
+                if (existingKey) existingSecretKeys[existingKey] = true;
+              }
               for (var ei = 0; ei < this.prefillEnvVars.length; ei++) {
-                var envKey = this.prefillEnvVars[ei];
-                if (currentText.indexOf(envKey + '=') === -1) {
-                  currentText = currentText.trim() + (currentText.trim() ? '\\n' : '') + envKey + '=';
+                var envKey = this.normalizeSecretKey(this.prefillEnvVars[ei]);
+                if (!envKey) continue;
+                if (!existingSecretKeys[envKey]) {
+                  this.addSecret(envKey, '');
+                  existingSecretKeys[envKey] = true;
                 }
               }
-              envEl.value = currentText;
-              this.advancedOpen = true;
-              this.envVarsOpen = true;
+              this.openSections.envvars = true;
+              this.updateSectionsUrl();
             }
 
             // 5. Dismiss banner and show result
@@ -2666,8 +2491,11 @@ ${agents
               this.errorMsg = 'Some items failed to add: ' + failures.join(', ');
             }
             if (hasEnvVars) {
-              this.successMsg = 'Changes approved! Please fill in environment variable values below, then Save Settings.';
+              // Don't persist dismissed to URL — env vars still need values + save.
+              // On refresh the banner will reappear so the user can re-approve.
+              this.successMsg = 'Changes approved! Please fill in secret values below, then Save Settings.';
             } else {
+              var u = new URL(window.location.href); u.searchParams.set('dismissed','1'); window.history.replaceState({}, '', u.toString());
               this.successMsg = failures.length > 0 ? 'Changes partially applied.' : 'All changes approved and saved!';
             }
             window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -2677,6 +2505,96 @@ ${agents
           } finally {
             this.approvingPrefills = false;
           }
+        }
+      };
+    }
+
+    function permissionsSection() {
+      return {
+        permissionItems: [],
+        permissionsLoading: true,
+        showAddForm: false,
+        newPattern: '',
+        newAccess: '1h',
+
+        init() {
+          this.loadPermissions();
+        },
+
+        apiUrl(path) {
+          return '/api/v1/agents/' + encodeURIComponent(__STATE__.agentId) + '/config' + path + '?token=' + encodeURIComponent(__STATE__.token);
+        },
+
+        async loadPermissions() {
+          this.permissionsLoading = true;
+          var items = [];
+
+          try {
+            var grantResp = await fetch(this.apiUrl('/grants'));
+            if (grantResp.ok) {
+              var grants = await grantResp.json();
+              for (var k = 0; k < grants.length; k++) {
+                var g = grants[k];
+                var type = g.denied ? 'denied' : (g.expiresAt === null ? 'always' : 'grant');
+                items.push({ pattern: g.pattern, type: type, expiresAt: g.expiresAt, grantedAt: g.grantedAt, denied: !!g.denied });
+              }
+            }
+          } catch (e) { /* ignore */ }
+
+          // Sort: domains first, then MCP tools
+          items.sort(function(a, b) {
+            var aIsTool = a.pattern.startsWith('/') ? 1 : 0;
+            var bIsTool = b.pattern.startsWith('/') ? 1 : 0;
+            if (aIsTool !== bIsTool) return aIsTool - bIsTool;
+            return a.pattern.localeCompare(b.pattern);
+          });
+
+          this.permissionItems = items;
+          this.permissionsLoading = false;
+        },
+
+        badgeText(item) {
+          if (item.denied) return 'Denied';
+          if (item.expiresAt === null) return 'Always';
+          var remaining = item.expiresAt - Date.now();
+          if (remaining <= 0) return 'Expired';
+          if (remaining > 86400000) return Math.ceil(remaining / 86400000) + 'd left';
+          if (remaining > 3600000) return Math.ceil(remaining / 3600000) + 'h left';
+          return Math.ceil(remaining / 60000) + 'min left';
+        },
+
+        badgeClass(item) {
+          if (item.denied) return 'bg-red-100 text-red-700';
+          if (item.expiresAt === null) return 'bg-green-100 text-green-700';
+          var remaining = item.expiresAt - Date.now();
+          if (remaining <= 0) return 'bg-gray-100 text-gray-500';
+          return 'bg-blue-100 text-blue-700';
+        },
+
+        async addPermission() {
+          var pattern = this.newPattern.trim();
+          if (!pattern) return;
+
+          var expiresAt = null;
+          var denied = false;
+          if (this.newAccess === '1h') expiresAt = Date.now() + 3600000;
+          else if (this.newAccess === 'session') expiresAt = Date.now() + 86400000;
+          else if (this.newAccess === 'denied') denied = true;
+
+          await fetch(this.apiUrl('/grants'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ pattern: pattern, expiresAt: expiresAt, denied: denied || undefined })
+          });
+
+          this.newPattern = '';
+          this.showAddForm = false;
+          await this.loadPermissions();
+        },
+
+        async removePermission(item) {
+          await fetch(this.apiUrl('/grants/' + encodeURIComponent(item.pattern)), { method: 'DELETE' });
+          await this.loadPermissions();
         }
       };
     }

@@ -6,7 +6,6 @@ const logger = createLogger("worker");
 
 import { setupWorkspaceEnv } from "./core/workspace";
 import { GatewayClient } from "./gateway/sse-client";
-import { GitFilesystemWorkerModule } from "./modules/git-filesystem";
 
 /**
  * Main entry point for gateway-based persistent worker
@@ -25,9 +24,6 @@ async function main() {
     });
     logger.info(`Tracing initialized: lobu-worker -> ${tempoEndpoint}`);
   }
-
-  // Register built-in worker modules
-  moduleRegistry.register(new GitFilesystemWorkerModule());
 
   // Discover and register available modules
   await moduleRegistry.registerAvailableModules();

@@ -1,6 +1,5 @@
 import type {
   AgentMcpConfig,
-  GitConfig,
   NetworkConfig,
   NixConfig,
   SessionContext,
@@ -37,8 +36,6 @@ export interface ThreadSession {
   model?: string;
   /** Per-agent network configuration for sandbox isolation */
   networkConfig?: NetworkConfig;
-  /** Git repository configuration for workspace initialization */
-  gitConfig?: GitConfig;
   /** Per-agent MCP configuration (additive to global MCPs) */
   mcpConfig?: AgentMcpConfig;
   /** Nix environment configuration for agent workspace */

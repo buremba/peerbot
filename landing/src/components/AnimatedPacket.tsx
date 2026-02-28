@@ -1,5 +1,5 @@
-import type React from "react";
 import { motion } from "framer-motion";
+import type React from "react";
 import { NODES } from "../nodes";
 
 interface AnimatedPacketProps {

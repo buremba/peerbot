@@ -13,8 +13,6 @@ const EXCLUDED_ROUTES = [
   "/", // Landing page
   "/settings", // HTML settings page
   "/api/v1/oauth/providers/{provider}/login", // OAuth redirect
-  "/api/v1/oauth/github/login", // GitHub OAuth redirect
-  "/api/v1/oauth/github/callback", // GitHub OAuth callback
 ];
 
 function isInternalRoute(path: string): boolean {
@@ -68,11 +66,6 @@ function deriveTag(path: string): string {
     if (path.includes("/messages") || path.includes("/interactions"))
       return "Agent Messages";
     return "Agents";
-  }
-
-  // GitHub utility routes
-  if (path.startsWith("/api/v1/github")) {
-    return "GitHub";
   }
 
   // Skills utility routes

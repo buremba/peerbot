@@ -104,7 +104,7 @@ export class AgentSettingsStore extends BaseRedisStore<AgentSettings> {
         this.decryptSettingsForRuntime(parsed);
 
       if (needsMigration) {
-        await this.migrateSettingsInPlace(key, settings);
+        await this.migrateSettingsInPlace(key, settings, data);
       }
 
       return settings;
@@ -192,14 +192,35 @@ export class AgentSettingsStore extends BaseRedisStore<AgentSettings> {
 
   private async migrateSettingsInPlace(
     key: string,
-    settings: AgentSettings
+    settings: AgentSettings,
+    originalRaw: string
   ): Promise<void> {
     if (!this.encryptionAvailable) {
       return;
     }
 
     try {
-      await this.set(key, settings);
+      await this.redis.watch(key);
+      const currentRaw = await this.redis.get(key);
+      if (currentRaw !== originalRaw) {
+        await this.redis.unwatch();
+        this.logger.info(
+          "Skipped credentials migration due to concurrent settings update",
+          { key }
+        );
+        return;
+      }
+
+      const serialized = this.serialize(settings);
+      const result = await this.redis.multi().set(key, serialized).exec();
+      if (!result) {
+        this.logger.info(
+          "Skipped credentials migration due to concurrent settings update",
+          { key }
+        );
+        return;
+      }
+
       this.logger.info(
         "Migrated agent settings credentials to encrypted format",
         {
@@ -207,6 +228,11 @@ export class AgentSettingsStore extends BaseRedisStore<AgentSettings> {
         }
       );
     } catch (error) {
+      try {
+        await this.redis.unwatch();
+      } catch {
+        // Ignore cleanup failures.
+      }
       this.logger.warn(
         "Failed migrating plaintext agent settings credentials",
         {
@@ -363,8 +389,14 @@ export class AgentSettingsStore extends BaseRedisStore<AgentSettings> {
       try {
         const decrypted = decrypt(value);
         return { value: decrypted, needsMigration: true };
-      } catch {
-        // Fall through and treat as plaintext if legacy decrypt fails.
+      } catch (error) {
+        this.logger.warn(
+          "Failed to decrypt legacy auth profile credential value",
+          {
+            error: error instanceof Error ? error.message : String(error),
+          }
+        );
+        return { value, needsMigration: false };
       }
     }
 

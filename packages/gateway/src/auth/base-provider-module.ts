@@ -9,6 +9,7 @@ import {
   type AuthProfilesManager,
   createAuthProfileLabel,
 } from "./settings/auth-profiles-manager";
+import { verifySettingsToken } from "./settings/token-service";
 
 const logger = createLogger("base-provider-module");
 
@@ -192,15 +193,35 @@ export abstract class BaseProviderModule
     // Default: no extra routes
   }
 
+  private isAuthorized(token: string | undefined, agentId: string): boolean {
+    if (!token) return false;
+
+    const payload = verifySettingsToken(token);
+    if (!payload) return false;
+
+    // Agent-bound tokens must match exactly.
+    if (payload.agentId && payload.agentId !== agentId) {
+      return false;
+    }
+
+    return true;
+  }
+
   private setupBaseRoutes(): void {
     // Save API key
     this.app.post("/save-key", async (c) => {
       try {
         const body = await c.req.json();
-        const { agentId, apiKey } = body;
+        const { agentId, apiKey, token } = body;
 
         if (!agentId || !apiKey) {
           return c.json({ error: "Missing agentId or apiKey" }, 400);
+        }
+
+        const queryToken = c.req.query("token");
+        const authToken = typeof token === "string" ? token : queryToken;
+        if (!this.isAuthorized(authToken, agentId)) {
+          return c.json({ error: "Unauthorized" }, 401);
         }
 
         await this.authProfilesManager.upsertProfile({
@@ -229,9 +250,16 @@ export abstract class BaseProviderModule
       try {
         const body = await c.req.json().catch(() => ({}));
         const agentId = body.agentId || c.req.query("agentId");
+        const queryToken = c.req.query("token");
+        const authToken =
+          typeof body.token === "string" ? body.token : queryToken;
 
         if (!agentId) {
           return c.json({ error: "Missing agentId" }, 400);
+        }
+
+        if (!this.isAuthorized(authToken, agentId)) {
+          return c.json({ error: "Unauthorized" }, 401);
         }
 
         await this.authProfilesManager.deleteProviderProfiles(

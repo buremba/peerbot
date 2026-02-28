@@ -1816,7 +1816,7 @@ ${
           if (!apiKey) return;
 
           try {
-            var resp = await fetch('/api/v1/auth/' + provider + '/save-key', {
+            var resp = await fetch('/api/v1/auth/' + provider + '/save-key?token=' + encodeURIComponent(this.token), {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ agentId: this.agentId, apiKey: apiKey })
@@ -1930,7 +1930,7 @@ ${
           if (profileId) body.profileId = profileId;
 
           // All providers have /logout on their auth app; try that first, fall back to OAuth route
-          var resp = await fetch('/api/v1/auth/' + provider + '/logout', {
+          var resp = await fetch('/api/v1/auth/' + provider + '/logout?token=' + encodeURIComponent(this.token), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body)

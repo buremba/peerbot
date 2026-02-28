@@ -281,8 +281,10 @@ export function verifySettingsToken(
 /**
  * Build the full settings URL with token
  */
+export const SETTINGS_TOKEN_HASH_PARAM = "st";
+
 export function buildSettingsUrl(token: string): string {
   const baseUrl = process.env.PUBLIC_GATEWAY_URL || "http://localhost:8080";
-  // URL-encode the token since it contains special characters
-  return `${baseUrl}/settings?token=${encodeURIComponent(token)}`;
+  // Keep the token in URL hash so it never appears in server logs/referrers.
+  return `${baseUrl}/settings#${SETTINGS_TOKEN_HASH_PARAM}=${encodeURIComponent(token)}`;
 }

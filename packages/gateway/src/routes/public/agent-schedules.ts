@@ -6,16 +6,14 @@
 
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import type { AgentMetadataStore } from "../../auth/agent-metadata-store";
-import {
-  type SettingsTokenPayload,
-  verifySettingsToken,
-} from "../../auth/settings/token-service";
+import type { SettingsTokenPayload } from "../../auth/settings/token-service";
 import type { UserAgentsStore } from "../../auth/user-agents-store";
 import type { ScheduledWakeupService } from "../../orchestration/scheduled-wakeup";
+import { verifySettingsSession } from "./settings-auth";
 
 const TAG = "Agents";
 const ErrorResponse = z.object({ error: z.string() });
-const TokenQuery = z.object({ token: z.string() });
+const TokenQuery = z.object({ token: z.string().optional() });
 
 // --- Route Definitions ---
 
@@ -92,11 +90,9 @@ export function createAgentSchedulesRoutes(
   const app = new OpenAPIHono();
 
   const verifyToken = async (
-    token: string | undefined,
+    payload: SettingsTokenPayload | null,
     agentId: string
   ): Promise<SettingsTokenPayload | null> => {
-    if (!token) return null;
-    const payload = verifySettingsToken(token);
     if (!payload) return null;
 
     if (payload.agentId) {
@@ -121,7 +117,7 @@ export function createAgentSchedulesRoutes(
 
   app.openapi(listSchedulesRoute, async (c): Promise<any> => {
     const agentId = c.req.param("agentId") || "";
-    const payload = await verifyToken(c.req.valid("query").token, agentId);
+    const payload = await verifyToken(verifySettingsSession(c), agentId);
     if (!payload) return c.json({ error: "Unauthorized" }, 401);
 
     if (!config.scheduledWakeupService) return c.json({ schedules: [] });
@@ -142,7 +138,7 @@ export function createAgentSchedulesRoutes(
 
   app.openapi(cancelScheduleRoute, async (c): Promise<any> => {
     const agentId = c.req.param("agentId") || "";
-    const payload = await verifyToken(c.req.valid("query").token, agentId);
+    const payload = await verifyToken(verifySettingsSession(c), agentId);
     if (!payload) return c.json({ error: "Unauthorized" }, 401);
 
     if (!config.scheduledWakeupService) {

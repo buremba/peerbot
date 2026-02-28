@@ -11,9 +11,9 @@ import { createLogger } from "@lobu/core";
 import { Hono } from "hono";
 import type { AgentMetadataStore } from "../../auth/agent-metadata-store";
 import type { AgentSettingsStore } from "../../auth/settings";
-import { verifySettingsToken } from "../../auth/settings/token-service";
 import type { UserAgentsStore } from "../../auth/user-agents-store";
 import type { ChannelBindingService } from "../../channels";
+import { verifySettingsSession } from "./settings-auth";
 
 const logger = createLogger("agent-routes");
 
@@ -46,12 +46,7 @@ export function createAgentRoutes(config: AgentRoutesConfig): Hono {
 
   // POST /api/v1/agents - Create a new agent
   router.post("/", async (c) => {
-    const token = c.req.query("token");
-    if (!token) {
-      return c.json({ error: "Missing token" }, 401);
-    }
-
-    const payload = verifySettingsToken(token);
+    const payload = verifySettingsSession(c);
     if (!payload) {
       return c.json({ error: "Invalid or expired token" }, 401);
     }
@@ -142,12 +137,7 @@ export function createAgentRoutes(config: AgentRoutesConfig): Hono {
 
   // GET /api/v1/agents - List user's agents
   router.get("/", async (c) => {
-    const token = c.req.query("token");
-    if (!token) {
-      return c.json({ error: "Missing token" }, 401);
-    }
-
-    const payload = verifySettingsToken(token);
+    const payload = verifySettingsSession(c);
     if (!payload) {
       return c.json({ error: "Invalid or expired token" }, 401);
     }
@@ -185,12 +175,7 @@ export function createAgentRoutes(config: AgentRoutesConfig): Hono {
 
   // DELETE /api/v1/agents/{agentId} - Delete an agent
   router.delete("/:agentId", async (c) => {
-    const token = c.req.query("token");
-    if (!token) {
-      return c.json({ error: "Missing token" }, 401);
-    }
-
-    const payload = verifySettingsToken(token);
+    const payload = verifySettingsSession(c);
     if (!payload) {
       return c.json({ error: "Invalid or expired token" }, 401);
     }

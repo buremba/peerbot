@@ -20,10 +20,16 @@ import type { AgentSettingsStore } from "../../auth/settings";
 import { verifySettingsToken } from "../../auth/settings/token-service";
 import type { UserAgentsStore } from "../../auth/user-agents-store";
 import type { ChannelBindingService } from "../../channels";
+import {
+  clearSettingsSessionCookie,
+  setSettingsSessionCookie,
+  verifySettingsSession,
+} from "./settings-auth";
 import type { ProviderMeta } from "./settings-page";
 import {
   renderErrorPage,
   renderPickerPage,
+  renderSessionBootstrapPage,
   renderSettingsPage,
 } from "./settings-page";
 
@@ -59,24 +65,54 @@ export function createSettingsPageRoutes(
 ): OpenAPIHono {
   const app = new OpenAPIHono();
 
-  // HTML Settings Page
-  app.get("/settings", async (c) => {
-    const token = c.req.query("token");
-    if (!token) {
-      return c.html(
-        renderErrorPage("Missing token. Please use the link sent to you."),
-        400
-      );
-    }
+  app.post("/settings/session", async (c) => {
+    const body = await c.req
+      .json<{ token?: string }>()
+      .catch((): { token?: string } => ({}));
+    const token = (body.token ?? "").trim();
+    if (!token) return c.json({ error: "Missing token" }, 400);
 
     const payload = verifySettingsToken(token);
     if (!payload) {
-      return c.html(
-        renderErrorPage(
-          "Invalid or expired link. Use /configure to request a new settings link."
-        ),
-        401
-      );
+      clearSettingsSessionCookie(c);
+      return c.json({ error: "Invalid or expired token" }, 401);
+    }
+
+    const sessionSet = setSettingsSessionCookie(c, token, payload);
+    if (!sessionSet) {
+      clearSettingsSessionCookie(c);
+      return c.json({ error: "Invalid or expired token" }, 401);
+    }
+
+    return c.json({ success: true });
+  });
+
+  // HTML Settings Page
+  app.get("/settings", async (c) => {
+    c.header("Referrer-Policy", "no-referrer");
+    c.header("Cache-Control", "no-store, max-age=0");
+    c.header("Pragma", "no-cache");
+
+    const legacyToken = c.req.query("token");
+    if (legacyToken) {
+      const payload = verifySettingsToken(legacyToken);
+      if (!payload) {
+        clearSettingsSessionCookie(c);
+        return c.html(
+          renderErrorPage(
+            "Invalid or expired link. Use /configure to request a new settings link."
+          ),
+          401
+        );
+      }
+
+      setSettingsSessionCookie(c, legacyToken, payload);
+      return c.redirect("/settings", 303);
+    }
+
+    const payload = verifySettingsSession(c);
+    if (!payload) {
+      return c.html(renderSessionBootstrapPage());
     }
 
     // Determine the agentId to show settings for
@@ -110,7 +146,7 @@ export function createSettingsPageRoutes(
         }
       }
 
-      return c.html(renderPickerPage(payload, agents, token));
+      return c.html(renderPickerPage(payload, agents));
     }
 
     // We have an agentId: render settings page
@@ -179,7 +215,7 @@ export function createSettingsPageRoutes(
     const effectivePayload = { ...payload, agentId };
 
     return c.html(
-      renderSettingsPage(effectivePayload, settings, token, {
+      renderSettingsPage(effectivePayload, settings, {
         providers: installedProviders,
         catalogProviders,
         providerModelOptions,
@@ -194,10 +230,7 @@ export function createSettingsPageRoutes(
 
   // PATCH /settings/update-agent - Update agent name/description
   app.patch("/settings/update-agent", async (c) => {
-    const token = c.req.query("token");
-    if (!token) return c.json({ error: "Missing token" }, 401);
-
-    const payload = verifySettingsToken(token);
+    const payload = verifySettingsSession(c);
     if (!payload) return c.json({ error: "Invalid or expired token" }, 401);
 
     let agentId = payload.agentId;
@@ -249,10 +282,7 @@ export function createSettingsPageRoutes(
 
   // POST /settings/switch-agent - Switch channel binding to a different agent
   app.post("/settings/switch-agent", async (c) => {
-    const token = c.req.query("token");
-    if (!token) return c.json({ error: "Missing token" }, 401);
-
-    const payload = verifySettingsToken(token);
+    const payload = verifySettingsSession(c);
     if (!payload) return c.json({ error: "Invalid or expired token" }, 401);
 
     if (!payload.channelId) {
@@ -335,10 +365,7 @@ export function createSettingsPageRoutes(
 
   // POST /settings/create-agent - Create new agent and optionally bind to channel
   app.post("/settings/create-agent", async (c) => {
-    const token = c.req.query("token");
-    if (!token) return c.json({ error: "Missing token" }, 401);
-
-    const payload = verifySettingsToken(token);
+    const payload = verifySettingsSession(c);
     if (!payload) return c.json({ error: "Invalid or expired token" }, 401);
 
     try {

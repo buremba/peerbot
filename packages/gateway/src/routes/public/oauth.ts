@@ -7,7 +7,8 @@
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import type { ClaudeOAuthStateStore } from "../../auth/oauth/state-store";
 import type { AgentSettingsStore } from "../../auth/settings";
-import { verifySettingsToken } from "../../auth/settings/token-service";
+import type { SettingsTokenPayload } from "../../auth/settings/token-service";
+import { verifySettingsSession } from "./settings-auth";
 
 const TAG = "OAuth";
 const ErrorResponse = z.object({ error: z.string() });
@@ -36,7 +37,7 @@ const codeExchangeRoute = createRoute({
   tags: [TAG],
   summary: "Exchange OAuth code for token",
   request: {
-    query: z.object({ token: z.string() }),
+    query: z.object({ token: z.string().optional() }),
     params: z.object({ provider: z.string() }),
     body: {
       content: {
@@ -68,7 +69,7 @@ const providerLogoutRoute = createRoute({
   tags: [TAG],
   summary: "Disconnect OAuth provider",
   request: {
-    query: z.object({ token: z.string() }),
+    query: z.object({ token: z.string().optional() }),
     params: z.object({ provider: z.string() }),
   },
   responses: {
@@ -98,21 +99,15 @@ export function createOAuthRoutes(config: OAuthRoutesConfig): OpenAPIHono {
   const app = new OpenAPIHono();
 
   const verifyToken = (
-    token: string | undefined
-  ):
-    | (import("../../auth/settings/token-service").SettingsTokenPayload & {
-        agentId: string;
-      })
-    | null => {
-    if (!token) return null;
-    const payload = verifySettingsToken(token);
+    payload: SettingsTokenPayload | null
+  ): (SettingsTokenPayload & { agentId: string }) | null => {
     if (!payload || !payload.agentId) return null;
     return payload as typeof payload & { agentId: string };
   };
 
   // --- Provider login redirect (excluded from docs) ---
   app.get("/providers/:provider/login", async (c) => {
-    const payload = verifyToken(c.req.query("token"));
+    const payload = verifyToken(verifySettingsSession(c));
     if (!payload) return c.json({ error: "Unauthorized" }, 401);
 
     const provider = c.req.param("provider");
@@ -134,8 +129,7 @@ export function createOAuthRoutes(config: OAuthRoutesConfig): OpenAPIHono {
 
   // --- Provider code exchange ---
   app.openapi(codeExchangeRoute, async (c): Promise<any> => {
-    const { token } = c.req.valid("query");
-    const payload = verifyToken(token);
+    const payload = verifyToken(verifySettingsSession(c));
     if (!payload) return c.json({ error: "Unauthorized" }, 401);
 
     const { provider } = c.req.valid("param");
@@ -176,7 +170,7 @@ export function createOAuthRoutes(config: OAuthRoutesConfig): OpenAPIHono {
 
   // --- Provider logout ---
   app.openapi(providerLogoutRoute, async (c): Promise<any> => {
-    const payload = verifyToken(c.req.valid("query").token);
+    const payload = verifyToken(verifySettingsSession(c));
     if (!payload) return c.json({ error: "Unauthorized" }, 401);
 
     const { provider } = c.req.valid("param");

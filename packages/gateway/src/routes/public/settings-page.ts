@@ -5,7 +5,10 @@
 import type { ModelOption } from "@lobu/core";
 import type { AgentMetadata } from "../../auth/agent-metadata-store";
 import type { AgentSettings } from "../../auth/settings";
-import type { SettingsTokenPayload } from "../../auth/settings/token-service";
+import {
+  SETTINGS_TOKEN_HASH_PARAM,
+  type SettingsTokenPayload,
+} from "../../auth/settings/token-service";
 import { platformRegistry } from "../../platform";
 import { settingsPageCSS } from "./settings-page-styles";
 
@@ -89,7 +92,6 @@ export interface SettingsPageOptions {
 export function renderSettingsPage(
   payload: SettingsTokenPayload,
   settings: AgentSettings | null,
-  token: string,
   options?: SettingsPageOptions
 ): string {
   const s: Partial<AgentSettings> = settings || {};
@@ -153,7 +155,6 @@ export function renderSettingsPage(
   })();
 
   const initialState = {
-    token,
     agentId: payload.agentId,
     PROVIDERS: Object.fromEntries(
       providers.map((p) => [
@@ -201,6 +202,7 @@ export function renderSettingsPage(
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="referrer" content="no-referrer">
   <title>Agent Settings - Lobu</title>
   <style>${settingsPageCSS}</style>
   <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.9/dist/cdn.min.js"></script>
@@ -527,7 +529,7 @@ ${agents
             html += `
 						          <div x-show="${showCond}" x-transition>
 						            <div class="mb-3 text-center">
-						              <a :href="'/api/v1/oauth/providers/${p.id}/login?token=' + encodeURIComponent(token)" target="_blank" class="inline-block px-4 py-2 text-xs font-medium rounded-lg bg-slate-600 text-white hover:bg-slate-700 transition-all">
+						              <a :href="'/api/v1/oauth/providers/${p.id}/login'" target="_blank" class="inline-block px-4 py-2 text-xs font-medium rounded-lg bg-slate-600 text-white hover:bg-slate-700 transition-all">
 						                Login with ${escapeHtml(p.name)}
 						              </a>
 						            </div>
@@ -661,7 +663,7 @@ ${agents
               <template x-if="pendingProvider && !pendingProvider.success && providerState[pendingProvider.id]?.activeAuthTab !== 'api-key' && (providerState[pendingProvider.id]?.showCodeInput || ((pendingProvider.supportedAuthTypes || [pendingProvider.authType]).length === 1 && pendingProvider.authType === 'oauth'))">
                 <div>
                   <div class="mb-3 text-center">
-                    <a :href="'/api/v1/oauth/providers/' + pendingProvider.id + '/login?token=' + encodeURIComponent(token)" target="_blank" class="inline-block px-4 py-2 text-xs font-medium rounded-lg bg-slate-600 text-white hover:bg-slate-700 transition-all" x-text="'Login with ' + pendingProvider.name">
+                    <a :href="'/api/v1/oauth/providers/' + pendingProvider.id + '/login'" target="_blank" class="inline-block px-4 py-2 text-xs font-medium rounded-lg bg-slate-600 text-white hover:bg-slate-700 transition-all" x-text="'Login with ' + pendingProvider.name">
                     </a>
                   </div>
                   <p class="text-xs text-gray-600 mb-2" x-text="'Paste the authentication code from ' + pendingProvider.name + ':'"></p>
@@ -1063,7 +1065,6 @@ ${agents
     function settingsApp() {
       return {
         // Config
-        token: __STATE__.token,
         agentId: __STATE__.agentId,
         PROVIDERS: __STATE__.PROVIDERS,
 
@@ -1352,7 +1353,7 @@ ${
           this.nixPackageSearchLoading = true;
           try {
             var response = await fetch(
-              this.apiUrl('/config/packages/search') + '&q=' + encodeURIComponent(query)
+              this.apiUrl('/config/packages/search') + '?q=' + encodeURIComponent(query)
             );
             var data = await response.json().catch(function() { return {}; });
             if (!response.ok) throw new Error(data.error || 'Failed to search packages');
@@ -1423,12 +1424,12 @@ ${
         },
 
         apiUrl(path) {
-          return '/api/v1/agents/' + encodeURIComponent(this.agentId) + path + '?token=' + encodeURIComponent(this.token);
+          return '/api/v1/agents/' + encodeURIComponent(this.agentId) + path;
         },
 
         async switchAgent(agentId) {
           try {
-            var resp = await fetch('/settings/switch-agent?token=' + encodeURIComponent(this.token), {
+            var resp = await fetch('/settings/switch-agent', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ agentId: agentId })
@@ -1455,7 +1456,7 @@ ${
             if (this.agentName !== this._initialAgentName) body.name = this.agentName;
             if (this.agentDescription !== this._initialAgentDescription) body.description = this.agentDescription;
 
-            var resp = await fetch('/settings/update-agent?token=' + encodeURIComponent(this.token), {
+            var resp = await fetch('/settings/update-agent', {
               method: 'PATCH',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify(body)
@@ -1487,7 +1488,7 @@ ${
           }
 
           try {
-            var resp = await fetch('/settings/create-agent?token=' + encodeURIComponent(this.token), {
+            var resp = await fetch('/settings/create-agent', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ agentId: agentId, name: name.trim() })
@@ -1505,7 +1506,7 @@ ${
 
         async deleteAgent() {
           try {
-            var resp = await fetch('/api/v1/agent-management/agents/' + encodeURIComponent(this.agentId) + '?token=' + encodeURIComponent(this.token), {
+            var resp = await fetch('/api/v1/agent-management/agents/' + encodeURIComponent(this.agentId), {
               method: 'DELETE'
             });
             var result = await resp.json();
@@ -1777,7 +1778,7 @@ ${
           }
 
           try {
-            var resp = await fetch('/api/v1/oauth/providers/' + provider + '/code?token=' + encodeURIComponent(this.token), {
+            var resp = await fetch('/api/v1/oauth/providers/' + provider + '/code', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ code: code })
@@ -1936,7 +1937,7 @@ ${
             body: JSON.stringify(body)
           });
           if (!resp.ok && info?.authType === 'oauth') {
-            await fetch('/api/v1/oauth/providers/' + provider + '/logout?token=' + encodeURIComponent(this.token), { method: 'POST' });
+            await fetch('/api/v1/oauth/providers/' + provider + '/logout', { method: 'POST' });
           }
           // Reset auth flow state
           var ps = this.providerState[provider];
@@ -1952,7 +1953,7 @@ ${
         // === Integrations (Skills + MCPs) ===
         async initIntegrations() {
           try {
-            var resp = await fetch('/api/v1/integrations/registry?token=' + encodeURIComponent(this.token));
+            var resp = await fetch('/api/v1/integrations/registry');
             var data = await resp.json();
             this.curatedSkills = data.skills || [];
             this.curatedMcps = data.mcps || [];
@@ -1972,7 +1973,7 @@ ${
           this.skillsError = '';
 
           try {
-            var fetchResp = await fetch('/api/v1/integrations/skills/fetch?token=' + encodeURIComponent(this.token), {
+            var fetchResp = await fetch('/api/v1/integrations/skills/fetch', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ repo: repo })
@@ -2100,7 +2101,7 @@ ${
           this.integrationSearchResults = [];
 
           try {
-            var resp = await fetch('/api/v1/integrations/registry?token=' + encodeURIComponent(this.token) + '&q=' + encodeURIComponent(q));
+            var resp = await fetch('/api/v1/integrations/registry?q=' + encodeURIComponent(q));
             var data = await resp.json();
             var skillResults = (data.skills || []).map(function(s) {
               return { id: s.id, name: s.name, description: s.description, installs: s.installs, type: 'skill' };
@@ -2258,7 +2259,7 @@ ${
           this.schedulesLoading = true;
 
           try {
-            var resp = await fetch('/api/v1/agents/' + encodeURIComponent(this.agentId) + '/schedules/' + encodeURIComponent(scheduleId) + '?token=' + encodeURIComponent(this.token), {
+            var resp = await fetch('/api/v1/agents/' + encodeURIComponent(this.agentId) + '/schedules/' + encodeURIComponent(scheduleId), {
               method: 'DELETE'
             });
 
@@ -2289,7 +2290,7 @@ ${
           if (!skill) return;
 
           try {
-            var fetchResp = await fetch('/api/v1/integrations/skills/fetch?token=' + encodeURIComponent(this.token), {
+            var fetchResp = await fetch('/api/v1/integrations/skills/fetch', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ repo: skill.repo })
@@ -2522,7 +2523,7 @@ ${
         },
 
         apiUrl(path) {
-          return '/api/v1/agents/' + encodeURIComponent(__STATE__.agentId) + '/config' + path + '?token=' + encodeURIComponent(__STATE__.token);
+          return '/api/v1/agents/' + encodeURIComponent(__STATE__.agentId) + '/config' + path;
         },
 
         async loadPermissions() {
@@ -2609,14 +2610,14 @@ ${
  */
 export function renderPickerPage(
   payload: SettingsTokenPayload,
-  agents: (AgentMetadata & { channelCount: number })[],
-  token: string
+  agents: (AgentMetadata & { channelCount: number })[]
 ): string {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="referrer" content="no-referrer">
   <title>Configure Agent - Lobu</title>
   <style>${settingsPageCSS}</style>
 </head>
@@ -2686,7 +2687,6 @@ ${agents
   </div>
 
   <script>
-    var token = ${JSON.stringify(token)};
     var idManuallyEdited = false;
 
     document.getElementById('agentId').addEventListener('input', function() {
@@ -2704,7 +2704,7 @@ ${agents
     async function selectAgent(agentId) {
       hideMessages();
       try {
-        var resp = await fetch('/settings/switch-agent?token=' + encodeURIComponent(token), {
+        var resp = await fetch('/settings/switch-agent', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ agentId: agentId })
@@ -2740,7 +2740,7 @@ ${agents
       hideMessages();
 
       try {
-        var resp = await fetch('/settings/create-agent?token=' + encodeURIComponent(token), {
+        var resp = await fetch('/settings/create-agent', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ agentId: agentId, name: name })
@@ -2776,6 +2776,76 @@ ${agents
       document.getElementById('success-msg').classList.add('hidden');
       document.getElementById('error-msg').classList.add('hidden');
     }
+  </script>
+</body>
+</html>`;
+}
+
+export function renderSessionBootstrapPage(): string {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="referrer" content="no-referrer">
+  <title>Loading Settings - Lobu</title>
+  <style>
+    body { margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 1.25rem; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: linear-gradient(to bottom right, #334155, #0f172a); color: #e2e8f0; }
+    .card { background: #0f172a; border: 1px solid #334155; border-radius: 1rem; box-shadow: 0 20px 25px -5px rgb(0 0 0 / 0.35); padding: 1.5rem; max-width: 28rem; width: 100%; text-align: center; }
+    .spinner { width: 1.25rem; height: 1.25rem; border: 2px solid #475569; border-top-color: #cbd5e1; border-radius: 9999px; margin: 0 auto 0.75rem; animation: spin 0.8s linear infinite; }
+    .error { display: none; margin-top: 0.75rem; font-size: 0.875rem; color: #fca5a5; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div id="spinner" class="spinner"></div>
+    <p id="status">Securing your settings session...</p>
+    <p id="error" class="error"></p>
+  </div>
+  <script>
+    (async function () {
+      var hash = window.location.hash ? window.location.hash.slice(1) : '';
+      var params = new URLSearchParams(hash);
+      var token = params.get('${SETTINGS_TOKEN_HASH_PARAM}') || params.get('token');
+      var errorEl = document.getElementById('error');
+      var statusEl = document.getElementById('status');
+      var spinnerEl = document.getElementById('spinner');
+
+      function showError(message) {
+        statusEl.textContent = 'Unable to open settings.';
+        errorEl.textContent = message;
+        errorEl.style.display = 'block';
+        spinnerEl.style.display = 'none';
+      }
+
+      if (!token) {
+        showError('Missing settings link token. Request a new link with /configure.');
+        return;
+      }
+
+      try {
+        var resp = await fetch('/settings/session', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token: token })
+        });
+
+        if (!resp.ok) {
+          var result = await resp.json().catch(function () { return {}; });
+          showError(result.error || 'Invalid or expired settings link.');
+          return;
+        }
+
+        var url = new URL(window.location.href);
+        url.hash = '';
+        url.search = '';
+        window.history.replaceState({}, '', url.pathname);
+        window.location.replace('/settings');
+      } catch (error) {
+        showError('Network error while securing session.');
+      }
+    })();
   </script>
 </body>
 </html>`;

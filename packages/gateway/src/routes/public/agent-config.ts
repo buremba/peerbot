@@ -12,18 +12,16 @@ import { collectModelValues } from "../../auth/provider-model-options";
 import type { ProviderStatus } from "../../auth/provider-status";
 import type { AgentSettings, AgentSettingsStore } from "../../auth/settings";
 import type { AuthProfilesManager } from "../../auth/settings/auth-profiles-manager";
-import {
-  type SettingsTokenPayload,
-  verifySettingsToken,
-} from "../../auth/settings/token-service";
+import type { SettingsTokenPayload } from "../../auth/settings/token-service";
 import type { UserAgentsStore } from "../../auth/user-agents-store";
 import type { WorkerConnectionManager } from "../../gateway/connection-manager";
 import type { IMessageQueue } from "../../infrastructure/queue";
 import type { GrantStore } from "../../permissions/grant-store";
+import { verifySettingsSession } from "./settings-auth";
 
 const TAG = "Agents";
 const ErrorResponse = z.object({ error: z.string() });
-const TokenQuery = z.object({ token: z.string() });
+const TokenQuery = z.object({ token: z.string().optional() });
 const logger = createLogger("agent-config-routes");
 
 // --- Route Definitions ---
@@ -182,11 +180,9 @@ export function createAgentConfigRoutes(
    * verify user owns the agent via userAgentsStore or it's a workspace agent.
    */
   const verifyToken = async (
-    token: string | undefined,
+    payload: SettingsTokenPayload | null,
     agentId: string
   ): Promise<SettingsTokenPayload | null> => {
-    if (!token) return null;
-    const payload = verifySettingsToken(token);
     if (!payload) return null;
 
     if (payload.agentId) {
@@ -217,7 +213,7 @@ export function createAgentConfigRoutes(
 
   app.openapi(getConfigRoute, async (c): Promise<any> => {
     const agentId = c.req.param("agentId") || "";
-    const payload = await verifyToken(c.req.valid("query").token, agentId);
+    const payload = await verifyToken(verifySettingsSession(c), agentId);
     if (!payload) return c.json({ error: "Unauthorized" }, 401);
 
     const settings = await config.agentSettingsStore.getSettings(agentId);
@@ -273,7 +269,7 @@ export function createAgentConfigRoutes(
 
   app.openapi(updateConfigRoute, async (c): Promise<any> => {
     const agentId = c.req.param("agentId") || "";
-    const payload = await verifyToken(c.req.valid("query").token, agentId);
+    const payload = await verifyToken(verifySettingsSession(c), agentId);
     if (!payload) return c.json({ error: "Unauthorized" }, 401);
 
     try {
@@ -329,8 +325,7 @@ export function createAgentConfigRoutes(
   // GET /packages/search?q=python
   app.get("/packages/search", async (c): Promise<any> => {
     const agentId = c.req.param("agentId") || "";
-    const token = c.req.query("token");
-    const payload = await verifyToken(token, agentId);
+    const payload = await verifyToken(verifySettingsSession(c), agentId);
     if (!payload) return c.json({ error: "Unauthorized" }, 401);
 
     const query = (c.req.query("q") || "").trim();
@@ -352,8 +347,7 @@ export function createAgentConfigRoutes(
   // GET /providers/catalog
   app.get("/providers/catalog", async (c): Promise<any> => {
     const agentId = c.req.param("agentId") || "";
-    const token = c.req.query("token");
-    const payload = await verifyToken(token, agentId);
+    const payload = await verifyToken(verifySettingsSession(c), agentId);
     if (!payload) return c.json({ error: "Unauthorized" }, 401);
 
     if (!config.providerCatalogService) {
@@ -380,8 +374,7 @@ export function createAgentConfigRoutes(
   // POST /providers/install
   app.post("/providers/install", async (c): Promise<any> => {
     const agentId = c.req.param("agentId") || "";
-    const token = c.req.query("token");
-    const payload = await verifyToken(token, agentId);
+    const payload = await verifyToken(verifySettingsSession(c), agentId);
     if (!payload) return c.json({ error: "Unauthorized" }, 401);
 
     if (!config.providerCatalogService) {
@@ -413,8 +406,7 @@ export function createAgentConfigRoutes(
   // POST /providers/uninstall
   app.post("/providers/uninstall", async (c): Promise<any> => {
     const agentId = c.req.param("agentId") || "";
-    const token = c.req.query("token");
-    const payload = await verifyToken(token, agentId);
+    const payload = await verifyToken(verifySettingsSession(c), agentId);
     if (!payload) return c.json({ error: "Unauthorized" }, 401);
 
     if (!config.providerCatalogService) {
@@ -445,8 +437,7 @@ export function createAgentConfigRoutes(
   // PATCH /providers/reorder
   app.patch("/providers/reorder", async (c): Promise<any> => {
     const agentId = c.req.param("agentId") || "";
-    const token = c.req.query("token");
-    const payload = await verifyToken(token, agentId);
+    const payload = await verifyToken(verifySettingsSession(c), agentId);
     if (!payload) return c.json({ error: "Unauthorized" }, 401);
 
     if (!config.providerCatalogService) {
@@ -482,8 +473,7 @@ export function createAgentConfigRoutes(
     // GET /grants - List all active grants
     app.get("/grants", async (c) => {
       const agentId = c.req.param("agentId") || "";
-      const token = c.req.query("token");
-      const payload = await verifyToken(token, agentId);
+      const payload = await verifyToken(verifySettingsSession(c), agentId);
       if (!payload) return c.json({ error: "Unauthorized" }, 401);
 
       const grants = await grantStore.listGrants(agentId);
@@ -493,8 +483,7 @@ export function createAgentConfigRoutes(
     // POST /grants - Create a grant
     app.post("/grants", async (c) => {
       const agentId = c.req.param("agentId") || "";
-      const token = c.req.query("token");
-      const payload = await verifyToken(token, agentId);
+      const payload = await verifyToken(verifySettingsSession(c), agentId);
       if (!payload) return c.json({ error: "Unauthorized" }, 401);
 
       const body = await c.req.json<{
@@ -524,8 +513,7 @@ export function createAgentConfigRoutes(
     app.delete("/grants/:pattern", async (c) => {
       const agentId = c.req.param("agentId") || "";
       const pattern = decodeURIComponent(c.req.param("pattern") || "");
-      const token = c.req.query("token");
-      const payload = await verifyToken(token, agentId);
+      const payload = await verifyToken(verifySettingsSession(c), agentId);
       if (!payload) return c.json({ error: "Unauthorized" }, 401);
 
       await grantStore.revoke(agentId, pattern);

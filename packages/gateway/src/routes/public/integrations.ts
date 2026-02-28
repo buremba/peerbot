@@ -6,9 +6,9 @@
  */
 
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
-import { verifySettingsToken } from "../../auth/settings/token-service";
 import { McpRegistryService } from "../../services/mcp-registry";
 import { SkillsFetcherService } from "../../services/skills-fetcher";
+import { verifySettingsSession } from "./settings-auth";
 
 const TAG = "Integrations";
 const ErrorResponse = z.object({ error: z.string() });
@@ -22,7 +22,7 @@ const registryRoute = createRoute({
     "Returns curated skills and MCPs if no query, or searches both registries in parallel if q provided",
   request: {
     query: z.object({
-      token: z.string(),
+      token: z.string().optional(),
       q: z
         .string()
         .optional()
@@ -70,7 +70,7 @@ const skillFetchRoute = createRoute({
   summary: "Fetch skill metadata from ClawHub",
   description: "Fetches skill name, description, and content by slug",
   request: {
-    query: z.object({ token: z.string() }),
+    query: z.object({ token: z.string().optional() }),
     body: {
       content: {
         "application/json": {
@@ -121,7 +121,7 @@ const mcpByIdRoute = createRoute({
   description:
     "Returns full MCP server configuration including setup instructions",
   request: {
-    query: z.object({ token: z.string() }),
+    query: z.object({ token: z.string().optional() }),
     params: z.object({ id: z.string() }),
   },
   responses: {
@@ -156,12 +156,10 @@ export function createIntegrationsRoutes(): OpenAPIHono {
   const skillsFetcher = new SkillsFetcherService();
   const mcpRegistry = new McpRegistryService();
 
-  const verifyToken = (token: string | undefined) =>
-    token ? verifySettingsToken(token) : null;
-
   app.openapi(registryRoute, async (c): Promise<any> => {
-    const { token, q, limit } = c.req.valid("query");
-    if (!verifyToken(token)) return c.json({ error: "Unauthorized" }, 401);
+    const { q, limit } = c.req.valid("query");
+    if (!verifySettingsSession(c))
+      return c.json({ error: "Unauthorized" }, 401);
 
     const maxLimit = Math.min(parseInt(limit || "20", 10), 50);
 
@@ -196,8 +194,8 @@ export function createIntegrationsRoutes(): OpenAPIHono {
   });
 
   app.openapi(skillFetchRoute, async (c): Promise<any> => {
-    const { token } = c.req.valid("query");
-    if (!verifyToken(token)) return c.json({ error: "Unauthorized" }, 401);
+    if (!verifySettingsSession(c))
+      return c.json({ error: "Unauthorized" }, 401);
 
     const { repo, refresh } = c.req.valid("json");
     if (!repo?.trim()) return c.json({ error: "Missing skill slug" }, 400);
@@ -218,8 +216,8 @@ export function createIntegrationsRoutes(): OpenAPIHono {
   });
 
   app.openapi(mcpByIdRoute, async (c): Promise<any> => {
-    const { token } = c.req.valid("query");
-    if (!verifyToken(token)) return c.json({ error: "Unauthorized" }, 401);
+    if (!verifySettingsSession(c))
+      return c.json({ error: "Unauthorized" }, 401);
 
     const { id } = c.req.valid("param");
     const mcp = mcpRegistry.getById(id);

@@ -944,11 +944,11 @@ Use it when the user references past discussions or you need context.`);
 
     let userFilesSection = "";
     if (files.length > 0) {
-      const imageFiles = files.filter((f: any) =>
-        OpenClawWorker.IMAGE_MIME_TYPES.has(f.mimetype)
+      const hasImages = files.some((f: any) =>
+        f.mimetype?.startsWith("image/")
       );
-      const nonImageFiles = files.filter(
-        (f: any) => !OpenClawWorker.IMAGE_MIME_TYPES.has(f.mimetype)
+      const hasNonImages = files.some(
+        (f: any) => !f.mimetype?.startsWith("image/")
       );
 
       const fileListing = files
@@ -959,11 +959,13 @@ Use it when the user references past discussions or you need context.`);
         .join("\n");
 
       let instructions = "";
-      if (imageFiles.length > 0) {
-        instructions += `\nThe ${imageFiles.length} image file(s) have been included directly in this message for visual analysis. You can see and analyze their contents.`;
+      if (hasImages) {
+        instructions +=
+          "\nImage files have been included directly in this message for visual analysis.";
       }
-      if (nonImageFiles.length > 0) {
-        instructions += `\nYou can read non-image files with standard commands like \`cat\`, \`less\`, or \`head\`.`;
+      if (hasNonImages) {
+        instructions +=
+          "\nYou can read non-image files with standard commands like `cat`, `less`, or `head`.";
       }
 
       userFilesSection = `
@@ -989,35 +991,26 @@ Create and show files for any output that helps answer the user's request by usi
 `;
   }
 
-  private static readonly IMAGE_MIME_TYPES = new Set([
-    "image/png",
-    "image/jpeg",
-    "image/gif",
-    "image/webp",
-  ]);
-
   private async getImageContentBlocks(): Promise<ImageContent[]> {
     const files = (this.config as any).platformMetadata?.files || [];
     const imageFiles = files.filter((f: any) =>
-      OpenClawWorker.IMAGE_MIME_TYPES.has(f.mimetype)
+      f.mimetype?.startsWith("image/")
     );
 
-    if (imageFiles.length === 0) {
-      return [];
-    }
+    if (imageFiles.length === 0) return [];
 
-    const workspaceDir = this.workspaceManager.getCurrentWorkingDirectory();
-    const inputDir = path.join(workspaceDir, "input");
-    const imageContents: ImageContent[] = [];
+    const inputDir = path.join(
+      this.workspaceManager.getCurrentWorkingDirectory(),
+      "input"
+    );
+    const results: ImageContent[] = [];
 
     for (const file of imageFiles) {
       try {
-        const filePath = path.join(inputDir, file.name);
-        const data = await fs.readFile(filePath);
-        const base64Data = data.toString("base64");
-        imageContents.push({
+        const data = await fs.readFile(path.join(inputDir, file.name));
+        results.push({
           type: "image",
-          data: base64Data,
+          data: data.toString("base64"),
           mimeType: file.mimetype,
         });
         logger.info(
@@ -1028,7 +1021,7 @@ Create and show files for any output that helps answer the user's request by usi
       }
     }
 
-    return imageContents;
+    return results;
   }
 
   private async maybeBuildAuthHintMessage(

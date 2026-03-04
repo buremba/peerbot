@@ -10,7 +10,7 @@ import {
   type ToolsConfig,
   type WorkerTransport,
 } from "@lobu/core";
-import { getModel } from "@mariozechner/pi-ai";
+import { getModel, type ImageContent, type TextContent } from "@mariozechner/pi-ai";
 import {
   AuthStorage,
   createAgentSession,
@@ -757,8 +757,22 @@ Use it when the user references past discussions or you need context.`);
         })
         .join("\n\n");
 
-      const effectivePrompt = `${configNotice}${sessionSummary ? `${sessionSummary}\n\n` : ""}${prependContexts ? `${prependContexts}\n\n` : ""}${userPrompt}`;
-      await session.prompt(effectivePrompt);
+      const effectivePromptText = `${configNotice}${sessionSummary ? `${sessionSummary}\n\n` : ""}${prependContexts ? `${prependContexts}\n\n` : ""}${userPrompt}`;
+
+      // Build multi-modal prompt when images are present
+      const imageBlocks = await this.getImageContentBlocks();
+      if (imageBlocks.length > 0) {
+        logger.info(
+          `Including ${imageBlocks.length} image(s) in prompt for vision analysis`
+        );
+        const multiModalPrompt: (TextContent | ImageContent)[] = [
+          { type: "text", text: effectivePromptText },
+          ...imageBlocks,
+        ];
+        await session.prompt(multiModalPrompt);
+      } else {
+        await session.prompt(effectivePromptText);
+      }
       await done;
 
       const sessionError = this.progressProcessor.consumeFatalErrorMessage();
@@ -934,13 +948,32 @@ Use it when the user references past discussions or you need context.`);
 
     let userFilesSection = "";
     if (files.length > 0) {
+      const imageFiles = files.filter((f: any) =>
+        OpenClawWorker.IMAGE_MIME_TYPES.has(f.mimetype)
+      );
+      const nonImageFiles = files.filter(
+        (f: any) => !OpenClawWorker.IMAGE_MIME_TYPES.has(f.mimetype)
+      );
+
+      const fileListing = files
+        .map((f: any) => `- \`${workspaceDir}/input/${f.name}\` (${f.mimetype || "unknown type"})`)
+        .join("\n");
+
+      let instructions = "";
+      if (imageFiles.length > 0) {
+        instructions += `\nThe ${imageFiles.length} image file(s) have been included directly in this message for visual analysis. You can see and analyze their contents.`;
+      }
+      if (nonImageFiles.length > 0) {
+        instructions += `\nYou can read non-image files with standard commands like \`cat\`, \`less\`, or \`head\`.`;
+      }
+
       userFilesSection = `
 
 ### User-Uploaded Files
 The user has uploaded ${files.length} file(s) for you to analyze:
-${files.map((f: any) => `- \`${workspaceDir}/input/${f.name}\` (${f.mimetype || "unknown type"})`).join("\n")}
+${fileListing}
 
-**Use these files to answer the user's request.** You can read them with standard commands like \`cat\`, \`less\`, or \`head\`.`;
+**Use these files to answer the user's request.**${instructions}`;
     }
 
     return `
@@ -955,6 +988,48 @@ Create and show files for any output that helps answer the user's request by usi
 - **Code files**: scripts, configurations, examples
 - **Images**: generated images, processed photos, screenshots.${userFilesSection}
 `;
+  }
+
+  private static readonly IMAGE_MIME_TYPES = new Set([
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "image/webp",
+  ]);
+
+  private async getImageContentBlocks(): Promise<ImageContent[]> {
+    const files = (this.config as any).platformMetadata?.files || [];
+    const imageFiles = files.filter((f: any) =>
+      OpenClawWorker.IMAGE_MIME_TYPES.has(f.mimetype)
+    );
+
+    if (imageFiles.length === 0) {
+      return [];
+    }
+
+    const workspaceDir = this.workspaceManager.getCurrentWorkingDirectory();
+    const inputDir = path.join(workspaceDir, "input");
+    const imageContents: ImageContent[] = [];
+
+    for (const file of imageFiles) {
+      try {
+        const filePath = path.join(inputDir, file.name);
+        const data = await fs.readFile(filePath);
+        const base64Data = data.toString("base64");
+        imageContents.push({
+          type: "image",
+          data: base64Data,
+          mimeType: file.mimetype,
+        });
+        logger.info(
+          `Loaded image for vision: ${file.name} (${file.mimetype}, ${Math.round(data.length / 1024)}KB)`
+        );
+      } catch (error) {
+        logger.warn(`Failed to load image ${file.name} for vision:`, error);
+      }
+    }
+
+    return imageContents;
   }
 
   private async maybeBuildAuthHintMessage(

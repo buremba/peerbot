@@ -10,7 +10,7 @@ import {
   type ToolsConfig,
   type WorkerTransport,
 } from "@lobu/core";
-import { getModel, type ImageContent, type TextContent } from "@mariozechner/pi-ai";
+import { getModel, type ImageContent } from "@mariozechner/pi-ai";
 import {
   AuthStorage,
   createAgentSession,
@@ -759,17 +759,13 @@ Use it when the user references past discussions or you need context.`);
 
       const effectivePromptText = `${configNotice}${sessionSummary ? `${sessionSummary}\n\n` : ""}${prependContexts ? `${prependContexts}\n\n` : ""}${userPrompt}`;
 
-      // Build multi-modal prompt when images are present
+      // Include image attachments for vision-capable models
       const imageBlocks = await this.getImageContentBlocks();
       if (imageBlocks.length > 0) {
         logger.info(
           `Including ${imageBlocks.length} image(s) in prompt for vision analysis`
         );
-        const multiModalPrompt: (TextContent | ImageContent)[] = [
-          { type: "text", text: effectivePromptText },
-          ...imageBlocks,
-        ];
-        await session.prompt(multiModalPrompt);
+        await session.prompt(effectivePromptText, { images: imageBlocks });
       } else {
         await session.prompt(effectivePromptText);
       }
@@ -956,7 +952,10 @@ Use it when the user references past discussions or you need context.`);
       );
 
       const fileListing = files
-        .map((f: any) => `- \`${workspaceDir}/input/${f.name}\` (${f.mimetype || "unknown type"})`)
+        .map(
+          (f: any) =>
+            `- \`${workspaceDir}/input/${f.name}\` (${f.mimetype || "unknown type"})`
+        )
         .join("\n");
 
       let instructions = "";

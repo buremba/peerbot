@@ -1,6 +1,6 @@
 {
   "name": "create-lobu",
-  "version": "2.6.1",
+  "version": "2.7.0",
   "description": "Multi-tenant OpenClaw for teams and end-users. Safely deploy persistent, autonomous agents with sandboxing, network isolation, and programmatic API creation.",
   "license": "Apache-2.0",
   "workspaces": [

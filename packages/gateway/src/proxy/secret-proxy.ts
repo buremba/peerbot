@@ -189,8 +189,20 @@ export class SecretProxy {
       }
     }
 
-    // Resolve credentials: prefer URL-based agentId (no header parsing needed),
-    // fall back to marker/placeholder swap for backward compatibility.
+    // Credential resolution is a two-step process:
+    //
+    // 1. Auth profile lookup (when agentId is in the URL path). Sets
+    //    Authorization: Bearer from per-user OAuth/API-key profiles stored
+    //    in agent settings.
+    //
+    // 2. Placeholder swap for any auth headers that still contain UUID
+    //    placeholders (lobu_secret_*). This covers system keys injected via
+    //    env vars (e.g. ANTHROPIC_API_KEY from .env) which are stored in
+    //    Redis as placeholder→real-value mappings. Runs unconditionally so
+    //    providers using x-api-key (Anthropic) or Authorization: Bearer are
+    //    handled regardless of whether an auth profile was found.
+
+    // Step 1: Resolve credentials from auth profiles when agentId is in the URL
     if (urlAgentId && resolvedSlug && this.authProfilesManager) {
       const providerId = this.slugToProviderId.get(resolvedSlug);
       if (providerId) {
@@ -208,23 +220,23 @@ export class SecretProxy {
       } else {
         logger.warn(`No providerId mapping for slug "${resolvedSlug}"`);
       }
-    } else {
-      // Legacy path: swap UUID placeholders in auth headers (non-provider secrets)
-      const apiKey = headers["x-api-key"];
-      if (apiKey) {
-        headers["x-api-key"] = await this.swap(apiKey);
-      }
+    }
 
-      const auth = headers.authorization || headers.Authorization;
-      if (auth) {
-        const parts = auth.split(" ");
-        if (parts.length === 2 && parts[0]?.toLowerCase() === "bearer") {
-          const swapped = await this.swap(parts[1]!);
-          const headerName = headers.authorization
-            ? "authorization"
-            : "Authorization";
-          headers[headerName] = `Bearer ${swapped}`;
-        }
+    // Step 2: Swap any remaining UUID placeholders in auth headers
+    const apiKey = headers["x-api-key"];
+    if (apiKey?.includes(PLACEHOLDER_PREFIX)) {
+      headers["x-api-key"] = await this.swap(apiKey);
+    }
+
+    const auth = headers.authorization || headers.Authorization;
+    if (auth?.includes(PLACEHOLDER_PREFIX)) {
+      const parts = auth.split(" ");
+      if (parts.length === 2 && parts[0]?.toLowerCase() === "bearer") {
+        const swapped = await this.swap(parts[1]!);
+        const headerName = headers.authorization
+          ? "authorization"
+          : "Authorization";
+        headers[headerName] = `Bearer ${swapped}`;
       }
     }
 

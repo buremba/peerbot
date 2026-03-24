@@ -403,6 +403,41 @@ export class McpProxy {
           error: data.error,
         });
 
+        // Detect auth errors — auto-start device-code auth flow
+        if (/unauthorized|unauthenticated|forbidden/i.test(errorMsg)) {
+          const autoAuthResult = await this.tryAutoDeviceAuth(
+            mcpId,
+            agentId,
+            auth.tokenData.userId
+          );
+          if (autoAuthResult) {
+            return c.json(
+              {
+                content: [
+                  {
+                    type: "text",
+                    text: autoAuthResult,
+                  },
+                ],
+                isError: true,
+              },
+              200
+            );
+          }
+          return c.json(
+            {
+              content: [
+                {
+                  type: "text",
+                  text: `Authentication required for ${mcpId}. Call owletto_login to authenticate.`,
+                },
+              ],
+              isError: true,
+            },
+            200
+          );
+        }
+
         return c.json(
           {
             content: [],
@@ -782,6 +817,45 @@ export class McpProxy {
     });
 
     logger.info("Re-initialized MCP session", { mcpId, agentId });
+  }
+
+  /**
+   * Auto-start device-code auth when an MCP upstream returns an auth error.
+   * Returns a user-facing message with the verification URL, or null on failure.
+   */
+  private async tryAutoDeviceAuth(
+    mcpId: string,
+    agentId: string,
+    userId: string
+  ): Promise<string | null> {
+    try {
+      const { startDeviceAuth } = await import(
+        "../../routes/internal/device-auth"
+      );
+      const result = await startDeviceAuth(
+        this.redisClient,
+        this.configService as any,
+        mcpId,
+        agentId,
+        userId
+      );
+      if (!result) return null;
+      const url = result.verificationUriComplete || result.verificationUri;
+      return JSON.stringify({
+        status: "login_required",
+        message:
+          "Authentication is required. Show the user this login link and code. After they complete login, call owletto_login_check to finish, then retry the original request.",
+        verification_url: url,
+        user_code: result.userCode,
+        expires_in_seconds: result.expiresIn,
+      });
+    } catch (error) {
+      logger.warn("Auto device-auth failed", {
+        mcpId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
   }
 
   private async getSession(key: string): Promise<string | null> {

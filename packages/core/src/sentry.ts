@@ -23,7 +23,7 @@ export async function initSentry() {
 
     const sentryDsn =
       process.env.SENTRY_DSN ||
-      "https://078b368139997798ba4d6d23f94dcc7f@o4507291398897664.ingest.us.sentry.io/4509916004220928";
+      "https://c5910e58d1a134d64ff93a95a9c535bb@o4507291398897664.ingest.us.sentry.io/4511097466781696";
 
     Sentry.init({
       dsn: sentryDsn,

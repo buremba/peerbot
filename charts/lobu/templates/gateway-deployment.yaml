@@ -152,6 +152,12 @@ spec:
                   name: {{ include "lobu.fullname" . }}-secrets
                   key: sentry-dsn
                   optional: true
+            - name: WORKER_ENV_SENTRY_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "lobu.fullname" . }}-secrets
+                  key: sentry-dsn
+                  optional: true
 
             {{- if .Values.tempo.enabled }}
             # Tempo distributed tracing endpoint

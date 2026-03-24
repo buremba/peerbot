@@ -12,8 +12,6 @@ import { startGateway } from "./gateway";
 const logger = createLogger("cli");
 
 async function main() {
-  initSentry().catch(console.error);
-
   const program = new Command();
 
   program
@@ -30,6 +28,8 @@ async function main() {
     .action(async (options) => {
       try {
         loadEnvFile(options.env);
+
+        await initSentry();
 
         initTracing({
           serviceName: "lobu-gateway",

@@ -1,4 +1,5 @@
 import { createLogger } from "@lobu/core";
+import type Redis from "ioredis";
 import type {
   InteractionService,
   PostedGrantRequest,
@@ -52,12 +53,45 @@ function markHandled(id: string): void {
 
 const pendingQuestionOptions = new Map<string, string[]>();
 
-// Track pending grant requests so the action handler can resolve them
-const pendingGrantRequests = new Map<
-  string,
-  { agentId: string; domains: string[] }
->();
 const GRANT_REQUEST_TTL = 5 * 60_000; // 5 minutes
+const GRANT_REQUEST_REDIS_TTL = 300; // 5 minutes in seconds
+const GRANT_REQUEST_KEY_PREFIX = "pending-grant:";
+
+async function storePendingGrant(
+  redis: Redis,
+  grantRequestId: string,
+  agentId: string,
+  domains: string[]
+): Promise<void> {
+  const key = `${GRANT_REQUEST_KEY_PREFIX}${grantRequestId}`;
+  await redis.set(
+    key,
+    JSON.stringify({ agentId, domains }),
+    "EX",
+    GRANT_REQUEST_REDIS_TTL
+  );
+}
+
+async function getPendingGrant(
+  redis: Redis,
+  grantRequestId: string
+): Promise<{ agentId: string; domains: string[] } | null> {
+  const key = `${GRANT_REQUEST_KEY_PREFIX}${grantRequestId}`;
+  const raw = await redis.get(key);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+async function deletePendingGrant(
+  redis: Redis,
+  grantRequestId: string
+): Promise<void> {
+  await redis.del(`${GRANT_REQUEST_KEY_PREFIX}${grantRequestId}`);
+}
 
 export function registerInteractionBridge(
   interactionService: InteractionService,
@@ -142,6 +176,8 @@ export function registerInteractionBridge(
     }
   });
 
+  const redis = manager.getServices().getQueue().getRedisClient();
+
   interactionService.on(
     "grant:requested",
     async (event: PostedGrantRequest) => {
@@ -149,15 +185,15 @@ export function registerInteractionBridge(
       if (handledEvents.has(event.id)) return;
       markHandled(event.id);
 
-      // Track pending grant so the action handler can resolve it
-      pendingGrantRequests.set(event.id, {
-        agentId: event.agentId,
-        domains: event.domains,
-      });
-      setTimeout(
-        () => pendingGrantRequests.delete(event.id),
-        GRANT_REQUEST_TTL
-      );
+      // Store pending grant in Redis so it survives pod restarts / multi-replica
+      try {
+        await storePendingGrant(redis, event.id, event.agentId, event.domains);
+      } catch (error) {
+        logger.error(
+          { grantRequestId: event.id, error: String(error) },
+          "Failed to store pending grant in Redis"
+        );
+      }
 
       const domainList = event.domains.join(", ");
       const text = `Access Request\nDomains: ${domainList}\nReason: ${event.reason}`;
@@ -397,7 +433,7 @@ export function registerInteractionBridge(
     }
   );
 
-  registerActionHandlers(chat, connection, grantStore);
+  registerActionHandlers(chat, connection, redis, grantStore);
 
   logger.info({ connectionId, platform }, "Interaction bridge registered");
 }
@@ -405,6 +441,7 @@ export function registerInteractionBridge(
 function registerActionHandlers(
   chat: any,
   connection: PlatformConnection,
+  redis: Redis,
   grantStore?: GrantStore
 ): void {
   chat.onAction(async (event: any) => {
@@ -421,7 +458,7 @@ function registerActionHandlers(
       const decision = parts[2]; // "approve" or "deny"
 
       if (grantRequestId && grantStore) {
-        const pending = pendingGrantRequests.get(grantRequestId);
+        const pending = await getPendingGrant(redis, grantRequestId);
         if (pending) {
           const approved = decision === "approve";
           try {
@@ -446,12 +483,17 @@ function registerActionHandlers(
               "Failed to persist grant decision"
             );
           }
-          pendingGrantRequests.delete(grantRequestId);
+          await deletePendingGrant(redis, grantRequestId);
+        } else {
+          logger.warn(
+            { grantRequestId },
+            "No pending grant found in Redis — may have expired"
+          );
         }
       }
 
-      // Echo decision text back to thread so the worker receives it
-      const responseText = value || decision || "";
+      // Echo human-readable decision back to thread so the worker receives it
+      const responseText = decision === "approve" ? "approve" : "deny";
       try {
         await thread.post(responseText);
       } catch (error) {

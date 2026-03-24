@@ -139,7 +139,7 @@ worker:
   # - Empty/unset: Complete isolation (no internet)
   # - "*": Unrestricted access
   # - "domain1,domain2": Allowlist mode
-  allowedDomains: "api.anthropic.com,statsig.anthropic.com,api.github.com,github.com,registry.npmjs.org"
+  allowedDomains: "api.anthropic.com,statsig.anthropic.com,api.github.com,github.com,registry.npmjs.org,.sentry.io"
   disallowedDomains: ""  # Blocklist (only used with "*" allowlist)
   env:
     USE_CLAUDE_RESUME: "true"

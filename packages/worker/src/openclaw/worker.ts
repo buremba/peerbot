@@ -721,9 +721,7 @@ export class OpenClawWorker implements WorkerExecutor {
       for (const [envVar, placeholder] of Object.entries(
         pc.credentialPlaceholders
       )) {
-        if (!process.env[envVar]) {
-          process.env[envVar] = placeholder;
-        }
+        process.env[envVar] = placeholder;
       }
     }
 

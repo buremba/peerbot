@@ -1,6 +1,11 @@
 #!/usr/bin/env bun
 
-import { createLogger, initTracing, moduleRegistry } from "@lobu/core";
+import {
+  createLogger,
+  initSentry,
+  initTracing,
+  moduleRegistry,
+} from "@lobu/core";
 
 const logger = createLogger("worker");
 
@@ -13,6 +18,9 @@ import { startWorkerHttpServer, stopWorkerHttpServer } from "./server";
  */
 async function main() {
   logger.info("Starting worker...");
+
+  // Initialize Sentry for error tracking
+  await initSentry();
 
   // Initialize OpenTelemetry tracing for distributed tracing
   // Worker traces are sent to Tempo via gateway proxy

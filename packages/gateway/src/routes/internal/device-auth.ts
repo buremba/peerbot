@@ -184,6 +184,111 @@ function deriveOAuthBaseUrl(upstreamUrl: string): string {
   return url.toString().replace(/\/$/, "");
 }
 
+/**
+ * Start device-code auth flow for a given MCP server.
+ * Reusable by the MCP proxy to auto-initiate auth on "unauthorized" errors.
+ */
+export async function startDeviceAuth(
+  redis: Redis,
+  mcpConfigService: {
+    getHttpServer: (
+      id: string,
+      agentId?: string
+    ) => Promise<{ upstreamUrl: string } | undefined>;
+  },
+  mcpId: string,
+  agentId: string,
+  userId: string
+): Promise<{
+  userCode: string;
+  verificationUri: string;
+  verificationUriComplete?: string;
+  expiresIn: number;
+} | null> {
+  const httpServer = await mcpConfigService.getHttpServer(mcpId, agentId);
+  if (!httpServer) return null;
+
+  const issuer = deriveOAuthBaseUrl(httpServer.upstreamUrl);
+
+  // Check cached client registration
+  let client: StoredClient | null = null;
+  const cachedClient = await redis.get(clientCacheKey(mcpId));
+  if (cachedClient) {
+    try {
+      client = JSON.parse(cachedClient) as StoredClient;
+    } catch {
+      client = null;
+    }
+  }
+
+  // Register a new client if needed
+  if (!client) {
+    const regResponse = await fetch(`${issuer}/oauth/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        grant_types: [DEVICE_CODE_GRANT_TYPE, "refresh_token"],
+        token_endpoint_auth_method: "none",
+        client_name: "Lobu Gateway Device Auth",
+        scope: DEFAULT_MCP_SCOPE,
+      }),
+    });
+
+    if (!regResponse.ok) return null;
+
+    const registration = (await regResponse.json()) as {
+      client_id: string;
+      client_secret?: string;
+    };
+
+    client = {
+      clientId: registration.client_id,
+      clientSecret: registration.client_secret,
+    };
+
+    await redis.set(clientCacheKey(mcpId), JSON.stringify(client));
+  }
+
+  const deviceCodeClient = new GenericDeviceCodeClient({
+    clientId: client.clientId,
+    clientSecret: client.clientSecret,
+    tokenUrl: `${issuer}/oauth/token`,
+    deviceAuthorizationUrl: `${issuer}/oauth/device_authorization`,
+    scope: DEFAULT_MCP_SCOPE,
+    tokenEndpointAuthMethod: client.clientSecret
+      ? "client_secret_post"
+      : "none",
+  });
+
+  const started = await deviceCodeClient.requestDeviceCode();
+
+  const deviceState: StoredDeviceAuth = {
+    deviceCode: started.deviceAuthId,
+    clientId: client.clientId,
+    clientSecret: client.clientSecret,
+    interval: started.interval,
+    expiresAt: Date.now() + started.expiresIn * 1000,
+    tokenUrl: `${issuer}/oauth/token`,
+    issuer,
+  };
+
+  await redis.set(
+    deviceAuthKey(agentId, userId, mcpId),
+    JSON.stringify(deviceState),
+    "EX",
+    started.expiresIn
+  );
+
+  logger.info("Device auth started (auto)", { mcpId, agentId, userId });
+
+  return {
+    userCode: started.userCode,
+    verificationUri: started.verificationUri,
+    verificationUriComplete: started.verificationUriComplete,
+    expiresIn: started.expiresIn,
+  };
+}
+
 export function createDeviceAuthRoutes(
   config: DeviceAuthConfig
 ): Hono<WorkerContext> {

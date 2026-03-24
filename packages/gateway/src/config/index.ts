@@ -158,6 +158,20 @@ export function loadEnvFile(envPath?: string): void {
 }
 
 /**
+ * Derive the internal gateway URL for worker→gateway communication.
+ * In K8s, uses DISPATCHER_SERVICE_NAME + namespace. In Docker, defaults to "gateway".
+ */
+function getInternalGatewayUrl(): string {
+  const dispatcherService = process.env.DISPATCHER_SERVICE_NAME;
+  if (dispatcherService) {
+    const namespace = process.env.KUBERNETES_NAMESPACE || "lobu";
+    return `http://${dispatcherService}.${namespace}.svc.cluster.local:8080`;
+  }
+  const port = process.env.GATEWAY_PORT || "8080";
+  return `http://gateway:${port}`;
+}
+
+/**
  * Build the default memory plugin list based on MEMORY_PLUGIN env var.
  * "owletto" (default) → Owletto MCP plugin
  * "native" → @openclaw/native-memory (filesystem-based)
@@ -171,14 +185,15 @@ export function buildMemoryPlugins(): PluginConfig[] {
     ];
   }
 
+  const gatewayUrl = getInternalGatewayUrl();
   return [
     {
       source: "@lobu/owletto-openclaw",
       slot: "memory",
       enabled: true,
       config: {
-        mcpUrl: "http://gateway:8080/mcp/owletto",
-        gatewayAuthUrl: "http://gateway:8080",
+        mcpUrl: `${gatewayUrl}/mcp/owletto`,
+        gatewayAuthUrl: gatewayUrl,
       },
     },
   ];

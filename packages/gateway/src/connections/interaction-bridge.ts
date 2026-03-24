@@ -458,36 +458,47 @@ function registerActionHandlers(
       const decision = parts[2]; // "approve" or "deny"
 
       if (grantRequestId && grantStore) {
-        const pending = await getPendingGrant(redis, grantRequestId);
-        if (pending) {
-          const approved = decision === "approve";
-          try {
-            for (const domain of pending.domains) {
-              await grantStore.grant(pending.agentId, domain, null, !approved);
+        try {
+          const pending = await getPendingGrant(redis, grantRequestId);
+          if (pending) {
+            const approved = decision === "approve";
+            try {
+              for (const domain of pending.domains) {
+                await grantStore.grant(
+                  pending.agentId,
+                  domain,
+                  null,
+                  !approved
+                );
+              }
+              logger.info(
+                {
+                  grantRequestId,
+                  agentId: pending.agentId,
+                  domains: pending.domains,
+                  approved,
+                },
+                "Grant request resolved via button"
+              );
+            } catch (error) {
+              logger.error(
+                { grantRequestId, error: String(error) },
+                "Failed to persist grant decision"
+              );
             }
-            logger.info(
-              {
-                grantRequestId,
-                agentId: pending.agentId,
-                domains: pending.domains,
-                approved,
-              },
-              "Grant request resolved via button"
+            await deletePendingGrant(redis, grantRequestId).catch(
+              /* best effort */ () => undefined
             );
-          } catch (error) {
-            logger.error(
-              {
-                grantRequestId,
-                error: String(error),
-              },
-              "Failed to persist grant decision"
+          } else {
+            logger.warn(
+              { grantRequestId },
+              "No pending grant found in Redis — may have expired"
             );
           }
-          await deletePendingGrant(redis, grantRequestId);
-        } else {
-          logger.warn(
-            { grantRequestId },
-            "No pending grant found in Redis — may have expired"
+        } catch (error) {
+          logger.error(
+            { grantRequestId, error: String(error) },
+            "Redis error looking up pending grant"
           );
         }
       }

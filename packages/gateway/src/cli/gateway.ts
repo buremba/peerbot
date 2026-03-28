@@ -625,9 +625,8 @@ export function createGatewayApp(
         setEnvResolver((key: string) => systemEnvStore.resolve(key));
 
         if (!process.env.ADMIN_PASSWORD) {
-          logger.info(
-            "Using auto-generated admin password. Set ADMIN_PASSWORD env var to use a fixed password."
-          );
+          logger.info(`Admin password (auto-generated): ${adminPassword}`);
+          logger.info("Set ADMIN_PASSWORD env var to use a fixed password.");
         }
 
         const {

@@ -616,6 +616,9 @@ function shouldHandle(
     );
     return false;
   }
+  if (event.connectionId && event.connectionId !== connectionId) {
+    return false;
+  }
   if (event.teamId === "api") {
     logger.debug({ connectionId }, "shouldHandle: skipping api teamId");
     return false;

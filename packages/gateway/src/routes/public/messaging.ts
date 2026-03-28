@@ -353,8 +353,7 @@ export function createMessagingRoutes(
       return c.json(
         {
           success: false,
-          error: "Failed to send message",
-          details: error instanceof Error ? error.message : "Unknown error",
+          error: "Internal server error",
         },
         500
       );

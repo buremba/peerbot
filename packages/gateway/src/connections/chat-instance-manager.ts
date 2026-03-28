@@ -6,7 +6,7 @@
 import { randomUUID } from "node:crypto";
 import { createLogger, decrypt, encrypt } from "@lobu/core";
 import type Redis from "ioredis";
-import type { CoreServices } from "../platform";
+import type { CoreServices, PlatformAdapter } from "../platform";
 import {
   type ConnectionSettings,
   isSecretField,
@@ -14,6 +14,13 @@ import {
   type PlatformConnection,
   SUPPORTED_PLATFORMS,
 } from "./types";
+
+type HistoryRecord = {
+  role: "user" | "assistant";
+  content: string;
+  authorName?: string;
+  timestamp: number;
+};
 
 const logger = createLogger("chat-instance-manager");
 const SLACK_SYSTEM_AGENT_PREFIX = "system:connection:slack";
@@ -35,6 +42,7 @@ interface ManagedInstance {
   connection: PlatformConnection;
   chat: any; // Chat SDK instance
   cleanup?: () => Promise<void>;
+  interactionCleanup?: () => void;
 }
 
 export class ChatInstanceManager {
@@ -134,6 +142,7 @@ export class ChatInstanceManager {
     const shutdownPromises = Array.from(this.instances.values()).map(
       async (instance) => {
         try {
+          instance.interactionCleanup?.();
           await instance.cleanup?.();
         } catch (error) {
           logger.error(
@@ -191,6 +200,7 @@ export class ChatInstanceManager {
   async removeConnection(id: string): Promise<void> {
     const instance = this.instances.get(id);
     if (instance) {
+      instance.interactionCleanup?.();
       await instance.cleanup?.();
       this.instances.delete(id);
     }
@@ -212,6 +222,7 @@ export class ChatInstanceManager {
   async restartConnection(id: string): Promise<void> {
     const instance = this.instances.get(id);
     if (instance) {
+      instance.interactionCleanup?.();
       await instance.cleanup?.();
       this.instances.delete(id);
     }
@@ -240,6 +251,7 @@ export class ChatInstanceManager {
   async stopConnection(id: string): Promise<void> {
     const instance = this.instances.get(id);
     if (instance) {
+      instance.interactionCleanup?.();
       await instance.cleanup?.();
       this.instances.delete(id);
     }
@@ -316,6 +328,7 @@ export class ChatInstanceManager {
     if (needsRestart && connection.status === "active") {
       const instance = this.instances.get(id);
       if (instance) {
+        instance.interactionCleanup?.();
         await instance.cleanup?.();
         this.instances.delete(id);
       }
@@ -642,13 +655,15 @@ export class ChatInstanceManager {
       const { registerInteractionBridge } = await import(
         "./interaction-bridge"
       );
-      registerInteractionBridge(
+      const interactionCleanup = registerInteractionBridge(
         this.services.getInteractionService(),
         this,
         connection,
         chat,
         this.services.getGrantStore()
       );
+      this.instances.get(connection.id)!.interactionCleanup =
+        interactionCleanup;
 
       // Register slash commands with the platform (e.g. Telegram menu)
       this.registerPlatformCommands(connection).catch((err) => {
@@ -972,5 +987,268 @@ export class ChatInstanceManager {
       }
     }
     return sanitized;
+  }
+
+  // ============================================================================
+  // Platform adapter methods (used via PlatformRegistry)
+  // ============================================================================
+
+  /**
+   * Create PlatformAdapter objects for each chat platform.
+   * These are lightweight adapters that delegate to this manager.
+   */
+  createPlatformAdapters(): PlatformAdapter[] {
+    const platforms = ["slack", "telegram", "whatsapp"] as const;
+    return platforms.map((name) => this.createPlatformAdapter(name));
+  }
+
+  private createPlatformAdapter(
+    name: "slack" | "telegram" | "whatsapp"
+  ): PlatformAdapter {
+    return {
+      name,
+      initialize: async () => {
+        /* no-op: lifecycle managed by ChatInstanceManager */
+      },
+      start: async () => {
+        /* no-op: lifecycle managed by ChatInstanceManager */
+      },
+      stop: async () => {
+        /* no-op: lifecycle managed by ChatInstanceManager */
+      },
+      isHealthy: () => true,
+      buildDeploymentMetadata: (
+        conversationId: string,
+        channelId: string,
+        platformMetadata: Record<string, any>
+      ) => ({
+        platform: name,
+        channelId,
+        conversationId,
+        ...(typeof platformMetadata.connectionId === "string"
+          ? { connectionId: platformMetadata.connectionId }
+          : {}),
+      }),
+      extractRoutingInfo: (body: Record<string, unknown>) =>
+        this.extractPlatformRoutingInfo(name, body),
+      sendMessage: (
+        _token: string,
+        message: string,
+        options: {
+          agentId: string;
+          channelId: string;
+          conversationId?: string;
+          teamId: string;
+          files?: Array<{ buffer: Buffer; filename: string }>;
+        }
+      ) => this.sendPlatformMessage(name, message, options),
+      getConversationHistory: (
+        channelId: string,
+        conversationId: string | undefined,
+        limit: number,
+        before: string | undefined
+      ) =>
+        this.getPlatformConversationHistory(
+          name,
+          channelId,
+          conversationId,
+          limit,
+          before
+        ),
+    };
+  }
+
+  private extractPlatformRoutingInfo(
+    name: string,
+    body: Record<string, unknown>
+  ): { channelId: string; conversationId?: string; teamId?: string } | null {
+    if (name === "slack") {
+      const slack = body.slack as
+        | { channel?: string; thread?: string; team?: string }
+        | undefined;
+      if (!slack?.channel) return null;
+      return {
+        channelId: slack.channel,
+        conversationId: slack.thread,
+        teamId: slack.team,
+      };
+    }
+
+    if (name === "telegram") {
+      const telegram = body.telegram as
+        | { chatId?: string | number }
+        | undefined;
+      if (!telegram?.chatId) return null;
+      return {
+        channelId: String(telegram.chatId),
+        conversationId: String(telegram.chatId),
+      };
+    }
+
+    const whatsapp = body.whatsapp as { chat?: string } | undefined;
+    if (!whatsapp?.chat) return null;
+    return {
+      channelId: whatsapp.chat,
+      conversationId: whatsapp.chat,
+    };
+  }
+
+  async sendPlatformMessage(
+    name: "slack" | "telegram" | "whatsapp",
+    message: string,
+    options: {
+      agentId: string;
+      channelId: string;
+      conversationId?: string;
+      teamId: string;
+      files?: Array<{ buffer: Buffer; filename: string }>;
+    }
+  ): Promise<{
+    messageId: string;
+    eventsUrl?: string;
+    queued?: boolean;
+  }> {
+    if (options.files?.length) {
+      throw new Error(
+        `Platform "${name}" does not support file uploads via Chat SDK routing yet`
+      );
+    }
+
+    const connection = await this.selectConnectionForPlatform(
+      name,
+      options.channelId,
+      options.teamId
+    );
+    if (!connection) {
+      throw new Error(`No active ${name} connection is available`);
+    }
+
+    const instance = this.getInstance(connection.id);
+    if (!instance) {
+      throw new Error(`Connection ${connection.id} is not running`);
+    }
+
+    const content =
+      name === "slack" ? message : message.replace(/@me\s*/g, "").trim();
+    if (!content) {
+      throw new Error("Cannot send an empty message");
+    }
+
+    const useThread = name === "slack" && !!options.conversationId;
+
+    let sent;
+    if (useThread) {
+      const adapter = instance.chat.getAdapter?.(connection.platform);
+      const createThread = (instance.chat as any).createThread;
+      const threadId = `${connection.platform}:${options.channelId}:${options.conversationId}`;
+      const thread =
+        adapter && typeof createThread === "function"
+          ? await createThread.call(instance.chat, adapter, threadId, {}, false)
+          : null;
+      if (!thread) {
+        throw new Error(`Unable to resolve ${name} thread`);
+      }
+      sent = await thread.post(content);
+    } else {
+      const channel = instance.chat.channel?.(
+        `${connection.platform}:${options.channelId}`
+      );
+      if (!channel) {
+        throw new Error(`Unable to resolve ${name} channel`);
+      }
+      sent = await channel.post(content);
+    }
+
+    return {
+      messageId: String(sent?.id || sent?.messageId || sent?.ts || Date.now()),
+    };
+  }
+
+  async getPlatformConversationHistory(
+    name: string,
+    channelId: string,
+    _conversationId: string | undefined,
+    limit: number,
+    before: string | undefined
+  ): Promise<{
+    messages: Array<{
+      timestamp: string;
+      user: string;
+      text: string;
+      isBot?: boolean;
+    }>;
+    nextCursor: string | null;
+    hasMore: boolean;
+  }> {
+    const connection = await this.selectConnectionForPlatform(name, channelId);
+    if (!connection) {
+      return { messages: [], nextCursor: null, hasMore: false };
+    }
+
+    const redis = this.services.getQueue().getRedisClient();
+    const key = `chat:history:${connection.id}:${channelId}`;
+    const raw = await redis.lrange(key, 0, -1);
+    let entries = raw.map(
+      (entry: string) => JSON.parse(entry) as HistoryRecord
+    );
+
+    if (before) {
+      const cutoff = Date.parse(before);
+      if (!Number.isNaN(cutoff)) {
+        entries = entries.filter(
+          (entry: HistoryRecord) => entry.timestamp < cutoff
+        );
+      }
+    }
+
+    const hasMore = entries.length > limit;
+    const selected = entries.slice(-limit);
+    const nextCursor =
+      hasMore && selected[0]
+        ? new Date(selected[0].timestamp).toISOString()
+        : null;
+
+    return {
+      messages: selected.map((entry: HistoryRecord) => ({
+        timestamp: new Date(entry.timestamp).toISOString(),
+        user:
+          entry.authorName ||
+          (entry.role === "assistant" ? "assistant" : "user"),
+        text: entry.content,
+        isBot: entry.role === "assistant",
+      })),
+      nextCursor,
+      hasMore,
+    };
+  }
+
+  private async selectConnectionForPlatform(
+    name: string,
+    channelId: string,
+    teamId?: string
+  ): Promise<PlatformConnection | null> {
+    const connections = await this.listConnections({ platform: name });
+    const activeConnections = connections.filter((connection) =>
+      this.has(connection.id)
+    );
+    if (activeConnections.length === 0) return null;
+    if (activeConnections.length === 1) return activeConnections[0] || null;
+
+    const teamMatch = activeConnections.find(
+      (connection) => connection.metadata?.teamId === teamId
+    );
+    if (teamMatch) return teamMatch;
+
+    const redis = this.services.getQueue().getRedisClient();
+    for (const connection of activeConnections) {
+      const exists = await redis.exists(
+        `chat:history:${connection.id}:${channelId}`
+      );
+      if (exists === 1) {
+        return connection;
+      }
+    }
+
+    return activeConnections[0] || null;
   }
 }

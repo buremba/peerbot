@@ -4,9 +4,10 @@
  * Worker-facing endpoints for image generation.
  */
 
-import { createLogger, verifyWorkerToken } from "@lobu/core";
+import { createLogger } from "@lobu/core";
 import { Hono } from "hono";
 import type { ImageGenerationService } from "../../services/image-generation-service";
+import { authenticateWorker } from "./middleware";
 
 const logger = createLogger("internal-image-routes");
 
@@ -28,20 +29,6 @@ export function createImageRoutes(
   imageGenerationService: ImageGenerationService
 ): Hono<WorkerContext> {
   const router = new Hono<WorkerContext>();
-
-  const authenticateWorker = async (c: any, next: () => Promise<void>) => {
-    const authHeader = c.req.header("authorization");
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      return c.json({ error: "Missing or invalid authorization" }, 401);
-    }
-    const workerToken = authHeader.substring(7);
-    const tokenData = verifyWorkerToken(workerToken);
-    if (!tokenData) {
-      return c.json({ error: "Invalid worker token" }, 401);
-    }
-    c.set("worker", tokenData);
-    await next();
-  };
 
   /**
    * Generate an image from prompt text
@@ -109,8 +96,7 @@ export function createImageRoutes(
       logger.error("Image generation error", { error });
       return c.json(
         {
-          error:
-            error instanceof Error ? error.message : "Failed to generate image",
+          error: "Failed to generate image",
         },
         500
       );

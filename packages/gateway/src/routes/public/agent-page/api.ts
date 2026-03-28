@@ -307,7 +307,7 @@ export async function fetchSkillContent(repo: string): Promise<{
   name: string;
   description: string;
   content: string;
-  fetchedAt: string;
+  fetchedAt: number;
   integrations?: Array<{
     id: string;
     label?: string;

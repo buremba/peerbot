@@ -71,7 +71,7 @@ export interface Skill {
   enabled: boolean;
   system?: boolean;
   content?: string;
-  contentFetchedAt?: string;
+  contentFetchedAt?: number;
   integrations?: SkillIntegrationInfo[];
   mcpServers?: SkillMcpServerInfo[];
   nixPackages?: string[];
@@ -199,8 +199,13 @@ export interface ProviderStatus {
   connected: boolean;
   userConnected: boolean;
   systemConnected: boolean;
-  activeAuthType?: string;
-  authMethods?: string[];
+  activeAuthType?: "oauth" | "device-code" | "api-key";
+  authMethods?: Array<{
+    profileId: string;
+    authType: "oauth" | "device-code" | "api-key";
+    label: string;
+    isPrimary: boolean;
+  }>;
 }
 
 export interface AgentConfigResponse {

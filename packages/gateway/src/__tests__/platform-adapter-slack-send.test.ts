@@ -1,18 +1,39 @@
 import { describe, expect, mock, test } from "bun:test";
-import { ChatPlatformAdapter } from "../connections/platform-adapter";
+import { ChatInstanceManager } from "../connections/chat-instance-manager";
 
-describe("ChatPlatformAdapter Slack sendMessage", () => {
+/**
+ * Helper: create a ChatInstanceManager with mocked internals for testing
+ * sendPlatformMessage without requiring Redis.
+ */
+function createTestManager(overrides: {
+  listConnections: (...args: any[]) => Promise<any[]>;
+  has: (id: string) => boolean;
+  getInstance: (id: string) => any;
+}): ChatInstanceManager {
+  const manager = new ChatInstanceManager();
+  // Patch internal methods used by sendPlatformMessage / selectConnectionForPlatform
+  (manager as any).listConnections = overrides.listConnections;
+  manager.has = overrides.has;
+  manager.getInstance = overrides.getInstance;
+  return manager;
+}
+
+describe("ChatInstanceManager Slack sendPlatformMessage", () => {
   test("posts top-level messages through the channel API", async () => {
     const post = mock(async () => ({ ts: "1700000000.000100" }));
     const channel = mock(() => ({ post }));
 
-    const adapter = new ChatPlatformAdapter("slack", {
+    const manager = createTestManager({
       listConnections: async () => [
         {
           id: "conn-1",
           platform: "slack",
           agentId: "system:connection:slack",
-          config: { platform: "slack", botToken: "xoxb", signingSecret: "sig" },
+          config: {
+            platform: "slack",
+            botToken: "xoxb",
+            signingSecret: "sig",
+          },
           settings: { allowGroups: true },
           metadata: {},
           status: "active",
@@ -26,9 +47,9 @@ describe("ChatPlatformAdapter Slack sendMessage", () => {
           channel,
         },
       }),
-    } as any);
+    });
 
-    const result = await adapter.sendMessage("token", "@me hello", {
+    const result = await manager.sendPlatformMessage("slack", "@me hello", {
       agentId: "agent-1",
       channelId: "C123",
       teamId: "T123",
@@ -46,13 +67,17 @@ describe("ChatPlatformAdapter Slack sendMessage", () => {
     const createThread = mock(async () => ({ post }));
     const getAdapter = mock(() => ({ name: "slack" }));
 
-    const adapter = new ChatPlatformAdapter("slack", {
+    const manager = createTestManager({
       listConnections: async () => [
         {
           id: "conn-1",
           platform: "slack",
           agentId: "system:connection:slack:T123",
-          config: { platform: "slack", botToken: "xoxb", signingSecret: "sig" },
+          config: {
+            platform: "slack",
+            botToken: "xoxb",
+            signingSecret: "sig",
+          },
           settings: { allowGroups: true },
           metadata: { teamId: "T123" },
           status: "active",
@@ -67,9 +92,9 @@ describe("ChatPlatformAdapter Slack sendMessage", () => {
           createThread,
         },
       }),
-    } as any);
+    });
 
-    const result = await adapter.sendMessage("token", "@me follow up", {
+    const result = await manager.sendPlatformMessage("slack", "@me follow up", {
       agentId: "agent-1",
       channelId: "C123",
       conversationId: "1700000000.000100",

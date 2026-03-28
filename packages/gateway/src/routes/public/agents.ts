@@ -163,8 +163,7 @@ export function createAgentRoutes(config: AgentRoutesConfig): Hono {
       logger.error("Failed to create agent", { error });
       return c.json(
         {
-          error:
-            error instanceof Error ? error.message : "Failed to create agent",
+          error: "Internal server error",
         },
         500
       );
@@ -270,8 +269,7 @@ export function createAgentRoutes(config: AgentRoutesConfig): Hono {
       logger.error("Failed to update agent", { error, agentId });
       return c.json(
         {
-          error:
-            error instanceof Error ? error.message : "Failed to update agent",
+          error: "Internal server error",
         },
         500
       );
@@ -329,8 +327,7 @@ export function createAgentRoutes(config: AgentRoutesConfig): Hono {
       logger.error("Failed to delete agent", { error, agentId });
       return c.json(
         {
-          error:
-            error instanceof Error ? error.message : "Failed to delete agent",
+          error: "Internal server error",
         },
         500
       );

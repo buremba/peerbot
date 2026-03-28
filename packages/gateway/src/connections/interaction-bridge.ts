@@ -44,15 +44,6 @@ async function sendTelegramInlineKeyboard(
   }
 }
 
-// Deduplicate events across multiple connections for the same platform
-const handledEvents = new Set<string>();
-function markHandled(id: string): void {
-  handledEvents.add(id);
-  setTimeout(() => handledEvents.delete(id), 30_000);
-}
-
-const pendingQuestionOptions = new Map<string, string[]>();
-
 const GRANT_REQUEST_TTL = 5 * 60_000; // 5 minutes
 const GRANT_REQUEST_REDIS_TTL = 300; // 5 minutes in seconds
 const GRANT_REQUEST_KEY_PREFIX = "pending-grant:";
@@ -99,88 +90,102 @@ export function registerInteractionBridge(
   connection: PlatformConnection,
   chat: any,
   grantStore?: GrantStore
-): void {
+): () => void {
   const { id: connectionId, platform } = connection;
 
-  interactionService.on("question:created", async (event: PostedQuestion) => {
-    if (!shouldHandle(event, platform, connectionId, manager)) return;
-    if (handledEvents.has(event.id)) return;
-    markHandled(event.id);
+  // Per-connection state (avoids cross-contamination between connections)
+  const handledEvents = new Set<string>();
+  function markHandled(id: string): void {
+    handledEvents.add(id);
+    setTimeout(() => handledEvents.delete(id), 30_000);
+  }
+  const pendingQuestionOptions = new Map<string, string[]>();
 
-    if (platform === "telegram") {
-      const botToken = manager.getConnectionConfigSecret(
-        connectionId,
-        "botToken"
-      );
-      if (botToken) {
-        pendingQuestionOptions.set(event.id, [...event.options]);
-        setTimeout(
-          () => pendingQuestionOptions.delete(event.id),
-          GRANT_REQUEST_TTL
-        );
-        const buttons = event.options.map((option, i) => [
-          {
-            text: option,
-            callback_data: `question:${event.id}:${i}`,
-          },
-        ]);
-        const sent = await sendTelegramInlineKeyboard(
-          botToken,
-          event.channelId,
-          event.question,
-          buttons
-        );
-        if (sent) return;
-        logger.warn(
-          { connectionId },
-          "Telegram inline keyboard failed for question, falling back"
-        );
-      }
-    }
-
-    const thread = await resolveThread(
-      manager,
-      connectionId,
-      event.channelId,
-      event.conversationId
-    );
-    if (!thread) return;
-
+  const onQuestionCreated = async (event: PostedQuestion) => {
     try {
-      const { Card, CardText, Actions, Button } = await import("chat");
-      const buttons = event.options.map((option, i) =>
-        Button({
-          id: `question:${event.id}:${i}`,
-          label: option,
-          value: option,
-        })
-      );
-      const card = Card({
-        children: [CardText(event.question), Actions(buttons)],
-      });
-      await thread.post({
-        card,
-        fallbackText: `${event.question}\n${event.options.map((o, i) => `${i + 1}. ${o}`).join("\n")}`,
-      });
-    } catch (error) {
-      logger.warn(
-        { connectionId, error: String(error) },
-        "Failed to post question interaction"
-      );
-      try {
-        const fallback = `${event.question}\n${event.options.map((o, i) => `${i + 1}. ${o}`).join("\n")}`;
-        await thread.post(fallback);
-      } catch {
-        // give up
+      if (!shouldHandle(event, platform, connectionId, manager)) return;
+      if (handledEvents.has(event.id)) return;
+      markHandled(event.id);
+
+      if (platform === "telegram") {
+        const botToken = manager.getConnectionConfigSecret(
+          connectionId,
+          "botToken"
+        );
+        if (botToken) {
+          pendingQuestionOptions.set(event.id, [...event.options]);
+          setTimeout(
+            () => pendingQuestionOptions.delete(event.id),
+            GRANT_REQUEST_TTL
+          );
+          const buttons = event.options.map((option, i) => [
+            {
+              text: option,
+              callback_data: `question:${event.id}:${i}`,
+            },
+          ]);
+          const sent = await sendTelegramInlineKeyboard(
+            botToken,
+            event.channelId,
+            event.question,
+            buttons
+          );
+          if (sent) return;
+          logger.warn(
+            { connectionId },
+            "Telegram inline keyboard failed for question, falling back"
+          );
+        }
       }
+
+      const thread = await resolveThread(
+        manager,
+        connectionId,
+        event.channelId,
+        event.conversationId
+      );
+      if (!thread) return;
+
+      try {
+        const { Card, CardText, Actions, Button } = await import("chat");
+        const buttons = event.options.map((option, i) =>
+          Button({
+            id: `question:${event.id}:${i}`,
+            label: option,
+            value: option,
+          })
+        );
+        const card = Card({
+          children: [CardText(event.question), Actions(buttons)],
+        });
+        await thread.post({
+          card,
+          fallbackText: `${event.question}\n${event.options.map((o, i) => `${i + 1}. ${o}`).join("\n")}`,
+        });
+      } catch (error) {
+        logger.warn(
+          { connectionId, error: String(error) },
+          "Failed to post question interaction"
+        );
+        try {
+          const fallback = `${event.question}\n${event.options.map((o, i) => `${i + 1}. ${o}`).join("\n")}`;
+          await thread.post(fallback);
+        } catch {
+          // give up
+        }
+      }
+    } catch (error) {
+      logger.error(
+        { connectionId, error: String(error) },
+        "Unhandled error in question:created handler"
+      );
     }
-  });
+  };
 
   const redis = manager.getServices().getQueue().getRedisClient();
 
-  interactionService.on(
-    "grant:requested",
-    async (event: PostedGrantRequest) => {
+  const onGrantRequested = async (event: PostedGrantRequest) => {
+    try {
       if (!shouldHandle(event, platform, connectionId, manager)) return;
       if (handledEvents.has(event.id)) return;
       markHandled(event.id);
@@ -269,12 +274,16 @@ export function registerInteractionBridge(
           // give up
         }
       }
+    } catch (error) {
+      logger.error(
+        { connectionId, error: String(error) },
+        "Unhandled error in grant:requested handler"
+      );
     }
-  );
+  };
 
-  interactionService.on(
-    "package:requested",
-    async (event: PostedPackageRequest) => {
+  const onPackageRequested = async (event: PostedPackageRequest) => {
+    try {
       if (!shouldHandle(event, platform, connectionId, manager)) return;
       if (handledEvents.has(event.id)) return;
       markHandled(event.id);
@@ -359,12 +368,16 @@ export function registerInteractionBridge(
           // give up
         }
       }
+    } catch (error) {
+      logger.error(
+        { connectionId, error: String(error) },
+        "Unhandled error in package:requested handler"
+      );
     }
-  );
+  };
 
-  interactionService.on(
-    "link-button:created",
-    async (event: PostedLinkButton) => {
+  const onLinkButtonCreated = async (event: PostedLinkButton) => {
+    try {
       if (!shouldHandle(event, platform, connectionId, manager)) return;
       if (handledEvents.has(event.id)) return;
       markHandled(event.id);
@@ -404,12 +417,16 @@ export function registerInteractionBridge(
           // give up
         }
       }
+    } catch (error) {
+      logger.error(
+        { connectionId, error: String(error) },
+        "Unhandled error in link-button:created handler"
+      );
     }
-  );
+  };
 
-  interactionService.on(
-    "status-message:created",
-    async (event: PostedStatusMessage) => {
+  const onStatusMessageCreated = async (event: PostedStatusMessage) => {
+    try {
       if (!shouldHandle(event, platform, connectionId, manager)) return;
       if (handledEvents.has(event.id)) return;
       markHandled(event.id);
@@ -430,19 +447,48 @@ export function registerInteractionBridge(
           "Failed to post status message interaction"
         );
       }
+    } catch (error) {
+      logger.error(
+        { connectionId, error: String(error) },
+        "Unhandled error in status-message:created handler"
+      );
     }
+  };
+
+  interactionService.on("question:created", onQuestionCreated);
+  interactionService.on("grant:requested", onGrantRequested);
+  interactionService.on("package:requested", onPackageRequested);
+  interactionService.on("link-button:created", onLinkButtonCreated);
+  interactionService.on("status-message:created", onStatusMessageCreated);
+
+  registerActionHandlers(
+    chat,
+    connection,
+    redis,
+    grantStore,
+    pendingQuestionOptions
   );
 
-  registerActionHandlers(chat, connection, redis, grantStore);
-
   logger.info({ connectionId, platform }, "Interaction bridge registered");
+
+  return () => {
+    interactionService.off("question:created", onQuestionCreated);
+    interactionService.off("grant:requested", onGrantRequested);
+    interactionService.off("package:requested", onPackageRequested);
+    interactionService.off("link-button:created", onLinkButtonCreated);
+    interactionService.off("status-message:created", onStatusMessageCreated);
+    handledEvents.clear();
+    pendingQuestionOptions.clear();
+    logger.info({ connectionId, platform }, "Interaction bridge unregistered");
+  };
 }
 
 function registerActionHandlers(
   chat: any,
   connection: PlatformConnection,
   redis: Redis,
-  grantStore?: GrantStore
+  grantStore: GrantStore | undefined,
+  pendingQuestionOptions: Map<string, string[]>
 ): void {
   chat.onAction(async (event: any) => {
     const actionId: string = event.actionId ?? "";

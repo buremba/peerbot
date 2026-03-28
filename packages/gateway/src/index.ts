@@ -38,7 +38,7 @@ export {
 } from "./cli/gateway";
 
 // Auth provider (for embedded mode)
-export { type AuthProvider } from "./routes/public/settings-auth";
+export type { AuthProvider } from "./routes/public/settings-auth";
 
 // Configuration
 export {
@@ -54,7 +54,7 @@ export {
 export { RedisSessionStore, SessionManager } from "./services/session-manager";
 
 // Platform adapters (for registering platforms in embedded mode)
-export { ChatPlatformAdapter, ChatInstanceManager } from "./connections";
+export { ChatInstanceManager } from "./connections";
 export { ApiPlatform } from "./api";
 
 // ── CLI mode (run directly, not when imported as library) ───────────────────

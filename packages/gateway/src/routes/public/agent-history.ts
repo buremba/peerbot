@@ -16,10 +16,19 @@ import { verifySettingsSession } from "./settings-auth";
 
 const logger = createLogger("agent-history-routes");
 
+/** Alphanumeric, hyphens, and underscores only — no path separators or dots. */
+const SAFE_AGENT_ID = /^[a-zA-Z0-9_-]+$/;
+
+function isSafeAgentId(id: string): boolean {
+  return SAFE_AGENT_ID.test(id);
+}
+
 function getAgentId(c: Context): string | null {
   const session = verifySettingsSession(c);
   if (!session) return null;
-  return c.req.param("agentId") || session.agentId || null;
+  const agentId = c.req.param("agentId") || session.agentId || null;
+  if (agentId && !isSafeAgentId(agentId)) return null;
+  return agentId;
 }
 
 // ─── Direct session file reader (fallback) ─────────────────────────────────
@@ -54,7 +63,10 @@ interface ParsedMessage {
 }
 
 async function findSessionFile(agentId: string): Promise<string | null> {
-  const workspaceDir = resolve("workspaces", agentId);
+  if (!isSafeAgentId(agentId)) return null;
+  const workspacesRoot = resolve("workspaces");
+  const workspaceDir = resolve(workspacesRoot, agentId);
+  if (!workspaceDir.startsWith(`${workspacesRoot}/`)) return null;
 
   // Direct: workspaces/{agentId}/.openclaw/session.jsonl
   const directPath = join(workspaceDir, ".openclaw", "session.jsonl");

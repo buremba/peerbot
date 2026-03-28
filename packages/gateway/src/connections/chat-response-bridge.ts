@@ -115,6 +115,8 @@ export class ChatResponseBridge implements ResponseRenderer {
           { connectionId, error: String(error) },
           "Failed to send initial delta"
         );
+        // Clean up orphaned stream entry if it was set before the failure
+        this.streams.delete(key);
       }
       return null;
     }
@@ -137,8 +139,12 @@ export class ChatResponseBridge implements ResponseRenderer {
     } else if (!stream.editTimer) {
       stream.editTimer = setTimeout(
         async () => {
-          stream!.editTimer = undefined;
-          await this.editStreamMessage(stream!, connectionId);
+          // Guard against race: stream may have been deleted by handleCompletion
+          // between when this timer was scheduled and when it fires.
+          const current = this.streams.get(key);
+          if (!current) return;
+          current.editTimer = undefined;
+          await this.editStreamMessage(current, connectionId);
         },
         EDIT_INTERVAL_MS - (now - stream.lastEditTime)
       );
@@ -165,8 +171,10 @@ export class ChatResponseBridge implements ResponseRenderer {
 
     const stream = this.streams.get(key);
     if (stream) {
+      // Clear edit timer before deleting to prevent stale timer callbacks
       if (stream.editTimer) {
         clearTimeout(stream.editTimer);
+        stream.editTimer = undefined;
       }
 
       if (stream.buffer.trim()) {

@@ -361,13 +361,20 @@ export class ScheduledWakeupService {
     const schedules: ScheduledWakeup[] = [];
 
     for (const scheduleId of scheduleIds) {
-      const redisKey = `${REDIS_KEY_PREFIX}${scheduleId}`;
-      const data = await redis.get(redisKey);
-      if (data) {
-        const schedule: ScheduledWakeup = JSON.parse(data);
-        if (schedule.status === "pending") {
-          schedules.push(schedule);
+      try {
+        const redisKey = `${REDIS_KEY_PREFIX}${scheduleId}`;
+        const data = await redis.get(redisKey);
+        if (data) {
+          const schedule: ScheduledWakeup = JSON.parse(data);
+          if (schedule.status === "pending") {
+            schedules.push(schedule);
+          }
         }
+      } catch (error) {
+        logger.warn(
+          { scheduleId, deploymentName, error },
+          "Failed to fetch schedule entry, skipping"
+        );
       }
     }
 
@@ -391,13 +398,20 @@ export class ScheduledWakeupService {
     const schedules: ScheduledWakeup[] = [];
 
     for (const scheduleId of scheduleIds) {
-      const redisKey = `${REDIS_KEY_PREFIX}${scheduleId}`;
-      const data = await redis.get(redisKey);
-      if (data) {
-        const schedule: ScheduledWakeup = JSON.parse(data);
-        if (schedule.status === "pending") {
-          schedules.push(schedule);
+      try {
+        const redisKey = `${REDIS_KEY_PREFIX}${scheduleId}`;
+        const data = await redis.get(redisKey);
+        if (data) {
+          const schedule: ScheduledWakeup = JSON.parse(data);
+          if (schedule.status === "pending") {
+            schedules.push(schedule);
+          }
         }
+      } catch (error) {
+        logger.warn(
+          { scheduleId, agentId, error },
+          "Failed to fetch schedule entry, skipping"
+        );
       }
     }
 
@@ -575,14 +589,7 @@ Schedule ID: ${schedule.id}`;
         const nextTrigger = interval.next().toDate();
         const delayMs = nextTrigger.getTime() - Date.now();
 
-        // Update schedule for next iteration
-        schedule.iteration++;
-        schedule.triggerAt = nextTrigger.toISOString();
-        await redis.setex(
-          redisKey,
-          SCHEDULE_TTL_SECONDS,
-          JSON.stringify(schedule)
-        );
+        const nextIteration = schedule.iteration + 1;
 
         // Create next delayed job
         const jobPayload: ScheduledJobPayload = {
@@ -598,8 +605,17 @@ Schedule ID: ${schedule.id}`;
 
         await this.queue.send(QUEUE_NAME, jobPayload, {
           delayMs,
-          singletonKey: `schedule-${scheduleId}-${schedule.iteration}`,
+          singletonKey: `schedule-${scheduleId}-${nextIteration}`,
         });
+
+        // Only increment iteration after queue send succeeds
+        schedule.iteration = nextIteration;
+        schedule.triggerAt = nextTrigger.toISOString();
+        await redis.setex(
+          redisKey,
+          SCHEDULE_TTL_SECONDS,
+          JSON.stringify(schedule)
+        );
 
         logger.info(
           {

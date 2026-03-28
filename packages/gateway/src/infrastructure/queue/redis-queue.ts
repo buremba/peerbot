@@ -56,6 +56,7 @@ export class RedisQueue implements IMessageQueue {
     // Close all workers first
     for (const [name, worker] of this.workers.entries()) {
       try {
+        worker.removeAllListeners();
         await worker.close();
         logger.debug(`Closed worker for queue: ${name}`);
       } catch (error) {
@@ -181,58 +182,65 @@ export class RedisQueue implements IMessageQueue {
     // Ensure queue exists
     await this.createQueue(queueName);
 
-    // Create worker if it doesn't exist
-    if (!this.workers.has(queueName)) {
-      if (!this.redisClient) {
-        throw new Error("Redis client not initialized. Call start() first.");
-      }
-
-      const startPaused = options?.startPaused ?? false;
-
-      const worker = new Worker(
-        queueName,
-        async (job) => {
-          logger.debug(`Processing job ${job.id} from queue ${queueName}`);
-
-          const queueJob: QueueJob<T> = {
-            id: job.id || "unknown",
-            data: job.data as T,
-            name: job.name,
-          };
-
-          await handler(queueJob);
-        },
-        {
-          connection: this.redisClient,
-          concurrency: 1, // Process one job at a time per worker
-          ...(startPaused ? { autorun: false } : {}),
-        }
-      );
-
-      // Add event listeners for worker
-      worker.on("completed", (job) => {
-        logger.debug(`Job ${job.id} completed in queue ${queueName}`);
-      });
-
-      worker.on("failed", (job, err) => {
-        logger.error(`Job ${job?.id} failed in queue ${queueName}:`, err);
-
-        // Move to dead letter queue after all retries exhausted
-        if (job && job.attemptsMade >= (job.opts?.attempts ?? 3)) {
-          this.moveToDeadLetterQueue(queueName, job).catch((dlqErr) => {
-            logger.error(`Failed to move job ${job.id} to DLQ:`, dlqErr);
-          });
-        }
-      });
-
-      this.workers.set(queueName, worker);
-      if (startPaused) {
-        this.pendingWorkers.add(queueName);
-      }
-      logger.debug(
-        `Created worker for queue: ${queueName}${startPaused ? " (paused)" : ""}`
-      );
+    // Close existing worker if one already exists for this queue
+    const existingWorker = this.workers.get(queueName);
+    if (existingWorker) {
+      existingWorker.removeAllListeners();
+      await existingWorker.close();
+      this.workers.delete(queueName);
+      this.pendingWorkers.delete(queueName);
+      logger.debug(`Closed existing worker for queue: ${queueName}`);
     }
+
+    if (!this.redisClient) {
+      throw new Error("Redis client not initialized. Call start() first.");
+    }
+
+    const startPaused = options?.startPaused ?? false;
+
+    const worker = new Worker(
+      queueName,
+      async (job) => {
+        logger.debug(`Processing job ${job.id} from queue ${queueName}`);
+
+        const queueJob: QueueJob<T> = {
+          id: job.id || "unknown",
+          data: job.data as T,
+          name: job.name,
+        };
+
+        await handler(queueJob);
+      },
+      {
+        connection: this.redisClient,
+        concurrency: 1, // Process one job at a time per worker
+        ...(startPaused ? { autorun: false } : {}),
+      }
+    );
+
+    // Add event listeners for worker
+    worker.on("completed", (job) => {
+      logger.debug(`Job ${job.id} completed in queue ${queueName}`);
+    });
+
+    worker.on("failed", (job, err) => {
+      logger.error(`Job ${job?.id} failed in queue ${queueName}:`, err);
+
+      // Move to dead letter queue after all retries exhausted
+      if (job && job.attemptsMade >= (job.opts?.attempts ?? 3)) {
+        this.moveToDeadLetterQueue(queueName, job).catch((dlqErr) => {
+          logger.error(`Failed to move job ${job.id} to DLQ:`, dlqErr);
+        });
+      }
+    });
+
+    this.workers.set(queueName, worker);
+    if (startPaused) {
+      this.pendingWorkers.add(queueName);
+    }
+    logger.debug(
+      `Created worker for queue: ${queueName}${startPaused ? " (paused)" : ""}`
+    );
   }
 
   /**

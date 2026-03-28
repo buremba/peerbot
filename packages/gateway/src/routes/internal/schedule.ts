@@ -5,9 +5,10 @@
  * Used by custom MCP tools (ScheduleReminder, CancelReminder, ListReminders).
  */
 
-import { createLogger, verifyWorkerToken } from "@lobu/core";
+import { createLogger } from "@lobu/core";
 import { Hono } from "hono";
 import type { ScheduledWakeupService } from "../../orchestration/scheduled-wakeup";
+import { authenticateWorker } from "./middleware";
 
 const logger = createLogger("internal-schedule-routes");
 
@@ -32,21 +33,6 @@ export function createScheduleRoutes(
   scheduledWakeupService: ScheduledWakeupService
 ): Hono<WorkerContext> {
   const router = new Hono<WorkerContext>();
-
-  // Worker authentication middleware
-  const authenticateWorker = async (c: any, next: () => Promise<void>) => {
-    const authHeader = c.req.header("authorization");
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      return c.json({ error: "Missing or invalid authorization" }, 401);
-    }
-    const workerToken = authHeader.substring(7);
-    const tokenData = verifyWorkerToken(workerToken);
-    if (!tokenData) {
-      return c.json({ error: "Invalid worker token" }, 401);
-    }
-    c.set("worker", tokenData);
-    await next();
-  };
 
   /**
    * Schedule a reminder (one-time or recurring)
@@ -157,9 +143,7 @@ export function createScheduleRoutes(
       });
     } catch (error) {
       logger.error("Failed to schedule reminder:", error);
-      const message =
-        error instanceof Error ? error.message : "Failed to schedule reminder";
-      return c.json({ error: message }, 400);
+      return c.json({ error: "Failed to schedule reminder" }, 400);
     }
   });
 
@@ -205,9 +189,7 @@ export function createScheduleRoutes(
         });
       } catch (error) {
         logger.error("Failed to cancel reminder:", error);
-        const message =
-          error instanceof Error ? error.message : "Failed to cancel reminder";
-        return c.json({ error: message }, 400);
+        return c.json({ error: "Failed to cancel reminder" }, 400);
       }
     }
   );

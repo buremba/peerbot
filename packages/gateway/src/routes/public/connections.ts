@@ -747,10 +747,7 @@ export function createConnectionCrudRoutes(
       logger.error({ error: String(error) }, "Failed to create connection");
       return c.json(
         {
-          error:
-            error instanceof Error
-              ? error.message
-              : "Failed to create connection",
+          error: "Failed to create connection",
         },
         400
       );
@@ -849,10 +846,7 @@ export function createConnectionCrudRoutes(
       logger.error({ id, error: String(error) }, "Failed to update connection");
       return c.json(
         {
-          error:
-            error instanceof Error
-              ? error.message
-              : "Failed to update connection",
+          error: "Failed to update connection",
         },
         400
       );
@@ -889,10 +883,7 @@ export function createConnectionCrudRoutes(
       logger.error({ id, error: String(error) }, "Failed to remove connection");
       return c.json(
         {
-          error:
-            error instanceof Error
-              ? error.message
-              : "Failed to remove connection",
+          error: "Failed to remove connection",
         },
         400
       );
@@ -933,10 +924,7 @@ export function createConnectionCrudRoutes(
       );
       return c.json(
         {
-          error:
-            error instanceof Error
-              ? error.message
-              : "Failed to restart connection",
+          error: "Failed to restart connection",
         },
         400
       );
@@ -1000,10 +988,7 @@ export function createConnectionCrudRoutes(
       logger.error({ id, error: String(error) }, "Failed to stop connection");
       return c.json(
         {
-          error:
-            error instanceof Error
-              ? error.message
-              : "Failed to stop connection",
+          error: "Failed to stop connection",
         },
         400
       );

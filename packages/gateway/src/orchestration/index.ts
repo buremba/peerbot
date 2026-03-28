@@ -32,6 +32,7 @@ export class Orchestrator {
   private shuttingDown = false;
   private cleanupInterval?: NodeJS.Timeout;
   private activeReconciliation: Promise<void> | null = null;
+  private isReconciling = false;
 
   constructor(config: OrchestratorConfig) {
     this.config = config;
@@ -234,8 +235,14 @@ export class Orchestrator {
       // Wait for in-flight reconciliation to finish (with 10s timeout)
       if (this.activeReconciliation) {
         logger.info("Waiting for in-flight reconciliation to complete...");
+        const safeReconciliation = this.activeReconciliation.catch((error) => {
+          logger.error(
+            "In-flight reconciliation failed during shutdown:",
+            error
+          );
+        });
         await Promise.race([
-          this.activeReconciliation,
+          safeReconciliation,
           new Promise<void>((resolve) => setTimeout(resolve, 10_000)),
         ]);
         this.activeReconciliation = null;
@@ -282,6 +289,13 @@ export class Orchestrator {
 
     this.cleanupInterval = setInterval(async () => {
       if (this.shuttingDown) return;
+      if (this.isReconciling) {
+        logger.debug(
+          "Skipping reconciliation interval: previous run still in progress"
+        );
+        return;
+      }
+      this.isReconciling = true;
       try {
         const p = this.deploymentManager.reconcileDeployments();
         this.activeReconciliation = p;
@@ -293,6 +307,7 @@ export class Orchestrator {
         );
       } finally {
         this.activeReconciliation = null;
+        this.isReconciling = false;
       }
     }, intervalMs);
   }

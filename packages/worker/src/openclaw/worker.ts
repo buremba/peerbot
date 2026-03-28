@@ -702,26 +702,24 @@ export class OpenClawWorker implements WorkerExecutor {
       `Synced ${context.skillsConfig.length} skill(s) to .skills/ directory`
     );
 
+    // Store credentials in a local map instead of mutating process.env
+    // to prevent leaking secrets between sessions via persistent env vars.
+    const credentialStore = new Map<string, string>();
+
     const pc = context.providerConfig;
     if (pc.credentialEnvVarName) {
-      process.env.CREDENTIAL_ENV_VAR_NAME = pc.credentialEnvVarName;
-    }
-    if (pc.defaultProvider) {
-      process.env.AGENT_DEFAULT_PROVIDER = pc.defaultProvider;
-    }
-    if (pc.defaultModel) {
-      process.env.AGENT_DEFAULT_MODEL = pc.defaultModel;
+      credentialStore.set("CREDENTIAL_ENV_VAR_NAME", pc.credentialEnvVarName);
     }
     if (pc.providerBaseUrlMappings) {
       for (const [envVar, url] of Object.entries(pc.providerBaseUrlMappings)) {
-        process.env[envVar] = url;
+        credentialStore.set(envVar, url);
       }
     }
     if (pc.credentialPlaceholders) {
       for (const [envVar, placeholder] of Object.entries(
         pc.credentialPlaceholders
       )) {
-        process.env[envVar] = placeholder;
+        credentialStore.set(envVar, placeholder);
       }
     }
 
@@ -735,7 +733,10 @@ export class OpenClawWorker implements WorkerExecutor {
     const modelRef =
       typeof rawOptions.model === "string" ? rawOptions.model : "";
 
-    const { provider: rawProvider, modelId } = resolveModelRef(modelRef);
+    const { provider: rawProvider, modelId } = resolveModelRef(modelRef, {
+      defaultModel: pc.defaultModel,
+      defaultProvider: pc.defaultProvider,
+    });
     // Map gateway slug to model-registry provider name (e.g. "z-ai" → "zai")
     const provider = PROVIDER_REGISTRY_ALIASES[rawProvider] || rawProvider;
 
@@ -750,8 +751,8 @@ export class OpenClawWorker implements WorkerExecutor {
         providerBaseUrl = dynamicMappings[fallbackEnvVar];
       }
       for (const [envVar, url] of Object.entries(dynamicMappings)) {
-        if (!process.env[envVar]) {
-          process.env[envVar] = url;
+        if (!credentialStore.has(envVar)) {
+          credentialStore.set(envVar, url);
         }
       }
     }
@@ -763,8 +764,12 @@ export class OpenClawWorker implements WorkerExecutor {
     }
     if (!providerBaseUrl) {
       const baseUrlEnvVar = DEFAULT_PROVIDER_BASE_URL_ENV[rawProvider];
-      if (baseUrlEnvVar && process.env[baseUrlEnvVar]) {
-        providerBaseUrl = process.env[baseUrlEnvVar];
+      if (baseUrlEnvVar) {
+        const baseUrlValue =
+          credentialStore.get(baseUrlEnvVar) || process.env[baseUrlEnvVar];
+        if (baseUrlValue) {
+          providerBaseUrl = baseUrlValue;
+        }
       }
     }
 
@@ -907,17 +912,22 @@ export class OpenClawWorker implements WorkerExecutor {
     const gatewayUrl = process.env.DISPATCHER_URL ?? "";
     const workerToken = process.env.WORKER_TOKEN ?? "";
 
-    // Credential injection — must happen AFTER session context applies
-    // CREDENTIAL_ENV_VAR_NAME to process.env (above).
+    // Credential injection — resolve API key from the in-memory credential store,
+    // falling back to process.env only for values that were present at startup.
     const authStorage = new AuthStorage();
-    const credEnvVar = process.env.CREDENTIAL_ENV_VAR_NAME || null;
-    if (credEnvVar && process.env[credEnvVar]) {
-      authStorage.setRuntimeApiKey(provider, process.env[credEnvVar]!);
+    const credEnvVar = credentialStore.get("CREDENTIAL_ENV_VAR_NAME") || null;
+    const credValue = credEnvVar
+      ? credentialStore.get(credEnvVar) || process.env[credEnvVar]
+      : null;
+    if (credEnvVar && credValue) {
+      authStorage.setRuntimeApiKey(provider, credValue);
       logger.info(`Set runtime API key for ${provider} from ${credEnvVar}`);
     } else {
       const fallbackEnvVar = getApiKeyEnvVarForProvider(provider);
-      if (process.env[fallbackEnvVar]) {
-        authStorage.setRuntimeApiKey(provider, process.env[fallbackEnvVar]!);
+      const fallbackValue =
+        credentialStore.get(fallbackEnvVar) || process.env[fallbackEnvVar];
+      if (fallbackValue) {
+        authStorage.setRuntimeApiKey(provider, fallbackValue);
         logger.info(
           `Set runtime API key for ${provider} from fallback ${fallbackEnvVar}`
         );
@@ -927,8 +937,12 @@ export class OpenClawWorker implements WorkerExecutor {
     // Re-resolve provider base URL after session context may have updated mappings
     if (!providerBaseUrl) {
       const baseUrlEnvVar = DEFAULT_PROVIDER_BASE_URL_ENV[rawProvider];
-      if (baseUrlEnvVar && process.env[baseUrlEnvVar]) {
-        providerBaseUrl = process.env[baseUrlEnvVar];
+      if (baseUrlEnvVar) {
+        const baseUrlValue =
+          credentialStore.get(baseUrlEnvVar) || process.env[baseUrlEnvVar];
+        if (baseUrlValue) {
+          providerBaseUrl = baseUrlValue;
+        }
       }
     }
 
@@ -1162,6 +1176,8 @@ Use it when the user references past discussions or you need context.`);
 
       let elapsedTime = 0;
       let lastHeartbeatTime = Date.now();
+      const MAX_CONSECUTIVE_HEARTBEAT_FAILURES = 5;
+      let consecutiveHeartbeatFailures = 0;
 
       const sendHeartbeat = async () => {
         const now = Date.now();
@@ -1184,9 +1200,31 @@ Use it when the user references past discussions or you need context.`);
       };
 
       heartbeatTimer = setInterval(() => {
-        sendHeartbeat().catch((err) => {
-          logger.error("Failed to send heartbeat:", err);
-        });
+        sendHeartbeat()
+          .then(() => {
+            consecutiveHeartbeatFailures = 0;
+          })
+          .catch((err) => {
+            consecutiveHeartbeatFailures += 1;
+            logger.error(
+              `Failed to send heartbeat (${consecutiveHeartbeatFailures}/${MAX_CONSECUTIVE_HEARTBEAT_FAILURES}):`,
+              err
+            );
+            if (
+              consecutiveHeartbeatFailures >= MAX_CONSECUTIVE_HEARTBEAT_FAILURES
+            ) {
+              logger.error(
+                "Gateway unresponsive after consecutive heartbeat failures, aborting session"
+              );
+              if (heartbeatTimer) {
+                clearInterval(heartbeatTimer);
+                heartbeatTimer = null;
+              }
+              if (session) {
+                session.dispose();
+              }
+            }
+          });
       }, HEARTBEAT_INTERVAL_MS);
 
       // Session reset: run unconditional memory flush, delete session file, and return early

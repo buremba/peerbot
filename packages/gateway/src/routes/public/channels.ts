@@ -173,8 +173,7 @@ export function createChannelBindingRoutes(
       logger.error("Failed to create binding", { error, agentId });
       return c.json(
         {
-          error:
-            error instanceof Error ? error.message : "Failed to create binding",
+          error: "Failed to create binding",
         },
         400
       );

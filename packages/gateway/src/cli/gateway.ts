@@ -67,12 +67,7 @@ export function createGatewayApp(
       contentSecurityPolicy: {
         defaultSrc: ["'self'"],
         frameAncestors: ["'self'", "*"],
-        scriptSrc: [
-          "'self'",
-          "'unsafe-inline'",
-          "'unsafe-eval'",
-          "https://cdn.jsdelivr.net",
-        ],
+        scriptSrc: ["'self'", "'unsafe-inline'", "https://cdn.jsdelivr.net"],
         styleSrc: ["'self'", "'unsafe-inline'"],
         imgSrc: ["'self'", "data:", "https:"],
         connectSrc: ["'self'", "ws:", "wss:"],
@@ -85,7 +80,7 @@ export function createGatewayApp(
     cors({
       origin: process.env.ALLOWED_ORIGINS
         ? process.env.ALLOWED_ORIGINS.split(",")
-        : (origin) => origin,
+        : [],
       credentials: true,
     })
   );
@@ -630,10 +625,9 @@ export function createGatewayApp(
         setEnvResolver((key: string) => systemEnvStore.resolve(key));
 
         if (!process.env.ADMIN_PASSWORD) {
-          logger.info("═══════════════════════════════════════════════");
-          logger.info(`Admin password (auto-generated): ${adminPassword}`);
-          logger.info("Set ADMIN_PASSWORD env var to use a fixed password");
-          logger.info("═══════════════════════════════════════════════");
+          logger.info(
+            "Using auto-generated admin password. Set ADMIN_PASSWORD env var to use a fixed password."
+          );
         }
 
         const {
@@ -1301,17 +1295,6 @@ export async function startGateway(config: GatewayConfig): Promise<void> {
   gateway.registerPlatform(apiPlatform);
   logger.debug("API platform registered");
 
-  const { ChatPlatformAdapter } = await import("../connections");
-  const chatPlatformAdapters = [
-    new ChatPlatformAdapter("slack", null),
-    new ChatPlatformAdapter("telegram", null),
-    new ChatPlatformAdapter("whatsapp", null),
-  ];
-  for (const adapter of chatPlatformAdapters) {
-    gateway.registerPlatform(adapter);
-  }
-  logger.debug("Chat SDK platform adapters registered");
-
   // Start gateway
   await gateway.start();
   logger.debug("Gateway started");
@@ -1342,8 +1325,10 @@ export async function startGateway(config: GatewayConfig): Promise<void> {
   const chatInstanceManager = new ChatInstanceManager();
   try {
     await chatInstanceManager.initialize(coreServices);
-    for (const adapter of chatPlatformAdapters) {
-      adapter.setManager(chatInstanceManager);
+
+    // Register chat platform adapters (delegates to ChatInstanceManager)
+    for (const adapter of chatInstanceManager.createPlatformAdapters()) {
+      gateway.registerPlatform(adapter);
     }
     logger.debug("ChatInstanceManager initialized");
 

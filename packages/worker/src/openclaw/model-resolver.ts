@@ -75,12 +75,17 @@ export function registerDynamicProvider(
   );
 }
 
-export function resolveModelRef(rawModelRef: string): {
+export function resolveModelRef(
+  rawModelRef: string,
+  overrides?: { defaultModel?: string; defaultProvider?: string }
+): {
   provider: string;
   modelId: string;
 } {
-  const defaultModelRef = process.env.AGENT_DEFAULT_MODEL || "";
-  const defaultProvider = process.env.AGENT_DEFAULT_PROVIDER || "";
+  const defaultModelRef =
+    overrides?.defaultModel || process.env.AGENT_DEFAULT_MODEL || "";
+  const defaultProvider =
+    overrides?.defaultProvider || process.env.AGENT_DEFAULT_PROVIDER || "";
 
   const normalizedRaw = rawModelRef?.trim();
   let modelRef = normalizedRaw || defaultModelRef;

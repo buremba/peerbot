@@ -83,7 +83,7 @@ export async function fetchIntegrationsRegistry() {
   return { skills: [], mcps: [] };
 }
 export async function fetchSkillContent() {
-  return { repo: "", name: "", description: "", content: "", fetchedAt: "" };
+  return { repo: "", name: "", description: "", content: "", fetchedAt: 0 };
 }
 export async function saveSkills() {
   /* noop */

@@ -377,6 +377,24 @@ export class MessageConsumer {
           }
 
           try {
+            // Re-check after acquiring lock - another process may have created
+            // the deployment between our initial check and lock acquisition
+            const recheckAfterLock =
+              await this.deploymentManager.listDeployments();
+            if (
+              recheckAfterLock.some((d) => d.deploymentName === deploymentName)
+            ) {
+              logger.info(
+                { traceId, deploymentName },
+                "Deployment already created by another process after lock acquired"
+              );
+              await this.deploymentManager.scaleDeployment(deploymentName, 1);
+              await this.deploymentManager.updateDeploymentActivity(
+                deploymentName
+              );
+              return;
+            }
+
             logger.info(
               { traceId, traceparent, conversationId, deploymentName },
               "New thread - creating deployment"
@@ -385,7 +403,7 @@ export class MessageConsumer {
               data.userId,
               conversationId,
               dataWithTrace,
-              existingDeployments
+              recheckAfterLock
             );
             logger.info({ traceId, deploymentName }, "Created deployment");
           } finally {

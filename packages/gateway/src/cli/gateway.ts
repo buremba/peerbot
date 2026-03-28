@@ -60,12 +60,13 @@ export function createGatewayApp(
   app.use(
     "*",
     secureHeaders({
-      xFrameOptions: "DENY",
+      xFrameOptions: false,
       xContentTypeOptions: "nosniff",
       referrerPolicy: "strict-origin-when-cross-origin",
       strictTransportSecurity: "max-age=63072000; includeSubDomains",
       contentSecurityPolicy: {
         defaultSrc: ["'self'"],
+        frameAncestors: ["'self'", "*"],
         scriptSrc: [
           "'self'",
           "'unsafe-inline'",
@@ -84,7 +85,8 @@ export function createGatewayApp(
     cors({
       origin: process.env.ALLOWED_ORIGINS
         ? process.env.ALLOWED_ORIGINS.split(",")
-        : "*",
+        : (origin) => origin,
+      credentials: true,
     })
   );
 

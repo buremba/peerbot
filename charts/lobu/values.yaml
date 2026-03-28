@@ -176,7 +176,7 @@ gateway:
   config:
     nodeEnv: "development"
     logLevel: "DEBUG"
-    authMcpUrl: "" # Optional: Owletto MCP URL for settings OAuth (e.g., https://owletto.com/mcp)
+    authMcpUrl: "" # Optional: Owletto MCP URL for OAuth login, memory, and integrations (e.g., https://owletto.com/mcp)
   # Anthropic API proxy configuration
   anthropicProxy:
     enabled: true # Set to true to enable the proxy

@@ -219,7 +219,7 @@ spec:
               value: "{{ .Values.gateway.anthropicProxy.baseUrl }}"
             {{- end }}
 
-            # External auth (Owletto OIDC) for settings OAuth
+            # External auth (Owletto OIDC)
             {{- if .Values.gateway.config.authMcpUrl }}
             - name: AUTH_MCP_URL
               value: "{{ .Values.gateway.config.authMcpUrl }}"

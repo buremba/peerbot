@@ -2,7 +2,7 @@ FROM node:20-alpine
 
 # Install bun for fast dependency installation and docker-cli for runtime
 # xz, shadow, gcompat needed for nix installer (embedded mode with nix packages)
-RUN apk add --no-cache curl bash docker-cli xz shadow gcompat && \
+RUN apk add --no-cache curl bash docker-cli xz shadow gcompat coreutils && \
     curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash && \
     chmod +x /usr/local/bin/bun
 ENV PATH="/usr/local/bin:${PATH}"

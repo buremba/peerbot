@@ -236,11 +236,17 @@ class MessageHandlerBridge {
       messageText = messageText.replace(`@${botUsername}`, "").trim();
     }
 
-    // Intercept /new before slash dispatch — triggers memory flush + session reset
+    // Intercept /new and /clear before slash dispatch
     let sessionReset = false;
-    if (messageText.trim().toLowerCase() === "/new") {
+    const trimmedLower = messageText.trim().toLowerCase();
+    if (trimmedLower === "/new") {
       messageText = "Starting new session.";
       sessionReset = true;
+    } else if (trimmedLower === "/clear") {
+      const historyKey = `chat:history:${this.connection.id}:${channelId}`;
+      await this.redis.del(historyKey);
+      await thread.post({ text: "Chat history cleared." });
+      return;
     }
 
     // Slash command dispatch — intercept before queueing to worker

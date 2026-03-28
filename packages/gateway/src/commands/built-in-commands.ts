@@ -111,6 +111,15 @@ export function registerBuiltInCommands(
   });
 
   registry.register({
+    name: "clear",
+    description: "Clear chat history and start fresh",
+    handler: async (ctx: CommandContext) => {
+      // Handled by message-handler-bridge before slash dispatch
+      await ctx.reply("Chat history cleared.");
+    },
+  });
+
+  registry.register({
     name: "help",
     description: "Show available commands",
     handler: async (ctx: CommandContext) => {

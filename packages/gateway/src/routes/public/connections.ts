@@ -698,6 +698,18 @@ export function createConnectionCrudRoutes(
   app.get("/internal/connections/test-targets", listLocalTestTargets);
   app.get("/api/internal/connections/test-targets", listLocalTestTargets);
 
+  // Internal endpoint for server-to-server connection listing (no auth required)
+  const listAllConnections = async (c: any) => {
+    const { platform, templateAgentId } = c.req.query();
+    const connections = await manager.listConnections({
+      platform: platform || undefined,
+      templateAgentId: templateAgentId || undefined,
+    });
+    return c.json({ connections });
+  };
+  app.get("/internal/connections", listAllConnections);
+  app.get("/api/internal/connections", listAllConnections);
+
   app.openapi(CreateConnectionRoute, async (c): Promise<any> => {
     const session = verifySettingsSession(c);
     if (!session) {

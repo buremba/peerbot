@@ -650,6 +650,14 @@ export class ChatInstanceManager {
         this.services.getGrantStore()
       );
 
+      // Register slash commands with the platform (e.g. Telegram menu)
+      this.registerPlatformCommands(connection).catch((err) => {
+        logger.warn(
+          { id: connection.id, error: String(err) },
+          "Failed to register platform commands"
+        );
+      });
+
       logger.info(
         { id: connection.id, platform: connection.platform },
         "Chat instance started"
@@ -680,6 +688,47 @@ export class ChatInstanceManager {
       keyPrefix: "chat-conn",
       logger: "warn",
     } as any);
+  }
+
+  /**
+   * Register slash commands with the platform's native command menu.
+   * Currently supports Telegram (setMyCommands) and Slack (via manifest).
+   */
+  private async registerPlatformCommands(
+    connection: PlatformConnection
+  ): Promise<void> {
+    const commands = this.services
+      .getCommandRegistry()
+      .getAll()
+      .map((cmd) => ({
+        command: cmd.name,
+        description: cmd.description,
+      }));
+
+    if (connection.platform === "telegram") {
+      const botToken = (connection.config as any).botToken;
+      if (!botToken) return;
+
+      const apiBase =
+        (connection.config as any).apiBaseUrl || "https://api.telegram.org";
+      const resp = await fetch(`${apiBase}/bot${botToken}/setMyCommands`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ commands }),
+      });
+
+      if (!resp.ok) {
+        const text = await resp.text();
+        throw new Error(
+          `Telegram setMyCommands failed: ${resp.status} ${text}`
+        );
+      }
+
+      logger.info(
+        { id: connection.id, count: commands.length },
+        "Telegram bot commands menu registered"
+      );
+    }
   }
 
   private resolveSlackAdapterConfig(options?: {

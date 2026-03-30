@@ -15,11 +15,11 @@ import type {
   AgentMetadataStore,
 } from "../../auth/agent-metadata-store";
 import type { OAuthStateStore } from "../../auth/oauth/state-store";
-import { resolveInstalledProviders } from "../../auth/provider-catalog";
 import { collectProviderModelOptions } from "../../auth/provider-model-options";
 import type { AgentSettingsStore } from "../../auth/settings";
 import type { ClaimService } from "../../auth/settings/claim-service";
 import type { SettingsOAuthClient } from "../../auth/settings/oauth-client";
+import { resolveSettingsView } from "../../auth/settings/resolved-settings-view";
 import type {
   PrefillMcpServer,
   SettingsTokenPayload,
@@ -318,10 +318,20 @@ async function renderSettingsForPayload(
   payload: SettingsTokenPayload,
   agentId: string
 ) {
-  const [settings, agentMetadata] = await Promise.all([
-    config.agentSettingsStore.getSettings(agentId),
+  const [settingsView, agentMetadata] = await Promise.all([
+    resolveSettingsView({
+      agentId,
+      agentSettingsStore: config.agentSettingsStore,
+      agentMetadataStore: config.agentMetadataStore,
+      viewer: {
+        settingsMode: payload.settingsMode,
+        allowedScopes: payload.allowedScopes,
+        isAdmin: payload.isAdmin,
+      },
+    }),
     config.agentMetadataStore.getMetadata(agentId),
   ]);
+  const settings = settingsView.effectiveSettings;
 
   // Build provider metadata from registry
   const allModules = getModelProviderModules();
@@ -394,28 +404,15 @@ async function renderSettingsForPayload(
       "utf-8"
     );
     const manifest = JSON.parse(manifestRaw);
-    const entry = manifest.agents?.find((a: any) => a.agentId === agentId);
+    const manifestAgentId = settingsView.templateAgentId || agentId;
+    const entry = manifest.agents?.find(
+      (a: any) => a.agentId === manifestAgentId
+    );
     if (entry?.credentials?.length) {
       configManagedProviders = entry.credentials.map((c: any) => c.providerId);
     }
   } catch {
     // Not a CLI-managed project or manifest not found
-  }
-
-  // Resolve base agent's provider names for sandbox agents with no own providers
-  let baseProviderNames: string[] = [];
-  if (installedProviders.length === 0) {
-    const effective = await resolveInstalledProviders(
-      config.agentSettingsStore,
-      agentId
-    );
-    baseProviderNames = effective
-      .map(
-        (ip) =>
-          allProviderMeta.find((p) => p.id === ip.providerId)?.name ||
-          ip.providerId
-      )
-      .filter(Boolean);
   }
 
   // Ensure the payload has agentId for the template (may have been resolved from binding)
@@ -424,6 +421,7 @@ async function renderSettingsForPayload(
   return c.html(
     renderSettingsPage(effectivePayload, settings, {
       memoryEnabled: !!process.env.AUTH_MCP_URL,
+      scope: settingsView.scope,
       providers: installedProviders,
       catalogProviders,
       providerModelOptions,
@@ -434,7 +432,10 @@ async function renderSettingsForPayload(
       hasChannelId: !!payload.channelId,
       isSandbox: !!agentMetadata?.parentConnectionId,
       ownerPlatform: agentMetadata?.owner?.platform || "",
-      baseProviderNames,
+      templateAgentId: settingsView.templateAgentId,
+      templateAgentName: settingsView.templateAgentName,
+      sectionViews: settingsView.sections,
+      providerViews: settingsView.providerSources,
       configManagedProviders,
     })
   );

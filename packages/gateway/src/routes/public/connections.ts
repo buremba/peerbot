@@ -30,6 +30,7 @@ const FlexibleObjectSchema = z.record(z.string(), z.unknown());
 
 const UserConfigScopeSchema = z.enum([
   "model",
+  "view-model",
   "system-prompt",
   "skills",
   "schedules",

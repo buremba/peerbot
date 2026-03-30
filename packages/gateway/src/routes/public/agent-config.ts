@@ -13,6 +13,10 @@ import { collectProviderModelOptions } from "../../auth/provider-model-options";
 import type { AgentSettings, AgentSettingsStore } from "../../auth/settings";
 import type { AuthProfilesManager } from "../../auth/settings/auth-profiles-manager";
 import {
+  type SettingsSectionKey,
+  resolveSettingsView,
+} from "../../auth/settings/resolved-settings-view";
+import {
   extractProviderIdFromModelRef,
   getModelSelectionState,
   type ProviderModelPreferences,
@@ -28,6 +32,7 @@ import {
   type ModelOption,
   type ModelProviderModule,
 } from "../../modules/module-system";
+import type { ScheduledWakeupService } from "../../orchestration/scheduled-wakeup";
 import type { GrantStore } from "../../permissions/grant-store";
 import { createTokenVerifier } from "../shared/token-verifier";
 import { verifySettingsSession } from "./settings-auth";
@@ -86,18 +91,7 @@ const getConfigRoute = createRoute({
       description: "Configuration",
       content: {
         "application/json": {
-          schema: z.object({
-            agentId: z.string(),
-            settings: z.any(),
-            providers: z.record(
-              z.string(),
-              z.object({
-                connected: z.boolean(),
-                userConnected: z.boolean(),
-                systemConnected: z.boolean(),
-              })
-            ),
-          }),
+          schema: z.any(),
         },
       },
     },
@@ -236,6 +230,55 @@ const promoteSandboxRoute = createRoute({
   },
 });
 
+const resetSectionRoute = createRoute({
+  method: "post",
+  path: "/reset-section",
+  tags: [TAG],
+  summary: "Reset a sandbox section to inherit from its base agent",
+  request: {
+    query: TokenQuery,
+    body: {
+      content: {
+        "application/json": {
+          schema: z.object({
+            section: z.enum([
+              "model",
+              "system-prompt",
+              "skills",
+              "packages",
+              "permissions",
+              "schedules",
+              "logging",
+            ]),
+          }),
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Reset",
+      content: {
+        "application/json": {
+          schema: z.object({ success: z.boolean(), agentId: z.string() }),
+        },
+      },
+    },
+    400: {
+      description: "Invalid",
+      content: { "application/json": { schema: ErrorResponse } },
+    },
+    401: {
+      description: "Unauthorized",
+      content: { "application/json": { schema: ErrorResponse } },
+    },
+    403: {
+      description: "Forbidden",
+      content: { "application/json": { schema: ErrorResponse } },
+    },
+  },
+});
+
 export interface ProviderCredentialStore {
   hasCredentials(agentId: string): Promise<boolean>;
 }
@@ -269,6 +312,7 @@ export interface AgentConfigRoutesConfig {
   queue?: IMessageQueue;
   connectionManager?: WorkerConnectionManager;
   grantStore?: GrantStore;
+  scheduledWakeupService?: ScheduledWakeupService;
 }
 
 async function syncPromotedGrants(
@@ -309,6 +353,234 @@ async function syncPromotedGrants(
         grant.denied
       );
     }
+  }
+}
+
+function getViewer(payload: SettingsTokenPayload | null | undefined): {
+  settingsMode?: "admin" | "user";
+  allowedScopes?: string[];
+  isAdmin?: boolean;
+} {
+  return {
+    settingsMode: payload?.settingsMode,
+    allowedScopes: payload?.allowedScopes,
+    isAdmin: payload?.isAdmin,
+  };
+}
+
+function getProviderModelPreferencesFromSettings(
+  settings: AgentSettings | null | undefined
+): Record<string, string> {
+  const directPreferences = Object.fromEntries(
+    Object.entries(settings?.providerModelPreferences || {})
+      .map(([providerId, modelRef]) => [providerId.trim(), modelRef.trim()])
+      .filter(([providerId, modelRef]) => providerId && modelRef)
+  );
+  if (Object.keys(directPreferences).length > 0) {
+    return directPreferences;
+  }
+
+  const fallbackPreferences: Record<string, string> = {};
+  for (const ip of settings?.installedProviders || []) {
+    if (ip.config?.modelPreference) {
+      fallbackPreferences[ip.providerId] = String(ip.config.modelPreference);
+    }
+  }
+  return fallbackPreferences;
+}
+
+async function buildResolvedConfigResponse(
+  config: AgentConfigRoutesConfig,
+  agentId: string,
+  payload: SettingsTokenPayload | null,
+  providerModels: Record<string, ModelOption[]>
+): Promise<any> {
+  const [settingsView, grants, schedules] = await Promise.all([
+    resolveSettingsView({
+      agentId,
+      agentSettingsStore: config.agentSettingsStore,
+      agentMetadataStore: config.agentMetadataStore,
+      viewer: getViewer(payload),
+    }),
+    config.grantStore?.listGrants(agentId) ?? Promise.resolve([]),
+    config.scheduledWakeupService?.listPendingForAgent(agentId) ??
+      Promise.resolve([]),
+  ]);
+  const settings = settingsView.effectiveSettings;
+
+  const providers: Record<
+    string,
+    {
+      connected: boolean;
+      userConnected: boolean;
+      systemConnected: boolean;
+      activeAuthType?: string;
+      authMethods?: string[];
+    }
+  > = {};
+  if (config.providerStores) {
+    for (const [name, store] of Object.entries(config.providerStores)) {
+      try {
+        const hasSystemCredentials =
+          config.providerConnectedOverrides?.[name] === true;
+        const hasUserCredentials = await store.hasCredentials(agentId);
+
+        const profiles = config.authProfilesManager
+          ? await config.authProfilesManager.getProviderProfiles(agentId, name)
+          : [];
+        const now = Date.now();
+        const validProfiles = profiles.filter(
+          (profile) =>
+            !profile.metadata?.expiresAt || profile.metadata.expiresAt > now
+        );
+
+        providers[name] = {
+          connected: hasUserCredentials || hasSystemCredentials,
+          userConnected: hasUserCredentials,
+          systemConnected: hasSystemCredentials,
+          activeAuthType: validProfiles[0]?.authType,
+          authMethods: validProfiles.map((profile) => profile.authType),
+        };
+      } catch {
+        providers[name] = {
+          connected: false,
+          userConnected: false,
+          systemConnected: false,
+        };
+      }
+    }
+  }
+
+  const allModules = getModelProviderModules();
+  const allProviderMeta = allModules
+    .filter((module) => module.catalogVisible !== false)
+    .map((module: ModelProviderModule) => ({
+      id: module.providerId,
+      name: module.providerDisplayName,
+      iconUrl: module.providerIconUrl || "",
+      authType: (module.authType || "oauth") as
+        | "oauth"
+        | "device-code"
+        | "api-key",
+      supportedAuthTypes: (module.supportedAuthTypes as (
+        | "oauth"
+        | "device-code"
+        | "api-key"
+      )[]) || [
+        (module.authType || "oauth") as "oauth" | "device-code" | "api-key",
+      ],
+      apiKeyInstructions: module.apiKeyInstructions || "",
+      apiKeyPlaceholder: module.apiKeyPlaceholder || "",
+      capabilities: [] as string[],
+    }));
+
+  const installedIds = (settings?.installedProviders || []).map(
+    (provider) => provider.providerId
+  );
+  const installedIdSet = new Set(installedIds);
+  const catalogProviders = allProviderMeta.filter(
+    (provider) => !installedIdSet.has(provider.id)
+  );
+  const providerIconUrls: Record<string, string> = {};
+  for (const provider of allProviderMeta) {
+    if (provider.iconUrl) {
+      providerIconUrls[provider.id] = provider.iconUrl;
+    }
+  }
+
+  const providerMeta: Record<string, object> = {};
+  for (const provider of allProviderMeta) {
+    providerMeta[provider.id] = {
+      name: provider.name,
+      authType: provider.authType,
+      supportedAuthTypes: provider.supportedAuthTypes,
+      apiKeyInstructions: provider.apiKeyInstructions,
+      apiKeyPlaceholder: provider.apiKeyPlaceholder,
+      capabilities: provider.capabilities,
+    };
+  }
+
+  const sanitized = sanitizeSettingsForResponse(settings);
+  return {
+    agentId,
+    scope: settingsView.scope,
+    templateAgentId: settingsView.templateAgentId,
+    templateAgentName: settingsView.templateAgentName,
+    sections: settingsView.sections,
+    providerViews: settingsView.providerSources,
+    instructions: {
+      identity: sanitized.identityMd || "",
+      soul: sanitized.soulMd || "",
+      user: sanitized.userMd || "",
+    },
+    providers: {
+      order: installedIds,
+      status: providers,
+      catalog: catalogProviders,
+      meta: providerMeta,
+      models: providerModels,
+      preferences: getProviderModelPreferencesFromSettings(settings),
+      icons: providerIconUrls,
+      modelSelection: getModelSelectionState(settings || undefined),
+      configManaged: [] as string[],
+    },
+    skills: sanitized.skillsConfig?.skills || [],
+    mcpServers: sanitized.mcpServers || {},
+    tools: {
+      nixPackages: sanitized.nixConfig?.packages || [],
+      permissions: grants,
+      schedules: schedules.map((schedule) => ({
+        scheduleId: schedule.id,
+        task: schedule.task,
+        scheduledFor: schedule.triggerAt,
+        status: schedule.status,
+        isRecurring: schedule.isRecurring,
+        cron: schedule.cron,
+        iteration: schedule.iteration,
+        maxIterations: schedule.maxIterations,
+      })),
+      registries: sanitized.skillRegistries || [],
+      globalRegistries: [] as any[],
+    },
+    settings: {
+      verboseLogging: !!sanitized.verboseLogging,
+      memoryEnabled: !!process.env.AUTH_MCP_URL,
+    },
+  };
+}
+
+function resetUpdatesForSection(
+  section: SettingsSectionKey
+): Partial<Omit<AgentSettings, "updatedAt">> {
+  switch (section) {
+    case "model":
+      return {
+        installedProviders: undefined,
+        authProfiles: undefined,
+        model: undefined,
+        modelSelection: undefined,
+        providerModelPreferences: undefined,
+      };
+    case "system-prompt":
+      return {
+        identityMd: undefined,
+        soulMd: undefined,
+        userMd: undefined,
+      };
+    case "skills":
+      return {
+        skillsConfig: undefined,
+        mcpServers: undefined,
+        skillRegistries: undefined,
+        pluginsConfig: undefined,
+      };
+    case "packages":
+      return { nixConfig: undefined };
+    case "logging":
+      return { verboseLogging: undefined };
+    case "permissions":
+    case "schedules":
+      return {};
   }
 }
 
@@ -513,154 +785,18 @@ export function createAgentConfigRoutes(
     const agentId = c.req.param("agentId") || "";
     const payload = await verifyToken(verifySettingsSession(c), agentId);
     if (!payload) return c.json({ error: "Unauthorized" }, 401);
-
-    const settings = await config.agentSettingsStore.getSettings(agentId);
-
-    // Provider status (API shape — simplified authMethods)
-    const providers: Record<
-      string,
-      {
-        connected: boolean;
-        userConnected: boolean;
-        systemConnected: boolean;
-        activeAuthType?: string;
-        authMethods?: string[];
-      }
-    > = {};
-    if (config.providerStores) {
-      for (const [name, store] of Object.entries(config.providerStores)) {
-        try {
-          const hasSystemCredentials =
-            config.providerConnectedOverrides?.[name] === true;
-          const hasUserCredentials = await store.hasCredentials(agentId);
-
-          const profiles = config.authProfilesManager
-            ? await config.authProfilesManager.getProviderProfiles(
-                agentId,
-                name
-              )
-            : [];
-          const now = Date.now();
-          const validProfiles = profiles.filter(
-            (p) => !p.metadata?.expiresAt || p.metadata.expiresAt > now
-          );
-
-          providers[name] = {
-            connected: hasUserCredentials || hasSystemCredentials,
-            userConnected: hasUserCredentials,
-            systemConnected: hasSystemCredentials,
-            activeAuthType: validProfiles[0]?.authType,
-            authMethods: validProfiles.map((p) => p.authType),
-          };
-        } catch {
-          providers[name] = {
-            connected: false,
-            userConnected: false,
-            systemConnected: false,
-          };
-        }
-      }
-    }
-
-    // Build provider catalog from module registry
-    const allModules = getModelProviderModules();
-    const allProviderMeta = allModules
-      .filter((m) => m.catalogVisible !== false)
-      .map((m: ModelProviderModule) => ({
-        id: m.providerId,
-        name: m.providerDisplayName,
-        iconUrl: m.providerIconUrl || "",
-        authType: (m.authType || "oauth") as
-          | "oauth"
-          | "device-code"
-          | "api-key",
-        supportedAuthTypes: (m.supportedAuthTypes as (
-          | "oauth"
-          | "device-code"
-          | "api-key"
-        )[]) || [
-          (m.authType || "oauth") as "oauth" | "device-code" | "api-key",
-        ],
-        apiKeyInstructions: m.apiKeyInstructions || "",
-        apiKeyPlaceholder: m.apiKeyPlaceholder || "",
-        capabilities: [] as string[],
-      }));
-
-    const installedIds = (settings?.installedProviders || []).map(
-      (ip) => ip.providerId
-    );
-    const providerOrder = installedIds;
-    const catalogProviders = allProviderMeta.filter(
-      (p) => !new Set(installedIds).has(p.id)
-    );
-    const providerIconUrls: Record<string, string> = {};
-    for (const p of allProviderMeta) {
-      if (p.iconUrl) providerIconUrls[p.id] = p.iconUrl;
-    }
-
-    // Provider METADATA (name, authType, etc.) keyed by id
-    const PROVIDERS: Record<string, object> = {};
-    for (const p of allProviderMeta) {
-      PROVIDERS[p.id] = {
-        name: p.name,
-        authType: p.authType,
-        supportedAuthTypes: p.supportedAuthTypes,
-        apiKeyInstructions: p.apiKeyInstructions,
-        apiKeyPlaceholder: p.apiKeyPlaceholder,
-        capabilities: p.capabilities,
-      };
-    }
-
-    // Provider model options
     const providerModels = await collectProviderModelOptions(
       agentId,
       payload.userId
     );
-
-    // Model selection state
-    const providerModelPreferences: Record<string, string> = {};
-    for (const ip of settings?.installedProviders || []) {
-      if (ip.config?.modelPreference) {
-        providerModelPreferences[ip.providerId] = String(
-          ip.config.modelPreference
-        );
-      }
-    }
-
-    const sanitized = sanitizeSettingsForResponse(settings);
-    return c.json({
-      agentId,
-      instructions: {
-        identity: sanitized.identityMd || "",
-        soul: sanitized.soulMd || "",
-        user: sanitized.userMd || "",
-      },
-      providers: {
-        order: providerOrder,
-        status: providers,
-        catalog: catalogProviders,
-        meta: PROVIDERS,
-        models: providerModels,
-        preferences: providerModelPreferences,
-        icons: providerIconUrls,
-        modelSelection: getModelSelectionState(settings || undefined),
-        baseNames: [] as string[],
-        configManaged: [] as string[],
-      },
-      skills: sanitized.skillsConfig?.skills || [],
-      mcpServers: sanitized.mcpServers || {},
-      tools: {
-        nixPackages: sanitized.nixConfig?.packages || [],
-        permissions: [] as any[],
-        schedules: [] as any[],
-        registries: sanitized.skillRegistries || [],
-        globalRegistries: [] as any[],
-      },
-      settings: {
-        verboseLogging: !!sanitized.verboseLogging,
-        memoryEnabled: !!process.env.AUTH_MCP_URL,
-      },
-    });
+    return c.json(
+      await buildResolvedConfigResponse(
+        config,
+        agentId,
+        payload,
+        providerModels
+      )
+    );
   });
 
   app.openapi(updateConfigRoute, async (c): Promise<any> => {
@@ -669,8 +805,14 @@ export function createAgentConfigRoutes(
     if (!payload) return c.json({ error: "Unauthorized" }, 401);
 
     try {
-      const existingSettings =
-        await config.agentSettingsStore.getSettings(agentId);
+      const settingsView = await resolveSettingsView({
+        agentId,
+        agentSettingsStore: config.agentSettingsStore,
+        agentMetadataStore: config.agentMetadataStore,
+        viewer: getViewer(payload),
+      });
+      const existingSettings = settingsView.localSettings;
+      const effectiveSettings = settingsView.effectiveSettings;
       const providerModelOptions = await collectProviderModelOptions(
         agentId,
         payload.userId
@@ -733,7 +875,7 @@ export function createAgentConfigRoutes(
             availableModels,
             providerModelOptions,
             installedProviderIds: new Set(
-              (existingSettings?.installedProviders || []).map(
+              (effectiveSettings?.installedProviders || []).map(
                 (provider) => provider.providerId
               )
             ),
@@ -753,14 +895,16 @@ export function createAgentConfigRoutes(
             : existingSettings?.model,
           modelSelection: hasOwnKey(updates, "modelSelection")
             ? updates.modelSelection
-            : existingSettings?.modelSelection,
+            : (existingSettings?.modelSelection ??
+              effectiveSettings?.modelSelection),
           providerModelPreferences: hasOwnKey(
             updates,
             "providerModelPreferences"
           )
             ? updates.providerModelPreferences
-            : existingSettings?.providerModelPreferences,
-          installedProviders: existingSettings?.installedProviders || [],
+            : (existingSettings?.providerModelPreferences ??
+              effectiveSettings?.providerModelPreferences),
+          installedProviders: effectiveSettings?.installedProviders || [],
         });
         Object.assign(updates, reconciled);
       }
@@ -877,6 +1021,86 @@ export function createAgentConfigRoutes(
       sourceAgentId,
       targetAgentId,
     });
+  });
+
+  app.openapi(resetSectionRoute, async (c): Promise<any> => {
+    const agentId = c.req.param("agentId") || "";
+    const payload = await verifyToken(verifySettingsSession(c), agentId);
+    if (!payload) return c.json({ error: "Unauthorized" }, 401);
+
+    const { section } = c.req.valid("json");
+    const settingsView = await resolveSettingsView({
+      agentId,
+      agentSettingsStore: config.agentSettingsStore,
+      agentMetadataStore: config.agentMetadataStore,
+      viewer: getViewer(payload),
+    });
+
+    if (!settingsView.isSandbox || !settingsView.templateAgentId) {
+      return c.json(
+        { error: "Only sandbox agents can reset inherited sections" },
+        400
+      );
+    }
+
+    if (!settingsView.sections[section].editable) {
+      return c.json({ error: "Scope not allowed" }, 403);
+    }
+
+    try {
+      if (section === "permissions" && config.grantStore) {
+        const grants = await config.grantStore.listGrants(agentId);
+        await Promise.all(
+          grants.map((grant) =>
+            config.grantStore!.revoke(agentId, grant.pattern)
+          )
+        );
+      }
+
+      if (section === "schedules" && config.scheduledWakeupService) {
+        const schedules =
+          await config.scheduledWakeupService.listPendingForAgent(agentId);
+        await Promise.all(
+          schedules.map((schedule) =>
+            config.scheduledWakeupService!.cancelByAgent(schedule.id, agentId)
+          )
+        );
+      }
+
+      const updates = resetUpdatesForSection(section);
+      if (Object.keys(updates).length > 0) {
+        await config.agentSettingsStore.updateSettings(agentId, updates);
+      }
+
+      config.connectionManager?.notifyAgent(agentId, "config_changed", {
+        changes: [
+          {
+            category:
+              section === "system-prompt"
+                ? "instructions"
+                : section === "skills"
+                  ? "skills"
+                  : section === "packages"
+                    ? "packages"
+                    : section === "logging"
+                      ? "logging"
+                      : "model",
+            action: "updated",
+            summary: `Reset ${section} section to inherit from the base agent`,
+          },
+        ] satisfies ConfigChangeEntry[],
+      });
+
+      return c.json({ success: true, agentId });
+    } catch (error) {
+      return c.json(
+        {
+          error:
+            error instanceof Error ? error.message : "Failed to reset section",
+        },
+        400
+      );
+    }
   });
 
   // GET /packages/search?q=python

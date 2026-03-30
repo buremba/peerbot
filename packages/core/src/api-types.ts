@@ -42,6 +42,32 @@ export interface ModelOption {
   value: string;
 }
 
+export type SettingsScope = "agent" | "sandbox";
+export type SettingsSource = "local" | "inherited" | "mixed";
+export type SettingsSectionKey =
+  | "model"
+  | "system-prompt"
+  | "skills"
+  | "packages"
+  | "permissions"
+  | "schedules"
+  | "logging";
+
+export interface SectionView {
+  source: SettingsSource;
+  editable: boolean;
+  canReset: boolean;
+  hasLocalOverride: boolean;
+}
+
+export interface ProviderView {
+  id: string;
+  source: SettingsSource;
+  canEdit: boolean;
+  canReset: boolean;
+  hasLocalOverride: boolean;
+}
+
 export interface ModelSelectionState {
   mode: "auto" | "pinned";
   pinnedModel?: string;
@@ -188,6 +214,11 @@ export interface ProviderStatus {
 
 export interface AgentConfigResponse {
   agentId: string;
+  scope: SettingsScope;
+  templateAgentId?: string;
+  templateAgentName?: string;
+  sections: Record<SettingsSectionKey, SectionView>;
+  providerViews: Record<string, ProviderView>;
 
   instructions: {
     identity: string;
@@ -204,7 +235,6 @@ export interface AgentConfigResponse {
     preferences: Record<string, string>;
     icons: Record<string, string>;
     modelSelection: ModelSelectionState;
-    baseNames: string[];
     configManaged: string[];
   };
 

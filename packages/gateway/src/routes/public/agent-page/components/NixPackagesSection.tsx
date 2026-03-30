@@ -23,6 +23,7 @@ export function NixPackagesSection({ adminOnly }: { adminOnly?: boolean }) {
   }
 
   function addNixPackage(name: string) {
+    if (!ctx.canEditSection("packages")) return;
     const packageName = normalizeNixPackageName(name);
     if (!packageName) return;
     if (ctx.nixPackages.value.includes(packageName)) {
@@ -38,6 +39,7 @@ export function NixPackagesSection({ adminOnly }: { adminOnly?: boolean }) {
   }
 
   function removeNixPackage(name: string) {
+    if (!ctx.canEditSection("packages")) return;
     ctx.nixPackages.value = ctx.nixPackages.value.filter((pkg) => pkg !== name);
   }
 
@@ -90,6 +92,7 @@ export function NixPackagesSection({ adminOnly }: { adminOnly?: boolean }) {
       id="packages"
       title="System Packages"
       icon="&#128230;"
+      sectionKey="packages"
       adminOnly={adminOnly}
     >
       <div class="space-y-3">
@@ -106,8 +109,9 @@ export function NixPackagesSection({ adminOnly }: { adminOnly?: boolean }) {
             </span>
             <button
               type="button"
+              disabled={!ctx.canEditSection("packages")}
               onClick={() => removeNixPackage(pkg)}
-              class="text-xs font-medium text-red-600 hover:text-red-700 transition-colors"
+              class="text-xs font-medium text-red-600 hover:text-red-700 transition-colors disabled:opacity-50"
               title="Uninstall package"
             >
               Uninstall
@@ -115,7 +119,7 @@ export function NixPackagesSection({ adminOnly }: { adminOnly?: boolean }) {
           </div>
         ))}
 
-        {!ctx.isSandbox && (
+        {ctx.canEditSection("packages") && (
           <>
             <div class="relative">
               <input
@@ -186,10 +190,10 @@ export function NixPackagesSection({ adminOnly }: { adminOnly?: boolean }) {
             </p>
           </>
         )}
-        {ctx.isSandbox && (
+        {!ctx.canEditSection("packages") && (
           <p class="text-xs text-gray-500">
-            Add new system packages from the base agent, then use promotion to
-            sync sandbox edits back.
+            Package configuration is visible here but cannot be edited in this
+            view.
           </p>
         )}
       </div>

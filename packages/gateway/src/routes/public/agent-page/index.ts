@@ -6,6 +6,11 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AgentMetadata } from "../../../auth/agent-metadata-store";
 import type { AgentSettings } from "../../../auth/settings";
+import type {
+  ResolvedProviderView,
+  ResolvedSectionView,
+  SettingsScope,
+} from "../../../auth/settings/resolved-settings-view";
 import type { SettingsTokenPayload } from "../../../auth/settings/token-service";
 import { getAuthMethod } from "../../../connections/platform-auth-methods";
 import type { ModelOption } from "../../../modules/module-system";
@@ -48,9 +53,13 @@ export interface SettingsPageOptions {
   agentName?: string;
   agentDescription?: string;
   hasChannelId?: boolean;
+  scope?: SettingsScope;
   isSandbox?: boolean;
   ownerPlatform?: string;
-  baseProviderNames?: string[];
+  templateAgentId?: string;
+  templateAgentName?: string;
+  sectionViews?: Record<string, ResolvedSectionView>;
+  providerViews?: Record<string, ResolvedProviderView>;
   configManagedProviders?: string[];
 }
 
@@ -101,6 +110,7 @@ export function renderSettingsPage(
 
   const initialState = {
     agentId: payload.agentId,
+    scope: options?.scope || "agent",
     PROVIDERS: Object.fromEntries(
       providers.map((p) => [
         p.id,
@@ -158,9 +168,7 @@ export function renderSettingsPage(
       channelCount: a.channelCount,
       description: a.description,
     })),
-    hasNoProviders:
-      providers.length === 0 && !options?.baseProviderNames?.length,
-    baseProviderNames: options?.baseProviderNames || [],
+    hasNoProviders: providers.length === 0,
     configManagedProviders: options?.configManagedProviders || [],
     providerIconUrls: Object.fromEntries(
       providers.map((p) => [p.id, p.iconUrl])
@@ -170,7 +178,10 @@ export function renderSettingsPage(
     isAdmin: !!payload.isAdmin,
     isSandbox: !!options?.isSandbox,
     ownerPlatform: options?.ownerPlatform || "",
-    templateAgentId: s.templateAgentId,
+    templateAgentId: options?.templateAgentId || s.templateAgentId,
+    templateAgentName: options?.templateAgentName || "",
+    sectionViews: options?.sectionViews || {},
+    providerViews: options?.providerViews || {},
     globalRegistries: (() => {
       try {
         const configPath = path.resolve(

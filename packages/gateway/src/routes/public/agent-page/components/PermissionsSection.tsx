@@ -33,6 +33,7 @@ export function PermissionsSection({ adminOnly }: { adminOnly?: boolean }) {
   }
 
   function addPermission() {
+    if (!ctx.canEditSection("permissions")) return;
     const pattern = newPattern.value.trim();
     if (!pattern) return;
     let expiresAt: number | null = null;
@@ -51,6 +52,7 @@ export function PermissionsSection({ adminOnly }: { adminOnly?: boolean }) {
   }
 
   function removePermission(pattern: string) {
+    if (!ctx.canEditSection("permissions")) return;
     ctx.permissionGrants.value = ctx.permissionGrants.value.filter(
       (g) => g.pattern !== pattern
     );
@@ -68,6 +70,7 @@ export function PermissionsSection({ adminOnly }: { adminOnly?: boolean }) {
       id="permissions"
       title="Permissions"
       icon="&#128274;"
+      sectionKey="permissions"
       adminOnly={adminOnly}
     >
       <div class="space-y-2">
@@ -99,8 +102,9 @@ export function PermissionsSection({ adminOnly }: { adminOnly?: boolean }) {
             </span>
             <button
               type="button"
+              disabled={!ctx.canEditSection("permissions")}
               onClick={() => removePermission(item.pattern)}
-              class="text-gray-400 hover:text-red-500 transition-colors"
+              class="text-gray-400 hover:text-red-500 transition-colors disabled:opacity-50"
               title="Remove"
             >
               <svg
@@ -153,7 +157,9 @@ export function PermissionsSection({ adminOnly }: { adminOnly?: boolean }) {
               <button
                 type="button"
                 onClick={addPermission}
-                disabled={!newPattern.value.trim()}
+                disabled={
+                  !newPattern.value.trim() || !ctx.canEditSection("permissions")
+                }
                 class="px-3 py-1 text-xs font-medium rounded bg-slate-700 text-white hover:bg-slate-800 disabled:opacity-40 transition-all"
               >
                 Add
@@ -171,7 +177,7 @@ export function PermissionsSection({ adminOnly }: { adminOnly?: boolean }) {
           </div>
         )}
 
-        {!showAddForm.value && (
+        {!showAddForm.value && ctx.canEditSection("permissions") && (
           <button
             type="button"
             onClick={() => {

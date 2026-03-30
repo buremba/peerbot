@@ -48,6 +48,7 @@ export interface PlatformConnection {
 
 export type UserConfigScope =
   | "model"
+  | "view-model"
   | "system-prompt"
   | "skills"
   | "schedules"

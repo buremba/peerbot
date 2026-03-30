@@ -741,6 +741,7 @@ export function createGatewayApp(
           .getWorkerGateway()
           ?.getConnectionManager(),
         grantStore: coreServices.getGrantStore(),
+        scheduledWakeupService: coreServices.getScheduledWakeupService(),
       });
       app.route("/api/v1/agents/:agentId/config", agentConfigRouter);
       logger.debug(

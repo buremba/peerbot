@@ -1,4 +1,4 @@
-import type { Connection, McpConfig, Skill } from "./types";
+import type { Connection, McpConfig, SettingsSectionKey, Skill } from "./types";
 
 function apiUrl(agentId: string, path: string): string {
   return `/api/v1/agents/${encodeURIComponent(agentId)}${path}`;
@@ -117,6 +117,19 @@ export async function promoteSandboxSettings(agentId: string): Promise<{
     throw new Error(data.error || "Failed to promote sandbox settings");
   }
   return data;
+}
+
+export async function resetSettingsSection(
+  agentId: string,
+  section: SettingsSectionKey
+): Promise<void> {
+  const resp = await jsonPost(apiUrl(agentId, "/config/reset-section"), {
+    section,
+  });
+  if (!resp.ok) {
+    const data = await parseJsonSafe(resp);
+    throw new Error(data.error || "Failed to reset section");
+  }
 }
 
 export async function checkProviders(agentId: string): Promise<

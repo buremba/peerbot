@@ -145,21 +145,31 @@ export function AdminBar() {
                 autoFocus
               />
             ) : (
-              <button
-                type="button"
-                class="font-medium text-sm text-gray-700 cursor-pointer hover:text-gray-900 transition-colors truncate block bg-transparent border-0 p-0 text-left"
-                title="Click to edit name"
-                onClick={() => {
-                  editingName.value = true;
-                }}
-              >
-                {ctx.isSandbox && ctx.ownerPlatform
-                  ? stripPlatformPrefix(
-                      ctx.agentName.value || "Agent Settings",
-                      ctx.ownerPlatform
-                    )
-                  : ctx.agentName.value || "Agent Settings"}
-              </button>
+              <div class="space-y-0.5">
+                <button
+                  type="button"
+                  class="font-medium text-sm text-gray-700 cursor-pointer hover:text-gray-900 transition-colors truncate block bg-transparent border-0 p-0 text-left"
+                  title="Click to edit name"
+                  onClick={() => {
+                    editingName.value = true;
+                  }}
+                >
+                  {ctx.isSandbox && ctx.ownerPlatform
+                    ? stripPlatformPrefix(
+                        ctx.agentName.value || "Agent Settings",
+                        ctx.ownerPlatform
+                      )
+                    : ctx.agentName.value || "Agent Settings"}
+                </button>
+                {ctx.isSandbox && (
+                  <p class="text-[10px] uppercase tracking-wide text-slate-500">
+                    Sandbox Settings
+                    {ctx.templateAgentName
+                      ? ` · inherits from ${ctx.templateAgentName}`
+                      : ""}
+                  </p>
+                )}
+              </div>
             )}
             {editingDesc.value ? (
               <input

@@ -26,6 +26,7 @@ export function RemindersSection({ adminOnly }: { adminOnly?: boolean }) {
   const ctx = useSettings();
 
   async function handleCancel(scheduleId: string) {
+    if (!ctx.canEditSection("schedules")) return;
     if (!confirm("Cancel this scheduled reminder?")) return;
     ctx.schedulesLoading.value = true;
     try {
@@ -50,9 +51,10 @@ export function RemindersSection({ adminOnly }: { adminOnly?: boolean }) {
 
   return (
     <Section
-      id="reminders"
+      id="schedules"
       title="Schedules"
       icon="&#9200;"
+      sectionKey="schedules"
       badge={loadingBadge}
       adminOnly={adminOnly}
     >
@@ -112,8 +114,9 @@ export function RemindersSection({ adminOnly }: { adminOnly?: boolean }) {
               {schedule.status === "pending" && (
                 <button
                   type="button"
+                  disabled={!ctx.canEditSection("schedules")}
                   onClick={() => handleCancel(schedule.scheduleId)}
-                  class="ml-2 px-2 py-1 text-xs rounded bg-red-100 text-red-700 hover:bg-red-200 flex-shrink-0"
+                  class="ml-2 px-2 py-1 text-xs rounded bg-red-100 text-red-700 hover:bg-red-200 flex-shrink-0 disabled:opacity-50"
                 >
                   Cancel
                 </button>

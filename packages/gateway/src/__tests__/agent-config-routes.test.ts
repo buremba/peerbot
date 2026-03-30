@@ -1,0 +1,157 @@
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { MockRedisClient } from "@lobu/core/testing";
+import { OpenAPIHono } from "@hono/zod-openapi";
+import { AgentMetadataStore } from "../auth/agent-metadata-store";
+import { AgentSettingsStore } from "../auth/settings/agent-settings-store";
+import { createAgentConfigRoutes } from "../routes/public/agent-config";
+import { setAuthProvider } from "../routes/public/settings-auth";
+import { GrantStore } from "../permissions/grant-store";
+
+describe("agent config routes", () => {
+  let redis: MockRedisClient;
+  let agentSettingsStore: AgentSettingsStore;
+  let agentMetadataStore: AgentMetadataStore;
+  let grantStore: GrantStore;
+
+  beforeEach(async () => {
+    redis = new MockRedisClient();
+    agentSettingsStore = new AgentSettingsStore(redis as any);
+    agentMetadataStore = new AgentMetadataStore(redis as any);
+    grantStore = new GrantStore(redis as any);
+
+    await agentMetadataStore.createAgent(
+      "template-agent",
+      "Template Agent",
+      "telegram",
+      "u1"
+    );
+    await agentMetadataStore.createAgent(
+      "telegram-1",
+      "Telegram Sandbox",
+      "telegram",
+      "u1",
+      { parentConnectionId: "conn-1" }
+    );
+    await redis.set(
+      "connection:conn-1",
+      JSON.stringify({ templateAgentId: "template-agent" })
+    );
+
+    await agentSettingsStore.saveSettings("template-agent", {
+      identityMd: "Template identity",
+      soulMd: "Template soul",
+      userMd: "Template user",
+      installedProviders: [{ providerId: "chatgpt", installedAt: 1 }],
+      verboseLogging: true,
+    });
+    await agentSettingsStore.saveSettings("telegram-1", {
+      identityMd: "Local identity",
+    });
+    await grantStore.grant("telegram-1", "api.openai.com", null);
+  });
+
+  afterEach(() => {
+    setAuthProvider(null);
+  });
+
+  function buildApp() {
+    const app = new OpenAPIHono();
+    const scheduledWakeupService = {
+      async listPendingForAgent(agentId: string) {
+        if (agentId !== "telegram-1") return [];
+        return [
+          {
+            id: "schedule-1",
+            task: "Check provider state",
+            triggerAt: "2026-03-30T18:00:00.000Z",
+            status: "pending",
+            isRecurring: false,
+            iteration: 1,
+            maxIterations: 1,
+          },
+        ];
+      },
+      async cancelByAgent() {
+        return true;
+      },
+    };
+
+    app.route(
+      "/api/v1/agents/:agentId/config",
+      createAgentConfigRoutes({
+        agentSettingsStore,
+        agentMetadataStore,
+        grantStore,
+        scheduledWakeupService: scheduledWakeupService as any,
+      })
+    );
+
+    return app;
+  }
+
+  test("GET /config returns effective sandbox settings with provenance", async () => {
+    setAuthProvider(() => ({
+      agentId: "telegram-1",
+      userId: "u1",
+      platform: "telegram",
+      exp: Date.now() + 60_000,
+      settingsMode: "user",
+      allowedScopes: [
+        "view-model",
+        "system-prompt",
+        "permissions",
+        "schedules",
+      ],
+    }));
+
+    const app = buildApp();
+    const response = await app.request("/api/v1/agents/telegram-1/config");
+    expect(response.status).toBe(200);
+
+    const data = (await response.json()) as any;
+    expect(data.scope).toBe("sandbox");
+    expect(data.templateAgentId).toBe("template-agent");
+    expect(data.templateAgentName).toBe("Template Agent");
+    expect(data.instructions.identity).toBe("Local identity");
+    expect(data.instructions.soul).toBe("Template soul");
+    expect(data.providers.order).toEqual(["chatgpt"]);
+    expect(data.sections.model.source).toBe("inherited");
+    expect(data.sections.model.editable).toBe(false);
+    expect(data.sections["system-prompt"].source).toBe("mixed");
+    expect(data.providerViews.chatgpt.source).toBe("inherited");
+    expect(data.providerViews.chatgpt.canEdit).toBe(false);
+    expect(data.tools.permissions).toHaveLength(1);
+    expect(data.tools.schedules).toHaveLength(1);
+    expect(data.tools.schedules[0]?.scheduleId).toBe("schedule-1");
+  });
+
+  test("POST /reset-section clears sandbox overrides and restores inheritance", async () => {
+    setAuthProvider(() => ({
+      agentId: "telegram-1",
+      userId: "u1",
+      platform: "telegram",
+      exp: Date.now() + 60_000,
+      settingsMode: "user",
+      allowedScopes: ["system-prompt"],
+    }));
+
+    const app = buildApp();
+    const response = await app.request(
+      "/api/v1/agents/telegram-1/config/reset-section",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ section: "system-prompt" }),
+      }
+    );
+    expect(response.status).toBe(200);
+
+    const localSettings = await agentSettingsStore.getSettings("telegram-1");
+    const effectiveSettings =
+      await agentSettingsStore.getEffectiveSettings("telegram-1");
+
+    expect(localSettings?.identityMd).toBeUndefined();
+    expect(effectiveSettings?.identityMd).toBe("Template identity");
+    expect(effectiveSettings?.soulMd).toBe("Template soul");
+  });
+});

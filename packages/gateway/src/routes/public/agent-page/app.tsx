@@ -26,6 +26,7 @@ import type {
   Schedule,
   SettingsSnapshot,
   SettingsState,
+  SettingsSectionKey,
   Skill,
 } from "./types";
 
@@ -53,6 +54,7 @@ export interface RegistryEntry {
 
 export interface SettingsContextValue {
   agentId: string;
+  scope: SettingsState["scope"];
   PROVIDERS: Record<string, ProviderInfo>;
   providerModels: Record<string, ModelOption[]>;
   catalogProviders: Signal<CatalogProvider[]>;
@@ -132,11 +134,15 @@ export interface SettingsContextValue {
   isSandbox: boolean;
   ownerPlatform: string;
   templateAgentId?: string;
-  baseProviderNames: string[];
+  templateAgentName?: string;
+  sectionViews: SettingsState["sectionViews"];
+  providerViews: SettingsState["providerViews"];
   configManagedProviders: string[];
   promoting: Signal<boolean>;
-  isScopeAllowed(scope: string): boolean;
-  isUserScope(scope: string): boolean;
+  canViewSection(section: SettingsSectionKey): boolean;
+  canEditSection(section: SettingsSectionKey): boolean;
+  canUserViewSection(section: SettingsSectionKey): boolean;
+  resetSection(section: SettingsSectionKey): Promise<void>;
 
   // Actions
   toggleSection(id: string): void;
@@ -279,6 +285,38 @@ function App() {
 
   // ─── Helpers ─────────────────────────────────────────────────────────
 
+  function sectionAllowedByScopes(
+    section: SettingsSectionKey,
+    opts?: { treatAsScopedUser?: boolean; requireEdit?: boolean }
+  ): boolean {
+    if (state.settingsMode !== "user") return true;
+    if (!opts?.treatAsScopedUser && state.isAdmin) return true;
+
+    const allowedScopes = state.allowedScopes || [];
+    if (section === "model") {
+      return opts?.requireEdit
+        ? allowedScopes.includes("model")
+        : allowedScopes.includes("model") ||
+            allowedScopes.includes("view-model");
+    }
+
+    if (allowedScopes.includes(section)) {
+      return true;
+    }
+
+    if (section === "skills") {
+      return (
+        allowedScopes.includes("tools") || allowedScopes.includes("mcp-servers")
+      );
+    }
+
+    if (section === "permissions" || section === "packages") {
+      return allowedScopes.includes("tools");
+    }
+
+    return false;
+  }
+
   function nixPackagesSignature(): string {
     return nixPackages.value
       .map((pkg) => (pkg || "").trim())
@@ -367,6 +405,29 @@ function App() {
     return (
       JSON.stringify(current) !== JSON.stringify(initialSettingsSnapshot.value)
     );
+  }
+
+  function canViewSection(section: SettingsSectionKey): boolean {
+    return sectionAllowedByScopes(section);
+  }
+
+  function canEditSection(section: SettingsSectionKey): boolean {
+    if (!canViewSection(section)) return false;
+    return (
+      state.sectionViews?.[section]?.editable ??
+      sectionAllowedByScopes(section, {
+        requireEdit: true,
+      })
+    );
+  }
+
+  function canUserViewSection(section: SettingsSectionKey): boolean {
+    return sectionAllowedByScopes(section, { treatAsScopedUser: true });
+  }
+
+  async function resetSection(section: SettingsSectionKey): Promise<void> {
+    await api.resetSettingsSection(state.agentId, section);
+    reloadPage();
   }
 
   function toggleSection(id: string) {
@@ -539,6 +600,7 @@ function App() {
 
   const ctx: SettingsContextValue = {
     agentId: state.agentId,
+    scope: state.scope,
     PROVIDERS: state.PROVIDERS,
     providerModels,
     catalogProviders,
@@ -613,41 +675,15 @@ function App() {
     isSandbox: !!state.isSandbox,
     ownerPlatform: state.ownerPlatform || "",
     templateAgentId: state.templateAgentId,
-    baseProviderNames: state.baseProviderNames || [],
+    templateAgentName: state.templateAgentName,
+    sectionViews: state.sectionViews || {},
+    providerViews: state.providerViews || {},
     configManagedProviders: state.configManagedProviders || [],
     promoting,
-    isUserScope(scope: string): boolean {
-      if (state.settingsMode !== "user") return true;
-      if (!state.allowedScopes?.length) return false;
-      if (state.allowedScopes.includes(scope)) return true;
-      if (scope === "skills") {
-        return (
-          state.allowedScopes.includes("tools") ||
-          state.allowedScopes.includes("mcp-servers")
-        );
-      }
-      if (scope === "permissions" || scope === "packages") {
-        return state.allowedScopes.includes("tools");
-      }
-      return false;
-    },
-    isScopeAllowed(scope: string): boolean {
-      if (state.settingsMode !== "user") return true;
-      if (state.isAdmin) return true;
-      if (!state.allowedScopes?.length) return false;
-      if (state.allowedScopes.includes(scope)) return true;
-      // Backward compat: old "tools"/"mcp-servers" scopes map to new names
-      if (scope === "skills") {
-        return (
-          state.allowedScopes.includes("tools") ||
-          state.allowedScopes.includes("mcp-servers")
-        );
-      }
-      if (scope === "permissions" || scope === "packages") {
-        return state.allowedScopes.includes("tools");
-      }
-      return false;
-    },
+    canViewSection,
+    canEditSection,
+    canUserViewSection,
+    resetSection,
 
     toggleSection,
     openExternal,
@@ -679,72 +715,106 @@ function App() {
           class="space-y-3"
         >
           {ctx.isAdmin && !ctx.isSandbox && <ConnectionsSection />}
-          {ctx.isScopeAllowed("model") && (
+          {ctx.canViewSection("model") && (
             <ProviderSection
               adminOnly={
-                ctx.isAdmin && ctx.isSandbox && !ctx.isUserScope("model")
+                ctx.isAdmin && ctx.isSandbox && !ctx.canUserViewSection("model")
               }
             />
           )}
-          {ctx.isScopeAllowed("system-prompt") && (
+          {ctx.canViewSection("system-prompt") && (
             <InstructionsSection
               adminOnly={
                 ctx.isAdmin &&
                 ctx.isSandbox &&
-                !ctx.isUserScope("system-prompt")
+                !ctx.canUserViewSection("system-prompt")
               }
             />
           )}
-          {ctx.isScopeAllowed("skills") && (
+          {ctx.canViewSection("skills") && (
             <SkillsSection
               adminOnly={
-                ctx.isAdmin && ctx.isSandbox && !ctx.isUserScope("skills")
+                ctx.isAdmin &&
+                ctx.isSandbox &&
+                !ctx.canUserViewSection("skills")
               }
             />
           )}
-          {ctx.isScopeAllowed("schedules") && (
+          {ctx.canViewSection("schedules") && (
             <RemindersSection
               adminOnly={
-                ctx.isAdmin && ctx.isSandbox && !ctx.isUserScope("schedules")
+                ctx.isAdmin &&
+                ctx.isSandbox &&
+                !ctx.canUserViewSection("schedules")
               }
             />
           )}
-          {ctx.isScopeAllowed("permissions") && (
+          {ctx.canViewSection("permissions") && (
             <PermissionsSection
               adminOnly={
-                ctx.isAdmin && ctx.isSandbox && !ctx.isUserScope("permissions")
+                ctx.isAdmin &&
+                ctx.isSandbox &&
+                !ctx.canUserViewSection("permissions")
               }
             />
           )}
-          {ctx.isScopeAllowed("packages") && (
+          {ctx.canViewSection("packages") && (
             <NixPackagesSection
               adminOnly={
-                ctx.isAdmin && ctx.isSandbox && !ctx.isUserScope("packages")
+                ctx.isAdmin &&
+                ctx.isSandbox &&
+                !ctx.canUserViewSection("packages")
               }
             />
           )}
 
-          {/* Verbose toggle */}
-          <div class="bg-gray-50 rounded-lg p-3">
-            <label class="flex items-center gap-2 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={ctx.verboseLogging.value}
-                onChange={(e) => {
-                  ctx.verboseLogging.value = (
-                    e.target as HTMLInputElement
-                  ).checked;
-                }}
-                class="w-4 h-4 text-slate-600 rounded focus:ring-slate-500"
-              />
-              <span class="text-sm font-medium text-gray-800">
-                Verbose logging
-              </span>
-            </label>
-            <p class="text-xs text-gray-500 mt-1 ml-6">
-              Show tool calls, reasoning tokens, and detailed output
-            </p>
-          </div>
+          {ctx.canViewSection("logging") && (
+            <div class="bg-gray-50 rounded-lg p-3">
+              <label
+                class={`flex items-center gap-2 ${ctx.canEditSection("logging") ? "cursor-pointer" : ""}`}
+              >
+                <input
+                  type="checkbox"
+                  checked={ctx.verboseLogging.value}
+                  disabled={!ctx.canEditSection("logging")}
+                  onChange={(e) => {
+                    ctx.verboseLogging.value = (
+                      e.target as HTMLInputElement
+                    ).checked;
+                  }}
+                  class="w-4 h-4 text-slate-600 rounded focus:ring-slate-500 disabled:opacity-50"
+                />
+                <span class="text-sm font-medium text-gray-800">
+                  Verbose logging
+                </span>
+                {ctx.sectionViews.logging?.source && (
+                  <span class="text-[10px] uppercase font-semibold px-1.5 py-0.5 rounded bg-slate-100 text-slate-600">
+                    {ctx.sectionViews.logging.source}
+                  </span>
+                )}
+                {!ctx.canEditSection("logging") && (
+                  <span class="text-[10px] uppercase font-semibold px-1.5 py-0.5 rounded bg-gray-100 text-gray-500">
+                    read-only
+                  </span>
+                )}
+                {ctx.sectionViews.logging?.canReset &&
+                  ctx.canEditSection("logging") && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void ctx.resetSection("logging");
+                      }}
+                      class="ml-auto text-xs text-slate-600 hover:text-slate-800"
+                    >
+                      Reset
+                    </button>
+                  )}
+              </label>
+              <p class="text-xs text-gray-500 mt-1 ml-6">
+                Show tool calls, reasoning tokens, and detailed output
+              </p>
+            </div>
+          )}
 
           {/* Submit */}
           <button
@@ -888,7 +958,35 @@ async function syncPermissionGrants(
 async function persistCurrentSettings(
   ctx: SettingsContextValue
 ): Promise<void> {
-  if (ctx.providerOrder.value.length > 0 && ctx.primaryProvider.value) {
+  const snap = ctx.initialSettingsSnapshot.value;
+  const currentSnap = ctx.buildSettingsSnapshot();
+
+  const providerOrderChanged =
+    !snap ||
+    snap.primaryProvider !== currentSnap.primaryProvider ||
+    snap.providerOrder !== currentSnap.providerOrder;
+  const providerPreferencesChanged =
+    !snap ||
+    snap.providerModelPreferences !== currentSnap.providerModelPreferences;
+  const instructionsChanged =
+    !snap ||
+    snap.identityMd !== currentSnap.identityMd ||
+    snap.soulMd !== currentSnap.soulMd ||
+    snap.userMd !== currentSnap.userMd;
+  const loggingChanged =
+    !snap || snap.verboseLogging !== currentSnap.verboseLogging;
+  const packagesChanged = !snap || snap.nixPackages !== currentSnap.nixPackages;
+  const skillsChanged = !snap || snap.skills !== currentSnap.skills;
+  const mcpServersChanged = !snap || snap.mcpServers !== currentSnap.mcpServers;
+  const permissionsChanged =
+    !snap || snap.permissions !== currentSnap.permissions;
+  const registriesChanged = !snap || snap.registries !== currentSnap.registries;
+
+  if (
+    providerOrderChanged &&
+    ctx.providerOrder.value.length > 0 &&
+    ctx.primaryProvider.value
+  ) {
     const orderedIds = [
       ctx.primaryProvider.value,
       ...ctx.providerOrder.value.filter(
@@ -902,44 +1000,57 @@ async function persistCurrentSettings(
     }
   }
 
-  const providerModelPreferences: Record<string, string> = {};
-  for (const providerId of ctx.providerOrder.value) {
-    const selectedModel = (
-      ctx.providerState.value[providerId]?.selectedModel || ""
-    ).trim();
-    if (!selectedModel) continue;
-    providerModelPreferences[providerId] = selectedModel;
+  const settings: Record<string, unknown> = {};
+
+  if (providerPreferencesChanged) {
+    const providerModelPreferences: Record<string, string> = {};
+    for (const providerId of ctx.providerOrder.value) {
+      const selectedModel = (
+        ctx.providerState.value[providerId]?.selectedModel || ""
+      ).trim();
+      if (!selectedModel) continue;
+      providerModelPreferences[providerId] = selectedModel;
+    }
+    settings.modelSelection = { mode: "auto" };
+    settings.providerModelPreferences = providerModelPreferences;
   }
 
-  const settings: Record<string, unknown> = {
-    modelSelection: { mode: "auto" },
-    providerModelPreferences,
-    identityMd: ctx.identityMd.value || "",
-    soulMd: ctx.soulMd.value || "",
-    userMd: ctx.userMd.value || "",
-    verboseLogging: !!ctx.verboseLogging.value,
-    skillRegistries: ctx.registries.value.length ? ctx.registries.value : null,
-  };
+  if (instructionsChanged) {
+    settings.identityMd = ctx.identityMd.value || "";
+    settings.soulMd = ctx.soulMd.value || "";
+    settings.userMd = ctx.userMd.value || "";
+  }
 
-  const nixPkgs = ctx.nixPackages.value
-    .map((pkg) => (pkg || "").trim())
-    .filter(Boolean);
-  settings.nixConfig = nixPkgs.length ? { packages: nixPkgs } : null;
+  if (loggingChanged) {
+    settings.verboseLogging = !!ctx.verboseLogging.value;
+  }
 
-  await api.saveSettings(ctx.agentId, settings);
+  if (registriesChanged) {
+    settings.skillRegistries = ctx.registries.value.length
+      ? ctx.registries.value
+      : null;
+  }
 
-  const snap = ctx.initialSettingsSnapshot.value;
-  const currentSnap = ctx.buildSettingsSnapshot();
+  if (packagesChanged) {
+    const nixPkgs = ctx.nixPackages.value
+      .map((pkg) => (pkg || "").trim())
+      .filter(Boolean);
+    settings.nixConfig = nixPkgs.length ? { packages: nixPkgs } : null;
+  }
 
-  if (!snap || snap.skills !== currentSnap.skills) {
+  if (Object.keys(settings).length > 0) {
+    await api.saveSettings(ctx.agentId, settings);
+  }
+
+  if (skillsChanged) {
     await api.saveSkills(ctx.agentId, ctx.skills.value);
   }
 
-  if (!snap || snap.mcpServers !== currentSnap.mcpServers) {
+  if (mcpServersChanged) {
     await api.saveMcpServers(ctx.agentId, ctx.mcpServers.value);
   }
 
-  if (!snap || snap.permissions !== currentSnap.permissions) {
+  if (permissionsChanged) {
     await syncPermissionGrants(ctx.agentId, ctx.permissionGrants.value);
   }
 

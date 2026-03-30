@@ -211,6 +211,7 @@ export function triggerProviderAuth(
   ctx: SettingsContextValue,
   providerId: string
 ) {
+  if (!ctx.canEditSection("model")) return;
   // Skip if auth flow is already active for this provider
   const existing = ctx.providerState.value[providerId];
   if (existing?.showAuthFlow) return;
@@ -306,52 +307,22 @@ export function ProviderSection({ adminOnly }: { adminOnly?: boolean }) {
       id="model"
       title="Providers"
       icon="&#129302;"
+      sectionKey="model"
       adminOnly={adminOnly}
     >
       <div id="provider-list">
-        {ctx.providerOrder.value.length === 0 &&
-          ctx.baseProviderNames.length === 0 && (
-            <div class="text-center py-6 text-gray-500">
-              <p class="text-sm font-medium text-gray-700 mb-1">
-                No model providers configured
-              </p>
-              <p class="text-xs">Add a provider below to get started.</p>
-            </div>
-          )}
-        {ctx.providerOrder.value.length === 0 &&
-          ctx.baseProviderNames.map((pid, i) => {
-            const pInfo = ctx.PROVIDERS[pid];
-            const iconUrl = ctx.providerIconUrls[pid] || "";
-            return (
-              <div
-                key={pid}
-                class={i > 0 ? "mt-3 pt-3 border-t border-gray-200" : ""}
-              >
-                <div class="flex items-center justify-between gap-2">
-                  <div class="flex items-center gap-3 min-w-0">
-                    {iconUrl && (
-                      <img
-                        src={iconUrl}
-                        alt={pInfo?.name || pid}
-                        class="w-5 h-5 rounded"
-                      />
-                    )}
-                    <div class="min-w-0">
-                      <p class="text-sm font-medium text-gray-800">
-                        {pInfo?.name || pid}
-                      </p>
-                      {pInfo?.capabilities && (
-                        <CapabilityChips capabilities={pInfo.capabilities} />
-                      )}
-                    </div>
-                  </div>
-                  <span class="text-xs text-gray-400 bg-gray-100 px-2 py-0.5 rounded">
-                    from config
-                  </span>
-                </div>
-              </div>
-            );
-          })}
+        {ctx.providerOrder.value.length === 0 && (
+          <div class="text-center py-6 text-gray-500">
+            <p class="text-sm font-medium text-gray-700 mb-1">
+              No model providers configured
+            </p>
+            <p class="text-xs">
+              {ctx.canEditSection("model")
+                ? "Add a provider below to get started."
+                : "Provider access is visible here but cannot be edited in this view."}
+            </p>
+          </div>
+        )}
         {ctx.providerOrder.value.map((pid, i) => (
           <ProviderCard key={pid} providerId={pid} index={i} />
         ))}
@@ -377,6 +348,8 @@ function ProviderCard({
   const iconUrl = ctx.providerIconUrls[providerId] || "";
   const models = ctx.providerModels[providerId] || [];
   const isConfigManaged = ctx.configManagedProviders.includes(providerId);
+  const providerView = ctx.providerViews[providerId];
+  const canEditProvider = providerView?.canEdit ?? ctx.canEditSection("model");
 
   function updatePS(update: Partial<ProviderState>) {
     ctx.providerState.value = {
@@ -457,10 +430,11 @@ function ProviderCard({
               name="primaryProvider"
               value={providerId}
               checked={ctx.primaryProvider.value === providerId}
+              disabled={!canEditProvider}
               onChange={() => {
                 ctx.primaryProvider.value = providerId;
               }}
-              class="w-4 h-4 accent-slate-600 cursor-pointer"
+              class="w-4 h-4 accent-slate-600 cursor-pointer disabled:opacity-50"
             />
           </label>
           {iconUrl && (
@@ -469,6 +443,11 @@ function ProviderCard({
           <div class="min-w-0">
             <p class="text-sm font-medium text-gray-800">{pInfo.name}</p>
             <CapabilityChips capabilities={pInfo.capabilities || []} />
+            {providerView?.source && (
+              <span class="inline-flex mt-1 text-[10px] uppercase font-semibold px-1.5 py-0.5 rounded bg-slate-100 text-slate-600">
+                {providerView.source}
+              </span>
+            )}
             {!isConfigManaged && !ps.connected && ps.status && (
               <p class="text-xs truncate max-w-[120px] sm:max-w-none text-red-500">
                 {ps.status}
@@ -482,6 +461,7 @@ function ProviderCard({
               <input
                 type="text"
                 value={ps.modelQuery}
+                disabled={!canEditProvider}
                 onInput={(e) => {
                   const val = (e.target as HTMLInputElement).value;
                   updatePS({
@@ -500,9 +480,9 @@ function ProviderCard({
                   }
                 }}
                 placeholder={ps.selectedModel || "Auto model"}
-                class="w-36 sm:w-44 px-3 py-1.5 border border-gray-200 rounded-lg text-xs focus:border-slate-600 focus:ring-1 focus:ring-slate-200 outline-none bg-white placeholder-gray-500"
+                class="w-36 sm:w-44 px-3 py-1.5 border border-gray-200 rounded-lg text-xs focus:border-slate-600 focus:ring-1 focus:ring-slate-200 outline-none bg-white placeholder-gray-500 disabled:bg-gray-100 disabled:text-gray-500"
               />
-              {ps.showModelDropdown && (
+              {ps.showModelDropdown && canEditProvider && (
                 <div class="absolute z-20 mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-lg max-h-48 overflow-y-auto">
                   <button
                     type="button"
@@ -542,16 +522,19 @@ function ProviderCard({
               from config
             </span>
           )}
-          {!isConfigManaged && !ps.connected && !ps.authMethods?.length && (
-            <button
-              type="button"
-              onClick={connectProvider}
-              class="bg-slate-100 text-slate-800 hover:bg-slate-200 px-3 py-1.5 text-xs font-medium rounded-lg transition-all"
-            >
-              Connect
-            </button>
-          )}
-          {!isConfigManaged && (!ctx.isSandbox || ctx.isUserScope("model")) && (
+          {!isConfigManaged &&
+            canEditProvider &&
+            !ps.connected &&
+            !ps.authMethods?.length && (
+              <button
+                type="button"
+                onClick={connectProvider}
+                class="bg-slate-100 text-slate-800 hover:bg-slate-200 px-3 py-1.5 text-xs font-medium rounded-lg transition-all"
+              >
+                Connect
+              </button>
+            )}
+          {!isConfigManaged && canEditProvider && (
             <button
               type="button"
               onClick={handleUninstall}
@@ -578,7 +561,7 @@ function ProviderCard({
       </div>
 
       {/* Auth flow */}
-      {ps.showAuthFlow && (
+      {ps.showAuthFlow && canEditProvider && (
         <div class="mt-3 pt-3 border-t border-gray-200">
           {hasMultiAuth && (
             <div class="flex gap-1 mb-3 border-b border-gray-200">
@@ -782,12 +765,12 @@ function AuthFlowContent({
 function ProviderCatalog() {
   const ctx = useSettings();
   if (ctx.catalogProviders.value.length === 0) return null;
-  if (ctx.isSandbox && !ctx.isUserScope("model")) {
+  if (!ctx.canEditSection("model")) {
     return (
       <div class="mt-3 pt-3 border-t border-gray-200">
         <p class="text-xs text-gray-500">
-          Add or remove providers from the base agent, then promote sandbox
-          changes back when you are ready.
+          Provider configuration is visible here but cannot be edited in this
+          view.
         </p>
       </div>
     );
@@ -860,6 +843,7 @@ function ProviderCatalog() {
 
 function PendingProviderAuth() {
   const ctx = useSettings();
+  if (!ctx.canEditSection("model")) return null;
   const pp = ctx.pendingProvider.value;
   if (!pp) return null;
 

@@ -86,6 +86,7 @@ export function SkillsSection({ adminOnly }: { adminOnly?: boolean }) {
       id="skills"
       title="Skills"
       icon="&#128218;"
+      sectionKey="skills"
       badge={badge}
       adminOnly={adminOnly}
     >
@@ -137,15 +138,17 @@ export function SkillsSection({ adminOnly }: { adminOnly?: boolean }) {
               >
                 <button
                   type="button"
+                  disabled={!ctx.canEditSection("skills")}
                   onClick={() => toggleSkill(skill.repo)}
-                  class={`px-2 py-1 text-xs rounded ${skill.enabled ? "bg-green-100 text-green-800" : "bg-gray-100 text-gray-500"}`}
+                  class={`px-2 py-1 text-xs rounded disabled:opacity-50 ${skill.enabled ? "bg-green-100 text-green-800" : "bg-gray-100 text-gray-500"}`}
                 >
                   {skill.enabled ? "Enabled" : "Disabled"}
                 </button>
                 <button
                   type="button"
+                  disabled={!ctx.canEditSection("skills")}
                   onClick={() => removeSkill(skill.repo)}
-                  class="px-2 py-1 text-xs rounded bg-red-100 text-red-700 hover:bg-red-200"
+                  class="px-2 py-1 text-xs rounded bg-red-100 text-red-700 hover:bg-red-200 disabled:opacity-50"
                 >
                   Remove
                 </button>
@@ -184,10 +187,12 @@ function SkillRegistriesSubsection() {
   const addError = useSignal("");
 
   function removeRegistry(id: string) {
+    if (!ctx.canEditSection("skills")) return;
     ctx.registries.value = ctx.registries.value.filter((r) => r.id !== id);
   }
 
   function handleAdd() {
+    if (!ctx.canEditSection("skills")) return;
     addError.value = "";
     const id = newId.value.trim();
     const type = newType.value;
@@ -226,14 +231,18 @@ function SkillRegistriesSubsection() {
             key={`custom-${r.id}`}
             registry={r}
             kind="custom"
-            onRemove={ctx.isSandbox ? undefined : () => removeRegistry(r.id)}
+            onRemove={
+              ctx.canEditSection("skills")
+                ? () => removeRegistry(r.id)
+                : undefined
+            }
           />
         ))}
         {!hasEntries && !showAdd.value && (
           <p class="text-xs text-gray-500">No skill registries configured.</p>
         )}
 
-        {showAdd.value && !ctx.isSandbox ? (
+        {showAdd.value && ctx.canEditSection("skills") ? (
           <div class="bg-gray-50 rounded-lg p-2.5 space-y-2">
             <div class="flex items-center gap-2">
               <input
@@ -294,7 +303,7 @@ function SkillRegistriesSubsection() {
               </button>
             </div>
           </div>
-        ) : !ctx.isSandbox ? (
+        ) : ctx.canEditSection("skills") ? (
           <button
             type="button"
             class="w-full py-1.5 text-xs font-medium rounded-lg border border-dashed border-gray-300 text-gray-500 hover:border-slate-400 hover:text-slate-600 transition-colors"
@@ -306,8 +315,8 @@ function SkillRegistriesSubsection() {
           </button>
         ) : (
           <p class="text-xs text-gray-500">
-            Manage registries from the base agent. Sandbox pages show the active
-            registry set but do not create new ones.
+            Registry configuration is visible here but cannot be edited in this
+            view.
           </p>
         )}
       </div>

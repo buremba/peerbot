@@ -636,7 +636,8 @@ function ConnectionCard({
             </p>
             {(
               [
-                { value: "model", label: "Providers" },
+                { value: "view-model", label: "Providers (Read-only)" },
+                { value: "model", label: "Providers (Edit)" },
                 { value: "system-prompt", label: "Instructions" },
                 { value: "skills", label: "Skills" },
                 { value: "schedules", label: "Schedules" },

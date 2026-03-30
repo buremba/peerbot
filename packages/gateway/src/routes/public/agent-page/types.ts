@@ -33,6 +33,32 @@ export interface ModelOption {
   value: string;
 }
 
+export type SettingsScope = "agent" | "sandbox";
+export type SettingsSource = "local" | "inherited" | "mixed";
+export type SettingsSectionKey =
+  | "model"
+  | "system-prompt"
+  | "skills"
+  | "packages"
+  | "permissions"
+  | "schedules"
+  | "logging";
+
+export interface SectionView {
+  source: SettingsSource;
+  editable: boolean;
+  canReset: boolean;
+  hasLocalOverride: boolean;
+}
+
+export interface ProviderView {
+  id: string;
+  source: SettingsSource;
+  canEdit: boolean;
+  canReset: boolean;
+  hasLocalOverride: boolean;
+}
+
 export interface ModelSelectionState {
   mode: "auto" | "pinned";
   pinnedModel?: string;
@@ -139,6 +165,7 @@ export interface AgentInfo {
 
 export interface SettingsState {
   agentId: string;
+  scope: SettingsScope;
   PROVIDERS: Record<string, ProviderInfo>;
   providerOrder: string[];
   providerModels: Record<string, ModelOption[]>;
@@ -170,7 +197,6 @@ export interface SettingsState {
   showSwitcher: boolean;
   agents: AgentInfo[];
   hasNoProviders: boolean;
-  baseProviderNames: string[];
   configManagedProviders: string[];
   // Provider icon URLs for rendering
   providerIconUrls: Record<string, string>;
@@ -185,6 +211,9 @@ export interface SettingsState {
   ownerPlatform?: string;
   // Template/base agent this sandbox promotes into
   templateAgentId?: string;
+  templateAgentName?: string;
+  sectionViews: Record<SettingsSectionKey, SectionView>;
+  providerViews: Record<string, ProviderView>;
   // Skill registries
   globalRegistries: { id: string; type: string; apiUrl: string }[];
   initialRegistries: { id: string; type: string; apiUrl: string }[];

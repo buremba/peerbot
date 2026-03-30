@@ -81,8 +81,9 @@ export class ProviderCatalogService {
       throw new Error(`Unknown provider: ${providerId}`);
     }
 
-    const settings = await this.agentSettingsStore.getSettings(agentId);
-    const installed = settings?.installedProviders || [];
+    const { localSettings, effectiveSettings } =
+      await this.agentSettingsStore.getSettingsContext(agentId);
+    const installed = effectiveSettings?.installedProviders || [];
 
     if (installed.some((ip) => ip.providerId === providerId)) {
       logger.info(
@@ -98,9 +99,12 @@ export class ProviderCatalogService {
     };
     const nextInstalledProviders = [...installed, entry];
     const reconciled = reconcileModelSelectionForInstalledProviders({
-      model: settings?.model,
-      modelSelection: settings?.modelSelection,
-      providerModelPreferences: settings?.providerModelPreferences,
+      model: localSettings?.model ?? effectiveSettings?.model,
+      modelSelection:
+        localSettings?.modelSelection ?? effectiveSettings?.modelSelection,
+      providerModelPreferences:
+        localSettings?.providerModelPreferences ??
+        effectiveSettings?.providerModelPreferences,
       installedProviders: nextInstalledProviders,
     });
 
@@ -116,8 +120,9 @@ export class ProviderCatalogService {
    * Uninstall a provider from an agent. Also cleans up auth profiles.
    */
   async uninstallProvider(agentId: string, providerId: string): Promise<void> {
-    const settings = await this.agentSettingsStore.getSettings(agentId);
-    const installed = settings?.installedProviders || [];
+    const { localSettings, effectiveSettings } =
+      await this.agentSettingsStore.getSettingsContext(agentId);
+    const installed = effectiveSettings?.installedProviders || [];
 
     const filtered = installed.filter((ip) => ip.providerId !== providerId);
     if (filtered.length === installed.length) {
@@ -130,9 +135,12 @@ export class ProviderCatalogService {
     // Clean up auth profiles for this provider
     await this.authProfilesManager.deleteProviderProfiles(agentId, providerId);
     const reconciled = reconcileModelSelectionForInstalledProviders({
-      model: settings?.model,
-      modelSelection: settings?.modelSelection,
-      providerModelPreferences: settings?.providerModelPreferences,
+      model: localSettings?.model ?? effectiveSettings?.model,
+      modelSelection:
+        localSettings?.modelSelection ?? effectiveSettings?.modelSelection,
+      providerModelPreferences:
+        localSettings?.providerModelPreferences ??
+        effectiveSettings?.providerModelPreferences,
       installedProviders: filtered,
     });
 
@@ -167,8 +175,9 @@ export class ProviderCatalogService {
    * exactly the same provider IDs as currently installed.
    */
   async reorderProviders(agentId: string, orderedIds: string[]): Promise<void> {
-    const settings = await this.agentSettingsStore.getSettings(agentId);
-    const installed = settings?.installedProviders || [];
+    const { localSettings, effectiveSettings } =
+      await this.agentSettingsStore.getSettingsContext(agentId);
+    const installed = effectiveSettings?.installedProviders || [];
 
     const installedMap = new Map(installed.map((ip) => [ip.providerId, ip]));
 
@@ -190,9 +199,12 @@ export class ProviderCatalogService {
       }
     }
     const reconciled = reconcileModelSelectionForInstalledProviders({
-      model: settings?.model,
-      modelSelection: settings?.modelSelection,
-      providerModelPreferences: settings?.providerModelPreferences,
+      model: localSettings?.model ?? effectiveSettings?.model,
+      modelSelection:
+        localSettings?.modelSelection ?? effectiveSettings?.modelSelection,
+      providerModelPreferences:
+        localSettings?.providerModelPreferences ??
+        effectiveSettings?.providerModelPreferences,
       installedProviders: reordered,
     });
 

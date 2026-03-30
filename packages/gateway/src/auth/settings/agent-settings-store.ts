@@ -72,6 +72,12 @@ export interface AgentSettings {
   updatedAt: number;
 }
 
+export interface AgentSettingsContext {
+  localSettings: AgentSettings | null;
+  effectiveSettings: AgentSettings | null;
+  templateAgentId?: string;
+}
+
 /**
  * Store and retrieve agent settings from Redis
  * Pattern: agent:settings:{agentId}
@@ -132,30 +138,51 @@ export class AgentSettingsStore extends BaseRedisStore<AgentSettings> {
    * are missing or have no providers configured.
    */
   async getEffectiveSettings(agentId: string): Promise<AgentSettings | null> {
-    const settings = await this.getSettings(agentId);
+    const context = await this.getSettingsContext(agentId);
+    return context.effectiveSettings;
+  }
+
+  async getSettingsContext(agentId: string): Promise<AgentSettingsContext> {
+    const localSettings = await this.getSettings(agentId);
 
     // Resolve template agent ID
     const templateAgentId = await this.resolveTemplateAgentId(
       agentId,
-      settings
+      localSettings
     );
-    if (!templateAgentId) return settings;
+    if (!templateAgentId) {
+      return { localSettings, effectiveSettings: localSettings };
+    }
 
     const templateSettings = await this.getSettings(templateAgentId);
-    if (!templateSettings) return settings;
+    if (!templateSettings) {
+      return {
+        localSettings,
+        effectiveSettings: localSettings,
+        templateAgentId,
+      };
+    }
 
     // Merge: own settings override template, but inherit missing fields
-    if (!settings) {
-      return { ...templateSettings, templateAgentId };
+    if (!localSettings) {
+      return {
+        localSettings,
+        effectiveSettings: { ...templateSettings, templateAgentId },
+        templateAgentId,
+      };
     }
 
     return {
-      ...templateSettings,
-      ...Object.fromEntries(
-        Object.entries(settings).filter(([, v]) => v !== undefined)
-      ),
+      localSettings,
+      effectiveSettings: {
+        ...templateSettings,
+        ...Object.fromEntries(
+          Object.entries(localSettings).filter(([, v]) => v !== undefined)
+        ),
+        templateAgentId,
+      } as AgentSettings,
       templateAgentId,
-    } as AgentSettings;
+    };
   }
 
   /**

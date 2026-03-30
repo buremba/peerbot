@@ -4,8 +4,9 @@
  * Creates a just-bash Bash instance from environment variables and wraps it
  * as a BashOperations interface for pi-coding-agent's bash tool.
  *
- * When nix binaries are detected on PATH (via nix-shell wrapper from gateway),
- * they are registered as just-bash customCommands that delegate to real exec.
+ * When nix binaries are detected on PATH (via nix-shell wrapper from gateway)
+ * or known CLI tools (e.g. owletto) are found, they are registered as
+ * just-bash customCommands that delegate to real exec.
  */
 
 import { execFile } from "node:child_process";
@@ -20,30 +21,43 @@ const EMBEDDED_BASH_LIMITS = {
 } as const;
 
 /**
- * Discover nix-provided binaries by scanning PATH for /nix/store/ directories.
- * Returns a map of binary name → full path.
+ * Discover binaries to register as custom commands:
+ * 1. All executables from /nix/store/ PATH directories
+ * 2. Known CLI tools (owletto) from anywhere on PATH
  */
-function discoverNixBinaries(): Map<string, string> {
+function discoverBinaries(): Map<string, string> {
   const binaries = new Map<string, string>();
   const pathDirs = (process.env.PATH || "").split(":");
 
   for (const dir of pathDirs) {
     if (!dir.includes("/nix/store/")) continue;
     try {
-      const entries = fs.readdirSync(dir);
-      for (const entry of entries) {
+      for (const entry of fs.readdirSync(dir)) {
         const fullPath = path.join(dir, entry);
         try {
           fs.accessSync(fullPath, fs.constants.X_OK);
-          if (!binaries.has(entry)) {
-            binaries.set(entry, fullPath);
-          }
+          if (!binaries.has(entry)) binaries.set(entry, fullPath);
         } catch {
-          // not executable, skip
+          // not executable
         }
       }
     } catch {
-      // directory doesn't exist or not readable
+      // directory not readable
+    }
+  }
+
+  // Discover known CLI tools from full PATH
+  for (const name of ["owletto"]) {
+    if (binaries.has(name)) continue;
+    for (const dir of pathDirs) {
+      const fullPath = path.join(dir, name);
+      try {
+        fs.accessSync(fullPath, fs.constants.X_OK);
+        binaries.set(name, fullPath);
+        break;
+      } catch {
+        // not found
+      }
     }
   }
 
@@ -51,16 +65,16 @@ function discoverNixBinaries(): Map<string, string> {
 }
 
 /**
- * Create just-bash customCommands for nix-provided binaries.
- * Each custom command delegates to the real binary via child_process.spawn.
+ * Create just-bash customCommands from a map of binary name → full path.
+ * Each custom command delegates to the real binary via child_process.execFile.
  */
-async function buildNixCustomCommands(
-  nixBinaries: Map<string, string>
+async function buildCustomCommands(
+  binaries: Map<string, string>
 ): Promise<ReturnType<typeof import("just-bash").defineCommand>[]> {
   const { defineCommand } = await import("just-bash");
   const commands = [];
 
-  for (const [name, binaryPath] of nixBinaries) {
+  for (const [name, binaryPath] of binaries) {
     commands.push(
       defineCommand(name, async (args: string[], ctx) => {
         // Convert ctx.env (Map-like) to a plain Record for child_process
@@ -90,9 +104,6 @@ async function buildNixCustomCommands(
               maxBuffer: 10 * 1024 * 1024,
             },
             (error, stdout, stderr) => {
-              if (ctx.stdin) {
-                // execFile doesn't support stdin easily; for now pass without
-              }
               resolve({
                 stdout: stdout || "",
                 stderr: stderr || (error?.message ?? ""),
@@ -148,17 +159,16 @@ export async function createEmbeddedBashOps(): Promise<BashOperations> {
         }
       : undefined;
 
-  // Discover nix binaries and register as custom commands
-  const nixBinaries = discoverNixBinaries();
+  // Discover nix binaries and known CLI tools, register as custom commands
+  const binaries = discoverBinaries();
   const customCommands =
-    nixBinaries.size > 0 ? await buildNixCustomCommands(nixBinaries) : [];
+    binaries.size > 0 ? await buildCustomCommands(binaries) : [];
 
-  if (nixBinaries.size > 0) {
-    const names = [...nixBinaries.keys()].slice(0, 20).join(", ");
-    const suffix =
-      nixBinaries.size > 20 ? `, ... (${nixBinaries.size} total)` : "";
+  if (binaries.size > 0) {
+    const names = [...binaries.keys()].slice(0, 20).join(", ");
+    const suffix = binaries.size > 20 ? `, ... (${binaries.size} total)` : "";
     console.log(
-      `[embedded] Registered ${nixBinaries.size} nix binaries as custom commands: ${names}${suffix}`
+      `[embedded] Registered ${binaries.size} custom commands: ${names}${suffix}`
     );
   }
 

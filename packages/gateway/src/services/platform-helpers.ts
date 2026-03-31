@@ -3,7 +3,11 @@
  * Extracts common logic duplicated across Slack, Telegram, and WhatsApp message handlers.
  */
 
-import { createLogger } from "@lobu/core";
+import {
+  createLogger,
+  type PluginConfig,
+  type PluginsConfig,
+} from "@lobu/core";
 import type { AgentSettingsStore } from "../auth/settings";
 import { resolveEffectiveModelRef } from "../auth/settings/model-selection";
 import type { ChannelBindingService } from "../channels";
@@ -13,6 +17,81 @@ import type { MessagePayload } from "../infrastructure/queue/queue-producer";
 import { platformAgentId } from "../spaces";
 
 const logger = createLogger("platform-helpers");
+const OWLETTO_PLUGIN_SOURCE = "@lobu/owletto-openclaw";
+
+function readOwlettoRuntimeDefaults(): PluginConfig | null {
+  return (
+    buildMemoryPlugins().find(
+      (plugin) =>
+        plugin.source === OWLETTO_PLUGIN_SOURCE && plugin.slot === "memory"
+    ) || null
+  );
+}
+
+function normalizeOwlettoPluginConfig(
+  plugin: PluginConfig,
+  runtimeDefault: PluginConfig | null
+): PluginConfig {
+  if (
+    plugin.source !== OWLETTO_PLUGIN_SOURCE ||
+    plugin.slot !== "memory" ||
+    !runtimeDefault?.config ||
+    !plugin.config
+  ) {
+    return plugin;
+  }
+
+  const storedMcpUrl = plugin.config.mcpUrl;
+  const storedGatewayAuthUrl = plugin.config.gatewayAuthUrl;
+  const runtimeMcpUrl = runtimeDefault.config.mcpUrl;
+  const runtimeGatewayAuthUrl = runtimeDefault.config.gatewayAuthUrl;
+
+  const shouldReplaceMcpUrl =
+    typeof storedMcpUrl === "string" &&
+    typeof runtimeMcpUrl === "string" &&
+    runtimeMcpUrl !== storedMcpUrl &&
+    /^https?:\/\/gateway(?::\d+)?\/mcp\/owletto\/?$/.test(storedMcpUrl);
+  const shouldReplaceGatewayAuthUrl =
+    typeof storedGatewayAuthUrl === "string" &&
+    typeof runtimeGatewayAuthUrl === "string" &&
+    runtimeGatewayAuthUrl !== storedGatewayAuthUrl &&
+    /^https?:\/\/gateway(?::\d+)?\/?$/.test(storedGatewayAuthUrl);
+
+  if (!shouldReplaceMcpUrl && !shouldReplaceGatewayAuthUrl) {
+    return plugin;
+  }
+
+  return {
+    ...plugin,
+    config: {
+      ...plugin.config,
+      ...(shouldReplaceMcpUrl ? { mcpUrl: runtimeMcpUrl } : {}),
+      ...(shouldReplaceGatewayAuthUrl
+        ? { gatewayAuthUrl: runtimeGatewayAuthUrl }
+        : {}),
+    },
+  };
+}
+
+function normalizePluginsConfig(
+  pluginsConfig: PluginsConfig | undefined
+): PluginsConfig | undefined {
+  if (!pluginsConfig?.plugins?.length) {
+    return pluginsConfig;
+  }
+
+  const runtimeDefault = readOwlettoRuntimeDefaults();
+  let changed = false;
+  const plugins = pluginsConfig.plugins.map((plugin) => {
+    const normalized = normalizeOwlettoPluginConfig(plugin, runtimeDefault);
+    if (normalized !== plugin) {
+      changed = true;
+    }
+    return normalized;
+  });
+
+  return changed ? { ...pluginsConfig, plugins } : pluginsConfig;
+}
 
 /**
  * Resolve agent options by merging base options with per-agent settings.
@@ -65,7 +144,9 @@ export async function resolveAgentOptions(
     mergedOptions.mcpServers = settings.mcpServers;
   }
   if (settings.pluginsConfig) {
-    mergedOptions.pluginsConfig = settings.pluginsConfig;
+    mergedOptions.pluginsConfig = normalizePluginsConfig(
+      settings.pluginsConfig
+    );
   }
   // Apply default memory plugins if no pluginsConfig from settings or baseOptions
   if (!mergedOptions.pluginsConfig) {

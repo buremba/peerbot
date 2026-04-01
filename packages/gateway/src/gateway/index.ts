@@ -190,12 +190,19 @@ export class WorkerGateway {
       await this.jobRouter.registerWorker(deploymentName);
       await this.jobRouter.resumeWorker(deploymentName);
 
-      // Handle client disconnect
+      // Handle client disconnect — only act if this is still the active writer
       sseWriter.onClose(() => {
+        const current = this.connectionManager.getConnection(deploymentName);
+        if (current && current.writer !== sseWriter) {
+          logger.debug(
+            `Ignoring stale disconnect for ${deploymentName} (replaced by newer SSE)`
+          );
+          return;
+        }
         this.jobRouter.pauseWorker(deploymentName).catch((err) => {
           logger.error(`Failed to pause worker ${deploymentName}:`, err);
         });
-        this.connectionManager.removeConnection(deploymentName, sseWriter);
+        this.connectionManager.removeConnection(deploymentName);
       });
 
       // Keep the connection open until the stream is actually aborted.

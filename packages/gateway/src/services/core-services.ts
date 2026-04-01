@@ -1,14 +1,14 @@
 #!/usr/bin/env bun
 
 import {
-  CommandRegistry,
-  createLogger,
-  moduleRegistry,
   type AgentAccessStore,
   type AgentConfigStore,
   type AgentConnectionStore,
-  type SystemSkillEntry,
+  CommandRegistry,
+  createLogger,
+  moduleRegistry,
   type RegistryEntry,
+  type SystemSkillEntry,
 } from "@lobu/core";
 import { AdminStatusCache } from "../auth/admin-status-cache";
 import { AgentMetadataStore } from "../auth/agent-metadata-store";

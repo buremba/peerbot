@@ -14,10 +14,10 @@ import type { McpConfigService } from "../auth/mcp/config-service";
 import type { McpProxy } from "../auth/mcp/proxy";
 import type { McpTool } from "../auth/mcp/tool-cache";
 import type { ProviderCatalogService } from "../auth/provider-catalog";
-import type { SettingsResolver } from "../services/settings-resolver";
 import { resolveEffectiveModelRef } from "../auth/settings/model-selection";
 import type { IMessageQueue } from "../infrastructure/queue";
 import type { InstructionService } from "../services/instruction-service";
+import type { SettingsResolver } from "../services/settings-resolver";
 import type { SystemSkillsService } from "../services/system-skills-service";
 import type { ISessionManager } from "../session";
 import { type SSEWriter, WorkerConnectionManager } from "./connection-manager";
@@ -128,11 +128,13 @@ export class WorkerGateway {
 
     // Create an SSE stream
     return stream(c, async (streamWriter) => {
+      let isClosed = false;
+
       // Create an SSE writer adapter
       const sseWriter: SSEWriter = {
         write: (data: string): boolean => {
           try {
-            streamWriter.write(data);
+            void streamWriter.write(data);
             return true;
           } catch {
             return false;
@@ -146,8 +148,10 @@ export class WorkerGateway {
           }
         },
         onClose: (callback: () => void) => {
-          // Handle abort signal
-          c.req.raw.signal.addEventListener("abort", callback);
+          streamWriter.onAbort(() => {
+            isClosed = true;
+            callback();
+          });
         },
       };
 
@@ -168,6 +172,7 @@ export class WorkerGateway {
         logger.info(
           `Cleaning up stale connection for ${deploymentName} before new SSE`
         );
+        // Intentionally no expectedWriter — always evict the old connection
         this.connectionManager.removeConnection(deploymentName);
       }
 
@@ -190,13 +195,13 @@ export class WorkerGateway {
         this.jobRouter.pauseWorker(deploymentName).catch((err) => {
           logger.error(`Failed to pause worker ${deploymentName}:`, err);
         });
-        this.connectionManager.removeConnection(deploymentName);
+        this.connectionManager.removeConnection(deploymentName, sseWriter);
       });
 
-      // Keep the connection open until client disconnects
-      await new Promise<void>((resolve) => {
-        c.req.raw.signal.addEventListener("abort", () => resolve());
-      });
+      // Keep the connection open until the stream is actually aborted.
+      while (!isClosed) {
+        await streamWriter.sleep(1000);
+      }
     });
   }
 
@@ -237,6 +242,13 @@ export class WorkerGateway {
 
       // Delivery receipts (worker ACKs) have no message payload — just acknowledge and return
       if (enrichedResponse.received) {
+        if (enrichedResponse.heartbeat) {
+          // touchConnection already ran above for all /worker/response calls,
+          // keeping this worker alive in stale-cleanup.
+          logger.debug(
+            `[WORKER-GATEWAY] Received heartbeat ACK from ${deploymentName}`
+          );
+        }
         return c.json({ success: true });
       }
 

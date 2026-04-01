@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { MockRedisClient } from "@lobu/core/testing";
 import { OpenAPIHono } from "@hono/zod-openapi";
+import { MockRedisClient } from "@lobu/core/testing";
 import { AgentMetadataStore } from "../auth/agent-metadata-store";
 import { AgentSettingsStore } from "../auth/settings/agent-settings-store";
+import { GrantStore } from "../permissions/grant-store";
 import { createAgentConfigRoutes } from "../routes/public/agent-config";
 import { setAuthProvider } from "../routes/public/settings-auth";
-import { GrantStore } from "../permissions/grant-store";
 
 describe("agent config routes", () => {
   let redis: MockRedisClient;

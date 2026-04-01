@@ -57,6 +57,23 @@ describe("WorkerConnectionManager", () => {
       expect(res.isEnded()).toBe(true);
     });
 
+    test("ignores stale disconnect callbacks from replaced SSE writers", () => {
+      const res1 = new MockResponse() as any;
+      const res2 = new MockResponse() as any;
+
+      manager.addConnection("worker-1", "U123", "thread-1", "agent-1", res1);
+      manager.addConnection("worker-1", "U123", "thread-1", "agent-1", res2);
+
+      manager.removeConnection("worker-1", res1);
+
+      expect(manager.isConnected("worker-1")).toBe(true);
+      expect(manager.getConnection("worker-1")?.writer).toBe(res2);
+
+      manager.removeConnection("worker-1", res2);
+
+      expect(manager.isConnected("worker-1")).toBe(false);
+    });
+
     test("handles removing non-existent connection gracefully", () => {
       expect(() => manager.removeConnection("non-existent")).not.toThrow();
     });
@@ -284,6 +301,24 @@ describe("WorkerConnectionManager", () => {
       }
 
       // Trigger cleanup
+      (manager as any).cleanupStaleConnections();
+
+      expect(manager.isConnected("worker-1")).toBe(true);
+    });
+
+    test("keeps connection alive after recent verified activity", async () => {
+      const res = new MockResponse() as any;
+
+      manager.addConnection("worker-1", "U123", "thread-1", "agent-1", res);
+
+      const connection = manager.getConnection("worker-1");
+      if (connection) {
+        connection.lastActivity = Date.now() - 11 * 60 * 1000;
+      }
+
+      await TestHelpers.delay(10);
+      manager.touchConnection("worker-1");
+
       (manager as any).cleanupStaleConnections();
 
       expect(manager.isConnected("worker-1")).toBe(true);

@@ -1,12 +1,12 @@
 #!/usr/bin/env bun
 
 import {
-  createLogger,
   type AgentAccessStore,
   type AgentConfigStore,
   type AgentConnectionStore,
-  type SystemSkillEntry,
+  createLogger,
   type RegistryEntry,
+  type SystemSkillEntry,
 } from "@lobu/core";
 import type { GatewayConfig } from "./config";
 import { type PlatformAdapter, platformRegistry } from "./platform";

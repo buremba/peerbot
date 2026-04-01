@@ -294,6 +294,25 @@ export class GatewayClient {
     });
   }
 
+  /**
+   * Send a heartbeat ACK back to the gateway so stale cleanup is based on
+   * verified inbound worker activity rather than outbound SSE writes.
+   */
+  private sendHeartbeatAck(): void {
+    const url = `${this.dispatcherUrl}/worker/response`;
+    fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${this.workerToken}`,
+      },
+      body: JSON.stringify({ received: true, heartbeat: true }),
+      signal: AbortSignal.timeout(10_000),
+    }).catch((err) => {
+      logger.warn("Failed to send heartbeat ACK:", err);
+    });
+  }
+
   private async handleReconnect(): Promise<void> {
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
       logger.error("Max reconnection attempts reached, giving up");
@@ -358,6 +377,7 @@ export class GatewayClient {
 
       if (eventType === "ping") {
         logger.debug("Received heartbeat ping from dispatcher");
+        this.sendHeartbeatAck();
         return;
       }
 

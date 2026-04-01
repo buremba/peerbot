@@ -4,8 +4,8 @@ import {
   ProviderCatalogService,
   resolveInstalledProviders,
 } from "../auth/provider-catalog";
-import { AuthProfilesManager } from "../auth/settings/auth-profiles-manager";
 import { AgentSettingsStore } from "../auth/settings/agent-settings-store";
+import { AuthProfilesManager } from "../auth/settings/auth-profiles-manager";
 import {
   canEditSettingsSection,
   canViewSettingsSection,

@@ -1,4 +1,4 @@
-import type { McpToolDef } from "@lobu/core";
+import { getCustomToolDescription, type McpToolDef } from "@lobu/core";
 import type { AgentToolResult } from "@mariozechner/pi-agent-core";
 import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
 import type { Static } from "@sinclair/typebox";
@@ -66,8 +66,7 @@ export function createOpenClawCustomTools(params: {
   const tools: ToolDefinition[] = [
     defineTool({
       name: "UploadUserFile",
-      description:
-        "Use this whenever you create a visualization, chart, image, document, report, or any file that helps answer the user's request. This is how you share your work with the user.",
+      description: getCustomToolDescription("UploadUserFile"),
       parameters: Type.Object({
         file_path: Type.String({
           description:
@@ -85,8 +84,7 @@ export function createOpenClawCustomTools(params: {
 
     defineTool({
       name: "ScheduleReminder",
-      description:
-        "Schedule a task for yourself to execute later. Use delayMinutes for one-time reminders, or cron for recurring schedules. The reminder will be delivered as a message in this thread.",
+      description: getCustomToolDescription("ScheduleReminder"),
       parameters: Type.Object({
         task: Type.String({
           description: "Description of what you need to do when reminded",
@@ -115,8 +113,7 @@ export function createOpenClawCustomTools(params: {
 
     defineTool({
       name: "CancelReminder",
-      description:
-        "Cancel a previously scheduled reminder. Use the scheduleId returned from ScheduleReminder.",
+      description: getCustomToolDescription("CancelReminder"),
       parameters: Type.Object({
         scheduleId: Type.String({
           description: "The schedule ID returned from ScheduleReminder",
@@ -127,16 +124,14 @@ export function createOpenClawCustomTools(params: {
 
     defineTool({
       name: "ListReminders",
-      description:
-        "List all pending reminders you have scheduled. Shows upcoming reminders with their schedule IDs and remaining time.",
+      description: getCustomToolDescription("ListReminders"),
       parameters: Type.Object({}),
       run: () => listReminders(gw),
     }),
 
     defineTool({
       name: "SearchSkills",
-      description:
-        "Search for installable skills and MCP servers, or list installed capabilities. Pass a query to search available capabilities. Pass an empty query to list all installed skills and MCP servers.",
+      description: getCustomToolDescription("SearchSkills"),
       parameters: Type.Object({
         query: Type.String({
           description:
@@ -153,8 +148,7 @@ export function createOpenClawCustomTools(params: {
 
     defineTool({
       name: "InstallSkill",
-      description:
-        "Install or upgrade a skill or MCP server. Pass the id from SearchSkills results.",
+      description: getCustomToolDescription("InstallSkill"),
       parameters: Type.Object({
         id: Type.String({
           description: "Skill or MCP server ID from SearchSkills results",
@@ -171,8 +165,7 @@ export function createOpenClawCustomTools(params: {
 
     defineTool({
       name: "InstallPackage",
-      description:
-        "Request installation of system packages (nix). Sends approval buttons to the user. Stop and wait for approval after calling.",
+      description: getCustomToolDescription("InstallPackage"),
       parameters: Type.Object({
         packages: Type.Array(Type.String(), {
           description:
@@ -187,8 +180,7 @@ export function createOpenClawCustomTools(params: {
 
     defineTool({
       name: "RequestNetworkAccess",
-      description:
-        "Request access to blocked domains. Sends inline approval buttons to the user. Stop and wait for approval after calling. Do NOT retry blocked requests — the domain is blocked at the network level.",
+      description: getCustomToolDescription("RequestNetworkAccess"),
       parameters: Type.Object({
         domains: Type.Array(Type.String(), {
           description:
@@ -203,8 +195,7 @@ export function createOpenClawCustomTools(params: {
 
     defineTool({
       name: "GenerateImage",
-      description:
-        "Generate an image from a text prompt and send it to the user. Use when the user asks for image generation, visual concepts, posters, illustrations, or edits that can be done from prompt instructions.",
+      description: getCustomToolDescription("GenerateImage"),
       parameters: Type.Object({
         prompt: Type.String({
           description: "The image prompt to generate",
@@ -261,8 +252,7 @@ export function createOpenClawCustomTools(params: {
 
     defineTool({
       name: "GenerateAudio",
-      description:
-        "Generate audio from text (text-to-speech). Use when you want to respond with a voice message, read content aloud, or when the user asks for audio output.",
+      description: getCustomToolDescription("GenerateAudio"),
       parameters: Type.Object({
         text: Type.String({
           description: "The text to convert to speech (max 4096 characters)",
@@ -284,8 +274,7 @@ export function createOpenClawCustomTools(params: {
 
     defineTool({
       name: "GetChannelHistory",
-      description:
-        "Fetch previous messages from this conversation thread. Use when the user references past discussions, asks 'what did we talk about', or you need context.",
+      description: getCustomToolDescription("GetChannelHistory"),
       parameters: Type.Object({
         limit: Type.Optional(
           Type.Number({
@@ -304,8 +293,7 @@ export function createOpenClawCustomTools(params: {
 
     defineTool({
       name: "AskUserQuestion",
-      description:
-        "Posts a question with button options to the user. Session ends after posting. The user's response will arrive as a new message in the next session.",
+      description: getCustomToolDescription("AskUserQuestion"),
       parameters: Type.Object({
         question: Type.String({
           description: "The question to ask the user",

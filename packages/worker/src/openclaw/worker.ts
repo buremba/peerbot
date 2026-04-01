@@ -29,6 +29,7 @@ import type {
 import { WorkspaceManager } from "../core/workspace";
 import { HttpWorkerTransport } from "../gateway/gateway-integration";
 import { generateCustomInstructions } from "../instructions/builder";
+import { ProjectsInstructionProvider } from "../instructions/providers";
 import { fetchAudioProviderSuggestions } from "../shared/audio-provider-suggestions";
 import {
   getApiKeyEnvVarForProvider,
@@ -42,7 +43,10 @@ import {
   createMcpToolDefinitions,
   createOpenClawCustomTools,
 } from "./custom-tools";
-import { OpenClawCoreInstructionProvider } from "./instructions";
+import {
+  OpenClawCoreInstructionProvider,
+  OpenClawPromptIntentInstructionProvider,
+} from "./instructions";
 import {
   DEFAULT_PROVIDER_BASE_URL_ENV,
   openOrCreateSessionManager,
@@ -345,12 +349,17 @@ export class OpenClawWorker implements WorkerExecutor {
 
       // Generate custom instructions
       let customInstructions = await generateCustomInstructions(
-        new OpenClawCoreInstructionProvider(),
+        [
+          new OpenClawCoreInstructionProvider(),
+          new OpenClawPromptIntentInstructionProvider(),
+          new ProjectsInstructionProvider(),
+        ],
         {
           userId: this.config.userId,
           agentId: this.config.agentId,
           sessionKey: this.config.sessionKey,
           workingDirectory: this.workspaceManager.getCurrentWorkingDirectory(),
+          userPrompt,
           availableProjects: listAppDirectories(
             this.workspaceManager.getCurrentWorkingDirectory()
           ),

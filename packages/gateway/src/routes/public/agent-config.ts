@@ -13,15 +13,15 @@ import { collectProviderModelOptions } from "../../auth/provider-model-options";
 import type { AgentSettings, AgentSettingsStore } from "../../auth/settings";
 import type { AuthProfilesManager } from "../../auth/settings/auth-profiles-manager";
 import {
-  type SettingsSectionKey,
-  resolveSettingsView,
-} from "../../auth/settings/resolved-settings-view";
-import {
   extractProviderIdFromModelRef,
   getModelSelectionState,
   type ProviderModelPreferences,
   reconcileModelSelectionForInstalledProviders,
 } from "../../auth/settings/model-selection";
+import {
+  resolveSettingsView,
+  type SettingsSectionKey,
+} from "../../auth/settings/resolved-settings-view";
 import { buildPromotedSettingsFromSource } from "../../auth/settings/template-utils";
 import type { SettingsTokenPayload } from "../../auth/settings/token-service";
 import type { UserAgentsStore } from "../../auth/user-agents-store";

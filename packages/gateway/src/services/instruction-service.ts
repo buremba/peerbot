@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
 import {
+  buildUnconfiguredAgentNotice,
   createLogger,
   type InstructionContext,
   type InstructionProvider,
@@ -276,17 +277,9 @@ export class InstructionService {
 
         // When soul is unconfigured, tell the agent about its settings page
         if (!agentInstructions.trim()) {
-          const settingsUrl = options?.settingsUrl;
-          const settingsHint = settingsUrl
-            ? ` Your settings page is: ${settingsUrl}`
-            : "";
-          agentInstructions = `## Agent Configuration Notice
-
-Your identity, instructions, and user context (IDENTITY.md, SOUL.md, USER.md) are not configured yet. You are running without personality or behavioral instructions.
-
-To configure your soul, ask your admin to open the settings page and fill in the Instructions section.${settingsHint}
-
-Until configured, behave as a helpful, concise AI assistant.`;
+          agentInstructions = buildUnconfiguredAgentNotice(
+            options?.settingsUrl
+          );
         }
 
         logger.info(

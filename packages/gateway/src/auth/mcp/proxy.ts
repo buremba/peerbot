@@ -1,5 +1,5 @@
-import { createLogger, verifyWorkerToken } from "@lobu/core";
 import dns from "node:dns/promises";
+import { createLogger, verifyWorkerToken } from "@lobu/core";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import type { IMessageQueue } from "../../infrastructure/queue";

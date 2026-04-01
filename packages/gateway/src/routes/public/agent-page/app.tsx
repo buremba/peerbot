@@ -24,9 +24,9 @@ import type {
   ProviderInfo,
   ProviderState,
   Schedule,
+  SettingsSectionKey,
   SettingsSnapshot,
   SettingsState,
-  SettingsSectionKey,
   Skill,
 } from "./types";
 

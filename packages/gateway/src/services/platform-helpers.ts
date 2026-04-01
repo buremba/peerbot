@@ -12,8 +12,8 @@ import type { AgentSettingsStore } from "../auth/settings";
 import { resolveEffectiveModelRef } from "../auth/settings/model-selection";
 import type { ChannelBindingService } from "../channels";
 import { buildMemoryPlugins } from "../config";
-import { getModelProviderModules } from "../modules/module-system";
 import type { MessagePayload } from "../infrastructure/queue/queue-producer";
+import { getModelProviderModules } from "../modules/module-system";
 import { platformAgentId } from "../spaces";
 
 const logger = createLogger("platform-helpers");

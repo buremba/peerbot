@@ -2,6 +2,7 @@
 
 // Shared exports for @lobu/core consumers (gateway, worker, external tools)
 
+export * from "./agent-policy";
 // Agent store interface (unified storage abstraction)
 export type {
   AgentAccessStore,
@@ -15,7 +16,6 @@ export type {
   Grant,
   StoredConnection,
 } from "./agent-store";
-
 export type { CommandContext, CommandDefinition } from "./command-registry";
 // Command registry
 export { CommandRegistry } from "./command-registry";

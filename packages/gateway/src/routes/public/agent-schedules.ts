@@ -4,8 +4,8 @@
  * Schedule management endpoints mounted under /api/v1/agents/{agentId}/schedules
  */
 
-import { createLogger } from "@lobu/core";
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
+import { createLogger } from "@lobu/core";
 import type { ExternalAuthClient } from "../../auth/external/client";
 import type { ScheduledWakeupService } from "../../orchestration/scheduled-wakeup";
 import { verifySettingsSession } from "./settings-auth";

@@ -8,7 +8,7 @@ set -e
 # Environment variables:
 #   TEST_PLATFORM   - "slack", "whatsapp", or "telegram" (default: auto-detect)
 #   TEST_CHANNEL    - Channel ID (Slack), phone number (WhatsApp), or peer/chat ID (Telegram)
-#   TEST_TIMEOUT    - Timeout in seconds (default: 30)
+#   TEST_TIMEOUT    - Timeout in seconds (default: 60)
 #
 # Platform-specific:
 #   Slack: QA_SLACK_CHANNEL, optional SLACK_BOT_TOKEN for reply polling
@@ -72,6 +72,43 @@ resolve_tguser_python() {
 }
 
 TGUSER_PYTHON="$(resolve_tguser_python)"
+TG_SESSION_COPY_DIRS=()
+
+cleanup_tg_session_copies() {
+    local dir
+    for dir in "${TG_SESSION_COPY_DIRS[@]}"; do
+        [ -n "$dir" ] && [ -d "$dir" ] && rm -rf "$dir"
+    done
+}
+
+trap cleanup_tg_session_copies EXIT
+
+prepare_tg_session() {
+    local source_input source_file temp_dir temp_base temp_file
+
+    source_input="${1:-${TG_SESSION:-$HOME/.config/tguser/session}}"
+    source_input="${source_input/#\~/$HOME}"
+    source_input="${source_input%.session}"
+
+    source_file="${source_input}.session"
+    temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/tguser-session.XXXXXX")" || return 1
+    TG_SESSION_COPY_DIRS+=("$temp_dir")
+    temp_base="$temp_dir/$(basename "$source_input")"
+    temp_file="${temp_base}.session"
+
+    if [ ! -f "$source_file" ]; then
+        printf '%s\n' "$source_input"
+        return 0
+    fi
+
+    if command -v sqlite3 > /dev/null 2>&1 && sqlite3 "$source_file" ".backup '$temp_file'" > /dev/null 2>&1; then
+        printf '%s\n' "$temp_base"
+        return 0
+    fi
+
+    cp "$source_file" "$temp_file"
+    printf '%s\n' "$temp_base"
+}
 
 # Load .env if it exists (line-by-line to handle unquoted special chars)
 if [ -f .env ]; then
@@ -96,11 +133,14 @@ telegram_wait_for_reply() {
     local peer="$1"
     local after_ts="$2"
     local timeout="$3"
+    local session_path
+
+    session_path="$(prepare_tg_session "${TG_SESSION:-$HOME/.config/tguser/session}")"
 
     TG_WAIT_PEER="$peer" \
     TG_WAIT_AFTER_TS="$after_ts" \
     TG_WAIT_TIMEOUT="$timeout" \
-    TG_SESSION="${TG_SESSION:-$HOME/.config/tguser/session}" \
+    TG_SESSION="$session_path" \
     "$TGUSER_PYTHON" - <<'PY'
 import asyncio
 import os
@@ -114,7 +154,7 @@ async def main() -> int:
     api_hash = os.environ.get("TG_API_HASH", "").strip()
     peer = os.environ.get("TG_WAIT_PEER", "").strip()
     after_ts = float(os.environ.get("TG_WAIT_AFTER_TS", "0"))
-    timeout = float(os.environ.get("TG_WAIT_TIMEOUT", "30"))
+    timeout = float(os.environ.get("TG_WAIT_TIMEOUT", "60"))
     session = os.environ.get("TG_SESSION", "").strip() or os.path.expanduser(
         "~/.config/tguser/session"
     )
@@ -163,34 +203,21 @@ telegram_send_and_wait() {
     local peer="$1"
     local message="$2"
     local timeout="$3"
+    local session_path
+
+    session_path="$(prepare_tg_session "${TG_SESSION:-$HOME/.config/tguser/session}")"
 
     TG_SEND_PEER="$peer" \
     TG_SEND_TEXT="$message" \
     TG_SEND_TIMEOUT="$timeout" \
-    TG_SESSION="${TG_SESSION:-$HOME/.config/tguser/session}" \
+    TG_SESSION="$session_path" \
     "$TGUSER_PYTHON" - <<'PY'
 import asyncio
 import json
 import os
-import sqlite3
 import sys
 import time
 from telethon import TelegramClient
-
-
-async def connect_with_retry(client: TelegramClient) -> None:
-    last_error = None
-    for _ in range(5):
-        try:
-            await client.connect()
-            return
-        except sqlite3.OperationalError as error:
-            if "locked" not in str(error).lower():
-                raise
-            last_error = error
-            await asyncio.sleep(1)
-    if last_error is not None:
-        raise last_error
 
 
 async def resolve_peer(client: TelegramClient, peer: str):
@@ -210,7 +237,7 @@ async def main() -> int:
     api_hash = os.environ.get("TG_API_HASH", "").strip()
     peer = os.environ.get("TG_SEND_PEER", "").strip()
     message = os.environ.get("TG_SEND_TEXT", "")
-    timeout = float(os.environ.get("TG_SEND_TIMEOUT", "30"))
+    timeout = float(os.environ.get("TG_SEND_TIMEOUT", "60"))
     session = os.environ.get("TG_SESSION", "").strip() or os.path.expanduser(
         "~/.config/tguser/session"
     )
@@ -220,7 +247,7 @@ async def main() -> int:
         return 2
 
     client = TelegramClient(session, int(api_id_s), api_hash)
-    await connect_with_retry(client)
+    await client.connect()
     try:
         if not await client.is_user_authorized():
             print("Not authenticated. Run `tguser login`.", file=sys.stderr)
@@ -307,7 +334,7 @@ if [ -z "$TEST_PLATFORM" ]; then
     fi
 fi
 
-TIMEOUT="${TEST_TIMEOUT:-30}"
+TIMEOUT="${TEST_TIMEOUT:-60}"
 
 # Platform-specific setup
 case "$TEST_PLATFORM" in
@@ -335,6 +362,7 @@ case "$TEST_PLATFORM" in
     telegram)
         AUTH_TOKEN="${TEST_AUTH_TOKEN:-$ADMIN_PASSWORD}"
         CHANNEL="${TEST_CHANNEL:-$TELEGRAM_TEST_CHAT_ID}"
+        ACTIVE_TELEGRAM_BOT_PEER="$(fetch_telegram_bot_peer)"
         TELEGRAM_BOT_PEER="${TELEGRAM_TEST_BOT_USERNAME:-}"
         if [[ -n "$TELEGRAM_BOT_PEER" && "$TELEGRAM_BOT_PEER" != @* ]]; then
             TELEGRAM_BOT_PEER="@${TELEGRAM_BOT_PEER}"
@@ -342,7 +370,15 @@ case "$TEST_PLATFORM" in
         if [[ "$CHANNEL" == @* ]]; then
             TELEGRAM_BOT_PEER="$CHANNEL"
         elif [ -z "$TELEGRAM_BOT_PEER" ]; then
-            TELEGRAM_BOT_PEER="$(fetch_telegram_bot_peer)"
+            TELEGRAM_BOT_PEER="$ACTIVE_TELEGRAM_BOT_PEER"
+        fi
+        if [[ "$TELEGRAM_BOT_PEER" == @* ]] && [[ -n "$ACTIVE_TELEGRAM_BOT_PEER" ]] && [[ "$TELEGRAM_BOT_PEER" != "$ACTIVE_TELEGRAM_BOT_PEER" ]]; then
+            echo "⚠️  Requested Telegram bot peer $TELEGRAM_BOT_PEER does not match active gateway connection $ACTIVE_TELEGRAM_BOT_PEER"
+            echo "   Using active gateway bot peer instead."
+            TELEGRAM_BOT_PEER="$ACTIVE_TELEGRAM_BOT_PEER"
+            if [[ "$CHANNEL" == @* ]]; then
+                CHANNEL="$ACTIVE_TELEGRAM_BOT_PEER"
+            fi
         fi
         if [ -z "$CHANNEL" ] && [ -z "$TELEGRAM_BOT_PEER" ]; then
             echo "❌ Telegram testing requires TEST_CHANNEL/TELEGRAM_TEST_CHAT_ID or TELEGRAM_TEST_BOT_USERNAME"

@@ -7,6 +7,7 @@
  *   - Host-provided store (embedded mode, e.g. PostgresAgentStore in Owletto)
  */
 
+import type { PluginsConfig } from "./plugin-types";
 import type {
   AuthProfile,
   InstalledProvider,
@@ -17,7 +18,6 @@ import type {
   SkillsConfig,
   ToolsConfig,
 } from "./types";
-import type { PluginsConfig } from "./plugin-types";
 
 // ── Agent Settings ──────────────────────────────────────────────────────────
 

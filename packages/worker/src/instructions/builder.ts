@@ -3,7 +3,6 @@ import {
   type InstructionContext,
   type InstructionProvider,
 } from "@lobu/core";
-import { ProjectsInstructionProvider } from "./providers";
 
 const logger = createLogger("instruction-generator");
 
@@ -60,17 +59,10 @@ async function buildInstructions(
  * Platform and MCP instructions are provided by the gateway
  */
 export async function generateCustomInstructions(
-  coreProvider: InstructionProvider,
+  providers: InstructionProvider[],
   context: InstructionContext
 ): Promise<string> {
   try {
-    // Collect worker-local instruction providers
-    const providers = [
-      coreProvider, // Agent-specific core provider
-      new ProjectsInstructionProvider(),
-    ];
-
-    // Build instructions with context
     const instructions = await buildInstructions(providers, context);
 
     logger.info(

@@ -329,6 +329,7 @@ export interface InstructionContext {
   sessionKey: string;
   workingDirectory: string;
   availableProjects?: string[];
+  userPrompt?: string;
 }
 
 /**

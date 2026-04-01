@@ -98,9 +98,16 @@ export class WorkerConnectionManager {
   /**
    * Remove a worker connection
    */
-  removeConnection(deploymentName: string): void {
+  removeConnection(deploymentName: string, expectedWriter?: SSEWriter): void {
     const connection = this.connections.get(deploymentName);
     if (connection) {
+      if (expectedWriter && connection.writer !== expectedWriter) {
+        logger.debug(
+          `Skipping disconnect for ${deploymentName} because a newer SSE writer is active`
+        );
+        return;
+      }
+
       // Clean up reverse index
       const deployments = this.agentDeployments.get(connection.agentId);
       if (deployments) {

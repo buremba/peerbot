@@ -1,5 +1,5 @@
-import type { ComponentChildren } from "preact";
 import { useSignal } from "@preact/signals";
+import type { ComponentChildren } from "preact";
 import { type RegistryEntry, useSettings } from "../app";
 import { Section } from "./Section";
 

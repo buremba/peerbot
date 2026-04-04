@@ -551,8 +551,9 @@ export function createGatewayApp(
     }
 
     if (!process.env.ADMIN_PASSWORD) {
-      logger.info(`Admin password (auto-generated): ${adminPassword}`);
-      logger.info("Set ADMIN_PASSWORD env var to use a fixed password.");
+      logger.info(
+        "An admin password has been auto-generated. For security reasons, it is not logged. Set the ADMIN_PASSWORD env var to use a fixed password."
+      );
     }
 
     // Landing page (docs + integrations)

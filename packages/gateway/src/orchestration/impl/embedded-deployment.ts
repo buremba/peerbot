@@ -20,7 +20,9 @@ const logger = createLogger("orchestrator");
 /** Timeout (ms) to wait for graceful shutdown before SIGKILL. */
 const KILL_TIMEOUT_MS = 5_000;
 const WORKER_BIN_DIR_CANDIDATES = [
+  path.resolve("node_modules/.bin"),
   path.resolve("packages/worker/node_modules/.bin"),
+  "/app/node_modules/.bin",
   "/app/packages/worker/node_modules/.bin",
 ] as const;
 

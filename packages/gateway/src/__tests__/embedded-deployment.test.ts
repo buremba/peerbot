@@ -294,9 +294,7 @@ describe("EmbeddedDeploymentManager", () => {
         | { env?: Record<string, string> }
         | undefined;
       const pathEntries = (spawnOptions?.env?.PATH || "").split(":");
-      expect(pathEntries).toContain(
-        path.resolve("packages/worker/node_modules/.bin")
-      );
+      expect(pathEntries).toContain(path.resolve("node_modules/.bin"));
     });
 
     test("child process exit removes worker from map", async () => {

@@ -44,7 +44,7 @@ export async function statusCommand(cwd: string): Promise<void> {
     status = (await res.json()) as StatusResponse;
   } catch {
     console.log(chalk.yellow("\n  Gateway not reachable."));
-    console.log(chalk.dim("  Start with `lobu dev` to run your agents.\n"));
+    console.log(chalk.dim("  Start with `lobu run` to run your agents.\n"));
     return;
   }
 

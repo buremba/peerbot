@@ -338,7 +338,7 @@ export async function createPVC(
 /**
  * List pods belonging to a given deployment by matching owner references.
  */
-export async function listDeploymentPods(
+async function listDeploymentPods(
   coreV1Api: k8s.CoreV1Api,
   namespace: string,
   deploymentName: string
@@ -368,7 +368,7 @@ export async function listDeploymentPods(
 /**
  * Get a failure message for a pod by inspecting its events.
  */
-export async function getPodFailureMessage(
+async function getPodFailureMessage(
   coreV1Api: k8s.CoreV1Api,
   namespace: string,
   podName: string

@@ -1,13 +1,13 @@
 /**
  * Extract settings link buttons from markdown content.
  *
- * Scans for markdown links pointing to `/agent?claim=...` URLs and
+ * Scans for markdown links pointing to `/connect/claim?claim=...` URLs and
  * returns them as structured button data, stripping the link syntax
  * from the content so platforms can render native buttons instead.
  */
 
 const SETTINGS_LINK_RE =
-  /\[([^\]]+)\]\((https?:\/\/[^)]*\/agent\?claim=[^)]+)\)/g;
+  /\[([^\]]+)\]\((https?:\/\/[^)]*\/(?:connect\/claim|agent)\?claim=[^)]+)\)/g;
 
 /**
  * Returns true when the URL points to a loopback address that

@@ -7,7 +7,6 @@ import { createLogger } from "@lobu/core";
 
 const logger = createLogger("metrics");
 
-// Metric storage
 interface MetricValue {
   value: number;
   labels: Record<string, string>;
@@ -22,9 +21,7 @@ interface Metric {
 
 const metrics: Map<string, Metric> = new Map();
 
-// Initialize default metrics
 function initializeMetrics() {
-  // Worker deployment metrics
   registerMetric(
     "lobu_worker_deployments_total",
     "Total number of worker deployments created",
@@ -40,8 +37,6 @@ function initializeMetrics() {
     "Current number of active worker deployments",
     "gauge"
   );
-
-  // Message queue metrics
   registerMetric(
     "lobu_messages_received_total",
     "Total number of messages received",
@@ -53,8 +48,6 @@ function initializeMetrics() {
     "counter"
   );
   registerMetric("lobu_queue_length", "Current message queue length", "gauge");
-
-  // PVC metrics
   registerMetric(
     "lobu_pvc_created_total",
     "Total number of PVCs created",
@@ -70,15 +63,11 @@ function initializeMetrics() {
     "Total number of failed PVC cleanup operations",
     "counter"
   );
-
-  // Redis metrics
   registerMetric(
     "lobu_redis_connection_errors_total",
     "Total number of Redis connection errors",
     "counter"
   );
-
-  // HTTP proxy metrics
   registerMetric(
     "lobu_proxy_requests_total",
     "Total number of HTTP proxy requests",
@@ -89,18 +78,14 @@ function initializeMetrics() {
     "Total number of blocked proxy requests",
     "counter"
   );
-
-  // Process metrics
   registerMetric(
     "lobu_process_start_time_seconds",
     "Start time of the process since unix epoch in seconds",
     "gauge"
   );
 
-  // Set process start time
   setGauge("lobu_process_start_time_seconds", Math.floor(Date.now() / 1000));
-
-  logger.info("✅ Prometheus metrics initialized");
+  logger.info("Prometheus metrics initialized");
 }
 
 function registerMetric(
@@ -111,9 +96,6 @@ function registerMetric(
   metrics.set(name, { name, help, type, values: [] });
 }
 
-/**
- * Set a gauge metric value (internal use only)
- */
 function setGauge(
   name: string,
   value: number,
@@ -127,7 +109,7 @@ function setGauge(
 
   const labelKey = JSON.stringify(labels);
   const existing = metric.values.find(
-    (v) => JSON.stringify(v.labels) === labelKey
+    (entry) => JSON.stringify(entry.labels) === labelKey
   );
   if (existing) {
     existing.value = value;
@@ -136,9 +118,6 @@ function setGauge(
   }
 }
 
-/**
- * Get metrics in Prometheus text format
- */
 export function getMetricsText(): string {
   const lines: string[] = [];
 
@@ -147,37 +126,34 @@ export function getMetricsText(): string {
     lines.push(`# TYPE ${metric.name} ${metric.type}`);
 
     if (metric.values.length === 0) {
-      // Output default value for metrics with no data
       lines.push(`${metric.name} 0`);
-    } else {
-      for (const { value, labels } of metric.values) {
-        const labelStr = Object.entries(labels)
-          .map(([k, v]) => `${k}="${v}"`)
-          .join(",");
-        if (labelStr) {
-          lines.push(`${metric.name}{${labelStr}} ${value}`);
-        } else {
-          lines.push(`${metric.name} ${value}`);
-        }
+      continue;
+    }
+
+    for (const { value, labels } of metric.values) {
+      const labelStr = Object.entries(labels)
+        .map(([key, labelValue]) => `${key}="${labelValue}"`)
+        .join(",");
+      if (labelStr) {
+        lines.push(`${metric.name}{${labelStr}} ${value}`);
+      } else {
+        lines.push(`${metric.name} ${value}`);
       }
     }
   }
 
-  // Add Node.js process metrics
   const memUsage = process.memoryUsage();
-  lines.push(`# HELP nodejs_heap_size_bytes Node.js heap size in bytes`);
-  lines.push(`# TYPE nodejs_heap_size_bytes gauge`);
+  lines.push("# HELP nodejs_heap_size_bytes Node.js heap size in bytes");
+  lines.push("# TYPE nodejs_heap_size_bytes gauge");
   lines.push(`nodejs_heap_size_bytes{type="used"} ${memUsage.heapUsed}`);
   lines.push(`nodejs_heap_size_bytes{type="total"} ${memUsage.heapTotal}`);
-
   lines.push(
-    `# HELP nodejs_external_memory_bytes Node.js external memory in bytes`
+    "# HELP nodejs_external_memory_bytes Node.js external memory in bytes"
   );
-  lines.push(`# TYPE nodejs_external_memory_bytes gauge`);
+  lines.push("# TYPE nodejs_external_memory_bytes gauge");
   lines.push(`nodejs_external_memory_bytes ${memUsage.external}`);
 
   return `${lines.join("\n")}\n`;
 }
 
-// Initialize on module load
 initializeMetrics();

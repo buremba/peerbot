@@ -4,7 +4,6 @@ export {
   createAuthProfileLabel,
   type UpsertAuthProfileInput,
 } from "./auth-profiles-manager";
-export { buildClaimSettingsUrl, ClaimService } from "./claim-service";
 export type {
   PrefillMcpServer,
   PrefillSkill,

@@ -29,22 +29,6 @@ export const CUSTOM_TOOL_METADATA: Record<string, CustomToolMetadata> = {
     description:
       "List all pending reminders you have scheduled. Shows upcoming reminders with their schedule IDs and remaining time.",
   },
-  SearchSkills: {
-    description:
-      "Search for installable skills and MCP servers, or list installed capabilities. Pass a query to search available capabilities. Pass an empty query to list all installed skills and MCP servers.",
-  },
-  InstallSkill: {
-    description:
-      "Install or upgrade a skill or MCP server. Pass the id from SearchSkills results.",
-  },
-  InstallPackage: {
-    description:
-      "Request installation of system packages (nix). Sends approval buttons to the user. Stop and wait for approval after calling.",
-  },
-  RequestNetworkAccess: {
-    description:
-      "Request access to blocked domains. Sends inline approval buttons to the user. Stop and wait for approval after calling. Do NOT retry blocked requests — the domain is blocked at the network level.",
-  },
   GenerateImage: {
     description:
       "Generate an image from a text prompt and send it to the user. Use when the user asks for image generation, visual concepts, posters, illustrations, or edits that can be done from prompt instructions.",
@@ -137,39 +121,6 @@ export const TOOL_INTENT_RULES: ToolIntentRule[] = [
     ],
   },
   {
-    id: "package-installation",
-    title: "System Package Installation",
-    tools: ["InstallPackage"],
-    instructionLines: [
-      "If the user asks to install or update a system package, your first action must be InstallPackage.",
-      "Do not run apt, brew, nix, or similar package installation commands directly.",
-      "After calling InstallPackage, stop and wait for approval.",
-    ],
-    priority: 50,
-    patterns: [
-      /\binstall\b.*\b(package|dependency|dependencies|ffmpeg|imagemagick|curl|git)\b/i,
-      /\b(upgrade|update|add)\b.*\b(package|dependency|dependencies)\b/i,
-      /\b(ffmpeg|imagemagick)\b/i,
-      /\b(apt|brew|nix(?:-shell)?|apk|yum)\b/i,
-    ],
-  },
-  {
-    id: "network-access",
-    title: "Blocked Network Access",
-    tools: ["RequestNetworkAccess"],
-    instructionLines: [
-      "If access to a domain is blocked or the user explicitly asks for network/domain access, use RequestNetworkAccess.",
-      "Do not keep retrying blocked requests after a proxy denial.",
-      "After calling RequestNetworkAccess, stop and wait for approval.",
-    ],
-    priority: 60,
-    patterns: [
-      /\b(request|need|grant|allow|whitelist|allowlist|unblock)\b.*\b(domain|network|access)\b/i,
-      /\bblocked domain\b/i,
-      /\bnetwork access\b/i,
-    ],
-  },
-  {
     id: "image-generation",
     title: "Image Generation",
     tools: ["GenerateImage"],
@@ -181,19 +132,6 @@ export const TOOL_INTENT_RULES: ToolIntentRule[] = [
     patterns: [
       /\b(generate|create|make|draw|edit|design)\b.*\b(image|illustration|poster|logo|picture|photo|icon)\b/i,
       /\b(image|illustration|poster|logo|picture|photo|icon)\b.*\b(generate|create|make|draw|edit|design)\b/i,
-    ],
-  },
-  {
-    id: "skills-discovery",
-    title: "Skill and MCP Discovery",
-    tools: ["SearchSkills", "InstallSkill"],
-    instructionLines: [
-      "If the user asks about adding capabilities, finding skills, or installing an MCP server, search with SearchSkills first.",
-      "Use InstallSkill only after you have an id from SearchSkills.",
-    ],
-    priority: 80,
-    patterns: [
-      /\b(search|find|install|add)\b.*\b(skill|skills|mcp|mcp server|capability|capabilities)\b/i,
     ],
   },
 ];
@@ -257,13 +195,13 @@ export function renderDetectedToolIntentRules(prompt: string): string {
 
 export function buildUnconfiguredAgentNotice(settingsUrl?: string): string {
   const settingsHint = settingsUrl
-    ? ` Your settings page is: ${settingsUrl}`
+    ? ` Admin configuration URL: ${settingsUrl}`
     : "";
   return `## Agent Configuration Notice
 
 Your identity, instructions, and user context (IDENTITY.md, SOUL.md, USER.md) are not configured yet.
 
-To configure your soul, ask your admin to open the settings page and fill in the Instructions section.${settingsHint}
+To configure your soul, ask your admin to update the agent instructions in the admin control plane.${settingsHint}
 
 Until configured, behave as a helpful, concise AI assistant.`;
 }

@@ -39,19 +39,3 @@ export async function collectProviderModelOptions(
 
   return results;
 }
-
-export async function collectModelValues(
-  agentId: string,
-  userId: string
-): Promise<Set<string>> {
-  const providerOptions = await collectProviderModelOptions(agentId, userId);
-  const values = new Set<string>();
-
-  for (const opts of Object.values(providerOptions)) {
-    for (const option of opts) {
-      values.add(option.value);
-    }
-  }
-
-  return values;
-}

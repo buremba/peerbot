@@ -1,7 +1,5 @@
-import { resolvePublicUrl } from "../../utils/public-url";
-
 /**
- * Pre-filled skill configuration for settings page
+ * Pre-filled skill configuration for an agent config session
  */
 export interface PrefillSkill {
   /** Skill repository (e.g., "anthropics/skills/pdf") */
@@ -13,7 +11,7 @@ export interface PrefillSkill {
 }
 
 /**
- * Pre-filled MCP server configuration for settings page
+ * Pre-filled MCP server configuration for an agent config session
  */
 export interface PrefillMcpServer {
   /** MCP server ID (key in mcpServers record) */
@@ -44,11 +42,10 @@ export interface SettingsSourceContext {
 }
 
 /**
- * Unified session payload for settings pages.
+ * Unified session payload for config/auth sessions.
  *
- * Used for both OAuth-based sessions and Telegram initData sessions.
- * OAuth sessions populate email/name/oauthUserId; Telegram sessions populate
- * platform/channelId/userId directly.
+ * OAuth sessions populate email/name/oauthUserId. Claimed chat sessions
+ * populate platform/channelId/userId directly.
  */
 export interface SettingsTokenPayload {
   /** Agent to configure. Optional when using channel-based entry (user picks agent on page). */
@@ -66,15 +63,15 @@ export interface SettingsTokenPayload {
   name?: string;
   /** OAuth provider user ID (set for OAuth sessions). */
   oauthUserId?: string;
-  /** Optional message to display on the settings page (e.g., instructions to get an API key) */
+  /** Optional message to display during config/auth flows */
   message?: string;
-  /** Optional provider IDs to pre-fill in the settings page (scrolls to provider auth flow) */
+  /** Optional provider IDs to associate with the flow */
   prefillProviders?: string[];
   /** Optional skills to pre-fill (user confirms to enable) */
   prefillSkills?: PrefillSkill[];
   /** Optional MCP servers to pre-fill (user confirms to enable) */
   prefillMcpServers?: PrefillMcpServer[];
-  /** Optional Nix packages to pre-fill in the system packages section */
+  /** Optional Nix packages to pre-fill */
   prefillNixPackages?: string[];
   /** Optional domain patterns to pre-fill as grants */
   prefillGrants?: string[];
@@ -84,21 +81,8 @@ export interface SettingsTokenPayload {
   settingsMode?: "admin" | "user";
   /** Scopes the user is allowed to configure (only relevant when settingsMode is "user") */
   allowedScopes?: string[];
-  /** Connection ID that triggered this settings session */
+  /** Connection ID that triggered this session */
   connectionId?: string;
   /** Whether this session has admin access */
   isAdmin?: boolean;
-}
-
-/**
- * Build a stable (tokenless) settings URL for Telegram WebApp buttons.
- *
- * Authentication happens via Telegram's `initData` (HMAC-signed by bot token),
- * so the URL never expires and can be reused across button taps.
- */
-export function buildTelegramSettingsUrl(chatId: string): string {
-  const url = new URL(resolvePublicUrl("/agent"));
-  url.searchParams.set("platform", "telegram");
-  url.searchParams.set("chat", chatId);
-  return url.toString();
 }

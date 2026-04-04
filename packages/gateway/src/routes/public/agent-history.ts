@@ -6,12 +6,14 @@
 
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import type { AgentConfigStore } from "@lobu/core";
 import { createLogger } from "@lobu/core";
 import type { Context } from "hono";
 import { Hono } from "hono";
-import type { AgentMetadataStore } from "../../auth/agent-metadata-store";
+import type { UserAgentsStore } from "../../auth/user-agents-store";
 import type { ChatInstanceManager } from "../../connections/chat-instance-manager";
 import type { WorkerConnectionManager } from "../../gateway/connection-manager";
+import { createTokenVerifier } from "../shared/token-verifier";
 import { verifySettingsSession } from "./settings-auth";
 
 const logger = createLogger("agent-history-routes");
@@ -21,14 +23,6 @@ const SAFE_AGENT_ID = /^[a-zA-Z0-9_-]+$/;
 
 function isSafeAgentId(id: string): boolean {
   return SAFE_AGENT_ID.test(id);
-}
-
-function getAgentId(c: Context): string | null {
-  const session = verifySettingsSession(c);
-  if (!session) return null;
-  const agentId = c.req.param("agentId") || session.agentId || null;
-  if (agentId && !isSafeAgentId(agentId)) return null;
-  return agentId;
 }
 
 // ─── Direct session file reader (fallback) ─────────────────────────────────
@@ -268,10 +262,24 @@ async function readSessionStats(agentId: string) {
 export function createAgentHistoryRoutes(deps: {
   connectionManager: WorkerConnectionManager;
   chatInstanceManager?: ChatInstanceManager;
-  agentMetadataStore?: AgentMetadataStore;
+  agentConfigStore?: Pick<AgentConfigStore, "listSandboxes" | "getMetadata">;
+  userAgentsStore?: UserAgentsStore;
 }) {
   const app = new Hono();
-  const { connectionManager, chatInstanceManager, agentMetadataStore } = deps;
+  const { connectionManager, chatInstanceManager, agentConfigStore } = deps;
+  const verifyToken = createTokenVerifier({
+    userAgentsStore: deps.userAgentsStore,
+    agentMetadataStore: deps.agentConfigStore,
+  });
+
+  async function getAuthorizedAgentId(c: Context): Promise<string | null> {
+    const session = verifySettingsSession(c);
+    if (!session) return null;
+    const agentId = c.req.param("agentId") || session.agentId || null;
+    if (!agentId || !isSafeAgentId(agentId)) return null;
+    const verified = await verifyToken(session, agentId);
+    return verified ? agentId : null;
+  }
 
   /**
    * Resolve the first active sandbox agentId that has a running deployment.
@@ -285,13 +293,13 @@ export function createAgentHistoryRoutes(deps: {
       return { connected: true, resolvedAgentId: agentId };
     }
 
-    if (chatInstanceManager && agentMetadataStore) {
+    if (chatInstanceManager && agentConfigStore) {
       try {
         const connections = await chatInstanceManager.listConnections({
           templateAgentId: agentId,
         });
         for (const conn of connections) {
-          const sandboxes = await agentMetadataStore.listSandboxes(conn.id);
+          const sandboxes = await agentConfigStore.listSandboxes(conn.id);
           for (const sb of sandboxes) {
             if (
               connectionManager.getDeploymentsForAgent(sb.agentId).length > 0
@@ -346,7 +354,7 @@ export function createAgentHistoryRoutes(deps: {
 
   // Agent status
   app.get("/status", async (c) => {
-    const agentId = getAgentId(c);
+    const agentId = await getAuthorizedAgentId(c);
     if (!agentId) return c.json({ error: "Unauthorized" }, 401);
 
     const { connected, resolvedAgentId } = await resolveActiveAgent(agentId);
@@ -364,7 +372,7 @@ export function createAgentHistoryRoutes(deps: {
 
   // Session messages
   app.get("/session/messages", async (c) => {
-    const agentId = getAgentId(c);
+    const agentId = await getAuthorizedAgentId(c);
     if (!agentId) return c.json({ error: "Unauthorized" }, 401);
 
     const cursor = c.req.query("cursor") || "";
@@ -394,7 +402,7 @@ export function createAgentHistoryRoutes(deps: {
 
   // Session stats
   app.get("/session/stats", async (c) => {
-    const agentId = getAgentId(c);
+    const agentId = await getAuthorizedAgentId(c);
     if (!agentId) return c.json({ error: "Unauthorized" }, 401);
 
     const result = await proxyOrFallback(

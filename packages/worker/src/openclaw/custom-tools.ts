@@ -11,12 +11,8 @@ import {
   generateAudio,
   generateImage,
   getChannelHistory,
-  installPackage,
-  installSkill,
   listReminders,
-  requestNetworkAccess,
   scheduleReminder,
-  searchSkills,
   uploadUserFile,
 } from "../shared/tool-implementations";
 
@@ -127,70 +123,6 @@ export function createOpenClawCustomTools(params: {
       description: getCustomToolDescription("ListReminders"),
       parameters: Type.Object({}),
       run: () => listReminders(gw),
-    }),
-
-    defineTool({
-      name: "SearchSkills",
-      description: getCustomToolDescription("SearchSkills"),
-      parameters: Type.Object({
-        query: Type.String({
-          description:
-            "What to search for (e.g., 'pdf', 'gmail', 'code review'). Empty string lists installed capabilities.",
-        }),
-        limit: Type.Optional(
-          Type.Number({
-            description: "Maximum results to return (default 5, max 10)",
-          })
-        ),
-      }),
-      run: (args) => searchSkills(gw, args),
-    }),
-
-    defineTool({
-      name: "InstallSkill",
-      description: getCustomToolDescription("InstallSkill"),
-      parameters: Type.Object({
-        id: Type.String({
-          description: "Skill or MCP server ID from SearchSkills results",
-        }),
-        upgrade: Type.Optional(
-          Type.Boolean({
-            description:
-              "Set to true to upgrade an already-installed skill to the latest version",
-          })
-        ),
-      }),
-      run: (args) => installSkill(gw, args),
-    }),
-
-    defineTool({
-      name: "InstallPackage",
-      description: getCustomToolDescription("InstallPackage"),
-      parameters: Type.Object({
-        packages: Type.Array(Type.String(), {
-          description:
-            "Nix package names to install (e.g., 'ffmpeg', 'imagemagick')",
-        }),
-        reason: Type.String({
-          description: "Brief explanation of why these packages are needed",
-        }),
-      }),
-      run: (args) => installPackage(gw, args),
-    }),
-
-    defineTool({
-      name: "RequestNetworkAccess",
-      description: getCustomToolDescription("RequestNetworkAccess"),
-      parameters: Type.Object({
-        domains: Type.Array(Type.String(), {
-          description:
-            "Domain patterns to request access for (e.g., 'api.example.com')",
-        }),
-        reason: Type.String({
-          description: "Brief explanation of why access is needed",
-        }),
-      }),
-      run: (args) => requestNetworkAccess(gw, args),
     }),
 
     defineTool({

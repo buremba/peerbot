@@ -1,9 +1,8 @@
 /**
  * AgentStore — unified interface for agent configuration storage.
  *
- * Replaces 6 separate Redis-backed stores with a single abstraction.
  * Implementations:
- *   - RedisAgentStore (CLI mode, seeded from lobu.toml)
+ *   - InMemoryAgentStore (default, populated from files or API)
  *   - Host-provided store (embedded mode, e.g. PostgresAgentStore in Owletto)
  */
 
@@ -14,7 +13,6 @@ import type {
   McpServerConfig,
   NetworkConfig,
   NixConfig,
-  RegistryEntry,
   SkillsConfig,
   ToolsConfig,
 } from "./types";
@@ -37,7 +35,6 @@ export interface AgentSettings {
   pluginsConfig?: PluginsConfig;
   authProfiles?: AuthProfile[];
   installedProviders?: InstalledProvider[];
-  skillRegistries?: RegistryEntry[];
   verboseLogging?: boolean;
   templateAgentId?: string;
   updatedAt: number;
@@ -126,6 +123,26 @@ export interface AgentConfigStore {
 }
 
 /**
+ * Find the first non-sandbox agent with installed providers configured.
+ * Used to pick a default template agent when creating ephemeral/API agents.
+ */
+export async function findTemplateAgentId(
+  store: Pick<AgentConfigStore, "listAgents" | "getSettings">
+): Promise<string | null> {
+  const agents = await store.listAgents();
+
+  for (const agent of agents) {
+    if (agent.parentConnectionId) continue;
+    const settings = await store.getSettings(agent.agentId);
+    if (settings?.installedProviders?.length) {
+      return agent.agentId;
+    }
+  }
+
+  return null;
+}
+
+/**
  * Platform wiring storage.
  * Connections (Telegram, Slack, etc.) + channel bindings.
  */
@@ -195,7 +212,7 @@ export interface AgentAccessStore {
 
 /**
  * Full storage interface — intersection of all sub-stores.
- * Implementations (RedisAgentStore, PostgresAgentStore) satisfy all 3.
+ * Implementations (InMemoryAgentStore, etc.) satisfy all 3.
  * Hosts can provide individual sub-stores via GatewayOptions instead.
  */
 export type AgentStore = AgentConfigStore &

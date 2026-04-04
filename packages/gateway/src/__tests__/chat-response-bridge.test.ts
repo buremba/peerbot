@@ -57,7 +57,7 @@ describe("ChatResponseBridge.handleEphemeral", () => {
         chatId: "123",
       },
       content:
-        "Setup required: add OpenAI in settings before this bot can respond.\n\n[Open Agent Settings](https://example.com/agent?claim=abc123)",
+        "Setup required: add OpenAI in settings before this bot can respond.\n\n[Open Agent Settings](https://example.com/connect/claim?claim=abc123)",
     });
 
     expect(posts).toHaveLength(1);
@@ -65,7 +65,7 @@ describe("ChatResponseBridge.handleEphemeral", () => {
     expect(posts[0]).toHaveProperty("card");
     expect(posts[0]).toHaveProperty("fallbackText");
     expect((posts[0] as { fallbackText: string }).fallbackText).toContain(
-      "Open Agent Settings: https://example.com/agent?claim=abc123"
+      "Open Agent Settings: https://example.com/connect/claim?claim=abc123"
     );
   });
 

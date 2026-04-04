@@ -77,33 +77,6 @@ export const customTools = [
     response: "2 active reminders:\n1. sched_a1b2 — Mon 9 AM: review PRs (weekly)\n2. sched_c3d4 — Tomorrow 2 PM: review Q1 deck (one-off)",
   },
   {
-    name: "SearchSkills",
-    how: "Searches discoverable skills/MCPs and lists currently installed capabilities.",
-    prompt: "Find a skill for on-call incident triage.",
-    response: "Found 3 matching skills:\n1. ops-triage — incident triage with PagerDuty + Slack\n2. on-call-helper — on-call runbook automation\n3. alert-summarizer — alert digest and dedup",
-  },
-  {
-    name: "InstallSkill",
-    how: "Installs or upgrades skills from the registry, bundling their provider/MCP dependencies into a settings approval flow.",
-    prompt: "Install the ops-triage skill.",
-    response: "Installing ops-triage…\nNeeds: Gmail (OAuth), GitHub (OAuth), Linear (API key)\n\nOpen settings to connect?",
-    buttons: [{ label: "Install Skill", action: "link" }],
-  },
-  {
-    name: "InstallPackage",
-    how: "Requests system package installation (nix) with inline user approval buttons.",
-    prompt: "I need ffmpeg to process this video.",
-    response: "Package install request sent. Click below to approve.",
-    buttons: [{ label: "Approve ffmpeg", action: "link" }],
-  },
-  {
-    name: "RequestNetworkAccess",
-    how: "Requests access to blocked domains with inline user approval buttons.",
-    prompt: "I need to call the GitHub API.",
-    response: "Domain access request sent for api.github.com.",
-    buttons: [{ label: "Grant Access (1h)", action: "link" }],
-  },
-  {
     name: "GenerateImage",
     how: "Generates an image from a prompt and sends it back in the chat thread.",
     prompt: "Create a minimalist onboarding illustration with teal accents.",
@@ -192,10 +165,6 @@ From `packages/worker/src/openclaw/custom-tools.ts`. These tools call back to th
 | `ScheduleReminder` | Schedules one-time or recurring follow-up tasks. | Deferred tasks and recurring automations. |
 | `CancelReminder` | Cancels a scheduled reminder by ID. | Stop previously scheduled jobs. |
 | `ListReminders` | Lists pending reminders and schedule IDs. | Audit or pick reminder to cancel/update. |
-| `SearchSkills` | Searches for skills and MCP servers, or lists installed capabilities (empty query). | Discover capabilities and check installed state. |
-| `InstallSkill` | Installs or upgrades skills from the registry with bundled dependencies. | Add capabilities (skills, providers, MCPs) via settings approval. |
-| `InstallPackage` | Requests system package installation (nix) with user approval. | Install ffmpeg, imagemagick, or other system tools. |
-| `RequestNetworkAccess` | Requests domain access grants with user approval. | Unblock API endpoints for curl/fetch calls. |
 | `GenerateImage` | Creates images from text prompts and uploads them in-thread. | Illustrations, posters, product mockups, and visual concepts. |
 | `GenerateAudio` | Converts text to speech and returns audio. | Voice responses or spoken summaries. |
 | `GetChannelHistory` | Fetches prior messages in the conversation thread. | Recover context from earlier discussion. |

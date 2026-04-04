@@ -68,6 +68,9 @@ export default defineConfig({
           label: "Platforms",
           items: [
             { label: "Slack", link: "/platforms/slack/" },
+            { label: "Discord", link: "/platforms/discord/" },
+            { label: "Microsoft Teams", link: "/platforms/teams/" },
+            { label: "Google Chat", link: "/platforms/google-chat/" },
             { label: "WhatsApp", link: "/platforms/whatsapp/" },
             { label: "Telegram", link: "/platforms/telegram/" },
             { label: "REST API", link: "/platforms/rest-api/" },

@@ -297,63 +297,57 @@ export async function initCommand(
     }
   }
 
-  // Auth provider (OAuth login for settings page + memory/integrations)
-  const { authProvider } = await inquirer.prompt([
+  // Memory
+  const { memoryChoice } = await inquirer.prompt([
     {
       type: "list",
-      name: "authProvider",
-      message: "Auth provider (OAuth login, memory & integrations):",
+      name: "memoryChoice",
+      message: "Memory:",
       choices: [
-        { name: "Owletto (owletto.com)", value: "owletto" },
-        { name: "Custom URL", value: "custom" },
-        { name: "None (admin password only)", value: "none" },
+        { name: "None (filesystem memory)", value: "none" },
+        { name: "Owletto Cloud (owletto.com)", value: "owletto-cloud" },
+        {
+          name: "Owletto Local (runs alongside gateway)",
+          value: "owletto-local",
+        },
+        { name: "Custom Owletto URL", value: "owletto-custom" },
       ],
-      default: "owletto",
+      default: "none",
     },
   ]);
 
-  const oauthSecrets: Array<{ envVar: string; value: string }> = [];
-  if (authProvider === "owletto") {
-    oauthSecrets.push({
-      envVar: "AUTH_MCP_URL",
-      value: "https://owletto.com/mcp",
+  const envSecrets: Array<{ envVar: string; value: string }> = [];
+  let includeOwlettoLocal = false;
+  let owlettoUrl = "";
+
+  if (memoryChoice === "owletto-cloud") {
+    owlettoUrl = "https://owletto.com/mcp";
+    envSecrets.push({ envVar: "MEMORY_URL", value: owlettoUrl });
+  } else if (memoryChoice === "owletto-local") {
+    includeOwlettoLocal = true;
+    owlettoUrl = "http://owletto:8787/mcp";
+    envSecrets.push({ envVar: "MEMORY_URL", value: owlettoUrl });
+    envSecrets.push({
+      envVar: "OWLETTO_AUTH_SECRET",
+      value: randomBytes(32).toString("hex"),
     });
-  } else if (authProvider === "custom") {
-    const { customAuthMcpUrl } = await inquirer.prompt([
+    envSecrets.push({
+      envVar: "OWLETTO_DB_PASSWORD",
+      value: randomBytes(16).toString("hex"),
+    });
+  } else if (memoryChoice === "owletto-custom") {
+    const { customOwlettoUrl } = await inquirer.prompt([
       {
         type: "input",
-        name: "customAuthMcpUrl",
-        message: "Auth MCP URL:",
+        name: "customOwlettoUrl",
+        message: "Owletto MCP URL:",
+        validate: (v: string) => (v ? true : "URL is required"),
       },
     ]);
-    if (customAuthMcpUrl) {
-      oauthSecrets.push({
-        envVar: "AUTH_MCP_URL",
-        value: customAuthMcpUrl,
-      });
-    }
+    owlettoUrl = customOwlettoUrl;
+    envSecrets.push({ envVar: "MEMORY_URL", value: owlettoUrl });
   }
-
-  // Memory plugin
-  const { memoryPlugin } = await inquirer.prompt([
-    {
-      type: "list",
-      name: "memoryPlugin",
-      message: "Memory plugin:",
-      choices: [
-        { name: "Owletto (persistent, cross-conversation)", value: "owletto" },
-        { name: "Native (filesystem-based)", value: "native" },
-      ],
-      default: authProvider === "owletto" ? "owletto" : "native",
-    },
-  ]);
-
-  if (memoryPlugin !== "owletto") {
-    oauthSecrets.push({
-      envVar: "MEMORY_PLUGIN",
-      value: memoryPlugin,
-    });
-  }
+  // "none" — no env var needed, gateway defaults to filesystem memory
 
   // Compute network domains from selected policy
   let allowedDomains: string;
@@ -450,7 +444,7 @@ export async function initCommand(
     }
 
     // Save OAuth secrets to .env
-    for (const secret of oauthSecrets) {
+    for (const secret of envSecrets) {
       await secretsSetCommand(projectDir, secret.envVar, secret.value);
     }
 
@@ -517,6 +511,7 @@ export async function initCommand(
       gatewayPort,
       dockerfilePath: "./Dockerfile.worker",
       deploymentMode: answers.deploymentMode,
+      includeOwlettoLocal,
     });
     await writeFile(join(projectDir, composeFilename), composeContent);
 
@@ -551,13 +546,30 @@ export async function initCommand(
     console.log();
 
     const gatewayUrl = `http://localhost:${gatewayPort}`;
+    if (owlettoUrl) {
+      const displayUrl = includeOwlettoLocal
+        ? "http://localhost:8787"
+        : owlettoUrl;
+      console.log(chalk.cyan("  Owletto:"));
+      console.log(chalk.dim(`     ${displayUrl}\n`));
+    }
     console.log(chalk.cyan("  3. Start the services:"));
-    console.log(chalk.dim("     lobu dev -d\n"));
-    console.log(chalk.cyan("  4. Open the admin page:"));
-    console.log(chalk.dim(`     ${gatewayUrl}/agents\n`));
-    console.log(chalk.cyan("  5. View logs:"));
+    console.log(chalk.dim("     lobu run -d\n"));
+    if (includeOwlettoLocal) {
+      console.log(chalk.cyan("  4. Set up Owletto (first run):"));
+      console.log(
+        chalk.dim("     Visit http://localhost:8787 to create your account\n")
+      );
+    }
+    console.log(
+      chalk.cyan(`  ${includeOwlettoLocal ? "5" : "4"}. Open the API docs:`)
+    );
+    console.log(chalk.dim(`     ${gatewayUrl}/api/docs\n`));
+    console.log(chalk.cyan(`  ${includeOwlettoLocal ? "6" : "5"}. View logs:`));
     console.log(chalk.dim("     docker compose logs -f\n"));
-    console.log(chalk.cyan("  6. Stop the services:"));
+    console.log(
+      chalk.cyan(`  ${includeOwlettoLocal ? "7" : "6"}. Stop the services:`)
+    );
     console.log(chalk.dim("     docker compose down\n"));
   } catch (error) {
     spinner.fail("Failed to create project");
@@ -604,7 +616,7 @@ async function generateLobuToml(
     );
   } else {
     lines.push(
-      "# Add providers via the admin page or uncomment below:",
+      "# Add providers via the gateway configuration APIs or uncomment below:",
       `# [[agents.${id}.providers]]`,
       '# id = "anthropic"',
       '# key = "$ANTHROPIC_API_KEY"'
@@ -624,7 +636,7 @@ async function generateLobuToml(
     }
   } else {
     lines.push(
-      "# Messaging platform (add via admin page or uncomment below):",
+      "# Messaging platform (add via the gateway configuration APIs or uncomment below):",
       `# [[agents.${id}.connections]]`,
       '# type = "telegram"',
       `# [agents.${id}.connections.config]`,
@@ -675,8 +687,10 @@ function generateDockerCompose(options: {
   gatewayPort: string;
   dockerfilePath: string;
   deploymentMode: "embedded" | "docker";
+  includeOwlettoLocal?: boolean;
 }): string {
-  const { projectName, gatewayPort, deploymentMode } = options;
+  const { projectName, gatewayPort, deploymentMode, includeOwlettoLocal } =
+    options;
   const gatewayImage = `ghcr.io/lobu-ai/lobu-gateway:latest`;
   const workerImage = `ghcr.io/lobu-ai/lobu-worker-base:latest`;
 
@@ -698,6 +712,63 @@ function generateDockerCompose(options: {
       - "127.0.0.1:8118:8118" # HTTP proxy for workers`
       : "";
 
+  const owlettoServices = includeOwlettoLocal
+    ? `
+  owletto-postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: owletto
+      POSTGRES_PASSWORD: \${OWLETTO_DB_PASSWORD}
+      POSTGRES_DB: owletto
+    volumes:
+      - owletto-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U owletto -d owletto"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - lobu-internal
+    restart: unless-stopped
+
+  owletto:
+    image: ghcr.io/lobu-ai/owletto-app:latest
+    pull_policy: always
+    ports:
+      - "127.0.0.1:8787:8787"
+    environment:
+      DATABASE_URL: postgresql://owletto:\${OWLETTO_DB_PASSWORD}@owletto-postgres:5432/owletto
+      BETTER_AUTH_SECRET: \${OWLETTO_AUTH_SECRET}
+      PORT: "8787"
+      HOST: 0.0.0.0
+    networks:
+      - lobu-internal
+    depends_on:
+      owletto-postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://127.0.0.1:8787/health || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+`
+    : "";
+
+  const owlettoDependsOn = includeOwlettoLocal
+    ? `
+      owletto:
+        condition: service_healthy`
+    : "";
+
+  const owlettoVolumes = includeOwlettoLocal
+    ? `
+volumes:
+  owletto-pgdata:
+`
+    : "";
+
   return `# Generated by @lobu/cli
 # Deployment mode: ${deploymentMode}
 
@@ -718,7 +789,7 @@ services:
     networks:
       - lobu-internal
     restart: unless-stopped
-
+${owlettoServices}
   gateway:
     image: ${gatewayImage}
     pull_policy: always
@@ -735,16 +806,17 @@ services:
       ENCRYPTION_KEY: \${ENCRYPTION_KEY}
       WORKER_ALLOWED_DOMAINS: \${WORKER_ALLOWED_DOMAINS:-}
       WORKER_DISALLOWED_DOMAINS: \${WORKER_DISALLOWED_DOMAINS:-}
-      AUTH_MCP_URL: \${AUTH_MCP_URL:-}
-      MEMORY_PLUGIN: \${MEMORY_PLUGIN:-owletto}
+      MEMORY_URL: \${MEMORY_URL:-}
+      LOBU_WORKSPACE_ROOT: /workspace/project
     volumes:${dockerSocketMount}
       - ./.lobu:/app/.lobu
+      - .:/workspace/project:ro
     networks:
       - lobu-public
       - lobu-internal
     depends_on:
       redis:
-        condition: service_healthy
+        condition: service_healthy${owlettoDependsOn}
     restart: unless-stopped
 
 networks:
@@ -753,6 +825,6 @@ networks:
   lobu-internal:
     internal: true
     driver: bridge
-
+${owlettoVolumes}
 `;
 }

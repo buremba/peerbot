@@ -2,7 +2,7 @@ function normalizeBaseUrl(url: string): string {
   return url.replace(/\/+$/, "");
 }
 
-export function resolvePublicBaseUrl(options?: {
+function resolvePublicBaseUrl(options?: {
   configuredUrl?: string;
   requestUrl?: string;
   forwardedProto?: string;

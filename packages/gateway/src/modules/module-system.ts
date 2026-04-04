@@ -177,11 +177,3 @@ export function getModelProviderModules(): ModelProviderModule[] {
         "providerId" in m && "getSecretEnvVarNames" in m
     );
 }
-
-export function getDispatcherModules(): DispatcherModule[] {
-  return moduleRegistry
-    .getModules()
-    .filter((m): m is DispatcherModule => "generateActionButtons" in m);
-}
-
-export { moduleRegistry } from "@lobu/core";

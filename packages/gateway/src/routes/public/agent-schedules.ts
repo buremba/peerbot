@@ -5,10 +5,14 @@
  */
 
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
+import type { AgentConfigStore } from "@lobu/core";
 import { createLogger } from "@lobu/core";
 import type { ExternalAuthClient } from "../../auth/external/client";
+import type { SettingsTokenPayload } from "../../auth/settings/token-service";
+import type { UserAgentsStore } from "../../auth/user-agents-store";
 import type { ScheduledWakeupService } from "../../orchestration/scheduled-wakeup";
-import { verifySettingsSession } from "./settings-auth";
+import { createTokenVerifier } from "../shared/token-verifier";
+import { verifySettingsSessionOrToken } from "./settings-auth";
 
 const logger = createLogger("agent-schedules");
 
@@ -130,37 +134,65 @@ const createScheduleRoute = createRoute({
 export interface AgentSchedulesRoutesConfig {
   scheduledWakeupService?: ScheduledWakeupService;
   externalAuthClient?: ExternalAuthClient;
+  userAgentsStore?: UserAgentsStore;
+  agentMetadataStore?: Pick<AgentConfigStore, "getMetadata">;
 }
 
 export function createAgentSchedulesRoutes(
   config: AgentSchedulesRoutesConfig
 ): OpenAPIHono {
   const app = new OpenAPIHono();
+  const verifySessionToken = createTokenVerifier({
+    userAgentsStore: config.userAgentsStore,
+    agentMetadataStore: config.agentMetadataStore,
+  });
 
   /**
    * Auth: settings session (cookie/authProvider) OR external OAuth Bearer token
-   * (validated via AUTH_MCP_URL userinfo endpoint).
+   * (validated via MEMORY_URL userinfo endpoint).
    */
-  async function requireAuth(c: any, _agentId: string): Promise<boolean> {
+  async function requireAuth(
+    c: any,
+    agentId: string
+  ): Promise<SettingsTokenPayload | null> {
     // 1. Try settings session (cookie or injected authProvider)
-    const session = verifySettingsSession(c);
-    if (session) return true;
+    const session = verifySettingsSessionOrToken(c);
+    if (session) {
+      if (session.isAdmin || session.settingsMode === "admin") {
+        return {
+          ...session,
+          isAdmin: true,
+          settingsMode: "admin",
+        };
+      }
+      return verifySessionToken(session, agentId);
+    }
 
-    // 2. Try external OAuth Bearer token (validated via AUTH_MCP_URL)
+    // 2. Try external OAuth Bearer token (validated via MEMORY_URL)
     if (config.externalAuthClient) {
       const authHeader = c.req.header("Authorization");
       if (authHeader?.startsWith("Bearer ")) {
         const token = authHeader.substring(7);
         try {
           const userInfo = await config.externalAuthClient.fetchUserInfo(token);
-          if (userInfo?.sub) return true;
+          if (userInfo?.sub) {
+            return verifySessionToken(
+              {
+                userId: userInfo.sub,
+                oauthUserId: userInfo.sub,
+                platform: "external",
+                exp: Date.now() + 60_000,
+              },
+              agentId
+            );
+          }
         } catch (err) {
           logger.debug({ err }, "Bearer token validation failed");
         }
       }
     }
 
-    return false;
+    return null;
   }
 
   // POST / — create schedule

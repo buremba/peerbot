@@ -18,6 +18,11 @@ import type { MessagePayload, QueuedMessage } from "./types";
 
 const logger = createLogger("sse-client");
 
+type AbortControllerLike = {
+  abort(): void;
+  readonly signal: AbortSignal;
+};
+
 // --- Pending config change notifications ---
 
 interface ConfigChangeEntry {
@@ -110,7 +115,7 @@ export class GatewayClient {
   private deploymentName: string;
   private isRunning = false;
   private currentWorker: WorkerExecutor | null = null;
-  private abortController?: AbortController;
+  private abortController?: AbortControllerLike;
   private currentJobId?: string;
   private currentTraceId?: string; // Trace ID for end-to-end observability
   private currentTraceparent?: string; // W3C traceparent for distributed tracing
@@ -173,7 +178,9 @@ export class GatewayClient {
     if (this.abortController) {
       this.abortController.abort();
     }
-    this.abortController = new AbortController();
+    const abortController =
+      new globalThis.AbortController() as AbortControllerLike;
+    this.abortController = abortController;
     const streamUrl = this.httpPort
       ? `${this.dispatcherUrl}/worker/stream?httpPort=${this.httpPort}`
       : `${this.dispatcherUrl}/worker/stream`;
@@ -188,7 +195,7 @@ export class GatewayClient {
         Authorization: `Bearer ${this.workerToken}`,
         Accept: "text/event-stream",
       },
-      signal: this.abortController.signal,
+      signal: abortController.signal,
     });
 
     if (!response.ok) {

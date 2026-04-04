@@ -16,6 +16,7 @@ export type {
   Grant,
   StoredConnection,
 } from "./agent-store";
+export { findTemplateAgentId } from "./agent-store";
 export type { CommandContext, CommandDefinition } from "./command-registry";
 // Command registry
 export { CommandRegistry } from "./command-registry";
@@ -94,15 +95,6 @@ export type {
   UserSuggestion,
 } from "./types";
 
-// Platform constants
-export const SUPPORTED_PLATFORMS = [
-  "telegram",
-  "slack",
-  "discord",
-  "whatsapp",
-  "teams",
-] as const;
-export type SupportedPlatform = (typeof SUPPORTED_PLATFORMS)[number];
 
 // Agent Settings API response types (for UI consumers)
 export type {

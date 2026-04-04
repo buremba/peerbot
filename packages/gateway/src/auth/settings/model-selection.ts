@@ -22,7 +22,7 @@ function normalizePreferenceMap(
   return normalized;
 }
 
-export function extractProviderIdFromModelRef(
+function extractProviderIdFromModelRef(
   modelRef: string | undefined
 ): string | undefined {
   const clean = modelRef?.trim();

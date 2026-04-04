@@ -1,20 +1,42 @@
 const localDev = {
   id: "dev",
   label: "Local Dev",
-  badges: ["Docker", "Hot reload", "Fastest setup"],
+  badges: ["CLI scaffold", "Full stack", "Fastest setup"],
   docsHref: "/deployment/docker/",
   steps: [
     { label: "Scaffold a new agent", code: "npx @lobu/cli init my-agent" },
-    { label: "Start the stack", code: "cd my-agent && npx @lobu/cli dev -d" },
+    { label: "Run the stack", code: "cd my-agent && npx @lobu/cli run -d" },
+    { label: "Open the docs", code: "open http://localhost:8080/api/docs" },
   ],
 };
 
-const lobuCloud = {
-  id: "managed",
-  label: "Lobu Cloud",
-  badges: ["Serverless", "Scale-to-zero", "No ops"],
-  docsHref: "/serverless-openclaw",
-  steps: [{ label: "Deploy to Lobu Cloud", code: "npx @lobu/cli launch" }],
+const embedWithTypescript = {
+  id: "embed",
+  label: "Embed with TypeScript",
+  badges: ["Next.js", "Express", "Hono", "Fastify", "Bun", "Deno"],
+  docsHref: "/deployment/embedding/",
+  steps: [
+    {
+      label: "Mount in Next.js App Router (or any framework)",
+      code: [
+        "// app/api/lobu/[...path]/route.ts",
+        'import { Lobu } from "@lobu/gateway";',
+        "",
+        "const lobu = new Lobu({",
+        "  redis: process.env.REDIS_URL!,",
+        '  agents: [{ id: "support" }],',
+        "});",
+        "const ready = lobu.initialize();",
+        "",
+        "async function handler(req: Request) {",
+        "  await ready;",
+        "  return lobu.getApp().fetch(req);",
+        "}",
+        "export const GET = handler;",
+        "export const POST = handler;",
+      ].join("\n"),
+    },
+  ],
 };
 
 const selfHosted = {
@@ -42,12 +64,12 @@ const selfHosted = {
 
 export type Mode = typeof localDev;
 
-export const modes = [localDev, lobuCloud];
+export const modes = [localDev, embedWithTypescript];
 
 export function ModeCard({ mode }: { mode: Mode }) {
   return (
     <div
-      class="rounded-xl p-6"
+      class="rounded-xl p-6 min-w-0"
       style={{
         backgroundColor: "var(--color-page-bg-elevated)",
         border: "1px solid var(--color-page-border)",
@@ -95,14 +117,14 @@ export function ModeCard({ mode }: { mode: Mode }) {
               {step.label}
             </div>
             <div
-              class="rounded-lg overflow-hidden font-mono text-[12.5px] leading-[1.6]"
+              class="rounded-lg overflow-hidden font-mono text-[12.5px] leading-[1.6] min-w-0"
               style={{
                 backgroundColor: "rgba(0,0,0,0.3)",
                 border: "1px solid rgba(255,255,255,0.06)",
               }}
             >
               <pre
-                class="p-3.5 m-0 overflow-x-auto"
+                class="p-3.5 m-0 overflow-x-auto whitespace-pre-wrap break-words"
                 style={{ color: "rgba(255,255,255,0.75)" }}
               >
                 <span style={{ color: "var(--color-tg-accent)" }}>$</span>{" "}
@@ -129,14 +151,14 @@ function SelfHostSteps({ variant }: { variant: "docker" | "kubernetes" }) {
             {step.label}
           </div>
           <div
-            class="rounded-lg overflow-hidden font-mono text-[12.5px] leading-[1.6]"
+            class="rounded-lg overflow-hidden font-mono text-[12.5px] leading-[1.6] min-w-0"
             style={{
               backgroundColor: "rgba(0,0,0,0.3)",
               border: "1px solid rgba(255,255,255,0.06)",
             }}
           >
             <pre
-              class="p-3.5 m-0 overflow-x-auto"
+              class="p-3.5 m-0 overflow-x-auto whitespace-pre-wrap break-words"
               style={{ color: "rgba(255,255,255,0.75)" }}
             >
               <span style={{ color: "var(--color-tg-accent)" }}>$</span>{" "}
@@ -159,7 +181,7 @@ function SelfHostSteps({ variant }: { variant: "docker" | "kubernetes" }) {
 function SelfHostCard() {
   return (
     <div
-      class="selfhost-card rounded-xl p-6"
+      class="selfhost-card rounded-xl p-6 min-w-0"
       style={{
         backgroundColor: "var(--color-page-bg-elevated)",
         border: "1px solid var(--color-page-border)",
@@ -248,40 +270,23 @@ export function InstallSection() {
           class="text-2xl sm:text-3xl font-bold text-center mb-3 tracking-tight"
           style={{ color: "var(--color-page-text)" }}
         >
-          Get started
+          Choose your production path
         </h2>
         <p
           class="text-sm text-center mb-10 max-w-lg mx-auto"
           style={{ color: "var(--color-page-text-muted)" }}
         >
-          Run locally, deploy to{" "}
-          <a
-            href="/serverless-openclaw"
-            class="underline decoration-dotted underline-offset-2 hover:opacity-80"
-            style={{ color: "var(--color-tg-accent)" }}
-          >
-            Lobu Cloud
-          </a>
-          , or self-host on your own infra. Browse{" "}
-          <a
-            href="/skills"
-            class="underline decoration-dotted underline-offset-2 hover:opacity-80"
-            style={{ color: "var(--color-tg-accent)" }}
-          >
-            skills
-          </a>{" "}
-          to extend your agent.
+          Start locally, then either run Lobu on your own infrastructure or
+          embed it inside your product with TypeScript.
         </p>
 
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {/* Left column: Local Dev */}
+        <div class="mb-6">
           <ModeCard mode={localDev} />
+        </div>
 
-          {/* Right column: Lobu Cloud + Self-Host stacked */}
-          <div class="space-y-6">
-            <ModeCard mode={lobuCloud} />
-            <SelfHostCard />
-          </div>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <SelfHostCard />
+          <ModeCard mode={embedWithTypescript} />
         </div>
       </div>
     </section>

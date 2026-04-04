@@ -340,10 +340,7 @@ function validateProxyAuth(req: http.IncomingMessage): ValidatedProxy | null {
  * Check if a hostname matches any domain patterns
  * Supports exact matches and wildcard patterns (.example.com matches *.example.com)
  */
-export function matchesDomainPattern(
-  hostname: string,
-  patterns: string[]
-): boolean {
+function matchesDomainPattern(hostname: string, patterns: string[]): boolean {
   const lowerHostname = hostname.toLowerCase();
 
   for (const pattern of patterns) {
@@ -372,7 +369,7 @@ export function matchesDomainPattern(
  * - If allowedDomains contains "*", unrestricted mode is enabled
  * - If allowedDomains is empty, complete isolation (deny all)
  */
-export function isHostnameAllowed(
+function isHostnameAllowed(
   hostname: string,
   allowedDomains: string[],
   deniedDomains: string[]
@@ -453,7 +450,7 @@ async function handleConnect(
     );
     try {
       clientSocket.write(
-        `HTTP/1.1 403 Domain not allowed: ${hostname}. Use RequestNetworkAccess to request access.\r\nContent-Type: text/plain\r\n\r\n403 Forbidden - Domain not allowed: ${hostname}. Use RequestNetworkAccess to request access.\r\n`
+        `HTTP/1.1 403 Domain not allowed: ${hostname}. Network access is configured via lobu.toml or the gateway configuration APIs.\r\nContent-Type: text/plain\r\n\r\n403 Forbidden - Domain not allowed: ${hostname}. Network access is configured via lobu.toml or the gateway configuration APIs.\r\n`
       );
       clientSocket.end();
     } catch {
@@ -602,7 +599,7 @@ async function handleProxyRequest(
       "Content-Type": "text/plain",
     });
     res.end(
-      `403 Forbidden - Domain not allowed: ${hostname}. Use RequestNetworkAccess to request access.\n`
+      `403 Forbidden - Domain not allowed: ${hostname}. Network access is configured via lobu.toml or the gateway configuration APIs.\n`
     );
     return;
   }

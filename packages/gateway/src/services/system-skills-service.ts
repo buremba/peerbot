@@ -59,7 +59,7 @@ export class SystemSkillsService {
   }
 
   /**
-   * Returns only skills that are discoverable via SearchSkills.
+   * Returns only skills that are discoverable via search.
    * Filters out entries with `hidden: true` (e.g. Owletto which is embedded).
    */
   async getSearchableSkills(): Promise<SkillConfig[]> {

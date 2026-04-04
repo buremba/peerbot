@@ -18,6 +18,24 @@ export function setAuthProvider(provider: AuthProvider | null): void {
   _authProvider = provider;
 }
 
+function decodeSettingsPayload(
+  token: string | null | undefined
+): SettingsTokenPayload | null {
+  if (!token || token.trim().length === 0) return null;
+
+  try {
+    const decrypted = decrypt(token);
+    const payload = JSON.parse(decrypted) as SettingsTokenPayload;
+
+    if (!payload.userId || !payload.exp) return null;
+    if (Date.now() > payload.exp) return null;
+
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
 function isSecureRequest(c: Context): boolean {
   const forwardedProto = c.req.header("x-forwarded-proto");
   if (forwardedProto) {
@@ -38,19 +56,25 @@ export function verifySettingsSession(c: Context): SettingsTokenPayload | null {
   }
 
   const token = getCookie(c, SETTINGS_SESSION_COOKIE_NAME);
-  if (!token || token.trim().length === 0) return null;
+  return decodeSettingsPayload(token);
+}
 
-  try {
-    const decrypted = decrypt(token);
-    const payload = JSON.parse(decrypted) as SettingsTokenPayload;
+export function verifySettingsToken(
+  token: string | null | undefined
+): SettingsTokenPayload | null {
+  if (!token) return null;
+  return decodeSettingsPayload(token);
+}
 
-    if (!payload.userId || !payload.exp) return null;
-    if (Date.now() > payload.exp) return null;
-
-    return payload;
-  } catch {
-    return null;
-  }
+/**
+ * Resolve settings auth from an injected auth provider, cookie session,
+ * or a direct encrypted query token.
+ */
+export function verifySettingsSessionOrToken(
+  c: Context,
+  queryKey = "token"
+): SettingsTokenPayload | null {
+  return verifySettingsSession(c) ?? verifySettingsToken(c.req.query(queryKey));
 }
 
 /**

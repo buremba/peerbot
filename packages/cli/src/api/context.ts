@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 export const LOBU_CONFIG_DIR = join(homedir(), ".config", "lobu");
 export const DEFAULT_CONTEXT_NAME = "community";
-export const DEFAULT_API_URL = "https://community.lobu.ai/api/v1";
+const DEFAULT_API_URL = "https://community.lobu.ai/api/v1";
 
 const CONTEXTS_FILE = join(LOBU_CONFIG_DIR, "config.json");
 
@@ -38,9 +38,7 @@ export async function loadContextConfig(): Promise<LobuContextConfig> {
   }
 }
 
-export async function saveContextConfig(
-  config: LobuContextConfig
-): Promise<void> {
+async function saveContextConfig(config: LobuContextConfig): Promise<void> {
   await mkdir(LOBU_CONFIG_DIR, { recursive: true });
   await writeFile(CONTEXTS_FILE, JSON.stringify(config, null, 2), {
     mode: 0o600,

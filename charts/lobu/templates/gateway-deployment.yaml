@@ -219,10 +219,10 @@ spec:
               value: "{{ .Values.gateway.anthropicProxy.baseUrl }}"
             {{- end }}
 
-            # External auth (Owletto OIDC)
-            {{- if .Values.gateway.config.authMcpUrl }}
-            - name: AUTH_MCP_URL
-              value: "{{ .Values.gateway.config.authMcpUrl }}"
+            # Owletto memory URL
+            {{- if .Values.gateway.config.memoryUrl }}
+            - name: MEMORY_URL
+              value: "{{ .Values.gateway.config.memoryUrl }}"
             {{- end }}
 
             # Admin password (direct value override, not in sealed secrets)

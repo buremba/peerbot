@@ -223,7 +223,7 @@ export class SecretProxy {
               {
                 error: {
                   message:
-                    "No provider credentials configured. Please add or update your API key in settings: /configure",
+                    "No provider credentials configured. End-user provider setup is not available in chat yet. Ask an admin to connect a provider for the base agent.",
                   type: "authentication_error",
                   code: "no_credentials",
                 },
@@ -239,7 +239,7 @@ export class SecretProxy {
             {
               error: {
                 message:
-                  "No provider credentials configured. Please add or update your API key in settings: /configure",
+                  "No provider credentials configured. End-user provider setup is not available in chat yet. Ask an admin to connect a provider for the base agent.",
                 type: "authentication_error",
                 code: "no_credentials",
               },

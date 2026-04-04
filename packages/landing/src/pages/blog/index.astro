@@ -14,7 +14,7 @@ const posts = (
 
 <BaseLayout title="Blog - Lobu" description="Updates and insights from the Lobu team.">
   <div class="min-h-screen grid-lines" style={{ backgroundColor: "var(--color-page-bg)" }}>
-    <Nav />
+    <Nav currentPath={Astro.url.pathname} />
     <main class="relative z-[1]">
       <div class="pt-28 pb-8 px-6">
         <div class="max-w-5xl mx-auto">

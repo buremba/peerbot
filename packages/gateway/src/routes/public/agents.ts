@@ -13,8 +13,13 @@ import { Hono } from "hono";
 import type { AgentMetadataStore } from "../../auth/agent-metadata-store";
 import type { AgentSettings, AgentSettingsStore } from "../../auth/settings";
 import { buildDefaultSettingsFromSource } from "../../auth/settings/template-utils";
+import type { SettingsTokenPayload } from "../../auth/settings/token-service";
 import type { UserAgentsStore } from "../../auth/user-agents-store";
 import type { ChannelBindingService } from "../../channels";
+import {
+  resolveSettingsLookupUserId,
+  verifyOwnedAgentAccess,
+} from "../shared/agent-ownership";
 import { verifySettingsSession } from "./settings-auth";
 
 const logger = createLogger("agent-routes");
@@ -30,6 +35,27 @@ export interface AgentRoutesConfig {
   agentMetadataStore: AgentMetadataStore;
   agentSettingsStore: AgentSettingsStore;
   channelBindingService: ChannelBindingService;
+}
+
+async function listOwnedAgentIds(
+  payload: SettingsTokenPayload,
+  config: Pick<AgentRoutesConfig, "userAgentsStore" | "agentMetadataStore">
+): Promise<string[]> {
+  const lookupUserId = resolveSettingsLookupUserId(payload);
+  const agentIds = new Set(
+    await config.userAgentsStore.listAgents(payload.platform, lookupUserId)
+  );
+
+  if (payload.platform === "external") {
+    const allAgents = await config.agentMetadataStore.listAllAgents();
+    for (const agent of allAgents) {
+      if (agent.owner.userId === lookupUserId) {
+        agentIds.add(agent.agentId);
+      }
+    }
+  }
+
+  return [...agentIds];
 }
 
 /**
@@ -54,6 +80,7 @@ export function createAgentRoutes(config: AgentRoutesConfig): Hono {
     }
 
     try {
+      const lookupUserId = resolveSettingsLookupUserId(payload);
       const body = await c.req.json<{
         agentId: string;
         name: string;
@@ -84,10 +111,7 @@ export function createAgentRoutes(config: AgentRoutesConfig): Hono {
 
       // Check per-user limit (admins bypass)
       if (!payload.isAdmin && MAX_AGENTS_PER_USER > 0) {
-        const userAgents = await config.userAgentsStore.listAgents(
-          payload.platform,
-          payload.userId
-        );
+        const userAgents = await listOwnedAgentIds(payload, config);
         if (userAgents.length >= MAX_AGENTS_PER_USER) {
           return c.json(
             {
@@ -103,7 +127,7 @@ export function createAgentRoutes(config: AgentRoutesConfig): Hono {
         agentId,
         body.name,
         payload.platform,
-        payload.userId,
+        lookupUserId,
         { description: body.description }
       );
 
@@ -135,7 +159,7 @@ export function createAgentRoutes(config: AgentRoutesConfig): Hono {
       // Associate with user
       await config.userAgentsStore.addAgent(
         payload.platform,
-        payload.userId,
+        lookupUserId,
         agentId
       );
 
@@ -157,7 +181,7 @@ export function createAgentRoutes(config: AgentRoutesConfig): Hono {
       return c.json({
         agentId,
         name: body.name,
-        settingsUrl: `/agent/${encodeURIComponent(agentId)}`,
+        settingsUrl: `/api/v1/agents/${encodeURIComponent(agentId)}/config`,
       });
     } catch (error) {
       logger.error("Failed to create agent", { error });
@@ -178,10 +202,7 @@ export function createAgentRoutes(config: AgentRoutesConfig): Hono {
     }
 
     try {
-      const agentIds = await config.userAgentsStore.listAgents(
-        payload.platform,
-        payload.userId
-      );
+      const agentIds = await listOwnedAgentIds(payload, config);
 
       const agents = [];
       for (const agentId of agentIds) {
@@ -226,12 +247,11 @@ export function createAgentRoutes(config: AgentRoutesConfig): Hono {
     try {
       // Verify ownership (admins bypass)
       if (!payload.isAdmin) {
-        const owns = await config.userAgentsStore.ownsAgent(
-          payload.platform,
-          payload.userId,
-          agentId
-        );
-        if (!owns) {
+        const access = await verifyOwnedAgentAccess(payload, agentId, {
+          userAgentsStore: config.userAgentsStore,
+          agentMetadataStore: config.agentMetadataStore,
+        });
+        if (!access.authorized) {
           return c.json({ error: "Agent not found or not owned by you" }, 404);
         }
       }
@@ -290,15 +310,18 @@ export function createAgentRoutes(config: AgentRoutesConfig): Hono {
 
     try {
       // Verify ownership (admins bypass)
+      let ownerPlatform: string | undefined;
+      let ownerUserId: string | undefined;
       if (!payload.isAdmin) {
-        const owns = await config.userAgentsStore.ownsAgent(
-          payload.platform,
-          payload.userId,
-          agentId
-        );
-        if (!owns) {
+        const access = await verifyOwnedAgentAccess(payload, agentId, {
+          userAgentsStore: config.userAgentsStore,
+          agentMetadataStore: config.agentMetadataStore,
+        });
+        if (!access.authorized) {
           return c.json({ error: "Agent not found or not owned by you" }, 404);
         }
+        ownerPlatform = access.ownerPlatform;
+        ownerUserId = access.ownerUserId;
       }
 
       // Auto-unbind all channels
@@ -314,9 +337,20 @@ export function createAgentRoutes(config: AgentRoutesConfig): Hono {
       // Remove from user's list
       await config.userAgentsStore.removeAgent(
         payload.platform,
-        payload.userId,
+        resolveSettingsLookupUserId(payload),
         agentId
       );
+      if (
+        ownerPlatform &&
+        ownerUserId &&
+        (ownerPlatform !== payload.platform || ownerUserId !== payload.userId)
+      ) {
+        await config.userAgentsStore.removeAgent(
+          ownerPlatform,
+          ownerUserId,
+          agentId
+        );
+      }
 
       logger.info(
         `Deleted agent ${agentId} (unbound ${unboundCount} channels)`

@@ -25,12 +25,12 @@ For the full request flow and security details, see the [Architecture guide](/gu
 
 ```bash
 npx @lobu/cli init my-agent
-cd my-agent && npx @lobu/cli dev -d
+cd my-agent && npx @lobu/cli run -d
 ```
 
 See the [CLI Reference](/reference/cli/) for all available commands.
 
-After deployment, connect your messaging platforms (Telegram, Slack, Discord, WhatsApp, Teams) via the admin page at `{PUBLIC_GATEWAY_URL}/agents` — no platform-specific env vars needed.
+After deployment, connect your messaging platforms ([Slack](/platforms/slack/), [Discord](/platforms/discord/), [Teams](/platforms/teams/), [Google Chat](/platforms/google-chat/), [WhatsApp](/platforms/whatsapp/), [Telegram](/platforms/telegram/)) via the admin page or the connections API — no platform-specific env vars needed.
 
 ## Managed (Community)
 
@@ -58,5 +58,6 @@ Main differences from managed:
 
 Choose a deployment guide:
 
+- [Embed in Your App](/deployment/embedding/)
 - [Docker Deployment](/deployment/docker/)
 - [Kubernetes Deployment](/deployment/kubernetes/)

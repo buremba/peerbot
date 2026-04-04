@@ -404,7 +404,7 @@ export abstract class BaseDeploymentManager {
 
   /**
    * Sync networkConfig.allowedDomains to the grant store for a running worker.
-   * Called on every message to pick up domains added via settings page.
+   * Called on every message to pick up domains added via configuration APIs.
    */
   async syncNetworkConfigGrants(messageData: MessagePayload): Promise<void> {
     const agentId = messageData.agentId;

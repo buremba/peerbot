@@ -1,24 +1,14 @@
 import { spawn } from "node:child_process";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { basename, join, resolve } from "node:path";
+import { readFile, writeFile } from "node:fs/promises";
+import { basename, join } from "node:path";
 import chalk from "chalk";
 import ora from "ora";
-import { loadSkillsRegistry } from "../commands/skills/registry.js";
-import type {
-  AgentManifestEntry,
-  AgentsManifest,
-} from "../config/agents-manifest.js";
-import {
-  isLoadError,
-  loadAgentMarkdown,
-  loadConfig,
-  loadSkillFiles,
-} from "../config/loader.js";
-import type { AgentEntry } from "../config/schema.js";
+import { isLoadError, loadConfig } from "../config/loader.js";
 
 /**
- * `lobu dev` — smart wrapper around `docker compose up`.
- * Reads lobu.toml, seeds .env + agents manifest, then passes all args through.
+ * `lobu run` — smart wrapper around `docker compose up`.
+ * Validates lobu.toml, seeds .env, then starts docker compose.
+ * The gateway reads lobu.toml directly from the mounted workspace.
  */
 export async function devCommand(
   cwd: string,
@@ -41,10 +31,7 @@ export async function devCommand(
   const spinner = ora("Preparing local dev environment...").start();
 
   try {
-    const lobuDir = join(cwd, ".lobu");
-    await mkdir(lobuDir, { recursive: true });
-
-    // Parse .env first so we can resolve $VAR references in lobu.toml
+    // Parse .env to merge derived vars
     const envPath = join(cwd, ".env");
     let existingEnv = "";
     try {
@@ -54,16 +41,15 @@ export async function devCommand(
     }
     const dotenvVars = parseEnvFile(existingEnv);
 
-    const { manifest, envVars } = await buildManifest(
-      cwd,
-      config.agents,
-      dotenvVars
-    );
+    const agentCount = Object.keys(config.agents).length;
 
-    await writeFile(
-      join(lobuDir, "agents.json"),
-      JSON.stringify(manifest, null, 2)
-    );
+    // Derive env vars (compose project name from first agent or directory name)
+    const firstAgent = Object.values(config.agents)[0];
+    const envVars: Record<string, string> = {
+      COMPOSE_PROJECT_NAME: firstAgent?.name
+        ? firstAgent.name.toLowerCase().replace(/\s+/g, "-")
+        : basename(cwd),
+    };
 
     // Merge derived vars into existing .env (preserves comments and formatting)
     await mergeEnvFile(envPath, existingEnv, envVars);
@@ -84,9 +70,7 @@ export async function devCommand(
 
     const fallbackPort = dotenvVars.GATEWAY_PORT || "8080";
 
-    console.log(
-      chalk.cyan(`\n  Starting ${manifest.agents.length} agent(s)...\n`)
-    );
+    console.log(chalk.cyan(`\n  Starting ${agentCount} agent(s)...\n`));
 
     const explicitDetach =
       passthroughArgs.includes("-d") || passthroughArgs.includes("--detach");
@@ -129,7 +113,7 @@ export async function devCommand(
         const gatewayUrl = `http://localhost:${port}`;
 
         console.log(chalk.green("\n  Lobu is running!\n"));
-        console.log(chalk.cyan(`  Admin page:    ${gatewayUrl}/agents`));
+        console.log(chalk.cyan(`  API docs:      ${gatewayUrl}/api/docs`));
         console.log(chalk.dim(`\n  Stop:          docker compose down`));
 
         if (explicitDetach) {
@@ -161,183 +145,6 @@ export async function devCommand(
     );
     process.exit(1);
   }
-}
-
-/**
- * Build agents manifest and merged env vars from [agents.*] config.
- */
-async function buildManifest(
-  cwd: string,
-  agents: Record<string, AgentEntry>,
-  dotenvVars: Record<string, string>
-): Promise<{ manifest: AgentsManifest; envVars: Record<string, string> }> {
-  const entries: AgentManifestEntry[] = [];
-  const rootSkillsDir = join(cwd, "skills");
-  const registrySkills = new Map(
-    loadSkillsRegistry().map((skill) => [skill.id, skill])
-  );
-
-  for (const [agentId, agentConfig] of Object.entries(agents)) {
-    const agentDir = resolve(cwd, agentConfig.dir);
-    const markdown = await loadAgentMarkdown(agentDir);
-    const skillFiles = await loadSkillFiles([
-      rootSkillsDir,
-      join(agentDir, "skills"),
-    ]);
-    const systemSkills = agentConfig.skills.enabled
-      .map((skillId) => registrySkills.get(skillId))
-      .filter((skill): skill is NonNullable<typeof skill> => !!skill)
-      .map((skill) => ({
-        repo: `system/${skill.id}`,
-        name: skill.name,
-        description: skill.description,
-        instructions: skill.instructions,
-        enabled: true,
-        system: true,
-        content: "",
-        mcpServers: skill.mcpServers?.map((mcp) => ({
-          id: mcp.id,
-          name: mcp.name,
-          url: mcp.url,
-          type: mcp.type,
-          command: mcp.command,
-          args: mcp.args,
-        })),
-        nixPackages: skill.nixPackages,
-        permissions: skill.permissions,
-        providers: skill.providers?.length ? [skill.id] : undefined,
-      }));
-    const localSkills = skillFiles.map((skillFile) => ({
-      repo: `local/${skillFile.name}`,
-      name: skillFile.name,
-      content: skillFile.content,
-      enabled: true,
-    }));
-
-    const entry: AgentManifestEntry = {
-      agentId,
-      name: agentConfig.name,
-      description: agentConfig.description,
-      settings: { ...markdown },
-    };
-
-    if (agentConfig.providers.length > 0) {
-      entry.settings.installedProviders = agentConfig.providers.map((p) => ({
-        providerId: p.id,
-      }));
-      entry.settings.modelSelection = { mode: "auto" };
-      const providerModelPreferences = Object.fromEntries(
-        agentConfig.providers
-          .filter((provider) => !!provider.model?.trim())
-          .map((provider) => [provider.id, provider.model!.trim()])
-      );
-      if (Object.keys(providerModelPreferences).length > 0) {
-        entry.settings.providerModelPreferences = providerModelPreferences;
-      }
-    }
-
-    if (systemSkills.length > 0 || localSkills.length > 0) {
-      entry.settings.skillsConfig = {
-        skills: [...systemSkills, ...localSkills],
-      };
-    }
-
-    if (agentConfig.network) {
-      entry.settings.networkConfig = {
-        allowedDomains: agentConfig.network.allowed,
-        deniedDomains: agentConfig.network.denied,
-      };
-    }
-
-    if (agentConfig.worker?.nix_packages?.length) {
-      entry.settings.nixConfig = {
-        packages: agentConfig.worker.nix_packages,
-      };
-    }
-
-    if (agentConfig.skills.mcp) {
-      const mcpServers: Record<string, any> = {};
-      for (const [id, mcp] of Object.entries(agentConfig.skills.mcp)) {
-        const mapped: Record<string, any> = { ...mcp };
-        if (mcp.oauth) {
-          mapped.oauth = {
-            authUrl: mcp.oauth.auth_url,
-            tokenUrl: mcp.oauth.token_url,
-            clientId: resolveEnvVar(mcp.oauth.client_id || "", dotenvVars),
-            clientSecret: resolveEnvVar(
-              mcp.oauth.client_secret || "",
-              dotenvVars
-            ),
-            scopes: mcp.oauth.scopes,
-            tokenEndpointAuthMethod: mcp.oauth.token_endpoint_auth_method,
-          };
-        }
-        // Resolve env vars in MCP env block
-        if (mcp.env) {
-          mapped.env = Object.fromEntries(
-            Object.entries(mcp.env).map(([k, v]) => [
-              k,
-              resolveEnvVar(v, dotenvVars),
-            ])
-          );
-        }
-        mcpServers[id] = mapped;
-      }
-      entry.settings.mcpServers = mcpServers;
-    }
-
-    // Resolve provider credentials from $ENV_VAR references
-    const credentials = agentConfig.providers
-      .filter((p) => p.key)
-      .map((p) => ({
-        providerId: p.id,
-        key: resolveEnvVar(p.key!, dotenvVars),
-      }))
-      .filter((c) => c.key); // skip if env var not found
-
-    if (credentials.length > 0) {
-      entry.credentials = credentials;
-    }
-
-    // Resolve connection configs from $ENV_VAR references
-    const connections = agentConfig.connections
-      .map((conn) => ({
-        type: conn.type,
-        config: Object.fromEntries(
-          Object.entries(conn.config).map(([k, v]) => [
-            k,
-            resolveEnvVar(v, dotenvVars),
-          ])
-        ),
-      }))
-      .filter((conn) => Object.values(conn.config).every((v) => v !== "")); // skip if any env var missing
-
-    if (connections.length > 0) {
-      entry.connections = connections;
-    }
-
-    entries.push(entry);
-  }
-
-  const envVars: Record<string, string> = {
-    COMPOSE_PROJECT_NAME: entries[0]?.name
-      ? entries[0].name.toLowerCase().replace(/\s+/g, "-")
-      : basename(cwd),
-  };
-
-  return { manifest: { version: 1, agents: entries }, envVars };
-}
-
-/**
- * Resolve a value that may be a $ENV_VAR reference.
- * Returns the resolved value, or empty string if the env var is not set.
- */
-function resolveEnvVar(value: string, envVars: Record<string, string>): string {
-  if (value.startsWith("$")) {
-    const varName = value.slice(1);
-    return envVars[varName] || process.env[varName] || "";
-  }
-  return value;
 }
 
 function parseEnvFile(content: string): Record<string, string> {

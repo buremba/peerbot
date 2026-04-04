@@ -530,7 +530,7 @@ export class OpenClawWorker implements WorkerExecutor {
               errorMsg
             );
           const userMessage = isAuthError
-            ? "Your AI provider credentials are invalid or expired. Please update them in your settings: /configure"
+            ? "Your AI provider credentials are invalid or expired. End-user provider setup is not available in chat yet. Ask an admin to reconnect the base agent provider."
             : `❌ Session failed: ${errorMsg}`;
           await this.workerTransport.sendStreamDelta(userMessage, true, true);
           if (isAuthError) {
@@ -1124,7 +1124,7 @@ Use it when the user references past discussions or you need context.`);
           } else if (parsed.status === "error") {
             logger.warn(`Owletto login returned error: ${parsed.message}`);
             instructionParts.push(
-              `\n\n## Owletto Memory Not Connected\nOwletto memory is not connected and login could not be started automatically. Tell the user they need to connect their Owletto memory. If owletto_login tool is available, call it to try again. Otherwise direct them to the settings page.`
+              `\n\n## Owletto Memory Not Connected\nOwletto memory is not connected and login could not be started automatically. Tell the user they need to connect their Owletto memory. If owletto_login tool is available, call it to try again. Otherwise tell them an admin or an existing auth flow is required.`
             );
           }
         } catch (err) {
@@ -1745,36 +1745,15 @@ ${fileListing}
     gatewayUrl: string,
     workerToken: string
   ): Promise<string> {
+    void gatewayUrl;
+    void workerToken;
+
     const authHint = getProviderAuthHintFromError(errorMessage, provider);
     if (!authHint) {
       return errorMessage;
     }
 
-    try {
-      const resp = await fetch(`${gatewayUrl}/internal/settings-link`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${workerToken}`,
-        },
-        body: JSON.stringify({
-          reason: `Connect your ${authHint.providerName} account to use ${modelId} models`,
-          providers: [authHint.providerName],
-        }),
-      });
-
-      if (resp.ok) {
-        const { url } = (await resp.json()) as { url: string };
-        return `To use ${modelId}, you need to connect your ${authHint.providerName} account.\n\nOpen settings to add your API key: ${url}`;
-      }
-    } catch (linkError) {
-      logger.error(
-        "Failed to generate settings link for missing API key",
-        linkError
-      );
-    }
-
-    return errorMessage;
+    return `To use ${modelId}, an admin needs to connect ${authHint.providerName} on the base agent. Ask an admin to configure ${authHint.providerName} and then try again.`;
   }
 
   private async maybeBuildAudioPermissionHintMessage(
@@ -1789,7 +1768,9 @@ ${fileListing}
 
     if (
       lower.includes("settings button has been sent") ||
-      lower.includes("open settings")
+      lower.includes("connect button has been sent") ||
+      lower.includes("open settings") ||
+      lower.includes("secure connect link")
     ) {
       return null;
     }
@@ -1799,46 +1780,13 @@ ${fileListing}
         gatewayUrl,
         workerToken,
       });
-      const providers = suggestions.providerIds;
       const providerList =
         suggestions.providerDisplayList || "an audio-capable provider";
 
-      const resp = await fetch(`${gatewayUrl}/internal/settings-link`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${workerToken}`,
-        },
-        body: JSON.stringify({
-          reason: "Fix OpenAI audio permission for voice generation",
-          message: `Your current OpenAI token is missing api.model.audio.request. Switch ChatGPT auth to an API key with audio permission, or connect an available audio provider (${providerList}).`,
-          providers: providers.length > 0 ? providers : undefined,
-        }),
-      });
-
-      if (!resp.ok) {
-        return null;
-      }
-
-      const payload = (await resp.json()) as {
-        type?: string;
-        url?: string;
-      };
-
-      if (payload.type === "settings_link") {
-        return `I sent a settings button in chat. Tap it to connect an audio-capable provider (${providerList}).`;
-      }
-
-      if (payload.url) {
-        return `Open settings to fix voice generation permissions: ${payload.url}`;
-      }
+      return `Voice generation needs an audio-capable provider (${providerList}) connected on the base agent. Ask an admin to connect one of these providers, then try again.`;
     } catch (error) {
-      logger.error(
-        "Failed to generate settings link for missing audio permission",
-        error
-      );
+      logger.error("Failed to fetch audio provider suggestions", error);
+      return null;
     }
-
-    return null;
   }
 }

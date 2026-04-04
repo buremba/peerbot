@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { OpenAPIHono } from "@hono/zod-openapi";
+import { encrypt } from "@lobu/core";
 import { MockRedisClient } from "@lobu/core/testing";
 import { AgentMetadataStore } from "../auth/agent-metadata-store";
 import { AgentSettingsStore } from "../auth/settings/agent-settings-store";
@@ -8,12 +9,16 @@ import { createAgentConfigRoutes } from "../routes/public/agent-config";
 import { setAuthProvider } from "../routes/public/settings-auth";
 
 describe("agent config routes", () => {
+  let originalEncryptionKey: string | undefined;
   let redis: MockRedisClient;
   let agentSettingsStore: AgentSettingsStore;
   let agentMetadataStore: AgentMetadataStore;
   let grantStore: GrantStore;
 
   beforeEach(async () => {
+    originalEncryptionKey = process.env.ENCRYPTION_KEY;
+    process.env.ENCRYPTION_KEY =
+      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
     redis = new MockRedisClient();
     agentSettingsStore = new AgentSettingsStore(redis as any);
     agentMetadataStore = new AgentMetadataStore(redis as any);
@@ -51,6 +56,11 @@ describe("agent config routes", () => {
   });
 
   afterEach(() => {
+    if (originalEncryptionKey !== undefined) {
+      process.env.ENCRYPTION_KEY = originalEncryptionKey;
+    } else {
+      delete process.env.ENCRYPTION_KEY;
+    }
     setAuthProvider(null);
   });
 
@@ -80,7 +90,12 @@ describe("agent config routes", () => {
       "/api/v1/agents/:agentId/config",
       createAgentConfigRoutes({
         agentSettingsStore,
-        agentMetadataStore,
+        agentConfigStore: {
+          getSettings: (agentId: string) =>
+            agentSettingsStore.getSettings(agentId),
+          getMetadata: (agentId: string) =>
+            agentMetadataStore.getMetadata(agentId),
+        },
         grantStore,
         scheduledWakeupService: scheduledWakeupService as any,
       })
@@ -125,33 +140,115 @@ describe("agent config routes", () => {
     expect(data.tools.schedules[0]?.scheduleId).toBe("schedule-1");
   });
 
-  test("POST /reset-section clears sandbox overrides and restores inheritance", async () => {
+  test("GET /config accepts direct query token auth", async () => {
+    const app = buildApp();
+    const token = encrypt(
+      JSON.stringify({
+        agentId: "telegram-1",
+        userId: "u1",
+        platform: "telegram",
+        exp: Date.now() + 60_000,
+        settingsMode: "user",
+        allowedScopes: ["view-model", "system-prompt", "permissions"],
+      })
+    );
+
+    const response = await app.request(
+      `/api/v1/agents/telegram-1/config?token=${encodeURIComponent(token)}`
+    );
+
+    expect(response.status).toBe(200);
+    const data = (await response.json()) as any;
+    expect(data.agentId).toBe("telegram-1");
+    expect(data.scope).toBe("sandbox");
+  });
+
+  test("GET /config keeps exact agent tokens read-only when settingsMode is missing", async () => {
+    const app = buildApp();
+    const token = encrypt(
+      JSON.stringify({
+        agentId: "telegram-1",
+        userId: "u1",
+        platform: "telegram",
+        exp: Date.now() + 60_000,
+      })
+    );
+
+    const response = await app.request(
+      `/api/v1/agents/telegram-1/config?token=${encodeURIComponent(token)}`
+    );
+
+    expect(response.status).toBe(200);
+    const data = (await response.json()) as any;
+    expect(data.sections.model.editable).toBe(false);
+    expect(data.sections["system-prompt"].editable).toBe(false);
+  });
+
+  test("GET /config rejects direct query token for the wrong agent", async () => {
+    const app = buildApp();
+    const token = encrypt(
+      JSON.stringify({
+        agentId: "template-agent",
+        userId: "u1",
+        platform: "telegram",
+        exp: Date.now() + 60_000,
+        settingsMode: "user",
+      })
+    );
+
+    const response = await app.request(
+      `/api/v1/agents/telegram-1/config?token=${encodeURIComponent(token)}`
+    );
+
+    expect(response.status).toBe(401);
+  });
+
+  test("GET /config reads effective settings from the settings store", async () => {
     setAuthProvider(() => ({
       agentId: "telegram-1",
       userId: "u1",
       platform: "telegram",
       exp: Date.now() + 60_000,
       settingsMode: "user",
-      allowedScopes: ["system-prompt"],
+      allowedScopes: ["view-model", "system-prompt"],
+    }));
+
+    const app = new OpenAPIHono();
+    app.route(
+      "/api/v1/agents/:agentId/config",
+      createAgentConfigRoutes({
+        agentSettingsStore,
+        agentConfigStore: {
+          getSettings: async () => null,
+          getMetadata: (agentId: string) =>
+            agentMetadataStore.getMetadata(agentId),
+        },
+      })
+    );
+
+    const response = await app.request("/api/v1/agents/telegram-1/config");
+
+    expect(response.status).toBe(200);
+    const data = (await response.json()) as any;
+    expect(data.instructions.identity).toBe("Local identity");
+    expect(data.instructions.soul).toBe("Template soul");
+    expect(data.providers.order).toEqual(["chatgpt"]);
+    expect(data.templateAgentId).toBe("template-agent");
+  });
+
+  test("GET /config grants owners full access even when browser session has no settingsMode", async () => {
+    setAuthProvider(() => ({
+      userId: "u1",
+      platform: "telegram",
+      exp: Date.now() + 60_000,
     }));
 
     const app = buildApp();
-    const response = await app.request(
-      "/api/v1/agents/telegram-1/config/reset-section",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ section: "system-prompt" }),
-      }
-    );
+    const response = await app.request("/api/v1/agents/telegram-1/config");
+
     expect(response.status).toBe(200);
-
-    const localSettings = await agentSettingsStore.getSettings("telegram-1");
-    const effectiveSettings =
-      await agentSettingsStore.getEffectiveSettings("telegram-1");
-
-    expect(localSettings?.identityMd).toBeUndefined();
-    expect(effectiveSettings?.identityMd).toBe("Template identity");
-    expect(effectiveSettings?.soulMd).toBe("Template soul");
+    const data = (await response.json()) as any;
+    expect(data.sections.model.editable).toBe(true);
+    expect(data.sections["system-prompt"].editable).toBe(true);
   });
 });

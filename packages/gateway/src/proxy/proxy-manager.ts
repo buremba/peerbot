@@ -61,7 +61,7 @@ export async function startFilteringProxy(): Promise<void> {
 /**
  * Stop filtering proxy (cleanup on shutdown)
  */
-export async function stopFilteringProxy(): Promise<void> {
+async function stopFilteringProxy(): Promise<void> {
   if (proxyServer) {
     logger.info("Stopping HTTP proxy...");
     await stopHttpProxy(proxyServer);

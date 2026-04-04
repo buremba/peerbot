@@ -5,12 +5,10 @@ import type {
   InstructionProvider,
   UserSuggestion,
 } from "@lobu/core";
-import type { AdminStatusCache } from "./auth/admin-status-cache";
 import type { AgentMetadataStore } from "./auth/agent-metadata-store";
 import type { McpProxy } from "./auth/mcp/proxy";
 import type { ProviderOAuthStateStore } from "./auth/oauth/state-store";
 import type { AgentSettingsStore } from "./auth/settings";
-import type { ClaimService } from "./auth/settings/claim-service";
 import type { ModelPreferenceStore } from "./auth/settings/model-preference-store";
 import type { UserAgentsStore } from "./auth/user-agents-store";
 import type { ChannelBindingService } from "./channels";
@@ -50,10 +48,8 @@ export interface CoreServices {
   getTranscriptionService(): TranscriptionService | undefined;
   getUserAgentsStore(): UserAgentsStore;
   getAgentMetadataStore(): AgentMetadataStore;
-  getAdminStatusCache(): AdminStatusCache;
   getCommandRegistry(): CommandRegistry;
   getGrantStore(): GrantStore | undefined;
-  getClaimService(): ClaimService | undefined;
 }
 
 // ============================================================================

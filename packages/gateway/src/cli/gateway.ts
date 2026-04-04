@@ -195,46 +195,6 @@ export function createGatewayApp(
     }
   }
 
-  // Settings link routes (worker can generate settings links for users)
-  {
-    const {
-      createSettingsLinkRoutes,
-    } = require("../routes/internal/settings-link");
-    const settingsLinkRouter = createSettingsLinkRoutes(
-      interactionService,
-      coreServices?.getGrantStore(),
-      coreServices?.getClaimService()
-    );
-    app.route("", settingsLinkRouter);
-    logger.debug(
-      "Settings link routes enabled at :8080/internal/settings-link"
-    );
-  }
-
-  // Integrations discovery routes (unified skills + MCP search for workers)
-  {
-    const {
-      createIntegrationsDiscoveryRoutes,
-    } = require("../routes/internal/integrations-discovery");
-    const { SkillRegistryCoordinator } = require("../services/skill-registry");
-    const { McpDiscoveryService } = require("../services/mcp-discovery");
-    const skillRegistryCoordinator = new SkillRegistryCoordinator();
-    const mcpDiscovery = new McpDiscoveryService({
-      configResolver: coreServices.getSystemConfigResolver(),
-    });
-    const integrationsDiscoveryRouter = createIntegrationsDiscoveryRoutes({
-      coordinator: skillRegistryCoordinator,
-      mcpDiscovery,
-      agentSettingsStore: coreServices?.getAgentSettingsStore(),
-      systemConfigResolver: coreServices?.getSystemConfigResolver(),
-      grantStore: coreServices?.getGrantStore(),
-    });
-    app.route("", integrationsDiscoveryRouter);
-    logger.debug(
-      "Integrations discovery routes enabled at :8080/internal/integrations/*"
-    );
-  }
-
   // Device auth routes (gateway-mediated OAuth for workers)
   if (coreServices) {
     const {
@@ -294,19 +254,7 @@ export function createGatewayApp(
     cliTokenService = new CliTokenService(redisClient);
   }
 
-  // Messaging routes (already Hono)
-  if (platformRegistry) {
-    const { createMessagingRoutes } = require("../routes/public/messaging");
-    const messagingRouter = createMessagingRoutes(platformRegistry, {
-      adminPassword,
-      cliTokenService,
-      externalAuthClient: coreServices?.getSettingsOAuthClient(),
-    });
-    app.route("", messagingRouter);
-    logger.debug("Messaging routes enabled at :8080/api/v1/messaging/send");
-  }
-
-  // Agent API routes (direct API access)
+  // Agent API routes (direct API access + platform-routed messaging)
   if (coreServices) {
     const queueProducer = coreServices.getQueueProducer();
     const sessionMgr = coreServices.getSessionManager();
@@ -321,8 +269,10 @@ export function createGatewayApp(
         publicGatewayUrl: publicUrl,
         adminPassword,
         cliTokenService,
-        externalAuthClient: coreServices.getSettingsOAuthClient(),
+        externalAuthClient: coreServices.getExternalAuthClient(),
         agentSettingsStore: coreServices.getAgentSettingsStore(),
+        agentConfigStore: coreServices.getConfigStore(),
+        platformRegistry,
       });
       app.route("", agentApi);
       logger.debug(
@@ -337,25 +287,33 @@ export function createGatewayApp(
     const registeredProviders: string[] = [];
 
     {
-      const { createCliAuthRoutes } = require("../routes/public/cli-auth");
+      const {
+        createCliAuthRoutes,
+        createConnectAuthRoutes,
+      } = require("../routes/public/cli-auth");
       const cliAuthRouter = createCliAuthRoutes({
         queue: coreServices.getQueue(),
-        externalAuthClient: coreServices.getSettingsOAuthClient(),
+        externalAuthClient: coreServices.getExternalAuthClient(),
+        allowAdminPasswordLogin: process.env.NODE_ENV !== "production",
+        adminPassword,
+      });
+      const connectAuthRouter = createConnectAuthRoutes({
+        queue: coreServices.getQueue(),
+        externalAuthClient: coreServices.getExternalAuthClient(),
         allowAdminPasswordLogin: process.env.NODE_ENV !== "production",
         adminPassword,
       });
       authRouter.route("", cliAuthRouter);
+      app.route("", connectAuthRouter);
       registeredProviders.push("cli-auth");
     }
 
-    // Dynamically mount model provider auth routes
     const providerModules = getModelProviderModules();
 
-    // Shared save-key, device-code, and logout handlers (parameterized by :provider)
     const authProfilesManager = coreServices.getAuthProfilesManager();
     if (authProfilesManager) {
       const {
-        verifySettingsSession,
+        verifySettingsSessionOrToken,
       } = require("../routes/public/settings-auth");
       const {
         createAuthProfileLabel,
@@ -363,18 +321,16 @@ export function createGatewayApp(
       const agentMetadataStore = coreServices.getAgentMetadataStore();
       const userAgentsStore = coreServices.getUserAgentsStore();
 
-      /** Verify session cookie authorizes access to the given agentId */
       const verifyProviderAuth = async (
         c: any,
         agentId: string
       ): Promise<boolean> => {
-        const payload = verifySettingsSession(c);
+        const payload = verifySettingsSessionOrToken(c);
         if (!payload) return false;
+        if (payload.isAdmin) return true;
 
-        // Agent-based token: must match exactly
         if (payload.agentId) return payload.agentId === agentId;
 
-        // Channel-based token: check user-agent association or metadata owner
         if (userAgentsStore) {
           const owns = await userAgentsStore.ownsAgent(
             payload.platform,
@@ -383,13 +339,13 @@ export function createGatewayApp(
           );
           if (owns) return true;
         }
+
         if (agentMetadataStore) {
           const metadata = await agentMetadataStore.getMetadata(agentId);
           const isOwner =
             metadata?.owner?.platform === payload.platform &&
             metadata?.owner?.userId === payload.userId;
           if (isOwner) {
-            // Reconcile missing index
             userAgentsStore
               ?.addAgent(payload.platform, payload.userId, agentId)
               .catch(() => {
@@ -398,6 +354,7 @@ export function createGatewayApp(
             return true;
           }
         }
+
         return false;
       };
 
@@ -537,7 +494,6 @@ export function createGatewayApp(
 
           const body = await c.req.json().catch(() => ({}));
           const agentId = body.agentId || c.req.query("agentId");
-
           if (!agentId) {
             return c.json({ error: "Missing agentId" }, 400);
           }
@@ -560,13 +516,6 @@ export function createGatewayApp(
       });
     }
 
-    for (const mod of providerModules) {
-      if (mod.getApp) {
-        authRouter.route(`/${mod.providerId}`, mod.getApp());
-        registeredProviders.push(mod.providerId);
-      }
-    }
-
     // Get shared dependencies (needed before mounting auth router)
     const agentSettingsStore = coreServices.getAgentSettingsStore();
     const claudeOAuthStateStore = coreServices.getOAuthStateStore();
@@ -581,100 +530,29 @@ export function createGatewayApp(
     for (const mod of providerModules) {
       providerStores[mod.providerId] = mod;
       providerConnectedOverrides[mod.providerId] = mod.hasSystemKey();
+      if (mod.getApp) {
+        authRouter.route(`/${mod.providerId}`, mod.getApp());
+        registeredProviders.push(mod.providerId);
+      }
     }
 
-    // Settings HTML page (requires claim service; OAuth client is optional)
-    const settingsOAuthClient = coreServices.getSettingsOAuthClient();
-    const settingsOAuthStateStore = coreServices.getSettingsOAuthStateStore();
-    const claimServiceForSettings = coreServices.getClaimService();
-    if (agentSettingsStore && claimServiceForSettings) {
-      const {
-        createAgentPageRoutes,
-      } = require("../routes/public/agent-settings");
-      const agentPageRouter = createAgentPageRoutes({
-        agentSettingsStore,
-        userAgentsStore: coreServices.getUserAgentsStore(),
-        agentMetadataStore: coreServices.getAgentMetadataStore(),
-        channelBindingService: coreServices.getChannelBindingService(),
-        connectionManager: coreServices
-          .getWorkerGateway()
-          ?.getConnectionManager(),
-        chatInstanceManager: chatInstanceManager ?? undefined,
-        settingsOAuthClient: settingsOAuthClient ?? undefined,
-        settingsOAuthStateStore: settingsOAuthStateStore ?? undefined,
-        claimService: claimServiceForSettings,
-        platformRegistry,
-        interactionService,
-        queueProducer: coreServices.getQueueProducer(),
+    const systemSkillsService = coreServices.getSystemSkillsService();
+
+    if (systemSkillsService) {
+      const { SystemEnvStore } = require("../auth/system-env-store");
+      const { setEnvResolver } = require("../auth/mcp/string-substitution");
+      const systemEnvStore = new SystemEnvStore(
+        coreServices.getQueue().getRedisClient()
+      );
+      systemEnvStore.refreshCache().catch((e: any) => {
+        logger.error("Failed to refresh system env cache", { error: e });
       });
-      app.route("", agentPageRouter);
-      logger.debug(
-        `Agent page enabled at :8080/agent (${settingsOAuthClient ? "with OAuth" : "Telegram initData only, OAuth not configured"})`
-      );
+      setEnvResolver((key: string) => systemEnvStore.resolve(key));
+    }
 
-      // Admin page (system skills registry)
-      const systemSkillsService = coreServices.getSystemSkillsService();
-      if (systemSkillsService) {
-        // System env store (Redis-backed env var overrides)
-        const { SystemEnvStore } = require("../auth/system-env-store");
-        const { setEnvResolver } = require("../auth/mcp/string-substitution");
-        const systemEnvStore = new SystemEnvStore(
-          coreServices.getQueue().getRedisClient()
-        );
-        systemEnvStore.refreshCache().catch((e: any) => {
-          logger.error("Failed to refresh system env cache", { error: e });
-        });
-        setEnvResolver((key: string) => systemEnvStore.resolve(key));
-
-        if (!process.env.ADMIN_PASSWORD) {
-          logger.info(`Admin password (auto-generated): ${adminPassword}`);
-          logger.info("Set ADMIN_PASSWORD env var to use a fixed password.");
-        }
-
-        const {
-          createAgentsPageRoutes,
-        } = require("../routes/public/agents-page");
-        const agentsPageRouter = createAgentsPageRoutes({
-          systemSkillsService,
-          userAgentsStore: coreServices.getUserAgentsStore(),
-          agentMetadataStore: coreServices.getAgentMetadataStore(),
-          chatInstanceManager: chatInstanceManager ?? undefined,
-          systemEnvStore,
-          adminPassword,
-          oauthEnabled: !!settingsOAuthClient,
-          version: process.env.npm_package_version || "2.6.1",
-          githubUrl: "https://github.com/lobu-ai/lobu",
-        });
-        app.route("", agentsPageRouter);
-
-        // Serve agents page JS bundle from disk (bypasses bun module cache)
-        const agentsPageBundlePath = require("node:path").resolve(
-          __dirname,
-          "../routes/public/agents-page-bundle.raw.js"
-        );
-        app.get("/agents-bundle.js", (c: any) => {
-          try {
-            const js = require("node:fs").readFileSync(
-              agentsPageBundlePath,
-              "utf-8"
-            );
-            return c.body(js, 200, {
-              "Content-Type": "application/javascript; charset=utf-8",
-              "Cache-Control": "no-store",
-            });
-          } catch {
-            return c.body("// bundle not found", 404, {
-              "Content-Type": "application/javascript",
-            });
-          }
-        });
-
-        logger.debug("Agents page enabled at :8080/agents");
-      }
-    } else if (agentSettingsStore) {
-      logger.warn(
-        "Settings page disabled: missing claim service configuration"
-      );
+    if (!process.env.ADMIN_PASSWORD) {
+      logger.info(`Admin password (auto-generated): ${adminPassword}`);
+      logger.info("Set ADMIN_PASSWORD env var to use a fixed password.");
     }
 
     // Landing page (docs + integrations)
@@ -697,27 +575,13 @@ export function createGatewayApp(
         const agentHistoryRouter = createAgentHistoryRoutes({
           connectionManager,
           chatInstanceManager: chatInstanceManager ?? undefined,
-          agentMetadataStore: coreServices.getAgentMetadataStore(),
+          agentConfigStore: coreServices.getConfigStore(),
+          userAgentsStore: coreServices.getUserAgentsStore(),
         });
         app.route("/api/v1/agents/:agentId/history", agentHistoryRouter);
         logger.debug(
           "Agent history routes enabled at :8080/api/v1/agents/{agentId}/history/*"
         );
-
-        // History HTML page
-        const { renderHistoryPage } = require("../routes/public/history-page");
-        const {
-          verifySettingsSession,
-        } = require("../routes/public/settings-auth");
-        app.get("/agent/:agentId/history", (c: any) => {
-          const session = verifySettingsSession(c);
-          if (!session) {
-            return c.redirect("/agent");
-          }
-          const agentId = c.req.param("agentId");
-          return c.html(renderHistoryPage(agentId));
-        });
-        logger.debug("History page enabled at :8080/agent/{agentId}/history");
       }
     }
 
@@ -729,8 +593,8 @@ export function createGatewayApp(
 
       const agentConfigRouter = createAgentConfigRoutes({
         agentSettingsStore,
+        agentConfigStore: coreServices.getConfigStore()!,
         userAgentsStore: coreServices.getUserAgentsStore(),
-        agentMetadataStore: coreServices.getAgentMetadataStore(),
         queue: coreServices.getQueue(),
         providerStores:
           Object.keys(providerStores).length > 0 ? providerStores : undefined,
@@ -756,26 +620,13 @@ export function createGatewayApp(
       } = require("../routes/public/agent-schedules");
       const agentSchedulesRouter = createAgentSchedulesRoutes({
         scheduledWakeupService,
-        externalAuthClient: coreServices.getSettingsOAuthClient(),
+        externalAuthClient: coreServices.getExternalAuthClient(),
+        userAgentsStore: coreServices.getUserAgentsStore(),
+        agentMetadataStore: coreServices.getConfigStore(),
       });
       app.route("/api/v1/agents/:agentId/schedules", agentSchedulesRouter);
       logger.debug(
         "Agent schedules routes enabled at :8080/api/v1/agents/{id}/schedules"
-      );
-    }
-
-    // Integrations routes (unified skills + MCP registry)
-    {
-      const {
-        createIntegrationsRoutes,
-      } = require("../routes/public/integrations");
-      const integrationsRouter = createIntegrationsRoutes({
-        configResolver: coreServices.getSystemConfigResolver(),
-        agentSettingsStore: coreServices.getAgentSettingsStore(),
-      });
-      app.route("/api/v1/integrations", integrationsRouter);
-      logger.debug(
-        "Integrations routes enabled at :8080/api/v1/integrations/*"
       );
     }
 
@@ -835,8 +686,6 @@ export function createGatewayApp(
       app.route("/api/v1/agents", agentManagementRouter);
       logger.debug("Agent management routes enabled at :8080/api/v1/agents/*");
     }
-
-    // Agent selector is now handled by the unified agent page (/agent)
   }
 
   // Chat SDK connection routes (webhook + CRUD)
@@ -855,13 +704,43 @@ export function createGatewayApp(
       "",
       createConnectionCrudRoutes(chatInstanceManager, {
         userAgentsStore: coreServices.getUserAgentsStore(),
-        agentMetadataStore: coreServices.getAgentMetadataStore(),
+        agentMetadataStore: coreServices.getConfigStore()!,
       })
     );
     logger.debug(
       "Slack and connection routes enabled at :8080/slack/*, :8080/api/v1/connections/*, and :8080/api/v1/webhooks/*"
     );
   }
+
+  // ─── Reload endpoint (file-first dev mode) ──────────────────────────────────
+  // Re-reads lobu.toml + markdown and re-populates InMemoryAgentStore.
+  // Only works in dev mode (files exist), authenticated with ADMIN_PASSWORD.
+  app.post("/api/v1/reload", async (c) => {
+    if (process.env.NODE_ENV === "production") {
+      return c.json({ error: "Not found" }, 404);
+    }
+    const authHeader = c.req.header("Authorization");
+    if (authHeader !== `Bearer ${adminPassword}`) {
+      return c.json({ error: "Unauthorized" }, 401);
+    }
+
+    if (!coreServices?.isFileFirstMode()) {
+      return c.json(
+        { error: "Reload only available in file-first dev mode" },
+        400
+      );
+    }
+
+    try {
+      const result = await coreServices.reloadFromFiles();
+      return c.json(result);
+    } catch (err) {
+      logger.error("Reload failed", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return c.json({ error: "Reload failed" }, 500);
+    }
+  });
 
   // ─── Internal CLI status endpoint ──────────────────────────────────────────
   // Returns agents, connections, and sandboxes for `lobu status`.
@@ -875,11 +754,10 @@ export function createGatewayApp(
       return c.json({ error: "Unauthorized" }, 401);
     }
 
-    const agentMetadataStore = coreServices?.getAgentMetadataStore();
-    const agentSettingsStore = coreServices?.getAgentSettingsStore();
+    const agentConfigStore = coreServices?.getConfigStore();
 
-    const allAgents: AgentMetadata[] = agentMetadataStore
-      ? await agentMetadataStore.listAllAgents()
+    const allAgents: AgentMetadata[] = agentConfigStore
+      ? await agentConfigStore.listAgents()
       : [];
     const templateAgents = allAgents.filter(
       (a: AgentMetadata) => !a.parentConnectionId
@@ -894,8 +772,8 @@ export function createGatewayApp(
 
     const agentDetails = [];
     for (const a of templateAgents) {
-      const settings = agentSettingsStore
-        ? await agentSettingsStore.getSettings(a.agentId)
+      const settings = agentConfigStore
+        ? await agentConfigStore.getSettings(a.agentId)
         : null;
       const providers = (settings?.installedProviders || []).map(
         (p: { providerId: string }) => p.providerId
@@ -1333,11 +1211,36 @@ export async function startGateway(config: GatewayConfig): Promise<void> {
     }
     logger.debug("ChatInstanceManager initialized");
 
-    // Seed connections from manifest (CLI-managed projects)
-    const { seedConnectionsFromManifest } = await import(
-      "../services/agent-seeder"
-    );
-    await seedConnectionsFromManifest(chatInstanceManager);
+    // Seed connections from file-loaded agents (file-first architecture)
+    const fileLoadedAgents = coreServices.getFileLoadedAgents();
+    if (fileLoadedAgents.length > 0) {
+      for (const agent of fileLoadedAgents) {
+        if (!agent.connections?.length) continue;
+        for (const conn of agent.connections) {
+          const existing = await chatInstanceManager.listConnections({
+            platform: conn.type,
+            templateAgentId: agent.agentId,
+          });
+          if (existing.length > 0) continue;
+          try {
+            await chatInstanceManager.addConnection(
+              conn.type,
+              agent.agentId,
+              { platform: conn.type as any, ...conn.config },
+              { allowGroups: true }
+            );
+            logger.debug(
+              `Created ${conn.type} connection for agent "${agent.agentId}"`
+            );
+          } catch (err) {
+            logger.error(
+              `Failed to create ${conn.type} connection for agent "${agent.agentId}"`,
+              { error: err instanceof Error ? err.message : String(err) }
+            );
+          }
+        }
+      }
+    }
 
     // Wire ChatResponseBridge into unified thread consumer
     const unifiedConsumer = gateway.getUnifiedConsumer();

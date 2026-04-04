@@ -13,15 +13,15 @@
     }
   },
   "scripts": {
-    "generate:css": "bun run scripts/generate-css.ts",
-    "build": "bun run generate:css && bun run scripts/build-history.ts && bun run scripts/build-agent.ts && bun run scripts/build-agents.ts && tsc",
-    "dev": "bun run generate:css && bun run scripts/build-history.ts && bun run scripts/build-agent.ts && bun run scripts/build-agents.ts && DEPLOYMENT_MODE=docker bun --watch src/index.ts -- --env ../../.env",
+    "build": "tsc",
+    "dev": "DEPLOYMENT_MODE=docker bun --watch src/index.ts -- --env ../../.env",
     "start": "cd ../core && bun run build && cd ../gateway && bun src/index.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@chat-adapter/discord": "^4",
+    "@chat-adapter/gchat": "^4",
     "@chat-adapter/slack": "^4",
     "@chat-adapter/state-ioredis": "^4",
     "@chat-adapter/teams": "^4",
@@ -41,23 +41,13 @@
     "dotenv": "^17.2.1",
     "hono": "^4.11.7",
     "ioredis": "^5.4.1",
-    "jose": "^6.0.11",
-    "jsonwebtoken": "^9.0.2",
-    "marked": "^12.0.0",
-    "pino": "^9.1.0",
+    "smol-toml": "^1.3.1",
     "yaml": "^2.7.1",
     "zod": "^4.1.12"
   },
   "devDependencies": {
-    "@preact/signals": "^2.0.0",
-    "@tailwindcss/typography": "^0.5.19",
-    "@tanstack/react-virtual": "^3.11.2",
     "@types/dockerode": "^3.3.29",
-    "@types/express": "^4.17.21",
-    "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^20.0.0",
-    "esbuild": "^0.24.0",
-    "preact": "^10.25.0",
     "typescript": "^5.8.3"
   }
 }

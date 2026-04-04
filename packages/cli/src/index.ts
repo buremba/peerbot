@@ -48,12 +48,26 @@ export async function runCli(
     .command("chat <prompt>")
     .description("Send a prompt to an agent and stream the response")
     .option("-a, --agent <id>", "Agent ID (defaults to first in lobu.toml)")
+    .option("-u, --user <id>", "User ID to impersonate (e.g. telegram:12345)")
+    .option("-t, --thread <id>", "Thread/conversation ID for multi-turn")
     .option(
       "-g, --gateway <url>",
       "Gateway URL (default: http://localhost:8080)"
     )
+    .option("--dry-run", "Process without persisting history")
+    .option("--new", "Force new session (ignore existing)")
     .action(
-      async (prompt: string, options: { agent?: string; gateway?: string }) => {
+      async (
+        prompt: string,
+        options: {
+          agent?: string;
+          gateway?: string;
+          user?: string;
+          thread?: string;
+          dryRun?: boolean;
+          new?: boolean;
+        }
+      ) => {
         const { chatCommand } = await import("./commands/chat.js");
         await chatCommand(process.cwd(), prompt, options);
       }
@@ -69,32 +83,18 @@ export async function runCli(
       if (!valid) process.exit(1);
     });
 
-  // ─── dev ────────────────────────────────────────────────────────────
+  // ─── run ────────────────────────────────────────────────────────────
   // Passthrough to docker compose up — all extra args forwarded directly.
-  //   lobu dev -d --build  →  docker compose up -d --build
+  //   lobu run -d --build  →  docker compose up -d --build
   program
-    .command("dev")
-    .description("Run agent locally (reads lobu.toml, then docker compose up)")
+    .command("run")
+    .description("Run agent stack (reads lobu.toml, then docker compose up)")
     .allowUnknownOption(true)
     .helpOption(false)
     .action(async (_opts: unknown, cmd: Command) => {
       const { devCommand } = await import("./commands/dev.js");
       await devCommand(process.cwd(), cmd.args);
     });
-
-  // ─── launch ─────────────────────────────────────────────────────────
-  program
-    .command("launch")
-    .description("Launch agent to Lobu Cloud")
-    .option("-e, --env <env>", "Target environment")
-    .option("--dry-run", "Show what would change")
-    .option("-m, --message <message>", "Deployment note")
-    .action(
-      async (options: { env?: string; dryRun?: boolean; message?: string }) => {
-        const { launchCommand } = await import("./commands/launch.js");
-        await launchCommand(process.cwd(), options);
-      }
-    );
 
   // ─── login ──────────────────────────────────────────────────────────
   program

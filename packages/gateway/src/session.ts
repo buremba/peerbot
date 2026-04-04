@@ -1,9 +1,4 @@
-import type {
-  AgentMcpConfig,
-  NetworkConfig,
-  NixConfig,
-  SessionContext,
-} from "@lobu/core";
+import type { AgentMcpConfig, NetworkConfig, NixConfig } from "@lobu/core";
 
 /**
  * Platform-agnostic session types and utilities
@@ -40,6 +35,10 @@ export interface ThreadSession {
   mcpConfig?: AgentMcpConfig;
   /** Nix environment configuration for agent workspace */
   nixConfig?: NixConfig;
+  /** Original agent ID (before composite session key generation) */
+  agentId?: string;
+  /** Process without persisting history */
+  dryRun?: boolean;
 }
 
 /**
@@ -51,9 +50,10 @@ export function computeSessionKey(session: {
   channelId: string;
   conversationId: string;
 }): string {
-  // For API platform, channelId starts with "api-" and we just use conversationId
+  // For API platform, channelId starts with "api-" or "api_" and we just use conversationId
   if (
     session.channelId.startsWith("api-") ||
+    session.channelId.startsWith("api_") ||
     session.channelId === session.conversationId
   ) {
     return session.conversationId;
@@ -107,26 +107,4 @@ export interface ISessionManager {
   ): Promise<{ allowed: boolean; owner?: string }>;
   touchSession(sessionKey: string): Promise<void>;
   cleanupExpired(ttl: number): Promise<number>;
-}
-
-// ============================================================================
-// Utilities
-// ============================================================================
-
-/**
- * Generate session key from context
- */
-export function generateSessionKey(context: SessionContext): string {
-  // Use conversation ID as the session key (if in a conversation)
-  // Otherwise use message ID
-  const id = context.conversationId || context.messageId || "";
-
-  // If we have a conversation ID, use it directly as the session key
-  // This ensures consistency across all worker executions in the same conversation
-  if (context.conversationId) {
-    return context.conversationId;
-  }
-
-  // For direct messages (no conversation), use the channel and message ID
-  return `${context.channelId}-${id}`;
 }

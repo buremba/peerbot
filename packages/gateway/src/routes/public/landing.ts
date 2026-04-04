@@ -1,14 +1,15 @@
 import { Hono } from "hono";
-import { verifySettingsSession } from "./settings-auth";
 
 export function createLandingRoutes() {
   const app = new Hono();
 
   app.get("/", (c) => {
-    const session = verifySettingsSession(c);
-    if (session?.isAdmin) return c.redirect("/agents");
-    if (session) return c.redirect("/agent");
-    return c.redirect("/agents/login");
+    return c.json({
+      name: "Lobu Gateway",
+      mode: "api-only",
+      docs: "/api/docs",
+      health: "/health",
+    });
   });
 
   return app;

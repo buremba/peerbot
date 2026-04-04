@@ -5,7 +5,7 @@ FROM node:20-alpine
 RUN apk add --no-cache curl bash docker-cli xz shadow gcompat coreutils && \
     curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash && \
     chmod +x /usr/local/bin/bun
-ENV PATH="/usr/local/bin:${PATH}"
+ENV PATH="/app/node_modules/.bin:/app/packages/worker/node_modules/.bin:/usr/local/bin:${PATH}"
 
 # Install Nix (single-user mode) for embedded deployment mode nix-shell support
 RUN adduser -D -u 1001 nixuser && mkdir -p /nix && chown nixuser:nixuser /nix
@@ -43,20 +43,14 @@ COPY packages/gateway/ ./packages/gateway/
 COPY packages/worker/ ./packages/worker/
 # Copy CLI's mcp-servers.json (referenced by gateway's mcp-registry)
 COPY packages/cli/src/mcp-servers.json ./packages/cli/src/mcp-servers.json
-# Copy system skills registry (provider catalog, integrations, MCP configs)
+# Copy system skills config (provider catalog, integrations, MCP configs)
 COPY config/system-skills.json ./config/system-skills.json
-COPY config/skill-registries.json ./config/skill-registries.json
 
 # Build core package dist (used by Node.js in production, Bun uses src/ via conditional exports)
 WORKDIR /app/packages/core
 RUN bunx tsc
 
-# Generate Tailwind CSS and page bundles
 WORKDIR /app/packages/gateway
-RUN bun run generate:css && \
-    bun run scripts/build-history.ts && \
-    bun run scripts/build-agent.ts && \
-    bun run scripts/build-agents.ts
 
 WORKDIR /app
 
@@ -69,4 +63,4 @@ RUN chmod -R a+rX /app
 
 # Run with bun for TypeScript support and hot reload in dev
 ENTRYPOINT []
-CMD ["sh", "-lc", "cd /app/packages/gateway && bun run generate:css >/dev/null 2>&1 && bun run scripts/build-history.ts >/dev/null 2>&1 && bun run scripts/build-agent.ts >/dev/null 2>&1 && bun run scripts/build-agents.ts >/dev/null 2>&1 && cd /app && exec bun --watch packages/gateway/src/index.ts"]
+CMD ["sh", "-lc", "exec bun --watch /app/packages/gateway/src/index.ts"]

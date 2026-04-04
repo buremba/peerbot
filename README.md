@@ -82,14 +82,14 @@ Every Lobu agent comes equipped with a suite of tools for autonomous execution a
 | Feature | Description | Built-in Tools |
 | :--- | :--- | :--- |
 | **Autonomous Scheduling** | Schedule one-time or recurring execution via cron. | `ScheduleReminder`, `ListReminders`, `CancelReminder` |
-| **Human-in-the-Loop** | Pause for user input via buttons and resume when answered. | `AskUserQuestion`, `Configure` |
+| **Human-in-the-Loop** | Pause for user input via buttons and resume when answered. | `AskUserQuestion` |
 | **Full Linux Toolbox** | Sandboxed shell access, file editing, and advanced search. | `bash`, `read`, `write`, `edit`, `grep`, `find`, `ls` |
 | **Conversation Context** | Pull earlier thread messages when the user references prior work. | `GetChannelHistory` |
 | **File & Media Delivery** | Share reports, charts, or generated voice messages. | `UploadUserFile`, `GenerateAudio` |
-| **Self-Expansion** | Search and dynamically install new skills or MCP servers. | `SearchSkills`, `InstallSkill` |
+| **Skills** | Extend agent capabilities via skills configured in lobu.toml or the admin settings page. | `lobu.toml`, Settings UI |
 | **Connected APIs** | Access third-party APIs (GitHub, Google, etc.) through Owletto MCP tools with managed OAuth. | MCP tools via Owletto |
 | **Managed MCP Proxy** | Securely connect to any MCP server with secret injection. | [MCP Proxy](docs/SECURITY.md#credentials) |
-| **Advanced Capabilities** | Extend agent abilities with web browsing, headless UI interaction, and specialized utilities via Nix packages or external MCP servers. | `bash` (Nix), `SearchSkills`, `InstallSkill` (MCP) |
+| **Advanced Capabilities** | Extend agent abilities with web browsing, headless UI interaction, and specialized utilities via Nix packages or external MCP servers. | `bash` (Nix), MCP servers |
 
 ### Popular MCP Integrations
 Workers access third-party APIs through MCP servers. OAuth and credential management is handled by Owletto:

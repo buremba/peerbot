@@ -1,6 +1,29 @@
 ---
 import StarlightPage from "@astrojs/starlight/components/StarlightPage.astro";
-import { ScalarComponent } from "@scalar/astro";
+
+// Fetch spec server-side (build time for prod, per-request in dev) — no CORS issues
+const specOrigin = import.meta.env.DEV
+  ? "http://localhost:8080"
+  : "https://community.lobu.ai";
+
+let spec: string | null = null;
+try {
+  const res = await fetch(`${specOrigin}/api/docs/openapi.json`);
+  if (res.ok) {
+    const text = await res.text();
+    if (text.length > 0) spec = text;
+  }
+} catch {}
+
+const config = JSON.stringify({
+  ...(spec
+    ? { content: spec }
+    : { url: `${specOrigin}/api/docs/openapi.json` }),
+  theme: "kepler",
+  layout: "modern",
+  defaultHttpClient: { targetKey: "js", clientKey: "fetch" },
+  servers: [{ url: "http://localhost:8080", description: "Local development" }],
+});
 ---
 
 <StarlightPage
@@ -11,17 +34,11 @@ import { ScalarComponent } from "@scalar/astro";
   }}
   hasSidebar={false}
 >
-  <ScalarComponent
-    configuration={{
-      url: "https://community.lobu.ai/api/docs/openapi.json",
-      theme: "kepler",
-      layout: "modern",
-      defaultHttpClient: { targetKey: "js", clientKey: "fetch" },
-      servers: [
-        { url: "http://localhost:8080", description: "Local development" },
-      ],
-    }}
-  />
+  <div id="scalar-api-reference"></div>
+  <script is:inline src="https://cdn.jsdelivr.net/npm/@scalar/api-reference"></script>
+  <script is:inline define:vars={{ config }}>
+    Scalar.createApiReference("#scalar-api-reference", JSON.parse(config));
+  </script>
 </StarlightPage>
 
 <style is:global>

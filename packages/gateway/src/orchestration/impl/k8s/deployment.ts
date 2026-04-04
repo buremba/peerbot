@@ -37,7 +37,7 @@ export const WORKER_SECURITY = {
   TMP_SIZE_LIMIT: "100Mi",
 } as const;
 
-export const WORKER_SELECTOR_LABELS = {
+const WORKER_SELECTOR_LABELS = {
   "app.kubernetes.io/name": BASE_WORKER_LABELS["app.kubernetes.io/name"],
   "app.kubernetes.io/component":
     BASE_WORKER_LABELS["app.kubernetes.io/component"],
@@ -497,7 +497,13 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
     );
 
     // Use agentId for PVC naming (shared across threads in same space)
-    const agentId = messageData?.agentId!;
+    const agentId = messageData?.agentId;
+    if (!agentId) {
+      throw new OrchestratorError(
+        ErrorCode.DEPLOYMENT_CREATE_FAILED,
+        "Missing agentId in message payload"
+      );
+    }
     const pvcName = `lobu-workspace-${agentId}`;
 
     // Check if Nix packages are configured (need init container + subPath mounts)

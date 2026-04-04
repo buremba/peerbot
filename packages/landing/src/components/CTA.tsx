@@ -14,7 +14,7 @@ export function CTA() {
           class="text-sm mb-8"
           style={{ color: "var(--color-page-text-muted)" }}
         >
-          Get started locally in seconds.
+          Get started locally, then self-host or embed with TypeScript.
         </p>
         <div class="flex flex-wrap justify-center gap-3 mb-8">
           <button
@@ -94,11 +94,19 @@ export function CTA() {
           </a>
           <span style={{ opacity: 0.3 }}>|</span>
           <a
-            href="/serverless-openclaw"
+            href="/deployment/docker/"
             class="hover:underline underline-offset-2"
             style={{ color: "var(--color-tg-accent)" }}
           >
-            Pricing
+            Self-host Docs
+          </a>
+          <span style={{ opacity: 0.3 }}>|</span>
+          <a
+            href="/platforms/rest-api/"
+            class="hover:underline underline-offset-2"
+            style={{ color: "var(--color-tg-accent)" }}
+          >
+            Embed
           </a>
           <span style={{ opacity: 0.3 }}>|</span>
           <a

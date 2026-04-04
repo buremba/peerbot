@@ -317,7 +317,9 @@ export class WorkerGateway {
 
       // Build settings URL for soul-empty fallback
       const settingsUrl = new URL(
-        agentId ? `/agent/${encodeURIComponent(agentId)}` : "/agent",
+        agentId
+          ? `/api/v1/agents/${encodeURIComponent(agentId)}/config`
+          : "/api/v1/agents",
         baseUrl
       );
 

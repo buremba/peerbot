@@ -118,7 +118,7 @@ describe("GenerateAudio dynamic provider messaging", () => {
     const text = extractText(result as any);
 
     expect(text).toContain("OpenAI, Google Gemini");
-    expect(text).toContain("settings page");
+    expect(text).toContain("Ask an admin");
   });
 });
 
@@ -128,37 +128,23 @@ describe("OpenClawWorker audio permission hint", () => {
     mock.restore();
   });
 
-  test("uses dynamic providers when creating settings-link payload", async () => {
-    let settingsLinkBody: Record<string, unknown> | null = null;
-
-    const fetchMock = mock(
-      async (input: RequestInfo | URL, init?: RequestInit) => {
-        const url = String(input);
-        if (url.endsWith("/internal/audio/capabilities")) {
-          return new Response(
-            JSON.stringify({
-              available: true,
-              providers: [
-                { provider: "openai", name: "OpenAI" },
-                { provider: "elevenlabs", name: "ElevenLabs" },
-              ],
-            }),
-            { status: 200, headers: { "Content-Type": "application/json" } }
-          );
-        }
-        if (url.endsWith("/internal/settings-link")) {
-          settingsLinkBody = JSON.parse(String(init?.body || "{}")) as Record<
-            string,
-            unknown
-          >;
-          return new Response(JSON.stringify({ type: "settings_link" }), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          });
-        }
-        throw new Error(`Unexpected URL: ${url}`);
+  test("uses dynamic providers in admin guidance", async () => {
+    const fetchMock = mock(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/internal/audio/capabilities")) {
+        return new Response(
+          JSON.stringify({
+            available: true,
+            providers: [
+              { provider: "openai", name: "OpenAI" },
+              { provider: "elevenlabs", name: "ElevenLabs" },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
       }
-    );
+      throw new Error(`Unexpected URL: ${url}`);
+    });
 
     globalThis.fetch = fetchMock as unknown as typeof fetch;
 
@@ -171,33 +157,13 @@ describe("OpenClawWorker audio permission hint", () => {
     );
 
     expect(hint).toContain("OpenAI, ElevenLabs");
-    expect(settingsLinkBody?.providers).toEqual([
-      "chatgpt",
-      "openai",
-      "elevenlabs",
-    ]);
+    expect(hint).toContain("Ask an admin");
   });
 
   test("falls back to generic provider suggestions when capabilities lookup fails", async () => {
-    let callCount = 0;
-    let settingsLinkBody: Record<string, unknown> | null = null;
-
-    const fetchMock = mock(
-      async (_input: RequestInfo | URL, init?: RequestInit) => {
-        callCount += 1;
-        if (callCount === 1) {
-          throw new Error("capabilities unavailable");
-        }
-        settingsLinkBody = JSON.parse(String(init?.body || "{}")) as Record<
-          string,
-          unknown
-        >;
-        return new Response(JSON.stringify({ type: "settings_link" }), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
-      }
-    );
+    const fetchMock = mock(async () => {
+      throw new Error("capabilities unavailable");
+    });
 
     globalThis.fetch = fetchMock as unknown as typeof fetch;
 
@@ -209,11 +175,24 @@ describe("OpenClawWorker audio permission hint", () => {
       "token"
     );
 
-    expect(hint).toContain("audio-capable provider");
-    expect(settingsLinkBody?.providers).toEqual([
-      "chatgpt",
-      "gemini",
-      "elevenlabs",
-    ]);
+    expect(hint).toBeNull();
+  });
+});
+
+describe("OpenClawWorker auth hint messaging", () => {
+  test("routes missing provider auth to admin guidance", async () => {
+    const hint = await (
+      OpenClawWorker.prototype as any
+    ).maybeBuildAuthHintMessage(
+      'Authentication failed for "openai"',
+      "openai",
+      "gpt-4.1",
+      "http://gateway",
+      "token"
+    );
+
+    expect(hint).toContain("gpt-4.1");
+    expect(hint).toContain("admin");
+    expect(hint).toContain("openai");
   });
 });

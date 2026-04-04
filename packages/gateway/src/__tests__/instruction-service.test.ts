@@ -20,7 +20,7 @@ describe("InstructionService", () => {
         userId: "user-1",
         workingDirectory: "/workspace/thread-1",
       } as any,
-      { settingsUrl: "http://localhost:8080/agents/agent-1" }
+      { settingsUrl: "http://localhost:8080/api/v1/agents/agent-1/config" }
     );
 
     expect(sessionContext.agentInstructions).toContain(

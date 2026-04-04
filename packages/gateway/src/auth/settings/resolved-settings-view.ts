@@ -71,7 +71,7 @@ const SECTION_SETTING_KEYS: Record<
     "providerModelPreferences",
   ],
   "system-prompt": ["identityMd", "soulMd", "userMd"],
-  skills: ["skillsConfig", "mcpServers", "skillRegistries", "pluginsConfig"],
+  skills: ["skillsConfig", "mcpServers", "pluginsConfig"],
   packages: ["nixConfig"],
   logging: ["verboseLogging"],
 };
@@ -111,7 +111,7 @@ export function canViewSettingsSection(
   section: SettingsSectionKey,
   viewer?: ResolvedSettingsViewer
 ): boolean {
-  if (!viewer || viewer.isAdmin || viewer.settingsMode !== "user") {
+  if (!viewer || viewer.isAdmin || viewer.settingsMode === "admin") {
     return true;
   }
 
@@ -143,7 +143,7 @@ export function canEditSettingsSection(
   section: SettingsSectionKey,
   viewer?: ResolvedSettingsViewer
 ): boolean {
-  if (!viewer || viewer.isAdmin || viewer.settingsMode !== "user") {
+  if (!viewer || viewer.isAdmin || viewer.settingsMode === "admin") {
     return true;
   }
 

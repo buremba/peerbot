@@ -65,8 +65,10 @@ body {
   position: relative;
   height: 1px;
   background-color: var(--grid-color);
-  max-width: min(64rem, calc(100% - 3rem));
+  width: calc(min(64rem, calc(100% - 3rem)) - 4px);
+  max-width: calc(100% - 3rem - 4px);
   margin: 1rem auto;
+  overflow: hidden;
 }
 
 .section-divider::before,
@@ -74,7 +76,7 @@ body {
   content: "+";
   position: absolute;
   top: 50%;
-  transform: translate(-50%, -50%);
+  transform: translateY(-50%);
   font-size: 13px;
   font-weight: 300;
   line-height: 1;
@@ -87,7 +89,6 @@ body {
 
 .section-divider::after {
   right: 0;
-  transform: translate(50%, -50%);
 }
 
 /* Chat action button hover */

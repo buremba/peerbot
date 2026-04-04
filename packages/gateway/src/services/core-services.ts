@@ -7,14 +7,13 @@ import {
   CommandRegistry,
   createLogger,
   moduleRegistry,
-  type RegistryEntry,
   type SystemSkillEntry,
 } from "@lobu/core";
-import { AdminStatusCache } from "../auth/admin-status-cache";
 import { AgentMetadataStore } from "../auth/agent-metadata-store";
 import { ApiKeyProviderModule } from "../auth/api-key-provider-module";
 import { ChatGPTOAuthModule } from "../auth/chatgpt";
 import { ClaudeOAuthModule } from "../auth/claude/oauth-module";
+import { ExternalAuthClient } from "../auth/external/client";
 import { McpConfigService } from "../auth/mcp/config-service";
 import { McpProxy } from "../auth/mcp/proxy";
 import { McpToolCache } from "../auth/mcp/tool-cache";
@@ -22,18 +21,19 @@ import { OAuthClient } from "../auth/oauth/client";
 import { CLAUDE_PROVIDER } from "../auth/oauth/providers";
 import {
   createOAuthStateStore,
-  OAuthStateStore,
   type ProviderOAuthStateStore,
 } from "../auth/oauth/state-store";
 import { ProviderCatalogService } from "../auth/provider-catalog";
 import { AgentSettingsStore, AuthProfilesManager } from "../auth/settings";
-import { ClaimService } from "../auth/settings/claim-service";
 import { ModelPreferenceStore } from "../auth/settings/model-preference-store";
-import { SettingsOAuthClient } from "../auth/settings/oauth-client";
 import { UserAgentsStore } from "../auth/user-agents-store";
 import { ChannelBindingService } from "../channels";
 import { registerBuiltInCommands } from "../commands/built-in-commands";
-import type { GatewayConfig } from "../config";
+import type { AgentConfig, GatewayConfig } from "../config";
+import {
+  type FileLoadedAgent,
+  loadAgentConfigFromFiles,
+} from "../config/file-loader";
 import { WorkerGateway } from "../gateway";
 import type { IMessageQueue } from "../infrastructure/queue";
 import {
@@ -50,7 +50,7 @@ import {
 import { GrantStore } from "../permissions/grant-store";
 import { SecretProxy } from "../proxy/secret-proxy";
 import { TokenRefreshJob } from "../proxy/token-refresh-job";
-import { seedAgentsFromManifest } from "./agent-seeder";
+import { InMemoryAgentStore } from "../stores/in-memory-agent-store";
 import { ImageGenerationService } from "./image-generation-service";
 import { InstructionService } from "./instruction-service";
 import { RedisSessionStore, SessionManager } from "./session-manager";
@@ -118,18 +118,11 @@ export class CoreServices {
   private imageGenerationService?: ImageGenerationService;
   private userAgentsStore?: UserAgentsStore;
   private agentMetadataStore?: AgentMetadataStore;
-  private adminStatusCache?: AdminStatusCache;
 
   // ============================================================================
-  // Settings OAuth
+  // External OAuth
   // ============================================================================
-  private claimService?: ClaimService;
-  private settingsOAuthClient?: SettingsOAuthClient;
-  private settingsOAuthStateStore?: OAuthStateStore<{
-    userId: string;
-    codeVerifier: string;
-    returnUrl: string;
-  }>;
+  private externalAuthClient?: ExternalAuthClient;
 
   // ============================================================================
   // Provider Catalog
@@ -154,13 +147,17 @@ export class CoreServices {
   private accessStore?: AgentAccessStore;
   private settingsResolver?: SettingsResolver;
 
+  // File-first architecture state
+  private fileLoadedAgents: FileLoadedAgent[] = [];
+  private projectPath: string | null = null;
+  private configAgents: AgentConfig[] = [];
+
   // Options stored for deferred initialization
   private options?: {
     configStore?: AgentConfigStore;
     connectionStore?: AgentConnectionStore;
     accessStore?: AgentAccessStore;
     systemSkills?: SystemSkillEntry[];
-    skillRegistries?: RegistryEntry[];
   };
 
   constructor(
@@ -170,7 +167,6 @@ export class CoreServices {
       connectionStore?: AgentConnectionStore;
       accessStore?: AgentAccessStore;
       systemSkills?: SystemSkillEntry[];
-      skillRegistries?: RegistryEntry[];
     }
   ) {
     this.options = options;
@@ -194,10 +190,6 @@ export class CoreServices {
 
   getSettingsResolver(): SettingsResolver | undefined {
     return this.settingsResolver;
-  }
-
-  getSkillRegistryConfigs(): RegistryEntry[] | undefined {
-    return this.options?.skillRegistries;
   }
 
   /**
@@ -312,14 +304,54 @@ export class CoreServices {
     this.interactionService = new InteractionService();
     logger.debug("Interaction service initialized");
 
-    // Initialize agent sub-stores — default missing ones to Redis
+    // Initialize agent sub-stores
     if (!this.configStore || !this.connectionStore || !this.accessStore) {
-      const { RedisAgentStore } = await import("../stores/redis-agent-store");
-      const redisStore = new RedisAgentStore(redisClient);
-      if (!this.configStore) this.configStore = redisStore;
-      if (!this.connectionStore) this.connectionStore = redisStore;
-      if (!this.accessStore) this.accessStore = redisStore;
-      logger.debug("Agent sub-stores initialized (Redis defaults for missing)");
+      const inMemoryStore = new InMemoryAgentStore();
+      if (!this.configStore) this.configStore = inMemoryStore;
+      if (!this.connectionStore) this.connectionStore = inMemoryStore;
+      if (!this.accessStore) this.accessStore = inMemoryStore;
+
+      if (this.config.agents?.length) {
+        // Embedded mode: populate from config.agents
+        await this.populateStoreFromAgentConfigs(
+          inMemoryStore,
+          this.config.agents
+        );
+        logger.debug(
+          `Agent sub-stores initialized (in-memory, ${this.config.agents.length} agent(s) from config)`
+        );
+      } else {
+        // Check if lobu.toml exists (file-first dev mode)
+        const { existsSync } = await import("node:fs");
+        const { resolve } = await import("node:path");
+        const workspaceRoot = process.env.LOBU_WORKSPACE_ROOT?.trim();
+        const candidatePaths = [
+          ...(workspaceRoot ? [resolve(workspaceRoot, "lobu.toml")] : []),
+          resolve(process.cwd(), "lobu.toml"),
+          resolve("/app/lobu.toml"),
+          resolve("/app/.lobu/lobu.toml"),
+        ];
+        const tomlPath = candidatePaths.find((p) => existsSync(p));
+
+        if (tomlPath) {
+          // File-first dev mode: use InMemoryAgentStore populated from files
+          this.projectPath = resolve(tomlPath, "..");
+
+          // Load agents from files and populate store
+          this.fileLoadedAgents = await loadAgentConfigFromFiles(
+            this.projectPath
+          );
+          await this.populateStoreFromFiles(
+            inMemoryStore,
+            this.fileLoadedAgents
+          );
+          logger.debug(
+            `Agent sub-stores initialized (in-memory, ${this.fileLoadedAgents.length} agent(s) from files)`
+          );
+        } else {
+          logger.debug("Agent sub-stores initialized (in-memory, empty)");
+        }
+      }
     } else {
       logger.debug("Using host-provided agent sub-stores (embedded mode)");
     }
@@ -339,29 +371,19 @@ export class CoreServices {
     this.channelBindingService = new ChannelBindingService(redisClient);
     this.userAgentsStore = new UserAgentsStore(redisClient);
     this.agentMetadataStore = new AgentMetadataStore(redisClient);
-    this.adminStatusCache = new AdminStatusCache(redisClient);
     logger.debug(
       "Agent settings, channel binding, user agents & metadata stores initialized"
     );
 
-    // Initialize claim service (always available, used by OAuth settings flow)
-    this.claimService = new ClaimService(redisClient);
-    logger.debug("Claim service initialized");
-
-    // Initialize settings OAuth client if configured
-    this.settingsOAuthClient =
-      SettingsOAuthClient.fromEnv(this.config.mcp.publicGatewayUrl, {
+    // Initialize external OAuth client if configured
+    this.externalAuthClient =
+      ExternalAuthClient.fromEnv(this.config.mcp.publicGatewayUrl, {
         get: (key) => redisClient.get(key),
         set: (key, value, ttlSeconds) =>
           redisClient.setex(key, ttlSeconds, value),
       }) ?? undefined;
-    if (this.settingsOAuthClient) {
-      this.settingsOAuthStateStore = new OAuthStateStore(
-        redisClient,
-        "settings:oauth:state",
-        "settings-oauth-state"
-      );
-      logger.debug("Settings OAuth client initialized");
+    if (this.externalAuthClient) {
+      logger.debug("External OAuth client initialized");
     }
   }
 
@@ -382,6 +404,27 @@ export class CoreServices {
       );
     }
 
+    if (this.fileLoadedAgents.length > 0) {
+      for (const agent of this.fileLoadedAgents) {
+        await this.syncAgentSettingsToRuntimeStore(agent.agentId, agent.settings);
+      }
+      logger.debug(
+        `Synced settings for ${this.fileLoadedAgents.length} file-loaded agent(s)`
+      );
+    }
+
+    if (this.configAgents.length > 0) {
+      for (const agent of this.configAgents) {
+        await this.syncAgentSettingsToRuntimeStore(
+          agent.id,
+          this.buildSettingsFromAgentConfig(agent)
+        );
+      }
+      logger.debug(
+        `Synced settings for ${this.configAgents.length} config agent(s)`
+      );
+    }
+
     // Initialize auth profile and preference stores
     this.authProfilesManager = new AuthProfilesManager(this.agentSettingsStore);
     this.transcriptionService = new TranscriptionService(
@@ -392,8 +435,44 @@ export class CoreServices {
     );
     this.modelPreferenceStore = new ModelPreferenceStore(redisClient, "claude");
 
-    // Seed agents from .lobu/agents.json manifest (CLI-managed projects)
-    await seedAgentsFromManifest(this.configStore!, this.authProfilesManager);
+    // Seed provider credentials from file-loaded agents
+    if (this.authProfilesManager && this.fileLoadedAgents.length > 0) {
+      for (const agent of this.fileLoadedAgents) {
+        for (const cred of agent.credentials) {
+          await this.authProfilesManager.upsertProfile({
+            agentId: agent.agentId,
+            provider: cred.provider,
+            credential: cred.key,
+            authType: "api-key",
+            label: `${cred.provider} (from lobu.toml)`,
+            makePrimary: true,
+          });
+        }
+      }
+      logger.debug(
+        `Seeded credentials for ${this.fileLoadedAgents.length} file-loaded agent(s)`
+      );
+    }
+
+    // Seed provider credentials from config agents (embedded mode)
+    if (this.authProfilesManager && this.configAgents.length > 0) {
+      for (const agent of this.configAgents) {
+        for (const provider of agent.providers || []) {
+          if (!provider.key) continue;
+          await this.authProfilesManager.upsertProfile({
+            agentId: agent.id,
+            provider: provider.id,
+            credential: provider.key,
+            authType: "api-key",
+            label: `${provider.id} (from config)`,
+            makePrimary: true,
+          });
+        }
+      }
+      logger.debug(
+        `Seeded credentials for ${this.configAgents.length} config agent(s)`
+      );
+    }
 
     logger.debug(
       "Auth profile, model preference, transcription, and image generation services initialized"
@@ -449,27 +528,9 @@ export class CoreServices {
         this.options.systemSkills
       );
     } else {
-      let systemSkillsUrl = "config/system-skills.json";
-      try {
-        const { readFileSync, existsSync } = await import("node:fs");
-        const { resolve } = await import("node:path");
-        const configPath = resolve(
-          process.cwd(),
-          "config/skill-registries.json"
-        );
-        if (existsSync(configPath)) {
-          const raw = JSON.parse(readFileSync(configPath, "utf-8"));
-          const lobuEntry = (raw.registries || []).find(
-            (r: any) => r.type === "lobu"
-          );
-          if (lobuEntry?.apiUrl) {
-            systemSkillsUrl = lobuEntry.apiUrl;
-          }
-        }
-      } catch (error) {
-        logger.warn("Failed to read skill registries config", { error });
-      }
-      this.systemSkillsService = new SystemSkillsService(systemSkillsUrl);
+      this.systemSkillsService = new SystemSkillsService(
+        "config/system-skills.json"
+      );
     }
     this.systemConfigResolver = new SystemConfigResolver(
       this.systemSkillsService
@@ -622,18 +683,188 @@ export class CoreServices {
         "Agent settings store must be initialized before command registry"
       );
     }
-    if (!this.claimService) {
-      throw new Error(
-        "Claim service must be initialized before command registry"
-      );
-    }
-
     this.commandRegistry = new CommandRegistry();
     registerBuiltInCommands(this.commandRegistry, {
       agentSettingsStore: this.agentSettingsStore,
-      claimService: this.claimService,
     });
     logger.debug("Command registry initialized with built-in commands");
+  }
+
+  // ============================================================================
+  // File-First Helpers
+  // ============================================================================
+
+  private async populateStoreFromFiles(
+    store: InMemoryAgentStore,
+    agents: FileLoadedAgent[]
+  ): Promise<void> {
+    for (const agent of agents) {
+      await store.saveMetadata(agent.agentId, {
+        agentId: agent.agentId,
+        name: agent.name,
+        description: agent.description,
+        owner: { platform: "system", userId: "manifest" },
+        createdAt: Date.now(),
+      });
+      await store.saveSettings(agent.agentId, {
+        ...agent.settings,
+        updatedAt: Date.now(),
+      } as any);
+    }
+  }
+
+  private buildSettingsFromAgentConfig(agent: AgentConfig): Record<string, any> {
+    const settings: Record<string, any> = {};
+    if (agent.identityMd) settings.identityMd = agent.identityMd;
+    if (agent.soulMd) settings.soulMd = agent.soulMd;
+    if (agent.userMd) settings.userMd = agent.userMd;
+
+    if (agent.providers?.length) {
+      settings.installedProviders = agent.providers.map((p) => ({
+        providerId: p.id,
+        installedAt: Date.now(),
+      }));
+      settings.modelSelection = { mode: "auto" };
+      const providerModelPreferences = Object.fromEntries(
+        agent.providers
+          .filter((p) => !!p.model?.trim())
+          .map((p) => [p.id, p.model!.trim()])
+      );
+      if (Object.keys(providerModelPreferences).length > 0) {
+        settings.providerModelPreferences = providerModelPreferences;
+      }
+    }
+
+    if (agent.skills?.mcp) {
+      settings.mcpServers = agent.skills.mcp;
+    }
+
+    if (agent.network) {
+      settings.networkConfig = {
+        allowedDomains: agent.network.allowed,
+        deniedDomains: agent.network.denied,
+      };
+    }
+
+    if (agent.nixPackages?.length) {
+      settings.nixConfig = { packages: agent.nixPackages };
+    }
+
+    return settings;
+  }
+
+  private async syncAgentSettingsToRuntimeStore(
+    agentId: string,
+    settings: Record<string, any>
+  ): Promise<void> {
+    if (!this.agentSettingsStore) {
+      throw new Error("Agent settings store must be initialized");
+    }
+
+    const existing = await this.agentSettingsStore.getSettings(agentId);
+    await this.agentSettingsStore.saveSettings(agentId, {
+      ...settings,
+      authProfiles: existing?.authProfiles,
+      mcpInstallNotified: existing?.mcpInstallNotified,
+    });
+  }
+
+  private async populateStoreFromAgentConfigs(
+    store: InMemoryAgentStore,
+    agents: AgentConfig[]
+  ): Promise<void> {
+    for (const agent of agents) {
+      await store.saveMetadata(agent.id, {
+        agentId: agent.id,
+        name: agent.name,
+        description: agent.description,
+        owner: { platform: "system", userId: "config" },
+        createdAt: Date.now(),
+      });
+      await store.saveSettings(
+        agent.id,
+        {
+          ...this.buildSettingsFromAgentConfig(agent),
+          updatedAt: Date.now(),
+        } as any
+      );
+    }
+
+    // Store agent configs for credential seeding and connection seeding later
+    this.configAgents = agents;
+  }
+
+  /**
+   * Reload agent config from files (dev mode only).
+   * Re-reads lobu.toml + markdown, clears and re-populates the in-memory store.
+   */
+  async reloadFromFiles(): Promise<{ reloaded: boolean; agents: string[] }> {
+    if (!this.projectPath) {
+      return { reloaded: false, agents: [] };
+    }
+
+    // Re-load from disk
+    this.fileLoadedAgents = await loadAgentConfigFromFiles(this.projectPath);
+
+    // Re-populate the in-memory store (clear existing data first)
+    if (this.configStore instanceof InMemoryAgentStore) {
+      const store = this.configStore as InMemoryAgentStore;
+      // Clear existing agents by loading fresh
+      const existing = await store.listAgents();
+      for (const meta of existing) {
+        // Only clear file-managed agents (owner: system/manifest)
+        if (
+          meta.owner?.platform === "system" &&
+          meta.owner?.userId === "manifest"
+        ) {
+          await store.deleteSettings(meta.agentId);
+          await store.deleteMetadata(meta.agentId);
+        }
+      }
+      await this.populateStoreFromFiles(store, this.fileLoadedAgents);
+    }
+
+    if (this.agentSettingsStore) {
+      for (const agent of this.fileLoadedAgents) {
+        await this.syncAgentSettingsToRuntimeStore(agent.agentId, agent.settings);
+      }
+    }
+
+    // Re-seed credentials
+    if (this.authProfilesManager) {
+      for (const agent of this.fileLoadedAgents) {
+        for (const cred of agent.credentials) {
+          await this.authProfilesManager.upsertProfile({
+            agentId: agent.agentId,
+            provider: cred.provider,
+            credential: cred.key,
+            authType: "api-key",
+            label: `${cred.provider} (from lobu.toml)`,
+            makePrimary: true,
+          });
+        }
+      }
+    }
+
+    const agentIds = this.fileLoadedAgents.map((a) => a.agentId);
+    logger.info(`Reloaded ${agentIds.length} agent(s) from files`);
+    return { reloaded: true, agents: agentIds };
+  }
+
+  getFileLoadedAgents(): FileLoadedAgent[] {
+    return this.fileLoadedAgents;
+  }
+
+  getConfigAgents(): AgentConfig[] {
+    return this.configAgents;
+  }
+
+  getProjectPath(): string | null {
+    return this.projectPath;
+  }
+
+  isFileFirstMode(): boolean {
+    return this.projectPath !== null;
   }
 
   // ============================================================================
@@ -757,12 +988,6 @@ export class CoreServices {
     return this.agentMetadataStore;
   }
 
-  getAdminStatusCache(): AdminStatusCache {
-    if (!this.adminStatusCache)
-      throw new Error("Admin status cache not initialized");
-    return this.adminStatusCache;
-  }
-
   getCommandRegistry(): CommandRegistry {
     if (!this.commandRegistry)
       throw new Error("Command registry not initialized");
@@ -791,21 +1016,7 @@ export class CoreServices {
     return this.systemConfigResolver;
   }
 
-  getClaimService(): ClaimService | undefined {
-    return this.claimService;
-  }
-
-  getSettingsOAuthClient(): SettingsOAuthClient | undefined {
-    return this.settingsOAuthClient;
-  }
-
-  getSettingsOAuthStateStore():
-    | OAuthStateStore<{
-        userId: string;
-        codeVerifier: string;
-        returnUrl: string;
-      }>
-    | undefined {
-    return this.settingsOAuthStateStore;
+  getExternalAuthClient(): ExternalAuthClient | undefined {
+    return this.externalAuthClient;
   }
 }

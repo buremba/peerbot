@@ -104,7 +104,7 @@ export function resolveModelRef(
 
   if (!modelRef) {
     throw new Error(
-      "No model configured. Please add a model provider in your settings."
+      "No model configured. Ask an admin to connect a provider for the base agent."
     );
   }
 

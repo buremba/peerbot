@@ -35,8 +35,7 @@ services:
       ENCRYPTION_KEY: ${ENCRYPTION_KEY}
       WORKER_ALLOWED_DOMAINS: ${WORKER_ALLOWED_DOMAINS:-}
       WORKER_DISALLOWED_DOMAINS: ${WORKER_DISALLOWED_DOMAINS:-}
-      AUTH_MCP_URL: ${AUTH_MCP_URL:-}
-      MEMORY_PLUGIN: ${MEMORY_PLUGIN:-owletto}
+      MEMORY_URL: ${MEMORY_URL:-}
     volumes:
       - ./.lobu:/app/.lobu
     networks:

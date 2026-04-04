@@ -8,7 +8,7 @@ Make sure you have Docker CLI installed.
 
 ```bash
 # Start the services
-lobu dev -d
+lobu run -d
 
 # View logs
 docker compose logs -f
@@ -51,7 +51,7 @@ Edit `.env` to configure:
 
 ### Platform Connections
 
-Platforms (Slack, Telegram, Discord, WhatsApp, Teams) are configured via the admin page at `{PUBLIC_GATEWAY_URL}/agents`. No platform-specific env vars needed — just paste your bot token in the UI.
+Platforms (Slack, Telegram, Discord, WhatsApp, Teams) are configured through the gateway APIs. No platform-specific env vars are required in `docker-compose.yml`; manage connections against `{PUBLIC_GATEWAY_URL}/api/v1/connections` and related auth/config endpoints.
 
 ### Worker Customization
 

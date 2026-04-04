@@ -206,13 +206,11 @@ describe("enforceBashCommandPolicy", () => {
     );
   });
 
-  test("package manager commands are blocked with InstallPackage guidance", () => {
+  test("package manager commands are blocked", () => {
     const policy = buildToolPolicy({});
     expect(() =>
       enforceBashCommandPolicy("apt-get install -y ffmpeg", policy.bashPolicy)
-    ).toThrow(
-      "Direct package manager commands are blocked in Bash. Use the InstallPackage tool instead."
-    );
+    ).toThrow("Bash command denied by policy");
   });
 
   test("allows all when allowAll is true", () => {

@@ -341,7 +341,13 @@ export class DockerDeploymentManager extends BaseDeploymentManager {
 
     try {
       // Use agentId for volume naming (shared across threads in same space)
-      const agentId = messageData?.agentId!;
+      const agentId = messageData?.agentId;
+      if (!agentId) {
+        throw new OrchestratorError(
+          ErrorCode.DEPLOYMENT_CREATE_FAILED,
+          "Missing agentId in message payload"
+        );
+      }
 
       // Determine if running in Docker and resolve project paths
       const isRunningInDocker = process.env.DEPLOYMENT_MODE === "docker";

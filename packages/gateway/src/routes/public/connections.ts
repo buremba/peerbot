@@ -1,21 +1,17 @@
 /**
- * Connection CRUD routes + webhook endpoint.
+ * Connection routes + webhook endpoint.
  *
  * Webhook: POST /api/v1/webhooks/:connectionId
- * CRUD (auth: settings session cookie):
- *   POST   /api/v1/connections
+ * Read-only (auth: settings session cookie):
  *   GET    /api/v1/connections
  *   GET    /api/v1/connections/:id
- *   PATCH  /api/v1/connections/:id
- *   DELETE /api/v1/connections/:id
- *   POST   /api/v1/connections/:id/restart
- *   POST   /api/v1/connections/:id/stop
+ *   GET    /api/v1/connections/:id/sandboxes
  */
 
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
-import { createLogger, SUPPORTED_PLATFORMS } from "@lobu/core";
+import type { AgentConfigStore } from "@lobu/core";
+import { createLogger } from "@lobu/core";
 import { Hono } from "hono";
-import type { AgentMetadataStore } from "../../auth/agent-metadata-store";
 import type { UserAgentsStore } from "../../auth/user-agents-store";
 import type { ChatInstanceManager } from "../../connections/chat-instance-manager";
 import { verifyAgentAccess } from "./agent-access";
@@ -23,8 +19,6 @@ import { verifySettingsSession } from "./settings-auth";
 
 const logger = createLogger("connection-routes");
 const TAG = "Connections";
-
-const SupportedPlatformSchema = z.enum(SUPPORTED_PLATFORMS);
 const ErrorResponseSchema = z.object({ error: z.string() });
 const FlexibleObjectSchema = z.record(z.string(), z.unknown());
 
@@ -41,7 +35,7 @@ const UserConfigScopeSchema = z.enum([
 const ConnectionSettingsSchema = z.object({
   allowFrom: z.array(z.string()).optional().openapi({
     description:
-      "User IDs allowed to interact with this connection. Empty = allow all.",
+      "User IDs allowed to interact with this connection. Omit to allow all; empty array blocks all.",
   }),
   allowGroups: z.boolean().optional().openapi({
     description: "Whether group messages are allowed (default true).",
@@ -209,13 +203,70 @@ const TeamsConfigSchema = z.object({
     .openapi({ description: "Override bot username." }),
 });
 
+const GoogleChatConfigSchema = z.object({
+  platform: z.literal("gchat"),
+  credentials: z
+    .string()
+    .optional()
+    .openapi({
+      description:
+        "Service account credentials JSON string. Defaults to GOOGLE_CHAT_CREDENTIALS env var.",
+    }),
+  useApplicationDefaultCredentials: z
+    .boolean()
+    .optional()
+    .openapi({
+      description:
+        "Use Application Default Credentials (ADC) instead of service account JSON.",
+    }),
+  endpointUrl: z
+    .string()
+    .optional()
+    .openapi({
+      description:
+        "HTTP endpoint URL for button click actions. Required for HTTP endpoint apps.",
+    }),
+  googleChatProjectNumber: z
+    .string()
+    .optional()
+    .openapi({
+      description:
+        "Google Cloud project number for verifying webhook JWTs. Defaults to GOOGLE_CHAT_PROJECT_NUMBER env var.",
+    }),
+  impersonateUser: z
+    .string()
+    .optional()
+    .openapi({
+      description:
+        "User email for domain-wide delegation. Defaults to GOOGLE_CHAT_IMPERSONATE_USER env var.",
+    }),
+  pubsubAudience: z
+    .string()
+    .optional()
+    .openapi({
+      description:
+        "Expected audience for Pub/Sub push JWT verification. Defaults to GOOGLE_CHAT_PUBSUB_AUDIENCE env var.",
+    }),
+  userName: z
+    .string()
+    .optional()
+    .openapi({ description: "Override bot username." }),
+});
+
 const PlatformAdapterConfigSchema = z.discriminatedUnion("platform", [
   TelegramConfigSchema,
   SlackConfigSchema,
   DiscordConfigSchema,
   WhatsAppConfigSchema,
   TeamsConfigSchema,
+  GoogleChatConfigSchema,
 ]);
+
+/** Derived from the discriminated union — no separate list to maintain. */
+const SUPPORTED_PLATFORMS = PlatformAdapterConfigSchema.options.map(
+  (s) => s.shape.platform.value
+) as [string, ...string[]];
+const SupportedPlatformSchema = z.enum(SUPPORTED_PLATFORMS);
 
 const PlatformConnectionSchema = z.object({
   id: z.string(),
@@ -230,19 +281,6 @@ const PlatformConnectionSchema = z.object({
   updatedAt: z.number(),
 });
 
-const CreateConnectionRequestSchema = z.object({
-  platform: SupportedPlatformSchema,
-  templateAgentId: z.string().optional(),
-  config: PlatformAdapterConfigSchema,
-  settings: ConnectionSettingsSchema.optional(),
-});
-
-const UpdateConnectionRequestSchema = z.object({
-  templateAgentId: z.string().nullable().optional(),
-  config: PlatformAdapterConfigSchema.optional(),
-  settings: ConnectionSettingsSchema.optional(),
-});
-
 const ConnectionIdParamsSchema = z.object({
   id: z.string(),
 });
@@ -250,57 +288,6 @@ const ConnectionIdParamsSchema = z.object({
 const ListConnectionsQuerySchema = z.object({
   platform: SupportedPlatformSchema.optional(),
   templateAgentId: z.string().optional(),
-});
-
-const CreateConnectionRoute = createRoute({
-  method: "post",
-  path: "/api/v1/connections",
-  tags: [TAG],
-  summary: "Create a platform connection",
-  description: "Creates and starts a Chat SDK-backed connection for an agent.",
-  request: {
-    body: {
-      content: {
-        "application/json": {
-          schema: CreateConnectionRequestSchema,
-        },
-      },
-    },
-  },
-  responses: {
-    201: {
-      description: "Connection created",
-      content: {
-        "application/json": {
-          schema: PlatformConnectionSchema,
-        },
-      },
-    },
-    400: {
-      description: "Invalid request",
-      content: {
-        "application/json": {
-          schema: ErrorResponseSchema,
-        },
-      },
-    },
-    401: {
-      description: "Unauthorized",
-      content: {
-        "application/json": {
-          schema: ErrorResponseSchema,
-        },
-      },
-    },
-    403: {
-      description: "Forbidden",
-      content: {
-        "application/json": {
-          schema: ErrorResponseSchema,
-        },
-      },
-    },
-  },
 });
 
 const ListConnectionsRoute = createRoute({
@@ -387,223 +374,6 @@ const GetConnectionRoute = createRoute({
   },
 });
 
-const UpdateConnectionRoute = createRoute({
-  method: "patch",
-  path: "/api/v1/connections/{id}",
-  tags: [TAG],
-  summary: "Update a platform connection",
-  request: {
-    params: ConnectionIdParamsSchema,
-    body: {
-      content: {
-        "application/json": {
-          schema: UpdateConnectionRequestSchema,
-        },
-      },
-    },
-  },
-  responses: {
-    200: {
-      description: "Updated connection",
-      content: {
-        "application/json": {
-          schema: PlatformConnectionSchema,
-        },
-      },
-    },
-    400: {
-      description: "Invalid request",
-      content: {
-        "application/json": {
-          schema: ErrorResponseSchema,
-        },
-      },
-    },
-    401: {
-      description: "Unauthorized",
-      content: {
-        "application/json": {
-          schema: ErrorResponseSchema,
-        },
-      },
-    },
-    403: {
-      description: "Forbidden",
-      content: {
-        "application/json": {
-          schema: ErrorResponseSchema,
-        },
-      },
-    },
-    404: {
-      description: "Connection not found",
-      content: {
-        "application/json": {
-          schema: ErrorResponseSchema,
-        },
-      },
-    },
-  },
-});
-
-const DeleteConnectionRoute = createRoute({
-  method: "delete",
-  path: "/api/v1/connections/{id}",
-  tags: [TAG],
-  summary: "Delete a platform connection",
-  request: {
-    params: ConnectionIdParamsSchema,
-  },
-  responses: {
-    200: {
-      description: "Connection removed",
-      content: {
-        "application/json": {
-          schema: z.object({
-            success: z.literal(true),
-          }),
-        },
-      },
-    },
-    400: {
-      description: "Invalid request",
-      content: {
-        "application/json": {
-          schema: ErrorResponseSchema,
-        },
-      },
-    },
-    401: {
-      description: "Unauthorized",
-      content: {
-        "application/json": {
-          schema: ErrorResponseSchema,
-        },
-      },
-    },
-    403: {
-      description: "Forbidden",
-      content: {
-        "application/json": {
-          schema: ErrorResponseSchema,
-        },
-      },
-    },
-    404: {
-      description: "Connection not found",
-      content: {
-        "application/json": {
-          schema: ErrorResponseSchema,
-        },
-      },
-    },
-  },
-});
-
-const RestartConnectionRoute = createRoute({
-  method: "post",
-  path: "/api/v1/connections/{id}/restart",
-  tags: [TAG],
-  summary: "Restart a platform connection",
-  request: {
-    params: ConnectionIdParamsSchema,
-  },
-  responses: {
-    200: {
-      description: "Restarted connection",
-      content: {
-        "application/json": {
-          schema: PlatformConnectionSchema.nullable(),
-        },
-      },
-    },
-    400: {
-      description: "Invalid request",
-      content: {
-        "application/json": {
-          schema: ErrorResponseSchema,
-        },
-      },
-    },
-    401: {
-      description: "Unauthorized",
-      content: {
-        "application/json": {
-          schema: ErrorResponseSchema,
-        },
-      },
-    },
-    403: {
-      description: "Forbidden",
-      content: {
-        "application/json": {
-          schema: ErrorResponseSchema,
-        },
-      },
-    },
-    404: {
-      description: "Connection not found",
-      content: {
-        "application/json": {
-          schema: ErrorResponseSchema,
-        },
-      },
-    },
-  },
-});
-
-const StopConnectionRoute = createRoute({
-  method: "post",
-  path: "/api/v1/connections/{id}/stop",
-  tags: [TAG],
-  summary: "Stop a platform connection",
-  request: {
-    params: ConnectionIdParamsSchema,
-  },
-  responses: {
-    200: {
-      description: "Stopped connection",
-      content: {
-        "application/json": {
-          schema: PlatformConnectionSchema.nullable(),
-        },
-      },
-    },
-    400: {
-      description: "Invalid request",
-      content: {
-        "application/json": {
-          schema: ErrorResponseSchema,
-        },
-      },
-    },
-    401: {
-      description: "Unauthorized",
-      content: {
-        "application/json": {
-          schema: ErrorResponseSchema,
-        },
-      },
-    },
-    403: {
-      description: "Forbidden",
-      content: {
-        "application/json": {
-          schema: ErrorResponseSchema,
-        },
-      },
-    },
-    404: {
-      description: "Connection not found",
-      content: {
-        "application/json": {
-          schema: ErrorResponseSchema,
-        },
-      },
-    },
-  },
-});
-
 export function createConnectionWebhookRoutes(
   manager: ChatInstanceManager
 ): Hono {
@@ -643,7 +413,7 @@ export function createConnectionCrudRoutes(
   manager: ChatInstanceManager,
   accessConfig: {
     userAgentsStore: UserAgentsStore;
-    agentMetadataStore: AgentMetadataStore;
+    agentMetadataStore: Pick<AgentConfigStore, "getMetadata" | "listSandboxes">;
   }
 ): OpenAPIHono {
   const app = new OpenAPIHono();
@@ -707,9 +477,7 @@ export function createConnectionCrudRoutes(
   };
 
   app.get("/internal/connections/platforms", listLocalTestPlatforms);
-  app.get("/api/internal/connections/platforms", listLocalTestPlatforms);
   app.get("/internal/connections/test-targets", listLocalTestTargets);
-  app.get("/api/internal/connections/test-targets", listLocalTestTargets);
 
   // Internal endpoint for server-to-server connection listing (no auth required)
   const listAllConnections = async (c: any) => {
@@ -721,51 +489,6 @@ export function createConnectionCrudRoutes(
     return c.json({ connections });
   };
   app.get("/internal/connections", listAllConnections);
-  app.get("/api/internal/connections", listAllConnections);
-
-  app.openapi(CreateConnectionRoute, async (c): Promise<any> => {
-    const session = verifySettingsSession(c);
-    if (!session) {
-      return c.json({ error: "Unauthorized" }, 401);
-    }
-
-    try {
-      const body = c.req.valid("json");
-
-      if (
-        body.templateAgentId &&
-        !(await verifyAgentAccess(session, body.templateAgentId, accessConfig))
-      ) {
-        return c.json({ error: "Forbidden" }, 403);
-      }
-
-      const connection = await manager.addConnection(
-        body.platform,
-        body.templateAgentId,
-        body.config,
-        body.settings
-      );
-
-      logger.info(
-        {
-          id: connection.id,
-          platform: body.platform,
-          templateAgentId: body.templateAgentId,
-        },
-        "Connection created via API"
-      );
-
-      return c.json(connection, 201);
-    } catch (error) {
-      logger.error({ error: String(error) }, "Failed to create connection");
-      return c.json(
-        {
-          error: "Failed to create connection",
-        },
-        400
-      );
-    }
-  });
 
   app.openapi(ListConnectionsRoute, async (c): Promise<any> => {
     const session = verifySettingsSession(c);
@@ -786,7 +509,9 @@ export function createConnectionCrudRoutes(
         templateAgentId,
       });
     } else {
-      // List all connections (admin view)
+      if (!session.isAdmin && session.settingsMode !== "admin") {
+        return c.json({ error: "Forbidden" }, 403);
+      }
       connections = await manager.listConnections({
         platform: platform || undefined,
       });
@@ -820,130 +545,6 @@ export function createConnectionCrudRoutes(
     return c.json(connection);
   });
 
-  app.openapi(UpdateConnectionRoute, async (c): Promise<any> => {
-    const session = verifySettingsSession(c);
-    if (!session) {
-      return c.json({ error: "Unauthorized" }, 401);
-    }
-
-    const { id } = c.req.valid("param");
-
-    try {
-      const existing = await manager.getConnection(id);
-      if (!existing) {
-        return c.json({ error: "Connection not found" }, 404);
-      }
-      if (
-        existing.templateAgentId &&
-        !(await verifyAgentAccess(
-          session,
-          existing.templateAgentId,
-          accessConfig
-        ))
-      ) {
-        return c.json({ error: "Forbidden" }, 403);
-      }
-
-      const body = c.req.valid("json");
-
-      if (
-        body.templateAgentId &&
-        !(await verifyAgentAccess(session, body.templateAgentId, accessConfig))
-      ) {
-        return c.json({ error: "Forbidden" }, 403);
-      }
-
-      const updated = await manager.updateConnection(id, body);
-      return c.json(updated);
-    } catch (error) {
-      logger.error({ id, error: String(error) }, "Failed to update connection");
-      return c.json(
-        {
-          error: "Failed to update connection",
-        },
-        400
-      );
-    }
-  });
-
-  app.openapi(DeleteConnectionRoute, async (c): Promise<any> => {
-    const session = verifySettingsSession(c);
-    if (!session) {
-      return c.json({ error: "Unauthorized" }, 401);
-    }
-
-    const { id } = c.req.valid("param");
-
-    try {
-      const existing = await manager.getConnection(id);
-      if (!existing) {
-        return c.json({ error: "Connection not found" }, 404);
-      }
-      if (
-        existing.templateAgentId &&
-        !(await verifyAgentAccess(
-          session,
-          existing.templateAgentId,
-          accessConfig
-        ))
-      ) {
-        return c.json({ error: "Forbidden" }, 403);
-      }
-
-      await manager.removeConnection(id);
-      return c.json({ success: true });
-    } catch (error) {
-      logger.error({ id, error: String(error) }, "Failed to remove connection");
-      return c.json(
-        {
-          error: "Failed to remove connection",
-        },
-        400
-      );
-    }
-  });
-
-  app.openapi(RestartConnectionRoute, async (c): Promise<any> => {
-    const session = verifySettingsSession(c);
-    if (!session) {
-      return c.json({ error: "Unauthorized" }, 401);
-    }
-
-    const { id } = c.req.valid("param");
-
-    try {
-      const existing = await manager.getConnection(id);
-      if (!existing) {
-        return c.json({ error: "Connection not found" }, 404);
-      }
-      if (
-        existing.templateAgentId &&
-        !(await verifyAgentAccess(
-          session,
-          existing.templateAgentId,
-          accessConfig
-        ))
-      ) {
-        return c.json({ error: "Forbidden" }, 403);
-      }
-
-      await manager.restartConnection(id);
-      const connection = await manager.getConnection(id);
-      return c.json(connection);
-    } catch (error) {
-      logger.error(
-        { id, error: String(error) },
-        "Failed to restart connection"
-      );
-      return c.json(
-        {
-          error: "Failed to restart connection",
-        },
-        400
-      );
-    }
-  });
-
   // GET /api/v1/connections/:id/sandboxes — list sandbox agents for a connection
   app.get("/api/v1/connections/:id/sandboxes", async (c): Promise<any> => {
     const session = verifySettingsSession(c);
@@ -955,6 +556,23 @@ export function createConnectionCrudRoutes(
     const connection = await manager.getConnection(id);
     if (!connection) {
       return c.json({ error: "Connection not found" }, 404);
+    }
+    if (
+      connection.templateAgentId &&
+      !(await verifyAgentAccess(
+        session,
+        connection.templateAgentId,
+        accessConfig
+      ))
+    ) {
+      return c.json({ error: "Forbidden" }, 403);
+    }
+    if (
+      !connection.templateAgentId &&
+      !session.isAdmin &&
+      session.settingsMode !== "admin"
+    ) {
+      return c.json({ error: "Forbidden" }, 403);
     }
 
     const sandboxes = await accessConfig.agentMetadataStore.listSandboxes(id);
@@ -968,44 +586,6 @@ export function createConnectionCrudRoutes(
         lastUsedAt: s.lastUsedAt ?? null,
       })),
     });
-  });
-
-  app.openapi(StopConnectionRoute, async (c): Promise<any> => {
-    const session = verifySettingsSession(c);
-    if (!session) {
-      return c.json({ error: "Unauthorized" }, 401);
-    }
-
-    const { id } = c.req.valid("param");
-
-    try {
-      const existing = await manager.getConnection(id);
-      if (!existing) {
-        return c.json({ error: "Connection not found" }, 404);
-      }
-      if (
-        existing.templateAgentId &&
-        !(await verifyAgentAccess(
-          session,
-          existing.templateAgentId,
-          accessConfig
-        ))
-      ) {
-        return c.json({ error: "Forbidden" }, 403);
-      }
-
-      await manager.stopConnection(id);
-      const connection = await manager.getConnection(id);
-      return c.json(connection);
-    } catch (error) {
-      logger.error({ id, error: String(error) }, "Failed to stop connection");
-      return c.json(
-        {
-          error: "Failed to stop connection",
-        },
-        400
-      );
-    }
   });
 
   return app;

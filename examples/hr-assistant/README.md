@@ -8,7 +8,7 @@ Make sure you have Docker CLI installed.
 
 ```bash
 # Start the services
-lobu dev -d
+lobu run -d
 
 # View logs
 docker compose logs -f

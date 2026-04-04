@@ -6,15 +6,20 @@ type OpenApiDefinition =
   | { type: string; route?: { method: string; path: string } };
 
 // Internal route prefixes - worker-facing, excluded from public docs
-const INTERNAL_PREFIXES = ["/api/proxy", "/internal", "/worker", "/mcp"];
+const INTERNAL_PREFIXES = [
+  "/api/proxy",
+  "/api/internal",
+  "/internal",
+  "/worker",
+  "/mcp",
+];
 
 // Routes excluded from docs entirely: HTML pages, OAuth redirects/callbacks,
 // platform webhooks, system probes, and infra endpoints
 const EXCLUDED_ROUTES = [
   "/", // Landing page
-  "/agent", // HTML agent page
   "/api/v1/auth/{provider}/login", // OAuth redirect (browser-only)
-  "/agent/{agentId}/history", // HTML history page
+  "/api/v1/reload", // Dev-only config reload, not a public API
   "/slack/install", // Slack app install
   "/slack/oauth_callback", // Slack OAuth callback
 ];
@@ -26,7 +31,7 @@ const EXCLUDED_PREFIXES = [
   "/api/telegram", // Telegram webhook
   "/api/v1/webhooks", // Chat SDK connection webhooks
   "/slack/", // Slack events
-  "/agent/oauth", // Agent OAuth flow
+  "/connect/oauth", // OAuth session bootstrap
 ];
 
 function isInternalRoute(path: string): boolean {
@@ -63,7 +68,6 @@ function extractPathParams(path: string): string[] {
 function deriveTag(path: string): string {
   // Messages — sending and streaming
   if (
-    path === "/api/v1/messaging/send" ||
     path.includes("/messages") ||
     path.includes("/events") ||
     path.includes("/interactions")
@@ -112,8 +116,8 @@ function deriveTag(path: string): string {
     return "Integrations";
   }
 
-  // Session — agent page bootstrap
-  if (path.startsWith("/agent")) {
+  // Session — OAuth/bootstrap endpoints
+  if (path.startsWith("/connect")) {
     return "Session";
   }
 
@@ -125,9 +129,6 @@ function deriveTag(path: string): string {
  * Key format: "method /path" (lowercase method, normalized path).
  */
 const ROUTE_SUMMARIES: Record<string, string> = {
-  // Session
-  "post /agent/session": "Establish agent session",
-
   // Agents
   "post /api/v1/agents": "Create agent",
   "get /api/v1/agents": "List user agents",
@@ -135,17 +136,9 @@ const ROUTE_SUMMARIES: Record<string, string> = {
   "delete /api/v1/agents/{agentId}": "Delete agent",
 
   // Configuration
-  "get /api/v1/agents/{agentId}/config/packages/search": "Search Nix packages",
   "get /api/v1/agents/{agentId}/config/providers/catalog":
     "List provider catalog",
-  "put /api/v1/agents/{agentId}/config/providers/{providerId}":
-    "Install or uninstall provider",
-  "patch /api/v1/agents/{agentId}/config/providers/reorder":
-    "Reorder providers",
   "get /api/v1/agents/{agentId}/config/grants": "List domain grants",
-  "post /api/v1/agents/{agentId}/config/grants": "Add domain grant",
-  "delete /api/v1/agents/{agentId}/config/grants/{pattern}":
-    "Revoke domain grant",
 
   // History
   "get /api/v1/agents/{agentId}/history/status": "Get agent connection status",
@@ -158,12 +151,6 @@ const ROUTE_SUMMARIES: Record<string, string> = {
   "post /api/v1/agents/{agentId}/channels": "Bind agent to channel",
   "delete /api/v1/agents/{agentId}/channels/{platform}/{channelId}":
     "Unbind agent from channel",
-
-  // Auth
-  "post /api/v1/auth/{provider}/save-key": "Save API key",
-  "post /api/v1/auth/{provider}/start": "Start device code flow",
-  "post /api/v1/auth/{provider}/poll": "Poll device code status",
-  "post /api/v1/auth/{provider}/logout": "Disconnect provider",
 };
 
 /**

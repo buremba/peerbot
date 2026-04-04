@@ -8,19 +8,26 @@ import { renderMarkdown } from "../utils/markdown.js";
 /**
  * `lobu chat "prompt"` — send a prompt to an agent and stream the response.
  *
- * Requires `lobu dev` running. Connects to the local gateway,
- * creates a session, sends the message, streams output, then exits.
+ * Without --user: API mode — creates a session, sends message, streams to terminal.
+ * With --user platform:id: Platform mode — sends through Telegram/Slack, response
+ * appears on the platform. Terminal shows the streamed response too.
  */
 export async function chatCommand(
   cwd: string,
   prompt: string,
-  options: { agent?: string; gateway?: string }
+  options: {
+    agent?: string;
+    gateway?: string;
+    user?: string;
+    thread?: string;
+    dryRun?: boolean;
+    new?: boolean;
+  }
 ): Promise<void> {
   const gatewayUrl = (
     options.gateway ?? (await resolveGatewayUrl(cwd))
   ).replace(/\/$/, "");
 
-  // Resolve auth token: CLI JWT (from `lobu login`) → ADMIN_PASSWORD env var
   const authToken = (await getToken()) ?? process.env.ADMIN_PASSWORD;
   if (!authToken) {
     console.error(
@@ -31,12 +38,142 @@ export async function chatCommand(
     process.exit(1);
   }
 
-  // Resolve agent ID from flag or first agent in lobu.toml (undefined = ephemeral)
   const agentId = options.agent ?? (await resolveAgentId(cwd));
 
-  // 1. Create agent session
-  const createBody: Record<string, string> = {};
-  if (agentId) createBody.agentId = agentId;
+  // Parse --user flag: "telegram:12345" → { platform: "telegram", userId: "12345" }
+  const platformUser = options.user ? parsePlatformUser(options.user) : null;
+
+  if (platformUser) {
+    // Platform mode: route through Telegram/Slack
+    await sendViaPlatform(gatewayUrl, authToken, {
+      agentId,
+      platform: platformUser.platform,
+      userId: platformUser.userId,
+      message: prompt,
+      thread: options.thread,
+    });
+  } else {
+    // API mode: create session, send message, stream response
+    await sendViaApi(gatewayUrl, authToken, {
+      agentId,
+      message: prompt,
+      thread: options.thread,
+      dryRun: options.dryRun,
+      forceNew: options.new,
+    });
+  }
+}
+
+function parsePlatformUser(
+  user: string
+): { platform: string; userId: string } | null {
+  const colonIndex = user.indexOf(":");
+  if (colonIndex === -1) {
+    // No platform prefix — use as plain userId in API mode
+    return null;
+  }
+  return {
+    platform: user.slice(0, colonIndex),
+    userId: user.slice(colonIndex + 1),
+  };
+}
+
+/**
+ * Platform mode: send message through Telegram/Slack via /api/v1/agents/{agentId}/messages.
+ * The response appears on the platform AND streams to terminal via eventsUrl.
+ */
+async function sendViaPlatform(
+  gatewayUrl: string,
+  authToken: string,
+  opts: {
+    agentId?: string;
+    platform: string;
+    userId: string;
+    message: string;
+    thread?: string;
+  }
+): Promise<void> {
+  const agentId = opts.agentId || `test-${opts.platform}`;
+  const body: Record<string, any> = {
+    platform: opts.platform,
+    content: opts.message,
+  };
+
+  // Platform-specific routing
+  if (opts.platform === "telegram") {
+    body.telegram = { chatId: opts.userId };
+  } else if (opts.platform === "slack") {
+    body.slack = {
+      channel: opts.userId,
+      thread: opts.thread,
+    };
+  } else if (opts.platform === "discord") {
+    body.discord = { channelId: opts.userId };
+  }
+
+  const res = await fetch(
+    `${gatewayUrl}/api/v1/agents/${encodeURIComponent(agentId)}/messages`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${authToken}`,
+      },
+      body: JSON.stringify(body),
+    }
+  );
+
+  if (!res.ok) {
+    const resBody = await res.text().catch(() => "");
+    console.error(
+      chalk.red(`\n  Failed to send message (${res.status}): ${resBody}\n`)
+    );
+    process.exit(1);
+  }
+
+  const result = (await res.json()) as {
+    success: boolean;
+    agentId?: string;
+    eventsUrl?: string;
+    queued?: boolean;
+  };
+
+  if (result.eventsUrl) {
+    // Stream the response from the agent
+    const sseUrl = result.eventsUrl.startsWith("http")
+      ? result.eventsUrl
+      : `${gatewayUrl}${result.eventsUrl}`;
+
+    const sseController = new AbortController();
+    await streamResponse(sseUrl, authToken, sseController);
+  } else {
+    console.log(
+      chalk.dim(
+        `  Message sent via ${opts.platform}. Response will appear on the platform.\n`
+      )
+    );
+  }
+}
+
+/**
+ * API mode: create session, send message, stream response to terminal.
+ */
+async function sendViaApi(
+  gatewayUrl: string,
+  authToken: string,
+  opts: {
+    agentId?: string;
+    message: string;
+    thread?: string;
+    dryRun?: boolean;
+    forceNew?: boolean;
+  }
+): Promise<void> {
+  const createBody: Record<string, any> = {};
+  if (opts.agentId) createBody.agentId = opts.agentId;
+  if (opts.thread) createBody.thread = opts.thread;
+  if (opts.dryRun) createBody.dryRun = true;
+  if (opts.forceNew) createBody.forceNew = true;
 
   const createRes = await fetch(`${gatewayUrl}/api/v1/agents`, {
     method: "POST",
@@ -68,23 +205,20 @@ export async function chatCommand(
     token: string;
   };
 
-  // Build URLs from gateway flag (returned URLs may point to a public domain)
   const base = `${gatewayUrl}/api/v1/agents/${session.agentId}`;
   const sseUrl = `${base}/events`;
   const messagesUrl = `${base}/messages`;
 
-  // 2. Open SSE connection before sending message so we don't miss events
   const sseController = new AbortController();
   const streaming = streamResponse(sseUrl, session.token, sseController);
 
-  // 3. Send the prompt
   const msgRes = await fetch(messagesUrl, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${session.token}`,
     },
-    body: JSON.stringify({ content: prompt }),
+    body: JSON.stringify({ content: opts.message }),
   });
 
   if (!msgRes.ok) {
@@ -96,28 +230,16 @@ export async function chatCommand(
     process.exit(1);
   }
 
-  // 4. Wait for streaming to complete
   await streaming;
 }
 
 async function resolveAgentId(cwd: string): Promise<string | undefined> {
   const result = await loadConfig(cwd);
-  if (isLoadError(result)) {
-    // No lobu.toml — use ephemeral agent
-    return undefined;
-  }
-
+  if (isLoadError(result)) return undefined;
   const ids = Object.keys(result.config.agents);
-  if (ids.length === 0) {
-    return undefined;
-  }
-
-  return ids[0]!;
+  return ids[0];
 }
 
-/**
- * Connect to SSE, print deltas to stdout, resolve on complete/error.
- */
 async function streamResponse(
   sseUrl: string,
   token: string,
@@ -176,8 +298,7 @@ async function streamResponse(
                 console.error(`\n${renderMarkdown(data.content)}\n`);
               }
               controller.abort();
-              process.exit(1);
-              break;
+              return;
             case "link-button":
             case "question":
             case "grant-request":
@@ -195,7 +316,7 @@ async function streamResponse(
                 chalk.red(`\n  Agent error: ${String(data.error)}\n`)
               );
               controller.abort();
-              process.exit(1);
+              return;
           }
 
           currentEvent = "";
@@ -205,7 +326,6 @@ async function streamResponse(
       }
     }
   } catch (err: unknown) {
-    // AbortError is expected when we call controller.abort() on complete
     if (err instanceof Error && err.name === "AbortError") return;
     throw err;
   } finally {

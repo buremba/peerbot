@@ -1,13 +1,20 @@
 import { createLogger } from "@lobu/core";
 import type Redis from "ioredis";
+import type { AgentSettingsStore } from "../auth/settings/agent-settings-store";
 import type {
   InteractionService,
+  PostedConfigRequest,
   PostedGrantRequest,
   PostedLinkButton,
   PostedPackageRequest,
   PostedQuestion,
   PostedStatusMessage,
 } from "../interactions";
+import {
+  applyPendingConfigRequest,
+  deletePendingConfigRequest,
+  getPendingConfigRequest,
+} from "../interactions/config-request-store";
 import type { GrantStore } from "../permissions/grant-store";
 import type { ChatInstanceManager } from "./chat-instance-manager";
 import type { PlatformConnection } from "./types";
@@ -110,7 +117,8 @@ export function registerInteractionBridge(
   manager: ChatInstanceManager,
   connection: PlatformConnection,
   chat: any,
-  grantStore?: GrantStore
+  grantStore?: GrantStore,
+  agentSettingsStore?: AgentSettingsStore
 ): () => void {
   const { id: connectionId, platform } = connection;
 
@@ -373,6 +381,85 @@ export function registerInteractionBridge(
     }
   };
 
+  const onConfigRequested = async (event: PostedConfigRequest) => {
+    try {
+      if (!shouldHandle(event, platform, connectionId, manager)) return;
+      if (handledEvents.has(event.id)) return;
+      markHandled(event.id);
+
+      if (platform === "telegram") {
+        const botToken = manager.getConnectionConfigSecret(
+          connectionId,
+          "botToken"
+        );
+        if (botToken) {
+          const sent = await sendTelegramInlineKeyboard(
+            botToken,
+            event.channelId,
+            event.text,
+            [
+              [
+                {
+                  text: "Approve",
+                  callback_data: `config:${event.id}:approve`,
+                },
+                {
+                  text: "Deny",
+                  callback_data: `config:${event.id}:deny`,
+                },
+              ],
+            ]
+          );
+          if (sent) return;
+          logger.warn(
+            { connectionId },
+            "Telegram inline keyboard failed for config request, falling back"
+          );
+        }
+      }
+
+      const thread = await resolveThread(
+        manager,
+        connectionId,
+        event.channelId,
+        event.conversationId
+      );
+      if (!thread) return;
+
+      const { Card, CardText, Actions, Button } = await import("chat");
+      const card = Card({
+        children: [
+          CardText(event.text),
+          Actions([
+            Button({
+              id: `config:${event.id}:approve`,
+              label: "Approve",
+              style: "primary",
+              value: "approve",
+            }),
+            Button({
+              id: `config:${event.id}:deny`,
+              label: "Deny",
+              style: "danger",
+              value: "deny",
+            }),
+          ]),
+        ],
+      });
+      await postWithFallback(
+        thread,
+        { card, fallbackText: event.text },
+        connectionId,
+        "config request interaction with buttons"
+      );
+    } catch (error) {
+      logger.error(
+        { connectionId, error: String(error) },
+        "Unhandled error in config:requested handler"
+      );
+    }
+  };
+
   const onLinkButtonCreated = async (event: PostedLinkButton) => {
     try {
       if (!shouldHandle(event, platform, connectionId, manager)) return;
@@ -388,13 +475,10 @@ export function registerInteractionBridge(
       if (!thread) return;
 
       const { Card, CardText, Actions, LinkButton } = await import("chat");
-      const linkButton: any = LinkButton({
+      const linkButton = LinkButton({
         url: event.url,
         label: event.label,
       });
-      if (event.webApp) {
-        linkButton.webApp = true;
-      }
       const card = Card({
         children: [CardText(event.label), Actions([linkButton])],
       });
@@ -446,6 +530,7 @@ export function registerInteractionBridge(
   interactionService.on("question:created", onQuestionCreated);
   interactionService.on("grant:requested", onGrantRequested);
   interactionService.on("package:requested", onPackageRequested);
+  interactionService.on("config:requested", onConfigRequested);
   interactionService.on("link-button:created", onLinkButtonCreated);
   interactionService.on("status-message:created", onStatusMessageCreated);
 
@@ -454,6 +539,7 @@ export function registerInteractionBridge(
     connection,
     redis,
     grantStore,
+    agentSettingsStore,
     pendingQuestionOptions
   );
 
@@ -463,6 +549,7 @@ export function registerInteractionBridge(
     interactionService.off("question:created", onQuestionCreated);
     interactionService.off("grant:requested", onGrantRequested);
     interactionService.off("package:requested", onPackageRequested);
+    interactionService.off("config:requested", onConfigRequested);
     interactionService.off("link-button:created", onLinkButtonCreated);
     interactionService.off("status-message:created", onStatusMessageCreated);
     for (const timer of activeTimers) {
@@ -480,6 +567,7 @@ function registerActionHandlers(
   connection: PlatformConnection,
   redis: Redis,
   grantStore: GrantStore | undefined,
+  agentSettingsStore: AgentSettingsStore | undefined,
   pendingQuestionOptions: Map<string, string[]>
 ): void {
   chat.onAction(async (event: any) => {
@@ -549,6 +637,69 @@ function registerActionHandlers(
         logger.debug(
           { connectionId: connection.id, error: String(error) },
           "Failed to post grant action response"
+        );
+      }
+      return;
+    }
+
+    if (actionId.startsWith("config:")) {
+      const parts = actionId.split(":");
+      const configRequestId = parts[1];
+      const decision = parts[2];
+
+      if (configRequestId && decision === "approve" && !agentSettingsStore) {
+        try {
+          await thread.post("failed to apply requested configuration change");
+        } catch {
+          // best effort
+        }
+        return;
+      }
+
+      if (configRequestId && decision === "approve" && agentSettingsStore) {
+        try {
+          const pending = await getPendingConfigRequest(redis, configRequestId);
+          if (pending) {
+            await applyPendingConfigRequest(
+              agentSettingsStore,
+              grantStore,
+              pending
+            );
+            await deletePendingConfigRequest(redis, configRequestId).catch(
+              () => undefined
+            );
+            logger.info(
+              {
+                configRequestId,
+                agentId: pending.agentId,
+              },
+              "Config request resolved via button"
+            );
+          }
+        } catch (error) {
+          logger.error(
+            { configRequestId, error: String(error) },
+            "Failed to apply config request"
+          );
+          try {
+            await thread.post("failed to apply requested configuration change");
+          } catch {
+            // best effort
+          }
+          return;
+        }
+      } else if (configRequestId) {
+        await deletePendingConfigRequest(redis, configRequestId).catch(
+          () => undefined
+        );
+      }
+
+      try {
+        await thread.post(decision === "approve" ? "approve" : "deny");
+      } catch (error) {
+        logger.debug(
+          { connectionId: connection.id, error: String(error) },
+          "Failed to post config action response"
         );
       }
       return;

@@ -130,7 +130,7 @@ gateway:
   config:
     nodeEnv: "production"
     logLevel: "INFO"
-    authMcpUrl: "https://owletto.com/mcp"
+    memoryUrl: "https://owletto.com/mcp"
   anthropicProxy:
     enabled: true
     baseUrl: ""

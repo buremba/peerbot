@@ -97,6 +97,16 @@ export class ApiPlatform implements PlatformAdapter {
       });
     });
 
+    interactionService.on("config:requested", (event: any) => {
+      if (event.teamId !== "api") return;
+      broadcastToAgent(event.conversationId, "config-request", {
+        type: "config-request",
+        requestId: event.id,
+        text: event.text,
+        timestamp: Date.now(),
+      });
+    });
+
     interactionService.on("suggestion:created", (event: any) => {
       if (event.teamId !== "api") return;
       broadcastToAgent(event.conversationId, "suggestion", {

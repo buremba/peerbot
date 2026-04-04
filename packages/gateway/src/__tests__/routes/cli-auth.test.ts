@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { decrypt } from "@lobu/core";
 import { MockRedisClient } from "../../../../core/src/__tests__/fixtures/mock-redis";
-import { createCliAuthRoutes } from "../../routes/public/cli-auth";
+import {
+  createCliAuthRoutes,
+  createConnectAuthRoutes,
+} from "../../routes/public/cli-auth";
 
 describe("cli auth routes", () => {
   let originalKey: string | undefined;
@@ -73,6 +77,79 @@ describe("cli auth routes", () => {
     expect(body.mode).toBe("browser");
     expect(typeof body.requestId).toBe("string");
     expect(body.loginUrl).toContain("/api/v1/auth/cli/session/login?request=");
+  });
+
+  test("GET /connect/oauth/login redirects into external browser auth", async () => {
+    const router = createConnectAuthRoutes({
+      queue: queue as any,
+      externalAuthClient: {
+        generateCodeVerifier: () => "code-verifier",
+        buildAuthUrl: mock(async (state: string, codeVerifier: string) => {
+          expect(state).toBeTruthy();
+          expect(codeVerifier).toBe("code-verifier");
+          return "https://issuer.example.com/oauth/authorize";
+        }),
+      } as any,
+    });
+
+    const res = await router.request(
+      "https://gateway.example.com/connect/oauth/login?returnUrl=%2Fdone"
+    );
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe(
+      "https://issuer.example.com/oauth/authorize"
+    );
+  });
+
+  test("GET /connect/oauth/callback sets a settings session and redirects back", async () => {
+    await redis.setex(
+      "cli:auth:connect:state-123",
+      600,
+      JSON.stringify({
+        returnUrl: "/done",
+        codeVerifier: "code-verifier",
+      })
+    );
+
+    const router = createConnectAuthRoutes({
+      queue: queue as any,
+      externalAuthClient: {
+        exchangeCodeForToken: mock(async () => ({
+          accessToken: "provider-access-token",
+          refreshToken: "provider-refresh-token",
+          tokenType: "Bearer",
+          expiresAt: Date.now() + 3600_000,
+          scopes: ["profile:read"],
+        })),
+        fetchUserInfo: mock(async () => ({
+          sub: "user-123",
+          email: "user@example.com",
+          name: "Example User",
+        })),
+      } as any,
+    });
+
+    const res = await router.request(
+      "https://gateway.example.com/connect/oauth/callback?code=auth-code&state=state-123"
+    );
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe("/done");
+    expect(res.headers.get("set-cookie")).toContain("lobu_settings_session=");
+
+    const setCookie = res.headers.get("set-cookie");
+    const token = setCookie
+      ?.match(/lobu_settings_session=([^;]+)/)?.[1];
+    expect(token).toBeTruthy();
+
+    const payload = JSON.parse(
+      decrypt(decodeURIComponent(token!))
+    ) as Record<string, unknown>;
+    expect(payload.userId).toBe("user-123");
+    expect(payload.platform).toBe("external");
+    expect(payload.isAdmin).toBeUndefined();
+    expect(payload.settingsMode).toBeUndefined();
   });
 
   test("POST /cli/poll mints Lobu tokens after device auth completes", async () => {

@@ -178,48 +178,17 @@ export function createOpenClawTools(
  */
 function wrapBashWithProxyHint(tool: AgentTool<any>): AgentTool<any> {
   const PROXY_403_PATTERN = /Received HTTP code 403 from proxy after CONNECT/i;
-  const DIRECT_PACKAGE_INSTALL_PATTERNS: RegExp[] = [
-    /(?:^|[;&|\n]\s*)(?:sudo\s+)?apt(?:-get)?(?:\s+[-\w=]+)*\s+install\b/i,
-    /(?:^|[;&|\n]\s*)(?:sudo\s+)?apk(?:\s+[-\w=]+)*\s+add\b/i,
-    /(?:^|[;&|\n]\s*)(?:sudo\s+)?yum(?:\s+[-\w=]+)*\s+install\b/i,
-    /(?:^|[;&|\n]\s*)(?:sudo\s+)?dnf(?:\s+[-\w=]+)*\s+install\b/i,
-    /(?:^|[;&|\n]\s*)(?:sudo\s+)?pacman(?:\s+[-\w=]+)*\s+-S\b/i,
-    /(?:^|[;&|\n]\s*)(?:sudo\s+)?zypper(?:\s+[-\w=]+)*\s+install\b/i,
-    /(?:^|[;&|\n]\s*)(?:sudo\s+)?brew(?:\s+[-\w=]+)*\s+install\b/i,
-    /(?:^|[;&|\n]\s*)(?:sudo\s+)?nix-shell\s+-p\b/i,
-    /(?:^|[;&|\n]\s*)(?:sudo\s+)?nix\s+profile\s+install\b/i,
-    /(?:^|[;&|\n]\s*)(?:sudo\s+)?nix-env\s+-i\b/i,
-  ];
-
-  const getCommand = (params: unknown): string => {
-    if (!params || typeof params !== "object") {
-      return "";
-    }
-    const maybe = params as Record<string, unknown>;
-    const commandValue = maybe.command ?? maybe.cmd;
-    return typeof commandValue === "string" ? commandValue : "";
-  };
-
-  const isDirectPackageInstall = (command: string): boolean =>
-    DIRECT_PACKAGE_INSTALL_PATTERNS.some((pattern) => pattern.test(command));
 
   return {
     ...tool,
     execute: async (toolCallId, params, signal, onUpdate) => {
-      const command = getCommand(params);
-      if (command && isDirectPackageInstall(command)) {
-        throw new Error(
-          "DIRECT PACKAGE INSTALL BLOCKED. Do not run apt/brew/nix install commands directly. Use the InstallPackage tool (for example: packages=['ffmpeg'], reason='Install ffmpeg') so the user can approve the change."
-        );
-      }
-
       try {
         return await tool.execute(toolCallId, params, signal, onUpdate);
       } catch (err: any) {
         const msg = err?.message ?? String(err);
         if (PROXY_403_PATTERN.test(msg)) {
           throw new Error(
-            `DOMAIN BLOCKED BY PROXY. You MUST call the RequestNetworkAccess tool to request access for this domain. Do NOT retry curl — the domain is blocked at the network level.\n\n${msg}`
+            `DOMAIN BLOCKED BY PROXY. The domain is blocked at the network level. Network access is configured via lobu.toml or the gateway configuration APIs — do NOT retry the request.\n\n${msg}`
           );
         }
         throw err;

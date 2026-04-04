@@ -22,7 +22,7 @@ Lobu runs as a gateway + worker architecture.
 ## Persistent Memory
 
 - By default, Lobu injects an OpenClaw memory plugin for agents: `@lobu/owletto-openclaw` (`slot: "memory"`).
-- Memory is automatically available when `AUTH_MCP_URL` is set.
+- Memory is automatically available when `MEMORY_URL` is set.
 - OpenClaw memory plugins are configurable per agent through `pluginsConfig`, so you can replace Owletto with other plugins (for example, native memory) when needed.
 
 ### How It Works

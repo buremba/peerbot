@@ -1,12 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
 import {
+  type AgentConfigStore,
   createLogger,
   createRootSpan,
+  findTemplateAgentId,
   generateWorkerToken,
   type InstalledProvider,
   type McpServerConfig,
   type NetworkConfig,
+  verifyWorkerToken,
 } from "@lobu/core";
 import { streamSSE } from "hono/streaming";
 import { z } from "zod";
@@ -19,6 +22,7 @@ import type { ExternalAuthClient } from "../../auth/external/client";
 import type { AgentSettingsStore } from "../../auth/settings/agent-settings-store";
 import type { QueueProducer } from "../../infrastructure/queue/queue-producer";
 import { getModelProviderModules } from "../../modules/module-system";
+import type { PlatformRegistry } from "../../platform";
 import { resolveAgentOptions } from "../../services/platform-helpers";
 import type { ISessionManager, ThreadSession } from "../../session";
 
@@ -62,6 +66,10 @@ const CreateAgentRequestSchema = z.object({
   provider: z.string().default("claude").optional(),
   model: z.string().optional(),
   agentId: z.string().min(1).optional(),
+  userId: z.string().min(1).optional(),
+  thread: z.string().optional(),
+  forceNew: z.boolean().optional(),
+  dryRun: z.boolean().optional(),
   networkConfig: NetworkConfigSchema.optional(),
   mcpServers: z.record(z.string(), McpServerConfigSchema).optional(),
   nix: NixConfigSchema.optional(),
@@ -76,15 +84,36 @@ const CreateAgentResponseSchema = z.object({
   messagesUrl: z.string(),
 });
 
-const SendMessageRequestSchema = z.object({
-  content: z.string(),
-  messageId: z.string().optional(),
+const SlackRoutingInfoSchema = z.object({
+  channel: z.string().describe("Slack channel ID"),
+  thread: z.string().optional().describe("Thread timestamp for replies"),
+  team: z.string().optional().describe("Slack team ID"),
 });
+
+const SendMessageRequestSchema = z
+  .object({
+    content: z.string().optional().describe("Message content"),
+    message: z
+      .string()
+      .optional()
+      .describe("Message content (alias for content)"),
+    messageId: z.string().optional(),
+    platform: z
+      .string()
+      .optional()
+      .describe("Target platform (api, slack, telegram)"),
+    slack: SlackRoutingInfoSchema.optional().describe(
+      "Slack-specific routing info (required when platform=slack)"
+    ),
+  })
+  .passthrough();
 
 const SendMessageResponseSchema = z.object({
   success: z.boolean(),
   messageId: z.string(),
-  jobId: z.string(),
+  agentId: z.string().optional(),
+  jobId: z.string().optional(),
+  eventsUrl: z.string().optional(),
   queued: z.boolean(),
   traceparent: z.string().optional(),
 });
@@ -353,11 +382,16 @@ const sendMessageRoute = createRoute({
   path: "/api/v1/agents/{agentId}/messages",
   tags: ["Messages"],
   summary: "Send a message to the agent",
+  description:
+    "Send a message to an agent. Supports JSON body or multipart form data for file uploads. " +
+    "When platform is specified, the message is routed through the platform adapter.",
   security: [{ bearerAuth: [] }],
   request: {
     params: AgentIdParamSchema,
     body: {
-      content: { "application/json": { schema: SendMessageRequestSchema } },
+      content: {
+        "application/json": { schema: SendMessageRequestSchema },
+      },
     },
   },
   responses: {
@@ -371,6 +405,10 @@ const sendMessageRoute = createRoute({
     },
     401: {
       description: "Unauthorized",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+    403: {
+      description: "Forbidden - worker tokens cannot route to platforms",
       content: { "application/json": { schema: ErrorResponseSchema } },
     },
     404: {
@@ -392,6 +430,8 @@ export interface AgentApiConfig {
   cliTokenService?: CliTokenService;
   externalAuthClient?: ExternalAuthClient;
   agentSettingsStore?: AgentSettingsStore;
+  agentConfigStore?: Pick<AgentConfigStore, "getSettings" | "listAgents">;
+  platformRegistry?: PlatformRegistry;
 }
 
 export function createAgentApi(config: AgentApiConfig): OpenAPIHono;
@@ -414,8 +454,14 @@ export function createAgentApi(
           publicGatewayUrl: publicGatewayUrl!,
         };
 
-  const { queueProducer, adminPassword, cliTokenService, agentSettingsStore } =
-    config;
+  const {
+    queueProducer,
+    adminPassword,
+    cliTokenService,
+    agentSettingsStore,
+    agentConfigStore,
+    platformRegistry,
+  } = config;
   const sessMgr = config.sessionManager;
   const pubUrl = config.publicGatewayUrl;
   const app = new OpenAPIHono();
@@ -442,6 +488,10 @@ export function createAgentApi(
       provider = "claude",
       model,
       agentId: requestedAgentId,
+      userId: requestedUserId,
+      thread,
+      forceNew,
+      dryRun,
       networkConfig,
       mcpServers,
       nix: nixConfig,
@@ -485,9 +535,12 @@ export function createAgentApi(
 
       if (systemProviders.length > 0) {
         // Also inherit pluginsConfig from template agent if available
-        const templateId = await agentSettingsStore.findTemplateAgentId();
+        const templateId = agentConfigStore
+          ? await findTemplateAgentId(agentConfigStore)
+          : await agentSettingsStore.findTemplateAgentId();
         const templateSettings = templateId
-          ? await agentSettingsStore.getSettings(templateId)
+          ? await (agentConfigStore?.getSettings(templateId) ??
+              agentSettingsStore.getSettings(templateId))
           : null;
         await agentSettingsStore.saveSettings(agentId, {
           installedProviders: systemProviders,
@@ -498,10 +551,13 @@ export function createAgentApi(
         );
       } else {
         // Fall back to using an existing agent as template (inherits its providers)
-        const templateId = await agentSettingsStore.findTemplateAgentId();
+        const templateId = agentConfigStore
+          ? await findTemplateAgentId(agentConfigStore)
+          : await agentSettingsStore.findTemplateAgentId();
         if (templateId) {
-          const templateSettings =
-            await agentSettingsStore.getSettings(templateId);
+          const templateSettings = await (agentConfigStore?.getSettings(
+            templateId
+          ) ?? agentSettingsStore.getSettings(templateId));
           await agentSettingsStore.saveSettings(agentId, {
             templateAgentId: templateId,
             pluginsConfig: templateSettings?.pluginsConfig,
@@ -513,15 +569,61 @@ export function createAgentApi(
       }
     }
 
-    const conversationId = agentId;
-    const channelId = `api-${agentId.slice(0, 8)}`;
+    const userId = requestedUserId || agentId;
+
+    // Build composite conversationId for user-specific sessions
+    // Uses _ separator (colons not allowed in BullMQ custom IDs)
+    const conversationId = thread
+      ? `${agentId}_${userId}_${thread}`
+      : `${agentId}_${userId}`;
+    const channelId = `api_${userId}`;
     const deploymentName = `api-${agentId.slice(0, 8)}`;
+
+    // Try to resume existing session (unless forceNew is requested)
+    if (!forceNew) {
+      const existing = await sessMgr.getSession(conversationId);
+      if (existing) {
+        // Reuse existing session — touch lastActivity and return existing token
+        await sessMgr.touchSession(conversationId);
+
+        const token = generateWorkerToken(
+          agentId,
+          conversationId,
+          deploymentName,
+          {
+            channelId,
+            agentId,
+            platform: "api",
+            sessionKey: userId,
+          }
+        );
+
+        const expiresAt = Date.now() + TOKEN_EXPIRATION_MS;
+        const baseUrl = pubUrl || "http://localhost:8080";
+
+        logger.info(
+          `Resumed API session: ${conversationId} (agent=${agentId})`
+        );
+
+        return c.json(
+          {
+            success: true,
+            agentId: conversationId,
+            token,
+            expiresAt,
+            sseUrl: `${baseUrl}/api/v1/agents/${conversationId}/events`,
+            messagesUrl: `${baseUrl}/api/v1/agents/${conversationId}/messages`,
+          },
+          201
+        );
+      }
+    }
 
     const token = generateWorkerToken(agentId, conversationId, deploymentName, {
       channelId,
       agentId,
       platform: "api",
-      sessionKey: agentId,
+      sessionKey: userId,
     });
 
     const expiresAt = Date.now() + TOKEN_EXPIRATION_MS;
@@ -529,8 +631,8 @@ export function createAgentApi(
     const session: ThreadSession = {
       conversationId,
       channelId,
-      userId: agentId,
-      threadCreator: agentId,
+      userId,
+      threadCreator: userId,
       lastActivity: Date.now(),
       createdAt: Date.now(),
       status: "created",
@@ -541,20 +643,22 @@ export function createAgentApi(
         ? { mcpServers: mcpServers as Record<string, McpServerConfig> }
         : undefined,
       nixConfig,
+      agentId,
+      dryRun: dryRun || false,
     };
     await sessMgr.setSession(session);
 
-    logger.info(`Created API agent: ${agentId}`);
+    logger.info(`Created API agent: ${conversationId} (agent=${agentId})`);
 
     const baseUrl = pubUrl || "http://localhost:8080";
     return c.json(
       {
         success: true,
-        agentId,
+        agentId: conversationId,
         token,
         expiresAt,
-        sseUrl: `${baseUrl}/api/v1/agents/${agentId}/events`,
-        messagesUrl: `${baseUrl}/api/v1/agents/${agentId}/messages`,
+        sseUrl: `${baseUrl}/api/v1/agents/${conversationId}/events`,
+        messagesUrl: `${baseUrl}/api/v1/agents/${conversationId}/messages`,
       },
       201
     );
@@ -562,16 +666,16 @@ export function createAgentApi(
 
   // GET /api/v1/agents/:agentId - Get status
   app.openapi(getAgentRoute, async (c): Promise<any> => {
-    const { agentId } = c.req.valid("param");
+    const { agentId: sessionKey } = c.req.valid("param");
 
-    const session = await sessMgr.getSession(agentId);
+    const session = await sessMgr.getSession(sessionKey);
     if (!session) {
       return c.json({ success: false, error: "Agent not found" }, 404);
     }
 
     const hasActiveConnection =
-      sseConnections.has(agentId) &&
-      (sseConnections.get(agentId)?.size ?? 0) > 0;
+      sseConnections.has(sessionKey) &&
+      (sseConnections.get(sessionKey)?.size ?? 0) > 0;
 
     return c.json({
       success: true,
@@ -588,9 +692,9 @@ export function createAgentApi(
 
   // DELETE /api/v1/agents/:agentId
   app.openapi(deleteAgentRoute, async (c): Promise<any> => {
-    const { agentId } = c.req.valid("param");
+    const { agentId: sessionKey } = c.req.valid("param");
 
-    const connections = sseConnections.get(agentId);
+    const connections = sseConnections.get(sessionKey);
     if (connections) {
       for (const connection of connections) {
         try {
@@ -610,26 +714,34 @@ export function createAgentApi(
           // Ignore
         }
       }
-      sseConnections.delete(agentId);
+      sseConnections.delete(sessionKey);
     }
 
-    await sessMgr.deleteSession(agentId);
+    // Get real agentId from session before deleting
+    const session = await sessMgr.getSession(sessionKey);
+    const realAgentId = session?.agentId || sessionKey;
+
+    await sessMgr.deleteSession(sessionKey);
     // Clean up ephemeral agent settings
     if (agentSettingsStore) {
-      await agentSettingsStore.deleteSettings(agentId).catch(() => {
+      await agentSettingsStore.deleteSettings(realAgentId).catch(() => {
         /* best-effort cleanup */
       });
     }
-    logger.info(`Deleted agent ${agentId}`);
+    logger.info(`Deleted agent ${sessionKey}`);
 
-    return c.json({ success: true, message: "Agent deleted", agentId });
+    return c.json({
+      success: true,
+      message: "Agent deleted",
+      agentId: sessionKey,
+    });
   });
 
   // GET /api/v1/agents/:agentId/events - SSE stream
   app.openapi(getAgentEventsRoute, async (c): Promise<any> => {
-    const { agentId } = c.req.valid("param");
+    const { agentId: sessionKey } = c.req.valid("param");
 
-    const session = await sessMgr.getSession(agentId);
+    const session = await sessMgr.getSession(sessionKey);
     if (!session) {
       return c.json({ success: false, error: "Agent not found" }, 404);
     }
@@ -646,10 +758,12 @@ export function createAgentApi(
       );
     }
 
-    if (!sseConnections.has(agentId)) {
-      sseConnections.set(agentId, new Set());
+    // Use conversationId as the SSE connection key (matches broadcastToAgent calls)
+    const sseKey = session.conversationId;
+    if (!sseConnections.has(sseKey)) {
+      sseConnections.set(sseKey, new Set());
     }
-    const agentConnections = sseConnections.get(agentId)!;
+    const agentConnections = sseConnections.get(sseKey)!;
     if (agentConnections.size >= MAX_CONNECTIONS_PER_AGENT) {
       return c.json(
         {
@@ -666,7 +780,10 @@ export function createAgentApi(
 
       await stream.writeSSE({
         event: "connected",
-        data: JSON.stringify({ agentId, timestamp: Date.now() }),
+        data: JSON.stringify({
+          agentId: session.agentId || sessionKey,
+          timestamp: Date.now(),
+        }),
       });
 
       const heartbeatInterval = setInterval(async () => {
@@ -684,9 +801,9 @@ export function createAgentApi(
         clearInterval(heartbeatInterval);
         agentConnections.delete(stream);
         if (agentConnections.size === 0) {
-          sseConnections.delete(agentId);
+          sseConnections.delete(sseKey);
         }
-        logger.info(`SSE connection closed for agent ${agentId}`);
+        logger.info(`SSE connection closed for session ${sseKey}`);
       });
 
       while (true) {
@@ -696,16 +813,202 @@ export function createAgentApi(
   });
 
   // POST /api/v1/agents/:agentId/messages - Send message
+  // Supports two paths:
+  //   1. Direct API (no platform field): requires pre-created session, enqueues directly
+  //   2. Platform-routed (platform field present): delegates to platform adapter
   app.openapi(sendMessageRoute, async (c): Promise<any> => {
     const { agentId } = c.req.valid("param");
 
-    const body = c.req.valid("json");
-    const { content, messageId = randomUUID() } = body;
+    // Parse body — multipart for file uploads, JSON otherwise
+    const contentType = c.req.header("content-type") || "";
+    let body: Record<string, any>;
+    let files: Array<{ buffer: Buffer; filename: string }> | undefined;
 
-    if (!content || typeof content !== "string") {
+    if (contentType.includes("multipart/form-data")) {
+      const formData = await c.req.formData();
+      body = {
+        content: formData.get("content") as string | null,
+        message: formData.get("message") as string | null,
+        messageId: formData.get("messageId") as string | null,
+        platform: formData.get("platform") as string | null,
+      };
+
+      // Extract nested platform routing from form fields
+      const slackChannel = formData.get("slack.channel") as string;
+      if (slackChannel) {
+        body.slack = {
+          channel: slackChannel,
+          thread: formData.get("slack.thread") as string | undefined,
+          team: formData.get("slack.team") as string | undefined,
+        };
+      }
+      const whatsappChat = formData.get("whatsapp.chat") as string;
+      if (whatsappChat) {
+        body.whatsapp = { chat: whatsappChat };
+      }
+      const telegramChatId = formData.get("telegram.chatId") as string;
+      if (telegramChatId) {
+        body.telegram = { chatId: telegramChatId };
+      }
+
+      // Extract files with size validation
+      const MAX_FILE_SIZE = 50 * 1024 * 1024;
+      const MAX_TOTAL_SIZE = 100 * 1024 * 1024;
+      const MAX_FILE_COUNT = 10;
+      const fileEntries = formData.getAll("files");
+      if (fileEntries.length > MAX_FILE_COUNT) {
+        return c.json(
+          {
+            success: false,
+            error: `Too many files: ${fileEntries.length} (max ${MAX_FILE_COUNT})`,
+          },
+          400
+        );
+      }
+      if (fileEntries.length > 0) {
+        const fileResults: Array<{ buffer: Buffer; filename: string }> = [];
+        let totalSize = 0;
+        for (const entry of fileEntries) {
+          if (entry instanceof File) {
+            if (entry.size > MAX_FILE_SIZE) {
+              return c.json(
+                {
+                  success: false,
+                  error: `File "${entry.name}" exceeds maximum size of ${MAX_FILE_SIZE / 1024 / 1024}MB`,
+                },
+                400
+              );
+            }
+            totalSize += entry.size;
+            if (totalSize > MAX_TOTAL_SIZE) {
+              return c.json(
+                {
+                  success: false,
+                  error: `Total upload size exceeds maximum of ${MAX_TOTAL_SIZE / 1024 / 1024}MB`,
+                },
+                400
+              );
+            }
+            const arrayBuffer = await entry.arrayBuffer();
+            fileResults.push({
+              buffer: Buffer.from(arrayBuffer),
+              filename: entry.name,
+            });
+          }
+        }
+        if (fileResults.length > 0) files = fileResults;
+      }
+    } else {
+      body = c.req.valid("json");
+    }
+
+    const messageContent = body.content || body.message;
+    const messageId = body.messageId || randomUUID();
+
+    if (!messageContent || typeof messageContent !== "string") {
       return c.json({ success: false, error: "content is required" }, 400);
     }
 
+    const platform = body.platform as string | undefined;
+
+    // ── Platform-routed path ──────────────────────────────────────────────────
+    // When platform is specified, delegate to the platform adapter which handles
+    // session creation, routing, and file delivery.
+    if (platform) {
+      // Worker tokens cannot route to user-facing platform connections
+      const authHeader = c.req.header("Authorization");
+      const rawToken = authHeader?.startsWith("Bearer ")
+        ? authHeader.substring(7)
+        : "";
+      if (verifyWorkerToken(rawToken)) {
+        return c.json(
+          { success: false, error: "Worker tokens cannot route to platforms" },
+          403
+        );
+      }
+
+      if (!platformRegistry) {
+        return c.json(
+          { success: false, error: "Platform routing not available" },
+          501
+        );
+      }
+
+      const adapter = platformRegistry.get(platform);
+      if (!adapter) {
+        return c.json(
+          {
+            success: false,
+            error: `Platform "${platform}" not found`,
+            details: `Available: ${platformRegistry.getAvailablePlatforms().join(", ")}`,
+          },
+          404
+        );
+      }
+
+      if (!adapter.sendMessage) {
+        return c.json(
+          {
+            success: false,
+            error: `Platform "${platform}" does not support sendMessage`,
+          },
+          501
+        );
+      }
+
+      // Extract platform-specific routing info
+      let channelId = agentId;
+      let conversationId: string | undefined =
+        platform === "api" ? agentId : undefined;
+      let teamId = "api";
+
+      if (adapter.extractRoutingInfo) {
+        const routingInfo = adapter.extractRoutingInfo(
+          body as Record<string, unknown>
+        );
+        if (routingInfo) {
+          channelId = routingInfo.channelId;
+          conversationId = routingInfo.conversationId || conversationId;
+          teamId = routingInfo.teamId || "api";
+        } else if (platform !== "api") {
+          return c.json(
+            {
+              success: false,
+              error: `Platform-specific routing info required for ${platform}`,
+            },
+            400
+          );
+        }
+      }
+
+      logger.info(
+        `Sending message via ${platform}: agentId=${agentId}, channelId=${channelId}${files?.length ? `, files=${files.length}` : ""}`
+      );
+
+      try {
+        const result = await adapter.sendMessage(rawToken, messageContent, {
+          agentId,
+          channelId,
+          conversationId,
+          teamId,
+          files,
+        });
+
+        return c.json({
+          success: true,
+          agentId,
+          messageId: result.messageId,
+          eventsUrl: result.eventsUrl,
+          queued: result.queued || false,
+        });
+      } catch (error) {
+        logger.error("Failed to send platform message", { error });
+        return c.json({ success: false, error: "Internal server error" }, 500);
+      }
+    }
+
+    // ── Direct API path ───────────────────────────────────────────────────────
+    // No platform field: use existing session-based direct enqueue
     const session = await sessMgr.getSession(agentId);
     if (!session) {
       return c.json({ success: false, error: "Agent not found" }, 404);
@@ -713,26 +1016,26 @@ export function createAgentApi(
 
     await sessMgr.touchSession(agentId);
 
+    const realAgentId = session.agentId || agentId;
+
     const { span: rootSpan, traceparent } = createRootSpan("message_received", {
-      "lobu.agent_id": agentId,
+      "lobu.agent_id": realAgentId,
       "lobu.message_id": messageId,
     });
 
     try {
-      const channelId = session.channelId || `api-${agentId.slice(0, 8)}`;
+      const channelId = session.channelId || `api_${session.userId}`;
 
-      // Merge agent settings (pluginsConfig, toolsConfig, etc.) like platform handlers do
       const baseOptions: Record<string, any> = {
         provider: session.provider || "claude",
         model: session.model,
       };
       const agentOptions = await resolveAgentOptions(
-        agentId,
+        realAgentId,
         baseOptions,
         agentSettingsStore
       );
 
-      // Extract settings-level overrides that resolveAgentOptions may have added
       const {
         networkConfig: settingsNetwork,
         mcpServers: settingsMcpServers,
@@ -745,14 +1048,15 @@ export function createAgentApi(
         messageId,
         channelId,
         teamId: "api",
-        agentId: agentId,
+        agentId: realAgentId,
         botId: "lobu-api",
         platform: "api",
-        messageText: content,
+        messageText: messageContent,
         platformMetadata: {
-          agentId,
+          agentId: realAgentId,
           source: "direct-api",
           traceparent: traceparent || undefined,
+          dryRun: session.dryRun || false,
         },
         agentOptions: remainingOptions,
         networkConfig: session.networkConfig || settingsNetwork,

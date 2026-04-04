@@ -1,6 +1,6 @@
 export function TerminalLog({ fill }: { fill?: boolean }) {
   const lines: { text: string; color: string }[] = [
-    { text: "$ lobu dev -d", color: "#4ade80" },
+    { text: "$ lobu run -d", color: "#4ade80" },
     { text: "[gateway] listening on :8080", color: "#8f96a3" },
     { text: "[gateway] connected to Redis", color: "#8f96a3" },
     {
@@ -67,14 +67,14 @@ export function TerminalLog({ fill }: { fill?: boolean }) {
             class="px-2.5 py-1 rounded-md"
             style={{ backgroundColor: "#23262d", color: "#c9cdd4" }}
           >
-            lobu dev
+            lobu run
           </span>
         </div>
       </div>
 
       {/* Log lines */}
       <div
-        class="px-3.5 pb-3.5 pt-1 font-mono text-[12px] leading-[1.7]"
+        class="px-3.5 pb-3.5 pt-1 font-mono text-[12px] leading-[1.7] text-left"
         style={{ backgroundColor: "#0b0c0f" }}
       >
         {lines.map((line) =>
@@ -88,7 +88,7 @@ export function TerminalLog({ fill }: { fill?: boolean }) {
         )}
       </div>
       <div
-        class="px-3.5 pb-3.5 text-[11px]"
+        class="px-3.5 pb-3.5 text-[11px] text-left"
         style={{ backgroundColor: "#0b0c0f" }}
       >
         <a

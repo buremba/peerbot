@@ -3,33 +3,6 @@
  * Extracts common helpers duplicated across Telegram, WhatsApp, and Slack converters/renderers.
  */
 
-import { createLogger } from "@lobu/core";
-
-const logger = createLogger("renderer-utils");
-
-export function ensureString(content: unknown): string {
-  if (typeof content === "string") return content;
-  logger.warn(
-    `Received non-string content (type: ${typeof content}), converting to string`
-  );
-  return typeof content === "object"
-    ? JSON.stringify(content)
-    : String(content);
-}
-
-export function decodeHtmlEntities(text: string): string {
-  return text
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&amp;/g, "&")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'");
-}
-
-export function collapseNewlines(text: string): string {
-  return text.replace(/\n{3,}/g, "\n\n").trim();
-}
-
 /**
  * Chunk a long message into smaller parts, breaking at natural boundaries.
  */

@@ -339,10 +339,15 @@ export class McpProxy {
 
   private async handleListTools(c: Context): Promise<Response> {
     const mcpId = c.req.param("mcpId");
+    if (!mcpId) return c.json({ error: "Missing MCP server id" }, 400);
     const auth = authenticateRequest(c);
     if (!auth) return c.json({ error: "Invalid authentication token" }, 401);
 
     const agentId = auth.tokenData.agentId || auth.tokenData.userId;
+    const requesterUserId = auth.tokenData.userId;
+    if (!agentId || !requesterUserId) {
+      return c.json({ error: "Invalid authentication token" }, 401);
+    }
     const httpServer = await this.configService.getHttpServer(mcpId, agentId);
     if (!httpServer) {
       return c.json({ error: `MCP server '${mcpId}' not found` }, 404);
@@ -368,7 +373,7 @@ export class McpProxy {
         mcpId,
         "POST",
         jsonRpcBody,
-        auth.tokenData.userId
+        requesterUserId
       );
 
       const data = (await response.json()) as JsonRpcResponse;
@@ -402,10 +407,17 @@ export class McpProxy {
   private async handleCallTool(c: Context): Promise<Response> {
     const mcpId = c.req.param("mcpId");
     const toolName = c.req.param("toolName");
+    if (!mcpId || !toolName) {
+      return c.json({ error: "Missing MCP server id or tool name" }, 400);
+    }
     const auth = authenticateRequest(c);
     if (!auth) return c.json({ error: "Invalid authentication token" }, 401);
 
     const agentId = auth.tokenData.agentId || auth.tokenData.userId;
+    const requesterUserId = auth.tokenData.userId;
+    if (!agentId || !requesterUserId) {
+      return c.json({ error: "Invalid authentication token" }, 401);
+    }
     const httpServer = await this.configService.getHttpServer(mcpId, agentId);
     if (!httpServer) {
       return c.json({ error: `MCP server '${mcpId}' not found` }, 404);
@@ -434,7 +446,7 @@ export class McpProxy {
               content: [
                 {
                   type: "text",
-                  text: `Tool call requires approval. Grant access via settings page for: ${mcpId} → ${toolName}`,
+                  text: `Tool call requires approval. Request access approval in chat for: ${mcpId} → ${toolName}`,
                 },
               ],
               isError: true,
@@ -466,15 +478,13 @@ export class McpProxy {
         id: 1,
       });
 
-      const userId = auth.tokenData.userId;
-
       let response = await this.sendUpstreamRequest(
         httpServer,
         agentId,
         mcpId,
         "POST",
         jsonRpcBody,
-        userId
+        requesterUserId
       );
 
       let data = (await response.json()) as JsonRpcResponse;
@@ -485,7 +495,12 @@ export class McpProxy {
           mcpId,
           toolName,
         });
-        await this.reinitializeSession(httpServer, agentId, mcpId, userId);
+        await this.reinitializeSession(
+          httpServer,
+          agentId,
+          mcpId,
+          requesterUserId
+        );
 
         response = await this.sendUpstreamRequest(
           httpServer,
@@ -493,7 +508,7 @@ export class McpProxy {
           mcpId,
           "POST",
           jsonRpcBody,
-          userId
+          requesterUserId
         );
         data = (await response.json()) as JsonRpcResponse;
       }
@@ -513,7 +528,7 @@ export class McpProxy {
           const autoAuthResult = await this.tryAutoDeviceAuth(
             mcpId,
             agentId,
-            auth.tokenData.userId
+            requesterUserId
           );
           if (autoAuthResult) {
             return c.json(

@@ -238,18 +238,18 @@ export class ExternalAuthClient {
   }
 
   static isConfigured(): boolean {
-    return !!process.env.AUTH_MCP_URL;
+    return !!process.env.MEMORY_URL;
   }
 
   static fromEnv(
     publicGatewayUrl: string,
     cacheStore?: ExternalAuthConfig["cacheStore"]
   ): ExternalAuthClient | null {
-    const authMcpUrl = process.env.AUTH_MCP_URL;
+    const authMcpUrl = process.env.MEMORY_URL;
     if (!authMcpUrl) return null;
 
     const issuerUrl = authMcpUrl.replace(/\/+$/, "");
-    const callbackPath = "/agent/oauth/callback";
+    const callbackPath = "/connect/oauth/callback";
 
     // Register redirect URIs for both the configured public URL and localhost
     // so OAuth works regardless of how the user accesses the gateway

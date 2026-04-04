@@ -1,14 +1,12 @@
 export interface PlatformAuthMethod {
-  type: "webapp-initdata" | "oauth" | "claim-code";
-  scriptUrl?: string;
+  type: "oauth" | "claim-code";
 }
 
-export const DEFAULT_AUTH_METHOD: PlatformAuthMethod = { type: "claim-code" };
+const DEFAULT_AUTH_METHOD: PlatformAuthMethod = { type: "claim-code" };
 
 const AUTH_METHODS: Record<string, PlatformAuthMethod> = {
   telegram: {
-    type: "webapp-initdata",
-    scriptUrl: "https://telegram.org/js/telegram-web-app.js",
+    type: "claim-code",
   },
 };
 

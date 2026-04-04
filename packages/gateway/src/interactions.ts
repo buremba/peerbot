@@ -34,8 +34,6 @@ export interface PostedLinkButton {
   url: string;
   label: string;
   linkType: "settings" | "install" | "oauth";
-  /** Open as Telegram Web App (in-app mini app) instead of external browser. */
-  webApp?: boolean;
 }
 
 /**
@@ -65,6 +63,20 @@ export interface PostedPackageRequest {
   teamId?: string;
   packages: string[];
   reason: string;
+}
+
+/**
+ * Payload emitted on "config:requested" — platform renderers listen for this.
+ */
+export interface PostedConfigRequest {
+  id: string;
+  userId: string;
+  agentId: string;
+  conversationId: string;
+  channelId: string;
+  teamId?: string;
+  connectionId?: string;
+  text: string;
 }
 
 /**
@@ -212,6 +224,42 @@ export class InteractionService extends EventEmitter {
   }
 
   /**
+   * Post a config request with approve/deny buttons (non-blocking).
+   * Emits "config:requested" for platform renderers.
+   */
+  async postConfigRequest(
+    userId: string,
+    agentId: string,
+    conversationId: string,
+    channelId: string,
+    teamId: string | undefined,
+    connectionId: string | undefined,
+    text: string
+  ): Promise<PostedConfigRequest> {
+    if (this.beforeCreateHook) {
+      await this.beforeCreateHook(userId, conversationId);
+    }
+
+    const posted: PostedConfigRequest = {
+      id: `cfg_${randomUUID()}`,
+      userId,
+      agentId,
+      conversationId,
+      channelId,
+      teamId,
+      connectionId,
+      text,
+    };
+
+    logger.info(
+      `Posted config request ${posted.id} for agent ${agentId} conversation ${conversationId}`
+    );
+
+    this.emit("config:requested", posted);
+    return posted;
+  }
+
+  /**
    * Post a link button (non-blocking, fire-and-forget).
    * Emits "link-button:created" for platform renderers.
    */
@@ -230,12 +278,6 @@ export class InteractionService extends EventEmitter {
       await this.beforeCreateHook(userId, conversationId);
     }
 
-    // Settings/install links open in Telegram Web App (in-app mini app)
-    // OAuth links point to external providers and must open in a browser
-    const webApp =
-      platform === "telegram" &&
-      (linkType === "settings" || linkType === "install");
-
     const posted: PostedLinkButton = {
       id: `lb_${randomUUID()}`,
       userId,
@@ -247,7 +289,6 @@ export class InteractionService extends EventEmitter {
       url,
       label,
       linkType,
-      webApp,
     };
 
     logger.info(

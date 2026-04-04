@@ -8,7 +8,6 @@ import {
   type NetworkConfig,
   type NixConfig,
   type PluginsConfig,
-  type RegistryEntry,
   type SkillsConfig,
   safeJsonParse,
   safeJsonStringify,
@@ -62,8 +61,6 @@ export interface AgentSettings {
   authProfiles?: AuthProfile[];
   /** Installed providers for this agent (index 0 = primary). */
   installedProviders?: InstalledProvider[];
-  /** Per-agent skill registries (in addition to global defaults) */
-  skillRegistries?: RegistryEntry[];
   /** Enable verbose logging (show tool calls, reasoning, etc.) */
   verboseLogging?: boolean;
   /** Template agent this sandbox was cloned from (for credential fallback) */

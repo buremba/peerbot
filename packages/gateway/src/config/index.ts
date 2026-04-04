@@ -113,10 +113,29 @@ export type DeepPartial<T> = {
 };
 
 /**
+ * Agent configuration passed programmatically via GatewayConfig.
+ * Used in embedded mode to provision agents at startup without API calls.
+ */
+export interface AgentConfig {
+  id: string;
+  name: string;
+  description?: string;
+  identityMd?: string;
+  soulMd?: string;
+  userMd?: string;
+  providers?: Array<{ id: string; model?: string; key?: string }>;
+  connections?: Array<{ type: string; config: Record<string, string> }>;
+  skills?: { enabled?: string[]; mcp?: Record<string, any> };
+  network?: { allowed?: string[]; denied?: string[] };
+  nixPackages?: string[];
+}
+
+/**
  * Complete gateway configuration - single source of truth
  * Platform-specific configs (like Slack) are built separately
  */
 export interface GatewayConfig {
+  agents?: AgentConfig[];
   agentDefaults: Partial<AgentOptions>;
   sessionTimeoutMinutes: number;
   logLevel: LogLevel;

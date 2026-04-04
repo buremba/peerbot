@@ -95,13 +95,7 @@ ${this.getGenericSkillsInstructions()}`;
   private getGenericSkillsInstructions(): string {
     return `## Skills
 
-You can extend your capabilities by searching for installable skills and MCP servers with the built-in tools.
-
-**Available tools:**
-- \`SearchSkills\` - Search for skills and MCP servers by keyword
-- \`InstallSkill\` - Install or upgrade a skill or MCP server from search results
-
-When the user asks about adding capabilities, finding tools, or extending functionality, search for relevant skills first using \`SearchSkills\`.`;
+Your available skills are listed above. To read full instructions for a skill, use: \`cat .skills/{skillName}/SKILL.md\``;
   }
 }
 
@@ -147,7 +141,7 @@ You can access any external service without restrictions.`;
 
 **Internet Access:** Complete isolation (no external access)
 
-You do NOT have access to the internet. All external requests (curl, wget, npm, pip, etc.) will fail. If you need network access, use RequestNetworkAccess to request it — this presents inline approval buttons to the user. Only local operations and MCP tools are available.`;
+You do NOT have access to the internet. All external requests (curl, wget, npm, pip, etc.) will fail. Network access is configured via lobu.toml or the gateway configuration APIs. Only local operations and MCP tools are available.`;
     }
 
     // Allowlist mode
@@ -178,7 +172,7 @@ ${blockedList}`;
 
     instructions += `
 
-You can only access the allowed domains listed above. All other external requests will be blocked by the proxy. If a domain is blocked, use RequestNetworkAccess to request access — this presents inline approval buttons to the user (default grant: 1 hour). Plan your work accordingly and use available MCP tools when possible.`;
+You can only access the allowed domains listed above. All other external requests will be blocked by the proxy. Network access is configured via lobu.toml or the gateway configuration APIs. Plan your work accordingly and use available MCP tools when possible.`;
 
     return instructions;
   }
@@ -275,7 +269,7 @@ export class InstructionService {
           agentInstructions = sections.join("\n\n");
         }
 
-        // When soul is unconfigured, tell the agent about its settings page
+        // When soul is unconfigured, tell the agent to defer to admin config.
         if (!agentInstructions.trim()) {
           agentInstructions = buildUnconfiguredAgentNotice(
             options?.settingsUrl

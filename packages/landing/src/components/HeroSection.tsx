@@ -24,46 +24,50 @@ export function HeroSection() {
           class="text-4xl sm:text-5xl font-bold tracking-tight leading-[1.1] mb-5"
           style={{ color: "var(--color-page-text)" }}
         >
-          Multi-tenant{" "}
-          <span style={{ whiteSpace: "nowrap" }}>
-            <span
-              style={{
-                color: "var(--color-tg-accent)",
-              }}
-            >
-              OpenClaw
-            </span>{" "}
-            infra
-          </span>
+          Add{" "}
+          <span
+            style={{
+              color: "var(--color-tg-accent)",
+            }}
+          >
+            autonomous agents
+          </span>{" "}
+          to your product
         </h1>
         <p
-          class="text-lg max-w-2xl mx-auto mb-8 leading-relaxed"
+          class="text-lg mx-auto mb-8 leading-relaxed"
           style={{ color: "var(--color-page-text-muted)" }}
         >
-          Computer use agents via REST API, on Slack, Telegram, and WhatsApp.
-          <br />
           <a
             href="/guides/security"
             class="underline decoration-dotted underline-offset-2 transition-opacity hover:opacity-80"
             style={{ color: "var(--color-page-text-muted)" }}
           >
             Sandboxed
-          </a>
-          , persistent, powered by the{" "}
+          </a>{" "}
+          persistent agents powered by{" "}
           <a
             href="/getting-started/comparison/"
             class="underline decoration-dotted underline-offset-2 transition-opacity hover:opacity-80"
             style={{ color: "var(--color-page-text-muted)" }}
           >
             OpenClaw runtime
-          </a>{" "}
-          and{" "}
+          </a>
+          , Lobu{" "}
           <a
             href="/skills"
             class="underline decoration-dotted underline-offset-2 transition-opacity hover:opacity-80"
             style={{ color: "var(--color-page-text-muted)" }}
           >
-            Lobu Skills
+            Skills,
+          </a>{" "}
+          and{" "}
+          <a
+            href="/memory"
+            class="underline decoration-dotted underline-offset-2 transition-opacity hover:opacity-80"
+            style={{ color: "var(--color-page-text-muted)" }}
+          >
+            Memory
           </a>
           .
         </p>

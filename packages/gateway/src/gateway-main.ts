@@ -5,7 +5,6 @@ import {
   type AgentConfigStore,
   type AgentConnectionStore,
   createLogger,
-  type RegistryEntry,
   type SystemSkillEntry,
 } from "@lobu/core";
 import type { GatewayConfig } from "./config";
@@ -29,16 +28,14 @@ const logger = createLogger("gateway");
  * 4. Gateway calls start() on each platform
  */
 export interface GatewayOptions {
-  /** Agent settings + metadata store. Defaults to RedisAgentStore. */
+  /** Agent settings + metadata store. Defaults to InMemoryAgentStore. */
   configStore?: AgentConfigStore;
-  /** Connections + channel bindings store. Defaults to RedisAgentStore. */
+  /** Connections + channel bindings store. Defaults to InMemoryAgentStore. */
   connectionStore?: AgentConnectionStore;
-  /** Grants + user-agent associations store. Defaults to RedisAgentStore. */
+  /** Grants + user-agent associations store. Defaults to InMemoryAgentStore. */
   accessStore?: AgentAccessStore;
   /** Provide system skills programmatically (skips file loading). */
   systemSkills?: SystemSkillEntry[];
-  /** Provide skill registries programmatically (skips file loading). */
-  skillRegistries?: RegistryEntry[];
 }
 
 export class Gateway {
@@ -56,7 +53,6 @@ export class Gateway {
       connectionStore: options?.connectionStore,
       accessStore: options?.accessStore,
       systemSkills: options?.systemSkills,
-      skillRegistries: options?.skillRegistries,
     });
   }
 

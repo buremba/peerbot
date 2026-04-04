@@ -34,7 +34,7 @@ export function createApiAuthMiddleware(opts: {
       if (identity) return next();
     }
 
-    // 3. Try external OAuth token (validated against AUTH_MCP_URL userinfo)
+    // 3. Try external OAuth token (validated against MEMORY_URL userinfo)
     if (opts.externalAuthClient) {
       try {
         const userInfo = await opts.externalAuthClient.fetchUserInfo(token);

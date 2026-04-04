@@ -1,15 +1,4 @@
 /**
- * Format MCP ID into human-readable name
- * Example: "github-mcp" -> "Github Mcp"
- */
-export function formatMcpName(mcpId: string): string {
-  return mcpId
-    .split("-")
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(" ");
-}
-
-/**
  * HTML templates for OAuth flow
  */
 
@@ -36,7 +25,7 @@ function escapeHtml(value: string): string {
 
 /**
  * Render a success page that auto-closes the tab (for in-app browsers)
- * and provides a link to the settings page as fallback.
+ * and provides a fallback link to agent configuration when available.
  */
 export function renderOAuthSuccessPage(
   name: string,
@@ -105,7 +94,7 @@ export function renderOAuthSuccessPage(
           <h1>${safeTitle}</h1>
           <p>${safeDescription.includes(safeName) ? safeDescription : `${safeDescription} <strong>${safeName}</strong>`}</p>
           ${safeDetails ? `<p>${safeDetails}</p>` : ""}
-          ${safeSettingsUrl ? `<a class="btn" href="${safeSettingsUrl}">Open Settings</a>` : ""}
+          ${safeSettingsUrl ? `<a class="btn" href="${safeSettingsUrl}">Open Configuration</a>` : ""}
           <p class="close-note">${safeCloseNote}</p>
         </div>
         <script>

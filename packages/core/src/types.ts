@@ -137,8 +137,12 @@ export interface SkillConfig {
   mcpServers?: SkillMcpServer[];
   /** System packages declared by the skill (nix) */
   nixPackages?: string[];
-  /** Network domains the skill needs access to */
+  /** Network domains the skill needs access to (legacy flat list) */
   permissions?: string[];
+  /** Network access policy declared by the skill */
+  networkConfig?: { allowedDomains?: string[]; deniedDomains?: string[] };
+  /** Tool permission policy declared by the skill */
+  toolPermissions?: { allow?: string[]; deny?: string[] };
   /** AI providers the skill requires */
   providers?: string[];
   /** Preferred model for this skill (e.g., "anthropic/claude-opus-4") */

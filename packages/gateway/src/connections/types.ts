@@ -4,6 +4,7 @@
  */
 
 import type { createDiscordAdapter } from "@chat-adapter/discord";
+import type { createGoogleChatAdapter } from "@chat-adapter/gchat";
 import type { createSlackAdapter } from "@chat-adapter/slack";
 import type { createTeamsAdapter } from "@chat-adapter/teams";
 import type { createTelegramAdapter } from "@chat-adapter/telegram";
@@ -25,13 +26,17 @@ type WhatsAppAdapterConfig = NonNullable<
 type TeamsAdapterConfig = NonNullable<
   Parameters<typeof createTeamsAdapter>[0]
 > & { platform: "teams" };
+type GoogleChatAdapterConfig = NonNullable<
+  Parameters<typeof createGoogleChatAdapter>[0]
+> & { platform: "gchat" };
 
 export type PlatformAdapterConfig =
   | TelegramAdapterConfig
   | SlackAdapterConfig
   | DiscordAdapterConfig
   | WhatsAppAdapterConfig
-  | TeamsAdapterConfig;
+  | TeamsAdapterConfig
+  | GoogleChatAdapterConfig;
 
 export interface PlatformConnection {
   id: string;
@@ -75,6 +80,5 @@ export function isSecretField(fieldName: string): boolean {
   return SECRET_FIELD_PATTERNS.some((p) => lower.includes(p));
 }
 
-export type { SupportedPlatform } from "@lobu/core";
-// Re-export from core so existing gateway imports continue to work
-export { SUPPORTED_PLATFORMS } from "@lobu/core";
+/** Derived from PlatformAdapterConfig — no separate list to maintain. */
+export type SupportedPlatform = PlatformAdapterConfig["platform"];

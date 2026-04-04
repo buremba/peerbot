@@ -8,7 +8,7 @@ set -e
 # Environment variables:
 #   TEST_PLATFORM   - "slack", "whatsapp", or "telegram" (default: auto-detect)
 #   TEST_CHANNEL    - Channel ID (Slack), phone number (WhatsApp), or peer/chat ID (Telegram)
-#   TEST_TIMEOUT    - Timeout in seconds (default: 60)
+#   TEST_TIMEOUT    - Timeout in seconds (default: 120)
 #
 # Platform-specific:
 #   Slack: QA_SLACK_CHANNEL, optional SLACK_BOT_TOKEN for reply polling
@@ -154,7 +154,7 @@ async def main() -> int:
     api_hash = os.environ.get("TG_API_HASH", "").strip()
     peer = os.environ.get("TG_WAIT_PEER", "").strip()
     after_ts = float(os.environ.get("TG_WAIT_AFTER_TS", "0"))
-    timeout = float(os.environ.get("TG_WAIT_TIMEOUT", "60"))
+    timeout = float(os.environ.get("TG_WAIT_TIMEOUT", "120"))
     session = os.environ.get("TG_SESSION", "").strip() or os.path.expanduser(
         "~/.config/tguser/session"
     )
@@ -334,7 +334,7 @@ if [ -z "$TEST_PLATFORM" ]; then
     fi
 fi
 
-TIMEOUT="${TEST_TIMEOUT:-60}"
+TIMEOUT="${TEST_TIMEOUT:-120}"
 
 # Platform-specific setup
 case "$TEST_PLATFORM" in
@@ -449,12 +449,11 @@ for i in "${!MESSAGES[@]}"; do
     # Use TEST_AGENT_ID or generate a default test agent ID
     AGENT_ID="${TEST_AGENT_ID:-test-$TEST_PLATFORM}"
 
-    # Build request body (must match /api/v1/messaging/send schema)
+    # Build request body (must match /api/v1/agents/{agentId}/messages schema)
     BODY=$(jq -n \
-        --arg agentId "$AGENT_ID" \
         --arg platform "$TEST_PLATFORM" \
-        --argjson message "$ESCAPED_MESSAGE" \
-        '{agentId: $agentId, platform: $platform, message: $message}')
+        --argjson content "$ESCAPED_MESSAGE" \
+        '{platform: $platform, content: $content}')
 
     # Add platform-specific routing info
     case "$TEST_PLATFORM" in
@@ -474,7 +473,7 @@ for i in "${!MESSAGES[@]}"; do
     esac
 
     # Send message
-    RESPONSE=$(curl -s -X POST "$GATEWAY_URL/api/v1/messaging/send" \
+    RESPONSE=$(curl -s -X POST "$GATEWAY_URL/api/v1/agents/$AGENT_ID/messages" \
       -H "Authorization: Bearer $AUTH_TOKEN" \
       -H "Content-Type: application/json" \
       -d "$BODY")

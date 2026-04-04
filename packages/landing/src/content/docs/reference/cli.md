@@ -5,7 +5,7 @@ sidebar:
   order: 0
 ---
 
-The Lobu CLI (`@lobu/cli`) scaffolds projects, runs agents locally, and deploys to Lobu Cloud.
+The Lobu CLI (`@lobu/cli`) scaffolds projects, runs agents locally, and manages deployments.
 
 ## Install
 
@@ -45,13 +45,13 @@ Options:
 
 ---
 
-### `lobu dev`
+### `lobu run`
 
-Run the agent locally. Reads `lobu.toml`, then starts Docker Compose. All extra flags are forwarded to `docker compose up`.
+Run the agent stack. Reads `lobu.toml`, then starts Docker Compose. All extra flags are forwarded to `docker compose up`.
 
 ```bash
-lobu dev -d          # detached mode
-lobu dev -d --build  # rebuild containers
+lobu run -d          # detached mode
+lobu run -d --build  # rebuild containers
 ```
 
 ---
@@ -68,29 +68,9 @@ Returns exit code `1` if validation fails.
 
 ---
 
-### `lobu launch`
-
-Deploy the agent to Lobu Cloud.
-
-```bash
-lobu launch
-lobu launch --dry-run
-lobu launch -e staging -m "v2 with new skills"
-```
-
-Options:
-
-| Flag | Description |
-|------|-------------|
-| `-e, --env <env>` | Target environment |
-| `--dry-run` | Show what would change without deploying |
-| `-m, --message <msg>` | Deployment note |
-
----
-
 ### `lobu login`
 
-Authenticate with Lobu Cloud. Opens a browser for OAuth by default.
+Authenticate with a remote Lobu gateway. Opens a browser for OAuth by default.
 
 ```bash
 lobu login
@@ -203,9 +183,5 @@ lobu secrets set GEMINI_API_KEY ...
 lobu validate
 
 # 4. Run locally
-lobu dev -d
-
-# 5. Deploy
-lobu login
-lobu launch
+lobu run -d
 ```

@@ -37,14 +37,6 @@ MCP server authentication uses a device-code flow managed through Owletto:
 
 Third-party API integrations (GitHub, Google, etc.) are handled entirely by Owletto MCP servers — the gateway acts as a thin proxy.
 
-## Agent-driven installation
-
-Agents can add MCPs at runtime:
-
-1. Agent calls `SearchSkills` / `InstallSkill` (with a capability `id`).
-2. Gateway generates a prefilled settings link.
-3. User reviews and approves — MCP is active immediately.
-
 ## Configuration reference
 
 ### Adding an MCP to the skills registry

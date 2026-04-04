@@ -2,18 +2,22 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createLogger } from "@lobu/core";
 import { type Context, Hono } from "hono";
 import { CliTokenService } from "../../auth/cli/token-service";
-import type { SettingsOAuthClient } from "../../auth/settings/oauth-client";
+import type { ExternalAuthClient } from "../../auth/external/client";
 import type { IMessageQueue } from "../../infrastructure/queue";
 import { resolvePublicUrl } from "../../utils/public-url";
 import {
   getClientIp,
   RedisFixedWindowRateLimiter,
 } from "../../utils/rate-limiter";
-import { verifySettingsSession } from "./settings-auth";
+import {
+  setSettingsSessionCookie,
+  verifySettingsSession,
+} from "./settings-auth";
 
 const logger = createLogger("cli-auth-routes");
 const AUTH_REQUEST_TTL_SECONDS = 10 * 60;
 const POLL_INTERVAL_MS = 2000;
+const CONNECT_OAUTH_TTL_SECONDS = 10 * 60;
 const ADMIN_LOGIN_RATE_LIMIT = {
   limit: 5,
   windowSeconds: 5 * 60,
@@ -49,11 +53,26 @@ interface CliDeviceAuthState {
   result?: CliAuthResult;
 }
 
+interface ConnectOauthState {
+  returnUrl: string;
+  codeVerifier: string;
+}
+
 export interface CliAuthRoutesConfig {
   queue: IMessageQueue;
-  externalAuthClient?: SettingsOAuthClient;
+  externalAuthClient?: ExternalAuthClient;
   allowAdminPasswordLogin?: boolean;
   adminPassword?: string;
+}
+
+function normalizeReturnUrl(
+  returnUrl: string | null | undefined
+): string | null {
+  const value = returnUrl?.trim();
+  if (!value || !value.startsWith("/") || value.startsWith("//")) {
+    return null;
+  }
+  return value;
 }
 
 function escapeHtml(str: string): string {
@@ -526,7 +545,7 @@ export function createCliAuthRoutes(config: CliAuthRoutesConfig): Hono {
 
     const returnUrl = `/api/v1/auth/cli/session/complete?request=${encodeURIComponent(requestId)}`;
     return c.redirect(
-      `/agent/oauth/login?returnUrl=${encodeURIComponent(returnUrl)}`
+      `/connect/oauth/login?returnUrl=${encodeURIComponent(returnUrl)}`
     );
   });
 
@@ -659,10 +678,170 @@ export function createCliAuthRoutes(config: CliAuthRoutesConfig): Hono {
   return router;
 }
 
+export function createConnectAuthRoutes(config: CliAuthRoutesConfig): Hono {
+  const router = new Hono();
+  const redis = config.queue.getRedisClient();
+
+  async function loadConnectState(
+    state: string
+  ): Promise<ConnectOauthState | null> {
+    const raw = await redis.get(getConnectStateKey(state));
+    if (!raw) return null;
+
+    try {
+      return JSON.parse(raw) as ConnectOauthState;
+    } catch {
+      await redis.del(getConnectStateKey(state));
+      return null;
+    }
+  }
+
+  router.get("/connect/oauth/login", async (c) => {
+    if (!config.externalAuthClient) {
+      return c.html(
+        renderPage(
+          "OAuth Unavailable",
+          "Browser OAuth login is not configured on this gateway.",
+          "error"
+        ),
+        501
+      );
+    }
+
+    const returnUrl = normalizeReturnUrl(c.req.query("returnUrl"));
+    if (!returnUrl) {
+      return c.html(
+        renderPage(
+          "OAuth Login Failed",
+          "Missing or invalid returnUrl.",
+          "error"
+        ),
+        400
+      );
+    }
+
+    const existingSession = verifySettingsSession(c);
+    if (existingSession) {
+      return c.redirect(returnUrl);
+    }
+
+    try {
+      const state = randomBytes(24).toString("base64url");
+      const codeVerifier = config.externalAuthClient.generateCodeVerifier();
+      await redis.setex(
+        getConnectStateKey(state),
+        CONNECT_OAUTH_TTL_SECONDS,
+        JSON.stringify({ returnUrl, codeVerifier } satisfies ConnectOauthState)
+      );
+
+      const redirectUri = resolvePublicUrl("/connect/oauth/callback", {
+        requestUrl: c.req.url,
+      });
+      const authUrl = await config.externalAuthClient.buildAuthUrl(
+        state,
+        codeVerifier,
+        redirectUri
+      );
+
+      return c.redirect(authUrl);
+    } catch (error) {
+      logger.error("Failed to start browser OAuth handoff", { error });
+      return c.html(
+        renderPage(
+          "OAuth Login Failed",
+          "The gateway could not start the browser OAuth flow.",
+          "error"
+        ),
+        500
+      );
+    }
+  });
+
+  router.get("/connect/oauth/callback", async (c) => {
+    if (!config.externalAuthClient) {
+      return c.html(
+        renderPage(
+          "OAuth Unavailable",
+          "Browser OAuth login is not configured on this gateway.",
+          "error"
+        ),
+        501
+      );
+    }
+
+    const code = c.req.query("code")?.trim();
+    const state = c.req.query("state")?.trim();
+    if (!code || !state) {
+      return c.html(
+        renderPage(
+          "OAuth Login Failed",
+          "Missing OAuth code or state.",
+          "error"
+        ),
+        400
+      );
+    }
+
+    const connectState = await loadConnectState(state);
+    await redis.del(getConnectStateKey(state));
+    if (!connectState) {
+      return c.html(
+        renderPage(
+          "OAuth Login Expired",
+          "This OAuth login request has expired. Start the flow again.",
+          "error"
+        ),
+        410
+      );
+    }
+
+    try {
+      const redirectUri = resolvePublicUrl("/connect/oauth/callback", {
+        requestUrl: c.req.url,
+      });
+      const credentials = await config.externalAuthClient.exchangeCodeForToken(
+        code,
+        connectState.codeVerifier,
+        redirectUri
+      );
+      const user = await config.externalAuthClient.fetchUserInfo(
+        credentials.accessToken
+      );
+
+      setSettingsSessionCookie(c, {
+        userId: user.sub,
+        platform: "external",
+        oauthUserId: user.sub,
+        email: user.email,
+        name: user.name,
+        exp: Date.now() + AUTH_REQUEST_TTL_SECONDS * 1000,
+      });
+
+      return c.redirect(connectState.returnUrl);
+    } catch (error) {
+      logger.error("Failed to complete browser OAuth handoff", { error });
+      return c.html(
+        renderPage(
+          "OAuth Login Failed",
+          "The gateway could not complete the browser OAuth flow.",
+          "error"
+        ),
+        500
+      );
+    }
+  });
+
+  return router;
+}
+
 function getRequestKey(requestId: string): string {
   return `cli:auth:request:${requestId}`;
 }
 
 function getDeviceRequestKey(deviceAuthId: string): string {
   return `cli:auth:device:${deviceAuthId}`;
+}
+
+function getConnectStateKey(state: string): string {
+  return `cli:auth:connect:${state}`;
 }

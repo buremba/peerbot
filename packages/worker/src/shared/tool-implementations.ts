@@ -117,7 +117,7 @@ const CONTENT_TYPES: Record<string, string> = {
   ".gz": "application/gzip",
 };
 
-export function getContentType(fileName: string): string {
+function getContentType(fileName: string): string {
   const ext = path.extname(fileName).toLowerCase();
   return CONTENT_TYPES[ext] || "application/octet-stream";
 }
@@ -126,7 +126,7 @@ export function getContentType(fileName: string): string {
 // Utility: FormData buffer serialisation
 // ============================================================================
 
-export async function formDataToBuffer(formData: FormData): Promise<Buffer> {
+async function formDataToBuffer(formData: FormData): Promise<Buffer> {
   return new Promise<Buffer>((resolve, reject) => {
     const chunks: Buffer[] = [];
     formData.on("data", (chunk: string | Buffer) => {
@@ -395,460 +395,6 @@ export async function listReminders(gw: GatewayParams): Promise<TextResult> {
 }
 
 // ============================================================================
-// SearchSkills (unified search for skills + MCP servers)
-// ============================================================================
-
-interface SkillMcpServerRef {
-  id: string;
-  name?: string;
-  url?: string;
-  type?: string;
-  command?: string;
-  args?: string[];
-}
-
-interface SkillSearchResult {
-  id: string;
-  name: string;
-  description: string;
-  source: string;
-  score?: number;
-  uri?: string;
-  mcpServers?: SkillMcpServerRef[];
-  nixPackages?: string[];
-  permissions?: string[];
-  providers?: string[];
-}
-
-interface McpSearchResult {
-  id: string;
-  name: string;
-  description: string;
-  source: string;
-}
-
-function formatSkillSearchResults(results: SkillSearchResult[]): string {
-  return results
-    .map((item, index) => {
-      const lines = [
-        `${index + 1}. ${item.name} (${item.id})`,
-        `   ${item.description || "No description"}`,
-        `   source: ${item.source}${item.score != null ? ` | score: ${Math.round(item.score * 100) / 100}` : ""}${item.uri ? ` | ${item.uri}` : ""}`,
-      ];
-      const deps: string[] = [];
-      if (item.nixPackages?.length)
-        deps.push(`packages: ${item.nixPackages.join(", ")}`);
-      if (item.permissions?.length)
-        deps.push(`domains: ${item.permissions.join(", ")}`);
-      if (item.mcpServers?.length)
-        deps.push(
-          `mcpServers: ${item.mcpServers.map((m) => m.name || m.id).join(", ")}`
-        );
-      if (item.providers?.length)
-        deps.push(`providers: ${item.providers.join(", ")}`);
-      if (deps.length) lines.push(`   requires: ${deps.join(" | ")}`);
-      return lines.join("\n");
-    })
-    .join("\n\n");
-}
-
-function formatMcpSearchResults(
-  results: McpSearchResult[],
-  startIndex: number
-): string {
-  return results
-    .map(
-      (item, index) =>
-        `${startIndex + index + 1}. ${item.name} (${item.id})\n   ${item.description || "No description"}`
-    )
-    .join("\n\n");
-}
-
-export async function searchSkills(
-  gw: GatewayParams,
-  args: { query: string; limit?: number }
-): Promise<TextResult> {
-  return withErrorHandling("SearchSkills", async () => {
-    const query = (args.query || "").trim();
-    const limit = Math.min(args.limit || 5, 10);
-
-    // Empty query → list installed capabilities
-    if (!query) {
-      return listInstalledCapabilities(gw);
-    }
-
-    let skills: SkillSearchResult[] = [];
-    let mcps: McpSearchResult[] = [];
-
-    try {
-      const response = await fetch(
-        `${gw.gatewayUrl}/internal/integrations/search?q=${encodeURIComponent(query)}&limit=${limit}`,
-        { headers: { Authorization: `Bearer ${gw.workerToken}` } }
-      );
-      if (response.ok) {
-        const data = (await response.json()) as {
-          skills: Array<{
-            id: string;
-            name: string;
-            description?: string;
-            source: string;
-            score?: number;
-            uri?: string;
-            mcpServers?: SkillMcpServerRef[];
-            nixPackages?: string[];
-            permissions?: string[];
-            providers?: string[];
-          }>;
-          mcps: Array<{
-            id: string;
-            name: string;
-            description: string;
-            source: string;
-          }>;
-        };
-        skills = (data.skills || []).map((s) => ({
-          id: s.id,
-          name: s.name,
-          description: s.description || "",
-          source: s.source || "registry",
-          score: s.score,
-          uri: s.uri,
-          mcpServers: s.mcpServers,
-          nixPackages: s.nixPackages,
-          permissions: s.permissions,
-          providers: s.providers,
-        }));
-        mcps = (data.mcps || []).map((m) => ({
-          id: m.id,
-          name: m.name,
-          description: m.description || "",
-          source: m.source || "mcp-registry",
-        }));
-      }
-    } catch (error) {
-      logger.error("Failed to search integrations from gateway:", error);
-    }
-
-    if (!skills.length && !mcps.length) {
-      return textResult(
-        `No results found for "${query}". Try a broader query.`
-      );
-    }
-
-    const sections: string[] = [];
-    if (skills.length) {
-      sections.push(
-        `Skills (${skills.length}):\n\n${formatSkillSearchResults(skills)}`
-      );
-    }
-    if (mcps.length) {
-      sections.push(
-        `MCP Servers (${mcps.length}):\n\n${formatMcpSearchResults(mcps, skills.length)}`
-      );
-    }
-
-    return textResult(
-      `${sections.join("\n\n")}\n\n` +
-        `Prefer system skills (source: system) — they are curated and pre-configured.\n` +
-        `Use InstallSkill with the selected id to install a skill from these results.`
-    );
-  });
-}
-
-/**
- * List installed capabilities (skills, integrations, MCP servers) for the current agent.
- */
-async function listInstalledCapabilities(
-  gw: GatewayParams
-): Promise<TextResult> {
-  interface InstalledSkill {
-    id: string;
-    name: string;
-    enabled: boolean;
-  }
-  interface InstalledMcp {
-    id: string;
-    enabled: boolean;
-    type?: string;
-  }
-
-  const { data, error } = await gatewayFetch<{
-    skills: InstalledSkill[];
-    mcpServers: InstalledMcp[];
-  }>(
-    gw,
-    "/internal/integrations/installed",
-    {},
-    "Failed to list installed capabilities"
-  );
-  if (error) return error;
-
-  const { skills, mcpServers } = data!;
-
-  if (!skills.length && !mcpServers.length) {
-    return textResult(
-      "No capabilities installed yet. Use SearchSkills with a query to find skills and MCP servers to install."
-    );
-  }
-
-  const sections: string[] = [];
-
-  if (skills.length) {
-    const formatted = skills
-      .map((s, i) => {
-        const status = s.enabled ? "enabled" : "disabled";
-        return `${i + 1}. ${s.name} (${s.id}) — ${status}`;
-      })
-      .join("\n");
-    sections.push(`Skills (${skills.length}):\n${formatted}`);
-  }
-
-  if (mcpServers.length) {
-    const formatted = mcpServers
-      .map((m, i) => {
-        const status = m.enabled ? "enabled" : "disabled";
-        return `${i + 1}. ${m.id} [${m.type || "unknown"}] — ${status}`;
-      })
-      .join("\n");
-    sections.push(`MCP Servers (${mcpServers.length}):\n${formatted}`);
-  }
-
-  return textResult(sections.join("\n\n"));
-}
-
-// ============================================================================
-// InstallSkill (resolve manifest, generate settings link for user confirmation)
-// ============================================================================
-
-interface ConfigureArgs {
-  reason: string;
-  message?: string;
-  providers?: string[];
-  skills?: Array<{
-    repo: string;
-    name?: string;
-    description?: string;
-  }>;
-  nixPackages?: string[];
-  grants?: string[];
-  mcpServers?: Array<{
-    id: string;
-    name?: string;
-    url?: string;
-    type?: string;
-    command?: string;
-    args?: string[];
-  }>;
-}
-
-export async function installPackage(
-  gw: GatewayParams,
-  args: { packages: string[]; reason: string }
-): Promise<TextResult> {
-  return withErrorHandling("InstallPackage", async () => {
-    logger.info(`InstallPackage: ${args.packages.join(", ")} — ${args.reason}`);
-
-    interface SettingsLinkResult {
-      type?: string;
-      message?: string;
-    }
-
-    const { data, error } = await gatewayFetch<SettingsLinkResult>(
-      gw,
-      "/internal/settings-link",
-      {
-        method: "POST",
-        body: JSON.stringify({
-          nixPackages: args.packages,
-          reason: args.reason,
-        }),
-      },
-      "Failed to request package install"
-    );
-    if (error) return error;
-    const result = data!;
-
-    if (result.type === "inline_package") {
-      return textResult(
-        "Approval buttons have been sent to the user in chat. Stop working and wait for the user's response — packages will be available after approval on the next message."
-      );
-    }
-
-    return textResult(
-      result.message || "Package install request sent to user."
-    );
-  });
-}
-
-export async function requestNetworkAccess(
-  gw: GatewayParams,
-  args: { domains: string[]; reason: string }
-): Promise<TextResult> {
-  return configure(gw, {
-    reason: args.reason,
-    grants: args.domains,
-  });
-}
-
-export async function installSkill(
-  gw: GatewayParams,
-  args: { id: string; upgrade?: boolean }
-): Promise<TextResult> {
-  return withErrorHandling("InstallSkill", async () => {
-    const action = args.upgrade ? "Upgrade" : "Install";
-
-    interface InstallResult {
-      type: "auto_installed" | "needs_setup" | "manifest";
-      id?: string;
-      name: string;
-      source?: string;
-      uri?: string | null;
-      description?: string;
-      message?: string;
-      mcpServers?: SkillMcpServerRef[];
-      nixPackages?: string[];
-      permissions?: string[];
-      providers?: string[];
-      missing?: string[];
-      prefillMcpServer?: {
-        id: string;
-        name: string;
-        url: string;
-        type?: string;
-      };
-    }
-
-    const { data, error } = await gatewayFetch<InstallResult>(
-      gw,
-      "/internal/integrations/install",
-      {
-        method: "POST",
-        body: JSON.stringify({ id: args.id, upgrade: args.upgrade }),
-      },
-      "Failed to install integration"
-    );
-    if (error) return error;
-    const result = data!;
-
-    // Auto-installed — no settings page needed
-    if (result.type === "auto_installed") {
-      return textResult(result.message || `${result.name} has been enabled.`);
-    }
-
-    // needs_setup or manifest — build ConfigureArgs and show settings link
-    const skillId = result.id || args.id;
-    const prefill: ConfigureArgs = {
-      reason: `${action} "${result.name}"`,
-    };
-
-    // Add skill entry
-    if (!result.prefillMcpServer) {
-      prefill.skills = [
-        {
-          repo: skillId,
-          name: result.name,
-          description: result.description,
-        },
-      ];
-    }
-
-    const grants: string[] = [...(result.permissions || [])];
-    if (grants.length) {
-      prefill.grants = [...new Set(grants)];
-    }
-
-    if (result.nixPackages?.length) {
-      prefill.nixPackages = result.nixPackages;
-    }
-    if (result.providers?.length) {
-      prefill.providers = result.providers;
-    }
-
-    // Pre-fill MCP servers
-    if (result.mcpServers?.length) {
-      prefill.mcpServers = result.mcpServers.map((m) => ({
-        id: m.id,
-        name: m.name,
-        url: m.url,
-        type: m.type,
-        command: m.command,
-        args: m.args,
-      }));
-    } else if (result.prefillMcpServer) {
-      prefill.mcpServers = [result.prefillMcpServer];
-    }
-
-    return configure(gw, prefill);
-  });
-}
-
-// ============================================================================
-// Configure
-// ============================================================================
-
-export async function configure(
-  gw: GatewayParams,
-  args: ConfigureArgs
-): Promise<TextResult> {
-  return withErrorHandling("Configure", async () => {
-    logger.info(`Configure: ${args.reason}`);
-
-    interface SettingsLinkResult {
-      url?: string;
-      expiresAt?: string;
-      type?: string;
-      message?: string;
-    }
-
-    const { data, error } = await gatewayFetch<SettingsLinkResult>(
-      gw,
-      "/internal/settings-link",
-      {
-        method: "POST",
-        body: JSON.stringify({
-          reason: args.reason,
-          message: args.message,
-          providers: args.providers,
-          nixPackages: args.nixPackages,
-          grants: args.grants,
-          skills: args.skills,
-          mcpServers: args.mcpServers,
-        }),
-      },
-      "Failed to generate settings link"
-    );
-    if (error) return error;
-    const result = data!;
-
-    // Inline grant approval — buttons sent directly in chat
-    if (result.type === "inline_grant") {
-      logger.info("Inline grant approval sent to user");
-      return textResult(
-        "Approval buttons have been sent to the user in chat. Stop working and wait for the user's response — it will arrive as the next message. Do NOT continue until you receive the approval."
-      );
-    }
-
-    // Settings link sent as native platform button
-    if (result.type === "settings_link") {
-      logger.info("Settings link button sent to user");
-      return textResult(
-        "A settings button has been sent to the user in chat. Do not include any URL in your response. Ask the user to tap the button to configure their settings."
-      );
-    }
-
-    logger.info(`Generated settings link: ${result.url}`);
-
-    const expiresLabel = result.expiresAt
-      ? `Expires: ${new Date(result.expiresAt).toLocaleString()}`
-      : "";
-
-    return textResult(
-      `Settings link generated successfully!\n\nURL: ${result.url}\n\n${expiresLabel}\n\nReason: ${args.reason}\n\nShare this link with the user so they can configure their settings.`
-    );
-  });
-}
-
-// ============================================================================
 // Utility: Upload generated file (image/audio) to gateway
 // ============================================================================
 
@@ -943,7 +489,7 @@ export async function generateImage(
         const providerList =
           capabilities.providers?.map((p) => p.name).join(", ") || "OpenAI";
         return textResult(
-          `Image generation is not configured. Supported providers: ${providerList}.\n\nConnect a provider via the settings page to enable image generation.`
+          `Image generation is not configured. Supported providers: ${providerList}.\n\nAsk an admin to connect one of these providers for the base agent.`
         );
       }
     }
@@ -979,13 +525,13 @@ export async function generateImage(
 
       if (errorData.availableProviders?.length) {
         return textResult(
-          `Image generation failed: ${errorMessage}.\n\nConnect a provider via the settings page to enable image generation.`
+          `Image generation failed: ${errorMessage}.\n\nAsk an admin to connect one of the supported providers for the base agent.`
         );
       }
 
       if (missingImagePermission) {
         return textResult(
-          `Image generation failed because the current credential lacks required image permissions.\n\nConnect a different provider with image generation access via the settings page.`
+          `Image generation failed because the current credential lacks required image permissions.\n\nAsk an admin to connect a provider with image generation access for the base agent.`
         );
       }
 
@@ -1036,7 +582,7 @@ export async function generateAudio(
 
     if (suggestions.available === false) {
       return textResult(
-        `Audio generation is not configured. To enable it, connect one of the available providers: ${providerList}.\n\nConnect an audio provider via the settings page.`
+        `Audio generation is not configured. To enable it, ask an admin to connect one of the available providers for the base agent: ${providerList}.`
       );
     }
 
@@ -1067,13 +613,13 @@ export async function generateAudio(
 
       if (errorData.availableProviders?.length) {
         return textResult(
-          `Audio generation failed: ${errorMessage}. No provider configured.\n\nConnect an audio provider via the settings page.`
+          `Audio generation failed: ${errorMessage}. No provider configured.\n\nAsk an admin to connect an audio provider for the base agent.`
         );
       }
 
       if (missingOpenAiAudioScope) {
         return textResult(
-          `Audio generation failed because the current OpenAI token lacks api.model.audio.request.\n\nConnect a provider with audio permission via the settings page, or connect an alternative audio provider (${providerList}).`
+          `Audio generation failed because the current OpenAI token lacks api.model.audio.request.\n\nAsk an admin to connect a provider with audio permission for the base agent, or to connect an alternative audio provider (${providerList}).`
         );
       }
 

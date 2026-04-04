@@ -6,7 +6,7 @@
 
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import type { ProviderOAuthStateStore } from "../../auth/oauth/state-store";
-import { verifySettingsSession } from "./settings-auth";
+import { verifySettingsSessionOrToken } from "./settings-auth";
 
 const TAG = "Auth";
 const SuccessResponse = z.object({ success: z.boolean() });
@@ -72,7 +72,7 @@ export function createOAuthRoutes(config: OAuthRoutesConfig): OpenAPIHono {
 
   // --- Provider login redirect (excluded from docs) ---
   app.get("/:provider/login", async (c) => {
-    const session = verifySettingsSession(c);
+    const session = verifySettingsSessionOrToken(c);
     const agentId = session?.agentId || c.req.query("agentId");
 
     if (!agentId) return c.json({ error: "Missing agentId" }, 400);
@@ -81,7 +81,7 @@ export function createOAuthRoutes(config: OAuthRoutesConfig): OpenAPIHono {
       // No session — redirect through settings OAuth to establish one, then return here
       const returnUrl = `${c.req.path}?agentId=${encodeURIComponent(agentId)}`;
       return c.redirect(
-        `/agent/oauth/login?returnUrl=${encodeURIComponent(returnUrl)}`
+        `/connect/oauth/login?returnUrl=${encodeURIComponent(returnUrl)}`
       );
     }
 
@@ -103,7 +103,7 @@ export function createOAuthRoutes(config: OAuthRoutesConfig): OpenAPIHono {
 
   // --- Provider code exchange ---
   app.openapi(codeExchangeRoute, async (c): Promise<any> => {
-    const session = verifySettingsSession(c);
+    const session = verifySettingsSessionOrToken(c);
     const agentId = session?.agentId;
     if (!session || !agentId) return c.json({ error: "Unauthorized" }, 401);
 

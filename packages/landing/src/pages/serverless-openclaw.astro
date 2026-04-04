@@ -8,7 +8,7 @@ import { ServerlessSection } from "../components/ServerlessSection";
 
 <BaseLayout title="Serverless OpenClaw - Lobu" description="Serverless OpenClaw agents with pay-per-use billing. Agents sleep when idle — you only pay for active CPU and memory.">
   <div class="min-h-screen grid-lines" style={{ backgroundColor: "var(--color-page-bg)" }}>
-    <Nav />
+    <Nav currentPath={Astro.url.pathname} />
     <main class="relative z-[1]">
       <ServerlessSection client:load />
     </main>

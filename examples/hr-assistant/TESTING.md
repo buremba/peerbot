@@ -8,7 +8,7 @@ Send messages to your bot with optional file uploads.
 
 ### Endpoint
 ```
-POST http://localhost:8081/api/messaging/send
+POST http://localhost:8081/api/v1/agents/{agentId}/messages
 ```
 
 ### Authentication
@@ -24,7 +24,7 @@ The bot token must be provided in the `Authorization` header, not in the request
 
 #### JSON Request (Simple Message)
 ```bash
-curl -X POST http://localhost:8081/api/messaging/send \
+curl -X POST http://localhost:8081/api/v1/agents/{agentId}/messages \
   -H "Authorization: Bearer xoxb-your-bot-token" \
   -H "Content-Type: application/json" \
   -d '{
@@ -36,7 +36,7 @@ curl -X POST http://localhost:8081/api/messaging/send \
 
 #### Multipart Request (With File Upload)
 ```bash
-curl -X POST http://localhost:8081/api/messaging/send \
+curl -X POST http://localhost:8081/api/v1/agents/{agentId}/messages \
   -H "Authorization: Bearer xoxb-your-bot-token" \
   -F "platform=slack" \
   -F "channel=C12345678" \
@@ -90,7 +90,7 @@ If you don't want to mention the bot, simply omit `@me` from your message.
 ### Example: Simple Text Message (with @me)
 
 ```bash
-curl -X POST http://localhost:8081/api/messaging/send \
+curl -X POST http://localhost:8081/api/v1/agents/{agentId}/messages \
   -H "Authorization: Bearer xoxb-your-bot-token" \
   -H "Content-Type: application/json" \
   -d '{
@@ -103,7 +103,7 @@ curl -X POST http://localhost:8081/api/messaging/send \
 ### Example: Without Bot Mention
 
 ```bash
-curl -X POST http://localhost:8081/api/messaging/send \
+curl -X POST http://localhost:8081/api/v1/agents/{agentId}/messages \
   -H "Authorization: Bearer xoxb-your-bot-token" \
   -H "Content-Type: application/json" \
   -d '{
@@ -116,7 +116,7 @@ curl -X POST http://localhost:8081/api/messaging/send \
 ### Example: Thread Reply
 
 ```bash
-curl -X POST http://localhost:8081/api/messaging/send \
+curl -X POST http://localhost:8081/api/v1/agents/{agentId}/messages \
   -H "Authorization: Bearer xoxb-your-bot-token" \
   -H "Content-Type: application/json" \
   -d '{
@@ -130,7 +130,7 @@ curl -X POST http://localhost:8081/api/messaging/send \
 ### Example: Single File Upload
 
 ```bash
-curl -X POST http://localhost:8081/api/messaging/send \
+curl -X POST http://localhost:8081/api/v1/agents/{agentId}/messages \
   -H "Authorization: Bearer xoxb-your-bot-token" \
   -F "platform=slack" \
   -F "channel=dev-channel" \
@@ -141,7 +141,7 @@ curl -X POST http://localhost:8081/api/messaging/send \
 ### Example: Multiple File Upload
 
 ```bash
-curl -X POST http://localhost:8081/api/messaging/send \
+curl -X POST http://localhost:8081/api/v1/agents/{agentId}/messages \
   -H "Authorization: Bearer xoxb-your-bot-token" \
   -F "platform=slack" \
   -F "channel=dev-channel" \
@@ -187,7 +187,7 @@ Testing a full conversation:
 
 ```bash
 # Step 1: Send initial message
-RESPONSE=$(curl -s -X POST http://localhost:8081/api/messaging/send \
+RESPONSE=$(curl -s -X POST http://localhost:8081/api/v1/agents/{agentId}/messages \
   -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{

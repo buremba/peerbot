@@ -41,6 +41,8 @@ services:
       QUEUE_URL: redis://redis:6379
       # Host project path for worker bind mounts (Docker-in-Docker)
       LOBU_DEV_PROJECT_PATH: ${PWD}
+      # Read-only workspace mount used for file-first agent config loading
+      LOBU_WORKSPACE_ROOT: /workspace/project
     env_file:
       - ../.env
     volumes:
@@ -48,8 +50,10 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       # Mount .env so gateway can load it via dotenv (avoids ARG_MAX with large vars)
       - ../.env:/app/.env:ro
-      # Mount .lobu/ for agents manifest and config
+      # Mount .lobu/ for local CLI session state
       - ../.lobu:/app/.lobu:ro
+      # Mount workspace root so the gateway can read lobu.toml directly
+      - ..:/workspace/project:ro
       # Mount integrations config for live editing
       - ../config:/app/config:ro
       # Mount source for hot reload (bun --watch detects changes)

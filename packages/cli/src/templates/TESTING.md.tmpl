@@ -8,7 +8,7 @@ Send messages to your bot with optional file uploads.
 
 ### Endpoint
 ```
-POST http://localhost:{{GATEWAY_PORT}}/api/messaging/send
+POST http://localhost:{{GATEWAY_PORT}}/api/v1/agents/{agentId}/messages
 ```
 
 ### Authentication
@@ -24,23 +24,23 @@ The bot token must be provided in the `Authorization` header, not in the request
 
 #### JSON Request (Simple Message)
 ```bash
-curl -X POST http://localhost:{{GATEWAY_PORT}}/api/messaging/send \
+curl -X POST http://localhost:{{GATEWAY_PORT}}/api/v1/agents/{agentId}/messages \
   -H "Authorization: Bearer xoxb-your-bot-token" \
   -H "Content-Type: application/json" \
   -d '{
     "platform": "slack",
     "channel": "general",
-    "message": "what is 2+2?"
+    "content": "what is 2+2?"
   }'
 ```
 
 #### Multipart Request (With File Upload)
 ```bash
-curl -X POST http://localhost:{{GATEWAY_PORT}}/api/messaging/send \
+curl -X POST http://localhost:{{GATEWAY_PORT}}/api/v1/agents/{agentId}/messages \
   -H "Authorization: Bearer xoxb-your-bot-token" \
   -F "platform=slack" \
   -F "channel=C12345678" \
-  -F "message=please review this file" \
+  -F "content=please review this file" \
   -F "file=@/path/to/document.pdf"
 ```
 
@@ -50,7 +50,7 @@ curl -X POST http://localhost:{{GATEWAY_PORT}}/api/messaging/send \
 |-------|----------|-------------|
 | `platform` | Yes | Platform name (currently: "slack") |
 | `channel` | Yes | Channel ID (e.g., `C12345678`) or name (e.g., `general`, `#general`) |
-| `message` | Yes | Message text to send (use `@me` to mention the bot) |
+| `content` | Yes | Message text to send (use `@me` to mention the bot) |
 | `threadId` | No | Thread ID to reply to (for thread continuity) |
 | `files` | No | File attachments (multipart/form-data, up to 10 files) |
 
@@ -76,7 +76,7 @@ Use the `@me` placeholder to mention the bot in a platform-agnostic way:
 
 ```json
 {
-  "message": "@me what is 2+2?"
+  "content": "@me what is 2+2?"
 }
 ```
 
@@ -90,39 +90,39 @@ If you don't want to mention the bot, simply omit `@me` from your message.
 ### Example: Simple Text Message (with @me)
 
 ```bash
-curl -X POST http://localhost:{{GATEWAY_PORT}}/api/messaging/send \
+curl -X POST http://localhost:{{GATEWAY_PORT}}/api/v1/agents/{agentId}/messages \
   -H "Authorization: Bearer xoxb-your-bot-token" \
   -H "Content-Type: application/json" \
   -d '{
     "platform": "slack",
     "channel": "general",
-    "message": "@me what is 2+2?"
+    "content": "@me what is 2+2?"
   }'
 ```
 
 ### Example: Without Bot Mention
 
 ```bash
-curl -X POST http://localhost:{{GATEWAY_PORT}}/api/messaging/send \
+curl -X POST http://localhost:{{GATEWAY_PORT}}/api/v1/agents/{agentId}/messages \
   -H "Authorization: Bearer xoxb-your-bot-token" \
   -H "Content-Type: application/json" \
   -d '{
     "platform": "slack",
     "channel": "general",
-    "message": "just a regular message"
+    "content": "just a regular message"
   }'
 ```
 
 ### Example: Thread Reply
 
 ```bash
-curl -X POST http://localhost:{{GATEWAY_PORT}}/api/messaging/send \
+curl -X POST http://localhost:{{GATEWAY_PORT}}/api/v1/agents/{agentId}/messages \
   -H "Authorization: Bearer xoxb-your-bot-token" \
   -H "Content-Type: application/json" \
   -d '{
     "platform": "slack",
     "channel": "C12345678",
-    "message": "tell me more about that",
+    "content": "tell me more about that",
     "threadId": "1234567890.123456"
   }'
 ```
@@ -130,22 +130,22 @@ curl -X POST http://localhost:{{GATEWAY_PORT}}/api/messaging/send \
 ### Example: Single File Upload
 
 ```bash
-curl -X POST http://localhost:{{GATEWAY_PORT}}/api/messaging/send \
+curl -X POST http://localhost:{{GATEWAY_PORT}}/api/v1/agents/{agentId}/messages \
   -H "Authorization: Bearer xoxb-your-bot-token" \
   -F "platform=slack" \
   -F "channel=dev-channel" \
-  -F "message=@me analyze this CSV" \
+  -F "content=@me analyze this CSV" \
   -F "files=@data.csv"
 ```
 
 ### Example: Multiple File Upload
 
 ```bash
-curl -X POST http://localhost:{{GATEWAY_PORT}}/api/messaging/send \
+curl -X POST http://localhost:{{GATEWAY_PORT}}/api/v1/agents/{agentId}/messages \
   -H "Authorization: Bearer xoxb-your-bot-token" \
   -F "platform=slack" \
   -F "channel=dev-channel" \
-  -F "message=@me review these documents" \
+  -F "content=@me review these documents" \
   -F "files=@document1.pdf" \
   -F "files=@document2.pdf" \
   -F "files=@spreadsheet.xlsx"
@@ -196,13 +196,13 @@ Testing a full conversation:
 
 ```bash
 # Step 1: Send initial message
-RESPONSE=$(curl -s -X POST http://localhost:{{GATEWAY_PORT}}/api/messaging/send \
+RESPONSE=$(curl -s -X POST http://localhost:{{GATEWAY_PORT}}/api/v1/agents/{agentId}/messages \
   -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "platform": "slack",
     "channel": "test-channel",
-    "message": "@me give me three options"
+    "content": "@me give me three options"
   }')
 
 THREAD_ID=$(echo $RESPONSE | jq -r '.threadId')

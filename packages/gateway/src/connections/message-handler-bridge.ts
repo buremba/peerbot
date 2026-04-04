@@ -30,6 +30,16 @@ interface HistoryEntry {
   timestamp: number;
 }
 
+export function isSenderAllowed(
+  allowFrom: string[] | undefined,
+  userId: string
+): boolean {
+  if (!Array.isArray(allowFrom)) {
+    return true;
+  }
+  return allowFrom.includes(userId);
+}
+
 /**
  * Register Chat SDK event handlers for a connection.
  */
@@ -107,11 +117,9 @@ class MessageHandlerBridge {
     );
 
     // Gap 6: Allowlist check
-    if (connection.settings?.allowFrom?.length) {
-      if (!connection.settings.allowFrom.includes(userId)) {
-        logger.info({ userId }, "Blocked by allowlist");
-        return;
-      }
+    if (!isSenderAllowed(connection.settings?.allowFrom, userId)) {
+      logger.info({ userId }, "Blocked by allowlist");
+      return;
     }
 
     // Gap 6: Group check
@@ -285,7 +293,7 @@ class MessageHandlerBridge {
     // Check if agent has any provider credentials before enqueuing
     if (!(await hasConfiguredProvider(agentId, agentSettingsStore))) {
       await thread.post(
-        "No AI provider is configured yet. Open settings to add one: /configure"
+        "No AI provider is configured yet. Provider setup is not available in the end-user chat flow yet. Ask an admin to connect a provider for the base agent."
       );
       return;
     }

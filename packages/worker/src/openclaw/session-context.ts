@@ -130,13 +130,13 @@ function buildMcpInstructions(
     }
 
     lines.push(
-      `- ⚠️ **${mcp.name}** (id: ${mcp.id}): Requires ${reasons.join(" and ")}. Direct the user to the settings page to authenticate.`
+      `- ⚠️ **${mcp.name}** (id: ${mcp.id}): Requires ${reasons.join(" and ")}. Start the relevant login flow if a login tool exists; otherwise tell the user an admin must connect it.`
     );
   }
 
   for (const mcp of unauthenticatedMcps) {
     lines.push(
-      `- ⚠️ **${mcp.name}** (id: ${mcp.id}): Tools are visible but require authentication to use. Direct the user to the settings page to authenticate.`
+      `- ⚠️ **${mcp.name}** (id: ${mcp.id}): Tools are visible but require authentication to use. Start the relevant login flow if available; otherwise tell the user an admin must connect it.`
     );
   }
 

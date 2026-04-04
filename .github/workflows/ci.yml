@@ -73,8 +73,5 @@ jobs:
       - name: Build core package first
         run: cd packages/core && bun run build
 
-      - name: Generate gateway CSS
-        run: cd packages/gateway && bun run generate:css
-
       - name: Run TypeScript type check
         run: bun run typecheck

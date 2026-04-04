@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
 import { existsSync } from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import type { AgentOptions, LogLevel, PluginConfig } from "@lobu/core";
 import {
@@ -16,6 +17,12 @@ import { config as dotenvConfig } from "dotenv";
 import type { OrchestratorConfig } from "../orchestration/base-deployment-manager";
 
 const logger = createLogger("cli-config");
+const OWLETTO_PLUGIN_SOURCE = "@lobu/owletto-openclaw";
+const NATIVE_MEMORY_PLUGIN_SOURCE = "@openclaw/native-memory";
+const WORKER_PACKAGE_JSON_CANDIDATES = [
+  path.resolve(process.cwd(), "packages/worker/package.json"),
+  "/app/packages/worker/package.json",
+] as const;
 
 // ============================================================================
 // CONSTANTS
@@ -182,23 +189,81 @@ function getInternalGatewayUrl(): string {
 }
 
 /**
- * Build the default memory plugin list based on MEMORY_PLUGIN env var.
- * "owletto" (default) → Owletto MCP plugin
- * "native" → @openclaw/native-memory (filesystem-based)
+ * Build the default memory plugin list based on MEMORY_URL env var.
+ * MEMORY_URL set → Owletto MCP plugin (connect to that URL) when installed
+ * MEMORY_URL empty → @openclaw/native-memory (filesystem-based)
  */
-export function buildMemoryPlugins(): PluginConfig[] {
-  const memoryPlugin = getOptionalEnv("MEMORY_PLUGIN", "owletto");
+function isPluginInstalled(source: string): boolean {
+  const resolverPaths = new Set<string>([__filename]);
+  const packagePathParts = source.split("/");
 
-  if (memoryPlugin === "native") {
-    return [
-      { source: "@openclaw/native-memory", slot: "memory", enabled: true },
-    ];
+  for (const candidate of WORKER_PACKAGE_JSON_CANDIDATES) {
+    if (existsSync(candidate)) {
+      resolverPaths.add(candidate);
+    }
+  }
+
+  for (const resolverPath of resolverPaths) {
+    try {
+      createRequire(resolverPath).resolve(source);
+      return true;
+    } catch {
+      const packageDir = path.join(
+        path.dirname(resolverPath),
+        "node_modules",
+        ...packagePathParts
+      );
+      if (existsSync(packageDir)) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+export function buildMemoryPlugins(options?: {
+  hasOwlettoPlugin?: boolean;
+  hasNativeMemoryPlugin?: boolean;
+}): PluginConfig[] {
+  const nativeMemoryPlugin: PluginConfig = {
+    source: NATIVE_MEMORY_PLUGIN_SOURCE,
+    slot: "memory",
+    enabled: true,
+  };
+  const hasNativeMemoryPlugin =
+    options?.hasNativeMemoryPlugin ??
+    isPluginInstalled(NATIVE_MEMORY_PLUGIN_SOURCE);
+
+  if (!process.env.MEMORY_URL) {
+    if (hasNativeMemoryPlugin) {
+      return [nativeMemoryPlugin];
+    }
+    logger.warn(
+      `${NATIVE_MEMORY_PLUGIN_SOURCE} is not installed; continuing without a memory plugin`
+    );
+    return [];
+  }
+
+  const hasOwlettoPlugin =
+    options?.hasOwlettoPlugin ?? isPluginInstalled(OWLETTO_PLUGIN_SOURCE);
+  if (!hasOwlettoPlugin) {
+    if (hasNativeMemoryPlugin) {
+      logger.warn(
+        `${OWLETTO_PLUGIN_SOURCE} is not installed; falling back to ${NATIVE_MEMORY_PLUGIN_SOURCE}`
+      );
+      return [nativeMemoryPlugin];
+    }
+    logger.warn(
+      `${OWLETTO_PLUGIN_SOURCE} is not installed and ${NATIVE_MEMORY_PLUGIN_SOURCE} is unavailable; continuing without a memory plugin`
+    );
+    return [];
   }
 
   const gatewayUrl = getInternalGatewayUrl();
   return [
     {
-      source: "@lobu/owletto-openclaw",
+      source: OWLETTO_PLUGIN_SOURCE,
       slot: "memory",
       enabled: true,
       config: {

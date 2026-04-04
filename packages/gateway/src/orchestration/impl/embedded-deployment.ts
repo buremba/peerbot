@@ -19,12 +19,34 @@ const logger = createLogger("orchestrator");
 
 /** Timeout (ms) to wait for graceful shutdown before SIGKILL. */
 const KILL_TIMEOUT_MS = 5_000;
+const WORKER_BIN_DIR_CANDIDATES = [
+  path.resolve("packages/worker/node_modules/.bin"),
+  "/app/packages/worker/node_modules/.bin",
+] as const;
 
 interface EmbeddedWorkerEntry {
   process: ChildProcess;
   env: Record<string, string>;
   lastActivity: Date;
   workspaceDir: string;
+}
+
+function buildEmbeddedWorkerPath(existingPath?: string): string | undefined {
+  const segments = (existingPath || "").split(":").filter(Boolean);
+
+  for (const candidate of [...WORKER_BIN_DIR_CANDIDATES].reverse()) {
+    if (!fs.existsSync(candidate)) continue;
+    if (segments.includes(candidate)) continue;
+    segments.unshift(candidate);
+  }
+
+  return segments.length > 0 ? segments.join(":") : existingPath;
+}
+
+function getBunExecutable(): string {
+  return path.basename(process.execPath).startsWith("bun")
+    ? process.execPath
+    : "bun";
 }
 
 export class EmbeddedDeploymentManager extends BaseDeploymentManager {
@@ -59,7 +81,13 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
     const [deploymentName, username, userId, messageDataRaw] = args;
     const messageData = messageDataRaw as MessagePayload | undefined;
 
-    const agentId = messageData?.agentId!;
+    const agentId = messageData?.agentId;
+    if (!agentId) {
+      throw new OrchestratorError(
+        ErrorCode.DEPLOYMENT_CREATE_FAILED,
+        "Missing agentId in message payload"
+      );
+    }
     const workspaceDir = path.resolve(`workspaces/${agentId}`);
     fs.mkdirSync(workspaceDir, { recursive: true });
 
@@ -73,6 +101,12 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
 
     commonEnvVars.WORKSPACE_DIR = workspaceDir;
     commonEnvVars.DEPLOYMENT_MODE = "embedded";
+    const embeddedPath = buildEmbeddedWorkerPath(
+      commonEnvVars.PATH || process.env.PATH
+    );
+    if (embeddedPath) {
+      commonEnvVars.PATH = embeddedPath;
+    }
 
     // Serialize allowed domains for worker-side just-bash bootstrap
     const allowedDomains = messageData?.networkConfig?.allowedDomains ?? [];
@@ -83,6 +117,7 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
     // Determine spawn command based on nix packages
     const nixPackages = messageData?.nixConfig?.packages ?? [];
     const workerEntryPoint = path.resolve("packages/worker/src/index.ts");
+    const bunExecutable = getBunExecutable();
 
     let command: string;
     let spawnArgs: string[];
@@ -94,13 +129,13 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
         "-p",
         ...nixPackages,
         "--run",
-        `bun run ${workerEntryPoint}`,
+        `${bunExecutable} run ${workerEntryPoint}`,
       ];
       logger.info(
         `Spawning embedded worker ${deploymentName} with nix packages: ${nixPackages.join(", ")}`
       );
     } else {
-      command = "bun";
+      command = bunExecutable;
       spawnArgs = ["run", workerEntryPoint];
     }
 

@@ -9,6 +9,7 @@ import {
 } from "bun:test";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
+import path from "node:path";
 import { ErrorCode, OrchestratorError } from "@lobu/core";
 import type {
   MessagePayload,
@@ -19,6 +20,7 @@ import type {
 // Mock child_process.spawn to return a fake ChildProcess
 // ---------------------------------------------------------------------------
 const mockChildProcesses: EventEmitter[] = [];
+const mockSpawn = mock(() => createMockChildProcess());
 
 function createMockChildProcess() {
   const cp = new EventEmitter() as EventEmitter & {
@@ -45,7 +47,7 @@ function createMockChildProcess() {
 }
 
 mock.module("node:child_process", () => ({
-  spawn: mock(() => createMockChildProcess()),
+  spawn: mockSpawn,
 }));
 
 // ---------------------------------------------------------------------------
@@ -117,6 +119,7 @@ describe("EmbeddedDeploymentManager", () => {
     process.env.ENCRYPTION_KEY = TEST_ENCRYPTION_KEY;
     manager = new EmbeddedDeploymentManager(TEST_CONFIG);
     mockChildProcesses.length = 0;
+    mockSpawn.mockClear();
     mkdirSyncSpy = spyOn(fs, "mkdirSync").mockReturnValue(undefined);
   });
 
@@ -170,6 +173,7 @@ describe("EmbeddedDeploymentManager", () => {
       await manager.createDeployment("worker-1", "user-1", "user-1", msg);
       expect(mockChildProcesses).toHaveLength(1);
       expect(mockChildProcesses[0]).toBeDefined();
+      expect(mockSpawn.mock.calls.at(-1)?.[0]).toBe(process.execPath);
     });
 
     test("createDeployment with different names returns multiple entries", async () => {
@@ -277,6 +281,22 @@ describe("EmbeddedDeploymentManager", () => {
       const msg = createTestMessagePayload();
       await manager.createDeployment("worker-1", "user-1", "user-1", msg);
       expect((globalThis as any).__lobuEmbeddedBashOps).toBeUndefined();
+    });
+
+    test("prepends the worker bin directory to subprocess PATH", async () => {
+      const msg = createTestMessagePayload();
+      await manager.createDeployment("worker-1", "user-1", "user-1", msg);
+
+      const spawnCall = mockSpawn.mock.calls.at(-1);
+      expect(spawnCall).toBeDefined();
+
+      const spawnOptions = spawnCall?.[2] as
+        | { env?: Record<string, string> }
+        | undefined;
+      const pathEntries = (spawnOptions?.env?.PATH || "").split(":");
+      expect(pathEntries).toContain(
+        path.resolve("packages/worker/node_modules/.bin")
+      );
     });
 
     test("child process exit removes worker from map", async () => {

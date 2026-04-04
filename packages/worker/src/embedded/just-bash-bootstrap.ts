@@ -20,6 +20,23 @@ const EMBEDDED_BASH_LIMITS = {
   maxCallDepth: 50,
 } as const;
 
+export function buildBinaryInvocation(
+  binaryPath: string,
+  args: string[]
+): { command: string; args: string[] } {
+  try {
+    const firstLine =
+      fs.readFileSync(binaryPath, "utf8").split("\n", 1)[0] || "";
+    if (firstLine === "#!/usr/bin/env node" || firstLine.endsWith("/node")) {
+      return { command: "node", args: [binaryPath, ...args] };
+    }
+  } catch {
+    // Fall back to executing the binary directly.
+  }
+
+  return { command: binaryPath, args };
+}
+
 /**
  * Discover binaries to register as custom commands:
  * 1. All executables from /nix/store/ PATH directories
@@ -77,6 +94,8 @@ async function buildCustomCommands(
   for (const [name, binaryPath] of binaries) {
     commands.push(
       defineCommand(name, async (args: string[], ctx) => {
+        const invocation = buildBinaryInvocation(binaryPath, args);
+
         // Convert ctx.env (Map-like) to a plain Record for child_process
         const envRecord: Record<string, string> = { ...process.env } as Record<
           string,
@@ -96,8 +115,8 @@ async function buildCustomCommands(
           exitCode: number;
         }>((resolve) => {
           execFile(
-            binaryPath,
-            args,
+            invocation.command,
+            invocation.args,
             {
               cwd: ctx.cwd,
               env: envRecord,

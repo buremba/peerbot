@@ -3,6 +3,8 @@ FROM oven/bun:1.2.9
 # Build argument to control dev/prod behavior
 ARG NODE_ENV=production
 
+ENV PATH="/app/node_modules/.bin:/app/packages/worker/node_modules/.bin:/home/bun/.bun/bin:/root/.cargo/bin:${PATH}"
+
 WORKDIR /app
 
 # Install runtime dependencies including Node.js, Python, uv, Docker, and GitHub CLI

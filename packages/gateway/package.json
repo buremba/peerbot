@@ -15,6 +15,7 @@
   "scripts": {
     "build": "tsc",
     "dev": "DEPLOYMENT_MODE=docker bun --watch src/index.ts -- --env ../../.env",
+    "generate:css": "true",
     "start": "cd ../core && bun run build && cd ../gateway && bun src/index.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit"

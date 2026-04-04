@@ -73,24 +73,6 @@ SECRET_ARGS=()
 # GitHub
 [[ -n "$GITHUB_CLIENT_SECRET" ]] && SECRET_ARGS+=(--from-literal=github-client-secret="$GITHUB_CLIENT_SECRET")
 
-# WhatsApp credentials - create separate secret (file too large for env var)
-WA_CREDS_FILE="${PROJECT_ROOT}/.lobu/whatsapp-credentials.txt"
-# WhatsApp credentials file (if it exists, create a separate secret)
-if [[ -f "$WA_CREDS_FILE" ]]; then
-  echo "Creating WhatsApp credentials secret..." >&2
-  kubectl delete secret lobu-whatsapp -n "$NAMESPACE" 2>/dev/null || true
-  kubectl create secret generic lobu-whatsapp \
-    -n "$NAMESPACE" \
-    --from-file=credentials.txt="$WA_CREDS_FILE"
-  # Add Helm labels
-  kubectl label secret lobu-whatsapp -n "$NAMESPACE" \
-    app.kubernetes.io/managed-by=Helm --overwrite 2>/dev/null
-  kubectl annotate secret lobu-whatsapp -n "$NAMESPACE" \
-    meta.helm.sh/release-name=lobu \
-    meta.helm.sh/release-namespace="$NAMESPACE" --overwrite 2>/dev/null
-  echo "✓ WhatsApp credentials secret created from $WA_CREDS_FILE" >&2
-fi
-
 if [[ ${#SECRET_ARGS[@]} -eq 0 ]]; then
   echo "Error: No secrets found in .env file" >&2
   exit 1

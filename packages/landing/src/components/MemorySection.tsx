@@ -464,9 +464,9 @@ export function MemorySection() {
                     style={{ color: "var(--color-page-text-muted)" }}
                   >
                     Users add connectors for GitHub, Google, RSS, review sites,
-                    or internal sources. Owletto syncs those feeds into the
-                    same graph so memory stays current instead of relying only
-                    on what the agent was told.
+                    or internal sources. Owletto syncs those feeds into the same
+                    graph so memory stays current instead of relying only on
+                    what the agent was told.
                   </p>
                 </div>
               </div>
@@ -653,27 +653,27 @@ export function MemorySection() {
               Why it fits Lobu
             </div>
             <div class="grid gap-3">
-            {whyItFitsLobu.map((item) => (
-              <div
-                key={item}
-                class="rounded-2xl p-4 border flex items-start gap-3"
-                style={{
-                  backgroundColor: "rgba(255,255,255,0.03)",
-                  borderColor: "rgba(62, 77, 97, 0.42)",
-                }}
-              >
+              {whyItFitsLobu.map((item) => (
                 <div
-                  class="w-2.5 h-2.5 rounded-full mt-2 shrink-0"
-                  style={{ backgroundColor: "#86efac" }}
-                />
-                <div
-                  class="text-sm leading-6"
-                  style={{ color: "var(--color-page-text-muted)" }}
+                  key={item}
+                  class="rounded-2xl p-4 border flex items-start gap-3"
+                  style={{
+                    backgroundColor: "rgba(255,255,255,0.03)",
+                    borderColor: "rgba(62, 77, 97, 0.42)",
+                  }}
                 >
-                  {item}
+                  <div
+                    class="w-2.5 h-2.5 rounded-full mt-2 shrink-0"
+                    style={{ backgroundColor: "#86efac" }}
+                  />
+                  <div
+                    class="text-sm leading-6"
+                    style={{ color: "var(--color-page-text-muted)" }}
+                  >
+                    {item}
+                  </div>
                 </div>
-              </div>
-            ))}
+              ))}
             </div>
           </div>
         </div>

@@ -17,7 +17,7 @@
           "responseType": "code"
         }
       },
-      "setupInstructions": "1. Create a GitHub OAuth App at https://github.com/settings/developers\n2. Set Authorization callback URL to: {PUBLIC_URL}/mcp/oauth/callback\n3. Copy the Client ID and Client Secret\n4. Update .lobu/mcp.config.json with your Client ID\n5. Add GITHUB_CLIENT_SECRET to your .env file"
+      "setupInstructions": "1. Create a GitHub OAuth App at https://github.com/settings/developers\n2. Set Authorization callback URL to: {PUBLIC_URL}/mcp/oauth/callback\n3. Copy the Client ID and Client Secret\n4. Add GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET to your .env file"
     },
     {
       "id": "playwright",
@@ -46,7 +46,7 @@
           "responseType": "code"
         }
       },
-      "setupInstructions": "1. Create a Figma App at https://www.figma.com/developers/apps\n2. Set Redirect URI to: {PUBLIC_URL}/mcp/oauth/callback\n3. Copy the Client ID and Client Secret\n4. Update .lobu/mcp.config.json with your Client ID\n5. Add FIGMA_CLIENT_SECRET to your .env file"
+      "setupInstructions": "1. Create a Figma App at https://www.figma.com/developers/apps\n2. Set Redirect URI to: {PUBLIC_URL}/mcp/oauth/callback\n3. Copy the Client ID and Client Secret\n4. Add FIGMA_CLIENT_ID and FIGMA_CLIENT_SECRET to your .env file"
     },
     {
       "id": "notion",
@@ -65,7 +65,7 @@
           "responseType": "code"
         }
       },
-      "setupInstructions": "1. Create a Notion Integration at https://www.notion.so/my-integrations\n2. Set Redirect URI to: {PUBLIC_URL}/mcp/oauth/callback\n3. Copy the OAuth Client ID and Secret\n4. Update .lobu/mcp.config.json with your Client ID\n5. Add NOTION_CLIENT_SECRET to your .env file"
+      "setupInstructions": "1. Create a Notion Integration at https://www.notion.so/my-integrations\n2. Set Redirect URI to: {PUBLIC_URL}/mcp/oauth/callback\n3. Copy the OAuth Client ID and Secret\n4. Add NOTION_CLIENT_ID and NOTION_CLIENT_SECRET to your .env file"
     },
     {
       "id": "firecrawl",
@@ -111,7 +111,7 @@
           "responseType": "code"
         }
       },
-      "setupInstructions": "1. Create an OAuth 2.0 app at https://developer.atlassian.com/console/myapps/\n2. Set Callback URL to: {PUBLIC_URL}/mcp/oauth/callback\n3. Copy the Client ID and Secret\n4. Update .lobu/mcp.config.json with your Client ID\n5. Add JIRA_CLIENT_SECRET to your .env file"
+      "setupInstructions": "1. Create an OAuth 2.0 app at https://developer.atlassian.com/console/myapps/\n2. Set Callback URL to: {PUBLIC_URL}/mcp/oauth/callback\n3. Copy the Client ID and Secret\n4. Add JIRA_CLIENT_ID and JIRA_CLIENT_SECRET to your .env file"
     },
     {
       "id": "datadog",
@@ -144,7 +144,7 @@
           "responseType": "code"
         }
       },
-      "setupInstructions": "1. Create OAuth credentials at https://console.cloud.google.com/apis/credentials\n2. Set Authorized redirect URI to: {PUBLIC_URL}/mcp/oauth/callback\n3. Copy the Client ID and Client Secret\n4. Update .lobu/mcp.config.json with your Client ID\n5. Add GOOGLE_CLIENT_SECRET to your .env file"
+      "setupInstructions": "1. Create OAuth credentials at https://console.cloud.google.com/apis/credentials\n2. Set Authorized redirect URI to: {PUBLIC_URL}/mcp/oauth/callback\n3. Copy the Client ID and Client Secret\n4. Add GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET to your .env file"
     },
     {
       "id": "sentry",
@@ -172,7 +172,7 @@
           "responseType": "code"
         }
       },
-      "setupInstructions": "1. Create OAuth app at https://linear.app/settings/api\n2. Set Redirect URL to: {PUBLIC_URL}/mcp/oauth/callback\n3. Copy the Client ID and Client Secret\n4. Update .lobu/mcp.config.json with your Client ID\n5. Add LINEAR_CLIENT_SECRET to your .env file"
+      "setupInstructions": "1. Create OAuth app at https://linear.app/settings/api\n2. Set Redirect URL to: {PUBLIC_URL}/mcp/oauth/callback\n3. Copy the Client ID and Client Secret\n4. Add LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET to your .env file"
     },
     {
       "id": "discord",
@@ -191,7 +191,7 @@
           "responseType": "code"
         }
       },
-      "setupInstructions": "1. Create Discord app at https://discord.com/developers/applications\n2. Set Redirect URL to: {PUBLIC_URL}/mcp/oauth/callback\n3. Copy the Client ID and Client Secret\n4. Update .lobu/mcp.config.json with your Client ID\n5. Add DISCORD_CLIENT_SECRET to your .env file"
+      "setupInstructions": "1. Create Discord app at https://discord.com/developers/applications\n2. Set Redirect URL to: {PUBLIC_URL}/mcp/oauth/callback\n3. Copy the Client ID and Client Secret\n4. Add DISCORD_CLIENT_ID and DISCORD_CLIENT_SECRET to your .env file"
     },
     {
       "id": "gitlab",
@@ -210,7 +210,7 @@
           "responseType": "code"
         }
       },
-      "setupInstructions": "1. Create GitLab application at https://gitlab.com/-/profile/applications\n2. Set Redirect URI to: {PUBLIC_URL}/mcp/oauth/callback\n3. Copy the Application ID and Secret\n4. Update .lobu/mcp.config.json with your Client ID\n5. Add GITLAB_CLIENT_SECRET to your .env file"
+      "setupInstructions": "1. Create GitLab application at https://gitlab.com/-/profile/applications\n2. Set Redirect URI to: {PUBLIC_URL}/mcp/oauth/callback\n3. Copy the Application ID and Secret\n4. Add GITLAB_CLIENT_ID and GITLAB_CLIENT_SECRET to your .env file"
     }
   ]
 }

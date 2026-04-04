@@ -39,6 +39,17 @@ const DEFAULT_PACKAGE_MANAGER_DENY_PREFIXES = [
   "sudo nix profile ",
 ];
 
+export function isDirectPackageInstallCommand(command: string): boolean {
+  const trimmed = command.trim().toLowerCase();
+  if (!trimmed) {
+    return false;
+  }
+
+  return DEFAULT_PACKAGE_MANAGER_DENY_PREFIXES.some((prefix) =>
+    trimmed.startsWith(prefix.toLowerCase())
+  );
+}
+
 function normalizePattern(pattern: string): string {
   return pattern.trim();
 }

@@ -95,7 +95,6 @@ export type {
   UserSuggestion,
 } from "./types";
 
-
 // Agent Settings API response types (for UI consumers)
 export type {
   AgentConfigResponse,

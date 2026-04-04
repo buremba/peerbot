@@ -389,8 +389,7 @@ export async function initCommand(
   const spinner = ora("Creating Lobu project...").start();
 
   try {
-    // Create .lobu and data directories in project directory
-    await mkdir(join(projectDir, ".lobu"), { recursive: true });
+    // Create data directory in project directory
     await mkdir(join(projectDir, "data"), { recursive: true });
 
     // Generate lobu.toml
@@ -809,7 +808,6 @@ ${owlettoServices}
       MEMORY_URL: \${MEMORY_URL:-}
       LOBU_WORKSPACE_ROOT: /workspace/project
     volumes:${dockerSocketMount}
-      - ./.lobu:/app/.lobu
       - .:/workspace/project:ro
     networks:
       - lobu-public

@@ -81,12 +81,7 @@ describe("config-request-store", () => {
       type: "sse",
     });
     expect(updates.nixConfig.packages).toEqual(["git", "ffmpeg"]);
-    expect(grant).toHaveBeenCalledWith(
-      "agent-1",
-      "api.example.com",
-      null,
-      undefined
-    );
+    expect(grant).toHaveBeenCalledWith("agent-1", "api.example.com", null);
   });
 
   test("skips settings writes when a request only grants permissions", async () => {
@@ -109,12 +104,7 @@ describe("config-request-store", () => {
     );
 
     expect(updateSettings).not.toHaveBeenCalled();
-    expect(grant).toHaveBeenCalledWith(
-      "agent-1",
-      "api.example.com",
-      null,
-      undefined
-    );
+    expect(grant).toHaveBeenCalledWith("agent-1", "api.example.com", null);
   });
 
   test("builds readable config request text", () => {

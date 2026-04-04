@@ -24,20 +24,21 @@ type HistoryRecord = {
 const logger = createLogger("chat-instance-manager");
 const SLACK_SYSTEM_AGENT_PREFIX = "system:connection:slack";
 
-export const ADAPTER_FACTORIES: Record<string, (config: any) => Promise<any>> = {
-  telegram: async (c) =>
-    (await import("@chat-adapter/telegram")).createTelegramAdapter(c),
-  slack: async (c) =>
-    (await import("@chat-adapter/slack")).createSlackAdapter(c),
-  discord: async (c) =>
-    (await import("@chat-adapter/discord")).createDiscordAdapter(c),
-  whatsapp: async (c) =>
-    (await import("@chat-adapter/whatsapp")).createWhatsAppAdapter(c),
-  teams: async (c) =>
-    (await import("@chat-adapter/teams")).createTeamsAdapter(c),
-  gchat: async (c) =>
-    (await import("@chat-adapter/gchat")).createGoogleChatAdapter(c),
-};
+export const ADAPTER_FACTORIES: Record<string, (config: any) => Promise<any>> =
+  {
+    telegram: async (c) =>
+      (await import("@chat-adapter/telegram")).createTelegramAdapter(c),
+    slack: async (c) =>
+      (await import("@chat-adapter/slack")).createSlackAdapter(c),
+    discord: async (c) =>
+      (await import("@chat-adapter/discord")).createDiscordAdapter(c),
+    whatsapp: async (c) =>
+      (await import("@chat-adapter/whatsapp")).createWhatsAppAdapter(c),
+    teams: async (c) =>
+      (await import("@chat-adapter/teams")).createTeamsAdapter(c),
+    gchat: async (c) =>
+      (await import("@chat-adapter/gchat")).createGoogleChatAdapter(c),
+  };
 
 interface ManagedInstance {
   connection: PlatformConnection;
@@ -1019,12 +1020,12 @@ export class ChatInstanceManager {
    * These are lightweight adapters that delegate to this manager.
    */
   createPlatformAdapters(): PlatformAdapter[] {
-    return Object.keys(ADAPTER_FACTORIES).map((name) => this.createPlatformAdapter(name));
+    return Object.keys(ADAPTER_FACTORIES).map((name) =>
+      this.createPlatformAdapter(name)
+    );
   }
 
-  private createPlatformAdapter(
-    name: string
-  ): PlatformAdapter {
+  private createPlatformAdapter(name: string): PlatformAdapter {
     return {
       name,
       initialize: async () => {

@@ -205,48 +205,30 @@ const TeamsConfigSchema = z.object({
 
 const GoogleChatConfigSchema = z.object({
   platform: z.literal("gchat"),
-  credentials: z
-    .string()
-    .optional()
-    .openapi({
-      description:
-        "Service account credentials JSON string. Defaults to GOOGLE_CHAT_CREDENTIALS env var.",
-    }),
-  useApplicationDefaultCredentials: z
-    .boolean()
-    .optional()
-    .openapi({
-      description:
-        "Use Application Default Credentials (ADC) instead of service account JSON.",
-    }),
-  endpointUrl: z
-    .string()
-    .optional()
-    .openapi({
-      description:
-        "HTTP endpoint URL for button click actions. Required for HTTP endpoint apps.",
-    }),
-  googleChatProjectNumber: z
-    .string()
-    .optional()
-    .openapi({
-      description:
-        "Google Cloud project number for verifying webhook JWTs. Defaults to GOOGLE_CHAT_PROJECT_NUMBER env var.",
-    }),
-  impersonateUser: z
-    .string()
-    .optional()
-    .openapi({
-      description:
-        "User email for domain-wide delegation. Defaults to GOOGLE_CHAT_IMPERSONATE_USER env var.",
-    }),
-  pubsubAudience: z
-    .string()
-    .optional()
-    .openapi({
-      description:
-        "Expected audience for Pub/Sub push JWT verification. Defaults to GOOGLE_CHAT_PUBSUB_AUDIENCE env var.",
-    }),
+  credentials: z.string().optional().openapi({
+    description:
+      "Service account credentials JSON string. Defaults to GOOGLE_CHAT_CREDENTIALS env var.",
+  }),
+  useApplicationDefaultCredentials: z.boolean().optional().openapi({
+    description:
+      "Use Application Default Credentials (ADC) instead of service account JSON.",
+  }),
+  endpointUrl: z.string().optional().openapi({
+    description:
+      "HTTP endpoint URL for button click actions. Required for HTTP endpoint apps.",
+  }),
+  googleChatProjectNumber: z.string().optional().openapi({
+    description:
+      "Google Cloud project number for verifying webhook JWTs. Defaults to GOOGLE_CHAT_PROJECT_NUMBER env var.",
+  }),
+  impersonateUser: z.string().optional().openapi({
+    description:
+      "User email for domain-wide delegation. Defaults to GOOGLE_CHAT_IMPERSONATE_USER env var.",
+  }),
+  pubsubAudience: z.string().optional().openapi({
+    description:
+      "Expected audience for Pub/Sub push JWT verification. Defaults to GOOGLE_CHAT_PUBSUB_AUDIENCE env var.",
+  }),
   userName: z
     .string()
     .optional()

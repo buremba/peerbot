@@ -13,7 +13,9 @@ try {
     const text = await res.text();
     if (text.length > 0) spec = text;
   }
-} catch {}
+} catch {
+  // Fall back to loading the spec from the public URL when server-side fetch fails.
+}
 
 const config = JSON.stringify({
   ...(spec

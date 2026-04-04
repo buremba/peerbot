@@ -91,10 +91,6 @@ SECRET_ARGS=()
 # Telegram
 [[ -n "$TELEGRAM_BOT_TOKEN" ]] && SECRET_ARGS+=(--from-literal=telegram-bot-token="$TELEGRAM_BOT_TOKEN")
 
-# WhatsApp
-[[ -n "$WHATSAPP_CREDENTIALS" ]] && [[ -f "$WHATSAPP_CREDENTIALS" ]] && \
-  SECRET_ARGS+=(--from-file=whatsapp-credentials="$WHATSAPP_CREDENTIALS")
-
 if [[ ${#SECRET_ARGS[@]} -eq 0 ]]; then
   echo "Error: No secrets found in .env file" >&2
   exit 1

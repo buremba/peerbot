@@ -2,10 +2,7 @@ import type { Server } from "node:http";
 import { createLogger } from "@lobu/core";
 import { ApiPlatform } from "./api";
 import { createGatewayApp, startGatewayServer } from "./cli/gateway";
-import {
-  buildGatewayConfig,
-  type GatewayConfig,
-} from "./config";
+import { buildGatewayConfig, type GatewayConfig } from "./config";
 import { ChatInstanceManager, ChatResponseBridge } from "./connections";
 import { Gateway } from "./gateway-main";
 import { InMemoryAgentStore } from "./stores/in-memory-agent-store";
@@ -54,6 +51,10 @@ export class Lobu {
   constructor(config: LobuConfig) {
     this.agentConfigs = config.agents ?? [];
     this.port = config.port ?? 8080;
+
+    if (config.memory) {
+      process.env.MEMORY_URL = config.memory;
+    }
 
     // Set ADMIN_PASSWORD in env so gateway.ts picks it up.
     // Auto-generate one if not provided.

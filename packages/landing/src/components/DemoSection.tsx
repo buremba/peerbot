@@ -190,22 +190,30 @@ function TerminalWindow({
         class="px-3.5 pb-3.5 pt-1 font-mono text-[11px] sm:text-[12px] text-left min-w-0 overflow-x-auto"
         style={{ backgroundColor: "#0b0c0f" }}
       >
-        {lines.map((line, index) =>
-          line.text === "" ? (
-            <div key={`blank-${index}`} class="h-3" />
-          ) : (
-            <div
-              key={`${index}-${line.text}`}
-              class={`break-words whitespace-pre-wrap flex items-baseline gap-1.5 flex-wrap leading-[1.7] ${line.links ? "mt-2 first:mt-0" : ""}`}
-              style={{ color: line.color }}
-            >
-              <span>{line.text}</span>
-              {line.links?.map((link) => (
-                <TermLinkPill key={link.label} link={link} />
-              ))}
-            </div>
-          )
-        )}
+        {(() => {
+          const lineKeyCounts = new Map<string, number>();
+          return lines.map((line) => {
+            const baseKey = `${line.text}:${line.links?.map((link) => link.label).join(",") ?? ""}`;
+            const occurrence = (lineKeyCounts.get(baseKey) ?? 0) + 1;
+            lineKeyCounts.set(baseKey, occurrence);
+            const key = `${baseKey}:${occurrence}`;
+
+            return line.text === "" ? (
+              <div key={key} class="h-3" />
+            ) : (
+              <div
+                key={key}
+                class={`break-words whitespace-pre-wrap flex items-baseline gap-1.5 flex-wrap leading-[1.7] ${line.links ? "mt-2 first:mt-0" : ""}`}
+                style={{ color: line.color }}
+              >
+                <span>{line.text}</span>
+                {line.links?.map((link) => (
+                  <TermLinkPill key={link.label} link={link} />
+                ))}
+              </div>
+            );
+          });
+        })()}
       </div>
     </div>
   );

@@ -33,6 +33,7 @@ describe("OAuth template escaping", () => {
     );
 
     expect(html).not.toContain('"><script>alert(1)</script>');
-    expect(html).toContain("Open Settings");
+    expect(html).toContain("&quot;&gt;&lt;script&gt;alert(1)&lt;/script&gt;");
+    expect(html).toContain("Open Configuration");
   });
 });

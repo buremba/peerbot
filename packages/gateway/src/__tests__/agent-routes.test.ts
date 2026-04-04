@@ -18,7 +18,12 @@ describe("agent routes", () => {
     agentSettingsStore = new AgentSettingsStore(redis as any);
     userAgentsStore = new UserAgentsStore(redis as any);
 
-    await agentMetadataStore.createAgent("agent-1", "Agent 1", "telegram", "u1");
+    await agentMetadataStore.createAgent(
+      "agent-1",
+      "Agent 1",
+      "telegram",
+      "u1"
+    );
     await userAgentsStore.addAgent("telegram", "u1", "agent-1");
   });
 

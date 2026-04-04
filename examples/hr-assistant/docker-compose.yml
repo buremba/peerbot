@@ -36,8 +36,9 @@ services:
       WORKER_ALLOWED_DOMAINS: ${WORKER_ALLOWED_DOMAINS:-}
       WORKER_DISALLOWED_DOMAINS: ${WORKER_DISALLOWED_DOMAINS:-}
       MEMORY_URL: ${MEMORY_URL:-}
+      LOBU_WORKSPACE_ROOT: /workspace/project
     volumes:
-      - ./.lobu:/app/.lobu
+      - .:/workspace/project:ro
     networks:
       - lobu-public
       - lobu-internal
@@ -52,4 +53,3 @@ networks:
   lobu-internal:
     internal: true
     driver: bridge
-

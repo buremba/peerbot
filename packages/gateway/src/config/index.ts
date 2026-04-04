@@ -197,7 +197,7 @@ export function loadEnvFile(envPath?: string): void {
  * Derive the internal gateway URL for worker→gateway communication.
  * In K8s, uses DISPATCHER_SERVICE_NAME + namespace. In Docker, defaults to "gateway".
  */
-function getInternalGatewayUrl(): string {
+export function getInternalGatewayUrl(): string {
   const dispatcherService = process.env.DISPATCHER_SERVICE_NAME;
   if (dispatcherService) {
     const namespace = process.env.KUBERNETES_NAMESPACE || "lobu";

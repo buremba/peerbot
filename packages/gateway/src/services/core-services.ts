@@ -51,6 +51,11 @@ import { GrantStore } from "../permissions/grant-store";
 import { SecretProxy } from "../proxy/secret-proxy";
 import { TokenRefreshJob } from "../proxy/token-refresh-job";
 import { InMemoryAgentStore } from "../stores/in-memory-agent-store";
+import {
+  RedisAgentAccessStore,
+  RedisAgentConfigStore,
+  RedisAgentConnectionStore,
+} from "../stores/redis-agent-store";
 import { ImageGenerationService } from "./image-generation-service";
 import { InstructionService } from "./instruction-service";
 import { RedisSessionStore, SessionManager } from "./session-manager";
@@ -304,15 +309,27 @@ export class CoreServices {
     this.interactionService = new InteractionService();
     logger.debug("Interaction service initialized");
 
+    // Initialize grant store for unified permissions
+    this.grantStore = new GrantStore(redisClient);
+    logger.debug("Grant store initialized");
+
+    // Initialize agent configuration stores
+    this.agentSettingsStore = new AgentSettingsStore(redisClient);
+    this.channelBindingService = new ChannelBindingService(redisClient);
+    this.userAgentsStore = new UserAgentsStore(redisClient);
+    this.agentMetadataStore = new AgentMetadataStore(redisClient);
+    logger.debug(
+      "Agent settings, channel binding, user agents & metadata stores initialized"
+    );
+
     // Initialize agent sub-stores
     if (!this.configStore || !this.connectionStore || !this.accessStore) {
-      const inMemoryStore = new InMemoryAgentStore();
-      if (!this.configStore) this.configStore = inMemoryStore;
-      if (!this.connectionStore) this.connectionStore = inMemoryStore;
-      if (!this.accessStore) this.accessStore = inMemoryStore;
-
       if (this.config.agents?.length) {
-        // Embedded mode: populate from config.agents
+        const inMemoryStore = new InMemoryAgentStore();
+        if (!this.configStore) this.configStore = inMemoryStore;
+        if (!this.connectionStore) this.connectionStore = inMemoryStore;
+        if (!this.accessStore) this.accessStore = inMemoryStore;
+
         await this.populateStoreFromAgentConfigs(
           inMemoryStore,
           this.config.agents
@@ -329,11 +346,15 @@ export class CoreServices {
           ...(workspaceRoot ? [resolve(workspaceRoot, "lobu.toml")] : []),
           resolve(process.cwd(), "lobu.toml"),
           resolve("/app/lobu.toml"),
-          resolve("/app/.lobu/lobu.toml"),
         ];
         const tomlPath = candidatePaths.find((p) => existsSync(p));
 
         if (tomlPath) {
+          const inMemoryStore = new InMemoryAgentStore();
+          if (!this.configStore) this.configStore = inMemoryStore;
+          if (!this.connectionStore) this.connectionStore = inMemoryStore;
+          if (!this.accessStore) this.accessStore = inMemoryStore;
+
           // File-first dev mode: use InMemoryAgentStore populated from files
           this.projectPath = resolve(tomlPath, "..");
 
@@ -349,7 +370,25 @@ export class CoreServices {
             `Agent sub-stores initialized (in-memory, ${this.fileLoadedAgents.length} agent(s) from files)`
           );
         } else {
-          logger.debug("Agent sub-stores initialized (in-memory, empty)");
+          if (!this.configStore) {
+            this.configStore = new RedisAgentConfigStore(
+              this.agentSettingsStore,
+              this.agentMetadataStore
+            );
+          }
+          if (!this.connectionStore) {
+            this.connectionStore = new RedisAgentConnectionStore(
+              redisClient,
+              this.channelBindingService
+            );
+          }
+          if (!this.accessStore) {
+            this.accessStore = new RedisAgentAccessStore(
+              this.grantStore,
+              this.userAgentsStore
+            );
+          }
+          logger.debug("Agent sub-stores initialized (Redis-backed defaults)");
         }
       }
     } else {
@@ -360,19 +399,6 @@ export class CoreServices {
     this.settingsResolver = new SettingsResolver(
       this.configStore,
       this.connectionStore
-    );
-
-    // Initialize grant store for unified permissions
-    this.grantStore = new GrantStore(redisClient);
-    logger.debug("Grant store initialized");
-
-    // Initialize agent configuration stores
-    this.agentSettingsStore = new AgentSettingsStore(redisClient);
-    this.channelBindingService = new ChannelBindingService(redisClient);
-    this.userAgentsStore = new UserAgentsStore(redisClient);
-    this.agentMetadataStore = new AgentMetadataStore(redisClient);
-    logger.debug(
-      "Agent settings, channel binding, user agents & metadata stores initialized"
     );
 
     // Initialize external OAuth client if configured
@@ -406,7 +432,10 @@ export class CoreServices {
 
     if (this.fileLoadedAgents.length > 0) {
       for (const agent of this.fileLoadedAgents) {
-        await this.syncAgentSettingsToRuntimeStore(agent.agentId, agent.settings);
+        await this.syncAgentSettingsToRuntimeStore(
+          agent.agentId,
+          agent.settings
+        );
       }
       logger.debug(
         `Synced settings for ${this.fileLoadedAgents.length} file-loaded agent(s)`
@@ -713,7 +742,9 @@ export class CoreServices {
     }
   }
 
-  private buildSettingsFromAgentConfig(agent: AgentConfig): Record<string, any> {
+  private buildSettingsFromAgentConfig(
+    agent: AgentConfig
+  ): Record<string, any> {
     const settings: Record<string, any> = {};
     if (agent.identityMd) settings.identityMd = agent.identityMd;
     if (agent.soulMd) settings.soulMd = agent.soulMd;
@@ -781,13 +812,10 @@ export class CoreServices {
         owner: { platform: "system", userId: "config" },
         createdAt: Date.now(),
       });
-      await store.saveSettings(
-        agent.id,
-        {
-          ...this.buildSettingsFromAgentConfig(agent),
-          updatedAt: Date.now(),
-        } as any
-      );
+      await store.saveSettings(agent.id, {
+        ...this.buildSettingsFromAgentConfig(agent),
+        updatedAt: Date.now(),
+      } as any);
     }
 
     // Store agent configs for credential seeding and connection seeding later
@@ -826,7 +854,10 @@ export class CoreServices {
 
     if (this.agentSettingsStore) {
       for (const agent of this.fileLoadedAgents) {
-        await this.syncAgentSettingsToRuntimeStore(agent.agentId, agent.settings);
+        await this.syncAgentSettingsToRuntimeStore(
+          agent.agentId,
+          agent.settings
+        );
       }
     }
 

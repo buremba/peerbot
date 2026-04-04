@@ -11,7 +11,7 @@ import {
 import type { AgentSettingsStore } from "../auth/settings";
 import { resolveEffectiveModelRef } from "../auth/settings/model-selection";
 import type { ChannelBindingService } from "../channels";
-import { buildMemoryPlugins } from "../config";
+import { buildMemoryPlugins, getInternalGatewayUrl } from "../config";
 import type { MessagePayload } from "../infrastructure/queue/queue-producer";
 import { getModelProviderModules } from "../modules/module-system";
 import { platformAgentId } from "../spaces";
@@ -20,12 +20,24 @@ const logger = createLogger("platform-helpers");
 const OWLETTO_PLUGIN_SOURCE = "@lobu/owletto-openclaw";
 
 function readOwlettoRuntimeDefaults(): PluginConfig | null {
-  return (
-    buildMemoryPlugins().find(
-      (plugin) =>
-        plugin.source === OWLETTO_PLUGIN_SOURCE && plugin.slot === "memory"
-    ) || null
+  const configuredPlugin = buildMemoryPlugins().find(
+    (plugin) =>
+      plugin.source === OWLETTO_PLUGIN_SOURCE && plugin.slot === "memory"
   );
+  if (configuredPlugin) {
+    return configuredPlugin;
+  }
+
+  const gatewayUrl = getInternalGatewayUrl();
+  return {
+    source: OWLETTO_PLUGIN_SOURCE,
+    slot: "memory",
+    enabled: true,
+    config: {
+      mcpUrl: `${gatewayUrl}/mcp/owletto`,
+      gatewayAuthUrl: gatewayUrl,
+    },
+  };
 }
 
 function normalizeOwlettoPluginConfig(

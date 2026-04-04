@@ -15,10 +15,21 @@ describe("connection routes", () => {
     agentMetadataStore = new AgentMetadataStore(redis as any);
     userAgentsStore = new UserAgentsStore(redis as any);
 
-    await agentMetadataStore.createAgent("agent-1", "Agent 1", "telegram", "u1");
-    await agentMetadataStore.createAgent("sandbox-1", "Sandbox 1", "telegram", "u1", {
-      parentConnectionId: "conn-1",
-    });
+    await agentMetadataStore.createAgent(
+      "agent-1",
+      "Agent 1",
+      "telegram",
+      "u1"
+    );
+    await agentMetadataStore.createAgent(
+      "sandbox-1",
+      "Sandbox 1",
+      "telegram",
+      "u1",
+      {
+        parentConnectionId: "conn-1",
+      }
+    );
     await userAgentsStore.addAgent("telegram", "u1", "agent-1");
   });
 
@@ -41,7 +52,10 @@ describe("connection routes", () => {
             createdAt: 1,
             updatedAt: 1,
           };
-          if (filters?.templateAgentId && filters.templateAgentId !== "agent-1") {
+          if (
+            filters?.templateAgentId &&
+            filters.templateAgentId !== "agent-1"
+          ) {
             return [];
           }
           return [connection];
@@ -122,7 +136,9 @@ describe("connection routes", () => {
       exp: Date.now() + 60_000,
     }));
 
-    const response = await buildApp().request("/api/v1/connections/conn-1/sandboxes");
+    const response = await buildApp().request(
+      "/api/v1/connections/conn-1/sandboxes"
+    );
     expect(response.status).toBe(403);
   });
 });

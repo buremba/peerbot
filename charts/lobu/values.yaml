@@ -17,7 +17,6 @@ secrets:
   encryptionKey: ""  # Optional: 32-char key for AES-GCM at-rest encryption
   anthropicApiKey: ""  # Optional: Anthropic API key (recommended for prod runtime)
   claudeCodeOAuthToken: ""  # Required: Claude Code OAuth token
-  whatsappCredentials: ""  # Optional: Base64-encoded WhatsApp credentials JSON
   telegramBotToken: ""  # Optional: Telegram bot token (enables Telegram when set)
 
 # Bitnami Sealed Secrets - for production use with Git-stored encrypted secrets

@@ -10,6 +10,7 @@ import {
   createWriteTool,
 } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
+import { isDirectPackageInstallCommand } from "./tool-policy";
 
 type RequiredParamGroup = {
   keys: readonly string[];
@@ -182,6 +183,15 @@ function wrapBashWithProxyHint(tool: AgentTool<any>): AgentTool<any> {
   return {
     ...tool,
     execute: async (toolCallId, params, signal, onUpdate) => {
+      const command =
+        params && typeof params === "object" && "command" in params
+          ? String((params as { command?: unknown }).command ?? "")
+          : "";
+      if (isDirectPackageInstallCommand(command)) {
+        throw new Error(
+          "DIRECT PACKAGE INSTALL BLOCKED. Install system packages with nixPackages in lobu.toml or agent settings instead of using package managers inside the worker."
+        );
+      }
       try {
         return await tool.execute(toolCallId, params, signal, onUpdate);
       } catch (err: any) {

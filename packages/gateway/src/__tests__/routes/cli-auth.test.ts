@@ -139,13 +139,13 @@ describe("cli auth routes", () => {
     expect(res.headers.get("set-cookie")).toContain("lobu_settings_session=");
 
     const setCookie = res.headers.get("set-cookie");
-    const token = setCookie
-      ?.match(/lobu_settings_session=([^;]+)/)?.[1];
+    const token = setCookie?.match(/lobu_settings_session=([^;]+)/)?.[1];
     expect(token).toBeTruthy();
 
-    const payload = JSON.parse(
-      decrypt(decodeURIComponent(token!))
-    ) as Record<string, unknown>;
+    const payload = JSON.parse(decrypt(decodeURIComponent(token!))) as Record<
+      string,
+      unknown
+    >;
     expect(payload.userId).toBe("user-123");
     expect(payload.platform).toBe("external");
     expect(payload.isAdmin).toBeUndefined();

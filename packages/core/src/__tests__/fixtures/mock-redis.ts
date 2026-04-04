@@ -155,6 +155,11 @@ export class MockRedisClient {
     return set ? Array.from(set) : [];
   }
 
+  async sismember(key: string, member: string): Promise<number> {
+    const set = this.sets.get(key);
+    return set?.has(member) ? 1 : 0;
+  }
+
   // --- List operations ---
 
   async rpush(key: string, ...values: string[]): Promise<number> {

@@ -16,7 +16,12 @@ describe("agent schedules routes", () => {
     agentMetadataStore = new AgentMetadataStore(redis as any);
     userAgentsStore = new UserAgentsStore(redis as any);
 
-    await agentMetadataStore.createAgent("agent-1", "Agent 1", "external", "u1");
+    await agentMetadataStore.createAgent(
+      "agent-1",
+      "Agent 1",
+      "external",
+      "u1"
+    );
     await userAgentsStore.addAgent("external", "u1", "agent-1");
   });
 

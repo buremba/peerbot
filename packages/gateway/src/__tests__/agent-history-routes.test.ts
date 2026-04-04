@@ -16,7 +16,12 @@ describe("agent history routes", () => {
     agentMetadataStore = new AgentMetadataStore(redis as any);
     userAgentsStore = new UserAgentsStore(redis as any);
 
-    await agentMetadataStore.createAgent("agent-1", "Agent 1", "external", "u1");
+    await agentMetadataStore.createAgent(
+      "agent-1",
+      "Agent 1",
+      "external",
+      "u1"
+    );
     await userAgentsStore.addAgent("external", "u1", "agent-1");
   });
 
@@ -52,12 +57,15 @@ describe("agent history routes", () => {
       })
     );
 
-    const response = await app.request("/api/v1/agents/agent-1/history/status", {
-      headers: {
-        host: "localhost",
-      },
-      method: "GET",
-    });
+    const response = await app.request(
+      "/api/v1/agents/agent-1/history/status",
+      {
+        headers: {
+          host: "localhost",
+        },
+        method: "GET",
+      }
+    );
 
     expect(response.status).toBe(401);
   });

@@ -74,43 +74,26 @@ export function HeroSection() {
 
         {/* CTA buttons */}
         <div class="flex flex-wrap gap-3 mb-8 justify-center items-center">
-          <button
-            type="button"
-            class="hero-copy-btn inline-flex items-center gap-2 font-mono text-[13px] font-semibold px-5 py-2.5 rounded-lg transition-all hover:opacity-90 cursor-pointer"
+          <a
+            href="/getting-started/"
+            class="inline-flex items-center gap-2 text-sm font-semibold px-5 py-2.5 rounded-lg transition-all hover:opacity-90"
             style={{
               backgroundColor: "var(--color-page-text)",
               color: "var(--color-page-bg)",
             }}
-            onClick={(e) => {
-              const button = e.currentTarget as HTMLButtonElement;
-              navigator.clipboard.writeText("npx @lobu/cli init").then(() => {
-                const original = button.innerHTML;
-                button.innerHTML =
-                  '<span style="color: var(--color-tg-accent)">Copied!</span>';
-                setTimeout(() => {
-                  button.innerHTML = original;
-                }, 2000);
-              });
+          >
+            Get Started
+          </a>
+          <a
+            href="/guides/architecture/"
+            class="inline-flex items-center gap-2 text-sm font-medium px-5 py-2.5 rounded-lg transition-all hover:opacity-90"
+            style={{
+              color: "var(--color-page-text-muted)",
+              border: "1px solid var(--color-page-border)",
             }}
           >
-            <span style={{ color: "var(--color-tg-accent)" }}>$</span> npx
-            @lobu/cli init
-            <svg
-              width="12"
-              height="12"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              style={{ opacity: 0.5 }}
-              aria-hidden="true"
-            >
-              <rect x="9" y="9" width="13" height="13" rx="2" />
-              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-            </svg>
-          </button>
+            View Architecture
+          </a>
           <a
             href={GITHUB_URL}
             target="_blank"

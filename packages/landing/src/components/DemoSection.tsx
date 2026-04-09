@@ -1,3 +1,9 @@
+import {
+  deliverySurfaces,
+  messagingChannels,
+  type DeliverySurface,
+} from "./platforms";
+
 type TermLink = { label: string; href: string; selected?: boolean };
 
 type TermLine = {
@@ -7,7 +13,7 @@ type TermLine = {
 };
 
 const initLines: TermLine[] = [
-  { text: "$ lobu init landing-demo-agent", color: "#4ade80" },
+  { text: "$ npx lobu init landing-demo-agent", color: "#4ade80" },
   { text: "", color: "" },
   { text: "🤖 Welcome to Lobu!", color: "#facc15" },
   { text: "", color: "" },
@@ -47,14 +53,11 @@ const initLines: TermLine[] = [
   {
     text: "? Connect a messaging platform?",
     color: "#c9cdd4",
-    links: [
-      { label: "WhatsApp", href: "/platforms/whatsapp/", selected: true },
-      { label: "Slack", href: "/platforms/slack/" },
-      { label: "Discord", href: "/platforms/discord/" },
-      { label: "Teams", href: "/platforms/teams/" },
-      { label: "Google Chat", href: "/platforms/google-chat/" },
-      { label: "Telegram", href: "/platforms/telegram/" },
-    ],
+    links: messagingChannels.map((channel) => ({
+      label: channel.label,
+      href: channel.href,
+      selected: channel.id === "whatsapp",
+    })),
   },
   {
     text: "? Memory?",
@@ -106,11 +109,11 @@ const embedSnippet = [
 ].join("\n");
 
 const testEvalLines: TermLine[] = [
-  { text: '$ lobu chat "Hello, what can you do?"', color: "#4ade80" },
+  { text: '$ npx lobu chat "Hello, what can you do?"', color: "#4ade80" },
   { text: "I can help with code reviews, manage GitHub", color: "#c9cdd4" },
   { text: "issues, and answer questions about your...", color: "#c9cdd4" },
   { text: "", color: "" },
-  { text: "$ lobu eval", color: "#4ade80" },
+  { text: "$ npx lobu eval", color: "#4ade80" },
   { text: "", color: "" },
   { text: "Running 3 evals (9 trials)...", color: "#8f96a3" },
   { text: "", color: "" },
@@ -312,6 +315,25 @@ function SectionIntro({
   );
 }
 
+function DeliverySurfacePill({ surface }: { surface: DeliverySurface }) {
+  return (
+    <a
+      href={surface.href}
+      class="inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-medium transition-opacity hover:opacity-80"
+      style={{
+        color: "var(--color-page-text)",
+        backgroundColor: "var(--color-page-surface-dim)",
+        border: "1px solid var(--color-page-border)",
+      }}
+    >
+      <span style={{ color: "var(--color-page-text-muted)" }}>
+        {surface.renderIcon(12)}
+      </span>
+      <span>{surface.label}</span>
+    </a>
+  );
+}
+
 function ShipCard({
   title,
   description,
@@ -398,7 +420,7 @@ export function DemoSection() {
               />
             </div>
             <TerminalWindow
-              label="lobu init landing-demo-agent"
+              label="npx lobu init landing-demo-agent"
               lines={initLines}
             />
           </div>
@@ -433,7 +455,7 @@ export function DemoSection() {
               <SectionIntro
                 step="03"
                 title="Test and evaluate"
-                body="Chat with your agent from the terminal, route test messages through Slack or Telegram, and run automated evals to measure quality across models."
+                body="Chat with your agent from the terminal, route test messages through supported chat platforms, and run automated evals to measure quality across models."
               />
               <p
                 class="text-sm leading-relaxed"
@@ -465,8 +487,13 @@ export function DemoSection() {
             <SectionIntro
               step="04"
               title="Ship it the way you want"
-              body="When the agent is ready, keep the same Lobu project and choose the runtime model that fits your product."
+              body="When the agent is ready, keep the same Lobu project, choose the runtime model that fits your product, and deliver it over the channel your users already use."
             />
+            <div class="flex flex-wrap gap-2 mb-5">
+              {deliverySurfaces.map((surface) => (
+                <DeliverySurfacePill key={surface.label} surface={surface} />
+              ))}
+            </div>
             <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
               <ShipCard
                 title="Embed in your app"

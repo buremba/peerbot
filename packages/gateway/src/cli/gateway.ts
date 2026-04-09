@@ -136,6 +136,14 @@ export function createGatewayApp(
     logger.debug("Secret proxy enabled at :8080/api/proxy");
   }
 
+  if (coreServices) {
+    const bedrockOpenAIService = coreServices.getBedrockOpenAIService?.();
+    if (bedrockOpenAIService) {
+      app.route("/api/bedrock", bedrockOpenAIService.getApp());
+      logger.debug("Bedrock routes enabled at :8080/api/bedrock/*");
+    }
+  }
+
   // Worker Gateway routes (Hono)
   if (workerGateway) {
     app.route("/worker", workerGateway.getApp());

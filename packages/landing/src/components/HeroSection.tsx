@@ -32,7 +32,7 @@ export function HeroSection() {
           >
             autonomous agents
           </span>{" "}
-          to your product
+          for your organization
         </h1>
         <p
           class="text-lg mx-auto mb-8 leading-relaxed"

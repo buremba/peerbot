@@ -7,35 +7,6 @@ import { ArchitectureDiagram } from "../../../components/ArchitectureDiagram";
 
 Lobu deploys sandboxed [OpenClaw](https://github.com/openclaw/openclaw) agents on demand for every user and channel. OpenClaw is an open-source agent runtime — Lobu wraps it in multi-tenant infrastructure so every user gets their own isolated agent from a single deploy.
 
-## How it works
-
-<ArchitectureDiagram />
-
-For the full request flow and security details, see the [Architecture guide](/guides/architecture/).
-
-## Learn the platform
-
-**Understand**
-- [Capabilities](/getting-started/capabilities/) — what agents can do
-- [Skills](/getting-started/skills/) — tools and integrations
-- [Comparison](/getting-started/comparison/) — how Lobu compares
-
-**Build**
-- [Agent Prompts](/guides/agent-prompts/) — customize behavior with IDENTITY.md, SOUL.md, USER.md
-- [Skills Authoring](/guides/skills-authoring/) — create custom skills and MCP servers
-- [Agent Settings](/guides/agent-settings/) — per-agent configuration
-- [Agent Management](/guides/admin-ui/) — manage agents, providers, connections via API
-
-**Test and evaluate**
-- [Testing](/guides/testing/) — test locally via CLI, REST API, and platforms
-- [Evaluations](/guides/evals/) — automated quality checks with YAML eval files
-
-**Reference**
-- [CLI Reference](/reference/cli/) — all commands and flags
-- [lobu.toml Reference](/reference/lobu-toml/) — full configuration schema
-- [Providers](/reference/providers/) — supported LLM providers
-- [Observability](/guides/observability/) — tracing, logging, error monitoring
-
 ## Quick start
 
 ```bash

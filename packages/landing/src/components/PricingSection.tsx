@@ -1,6 +1,11 @@
 import { ScheduleCallButton } from "./ScheduleDialog";
+import { deliverySurfaces, formatLabelList } from "./platforms";
 
 const GITHUB_URL = "https://github.com/lobu-ai/lobu";
+
+const deliverySurfacesLabel = formatLabelList(
+  deliverySurfaces.map((surface) => surface.label)
+);
 
 export function PricingSection() {
   return (
@@ -51,7 +56,7 @@ export function PricingSection() {
             <ul class="space-y-3 mb-8 flex-1">
               {[
                 "Unlimited agents and users",
-                "All platforms (Slack, Telegram, WhatsApp, Discord, Teams)",
+                `All delivery surfaces (${deliverySurfacesLabel})`,
                 "Docker Compose and Kubernetes deployment",
                 "Embeddable in Node.js apps",
                 "MCP proxy with credential isolation",

@@ -5,7 +5,6 @@ const GITHUB_STARS_BADGE =
 const leftLinks = [
   { label: "Memory", href: "/memory" },
   { label: "Skills", href: "/skills" },
-  { label: "Compare", href: "/getting-started/comparison" },
   { label: "Pricing", href: "/pricing" },
 ];
 

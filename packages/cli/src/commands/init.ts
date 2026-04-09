@@ -662,10 +662,21 @@ turns:
       chalk.cyan(`  ${includeOwlettoLocal ? "5" : "4"}. Open the API docs:`)
     );
     console.log(chalk.dim(`     ${gatewayUrl}/api/docs\n`));
-    console.log(chalk.cyan(`  ${includeOwlettoLocal ? "6" : "5"}. View logs:`));
+    console.log(
+      chalk.cyan(
+        `  ${includeOwlettoLocal ? "6" : "5"}. Build with a coding agent:`
+      )
+    );
+    console.log(
+      chalk.dim(
+        "     Ask Codex or Claude Code to read AGENTS.md, lobu.toml, and agents/*/{IDENTITY,SOUL,USER}.md"
+      )
+    );
+    console.log(chalk.dim("     Optional external skill: lobu-builder\n"));
+    console.log(chalk.cyan(`  ${includeOwlettoLocal ? "7" : "6"}. View logs:`));
     console.log(chalk.dim("     docker compose logs -f\n"));
     console.log(
-      chalk.cyan(`  ${includeOwlettoLocal ? "7" : "6"}. Stop the services:`)
+      chalk.cyan(`  ${includeOwlettoLocal ? "8" : "7"}. Stop the services:`)
     );
     console.log(chalk.dim("     docker compose down\n"));
   } catch (error) {

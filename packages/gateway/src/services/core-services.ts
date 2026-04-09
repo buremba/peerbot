@@ -11,6 +11,7 @@ import {
 } from "@lobu/core";
 import { AgentMetadataStore } from "../auth/agent-metadata-store";
 import { ApiKeyProviderModule } from "../auth/api-key-provider-module";
+import { BedrockProviderModule } from "../auth/bedrock/provider-module";
 import { ChatGPTOAuthModule } from "../auth/chatgpt";
 import { ClaudeOAuthModule } from "../auth/claude/oauth-module";
 import { ExternalAuthClient } from "../auth/external/client";
@@ -57,6 +58,8 @@ import {
   RedisAgentConnectionStore,
 } from "../stores/redis-agent-store";
 import { ImageGenerationService } from "./image-generation-service";
+import { BedrockModelCatalog } from "./bedrock-model-catalog";
+import { BedrockOpenAIService } from "./bedrock-openai-service";
 import { InstructionService } from "./instruction-service";
 import { RedisSessionStore, SessionManager } from "./session-manager";
 import { SettingsResolver } from "./settings-resolver";
@@ -121,6 +124,7 @@ export class CoreServices {
   private channelBindingService?: ChannelBindingService;
   private transcriptionService?: TranscriptionService;
   private imageGenerationService?: ImageGenerationService;
+  private bedrockOpenAIService?: BedrockOpenAIService;
   private userAgentsStore?: UserAgentsStore;
   private agentMetadataStore?: AgentMetadataStore;
 
@@ -549,6 +553,17 @@ export class CoreServices {
     logger.debug(
       `ChatGPT OAuth module registered (system token: ${chatgptOAuthModule.hasSystemKey() ? "available" : "not available"})`
     );
+
+    const bedrockModelCatalog = new BedrockModelCatalog();
+    const bedrockProviderModule = new BedrockProviderModule(
+      this.authProfilesManager,
+      bedrockModelCatalog
+    );
+    moduleRegistry.register(bedrockProviderModule);
+    this.bedrockOpenAIService = new BedrockOpenAIService({
+      modelCatalog: bedrockModelCatalog,
+    });
+    logger.debug("Bedrock provider module registered");
 
     // Initialize system skills — use injected skills if provided, else load from file
     if (this.options?.systemSkills) {
@@ -1005,6 +1020,10 @@ export class CoreServices {
 
   getImageGenerationService(): ImageGenerationService | undefined {
     return this.imageGenerationService;
+  }
+
+  getBedrockOpenAIService(): BedrockOpenAIService | undefined {
+    return this.bedrockOpenAIService;
   }
 
   getUserAgentsStore(): UserAgentsStore {

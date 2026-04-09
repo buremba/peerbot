@@ -662,9 +662,7 @@ export class WorkerGateway {
     if (primaryProvider) {
       result.credentialEnvVarName = primaryProvider.getCredentialEnvVarName();
       const upstream = primaryProvider.getUpstreamConfig?.();
-      if (upstream?.slug) {
-        result.defaultProvider = upstream.slug;
-      }
+      result.defaultProvider = upstream?.slug || primaryProvider.providerId;
     }
 
     if (agentModel) {

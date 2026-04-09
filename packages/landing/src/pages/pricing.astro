@@ -16,7 +16,7 @@ import { Nav } from "../components/Nav";
   >
     <Nav currentPath={Astro.url.pathname} />
     <main class="relative z-[1]">
-      <PricingSection />
+      <PricingSection client:load />
     </main>
     <Footer />
   </div>

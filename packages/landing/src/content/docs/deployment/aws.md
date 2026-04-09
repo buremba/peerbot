@@ -5,26 +5,26 @@ sidebar:
   order: 3
 ---
 
-Lobu runs natively on AWS infrastructure. Use Bedrock for Claude models via IAM, EKS for production orchestration, and S3 Files for persistent worker storage — all without leaving your AWS account.
+Lobu runs natively on AWS infrastructure. Use Bedrock for foundation models via IAM, EKS for production orchestration, and S3 Files for persistent worker storage — all without leaving your AWS account.
 
 ## Amazon Bedrock
 
-Bedrock lets you call Claude models through your AWS account using IAM credentials instead of Anthropic API keys. The gateway proxies all model requests, so workers never see AWS credentials.
+Bedrock lets you use foundation models through your AWS account using IAM credentials instead of per-provider API keys. The gateway proxies all model requests, so workers never see AWS credentials.
 
 ### How it works
 
 1. Gateway detects AWS credentials from the environment (IAM role, env vars, OIDC, or container credentials).
-2. Workers send standard Anthropic API requests to the gateway proxy.
-3. Gateway converts requests to Bedrock format, calls Bedrock with IAM auth, and streams responses back in Anthropic format.
-4. Workers use the standard Anthropic SDK — no Bedrock-specific code needed.
+2. Workers send OpenAI-compatible API requests to the gateway proxy.
+3. Gateway converts requests to the Bedrock Converse API, calls Bedrock with IAM auth, and streams responses back in OpenAI format.
+4. Workers use the standard OpenAI SDK — no Bedrock-specific code needed.
 
 ```
-Worker (Anthropic SDK) → Gateway Proxy → Amazon Bedrock → Claude
+Worker (OpenAI SDK) → Gateway Proxy → Bedrock Converse API → Model
 ```
 
 ### Supported models
 
-All Claude models available on Bedrock are supported. The gateway automatically selects the correct region-prefixed model ID based on your `AWS_REGION`. See [Bedrock supported models](https://docs.aws.amazon.com/bedrock/latest/userguide/models-supported.html) for the full list and regional availability.
+All Bedrock foundation models with text output and streaming support are available — including Anthropic Claude, Amazon Nova, Meta Llama, Mistral, and others. The gateway dynamically discovers available models by calling the Bedrock `ListFoundationModels` API for your region and caches the result. See [Bedrock supported models](https://docs.aws.amazon.com/bedrock/latest/userguide/models-supported.html) for the full list and regional availability.
 
 ### Configuration
 
@@ -37,10 +37,12 @@ Use [IAM Roles for Service Accounts (IRSA)](https://docs.aws.amazon.com/eks/late
 
 | Variable | Description |
 |----------|-------------|
-| `AWS_REGION` | AWS region (default: `us-east-1`) |
+| `AWS_REGION` or `AWS_DEFAULT_REGION` | AWS region for Bedrock API calls |
 | `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` | Static IAM credentials |
 | `AWS_PROFILE` | Named profile from `~/.aws/credentials` |
 | `AWS_WEB_IDENTITY_TOKEN_FILE` | OIDC federation (used by IRSA) |
+| `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI` | ECS task role credentials |
+| `AWS_CONTAINER_CREDENTIALS_FULL_URI` | ECS/EKS container credentials |
 | `BEDROCK_ENABLED` | Set to `true` to force-enable Bedrock provider |
 
 The Bedrock provider auto-enables when any AWS credential is detected. Once enabled, it appears as a provider option in the agent settings UI.
@@ -55,13 +57,16 @@ The Bedrock provider auto-enables when any AWS credential is detected. Once enab
       "Effect": "Allow",
       "Action": [
         "bedrock:InvokeModel",
-        "bedrock:InvokeModelWithResponseStream"
+        "bedrock:InvokeModelWithResponseStream",
+        "bedrock:ListFoundationModels"
       ],
-      "Resource": "arn:aws:bedrock:*::foundation-model/anthropic.*"
+      "Resource": "*"
     }
   ]
 }
 ```
+
+`ListFoundationModels` is used for dynamic model discovery. Restrict the `InvokeModel` actions to specific model ARNs if you want to limit which models agents can use.
 
 ### Embedded mode
 
@@ -76,8 +81,8 @@ const lobu = new Lobu({
     {
       id: "support",
       name: "Support Agent",
-      // Use bedrock provider — credentials come from IAM role
-      providers: [{ id: "bedrock" }],
+      // Use Bedrock provider — credentials come from IAM role
+      providers: [{ id: "amazon-bedrock" }],
     },
   ],
 });

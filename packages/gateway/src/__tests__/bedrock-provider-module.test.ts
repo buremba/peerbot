@@ -39,7 +39,6 @@ describe("BedrockProviderModule", () => {
     ).toEqual({
       AMAZON_BEDROCK_BASE_URL:
         "http://gateway:8080/api/bedrock/openai/a/agent-123",
-      OPENAI_BASE_URL: "http://gateway:8080/api/bedrock/openai/a/agent-123",
     });
   });
 

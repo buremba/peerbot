@@ -43,9 +43,10 @@ Use [IAM Roles for Service Accounts (IRSA)](https://docs.aws.amazon.com/eks/late
 | `AWS_WEB_IDENTITY_TOKEN_FILE` | OIDC federation (used by IRSA) |
 | `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI` | ECS task role credentials |
 | `AWS_CONTAINER_CREDENTIALS_FULL_URI` | ECS/EKS container credentials |
+| `AWS_BEARER_TOKEN_BEDROCK` | Bearer token for Bedrock access |
 | `BEDROCK_ENABLED` | Set to `true` to force-enable Bedrock provider |
 
-The Bedrock provider auto-enables when any AWS credential is detected. Once enabled, it appears as a provider option in the agent settings UI.
+The Bedrock provider auto-enables when a credential source is detected (IAM role, access key, profile, or OIDC). Region alone is not sufficient — set `BEDROCK_ENABLED=true` to force-enable when credentials come from the default AWS credential chain. The default model is `amazon.nova-lite-v1:0`.
 
 ### Required IAM permissions
 

@@ -11,11 +11,13 @@ const BEDROCK_CREDENTIAL_ENV = "AMAZON_BEDROCK_API_KEY";
 const DEFAULT_BEDROCK_MODEL = "amazon.nova-lite-v1:0";
 
 function hasAwsCredentialHint(): boolean {
+  // Explicit opt-in always wins
+  if (process.env.BEDROCK_ENABLED === "true") return true;
+
+  // Only auto-enable when an actual credential source is present.
+  // Region alone is not sufficient — it doesn't provide authentication.
   return Boolean(
-    process.env.BEDROCK_ENABLED === "true" ||
-      process.env.AWS_REGION ||
-      process.env.AWS_DEFAULT_REGION ||
-      process.env.AWS_PROFILE ||
+    process.env.AWS_PROFILE ||
       process.env.AWS_ACCESS_KEY_ID ||
       process.env.AWS_WEB_IDENTITY_TOKEN_FILE ||
       process.env.AWS_CONTAINER_CREDENTIALS_RELATIVE_URI ||
@@ -80,7 +82,6 @@ export class BedrockProviderModule extends BaseProviderModule {
     const base = `${gatewayBase}${BEDROCK_ROUTE_PREFIX}`;
     return {
       [BEDROCK_BASE_URL_ENV]: agentId ? `${base}/a/${agentId}` : base,
-      OPENAI_BASE_URL: agentId ? `${base}/a/${agentId}` : base,
     };
   }
 

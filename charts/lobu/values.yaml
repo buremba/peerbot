@@ -263,9 +263,10 @@ grafana:
   namespace: "monitoring"  # Namespace where Grafana is installed
   lokiUrl: "http://loki:3100"  # URL to Loki service
 
-# Grafana Tempo for distributed tracing (waterfall view)
+# Grafana Tempo for distributed tracing
+# When enabled, sets OTEL_EXPORTER_OTLP_ENDPOINT automatically for gateway and workers
 tempo:
-  enabled: false  # Enable for Chrome DevTools-style trace visualization
+  enabled: false
   # Tempo subchart configuration
   tempo:
     # Use local filesystem storage for simplicity (switch to S3/GCS in production)

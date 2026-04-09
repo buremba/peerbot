@@ -34,8 +34,8 @@ async function main() {
         initTracing({
           serviceName: "lobu-gateway",
           serviceVersion: process.env.npm_package_version || "2.0.0",
-          tempoEndpoint: process.env.TEMPO_ENDPOINT,
-          enabled: !!process.env.TEMPO_ENDPOINT,
+          otlpEndpoint: process.env.OTEL_EXPORTER_OTLP_ENDPOINT,
+          enabled: !!process.env.OTEL_EXPORTER_OTLP_ENDPOINT,
         });
 
         const config = buildGatewayConfig();

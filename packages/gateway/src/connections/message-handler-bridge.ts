@@ -4,7 +4,12 @@
  * settings links, allowlist, audio transcription, etc.
  */
 
-import { createLogger, generateTraceId } from "@lobu/core";
+import {
+  createLogger,
+  createRootSpan,
+  flushTracing,
+  generateTraceId,
+} from "@lobu/core";
 import type Redis from "ioredis";
 import type { CommandDispatcher } from "../commands/command-dispatcher";
 import { createChatReply } from "../commands/command-reply-adapters";
@@ -290,8 +295,17 @@ class MessageHandlerBridge {
     const traceId = generateTraceId(messageId);
     const agentSettingsStore = this.services.getAgentSettingsStore();
 
+    // Create root span for distributed tracing
+    const { span: rootSpan, traceparent } = createRootSpan("message_received", {
+      "lobu.agent_id": agentId,
+      "lobu.message_id": messageId,
+      "lobu.platform": platform,
+      "lobu.connection_id": this.connection.id,
+    });
+
     // Check if agent has any provider credentials before enqueuing
     if (!(await hasConfiguredProvider(agentId, agentSettingsStore))) {
+      rootSpan?.end();
       await thread.post(
         "No AI provider is configured yet. Provider setup is not available in the end-user chat flow yet. Ask an admin to connect a provider for the base agent."
       );
@@ -316,6 +330,7 @@ class MessageHandlerBridge {
       channelId,
       platformMetadata: {
         traceId,
+        traceparent: traceparent || undefined,
         agentId,
         chatId: channelId,
         senderId: userId,
@@ -335,9 +350,17 @@ class MessageHandlerBridge {
 
     const queueProducer = this.services.getQueueProducer();
     await queueProducer.enqueueMessage(payload);
+    rootSpan?.end();
+    void flushTracing();
 
     logger.info(
-      { traceId, messageId, agentId, connectionId: this.connection.id },
+      {
+        traceId,
+        traceparent,
+        messageId,
+        agentId,
+        connectionId: this.connection.id,
+      },
       "Message enqueued via Chat SDK bridge"
     );
 

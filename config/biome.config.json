@@ -20,7 +20,8 @@
       "!**/node_modules/**",
       "!**/.astro/**",
       "!**/tmp/**",
-      "!**/provision-careops-watchers*"
+      "!**/provision-careops-watchers*",
+      "!**/*.css"
     ]
   },
   "formatter": {
@@ -96,6 +97,17 @@
         "noWith": "error",
         "noTemplateCurlyInString": "off"
       }
+    }
+  },
+  "css": {
+    "parser": {
+      "cssModules": true
+    },
+    "formatter": {
+      "enabled": false
+    },
+    "linter": {
+      "enabled": false
     }
   },
   "javascript": {

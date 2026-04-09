@@ -4,7 +4,7 @@
  * via the PlatformRegistry, eliminating duplicate queue filtering logic.
  */
 
-import { createLogger } from "@lobu/core";
+import { createChildSpan, createLogger, flushTracing } from "@lobu/core";
 import type { ChatResponseBridge } from "../connections/chat-response-bridge";
 import type {
   IMessageQueue,
@@ -77,61 +77,68 @@ export class UnifiedThreadResponseConsumer {
       return;
     }
 
-    // Check if this response belongs to a Chat SDK connection — handle before legacy routing
-    if (this.chatResponseBridge?.canHandle(data)) {
-      const sessionKey = `${data.userId}:${data.originalMessageId || data.messageId}`;
-      try {
-        await this.routeToRenderer(this.chatResponseBridge, data, sessionKey);
-      } catch (error) {
-        logger.error("Error processing Chat SDK response:", error);
-        throw error;
-      }
-      return;
-    }
-
-    // Use platform field, fall back to teamId
-    const platformName = data.platform || data.teamId;
-    if (!platformName) {
-      logger.warn(
-        `Missing platform in thread response for message ${data.messageId}, skipping`
-      );
-      return;
-    }
-
-    // Get platform adapter from registry
-    const platform = this.platformRegistry.get(platformName);
-    if (!platform) {
-      logger.warn(
-        `No platform adapter registered for: ${platformName}, skipping message ${data.messageId}`
-      );
-      return;
-    }
-
-    // Get renderer from platform
-    const renderer = platform.getResponseRenderer?.();
-    if (!renderer) {
-      logger.warn(
-        `Platform ${platformName} does not provide a response renderer, skipping message ${data.messageId}`
-      );
-      return;
-    }
-
-    // Create session key for tracking
-    const sessionKey = `${data.userId}:${data.originalMessageId || data.messageId}`;
-
-    logger.info(
-      `Processing thread response for platform=${platformName}, message=${data.messageId}, session=${sessionKey}`
-    );
+    // Create child span for response processing (linked to original trace)
+    const traceparent = data.platformMetadata?.traceparent as
+      | string
+      | undefined;
+    const span = createChildSpan("response_delivery", traceparent, {
+      "lobu.message_id": data.messageId,
+      "lobu.user_id": data.userId,
+      "lobu.platform": data.platform || data.teamId || "unknown",
+    });
 
     try {
+      // Check if this response belongs to a Chat SDK connection — handle before legacy routing
+      if (this.chatResponseBridge?.canHandle(data)) {
+        const sessionKey = `${data.userId}:${data.originalMessageId || data.messageId}`;
+        await this.routeToRenderer(this.chatResponseBridge, data, sessionKey);
+        return;
+      }
+
+      // Use platform field, fall back to teamId
+      const platformName = data.platform || data.teamId;
+      if (!platformName) {
+        logger.warn(
+          `Missing platform in thread response for message ${data.messageId}, skipping`
+        );
+        return;
+      }
+
+      // Get platform adapter from registry
+      const platform = this.platformRegistry.get(platformName);
+      if (!platform) {
+        logger.warn(
+          `No platform adapter registered for: ${platformName}, skipping message ${data.messageId}`
+        );
+        return;
+      }
+
+      // Get renderer from platform
+      const renderer = platform.getResponseRenderer?.();
+      if (!renderer) {
+        logger.warn(
+          `Platform ${platformName} does not provide a response renderer, skipping message ${data.messageId}`
+        );
+        return;
+      }
+
+      // Create session key for tracking
+      const sessionKey = `${data.userId}:${data.originalMessageId || data.messageId}`;
+
+      logger.info(
+        `Processing thread response for platform=${platformName}, message=${data.messageId}, session=${sessionKey}`
+      );
+
       await this.routeToRenderer(renderer, data, sessionKey);
     } catch (error) {
       logger.error(
-        `Error processing thread response for ${platformName}:`,
+        `Error processing thread response for message ${data.messageId}:`,
         error
       );
-      // Let queue handle retry logic
       throw error;
+    } finally {
+      span?.end();
+      void flushTracing();
     }
   }
 

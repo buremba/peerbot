@@ -12,18 +12,20 @@ function getLogger(): Logger {
 let sentryInstance: typeof import("@sentry/node") | null = null;
 
 /**
- * Initialize Sentry with configuration from environment variables
- * Falls back to hardcoded DSN if SENTRY_DSN is not provided
- * Uses dynamic import to avoid module resolution issues in dev mode
+ * Initialize Sentry with configuration from environment variables.
+ * Only initializes if SENTRY_DSN is set — no implicit error reporting.
+ * Uses dynamic import to avoid module resolution issues in dev mode.
  */
 export async function initSentry() {
+  const sentryDsn = process.env.SENTRY_DSN;
+  if (!sentryDsn) {
+    getLogger().debug("Sentry disabled (no SENTRY_DSN configured)");
+    return;
+  }
+
   try {
     const Sentry = await import("@sentry/node");
     sentryInstance = Sentry;
-
-    const sentryDsn =
-      process.env.SENTRY_DSN ||
-      "https://c5910e58d1a134d64ff93a95a9c535bb@o4507291398897664.ingest.us.sentry.io/4511097466781696";
 
     Sentry.init({
       dsn: sentryDsn,
@@ -39,7 +41,7 @@ export async function initSentry() {
     getLogger().debug("Sentry monitoring initialized");
   } catch (error) {
     getLogger().warn(
-      "⚠️ Sentry initialization failed (continuing without monitoring):",
+      "Sentry initialization failed (continuing without monitoring):",
       error
     );
   }

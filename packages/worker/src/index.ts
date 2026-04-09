@@ -34,15 +34,13 @@ async function main() {
   await initSentry();
 
   // Initialize OpenTelemetry tracing for distributed tracing
-  // Worker traces are sent to Tempo via gateway proxy
-  const tempoEndpoint = process.env.TEMPO_ENDPOINT;
-  logger.debug(`TEMPO_ENDPOINT: ${tempoEndpoint}`);
-  if (tempoEndpoint) {
+  const otlpEndpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+  if (otlpEndpoint) {
     initTracing({
       serviceName: "lobu-worker",
-      tempoEndpoint,
+      otlpEndpoint,
     });
-    logger.info(`Tracing initialized: lobu-worker -> ${tempoEndpoint}`);
+    logger.info(`Tracing initialized: lobu-worker -> ${otlpEndpoint}`);
   }
 
   // Discover and register available modules

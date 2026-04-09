@@ -160,8 +160,8 @@ spec:
                   optional: true
 
             {{- if .Values.tempo.enabled }}
-            # Tempo distributed tracing endpoint
-            - name: TEMPO_ENDPOINT
+            # OpenTelemetry OTLP endpoint for distributed tracing
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: "http://{{ .Release.Name }}-tempo:4318/v1/traces"
             {{- end }}
 

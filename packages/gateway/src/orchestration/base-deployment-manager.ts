@@ -480,15 +480,15 @@ export abstract class BaseDeploymentManager {
       envVars.TRACE_ID = traceId;
     }
 
-    // Add Tempo endpoint for distributed tracing
-    const tempoEndpoint = process.env.TEMPO_ENDPOINT;
-    if (tempoEndpoint) {
-      envVars.TEMPO_ENDPOINT = tempoEndpoint;
+    // Add OTLP endpoint for distributed tracing
+    const otlpEndpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+    if (otlpEndpoint) {
+      envVars.OTEL_EXPORTER_OTLP_ENDPOINT = otlpEndpoint;
       try {
-        const tempoUrl = new URL(tempoEndpoint);
-        envVars.NO_PROXY = `${envVars.NO_PROXY},${tempoUrl.hostname}`;
+        const otlpUrl = new URL(otlpEndpoint);
+        envVars.NO_PROXY = `${envVars.NO_PROXY},${otlpUrl.hostname}`;
       } catch {
-        envVars.NO_PROXY = `${envVars.NO_PROXY},lobu-tempo`;
+        envVars.NO_PROXY = `${envVars.NO_PROXY},tempo`;
       }
     }
 

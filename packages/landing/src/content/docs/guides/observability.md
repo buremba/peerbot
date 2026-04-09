@@ -3,24 +3,31 @@ title: Observability
 description: Distributed tracing, logging, and error monitoring for Lobu deployments.
 ---
 
-Lobu includes built-in observability through OpenTelemetry tracing (Grafana Tempo), structured logging (Loki-compatible), and error monitoring (Sentry).
+Lobu includes built-in observability through OpenTelemetry tracing, structured logging (Loki-compatible), and error monitoring (Sentry).
 
 ## Distributed tracing
 
-Lobu uses [OpenTelemetry](https://opentelemetry.io/) to trace messages end-to-end across the gateway and worker. Traces are exported to [Grafana Tempo](https://grafana.com/oss/tempo/) and visualized as waterfall timelines in Grafana.
+Lobu uses [OpenTelemetry](https://opentelemetry.io/) to trace messages end-to-end across the gateway and worker. Traces are exported via OTLP HTTP to any compatible collector (Tempo, Jaeger, Datadog, Honeycomb, etc.).
 
 ### What gets traced
 
-Each incoming message creates a root span that propagates through the full pipeline:
+Each incoming message creates a root span that propagates through the full request and response pipeline:
 
-1. **message_received** — gateway ingests message from platform
+**Request path (gateway → worker):**
+
+1. **message_received** — gateway ingests message from API or platform (Slack, Telegram, etc.)
 2. **queue_processing** — message consumer picks up the job
 3. **worker_creation** — gateway creates worker container/pod
 4. **pvc_setup** — persistent volume setup (Kubernetes only)
 5. **job_received** — worker receives the job
-6. **agent_execution** — OpenClaw agent runs the prompt
+6. **exec_execution** — sandbox command execution (if applicable)
+7. **agent_execution** — agent runs the prompt
 
-Spans are linked via W3C `traceparent` headers, so a single trace ID connects gateway and worker activity.
+**Response path (worker → platform):**
+
+8. **response_delivery** — gateway receives worker response and routes to platform renderer
+
+Spans are linked via W3C `traceparent` headers propagated through the queue, so a single trace ID connects the full round-trip from message ingestion through agent execution to response delivery. All entry points (API, Slack, Telegram, Discord, etc.) create root spans.
 
 ### Trace ID format
 
@@ -28,14 +35,14 @@ Each message gets a trace ID in the format `tr-{messageId}-{timestamp}-{random}`
 
 ### Enable tracing
 
-Set the `TEMPO_ENDPOINT` environment variable. Tracing is automatically disabled when this variable is unset.
+Point `OTEL_EXPORTER_OTLP_ENDPOINT` at any OTLP HTTP collector. Tracing is automatically disabled when this variable is unset.
 
 ```bash
-# .env
-TEMPO_ENDPOINT=http://tempo:4318/v1/traces
+# .env — use any OTLP-compatible collector
+OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4318/v1/traces
 ```
 
-Both gateway and worker initialize tracing on startup when this is set. The gateway passes the endpoint to workers automatically.
+Both gateway and worker initialize tracing on startup when this is set. The gateway passes the endpoint to workers automatically. You can also set this during `lobu init`.
 
 ### Docker setup
 
@@ -91,7 +98,7 @@ metrics_generator:
     path: /var/tempo/metrics
 ```
 
-Then add `TEMPO_ENDPOINT=http://tempo:4318/v1/traces` to your `.env` and restart.
+Then add `OTEL_EXPORTER_OTLP_ENDPOINT=http://tempo:4318/v1/traces` to your `.env` and restart.
 
 ### Kubernetes setup
 
@@ -175,12 +182,14 @@ kubectl logs -f deployment/lobu-gateway -n lobu
 
 ## Error monitoring (Sentry)
 
-Lobu integrates with [Sentry](https://sentry.io/) for error and warning capture.
+Lobu integrates with [Sentry](https://sentry.io/) for error and warning capture. Sentry is **opt-in only** — no error data is sent unless you explicitly enable it.
 
 ### Enable Sentry
 
+During `lobu init`, you'll be asked whether to share anonymous error reports with Lobu's community Sentry project. You can also configure your own Sentry project:
+
 ```bash
-# .env
+# .env — use Lobu's community DSN or your own
 SENTRY_DSN=https://your-dsn@sentry.io/your-project
 ```
 
@@ -189,13 +198,13 @@ When set, errors and warnings from both gateway and worker are automatically sen
 - Redis integration for queue-related errors
 - 100% trace sample rate for full visibility
 
-If `SENTRY_DSN` is not set, Sentry falls back to the community DSN for basic error reporting.
+To disable, remove `SENTRY_DSN` from your `.env`.
 
 ## Environment variable summary
 
 | Variable | Component | Description |
 |----------|-----------|-------------|
-| `TEMPO_ENDPOINT` | Gateway, Worker | OTLP HTTP endpoint for Tempo (e.g., `http://tempo:4318/v1/traces`) |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Gateway, Worker | OTLP HTTP endpoint for trace collector (e.g., `http://collector:4318/v1/traces`) |
 | `SENTRY_DSN` | Gateway, Worker | Sentry DSN for error monitoring |
 | `LOG_LEVEL` | Gateway, Worker | Minimum log level (`error`, `warn`, `info`, `debug`) |
 | `LOG_FORMAT` | Gateway, Worker | Log output format (`json` or `text`) |

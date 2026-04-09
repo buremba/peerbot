@@ -17,6 +17,26 @@ export type {
   StoredConnection,
 } from "./agent-store";
 export { findTemplateAgentId } from "./agent-store";
+// Agent Settings API response types (for UI consumers)
+export type {
+  AgentConfigResponse,
+  AgentInfo,
+  CatalogProvider,
+  Connection,
+  McpConfig,
+  ModelOption,
+  ModelSelectionState,
+  PermissionGrant,
+  PrefillMcp,
+  PrefillSkill,
+  ProviderInfo,
+  ProviderState,
+  ProviderStatus,
+  Schedule,
+  SettingsSnapshot,
+  Skill,
+  SkillMcpServerInfo,
+} from "./api-types";
 export type { CommandContext, CommandDefinition } from "./command-registry";
 // Command registry
 export { CommandRegistry } from "./command-registry";
@@ -33,7 +53,7 @@ export * from "./logger";
 export type { ActionButton, ModuleSessionContext } from "./modules";
 export * from "./modules";
 export type { OtelConfig, Span, Tracer } from "./otel";
-// OpenTelemetry tracing (Tempo integration)
+// OpenTelemetry tracing
 export {
   createChildSpan,
   createRootSpan,
@@ -80,13 +100,13 @@ export type {
   InstructionContext,
   InstructionProvider,
   LogLevel,
+  McpOAuthConfig,
   McpServerConfig,
   NetworkConfig,
   NixConfig,
   RegistryEntry,
   SessionContext,
   SkillConfig,
-  McpOAuthConfig,
   SkillMcpServer,
   SkillsConfig,
   SuggestedPrompt,
@@ -95,27 +115,6 @@ export type {
   ToolsConfig,
   UserSuggestion,
 } from "./types";
-
-// Agent Settings API response types (for UI consumers)
-export type {
-  AgentConfigResponse,
-  AgentInfo,
-  CatalogProvider,
-  Connection,
-  McpConfig,
-  ModelOption,
-  ModelSelectionState,
-  PermissionGrant,
-  PrefillMcp,
-  PrefillSkill,
-  ProviderInfo,
-  ProviderState,
-  ProviderStatus,
-  Schedule,
-  SettingsSnapshot,
-  Skill,
-  SkillMcpServerInfo,
-} from "./api-types";
 
 // Utilities
 export * from "./utils/encryption";

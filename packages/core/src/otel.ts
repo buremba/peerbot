@@ -1,6 +1,6 @@
 /**
- * OpenTelemetry tracing setup for distributed tracing with Grafana Tempo.
- * Provides Chrome DevTools-style waterfall visualization in Grafana.
+ * OpenTelemetry tracing setup for distributed tracing.
+ * Ships traces via OTLP HTTP to any compatible collector (Tempo, Jaeger, Datadog, etc.).
  */
 
 import type { Span, Tracer } from "@opentelemetry/api";
@@ -25,7 +25,7 @@ let tracer: Tracer | null = null;
 export interface OtelConfig {
   serviceName: string;
   serviceVersion?: string;
-  tempoEndpoint?: string; // e.g., "http://tempo:4318/v1/traces"
+  otlpEndpoint?: string; // e.g., "http://collector:4318/v1/traces"
   enabled?: boolean;
 }
 
@@ -36,7 +36,7 @@ export interface OtelConfig {
  * @example
  * initTracing({
  *   serviceName: "lobu-gateway",
- *   tempoEndpoint: "http://lobu-tempo:4318/v1/traces",
+ *   otlpEndpoint: "http://collector:4318/v1/traces",
  * });
  */
 export function initTracing(config: OtelConfig): void {
@@ -44,9 +44,11 @@ export function initTracing(config: OtelConfig): void {
     return; // Already initialized
   }
 
-  const enabled = config.enabled ?? !!config.tempoEndpoint;
+  const enabled = config.enabled ?? !!config.otlpEndpoint;
   if (!enabled) {
-    logger.debug("Tracing disabled (no TEMPO_ENDPOINT configured)");
+    logger.debug(
+      "Tracing disabled (no OTEL_EXPORTER_OTLP_ENDPOINT configured)"
+    );
     return;
   }
 
@@ -57,9 +59,8 @@ export function initTracing(config: OtelConfig): void {
 
   provider = new NodeTracerProvider({ resource });
 
-  // Configure OTLP exporter to send traces to Tempo
   const exporter = new OTLPTraceExporter({
-    url: config.tempoEndpoint,
+    url: config.otlpEndpoint,
     timeoutMillis: 30000, // 30 second timeout for reliability
   });
 
@@ -70,7 +71,7 @@ export function initTracing(config: OtelConfig): void {
   tracer = trace.getTracer(config.serviceName, config.serviceVersion);
 
   logger.info(
-    `Tracing initialized: ${config.serviceName} -> ${config.tempoEndpoint}`
+    `Tracing initialized: ${config.serviceName} -> ${config.otlpEndpoint}`
   );
 }
 
@@ -301,6 +302,6 @@ export function getTraceparent(span: Span | null): string | null {
   return `00-${ctx.traceId}-${ctx.spanId}-01`;
 }
 
+export type { Span, Tracer };
 // Re-export OpenTelemetry types for convenience
 export { SpanKind, SpanStatusCode };
-export type { Span, Tracer };

@@ -424,6 +424,43 @@ export async function initCommand(
   }
   // "none" — no env var needed, gateway defaults to filesystem memory
 
+  // Observability — OTEL tracing endpoint
+  const { otelEndpoint } = await inquirer.prompt([
+    {
+      type: "input",
+      name: "otelEndpoint",
+      message:
+        "OpenTelemetry collector endpoint? (leave empty to disable tracing)",
+      default: "",
+    },
+  ]);
+
+  if (otelEndpoint) {
+    envSecrets.push({
+      envVar: "OTEL_EXPORTER_OTLP_ENDPOINT",
+      value: otelEndpoint,
+    });
+  }
+
+  // Observability — Sentry error reporting
+  const { enableSentry } = await inquirer.prompt([
+    {
+      type: "confirm",
+      name: "enableSentry",
+      message:
+        "Help improve Lobu by sharing anonymous error reports with Sentry?",
+      default: true,
+    },
+  ]);
+
+  if (enableSentry) {
+    envSecrets.push({
+      envVar: "SENTRY_DSN",
+      value:
+        "https://c5910e58d1a134d64ff93a95a9c535bb@o4507291398897664.ingest.us.sentry.io/4511097466781696",
+    });
+  }
+
   // Compute network domains from selected policy
   let allowedDomains: string;
   let disallowedDomains: string;

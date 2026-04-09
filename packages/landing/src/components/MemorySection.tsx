@@ -311,48 +311,51 @@ export function MemorySection() {
   return (
     <section class="pt-32 pb-24 px-4 sm:px-8">
       <div class="max-w-[58rem] mx-auto">
-        <div class="grid gap-12 lg:grid-cols-[1.05fr_0.95fr] items-start">
-          <div>
-            <h1
-              class="text-4xl sm:text-5xl font-bold tracking-tight leading-[1.1] mt-5 mb-5"
-              style={{ color: "var(--color-page-text)" }}
+        {/* Hero */}
+        <div class="text-center mb-12">
+          <h1
+            class="text-4xl sm:text-5xl font-bold tracking-tight leading-[1.1] mb-5"
+            style={{ color: "var(--color-page-text)" }}
+          >
+            Multi-tenant organizational memory for agents
+          </h1>
+          <p
+            class="text-lg sm:text-xl leading-8 max-w-[40rem] mx-auto m-0"
+            style={{ color: "var(--color-page-text-muted)" }}
+          >
+            Owletto is Lobu&apos;s default memory system. It gives agents a
+            typed graph, live connectors, scheduled analysis, and managed OAuth
+            instead of a vector dump or short-lived chat history.
+          </p>
+          <div class="flex flex-wrap gap-3 mt-8 justify-center">
+            <a
+              href="https://owletto.com"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="inline-flex items-center rounded-xl px-4 py-2.5 text-sm font-medium border transition-transform hover:-translate-y-0.5"
+              style={{
+                color: "var(--color-page-text)",
+                backgroundColor: "rgba(255,255,255,0.04)",
+                borderColor: "var(--color-page-border-active)",
+              }}
             >
-              Multi-tenant organizational memory for agents
-            </h1>
-            <p
-              class="text-lg sm:text-xl leading-8 max-w-[40rem] m-0"
+              See live
+            </a>
+            <a
+              href="https://github.com/lobu-ai/owletto"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-medium"
               style={{ color: "var(--color-page-text-muted)" }}
             >
-              Owletto is Lobu&apos;s default memory system. It gives agents a
-              typed graph, live connectors, scheduled analysis, and managed
-              OAuth instead of a vector dump or short-lived chat history.
-            </p>
-            <div class="flex flex-wrap gap-3 mt-8">
-              <a
-                href="https://owletto.com"
-                target="_blank"
-                rel="noopener noreferrer"
-                class="inline-flex items-center rounded-xl px-4 py-2.5 text-sm font-medium border transition-transform hover:-translate-y-0.5"
-                style={{
-                  color: "var(--color-page-text)",
-                  backgroundColor: "rgba(255,255,255,0.04)",
-                  borderColor: "var(--color-page-border-active)",
-                }}
-              >
-                See live
-              </a>
-              <a
-                href="https://github.com/lobu-ai/owletto"
-                target="_blank"
-                rel="noopener noreferrer"
-                class="inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-medium"
-                style={{ color: "var(--color-page-text-muted)" }}
-              >
-                <GitHubIcon />
-                See GitHub
-              </a>
-            </div>
+              <GitHubIcon />
+              See GitHub
+            </a>
           </div>
+        </div>
+
+        {/* Diagram */}
+        <div class="max-w-[42rem] mx-auto mb-4">
           <DiagramPanel />
         </div>
 

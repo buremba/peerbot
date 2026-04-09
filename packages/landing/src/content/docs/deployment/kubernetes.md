@@ -38,6 +38,12 @@ Use Kubernetes mode when you need:
 - Cluster scheduling and autoscaling
 - Production operations with Helm-based deployment
 
-## Deployment Path
+## Deployment
 
-Install with Helm chart and configure secrets via Sealed Secrets for production environments.
+The Helm chart is published as an OCI artifact to GitHub Container Registry:
+
+```bash
+helm install lobu oci://ghcr.io/lobu-ai/charts/lobu
+```
+
+The chart uses `ghcr.io/lobu-ai/lobu-gateway` and `ghcr.io/lobu-ai/lobu-worker-base` images. Configure secrets via Sealed Secrets or your preferred secrets manager.

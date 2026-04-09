@@ -7,10 +7,26 @@ sidebar:
 
 Docker mode is the easiest way to run Lobu on a single machine.
 
+## Docker images
+
+Pre-built images are published to GitHub Container Registry on every push to `main`:
+
+| Image | Description |
+|-------|-------------|
+| `ghcr.io/lobu-ai/lobu-gateway` | Gateway server |
+| `ghcr.io/lobu-ai/lobu-worker-base` | Worker base image |
+
+```bash
+docker pull ghcr.io/lobu-ai/lobu-gateway:latest
+docker pull ghcr.io/lobu-ai/lobu-worker-base:latest
+```
+
+Tags follow the pattern `latest`, `<version>`, and `main-<sha>`.
+
 ## How It Works
 
 1. `docker compose` starts gateway + Redis.
-2. Gateway creates per-session worker containers on demand.
+2. Gateway creates per-session worker containers on demand using the worker image.
 3. Each worker gets an isolated workspace directory (for example `./workspaces/{threadId}/`).
 4. Worker network access goes through the gateway proxy (`HTTP_PROXY=http://gateway:8118`).
 

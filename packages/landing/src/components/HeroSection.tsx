@@ -24,15 +24,15 @@ export function HeroSection() {
           class="text-4xl sm:text-5xl font-bold tracking-tight leading-[1.1] mb-5"
           style={{ color: "var(--color-page-text)" }}
         >
-          Add{" "}
+          Your{" "}
           <span
             style={{
               color: "var(--color-tg-accent)",
             }}
           >
-            autonomous agents
-          </span>{" "}
-          for your organization
+            AI team
+          </span>
+          , running in your infrastructure
         </h1>
         <p
           class="text-lg mx-auto mb-8 leading-relaxed"

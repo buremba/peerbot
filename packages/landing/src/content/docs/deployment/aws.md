@@ -96,12 +96,19 @@ EKS is the recommended way to run Lobu in production on AWS. The Helm chart work
 
 ### Deploy to EKS
 
+The Helm chart and Docker images are published to GitHub Container Registry:
+
 ```bash
-# Add the Lobu Helm repo and install
-helm install lobu ./charts/lobu \
-  --set gateway.image.tag=latest \
-  --set redis.enabled=true
+# Pull the Helm chart
+helm pull oci://ghcr.io/lobu-ai/charts/lobu
+
+# Install
+helm install lobu oci://ghcr.io/lobu-ai/charts/lobu \
+  --set gateway.image.repository=ghcr.io/lobu-ai/lobu-gateway \
+  --set gateway.image.tag=latest
 ```
+
+The chart pulls `ghcr.io/lobu-ai/lobu-gateway` and `ghcr.io/lobu-ai/lobu-worker-base` by default.
 
 ### EKS-specific considerations
 
@@ -150,11 +157,12 @@ In embedded mode, each worker writes to a local `workspaces/{agentId}` directory
 
 **ECS (Fargate or EC2)**:
 
-Add an EFS or S3 Files mount point to your task definition:
+Use the published gateway image (`ghcr.io/lobu-ai/lobu-gateway`) in your task definition, and add an EFS or S3 Files mount point for persistent workspaces:
 
 ```json
 {
   "containerDefinitions": [{
+    "image": "ghcr.io/lobu-ai/lobu-gateway:latest",
     "mountPoints": [{
       "sourceVolume": "agent-workspaces",
       "containerPath": "/app/workspaces"

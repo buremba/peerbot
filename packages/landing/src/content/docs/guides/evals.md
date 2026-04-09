@@ -194,6 +194,7 @@ When a rubric is present, its score is weighted 50% alongside assertion scores (
 | `--trials <n>` | Override trial count for all evals |
 | `--ci` | CI mode: JSON output, exit code 1 on any failure |
 | `--output <file>` | Write results to a JSON file |
+| `--list` | List available evals without running them |
 
 ## Results and reports
 

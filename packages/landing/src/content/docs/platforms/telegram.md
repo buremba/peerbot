@@ -3,7 +3,7 @@ title: Telegram
 description: Telegram integration capabilities for Lobu agents.
 ---
 
-Lobu's Telegram adapter uses Grammy and supports bot flows plus Mini App-secured experiences.
+Lobu connects to Telegram through the [Chat SDK](https://github.com/vercel/chat) Telegram adapter (`@chat-adapter/telegram`), using the Telegram Bot API directly.
 
 ## Setup
 
@@ -14,10 +14,9 @@ Lobu's Telegram adapter uses Grammy and supports bot flows plus Mini App-secured
 
 ## Features
 
-- **Grammy-based bot runtime** with long-polling or webhook handling.
+- **Long-polling or webhook handling** for receiving messages.
 - **Inline keyboard interactions** for structured choices and approvals.
-- **Telegram Mini App support** with signed `initData` validation.
-- **Platform-scoped settings links** that can open Telegram Web App context.
+- **Platform-scoped settings links** for authentication and configuration flows.
 - **Thread/context routing** across DMs and group chats.
 - **File handling** for documents and media attached in Telegram messages.
 
@@ -25,4 +24,3 @@ Lobu's Telegram adapter uses Grammy and supports bot flows plus Mini App-secured
 
 - Personal AI assistant in Telegram DMs.
 - Group copilots with mention-based interaction patterns.
-- Mini App assisted settings and authentication flows.

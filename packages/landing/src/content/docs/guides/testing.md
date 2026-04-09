@@ -177,6 +177,7 @@ For automated quality checks, use the `eval` command:
 npx @lobu/cli eval                           # run all evals
 npx @lobu/cli eval basic-qa                  # run a specific eval
 npx @lobu/cli eval --model claude/sonnet     # eval with a specific model
+npx @lobu/cli eval --list                       # list available evals
 npx @lobu/cli eval --ci --output results.json  # CI mode
 ```
 

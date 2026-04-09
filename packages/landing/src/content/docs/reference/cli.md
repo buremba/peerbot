@@ -88,6 +88,7 @@ npx @lobu/cli eval --ci --output results.json  # CI mode with JSON output
 | `--trials <n>` | Override trial count |
 | `--ci` | CI mode: JSON output, non-zero exit on failure |
 | `--output <file>` | Write results to JSON file |
+| `--list` | List available evals without running them |
 
 ---
 

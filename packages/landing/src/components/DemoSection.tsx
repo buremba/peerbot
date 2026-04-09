@@ -63,7 +63,8 @@ const initLines: TermLine[] = [
     text: "? Memory?",
     color: "#c9cdd4",
     links: [
-      { label: "Filesystem", href: "https://owletto.com", selected: true },
+      { label: "Filesystem", href: "#", selected: true },
+      { label: "Owletto", href: "/memory", selected: false },
     ],
   },
   { text: "", color: "" },

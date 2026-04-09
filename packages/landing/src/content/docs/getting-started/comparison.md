@@ -13,7 +13,7 @@ This page compares Lobu against the alternatives you'd evaluate when deploying a
 |---|---|---|---|---|
 | **What it is** | Self-hosted multi-tenant gateway | Single-user agent runtime | Hosted agent deployment (LangSmith) | Hosted managed agents |
 | **Multi-tenant** | Per-user/channel isolation | Single user | Per-thread sandbox | Per-conversation |
-| **Platforms** | Slack, Telegram, WhatsApp, Discord, Teams, REST API | CLI and API | API endpoints (MCP, A2A, Agent Protocol) | API |
+| **Platforms** | Slack, Telegram, WhatsApp, Discord, Teams, Google Chat, REST API | CLI and API | API endpoints (MCP, A2A, Agent Protocol) | API |
 | **Embeddable** | Mount inside Next.js, Express, Hono, Fastify | No | No | No |
 | **Self-hosted** | Docker, Kubernetes | Single process | LangSmith hosted (self-host option) | Cloud only |
 | **Model support** | Any provider via config | Any provider | Any LangChain-compatible provider | Anthropic only |
@@ -117,7 +117,7 @@ OpenClaw is a powerful runtime (~800k lines of code), but it was designed as a *
 | Capability | Lobu | OpenClaw |
 |---|---|---|
 | Architecture | Multi-tenant gateway + isolated workers | Single-tenant, single-user |
-| Platform delivery | Slack, Telegram, WhatsApp, Discord, Teams, REST API | CLI and API |
+| Platform delivery | Slack, Telegram, WhatsApp, Discord, Teams, Google Chat, REST API | CLI and API |
 | Worker isolation | Sandboxed containers, no direct internet | Runs on host |
 | Secret handling | Gateway proxy injects credentials | Direct env vars |
 | Egress control | Domain allowlists via HTTP proxy | Host network |
@@ -138,7 +138,7 @@ Inside each Lobu worker, the full OpenClaw runtime runs untouched. Lobu rewrites
 |---|---|---|
 | Hosting | Self-hosted (you own the infra) | Hosted on LangSmith |
 | Multi-tenant | Per-user sandboxed workers | Per-thread sandbox |
-| Platform delivery | Native Slack/Telegram/WhatsApp/Discord/Teams | API endpoints only |
+| Platform delivery | Native Slack/Telegram/WhatsApp/Discord/Teams/Google Chat | API endpoints only |
 | Embeddable | Yes — mount in Node.js frameworks | No |
 | Network isolation | Gateway-mediated domain filtering | Sandbox-level |
 | Protocols | MCP | MCP, A2A, Agent Protocol |
@@ -159,7 +159,7 @@ Claude Managed Agents is Anthropic's hosted agent platform.
 | Model support | Any provider | Anthropic only |
 | Self-hosted | Yes | Cloud only |
 | Open source | Yes | Proprietary |
-| Platform delivery | Slack, Telegram, WhatsApp, Discord, Teams | API |
+| Platform delivery | Slack, Telegram, WhatsApp, Discord, Teams, Google Chat | API |
 | Embeddable | Yes | No |
 | Network isolation | Domain-filtered egress | Platform-managed |
 | Evals | Built-in | Not included |

@@ -11,7 +11,7 @@ Lobu connects to Discord through the [Chat SDK](https://github.com/vercel/chat) 
 2. Under **Bot**, create a bot and copy the **bot token**.
 3. Copy the **Application ID** and **Public Key** from the General Information page.
 4. Under **OAuth2 → URL Generator**, select the `bot` scope with `Send Messages`, `Read Message History`, and `Use Slash Commands` permissions. Use the generated URL to invite the bot to your server.
-5. Add a connection in Lobu via the connections API or admin page:
+5. Add a connection in Lobu via the admin page or connections API:
 
 ```bash
 curl -X POST https://your-gateway/api/v1/connections \
@@ -27,14 +27,6 @@ curl -X POST https://your-gateway/api/v1/connections \
       "publicKey": "..."
     }
   }'
-```
-
-Or set environment variables and the adapter picks them up automatically:
-
-```
-DISCORD_BOT_TOKEN=...
-DISCORD_APPLICATION_ID=...
-DISCORD_PUBLIC_KEY=...
 ```
 
 ## Configuration

@@ -113,7 +113,7 @@ Each entry connects the agent to a messaging platform.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `type` | string | yes | Platform type: `telegram`, `slack`, `discord`, `whatsapp`, `teams`, `google-chat` |
+| `type` | string | yes | Platform type: `telegram`, `slack`, `discord`, `whatsapp`, `teams`, `gchat` |
 | `config` | table | yes | Platform-specific configuration (see below) |
 
 #### Connection config by platform
@@ -135,6 +135,8 @@ signingSecret = "$SLACK_SIGNING_SECRET"
 ```toml
 [agents.x.connections.config]
 botToken = "$DISCORD_BOT_TOKEN"
+applicationId = "$DISCORD_APPLICATION_ID"
+publicKey = "$DISCORD_PUBLIC_KEY"
 ```
 
 **WhatsApp** (Cloud API)
@@ -142,7 +144,8 @@ botToken = "$DISCORD_BOT_TOKEN"
 [agents.x.connections.config]
 accessToken = "$WHATSAPP_ACCESS_TOKEN"
 phoneNumberId = "$WHATSAPP_PHONE_NUMBER_ID"
-webhookVerifyToken = "$WHATSAPP_WEBHOOK_VERIFY_TOKEN"
+verifyToken = "$WHATSAPP_WEBHOOK_VERIFY_TOKEN"
+appSecret = "$WHATSAPP_APP_SECRET"
 ```
 
 **Teams**
@@ -150,12 +153,14 @@ webhookVerifyToken = "$WHATSAPP_WEBHOOK_VERIFY_TOKEN"
 [agents.x.connections.config]
 appId = "$TEAMS_APP_ID"
 appPassword = "$TEAMS_APP_PASSWORD"
+appTenantId = "$TEAMS_APP_TENANT_ID"
+appType = "MultiTenant"
 ```
 
 **Google Chat**
 ```toml
 [agents.x.connections.config]
-serviceAccountKey = "$GOOGLE_CHAT_SERVICE_ACCOUNT_KEY"
+credentials = "$GOOGLE_CHAT_CREDENTIALS"
 ```
 
 ### `[agents.<id>.skills]`

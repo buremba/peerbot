@@ -303,72 +303,74 @@ class MessageHandlerBridge {
       "lobu.connection_id": this.connection.id,
     });
 
-    // Check if agent has any provider credentials before enqueuing
-    if (!(await hasConfiguredProvider(agentId, agentSettingsStore))) {
-      rootSpan?.end();
-      await thread.post(
-        "No AI provider is configured yet. Provider setup is not available in the end-user chat flow yet. Ask an admin to connect a provider for the base agent."
-      );
-      return;
-    }
-
-    const agentOptions = await resolveAgentOptions(
-      agentId,
-      {},
-      agentSettingsStore
-    );
-
-    const payload = buildMessagePayload({
-      platform,
-      userId,
-      botId: platform,
-      conversationId: isGroup ? messageId : channelId,
-      teamId: isGroup ? channelId : platform,
-      agentId,
-      messageId,
-      messageText,
-      channelId,
-      platformMetadata: {
-        traceId,
-        traceparent: traceparent || undefined,
-        agentId,
-        chatId: channelId,
-        senderId: userId,
-        senderUsername: message.author?.userName,
-        senderDisplayName: message.author?.fullName,
-        isGroup,
-        connectionId: this.connection.id,
-        responseChannel: channelId,
-        responseId: messageId,
-        responseThreadId: thread.id,
-        conversationHistory:
-          conversationHistory.length > 0 ? conversationHistory : undefined,
-        ...(sessionReset && { sessionReset: true }),
-      },
-      agentOptions,
-    });
-
-    const queueProducer = this.services.getQueueProducer();
-    await queueProducer.enqueueMessage(payload);
-    rootSpan?.end();
-    void flushTracing();
-
-    logger.info(
-      {
-        traceId,
-        traceparent,
-        messageId,
-        agentId,
-        connectionId: this.connection.id,
-      },
-      "Message enqueued via Chat SDK bridge"
-    );
-
-    // Show typing indicator
     try {
-      await thread.startTyping?.("Processing...");
-    } catch {
-      // best effort
+      // Check if agent has any provider credentials before enqueuing
+      if (!(await hasConfiguredProvider(agentId, agentSettingsStore))) {
+        await thread.post(
+          "No AI provider is configured yet. Provider setup is not available in the end-user chat flow yet. Ask an admin to connect a provider for the base agent."
+        );
+        return;
+      }
+
+      const agentOptions = await resolveAgentOptions(
+        agentId,
+        {},
+        agentSettingsStore
+      );
+
+      const payload = buildMessagePayload({
+        platform,
+        userId,
+        botId: platform,
+        conversationId: isGroup ? messageId : channelId,
+        teamId: isGroup ? channelId : platform,
+        agentId,
+        messageId,
+        messageText,
+        channelId,
+        platformMetadata: {
+          traceId,
+          traceparent: traceparent || undefined,
+          agentId,
+          chatId: channelId,
+          senderId: userId,
+          senderUsername: message.author?.userName,
+          senderDisplayName: message.author?.fullName,
+          isGroup,
+          connectionId: this.connection.id,
+          responseChannel: channelId,
+          responseId: messageId,
+          responseThreadId: thread.id,
+          conversationHistory:
+            conversationHistory.length > 0 ? conversationHistory : undefined,
+          ...(sessionReset && { sessionReset: true }),
+        },
+        agentOptions,
+      });
+
+      const queueProducer = this.services.getQueueProducer();
+      await queueProducer.enqueueMessage(payload);
+
+      logger.info(
+        {
+          traceId,
+          traceparent,
+          messageId,
+          agentId,
+          connectionId: this.connection.id,
+        },
+        "Message enqueued via Chat SDK bridge"
+      );
+
+      // Show typing indicator
+      try {
+        await thread.startTyping?.("Processing...");
+      } catch {
+        // best effort
+      }
+    } finally {
+      rootSpan?.end();
+      void flushTracing();
     }
   }
 

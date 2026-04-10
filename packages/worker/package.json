@@ -35,7 +35,7 @@
   },
   "dependencies": {
     "@hono/node-server": "^1.19.9",
-    "@lobu/core": "^3.0.5",
+    "@lobu/core": "workspace:*",
     "@lobu/owletto-openclaw": "^3.0.2",
     "@mariozechner/pi-agent-core": "^0.51.6",
     "@mariozechner/pi-ai": "^0.51.6",

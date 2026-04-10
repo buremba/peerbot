@@ -2,8 +2,8 @@ apiVersion: v2
 name: lobu
 description: Lobu - Kubernetes deployment for thread-based AI conversations
 type: application
-version: 3.0.19
-appVersion: "3.0.19"
+version: 3.1.0
+appVersion: 3.1.0
 keywords:
   - claude
   - slack
@@ -20,9 +20,9 @@ maintainers:
 annotations:
   category: Communication
   artifacthub.io/license: MIT
-  artifacthub.io/operator: "false"
+  artifacthub.io/operator: 'false'
   artifacthub.io/operatorCapabilities: Basic Install
-  artifacthub.io/containsSecurityUpdates: "false"
+  artifacthub.io/containsSecurityUpdates: 'false'
   artifacthub.io/images: |
     - name: lobu-dispatcher
       image: ghcr.io/lobu-ai/lobu-gateway:latest
@@ -39,13 +39,11 @@ annotations:
     - kind: added
       description: Kubernetes deployment with persistent volumes
 dependencies:
-  # Redis for message queues and state management
   - name: redis
-    version: "24.1.8"
+    version: 24.1.8
     repository: oci://registry-1.docker.io/bitnamicharts
     condition: redis.enabled
-  # Grafana Tempo for distributed tracing
   - name: tempo
-    version: "~1.x"
+    version: ~1.x
     repository: https://grafana.github.io/helm-charts
     condition: tempo.enabled

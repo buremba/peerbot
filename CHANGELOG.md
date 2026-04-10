@@ -1,5 +1,19 @@
 # Changelog
 
+## [3.1.0](https://github.com/lobu-ai/lobu/compare/v3.0.19...v3.1.0) (2026-04-10)
+
+
+### Features
+
+* **gateway:** support leading-dot domain patterns in GrantStore ([f2a1006](https://github.com/lobu-ai/lobu/commit/f2a1006e4a9769c90bf5521332c87a8c0ed156ff))
+* **mcp-auth:** surface login prompts as platform link buttons ([9ca5449](https://github.com/lobu-ai/lobu/commit/9ca5449a48321db1e6a81f3ab1172b8768f272fc))
+
+
+### Bug Fixes
+
+* **ci:** release-please triggers publish-packages via gh workflow run ([87b14cb](https://github.com/lobu-ai/lobu/commit/87b14cbaea46df47be6e5a71d7fc498523c23995))
+* **ci:** use yaml updater for Chart.yaml version + appVersion ([58819bc](https://github.com/lobu-ai/lobu/commit/58819bc604ed04448a10e8a67535c8b1ff470911))
+
 ## [2.7.0](https://github.com/lobu-ai/lobu/compare/v2.6.1...v2.7.0) (2026-03-18)
 
 

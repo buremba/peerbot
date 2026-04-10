@@ -1,5 +1,54 @@
 # Changelog
 
+## [2.8.0](https://github.com/lobu-ai/lobu/compare/v2.7.0...v2.8.0) (2026-04-10)
+
+
+### Features
+
+* add Bedrock provider and AWS deployment docs ([#171](https://github.com/lobu-ai/lobu/issues/171)) ([9210a36](https://github.com/lobu-ai/lobu/commit/9210a362f8bbc85ac37ded05e6fb95173d1f12a0))
+* **cli,landing:** add connections CLI + themeable chat component ([506b91c](https://github.com/lobu-ai/lobu/commit/506b91c5f4136c3867b509b4c2c52529d14ab778))
+* **cli:** add lobu eval command with model comparison and CI workflow ([910da9b](https://github.com/lobu-ai/lobu/commit/910da9bd32fbc4f38a9479f3d5b070fe6def52b2))
+* **cli:** add WhatsApp, Teams, and Google Chat to init platform choices ([d140b3b](https://github.com/lobu-ai/lobu/commit/d140b3be6f67958c843dfe29df74976897576fef))
+* **gateway:** embedded runtime credential resolver + secret-backed device auth ([8b3053a](https://github.com/lobu-ai/lobu/commit/8b3053a80c5aeb3fa05bcf1e3c379a691103c882))
+* **gateway:** proxy-driven MCP tool approval with execute-on-approve ([cde529a](https://github.com/lobu-ai/lobu/commit/cde529ac3433820b40be2639412d89b2a3673314))
+* **observability:** vendor-neutral OTEL tracing + opt-in Sentry ([#172](https://github.com/lobu-ai/lobu/issues/172)) ([f3345d3](https://github.com/lobu-ai/lobu/commit/f3345d364cfa28c9cc8f9c801041ccb1fd492b5c))
+* **otel:** switch from OTLP HTTP to gRPC exporter (port 4317) ([60178db](https://github.com/lobu-ai/lobu/commit/60178db403596efadcd3124e367b06287f7696ba))
+* **settings:** add generic OpenAI provider ([fcae8c3](https://github.com/lobu-ai/lobu/commit/fcae8c30497d52263787930588763b64934160ae))
+* **worker:** generic MCP login tools + bash hardening ([5e167a4](https://github.com/lobu-ai/lobu/commit/5e167a41bf87f71704c7f936759624a26e959e85))
+
+
+### Bug Fixes
+
+* **ci:** remove invalid secrets check from eval workflow job condition ([1889cc4](https://github.com/lobu-ai/lobu/commit/1889cc47c6b10c43d78a2a91e92f9ff5924c1559))
+* **ci:** repair broken npm publish workflows ([6f6ea08](https://github.com/lobu-ai/lobu/commit/6f6ea08ec2f2d15e10933c1ecd993fe205dad55f))
+* **ci:** restore release config for package releases ([6c7190c](https://github.com/lobu-ai/lobu/commit/6c7190ceff17b4b113e9036b5663c40ec01fe19f))
+* **ci:** restore release manifest for package releases ([892cdc5](https://github.com/lobu-ai/lobu/commit/892cdc5d3fa91db47bd06e44ad1e9507a57f0f58))
+* **ci:** upgrade npm to latest for OIDC trusted publishing ([a85bbb2](https://github.com/lobu-ai/lobu/commit/a85bbb280ea814c8ab6c8c2d576b18cd14817ff6))
+* **ci:** use Node 24 for bundled npm 11 (OIDC trusted publishing) ([3697004](https://github.com/lobu-ai/lobu/commit/3697004f3cf00a41e0dcbdaae2f7e539e9a7d00b))
+* **ci:** use NODE_AUTH_TOKEN for npm auth instead of manual .npmrc ([606a82b](https://github.com/lobu-ai/lobu/commit/606a82ba9d7879a0a028fb63d1ab09e7e3f6326c))
+* **ci:** use OIDC trusted publishing, drop stale NPM_TOKEN path ([e8f5ca0](https://github.com/lobu-ai/lobu/commit/e8f5ca08c70be3f0afc2b29c3f5ac3b78e0c8669))
+* **cli:** auth reliability — server-side logout, --force login, stale cred cleanup, concurrent refresh ([b0ee7a3](https://github.com/lobu-ai/lobu/commit/b0ee7a3cf89be660254febed38481f26f7a95eec))
+* **cli:** hide hidden skills from 'lobu skills list' ([abbf99e](https://github.com/lobu-ai/lobu/commit/abbf99e93a6a60e2828e6222324835b2faac403e))
+* **cli:** restore system skills and add CLI to publish workflow ([1fc3687](https://github.com/lobu-ai/lobu/commit/1fc3687985505bf6dd9133b94f162bdd568947c4))
+* **docs:** correct outdated references across documentation ([b78fa65](https://github.com/lobu-ai/lobu/commit/b78fa65611ca556fb672b52a950c03e73c741cab))
+* **docs:** fix Teams Chat SDK link and update CLI generated files list ([737a3d7](https://github.com/lobu-ai/lobu/commit/737a3d747aa9cc62f9d8334743c1a22167357159))
+* **eval:** continue running remaining evals after individual failures ([8187b7f](https://github.com/lobu-ai/lobu/commit/8187b7f3f9422b3ec919878f64034be40e70cc17))
+* **eval:** create data dir for Redis persistence in CI ([3f7f598](https://github.com/lobu-ai/lobu/commit/3f7f598ea25aa3a03a2da2465ebe1bfcb27e9bd7))
+* **eval:** disable Redis RDB persistence in CI to avoid MISCONF errors ([c131bbb](https://github.com/lobu-ai/lobu/commit/c131bbb4eeaa8c628d9528963ecf9fad66741752))
+* **eval:** don't override provider/model unless --model flag is set ([8b8bd4b](https://github.com/lobu-ai/lobu/commit/8b8bd4b1c02d6c630da41c900973604c69b32487))
+* **eval:** don't pass provider/model to session creation, use agent config ([49f3b4d](https://github.com/lobu-ai/lobu/commit/49f3b4df506751b5b1a62ede913e5abc9c84f761))
+* **eval:** improve judge prompts with prose fallback, CI runs smoke only ([6876107](https://github.com/lobu-ai/lobu/commit/6876107f5620341056bc821accaad33d14d15333))
+* **eval:** pass Z_AI_API_KEY to gateway container in docker-compose ([ad890e3](https://github.com/lobu-ai/lobu/commit/ad890e35add1fee8285b241415b53d1984a2302d))
+* **gateway:** preserve base path when mounted as sub-app ([edc0be5](https://github.com/lobu-ai/lobu/commit/edc0be54a5a1d56d771a0b70541d3752306779f9))
+* **gateway:** publish embedded runtime packages ([148e7dc](https://github.com/lobu-ai/lobu/commit/148e7dcfb47b8a29c5e7f14926a55a3b5754e09b))
+* **landing:** bold connector label inline instead of separate heading ([3ac690e](https://github.com/lobu-ai/lobu/commit/3ac690e5f803408fa8ee4a91ebd87f9ecdf07138))
+* **landing:** inline connector labels to balance recall/auth column heights ([6125016](https://github.com/lobu-ai/lobu/commit/61250162d3a4b28fccfcb273282e39afbc000a69))
+* **packages:** add repository.url to all published package.json files ([c3f14c0](https://github.com/lobu-ai/lobu/commit/c3f14c04649c690ee6d5ee02a69e94f0f55de279))
+* **release:** sync helm chart to 3.0.5 ([92c5142](https://github.com/lobu-ai/lobu/commit/92c51422bc96f3267f89d607fafa47237b2709e8))
+* update README and landing page (Baileys→Cloud API, Anthropic→OpenRouter, bare lobu→npx) ([45ee64f](https://github.com/lobu-ai/lobu/commit/45ee64f1ced1ee883ea2db6b48c2255dc72ab229))
+* use npx @lobu/cli consistently across CLI output, docs, and landing page ([ca1133c](https://github.com/lobu-ai/lobu/commit/ca1133cde710605a017a79c7dd161cf6dca11d33))
+* **worker:** use string concatenation for session-context URL ([09d474e](https://github.com/lobu-ai/lobu/commit/09d474e6e2e5c8ec48505196803a0d7c8beb055d))
+
 ## [2.7.0](https://github.com/lobu-ai/lobu/compare/v2.6.1...v2.7.0) (2026-03-18)
 
 

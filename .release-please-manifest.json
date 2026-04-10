@@ -1,5 +1,5 @@
 {
-  ".": "3.0.7",
+  ".": "2.8.0",
   "packages/cli": "3.0.7",
   "packages/core": "3.0.7",
   "packages/gateway": "3.0.7",

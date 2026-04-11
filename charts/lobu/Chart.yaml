@@ -3,7 +3,7 @@ name: lobu
 description: Lobu - Kubernetes deployment for thread-based AI conversations
 type: application
 version: 3.1.0
-appVersion: 3.1.0
+appVersion: "3.1.0"
 keywords:
   - claude
   - slack

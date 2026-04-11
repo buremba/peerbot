@@ -9,7 +9,6 @@
   "prerelease": false,
   "separate-pull-requests": false,
   "changelog-path": "CHANGELOG.md",
-  "pull-request-title-pattern": "chore(release): ${version}",
   "packages": {
     ".": {
       "package-name": "@lobu/gateway",
@@ -39,11 +38,6 @@
           "type": "yaml",
           "path": "charts/lobu/Chart.yaml",
           "jsonpath": "$.version"
-        },
-        {
-          "type": "yaml",
-          "path": "charts/lobu/Chart.yaml",
-          "jsonpath": "$.appVersion"
         }
       ]
     }

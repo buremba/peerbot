@@ -157,6 +157,26 @@ workspace was added without updating the script. Open
 `scripts/publish-packages.mjs`, add the new package to the `PACKAGES`
 array or allow the ref.
 
+## Chart.yaml `appVersion` is updated manually
+
+release-please bumps `charts/lobu/Chart.yaml` `version:` in the
+release PR automatically via its YAML updater, but does **not**
+bump `appVersion:`. The YAML updater strips string quotes from any
+value it touches, and Helm convention (and artifacthub.io) wants
+`appVersion` quoted (`appVersion: "3.1.0"`), so it's left out of
+the automation.
+
+When you review the release PR, update `appVersion` manually to
+match the new `version`:
+
+```yaml
+version: 3.1.0
+appVersion: "3.1.0"
+```
+
+Amend the PR branch with a follow-up commit or edit the file in the
+GitHub UI before merging.
+
 ## Adding release-please to a new package
 
 If you add a new `packages/*` workspace that should be published, two

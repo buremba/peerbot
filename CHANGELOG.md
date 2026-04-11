@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.1.1](https://github.com/lobu-ai/lobu/compare/v3.1.0...v3.1.1) (2026-04-11)
+
+
+### Bug Fixes
+
+* **ci:** reconcile release-please config + Chart.yaml appVersion ([#174](https://github.com/lobu-ai/lobu/issues/174)) ([c6ea7c8](https://github.com/lobu-ai/lobu/commit/c6ea7c8368f312f2deb10deb5e723ef76e23ece6))
+
 ## [3.1.0](https://github.com/lobu-ai/lobu/compare/v3.0.19...v3.1.0) (2026-04-10)
 
 

@@ -22,6 +22,7 @@ ENV NIX_PATH="nixpkgs=/home/nixuser/.nix-defexpr/channels/nixpkgs"
 WORKDIR /app
 
 # Set up workspace for gateway + core + worker (worker needed for embedded deployment mode)
+COPY bun.lock ./
 COPY tsconfig.json ./
 COPY package.json ./
 COPY patches/ ./patches/

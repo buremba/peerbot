@@ -35,11 +35,11 @@ Prefer editing these files directly instead of burying behavior in ad hoc code.
 
 ## Workflow
 
-1. Keep the project runnable. Start or reuse the stack with `npx @lobu/cli run -d`.
+1. Keep the project runnable. Start or reuse the stack with `npx @lobu/cli@latest run -d`.
 2. Make the smallest prompt, config, skill, or eval change that solves the task.
-3. Run `npx @lobu/cli validate` after changing `lobu.toml` or skill definitions.
-4. Test behavior with `npx @lobu/cli chat "..."` or the project's testing instructions.
-5. Run `npx @lobu/cli eval` when the behavior should be captured as a regression test.
+3. Run `npx @lobu/cli@latest validate` after changing `lobu.toml` or skill definitions.
+4. Test behavior with `npx @lobu/cli@latest chat "..."` or the project's testing instructions.
+5. Run `npx @lobu/cli@latest eval` when the behavior should be captured as a regression test.
 
 If the repository already provides project-specific test scripts, use those.
 
@@ -54,7 +54,7 @@ If the repository already provides project-specific test scripts, use those.
 ## Useful Suggestions
 
 - Add or reorder providers in `lobu.toml`
-- Enable built-in skills with `npx @lobu/cli skills list`, `search`, or `add`
+- Enable built-in skills with `npx @lobu/cli@latest skills list`, `search`, or `add`
 - Add a custom MCP server under `[agents.<id>.skills.mcp.*]`
 - Add a shared skill under `skills/` for repeated workflows
 - Add evals for risky behaviors and policy constraints

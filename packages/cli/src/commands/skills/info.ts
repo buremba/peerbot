@@ -7,7 +7,9 @@ export async function skillsInfoCommand(skillId: string): Promise<void> {
   if (!skill) {
     console.log(chalk.red(`\n  Skill "${skillId}" not found.`));
     console.log(
-      chalk.dim("  Run `npx @lobu/cli skills list` to see available skills.\n")
+      chalk.dim(
+        "  Run `npx @lobu/cli@latest skills list` to see available skills.\n"
+      )
     );
     return;
   }

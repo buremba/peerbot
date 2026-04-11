@@ -9,19 +9,19 @@ Evals are automated test cases that verify your agent behaves correctly. They li
 
 ```bash
 # Run all evals for the default agent
-npx @lobu/cli eval
+npx @lobu/cli@latest eval
 
 # Run a specific eval
-npx @lobu/cli eval ping
+npx @lobu/cli@latest eval ping
 
 # Run with a different model
-npx @lobu/cli eval --model anthropic/claude-sonnet-4
+npx @lobu/cli@latest eval --model anthropic/claude-sonnet-4
 
 # CI mode (JSON output, exit 1 on failure)
-npx @lobu/cli eval --ci --output results.json
+npx @lobu/cli@latest eval --ci --output results.json
 ```
 
-The gateway must be running (`npx @lobu/cli run`) before running evals.
+The gateway must be running (`npx @lobu/cli@latest run`) before running evals.
 
 ## Eval file format
 

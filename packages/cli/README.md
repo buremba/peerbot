@@ -5,7 +5,7 @@ CLI tool for initializing and managing Lobu projects.
 ## Quick Start
 
 ```bash
-npx @lobu/cli init my-bot
+npx @lobu/cli@latest init my-bot
 cd my-bot
 docker compose up -d
 ```

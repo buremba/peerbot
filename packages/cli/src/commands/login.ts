@@ -129,7 +129,7 @@ export async function loginCommand(options: {
     );
     console.log(
       chalk.dim(
-        "  Run `npx @lobu/cli logout` first, or use `--force` to re-authenticate.\n"
+        "  Run `npx @lobu/cli@latest logout` first, or use `--force` to re-authenticate.\n"
       )
     );
     return;
@@ -430,7 +430,9 @@ export async function loginCommand(options: {
     }
   }
 
-  spinner.fail("Login request expired. Run `npx @lobu/cli login` again.");
+  spinner.fail(
+    "Login request expired. Run `npx @lobu/cli@latest login` again."
+  );
   console.log();
 }
 

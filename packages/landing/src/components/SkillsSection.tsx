@@ -346,7 +346,7 @@ const editorFiles: EditorFile[] = [
 const AGENT_PROMPT =
   "Set up a new Lobu agent in this directory. Create lobu.toml, IDENTITY.md, SOUL.md, USER.md, and a skill in skills/ops-triage/SKILL.md with nix packages, a network allowlist, tool permissions, and an MCP server. Follow the Lobu skill conventions at https://lobu.ai/getting-started/skills/.";
 
-const INIT_COMMAND = "npx lobu init";
+const INIT_COMMAND = "npx @lobu/cli@latest init";
 
 function useCopy(value: string) {
   const [copied, setCopied] = useState(false);
@@ -577,7 +577,8 @@ function EditorPreview() {
               style={codeBlockStyle}
             >
               <code>
-                <span style={{ color: "#7aa2f7" }}>$</span> npx lobu run
+                <span style={{ color: "#7aa2f7" }}>$</span> npx @lobu/cli@latest
+                run
                 {"\n"}
                 <span style={{ color: "#9ece6a" }}>{">"}</span> reading
                 lobu.toml

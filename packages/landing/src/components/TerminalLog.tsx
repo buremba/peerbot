@@ -1,6 +1,6 @@
 export function TerminalLog({ fill }: { fill?: boolean }) {
   const lines: { text: string; color: string }[] = [
-    { text: "$ npx @lobu/cli run -d", color: "#4ade80" },
+    { text: "$ npx @lobu/cli@latest run -d", color: "#4ade80" },
     { text: "[gateway] listening on :8080", color: "#8f96a3" },
     { text: "[gateway] connected to Redis", color: "#8f96a3" },
     {
@@ -67,7 +67,7 @@ export function TerminalLog({ fill }: { fill?: boolean }) {
             class="px-2.5 py-1 rounded-md"
             style={{ backgroundColor: "#23262d", color: "#c9cdd4" }}
           >
-            npx @lobu/cli run
+            npx @lobu/cli@latest run
           </span>
         </div>
       </div>

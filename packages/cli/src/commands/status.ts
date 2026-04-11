@@ -45,7 +45,7 @@ export async function statusCommand(cwd: string): Promise<void> {
   } catch {
     console.log(chalk.yellow("\n  Gateway not reachable."));
     console.log(
-      chalk.dim("  Start with `npx @lobu/cli run` to run your agents.\n")
+      chalk.dim("  Start with `npx @lobu/cli@latest run` to run your agents.\n")
     );
     return;
   }

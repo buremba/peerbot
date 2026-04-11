@@ -13,7 +13,7 @@ type TermLine = {
 };
 
 const initLines: TermLine[] = [
-  { text: "$ npx lobu init landing-demo-agent", color: "#4ade80" },
+  { text: "$ npx @lobu/cli@latest init landing-demo-agent", color: "#4ade80" },
   { text: "", color: "" },
   { text: "🤖 Welcome to Lobu!", color: "#facc15" },
   { text: "", color: "" },
@@ -79,7 +79,7 @@ const initLines: TermLine[] = [
   { text: "", color: "" },
   { text: "Next steps:", color: "#facc15" },
   { text: "  cd landing-demo-agent", color: "#67e8f9" },
-  { text: "  npx @lobu/cli run -d", color: "#67e8f9" },
+  { text: "  npx @lobu/cli@latest run -d", color: "#67e8f9" },
 ];
 
 const agentPrompt = [
@@ -90,7 +90,7 @@ const agentPrompt = [
   "2. Help me shape the agent behavior by editing those files directly.",
   "3. Use Lobu skills when they make sense: https://lobu.ai/getting-started/skills/",
   "4. Suggest any provider, skill, or connection changes needed in lobu.toml.",
-  "5. Keep the project runnable with `npx @lobu/cli run -d`.",
+  "5. Keep the project runnable with `npx @lobu/cli@latest run -d`.",
   "",
   "Explain what you change and why.",
 ].join("\n");
@@ -114,11 +114,14 @@ const embedSnippet = [
 ].join("\n");
 
 const testEvalLines: TermLine[] = [
-  { text: '$ npx lobu chat "Hello, what can you do?"', color: "#4ade80" },
+  {
+    text: '$ npx @lobu/cli@latest chat "Hello, what can you do?"',
+    color: "#4ade80",
+  },
   { text: "I can help with code reviews, manage GitHub", color: "#c9cdd4" },
   { text: "issues, and answer questions about your...", color: "#c9cdd4" },
   { text: "", color: "" },
-  { text: "$ npx lobu eval", color: "#4ade80" },
+  { text: "$ npx @lobu/cli@latest eval", color: "#4ade80" },
   { text: "", color: "" },
   { text: "Running 3 evals (9 trials)...", color: "#8f96a3" },
   { text: "", color: "" },
@@ -132,7 +135,7 @@ const testEvalLines: TermLine[] = [
 
 const selfHostSnippet = [
   "$ cd landing-demo-agent",
-  "$ npx @lobu/cli run -d",
+  "$ npx @lobu/cli@latest run -d",
   "# iterate locally",
   "",
   "$ docker compose up -d",
@@ -424,7 +427,7 @@ export function DemoSection() {
               />
             </div>
             <TerminalWindow
-              label="npx lobu init landing-demo-agent"
+              label="npx @lobu/cli@latest init landing-demo-agent"
               lines={initLines}
             />
           </div>

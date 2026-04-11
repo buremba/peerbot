@@ -258,7 +258,7 @@ key = "sk-literal-value"        # used as-is
 ## Validation
 
 ```bash
-npx @lobu/cli validate
+npx @lobu/cli@latest validate
 ```
 
 Checks TOML syntax, schema conformance, skill IDs, and provider configuration. Returns exit code 1 on failure.

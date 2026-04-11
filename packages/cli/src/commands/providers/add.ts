@@ -17,7 +17,7 @@ export async function providersAddCommand(
     console.log(chalk.red(`\n  Provider "${providerId}" not found.`));
     console.log(
       chalk.dim(
-        "  Run `npx @lobu/cli providers list` to see available providers.\n"
+        "  Run `npx @lobu/cli@latest providers list` to see available providers.\n"
       )
     );
     return;
@@ -72,7 +72,7 @@ export async function providersAddCommand(
   if (!apiKey) {
     console.log(chalk.dim("\n  Set the API key:"));
     console.log(
-      chalk.cyan(`    npx @lobu/cli secrets set ${envVar} <your-key>`)
+      chalk.cyan(`    npx @lobu/cli@latest secrets set ${envVar} <your-key>`)
     );
   }
   console.log();

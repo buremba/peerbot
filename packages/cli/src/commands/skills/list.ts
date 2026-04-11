@@ -36,7 +36,7 @@ export async function skillsListCommand(): Promise<void> {
 
   console.log(
     chalk.dim(
-      "\n  Use `npx @lobu/cli skills info <id>` for details on a specific skill.\n"
+      "\n  Use `npx @lobu/cli@latest skills info <id>` for details on a specific skill.\n"
     )
   );
 }

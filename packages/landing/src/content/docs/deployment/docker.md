@@ -49,6 +49,6 @@ Use Docker mode when:
 
 ## Operational Notes
 
-- Start stack: `npx @lobu/cli run -d` or `docker compose up -d`
+- Start stack: `npx @lobu/cli@latest run -d` or `docker compose up -d`
 - Restart after `.env` changes
 - Session persistence is provided by mounted workspace directories

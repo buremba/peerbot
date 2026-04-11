@@ -44,7 +44,7 @@ export async function chatCommand(
   if (!authToken) {
     console.error(
       chalk.red(
-        "\n  Session expired or not logged in. Run `npx @lobu/cli login` or set ADMIN_PASSWORD.\n"
+        "\n  Session expired or not logged in. Run `npx @lobu/cli@latest login` or set ADMIN_PASSWORD.\n"
       )
     );
     process.exit(1);
@@ -201,7 +201,7 @@ async function sendViaApi(
     if (createRes.status === 401) {
       console.error(
         chalk.red(
-          "\n  Authentication required. Run `npx @lobu/cli login` or set ADMIN_PASSWORD.\n"
+          "\n  Authentication required. Run `npx @lobu/cli@latest login` or set ADMIN_PASSWORD.\n"
         )
       );
       process.exit(1);

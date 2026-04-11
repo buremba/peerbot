@@ -20,7 +20,7 @@ Project links:
 
 ```bash
 # Run without installing
-npx owletto <command>
+npx owletto@latest <command>
 
 # Or install globally
 npm install -g owletto
@@ -180,8 +180,8 @@ The point is not to store everything equally. The point is to structure what sho
 Starts a local Owletto runtime.
 
 ```bash
-npx owletto start
-npx owletto start --port 8787
+npx owletto@latest start
+npx owletto@latest start --port 8787
 ```
 
 Default behavior:
@@ -198,8 +198,8 @@ If `DATABASE_URL` is set, the CLI starts the server against external Postgres in
 Configures supported local agent clients to use an Owletto MCP endpoint.
 
 ```bash
-npx owletto init
-npx owletto init --url http://localhost:8787/mcp
+npx owletto@latest init
+npx owletto@latest init --url http://localhost:8787/mcp
 ```
 
 The init flow:
@@ -219,7 +219,7 @@ Use this after `owletto start` for local development, or point it at a hosted Ow
 Authenticates the CLI against an Owletto MCP server using OAuth.
 
 ```bash
-npx owletto login https://owletto.com/mcp
+npx owletto@latest login https://owletto.com/mcp
 ```
 
 By default, the CLI opens a browser and completes an authorization-code flow with a local callback server.
@@ -233,7 +233,7 @@ Useful flags:
 Example for a headless box:
 
 ```bash
-npx owletto login https://owletto.com/mcp --device
+npx owletto@latest login https://owletto.com/mcp --device
 ```
 
 ### `owletto token`
@@ -241,8 +241,8 @@ npx owletto login https://owletto.com/mcp --device
 Prints a usable access token from the saved session.
 
 ```bash
-npx owletto token
-npx owletto token --raw
+npx owletto@latest token
+npx owletto@latest token --raw
 ```
 
 This is mainly useful for integrations or plugin setups that need a token command.
@@ -252,7 +252,7 @@ This is mainly useful for integrations or plugin setups that need a token comman
 Checks that the saved session is valid and that the CLI can reach the MCP endpoint.
 
 ```bash
-npx owletto health
+npx owletto@latest health
 ```
 
 ## Organization Selection
@@ -260,8 +260,8 @@ npx owletto health
 Owletto sessions are organization-aware. After login, set the default org if needed:
 
 ```bash
-npx owletto org current
-npx owletto org set my-org
+npx owletto@latest org current
+npx owletto@latest org set my-org
 ```
 
 You can also override organization and server selection per command:
@@ -279,16 +279,16 @@ Lists tools when called without arguments, or executes a tool when given a tool 
 
 ```bash
 # List available tools
-npx owletto run
+npx owletto@latest run
 
 # Search memory
-npx owletto run search_knowledge '{"query":"Acme"}'
+npx owletto@latest run search_knowledge '{"query":"Acme"}'
 
 # Read saved content
-npx owletto run read_knowledge '{"query":"customer preferences"}'
+npx owletto@latest run read_knowledge '{"query":"customer preferences"}'
 
 # Save new knowledge
-npx owletto run save_knowledge '{"content":"Prefers weekly summaries","semantic_type":"preference","metadata":{}}'
+npx owletto@latest run save_knowledge '{"content":"Prefers weekly summaries","semantic_type":"preference","metadata":{}}'
 ```
 
 This is the most direct way to inspect or test Owletto memory behavior outside an agent runtime.
@@ -300,7 +300,7 @@ This is the most direct way to inspect or test Owletto memory behavior outside a
 Checks local prerequisites such as Node, Docker, and current server reachability.
 
 ```bash
-npx owletto doctor
+npx owletto@latest doctor
 ```
 
 ### `owletto browser-auth`

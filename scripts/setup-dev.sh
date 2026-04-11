@@ -12,7 +12,7 @@ make build-packages
 echo "Setup complete!"
 echo ""
 echo "If you haven't configured .env yet, run:"
-echo "  npx @lobu/cli"
+echo "  npx @lobu/cli@latest"
 echo ""
 echo "To start development:"
 echo "  redis-server &"

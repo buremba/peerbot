@@ -11,20 +11,20 @@ The fastest way to test. Sends a prompt and streams the response in your termina
 
 ```bash
 # Basic test
-npx @lobu/cli chat "Hello, what can you do?"
+npx @lobu/cli@latest chat "Hello, what can you do?"
 
 # Multi-turn conversation
-npx @lobu/cli chat "What's on my calendar?" --thread my-test
-npx @lobu/cli chat "Cancel the 3pm meeting" --thread my-test
+npx @lobu/cli@latest chat "What's on my calendar?" --thread my-test
+npx @lobu/cli@latest chat "Cancel the 3pm meeting" --thread my-test
 
 # Target a specific agent (if you have multiple in lobu.toml)
-npx @lobu/cli chat "Hello" --agent support
+npx @lobu/cli@latest chat "Hello" --agent support
 
 # Dry run (no history persisted)
-npx @lobu/cli chat "Test prompt" --dry-run
+npx @lobu/cli@latest chat "Test prompt" --dry-run
 
 # Force a fresh session
-npx @lobu/cli chat "Start over" --new
+npx @lobu/cli@latest chat "Start over" --new
 ```
 
 This uses **API mode** — the agent runs and responds directly to your terminal. No platform connection needed.
@@ -39,13 +39,13 @@ The `--user` flag routes your message through a platform connection:
 
 ```bash
 # Send as a Telegram user
-npx @lobu/cli chat "Hello" --user telegram:12345
+npx @lobu/cli@latest chat "Hello" --user telegram:12345
 
 # Send to a Slack channel
-npx @lobu/cli chat "Hello" --user slack:C0123ABCD
+npx @lobu/cli@latest chat "Hello" --user slack:C0123ABCD
 
 # Send to Discord
-npx @lobu/cli chat "Hello" --user discord:987654321
+npx @lobu/cli@latest chat "Hello" --user discord:987654321
 ```
 
 The response appears on the platform **and** streams to your terminal.
@@ -150,11 +150,11 @@ Use named contexts to test against staging or production:
 
 ```bash
 # Add a staging context
-npx @lobu/cli context add staging --api-url https://staging.example.com/api/v1
-npx @lobu/cli login -c staging
+npx @lobu/cli@latest context add staging --api-url https://staging.example.com/api/v1
+npx @lobu/cli@latest login -c staging
 
 # Chat with the staging agent
-npx @lobu/cli chat "Hello" -c staging
+npx @lobu/cli@latest chat "Hello" -c staging
 ```
 
 ## Resetting conversation state
@@ -174,11 +174,11 @@ docker compose -f docker/docker-compose.yml exec redis redis-cli DEL 'chat:histo
 For automated quality checks, use the `eval` command:
 
 ```bash
-npx @lobu/cli eval                           # run all evals
-npx @lobu/cli eval basic-qa                  # run a specific eval
-npx @lobu/cli eval --model claude/sonnet     # eval with a specific model
-npx @lobu/cli eval --list                       # list available evals
-npx @lobu/cli eval --ci --output results.json  # CI mode
+npx @lobu/cli@latest eval                           # run all evals
+npx @lobu/cli@latest eval basic-qa                  # run a specific eval
+npx @lobu/cli@latest eval --model claude/sonnet     # eval with a specific model
+npx @lobu/cli@latest eval --list                       # list available evals
+npx @lobu/cli@latest eval --ci --output results.json  # CI mode
 ```
 
 Eval files live in the agent directory and define test cases with expected outcomes. Use `--ci` for non-zero exit codes on failure in CI/CD pipelines.

@@ -50,7 +50,7 @@ test:
 
 # Run agent evals
 eval:
-	@npx @lobu/cli eval
+	@npx @lobu/cli@latest eval
 # Deploy to Kubernetes
 # Usage: make deploy [--target=environment]
 deploy:

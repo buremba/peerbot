@@ -27,7 +27,7 @@ export async function validateCommand(cwd: string): Promise<boolean> {
     for (const skillId of agentEntry.skills.enabled) {
       if (!skillIds.has(skillId)) {
         errors.push(
-          `[agents.${agentId}] Unknown skill "${skillId}". Run \`npx @lobu/cli skills list\` to see available skills.`
+          `[agents.${agentId}] Unknown skill "${skillId}". Run \`npx @lobu/cli@latest skills list\` to see available skills.`
         );
       }
     }

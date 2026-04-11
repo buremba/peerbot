@@ -25,7 +25,9 @@ export async function whoamiCommand(options?: {
     console.log(chalk.dim("\n  Not logged in."));
     console.log(chalk.dim(`  Context: ${target.name}`));
     console.log(chalk.dim(`  API URL: ${target.apiUrl}`));
-    console.log(chalk.dim("  Run `npx @lobu/cli login` to authenticate.\n"));
+    console.log(
+      chalk.dim("  Run `npx @lobu/cli@latest login` to authenticate.\n")
+    );
     return;
   }
 

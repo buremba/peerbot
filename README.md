@@ -33,8 +33,8 @@ https://github.com/user-attachments/assets/d72a9286-0325-4b8b-afc0-c1efe9c96f4e
 The quickest way to start is the CLI scaffold:
 
 ```bash
-npx @lobu/cli init my-bot
-cd my-bot && npx @lobu/cli run -d
+npx @lobu/cli@latest init my-bot
+cd my-bot && npx @lobu/cli@latest run -d
 ```
 
 ### Deployment modes

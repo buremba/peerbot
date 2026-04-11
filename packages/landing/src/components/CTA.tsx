@@ -26,18 +26,20 @@ export function CTA() {
             }}
             onClick={(e) => {
               const button = e.currentTarget as HTMLButtonElement;
-              navigator.clipboard.writeText("npx @lobu/cli init").then(() => {
-                const original = button.innerHTML;
-                button.innerHTML =
-                  '<span style="color: var(--color-tg-accent)">Copied!</span>';
-                setTimeout(() => {
-                  button.innerHTML = original;
-                }, 2000);
-              });
+              navigator.clipboard
+                .writeText("npx @lobu/cli@latest init")
+                .then(() => {
+                  const original = button.innerHTML;
+                  button.innerHTML =
+                    '<span style="color: var(--color-tg-accent)">Copied!</span>';
+                  setTimeout(() => {
+                    button.innerHTML = original;
+                  }, 2000);
+                });
             }}
           >
             <span style={{ color: "var(--color-tg-accent)" }}>$</span> npx
-            @lobu/cli init
+            @lobu/cli@latest init
             <svg
               width="12"
               height="12"

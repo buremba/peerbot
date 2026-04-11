@@ -4,8 +4,14 @@ const localDev = {
   badges: ["CLI scaffold", "Full stack", "Fastest setup"],
   docsHref: "/deployment/docker/",
   steps: [
-    { label: "Scaffold a new agent", code: "npx @lobu/cli init my-agent" },
-    { label: "Run the stack", code: "cd my-agent && npx @lobu/cli run -d" },
+    {
+      label: "Scaffold a new agent",
+      code: "npx @lobu/cli@latest init my-agent",
+    },
+    {
+      label: "Run the stack",
+      code: "cd my-agent && npx @lobu/cli@latest run -d",
+    },
     { label: "Open the docs", code: "open http://localhost:8080/api/docs" },
   ],
 };

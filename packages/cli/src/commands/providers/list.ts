@@ -27,7 +27,7 @@ export async function providersListCommand(): Promise<void> {
 
   console.log(
     chalk.dim(
-      "\n  Use `npx @lobu/cli providers add <id>` to add a provider to lobu.toml.\n"
+      "\n  Use `npx @lobu/cli@latest providers add <id>` to add a provider to lobu.toml.\n"
     )
   );
 }

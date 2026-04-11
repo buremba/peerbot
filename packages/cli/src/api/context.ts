@@ -82,7 +82,7 @@ export async function resolveContext(
   }
 
   throw new Error(
-    `Unknown context "${contextName}". Run \`npx @lobu/cli context list\` to see configured contexts.`
+    `Unknown context "${contextName}". Run \`npx @lobu/cli@latest context list\` to see configured contexts.`
   );
 }
 
@@ -114,7 +114,7 @@ export async function setCurrentContext(
   const config = await loadContextConfig();
   if (!config.contexts[trimmedName]) {
     throw new Error(
-      `Unknown context "${trimmedName}". Run \`npx @lobu/cli context add ${trimmedName} --api-url <url>\` first.`
+      `Unknown context "${trimmedName}". Run \`npx @lobu/cli@latest context add ${trimmedName} --api-url <url>\` first.`
     );
   }
 

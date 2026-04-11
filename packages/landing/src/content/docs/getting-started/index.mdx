@@ -11,11 +11,11 @@ Deploy sandboxed, persistent AI agents to your infrastructure — one isolated a
 
 ```bash
 # 1. Scaffold and run
-npx @lobu/cli init my-agent
-cd my-agent && npx @lobu/cli run -d
+npx @lobu/cli@latest init my-agent
+cd my-agent && npx @lobu/cli@latest run -d
 
 # 2. Chat with your agent
-npx @lobu/cli chat "Hello, what can you do?"
+npx @lobu/cli@latest chat "Hello, what can you do?"
 
 # 3. Customize behavior (edit prompt files)
 #    agents/my-agent/IDENTITY.md  — who the agent is
@@ -23,7 +23,7 @@ npx @lobu/cli chat "Hello, what can you do?"
 #    agents/my-agent/USER.md      — user context
 
 # 4. Run evals to measure quality
-npx @lobu/cli eval
+npx @lobu/cli@latest eval
 ```
 
 The `init` wizard walks you through deployment mode, AI provider, skills, messaging platform, and memory configuration. All choices are saved to `lobu.toml` and `.env`.
@@ -40,7 +40,7 @@ Please:
 2. Help me shape the agent behavior by editing those files directly.
 3. Use Lobu skills when they make sense: https://lobu.ai/getting-started/skills/
 4. Suggest any provider, skill, or connection changes needed in lobu.toml.
-5. Keep the project runnable with `npx @lobu/cli run -d`.
+5. Keep the project runnable with `npx @lobu/cli@latest run -d`.
 
 Explain what you change and why.
 ```
@@ -67,8 +67,8 @@ The coding agent will read your project structure and help you:
 After each change, test with:
 
 ```bash
-npx @lobu/cli chat "Hello, can you cancel my subscription?"
-npx @lobu/cli eval
+npx @lobu/cli@latest chat "Hello, can you cancel my subscription?"
+npx @lobu/cli@latest eval
 ```
 
 See [Agent Workspace](/guides/agent-prompts/), [SKILL.md Reference](/reference/skill-md/), and [Evaluations](/guides/evals/) for details on each file.
@@ -83,21 +83,21 @@ After `init`, your project is configured through `lobu.toml`. Use the CLI to add
 
 ```bash
 # Browse and add providers
-npx @lobu/cli providers list
-npx @lobu/cli providers add gemini          # prompts for API key, updates lobu.toml + .env
+npx @lobu/cli@latest providers list
+npx @lobu/cli@latest providers add gemini          # prompts for API key, updates lobu.toml + .env
 
 # Browse and add skills
-npx @lobu/cli skills list
-npx @lobu/cli skills add github
-npx @lobu/cli skills add linear
+npx @lobu/cli@latest skills list
+npx @lobu/cli@latest skills add github
+npx @lobu/cli@latest skills add linear
 
 # Manage secrets
-npx @lobu/cli secrets set GEMINI_API_KEY AIza...
-npx @lobu/cli secrets list
+npx @lobu/cli@latest secrets set GEMINI_API_KEY AIza...
+npx @lobu/cli@latest secrets list
 
 # Validate and run
-npx @lobu/cli validate
-npx @lobu/cli run -d
+npx @lobu/cli@latest validate
+npx @lobu/cli@latest run -d
 ```
 
 See the [CLI Reference](/reference/cli/) for all available commands.

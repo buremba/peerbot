@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.1.2](https://github.com/lobu-ai/lobu/compare/v3.1.1...v3.1.2) (2026-04-11)
+
+
+### Bug Fixes
+
+* **ci:** put version in release-please PR title + add workflow_dispatch ([#176](https://github.com/lobu-ai/lobu/issues/176)) ([9021308](https://github.com/lobu-ai/lobu/commit/9021308ed7162a7bd20e08817c351a64684ed7c1))
+* **ci:** use default release-please title pattern variables ([#178](https://github.com/lobu-ai/lobu/issues/178)) ([26709e3](https://github.com/lobu-ai/lobu/commit/26709e3c19e01ebf58220118a056833caf6ea50b))
+
 ## [3.1.1](https://github.com/lobu-ai/lobu/compare/v3.1.0...v3.1.1) (2026-04-11)
 
 

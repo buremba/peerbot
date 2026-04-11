@@ -69,7 +69,7 @@ jobs:
         with:
           images: ghcr.io/lobu-ai/lobu-gateway
           tags: |
-            type=sha,prefix={{branch}}-
+            type=sha,prefix={{branch}}-,enable=${{ github.event_name == 'push' }}
             type=raw,value=latest,enable={{is_default_branch}}
             type=raw,value=${{ steps.tag.outputs.tag }}
 
@@ -94,7 +94,7 @@ jobs:
         with:
           images: ghcr.io/lobu-ai/lobu-worker-base
           tags: |
-            type=sha,prefix={{branch}}-
+            type=sha,prefix={{branch}}-,enable=${{ github.event_name == 'push' }}
             type=raw,value=latest,enable={{is_default_branch}}
             type=raw,value=${{ steps.tag.outputs.tag }}
             type=raw,value=${{ steps.tag.outputs.version }},enable=${{ steps.tag.outputs.version != '' }}

@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.2.0](https://github.com/lobu-ai/lobu/compare/v3.1.2...v3.2.0) (2026-04-11)
+
+
+### Features
+
+* refresh cli docs and restore release publish chain ([#179](https://github.com/lobu-ai/lobu/issues/179)) ([1ee0595](https://github.com/lobu-ai/lobu/commit/1ee0595d354b0dee1a85d4b3015fd1c9adcab4a0))
+
 ## [3.1.2](https://github.com/lobu-ai/lobu/compare/v3.1.1...v3.1.2) (2026-04-11)
 
 

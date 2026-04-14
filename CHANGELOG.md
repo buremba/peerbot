@@ -1,5 +1,30 @@
 # Changelog
 
+## [3.3.0](https://github.com/lobu-ai/lobu/compare/v3.2.0...v3.3.0) (2026-04-14)
+
+
+### Features
+
+* add agent-community use case and extract UseCaseTabs label prop ([ba956ad](https://github.com/lobu-ai/lobu/commit/ba956ad13bdb642e22c3ed6bc2a7c00128d2ff72))
+* add ecommerce use case to landing page ([4982606](https://github.com/lobu-ai/lobu/commit/498260638532f7da16400a0bf6f1aca7e8ff3f46))
+* add privacy policy page and footer link ([b9df04f](https://github.com/lobu-ai/lobu/commit/b9df04fffab714edaa569f447bb29b96c0c65c07))
+* expand landing use cases and normalize network grants ([e9b0282](https://github.com/lobu-ai/lobu/commit/e9b02825b2c721fa4cde8a5a68d07e5ddfd4c993))
+* harden file delivery flows and add OpenRouter CI evals ([676544c](https://github.com/lobu-ai/lobu/commit/676544c1d9871debd6116a638108ad2a757fd1af))
+* **landing:** add posthog analytics ([b7b431d](https://github.com/lobu-ai/lobu/commit/b7b431d0bc30ddb1a104ed2473ab1aa7d695577c))
+* **landing:** revamp memory page demo ([96dba19](https://github.com/lobu-ai/lobu/commit/96dba192e07b7861b333c9d7f3fc72701527436a))
+* make skills page init preview contextual to selected use-case ([146e87a](https://github.com/lobu-ai/lobu/commit/146e87ad8838c5dd03c5f27900636e05c527823f))
+* refresh landing pages and pricing UX ([c8d8b58](https://github.com/lobu-ai/lobu/commit/c8d8b58fd6ea4b16583d67259e61839dc9ee1f52))
+* show nix packages in landing skill previews ([6095e13](https://github.com/lobu-ai/lobu/commit/6095e13447d9d7c3e6214a9995b9994645ee8bf9))
+
+
+### Bug Fixes
+
+* **ci:** guard docker sha tags on release events ([#181](https://github.com/lobu-ai/lobu/issues/181)) ([48b75ac](https://github.com/lobu-ai/lobu/commit/48b75ac8154c801bbdc8676412cf5fabe804d8aa))
+* **cli:** replace RequestInfo with portable fetch input type ([ba23c4a](https://github.com/lobu-ai/lobu/commit/ba23c4a260949f75e81876dd4e85e35449d5cada))
+* deduplicate owletto URL logic, fix skills card title, add skills link to memory reuse step ([78ad65e](https://github.com/lobu-ai/lobu/commit/78ad65e75faa689fbaa3715c0cc3eec1496c8527))
+* make memory step layouts consistent ([990bf61](https://github.com/lobu-ai/lobu/commit/990bf61d7af60d43c6487f99c2b73b27820e4468))
+* point agent-community Try Now to venture-capital org ([b117767](https://github.com/lobu-ai/lobu/commit/b117767c65e1e817a39f567ad39cc2abf2459da0))
+
 ## [3.2.0](https://github.com/lobu-ai/lobu/compare/v3.1.2...v3.2.0) (2026-04-11)
 
 

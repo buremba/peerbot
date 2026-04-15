@@ -17,6 +17,26 @@ export class MockRedisClient {
   private lists = new Map<string, string[]>();
   private currentTime = Date.now();
 
+  // --- ioredis event surface (used by state-ioredis adapter) ---
+
+  on(_event: string, _callback: (...args: any[]) => void): this {
+    // No-op for mock events
+    return this;
+  }
+
+  once(event: string, callback: (...args: any[]) => void): this {
+    // Fire "ready" synchronously so the adapter's initial-connection wait
+    // resolves immediately instead of timing out against a real socket.
+    if (event === "ready") {
+      setTimeout(callback, 0);
+    }
+    return this;
+  }
+
+  get status(): string {
+    return "ready";
+  }
+
   // --- String operations ---
 
   async exists(key: string): Promise<number> {

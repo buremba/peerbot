@@ -69,7 +69,7 @@ jobs:
       - name: Swap example provider to OpenRouter
         working-directory: examples/${{ matrix.example }}
         run: |
-          source "$RUNNER_TEMP/openrouter.env"
+          set -a; source "$RUNNER_TEMP/openrouter.env"; set +a
           python3 - <<'PY'
           from pathlib import Path
           import os

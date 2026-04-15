@@ -82,7 +82,7 @@ jobs:
     needs: [test, format-lint, typecheck]
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     env:
-      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      Z_AI_API_KEY: ${{ secrets.Z_AI_API_KEY }}
     steps:
       - uses: actions/checkout@v4
 
@@ -90,10 +90,10 @@ jobs:
         with:
           bun-version: 1.3.5
 
-      - name: Require OpenRouter secret
+      - name: Require Z_AI_API_KEY secret
         run: |
-          if [ -z "$OPENROUTER_API_KEY" ]; then
-            echo "OPENROUTER_API_KEY secret is not configured"
+          if [ -z "$Z_AI_API_KEY" ]; then
+            echo "Z_AI_API_KEY secret is not configured"
             exit 1
           fi
 
@@ -108,38 +108,6 @@ jobs:
       - name: Build local gateway image
         run: docker build -f docker/Dockerfile.gateway -t lobu-gateway:ci .
 
-      - name: Select healthy free OpenRouter model
-        run: |
-          OPENROUTER_SELECTOR_VERBOSE=1 \
-          bun scripts/select-openrouter-model.mjs --write "$RUNNER_TEMP/openrouter.env"
-          cat "$RUNNER_TEMP/openrouter.env"
-
-      - name: Swap example provider to OpenRouter
-        working-directory: examples/careops
-        run: |
-          set -a; source "$RUNNER_TEMP/openrouter.env"; set +a
-          python3 - <<'PY'
-          from pathlib import Path
-          import os
-          path = Path('lobu.toml')
-          text = path.read_text()
-          target = (
-              '[[agents.careops.providers]]\n'
-              'id = "z-ai"\n'
-              'model = "z-ai/glm-4.7"\n'
-              'key = "$Z_AI_API_KEY"'
-          )
-          replacement = (
-              '[[agents.careops.providers]]\n'
-              'id = "openrouter"\n'
-              f'model = "{os.environ["OPENROUTER_MODEL_REF"]}"\n'
-              'key = "$OPENROUTER_API_KEY"'
-          )
-          if target not in text:
-              raise SystemExit(f"Expected z-ai provider block not found in {path}")
-          path.write_text(text.replace(target, replacement, 1))
-          PY
-
       - name: Create .env for example
         working-directory: examples/careops
         run: |
@@ -147,16 +115,16 @@ jobs:
           ADMIN_PASSWORD=ci-eval-password
           ENCRYPTION_KEY=$(openssl rand -hex 32)
           GATEWAY_PORT=8081
-          OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+          Z_AI_API_KEY=${Z_AI_API_KEY}
           EOF
 
       - name: Start stack
         working-directory: examples/careops
         run: |
           mkdir -p data && chmod 777 data
-          # Override: use the gateway image built from this checkout, tame
-          # Redis for ephemeral CI, and pass OPENROUTER_API_KEY into the
-          # gateway container (base compose only threads Z_AI_API_KEY).
+          # Use the gateway image built from this checkout and tame Redis
+          # for ephemeral CI. Z_AI_API_KEY passthrough already exists in
+          # the base docker-compose.yml.
           cat > docker-compose.override.yml <<'YAML'
           services:
             redis:
@@ -164,8 +132,6 @@ jobs:
             gateway:
               image: lobu-gateway:ci
               pull_policy: never
-              environment:
-                OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
           YAML
           docker compose up -d
           echo "Waiting for gateway to be ready..."

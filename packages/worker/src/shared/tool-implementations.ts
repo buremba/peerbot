@@ -84,6 +84,7 @@ async function postLinkButton(
     url: string;
     label: string;
     linkType?: "settings" | "install" | "oauth";
+    body?: string;
   }
 ): Promise<void> {
   const { error } = await gatewayFetch<{ id: string }>(
@@ -96,6 +97,7 @@ async function postLinkButton(
         url: args.url,
         label: args.label,
         linkType: args.linkType || "oauth",
+        body: args.body,
       }),
     },
     "Failed to post link button"
@@ -361,6 +363,7 @@ export async function startMcpLogin(
         url: verificationUrl,
         label: `Connect ${args.mcpId}`,
         linkType: "oauth",
+        body: `Sign in to ${args.mcpId} so I can use its tools on your behalf.`,
       });
     }
 

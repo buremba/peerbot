@@ -22,6 +22,11 @@ export interface PostedQuestion {
 
 /**
  * Payload emitted on "link-button:created" — platform renderers listen for this.
+ *
+ * `body`: optional explanatory text shown above the button inside the card.
+ * Leave undefined when the button label alone is self-explanatory — the
+ * renderer will skip the card-body text entirely rather than duplicate the
+ * button's own label.
  */
 export interface PostedLinkButton {
   id: string;
@@ -33,6 +38,7 @@ export interface PostedLinkButton {
   platform: string;
   url: string;
   label: string;
+  body?: string;
   linkType: "settings" | "install" | "oauth";
 }
 
@@ -183,7 +189,8 @@ export class InteractionService extends EventEmitter {
     platform: string,
     url: string,
     label: string,
-    linkType: "settings" | "install" | "oauth"
+    linkType: "settings" | "install" | "oauth",
+    body?: string
   ): Promise<PostedLinkButton> {
     if (this.beforeCreateHook) {
       await this.beforeCreateHook(userId, conversationId);
@@ -199,6 +206,7 @@ export class InteractionService extends EventEmitter {
       platform,
       url,
       label,
+      body,
       linkType,
     };
 
@@ -221,7 +229,8 @@ export class InteractionService extends EventEmitter {
     connectionId: string | undefined,
     platform: string,
     url: string,
-    label: string
+    label: string,
+    body?: string
   ): Promise<PostedLinkButton> {
     return this.postLinkButton(
       userId,
@@ -232,7 +241,8 @@ export class InteractionService extends EventEmitter {
       platform,
       url,
       label,
-      "oauth"
+      "oauth",
+      body
     );
   }
 

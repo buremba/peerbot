@@ -350,10 +350,20 @@ export function registerInteractionBridge(
         url: event.url,
         label: event.label,
       });
-      const card = Card({
-        children: [CardText(event.label), Actions([linkButton])],
-      });
-      const fallbackText = `${event.label}: ${event.url}`;
+      // The button itself carries the label — only render an extra line of
+      // card-body text when the caller supplied a distinct `body` explaining
+      // *why* (e.g. for OAuth, "Authorize {mcp} to continue."). Falling back
+      // to `label` again would produce the "Connect sentry / [Connect sentry]"
+      // duplication we saw in Slack.
+      const bodyText = event.body?.trim();
+      const cardChildren =
+        bodyText && bodyText !== event.label
+          ? [CardText(bodyText), Actions([linkButton])]
+          : [Actions([linkButton])];
+      const card = Card({ children: cardChildren });
+      const fallbackText = bodyText
+        ? `${bodyText} ${event.label}: ${event.url}`
+        : `${event.label}: ${event.url}`;
       await postWithFallback(
         thread,
         { card, fallbackText },

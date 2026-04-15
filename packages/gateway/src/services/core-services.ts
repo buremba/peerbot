@@ -816,7 +816,8 @@ export class CoreServices {
           connectionId,
           platform || "unknown",
           payload.url,
-          `Connect ${mcpId}`
+          `Connect ${mcpId}`,
+          `Sign in to ${mcpId} so I can use its tools on your behalf.`
         );
         return;
       }

@@ -54,7 +54,8 @@ export function createInteractionRoutes(
             platform || "unknown",
             body.url,
             body.label,
-            body.linkType || "oauth"
+            body.linkType || "oauth",
+            typeof body.body === "string" ? body.body : undefined
           );
           return c.json({ id: posted.id, status: "posted" });
         }

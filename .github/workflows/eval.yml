@@ -32,7 +32,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        example: ${{ fromJSON(inputs.example && format('["{0}"]', inputs.example) || '["hr-assistant"]') }}
+        example: ${{ fromJSON(inputs.example && format('["{0}"]', inputs.example) || '["careops"]') }}
 
     steps:
       - uses: actions/checkout@v4
@@ -66,21 +66,34 @@ jobs:
           bun scripts/select-openrouter-model.mjs --write "$RUNNER_TEMP/openrouter.env"
           cat "$RUNNER_TEMP/openrouter.env"
 
-      - name: Apply selected model to example config
+      - name: Swap example provider to OpenRouter
         working-directory: examples/${{ matrix.example }}
         run: |
           source "$RUNNER_TEMP/openrouter.env"
           python3 - <<'PY'
           from pathlib import Path
           import os
+          example = os.environ["EXAMPLE_NAME"]
           path = Path('lobu.toml')
           text = path.read_text()
-          target = 'model = "openrouter/openai/gpt-oss-20b:free"'
-          replacement = f'model = "{os.environ["OPENROUTER_MODEL_REF"]}"'
+          target = (
+              f'[[agents.{example}.providers]]\n'
+              'id = "z-ai"\n'
+              'model = "z-ai/glm-4.7"\n'
+              'key = "$Z_AI_API_KEY"'
+          )
+          replacement = (
+              f'[[agents.{example}.providers]]\n'
+              'id = "openrouter"\n'
+              f'model = "{os.environ["OPENROUTER_MODEL_REF"]}"\n'
+              'key = "$OPENROUTER_API_KEY"'
+          )
           if target not in text:
-              raise SystemExit(f"Expected model line not found in {path}")
+              raise SystemExit(f"Expected z-ai provider block not found in {path}")
           path.write_text(text.replace(target, replacement, 1))
           PY
+        env:
+          EXAMPLE_NAME: ${{ matrix.example }}
 
       - name: Create .env for example
         working-directory: examples/${{ matrix.example }}
@@ -96,7 +109,9 @@ jobs:
         working-directory: examples/${{ matrix.example }}
         run: |
           mkdir -p data && chmod 777 data
-          # Disable Redis write-stop-on-error for CI and use the gateway image built from this checkout
+          # Disable Redis write-stop-on-error for CI, use the gateway image
+          # built from this checkout, and pass OPENROUTER_API_KEY into the
+          # gateway container (base compose only threads Z_AI_API_KEY).
           cat > docker-compose.override.yml <<'YAML'
           services:
             redis:
@@ -104,6 +119,8 @@ jobs:
             gateway:
               image: lobu-gateway:ci
               pull_policy: never
+              environment:
+                OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
           YAML
           docker compose up -d
           echo "Waiting for gateway to be ready..."
@@ -120,7 +137,7 @@ jobs:
             sleep 2
           done
 
-      - name: Run evals
+      - name: Run all evals
         working-directory: examples/${{ matrix.example }}
         env:
           ADMIN_PASSWORD: ci-eval-password
@@ -129,7 +146,7 @@ jobs:
           if [ -n "${{ inputs.model }}" ]; then
             MODEL_FLAG="-m ${{ inputs.model }}"
           fi
-          node ../../packages/cli/bin/lobu.js eval smoke --ci --output eval-results.json $MODEL_FLAG
+          node ../../packages/cli/bin/lobu.js eval --ci --output eval-results.json $MODEL_FLAG
 
       - name: Gateway logs
         if: always()

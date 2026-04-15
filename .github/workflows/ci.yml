@@ -114,8 +114,8 @@ jobs:
           bun scripts/select-openrouter-model.mjs --write "$RUNNER_TEMP/openrouter.env"
           cat "$RUNNER_TEMP/openrouter.env"
 
-      - name: Apply selected model to example config
-        working-directory: examples/hr-assistant
+      - name: Swap example provider to OpenRouter
+        working-directory: examples/careops
         run: |
           source "$RUNNER_TEMP/openrouter.env"
           python3 - <<'PY'
@@ -123,15 +123,25 @@ jobs:
           import os
           path = Path('lobu.toml')
           text = path.read_text()
-          target = 'model = "openrouter/openai/gpt-oss-20b:free"'
-          replacement = f'model = "{os.environ["OPENROUTER_MODEL_REF"]}"'
+          target = (
+              '[[agents.careops.providers]]\n'
+              'id = "z-ai"\n'
+              'model = "z-ai/glm-4.7"\n'
+              'key = "$Z_AI_API_KEY"'
+          )
+          replacement = (
+              '[[agents.careops.providers]]\n'
+              'id = "openrouter"\n'
+              f'model = "{os.environ["OPENROUTER_MODEL_REF"]}"\n'
+              'key = "$OPENROUTER_API_KEY"'
+          )
           if target not in text:
-              raise SystemExit(f"Expected model line not found in {path}")
+              raise SystemExit(f"Expected z-ai provider block not found in {path}")
           path.write_text(text.replace(target, replacement, 1))
           PY
 
       - name: Create .env for example
-        working-directory: examples/hr-assistant
+        working-directory: examples/careops
         run: |
           cat > .env <<EOF
           ADMIN_PASSWORD=ci-eval-password
@@ -141,9 +151,12 @@ jobs:
           EOF
 
       - name: Start stack
-        working-directory: examples/hr-assistant
+        working-directory: examples/careops
         run: |
           mkdir -p data && chmod 777 data
+          # Override: use the gateway image built from this checkout, tame
+          # Redis for ephemeral CI, and pass OPENROUTER_API_KEY into the
+          # gateway container (base compose only threads Z_AI_API_KEY).
           cat > docker-compose.override.yml <<'YAML'
           services:
             redis:
@@ -151,6 +164,8 @@ jobs:
             gateway:
               image: lobu-gateway:ci
               pull_policy: never
+              environment:
+                OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
           YAML
           docker compose up -d
           echo "Waiting for gateway to be ready..."
@@ -167,29 +182,29 @@ jobs:
             sleep 2
           done
 
-      - name: Run smoke eval with local CLI
-        working-directory: examples/hr-assistant
+      - name: Run all evals with local CLI
+        working-directory: examples/careops
         env:
           ADMIN_PASSWORD: ci-eval-password
-        run: node ../../packages/cli/bin/lobu.js eval smoke --ci --output eval-results.json
+        run: node ../../packages/cli/bin/lobu.js eval --ci --output eval-results.json
 
       - name: Gateway logs
         if: always()
-        working-directory: examples/hr-assistant
+        working-directory: examples/careops
         run: docker compose logs gateway 2>&1 | tail -100
 
-      - name: Upload smoke eval results
+      - name: Upload eval results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: smoke-eval-results-hr-assistant
+          name: smoke-eval-results-careops
           path: |
-            examples/hr-assistant/eval-results.json
-            examples/hr-assistant/agents/*/evals/evals-report.md
+            examples/careops/eval-results.json
+            examples/careops/agents/*/evals/evals-report.md
 
       - name: Print eval report
         if: always()
-        working-directory: examples/hr-assistant
+        working-directory: examples/careops
         run: |
           for report in agents/*/evals/evals-report.md; do
             if [ -f "$report" ]; then
@@ -200,5 +215,5 @@ jobs:
 
       - name: Stop stack
         if: always()
-        working-directory: examples/hr-assistant
+        working-directory: examples/careops
         run: docker compose down

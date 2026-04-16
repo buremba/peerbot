@@ -67,7 +67,7 @@ export async function createSession(
 export async function sendMessage(
   session: Session,
   content: string
-): Promise<{ traceId?: string }> {
+): Promise<{ traceId?: string; messageId?: string }> {
   const res = await fetch(`${session.base}/messages`, {
     method: "POST",
     headers: {
@@ -82,19 +82,27 @@ export async function sendMessage(
     throw new Error(`Failed to send message (${res.status}): ${text}`);
   }
 
-  const data = (await res.json()) as { traceparent?: string };
+  const data = (await res.json()) as {
+    traceparent?: string;
+    messageId?: string;
+  };
   // Extract trace ID from W3C traceparent: "00-{traceId}-{spanId}-01"
   const traceId = data.traceparent?.split("-")[1];
-  return { traceId };
+  return { traceId, messageId: data.messageId };
 }
 
 /**
  * Connect to SSE stream and collect the full response text.
- * Accumulates 'output' deltas until 'complete' event.
+ * Accumulates 'output' deltas until 'complete' event for the target messageId.
+ *
+ * When `messageId` is provided, events for other messageIds are ignored. This
+ * prevents SSE backlog replay from prior turns in the same session from being
+ * misread as the current turn's response.
  */
 export async function collectResponse(
   session: Session,
-  timeoutMs: number
+  timeoutMs: number,
+  messageId?: string
 ): Promise<CollectedResponse> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -116,6 +124,11 @@ export async function collectResponse(
     let currentEvent = "";
     let text = "";
 
+    const matchesTarget = (eventMessageId: unknown): boolean => {
+      if (!messageId) return true;
+      return typeof eventMessageId === "string" && eventMessageId === messageId;
+    };
+
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -133,9 +146,15 @@ export async function collectResponse(
 
           switch (currentEvent) {
             case "output":
-              if (typeof data.content === "string") text += data.content;
+              if (
+                typeof data.content === "string" &&
+                matchesTarget(data.messageId)
+              ) {
+                text += data.content;
+              }
               break;
             case "complete": {
+              if (!matchesTarget(data.messageId)) break;
               const usage = data.usage as Record<string, number> | undefined;
               return {
                 text,
@@ -152,6 +171,7 @@ export async function collectResponse(
               };
             }
             case "error":
+              if (!matchesTarget(data.messageId)) break;
               return {
                 text,
                 latencyMs: Date.now() - start,
@@ -187,16 +207,19 @@ export async function deleteSession(session: Session): Promise<void> {
 
 /**
  * Send a message and collect the full response in one call.
+ *
+ * Sends first to capture the gateway-issued messageId, then opens the SSE
+ * stream filtered to that messageId. The gateway's SSE endpoint replays a
+ * recent event backlog on connect, so no output deltas are lost between the
+ * POST and the SSE subscribe.
  */
 export async function sendAndCollect(
   session: Session,
   content: string,
   timeoutMs: number
 ): Promise<CollectedResponse> {
-  // Start SSE collection first, then send message
-  const collecting = collectResponse(session, timeoutMs);
-  const { traceId } = await sendMessage(session, content);
-  const response = await collecting;
+  const { traceId, messageId } = await sendMessage(session, content);
+  const response = await collectResponse(session, timeoutMs, messageId);
   response.traceId = traceId;
   return response;
 }

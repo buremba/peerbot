@@ -1,5 +1,34 @@
 # Changelog
 
+## [3.4.0](https://github.com/lobu-ai/lobu/compare/v3.3.0...v3.4.0) (2026-04-16)
+
+
+### Features
+
+* add /skills/for/{useCase} routes, version eval schema, clean up duplication ([d84a856](https://github.com/lobu-ai/lobu/commit/d84a856a307916b87641426e0d2de48f89442089))
+* **gateway:** add MCP OAuth 2.1 auth-code + PKCE flow ([9ea9f45](https://github.com/lobu-ai/lobu/commit/9ea9f45dedb9aa0f5ef740b949cd6b51fa8bf2ee))
+* **gateway:** add optional body text to link-button cards ([#183](https://github.com/lobu-ai/lobu/issues/183)) ([1e93013](https://github.com/lobu-ai/lobu/commit/1e93013d542d4021fe33b4029b58b6329c4b19bd))
+* **landing:** add connect-from pages and refresh use-case content ([1ce6f6c](https://github.com/lobu-ai/lobu/commit/1ce6f6c0754aa8adfa45f6dc0738f5931717dbf1))
+* **landing:** add terms of service page ([0347573](https://github.com/lobu-ai/lobu/commit/0347573d58d5aff6594713bb4a7277f7227d9e83))
+* **landing:** remove Lobu for X labels and redundant use case summaries ([e861218](https://github.com/lobu-ai/lobu/commit/e861218120dbfc5265152bd09b2ab96a6202f5c3))
+* **landing:** update copy prompt behavior and text ([a551a79](https://github.com/lobu-ai/lobu/commit/a551a7965c9c46aa2b44e2a29eecd065fd9c1f13))
+* make examples/ single source of truth for use cases and Owletto orgs ([3fc5380](https://github.com/lobu-ai/lobu/commit/3fc5380a720681d4b54ca88ff401dcaa7462db70))
+* make Hero GitHub button contextual to active use case ([f1ca9fe](https://github.com/lobu-ai/lobu/commit/f1ca9fed7cfbe4326599e546109eca7f6a45bb05))
+* migrate owletto examples to models/ directory with type field ([3deeb77](https://github.com/lobu-ai/lobu/commit/3deeb77f5eea1cd9d1124691e42430e3bb6fa496))
+* rename CTA to "Open in Owletto" and open in new tab ([179fc23](https://github.com/lobu-ai/lobu/commit/179fc239b240a31aabd3d412a98035353b638924))
+* wire file-first owletto memory config ([46c7554](https://github.com/lobu-ai/lobu/commit/46c7554d27284724333d5aa043316fe208f278b1))
+* **worker:** redact sandbox leaks, replace base prompt identity, use signed artifact URLs ([a5c33d8](https://github.com/lobu-ai/lobu/commit/a5c33d818d9de4e0bef8fd1710a2244f8592e33f))
+
+
+### Bug Fixes
+
+* **eval:** isolate trials + feat(worker): MCP-as-CLI for embedded mode ([#184](https://github.com/lobu-ai/lobu/issues/184)) ([c256d6d](https://github.com/lobu-ai/lobu/commit/c256d6d2604b514df9eb2c5658524079286e73b9))
+* **landing:** clarify use-case source CTA ([d0b64f2](https://github.com/lobu-ai/lobu/commit/d0b64f2367c4c0f7e8c815c2ae89d92047ae38d8))
+* **landing:** correct owletto demo links ([150a7c9](https://github.com/lobu-ai/lobu/commit/150a7c94f26b04e51271e6dc9074a649eb178099))
+* **landing:** improve hero CTA labels ([ae6a807](https://github.com/lobu-ai/lobu/commit/ae6a807ae33679770e7f851ab0f4c8ef5dce2c3a))
+* **landing:** keep homepage hero generic ([8078103](https://github.com/lobu-ai/lobu/commit/807810394c3d6ed87aa445075b4e9b7e4e248136))
+* **landing:** left-align skills workspace preview ([54519ca](https://github.com/lobu-ai/lobu/commit/54519cab40a6f157c5f19761e7e5a3ca6a565813))
+
 ## [3.3.0](https://github.com/lobu-ai/lobu/compare/v3.2.0...v3.3.0) (2026-04-14)
 
 

@@ -9,7 +9,6 @@ import {
 
 const logger = createLogger("worker");
 
-import { setupWorkspaceEnv } from "./core/workspace";
 import { GatewayClient } from "./gateway/sse-client";
 import { startWorkerHttpServer, stopWorkerHttpServer } from "./server";
 
@@ -80,8 +79,6 @@ async function main() {
       logger.error("❌ WORKER_TOKEN environment variable is required");
       process.exit(1);
     }
-
-    setupWorkspaceEnv(deploymentName);
 
     // Start HTTP server before connecting to gateway
     const httpPort = await startWorkerHttpServer();

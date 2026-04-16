@@ -9,57 +9,16 @@ import type { WorkspaceInfo, WorkspaceSetupConfig } from "./types";
 const logger = createLogger("workspace");
 
 // ============================================================================
-// WORKSPACE UTILITIES
-// ============================================================================
-
-/**
- * Get workspace directory path for a thread
- */
-function getWorkspacePathForThread(
-  baseDirectory: string,
-  conversationId: string
-): string {
-  // Sanitize thread ID for filesystem
-  const sanitizedConversationId = sanitizeConversationId(conversationId);
-  return `${baseDirectory}/${sanitizedConversationId}`;
-}
-
-/**
- * Setup workspace directory environment variable
- * Used by MCP process manager
- */
-export function setupWorkspaceEnv(deploymentName: string | undefined): void {
-  const conversationId = process.env.CONVERSATION_ID;
-
-  if (conversationId) {
-    const baseDir = process.env.WORKSPACE_DIR || "/workspace";
-    const workspaceDir = getWorkspacePathForThread(baseDir, conversationId);
-    process.env.WORKSPACE_DIR = workspaceDir;
-    logger.info(`📁 Set WORKSPACE_DIR for process manager: ${workspaceDir}`);
-  } else if (deploymentName) {
-    // deploymentName is no longer parseable (it may be hashed/collision-resistant).
-    logger.warn("WORKSPACE_DIR not set (missing CONVERSATION_ID env var)");
-  }
-}
-
-/**
- * Get conversation identifier from various sources
- * Priority: CONVERSATION_ID > sessionKey > username
- */
-function getThreadIdentifier(sessionKey?: string, username?: string): string {
-  const conversationId =
-    process.env.CONVERSATION_ID || sessionKey || username || "default";
-
-  return conversationId;
-}
-
-// ============================================================================
 // WORKSPACE MANAGER
 // ============================================================================
 
 /**
- * Simplified WorkspaceManager - only handles directory creation
- * All VCS operations (git, etc.) are handled by modules via hooks
+ * Simplified WorkspaceManager - only handles directory creation.
+ * All VCS operations (git, etc.) are handled by modules via hooks.
+ *
+ * Workspace layout:
+ *   baseDirectory/                      ← agent-level root (e.g. /workspace)
+ *   baseDirectory/{conversationId}/     ← thread-specific working directory
  */
 export class WorkspaceManager {
   private config: WorkspaceSetupConfig;
@@ -70,33 +29,28 @@ export class WorkspaceManager {
   }
 
   /**
-   * Setup workspace directory - creates thread-specific directory only
-   * VCS operations are handled by module hooks (e.g., GitHub module)
+   * Setup workspace directory - creates thread-specific directory only.
+   * VCS operations are handled by module hooks (e.g., GitHub module).
    */
   async setupWorkspace(
     username: string,
     sessionKey?: string
   ): Promise<WorkspaceInfo> {
     try {
-      // Use thread-specific directory to avoid conflicts between concurrent threads
-      const conversationId = getThreadIdentifier(sessionKey, username);
+      const conversationId =
+        process.env.CONVERSATION_ID || sessionKey || username || "default";
 
       logger.info(
         `Setting up workspace directory for ${username}, conversation: ${conversationId}...`
       );
 
-      const userDirectory = getWorkspacePathForThread(
-        this.config.baseDirectory,
-        conversationId
-      );
+      const sanitized = sanitizeConversationId(conversationId);
+      const userDirectory = `${this.config.baseDirectory}/${sanitized}`;
 
-      // Ensure base directory exists
+      // Ensure directories exist
       await this.ensureDirectory(this.config.baseDirectory);
-
-      // Ensure user directory exists
       await this.ensureDirectory(userDirectory);
 
-      // Create workspace info
       this.workspaceInfo = {
         baseDirectory: this.config.baseDirectory,
         userDirectory,
@@ -116,9 +70,6 @@ export class WorkspaceManager {
     }
   }
 
-  /**
-   * Ensure directory exists
-   */
   private async ensureDirectory(path: string): Promise<void> {
     try {
       await mkdir(path, { recursive: true });
@@ -130,7 +81,7 @@ export class WorkspaceManager {
   }
 
   /**
-   * Get current working directory
+   * Get current working directory (thread-specific).
    */
   getCurrentWorkingDirectory(): string {
     return this.workspaceInfo?.userDirectory || this.config.baseDirectory;

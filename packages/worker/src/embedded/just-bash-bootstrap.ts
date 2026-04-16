@@ -140,6 +140,8 @@ async function buildCustomCommands(
 }
 
 export interface EmbeddedBashOpsOptions {
+  /** Thread-specific workspace directory used as the sandbox filesystem root. */
+  workspaceDir?: string;
   /**
    * When provided together with `gw`, MCP servers are exposed as one
    * `just-bash` custom command per server (e.g. `owletto search_knowledge
@@ -176,7 +178,8 @@ export async function createEmbeddedBashOps(
 ): Promise<BashOperations> {
   const { Bash, ReadWriteFs } = await import("just-bash");
 
-  const workspaceDir = process.env.WORKSPACE_DIR || "/workspace";
+  const workspaceDir =
+    options.workspaceDir || process.env.WORKSPACE_DIR || "/workspace";
   const bashFs = new ReadWriteFs({ root: workspaceDir });
 
   // Parse allowed domains from env var (set by gateway)

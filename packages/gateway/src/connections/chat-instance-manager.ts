@@ -1152,27 +1152,21 @@ export class ChatInstanceManager {
       return Buffer.concat(chunks);
     };
 
-    // For Slack, conversationId from the worker is the slack thread_ts (e.g.
-    // "1776198973.123456"). Top-level DM posts come through with no thread_ts.
+    // For Slack, `conversationId` is the Chat SDK's canonical `thread.id`
+    // (`slack:{channel}:{parent_thread_ts}`) for group threads, or the bare
+    // channel id for DMs/channel-level posts (no thread_ts).
     const parseSlackThread = (
       channelId: string,
       conversationId?: string
     ): { channel: string; threadTs?: string } => {
-      if (!conversationId) {
-        return { channel: channelId };
-      }
-      if (conversationId.startsWith("slack:")) {
+      if (conversationId?.startsWith("slack:")) {
         const [, channel, threadTs] = conversationId.split(":");
         return {
           channel: channel || channelId,
           threadTs: threadTs && threadTs !== "" ? threadTs : undefined,
         };
       }
-      const looksLikeTs = /^\d{10}\.\d+$/.test(conversationId);
-      return {
-        channel: channelId,
-        threadTs: looksLikeTs ? conversationId : undefined,
-      };
+      return { channel: channelId };
     };
 
     return {

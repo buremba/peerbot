@@ -572,30 +572,29 @@ export class ChatResponseBridge implements ResponseRenderer {
       return null;
     }
 
-    // Threaded fallback: reconstruct the adapter's full thread id and use
-    // `createThread`. Mirrors interaction-bridge.resolveThread. The Chat SDK
-    // has no `getThread` — calling the missing method was a silent no-op.
+    // Threaded fallback: `conversationId` is the Chat SDK's canonical
+    // `thread.id` (e.g. `slack:{channel}:{parent_thread_ts}`) — pass it
+    // straight to `createThread`.
     const adapter = chat.getAdapter?.(platform);
     const createThread = (chat as any).createThread;
     if (adapter && typeof createThread === "function") {
-      const fullThreadId = `${channelKey}:${conversationId}`;
       try {
         const currentMessage = buildCurrentMessageFromMetadata(
-          fullThreadId,
+          conversationId,
           platformMetadata
         );
         const thread = await createThread.call(
           chat,
           adapter,
-          fullThreadId,
+          conversationId,
           currentMessage,
           false
         );
         if (thread) return thread;
       } catch (error) {
         logger.warn(
-          { platform, fullThreadId, error: String(error) },
-          "createThread with composite thread id failed"
+          { platform, conversationId, error: String(error) },
+          "createThread with conversationId failed"
         );
       }
     }

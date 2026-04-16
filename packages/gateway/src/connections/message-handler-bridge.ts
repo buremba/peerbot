@@ -236,6 +236,12 @@ export class MessageHandlerBridge {
     const channelId = thread.channelId ?? thread.id ?? "unknown";
     const messageId = message.id ?? String(Date.now());
     const isGroup = source === "mention" || source === "subscribed";
+    // Use the Chat SDK's canonical `thread.id` for group threads so a reply in
+    // an existing thread collapses to the same conversation as its parent
+    // (Slack: `slack:{channel}:{parent_thread_ts}`, Telegram: `telegram:{chatId}:{topicId}`).
+    // DMs use the bare channel id — they're channel-level, not thread-level.
+    const conversationId =
+      isGroup && typeof thread.id === "string" ? thread.id : channelId;
 
     logger.info(
       {
@@ -407,7 +413,7 @@ export class MessageHandlerBridge {
           userId,
           channelId,
           isGroup,
-          conversationId: messageId,
+          conversationId,
           connectionId: this.connection.id,
           reply: createChatReply((content) => thread.post(content)),
         }
@@ -459,7 +465,7 @@ export class MessageHandlerBridge {
         platform,
         userId,
         botId: platform,
-        conversationId: isGroup ? messageId : channelId,
+        conversationId,
         teamId: isGroup ? channelId : platform,
         agentId,
         messageId,

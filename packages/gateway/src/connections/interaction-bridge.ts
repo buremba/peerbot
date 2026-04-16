@@ -763,15 +763,13 @@ async function resolveThread(
     const chat = instance.chat;
     const platform = instance.connection.platform;
 
-    // `channelId` here is the bare platform channel id (e.g. `"C09EH3ASNQ1"`)
-    // because the interaction events are built from the worker token, which
-    // carries the raw platform id without an adapter prefix. The Chat SDK's
-    // `chat.channel()` parses the first `:`-segment as the adapter name, so
-    // we must prefix with `${platform}:` — mirroring `chat-response-bridge.resolveTarget`.
+    // `channelId` is the bare platform channel id (e.g. `"C09EH3ASNQ1"`). The
+    // Chat SDK's `chat.channel()` parses the first `:`-segment as the adapter
+    // name, so we must prefix with `${platform}:`.
     const channelKey = `${platform}:${channelId}`;
 
-    // DM shortcut: when the message flow recorded conversationId === channelId
-    // (see buildMessagePayload for DMs) we can post directly at the channel level.
+    // DM shortcut: buildMessagePayload stores `conversationId === channelId`
+    // for DMs (channel-level, not thread-level).
     if (!conversationId || conversationId === channelId) {
       const channel = chat.channel?.(channelKey);
       if (channel) return channel;
@@ -782,29 +780,26 @@ async function resolveThread(
       return null;
     }
 
-    // Thread message — reconstruct the adapter's full thread id and use
-    // `createThread` (the Chat SDK has no `getThread`; see
-    // chat-response-bridge.resolveTarget for the same pattern). For Slack
-    // this produces `"slack:{channel}:{threadTs}"`, which the adapter decodes
-    // back into a `conversations.replies` post — the key to having Block Kit
-    // render inside the originating thread.
+    // Group threads: conversationId is the Chat SDK's canonical `thread.id`
+    // (e.g. `"slack:{channel}:{parent_thread_ts}"`). Pass it directly to
+    // `createThread` — the adapter decodes it back into the correct
+    // thread-scoped post (e.g. `conversations.replies` for Slack).
     const adapter = chat.getAdapter?.(platform);
     const createThread = (chat as any).createThread;
     if (adapter && typeof createThread === "function") {
-      const fullThreadId = `${channelKey}:${conversationId}`;
       try {
         const thread = await createThread.call(
           chat,
           adapter,
-          fullThreadId,
-          {},
+          conversationId,
+          undefined,
           false
         );
         if (thread) return thread;
       } catch (error) {
         logger.debug(
-          { connectionId, platform, fullThreadId, error: String(error) },
-          "resolveThread: createThread failed for composite thread id"
+          { connectionId, platform, conversationId, error: String(error) },
+          "resolveThread: createThread failed"
         );
       }
     }

@@ -12,7 +12,10 @@ set -e
 #
 # Platform-specific:
 #   Slack: QA_SLACK_CHANNEL, QA_SLACK_USER_TOKEN (xoxp-) to send as real user,
-#          optional SLACK_BOT_TOKEN for reply polling when user token absent
+#          or QA_SLACK_BOT_TOKEN (xoxb- from a *separate* QA-only Slack app) to
+#          send as a distinct bot — the target bot's isMessageFromSelf filter
+#          only skips its own bot_id, so a different app's bot posts through.
+#          Optional SLACK_BOT_TOKEN for reply polling when QA tokens absent.
 #   WhatsApp: WHATSAPP_SELF_PHONE (defaults to bot's own number for self-chat)
 #   Telegram: TELEGRAM_TEST_CHAT_ID, TG_API_ID, TG_API_HASH (uses tguser to send as real user)
 
@@ -453,26 +456,33 @@ for i in "${!MESSAGES[@]}"; do
         echo "   ℹ️  TG_API_ID/TG_API_HASH not configured; falling back to gateway-side Telegram send"
     fi
 
-    # Slack QA-sender path: QA_SLACK_USER_TOKEN (xoxp-) posts as a real user via
-    # chat.postMessage so the target bot sees a genuine Slack event instead of
-    # a gateway-forged enqueue. A secondary *bot* token doesn't work here —
-    # Slack filters bot_message events cross-app to avoid loops.
-    if [ "$TEST_PLATFORM" = "slack" ] && [ -z "$QA_SLACK_USER_TOKEN" ]; then
-        echo "   ⚠️  QA_SLACK_USER_TOKEN not set — using gateway-forged send."
+    # Slack QA-sender path: post via chat.postMessage so the target bot sees a
+    # genuine Slack event instead of a gateway-forged enqueue.
+    #   - QA_SLACK_USER_TOKEN (xoxp-): posts as a real user.
+    #   - QA_SLACK_BOT_TOKEN  (xoxb-): posts as a *separate* QA bot. The target
+    #     bot's isMessageFromSelf only matches its own bot_id, so cross-app
+    #     bot posts are delivered normally.
+    QA_SEND_TOKEN="${QA_SLACK_USER_TOKEN:-$QA_SLACK_BOT_TOKEN}"
+    if [ "$TEST_PLATFORM" = "slack" ] && [ -z "$QA_SEND_TOKEN" ]; then
+        echo "   ⚠️  No QA Slack token set — using gateway-forged send."
         echo "       The message is queued directly to the worker; nothing"
         echo "       appears in Slack as an inbound message."
-        echo "       To exercise the real webhook flow, install the QA app"
-        echo "       (config/slack-app-manifest.qa-user.json) to mint a xoxp-"
-        echo "       token, then export QA_SLACK_USER_TOKEN=<xoxp-...>."
+        echo "       To exercise the real webhook flow, set either"
+        echo "       QA_SLACK_USER_TOKEN=<xoxp-...> or QA_SLACK_BOT_TOKEN=<xoxb-...>"
+        echo "       (the latter must come from a *separate* Slack app)."
     fi
-    if [ "$TEST_PLATFORM" = "slack" ] && [ -n "$QA_SLACK_USER_TOKEN" ]; then
-        echo "   ✅ Sending via Slack user token to $CHANNEL"
+    if [ "$TEST_PLATFORM" = "slack" ] && [ -n "$QA_SEND_TOKEN" ]; then
+        if [ -n "$QA_SLACK_USER_TOKEN" ]; then
+            echo "   ✅ Sending via QA user token to $CHANNEL"
+        else
+            echo "   ✅ Sending via QA bot token to $CHANNEL"
+        fi
         POST_BODY="channel=$CHANNEL&text=$(printf '%s' "$MESSAGE" | jq -sRr @uri)"
         if [ -n "$LAST_THREAD_ID" ]; then
             POST_BODY="$POST_BODY&thread_ts=$LAST_THREAD_ID"
         fi
         POST_RESP=$(curl -s -X POST https://slack.com/api/chat.postMessage \
-            -H "Authorization: Bearer $QA_SLACK_USER_TOKEN" \
+            -H "Authorization: Bearer $QA_SEND_TOKEN" \
             -H "Content-Type: application/x-www-form-urlencoded" \
             -d "$POST_BODY")
         if ! echo "$POST_RESP" | jq -e '.ok' > /dev/null 2>&1; then
@@ -486,7 +496,7 @@ for i in "${!MESSAGES[@]}"; do
             LAST_THREAD_ID="$MESSAGE_ID"
         fi
 
-        POLL_TOKEN="${SLACK_BOT_TOKEN:-$QA_SLACK_USER_TOKEN}"
+        POLL_TOKEN="${SLACK_BOT_TOKEN:-$QA_SEND_TOKEN}"
         echo "   ⏳ Waiting for bot response..."
         START_TIME=$(date +%s)
         while true; do

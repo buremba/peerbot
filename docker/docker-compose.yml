@@ -42,7 +42,7 @@ services:
       # Host project path for worker bind mounts (Docker-in-Docker)
       LOBU_DEV_PROJECT_PATH: ${PWD}
       # Read-only workspace mount used for file-first agent config loading
-      LOBU_WORKSPACE_ROOT: /workspace/project
+      LOBU_WORKSPACE_ROOT: ${LOBU_WORKSPACE_ROOT:-/workspace/project}
     env_file:
       - ../.env
     volumes:

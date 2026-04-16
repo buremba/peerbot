@@ -6,15 +6,23 @@ name = "careops"
 description = "Manage patient care, appointments, and treatment workflows for healthcare practices"
 dir = "./agents/careops"
 
+# Primary: Gemini 2.5 Flash via Google AI Studio — generous free tier
+# (~15 RPM, 1M tokens/day), supports tool-use. Verified 2026-04-16.
 [[agents.careops.providers]]
-id = "z-ai"
-model = "z-ai/glm-4.7"
-key = "$Z_AI_API_KEY"
+id = "gemini"
+model = "gemini/gemini-2.5-flash"
+key = "$GEMINI_API_KEY"
 
+# Fallbacks (swap in if Gemini free tier is exhausted):
 # [[agents.careops.providers]]
-# id = "anthropic"
-# model = "claude/sonnet-4-5"
-# key = "$ANTHROPIC_API_KEY"
+# id = "openrouter"
+# model = "google/gemini-2.5-flash-lite"
+# key = "$OPENROUTER_API_KEY"
+#
+# [[agents.careops.providers]]
+# id = "z-ai"
+# model = "z-ai/glm-4.7"
+# key = "$Z_AI_API_KEY"
 
 [[agents.careops.connections]]
 type = "slack"

@@ -26,6 +26,7 @@ export async function createSession(
   authToken: string,
   opts?: {
     agentId?: string;
+    thread?: string;
     forceNew?: boolean;
     dryRun?: boolean;
     provider?: string;
@@ -37,6 +38,7 @@ export async function createSession(
     dryRun: opts?.dryRun ?? true,
   };
   if (opts?.agentId) body.agentId = opts.agentId;
+  if (opts?.thread) body.thread = opts.thread;
   if (opts?.provider) body.provider = opts.provider;
   if (opts?.model) body.model = opts.model;
 

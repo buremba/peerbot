@@ -772,6 +772,11 @@ export function createAgentApi(
       sseConnections.delete(sessionKey);
     }
 
+    // Drop any remembered SSE events so a later connection with the same key
+    // (rare, but possible with deterministic conversationIds) can't replay
+    // stale completion events from this deleted session.
+    sseEventBacklog.delete(sessionKey);
+
     // Get real agentId from session before deleting
     const session = await sessMgr.getSession(sessionKey);
     const realAgentId = session?.agentId || sessionKey;

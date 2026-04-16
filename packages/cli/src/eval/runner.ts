@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { createSession, deleteSession, sendAndCollect } from "./client.js";
@@ -74,8 +75,13 @@ async function runTrial(
   const start = Date.now();
   const timeoutMs = definition.timeout * 1000;
 
+  // Use a unique thread per trial so each trial gets a fresh conversationId,
+  // SSE backlog, and worker workspace. Without this, every trial reuses
+  // `${agentId}_${userId}` and inherits chat history + stale SSE events
+  // from previous trials.
   const session = await createSession(options.gatewayUrl, options.authToken, {
     agentId: options.agentId,
+    thread: `eval-${randomUUID()}`,
     forceNew: true,
     dryRun: true,
   });

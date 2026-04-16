@@ -115,7 +115,10 @@ export function MemorySection(props: {
         <SectionDivider />
 
         <CompactContentRail className="text-center">
-          <h2 class="text-2xl font-bold mb-3" style={{ color: textColor }}>
+          <h2
+            class="text-2xl font-bold mb-3 mt-12"
+            style={{ color: textColor }}
+          >
             Start building shared memory
           </h2>
           <p

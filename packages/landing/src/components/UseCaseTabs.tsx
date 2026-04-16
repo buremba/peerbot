@@ -21,7 +21,7 @@ export function UseCaseTabs({
   className = "",
 }: UseCaseTabsProps) {
   return (
-    <div class={`mx-auto w-full max-w-[44rem] text-center ${className}`.trim()}>
+    <div class={`mx-auto w-full text-center ${className}`.trim()}>
       {label && (
         <div
           class="text-[11px] font-semibold uppercase tracking-[0.22em] mb-3"
@@ -30,7 +30,7 @@ export function UseCaseTabs({
           {label}
         </div>
       )}
-      <div class="mx-auto flex max-w-[44rem] flex-wrap items-center justify-center gap-2.5">
+      <div class="mx-auto flex flex-wrap items-center justify-center gap-2.5">
         {tabs.map((tab) => {
           const active = tab.id === activeId;
           const commonClass = `px-4 py-2.5 rounded-full text-sm leading-none whitespace-nowrap transition-all ${

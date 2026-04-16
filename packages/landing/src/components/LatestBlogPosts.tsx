@@ -14,7 +14,7 @@ export function LatestBlogPosts({ posts }: { posts: LatestBlogPost[] }) {
 
   return (
     <CompactContentRail>
-      <div class="flex flex-col items-center text-center mb-8">
+      <div class="flex flex-col items-center text-center mb-8 mt-12">
         <div
           class="text-xs uppercase tracking-[0.22em] mb-3"
           style={{ color: "var(--color-tg-accent)" }}

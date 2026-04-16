@@ -9,6 +9,7 @@ import {
   getSurfaceHeroCopy,
   landingUseCaseShowcases,
 } from "../../use-case-showcases";
+import { getLatestPosts } from "../../latest-posts";
 
 export function getStaticPaths() {
   return landingUseCaseShowcases.map((useCase) => ({
@@ -19,6 +20,7 @@ export function getStaticPaths() {
 
 const { useCaseId } = Astro.props;
 const showcase = getLandingUseCaseShowcase(useCaseId);
+const latestPosts = await getLatestPosts(3);
 ---
 
 <BaseLayout
@@ -39,6 +41,7 @@ const showcase = getLandingUseCaseShowcase(useCaseId);
         defaultUseCaseId={showcase.id}
         linkTabsToCampaigns
         heroCopy={getSurfaceHeroCopy("landing", showcase.id)}
+        latestPosts={latestPosts}
       />
     </main>
     <Footer />

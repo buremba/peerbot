@@ -4,6 +4,9 @@ import "../globals.css";
 import { Footer } from "../components/Footer";
 import { LandingPage } from "../components/LandingPage";
 import { Nav } from "../components/Nav";
+import { getLatestPosts } from "../latest-posts";
+
+const latestPosts = await getLatestPosts(3);
 ---
 
 <BaseLayout>
@@ -16,7 +19,7 @@ import { Nav } from "../components/Nav";
   >
     <Nav currentPath={Astro.url.pathname} />
     <main class="relative z-[1]">
-      <LandingPage client:load linkTabsToCampaigns />
+      <LandingPage client:load linkTabsToCampaigns latestPosts={latestPosts} />
     </main>
     <Footer />
   </div>

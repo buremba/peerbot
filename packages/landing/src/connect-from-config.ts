@@ -35,7 +35,6 @@ type ConnectFromClientConfig = {
    * Owletto memory for them.
    */
   installPrompt: string;
-  installPromptLabel: string;
   /**
    * Optional npm package to surface as the canonical install path.
    */
@@ -64,7 +63,6 @@ export const connectFromClientConfigs: Record<
     startTitle: "Connect ChatGPT to Owletto",
     valueProp:
       "Add structured, queryable long-term memory to ChatGPT — the same graph other agents share, recalled and updated through one MCP endpoint.",
-    installPromptLabel: "Copy install prompt",
     installPrompt:
       "Connect ChatGPT to Owletto: open Settings → Integrations → Model Context Protocol → Add Server, name it `Owletto`, and paste the MCP URL https://owletto.com/mcp. Sign in with your Owletto account when prompted, then point ChatGPT at the workspace I want it to use.",
     describe: mcpClientDescribe("ChatGPT"),
@@ -90,7 +88,6 @@ export const connectFromClientConfigs: Record<
     startTitle: "Connect Claude to Owletto",
     valueProp:
       "Give Claude durable, structured memory it can search and append to — so the same recall is available across Claude, ChatGPT, and your own agents.",
-    installPromptLabel: "Copy install prompt",
     installPrompt:
       "Connect Claude to Owletto: open Settings → Connectors → Add Custom Connector, paste the MCP URL https://owletto.com/mcp, complete the Owletto sign-in, then enable the connector. Pick the workspace I want Claude to read and write.",
     describe: mcpClientDescribe("Claude"),
@@ -124,7 +121,6 @@ export const connectFromClientConfigs: Record<
     startTitle: "Install Owletto memory in OpenClaw",
     valueProp:
       "Layer structured, shareable memory on top of OpenClaw's built-in filesystem memory — the plugin extends OpenClaw's filesystem plugin and can optionally take over its memory slot, so different OpenClaw agents can talk to each other through the same Owletto graph.",
-    installPromptLabel: "Copy install prompt",
     installPrompt:
       "Install Owletto memory in OpenClaw. Run:\n\n  openclaw plugins install owletto-openclaw-plugin\n  owletto login https://owletto.com/mcp\n  owletto configure\n  owletto health\n\nThe plugin extends OpenClaw's filesystem plugin and can replace its memory slot. After install, point me at the Owletto workspace I should use as shared memory across my OpenClaw agents.",
     npmPackage: {

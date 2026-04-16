@@ -8,11 +8,13 @@ import { ArchitectureSection } from "./ArchitectureSection";
 import { CTA } from "./CTA";
 import { DemoSection } from "./DemoSection";
 import { HeroSection } from "./HeroSection";
+import { LatestBlogPosts, type LatestBlogPost } from "./LatestBlogPosts";
 
 export function LandingPage(props: {
   defaultUseCaseId?: LandingUseCaseId;
   linkTabsToCampaigns?: boolean;
   heroCopy?: SurfaceHeroCopy;
+  latestPosts?: LatestBlogPost[];
 }) {
   const [activeUseCaseId, setActiveUseCaseId] = useState<LandingUseCaseId>(
     props.defaultUseCaseId ?? DEFAULT_LANDING_USE_CASE_ID
@@ -39,6 +41,12 @@ export function LandingPage(props: {
         <ArchitectureSection activeUseCaseId={activeUseCaseId} />
         <div class="section-divider" />
       </div>
+      {props.latestPosts?.length ? (
+        <>
+          <div class="section-divider" />
+          <LatestBlogPosts posts={props.latestPosts} />
+        </>
+      ) : null}
       <CTA
         activeUseCaseId={activeUseCaseId}
         useScopedOwlettoUrl={useScopedOwlettoUrl}

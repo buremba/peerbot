@@ -9,7 +9,7 @@
   "prerelease": false,
   "separate-pull-requests": false,
   "changelog-path": "CHANGELOG.md",
-  "pull-request-title-pattern": "chore${scope}: release${component} ${version}",
+  "pull-request-title-pattern": "chore(main): release ${version}",
   "packages": {
     ".": {
       "package-name": "@lobu/gateway",

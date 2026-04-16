@@ -20,7 +20,8 @@ services:
     restart: unless-stopped
 
   gateway:
-    image: lobu-gateway:latest
+    image: ghcr.io/lobu-ai/lobu-gateway:latest
+    pull_policy: always
     ports:
       - "127.0.0.1:${GATEWAY_PORT:-8090}:8080"
     environment:

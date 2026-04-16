@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.4.1](https://github.com/lobu-ai/lobu/compare/v3.4.0...v3.4.1) (2026-04-16)
+
+
+### Bug Fixes
+
+* **ci:** restore release-please pull-request-title-pattern ([#186](https://github.com/lobu-ai/lobu/issues/186)) ([699f40b](https://github.com/lobu-ai/lobu/commit/699f40b0cf9375b25a76733f7351ca934730fe9d))
+* **ci:** use simpler release-please title pattern that actually works ([#188](https://github.com/lobu-ai/lobu/issues/188)) ([11e1e70](https://github.com/lobu-ai/lobu/commit/11e1e7056674b1ed67be9678ed4c1fa2a988a9c2))
+
 ## [3.4.0](https://github.com/lobu-ai/lobu/compare/v3.3.0...v3.4.0) (2026-04-16)
 
 

@@ -53,6 +53,8 @@ export function createOpenClawCustomTools(params: {
   channelId: string;
   conversationId: string;
   platform?: string;
+  /** Session workspace directory. Required — UploadUserFile resolves relative paths against it. */
+  workspaceDir: string;
   onCustomEvent?: (
     name: string,
     data: Record<string, unknown>
@@ -64,6 +66,7 @@ export function createOpenClawCustomTools(params: {
     channelId: params.channelId,
     conversationId: params.conversationId,
     platform: params.platform || "slack",
+    workspaceDir: params.workspaceDir,
   };
 
   const tools: ToolDefinition[] = [

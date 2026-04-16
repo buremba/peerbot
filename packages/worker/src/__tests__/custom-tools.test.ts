@@ -20,6 +20,7 @@ describe("createOpenClawCustomTools", () => {
       channelId: "channel-1",
       conversationId: "conversation-1",
       platform: "telegram",
+      workspaceDir: "/tmp/test-workspace",
     });
 
     expect(tools.map((tool) => tool.name)).toEqual([
@@ -59,6 +60,7 @@ describe("createOpenClawCustomTools", () => {
         channelId: "channel-1",
         conversationId: "conversation-1",
         platform: "telegram",
+        workspaceDir: tempDir,
         onCustomEvent: (name, data) => {
           events.push({ name, data });
         },

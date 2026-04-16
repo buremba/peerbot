@@ -121,6 +121,12 @@ export interface GatewayParams {
   channelId: string;
   conversationId: string;
   platform?: string;
+  /**
+   * Session workspace directory. Relative file paths from the model get
+   * resolved against this (not `process.cwd()`, which is the parent gateway
+   * process's directory, not the per-conversation workspace).
+   */
+  workspaceDir?: string;
 }
 
 // ============================================================================
@@ -201,9 +207,14 @@ export async function uploadUserFile(
       `Show file to user: ${args.file_path}, description: ${args.description || "none"}`
     );
 
+    if (!path.isAbsolute(args.file_path) && !gw.workspaceDir) {
+      return textResult(
+        `Error: Cannot resolve relative file path "${args.file_path}" — workspaceDir not set. This is a wiring bug; pass an absolute path or ensure the worker was started with a workspace.`
+      );
+    }
     const filePath = path.isAbsolute(args.file_path)
       ? args.file_path
-      : path.join(process.cwd(), args.file_path);
+      : path.join(gw.workspaceDir as string, args.file_path);
 
     const stats = await fs.stat(filePath).catch(() => null);
     if (!stats || !stats.isFile()) {

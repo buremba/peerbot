@@ -895,9 +895,25 @@ export class OpenClawWorker implements WorkerExecutor {
         );
       }
     }
-    const model = providerBaseUrl
+    const resolvedModel = providerBaseUrl
       ? { ...baseModel, baseUrl: providerBaseUrl }
       : baseModel;
+
+    // Defensive: any `openai-completions` model whose baseUrl is not real
+    // OpenAI is a third-party compat endpoint (Gemini, Nvidia, Together, z.ai,
+    // etc.). These reject unknown fields and 400 with "Unknown name 'store'"
+    // if pi-ai sends `store: false`. Force it off regardless of whether the
+    // model came from the static registry or the dynamic fallback above.
+    const isThirdPartyOpenAICompat =
+      resolvedModel.api === "openai-completions" &&
+      typeof resolvedModel.baseUrl === "string" &&
+      !resolvedModel.baseUrl.startsWith("https://api.openai.com");
+    const model = isThirdPartyOpenAICompat
+      ? {
+          ...resolvedModel,
+          compat: { ...(resolvedModel.compat ?? {}), supportsStore: false },
+        }
+      : resolvedModel;
 
     const workspaceDir = this.getWorkingDirectory();
     await fs.mkdir(path.join(workspaceDir, ".openclaw"), { recursive: true });
@@ -1012,6 +1028,7 @@ export class OpenClawWorker implements WorkerExecutor {
       channelId: this.config.channelId,
       conversationId: this.config.conversationId,
       platform: this.config.platform,
+      workspaceDir,
     };
 
     let embeddedBashOps:
@@ -1022,6 +1039,7 @@ export class OpenClawWorker implements WorkerExecutor {
         "../embedded/just-bash-bootstrap"
       );
       embeddedBashOps = await createEmbeddedBashOps({
+        workspaceDir,
         mcpRuntimeRef,
         gw: gwParams,
         mcpExposure,
@@ -1145,6 +1163,7 @@ Use it when the user references past discussions or you need context.`);
 
     const customTools = createOpenClawCustomTools({
       ...gwParams,
+      workspaceDir,
       onCustomEvent: async (name, data) => {
         await onProgress({
           type: "custom_event",
@@ -1792,21 +1811,28 @@ Use it when the user references past discussions or you need context.`);
     const workspaceDir = this.workspaceManager.getCurrentWorkingDirectory();
     const files = this.uploadedFiles;
 
+    const fileOutputRules = `
+**Mandatory workflow for ANY file you create or generate:**
+1. Write the file to disk (e.g. \`output/report.pdf\`).
+2. Call \`UploadUserFile\` with the file path — this is the ONLY way the user can access it.
+3. Confirm delivery ONLY after \`UploadUserFile\` succeeds.
+
+**Workspace paths are not accessible to users.** Paths like \`/workspace/...\` or \`/app/workspaces/...\` are internal sandbox paths. Never show them as file locations, download links, or "saved at" references. The user cannot reach them. Always use \`UploadUserFile\` instead.`;
+
     if (files.length === 0) {
       return `
 
 ## File Generation & Output
 
+${fileOutputRules}
+
 **When to Create Files:**
-Create and show files for any output that helps answer the user's request by using \`UploadUserFile\` tool:
+Create and show files for any output that helps answer the user's request:
 - **Charts & visualizations**: pie charts, bar graphs, plots, diagrams via \`matplotlib\`
 - **Reports & documents**: analysis reports, summaries, PDFs
 - **Data files**: CSV exports, JSON data, spreadsheets
 - **Code files**: scripts, configurations, examples
 - **Images**: generated images, processed photos, screenshots.
-- If the user asked you to send, share, attach, upload, export, or make a file downloadable, this sequence is required: create the file, call \`UploadUserFile\`, then tell the user it was sent only if the tool succeeds.
-- **Never** present \`sandbox:/\`, workspace paths, or local filesystem links as if they were real user-downloadable files.
-- **Never** say a file was sent unless \`UploadUserFile\` actually succeeded.
 `;
     }
 
@@ -1834,16 +1860,15 @@ Create and show files for any output that helps answer the user's request by usi
 
 ## File Generation & Output
 
+${fileOutputRules}
+
 **When to Create Files:**
-Create and show files for any output that helps answer the user's request by using \`UploadUserFile\` tool:
+Create and show files for any output that helps answer the user's request:
 - **Charts & visualizations**: pie charts, bar graphs, plots, diagrams via \`matplotlib\`
 - **Reports & documents**: analysis reports, summaries, PDFs
 - **Data files**: CSV exports, JSON data, spreadsheets
 - **Code files**: scripts, configurations, examples
 - **Images**: generated images, processed photos, screenshots.
-- If the user asked you to send, share, attach, upload, export, or make a file downloadable, this sequence is required: create the file, call \`UploadUserFile\`, then tell the user it was sent only if the tool succeeds.
-- **Never** present \`sandbox:/\`, workspace paths, or local filesystem links as if they were real user-downloadable files.
-- **Never** say a file was sent unless \`UploadUserFile\` actually succeeded.
 
 ### User-Uploaded Files
 The user has uploaded ${files.length} file(s) for you to analyze:

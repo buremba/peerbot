@@ -39,6 +39,14 @@ export interface ThreadSession {
   agentId?: string;
   /** Process without persisting history */
   dryRun?: boolean;
+  /**
+   * True when the session was created without a caller-supplied agentId and
+   * the gateway auto-provisioned both the agent and its settings. Only
+   * ephemeral sessions should have their settings torn down on DELETE —
+   * tearing down a shared/named agent's settings corrupts every other
+   * session that reuses it.
+   */
+  isEphemeral?: boolean;
 }
 
 /**

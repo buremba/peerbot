@@ -700,6 +700,7 @@ export function createAgentApi(
       nixConfig,
       agentId,
       dryRun: dryRun || false,
+      isEphemeral,
     };
     await sessMgr.setSession(session);
 
@@ -780,10 +781,13 @@ export function createAgentApi(
     // Get real agentId from session before deleting
     const session = await sessMgr.getSession(sessionKey);
     const realAgentId = session?.agentId || sessionKey;
+    const wasEphemeral = session?.isEphemeral === true;
 
     await sessMgr.deleteSession(sessionKey);
-    // Clean up ephemeral agent settings
-    if (agentSettingsStore) {
+    // Only tear down agent settings if we auto-provisioned them for an
+    // ephemeral session. Named/shared agents (like ones loaded from
+    // filesystem config) must keep their settings across session lifecycles.
+    if (wasEphemeral && agentSettingsStore) {
       await agentSettingsStore.deleteSettings(realAgentId).catch(() => {
         /* best-effort cleanup */
       });

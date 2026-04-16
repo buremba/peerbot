@@ -1754,7 +1754,8 @@ const chatScenarioContent: Partial<
       id: "devops-skill",
       tabLabel: "Skill",
       title: "Install the devops skill",
-      description: "Bundles PagerDuty, GitHub, and k8s tools with safe rollback.",
+      description:
+        "Bundles PagerDuty, GitHub, and k8s tools with safe rollback.",
       settingsLabel: "Skills and integrations",
       chatLabel: "Agent installs devops skill",
       botName: "DevOps",
@@ -1805,7 +1806,8 @@ const chatScenarioContent: Partial<
       id: "support-permission",
       tabLabel: "Permission",
       title: "Read ticket history",
-      description: "Agent asks to reach Zendesk before pulling account context.",
+      description:
+        "Agent asks to reach Zendesk before pulling account context.",
       settingsLabel: "Domains and tool permissions",
       chatLabel: "Allow yourco.zendesk.com",
       botName: "Support",
@@ -1853,7 +1855,8 @@ const chatScenarioContent: Partial<
       id: "support-settings",
       tabLabel: "Settings",
       title: "Pick a canned-response voice",
-      description: "Switch tone presets without editing the system prompt in chat.",
+      description:
+        "Switch tone presets without editing the system prompt in chat.",
       settingsLabel: "Voice, tone, and templates",
       chatLabel: "Agent opens settings page",
       botName: "Support",
@@ -1903,7 +1906,8 @@ const chatScenarioContent: Partial<
       id: "legal-skill",
       tabLabel: "Skill",
       title: "Install the legal skill",
-      description: "Redline tools, clause library, and counsel approvals in one bundle.",
+      description:
+        "Redline tools, clause library, and counsel approvals in one bundle.",
       settingsLabel: "Skills and integrations",
       chatLabel: "Agent installs legal skill",
       botName: "Legal",
@@ -1977,7 +1981,8 @@ const chatScenarioContent: Partial<
       id: "sales-skill",
       tabLabel: "Skill",
       title: "Install the sales skill",
-      description: "CRM, usage telemetry, and proposal templates bundled together.",
+      description:
+        "CRM, usage telemetry, and proposal templates bundled together.",
       settingsLabel: "Skills and integrations",
       chatLabel: "Agent installs sales skill",
       botName: "Sales",
@@ -2027,7 +2032,8 @@ const chatScenarioContent: Partial<
       id: "leadership-permission",
       tabLabel: "Permission",
       title: "Read this week's updates",
-      description: "Agent asks to reach Notion before summarizing team updates.",
+      description:
+        "Agent asks to reach Notion before summarizing team updates.",
       settingsLabel: "Domains and tool permissions",
       chatLabel: "Allow yourco.notion.site",
       botName: "Chief of Staff",
@@ -2058,7 +2064,10 @@ const chatScenarioContent: Partial<
       botInitial: "C",
       botColor: "#ec4899",
       messages: [
-        { role: "user", text: "What decisions are still open from Q1 planning?" },
+        {
+          role: "user",
+          text: "What decisions are still open from Q1 planning?",
+        },
         {
           role: "bot",
           text: "I need the `leadership` skill — it bundles Notion, Google Docs, and the decision log.",
@@ -2101,7 +2110,8 @@ const chatScenarioContent: Partial<
       id: "finance-permission",
       tabLabel: "Permission",
       title: "Read ledger data",
-      description: "Agent asks to reach NetSuite before running a reconciliation.",
+      description:
+        "Agent asks to reach NetSuite before running a reconciliation.",
       settingsLabel: "Domains and tool permissions",
       chatLabel: "Allow yourco.netsuite.com",
       botName: "Finance",
@@ -2125,14 +2135,18 @@ const chatScenarioContent: Partial<
       id: "finance-skill",
       tabLabel: "Skill",
       title: "Install the finance skill",
-      description: "ERP, payment systems, and close-process tooling bundled together.",
+      description:
+        "ERP, payment systems, and close-process tooling bundled together.",
       settingsLabel: "Skills and integrations",
       chatLabel: "Agent installs finance skill",
       botName: "Finance",
       botInitial: "F",
       botColor: "#0ea5e9",
       messages: [
-        { role: "user", text: "Flag exceptions over $5k in this week's AP run" },
+        {
+          role: "user",
+          text: "Flag exceptions over $5k in this week's AP run",
+        },
         {
           role: "bot",
           text: "I need the `finance` skill — it bundles NetSuite, Stripe, and the close playbook.",
@@ -2149,7 +2163,8 @@ const chatScenarioContent: Partial<
       id: "finance-settings",
       tabLabel: "Settings",
       title: "Set approval thresholds",
-      description: "Which transaction sizes require human sign-off before posting.",
+      description:
+        "Which transaction sizes require human sign-off before posting.",
       settingsLabel: "Approval thresholds and policy",
       chatLabel: "Agent opens settings page",
       botName: "Finance",
@@ -2175,7 +2190,8 @@ const chatScenarioContent: Partial<
       id: "delivery-permission",
       tabLabel: "Permission",
       title: "Pull project status",
-      description: "Agent asks to reach Jira before assembling a rollout report.",
+      description:
+        "Agent asks to reach Jira before assembling a rollout report.",
       settingsLabel: "Domains and tool permissions",
       chatLabel: "Allow yourco.atlassian.net",
       botName: "Delivery",
@@ -2199,7 +2215,8 @@ const chatScenarioContent: Partial<
       id: "delivery-skill",
       tabLabel: "Skill",
       title: "Install the delivery skill",
-      description: "Jira, rollout checklists, and status reporting in one bundle.",
+      description:
+        "Jira, rollout checklists, and status reporting in one bundle.",
       settingsLabel: "Skills and integrations",
       chatLabel: "Agent installs delivery skill",
       botName: "Delivery",
@@ -2230,7 +2247,10 @@ const chatScenarioContent: Partial<
       botInitial: "D",
       botColor: "#14b8a6",
       messages: [
-        { role: "user", text: "Send stakeholders a rollout digest every Thursday" },
+        {
+          role: "user",
+          text: "Send stakeholders a rollout digest every Thursday",
+        },
         {
           role: "bot",
           text: "Digest cadence lives in settings — current: none.",
@@ -2249,7 +2269,8 @@ const chatScenarioContent: Partial<
       id: "community-permission",
       tabLabel: "Permission",
       title: "Read member directory",
-      description: "Agent asks to reach the community platform before matching members.",
+      description:
+        "Agent asks to reach the community platform before matching members.",
       settingsLabel: "Domains and tool permissions",
       chatLabel: "Allow yourco.circle.so",
       botName: "Community",
@@ -2273,7 +2294,8 @@ const chatScenarioContent: Partial<
       id: "community-skill",
       tabLabel: "Skill",
       title: "Install the community skill",
-      description: "Member directory, interest graph, and intro workflows bundled together.",
+      description:
+        "Member directory, interest graph, and intro workflows bundled together.",
       settingsLabel: "Skills and integrations",
       chatLabel: "Agent installs community skill",
       botName: "Community",
@@ -2297,7 +2319,8 @@ const chatScenarioContent: Partial<
       id: "community-settings",
       tabLabel: "Settings",
       title: "Tune matching signals",
-      description: "Which activity signals weigh most when recommending member matches.",
+      description:
+        "Which activity signals weigh most when recommending member matches.",
       settingsLabel: "Matching weights and recency",
       chatLabel: "Agent opens settings page",
       botName: "Community",
@@ -2323,7 +2346,8 @@ const chatScenarioContent: Partial<
       id: "market-permission",
       tabLabel: "Permission",
       title: "Fetch competitor signals",
-      description: "Agent asks to reach Crunchbase before pulling funding data.",
+      description:
+        "Agent asks to reach Crunchbase before pulling funding data.",
       settingsLabel: "Domains and tool permissions",
       chatLabel: "Allow crunchbase.com",
       botName: "Market Intel",
@@ -2347,7 +2371,8 @@ const chatScenarioContent: Partial<
       id: "market-skill",
       tabLabel: "Skill",
       title: "Install the market intel skill",
-      description: "Crunchbase, Product Hunt, review sites, and news feeds in one bundle.",
+      description:
+        "Crunchbase, Product Hunt, review sites, and news feeds in one bundle.",
       settingsLabel: "Skills and integrations",
       chatLabel: "Agent installs market intel skill",
       botName: "Market Intel",
@@ -2397,7 +2422,8 @@ const chatScenarioContent: Partial<
       id: "careops-permission",
       tabLabel: "Permission",
       title: "Read the care platform",
-      description: "Agent asks to reach the care platform before reviewing a patient.",
+      description:
+        "Agent asks to reach the care platform before reviewing a patient.",
       settingsLabel: "Domains and tool permissions",
       chatLabel: "Allow yourco.healthie.com",
       botName: "CareOps",
@@ -2421,7 +2447,8 @@ const chatScenarioContent: Partial<
       id: "careops-skill",
       tabLabel: "Skill",
       title: "Install the careops skill",
-      description: "Care platform, scheduling, and follow-up playbooks bundled together.",
+      description:
+        "Care platform, scheduling, and follow-up playbooks bundled together.",
       settingsLabel: "Skills and integrations",
       chatLabel: "Agent installs careops skill",
       botName: "CareOps",
@@ -2487,7 +2514,7 @@ const chatScenarioContent: Partial<
         { role: "user", text: "Allow" },
         {
           role: "bot",
-          text: "Order #10482 shipped Apr 12, delivered Apr 15. Customer opened a \"where is it\" ticket today — tracking shows delivered to mailroom. Drafted reply with photo proof.",
+          text: 'Order #10482 shipped Apr 12, delivered Apr 15. Customer opened a "where is it" ticket today — tracking shows delivered to mailroom. Drafted reply with photo proof.',
         },
       ],
     },
@@ -2519,7 +2546,8 @@ const chatScenarioContent: Partial<
       id: "ecommerce-settings",
       tabLabel: "Settings",
       title: "Set refund approval limits",
-      description: "Maximum auto-refund the agent can issue without human review.",
+      description:
+        "Maximum auto-refund the agent can issue without human review.",
       settingsLabel: "Refund limits and policy",
       chatLabel: "Agent opens settings page",
       botName: "Store",
@@ -2545,7 +2573,8 @@ const chatScenarioContent: Partial<
       id: "vc-permission",
       tabLabel: "Permission",
       title: "Pull deal flow data",
-      description: "Agent asks to reach Affinity before summarizing the pipeline.",
+      description:
+        "Agent asks to reach Affinity before summarizing the pipeline.",
       settingsLabel: "Domains and tool permissions",
       chatLabel: "Allow affinity.co",
       botName: "Deal Flow",
@@ -2569,14 +2598,18 @@ const chatScenarioContent: Partial<
       id: "vc-skill",
       tabLabel: "Skill",
       title: "Install the VC skill",
-      description: "Affinity, Crunchbase, and diligence checklists bundled together.",
+      description:
+        "Affinity, Crunchbase, and diligence checklists bundled together.",
       settingsLabel: "Skills and integrations",
       chatLabel: "Agent installs vc skill",
       botName: "Deal Flow",
       botInitial: "D",
       botColor: "#f43f5e",
       messages: [
-        { role: "user", text: "Find co-investors we've backed with in AI infra" },
+        {
+          role: "user",
+          text: "Find co-investors we've backed with in AI infra",
+        },
         {
           role: "bot",
           text: "I need the `vc` skill — it bundles Affinity, Crunchbase, and our portfolio graph.",
@@ -2593,7 +2626,8 @@ const chatScenarioContent: Partial<
       id: "vc-settings",
       tabLabel: "Settings",
       title: "Choose an investment thesis",
-      description: "Pick which thesis the agent uses when scoring inbound deals.",
+      description:
+        "Pick which thesis the agent uses when scoring inbound deals.",
       settingsLabel: "Thesis and scoring model",
       chatLabel: "Agent opens settings page",
       botName: "Deal Flow",

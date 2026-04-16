@@ -29,12 +29,10 @@ export function CopyableSnippet({
     <div
       style={{
         borderRadius: "0.5rem",
-        border:
-          "1px solid var(--sl-color-hairline, rgba(255,255,255,0.1))",
+        border: "1px solid var(--sl-color-hairline, rgba(255,255,255,0.1))",
         margin: "0.75rem 0",
         overflow: "hidden",
-        backgroundColor:
-          "var(--sl-color-bg-inline-code, rgba(0,0,0,0.2))",
+        backgroundColor: "var(--sl-color-bg-inline-code, rgba(0,0,0,0.2))",
       }}
     >
       <div

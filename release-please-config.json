@@ -9,10 +9,10 @@
   "prerelease": false,
   "separate-pull-requests": false,
   "changelog-path": "CHANGELOG.md",
-  "pull-request-title-pattern": "chore(main): release ${version}",
+  "pull-request-title-pattern": "chore(main): release${component} ${version}",
   "packages": {
     ".": {
-      "component": "",
+      "package-name": "lobu",
       "release-type": "node",
       "extra-files": [
         {

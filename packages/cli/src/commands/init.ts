@@ -881,6 +881,18 @@ ${owlettoServices}
       # memory from [memory.owletto] in lobu.toml and owletto.yaml.
       MEMORY_URL: \${MEMORY_URL:-}
       LOBU_WORKSPACE_ROOT: /workspace/project
+      # Provider API keys — passthrough any that are set in the host env so
+      # agents can reference them as \`$VAR\` in lobu.toml. Unset vars expand
+      # to empty strings and are ignored by the agent runtime.
+      ANTHROPIC_API_KEY: \${ANTHROPIC_API_KEY:-}
+      GEMINI_API_KEY: \${GEMINI_API_KEY:-}
+      OPENAI_API_KEY: \${OPENAI_API_KEY:-}
+      OPENROUTER_API_KEY: \${OPENROUTER_API_KEY:-}
+      Z_AI_API_KEY: \${Z_AI_API_KEY:-}
+      # Platform credentials — same pattern: set only the ones your agents use.
+      SLACK_BOT_TOKEN: \${SLACK_BOT_TOKEN:-}
+      SLACK_SIGNING_SECRET: \${SLACK_SIGNING_SECRET:-}
+      TELEGRAM_BOT_TOKEN: \${TELEGRAM_BOT_TOKEN:-}
     volumes:${dockerSocketMount}
       - .:/workspace/project:ro
     networks:

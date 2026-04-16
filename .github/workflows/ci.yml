@@ -82,7 +82,7 @@ jobs:
     needs: [test, format-lint, typecheck]
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     env:
-      Z_AI_API_KEY: ${{ secrets.Z_AI_API_KEY }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
     steps:
       - uses: actions/checkout@v4
 
@@ -90,10 +90,10 @@ jobs:
         with:
           bun-version: 1.3.5
 
-      - name: Require Z_AI_API_KEY secret
+      - name: Require GEMINI_API_KEY secret
         run: |
-          if [ -z "$Z_AI_API_KEY" ]; then
-            echo "Z_AI_API_KEY secret is not configured"
+          if [ -z "$GEMINI_API_KEY" ]; then
+            echo "GEMINI_API_KEY secret is not configured"
             exit 1
           fi
 
@@ -115,7 +115,7 @@ jobs:
           ADMIN_PASSWORD=ci-eval-password
           ENCRYPTION_KEY=$(openssl rand -hex 32)
           GATEWAY_PORT=8081
-          Z_AI_API_KEY=${Z_AI_API_KEY}
+          GEMINI_API_KEY=${GEMINI_API_KEY}
           EOF
 
       - name: Start stack
@@ -123,7 +123,7 @@ jobs:
         run: |
           mkdir -p data && chmod 777 data
           # Use the gateway image built from this checkout and tame Redis
-          # for ephemeral CI. Z_AI_API_KEY passthrough already exists in
+          # for ephemeral CI. GEMINI_API_KEY passthrough already exists in
           # the base docker-compose.yml.
           cat > docker-compose.override.yml <<'YAML'
           services:

@@ -12,17 +12,35 @@ type ConnectFromDocSection = {
   paragraphs: string[];
 };
 
+export type ConnectFromNpmPackage = {
+  name: string;
+  registryUrl: string;
+  sourceUrl: string;
+  installCommand: string;
+};
+
 type ConnectFromClientConfig = {
   id: ConnectFromClientId;
   label: string;
   docsHref: string;
   docsLabel: string;
-  command: string;
   startTitle: string;
+  /**
+   * One-liner shown directly under the page title that explains what Owletto
+   * adds to this agent.
+   */
+  valueProp: string;
+  /**
+   * The text the user copies into their agent (or assistant) so it can install
+   * Owletto memory for them.
+   */
+  installPrompt: string;
+  installPromptLabel: string;
+  /**
+   * Optional npm package to surface as the canonical install path.
+   */
+  npmPackage?: ConnectFromNpmPackage;
   describe: (showcase: LandingUseCaseShowcase) => string;
-  prompt: (showcase: LandingUseCaseShowcase) => string;
-  docsIntro: string[];
-  docsNeeds: string[];
   docsSetupTitle: string;
   docsSetupSteps: string[];
   docsSetupNote?: string;
@@ -30,25 +48,9 @@ type ConnectFromClientConfig = {
   docsRelated: ConnectFromDocLink[];
 };
 
-const MCP_CLIENT_NEEDS = [
-  "An Owletto MCP endpoint (shared or org-scoped)",
-  "A valid Owletto login",
-  "A workspace or organization selected in Owletto",
-];
-
-const mcpClientSteps = (label: string) => [
-  `Open ${label}'s MCP connection flow.`,
-  "Add your Owletto MCP endpoint.",
-  "Complete the normal Owletto auth flow.",
-  `Verify ${label} can access the memory tools you expect.`,
-];
-
 const mcpClientDescribe =
   (label: string) => (showcase: LandingUseCaseShowcase) =>
-    `Use the ${showcase.label.toLowerCase()} Owletto workspace as the shared memory layer for ${label}, then reuse the same entities, relations, and watcher outputs from this example.`;
-
-const mcpClientPrompt = (label: string) => (showcase: LandingUseCaseShowcase) =>
-  `Connect ${label} to Owletto for ${showcase.label}. Reuse the same memory model shown here: ${showcase.memory.entityTypes.join(", ")}. Keep ${label} pointed at the Owletto workspace for this project so it can search, read, and save shared memory.`;
+    `Use ${label} on top of the ${showcase.label.toLowerCase()} workspace so it can read and write the same shared memory shown in this example.`;
 
 export const connectFromClientConfigs: Record<
   ConnectFromClientId,
@@ -59,18 +61,22 @@ export const connectFromClientConfigs: Record<
     label: "ChatGPT",
     docsHref: "/connect-from/chatgpt/",
     docsLabel: "ChatGPT setup docs",
-    command: "npx owletto@latest init",
-    startTitle: "Connect ChatGPT in seconds",
+    startTitle: "Connect ChatGPT to Owletto",
+    valueProp:
+      "Add structured, queryable long-term memory to ChatGPT — the same graph other agents share, recalled and updated through one MCP endpoint.",
+    installPromptLabel: "Copy install prompt",
+    installPrompt:
+      "Connect ChatGPT to Owletto: open Settings → Integrations → Model Context Protocol → Add Server, name it `Owletto`, and paste the MCP URL https://owletto.com/mcp. Sign in with your Owletto account when prompted, then point ChatGPT at the workspace I want it to use.",
     describe: mcpClientDescribe("ChatGPT"),
-    prompt: mcpClientPrompt("ChatGPT"),
-    docsIntro: [
-      "Use your Owletto MCP endpoint (or an org-scoped endpoint for fixed workspaces) as the memory source when connecting from ChatGPT.",
-    ],
-    docsNeeds: MCP_CLIENT_NEEDS,
     docsSetupTitle: "Connect ChatGPT",
-    docsSetupSteps: mcpClientSteps("ChatGPT"),
+    docsSetupSteps: [
+      "Open Settings → Integrations → Model Context Protocol → Add Server in ChatGPT.",
+      "Name the server `Owletto` and paste https://owletto.com/mcp as the URL.",
+      "Complete the Owletto sign-in flow in the popup.",
+      "Pick the workspace ChatGPT should read and write.",
+    ],
     docsSetupNote:
-      "Start with the same endpoint and auth flow described in the Owletto CLI Reference.",
+      "ChatGPT discovers the available memory tools automatically once the MCP connection is approved.",
     docsRelated: [
       { label: "Memory", href: "/getting-started/memory/" },
       { label: "Owletto CLI Reference", href: "/reference/owletto-cli/" },
@@ -81,24 +87,27 @@ export const connectFromClientConfigs: Record<
     label: "Claude",
     docsHref: "/connect-from/claude/",
     docsLabel: "Claude setup docs",
-    command: "npx owletto@latest init",
-    startTitle: "Connect Claude in seconds",
+    startTitle: "Connect Claude to Owletto",
+    valueProp:
+      "Give Claude durable, structured memory it can search and append to — so the same recall is available across Claude, ChatGPT, and your own agents.",
+    installPromptLabel: "Copy install prompt",
+    installPrompt:
+      "Connect Claude to Owletto: open Settings → Connectors → Add Custom Connector, paste the MCP URL https://owletto.com/mcp, complete the Owletto sign-in, then enable the connector. Pick the workspace I want Claude to read and write.",
     describe: mcpClientDescribe("Claude"),
-    prompt: mcpClientPrompt("Claude"),
-    docsIntro: [
-      "Use the same Owletto MCP endpoint (or an org-scoped endpoint for fixed workspaces) from Claude when you want Claude-based workflows to read and write shared memory.",
-    ],
-    docsNeeds: MCP_CLIENT_NEEDS,
     docsSetupTitle: "Connect Claude",
-    docsSetupSteps: mcpClientSteps("Claude"),
+    docsSetupSteps: [
+      "Open Settings → Connectors → Add Custom Connector in Claude Desktop or claude.ai.",
+      "Paste https://owletto.com/mcp as the MCP URL.",
+      "Complete the Owletto sign-in flow.",
+      "Enable the connector and choose the workspace Claude should use.",
+    ],
     docsSetupNote:
-      "In practice, this uses Claude's MCP connection flow with your Owletto endpoint and standard Owletto auth.",
+      "For Claude Code, run `claude mcp add --transport http owletto https://owletto.com/mcp` instead and complete the OAuth flow when prompted.",
     docsExtraSection: {
-      title: "Claude Code And Claude Desktop",
+      title: "Claude Code and Claude Desktop",
       paragraphs: [
-        "If you are using Claude Code or the Claude Desktop app instead of the hosted Claude client, the setup is usually a mix of local client configuration and project-level instructions.",
-        "A practical setup is to run owletto init, run owletto login, then add a local skill or instruction file that tells the agent when to search, read, and save knowledge in Owletto.",
-        "That gives you both pieces: MCP or client wiring through the Owletto CLI, plus skill-style instructions for how the coding agent should use memory during work.",
+        "Claude Code uses the same MCP endpoint, registered through `claude mcp add`. The OAuth flow is handled in your browser the first time you call a memory tool.",
+        "Pair the connector with a project-level instruction file (or a small skill) that tells Claude when to search memory before answering and when to save what it just learned.",
       ],
     },
     docsRelated: [
@@ -112,30 +121,36 @@ export const connectFromClientConfigs: Record<
     label: "OpenClaw",
     docsHref: "/connect-from/openclaw/",
     docsLabel: "OpenClaw setup docs",
-    command: "npx owletto@latest configure",
-    startTitle: "Install OpenClaw memory in seconds",
+    startTitle: "Install Owletto memory in OpenClaw",
+    valueProp:
+      "Layer structured, shareable memory on top of OpenClaw's built-in filesystem memory — the plugin extends OpenClaw's filesystem plugin and can optionally take over its memory slot, so different OpenClaw agents can talk to each other through the same Owletto graph.",
+    installPromptLabel: "Copy install prompt",
+    installPrompt:
+      "Install Owletto memory in OpenClaw. Run:\n\n  openclaw plugins install owletto-openclaw-plugin\n  owletto login https://owletto.com/mcp\n  owletto configure\n  owletto health\n\nThe plugin extends OpenClaw's filesystem plugin and can replace its memory slot. After install, point me at the Owletto workspace I should use as shared memory across my OpenClaw agents.",
+    npmPackage: {
+      name: "@lobu/owletto-openclaw",
+      registryUrl: "https://www.npmjs.com/package/@lobu/owletto-openclaw",
+      sourceUrl:
+        "https://github.com/lobu-ai/owletto/tree/main/packages/openclaw-plugin",
+      installCommand: "openclaw plugins install owletto-openclaw-plugin",
+    },
     describe: (showcase) =>
-      `Install Owletto into OpenClaw for the ${showcase.label.toLowerCase()} example so OpenClaw can read and write the same shared memory graph shown on this page.`,
-    prompt: (showcase) =>
-      `Install Owletto memory in OpenClaw for ${showcase.label}. Reuse the same memory model shown here: ${showcase.memory.entityTypes.join(", ")}. Configure OpenClaw to read and write the Owletto workspace for this project.`,
-    docsIntro: [
-      "For OpenClaw, install and configure the @lobu/owletto-openclaw memory plugin so OpenClaw can read and write Owletto directly.",
-      "You can use a shared endpoint or an org-scoped endpoint for fixed workspaces.",
-    ],
-    docsNeeds: [
-      "OpenClaw installed",
-      "An Owletto MCP endpoint (shared or org-scoped)",
-      "A valid Owletto login",
-    ],
-    docsSetupTitle: "Install to OpenClaw",
+      `Install Owletto into OpenClaw and point it at the ${showcase.label.toLowerCase()} workspace so multiple OpenClaw agents share the same memory shown in this example.`,
+    docsSetupTitle: "Install in OpenClaw",
     docsSetupSteps: [
-      "Run owletto configure.",
-      "Review the generated memory plugin configuration.",
-      "Point OpenClaw at the Owletto workspace for your project.",
-      "Verify OpenClaw can read and write shared memory.",
+      "Install the plugin: `openclaw plugins install owletto-openclaw-plugin`.",
+      "Log in to Owletto: `owletto login https://owletto.com/mcp`.",
+      "Wire it into OpenClaw: `owletto configure` (writes the plugin config and, if you opt in, takes over the filesystem memory slot).",
+      "Verify: `owletto health`.",
     ],
     docsSetupNote:
-      "The fastest path is owletto configure, which writes the plugin config for you.",
+      "The plugin extends OpenClaw's filesystem plugin. Leave that plugin enabled if you want both, or let `owletto configure` swap Owletto in as the memory slot.",
+    docsExtraSection: {
+      title: "Cross-agent memory",
+      paragraphs: [
+        "Once two OpenClaw agents point at the same Owletto workspace, they read and write the same entities, observations, and decisions — that is how a team of OpenClaw agents stays coherent without copy-pasting context.",
+      ],
+    },
     docsRelated: [
       { label: "Memory", href: "/getting-started/memory/" },
       { label: "Owletto CLI Reference", href: "/reference/owletto-cli/" },

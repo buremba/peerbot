@@ -77,7 +77,7 @@ export function HeroSection(props: {
           <HighlightedText
             text={
               props.heroCopy?.title ??
-              "Your AI team, running in your infrastructure"
+              "Your AI team, running on your infrastructure"
             }
             highlight={props.heroCopy?.highlight ?? "AI team"}
           />

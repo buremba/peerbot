@@ -2,6 +2,7 @@ import type { ComponentChildren } from "preact";
 import { useEffect, useMemo, useState } from "preact/hooks";
 import { examples, type RecordNode } from "../../memory-examples";
 import { landingUseCaseOptions } from "../../use-case-showcases";
+import { Chip } from "../Chip";
 import { CompactContentRail } from "../CompactContentRail";
 import { SectionHeader } from "../SectionHeader";
 import { UseCaseTabs } from "../UseCaseTabs";
@@ -236,59 +237,6 @@ function DetailCard({ children }: { children: ComponentChildren }) {
     >
       {children}
     </div>
-  );
-}
-
-function StepChip({
-  label,
-  active = false,
-  onClick,
-  color,
-}: {
-  label: string;
-  active?: boolean;
-  onClick?: () => void;
-  color: string;
-}) {
-  const isPrimaryAccent = color === primaryAccent;
-  const style = {
-    color: active ? darkBase : textColor,
-    backgroundColor: active
-      ? color
-      : isPrimaryAccent
-        ? primaryAccentSoft
-        : `${color}14`,
-    borderColor: active
-      ? isPrimaryAccent
-        ? "rgba(var(--color-tg-accent-rgb), 0.72)"
-        : `${color}b8`
-      : isPrimaryAccent
-        ? "rgba(var(--color-tg-accent-rgb), 0.28)"
-        : `${color}47`,
-    boxShadow: active
-      ? isPrimaryAccent
-        ? "0 8px 24px rgba(var(--color-tg-accent-rgb), 0.16)"
-        : `0 8px 24px ${color}29`
-      : "none",
-  };
-
-  if (!onClick) {
-    return (
-      <span class="px-3 py-1 rounded-full text-xs border" style={style}>
-        {label}
-      </span>
-    );
-  }
-
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      class="px-3 py-1 rounded-full text-xs border transition-all hover:-translate-y-0.5"
-      style={style}
-    >
-      {label}
-    </button>
   );
 }
 
@@ -673,7 +621,7 @@ export function ExampleShowcase(props: {
                                 activeExample.entitySelections?.[type];
 
                               return (
-                                <StepChip
+                                <Chip
                                   key={type}
                                   label={type}
                                   active={targetNodeId === selectedNodeId}
@@ -1097,7 +1045,7 @@ export function ExampleShowcase(props: {
                     ) : step.chips?.length ? (
                       <div class="flex flex-wrap gap-1.5 mb-4">
                         {step.chips.map((chip) => (
-                          <StepChip key={chip} label={chip} color={color} />
+                          <Chip key={chip} label={chip} color={color} />
                         ))}
                       </div>
                     ) : null}

@@ -8,6 +8,8 @@ import { PlatformConfigTable } from "../../../components/PlatformConfigTable";
 
 Lobu's Slack adapter supports assistant threads, rich UI, and interactive workflows.
 
+<PlatformChatExamples platform="slack" client:visible />
+
 ## Setup
 
 ### Single-workspace setup
@@ -45,12 +47,6 @@ Minimum setup:
 
 When a user completes the Slack install flow, Lobu exchanges the OAuth code, stores the workspace installation, and creates or updates the Lobu Slack connection for that workspace automatically.
 
-## Interactive Examples
-
-Three common Slack thread interactions: network permission, skill install, and settings link.
-
-<PlatformChatExamples platform="slack" />
-
 ## Configuration
 
 <PlatformConfigTable platform="slack" />
@@ -64,24 +60,6 @@ Three common Slack thread interactions: network permission, skill install, and s
 - **MCP tool access** — workers discover MCP tools at startup and call them through the gateway proxy; responses render inline as system messages.
 - **Settings/auth links** rendered as platform-scoped link buttons.
 - **Thread status indicator** (`is running..`) with rotating progress messages.
-
-## Arbitrary MCP Servers
-
-Lobu supports any MCP server — Owletto's built-ins, community-published servers, or your own. MCP servers are declared in `lobu.toml` under `[agents.<id>.skills.mcp.<name>]`:
-
-```toml
-[agents.support.skills.mcp.gmail]
-url = "https://gmail-mcp.example.com"
-
-[agents.support.skills.mcp.gmail.oauth]
-auth_url = "https://auth.example.com/authorize"
-token_url = "https://auth.example.com/token"
-client_id = "$OAUTH_CLIENT_ID"
-client_secret = "$OAUTH_CLIENT_SECRET"
-scopes = ["gmail.readonly", "gmail.send"]
-```
-
-Workers discover tools at startup and call them through the gateway MCP proxy. The proxy handles credential injection, SSRF protection, and approval policy. Workers never see OAuth tokens directly.
 
 ## Destructive Tool Approval
 

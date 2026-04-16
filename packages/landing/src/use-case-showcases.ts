@@ -1,3 +1,4 @@
+import type { UseCase } from "./types";
 import {
   landingUseCases,
   technicalLinks,
@@ -62,6 +63,12 @@ export type ShowcaseMemoryExample = MemoryExample & {
   examplePath: string;
 };
 
+export type LandingUseCaseChatScenarios = {
+  permission: UseCase;
+  skill: UseCase;
+  settings: UseCase;
+};
+
 export type LandingUseCaseShowcase = {
   id: LandingUseCaseId;
   label: string;
@@ -70,6 +77,7 @@ export type LandingUseCaseShowcase = {
   runtime: RuntimeJourney;
   skills: ShowcaseSkillWorkspacePreview;
   memory: ShowcaseMemoryExample;
+  chatScenarios?: LandingUseCaseChatScenarios;
 };
 
 const docsLinks = {
@@ -1705,7 +1713,7 @@ function toCampaignMeta(
   runtime: RuntimeJourneyInput
 ): CampaignMeta {
   return {
-    title: `Deploy secure ${useCase.label.toLowerCase()} agents in your infrastructure`,
+    title: `Deploy secure ${useCase.label.toLowerCase()} agents on your infrastructure`,
     description: runtime.summary,
     seoTitle: `${useCase.label} AI agents on your infrastructure - Lobu`,
     seoDescription: runtime.summary,
@@ -1713,6 +1721,900 @@ function toCampaignMeta(
     ctaLabel: `Open ${useCase.label} page`,
   };
 }
+
+const chatScenarioContent: Partial<
+  Record<LandingUseCaseId, LandingUseCaseChatScenarios>
+> = {
+  devops: {
+    permission: {
+      id: "devops-permission",
+      tabLabel: "Permission",
+      title: "Pull live incident state",
+      description: "Agent asks to reach PagerDuty before querying incidents.",
+      settingsLabel: "Domains and tool permissions",
+      chatLabel: "Allow api.pagerduty.com",
+      botName: "DevOps",
+      botInitial: "D",
+      botColor: "#f97316",
+      messages: [
+        { role: "user", text: "What's on fire right now?" },
+        {
+          role: "bot",
+          text: "Can't reach api.pagerduty.com — not in the agent's allowed domains.\n\nGrant access?",
+          buttons: [{ label: "Allow api.pagerduty.com", action: "link" }],
+        },
+        { role: "user", text: "Allow for 1 hour" },
+        {
+          role: "bot",
+          text: "2 open incidents:\n• INC-4821 P1 checkout-api 5xx (12m)\n• INC-4820 P2 redis-cache latency (28m)\n\nBoth started after deploy #3491.",
+        },
+      ],
+    },
+    skill: {
+      id: "devops-skill",
+      tabLabel: "Skill",
+      title: "Install the devops skill",
+      description: "Bundles PagerDuty, GitHub, and k8s tools with safe rollback.",
+      settingsLabel: "Skills and integrations",
+      chatLabel: "Agent installs devops skill",
+      botName: "DevOps",
+      botInitial: "D",
+      botColor: "#f97316",
+      messages: [
+        { role: "user", text: "Roll back the checkout service" },
+        {
+          role: "bot",
+          text: "I need the `devops` skill to run rollbacks.\n\nBundles PagerDuty, GitHub, and k8s with an approval step before any write.",
+          buttons: [{ label: "Install devops", action: "link" }],
+        },
+        { role: "user", text: "Go ahead" },
+        {
+          role: "bot",
+          text: "Installed. Ready to roll checkout-api back to deploy #3490. Confirm?",
+          buttons: [{ label: "Approve rollback", action: "link" }],
+        },
+      ],
+    },
+    settings: {
+      id: "devops-settings",
+      tabLabel: "Settings",
+      title: "Set on-call routing",
+      description: "Point non-critical pages away from chat during off-hours.",
+      settingsLabel: "Schedules, models, and routing",
+      chatLabel: "Agent opens settings page",
+      botName: "DevOps",
+      botInitial: "D",
+      botColor: "#f97316",
+      messages: [
+        { role: "user", text: "Mute P3 pings overnight" },
+        {
+          role: "bot",
+          text: "Open settings to set quiet hours per severity — current on-call schedule is shown there.",
+          buttons: [{ label: "Open Settings", action: "settings" }],
+        },
+        { role: "user", text: "Set 22:00–07:00 PT for P3" },
+        {
+          role: "bot",
+          text: "Quiet hours saved. P3 stays in the incident log; only P1/P2 page during that window.",
+        },
+      ],
+    },
+  },
+  support: {
+    permission: {
+      id: "support-permission",
+      tabLabel: "Permission",
+      title: "Read ticket history",
+      description: "Agent asks to reach Zendesk before pulling account context.",
+      settingsLabel: "Domains and tool permissions",
+      chatLabel: "Allow yourco.zendesk.com",
+      botName: "Support",
+      botInitial: "S",
+      botColor: "#8b5cf6",
+      messages: [
+        { role: "user", text: "Draft a reply for Alex Kim at Redwood" },
+        {
+          role: "bot",
+          text: "Can't reach yourco.zendesk.com — not in the agent's allowed domains.\n\nGrant access?",
+          buttons: [{ label: "Allow yourco.zendesk.com", action: "link" }],
+        },
+        { role: "user", text: "Allow" },
+        {
+          role: "bot",
+          text: "Alex last wrote Tuesday — open ticket #7732 on webhook retries. Draft ready, flagged for your review before I send.",
+        },
+      ],
+    },
+    skill: {
+      id: "support-skill",
+      tabLabel: "Skill",
+      title: "Install the support skill",
+      description: "Ticketing, knowledge base, and escalation in one bundle.",
+      settingsLabel: "Skills and integrations",
+      chatLabel: "Agent installs support skill",
+      botName: "Support",
+      botInitial: "S",
+      botColor: "#8b5cf6",
+      messages: [
+        { role: "user", text: "Who owns enterprise escalations this week?" },
+        {
+          role: "bot",
+          text: "I need the `support` skill — it bundles Zendesk, the KB, and your rotation config.",
+          buttons: [{ label: "Install support", action: "link" }],
+        },
+        { role: "user", text: "Install it" },
+        {
+          role: "bot",
+          text: "Enterprise escalations this week: Priya (primary), Marcus (backup).\nP0 SLA: 15 min response.",
+        },
+      ],
+    },
+    settings: {
+      id: "support-settings",
+      tabLabel: "Settings",
+      title: "Pick a canned-response voice",
+      description: "Switch tone presets without editing the system prompt in chat.",
+      settingsLabel: "Voice, tone, and templates",
+      chatLabel: "Agent opens settings page",
+      botName: "Support",
+      botInitial: "S",
+      botColor: "#8b5cf6",
+      messages: [
+        { role: "user", text: "Use a warmer tone for replies" },
+        {
+          role: "bot",
+          text: "Tone presets live in settings — current is `neutral`.",
+          buttons: [{ label: "Open Settings", action: "settings" }],
+        },
+        { role: "user", text: "Switched to `friendly`" },
+        {
+          role: "bot",
+          text: "Using the friendly preset for new drafts. Existing replies in flight keep their tone.",
+        },
+      ],
+    },
+  },
+  legal: {
+    permission: {
+      id: "legal-permission",
+      tabLabel: "Permission",
+      title: "Fetch a counterparty's draft",
+      description: "Agent asks to reach the counterparty's contract portal.",
+      settingsLabel: "Domains and tool permissions",
+      chatLabel: "Allow contracts.redwood.com",
+      botName: "Legal",
+      botInitial: "L",
+      botColor: "#0ea5e9",
+      messages: [
+        { role: "user", text: "Review Redwood's latest NDA draft" },
+        {
+          role: "bot",
+          text: "Can't reach contracts.redwood.com — not in the agent's allowed domains.\n\nGrant access?",
+          buttons: [{ label: "Allow contracts.redwood.com", action: "link" }],
+        },
+        { role: "user", text: "Allow for this session" },
+        {
+          role: "bot",
+          text: "Pulled v4. Two clauses changed since v3:\n• §7 indemnity — narrowed cap, OK\n• §12 IP — new carve-out, needs counsel review",
+        },
+      ],
+    },
+    skill: {
+      id: "legal-skill",
+      tabLabel: "Skill",
+      title: "Install the legal skill",
+      description: "Redline tools, clause library, and counsel approvals in one bundle.",
+      settingsLabel: "Skills and integrations",
+      chatLabel: "Agent installs legal skill",
+      botName: "Legal",
+      botInitial: "L",
+      botColor: "#0ea5e9",
+      messages: [
+        { role: "user", text: "Redline this MSA against our standard" },
+        {
+          role: "bot",
+          text: "I need the `legal` skill — it bundles the redline engine, clause library, and counsel approval flow.",
+          buttons: [{ label: "Install legal", action: "link" }],
+        },
+        { role: "user", text: "Install" },
+        {
+          role: "bot",
+          text: "6 redlines drafted, 2 flagged for counsel (§12 IP, §18 liability). Nothing sent until you approve.",
+        },
+      ],
+    },
+    settings: {
+      id: "legal-settings",
+      tabLabel: "Settings",
+      title: "Pick a counsel-approved model",
+      description: "Legal review needs a model counsel has signed off on.",
+      settingsLabel: "Model and redaction policy",
+      chatLabel: "Agent opens settings page",
+      botName: "Legal",
+      botInitial: "L",
+      botColor: "#0ea5e9",
+      messages: [
+        { role: "user", text: "Use a model our counsel approved" },
+        {
+          role: "bot",
+          text: "Model picker is in settings — current list is scoped to counsel-approved options.",
+          buttons: [{ label: "Open Settings", action: "settings" }],
+        },
+        { role: "user", text: "Switched to claude-sonnet-4-6 via Bedrock" },
+        {
+          role: "bot",
+          text: "Running on claude-sonnet-4-6 (Bedrock, EU region). Redaction policy unchanged.",
+        },
+      ],
+    },
+  },
+  sales: {
+    permission: {
+      id: "sales-permission",
+      tabLabel: "Permission",
+      title: "Pull account context",
+      description: "Agent asks to reach Salesforce before prepping the call.",
+      settingsLabel: "Domains and tool permissions",
+      chatLabel: "Allow yourco.my.salesforce.com",
+      botName: "Sales",
+      botInitial: "S",
+      botColor: "#10b981",
+      messages: [
+        { role: "user", text: "Prep me for the Redwood renewal call" },
+        {
+          role: "bot",
+          text: "Can't reach yourco.my.salesforce.com — not in the agent's allowed domains.\n\nGrant access?",
+          buttons: [{ label: "Allow Salesforce", action: "link" }],
+        },
+        { role: "user", text: "Allow" },
+        {
+          role: "bot",
+          text: "Redwood, Enterprise, ARR $180k, renewal in 12 days.\n• 2 open tickets (both resolved this week)\n• Exec sponsor changed — new CFO: Priya R.\n• Last usage dip: -8% in March",
+        },
+      ],
+    },
+    skill: {
+      id: "sales-skill",
+      tabLabel: "Skill",
+      title: "Install the sales skill",
+      description: "CRM, usage telemetry, and proposal templates bundled together.",
+      settingsLabel: "Skills and integrations",
+      chatLabel: "Agent installs sales skill",
+      botName: "Sales",
+      botInitial: "S",
+      botColor: "#10b981",
+      messages: [
+        { role: "user", text: "Which pilots are at risk?" },
+        {
+          role: "bot",
+          text: "I need the `sales` skill — it bundles Salesforce, usage telemetry, and proposal tooling.",
+          buttons: [{ label: "Install sales", action: "link" }],
+        },
+        { role: "user", text: "Go" },
+        {
+          role: "bot",
+          text: "3 pilots at risk:\n• Acme — no exec sponsor named\n• Northwind — usage -40% MoM\n• Globex — procurement stalled 2wk",
+        },
+      ],
+    },
+    settings: {
+      id: "sales-settings",
+      tabLabel: "Settings",
+      title: "Sync reporting cadence",
+      description: "Weekly deal review digests and who receives them.",
+      settingsLabel: "Digests, schedules, and recipients",
+      chatLabel: "Agent opens settings page",
+      botName: "Sales",
+      botInitial: "S",
+      botColor: "#10b981",
+      messages: [
+        { role: "user", text: "Send me the weekly pipeline digest" },
+        {
+          role: "bot",
+          text: "Digest schedule is in settings — you can add recipients and pick the day.",
+          buttons: [{ label: "Open Settings", action: "settings" }],
+        },
+        { role: "user", text: "Friday 8am, add Priya" },
+        {
+          role: "bot",
+          text: "Digest scheduled Fridays 08:00 PT, sent to you + Priya. First run ships this week.",
+        },
+      ],
+    },
+  },
+  leadership: {
+    permission: {
+      id: "leadership-permission",
+      tabLabel: "Permission",
+      title: "Read this week's updates",
+      description: "Agent asks to reach Notion before summarizing team updates.",
+      settingsLabel: "Domains and tool permissions",
+      chatLabel: "Allow yourco.notion.site",
+      botName: "Chief of Staff",
+      botInitial: "C",
+      botColor: "#ec4899",
+      messages: [
+        { role: "user", text: "What shipped this week across the org?" },
+        {
+          role: "bot",
+          text: "Can't reach yourco.notion.site — not in the agent's allowed domains.\n\nGrant access?",
+          buttons: [{ label: "Allow Notion", action: "link" }],
+        },
+        { role: "user", text: "Allow" },
+        {
+          role: "bot",
+          text: "This week:\n• Platform — shipped multi-region failover\n• Growth — launched partner portal beta\n• Ops — closed 3 P1 incidents, MTTR down 22%",
+        },
+      ],
+    },
+    skill: {
+      id: "leadership-skill",
+      tabLabel: "Skill",
+      title: "Install the leadership skill",
+      description: "Docs, decisions, and team updates connected together.",
+      settingsLabel: "Skills and integrations",
+      chatLabel: "Agent installs leadership skill",
+      botName: "Chief of Staff",
+      botInitial: "C",
+      botColor: "#ec4899",
+      messages: [
+        { role: "user", text: "What decisions are still open from Q1 planning?" },
+        {
+          role: "bot",
+          text: "I need the `leadership` skill — it bundles Notion, Google Docs, and the decision log.",
+          buttons: [{ label: "Install leadership", action: "link" }],
+        },
+        { role: "user", text: "Install" },
+        {
+          role: "bot",
+          text: "4 open Q1 decisions:\n• Hiring plan for Growth (owner: Dara)\n• EU region GTM (owner: Priya)\n• Pricing revamp (blocked on finance)\n• Analytics rebuild (in discovery)",
+        },
+      ],
+    },
+    settings: {
+      id: "leadership-settings",
+      tabLabel: "Settings",
+      title: "Configure the weekly brief",
+      description: "Pick which signals flow into the Monday morning brief.",
+      settingsLabel: "Briefing topics and cadence",
+      chatLabel: "Agent opens settings page",
+      botName: "Chief of Staff",
+      botInitial: "C",
+      botColor: "#ec4899",
+      messages: [
+        { role: "user", text: "Add revenue to my Monday brief" },
+        {
+          role: "bot",
+          text: "Briefing topics live in settings — current topics: product, ops, hiring.",
+          buttons: [{ label: "Open Settings", action: "settings" }],
+        },
+        { role: "user", text: "Added revenue and churn" },
+        {
+          role: "bot",
+          text: "Monday brief now includes revenue and churn alongside the existing topics. First run Monday 07:00 PT.",
+        },
+      ],
+    },
+  },
+  finance: {
+    permission: {
+      id: "finance-permission",
+      tabLabel: "Permission",
+      title: "Read ledger data",
+      description: "Agent asks to reach NetSuite before running a reconciliation.",
+      settingsLabel: "Domains and tool permissions",
+      chatLabel: "Allow yourco.netsuite.com",
+      botName: "Finance",
+      botInitial: "F",
+      botColor: "#0ea5e9",
+      messages: [
+        { role: "user", text: "Reconcile March Stripe payouts to the GL" },
+        {
+          role: "bot",
+          text: "Can't reach yourco.netsuite.com — not in the agent's allowed domains.\n\nGrant access?",
+          buttons: [{ label: "Allow NetSuite", action: "link" }],
+        },
+        { role: "user", text: "Allow" },
+        {
+          role: "bot",
+          text: "$412,308 in Stripe payouts vs $411,922 in GL. 3 variances:\n• $180 refund booked next-month\n• $206 FX delta on EUR charges\n• Remaining balances tie.",
+        },
+      ],
+    },
+    skill: {
+      id: "finance-skill",
+      tabLabel: "Skill",
+      title: "Install the finance skill",
+      description: "ERP, payment systems, and close-process tooling bundled together.",
+      settingsLabel: "Skills and integrations",
+      chatLabel: "Agent installs finance skill",
+      botName: "Finance",
+      botInitial: "F",
+      botColor: "#0ea5e9",
+      messages: [
+        { role: "user", text: "Flag exceptions over $5k in this week's AP run" },
+        {
+          role: "bot",
+          text: "I need the `finance` skill — it bundles NetSuite, Stripe, and the close playbook.",
+          buttons: [{ label: "Install finance", action: "link" }],
+        },
+        { role: "user", text: "Install" },
+        {
+          role: "bot",
+          text: "7 AP exceptions over $5k flagged — 2 missing POs, 1 duplicate invoice, 4 awaiting approval. Summary queued for review.",
+        },
+      ],
+    },
+    settings: {
+      id: "finance-settings",
+      tabLabel: "Settings",
+      title: "Set approval thresholds",
+      description: "Which transaction sizes require human sign-off before posting.",
+      settingsLabel: "Approval thresholds and policy",
+      chatLabel: "Agent opens settings page",
+      botName: "Finance",
+      botInitial: "F",
+      botColor: "#0ea5e9",
+      messages: [
+        { role: "user", text: "Require approval for anything over $25k" },
+        {
+          role: "bot",
+          text: "Approval thresholds live in settings — current ceiling is $10k.",
+          buttons: [{ label: "Open Settings", action: "settings" }],
+        },
+        { role: "user", text: "Set to $25k" },
+        {
+          role: "bot",
+          text: "New ceiling: $25k. Transactions above that route to you before posting. Existing approvals unchanged.",
+        },
+      ],
+    },
+  },
+  delivery: {
+    permission: {
+      id: "delivery-permission",
+      tabLabel: "Permission",
+      title: "Pull project status",
+      description: "Agent asks to reach Jira before assembling a rollout report.",
+      settingsLabel: "Domains and tool permissions",
+      chatLabel: "Allow yourco.atlassian.net",
+      botName: "Delivery",
+      botInitial: "D",
+      botColor: "#14b8a6",
+      messages: [
+        { role: "user", text: "Status on the Q2 onboarding rollout?" },
+        {
+          role: "bot",
+          text: "Can't reach yourco.atlassian.net — not in the agent's allowed domains.\n\nGrant access?",
+          buttons: [{ label: "Allow Atlassian", action: "link" }],
+        },
+        { role: "user", text: "Allow" },
+        {
+          role: "bot",
+          text: "Q2 onboarding: 58% complete, 2d slip vs plan.\n• Blocked: ONB-318 (design review)\n• At risk: ONB-322 (dep on legal)\n• Next milestone: pilot kickoff May 6.",
+        },
+      ],
+    },
+    skill: {
+      id: "delivery-skill",
+      tabLabel: "Skill",
+      title: "Install the delivery skill",
+      description: "Jira, rollout checklists, and status reporting in one bundle.",
+      settingsLabel: "Skills and integrations",
+      chatLabel: "Agent installs delivery skill",
+      botName: "Delivery",
+      botInitial: "D",
+      botColor: "#14b8a6",
+      messages: [
+        { role: "user", text: "Who owns each open blocker this week?" },
+        {
+          role: "bot",
+          text: "I need the `delivery` skill — it bundles Jira, ownership data, and status templates.",
+          buttons: [{ label: "Install delivery", action: "link" }],
+        },
+        { role: "user", text: "Install" },
+        {
+          role: "bot",
+          text: "5 open blockers:\n• ONB-318 → Dara (design)\n• API-94 → Luis (backend)\n• SEC-22 → Priya (sec review)\n• ONB-322 → Legal\n• DATA-61 → Unassigned",
+        },
+      ],
+    },
+    settings: {
+      id: "delivery-settings",
+      tabLabel: "Settings",
+      title: "Configure status digests",
+      description: "Who gets the weekly rollout digest, and when.",
+      settingsLabel: "Digests, schedules, and recipients",
+      chatLabel: "Agent opens settings page",
+      botName: "Delivery",
+      botInitial: "D",
+      botColor: "#14b8a6",
+      messages: [
+        { role: "user", text: "Send stakeholders a rollout digest every Thursday" },
+        {
+          role: "bot",
+          text: "Digest cadence lives in settings — current: none.",
+          buttons: [{ label: "Open Settings", action: "settings" }],
+        },
+        { role: "user", text: "Added stakeholders, Thursdays 09:00" },
+        {
+          role: "bot",
+          text: "Scheduled Thursdays 09:00 PT to the stakeholder list. First run ships this week with current blockers and risks.",
+        },
+      ],
+    },
+  },
+  "agent-community": {
+    permission: {
+      id: "community-permission",
+      tabLabel: "Permission",
+      title: "Read member directory",
+      description: "Agent asks to reach the community platform before matching members.",
+      settingsLabel: "Domains and tool permissions",
+      chatLabel: "Allow yourco.circle.so",
+      botName: "Community",
+      botInitial: "C",
+      botColor: "#8b5cf6",
+      messages: [
+        { role: "user", text: "Find 5 members working on RAG eval tooling" },
+        {
+          role: "bot",
+          text: "Can't reach yourco.circle.so — not in the agent's allowed domains.\n\nGrant access?",
+          buttons: [{ label: "Allow Circle", action: "link" }],
+        },
+        { role: "user", text: "Allow" },
+        {
+          role: "bot",
+          text: "5 member matches:\n• Maya R. — shipped eval harness in #ml-infra\n• Dev K. — posted benchmark last week\n• Lin C. — asking for RAG ground truth\n• Priya N. — hiring for eval work\n• Sam T. — wrote the eval FAQ.",
+        },
+      ],
+    },
+    skill: {
+      id: "community-skill",
+      tabLabel: "Skill",
+      title: "Install the community skill",
+      description: "Member directory, interest graph, and intro workflows bundled together.",
+      settingsLabel: "Skills and integrations",
+      chatLabel: "Agent installs community skill",
+      botName: "Community",
+      botInitial: "C",
+      botColor: "#8b5cf6",
+      messages: [
+        { role: "user", text: "Who's active in #ai-safety this month?" },
+        {
+          role: "bot",
+          text: "I need the `community` skill — it bundles the member directory, interest graph, and intro playbooks.",
+          buttons: [{ label: "Install community", action: "link" }],
+        },
+        { role: "user", text: "Install" },
+        {
+          role: "bot",
+          text: "Top 8 active: Priya, Dev, Maya, Lin, Sam, Alex, Rui, Chen. 3 new members joined this week — suggest intros?",
+        },
+      ],
+    },
+    settings: {
+      id: "community-settings",
+      tabLabel: "Settings",
+      title: "Tune matching signals",
+      description: "Which activity signals weigh most when recommending member matches.",
+      settingsLabel: "Matching weights and recency",
+      chatLabel: "Agent opens settings page",
+      botName: "Community",
+      botInitial: "C",
+      botColor: "#8b5cf6",
+      messages: [
+        { role: "user", text: "Weight recent posts higher than bio tags" },
+        {
+          role: "bot",
+          text: "Matching weights live in settings — current: equal weight, 90-day window.",
+          buttons: [{ label: "Open Settings", action: "settings" }],
+        },
+        { role: "user", text: "Posts 2x bio, 30-day window" },
+        {
+          role: "bot",
+          text: "Updated. New matches favor active posters in the last 30 days. Next request will use the new weights.",
+        },
+      ],
+    },
+  },
+  "market-intelligence": {
+    permission: {
+      id: "market-permission",
+      tabLabel: "Permission",
+      title: "Fetch competitor signals",
+      description: "Agent asks to reach Crunchbase before pulling funding data.",
+      settingsLabel: "Domains and tool permissions",
+      chatLabel: "Allow crunchbase.com",
+      botName: "Market Intel",
+      botInitial: "M",
+      botColor: "#eab308",
+      messages: [
+        { role: "user", text: "Did Acme's competitor raise recently?" },
+        {
+          role: "bot",
+          text: "Can't reach crunchbase.com — not in the agent's allowed domains.\n\nGrant access?",
+          buttons: [{ label: "Allow Crunchbase", action: "link" }],
+        },
+        { role: "user", text: "Allow" },
+        {
+          role: "bot",
+          text: "Yes — Northwind raised $48M Series B two weeks ago (led by Sequoia).\nHead count jumped from 42 → 61 on LinkedIn.\nNew product page: launched April 8.",
+        },
+      ],
+    },
+    skill: {
+      id: "market-skill",
+      tabLabel: "Skill",
+      title: "Install the market intel skill",
+      description: "Crunchbase, Product Hunt, review sites, and news feeds in one bundle.",
+      settingsLabel: "Skills and integrations",
+      chatLabel: "Agent installs market intel skill",
+      botName: "Market Intel",
+      botInitial: "M",
+      botColor: "#eab308",
+      messages: [
+        { role: "user", text: "What launched in our category this week?" },
+        {
+          role: "bot",
+          text: "I need the `market-intel` skill — it bundles Product Hunt, Crunchbase, and review aggregators.",
+          buttons: [{ label: "Install market-intel", action: "link" }],
+        },
+        { role: "user", text: "Install" },
+        {
+          role: "bot",
+          text: "6 launches this week:\n• Northwind Cloud — #2 on PH\n• 2 niche OSS entrants\n• 3 feature expansions by incumbents.\nSummary and links queued.",
+        },
+      ],
+    },
+    settings: {
+      id: "market-settings",
+      tabLabel: "Settings",
+      title: "Pick tracked competitors",
+      description: "The watchlist that drives daily signals and digests.",
+      settingsLabel: "Competitor watchlist",
+      chatLabel: "Agent opens settings page",
+      botName: "Market Intel",
+      botInitial: "M",
+      botColor: "#eab308",
+      messages: [
+        { role: "user", text: "Add Northwind to the tracked list" },
+        {
+          role: "bot",
+          text: "Watchlist lives in settings — current: 6 companies.",
+          buttons: [{ label: "Open Settings", action: "settings" }],
+        },
+        { role: "user", text: "Added Northwind" },
+        {
+          role: "bot",
+          text: "Now tracking Northwind across funding, launches, and hiring. First daily signal email includes them tomorrow.",
+        },
+      ],
+    },
+  },
+  careops: {
+    permission: {
+      id: "careops-permission",
+      tabLabel: "Permission",
+      title: "Read the care platform",
+      description: "Agent asks to reach the care platform before reviewing a patient.",
+      settingsLabel: "Domains and tool permissions",
+      chatLabel: "Allow yourco.healthie.com",
+      botName: "CareOps",
+      botInitial: "C",
+      botColor: "#ec4899",
+      messages: [
+        { role: "user", text: "Prep a follow-up plan for Jordan Lee" },
+        {
+          role: "bot",
+          text: "Can't reach yourco.healthie.com — not in the agent's allowed domains.\n\nGrant access?",
+          buttons: [{ label: "Allow Healthie", action: "link" }],
+        },
+        { role: "user", text: "Allow" },
+        {
+          role: "bot",
+          text: "Jordan Lee — intake 3 weeks ago, last visit Tuesday.\n• Outstanding: lab results review\n• Next scheduled: May 2\n• Draft follow-up plan queued for your review.",
+        },
+      ],
+    },
+    skill: {
+      id: "careops-skill",
+      tabLabel: "Skill",
+      title: "Install the careops skill",
+      description: "Care platform, scheduling, and follow-up playbooks bundled together.",
+      settingsLabel: "Skills and integrations",
+      chatLabel: "Agent installs careops skill",
+      botName: "CareOps",
+      botInitial: "C",
+      botColor: "#ec4899",
+      messages: [
+        { role: "user", text: "Which patients are overdue for a check-in?" },
+        {
+          role: "bot",
+          text: "I need the `careops` skill — it bundles Healthie, scheduling, and the follow-up playbook.",
+          buttons: [{ label: "Install careops", action: "link" }],
+        },
+        { role: "user", text: "Install" },
+        {
+          role: "bot",
+          text: "12 overdue check-ins, 4 over 60 days. Top priorities: Jordan L., Sam C., Priya R., Devon K. Suggested outreach drafts ready for review.",
+        },
+      ],
+    },
+    settings: {
+      id: "careops-settings",
+      tabLabel: "Settings",
+      title: "Configure reminder cadence",
+      description: "When and how to remind patients about overdue follow-ups.",
+      settingsLabel: "Reminder cadence and channels",
+      chatLabel: "Agent opens settings page",
+      botName: "CareOps",
+      botInitial: "C",
+      botColor: "#ec4899",
+      messages: [
+        { role: "user", text: "Remind overdue patients weekly by SMS" },
+        {
+          role: "bot",
+          text: "Reminder cadence lives in settings — current: none automated.",
+          buttons: [{ label: "Open Settings", action: "settings" }],
+        },
+        { role: "user", text: "Weekly SMS after 7 days overdue" },
+        {
+          role: "bot",
+          text: "Set. SMS sends weekly for check-ins overdue by 7+ days. First batch queued for Monday AM; you'll get a pre-send summary.",
+        },
+      ],
+    },
+  },
+  ecommerce: {
+    permission: {
+      id: "ecommerce-permission",
+      tabLabel: "Permission",
+      title: "Pull order data",
+      description: "Agent asks to reach Shopify before investigating an order.",
+      settingsLabel: "Domains and tool permissions",
+      chatLabel: "Allow yourco.myshopify.com",
+      botName: "Store",
+      botInitial: "S",
+      botColor: "#22c55e",
+      messages: [
+        { role: "user", text: "Where's order #10482?" },
+        {
+          role: "bot",
+          text: "Can't reach yourco.myshopify.com — not in the agent's allowed domains.\n\nGrant access?",
+          buttons: [{ label: "Allow Shopify", action: "link" }],
+        },
+        { role: "user", text: "Allow" },
+        {
+          role: "bot",
+          text: "Order #10482 shipped Apr 12, delivered Apr 15. Customer opened a \"where is it\" ticket today — tracking shows delivered to mailroom. Drafted reply with photo proof.",
+        },
+      ],
+    },
+    skill: {
+      id: "ecommerce-skill",
+      tabLabel: "Skill",
+      title: "Install the store skill",
+      description: "Shopify, fulfillment, and CX playbooks in one bundle.",
+      settingsLabel: "Skills and integrations",
+      chatLabel: "Agent installs store skill",
+      botName: "Store",
+      botInitial: "S",
+      botColor: "#22c55e",
+      messages: [
+        { role: "user", text: "Which SKUs are low in stock?" },
+        {
+          role: "bot",
+          text: "I need the `ecommerce` skill — it bundles Shopify, inventory, and reorder logic.",
+          buttons: [{ label: "Install ecommerce", action: "link" }],
+        },
+        { role: "user", text: "Install" },
+        {
+          role: "bot",
+          text: "7 SKUs below reorder point:\n• SKU-1204 (2 left)\n• SKU-1187 (4 left)\n• 5 more flagged.\nDraft PO queued; awaiting your approval before sending to supplier.",
+        },
+      ],
+    },
+    settings: {
+      id: "ecommerce-settings",
+      tabLabel: "Settings",
+      title: "Set refund approval limits",
+      description: "Maximum auto-refund the agent can issue without human review.",
+      settingsLabel: "Refund limits and policy",
+      chatLabel: "Agent opens settings page",
+      botName: "Store",
+      botInitial: "S",
+      botColor: "#22c55e",
+      messages: [
+        { role: "user", text: "Let the agent auto-refund up to $50" },
+        {
+          role: "bot",
+          text: "Refund cap lives in settings — current: $0 (all refunds require approval).",
+          buttons: [{ label: "Open Settings", action: "settings" }],
+        },
+        { role: "user", text: "Set to $50" },
+        {
+          role: "bot",
+          text: "Auto-refund cap set to $50. Anything above still routes to you. Last 7 days: 12 refunds would have qualified for auto.",
+        },
+      ],
+    },
+  },
+  "venture-capital": {
+    permission: {
+      id: "vc-permission",
+      tabLabel: "Permission",
+      title: "Pull deal flow data",
+      description: "Agent asks to reach Affinity before summarizing the pipeline.",
+      settingsLabel: "Domains and tool permissions",
+      chatLabel: "Allow affinity.co",
+      botName: "Deal Flow",
+      botInitial: "D",
+      botColor: "#f43f5e",
+      messages: [
+        { role: "user", text: "What's in the pipeline this week?" },
+        {
+          role: "bot",
+          text: "Can't reach affinity.co — not in the agent's allowed domains.\n\nGrant access?",
+          buttons: [{ label: "Allow Affinity", action: "link" }],
+        },
+        { role: "user", text: "Allow" },
+        {
+          role: "bot",
+          text: "12 deals moved stages this week:\n• 4 new intros (2 warm, 2 cold)\n• 3 into diligence\n• 2 term sheet drafts\n• 3 passed with rationale logged.",
+        },
+      ],
+    },
+    skill: {
+      id: "vc-skill",
+      tabLabel: "Skill",
+      title: "Install the VC skill",
+      description: "Affinity, Crunchbase, and diligence checklists bundled together.",
+      settingsLabel: "Skills and integrations",
+      chatLabel: "Agent installs vc skill",
+      botName: "Deal Flow",
+      botInitial: "D",
+      botColor: "#f43f5e",
+      messages: [
+        { role: "user", text: "Find co-investors we've backed with in AI infra" },
+        {
+          role: "bot",
+          text: "I need the `vc` skill — it bundles Affinity, Crunchbase, and our portfolio graph.",
+          buttons: [{ label: "Install vc", action: "link" }],
+        },
+        { role: "user", text: "Install" },
+        {
+          role: "bot",
+          text: "6 repeat co-investors in AI infra since 2023: Accel, Benchmark, Sequoia, Index, Lux, USV. Strongest overlap with Accel (4 shared deals).",
+        },
+      ],
+    },
+    settings: {
+      id: "vc-settings",
+      tabLabel: "Settings",
+      title: "Choose an investment thesis",
+      description: "Pick which thesis the agent uses when scoring inbound deals.",
+      settingsLabel: "Thesis and scoring model",
+      chatLabel: "Agent opens settings page",
+      botName: "Deal Flow",
+      botInitial: "D",
+      botColor: "#f43f5e",
+      messages: [
+        { role: "user", text: "Score incoming deals against our 2026 thesis" },
+        {
+          role: "bot",
+          text: "Thesis selection lives in settings — current: 2025 thesis.",
+          buttons: [{ label: "Open Settings", action: "settings" }],
+        },
+        { role: "user", text: "Switched to 2026 AI infra thesis" },
+        {
+          role: "bot",
+          text: "Scoring now uses the 2026 AI infra thesis. Next 20 inbounds will be re-ranked; full list in the pipeline view.",
+        },
+      ],
+    },
+  },
+};
 
 export const landingUseCaseShowcases: LandingUseCaseShowcase[] = (
   Object.entries(landingUseCases) as Array<
@@ -1734,6 +2636,7 @@ export const landingUseCaseShowcases: LandingUseCaseShowcase[] = (
     runtime,
     skills: toSkillPreview(useCaseId, useCase),
     memory: toMemoryExample(useCaseId, useCase),
+    chatScenarios: chatScenarioContent[useCaseId],
   };
 });
 
@@ -1742,7 +2645,7 @@ export const DEFAULT_LANDING_USE_CASE_ID: LandingUseCaseId = "devops";
 const surfaceHeroCopy: Record<SurfaceId, SurfaceHeroCopyConfig> = {
   landing: {
     default: {
-      title: "Your AI team, running in your infrastructure",
+      title: "Your AI team, running on your infrastructure",
       highlight: "AI team",
       description:
         "Sandboxed persistent agents powered by the OpenClaw harness, long-term memory, and installable skills.",
@@ -1824,8 +2727,8 @@ const surfaceHeroCopy: Record<SurfaceId, SurfaceHeroCopyConfig> = {
   },
   skills: {
     default: {
-      title: "Build reliable agents with CLI-like skills",
-      highlight: "CLI-like skills",
+      title: "Build reliable agents with skills",
+      highlight: "skills",
       description:
         "A skill isn't a prompt template, it's a full sandboxed computer. All capabilities bundled into one installable unit.",
       startTitle: "Start a new agent in seconds",
@@ -1946,3 +2849,20 @@ export function getOwlettoScopedMcpUrl(useCaseId?: LandingUseCaseId) {
   const orgSlug = getOwlettoOrgSlug(useCaseId);
   return orgSlug ? `${OWLETTO_MCP_URL}/${orgSlug}` : OWLETTO_MCP_URL;
 }
+
+export function getOwlettoBaseUrl() {
+  return OWLETTO_URL;
+}
+
+export type LandingUseCaseWorkspaceOption = {
+  id: LandingUseCaseId;
+  label: string;
+  orgSlug?: string;
+};
+
+export const landingUseCaseWorkspaceOptions: LandingUseCaseWorkspaceOption[] =
+  landingUseCaseShowcases.map((useCase) => ({
+    id: useCase.id,
+    label: useCase.label,
+    orgSlug: getOwlettoOrgSlug(useCase.id),
+  }));

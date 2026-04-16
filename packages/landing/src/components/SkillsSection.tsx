@@ -698,9 +698,9 @@ export function SkillsSection(props: {
             <HighlightedText
               text={
                 props.heroCopy?.title ??
-                "Build reliable agents with CLI-like skills"
+                "Build reliable agents with Lobu skills"
               }
-              highlight={props.heroCopy?.highlight ?? "CLI-like skills"}
+              highlight={props.heroCopy?.highlight ?? "Lobu skills"}
             />
           }
           description={

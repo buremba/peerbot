@@ -3,8 +3,6 @@ title: Getting Started
 description: Choose between managed community access and self-hosted deployment.
 ---
 
-import { ArchitectureDiagram } from "../../../components/ArchitectureDiagram";
-
 Deploy sandboxed, persistent AI agents to your infrastructure — one isolated agent per user and channel, from a single deploy.
 
 ## Quick start
@@ -17,16 +15,41 @@ cd my-agent && npx @lobu/cli@latest run -d
 # 2. Chat with your agent
 npx @lobu/cli@latest chat "Hello, what can you do?"
 
-# 3. Customize behavior (edit prompt files)
-#    agents/my-agent/IDENTITY.md  — who the agent is
-#    agents/my-agent/SOUL.md      — instructions and rules
-#    agents/my-agent/USER.md      — user context
-
-# 4. Run evals to measure quality
+# 3. Run evals to measure quality
 npx @lobu/cli@latest eval
 ```
 
-The `init` wizard walks you through deployment mode, AI provider, skills, messaging platform, and memory configuration. All choices are saved to `lobu.toml` and `.env`.
+## Project structure
+
+```
+my-agent/
+├── lobu.toml                  # agents, providers, skills, network
+├── .env                       # secrets (API keys, OAuth tokens)
+├── docker-compose.yml         # Redis + gateway + optional Owletto
+├── AGENTS.md                  # briefing for coding agents
+├── README.md
+├── TESTING.md
+├── agents/my-agent/
+│   ├── IDENTITY.md            # who the agent is
+│   ├── SOUL.md                # instructions, rules, workflows
+│   ├── USER.md                # per-user context and preferences
+│   ├── skills/                # skills scoped to this agent only
+│   └── evals/
+│       └── ping.yaml          # test cases for agent quality
+├── skills/                    # skills shared across all agents
+├── models/                    # Owletto entity schemas (if memory enabled)
+├── data/                      # Owletto seed entities and relationships
+└── owletto.yaml               # Owletto project config (if memory enabled)
+```
+
+| Path | Docs |
+|------|------|
+| `lobu.toml` | [lobu.toml reference](/reference/lobu-toml/) |
+| `agents/*/IDENTITY.md`, `SOUL.md`, `USER.md` | [Agent Workspace](/guides/agent-prompts/) |
+| `agents/*/skills/`, `skills/` | [SKILL.md reference](/reference/skill-md/), [Skills](/getting-started/skills/) |
+| `agents/*/evals/` | [Evaluations](/guides/evals/) |
+| `models/`, `data/`, `owletto.yaml` | [Memory](/getting-started/memory/) |
+| `docker-compose.yml`, `Dockerfile.worker` | [Deployment](/deployment/docker/) |
 
 ## Develop your agent
 
@@ -45,15 +68,7 @@ Please:
 Explain what you change and why.
 ```
 
-The coding agent will read your project structure and help you:
-
-- **Shape the personality** — edit `IDENTITY.md` to define who the agent is
-- **Write instructions** — edit `SOUL.md` with rules, workflows, and constraints
-- **Add skills** — enable GitHub, Google Workspace, Linear, or custom MCP servers in `lobu.toml`
-- **Configure network access** — set which domains the agent can reach
-- **Write evals** — create test cases in `agents/my-agent/evals/` to verify quality
-
-### What to give the coding agent
+### What to ask for
 
 | File | What to ask for |
 |------|----------------|
@@ -70,8 +85,6 @@ After each change, test with:
 npx @lobu/cli@latest chat "Hello, can you cancel my subscription?"
 npx @lobu/cli@latest eval
 ```
-
-See [Agent Workspace](/guides/agent-prompts/), [SKILL.md Reference](/reference/skill-md/), and [Evaluations](/guides/evals/) for details on each file.
 
 ## Configuration
 

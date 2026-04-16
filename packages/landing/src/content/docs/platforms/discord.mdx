@@ -9,6 +9,8 @@ import { PlatformConfigTable } from "../../../components/PlatformConfigTable";
 Lobu's Discord adapter supports direct messages, server channels, and interactive workflows.
 Under the hood, Lobu uses the Chat SDK Discord adapter to handle DMs and server messaging.
 
+<PlatformChatExamples platform="discord" client:visible />
+
 ## Setup
 
 1. Create a Discord application at the [Discord Developer Portal](https://discord.com/developers/applications).
@@ -17,9 +19,6 @@ Under the hood, Lobu uses the Chat SDK Discord adapter to handle DMs and server 
 4. Under **OAuth2 → URL Generator**, select the `bot` scope with `Send Messages`, `Read Message History`, and `Use Slash Commands` permissions. Use the generated URL to invite the bot to your server.
 5. Run `lobu connections add discord` to add the connection (prompts for the bot token), or run `lobu init` to scaffold a new project and pick Discord in the wizard.
 
-## Interactive Examples
-
-<PlatformChatExamples platform="discord" />
 
 ## Configuration
 

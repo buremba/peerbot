@@ -9,6 +9,9 @@ import { PlatformConfigTable } from "../../../components/PlatformConfigTable";
 Lobu's Google Chat adapter supports direct messages, space mentions, and interactive workflows.
 Under the hood, Lobu uses `@chat-adapter/gchat` with the Google Chat API and Workspace Events.
 
+<PlatformChatExamples platform="gchat" client:visible />
+
+
 ## Setup
 
 1. Create a Google Cloud project and enable the **Google Chat API** and **Workspace Events API**.
@@ -17,10 +20,6 @@ Under the hood, Lobu uses `@chat-adapter/gchat` with the Google Chat API and Wor
    - Set the **App URL** to your gateway's webhook endpoint: `https://your-gateway/api/v1/webhooks/{connectionId}`
    - Enable **Interactive features** and configure the connection settings.
 4. Run `lobu connections add gchat` to add the connection (prompts for the service account JSON), or run `lobu init` to scaffold a new project and pick Google Chat in the wizard.
-
-## Interactive Examples
-
-<PlatformChatExamples platform="gchat" />
 
 ## Configuration
 

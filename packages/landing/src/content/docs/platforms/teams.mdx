@@ -9,16 +9,14 @@ import { PlatformConfigTable } from "../../../components/PlatformConfigTable";
 Lobu's Microsoft Teams adapter supports direct chats, channel mentions, and interactive workflows.
 Under the hood, Lobu uses the Chat SDK Teams adapter with Azure Bot Framework.
 
+<PlatformChatExamples platform="teams" client:visible />
+
 ## Setup
 
 1. Register a bot in the [Azure Portal](https://portal.azure.com) under **Azure Bot** (or **Bot Framework Registration**).
 2. Note the **App ID**, **App Password** (client secret), and **Tenant ID**.
 3. In the Azure Bot's **Channels** section, enable the **Microsoft Teams** channel.
 4. Run `lobu connections add teams` to add the connection (prompts for the app ID and app password), or run `lobu init` to scaffold a new project and pick Microsoft Teams in the wizard.
-
-## Interactive Examples
-
-<PlatformChatExamples platform="teams" />
 
 ## Configuration
 

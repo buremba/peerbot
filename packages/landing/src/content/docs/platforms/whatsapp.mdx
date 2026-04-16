@@ -9,16 +9,14 @@ import { PlatformConfigTable } from "../../../components/PlatformConfigTable";
 Lobu's WhatsApp adapter supports direct chats, group controls, and media-aware workflows.
 Under the hood, Lobu uses the WhatsApp Business Cloud API for message delivery and media handling.
 
+<PlatformChatExamples platform="whatsapp" client:visible />
+
 ## Setup
 
 1. Obtain a WhatsApp Business **access token**, **phone number ID**, **app secret**, and **verify token** from the [Meta Developer Portal](https://developers.facebook.com/).
 2. Run `lobu connections add whatsapp` to add the connection (prompts for the access token and phone number ID), or run `lobu init` to scaffold a new project and pick WhatsApp in the wizard.
 3. Configure the webhook URL in the Meta Developer Portal to point to your gateway's webhook endpoint.
 4. Start the stack with `lobu run -d` — the bot starts handling messages on the configured phone number.
-
-## Interactive Examples
-
-<PlatformChatExamples platform="whatsapp" />
 
 ## Configuration
 

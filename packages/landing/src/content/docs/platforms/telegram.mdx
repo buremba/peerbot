@@ -9,15 +9,13 @@ import { PlatformConfigTable } from "../../../components/PlatformConfigTable";
 Lobu's Telegram adapter supports direct chats, group interactions, and interactive workflows.
 Under the hood, Lobu uses the Telegram Bot API via `@chat-adapter/telegram`.
 
+<PlatformChatExamples platform="telegram" client:visible />
+
 ## Setup
 
 1. Create a bot with [@BotFather](https://t.me/BotFather) on Telegram and copy the bot token.
 2. Run `lobu connections add telegram` to add the connection (prompts for the bot token), or run `lobu init` to scaffold a new project and pick Telegram in the wizard.
 3. Start the stack with `lobu run -d` — the bot starts receiving messages immediately.
-
-## Interactive Examples
-
-<PlatformChatExamples platform="telegram" />
 
 ## Configuration
 

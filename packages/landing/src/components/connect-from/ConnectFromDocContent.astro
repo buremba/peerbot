@@ -6,13 +6,13 @@ import {
 } from "../../connect-from-config";
 import {
   getLandingUseCaseShowcase,
+  getOwlettoBaseUrl,
   getOwlettoMcpUrl,
-  getOwlettoOrgSlug,
-  getOwlettoScopedMcpUrl,
-  getOwlettoUrl,
+  landingUseCaseWorkspaceOptions,
 } from "../../use-case-showcases";
 import type { LandingUseCaseId } from "../../use-case-definitions";
-import ConnectFromUseCaseLinks from "./ConnectFromUseCaseLinks.astro";
+import { CopyableSnippet } from "./CopyableSnippet";
+import { TryItSection } from "./TryItSection";
 
 const { clientId, useCaseId } = Astro.props as {
   clientId: ConnectFromClientId;
@@ -20,12 +20,8 @@ const { clientId, useCaseId } = Astro.props as {
 };
 const client = getConnectFromClientConfig(clientId);
 const showcase = useCaseId ? getLandingUseCaseShowcase(useCaseId) : undefined;
-const owlettoUrl = showcase ? getOwlettoUrl(showcase.id) : undefined;
 const owlettoMcpUrl = getOwlettoMcpUrl();
-const owlettoOrgSlug = showcase ? getOwlettoOrgSlug(showcase.id) : undefined;
-const owlettoScopedMcpUrl = showcase
-  ? getOwlettoScopedMcpUrl(showcase.id)
-  : owlettoMcpUrl;
+const owlettoBaseUrl = getOwlettoBaseUrl();
 
 const clientSwitcherLinks = connectFromClientIds
   .filter((id) => id !== clientId)
@@ -57,73 +53,52 @@ const relatedLinks = client.docsRelated.map((link) => {
 });
 ---
 
-{client.docsIntro.map((paragraph) => (
-  <p>{paragraph}</p>
-))}
+<p>{client.valueProp}</p>
 
-<h2>Try it</h2>
-<p>
-  {showcase
-    ? `Use the org-scoped Owletto MCP endpoint for the ${showcase.label.toLowerCase()} example so the connected client stays pinned to that workspace.`
-    : "Pick a use case to see the project context, memory model, and the Owletto connection path for that example."}
-</p>
+<TryItSection
+  client:load
+  clientLabel={client.label}
+  mcpBaseUrl={owlettoMcpUrl}
+  owlettoBaseUrl={owlettoBaseUrl}
+  workspaces={landingUseCaseWorkspaceOptions}
+/>
 
-<ConnectFromUseCaseLinks clientId={clientId} activeUseCaseId={showcase?.id} />
-
-{showcase ? (
+{client.npmPackage ? (
   <>
-    <ul>
-      <li>
-        <strong>MCP URL:</strong> <code>{owlettoScopedMcpUrl}</code>
-      </li>
-      {owlettoOrgSlug ? (
-        <li>
-          <strong>Fixed organization:</strong> <code>{owlettoOrgSlug}</code>
-        </li>
-      ) : null}
-      <li>
-        <strong>Memory model:</strong> {showcase.memory.entityTypes.join(", ")}
-      </li>
-    </ul>
-
-    {owlettoOrgSlug ? (
-      <p>
-        This scoped endpoint should not expose organization switching tools.
-      </p>
-    ) : null}
-
-    <details>
-      <summary>Suggested instructions for {client.label}</summary>
-      <pre><code>{client.prompt(showcase)}</code></pre>
-    </details>
-
+    <h2>Install the plugin</h2>
     <p>
-      <a href={`/memory/for/${showcase.id}/`}>
-        View the {showcase.label} memory example
-      </a>
-      {" · "}
-      <a href={owlettoUrl} target="_blank" rel="noopener noreferrer">
-        Open the {showcase.label} Owletto workspace
-      </a>
+      Source: <a href={client.npmPackage.sourceUrl} target="_blank" rel="noopener noreferrer">{client.npmPackage.sourceUrl.replace("https://", "")}</a>
+      {" · "}<br />
+      npm: <a href={client.npmPackage.registryUrl} target="_blank" rel="noopener noreferrer"><code>{client.npmPackage.name}</code></a>
     </p>
+    <CopyableSnippet
+      client:load
+      code={client.npmPackage.installCommand}
+      label="Install command"
+    />
   </>
 ) : null}
 
-<h2>What You Need</h2>
-<ul>
-  {client.docsNeeds.map((item) => (
-    <li>{item}</li>
-  ))}
-</ul>
+<h2>{client.installPromptLabel}</h2>
+<p>
+  Paste this into {client.label} and it will install Owletto memory for you.
+</p>
+<CopyableSnippet
+  client:load
+  code={client.installPrompt}
+  label={`Prompt for ${client.label}`}
+/>
 
 <h2>{client.docsSetupTitle}</h2>
 <ol>
   {client.docsSetupSteps.map((step) => (
-    <li>{step}</li>
+    <li set:html={step.replace(/`([^`]+)`/g, "<code>$1</code>")} />
   ))}
 </ol>
 
-{client.docsSetupNote ? <p>{client.docsSetupNote}</p> : null}
+{client.docsSetupNote ? (
+  <p set:html={client.docsSetupNote.replace(/`([^`]+)`/g, "<code>$1</code>")} />
+) : null}
 
 {client.docsExtraSection ? (
   <>

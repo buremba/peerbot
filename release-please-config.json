@@ -12,7 +12,6 @@
   "pull-request-title-pattern": "chore(main): release ${version}",
   "packages": {
     ".": {
-      "package-name": "@lobu/gateway",
       "release-type": "node",
       "extra-files": [
         {

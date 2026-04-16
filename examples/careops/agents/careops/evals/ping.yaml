@@ -8,9 +8,10 @@ tags: [smoke, fast]
 turns:
   - content: "Hello, are you there?"
     assert:
-      - type: contains
-        value: "hello"
-        options: { case_insensitive: true }
+      # Accept any acknowledgment-style opener. Literal "hello" was too strict —
+      # "Yes, I'm here!" is a fine reply but doesn't contain the word.
+      - type: regex
+        value: "hello|hi\\b|hey|yes|here|ready"
         weight: 0.3
       - type: llm-rubric
         value: "Response is friendly and acknowledges the greeting without being overly verbose"

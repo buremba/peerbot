@@ -9,8 +9,11 @@ rubric: follows-instructions.rubric.md
 turns:
   - content: "List exactly 3 common appointment types in a healthcare clinic. Use bullet points."
     assert:
+      # Match 3 bullet markers (each followed by whitespace) across lines.
+      # The original `.*` version required them on a single line, which broke
+      # every response that wrapped bullets onto separate lines.
       - type: regex
-        value: "^[\\s\\S]*[-•].*[-•].*[-•]"
+        value: "[-•*]\\s.+[\\s\\S]+[-•*]\\s.+[\\s\\S]+[-•*]\\s.+"
         weight: 0.5
       - type: llm-rubric
         value: "Lists exactly 3 appointment types (not 2, not 4+), uses bullet points"

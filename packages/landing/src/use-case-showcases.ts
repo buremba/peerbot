@@ -2786,10 +2786,10 @@ const surfaceHeroCopy: Record<SurfaceId, SurfaceHeroCopyConfig> = {
   },
   memory: {
     default: {
-      title: "Turn data into shared, structured memory",
-      highlight: "structured memory",
+      title: "Build long-term collective memory",
+      highlight: "collective memory",
       description:
-        "Owletto gives every Lobu use case the same durable graph: connectors, recall, and managed auth without leaking credentials to the runtime.",
+        "Owletto gives all your agents the same durable graph: connectors, recall, and managed auth without leaking credentials to the runtime.",
       startTitle: "Start Owletto in seconds",
     },
     byUseCase: {

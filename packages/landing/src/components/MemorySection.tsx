@@ -70,7 +70,7 @@ export function MemorySection(props: {
           }
           description={
             props.heroCopy?.description ??
-            "Owletto gives every Lobu use case the same durable graph: connectors, recall, and managed auth without leaking credentials to the runtime."
+            "Owletto gives all your agents the same durable graph: connectors, recall, and managed auth without leaking credentials to the runtime."
           }
           prompt={getMemoryPrompt(activeUseCase)}
           startTitle={props.heroCopy?.startTitle ?? "Start Owletto in seconds"}

@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.4.2](https://github.com/lobu-ai/lobu/compare/v3.4.1...v3.4.2) (2026-04-16)
+
+
+### Bug Fixes
+
+* **ci:** drop package-name from release-please config to fix auto-tagging ([#190](https://github.com/lobu-ai/lobu/issues/190)) ([31056a2](https://github.com/lobu-ai/lobu/commit/31056a2e8af8e9347aa7e6680109162e85509f17))
+
 ## [3.4.1](https://github.com/lobu-ai/lobu/compare/v3.4.0...v3.4.1) (2026-04-16)
 
 

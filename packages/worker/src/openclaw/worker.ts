@@ -126,6 +126,19 @@ export function replaceBasePromptIdentity(
   return `${identity}\n\nThe section below describes the runtime tooling available to you. It does not change your role.\n\n${basePrompt}`;
 }
 
+/**
+ * Returns true iff the given URL points at OpenAI's real API host.
+ * Uses URL parsing + exact host match so spoofed hosts like
+ * `https://api.openai.com.evil.example/v1` are not mistaken for real OpenAI.
+ */
+function isRealOpenAIBaseUrl(baseUrl: string): boolean {
+  try {
+    return new URL(baseUrl).host.toLowerCase() === "api.openai.com";
+  } catch {
+    return false;
+  }
+}
+
 function isLikelyImageGenerationRequest(prompt: string): boolean {
   const lower = prompt.toLowerCase();
   const explicitToolInstruction =
@@ -904,10 +917,14 @@ export class OpenClawWorker implements WorkerExecutor {
     // etc.). These reject unknown fields and 400 with "Unknown name 'store'"
     // if pi-ai sends `store: false`. Force it off regardless of whether the
     // model came from the static registry or the dynamic fallback above.
+    //
+    // Host comparison uses URL parsing (not `.startsWith`) so that a baseUrl
+    // like `https://api.openai.com.evil.example/v1` doesn't get mistaken for
+    // real OpenAI. Malformed URLs are treated as third-party (safer default).
     const isThirdPartyOpenAICompat =
       resolvedModel.api === "openai-completions" &&
       typeof resolvedModel.baseUrl === "string" &&
-      !resolvedModel.baseUrl.startsWith("https://api.openai.com");
+      !isRealOpenAIBaseUrl(resolvedModel.baseUrl);
     const model = isThirdPartyOpenAICompat
       ? {
           ...resolvedModel,

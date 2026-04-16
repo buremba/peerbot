@@ -1,5 +1,8 @@
 import type Redis from "ioredis";
 import type { StateAdapter } from "chat";
+import { createLogger } from "@lobu/core";
+
+const logger = createLogger("chat-state");
 
 export async function createGatewayStateAdapter(
   redis: Redis
@@ -8,6 +11,6 @@ export async function createGatewayStateAdapter(
   return createIoRedisState({
     client: redis,
     keyPrefix: "chat-conn",
-    logger: "warn",
+    logger,
   } as any) as StateAdapter;
 }

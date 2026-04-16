@@ -104,6 +104,18 @@ interface StreamState {
   buffer: string;
   /** Set when the adapter's streaming API rejected. Completion posts the buffer. */
   streamFailed: boolean;
+  /**
+   * True once the worker has sent at least one delta with `isFullReplacement=true`.
+   * A full replacement is a complete, self-contained user-facing message
+   * (e.g. the worker's own "❌ Session failed: …" text). When this is set,
+   * `handleError` must NOT post its fallback `"Error: …"` text, because the
+   * user has already seen a formatted failure message.
+   *
+   * Partial-only streams (worker streamed incremental deltas and then errored)
+   * leave this false so the fallback still fires and the user sees a failure
+   * indicator instead of silently-truncated output.
+   */
+  wasFullyReplaced: boolean;
   /** The resolved Chat SDK target — reused on failure fallback without a second resolveTarget call. */
   target: any;
 }
@@ -212,6 +224,7 @@ export class ChatResponseBridge implements ResponseRenderer {
           streamPromise: Promise.resolve(),
           buffer: payload.delta,
           streamFailed: false,
+          wasFullyReplaced: !!payload.isFullReplacement,
           target,
         };
         newStream.streamPromise = Promise.resolve(
@@ -356,7 +369,16 @@ export class ChatResponseBridge implements ResponseRenderer {
     const key = `${channelId}:${payload.conversationId}`;
 
     // Clean up stream — close iterator so the adapter call resolves.
+    // Capture whether the worker already delivered a complete, self-contained
+    // user-facing message (via `sendStreamDelta(..., isFullReplacement=true)`).
+    // When it did, we must NOT post the fallback raw "Error: …" because the
+    // user already saw a formatted failure message like "❌ Session failed: …".
+    //
+    // For partial streams that errored mid-way (`isFullReplacement` never set),
+    // the fallback still fires so the user sees a failure indicator instead of
+    // silently-truncated output.
     const stream = this.streams.get(key);
+    const alreadyDeliveredCompleteMessage = !!stream?.wasFullyReplaced;
     if (stream) {
       stream.iterator.close();
       try {
@@ -365,6 +387,14 @@ export class ChatResponseBridge implements ResponseRenderer {
         // swallow — we're already in error path
       }
       this.streams.delete(key);
+    }
+
+    if (alreadyDeliveredCompleteMessage) {
+      logger.debug(
+        { connectionId, channelId },
+        "Skipping fallback error text — worker already delivered a complete user-facing message"
+      );
+      return;
     }
 
     // For known error codes, render user-facing guidance without sending users

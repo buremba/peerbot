@@ -124,7 +124,10 @@ describe("ChatResponseBridge.handleDelta — AsyncIterable streaming", () => {
     expect(history).toEqual([]);
   });
 
-  test("handleError closes iterator and posts error text separately", async () => {
+  test("handleError after partial stream posts fallback so truncation is visible", async () => {
+    // Worker was mid-stream (no isFullReplacement) and then errored. The user
+    // would see truncated text with no failure indicator unless the gateway
+    // posts the fallback "Error: …" message.
     const { target, collected, plainPosts, drained } = createStreamingTarget();
     const { manager } = createHarness(target);
     const bridge = new ChatResponseBridge(manager as any);
@@ -134,6 +137,46 @@ describe("ChatResponseBridge.handleDelta — AsyncIterable streaming", () => {
     await drained;
 
     expect(collected).toEqual(["partial"]);
+    expect(plainPosts).toContain("Error: boom");
+  });
+
+  test("handleError after full-replacement delta skips fallback to avoid duplicate", async () => {
+    // Worker already delivered a complete, self-contained failure message
+    // (e.g. "❌ Session failed: 429 …") via isFullReplacement and then called
+    // signalError for bookkeeping. The gateway must NOT post a second
+    // "Error: 429 …" — the user has already seen the formatted message.
+    const { target, collected, plainPosts, drained } = createStreamingTarget();
+    const { manager } = createHarness(target);
+    const bridge = new ChatResponseBridge(manager as any);
+
+    await bridge.handleDelta(
+      {
+        ...basePayload,
+        delta: "❌ Session failed: 429 rate-limited",
+        isFullReplacement: true,
+      },
+      "s"
+    );
+    await bridge.handleError(
+      { ...basePayload, error: "429 rate-limited" },
+      "s"
+    );
+    await drained;
+
+    expect(collected).toEqual(["❌ Session failed: 429 rate-limited"]);
+    expect(plainPosts).toEqual([]);
+  });
+
+  test("handleError with no prior stream still posts fallback (worker crashed early)", async () => {
+    // No delta was ever sent (e.g. NO_MODEL_CONFIGURED path calls signalError
+    // with no preceding sendStreamDelta). The fallback is the only way the
+    // user learns anything went wrong.
+    const { target, plainPosts } = createStreamingTarget();
+    const { manager } = createHarness(target);
+    const bridge = new ChatResponseBridge(manager as any);
+
+    await bridge.handleError({ ...basePayload, error: "boom" }, "s");
+
     expect(plainPosts).toContain("Error: boom");
   });
 

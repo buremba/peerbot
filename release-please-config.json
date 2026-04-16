@@ -40,6 +40,11 @@
           "type": "yaml",
           "path": "charts/lobu/Chart.yaml",
           "jsonpath": "$.version"
+        },
+        {
+          "type": "yaml",
+          "path": "charts/lobu/Chart.yaml",
+          "jsonpath": "$.appVersion"
         }
       ]
     }

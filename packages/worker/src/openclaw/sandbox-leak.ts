@@ -4,35 +4,41 @@
  * user-downloadable artifact, without having actually called
  * `UploadUserFile`.
  *
- * Key design decision: we only flag **structural** delivery claims, not
- * free-text mentions. An agent that *describes* workspace paths in a probe
- * or ls-style answer is legitimate; an agent that hands the path to the
- * user as a clickable link or file URL is not. This eliminates the false
- * positives that the previous broad substring check produced.
+ * Catches three structural delivery patterns (links, sandbox:// URLs,
+ * HTML attributes) plus a semantic pattern: a workspace path presented as
+ * "the file is at …" or "located at …" — the phrasing that tricks users
+ * into thinking the path is reachable.
  */
 
-/**
- * Matches Claude's `sandbox://` file-reference scheme. Any occurrence of
- * this is unambiguously a delivery claim — the scheme exists for exactly
- * that purpose.
- */
+/** Claude's `sandbox://` file-reference scheme — always a delivery claim. */
 const SANDBOX_URL_RE = /\bsandbox:\/{1,2}[^\s)\]}'"<>]+/gi;
 
 /**
- * Matches a markdown link target pointing at a local workspace path, e.g.
+ * Markdown link target pointing at a local workspace path, e.g.
  * `[report](/app/workspaces/foo/bar.pdf)` or `[x](file:///workspace/y)`.
- * The capture group is the URL/path portion so we can rewrite it.
  */
 const LOCAL_MD_LINK_RE =
   /\]\(\s*((?:file:\/\/)?(?:\/app\/workspaces\/|\/workspace\/)[^\s)]+)\s*\)/gi;
 
 /**
- * Matches HTML `href`/`src` pointing at a local workspace path. Capture
- * group 1 is the attribute name (`href` or `src`) so we can preserve it on
- * redact; capture group 2 is the URL target.
+ * HTML `href`/`src` pointing at a local workspace path.
+ * Group 1 = attribute name, group 2 = URL target.
  */
 const LOCAL_HREF_RE =
   /\b(href|src)\s*=\s*["']((?:file:\/\/)?(?:\/app\/workspaces\/|\/workspace\/)[^"']+)["']/gi;
+
+/**
+ * A workspace path presented as a file location via delivery-intent phrasing
+ * (e.g. "located at", "saved to", "file is at", "available at").
+ * Only fires when the path has a file extension so directory descriptions
+ * in ls-style probes are not flagged.
+ *
+ * Matches both bare and back-ticked paths:
+ *   "The file is located at: /app/workspaces/.../report.pdf"
+ *   "saved to `/workspace/output/data.csv`"
+ */
+const DELIVERY_PHRASE_RE =
+  /(?:located at|saved (?:to|at|in)|file is (?:at|in)|available at|created (?:at|in)|stored (?:at|in)|written to|exported to|generated (?:at|in))[:\s]+`?((?:\/app\/workspaces\/|\/workspace\/)[^\s`]+\.\w{1,10})`?/gi;
 
 export interface LeakCheckResult {
   /** True if the final message makes an unfulfilled file-delivery claim. */
@@ -60,13 +66,15 @@ export function checkSandboxLeak(
   const hasSandboxUrl = SANDBOX_URL_RE.test(finalText);
   const hasMdLink = LOCAL_MD_LINK_RE.test(finalText);
   const hasHref = LOCAL_HREF_RE.test(finalText);
+  const hasDeliveryPhrase = DELIVERY_PHRASE_RE.test(finalText);
 
   // Reset lastIndex — `test()` on /g regexes advances state.
   SANDBOX_URL_RE.lastIndex = 0;
   LOCAL_MD_LINK_RE.lastIndex = 0;
   LOCAL_HREF_RE.lastIndex = 0;
+  DELIVERY_PHRASE_RE.lastIndex = 0;
 
-  if (!hasSandboxUrl && !hasMdLink && !hasHref) {
+  if (!hasSandboxUrl && !hasMdLink && !hasHref && !hasDeliveryPhrase) {
     return { leaked: false, redactedText: finalText };
   }
 
@@ -78,6 +86,15 @@ export function checkSandboxLeak(
   redacted = redacted.replace(
     LOCAL_HREF_RE,
     (_match, attr: string) => `${attr}="about:blank"`
+  );
+  redacted = redacted.replace(
+    DELIVERY_PHRASE_RE,
+    (_match, _path: string, _offset: number, _full: string) => {
+      // Reconstruct the phrase prefix (everything before the path) by
+      // re-matching on the original substring. Simpler: replace the whole
+      // match with a generic note.
+      return "[file was created but not uploaded — use `UploadUserFile` to deliver it]";
+    }
   );
 
   const note =

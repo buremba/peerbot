@@ -116,11 +116,51 @@ describe("checkSandboxLeak", () => {
     expect(res.leaked).toBe(false);
   });
 
+  // --- delivery-phrase detection ---
+
+  test("flags 'located at' with workspace file path", () => {
+    const text =
+      "The file is located at: /app/workspaces/careops/123/input/sample_patient.json";
+    const res = checkSandboxLeak(text, false);
+    expect(res.leaked).toBe(true);
+    expect(res.redactedText).not.toContain("/app/workspaces/careops");
+    expect(res.redactedText).toContain("not uploaded");
+  });
+
+  test("flags 'saved to' with backticked workspace path", () => {
+    const text = "Report saved to `/workspace/output/report.pdf` successfully.";
+    const res = checkSandboxLeak(text, false);
+    expect(res.leaked).toBe(true);
+    expect(res.redactedText).not.toContain("/workspace/output/report.pdf");
+  });
+
+  test("does not flag delivery phrase with directory (no extension)", () => {
+    const text = "Files are stored in /app/workspaces/careops/123/input";
+    const res = checkSandboxLeak(text, false);
+    expect(res.leaked).toBe(false);
+  });
+
+  test("does not flag delivery phrase about non-workspace paths", () => {
+    const text = "The file is located at: /home/user/documents/report.pdf";
+    const res = checkSandboxLeak(text, false);
+    expect(res.leaked).toBe(false);
+  });
+
+  test("suppresses delivery-phrase check when UploadUserFile was used", () => {
+    const text =
+      "I saved the file to `/workspace/output/data.csv` and uploaded it.";
+    const res = checkSandboxLeak(text, true);
+    expect(res.leaked).toBe(false);
+    expect(res.redactedText).toBe(text);
+  });
+
   test("is stable across repeated invocations (no lastIndex leakage)", () => {
     const bad = "Here: sandbox:/a.pdf";
     const good = "Workspace at /app/workspaces/careops.";
+    const deliveryBad = "File saved to /app/workspaces/foo/report.pdf for you.";
     expect(checkSandboxLeak(bad, false).leaked).toBe(true);
     expect(checkSandboxLeak(good, false).leaked).toBe(false);
+    expect(checkSandboxLeak(deliveryBad, false).leaked).toBe(true);
     expect(checkSandboxLeak(bad, false).leaked).toBe(true);
     expect(checkSandboxLeak(good, false).leaked).toBe(false);
   });

@@ -10,6 +10,7 @@
   "separate-pull-requests": false,
   "changelog-path": "CHANGELOG.md",
   "pull-request-title-pattern": "chore(main): release${component} ${version}",
+  "group-pull-request-title-pattern": "chore(main): release${component} ${version}",
   "packages": {
     ".": {
       "package-name": "lobu",

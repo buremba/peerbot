@@ -113,7 +113,12 @@ async function runTrial(
             response.text,
             options.gatewayUrl,
             options.authToken,
-            timeoutMs
+            timeoutMs,
+            {
+              agentId: options.agentId,
+              provider: options.provider,
+              model: options.model,
+            }
           )
         : [];
 
@@ -135,7 +140,12 @@ async function runTrial(
         options.authToken,
         rubricContent,
         turnResults,
-        timeoutMs
+        timeoutMs,
+        {
+          agentId: options.agentId,
+          provider: options.provider,
+          model: options.model,
+        }
       );
     }
 
@@ -161,7 +171,8 @@ async function runAssertions(
   agentResponse: string,
   gatewayUrl: string,
   authToken: string,
-  timeoutMs: number
+  timeoutMs: number,
+  judgeOptions: { agentId?: string; provider?: string; model?: string }
 ): Promise<AssertionResult[]> {
   const results: AssertionResult[] = [];
 
@@ -193,7 +204,8 @@ async function runAssertions(
           authToken,
           assertion.value,
           agentResponse,
-          timeoutMs
+          timeoutMs,
+          judgeOptions
         );
         results.push({
           type: "llm-rubric",

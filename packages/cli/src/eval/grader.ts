@@ -5,6 +5,7 @@
  * grades agent output against a markdown rubric with per-criterion scoring.
  */
 
+import { randomUUID } from "node:crypto";
 import {
   createSession,
   deleteSession,
@@ -46,12 +47,19 @@ Rules:
 ## Conversation
 {{transcript}}`;
 
+export interface JudgeSessionOptions {
+  agentId?: string;
+  provider?: string;
+  model?: string;
+}
+
 export async function gradeWithRubric(
   gatewayUrl: string,
   authToken: string,
   rubricContent: string,
   turns: TurnResult[],
-  timeoutMs: number
+  timeoutMs: number,
+  judgeOptions?: JudgeSessionOptions
 ): Promise<RubricResult> {
   const transcript = turns
     .map((t) => `User: ${t.user}\nAgent: ${t.agent}`)
@@ -63,6 +71,10 @@ export async function gradeWithRubric(
   ).replace("{{transcript}}", transcript);
 
   const session = await createSession(gatewayUrl, authToken, {
+    agentId: judgeOptions?.agentId,
+    provider: judgeOptions?.provider,
+    model: judgeOptions?.model,
+    thread: `judge-${randomUUID()}`,
     forceNew: true,
     dryRun: true,
   });
@@ -80,7 +92,8 @@ export async function gradeInline(
   authToken: string,
   criteria: string,
   agentResponse: string,
-  timeoutMs: number
+  timeoutMs: number,
+  judgeOptions?: JudgeSessionOptions
 ): Promise<{ passed: boolean; score: number; reason: string }> {
   const prompt = INLINE_JUDGE_PROMPT.replace("{{criteria}}", criteria).replace(
     "{{response}}",
@@ -88,6 +101,10 @@ export async function gradeInline(
   );
 
   const session = await createSession(gatewayUrl, authToken, {
+    agentId: judgeOptions?.agentId,
+    provider: judgeOptions?.provider,
+    model: judgeOptions?.model,
+    thread: `judge-${randomUUID()}`,
     forceNew: true,
     dryRun: true,
   });

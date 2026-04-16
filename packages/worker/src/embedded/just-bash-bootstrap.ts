@@ -14,6 +14,9 @@ import fs from "node:fs";
 import path from "node:path";
 import type { BashOperations } from "@mariozechner/pi-coding-agent";
 import { stripSensitiveWorkerEnv } from "../shared/sensitive-env";
+import type { GatewayParams } from "../shared/tool-implementations";
+import type { McpCliCommand, McpRuntimeRef } from "./mcp-cli-commands";
+import { buildMcpCliCommands } from "./mcp-cli-commands";
 
 const EMBEDDED_BASH_LIMITS = {
   maxCommandCount: 50_000,
@@ -136,11 +139,41 @@ async function buildCustomCommands(
   return commands;
 }
 
+export interface EmbeddedBashOpsOptions {
+  /**
+   * When provided together with `gw`, MCP servers are exposed as one
+   * `just-bash` custom command per server (e.g. `owletto search_knowledge
+   * <<<'{...}'`). Only applied when `mcpExposure === "cli"`. The ref's
+   * optional `refresh()` is invoked after successful auth operations so
+   * CLI handlers pick up freshly-discovered MCP tools without rebuilding Bash.
+   */
+  mcpRuntimeRef?: McpRuntimeRef;
+  gw?: GatewayParams;
+  /** `"tools"` (default) keeps today's first-class MCP tools. `"cli"` swaps to sandboxed bash CLIs. */
+  mcpExposure?: "tools" | "cli";
+}
+
+/**
+ * Convert an in-process MCP CLI handler into a just-bash `defineCommand` entry.
+ */
+async function adaptMcpCliCommand(
+  cmd: McpCliCommand
+): Promise<ReturnType<typeof import("just-bash").defineCommand>> {
+  const { defineCommand } = await import("just-bash");
+  return defineCommand(cmd.name, async (args: string[], ctx) => {
+    const stdin = typeof ctx.stdin === "string" ? ctx.stdin : "";
+    const signal = ctx.signal as AbortSignal | undefined;
+    return cmd.execute(args, { stdin, signal });
+  });
+}
+
 /**
  * Create a BashOperations adapter backed by a just-bash Bash instance.
  * Reads configuration from environment variables.
  */
-export async function createEmbeddedBashOps(): Promise<BashOperations> {
+export async function createEmbeddedBashOps(
+  options: EmbeddedBashOpsOptions = {}
+): Promise<BashOperations> {
   const { Bash, ReadWriteFs } = await import("just-bash");
 
   const workspaceDir = process.env.WORKSPACE_DIR || "/workspace";
@@ -176,16 +209,42 @@ export async function createEmbeddedBashOps(): Promise<BashOperations> {
         }
       : undefined;
 
-  // Discover nix binaries and known CLI tools, register as custom commands
+  // Build MCP CLI commands first so that explicit MCP registrations win over
+  // any PATH-discovered binary with the same name (e.g. `owletto` is both an
+  // installed nix binary and an MCP server).
+  let mcpCliCommands: McpCliCommand[] = [];
+  if (options.mcpExposure === "cli" && options.mcpRuntimeRef && options.gw) {
+    mcpCliCommands = buildMcpCliCommands(options.mcpRuntimeRef, options.gw);
+  }
+  const mcpCliNames = new Set(mcpCliCommands.map((c) => c.name));
+
+  // Discover nix binaries and known CLI tools, register as custom commands.
+  // Strip names claimed by MCP CLIs so the MCP-backed handler takes precedence.
   const binaries = discoverBinaries();
-  const customCommands =
+  for (const name of mcpCliNames) {
+    binaries.delete(name);
+  }
+  const binaryCommands =
     binaries.size > 0 ? await buildCustomCommands(binaries) : [];
+
+  const mcpCommandEntries = await Promise.all(
+    mcpCliCommands.map((c) => adaptMcpCliCommand(c))
+  );
+
+  const customCommands = [...mcpCommandEntries, ...binaryCommands];
 
   if (binaries.size > 0) {
     const names = [...binaries.keys()].slice(0, 20).join(", ");
     const suffix = binaries.size > 20 ? `, ... (${binaries.size} total)` : "";
     console.log(
-      `[embedded] Registered ${binaries.size} custom commands: ${names}${suffix}`
+      `[embedded] Registered ${binaries.size} binary commands: ${names}${suffix}`
+    );
+  }
+  if (mcpCliCommands.length > 0) {
+    console.log(
+      `[embedded] Registered ${
+        mcpCliCommands.length
+      } MCP CLI commands: ${mcpCliCommands.map((c) => c.name).join(", ")}`
     );
   }
 

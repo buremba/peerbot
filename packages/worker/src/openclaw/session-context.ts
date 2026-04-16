@@ -1,20 +1,12 @@
 import {
   type ConfigProviderMeta,
   createLogger,
+  type McpStatus,
   type McpToolDef,
 } from "@lobu/core";
 import { ensureBaseUrl } from "../core/url-utils";
 
 const logger = createLogger("openclaw-session-context");
-
-interface McpStatus {
-  id: string;
-  name: string;
-  requiresAuth: boolean;
-  requiresInput: boolean;
-  authenticated: boolean;
-  configured: boolean;
-}
 
 export interface ProviderConfig {
   credentialEnvVarName?: string;
@@ -75,6 +67,7 @@ let cachedResult: {
   mcpStatus: McpStatus[];
   mcpTools: Record<string, McpToolDef[]>;
   mcpContext: Record<string, string>;
+  mcpExposure: "tools" | "cli";
   cachedAt: number;
 } | null = null;
 
@@ -89,7 +82,8 @@ export function invalidateSessionContextCache(): void {
 
 function buildMcpInstructions(
   mcpStatus: McpStatus[],
-  mcpToolIds: Set<string>
+  mcpToolIds: Set<string>,
+  mcpExposure: "tools" | "cli" = "tools"
 ): string {
   if (!mcpStatus || mcpStatus.length === 0) {
     return "";
@@ -114,8 +108,16 @@ function buildMcpInstructions(
   const lines: string[] = ["## MCP Tools Requiring Setup"];
 
   for (const mcp of needsAuthentication) {
+    const loginCmd =
+      mcpExposure === "cli"
+        ? `run \`${mcp.id} auth login\` in Bash`
+        : `call \`${mcp.id}_login\``;
+    const checkCmd =
+      mcpExposure === "cli"
+        ? `run \`${mcp.id} auth check\``
+        : `call \`${mcp.id}_login_check\``;
     lines.push(
-      `- ⚠️ **${mcp.name}** (id: ${mcp.id}): Authentication is required. Call \`${mcp.id}_login\` to start login. After the user completes login, call \`${mcp.id}_login_check\`. Newly available MCP tools will refresh on the next message.`
+      `- ⚠️ **${mcp.name}** (id: ${mcp.id}): Authentication is required. To start login, ${loginCmd}. After the user completes login, ${checkCmd}. Newly available MCP tools will refresh on the next message.`
     );
   }
 
@@ -137,6 +139,33 @@ function buildMcpInstructions(
   return lines.join("\n");
 }
 
+/**
+ * CLI-mode header introducing the `<server> <tool>` idiom. Appended to gateway
+ * instructions when `mcpExposure === "cli"` so the model understands how to
+ * invoke MCP tools through bash instead of as first-class function calls.
+ */
+function buildMcpCliInstructions(mcpStatus: McpStatus[]): string {
+  if (!mcpStatus || mcpStatus.length === 0) return "";
+  const servers = mcpStatus.map((m) => `- \`${m.id}\` — ${m.name}`).join("\n");
+  return `## Available MCP CLIs
+
+MCP servers are exposed as Bash commands. One command per server. Invoke tools by piping JSON on stdin:
+
+\`\`\`bash
+<server> <tool> <<'EOF'
+{ ...json args... }
+EOF
+\`\`\`
+
+Discovery:
+- \`<server> --help\` — list a server's tools
+- \`<server> <tool> --schema\` — print the JSON Schema for a tool
+- \`<server> auth login|check|logout\` — manage OAuth where required
+
+Servers:
+${servers}`;
+}
+
 function buildMcpServerInstructions(
   mcpInstructions: Record<string, string>
 ): string {
@@ -156,7 +185,9 @@ function buildMcpServerInstructions(
  * Caches the result until invalidated by a config_changed SSE event.
  * Skips MCP server config (OpenClaw doesn't use Claude SDK's MCP format).
  */
-export async function getOpenClawSessionContext(): Promise<{
+export async function getOpenClawSessionContext(
+  opts: { mcpExposure?: "tools" | "cli" } = {}
+): Promise<{
   /**
    * Identity/soul/user instructions for this agent. Returned separately from
    * `gatewayInstructions` so the worker can prepend identity BEFORE the
@@ -173,7 +204,13 @@ export async function getOpenClawSessionContext(): Promise<{
   mcpTools: Record<string, McpToolDef[]>;
   mcpContext: Record<string, string>;
 }> {
-  if (cachedResult && Date.now() - cachedResult.cachedAt < CACHE_TTL_MS) {
+  const mcpExposure: "tools" | "cli" = opts.mcpExposure ?? "tools";
+
+  if (
+    cachedResult &&
+    cachedResult.mcpExposure === mcpExposure &&
+    Date.now() - cachedResult.cachedAt < CACHE_TTL_MS
+  ) {
     logger.debug("Returning cached session context");
     return cachedResult;
   }
@@ -212,7 +249,8 @@ export async function getOpenClawSessionContext(): Promise<{
     const toolMcpIds = new Set(Object.keys(data.mcpTools || {}));
     const mcpSetupInstructions = buildMcpInstructions(
       data.mcpStatus,
-      toolMcpIds
+      toolMcpIds,
+      mcpExposure
     );
     // Include MCP server instructions for all servers (with or without tools).
     // These provide workspace context (available connectors, entity schemas, etc.)
@@ -220,6 +258,8 @@ export async function getOpenClawSessionContext(): Promise<{
     const mcpServerInstructions = buildMcpServerInstructions(
       data.mcpInstructions || {}
     );
+    const mcpCliInstructions =
+      mcpExposure === "cli" ? buildMcpCliInstructions(data.mcpStatus) : "";
 
     // Identity/soul/user instructions are returned separately so the worker
     // can prepend them BEFORE the pi-coding-agent base prompt.
@@ -229,6 +269,7 @@ export async function getOpenClawSessionContext(): Promise<{
       data.platformInstructions,
       data.networkInstructions,
       data.skillsInstructions,
+      mcpCliInstructions,
       mcpSetupInstructions,
       mcpServerInstructions,
     ]
@@ -259,7 +300,7 @@ export async function getOpenClawSessionContext(): Promise<{
       (mcp) => mcp.authenticated && !toolMcpIds.has(mcp.id)
     );
     if (!hasEmptyAuthenticatedMcp) {
-      cachedResult = { ...result, cachedAt: Date.now() };
+      cachedResult = { ...result, mcpExposure, cachedAt: Date.now() };
     } else {
       logger.warn(
         "Skipping session context cache — authenticated MCP(s) returned no tools",

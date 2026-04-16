@@ -725,9 +725,30 @@ export class OpenClawWorker implements WorkerExecutor {
 
     this.progressProcessor.setVerboseLogging(verboseLogging);
 
+    // Resolve how MCP tools should be exposed to the agent. In embedded mode,
+    // operators can swap the many first-class MCP tools for a small set of
+    // per-server just-bash CLIs (keeps the tool list lean).
+    const configuredMcpExposure = (
+      rawOptions.toolsConfig as ToolsConfig | undefined
+    )?.mcpExposure;
+    const envMcpExposure = process.env.LOBU_MCP_EXPOSURE;
+    const requestedMcpExposure: "tools" | "cli" =
+      configuredMcpExposure === "cli" || envMcpExposure === "cli"
+        ? "cli"
+        : "tools";
+    const isEmbedded = process.env.DEPLOYMENT_MODE === "embedded";
+    if (requestedMcpExposure === "cli" && !isEmbedded) {
+      logger.warn(
+        "mcpExposure='cli' requested but DEPLOYMENT_MODE is not 'embedded' — falling back to 'tools'."
+      );
+    }
+    const mcpExposure: "tools" | "cli" =
+      requestedMcpExposure === "cli" && isEmbedded ? "cli" : "tools";
+
     // Fetch session context BEFORE model resolution so AGENT_DEFAULT_PROVIDER
-    // is available when resolveModelRef() needs a fallback provider.
-    const context = await getOpenClawSessionContext();
+    // is available when resolveModelRef() needs a fallback provider. Pass
+    // `mcpExposure` so MCP setup instructions use the right call syntax.
+    const context = await getOpenClawSessionContext({ mcpExposure });
 
     // Sync enabled skills to workspace filesystem so the agent can `cat` them.
     // Remove stale skill directories to avoid serving removed/disabled skills.
@@ -955,14 +976,56 @@ export class OpenClawWorker implements WorkerExecutor {
         | undefined,
     });
 
+    // Build a mutable snapshot of MCP runtime state. The embedded CLI handlers
+    // read through `mcpRuntimeRef.current` so that `auth check` / `logout` can
+    // swap in refreshed tools/state without rebuilding Bash. `refresh()` re-
+    // fetches session context — `checkMcpLogin`/`logoutMcp` already invalidate
+    // the gateway cache, so the next fetch reaches the gateway.
+    const mcpRuntimeRef = {
+      current: {
+        mcpTools: context.mcpTools,
+        mcpStatus: context.mcpStatus,
+        mcpContext: context.mcpContext,
+      },
+      ...(mcpExposure === "cli" && {
+        refresh: async () => {
+          try {
+            const fresh = await getOpenClawSessionContext({ mcpExposure });
+            return {
+              mcpTools: fresh.mcpTools,
+              mcpStatus: fresh.mcpStatus,
+              mcpContext: fresh.mcpContext,
+            };
+          } catch (err) {
+            logger.warn(
+              `Failed to refresh MCP session context after auth: ${err instanceof Error ? err.message : String(err)}`
+            );
+            return null;
+          }
+        },
+      }),
+    };
+
+    const gwParams: GatewayParams = {
+      gatewayUrl: process.env.DISPATCHER_URL ?? "",
+      workerToken: process.env.WORKER_TOKEN ?? "",
+      channelId: this.config.channelId,
+      conversationId: this.config.conversationId,
+      platform: this.config.platform,
+    };
+
     let embeddedBashOps:
       | import("@mariozechner/pi-coding-agent").BashOperations
       | undefined;
-    if (process.env.DEPLOYMENT_MODE === "embedded") {
+    if (isEmbedded) {
       const { createEmbeddedBashOps } = await import(
         "../embedded/just-bash-bootstrap"
       );
-      embeddedBashOps = await createEmbeddedBashOps();
+      embeddedBashOps = await createEmbeddedBashOps({
+        mcpRuntimeRef,
+        gw: gwParams,
+        mcpExposure,
+      });
     }
     let tools = createOpenClawTools(workspaceDir, {
       bashOperations: embeddedBashOps,
@@ -1080,14 +1143,6 @@ Replace "YOUR_PROMPT_HERE" with the user's request. These agents can read/write 
 You have access to GetChannelHistory to view previous messages in this thread.
 Use it when the user references past discussions or you need context.`);
 
-    const gwParams = {
-      gatewayUrl,
-      workerToken,
-      channelId: this.config.channelId,
-      conversationId: this.config.conversationId,
-      platform: this.config.platform,
-    };
-
     const customTools = createOpenClawCustomTools({
       ...gwParams,
       onCustomEvent: async (name, data) => {
@@ -1099,17 +1154,26 @@ Use it when the user references past discussions or you need context.`);
       },
     });
 
-    // Register MCP tools as first-class callable tools (alongside virtual memory wrappers)
-    const mcpToolDefs = createMcpToolDefinitions(
-      context.mcpTools,
-      gwParams,
-      context.mcpContext
-    );
-    if (mcpToolDefs.length > 0) {
-      customTools.push(...mcpToolDefs);
+    // Register first-class MCP tools + auth tools. Skipped entirely in CLI
+    // mode — MCP tools are instead reachable via the per-server just-bash CLI
+    // wired in above, and `<server> auth login|check|logout` supersedes the
+    // `<id>_login` / `<id>_login_check` / `<id>_logout` trio.
+    if (mcpExposure === "cli") {
       logger.info(
-        `Registered ${mcpToolDefs.length} MCP tool(s): ${mcpToolDefs.map((t) => t.name).join(", ")}`
+        "mcpExposure='cli' — skipping first-class MCP tool registration (tools reachable via <server> <tool> in Bash)."
       );
+    } else {
+      const mcpToolDefs = createMcpToolDefinitions(
+        context.mcpTools,
+        gwParams,
+        context.mcpContext
+      );
+      if (mcpToolDefs.length > 0) {
+        customTools.push(...mcpToolDefs);
+        logger.info(
+          `Registered ${mcpToolDefs.length} MCP tool(s): ${mcpToolDefs.map((t) => t.name).join(", ")}`
+        );
+      }
     }
 
     // Load OpenClaw plugins
@@ -1124,16 +1188,18 @@ Use it when the user references past discussions or you need context.`);
       );
     }
 
-    const authToolDefs = createMcpAuthToolDefinitions(
-      context.mcpStatus,
-      gwParams,
-      new Set(customTools.map((tool) => tool.name))
-    );
-    if (authToolDefs.length > 0) {
-      customTools.push(...authToolDefs);
-      logger.info(
-        `Registered ${authToolDefs.length} MCP auth tool(s): ${authToolDefs.map((t) => t.name).join(", ")}`
+    if (mcpExposure !== "cli") {
+      const authToolDefs = createMcpAuthToolDefinitions(
+        context.mcpStatus,
+        gwParams,
+        new Set(customTools.map((tool) => tool.name))
       );
+      if (authToolDefs.length > 0) {
+        customTools.push(...authToolDefs);
+        logger.info(
+          `Registered ${authToolDefs.length} MCP auth tool(s): ${authToolDefs.map((t) => t.name).join(", ")}`
+        );
+      }
     }
 
     // Apply plugin provider registrations to ModelRegistry

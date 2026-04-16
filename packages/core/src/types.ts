@@ -297,6 +297,17 @@ export interface ToolsConfig {
    * If false (default), allowedTools are ADDED to default permissions.
    */
   strictMode?: boolean;
+
+  /**
+   * How MCP tools are exposed to the agent in embedded deployment mode.
+   * - "tools" (default): each MCP tool is registered as a first-class
+   *   function-call tool with its JSON Schema.
+   * - "cli": MCP servers are exposed as one `just-bash` command per server
+   *   (e.g. `owletto search_knowledge <<<'{...}'`). Keeps the first-class
+   *   tool list small; relies on the sandboxed bash to invoke MCP tools.
+   * Non-embedded deployment modes ignore this field and always use "tools".
+   */
+  mcpExposure?: "tools" | "cli";
 }
 
 /**

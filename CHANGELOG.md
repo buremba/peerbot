@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.4.3](https://github.com/lobu-ai/lobu/compare/v3.4.2...v3.4.3) (2026-04-16)
+
+
+### Bug Fixes
+
+* **ci:** set empty component to fix release-please auto-tagging ([#192](https://github.com/lobu-ai/lobu/issues/192)) ([ec809f9](https://github.com/lobu-ai/lobu/commit/ec809f9069f0a8b79b0fab0b37eeb409783da67e))
+
 ## [3.4.2](https://github.com/lobu-ai/lobu/compare/v3.4.1...v3.4.2) (2026-04-16)
 
 

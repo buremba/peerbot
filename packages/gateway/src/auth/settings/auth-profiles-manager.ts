@@ -4,10 +4,9 @@ import type {
   RuntimeProviderCredentialResolver,
 } from "../../embedded";
 import type { WritableSecretStore } from "../../secrets";
-import type {
-  AgentSettingsStore,
-  EphemeralAuthProfileRegistry,
-} from "./agent-settings-store";
+import type { DeclaredAgentRegistry } from "../../services/declared-agent-registry";
+import type { EphemeralAuthProfileRegistry } from "./agent-settings-store";
+import type { UserAuthProfileStore } from "./user-auth-profile-store";
 
 const logger = createLogger("auth-profiles-manager");
 
@@ -15,6 +14,8 @@ const ANY_MODEL_SCOPE = "*";
 
 export interface UpsertAuthProfileInput {
   agentId: string;
+  /** Owning user. Required for persistent (Redis-backed) writes. */
+  userId?: string;
   provider: string;
   credential?: string;
   credentialRef?: string;
@@ -26,42 +27,76 @@ export interface UpsertAuthProfileInput {
   id?: string;
 }
 
+export interface AuthProfilesManagerOptions {
+  ephemeralProfiles: EphemeralAuthProfileRegistry;
+  declaredAgents: DeclaredAgentRegistry;
+  userAuthProfiles: UserAuthProfileStore;
+  secretStore: WritableSecretStore;
+  runtimeCredentialResolver?: RuntimeProviderCredentialResolver;
+}
+
+/**
+ * Resolve and write auth profiles by merging three sources:
+ *
+ * 1. **Runtime resolver** — SDK host can plug in a synchronous credential
+ *    resolver that wins over everything else (ProviderCredentialContext).
+ * 2. **User-scoped profiles** — durable per-user profiles keyed by
+ *    `(userId, agentId)` in `UserAuthProfileStore`.
+ * 3. **Declared credentials** — read-only credentials shipped with the
+ *    agent's declared config (lobu.toml / SDK GatewayConfig.agents),
+ *    surfaced via `DeclaredAgentRegistry`.
+ *
+ * Callers pass `ProviderCredentialContext.userId` when they have one
+ * (worker proxy, OAuth route, agent-config route). When `userId` is
+ * absent, only declared + runtime sources are consulted.
+ */
 export class AuthProfilesManager {
-  /**
-   * Ephemeral profile registry is owned by `AgentSettingsStore` so that
-   * every `AuthProfilesManager` built against the same store (including
-   * the ones each provider module constructs internally) shares the same
-   * ephemeral view. Without this, a `provider.key` seeded on the central
-   * manager would be invisible to provider modules' own managers.
-   */
   private readonly ephemeralProfiles: EphemeralAuthProfileRegistry;
+  private readonly declaredAgents: DeclaredAgentRegistry;
+  private readonly userAuthProfiles: UserAuthProfileStore;
+  private readonly secretStore: WritableSecretStore;
   private readonly runtimeCredentialResolver?: RuntimeProviderCredentialResolver;
 
-  constructor(
-    private readonly agentSettingsStore: AgentSettingsStore,
-    private readonly secretStore: WritableSecretStore,
-    runtimeCredentialResolver?: RuntimeProviderCredentialResolver
-  ) {
-    this.ephemeralProfiles = agentSettingsStore.getEphemeralAuthProfiles();
-    this.runtimeCredentialResolver =
-      runtimeCredentialResolver ??
-      agentSettingsStore.getRuntimeCredentialResolver();
+  constructor(options: AuthProfilesManagerOptions) {
+    this.ephemeralProfiles = options.ephemeralProfiles;
+    this.declaredAgents = options.declaredAgents;
+    this.userAuthProfiles = options.userAuthProfiles;
+    this.secretStore = options.secretStore;
+    this.runtimeCredentialResolver = options.runtimeCredentialResolver;
   }
 
-  async listProfiles(agentId: string): Promise<AuthProfile[]> {
-    const settings =
-      await this.agentSettingsStore.getEffectiveSettings(agentId);
+  getDeclaredAgents(): DeclaredAgentRegistry {
+    return this.declaredAgents;
+  }
 
-    // Persistent profiles take precedence over ephemeral on (provider, model)
-    // collision, so the two halves are merged with the persistent set first.
+  getUserAuthProfileStore(): UserAuthProfileStore {
+    return this.userAuthProfiles;
+  }
+
+  /**
+   * Return every profile known for `(agentId, userId?)`, with secret refs
+   * resolved to plaintext. Intended for admin/agent-config surfaces.
+   *
+   * Order:
+   *   1. user-scoped profiles (most authoritative)
+   *   2. ephemeral profiles registered by SDK host
+   *   3. declared credentials from registry (synthesized as `api-key`)
+   */
+  async listProfiles(agentId: string, userId?: string): Promise<AuthProfile[]> {
+    const userProfiles = userId
+      ? await this.userAuthProfiles.list(userId, agentId)
+      : [];
+    const ephemeral = this.ephemeralProfiles.get(agentId) || [];
+    const declared = this.synthesizeDeclaredProfiles(agentId);
+
     const merged = this.dedupeByScope([
-      ...(settings?.authProfiles || []),
-      ...(this.ephemeralProfiles.get(agentId) || []),
+      ...this.normalizeProfiles(userProfiles),
+      ...this.normalizeProfiles(ephemeral),
+      ...declared,
     ]);
-    const profiles = this.normalizeProfiles(merged);
 
     const resolved = await Promise.all(
-      profiles.map(async (profile) => {
+      merged.map(async (profile) => {
         try {
           return await this.resolveProfile(profile);
         } catch (error) {
@@ -92,15 +127,16 @@ export class AuthProfilesManager {
     ) {
       return true;
     }
-    const profiles = await this.listProfiles(agentId);
+    const profiles = await this.listProfiles(agentId, context?.userId);
     return profiles.some((profile) => profile.provider === provider);
   }
 
   async getProviderProfiles(
     agentId: string,
-    provider: string
+    provider: string,
+    userId?: string
   ): Promise<AuthProfile[]> {
-    const profiles = await this.listProfiles(agentId);
+    const profiles = await this.listProfiles(agentId, userId);
     return profiles.filter((profile) => profile.provider === provider);
   }
 
@@ -120,7 +156,11 @@ export class AuthProfilesManager {
       return runtimeProfile;
     }
 
-    const providerProfiles = await this.getProviderProfiles(agentId, provider);
+    const providerProfiles = await this.getProviderProfiles(
+      agentId,
+      provider,
+      context?.userId
+    );
     if (providerProfiles.length === 0) {
       return null;
     }
@@ -139,26 +179,36 @@ export class AuthProfilesManager {
       return null;
     }
 
-    const candidates = validProfiles;
     if (!model) {
-      return candidates[0] || null;
+      return validProfiles[0] || null;
     }
 
-    const exact = candidates.find((profile) => profile.model === model);
+    const exact = validProfiles.find((profile) => profile.model === model);
     if (exact) return exact;
 
-    const wildcard = candidates.find(
+    const wildcard = validProfiles.find(
       (profile) => profile.model === ANY_MODEL_SCOPE
     );
-    return wildcard || candidates[0] || null;
+    return wildcard || validProfiles[0] || null;
   }
 
+  /**
+   * Insert or update a persistent (Redis-backed) profile.
+   *
+   * Requires `userId` — declared agents cannot be mutated through this
+   * path. Runtime UI/sandbox agents that aren't owned by a single user
+   * should pass a synthetic principal (`$ADMIN`) chosen by the caller.
+   */
   async upsertProfile(input: UpsertAuthProfileInput): Promise<AuthProfile> {
-    const settings = await this.agentSettingsStore.getSettings(input.agentId);
-    const current = this.normalizeProfiles(settings?.authProfiles);
-    const modelScope = input.model?.trim() || ANY_MODEL_SCOPE;
+    if (!input.userId) {
+      throw new Error(
+        "upsertProfile requires userId — declared agents cannot be mutated; " +
+          "runtime agents must specify the owning principal"
+      );
+    }
 
-    const nextProfile: AuthProfile = {
+    const modelScope = input.model?.trim() || ANY_MODEL_SCOPE;
+    const profile: AuthProfile = {
       id: input.id || crypto.randomUUID(),
       provider: input.provider,
       ...(input.credential ? { credential: input.credential } : {}),
@@ -170,69 +220,24 @@ export class AuthProfilesManager {
       createdAt: Date.now(),
     };
 
-    let replaced = false;
-    const withoutExisting = current.filter((profile) => {
-      if (input.id && profile.id === input.id) {
-        replaced = true;
-        nextProfile.createdAt = profile.createdAt;
-        return false;
-      }
-      return true;
-    });
-
-    if (!input.id) {
-      const existingPrimary = withoutExisting.find(
-        (profile) =>
-          profile.provider === input.provider && profile.model === modelScope
-      );
-      if (existingPrimary) {
-        replaced = true;
-        nextProfile.createdAt = existingPrimary.createdAt;
-      }
-    }
-
-    const withoutSameScope = withoutExisting.filter(
-      (profile) =>
-        !(
-          profile.provider === input.provider &&
-          profile.model === modelScope &&
-          (!input.id || profile.id !== input.id)
-        )
+    const stored = await this.userAuthProfiles.upsert(
+      input.userId,
+      input.agentId,
+      profile,
+      { makePrimary: input.makePrimary }
     );
-
-    const nextProfiles: AuthProfile[] = [];
-    const providerProfiles: AuthProfile[] = [];
-    const otherProfiles: AuthProfile[] = [];
-
-    for (const profile of withoutSameScope) {
-      if (profile.provider === input.provider) {
-        providerProfiles.push(profile);
-      } else {
-        otherProfiles.push(profile);
-      }
-    }
-
-    if (input.makePrimary !== false) {
-      nextProfiles.push(nextProfile, ...providerProfiles, ...otherProfiles);
-    } else {
-      nextProfiles.push(...providerProfiles, nextProfile, ...otherProfiles);
-    }
-
-    await this.agentSettingsStore.updateSettings(input.agentId, {
-      authProfiles: nextProfiles,
-    });
 
     logger.info(
       {
         agentId: input.agentId,
+        userId: input.userId,
         provider: input.provider,
-        profileId: nextProfile.id,
-        replaced,
+        profileId: stored.id,
       },
       "Saved auth profile"
     );
 
-    return nextProfile;
+    return stored;
   }
 
   registerEphemeralProfile(input: UpsertAuthProfileInput): AuthProfile {
@@ -281,57 +286,24 @@ export class AuthProfilesManager {
   async deleteProviderProfiles(
     agentId: string,
     provider: string,
-    profileId?: string
+    options: { userId?: string; profileId?: string } = {}
   ): Promise<void> {
-    const settings = await this.agentSettingsStore.getSettings(agentId);
-    const current = this.normalizeProfiles(settings?.authProfiles);
-
-    // Collect profiles that are actually being removed so we can clean up
-    // their secrets from the secret store before updating settings.
-    const removed = current.filter((profile) => {
-      if (profile.provider !== provider) return false;
-      if (profileId && profile.id !== profileId) return false;
-      return true;
-    });
-    const filtered = current.filter((profile) => !removed.includes(profile));
-
-    await this.agentSettingsStore.updateSettings(agentId, {
-      authProfiles: filtered,
-    });
-
-    // Delete orphaned secrets for each removed profile. Both kinds
-    // (credential + refresh-token) use the deterministic name built by
-    // AgentSettingsStore, so we can reconstruct the names here.
-    let secretsDeleted = 0;
-    for (const profile of removed) {
-      for (const kind of ["credential", "refresh-token"] as const) {
-        const name = `agents/${agentId}/auth-profiles/${profile.id}/${kind}`;
-        try {
-          await this.secretStore.delete(name);
-          secretsDeleted += 1;
-        } catch (error) {
-          logger.warn(
-            {
-              agentId,
-              profileId: profile.id,
-              kind,
-              error: error instanceof Error ? error.message : String(error),
-            },
-            "Failed to delete auth profile secret"
-          );
-        }
-      }
+    if (options.userId) {
+      await this.userAuthProfiles.remove(options.userId, agentId, {
+        provider,
+        ...(options.profileId ? { profileId: options.profileId } : {}),
+      });
     }
 
     const ephemeral = this.ephemeralProfiles.get(agentId);
     if (ephemeral) {
-      const filteredEphemeral = ephemeral.filter((profile) => {
+      const filtered = ephemeral.filter((profile) => {
         if (profile.provider !== provider) return true;
-        if (!profileId) return false;
-        return profile.id !== profileId;
+        if (!options.profileId) return false;
+        return profile.id !== options.profileId;
       });
-      if (filteredEphemeral.length > 0) {
-        this.ephemeralProfiles.set(agentId, filteredEphemeral);
+      if (filtered.length > 0) {
+        this.ephemeralProfiles.set(agentId, filtered);
       } else {
         this.ephemeralProfiles.delete(agentId);
       }
@@ -341,12 +313,28 @@ export class AuthProfilesManager {
       {
         agentId,
         provider,
-        profileId: profileId || "all",
-        removedCount: removed.length,
-        secretsDeleted,
+        userId: options.userId || null,
+        profileId: options.profileId || "all",
       },
       "Deleted auth profiles"
     );
+  }
+
+  private synthesizeDeclaredProfiles(agentId: string): AuthProfile[] {
+    const entry = this.declaredAgents.get(agentId);
+    if (!entry || entry.credentials.length === 0) return [];
+
+    const now = Date.now();
+    return entry.credentials.map<AuthProfile>((cred) => ({
+      id: `declared:${agentId}:${cred.provider}`,
+      provider: cred.provider,
+      ...(cred.key ? { credential: cred.key } : {}),
+      ...(cred.secretRef ? { credentialRef: cred.secretRef } : {}),
+      authType: "api-key",
+      label: `${cred.provider} (declared)`,
+      model: ANY_MODEL_SCOPE,
+      createdAt: now,
+    }));
   }
 
   private normalizeProfiles(
@@ -364,24 +352,36 @@ export class AuthProfilesManager {
   }
 
   /**
-   * Merge persistent + ephemeral profile lists, preferring whichever came
-   * first in the input when two profiles cover the same (provider, model)
-   * scope. Callers pass persistent profiles before ephemeral ones so
-   * persistent always wins the scope on collision.
+   * Merge profile lists, preferring whichever came first in the input
+   * when two profiles cover the same (provider, model) scope. Callers
+   * pass user profiles before ephemeral and declared so the persisted
+   * per-user choice always wins.
+   *
+   * Within a scope, a non-expired profile beats an expired one regardless
+   * of order — this keeps a stale user OAuth token from masking a valid
+   * declared/ephemeral fallback for the same scope.
    */
   private dedupeByScope(profiles: AuthProfile[]): AuthProfile[] {
-    const seenScopes = new Set<string>();
-    const seenIds = new Set<string>();
-    const result: AuthProfile[] = [];
+    const now = Date.now();
+    const isExpired = (profile: AuthProfile) =>
+      !!profile.metadata?.expiresAt && profile.metadata.expiresAt <= now;
+
+    const scopeOrder: string[] = [];
+    const chosen = new Map<string, AuthProfile>();
     for (const profile of profiles) {
-      if (seenIds.has(profile.id)) continue;
       const scope = `${profile.provider}:${profile.model ?? ANY_MODEL_SCOPE}`;
-      if (seenScopes.has(scope)) continue;
-      seenScopes.add(scope);
-      seenIds.add(profile.id);
-      result.push(profile);
+      const existing = chosen.get(scope);
+      if (!existing) {
+        chosen.set(scope, profile);
+        scopeOrder.push(scope);
+        continue;
+      }
+      if (existing.id === profile.id) continue;
+      if (isExpired(existing) && !isExpired(profile)) {
+        chosen.set(scope, profile);
+      }
     }
-    return result;
+    return scopeOrder.map((scope) => chosen.get(scope)!);
   }
 
   private async resolveProfile(profile: AuthProfile): Promise<AuthProfile> {
@@ -413,9 +413,6 @@ export class AuthProfilesManager {
       refreshTokenResolvedFromRef = true;
     }
 
-    // Maintain the AuthProfile invariant: exactly one of credential / credentialRef
-    // (and the same for refreshToken / refreshTokenRef). When we inline the
-    // resolved plaintext, drop the ref so downstream code can't see both.
     const next: AuthProfile = { ...profile };
     if (credentialResolvedFromRef) {
       next.credential = credential;

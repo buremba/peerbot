@@ -1,9 +1,8 @@
 import { createLogger } from "@lobu/core";
 import type { ModelOption } from "../../modules/module-system";
 import { BaseProviderModule } from "../base-provider-module";
-import type { AgentSettingsStore } from "../settings/agent-settings-store";
 import {
-  AuthProfilesManager,
+  type AuthProfilesManager,
   createAuthProfileLabel,
 } from "../settings/auth-profiles-manager";
 import { ChatGPTDeviceCodeClient } from "./device-code-client";
@@ -17,11 +16,7 @@ const logger = createLogger("chatgpt-oauth-module");
 export class ChatGPTOAuthModule extends BaseProviderModule {
   private deviceCodeClient: ChatGPTDeviceCodeClient;
 
-  constructor(agentSettingsStore: AgentSettingsStore) {
-    const authProfilesManager = new AuthProfilesManager(
-      agentSettingsStore,
-      agentSettingsStore.getSecretStore()
-    );
+  constructor(authProfilesManager: AuthProfilesManager) {
     super(
       {
         providerId: "chatgpt",
@@ -141,6 +136,7 @@ export class ChatGPTOAuthModule extends BaseProviderModule {
 
   async pollDeviceCode(
     agentId: string,
+    userId: string,
     payload: { deviceAuthId: string; userCode: string }
   ): Promise<{
     status: "pending" | "success";
@@ -159,6 +155,7 @@ export class ChatGPTOAuthModule extends BaseProviderModule {
 
       await this.authProfilesManager.upsertProfile({
         agentId,
+        userId,
         provider: this.providerId,
         credential: result.accessToken,
         authType: "device-code",

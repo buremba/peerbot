@@ -12,14 +12,11 @@ function cloneSettingValue<T>(value: T): T {
  * - `updatedAt`: set fresh on save.
  * - `templateAgentId`: the derived agent tracks its own template pointer.
  * - `mcpInstallNotified`: per-agent UI state; not a config value.
- * - `authProfiles`: credentials are deliberately not cloned into sandboxes;
- *   they're resolved at runtime from the effective settings chain.
  */
 const NON_TEMPLATED_KEYS = new Set<keyof AgentSettings>([
   "updatedAt",
   "templateAgentId",
   "mcpInstallNotified",
-  "authProfiles",
 ]);
 
 export function buildDefaultSettingsFromSource(

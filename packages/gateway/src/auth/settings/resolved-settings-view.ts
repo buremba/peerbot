@@ -65,7 +65,6 @@ const SECTION_SETTING_KEYS: Record<
 > = {
   model: [
     "installedProviders",
-    "authProfiles",
     "model",
     "modelSelection",
     "providerModelPreferences",
@@ -197,9 +196,6 @@ function resolveProviderSources(
       (provider) => provider.providerId
     )
   );
-  const localProfileProviders = new Set(
-    (localSettings?.authProfiles || []).map((profile) => profile.provider)
-  );
   const localPreferenceProviders = new Set(
     Object.keys(localSettings?.providerModelPreferences || {})
   );
@@ -213,7 +209,6 @@ function resolveProviderSources(
     effectiveProviderIds.map((providerId) => {
       const hasLocalOverride =
         localProviderIds.has(providerId) ||
-        localProfileProviders.has(providerId) ||
         localPreferenceProviders.has(providerId);
 
       const source = resolveSectionSource(

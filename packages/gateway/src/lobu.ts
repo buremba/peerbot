@@ -2,7 +2,11 @@ import type { Server } from "node:http";
 import { createLogger } from "@lobu/core";
 import { ApiPlatform } from "./api";
 import { createGatewayApp, startGatewayServer } from "./cli/gateway";
-import { buildGatewayConfig, type GatewayConfig } from "./config";
+import {
+  type AgentConfig,
+  buildGatewayConfig,
+  type GatewayConfig,
+} from "./config";
 import { ChatInstanceManager, ChatResponseBridge } from "./connections";
 import type {
   EmbeddedAuthProvider,
@@ -10,7 +14,6 @@ import type {
 } from "./embedded";
 import { Gateway } from "./gateway-main";
 import type { SecretStoreRegistry } from "./secrets";
-import { InMemoryAgentStore } from "./stores/in-memory-agent-store";
 
 const logger = createLogger("lobu");
 
@@ -93,8 +96,11 @@ export class Lobu {
 
     const defaultPublicUrl = `http://localhost:${this.port}`;
 
-    // Convert LobuConfig -> GatewayConfig via buildGatewayConfig overrides
+    // Convert LobuConfig -> GatewayConfig via buildGatewayConfig overrides.
+    // Passing `agents` lets core-services own InMemoryAgentStore population
+    // and DeclaredAgentRegistry seeding; avoids a parallel SDK seeding path.
     this.gatewayConfig = buildGatewayConfig({
+      agents: this.agentConfigs.map(toAgentConfig),
       queues: { connectionString: config.redis },
       orchestration: {
         deploymentMode: config.deploymentMode ?? "embedded",
@@ -104,12 +110,7 @@ export class Lobu {
       },
     });
 
-    // Build InMemoryAgentStore pre-populated with agents from config
-    const store = new InMemoryAgentStore();
     this.gateway = new Gateway(this.gatewayConfig, {
-      configStore: store,
-      connectionStore: store,
-      accessStore: store,
       secretStore: config.secretStore,
       providerCredentialResolver: config.providerCredentialResolver,
     });
@@ -128,13 +129,12 @@ export class Lobu {
   async initialize(): Promise<void> {
     if (this.initialized) return;
 
-    // Start the gateway (initializes CoreServices, platforms, consumer)
+    // Start the gateway (initializes CoreServices, platforms, consumer).
+    // CoreServices populates agents + the declared registry from
+    // `gatewayConfig.agents` automatically — no separate seeding needed.
     await this.gateway.start();
 
     const coreServices = this.gateway.getCoreServices();
-
-    // Populate agents from config into the InMemoryAgentStore
-    await this.populateAgents();
 
     // Initialize Chat SDK connection manager for platform connections
     this.chatInstanceManager = new ChatInstanceManager();
@@ -218,103 +218,6 @@ export class Lobu {
   // ── Private Helpers ──────────────────────────────────────────────────────
 
   /**
-   * Populate InMemoryAgentStore + seed credentials from LobuAgentConfig[].
-   * Mirrors what CoreServices.populateStoreFromFiles() does for file-loaded agents.
-   */
-  private async populateAgents(): Promise<void> {
-    if (this.agentConfigs.length === 0) return;
-
-    const coreServices = this.gateway.getCoreServices();
-    const configStore = coreServices.getConfigStore();
-    if (!configStore) return;
-
-    const store = configStore as InMemoryAgentStore;
-    const authProfilesManager = coreServices.getAuthProfilesManager();
-
-    for (const agent of this.agentConfigs) {
-      // Save metadata
-      await store.saveMetadata(agent.id, {
-        agentId: agent.id,
-        name: agent.name ?? agent.id,
-        description: agent.description,
-        owner: { platform: "system", userId: "sdk" },
-        createdAt: Date.now(),
-      });
-
-      // Build settings (same shape as FileLoadedAgent.settings)
-      const settings: Record<string, any> = {};
-
-      if (agent.identity) settings.identityMd = agent.identity;
-      if (agent.soul) settings.soulMd = agent.soul;
-      if (agent.user) settings.userMd = agent.user;
-
-      if (agent.providers?.length) {
-        settings.installedProviders = agent.providers.map((p) => ({
-          providerId: p.id,
-          installedAt: Date.now(),
-        }));
-        settings.modelSelection = { mode: "auto" };
-        const providerModelPreferences = Object.fromEntries(
-          agent.providers
-            .filter((p) => !!p.model?.trim())
-            .map((p) => [p.id, p.model!.trim()])
-        );
-        if (Object.keys(providerModelPreferences).length > 0) {
-          settings.providerModelPreferences = providerModelPreferences;
-        }
-      }
-
-      if (agent.network) {
-        settings.networkConfig = {
-          allowedDomains: agent.network.allowed,
-          deniedDomains: agent.network.denied,
-        };
-      }
-
-      if (agent.nixPackages?.length) {
-        settings.nixConfig = { packages: agent.nixPackages };
-      }
-
-      await store.saveSettings(agent.id, {
-        ...settings,
-        updatedAt: Date.now(),
-      } as any);
-
-      // Seed provider credentials
-      if (authProfilesManager && agent.providers) {
-        for (const provider of agent.providers) {
-          if (provider.secretRef) {
-            await authProfilesManager.upsertProfile({
-              agentId: agent.id,
-              provider: provider.id,
-              credentialRef: provider.secretRef,
-              authType: "api-key",
-              label: `${provider.id} (from SDK config)`,
-              makePrimary: true,
-            });
-            continue;
-          }
-
-          if (provider.key) {
-            authProfilesManager.registerEphemeralProfile({
-              agentId: agent.id,
-              provider: provider.id,
-              credential: provider.key,
-              authType: "api-key",
-              label: `${provider.id} (from SDK config)`,
-              makePrimary: true,
-            });
-          }
-        }
-      }
-    }
-
-    logger.info(
-      `Populated ${this.agentConfigs.length} agent(s) from SDK config`
-    );
-  }
-
-  /**
    * Seed platform connections from agent configs.
    * Mirrors the file-loaded agent connection seeding in gateway.ts startGateway().
    */
@@ -374,4 +277,23 @@ export class Lobu {
       }
     }
   }
+}
+
+/**
+ * Convert a public LobuAgentConfig into the internal AgentConfig shape so
+ * `buildGatewayConfig` and `CoreServices` can populate the agent store and
+ * declared registry from a single source.
+ */
+function toAgentConfig(agent: LobuAgentConfig): AgentConfig {
+  return {
+    id: agent.id,
+    name: agent.name ?? agent.id,
+    description: agent.description,
+    identityMd: agent.identity,
+    soulMd: agent.soul,
+    userMd: agent.user,
+    providers: agent.providers,
+    network: agent.network,
+    nixPackages: agent.nixPackages,
+  };
 }

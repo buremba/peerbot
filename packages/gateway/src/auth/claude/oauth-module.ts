@@ -81,11 +81,14 @@ export class ClaudeOAuthModule extends BaseProviderModule {
 
   override async buildEnvVars(
     agentId: string,
-    envVars: Record<string, string>
+    envVars: Record<string, string>,
+    context?: import("../../embedded").ProviderCredentialContext
   ): Promise<Record<string, string>> {
     const profile = await this.authProfilesManager.getBestProfile(
       agentId,
-      this.providerId
+      this.providerId,
+      undefined,
+      context
     );
 
     if (profile?.credential) {
@@ -152,23 +155,34 @@ export class ClaudeOAuthModule extends BaseProviderModule {
     return options;
   }
 
-  async setCredentials(agentId: string, credentials: unknown): Promise<void> {
-    await this.saveOAuthCredentials(agentId, credentials as OAuthCredentials);
+  async setCredentials(
+    agentId: string,
+    userId: string,
+    credentials: unknown
+  ): Promise<void> {
+    await this.saveOAuthCredentials(
+      agentId,
+      userId,
+      credentials as OAuthCredentials
+    );
   }
 
-  async deleteCredentials(agentId: string): Promise<void> {
+  async deleteCredentials(agentId: string, userId: string): Promise<void> {
     await this.authProfilesManager.deleteProviderProfiles(
       agentId,
-      this.providerId
+      this.providerId,
+      { userId }
     );
   }
 
   private async saveOAuthCredentials(
     agentId: string,
+    userId: string,
     credentials: OAuthCredentials
   ): Promise<void> {
     await this.authProfilesManager.upsertProfile({
       agentId,
+      userId,
       provider: this.providerId,
       credential: credentials.accessToken,
       authType: "oauth",

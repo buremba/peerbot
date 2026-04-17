@@ -252,27 +252,34 @@ describe("resolveAgentOptions model resolution", () => {
 });
 
 describe("hasConfiguredProvider", () => {
-  test("accepts inherited template credentials from effective settings", async () => {
+  test("accepts declared agents with credentials regardless of system keys", async () => {
+    const { DeclaredAgentRegistry } = await import(
+      "../services/declared-agent-registry"
+    );
     const settingsStore = {
-      getEffectiveSettings: async () =>
-        ({
-          authProfiles: [
-            {
-              id: "profile-1",
-              provider: "z-ai",
-              credential: "secret",
-              authType: "api-key",
-              label: "z.ai",
-              model: "*",
-              createdAt: 1,
-            },
-          ],
-          installedProviders: [{ providerId: "z-ai", installedAt: 1 }],
-        }) as any,
+      getEffectiveSettings: async () => null,
     };
+    const declaredAgents = new DeclaredAgentRegistry();
+    declaredAgents.replaceAll(
+      new Map([
+        [
+          "telegram-6570514069",
+          {
+            settings: {
+              installedProviders: [{ providerId: "z-ai", installedAt: 1 }],
+            },
+            credentials: [{ provider: "z-ai", key: "secret" }],
+          },
+        ],
+      ])
+    );
 
     await expect(
-      hasConfiguredProvider("telegram-6570514069", settingsStore as any)
+      hasConfiguredProvider(
+        "telegram-6570514069",
+        settingsStore as any,
+        declaredAgents
+      )
     ).resolves.toBe(true);
   });
 });

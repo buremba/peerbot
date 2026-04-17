@@ -27,6 +27,7 @@ import {
 import { ProviderCatalogService } from "../auth/provider-catalog";
 import { AgentSettingsStore, AuthProfilesManager } from "../auth/settings";
 import { ModelPreferenceStore } from "../auth/settings/model-preference-store";
+import { UserAuthProfileStore } from "../auth/settings/user-auth-profile-store";
 import { UserAgentsStore } from "../auth/user-agents-store";
 import { ChannelBindingService } from "../channels";
 import { ConversationStateStore } from "../connections/conversation-state-store";
@@ -69,6 +70,11 @@ import {
 } from "../stores/redis-agent-store";
 import { BedrockModelCatalog } from "./bedrock-model-catalog";
 import { BedrockOpenAIService } from "./bedrock-openai-service";
+import {
+  buildRegistryMap,
+  DeclaredAgentRegistry,
+  entryFromAgentConfig,
+} from "./declared-agent-registry";
 import { ImageGenerationService } from "./image-generation-service";
 import { InstructionService } from "./instruction-service";
 import { SessionManager, StateAdapterSessionStore } from "./session-manager";
@@ -100,6 +106,8 @@ export class CoreServices {
   // Auth & Provider Services
   // ============================================================================
   private authProfilesManager?: AuthProfilesManager;
+  private declaredAgentRegistry?: DeclaredAgentRegistry;
+  private userAuthProfileStore?: UserAuthProfileStore;
   private modelPreferenceStore?: ModelPreferenceStore;
   private oauthStateStore?: ProviderOAuthStateStore;
   private secretProxy?: SecretProxy;
@@ -362,13 +370,7 @@ export class CoreServices {
     logger.debug("Secret store initialized");
 
     // Initialize agent configuration stores
-    this.agentSettingsStore = new AgentSettingsStore(
-      redisClient,
-      this.secretStore,
-      {
-        runtimeCredentialResolver: this.options?.providerCredentialResolver,
-      }
-    );
+    this.agentSettingsStore = new AgentSettingsStore(redisClient);
     this.channelBindingService = new ChannelBindingService(redisClient);
     this.userAgentsStore = new UserAgentsStore(redisClient);
     this.agentMetadataStore = new AgentMetadataStore(redisClient);
@@ -485,39 +487,52 @@ export class CoreServices {
       );
     }
 
-    if (this.fileLoadedAgents.length > 0) {
-      for (const agent of this.fileLoadedAgents) {
-        await this.syncAgentSettingsToRuntimeStore(
-          agent.agentId,
-          agent.settings
-        );
-      }
-      logger.debug(
-        `Synced settings for ${this.fileLoadedAgents.length} file-loaded agent(s)`
-      );
-    }
-
-    if (this.configAgents.length > 0) {
-      for (const agent of this.configAgents) {
-        await this.syncAgentSettingsToRuntimeStore(
-          agent.id,
-          this.buildSettingsFromAgentConfig(agent)
-        );
-      }
-      logger.debug(
-        `Synced settings for ${this.configAgents.length} config agent(s)`
-      );
-    }
-
     // Initialize auth profile and preference stores
     if (!this.secretStore) {
       throw new Error("Secret store must be initialized before auth services");
     }
 
-    this.authProfilesManager = new AuthProfilesManager(
-      this.agentSettingsStore,
+    // Declared registry: read-only snapshot of file/SDK-declared agents.
+    // No Redis copy is kept — declared settings live in memory and are
+    // rebuilt wholesale on hot-reload.
+    this.declaredAgentRegistry = new DeclaredAgentRegistry();
+    this.declaredAgentRegistry.replaceAll(
+      buildRegistryMap(this.fileLoadedAgents, this.configAgents)
+    );
+    // Plumb registry into the settings store so getEffectiveSettings
+    // returns declared settings for declared agents (no Redis copy exists
+    // by design — see one-shot cleanup below).
+    this.agentSettingsStore.setDeclaredAgents(this.declaredAgentRegistry);
+
+    // User-scoped auth profile store: durable per-(userId, agentId)
+    // OAuth/BYOK state. Replaces the authProfiles field that used to
+    // live on AgentSettingsStore.
+    this.userAuthProfileStore = new UserAuthProfileStore(
+      redisClient,
       this.secretStore
     );
+
+    // One-shot cleanup: declared agents must not have stale Redis settings
+    // hanging around. Deleting the key keeps `agent:settings:*` reserved
+    // for runtime-created agents only.
+    for (const agentId of this.declaredAgentRegistry.agentIds()) {
+      try {
+        await this.agentSettingsStore.deleteSettings(agentId);
+      } catch (error) {
+        logger.warn("Failed to clear stale settings for declared agent", {
+          agentId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    this.authProfilesManager = new AuthProfilesManager({
+      ephemeralProfiles: this.agentSettingsStore.getEphemeralAuthProfiles(),
+      declaredAgents: this.declaredAgentRegistry,
+      userAuthProfiles: this.userAuthProfileStore,
+      secretStore: this.secretStore,
+      runtimeCredentialResolver: this.options?.providerCredentialResolver,
+    });
     this.transcriptionService = new TranscriptionService(
       this.authProfilesManager
     );
@@ -527,55 +542,24 @@ export class CoreServices {
     this.artifactStore = new ArtifactStore();
     this.modelPreferenceStore = new ModelPreferenceStore(redisClient, "claude");
 
-    // Seed provider credentials from file-loaded agents
-    if (this.authProfilesManager && this.fileLoadedAgents.length > 0) {
-      for (const agent of this.fileLoadedAgents) {
-        for (const cred of agent.credentials) {
-          await this.authProfilesManager.upsertProfile({
-            agentId: agent.agentId,
-            provider: cred.provider,
-            ...(cred.key ? { credential: cred.key } : {}),
-            ...(cred.secretRef ? { credentialRef: cred.secretRef } : {}),
+    // Embedded SDK mode: per-agent in-memory credentials supplied via
+    // `provider.key` are exposed as ephemeral profiles. Credentials with
+    // a `secretRef` come through the declared registry (no separate
+    // ephemeral copy needed).
+    if (this.configAgents.length > 0) {
+      for (const agent of this.configAgents) {
+        for (const provider of agent.providers || []) {
+          if (!provider.key || provider.secretRef) continue;
+          this.authProfilesManager.registerEphemeralProfile({
+            agentId: agent.id,
+            provider: provider.id,
+            credential: provider.key,
             authType: "api-key",
-            label: `${cred.provider} (from lobu.toml)`,
+            label: `${provider.id} (from config)`,
             makePrimary: true,
           });
         }
       }
-      logger.debug(
-        `Seeded credentials for ${this.fileLoadedAgents.length} file-loaded agent(s)`
-      );
-    }
-
-    // Seed provider credentials from config agents (embedded SDK mode).
-    // `secretRef` → durable upsertProfile (persists through secret store).
-    // `key` → registerEphemeralProfile (in-memory, SDK-process lifetime).
-    if (this.authProfilesManager && this.configAgents.length > 0) {
-      for (const agent of this.configAgents) {
-        for (const provider of agent.providers || []) {
-          if (!provider.key && !provider.secretRef) continue;
-
-          const input = {
-            agentId: agent.id,
-            provider: provider.id,
-            authType: "api-key" as const,
-            label: `${provider.id} (from config)`,
-            makePrimary: true,
-            ...(provider.secretRef
-              ? { credentialRef: provider.secretRef }
-              : { credential: provider.key }),
-          };
-
-          if (provider.secretRef) {
-            await this.authProfilesManager.upsertProfile(input);
-          } else {
-            this.authProfilesManager.registerEphemeralProfile(input);
-          }
-        }
-      }
-      logger.debug(
-        `Seeded credentials for ${this.configAgents.length} config agent(s)`
-      );
     }
 
     logger.debug(
@@ -602,11 +586,9 @@ export class CoreServices {
         "Auth profiles manager must be initialized before token refresh job"
       );
     }
-    this.tokenRefreshJob = new TokenRefreshJob(
-      this.authProfilesManager,
-      redisClient,
-      [{ providerId: "claude", oauthClient: new OAuthClient(CLAUDE_PROVIDER) }]
-    );
+    this.tokenRefreshJob = new TokenRefreshJob(this.authProfilesManager, [
+      { providerId: "claude", oauthClient: new OAuthClient(CLAUDE_PROVIDER) },
+    ]);
     this.tokenRefreshJob.start();
     logger.debug("Token refresh job started");
 
@@ -622,7 +604,7 @@ export class CoreServices {
     );
 
     // Register ChatGPT OAuth module
-    const chatgptOAuthModule = new ChatGPTOAuthModule(this.agentSettingsStore);
+    const chatgptOAuthModule = new ChatGPTOAuthModule(this.authProfilesManager);
     moduleRegistry.register(chatgptOAuthModule);
     logger.debug(
       `ChatGPT OAuth module registered (system token: ${chatgptOAuthModule.hasSystemKey() ? "available" : "not available"})`
@@ -689,7 +671,7 @@ export class CoreServices {
         registryAlias: entry.registryAlias,
         apiKeyInstructions: entry.apiKeyInstructions,
         apiKeyPlaceholder: entry.apiKeyPlaceholder,
-        agentSettingsStore: this.agentSettingsStore,
+        authProfilesManager: this.authProfilesManager,
       });
       moduleRegistry.register(module);
       registeredIds.add(id);
@@ -701,7 +683,8 @@ export class CoreServices {
     // Initialize provider catalog service
     this.providerCatalogService = new ProviderCatalogService(
       this.agentSettingsStore,
-      this.authProfilesManager
+      this.authProfilesManager,
+      this.declaredAgentRegistry
     );
     logger.debug("Provider catalog service initialized");
 
@@ -898,64 +881,6 @@ export class CoreServices {
     }
   }
 
-  private buildSettingsFromAgentConfig(
-    agent: AgentConfig
-  ): Record<string, any> {
-    const settings: Record<string, any> = {};
-    if (agent.identityMd) settings.identityMd = agent.identityMd;
-    if (agent.soulMd) settings.soulMd = agent.soulMd;
-    if (agent.userMd) settings.userMd = agent.userMd;
-
-    if (agent.providers?.length) {
-      settings.installedProviders = agent.providers.map((p) => ({
-        providerId: p.id,
-        installedAt: Date.now(),
-      }));
-      settings.modelSelection = { mode: "auto" };
-      const providerModelPreferences = Object.fromEntries(
-        agent.providers
-          .filter((p) => !!p.model?.trim())
-          .map((p) => [p.id, p.model!.trim()])
-      );
-      if (Object.keys(providerModelPreferences).length > 0) {
-        settings.providerModelPreferences = providerModelPreferences;
-      }
-    }
-
-    if (agent.skills?.mcp) {
-      settings.mcpServers = agent.skills.mcp;
-    }
-
-    if (agent.network) {
-      settings.networkConfig = {
-        allowedDomains: agent.network.allowed,
-        deniedDomains: agent.network.denied,
-      };
-    }
-
-    if (agent.nixPackages?.length) {
-      settings.nixConfig = { packages: agent.nixPackages };
-    }
-
-    return settings;
-  }
-
-  private async syncAgentSettingsToRuntimeStore(
-    agentId: string,
-    settings: Record<string, any>
-  ): Promise<void> {
-    if (!this.agentSettingsStore) {
-      throw new Error("Agent settings store must be initialized");
-    }
-
-    const existing = await this.agentSettingsStore.getSettings(agentId);
-    await this.agentSettingsStore.saveSettings(agentId, {
-      ...settings,
-      authProfiles: existing?.authProfiles,
-      mcpInstallNotified: existing?.mcpInstallNotified,
-    });
-  }
-
   private async populateStoreFromAgentConfigs(
     store: InMemoryAgentStore,
     agents: AgentConfig[]
@@ -969,7 +894,7 @@ export class CoreServices {
         createdAt: Date.now(),
       });
       await store.saveSettings(agent.id, {
-        ...this.buildSettingsFromAgentConfig(agent),
+        ...entryFromAgentConfig(agent).settings,
         updatedAt: Date.now(),
       } as any);
     }
@@ -1010,30 +935,13 @@ export class CoreServices {
       await this.populateStoreFromFiles(store, this.fileLoadedAgents);
     }
 
-    if (this.agentSettingsStore) {
-      for (const agent of this.fileLoadedAgents) {
-        await this.syncAgentSettingsToRuntimeStore(
-          agent.agentId,
-          agent.settings
-        );
-      }
-    }
-
-    // Re-seed credentials
-    if (this.authProfilesManager) {
-      for (const agent of this.fileLoadedAgents) {
-        for (const cred of agent.credentials) {
-          await this.authProfilesManager.upsertProfile({
-            agentId: agent.agentId,
-            provider: cred.provider,
-            ...(cred.key ? { credential: cred.key } : {}),
-            ...(cred.secretRef ? { credentialRef: cred.secretRef } : {}),
-            authType: "api-key",
-            label: `${cred.provider} (from lobu.toml)`,
-            makePrimary: true,
-          });
-        }
-      }
+    // Repopulate the declared registry so subsequent credential lookups
+    // see the new file-declared providers/keys. No Redis sync, no
+    // additive seeding — the registry IS the source of truth.
+    if (this.declaredAgentRegistry) {
+      this.declaredAgentRegistry.replaceAll(
+        buildRegistryMap(this.fileLoadedAgents, this.configAgents)
+      );
     }
 
     const agentIds = this.fileLoadedAgents.map((a) => a.agentId);
@@ -1230,6 +1138,14 @@ export class CoreServices {
 
   getAuthProfilesManager(): AuthProfilesManager | undefined {
     return this.authProfilesManager;
+  }
+
+  getDeclaredAgentRegistry(): DeclaredAgentRegistry | undefined {
+    return this.declaredAgentRegistry;
+  }
+
+  getUserAuthProfileStore(): UserAuthProfileStore | undefined {
+    return this.userAuthProfileStore;
   }
 
   getGrantStore(): GrantStore | undefined {

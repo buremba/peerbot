@@ -70,6 +70,7 @@ export interface ModelProviderModule extends OrchestratorModule {
   }>;
   pollDeviceCode?(
     agentId: string,
+    userId: string,
     payload: { deviceAuthId: string; userCode: string }
   ): Promise<{
     status: "pending" | "success";

@@ -8,7 +8,6 @@
 
 import type { PluginsConfig } from "./plugin-types";
 import type {
-  AuthProfile,
   InstalledProvider,
   McpServerConfig,
   ModelSelectionState,
@@ -53,8 +52,6 @@ export interface AgentSettings {
   toolsConfig?: ToolsConfig;
   /** OpenClaw plugin configuration */
   pluginsConfig?: PluginsConfig;
-  /** Ordered auth profiles (index 0 = primary). Used for multi-provider credential management. */
-  authProfiles?: AuthProfile[];
   /** Installed providers for this agent (index 0 = primary). */
   installedProviders?: InstalledProvider[];
   /** Enable verbose logging (show tool calls, reasoning, etc.) */

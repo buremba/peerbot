@@ -162,25 +162,22 @@ describe("CoreServices store selection", () => {
     (coreServices as any).queue = new MockMessageQueue();
 
     await (coreServices as any).initializeSessionServices();
+    await (coreServices as any).initializeClaudeServices();
 
-    const agentSettingsStore = coreServices.getAgentSettingsStore();
-    await agentSettingsStore.saveSettings("agent-1", {
-      authProfiles: [
-        {
-          id: "profile-1",
-          provider: "openai",
-          model: "*",
-          credential: "sk-host-store-only",
-          label: "host-backed",
-          authType: "api-key",
-          createdAt: Date.now(),
-        },
-      ],
+    const authProfilesManager = coreServices.getAuthProfilesManager();
+    expect(authProfilesManager).toBeDefined();
+    await authProfilesManager!.upsertProfile({
+      agentId: "agent-1",
+      userId: "user-1",
+      provider: "openai",
+      credential: "sk-host-store-only",
+      label: "host-backed",
+      authType: "api-key",
     });
 
     const redis = (coreServices as any).queue.getRedisClient();
-    const rawSettings = await redis.get("agent:settings:agent-1");
-    expect(rawSettings).toContain("host://");
+    const rawProfiles = await redis.get("user:auth-profiles:user-1:agent-1");
+    expect(rawProfiles).toContain("host://");
 
     const [, redisSecretKeys] = await redis.scan(
       "0",
@@ -189,7 +186,9 @@ describe("CoreServices store selection", () => {
     );
     expect(redisSecretKeys).toHaveLength(0);
 
-    const hostEntries = await hostStore.list("agents/agent-1/");
+    const hostEntries = await hostStore.list(
+      "users/user-1/agents/agent-1/auth-profiles/"
+    );
     expect(hostEntries).toHaveLength(1);
     expect(await hostStore.get(hostEntries[0]!.ref)).toBe("sk-host-store-only");
   });

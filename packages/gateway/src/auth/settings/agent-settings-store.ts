@@ -6,8 +6,7 @@ import {
   safeJsonStringify,
 } from "@lobu/core";
 import type Redis from "ioredis";
-import type { RuntimeProviderCredentialResolver } from "../../embedded";
-import { deleteSecretsByPrefix, type WritableSecretStore } from "../../secrets";
+import type { DeclaredAgentRegistry } from "../../services/declared-agent-registry";
 
 // Re-export so existing imports from this module keep working.
 export type { AgentSettings };
@@ -16,10 +15,6 @@ export interface AgentSettingsContext {
   localSettings: AgentSettings | null;
   effectiveSettings: AgentSettings | null;
   templateAgentId?: string;
-}
-
-export interface AgentSettingsStoreOptions {
-  runtimeCredentialResolver?: RuntimeProviderCredentialResolver;
 }
 
 /**
@@ -51,18 +46,16 @@ export class EphemeralAuthProfileRegistry {
  * Store and retrieve agent settings from Redis
  * Pattern: agent:settings:{agentId}
  *
- * Sensitive values (auth profile credentials and refresh tokens) are never
- * persisted inline. They are written to the secret store on save and the
- * stored JSON only holds the resulting `credentialRef` / `refreshTokenRef`.
+ * Holds runtime-mutable settings for agents created via the UI or sandbox
+ * paths. Declared agents (lobu.toml / SDK config) live in
+ * `DeclaredAgentRegistry` and never touch Redis. Auth profiles are owned
+ * by `UserAuthProfileStore` keyed by `(userId, agentId)`.
  */
 export class AgentSettingsStore extends BaseRedisStore<AgentSettings> {
   private readonly ephemeralAuthProfiles = new EphemeralAuthProfileRegistry();
+  private declaredAgents?: DeclaredAgentRegistry;
 
-  constructor(
-    redis: Redis,
-    private readonly secretStore: WritableSecretStore,
-    private readonly options: AgentSettingsStoreOptions = {}
-  ) {
+  constructor(redis: Redis) {
     super({
       redis,
       keyPrefix: "agent:settings",
@@ -70,18 +63,18 @@ export class AgentSettingsStore extends BaseRedisStore<AgentSettings> {
     });
   }
 
-  getSecretStore(): WritableSecretStore {
-    return this.secretStore;
-  }
-
   getEphemeralAuthProfiles(): EphemeralAuthProfileRegistry {
     return this.ephemeralAuthProfiles;
   }
 
-  getRuntimeCredentialResolver():
-    | RuntimeProviderCredentialResolver
-    | undefined {
-    return this.options.runtimeCredentialResolver;
+  /**
+   * Wire the declared-agent registry so `getEffectiveSettings`
+   * returns declared settings for declared agents (which never have a
+   * Redis copy by design). Called once from CoreServices after the
+   * registry is built.
+   */
+  setDeclaredAgents(registry: DeclaredAgentRegistry): void {
+    this.declaredAgents = registry;
   }
 
   /**
@@ -121,6 +114,16 @@ export class AgentSettingsStore extends BaseRedisStore<AgentSettings> {
   }
 
   async getSettingsContext(agentId: string): Promise<AgentSettingsContext> {
+    const declared = this.declaredAgents?.get(agentId);
+    if (declared) {
+      // Declared agents are immutable from runtime: no Redis local copy,
+      // no template fallback. Return registry settings as effective.
+      return {
+        localSettings: null,
+        effectiveSettings: declared.settings as AgentSettings,
+      };
+    }
+
     const localSettings = await this.getSettings(agentId);
 
     const templateAgentId = await this.resolveTemplateAgentId(
@@ -188,61 +191,30 @@ export class AgentSettingsStore extends BaseRedisStore<AgentSettings> {
     }
   }
 
-  /**
-   * Save settings for an agent. Any plaintext credential/refreshToken on
-   * authProfiles is moved into the secret store and replaced with a ref.
-   */
   async saveSettings(
     agentId: string,
     settings: Omit<AgentSettings, "updatedAt">
   ): Promise<void> {
     const key = this.buildKey(agentId);
-    const fullSettings = await this.persistAuthProfileSecrets(agentId, {
-      ...settings,
-      updatedAt: Date.now(),
-    });
-    await this.set(key, fullSettings);
+    await this.set(key, { ...settings, updatedAt: Date.now() });
     this.logger.info(`Saved settings for agent ${agentId}`);
   }
 
-  /**
-   * Update specific settings fields (partial update). Existing secret refs
-   * are preserved.
-   */
   async updateSettings(
     agentId: string,
     updates: Partial<Omit<AgentSettings, "updatedAt">>
   ): Promise<void> {
     const existing = await this.getSettings(agentId);
-    const merged = await this.persistAuthProfileSecrets(agentId, {
-      ...existing,
-      ...updates,
-      updatedAt: Date.now(),
-    });
     const key = this.buildKey(agentId);
-    await this.set(key, merged);
+    await this.set(key, { ...existing, ...updates, updatedAt: Date.now() });
     this.logger.info(`Updated settings for agent ${agentId}`);
   }
 
   async deleteSettings(agentId: string): Promise<void> {
     const key = this.buildKey(agentId);
-
-    // Cascade-delete every secret owned by this agent's auth profiles.
-    // Using a prefix sweep catches credentials and refresh tokens for all
-    // profile IDs without requiring us to re-read + parse the JSON.
-    const secretsDeleted = await deleteSecretsByPrefix(
-      this.secretStore,
-      `agents/${agentId}/auth-profiles/`
-    );
-
-    // Drop ephemeral profiles too so a subsequent getProfiles doesn't
-    // surface stale in-memory entries after the agent is torn down.
     this.ephemeralAuthProfiles.delete(agentId);
-
     await this.delete(key);
-    this.logger.info(
-      `Deleted settings for agent ${agentId} (cascade-deleted ${secretsDeleted} secret(s))`
-    );
+    this.logger.info(`Deleted settings for agent ${agentId}`);
   }
 
   /**
@@ -274,102 +246,11 @@ export class AgentSettingsStore extends BaseRedisStore<AgentSettings> {
     return this.exists(key);
   }
 
-  /**
-   * Find the first agent that has installed providers configured.
-   * Used to find a template for ephemeral agents.
-   */
-  async findTemplateAgentId(): Promise<string | null> {
-    const prefix = `${this.keyPrefix}:`;
-    const keys = await this.scanByPrefix(prefix);
-    for (const key of keys) {
-      try {
-        const data = await this.redis.get(key);
-        if (!data) continue;
-        const parsed = safeJsonParse<AgentSettings>(data);
-        if (
-          parsed?.installedProviders &&
-          parsed.installedProviders.length > 0
-        ) {
-          return key.slice(prefix.length);
-        }
-      } catch {
-        /* skip unparseable key */
-      }
-    }
-    return null;
-  }
-
   protected override serialize(value: AgentSettings): string {
     const json = safeJsonStringify(value);
     if (json === null) {
       throw new Error("Failed to serialize value to JSON");
     }
     return json;
-  }
-
-  /**
-   * Walk authProfiles, move any plaintext credential or refreshToken into the
-   * secret store, and replace them with credentialRef / refreshTokenRef.
-   */
-  private async persistAuthProfileSecrets(
-    agentId: string,
-    settings: AgentSettings
-  ): Promise<AgentSettings> {
-    if (
-      !Array.isArray(settings.authProfiles) ||
-      settings.authProfiles.length === 0
-    ) {
-      return settings;
-    }
-
-    const authProfiles = await Promise.all(
-      settings.authProfiles.map((profile) =>
-        this.persistProfileSecrets(agentId, profile)
-      )
-    );
-
-    return { ...settings, authProfiles };
-  }
-
-  private async persistProfileSecrets(
-    agentId: string,
-    profile: AuthProfile
-  ): Promise<AuthProfile> {
-    const next: AuthProfile = { ...profile };
-    const metadata = profile.metadata ? { ...profile.metadata } : undefined;
-
-    // Always rewrite plaintext into the secret store when it's present —
-    // even if a ref already exists. Callers like TokenRefreshJob update
-    // profiles with a freshly-rotated refresh token on top of the existing
-    // ref, and we must not drop it on the floor. `secretStore.put` uses a
-    // deterministic secret name so the returned ref is stable.
-    if (profile.credential) {
-      next.credentialRef = await this.secretStore.put(
-        this.buildAuthProfileSecretName(agentId, profile, "credential"),
-        profile.credential
-      );
-    }
-    delete next.credential;
-
-    if (metadata) {
-      if (metadata.refreshToken) {
-        metadata.refreshTokenRef = await this.secretStore.put(
-          this.buildAuthProfileSecretName(agentId, profile, "refresh-token"),
-          metadata.refreshToken
-        );
-      }
-      delete metadata.refreshToken;
-      next.metadata = metadata;
-    }
-
-    return next;
-  }
-
-  private buildAuthProfileSecretName(
-    agentId: string,
-    profile: AuthProfile,
-    kind: "credential" | "refresh-token"
-  ): string {
-    return `agents/${agentId}/auth-profiles/${profile.id}/${kind}`;
   }
 }

@@ -592,7 +592,7 @@ export function createAgentApi(
         // Also inherit pluginsConfig from template agent if available
         const templateId = agentConfigStore
           ? await findTemplateAgentId(agentConfigStore)
-          : await agentSettingsStore.findTemplateAgentId();
+          : null;
         const templateSettings = templateId
           ? await (agentConfigStore?.getSettings(templateId) ??
               agentSettingsStore.getSettings(templateId))
@@ -608,7 +608,7 @@ export function createAgentApi(
         // Fall back to using an existing agent as template (inherits its providers)
         const templateId = agentConfigStore
           ? await findTemplateAgentId(agentConfigStore)
-          : await agentSettingsStore.findTemplateAgentId();
+          : null;
         if (templateId) {
           const templateSettings = await (agentConfigStore?.getSettings(
             templateId

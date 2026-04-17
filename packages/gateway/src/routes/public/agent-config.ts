@@ -5,7 +5,7 @@
  */
 
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
-import type { AgentConfigStore, AuthProfile, SkillConfig } from "@lobu/core";
+import type { AgentConfigStore, SkillConfig } from "@lobu/core";
 import type { ProviderCatalogService } from "../../auth/provider-catalog";
 import { collectProviderModelOptions } from "../../auth/provider-model-options";
 
@@ -56,25 +56,6 @@ export interface ConfigChangeEntry {
 const SENSITIVE_KEY_PATTERN =
   /(?:credential|secret|token|password|api(?:_|-)?key|authorization)/i;
 
-type SanitizedAuthProfile = Omit<
-  AuthProfile,
-  "credential" | "credentialRef" | "metadata"
-> & {
-  credential: string;
-  credentialRedacted: true;
-  metadata?: Omit<
-    NonNullable<AuthProfile["metadata"]>,
-    "refreshToken" | "refreshTokenRef"
-  > & {
-    refreshToken?: string;
-    refreshTokenRedacted?: true;
-  };
-};
-
-type PublicAgentSettings = Omit<AgentSettings, "authProfiles"> & {
-  authProfiles?: SanitizedAuthProfile[];
-};
-
 // --- Route Definitions ---
 
 const getConfigRoute = createRoute({
@@ -100,7 +81,10 @@ const getConfigRoute = createRoute({
 });
 
 export interface ProviderCredentialStore {
-  hasCredentials(agentId: string): Promise<boolean>;
+  hasCredentials(
+    agentId: string,
+    context?: { userId?: string }
+  ): Promise<boolean>;
 }
 
 export interface AgentConfigRoutesConfig {
@@ -166,7 +150,6 @@ const SECTION_SETTING_KEYS: Record<
 > = {
   model: [
     "installedProviders",
-    "authProfiles",
     "model",
     "modelSelection",
     "providerModelPreferences",
@@ -227,9 +210,6 @@ function resolveProviderSources(
       (provider) => provider.providerId
     )
   );
-  const localProfileProviders = new Set(
-    (localSettings?.authProfiles || []).map((profile) => profile.provider)
-  );
   const localPreferenceProviders = new Set(
     Object.keys(localSettings?.providerModelPreferences || {})
   );
@@ -243,7 +223,6 @@ function resolveProviderSources(
     effectiveProviderIds.map((providerId) => {
       const hasLocalOverride =
         localProviderIds.has(providerId) ||
-        localProfileProviders.has(providerId) ||
         localPreferenceProviders.has(providerId);
 
       const source = resolveSectionSource(
@@ -361,10 +340,17 @@ async function buildResolvedConfigResponse(
       try {
         const hasSystemCredentials =
           config.providerConnectedOverrides?.[name] === true;
-        const hasUserCredentials = await store.hasCredentials(agentId);
+        const hasUserCredentials = await store.hasCredentials(
+          agentId,
+          payload?.userId ? { userId: payload.userId } : undefined
+        );
 
         const profiles = config.authProfilesManager
-          ? await config.authProfilesManager.getProviderProfiles(agentId, name)
+          ? await config.authProfilesManager.getProviderProfiles(
+              agentId,
+              name,
+              payload?.userId
+            )
           : [];
         const now = Date.now();
         const validProfiles = profiles.filter(
@@ -603,10 +589,10 @@ export function createAgentConfigRoutes(
 
 function sanitizeSettingsForResponse(
   settings: AgentSettings | null
-): PublicAgentSettings | Record<string, never> {
+): AgentSettings | Record<string, never> {
   if (!settings) return {};
 
-  const sanitized = redactSensitiveFields(settings) as PublicAgentSettings;
+  const sanitized = redactSensitiveFields(settings) as AgentSettings;
 
   if (sanitized.skillsConfig?.skills) {
     sanitized.skillsConfig = {
@@ -625,45 +611,7 @@ function sanitizeSettingsForResponse(
     };
   }
 
-  if (Array.isArray(settings.authProfiles)) {
-    sanitized.authProfiles = settings.authProfiles.map(sanitizeAuthProfile);
-  }
-
   return sanitized;
-}
-
-function sanitizeAuthProfile(profile: AuthProfile): SanitizedAuthProfile {
-  const hadRefreshToken =
-    !!profile.metadata?.refreshToken || !!profile.metadata?.refreshTokenRef;
-  const metadata = profile.metadata
-    ? (() => {
-        const {
-          refreshToken: _refreshToken,
-          refreshTokenRef: _refreshTokenRef,
-          ...rest
-        } = redactSensitiveFields(profile.metadata) as NonNullable<
-          AuthProfile["metadata"]
-        >;
-        return rest as SanitizedAuthProfile["metadata"];
-      })()
-    : undefined;
-
-  if (metadata && hadRefreshToken) {
-    metadata.refreshTokenRedacted = true;
-  }
-
-  const {
-    credential: _credential,
-    credentialRef: _credentialRef,
-    ...rest
-  } = profile;
-
-  return {
-    ...rest,
-    credential: REDACTED_VALUE,
-    credentialRedacted: true,
-    metadata,
-  };
 }
 
 function redactSensitiveFields(value: unknown): unknown {

@@ -448,7 +448,13 @@ export class MessageHandlerBridge {
 
     try {
       // Check if agent has any provider credentials before enqueuing
-      if (!(await hasConfiguredProvider(agentId, agentSettingsStore))) {
+      if (
+        !(await hasConfiguredProvider(
+          agentId,
+          agentSettingsStore,
+          this.services.getDeclaredAgentRegistry()
+        ))
+      ) {
         await thread.post(
           "No AI provider is configured yet. Provider setup is not available in the end-user chat flow yet. Ask an admin to connect a provider for the base agent."
         );
@@ -614,7 +620,13 @@ export class MessageHandlerBridge {
     );
 
     try {
-      if (!(await hasConfiguredProvider(agentId, agentSettingsStore))) {
+      if (
+        !(await hasConfiguredProvider(
+          agentId,
+          agentSettingsStore,
+          this.services.getDeclaredAgentRegistry()
+        ))
+      ) {
         await thread.post(
           "No AI provider is configured yet. Provider setup is not available in the end-user chat flow yet. Ask an admin to connect a provider for the base agent."
         );

@@ -21,6 +21,7 @@ import type { IFileHandler } from "./platform/file-handler";
 import type { ResponseRenderer } from "./platform/response-renderer";
 import type { SecretProxy } from "./proxy/secret-proxy";
 import type { WritableSecretStore } from "./secrets";
+import type { DeclaredAgentRegistry } from "./services/declared-agent-registry";
 import type { InstructionService } from "./services/instruction-service";
 import type { TranscriptionService } from "./services/transcription-service";
 import type { ISessionManager } from "./session";
@@ -54,6 +55,7 @@ export interface CoreServices {
   getAgentMetadataStore(): AgentMetadataStore;
   getCommandRegistry(): CommandRegistry;
   getGrantStore(): GrantStore | undefined;
+  getDeclaredAgentRegistry(): DeclaredAgentRegistry | undefined;
 }
 
 // ============================================================================

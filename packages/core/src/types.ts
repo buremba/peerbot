@@ -55,7 +55,9 @@ export interface CliBackendConfig {
 
 /**
  * Unified authentication profile for any model provider.
- * Stored in AgentSettings.authProfiles as an ordered array (index 0 = primary).
+ * Persisted per-(userId, agentId) by the gateway's UserAuthProfileStore;
+ * also synthesized at read time from declared credentials and SDK-supplied
+ * ephemeral credentials.
  *
  * **Invariant:** at any point in time, a profile has **exactly one** credential
  * source set — either `credentialRef` (persisted profiles resolved through the
@@ -89,6 +91,22 @@ export interface AuthProfile {
 /** True if the profile has any credential source (resolved or ref). */
 export function hasCredentialSource(profile: AuthProfile): boolean {
   return Boolean(profile.credential || profile.credentialRef);
+}
+
+/**
+ * Declared provider credential — a credential that ships with the agent's
+ * declared configuration (`lobu.toml` or SDK `GatewayConfig.agents`).
+ *
+ * Declared credentials are read-only at runtime. They are merged into the
+ * effective auth profile list when no user-scoped profile exists for the
+ * `(agentId, provider)` pair.
+ */
+export interface DeclaredCredential {
+  provider: string;
+  /** Plaintext key — present when the file/SDK supplies a value directly. */
+  key?: string;
+  /** Persisted secret reference — present when the file/SDK supplies a ref. */
+  secretRef?: SecretRef;
 }
 
 export interface SessionContext {

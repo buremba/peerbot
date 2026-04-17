@@ -14,8 +14,12 @@ const ErrorResponse = z.object({ error: z.string() });
 
 export interface ProviderCredentialStore {
   hasCredentials(agentId: string): Promise<boolean>;
-  deleteCredentials(agentId: string): Promise<void>;
-  setCredentials(agentId: string, credentials: unknown): Promise<void>;
+  deleteCredentials(agentId: string, userId: string): Promise<void>;
+  setCredentials(
+    agentId: string,
+    userId: string,
+    credentials: unknown
+  ): Promise<void>;
 }
 
 export interface ProviderOAuthClient {
@@ -133,7 +137,11 @@ export function createOAuthRoutes(config: OAuthRoutesConfig): OpenAPIHono {
         "https://console.anthropic.com/oauth/code/callback",
         state
       );
-      await credentialStore.setCredentials(agentId, credentials);
+      await credentialStore.setCredentials(
+        agentId,
+        session.userId,
+        credentials
+      );
       return c.json({ success: true });
     } catch (e) {
       return c.json(

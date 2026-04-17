@@ -405,12 +405,17 @@ export function createGatewayApp(
       const verifyProviderAuth = async (
         c: any,
         agentId: string
-      ): Promise<boolean> => {
+      ): Promise<{ userId: string; platform: string } | null> => {
         const payload = verifySettingsSessionOrToken(c);
-        if (!payload) return false;
-        if (payload.isAdmin) return true;
+        if (!payload) return null;
+        const principal = {
+          userId: payload.userId,
+          platform: payload.platform,
+        };
+        if (payload.isAdmin) return principal;
 
-        if (payload.agentId) return payload.agentId === agentId;
+        if (payload.agentId)
+          return payload.agentId === agentId ? principal : null;
 
         if (userAgentsStore) {
           const owns = await userAgentsStore.ownsAgent(
@@ -418,7 +423,7 @@ export function createGatewayApp(
             payload.userId,
             agentId
           );
-          if (owns) return true;
+          if (owns) return principal;
         }
 
         if (agentMetadataStore) {
@@ -432,11 +437,11 @@ export function createGatewayApp(
               .catch(() => {
                 /* best-effort reconciliation */
               });
-            return true;
+            return principal;
           }
         }
 
-        return false;
+        return null;
       };
 
       authRouter.post("/:provider/save-key", async (c: any) => {
@@ -453,12 +458,14 @@ export function createGatewayApp(
             return c.json({ error: "Missing agentId or apiKey" }, 400);
           }
 
-          if (!(await verifyProviderAuth(c, agentId))) {
+          const principal = await verifyProviderAuth(c, agentId);
+          if (!principal) {
             return c.json({ error: "Unauthorized" }, 401);
           }
 
           await authProfilesManager.upsertProfile({
             agentId,
+            userId: principal.userId,
             provider: providerId,
             credential: apiKey,
             authType: "api-key",
@@ -550,11 +557,12 @@ export function createGatewayApp(
             );
           }
 
-          if (!(await verifyProviderAuth(c, agentId))) {
+          const principal = await verifyProviderAuth(c, agentId);
+          if (!principal) {
             return c.json({ error: "Unauthorized" }, 401);
           }
 
-          const result = await mod.pollDeviceCode(agentId, {
+          const result = await mod.pollDeviceCode(agentId, principal.userId, {
             deviceAuthId,
             userCode,
           });
@@ -579,14 +587,18 @@ export function createGatewayApp(
             return c.json({ error: "Missing agentId" }, 400);
           }
 
-          if (!(await verifyProviderAuth(c, agentId))) {
+          const principal = await verifyProviderAuth(c, agentId);
+          if (!principal) {
             return c.json({ error: "Unauthorized" }, 401);
           }
 
           await authProfilesManager.deleteProviderProfiles(
             agentId,
             providerId,
-            body.profileId
+            {
+              userId: principal.userId,
+              ...(body.profileId ? { profileId: body.profileId } : {}),
+            }
           );
 
           return c.json({ success: true });

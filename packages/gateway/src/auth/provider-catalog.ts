@@ -3,6 +3,7 @@ import {
   getModelProviderModules,
   type ModelProviderModule,
 } from "../modules/module-system";
+import type { DeclaredAgentRegistry } from "../services/declared-agent-registry";
 import type { AgentSettingsStore } from "./settings/agent-settings-store";
 import type { AuthProfilesManager } from "./settings/auth-profiles-manager";
 import { reconcileModelSelectionForInstalledProviders } from "./settings/model-selection";
@@ -28,11 +29,21 @@ export async function resolveInstalledProviders(
  * Providers are registered globally in the module registry,
  * but each agent chooses which providers to install from the catalog.
  */
+const DECLARED_AGENT_MUTATION_ERROR =
+  "provider list is declared in lobu.toml; edit the file and restart";
+
 export class ProviderCatalogService {
   constructor(
     private agentSettingsStore: AgentSettingsStore,
-    private authProfilesManager: AuthProfilesManager
+    private authProfilesManager: AuthProfilesManager,
+    private declaredAgents: DeclaredAgentRegistry
   ) {}
+
+  private guardDeclared(agentId: string): void {
+    if (this.declaredAgents.has(agentId)) {
+      throw new Error(DECLARED_AGENT_MUTATION_ERROR);
+    }
+  }
 
   /**
    * List all catalog-visible providers from the module registry.
@@ -75,6 +86,7 @@ export class ProviderCatalogService {
     providerId: string,
     config?: InstalledProvider["config"]
   ): Promise<void> {
+    this.guardDeclared(agentId);
     const allModules = getModelProviderModules();
     const module = allModules.find((m) => m.providerId === providerId);
     if (!module) {
@@ -120,6 +132,7 @@ export class ProviderCatalogService {
    * Uninstall a provider from an agent. Also cleans up auth profiles.
    */
   async uninstallProvider(agentId: string, providerId: string): Promise<void> {
+    this.guardDeclared(agentId);
     const { localSettings, effectiveSettings } =
       await this.agentSettingsStore.getSettingsContext(agentId);
     const installed = effectiveSettings?.installedProviders || [];
@@ -132,7 +145,10 @@ export class ProviderCatalogService {
       return;
     }
 
-    // Clean up auth profiles for this provider
+    // Clean up ephemeral auth profiles. User-scoped profiles in
+    // UserAuthProfileStore stay put — uninstalling a provider on a
+    // runtime agent shouldn't cascade-delete every user's tokens; users
+    // remove their own credentials from the per-user UI.
     await this.authProfilesManager.deleteProviderProfiles(agentId, providerId);
     const reconciled = reconcileModelSelectionForInstalledProviders({
       model: localSettings?.model ?? effectiveSettings?.model,
@@ -175,6 +191,7 @@ export class ProviderCatalogService {
    * exactly the same provider IDs as currently installed.
    */
   async reorderProviders(agentId: string, orderedIds: string[]): Promise<void> {
+    this.guardDeclared(agentId);
     const { localSettings, effectiveSettings } =
       await this.agentSettingsStore.getSettingsContext(agentId);
     const installed = effectiveSettings?.installedProviders || [];

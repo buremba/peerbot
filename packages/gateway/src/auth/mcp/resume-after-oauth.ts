@@ -60,7 +60,13 @@ export async function postOAuthCompletionPrompt(
   } = params;
 
   const agentSettingsStore = coreServices.getAgentSettingsStore();
-  if (!(await hasConfiguredProvider(agentId, agentSettingsStore))) {
+  if (
+    !(await hasConfiguredProvider(
+      agentId,
+      agentSettingsStore,
+      coreServices.getDeclaredAgentRegistry()
+    ))
+  ) {
     logger.warn("Skipping OAuth resume: agent has no configured provider", {
       agentId,
     });

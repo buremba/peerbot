@@ -14,6 +14,7 @@ import type { ChannelBindingService } from "../channels";
 import { buildMemoryPlugins, getInternalGatewayUrl } from "../config";
 import type { MessagePayload } from "../infrastructure/queue/queue-producer";
 import { getModelProviderModules } from "../modules/module-system";
+import type { DeclaredAgentRegistry } from "./declared-agent-registry";
 import { platformAgentId } from "../spaces";
 
 const logger = createLogger("platform-helpers");
@@ -194,30 +195,29 @@ export async function resolveAgentOptions(
 
 export async function hasConfiguredProvider(
   agentId: string,
-  agentSettingsStore?: AgentSettingsStore
+  agentSettingsStore?: AgentSettingsStore,
+  declaredAgents?: DeclaredAgentRegistry
 ): Promise<boolean> {
-  if (!agentSettingsStore) {
-    return true;
-  }
+  if (!agentSettingsStore) return true;
+
+  const declaredEntry = declaredAgents?.get(agentId);
+  if (declaredEntry?.credentials.length) return true;
 
   const settings = await agentSettingsStore.getEffectiveSettings(agentId);
-  const installedProviderIds = new Set(
-    (settings?.installedProviders || []).map((provider) => provider.providerId)
-  );
-
-  if ((settings?.authProfiles?.length || 0) > 0) {
-    return true;
-  }
+  const installedProviderIds = new Set<string>([
+    ...(settings?.installedProviders ?? []).map((p) => p.providerId),
+    ...(declaredEntry?.settings.installedProviders ?? []).map(
+      (p) => p.providerId
+    ),
+  ]);
 
   const modules = getModelProviderModules();
-  if (installedProviderIds.size > 0) {
-    return modules.some(
-      (module) =>
-        installedProviderIds.has(module.providerId) && module.hasSystemKey()
-    );
+  if (installedProviderIds.size === 0) {
+    return modules.some((m) => m.hasSystemKey());
   }
-
-  return modules.some((module) => module.hasSystemKey());
+  return modules.some(
+    (m) => installedProviderIds.has(m.providerId) && m.hasSystemKey()
+  );
 }
 
 /**

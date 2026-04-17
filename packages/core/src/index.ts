@@ -112,6 +112,7 @@ export type {
   AuthProfile,
   CliBackendConfig,
   ConversationMessage,
+  DeclaredCredential,
   HistoryMessage,
   InstalledProvider,
   InstructionContext,

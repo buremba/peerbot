@@ -1309,7 +1309,13 @@ export class ChatInstanceManager {
     const sessionId = `platform-chat:${name}:${options.channelId}:${conversationId}`;
     const sessionUserId = `${name}-${token.slice(0, 8) || "anonymous"}`;
 
-    if (!(await hasConfiguredProvider(options.agentId, agentSettingsStore))) {
+    if (
+      !(await hasConfiguredProvider(
+        options.agentId,
+        agentSettingsStore,
+        this.services.getDeclaredAgentRegistry()
+      ))
+    ) {
       throw new Error(
         "No model configured. Ask an admin to connect a provider for the base agent."
       );

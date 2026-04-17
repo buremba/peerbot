@@ -1,5 +1,4 @@
 import { createLogger } from "@lobu/core";
-import type Redis from "ioredis";
 import type { OAuthClient } from "../auth/oauth/client";
 import type { AuthProfilesManager } from "../auth/settings/auth-profiles-manager";
 
@@ -17,9 +16,9 @@ export interface RefreshableProvider {
  * Background job that proactively refreshes OAuth tokens before they expire.
  *
  * On each tick:
- * 1. Scans authProfiles for OAuth tokens expiring soon across all registered providers
- * 2. Refreshes via the provider's OAuth client
- * 3. Updates authProfiles with new credentials
+ * 1. Scans `UserAuthProfileStore` for `(userId, agentId)` pairs holding OAuth profiles.
+ * 2. Refreshes any token expiring within `EXPIRY_BUFFER_MS` via its provider's OAuth client.
+ * 3. Writes the rotated credentials back through `AuthProfilesManager.upsertProfile`.
  */
 export class TokenRefreshJob {
   private timer: Timer | null = null;
@@ -27,7 +26,6 @@ export class TokenRefreshJob {
 
   constructor(
     private authProfilesManager: AuthProfilesManager,
-    private redis: Redis,
     private refreshableProviders: RefreshableProvider[]
   ) {}
 
@@ -50,46 +48,35 @@ export class TokenRefreshJob {
   }
 
   private async tick(): Promise<void> {
-    const pattern = "agent:settings:*";
-    let cursor = "0";
-    do {
-      const [next, keys] = await this.redis.scan(
-        cursor,
-        "MATCH",
-        pattern,
-        "COUNT",
-        100
-      );
-      cursor = next;
-      for (const key of keys) {
-        const agentId = key.replace("agent:settings:", "");
-        await this.maybeRefresh(agentId);
-      }
-    } while (cursor !== "0");
+    const userAuthProfiles = this.authProfilesManager.getUserAuthProfileStore();
+    for await (const { userId, agentId } of userAuthProfiles.scanAllOAuth()) {
+      await this.maybeRefresh(userId, agentId);
+    }
   }
 
-  private async maybeRefresh(agentId: string): Promise<void> {
-    // Prevent concurrent refresh for the same agent
-    const existing = this.refreshLocks.get(agentId);
+  private async maybeRefresh(userId: string, agentId: string): Promise<void> {
+    const lockKey = `${userId}:${agentId}`;
+    const existing = this.refreshLocks.get(lockKey);
     if (existing) {
       await existing;
       return;
     }
 
-    const promise = this.doRefresh(agentId);
-    this.refreshLocks.set(agentId, promise);
+    const promise = this.doRefresh(userId, agentId);
+    this.refreshLocks.set(lockKey, promise);
     try {
       await promise;
     } finally {
-      this.refreshLocks.delete(agentId);
+      this.refreshLocks.delete(lockKey);
     }
   }
 
-  private async doRefresh(agentId: string): Promise<void> {
+  private async doRefresh(userId: string, agentId: string): Promise<void> {
     for (const { providerId, oauthClient } of this.refreshableProviders) {
       const profiles = await this.authProfilesManager.getProviderProfiles(
         agentId,
-        providerId
+        providerId,
+        userId
       );
       const oauthProfile = profiles.find(
         (profile) =>
@@ -103,7 +90,7 @@ export class TokenRefreshJob {
       if (!isExpiring) continue;
 
       logger.info(
-        `Refreshing ${providerId} token for agent ${agentId} profile ${oauthProfile.id}`,
+        `Refreshing ${providerId} token for user ${userId} agent ${agentId} profile ${oauthProfile.id}`,
         { expiresAt: new Date(expiresAt).toISOString() }
       );
 
@@ -114,6 +101,7 @@ export class TokenRefreshJob {
 
         await this.authProfilesManager.upsertProfile({
           agentId,
+          userId,
           id: oauthProfile.id,
           provider: oauthProfile.provider,
           credential: newCredentials.accessToken,
@@ -128,10 +116,12 @@ export class TokenRefreshJob {
           makePrimary: false,
         });
 
-        logger.info(`Token refreshed for agent ${agentId} (${providerId})`);
+        logger.info(
+          `Token refreshed for user ${userId} agent ${agentId} (${providerId})`
+        );
       } catch (error) {
         logger.error(
-          `Failed to refresh ${providerId} token for agent ${agentId}`,
+          `Failed to refresh ${providerId} token for user ${userId} agent ${agentId}`,
           {
             error,
             profileId: oauthProfile.id,

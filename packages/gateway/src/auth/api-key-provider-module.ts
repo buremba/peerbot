@@ -1,8 +1,7 @@
 import type { ConfigProviderMeta } from "@lobu/core";
 import type { ModelOption } from "../modules/module-system";
 import { BaseProviderModule } from "./base-provider-module";
-import type { AgentSettingsStore } from "./settings/agent-settings-store";
-import { AuthProfilesManager } from "./settings/auth-profiles-manager";
+import type { AuthProfilesManager } from "./settings/auth-profiles-manager";
 
 export interface ApiKeyProviderConfig {
   providerId: string;
@@ -28,7 +27,7 @@ export interface ApiKeyProviderConfig {
   registryAlias?: string;
   /** Whether to show in "Add Provider" catalog (default: true) */
   catalogVisible?: boolean;
-  agentSettingsStore: AgentSettingsStore;
+  authProfilesManager: AuthProfilesManager;
 }
 
 /**
@@ -43,10 +42,6 @@ export class ApiKeyProviderModule extends BaseProviderModule {
   protected readonly apiKeyConfig: ApiKeyProviderConfig;
 
   constructor(config: ApiKeyProviderConfig) {
-    const authProfilesManager = new AuthProfilesManager(
-      config.agentSettingsStore,
-      config.agentSettingsStore.getSecretStore()
-    );
     super(
       {
         providerId: config.providerId,
@@ -65,7 +60,7 @@ export class ApiKeyProviderModule extends BaseProviderModule {
         apiKeyPlaceholder: config.apiKeyPlaceholder,
         catalogVisible: config.catalogVisible,
       },
-      authProfilesManager
+      config.authProfilesManager
     );
     this.apiKeyConfig = config;
     this.name = `${config.providerId}-api-key`;

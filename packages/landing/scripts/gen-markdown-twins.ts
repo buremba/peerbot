@@ -41,30 +41,39 @@ function walk(dir: string, acc: string[] = []): string[] {
   return acc;
 }
 
-function stripFrontmatter(raw: string): { body: string; title?: string; description?: string } {
-  if (!raw.startsWith("---")) return { body: raw };
+function stripFrontmatter(raw: string): {
+  body: string;
+  title?: string;
+  description?: string;
+  draft: boolean;
+} {
+  if (!raw.startsWith("---")) return { body: raw, draft: false };
   const end = raw.indexOf("\n---", 3);
-  if (end === -1) return { body: raw };
+  if (end === -1) return { body: raw, draft: false };
   const fm = raw.slice(3, end);
   const body = raw.slice(end + 4).replace(/^\r?\n/, "");
   const titleMatch = fm.match(/^title:\s*(.*)$/m);
   const descMatch = fm.match(/^description:\s*(.*)$/m);
+  const draftMatch = fm.match(/^draft:\s*(.*)$/m);
+  const draft = draftMatch?.[1]?.trim().toLowerCase() === "true";
   return {
     body,
     title: titleMatch?.[1]?.trim().replace(/^["']|["']$/g, ""),
     description: descMatch?.[1]?.trim().replace(/^["']|["']$/g, ""),
+    draft,
   };
 }
 
 function stripMdxImports(body: string): string {
-  return body.replace(/^import\s+[^;]+;\s*$/gm, "").replace(/^\s*\n(\s*\n)+/gm, "\n\n");
+  return body
+    .replace(/^import\s+[^;]+;\s*$/gm, "")
+    .replace(/^\s*\n(\s*\n)+/gm, "\n\n");
 }
 
 function routeFor(sourceAbs: string): string {
   const rel = relative(contentRoot, sourceAbs).replace(/\\/g, "/");
   let route = rel
     .replace(/^docs\//, "")
-    .replace(/^blog\//, "blog/")
     .replace(/\.(md|mdx)$/, "")
     .replace(/\/index$/, "");
   if (!route) route = "index";
@@ -77,9 +86,14 @@ const entries: Entry[] = walk(contentRoot).map((sourcePath) => ({
 }));
 
 let written = 0;
+let skipped = 0;
 for (const { sourcePath, route } of entries) {
   const raw = readFileSync(sourcePath, "utf-8");
-  const { body, title, description } = stripFrontmatter(raw);
+  const { body, title, description, draft } = stripFrontmatter(raw);
+  if (draft) {
+    skipped++;
+    continue;
+  }
   const clean = stripMdxImports(body).trim();
   const header = [
     title ? `# ${title}` : null,
@@ -95,4 +109,6 @@ for (const { sourcePath, route } of entries) {
   written++;
 }
 
-console.log(`gen-markdown-twins: wrote ${written} files to ${publicRoot}`);
+console.log(
+  `gen-markdown-twins: wrote ${written} files (${skipped} drafts skipped) to ${publicRoot}`
+);

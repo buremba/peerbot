@@ -17,10 +17,16 @@ function prefersMarkdown(accept: string | null): boolean {
   const entries = accept
     .split(",")
     .map((part) => {
-      const [type, ...params] = part.trim().split(";").map((s) => s.trim());
+      const [type, ...params] = part
+        .trim()
+        .split(";")
+        .map((s) => s.trim());
       const q = params.find((p) => p.startsWith("q="));
       const quality = q ? Number.parseFloat(q.slice(2)) : 1;
-      return { type: type.toLowerCase(), quality: Number.isFinite(quality) ? quality : 1 };
+      return {
+        type: type.toLowerCase(),
+        quality: Number.isFinite(quality) ? quality : 1,
+      };
     })
     .filter((e) => e.type);
 
@@ -31,7 +37,9 @@ function prefersMarkdown(accept: string | null): boolean {
   if (mdQ < 0) return false;
 
   const htmlQ = Math.max(
-    ...entries.filter((e) => e.type === "text/html" || e.type === "*/*").map((e) => e.quality),
+    ...entries
+      .filter((e) => e.type === "text/html" || e.type === "*/*")
+      .map((e) => e.quality),
     0
   );
   return mdQ >= htmlQ;
@@ -64,7 +72,9 @@ export const onRequest: PagesFunction = async ({ request, next }) => {
   mdUrl.pathname = toMarkdownPath(url.pathname);
 
   const mdResponse = await fetch(mdUrl.toString(), {
-    headers: { "user-agent": request.headers.get("user-agent") ?? "lobu-md-negotiation" },
+    headers: {
+      "user-agent": request.headers.get("user-agent") ?? "lobu-md-negotiation",
+    },
   });
 
   if (!mdResponse.ok) return next();

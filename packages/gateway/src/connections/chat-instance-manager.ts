@@ -997,6 +997,10 @@ export class ChatInstanceManager {
       return this.createSlackFileHandler(instance);
     }
 
+    if (name === "discord" || name === "teams") {
+      return this.createChatSdkFileHandler(instance);
+    }
+
     return undefined;
   }
 
@@ -1249,6 +1253,76 @@ export class ChatInstanceManager {
           permalink: uploadedFile?.permalink || "",
           name: uploadedFile?.name || options.filename,
           size: Number(uploadedFile?.size || buffer.length),
+        };
+      },
+    };
+  }
+
+  // Generic file handler for platforms whose Chat SDK adapter already supports
+  // Postable.files (Discord, Teams). The conversationId arriving as `threadTs`
+  // is the canonical platform-prefixed thread ID (e.g. `discord:guildId:channelId`).
+  private createChatSdkFileHandler(instance: ManagedInstance): IFileHandler {
+    const { chat, connection } = instance;
+    const platform = connection.platform;
+
+    const readStreamToBuffer = async (
+      fileStream: Readable
+    ): Promise<Buffer> => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of fileStream) {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      }
+      return Buffer.concat(chunks);
+    };
+
+    return {
+      uploadFile: async (fileStream, options) => {
+        const buffer = await readStreamToBuffer(fileStream);
+        const postable = {
+          raw: options.initialComment || "",
+          files: [{ data: buffer, filename: options.filename }],
+        };
+
+        let sent: any;
+        const threadId = options.threadTs;
+
+        if (threadId) {
+          const adapter = chat.getAdapter?.(platform);
+          const createThread = (chat as any).createThread;
+          if (!adapter || typeof createThread !== "function") {
+            throw new Error(
+              `Chat instance has no createThread for ${platform}`
+            );
+          }
+          const thread = await createThread.call(
+            chat,
+            adapter,
+            threadId,
+            undefined,
+            false
+          );
+          if (!thread) {
+            throw new Error(
+              `Unable to resolve ${platform} thread ${threadId} for upload`
+            );
+          }
+          sent = await thread.post(postable);
+        } else {
+          const channelId = `${platform}:${options.channelId}`;
+          const channel = chat.channel?.(channelId);
+          if (!channel) {
+            throw new Error(
+              `Unable to resolve ${platform} channel ${options.channelId} for upload`
+            );
+          }
+          sent = await channel.post(postable);
+        }
+
+        return {
+          fileId: String(sent?.id || sent?.messageId || sent?.ts || Date.now()),
+          permalink: "",
+          name: options.filename,
+          size: buffer.length,
         };
       },
     };

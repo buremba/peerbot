@@ -20,8 +20,6 @@ import {
   persistSecretValue,
   type WritableSecretStore,
 } from "../secrets";
-import { getScheduledWakeupService } from "./scheduled-wakeup";
-
 // Re-export MessagePayload for use by deployment implementations
 export type { MessagePayload };
 
@@ -991,12 +989,6 @@ export abstract class BaseDeploymentManager {
             error
           );
         }
-      }
-
-      // Clean up any scheduled wakeups for this deployment
-      const scheduledWakeupService = getScheduledWakeupService();
-      if (scheduledWakeupService) {
-        await scheduledWakeupService.cleanupForDeployment(deploymentName);
       }
 
       await this.deleteDeployment(deploymentName);

@@ -25,9 +25,6 @@ describe("createOpenClawCustomTools", () => {
 
     expect(tools.map((tool) => tool.name)).toEqual([
       "UploadUserFile",
-      "ScheduleReminder",
-      "CancelReminder",
-      "ListReminders",
       "GenerateImage",
       "GenerateAudio",
       "GetChannelHistory",

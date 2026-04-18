@@ -51,6 +51,26 @@ allowed = ["github.com", ".github.com", ".githubusercontent.com", "registry.npmj
 [agents.careops.skills.mcp.deepwiki]
 url = "https://mcp.deepwiki.com/mcp"
 
+# Default delivery target for scheduled fires that omit `deliver_to`.
+# Format: "<platform>:<connectionSlug>:<channelId>[:<threadTs>]"
+# connectionSlug for the slack connection above is "careops-slack".
+default_schedule_channel = "$CAREOPS_SCHEDULE_CHANNEL"
+
+# Scheduled wakeups — the agent runs `task` on its own at each cron tick
+# and posts the result to `deliver_to` (or default_schedule_channel).
+[[agents.careops.schedules]]
+id = "morning-standup"
+cron = "0 9 * * 1-5"
+timezone = "America/Los_Angeles"
+task = "Summarize today's appointments and any patient follow-ups that need attention before noon."
+
+[[agents.careops.schedules]]
+id = "weekly-review"
+cron = "0 17 * * 5"
+timezone = "America/Los_Angeles"
+task = "Generate a one-paragraph weekly summary: appointment volume, no-shows, and outstanding follow-ups."
+enabled = false
+
 [memory.owletto]
 enabled = true
 config = "./owletto.yaml"

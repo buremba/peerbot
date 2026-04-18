@@ -65,6 +65,12 @@ export interface AgentSettings {
    * for matching tools. Operator-only — skills cannot set this.
    */
   preApprovedTools?: string[];
+  /**
+   * Default delivery target for scheduled fires that omit `deliverTo`.
+   * Same format as `DeclaredSchedule.deliverTo`:
+   *   "<platform>:<connectionSlug>:<channelId>[:<threadTs>]"
+   */
+  defaultScheduleChannel?: string;
   /** Last updated timestamp */
   updatedAt: number;
 }

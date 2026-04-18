@@ -4,7 +4,7 @@ import type { AuthProfilesManager } from "../auth/settings/auth-profiles-manager
 
 const logger = createLogger("image-generation-service");
 
-export type ImageGenerationProvider = "openai";
+export type ImageGenerationProvider = "openai" | "gemini";
 
 interface ImageGenerationConfig {
   profileProviderId: string;
@@ -49,6 +49,11 @@ const IMAGE_CAPABLE_PROVIDERS: {
     profileProviderId: "openai",
     provider: "openai",
     displayName: "OpenAI-compatible",
+  },
+  {
+    profileProviderId: "gemini",
+    provider: "gemini",
+    displayName: "Google Gemini",
   },
 ];
 
@@ -167,11 +172,10 @@ export class ImageGenerationService {
     });
 
     try {
-      const result = await this.generateWithOpenAI(
-        prompt,
-        config.apiKey,
-        options
-      );
+      const result =
+        config.provider === "gemini"
+          ? await this.generateWithGemini(prompt, config.apiKey, options)
+          : await this.generateWithOpenAI(prompt, config.apiKey, options);
       return {
         imageBuffer: result.imageBuffer,
         mimeType: result.mimeType,
@@ -253,6 +257,52 @@ export class ImageGenerationService {
     return {
       imageBuffer: Buffer.from(b64, "base64"),
       mimeType,
+    };
+  }
+
+  private async generateWithGemini(
+    prompt: string,
+    apiKey: string,
+    options: ImageGenerationOptions
+  ): Promise<{ imageBuffer: Buffer; mimeType: string }> {
+    const format = options.format || "png";
+    const mimeType =
+      format === "jpeg"
+        ? "image/jpeg"
+        : format === "webp"
+          ? "image/webp"
+          : "image/png";
+
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/imagen-4.0-generate-001:predict?key=${apiKey}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          instances: [{ prompt }],
+          parameters: { sampleCount: 1, outputMimeType: mimeType },
+        }),
+      }
+    );
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(
+        `Gemini Imagen API error: ${response.status} - ${errorText}`
+      );
+    }
+
+    const data = (await response.json()) as {
+      predictions?: Array<{ bytesBase64Encoded?: string; mimeType?: string }>;
+    };
+    const prediction = data.predictions?.[0];
+    if (!prediction?.bytesBase64Encoded) {
+      throw new Error("Gemini Imagen API returned no image payload");
+    }
+
+    return {
+      imageBuffer: Buffer.from(prediction.bytesBase64Encoded, "base64"),
+      mimeType: prediction.mimeType || mimeType,
     };
   }
 }

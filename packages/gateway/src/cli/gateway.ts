@@ -220,17 +220,6 @@ export function createGatewayApp(
     logger.debug("History routes enabled at :8080/internal/history");
   }
 
-  // Schedule routes (worker scheduling endpoints)
-  if (coreServices) {
-    const scheduledWakeupService = coreServices.getScheduledWakeupService();
-    if (scheduledWakeupService) {
-      const { createScheduleRoutes } = require("../routes/internal/schedule");
-      const scheduleRouter = createScheduleRoutes(scheduledWakeupService);
-      app.route("", scheduleRouter);
-      logger.debug("Schedule routes enabled at :8080/internal/schedule");
-    }
-  }
-
   // Device auth routes (gateway-mediated OAuth for workers)
   if (coreServices) {
     const {
@@ -614,7 +603,7 @@ export function createGatewayApp(
     // Get shared dependencies (needed before mounting auth router)
     const agentSettingsStore = coreServices.getAgentSettingsStore();
     const claudeOAuthStateStore = coreServices.getOAuthStateStore();
-    const scheduledWakeupService = coreServices.getScheduledWakeupService();
+    const scheduleService = coreServices.getScheduleService();
 
     // Build provider stores and overrides dynamically from registered modules
     const providerStores: Record<
@@ -699,28 +688,11 @@ export function createGatewayApp(
           .getWorkerGateway()
           ?.getConnectionManager(),
         grantStore: coreServices.getGrantStore(),
-        scheduledWakeupService: coreServices.getScheduledWakeupService(),
+        scheduleService,
       });
       app.route("/api/v1/agents/:agentId/config", agentConfigRouter);
       logger.debug(
         "Agent config routes enabled at :8080/api/v1/agents/{id}/config"
-      );
-    }
-
-    // Agent schedules routes (/api/v1/agents/{id}/schedules)
-    {
-      const {
-        createAgentSchedulesRoutes,
-      } = require("../routes/public/agent-schedules");
-      const agentSchedulesRouter = createAgentSchedulesRoutes({
-        scheduledWakeupService,
-        externalAuthClient: coreServices.getExternalAuthClient(),
-        userAgentsStore: coreServices.getUserAgentsStore(),
-        agentMetadataStore: coreServices.getConfigStore(),
-      });
-      app.route("/api/v1/agents/:agentId/schedules", agentSchedulesRouter);
-      logger.debug(
-        "Agent schedules routes enabled at :8080/api/v1/agents/{id}/schedules"
       );
     }
 

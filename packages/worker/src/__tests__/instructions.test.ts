@@ -32,22 +32,6 @@ describe("OpenClawCoreInstructionProvider", () => {
 });
 
 describe("OpenClawPromptIntentInstructionProvider", () => {
-  test("injects scheduling guidance for scheduling prompts", () => {
-    const provider = new OpenClawPromptIntentInstructionProvider();
-    const instructions = provider.getInstructions({
-      userPrompt: "set up a recurring hourly schedule to run watcher 174",
-    } as any);
-
-    expect(instructions).toContain(
-      "## Priority Tool Guidance For This Request"
-    );
-    expect(instructions).toContain("Scheduling Follow-Up Work For A Watcher");
-    expect(instructions).toContain("ScheduleReminder");
-    expect(instructions).toContain("ListReminders");
-    expect(instructions).toContain("CancelReminder");
-    expect(instructions).toContain("Do not use manage_watchers");
-  });
-
   test("injects file delivery guidance for prompts that ask to send a file", () => {
     const provider = new OpenClawPromptIntentInstructionProvider();
     const instructions = provider.getInstructions({

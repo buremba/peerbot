@@ -17,18 +17,6 @@ export const CUSTOM_TOOL_METADATA: Record<string, CustomToolMetadata> = {
     description:
       "Use this whenever you create a visualization, chart, image, document, report, or any file that helps answer the user's request. When the user asks you to send, share, attach, export, or upload a file, create it and then call this tool so the user can actually receive it in-thread. Do not substitute local paths, workspace paths, or sandbox links.",
   },
-  ScheduleReminder: {
-    description:
-      "Schedule a task for yourself to execute later. Use delayMinutes for one-time reminders, or cron for recurring schedules. The reminder will be delivered as a message in this thread.",
-  },
-  CancelReminder: {
-    description:
-      "Cancel a previously scheduled reminder. Use the scheduleId returned from ScheduleReminder.",
-  },
-  ListReminders: {
-    description:
-      "List all pending reminders you have scheduled. Shows upcoming reminders with their schedule IDs and remaining time.",
-  },
   GenerateImage: {
     description:
       "Generate an image from a text prompt and send it to the user. Use when the user asks for image generation, visual concepts, posters, illustrations, or edits that can be done from prompt instructions.",
@@ -105,39 +93,6 @@ export const TOOL_INTENT_RULES: ToolIntentRule[] = [
     ],
     priority: 35,
     alwaysInclude: true,
-  },
-  {
-    id: "watcher-follow-up-scheduling",
-    title: "Scheduling Follow-Up Work For A Watcher",
-    tools: ["ScheduleReminder"],
-    instructionLines: [
-      "If the user asks you to schedule this thread or agent to run a watcher later, first verify the watcher with the relevant MCP lookup tool such as get_watcher if available.",
-      "Then create the follow-up with ScheduleReminder.",
-      "Do not use manage_watchers or a watcher's own cron field unless the user explicitly asked to change the watcher's internal schedule.",
-      "Do not propose OpenClaw cron jobs, external cron jobs, or Owletto reminders for this case.",
-    ],
-    priority: 40,
-    patterns: [
-      /\bwatcher\b.*\b(remind|reminder|schedule|scheduled|scheduling|cron|recurring|repeat|repeating|hourly|daily|weekly|monthly)\b|\b(remind|reminder|schedule|scheduled|scheduling|cron|recurring|repeat|repeating|hourly|daily|weekly|monthly)\b.*\bwatcher\b/i,
-    ],
-  },
-  {
-    id: "scheduling",
-    title: "Scheduling and Reminders",
-    tools: ["ScheduleReminder", "ListReminders", "CancelReminder"],
-    instructionLines: [
-      "If the user asks you to remind them later, follow up later, run something again, or create a recurring schedule, use ScheduleReminder.",
-      "Use delayMinutes for one-time reminders and cron for recurring schedules.",
-      "Use ListReminders to inspect existing reminders and CancelReminder to cancel one.",
-      "Do not invent other scheduling systems or claim that reminders are handled by Owletto, cron jobs, or background services unless a tool result in this conversation explicitly confirms that.",
-    ],
-    priority: 45,
-    patterns: [
-      /\b(remind|reminder|schedule|scheduled|scheduling|cron|recurring|repeat|repeating)\b/i,
-      /\b(follow[ -]?up|run again)\b/i,
-      /\b(hourly|daily|weekly|monthly)\b/i,
-      /\bevery\s+\d+\s*(minute|minutes|hour|hours|day|days|week|weeks)\b/i,
-    ],
   },
   {
     id: "image-generation",

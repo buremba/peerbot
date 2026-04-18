@@ -28,7 +28,7 @@ import {
   type ModelOption,
   type ModelProviderModule,
 } from "../../modules/module-system";
-import type { ScheduledWakeupService } from "../../orchestration/scheduled-wakeup";
+import type { ScheduleService } from "../../orchestration/scheduled-wakeup";
 import type { GrantStore } from "../../permissions/grant-store";
 import { createTokenVerifier } from "../shared/token-verifier";
 import { verifySettingsSessionOrToken } from "./settings-auth";
@@ -101,7 +101,7 @@ export interface AgentConfigRoutesConfig {
   queue?: IMessageQueue;
   connectionManager?: WorkerConnectionManager;
   grantStore?: GrantStore;
-  scheduledWakeupService?: ScheduledWakeupService;
+  scheduleService?: ScheduleService;
 }
 
 function getViewer(payload: SettingsTokenPayload | null | undefined): {
@@ -317,12 +317,11 @@ async function buildResolvedConfigResponse(
   payload: SettingsTokenPayload | null,
   providerModels: Record<string, ModelOption[]>
 ): Promise<any> {
-  const [settingsView, grants, schedules] = await Promise.all([
+  const [settingsView, grants] = await Promise.all([
     resolveSettingsView(config, agentId, payload),
     config.grantStore?.listGrants(agentId) ?? Promise.resolve([]),
-    config.scheduledWakeupService?.listPendingForAgent(agentId) ??
-      Promise.resolve([]),
   ]);
+  const schedules = config.scheduleService?.listByAgent(agentId) ?? [];
   const settings = settingsView.effectiveSettings;
 
   const providers: Record<
@@ -454,14 +453,16 @@ async function buildResolvedConfigResponse(
       nixPackages: sanitized.nixConfig?.packages || [],
       permissions: grants,
       schedules: schedules.map((schedule) => ({
-        scheduleId: schedule.id,
-        task: schedule.task,
-        scheduledFor: schedule.triggerAt,
-        status: schedule.status,
-        isRecurring: schedule.isRecurring,
+        id: schedule.id,
+        agentId: schedule.agentId,
         cron: schedule.cron,
-        iteration: schedule.iteration,
-        maxIterations: schedule.maxIterations,
+        task: schedule.task,
+        enabled: schedule.enabled,
+        timezone: schedule.timezone,
+        deliverTo: schedule.deliverTo,
+        approver: schedule.approver,
+        concurrency: schedule.concurrency,
+        source: schedule.id.split(":")[0] ?? "unknown",
       })),
       registries: [],
       globalRegistries: [],

@@ -29,7 +29,6 @@ describe("InstructionService", () => {
     expect(sessionContext.agentInstructions).toContain(
       "IDENTITY.md, SOUL.md, USER.md"
     );
-    expect(sessionContext.agentInstructions).not.toContain("ScheduleReminder");
     expect(sessionContext.agentInstructions).not.toContain(
       "Do not invent product capabilities"
     );

@@ -242,7 +242,7 @@ export class MessageHandlerBridge {
     // ends with a trailing `:`); Telegram encodes `telegram:{chatId}` for
     // top-level and `telegram:{chatId}:{topicId}` inside a forum topic. Without
     // this, a `onDirectMessage` event for a reply in a DM thread (e.g. the
-    // worker posted a `ScheduleReminder` ALARM_FIRED message and the user
+    // worker posted a scheduled-fire follow-up message and the user
     // clicked Reply on it) would fall back to the channel id and the bot's
     // response would land in the main DM pane instead of the thread.
     const isThreadReply =

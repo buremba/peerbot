@@ -66,23 +66,19 @@ describe("agent config routes", () => {
 
   function buildApp() {
     const app = new OpenAPIHono();
-    const scheduledWakeupService = {
-      async listPendingForAgent(agentId: string) {
+    const scheduleService = {
+      listByAgent(agentId: string) {
         if (agentId !== "telegram-1") return [];
         return [
           {
-            id: "schedule-1",
+            id: "toml:telegram-1:check-provider",
+            agentId: "telegram-1",
+            cron: "0 18 * * *",
             task: "Check provider state",
-            triggerAt: "2026-03-30T18:00:00.000Z",
-            status: "pending",
-            isRecurring: false,
-            iteration: 1,
-            maxIterations: 1,
+            enabled: true,
+            timezone: "UTC",
           },
         ];
-      },
-      async cancelByAgent() {
-        return true;
       },
     };
 
@@ -97,7 +93,7 @@ describe("agent config routes", () => {
             agentMetadataStore.getMetadata(agentId),
         },
         grantStore,
-        scheduledWakeupService: scheduledWakeupService as any,
+        scheduleService: scheduleService as any,
       })
     );
 
@@ -137,7 +133,8 @@ describe("agent config routes", () => {
     expect(data.providerViews.chatgpt.canEdit).toBe(false);
     expect(data.tools.permissions).toHaveLength(1);
     expect(data.tools.schedules).toHaveLength(1);
-    expect(data.tools.schedules[0]?.scheduleId).toBe("schedule-1");
+    expect(data.tools.schedules[0]?.id).toBe("toml:telegram-1:check-provider");
+    expect(data.tools.schedules[0]?.source).toBe("toml");
   });
 
   test("GET /config accepts direct query token auth", async () => {

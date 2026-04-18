@@ -132,6 +132,68 @@ export interface ConversationMessage {
 }
 
 // ============================================================================
+// Schedule Types
+// ============================================================================
+
+/**
+ * Concurrency policy applied when a schedule fires while the previous
+ * run for the same id is still executing.
+ *
+ * - "queue" (default): run after the current finishes; max queue depth 1,
+ *   extras are coalesced and warn-logged.
+ * - "skip": drop the new fire entirely.
+ * - "allow": run in parallel with the in-flight run.
+ */
+export type ScheduleConcurrency = "queue" | "skip" | "allow";
+
+/**
+ * Declared schedule — a cron-driven wakeup definition pushed into the
+ * Lobu scheduler by either the lobu.toml file loader (id prefix `toml:`)
+ * or an in-process embedder such as Owletto (id prefix `owletto:`).
+ *
+ * Definitions live in `ScheduleService`'s in-memory map; Redis only
+ * holds runtime state (next fire timestamp, lease).
+ *
+ * `id` is globally unique and namespaced by source; `replaceByPrefix`
+ * uses the prefix to GC the right slice without touching the other
+ * source.
+ */
+export interface DeclaredSchedule {
+  /** Globally unique, namespaced: "toml:<agentId>:<localId>" or "owletto:watcher:<watcherId>" */
+  id: string;
+  agentId: string;
+  /** 5-field POSIX cron expression. */
+  cron: string;
+  /** Prompt the agent runs on fire. */
+  task: string;
+  /** IANA timezone (e.g. "America/New_York"); default "UTC". */
+  timezone?: string;
+  /** When false, the schedule stays in `list()` but does not fire. */
+  enabled: boolean;
+  /**
+   * Where the agent's response lands. Resolution at fire time:
+   *   1. schedule.deliverTo (this field)
+   *   2. agent.defaultScheduleChannel (per-agent default)
+   *   3. headless — agent runs without an implicit chat surface
+   * Format ALWAYS includes connection slug because an agent may be
+   * installed in multiple Slack workspaces:
+   *   "<platform>:<connectionSlug>:<channelId>[:<threadTs>]"
+   * e.g. "slack:acme-prod:C0xxx", "telegram:default:-100123:42".
+   */
+  deliverTo?: string;
+  /**
+   * Optional approver routing for destructive tool calls in headless
+   * mode. Same format as `deliverTo`; may name a user (DM) or channel.
+   *   - if unset and deliverTo is set → ask in deliverTo channel
+   *   - if unset and headless        → destructive calls fail-closed
+   *   - if set                       → always route consent prompt here
+   */
+  approver?: string;
+  /** Default "queue". */
+  concurrency?: ScheduleConcurrency;
+}
+
+// ============================================================================
 // Conversation History Types
 // ============================================================================
 

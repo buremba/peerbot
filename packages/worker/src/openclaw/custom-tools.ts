@@ -8,13 +8,10 @@ import {
   askUserQuestion,
   callMcpTool,
   checkMcpLogin,
-  cancelReminder,
   generateAudio,
   generateImage,
   getChannelHistory,
-  listReminders,
   logoutMcp,
-  scheduleReminder,
   startMcpLogin,
   uploadUserFile,
 } from "../shared/tool-implementations";
@@ -89,53 +86,6 @@ export function createOpenClawCustomTools(params: {
         uploadUserFile(gw, args, {
           onUploaded: (data) => params.onCustomEvent?.("file-uploaded", data),
         }),
-    }),
-
-    defineTool({
-      name: "ScheduleReminder",
-      description: getCustomToolDescription("ScheduleReminder"),
-      parameters: Type.Object({
-        task: Type.String({
-          description: "Description of what you need to do when reminded",
-        }),
-        delayMinutes: Type.Optional(
-          Type.Number({
-            description:
-              "Minutes from now to trigger (1-1440, max 24 hours). Use this OR cron, not both.",
-          })
-        ),
-        cron: Type.Optional(
-          Type.String({
-            description:
-              "Cron expression for recurring schedule (e.g., '*/30 * * * *' for every 30 min). Use this OR delayMinutes, not both.",
-          })
-        ),
-        maxIterations: Type.Optional(
-          Type.Number({
-            description:
-              "Maximum iterations for recurring schedules (default: 10, max: 100). Only used with cron.",
-          })
-        ),
-      }),
-      run: (args) => scheduleReminder(gw, args),
-    }),
-
-    defineTool({
-      name: "CancelReminder",
-      description: getCustomToolDescription("CancelReminder"),
-      parameters: Type.Object({
-        scheduleId: Type.String({
-          description: "The schedule ID returned from ScheduleReminder",
-        }),
-      }),
-      run: (args) => cancelReminder(gw, args),
-    }),
-
-    defineTool({
-      name: "ListReminders",
-      description: getCustomToolDescription("ListReminders"),
-      parameters: Type.Object({}),
-      run: () => listReminders(gw),
     }),
 
     defineTool({

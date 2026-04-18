@@ -51,8 +51,8 @@ import {
 import { InteractionService } from "../interactions";
 import { getModelProviderModules } from "../modules/module-system";
 import {
-  ScheduledWakeupService,
-  setScheduledWakeupService,
+  ScheduleService,
+  setScheduleServiceInstance,
 } from "../orchestration/scheduled-wakeup";
 import { GrantStore } from "../permissions/grant-store";
 import { SecretProxy } from "../proxy/secret-proxy";
@@ -164,9 +164,9 @@ export class CoreServices {
   private commandRegistry?: CommandRegistry;
 
   // ============================================================================
-  // Scheduled Wakeup Service
+  // Schedule Service
   // ============================================================================
-  private scheduledWakeupService?: ScheduledWakeupService;
+  private scheduleService?: ScheduleService;
 
   // ============================================================================
   // Agent Sub-Stores (injectable — host can provide its own implementations)
@@ -256,9 +256,9 @@ export class CoreServices {
     await this.initializeQueueProducer();
     logger.debug("Queue producer initialized");
 
-    // 6. Scheduled wakeup service (depends on queue)
-    await this.initializeScheduledWakeupService();
-    logger.debug("Scheduled wakeup service initialized");
+    // 6. Schedule service (depends on queue)
+    await this.initializeScheduleService();
+    logger.debug("Schedule service initialized");
 
     // 7. Command registry (depends on agent settings store)
     this.initializeCommandRegistry();
@@ -307,21 +307,30 @@ export class CoreServices {
   }
 
   // ============================================================================
-  // Scheduled Wakeup Service Initialization
+  // Schedule Service Initialization
   // ============================================================================
 
-  private async initializeScheduledWakeupService(): Promise<void> {
+  private async initializeScheduleService(): Promise<void> {
     if (!this.queue) {
-      throw new Error(
-        "Queue must be initialized before scheduled wakeup service"
-      );
+      throw new Error("Queue must be initialized before schedule service");
     }
 
-    this.scheduledWakeupService = new ScheduledWakeupService(this.queue);
-    await this.scheduledWakeupService.start();
-    // Set global reference for BaseDeploymentManager cleanup
-    setScheduledWakeupService(this.scheduledWakeupService);
-    logger.debug("Scheduled wakeup service initialized");
+    this.scheduleService = new ScheduleService(this.queue);
+    await this.scheduleService.start();
+    setScheduleServiceInstance(this.scheduleService);
+    await this.syncDeclaredSchedulesFromFiles();
+    logger.debug("Schedule service initialized");
+  }
+
+  /**
+   * Push the `toml:` namespaced schedules from currently-loaded files into
+   * ScheduleService. Called at startup and on every `reloadFromFiles` so the
+   * file is the single source of truth for declared schedules.
+   */
+  private async syncDeclaredSchedulesFromFiles(): Promise<void> {
+    if (!this.scheduleService) return;
+    const defs = this.fileLoadedAgents.flatMap((a) => a.schedules);
+    await this.scheduleService.replaceByPrefix("toml:", defs);
   }
 
   // ============================================================================
@@ -767,6 +776,21 @@ export class CoreServices {
       teamId,
       connectionId
     ) => {
+      // Headless scheduled fires have no real chat surface to post to —
+      // the synthetic "scheduled:" channelId means there's no human in
+      // the loop. Fail closed: the proxy already returned the blocked
+      // response to the worker; just don't spam an approval card to a
+      // non-existent thread.
+      if (
+        userId === "system:scheduler" &&
+        (!connectionId || channelId.startsWith("scheduled:"))
+      ) {
+        logger.info(
+          { requestId, agentId, mcpId, toolName, grantPattern },
+          "tool call blocked for headless scheduled fire — no approver configured"
+        );
+        return;
+      }
       await this.interactionService?.postToolApproval(
         requestId,
         agentId,
@@ -971,6 +995,10 @@ export class CoreServices {
       );
     }
 
+    // Push the new schedules into ScheduleService. `replaceByPrefix("toml:")`
+    // drops any in-memory toml: defs that disappeared from the file.
+    await this.syncDeclaredSchedulesFromFiles();
+
     const agentIds = this.fileLoadedAgents.map((a) => a.agentId);
 
     // Notify listeners (e.g. the orchestrator's BaseDeploymentManager)
@@ -1123,8 +1151,8 @@ export class CoreServices {
     return this.channelBindingService;
   }
 
-  getScheduledWakeupService(): ScheduledWakeupService | undefined {
-    return this.scheduledWakeupService;
+  getScheduleService(): ScheduleService | undefined {
+    return this.scheduleService;
   }
 
   getTranscriptionService(): TranscriptionService | undefined {

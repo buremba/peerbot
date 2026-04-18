@@ -135,6 +135,42 @@ const workerSchema = z.object({
   nix_packages: z.array(z.string()).optional(),
 });
 
+// ── Schedule ────────────────────────────────────────────────────────────────
+
+/**
+ * Per-agent declared schedule. Mirrored into `ScheduleService` at startup
+ * and on `reloadFromFiles` under id `toml:<agentId>:<localId>`.
+ */
+const scheduleSchema = z.object({
+  /** Unique within this agent. Becomes part of the global schedule id. */
+  id: z.string().regex(/^[a-z0-9][a-z0-9-]*$/, {
+    message: "schedule id must be lowercase alphanumeric with hyphens",
+  }),
+  /** 5-field POSIX cron expression. Validated for parseability + timezone at upsert. */
+  cron: z.string(),
+  /** Prompt the agent runs when the schedule fires. */
+  task: z.string(),
+  /**
+   * Where the agent's response lands. Format:
+   *   "<platform>:<connectionSlug>:<channelId>[:<threadTs>]"
+   * If omitted, falls back to `default_schedule_channel`, then headless.
+   */
+  deliver_to: z.string().optional(),
+  /**
+   * Optional approver routing for destructive tool calls in headless mode.
+   * Same format as `deliver_to`. When unset and `deliver_to` is set, the
+   * delivery channel is used. When both are unset, destructive calls
+   * fail-closed.
+   */
+  approver: z.string().optional(),
+  /** IANA timezone (e.g. "America/New_York"); default UTC. */
+  timezone: z.string().optional(),
+  /** Default true. When false, the schedule loads but does not fire. */
+  enabled: z.boolean().default(true),
+  /** Concurrency policy if previous run is still executing. Default "queue". */
+  concurrency: z.enum(["queue", "skip", "allow"]).default("queue"),
+});
+
 // ── Agent ───────────────────────────────────────────────────────────────────
 
 const agentEntrySchema = z.object({
@@ -148,6 +184,12 @@ const agentEntrySchema = z.object({
   network: networkSchema.optional(),
   tools: toolsSchema.optional(),
   worker: workerSchema.optional(),
+  /**
+   * Default delivery target for scheduled fires that omit `deliver_to`.
+   * Same `<platform>:<connectionSlug>:<channelId>[:<threadTs>]` shape.
+   */
+  default_schedule_channel: z.string().optional(),
+  schedules: z.array(scheduleSchema).default([]),
 });
 
 // ── Memory ─────────────────────────────────────────────────────────────────
@@ -181,5 +223,6 @@ export type SkillsEntry = z.infer<typeof skillsSchema>;
 export type NetworkEntry = z.infer<typeof networkSchema>;
 export type ToolsEntry = z.infer<typeof toolsSchema>;
 export type WorkerEntry = z.infer<typeof workerSchema>;
+export type ScheduleEntry = z.infer<typeof scheduleSchema>;
 export type OwlettoMemoryEntry = z.infer<typeof owlettoMemorySchema>;
 export type MemoryEntry = z.infer<typeof memorySchema>;

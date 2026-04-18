@@ -5,10 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   askUserQuestion,
-  cancelReminder,
   getChannelHistory,
-  listReminders,
-  scheduleReminder,
   uploadUserFile,
 } from "../shared/tool-implementations";
 
@@ -165,86 +162,6 @@ describe("tool implementations", () => {
     expect(extractText(result as any)).toContain(
       "Question posted with buttons"
     );
-  });
-
-  test("scheduleReminder posts to internal schedule and formats schedule ID", async () => {
-    let capturedBody: Record<string, unknown> | null = null;
-    globalThis.fetch = mock(
-      async (_input: RequestInfo | URL, init?: RequestInit) => {
-        capturedBody = JSON.parse(String(init?.body));
-        return Response.json({
-          scheduleId: "sched-1",
-          scheduledFor: "2026-04-11T18:30:00.000Z",
-          isRecurring: false,
-          maxIterations: 1,
-          message: "ok",
-        });
-      }
-    ) as unknown as typeof fetch;
-
-    const result = await scheduleReminder(gw, {
-      task: "Do thing",
-      delayMinutes: 5,
-    });
-
-    expect(capturedBody).toEqual({
-      delayMinutes: 5,
-      cron: undefined,
-      maxIterations: undefined,
-      task: "Do thing",
-    });
-    expect(extractText(result as any)).toContain("Schedule ID: sched-1");
-  });
-
-  test("cancelReminder deletes the schedule", async () => {
-    let capturedMethod = "";
-    let capturedUrl = "";
-    globalThis.fetch = mock(
-      async (input: RequestInfo | URL, init?: RequestInit) => {
-        capturedMethod = String(init?.method || "");
-        capturedUrl = String(input);
-        return Response.json({ success: true, message: "cancelled" });
-      }
-    ) as unknown as typeof fetch;
-
-    const result = await cancelReminder(gw, { scheduleId: "sched-1" });
-
-    expect(capturedMethod).toBe("DELETE");
-    expect(capturedUrl).toContain("/internal/schedule/sched-1");
-    expect(extractText(result as any)).toContain(
-      "Reminder cancelled successfully"
-    );
-  });
-
-  test("listReminders formats empty and populated reminder lists", async () => {
-    const fetchMock = mock(async () => Response.json({ reminders: [] }));
-    globalThis.fetch = fetchMock as unknown as typeof fetch;
-
-    const empty = await listReminders(gw);
-    expect(extractText(empty as any)).toBe("No pending reminders scheduled.");
-
-    globalThis.fetch = mock(async () =>
-      Response.json({
-        reminders: [
-          {
-            scheduleId: "sched-1",
-            task: "Do thing",
-            scheduledFor: "2026-04-11T18:30:00.000Z",
-            minutesRemaining: 30,
-            isRecurring: true,
-            cron: "*/30 * * * *",
-            iteration: 1,
-            maxIterations: 10,
-          },
-        ],
-      })
-    ) as unknown as typeof fetch;
-
-    const populated = await listReminders(gw);
-    const text = extractText(populated as any);
-    expect(text).toContain("Pending reminders (1)");
-    expect(text).toContain("[sched-1]");
-    expect(text).toContain("Recurring: */30 * * * *");
   });
 
   test("getChannelHistory returns note responses and formatted history", async () => {

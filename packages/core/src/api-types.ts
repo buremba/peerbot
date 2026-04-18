@@ -102,15 +102,24 @@ export interface McpConfig {
   description?: string;
 }
 
+/**
+ * Read-only view of a declared schedule for the admin UI. The full
+ * definition lives in `lobu.toml` (or is pushed by an embedder such as
+ * Owletto); this shape is what the agent-config endpoint returns.
+ */
 export interface Schedule {
-  scheduleId: string;
+  /** Globally namespaced id, e.g. "toml:careops:morning-standup". */
+  id: string;
+  agentId: string;
+  cron: string;
   task: string;
-  scheduledFor: string;
-  status: "pending" | "triggered" | "cancelled";
-  isRecurring?: boolean;
-  cron?: string;
-  iteration?: number;
-  maxIterations?: number;
+  enabled: boolean;
+  timezone?: string;
+  deliverTo?: string;
+  approver?: string;
+  concurrency?: "queue" | "skip" | "allow";
+  /** Origin of the definition: "toml", "owletto", or another embedder slug. */
+  source: string;
 }
 
 export interface PrefillSkill {

@@ -3,6 +3,7 @@ import { join, resolve } from "node:path";
 import type {
   TomlAgentEntry as AgentEntry,
   AgentSettings,
+  DeclaredSchedule,
   LobuTomlConfig,
   TomlMcpServerEntry as McpServerEntry,
   SkillConfig,
@@ -37,6 +38,11 @@ export interface FileLoadedAgent {
     type: string;
     config: Record<string, string>;
   }>;
+  /**
+   * Declared schedules from `[[agents.<id>.schedules]]`. IDs are namespaced
+   * `toml:<agentId>:<localId>` so the registry can clear them on reload.
+   */
+  schedules: DeclaredSchedule[];
 }
 
 /** Slugify agent IDs and platform names for use in connection IDs. */
@@ -428,6 +434,40 @@ async function buildAgentConfig(
     }))
     .filter((conn) => Object.values(conn.config).every((v) => v !== ""));
 
+  // Default schedule channel falls back to here when a schedule omits
+  // `deliver_to`. Stored alongside settings so the worker can read it.
+  if (agentConfig.default_schedule_channel) {
+    settings.defaultScheduleChannel = resolveEnvVar(
+      agentConfig.default_schedule_channel
+    );
+  }
+
+  // Schedules: namespace local ids under "toml:<agentId>:" so the registry
+  // can replace the whole block on hot-reload without touching pushes from
+  // other sources (e.g. owletto:). Reject duplicate ids per agent — they'd
+  // collapse onto the same global id and the second def would silently
+  // overwrite the first.
+  const seenScheduleIds = new Set<string>();
+  for (const s of agentConfig.schedules) {
+    if (seenScheduleIds.has(s.id)) {
+      throw new Error(`agent "${agentId}" has duplicate schedule id "${s.id}"`);
+    }
+    seenScheduleIds.add(s.id);
+  }
+  const schedules: DeclaredSchedule[] = agentConfig.schedules.map((s) => ({
+    id: `toml:${agentId}:${s.id}`,
+    agentId,
+    cron: s.cron,
+    task: s.task,
+    timezone: s.timezone,
+    enabled: s.enabled,
+    deliverTo: s.deliver_to
+      ? resolveEnvVar(s.deliver_to)
+      : settings.defaultScheduleChannel,
+    approver: s.approver ? resolveEnvVar(s.approver) : undefined,
+    concurrency: s.concurrency,
+  }));
+
   return {
     agentId,
     name: agentConfig.name,
@@ -435,6 +475,7 @@ async function buildAgentConfig(
     settings,
     credentials,
     connections,
+    schedules,
   };
 }
 

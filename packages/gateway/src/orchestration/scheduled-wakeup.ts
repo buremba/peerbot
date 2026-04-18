@@ -360,6 +360,25 @@ export class ScheduleService {
         }
       : {};
 
+    // Approver-routed consent for destructive tool calls. Worker JWT
+    // carries these so the proxy can route blocked-tool approval cards
+    // to the approver channel even when the schedule is otherwise
+    // headless. Reply path is unaffected (it uses `deliveryMetadata`).
+    const approverTarget = parseDeliveryTarget(def.approver);
+    const approverMetadata = approverTarget
+      ? {
+          approverPlatform: approverTarget.platform,
+          approverConnectionId: approverTarget.connectionSlug,
+          approverChannelId: `${approverTarget.platform}:${approverTarget.channelId}`,
+          approverConversationId: approverTarget.threadTs
+            ? `${approverTarget.platform}:${approverTarget.channelId}:${approverTarget.threadTs}`
+            : `${approverTarget.platform}:${approverTarget.channelId}`,
+          ...(approverTarget.connectionSlug
+            ? { approverTeamId: approverTarget.connectionSlug }
+            : {}),
+        }
+      : {};
+
     await this.queue.send(
       "messages",
       {
@@ -378,6 +397,7 @@ export class ScheduleService {
           deliverTo: def.deliverTo,
           approver: def.approver,
           ...deliveryMetadata,
+          ...approverMetadata,
         },
         agentOptions: {},
       },

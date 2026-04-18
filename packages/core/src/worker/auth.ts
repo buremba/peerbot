@@ -20,6 +20,15 @@ export interface WorkerTokenData {
   platform?: string;
   sessionKey?: string;
   traceId?: string; // Trace ID for end-to-end observability
+  // Approver-routed consent target. Populated for scheduled fires whose
+  // schedule declares `approver = "<platform>:<connectionSlug>:<channelId>[:<threadTs>]"`.
+  // When set, blocked tool calls post the approval card to this target
+  // instead of being silently dropped (headless mode).
+  approverChannelId?: string;
+  approverConnectionId?: string;
+  approverTeamId?: string;
+  approverPlatform?: string;
+  approverConversationId?: string;
 }
 
 /**
@@ -37,6 +46,11 @@ export function generateWorkerToken(
     platform?: string;
     sessionKey?: string;
     traceId?: string; // Trace ID for end-to-end observability
+    approverChannelId?: string;
+    approverConnectionId?: string;
+    approverTeamId?: string;
+    approverPlatform?: string;
+    approverConversationId?: string;
   }
 ): string {
   // Validate required fields
@@ -57,6 +71,11 @@ export function generateWorkerToken(
     platform: options.platform,
     sessionKey: options.sessionKey,
     traceId: options.traceId, // Trace ID for observability
+    approverChannelId: options.approverChannelId,
+    approverConnectionId: options.approverConnectionId,
+    approverTeamId: options.approverTeamId,
+    approverPlatform: options.approverPlatform,
+    approverConversationId: options.approverConversationId,
   };
 
   // Encrypt the payload

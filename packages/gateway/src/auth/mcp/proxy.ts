@@ -180,7 +180,14 @@ export class McpProxy {
     channelId: string,
     conversationId: string,
     teamId: string | undefined,
-    connectionId: string | undefined
+    connectionId: string | undefined,
+    approver?: {
+      channelId?: string;
+      conversationId?: string;
+      teamId?: string;
+      connectionId?: string;
+      platform?: string;
+    }
   ) => Promise<void>;
 
   /** Callback invoked when an MCP auth flow is started or already pending. */
@@ -697,7 +704,14 @@ export class McpProxy {
               auth.tokenData.channelId || "",
               auth.tokenData.conversationId || "",
               auth.tokenData.teamId,
-              auth.tokenData.connectionId
+              auth.tokenData.connectionId,
+              {
+                channelId: auth.tokenData.approverChannelId,
+                conversationId: auth.tokenData.approverConversationId,
+                teamId: auth.tokenData.approverTeamId,
+                connectionId: auth.tokenData.approverConnectionId,
+                platform: auth.tokenData.approverPlatform,
+              }
             ).catch((err) =>
               logger.error(
                 { requestId, error: String(err) },
@@ -1105,7 +1119,14 @@ export class McpProxy {
                     tokenData.channelId || "",
                     tokenData.conversationId || "",
                     tokenData.teamId,
-                    tokenData.connectionId
+                    tokenData.connectionId,
+                    {
+                      channelId: tokenData.approverChannelId,
+                      conversationId: tokenData.approverConversationId,
+                      teamId: tokenData.approverTeamId,
+                      connectionId: tokenData.approverConnectionId,
+                      platform: tokenData.approverPlatform,
+                    }
                   ).catch((err) =>
                     logger.error(
                       { requestId, error: String(err) },

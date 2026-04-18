@@ -774,17 +774,34 @@ export class CoreServices {
       channelId,
       conversationId,
       teamId,
-      connectionId
+      connectionId,
+      approver
     ) => {
-      // Headless scheduled fires have no real chat surface to post to —
-      // the synthetic "scheduled:" channelId means there's no human in
-      // the loop. Fail closed: the proxy already returned the blocked
-      // response to the worker; just don't spam an approval card to a
-      // non-existent thread.
-      if (
+      // Scheduled fires: prefer the schedule's `approver` target if set,
+      // so destructive tool calls can still be approved out-of-band even
+      // when delivery is headless. Fail closed only when no approver is
+      // configured.
+      const isHeadlessScheduler =
         userId === "system:scheduler" &&
-        (!connectionId || channelId.startsWith("scheduled:"))
-      ) {
+        (!connectionId || channelId.startsWith("scheduled:"));
+
+      if (isHeadlessScheduler) {
+        if (approver?.connectionId && approver.channelId) {
+          await this.interactionService?.postToolApproval(
+            requestId,
+            agentId,
+            userId,
+            approver.conversationId || approver.channelId,
+            approver.channelId,
+            approver.teamId,
+            approver.connectionId,
+            mcpId,
+            toolName,
+            args,
+            grantPattern
+          );
+          return;
+        }
         logger.info(
           { requestId, agentId, mcpId, toolName, grantPattern },
           "tool call blocked for headless scheduled fire — no approver configured"

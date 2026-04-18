@@ -789,6 +789,11 @@ export abstract class BaseDeploymentManager {
           : undefined,
     };
 
+    const approverField = (key: string): string | undefined => {
+      const v = platformMetadata?.[key];
+      return typeof v === "string" ? v : undefined;
+    };
+
     const workerToken = generateWorkerToken(
       userId,
       conversationId,
@@ -803,6 +808,11 @@ export abstract class BaseDeploymentManager {
             ? platformMetadata.connectionId
             : undefined,
         traceId,
+        approverChannelId: approverField("approverChannelId"),
+        approverConnectionId: approverField("approverConnectionId"),
+        approverTeamId: approverField("approverTeamId"),
+        approverPlatform: approverField("approverPlatform"),
+        approverConversationId: approverField("approverConversationId"),
       }
     );
 

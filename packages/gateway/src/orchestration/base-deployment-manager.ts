@@ -197,6 +197,15 @@ export abstract class BaseDeploymentManager {
    * Redis instead of lingering forever.
    */
   private grantSyncCache = new Map<string, Set<string>>();
+  /**
+   * In-flight `ensureDeployment` promises keyed by deploymentName. Coalesces
+   * concurrent calls within a single gateway process so the orchestrator-
+   * specific `spawnDeployment` only runs once per deployment slot. Cross-
+   * process concurrency (multi-replica gateway) is handled by the underlying
+   * orchestrator's atomic name-uniqueness guarantee — each subclass catches
+   * the resulting AlreadyExists error and treats it as benign success.
+   */
+  private inFlightCreates = new Map<string, Promise<void>>();
 
   constructor(
     config: OrchestratorConfig,
@@ -249,7 +258,15 @@ export abstract class BaseDeploymentManager {
 
   // Abstract methods that must be implemented by concrete classes
   abstract listDeployments(): Promise<DeploymentInfo[]>;
-  abstract createDeployment(
+  /**
+   * Orchestrator-specific deployment spawn. Subclasses must implement the
+   * actual create call (process spawn / docker createContainer / k8s
+   * createNamespacedDeployment) and treat the orchestrator's AlreadyExists
+   * error as benign success — that is the cross-process serialization
+   * mechanism. Always invoked through `ensureDeployment` which provides
+   * in-process coalescing.
+   */
+  protected abstract spawnDeployment(
     deploymentName: string,
     username: string,
     userId: string,
@@ -268,6 +285,35 @@ export abstract class BaseDeploymentManager {
    * Implementations return the appropriate host for their deployment mode
    */
   protected abstract getDispatcherHost(): string;
+
+  /**
+   * Idempotent deployment ensure: returns the existing deployment if one is
+   * already being (or has been) created with this name, otherwise delegates
+   * to the orchestrator-specific `spawnDeployment`. Concurrent callers for
+   * the same name share a single in-flight promise.
+   */
+  async ensureDeployment(
+    deploymentName: string,
+    username: string,
+    userId: string,
+    messageData?: MessagePayload
+  ): Promise<void> {
+    const inFlight = this.inFlightCreates.get(deploymentName);
+    if (inFlight) {
+      return inFlight;
+    }
+
+    const promise = this.spawnDeployment(
+      deploymentName,
+      username,
+      userId,
+      messageData
+    ).finally(() => {
+      this.inFlightCreates.delete(deploymentName);
+    });
+    this.inFlightCreates.set(deploymentName, promise);
+    return promise;
+  }
 
   /**
    * Resolve worker image reference.
@@ -348,7 +394,7 @@ export abstract class BaseDeploymentManager {
         }
       }
 
-      await this.createDeployment(deploymentName, userId, userId, messageData);
+      await this.ensureDeployment(deploymentName, userId, userId, messageData);
     } catch (error) {
       throw new OrchestratorError(
         ErrorCode.DEPLOYMENT_CREATE_FAILED,

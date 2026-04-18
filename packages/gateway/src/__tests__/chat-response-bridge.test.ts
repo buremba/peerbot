@@ -32,14 +32,23 @@ function createStreamingTarget() {
   return { target, collected, plainPosts, drained };
 }
 
-function createHarness(target: unknown, platform = "slack") {
+function createHarness(
+  target: unknown,
+  platform = "telegram",
+  slackPostMessage?: ReturnType<typeof mock>
+) {
   const state = new InMemoryStateAdapter();
   const conversationState = new ConversationStateStore(state);
+  const slackAdapter = slackPostMessage
+    ? { client: { chat: { postMessage: slackPostMessage } } }
+    : undefined;
   const manager = {
     getInstance: () => ({
       connection: { platform },
       chat: {
         channel: () => target,
+        getAdapter: (name: string) =>
+          name === "slack" ? slackAdapter : undefined,
       },
       conversationState,
     }),
@@ -55,7 +64,7 @@ const basePayload = {
   userId: "u1",
   teamId: "t1",
   timestamp: 0,
-  platform: "slack",
+  platform: "telegram",
   platformMetadata: {
     connectionId: "conn-1",
     chatId: "123",
@@ -268,6 +277,136 @@ describe("ChatResponseBridge.handleDelta — AsyncIterable streaming", () => {
         platformMetadata: {},
       } as any)
     ).toBe(false);
+  });
+});
+
+describe("ChatResponseBridge.handleDelta — Slack markdown_text path", () => {
+  test("Slack accumulates deltas and posts via chat.postMessage with markdown_text", async () => {
+    const { target } = createStreamingTarget();
+    const slackPost = mock(async () => ({ ok: true, ts: "1.1" }));
+    const { manager } = createHarness(target, "slack", slackPost);
+    const bridge = new ChatResponseBridge(manager as any);
+
+    const slackPayload = {
+      ...basePayload,
+      platform: "slack",
+      channelId: "slack:C123",
+      conversationId: "slack:C123:1700000000.123456",
+      platformMetadata: {
+        connectionId: "conn-1",
+        chatId: "slack:C123",
+      },
+    };
+
+    await bridge.handleDelta({ ...slackPayload, delta: "hello " }, "s");
+    await bridge.handleDelta({ ...slackPayload, delta: "world" }, "s");
+    await bridge.handleCompletion(slackPayload, "s");
+
+    // SDK target.post should NOT be called for Slack — we use markdown_text.
+    expect(target.post).not.toHaveBeenCalled();
+    expect(slackPost).toHaveBeenCalledTimes(1);
+    expect(slackPost.mock.calls[0]?.[0]).toMatchObject({
+      channel: "C123",
+      thread_ts: "1700000000.123456",
+      markdown_text: "hello world",
+    });
+  });
+
+  test("Slack decodes HTML entities and strips empty markdown links", async () => {
+    const { target } = createStreamingTarget();
+    const slackPost = mock(async () => ({ ok: true, ts: "1.1" }));
+    const { manager } = createHarness(target, "slack", slackPost);
+    const bridge = new ChatResponseBridge(manager as any);
+
+    const slackPayload = {
+      ...basePayload,
+      platform: "slack",
+      channelId: "slack:C123",
+      conversationId: "slack:C123",
+      platformMetadata: {
+        connectionId: "conn-1",
+        chatId: "slack:C123",
+      },
+    };
+
+    await bridge.handleDelta(
+      {
+        ...slackPayload,
+        delta: "&lt;summary&gt;hi&lt;/summary&gt; [foo:1, 2]() bar",
+      },
+      "s"
+    );
+    await bridge.handleCompletion(slackPayload, "s");
+
+    expect(slackPost).toHaveBeenCalledTimes(1);
+    expect(slackPost.mock.calls[0]?.[0]).toMatchObject({
+      markdown_text: "<summary>hi</summary> foo:1, 2 bar",
+    });
+  });
+
+  test("Slack chunks long content on paragraph boundaries", async () => {
+    const { target } = createStreamingTarget();
+    const slackPost = mock(async () => ({ ok: true, ts: "1.1" }));
+    const { manager } = createHarness(target, "slack", slackPost);
+    const bridge = new ChatResponseBridge(manager as any);
+
+    const slackPayload = {
+      ...basePayload,
+      platform: "slack",
+      channelId: "slack:C123",
+      conversationId: "slack:C123",
+      platformMetadata: {
+        connectionId: "conn-1",
+        chatId: "slack:C123",
+      },
+    };
+
+    // Build content > 11000 chars with explicit paragraph boundaries every ~5000 chars.
+    const para = `${"x".repeat(5000)}`;
+    const body = `${para}\n\n${para}\n\n${para}`;
+
+    await bridge.handleDelta({ ...slackPayload, delta: body }, "s");
+    await bridge.handleCompletion(slackPayload, "s");
+
+    expect(slackPost).toHaveBeenCalledTimes(2);
+    // Each posted chunk must NOT split mid-paragraph.
+    for (const call of slackPost.mock.calls) {
+      const md = (call[0] as { markdown_text: string }).markdown_text;
+      expect(md.length).toBeLessThanOrEqual(11_000);
+      // Chunks must start/end at paragraph boundaries (no leading/trailing
+      // partial paragraph fragments split mid-content).
+      expect(md.startsWith("xxxx")).toBe(true);
+    }
+  });
+
+  test("Slack isFullReplacement discards prior buffered content", async () => {
+    const { target } = createStreamingTarget();
+    const slackPost = mock(async () => ({ ok: true, ts: "1.1" }));
+    const { manager } = createHarness(target, "slack", slackPost);
+    const bridge = new ChatResponseBridge(manager as any);
+
+    const slackPayload = {
+      ...basePayload,
+      platform: "slack",
+      channelId: "slack:C123",
+      conversationId: "slack:C123",
+      platformMetadata: {
+        connectionId: "conn-1",
+        chatId: "slack:C123",
+      },
+    };
+
+    await bridge.handleDelta({ ...slackPayload, delta: "old streamed" }, "s");
+    await bridge.handleDelta(
+      { ...slackPayload, delta: "new content", isFullReplacement: true },
+      "s"
+    );
+    await bridge.handleCompletion(slackPayload, "s");
+
+    expect(slackPost).toHaveBeenCalledTimes(1);
+    expect(slackPost.mock.calls[0]?.[0]).toMatchObject({
+      markdown_text: "new content",
+    });
   });
 });
 

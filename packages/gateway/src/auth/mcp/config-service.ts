@@ -90,6 +90,34 @@ export class McpConfigService {
   }
 
   /**
+   * Register or replace a single global MCP server. Used for runtime-derived
+   * entries (e.g. the Owletto memory MCP, whose upstream URL is resolved
+   * from `MEMORY_URL` at startup and may change when `lobu.toml` reloads).
+   */
+  upsertGlobalServer(id: string, serverConfig: Record<string, any>): void {
+    if (!this.cache) {
+      this.cache = {
+        rawServers: {},
+        httpServers: new Map(),
+      };
+    }
+
+    const normalized = normalizeConfig({ mcpServers: { [id]: serverConfig } });
+    const raw = normalized.rawServers[id];
+    if (raw) {
+      this.cache.rawServers[id] = raw;
+    }
+    const http = normalized.httpServers.get(id);
+    if (http) {
+      this.cache.httpServers.set(id, http);
+    } else {
+      this.cache.httpServers.delete(id);
+    }
+
+    logger.info(`Upserted global MCP "${id}"`);
+  }
+
+  /**
    * Return MCP config tailored for a worker request.
    */
   async getWorkerConfig(options: {
@@ -275,7 +303,8 @@ export class McpConfigService {
     }
 
     try {
-      const settings = await this.agentSettingsStore.getSettings(agentId);
+      const settings =
+        await this.agentSettingsStore.getEffectiveSettings(agentId);
       return settings?.mcpServers || {};
     } catch (error) {
       logger.warn(`Failed to load per-agent MCP settings for ${agentId}`, {

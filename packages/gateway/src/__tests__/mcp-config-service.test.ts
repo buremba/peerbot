@@ -136,7 +136,7 @@ describe("McpConfigService", () => {
 
   test("getWorkerConfig - merges per-agent MCPs", async () => {
     const mockAgentSettingsStore = {
-      getSettings: async (agentId: string) => {
+      getEffectiveSettings: async (agentId: string) => {
         if (agentId === "agent1") {
           return {
             mcpServers: {
@@ -185,7 +185,7 @@ describe("McpConfigService", () => {
 
   test("getWorkerConfig - skips disabled MCPs", async () => {
     const mockAgentSettingsStore = {
-      getSettings: async () => ({
+      getEffectiveSettings: async () => ({
         mcpServers: {
           "disabled-mcp": {
             url: "https://disabled.example.com/mcp",
@@ -215,7 +215,7 @@ describe("McpConfigService", () => {
 
   test("getWorkerConfig - global takes precedence over per-agent", async () => {
     const mockAgentSettingsStore = {
-      getSettings: async () => ({
+      getEffectiveSettings: async () => ({
         mcpServers: {
           "shared-mcp": {
             url: "https://agent-version.example.com/mcp",
@@ -291,7 +291,7 @@ describe("McpConfigService", () => {
 
   test("getAllHttpServers - merges global + per-agent, excludes disabled and non-HTTP", async () => {
     const mockAgentSettingsStore = {
-      getSettings: async () => ({
+      getEffectiveSettings: async () => ({
         mcpServers: {
           "agent-http": {
             url: "https://agent-http.example.com/mcp",

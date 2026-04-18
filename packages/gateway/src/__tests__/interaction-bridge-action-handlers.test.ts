@@ -153,7 +153,7 @@ describe("registerActionHandlers — tool approval", () => {
     expect(edited).toContain("Approved (1h)");
   });
 
-  test("approve with no pending (retry / stale) silently no-ops — no grant, no execute, no user-visible message", async () => {
+  test("approve with no pending but tracked card (late first click) edits card and posts an expired notice — no grant, no execute", async () => {
     const h = setup({ pending: null });
     await h.handler({
       actionId: "tool:req-x:1h",
@@ -162,7 +162,11 @@ describe("registerActionHandlers — tool approval", () => {
     });
     expect(h.grantStore.grant).not.toHaveBeenCalled();
     expect(h.executeToolDirect).not.toHaveBeenCalled();
-    expect(h.post).not.toHaveBeenCalled();
+    // Card should be edited to show the expired notice and the user told to retry.
+    expect(h.editCard).toHaveBeenCalledTimes(1);
+    expect(h.editCard.mock.calls[0]?.[0] as string).toMatch(/expired/i);
+    expect(h.post).toHaveBeenCalledTimes(1);
+    expect(h.post.mock.calls[0]?.[0] as string).toMatch(/expired/i);
   });
 
   test("approve but tool execution throws posts failure message and still stores grant", async () => {
@@ -215,7 +219,7 @@ describe("registerActionHandlers — tool approval", () => {
     expect(h.post.mock.calls[0]?.[0]).toMatch(/denied/i);
   });
 
-  test("deny with no pending (retry / stale) silently no-ops — no grant, no user-visible message", async () => {
+  test("deny with no pending but tracked card (late first click) edits card and posts an expired notice — no grant", async () => {
     const h = setup({ pending: null });
     await h.handler({
       actionId: "tool:req-7:deny",
@@ -223,7 +227,10 @@ describe("registerActionHandlers — tool approval", () => {
       thread: h.thread,
     });
     expect(h.grantStore.grant).not.toHaveBeenCalled();
-    expect(h.post).not.toHaveBeenCalled();
+    expect(h.editCard).toHaveBeenCalledTimes(1);
+    expect(h.editCard.mock.calls[0]?.[0] as string).toMatch(/expired/i);
+    expect(h.post).toHaveBeenCalledTimes(1);
+    expect(h.post.mock.calls[0]?.[0] as string).toMatch(/expired/i);
   });
 
   test("deny edits the approval card to show denial summary", async () => {

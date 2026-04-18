@@ -49,6 +49,154 @@ function buildCurrentMessageFromMetadata(
 }
 
 /**
+ * Decode HTML entities back to their literal characters. Slack's `chat.postMessage`
+ * `text` field auto-escapes `<`, `>`, `&` and re-rendering already-escaped content
+ * (e.g. text the worker streamed via the SDK that came back through history) leaves
+ * `&gt;` etc. visible to the user. Use the `markdown_text` field for a Slack post
+ * so Slack does not double-escape, and pre-decode to handle entities the worker
+ * may have produced upstream (e.g. from MCP tool results that returned HTML).
+ */
+function decodeHtmlEntities(input: string): string {
+  return input
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&apos;/g, "'")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&");
+}
+
+/**
+ * Strip empty markdown links `[text]()` → `text`. Some MCP tools (notably
+ * deepwiki) emit citation footnotes with no URL; rendering them as links
+ * leaves visible empty parens in Slack/Telegram.
+ */
+function stripEmptyLinks(input: string): string {
+  return input.replace(/\[([^\]]+)\]\(\s*\)/g, "$1");
+}
+
+/**
+ * Slack accepts up to 12,000 chars per `markdown_text` post. Keep a margin so
+ * downstream emoji/mention expansion does not push us over the limit.
+ */
+const SLACK_MARKDOWN_CHUNK_SIZE = 11_000;
+
+/**
+ * Split text on paragraph boundaries (`\n\n`) so we never break mid-sentence,
+ * mid-list, or mid-code-fence when posting multiple chunks. Long paragraphs
+ * that exceed the limit on their own fall back to line boundaries, then to
+ * a hard slice as last resort.
+ */
+function chunkOnParagraphBoundaries(
+  text: string,
+  maxChunkSize: number
+): string[] {
+  if (text.length <= maxChunkSize) return [text];
+
+  const chunks: string[] = [];
+  const paragraphs = text.split(/\n\n+/);
+  let current = "";
+
+  const flush = () => {
+    if (current.length > 0) {
+      chunks.push(current);
+      current = "";
+    }
+  };
+
+  const pushOversized = (chunk: string) => {
+    // Try line boundaries first, then hard slice as a last resort.
+    const lines = chunk.split("\n");
+    let buf = "";
+    for (const line of lines) {
+      if (buf.length + line.length + 1 > maxChunkSize) {
+        if (buf) chunks.push(buf);
+        buf = "";
+        if (line.length > maxChunkSize) {
+          for (let i = 0; i < line.length; i += maxChunkSize) {
+            const slice = line.slice(i, i + maxChunkSize);
+            if (i + maxChunkSize >= line.length) {
+              buf = slice;
+            } else {
+              chunks.push(slice);
+            }
+          }
+        } else {
+          buf = line;
+        }
+      } else {
+        buf = buf ? `${buf}\n${line}` : line;
+      }
+    }
+    if (buf) chunks.push(buf);
+  };
+
+  for (const para of paragraphs) {
+    if (para.length > maxChunkSize) {
+      flush();
+      pushOversized(para);
+      continue;
+    }
+    const candidate = current ? `${current}\n\n${para}` : para;
+    if (candidate.length > maxChunkSize) {
+      flush();
+      current = para;
+    } else {
+      current = candidate;
+    }
+  }
+  flush();
+  return chunks;
+}
+
+/**
+ * Post a text body to a Slack channel/thread using `chat.postMessage` with
+ * `markdown_text`, so Slack renders markdown directly and does not HTML-escape
+ * `<`, `>`, `&`. Splits long bodies on paragraph boundaries to avoid hitting
+ * Slack's 12,000-char per-post limit.
+ *
+ * Returns true if the post was handled here, false if the caller should fall
+ * back to the SDK's generic `target.post()` path.
+ */
+async function postSlackMarkdown(
+  instance: any,
+  channelId: string,
+  conversationId: string | undefined,
+  body: string
+): Promise<boolean> {
+  const adapter = instance.chat?.getAdapter?.("slack");
+  const slackClient = adapter?.client;
+  if (!slackClient?.chat?.postMessage) return false;
+
+  // channelId looks like "slack:C0123ABCD"; conversationId either equals it
+  // (DM/channel-level) or is "slack:C0123ABCD:1700000000.123456" for a thread.
+  const channel = channelId.startsWith("slack:")
+    ? channelId.slice("slack:".length)
+    : channelId;
+  let thread_ts: string | undefined;
+  if (conversationId && conversationId !== channelId) {
+    const parts = conversationId.split(":");
+    if (parts.length === 3 && parts[0] === "slack") {
+      thread_ts = parts[2];
+    }
+  }
+
+  const chunks = chunkOnParagraphBoundaries(body, SLACK_MARKDOWN_CHUNK_SIZE);
+  for (const chunk of chunks) {
+    if (!chunk.trim()) continue;
+    await slackClient.chat.postMessage({
+      channel,
+      ...(thread_ts ? { thread_ts } : {}),
+      markdown_text: chunk,
+      unfurl_links: false,
+      unfurl_media: false,
+    });
+  }
+  return true;
+}
+
+/**
  * Push-based async iterable: producers call `push(value)` and `close()`;
  * consumers iterate via `for await (...)`.
  */
@@ -177,9 +325,49 @@ export class ChatResponseBridge implements ResponseRenderer {
     const ctx = this.extractResponseContext(payload);
     if (!ctx) return null;
 
-    const { connectionId, instance, channelId } = ctx;
+    const { connectionId, instance, channelId, platform } = ctx;
     const key = `${channelId}:${payload.conversationId}`;
     const existing = this.streams.get(key);
+
+    // For Slack we skip the SDK streaming path entirely and post a single
+    // chunked `markdown_text` message at completion. The Slack streaming API
+    // (`chat.appendStream`) auto-splits at fixed sizes (breaking mid-line)
+    // and the regular `chat.postMessage` `text` field HTML-escapes `<`/`>`/`&`.
+    // Buffer-and-post on completion gives us paragraph-aligned chunks AND
+    // markdown-native rendering. See `postSlackMarkdown` above.
+    if (platform === "slack") {
+      if (payload.isFullReplacement && existing) {
+        // Discard prior buffered content — the worker is replacing it.
+        this.streams.delete(key);
+      }
+      let stream = this.streams.get(key);
+      if (!stream) {
+        // Resolve the SDK target up front so that if `postSlackMarkdown`
+        // can't reach `slackClient.chat.postMessage` at completion (adapter
+        // not wired, getAdapter returns undefined, etc.) we still have a
+        // non-null fallback and the response doesn't silently disappear.
+        const fallbackTarget = await this.resolveTarget(
+          instance,
+          channelId,
+          payload.conversationId,
+          (payload.platformMetadata as any)?.responseThreadId,
+          payload.platformMetadata as Record<string, unknown> | undefined
+        ).catch(() => null);
+        stream = {
+          iterator: new AsyncPushIterator<string>(),
+          streamPromise: Promise.resolve(),
+          buffer: payload.delta,
+          streamFailed: true, // Force completion to use the post-buffer path
+          wasFullyReplaced: !!payload.isFullReplacement,
+          target: fallbackTarget,
+        };
+        this.streams.set(key, stream);
+      } else {
+        stream.buffer += payload.delta;
+        if (payload.isFullReplacement) stream.wasFullyReplaced = true;
+      }
+      return null;
+    }
 
     // Full replacement: close current stream, await delivery, then start fresh.
     // This only fires in rare error paths (see worker.ts:584).
@@ -261,7 +449,7 @@ export class ChatResponseBridge implements ResponseRenderer {
     const ctx = this.extractResponseContext(payload);
     if (!ctx) return;
 
-    const { connectionId, channelId } = ctx;
+    const { connectionId, instance, channelId, platform } = ctx;
     const key = `${channelId}:${payload.conversationId}`;
 
     const stream = this.streams.get(key);
@@ -275,11 +463,49 @@ export class ChatResponseBridge implements ResponseRenderer {
           "Adapter stream errored during completion"
         );
       }
-      // Fallback: when native streaming rejected (e.g. Slack's chatStream
-      // requires a recipient user/team id that the public-API send path
-      // can't supply), post the accumulated buffer non-streaming so the
-      // response still lands in the thread instead of being silently dropped.
-      if (stream.streamFailed && stream.buffer.trim() && stream.target) {
+
+      // Slack-specific path: always post via `markdown_text` with paragraph
+      // chunking (see handleDelta — we never opened a real stream for Slack).
+      if (platform === "slack" && stream.buffer.trim()) {
+        const cleaned = stripEmptyLinks(decodeHtmlEntities(stream.buffer));
+        try {
+          const handled = await postSlackMarkdown(
+            instance,
+            channelId,
+            payload.conversationId,
+            cleaned
+          );
+          if (handled) {
+            logger.info(
+              { connectionId, channelId, length: cleaned.length },
+              "Posted Slack response via markdown_text with paragraph chunking"
+            );
+          } else if (stream.target) {
+            // Adapter unavailable — fall back to the SDK so we still deliver.
+            await stream.target.post(cleaned);
+          }
+        } catch (error) {
+          logger.warn(
+            { connectionId, error: String(error) },
+            "Slack markdown_text post failed; falling back to SDK"
+          );
+          if (stream.target) {
+            try {
+              await stream.target.post(cleaned);
+            } catch (fallbackError) {
+              logger.warn(
+                { connectionId, error: String(fallbackError) },
+                "SDK fallback post also failed"
+              );
+            }
+          }
+        }
+      } else if (stream.streamFailed && stream.buffer.trim() && stream.target) {
+        // Non-Slack fallback: when native streaming rejected (e.g. Slack's
+        // chatStream requires a recipient user/team id that the public-API
+        // send path can't supply), post the accumulated buffer non-streaming
+        // so the response still lands in the thread instead of being
+        // silently dropped.
         try {
           await stream.target.post(stream.buffer);
           logger.info(

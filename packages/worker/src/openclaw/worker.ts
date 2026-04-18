@@ -1253,68 +1253,6 @@ Use it when the user references past discussions or you need context.`);
     }
     await startPluginServices(loadedPlugins);
 
-    // Proactive owletto login: call owletto_login to check auth status.
-    // If not authenticated, inject the login link into instructions so the model
-    // can relay it to the user without needing to call tools itself.
-    {
-      const loginTool = pluginTools.find((t) => t.name === "owletto_login");
-      if (loginTool) {
-        logger.info("Checking Owletto auth status via proactive login");
-        try {
-          const loginResult = await loginTool.execute(
-            "proactive-login",
-            {},
-            undefined,
-            undefined,
-            undefined as any
-          );
-          const resultText =
-            loginResult?.content
-              ?.filter(
-                (
-                  c
-                ): c is {
-                  type: "text";
-                  text: string;
-                } => c.type === "text" && typeof c.text === "string"
-              )
-              .map((c) => c.text)
-              .join("\n") || "";
-          logger.info(`Owletto login result: ${resultText.slice(0, 200)}`);
-          const parsed = JSON.parse(resultText);
-          if (parsed.status === "login_started" && parsed.verification_url) {
-            // Send login link directly to the user — don't rely on the model
-            const loginMessage = `🔑 Memory requires login. Open this link to connect:\n${parsed.verification_url}${parsed.user_code ? `\nCode: ${parsed.user_code}` : ""}\n\n`;
-            await onProgress({
-              type: "output",
-              data: loginMessage,
-              timestamp: Date.now(),
-            });
-            logger.info(
-              "Proactive owletto login started — login link sent directly to user"
-            );
-            instructionParts.push(
-              `\n\n## Owletto Login In Progress\nThe login link and code have already been sent directly to the user by the system. Do not repeat the verification URL or code unless the user explicitly asks. Do not call owletto_login again while authentication is pending. If the current request depends on Owletto, tell the user briefly to complete login and reply once done.`
-            );
-          } else if (parsed.status === "already_authenticated") {
-            logger.info("Owletto already authenticated");
-          } else if (parsed.status === "error") {
-            logger.warn(`Owletto login returned error: ${parsed.message}`);
-            instructionParts.push(
-              `\n\n## Owletto Memory Not Connected\nOwletto memory is not connected and login could not be started automatically. Tell the user they need to connect their Owletto memory. If owletto_login tool is available, call it to try again. Otherwise tell them an admin or an existing auth flow is required.`
-            );
-          }
-        } catch (err) {
-          logger.warn(
-            `Proactive owletto login failed: ${err instanceof Error ? err.message : String(err)}`
-          );
-          instructionParts.push(
-            `\n\n## Owletto Memory Not Connected\nOwletto memory is not connected. Tell the user they need to connect their memory via Owletto. If the owletto_login tool is available, call it to start the login flow.`
-          );
-        }
-      }
-    }
-
     // Rebuild final instructions after possible login link injection
     const finalInstructionsUpdated = instructionParts
       .filter(Boolean)

@@ -219,7 +219,7 @@ describe("DockerDeploymentManager", () => {
   // ResourceParser (tested indirectly via createContainer args)
   // =========================================================================
 
-  describe("ResourceParser (via createDeployment)", () => {
+  describe("ResourceParser (via ensureDeployment)", () => {
     test("parseMemory: 512Mi -> 512 * 1024 * 1024", async () => {
       const manager = createManager({
         worker: {
@@ -231,7 +231,7 @@ describe("DockerDeploymentManager", () => {
         },
       });
 
-      await manager.createDeployment(
+      await manager.ensureDeployment(
         "test-deploy",
         "user",
         "user-id",
@@ -253,7 +253,7 @@ describe("DockerDeploymentManager", () => {
         },
       });
 
-      await manager.createDeployment(
+      await manager.ensureDeployment(
         "test-deploy",
         "user",
         "user-id",
@@ -267,7 +267,7 @@ describe("DockerDeploymentManager", () => {
     test("parseCpu: 500m -> 500_000_000 nanocpus", async () => {
       const manager = createManager();
 
-      await manager.createDeployment(
+      await manager.ensureDeployment(
         "test-deploy",
         "user",
         "user-id",
@@ -289,7 +289,7 @@ describe("DockerDeploymentManager", () => {
         },
       });
 
-      await manager.createDeployment(
+      await manager.ensureDeployment(
         "test-deploy",
         "user",
         "user-id",
@@ -305,10 +305,10 @@ describe("DockerDeploymentManager", () => {
   // Container creation & security
   // =========================================================================
 
-  describe("createDeployment", () => {
+  describe("ensureDeployment", () => {
     test("calls docker.createContainer with correct image", async () => {
       const manager = createManager();
-      await manager.createDeployment(
+      await manager.ensureDeployment(
         "test-deploy",
         "user",
         "user-id",
@@ -322,7 +322,7 @@ describe("DockerDeploymentManager", () => {
 
     test("drops all capabilities: CapDrop=['ALL']", async () => {
       const manager = createManager();
-      await manager.createDeployment(
+      await manager.ensureDeployment(
         "test-deploy",
         "user",
         "user-id",
@@ -334,7 +334,7 @@ describe("DockerDeploymentManager", () => {
     test("adds configurable capabilities via WORKER_CAPABILITIES env var", async () => {
       process.env.WORKER_CAPABILITIES = "NET_BIND_SERVICE,SYS_PTRACE";
       const manager = createManager();
-      await manager.createDeployment(
+      await manager.ensureDeployment(
         "test-deploy",
         "user",
         "user-id",
@@ -349,7 +349,7 @@ describe("DockerDeploymentManager", () => {
     test("empty CapAdd when WORKER_CAPABILITIES not set", async () => {
       delete process.env.WORKER_CAPABILITIES;
       const manager = createManager();
-      await manager.createDeployment(
+      await manager.ensureDeployment(
         "test-deploy",
         "user",
         "user-id",
@@ -360,7 +360,7 @@ describe("DockerDeploymentManager", () => {
 
     test("enables no-new-privileges security option", async () => {
       const manager = createManager();
-      await manager.createDeployment(
+      await manager.ensureDeployment(
         "test-deploy",
         "user",
         "user-id",
@@ -373,7 +373,7 @@ describe("DockerDeploymentManager", () => {
 
     test("uses readonly rootfs by default", async () => {
       const manager = createManager();
-      await manager.createDeployment(
+      await manager.ensureDeployment(
         "test-deploy",
         "user",
         "user-id",
@@ -384,7 +384,7 @@ describe("DockerDeploymentManager", () => {
 
     test("disables readonly rootfs when Nix packages configured", async () => {
       const manager = createManager();
-      await manager.createDeployment(
+      await manager.ensureDeployment(
         "test-deploy",
         "user",
         "user-id",
@@ -395,7 +395,7 @@ describe("DockerDeploymentManager", () => {
 
     test("disables readonly rootfs when Nix flakeUrl configured", async () => {
       const manager = createManager();
-      await manager.createDeployment(
+      await manager.ensureDeployment(
         "test-deploy",
         "user",
         "user-id",
@@ -408,7 +408,7 @@ describe("DockerDeploymentManager", () => {
 
     test("adds tmpfs for /tmp when readonly rootfs enabled", async () => {
       const manager = createManager();
-      await manager.createDeployment(
+      await manager.ensureDeployment(
         "test-deploy",
         "user",
         "user-id",
@@ -421,7 +421,7 @@ describe("DockerDeploymentManager", () => {
 
     test("does not add tmpfs when Nix packages configured", async () => {
       const manager = createManager();
-      await manager.createDeployment(
+      await manager.ensureDeployment(
         "test-deploy",
         "user",
         "user-id",
@@ -432,7 +432,7 @@ describe("DockerDeploymentManager", () => {
 
     test("sets ShmSize to 256MB (268435456)", async () => {
       const manager = createManager();
-      await manager.createDeployment(
+      await manager.ensureDeployment(
         "test-deploy",
         "user",
         "user-id",
@@ -448,7 +448,7 @@ describe("DockerDeploymentManager", () => {
       const manager = createManager();
       await new Promise((r) => setTimeout(r, 50));
 
-      await manager.createDeployment(
+      await manager.ensureDeployment(
         "test-deploy",
         "user",
         "user-id",
@@ -461,7 +461,7 @@ describe("DockerDeploymentManager", () => {
       const manager = createManager();
       await new Promise((r) => setTimeout(r, 50));
 
-      await manager.createDeployment(
+      await manager.ensureDeployment(
         "test-deploy",
         "user",
         "user-id",
@@ -472,7 +472,7 @@ describe("DockerDeploymentManager", () => {
 
     test("starts container after creation", async () => {
       const manager = createManager();
-      await manager.createDeployment(
+      await manager.ensureDeployment(
         "test-deploy",
         "user",
         "user-id",
@@ -502,7 +502,7 @@ describe("DockerDeploymentManager", () => {
       const manager = createManager();
 
       await expect(
-        manager.createDeployment(
+        manager.ensureDeployment(
           "test-deploy",
           "user",
           "user-id",
@@ -515,7 +515,7 @@ describe("DockerDeploymentManager", () => {
 
     test("sets WorkingDir to /workspace", async () => {
       const manager = createManager();
-      await manager.createDeployment(
+      await manager.ensureDeployment(
         "test-deploy",
         "user",
         "user-id",
@@ -540,7 +540,7 @@ describe("DockerDeploymentManager", () => {
 
       const manager = createManager();
 
-      await manager.createDeployment(
+      await manager.ensureDeployment(
         "test-deploy",
         "user",
         "user-id",
@@ -558,7 +558,7 @@ describe("DockerDeploymentManager", () => {
       const manager = createManager();
 
       // First deployment
-      await manager.createDeployment(
+      await manager.ensureDeployment(
         "deploy-1",
         "user",
         "user-id",
@@ -566,7 +566,7 @@ describe("DockerDeploymentManager", () => {
       );
 
       // Second deployment with same agentId
-      await manager.createDeployment(
+      await manager.ensureDeployment(
         "deploy-2",
         "user",
         "user-id",
@@ -607,13 +607,72 @@ describe("DockerDeploymentManager", () => {
 
       // Should not throw despite 409
       await expect(
-        manager.createDeployment(
+        manager.ensureDeployment(
           "test-deploy",
           "user",
           "user-id",
           createTestMessagePayload()
         )
       ).resolves.toBeUndefined();
+    });
+
+    test("treats 409 from createContainer as benign and starts existing container if stopped", async () => {
+      const existing = {
+        inspect: mock(async () => ({ State: { Running: false } })),
+        start: mock(async () => {
+          /* noop */
+        }),
+      };
+      mockDocker.createContainer.mockImplementationOnce(async () => {
+        const err: any = new Error(
+          'Conflict. The container name "/test-deploy" is already in use'
+        );
+        err.statusCode = 409;
+        throw err;
+      });
+      mockDocker.getContainer.mockImplementationOnce(() => existing as any);
+
+      const manager = createManager();
+
+      await expect(
+        manager.ensureDeployment(
+          "test-deploy",
+          "user",
+          "user-id",
+          createTestMessagePayload()
+        )
+      ).resolves.toBeUndefined();
+
+      expect(existing.inspect).toHaveBeenCalled();
+      expect(existing.start).toHaveBeenCalled();
+    });
+
+    test("treats 409 from createContainer as benign and skips start if already running", async () => {
+      const existing = {
+        inspect: mock(async () => ({ State: { Running: true } })),
+        start: mock(async () => {
+          /* noop */
+        }),
+      };
+      mockDocker.createContainer.mockImplementationOnce(async () => {
+        const err: any = new Error("already in use");
+        err.statusCode = 409;
+        throw err;
+      });
+      mockDocker.getContainer.mockImplementationOnce(() => existing as any);
+
+      const manager = createManager();
+
+      await expect(
+        manager.ensureDeployment(
+          "test-deploy",
+          "user",
+          "user-id",
+          createTestMessagePayload()
+        )
+      ).resolves.toBeUndefined();
+
+      expect(existing.start).not.toHaveBeenCalled();
     });
 
     test("development mode uses bind mounts", async () => {
@@ -623,7 +682,7 @@ describe("DockerDeploymentManager", () => {
 
       const manager = createManager();
 
-      await manager.createDeployment(
+      await manager.ensureDeployment(
         "test-deploy",
         "user",
         "user-id",
@@ -661,7 +720,7 @@ describe("DockerDeploymentManager", () => {
     test("WORKER_NETWORK env var overrides network name", async () => {
       process.env.WORKER_NETWORK = "custom-network";
       const manager = createManager();
-      await manager.createDeployment(
+      await manager.ensureDeployment(
         "test-deploy",
         "user",
         "user-id",
@@ -674,7 +733,7 @@ describe("DockerDeploymentManager", () => {
       delete process.env.WORKER_NETWORK;
       process.env.COMPOSE_PROJECT_NAME = "myproject";
       const manager = createManager();
-      await manager.createDeployment(
+      await manager.ensureDeployment(
         "test-deploy",
         "user",
         "user-id",
@@ -694,7 +753,7 @@ describe("DockerDeploymentManager", () => {
       const manager = createManager();
       await new Promise((r) => setTimeout(r, 50));
 
-      await manager.createDeployment(
+      await manager.ensureDeployment(
         "test-deploy",
         "user",
         "user-id",
@@ -724,7 +783,7 @@ describe("DockerDeploymentManager", () => {
         (p: any) => String(p) === "/.dockerenv"
       );
       const manager = createManager();
-      await manager.createDeployment(
+      await manager.ensureDeployment(
         "test-deploy",
         "user",
         "user-id",
@@ -738,7 +797,7 @@ describe("DockerDeploymentManager", () => {
       process.env.CONTAINER = "true";
       const existsSpy = spyOn(fs, "existsSync").mockReturnValue(false);
       const manager = createManager();
-      await manager.createDeployment(
+      await manager.ensureDeployment(
         "test-deploy",
         "user",
         "user-id",
@@ -752,7 +811,7 @@ describe("DockerDeploymentManager", () => {
       delete process.env.CONTAINER;
       const existsSpy = spyOn(fs, "existsSync").mockReturnValue(false);
       const manager = createManager();
-      await manager.createDeployment(
+      await manager.ensureDeployment(
         "test-deploy",
         "user",
         "user-id",
@@ -780,7 +839,7 @@ describe("DockerDeploymentManager", () => {
           },
         },
       });
-      await manager.createDeployment(
+      await manager.ensureDeployment(
         "test-deploy",
         "user",
         "user-id",
@@ -791,7 +850,7 @@ describe("DockerDeploymentManager", () => {
 
     test("uses tag reference when no digest: repo:tag", async () => {
       const manager = createManager();
-      await manager.createDeployment(
+      await manager.ensureDeployment(
         "test-deploy",
         "user",
         "user-id",
@@ -812,7 +871,7 @@ describe("DockerDeploymentManager", () => {
           },
         },
       });
-      await manager.createDeployment(
+      await manager.ensureDeployment(
         "test-deploy",
         "user",
         "user-id",
@@ -1085,7 +1144,7 @@ describe("DockerDeploymentManager", () => {
   describe("labels", () => {
     test("sets base worker labels", async () => {
       const manager = createManager();
-      await manager.createDeployment(
+      await manager.ensureDeployment(
         "test-deploy",
         "user",
         "user-id",
@@ -1100,7 +1159,7 @@ describe("DockerDeploymentManager", () => {
     test("sets Docker Compose project labels", async () => {
       process.env.COMPOSE_PROJECT_NAME = "myproject";
       const manager = createManager();
-      await manager.createDeployment(
+      await manager.ensureDeployment(
         "test-deploy",
         "user",
         "user-id",
@@ -1113,7 +1172,7 @@ describe("DockerDeploymentManager", () => {
 
     test("sets agent-id label", async () => {
       const manager = createManager();
-      await manager.createDeployment(
+      await manager.ensureDeployment(
         "test-deploy",
         "user",
         "user-id",
@@ -1134,7 +1193,7 @@ describe("DockerDeploymentManager", () => {
       delete process.env.CONTAINER;
       const existsSpy = spyOn(fs, "existsSync").mockReturnValue(false);
       const manager = createManager();
-      await manager.createDeployment(
+      await manager.ensureDeployment(
         "test-deploy",
         "user",
         "user-id",
@@ -1150,7 +1209,7 @@ describe("DockerDeploymentManager", () => {
       process.env.CONTAINER = "true";
       const existsSpy = spyOn(fs, "existsSync").mockReturnValue(false);
       const manager = createManager();
-      await manager.createDeployment(
+      await manager.ensureDeployment(
         "test-deploy",
         "user",
         "user-id",
@@ -1169,7 +1228,7 @@ describe("DockerDeploymentManager", () => {
     test("adds seccomp profile when WORKER_SECCOMP_PROFILE set", async () => {
       process.env.WORKER_SECCOMP_PROFILE = "/path/to/seccomp.json";
       const manager = createManager();
-      await manager.createDeployment(
+      await manager.ensureDeployment(
         "test-deploy",
         "user",
         "user-id",
@@ -1183,7 +1242,7 @@ describe("DockerDeploymentManager", () => {
     test("adds apparmor profile when WORKER_APPARMOR_PROFILE set", async () => {
       process.env.WORKER_APPARMOR_PROFILE = "docker-custom";
       const manager = createManager();
-      await manager.createDeployment(
+      await manager.ensureDeployment(
         "test-deploy",
         "user",
         "user-id",
@@ -1197,7 +1256,7 @@ describe("DockerDeploymentManager", () => {
     test("disables readonly rootfs when WORKER_READONLY_ROOTFS=false", async () => {
       process.env.WORKER_READONLY_ROOTFS = "false";
       const manager = createManager();
-      await manager.createDeployment(
+      await manager.ensureDeployment(
         "test-deploy",
         "user",
         "user-id",

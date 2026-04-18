@@ -24,6 +24,7 @@ import {
 } from "./conversation-state-store";
 import { createGatewayStateAdapter } from "./state-adapter";
 import { SlackConnectionCoordinator } from "./slack-connection-coordinator";
+import { SlackInstructionProvider } from "./slack-instruction-provider";
 import { registerSlackPlatformHandlers } from "./slack-platform-bridge";
 import type { MessageHandlerBridge } from "./message-handler-bridge";
 import {
@@ -620,19 +621,32 @@ export class ChatInstanceManager {
         }
       };
 
-      // Populate metadata (bot username etc.) from adapter properties
-      if (!connection.metadata.botUsername) {
-        try {
+      // Populate metadata (bot username, bot user id) from adapter properties.
+      // Slack adapters call `auth.test` during initialize and expose `botUserId`
+      // via a getter; we mirror it onto connection.metadata so message-bridge
+      // mention-strip and the Slack instruction provider can find it.
+      try {
+        const metadataUpdate: Record<string, string> = {};
+        if (!connection.metadata.botUsername) {
           const userName = adapter.userName || adapter.botUsername;
           if (userName) {
-            connection.metadata.botUsername = userName;
-            await this.updateConnection(connection.id, {
-              metadata: { botUsername: userName },
-            });
+            metadataUpdate.botUsername = userName;
           }
-        } catch {
-          // non-critical
         }
+        if (!connection.metadata.botUserId) {
+          const botUserId = adapter.botUserId;
+          if (botUserId) {
+            metadataUpdate.botUserId = botUserId;
+          }
+        }
+        if (Object.keys(metadataUpdate).length > 0) {
+          Object.assign(connection.metadata, metadataUpdate);
+          await this.updateConnection(connection.id, {
+            metadata: metadataUpdate,
+          });
+        }
+      } catch {
+        // non-critical
       }
 
       this.instances.set(connection.id, {
@@ -940,6 +954,11 @@ export class ChatInstanceManager {
         }
       ) => this.routePlatformMessage(name, token, message, options),
       getFileHandler: (options) => this.getPlatformFileHandler(name, options),
+      ...(name === "slack"
+        ? {
+            getInstructionProvider: () => new SlackInstructionProvider(this),
+          }
+        : {}),
       getConversationHistory: (
         channelId: string,
         conversationId: string | undefined,

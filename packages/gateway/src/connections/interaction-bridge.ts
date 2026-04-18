@@ -82,6 +82,10 @@ async function takePendingToolInvocation(
   args: Record<string, unknown>;
   agentId: string;
   userId: string;
+  channelId?: string;
+  conversationId?: string;
+  teamId?: string;
+  connectionId?: string;
 } | null> {
   const raw = await redis.getdel(`${PENDING_TOOL_KEY_PREFIX}${requestId}`);
   if (!raw) return null;
@@ -174,7 +178,9 @@ export function registerInteractionBridge(
 
   // Tracks posted tool-approval cards so we can edit them on click to strip
   // the buttons. Keyed by requestId (== PostedToolApproval.id == Redis key).
-  // Entries auto-expire after PENDING_TOOL_TTL (5min) matching Redis.
+  // Auto-expire window matches the Redis pending-tool TTL (24h) so a late
+  // click can still find the card to strip.
+  const APPROVAL_CARD_TTL_MS = 24 * 60 * 60 * 1000;
   const pendingApprovalCards = new Map<string, SentMessage>();
   const pendingApprovalTimers = new Map<string, NodeJS.Timeout>();
   function trackApprovalCard(requestId: string, sent: SentMessage): void {
@@ -182,7 +188,7 @@ export function registerInteractionBridge(
     const timer = setTimeout(() => {
       pendingApprovalCards.delete(requestId);
       pendingApprovalTimers.delete(requestId);
-    }, 300_000);
+    }, APPROVAL_CARD_TTL_MS);
     pendingApprovalTimers.set(requestId, timer);
   }
   function claimApprovalCard(requestId: string): SentMessage | undefined {
@@ -498,7 +504,9 @@ export function registerInteractionBridge(
           "Background question-click processing failed"
         );
       });
-    }
+    },
+    async (channelId, conversationId) =>
+      resolveThread(manager, connectionId, channelId, conversationId)
   );
 
   logger.info({ connectionId, platform }, "Interaction bridge registered");
@@ -558,7 +566,11 @@ export function registerActionHandlers(
   grantStore: GrantStore | undefined,
   executeToolDirect?: ExecuteToolDirectFn,
   claimApprovalCard?: (requestId: string) => SentMessage | undefined,
-  onQuestionClick?: OnQuestionClickFn
+  onQuestionClick?: OnQuestionClickFn,
+  resolveApprovalTarget?: (
+    channelId: string,
+    conversationId: string
+  ) => Promise<any | null>
 ): void {
   chat.onAction(async (event: any) => {
     const actionId: string = event.actionId ?? "";
@@ -575,17 +587,43 @@ export function registerActionHandlers(
 
       if (!requestId) return;
 
-      // GETDEL atomically claims the pending invocation. On retries (Slack
-      // re-delivering the same block_actions webhook) getdel returns null and
-      // we silently no-op — the first click already handled it.
+      // GETDEL atomically claims the pending invocation. On Slack retries of
+      // the same block_actions webhook the second GETDEL returns null and we
+      // silently no-op (the first click already won). But if the card was
+      // never claimed before — i.e. the in-memory approval card is still
+      // tracked — this is a real first click landing on an expired/missing
+      // pending key, and we MUST surface that to the user. Otherwise the
+      // click looks like it did nothing.
       const pending = await takePendingToolInvocation(redis, requestId).catch(
         () => null
       );
       if (!pending) {
-        logger.debug(
-          { requestId, decision },
-          "No pending tool invocation — ignoring (already handled or expired)"
-        );
+        const sent = claimApprovalCard?.(requestId);
+        if (sent) {
+          logger.info(
+            { requestId, decision },
+            "Tool approval click with no pending invocation — likely expired"
+          );
+          try {
+            await sent.edit(
+              "*Tool Approval*\n\n_This approval request expired before it could be acted on. Re-send your last message to retry._"
+            );
+          } catch {
+            // best effort
+          }
+          try {
+            await thread.post(
+              "This tool approval request expired before it could be acted on. Re-send your last message to retry."
+            );
+          } catch {
+            // best effort
+          }
+        } else {
+          logger.debug(
+            { requestId, decision },
+            "Tool approval click with no pending invocation and no tracked card — ignoring (already handled)"
+          );
+        }
         return;
       }
 
@@ -598,6 +636,25 @@ export function registerActionHandlers(
         decision
       );
 
+      // Resolve the post target. Prefer the original conversation captured at
+      // the time the tool call was blocked (saved alongside the pending
+      // record) so the result lands in the same Slack/Telegram thread the
+      // user originally pinged the bot in. Fall back to the click event's
+      // thread (the card the user just clicked) only if we don't have the
+      // original context — that fallback can be wrong on Slack when the card
+      // ended up posted at channel level.
+      let postTarget: any = thread;
+      if (
+        resolveApprovalTarget &&
+        (pending.conversationId || pending.channelId)
+      ) {
+        const resolved = await resolveApprovalTarget(
+          pending.channelId ?? "",
+          pending.conversationId ?? ""
+        ).catch(() => null);
+        if (resolved) postTarget = resolved;
+      }
+
       if (decision === "deny") {
         if (grantStore) {
           await grantStore
@@ -605,7 +662,7 @@ export function registerActionHandlers(
             .catch(() => undefined);
         }
         try {
-          await thread.post(
+          await postTarget.post(
             "Tool call denied. Let me know if you'd like me to try a different approach."
           );
         } catch {
@@ -650,7 +707,7 @@ export function registerActionHandlers(
           );
 
           const resultText = result.content.map((c) => c.text).join("\n");
-          await thread.post(
+          await postTarget.post(
             result.isError ? `Tool error: ${resultText}` : resultText
           );
           logger.info(
@@ -668,14 +725,14 @@ export function registerActionHandlers(
             "Failed to execute tool after approval"
           );
           try {
-            await thread.post(`Failed to execute tool: ${String(error)}`);
+            await postTarget.post(`Failed to execute tool: ${String(error)}`);
           } catch {
             // best effort
           }
         }
       } else {
         try {
-          await thread.post("approve");
+          await postTarget.post("approve");
         } catch {
           // best effort
         }

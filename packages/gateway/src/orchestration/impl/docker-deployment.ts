@@ -333,12 +333,12 @@ export class DockerDeploymentManager extends BaseDeploymentManager {
     return volumeName;
   }
 
-  async createDeployment(
-    ...args: Parameters<BaseDeploymentManager["createDeployment"]>
+  protected async spawnDeployment(
+    deploymentName: string,
+    username: string,
+    userId: string,
+    messageData?: MessagePayload
   ): Promise<void> {
-    const [deploymentName, username, userId, messageDataRaw] = args;
-    const messageData = messageDataRaw as MessagePayload | undefined;
-
     try {
       // Use agentId for volume naming (shared across threads in same space)
       const agentId = messageData?.agentId;
@@ -504,7 +504,30 @@ export class DockerDeploymentManager extends BaseDeploymentManager {
         WorkingDir: "/workspace",
       };
 
-      const container = await this.docker.createContainer(createOptions);
+      let container: Docker.Container;
+      try {
+        container = await this.docker.createContainer(createOptions);
+      } catch (createError: any) {
+        // Another gateway replica created this container concurrently — Docker
+        // enforces unique container names cluster-wide on a host. Treat 409 as
+        // benign: the existing container is the canonical worker for this
+        // deployment slot, and we just need to ensure it's running.
+        if (
+          createError?.statusCode === 409 ||
+          createError?.message?.includes("already in use")
+        ) {
+          logger.info(
+            `Container ${deploymentName} already exists (created by another replica); ensuring it's started`
+          );
+          const existing = this.docker.getContainer(deploymentName);
+          const info = await existing.inspect();
+          if (!info.State.Running) {
+            await existing.start();
+          }
+          return;
+        }
+        throw createError;
+      }
       try {
         await container.start();
       } catch (startError) {

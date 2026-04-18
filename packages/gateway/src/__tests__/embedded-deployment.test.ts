@@ -159,38 +159,60 @@ describe("EmbeddedDeploymentManager", () => {
   // Lifecycle: create / list / scale / delete
   // =========================================================================
   describe("lifecycle", () => {
-    test("createDeployment then listDeployments returns 1 entry", async () => {
+    test("ensureDeployment then listDeployments returns 1 entry", async () => {
       const msg = createTestMessagePayload();
-      await manager.createDeployment("worker-1", "user-1", "user-1", msg);
+      await manager.ensureDeployment("worker-1", "user-1", "user-1", msg);
       const list = await manager.listDeployments();
       expect(list).toHaveLength(1);
       expect(list[0].deploymentName).toBe("worker-1");
       expect(list[0].replicas).toBe(1);
     });
 
-    test("createDeployment spawns a child process", async () => {
+    test("ensureDeployment spawns a child process", async () => {
       const msg = createTestMessagePayload();
-      await manager.createDeployment("worker-1", "user-1", "user-1", msg);
+      await manager.ensureDeployment("worker-1", "user-1", "user-1", msg);
       expect(mockChildProcesses).toHaveLength(1);
       expect(mockChildProcesses[0]).toBeDefined();
       expect(mockSpawn.mock.calls.at(-1)?.[0]).toBe(process.execPath);
     });
 
-    test("createDeployment with different names returns multiple entries", async () => {
+    test("ensureDeployment with different names returns multiple entries", async () => {
       const msg1 = createTestMessagePayload({ agentId: "agent-a" });
       const msg2 = createTestMessagePayload({
         agentId: "agent-b",
         conversationId: "conv-2",
       });
-      await manager.createDeployment("worker-1", "user-1", "user-1", msg1);
-      await manager.createDeployment("worker-2", "user-1", "user-1", msg2);
+      await manager.ensureDeployment("worker-1", "user-1", "user-1", msg1);
+      await manager.ensureDeployment("worker-2", "user-1", "user-1", msg2);
       const list = await manager.listDeployments();
       expect(list).toHaveLength(2);
     });
 
+    test("ensureDeployment is idempotent for the same name (sequential)", async () => {
+      const msg = createTestMessagePayload();
+      await manager.ensureDeployment("worker-1", "user-1", "user-1", msg);
+      await manager.ensureDeployment("worker-1", "user-1", "user-1", msg);
+      await manager.ensureDeployment("worker-1", "user-1", "user-1", msg);
+      expect(mockChildProcesses).toHaveLength(1);
+      const list = await manager.listDeployments();
+      expect(list).toHaveLength(1);
+    });
+
+    test("ensureDeployment coalesces concurrent calls for the same name", async () => {
+      const msg = createTestMessagePayload();
+      await Promise.all([
+        manager.ensureDeployment("worker-1", "user-1", "user-1", msg),
+        manager.ensureDeployment("worker-1", "user-1", "user-1", msg),
+        manager.ensureDeployment("worker-1", "user-1", "user-1", msg),
+      ]);
+      expect(mockChildProcesses).toHaveLength(1);
+      const list = await manager.listDeployments();
+      expect(list).toHaveLength(1);
+    });
+
     test("scaleDeployment(0) kills worker and removes from map", async () => {
       const msg = createTestMessagePayload();
-      await manager.createDeployment("worker-1", "user-1", "user-1", msg);
+      await manager.ensureDeployment("worker-1", "user-1", "user-1", msg);
       await manager.scaleDeployment("worker-1", 0);
       const list = await manager.listDeployments();
       expect(list).toHaveLength(0);
@@ -198,7 +220,7 @@ describe("EmbeddedDeploymentManager", () => {
 
     test("deleteDeployment kills process and removes entry", async () => {
       const msg = createTestMessagePayload();
-      await manager.createDeployment("worker-1", "user-1", "user-1", msg);
+      await manager.ensureDeployment("worker-1", "user-1", "user-1", msg);
       await manager.deleteDeployment("worker-1");
       const list = await manager.listDeployments();
       expect(list).toHaveLength(0);
@@ -232,7 +254,7 @@ describe("EmbeddedDeploymentManager", () => {
     test("lastActivity is set at creation time", async () => {
       const before = Date.now();
       const msg = createTestMessagePayload();
-      await manager.createDeployment("worker-1", "user-1", "user-1", msg);
+      await manager.ensureDeployment("worker-1", "user-1", "user-1", msg);
       const after = Date.now();
       const list = await manager.listDeployments();
       const ts = list[0].lastActivity.getTime();
@@ -242,7 +264,7 @@ describe("EmbeddedDeploymentManager", () => {
 
     test("updateDeploymentActivity advances timestamp", async () => {
       const msg = createTestMessagePayload();
-      await manager.createDeployment("worker-1", "user-1", "user-1", msg);
+      await manager.ensureDeployment("worker-1", "user-1", "user-1", msg);
       const listBefore = await manager.listDeployments();
       const tsBefore = listBefore[0].lastActivity.getTime();
 
@@ -268,7 +290,7 @@ describe("EmbeddedDeploymentManager", () => {
     test("does not mutate gateway process.env", async () => {
       const envBefore = { ...process.env };
       const msg = createTestMessagePayload();
-      await manager.createDeployment("worker-1", "user-1", "user-1", msg);
+      await manager.ensureDeployment("worker-1", "user-1", "user-1", msg);
       // Gateway process.env should not have new worker-specific vars added
       // (WORKSPACE_DIR, WORKER_TOKEN, etc. are passed to subprocess env, not process.env)
       expect(process.env.WORKSPACE_DIR).toBe(envBefore.WORKSPACE_DIR);
@@ -279,7 +301,7 @@ describe("EmbeddedDeploymentManager", () => {
 
     test("does not set globalThis.__lobuEmbeddedBashOps", async () => {
       const msg = createTestMessagePayload();
-      await manager.createDeployment("worker-1", "user-1", "user-1", msg);
+      await manager.ensureDeployment("worker-1", "user-1", "user-1", msg);
       expect((globalThis as any).__lobuEmbeddedBashOps).toBeUndefined();
     });
 
@@ -291,7 +313,7 @@ describe("EmbeddedDeploymentManager", () => {
       const existsSpy = spyOn(fs, "existsSync").mockReturnValue(true);
       try {
         const msg = createTestMessagePayload();
-        await manager.createDeployment("worker-1", "user-1", "user-1", msg);
+        await manager.ensureDeployment("worker-1", "user-1", "user-1", msg);
 
         const spawnCall = mockSpawn.mock.calls.at(-1);
         expect(spawnCall).toBeDefined();
@@ -308,7 +330,7 @@ describe("EmbeddedDeploymentManager", () => {
 
     test("child process exit removes worker from map", async () => {
       const msg = createTestMessagePayload();
-      await manager.createDeployment("worker-1", "user-1", "user-1", msg);
+      await manager.ensureDeployment("worker-1", "user-1", "user-1", msg);
       expect(await manager.listDeployments()).toHaveLength(1);
 
       // Simulate child process exiting
@@ -328,7 +350,7 @@ describe("EmbeddedDeploymentManager", () => {
   describe("listDeployments shape", () => {
     test("returns DeploymentInfo with expected fields", async () => {
       const msg = createTestMessagePayload();
-      await manager.createDeployment("worker-1", "user-1", "user-1", msg);
+      await manager.ensureDeployment("worker-1", "user-1", "user-1", msg);
       const list = await manager.listDeployments();
       const info = list[0];
       expect(info.deploymentName).toBe("worker-1");
@@ -342,7 +364,7 @@ describe("EmbeddedDeploymentManager", () => {
 
     test("newly created worker is not idle", async () => {
       const msg = createTestMessagePayload();
-      await manager.createDeployment("worker-1", "user-1", "user-1", msg);
+      await manager.ensureDeployment("worker-1", "user-1", "user-1", msg);
       const list = await manager.listDeployments();
       expect(list[0].isIdle).toBe(false);
       expect(list[0].isVeryOld).toBe(false);

@@ -141,6 +141,39 @@ export class ConversationStateStore {
     return entries.length > 0;
   }
 
+  /**
+   * Atomic "first time we've seen this thread" marker. Returns true on the
+   * first call per (connectionId, threadId) within HISTORY_TTL_MS, false
+   * thereafter. Used to ensure thread-history backfill from the platform
+   * runs at most once per thread per TTL window, even if multiple events
+   * race in.
+   *
+   * Pair with `releaseThreadBackfill` so a failed backfill (rate limit,
+   * transient network error) clears the marker and the next event can
+   * retry — otherwise a single failure poisons the thread for 24h.
+   */
+  async claimThreadBackfill(
+    connectionId: string,
+    threadId: string
+  ): Promise<boolean> {
+    return this.state.setIfNotExists(
+      this.threadBackfillKey(connectionId, threadId),
+      1,
+      HISTORY_TTL_MS
+    );
+  }
+
+  async releaseThreadBackfill(
+    connectionId: string,
+    threadId: string
+  ): Promise<void> {
+    await this.state.delete(this.threadBackfillKey(connectionId, threadId));
+  }
+
+  private threadBackfillKey(connectionId: string, threadId: string): string {
+    return `thread-backfilled:${connectionId}:${threadId}`;
+  }
+
   async listHistoryChannels(connectionId: string): Promise<string[]> {
     const index = await this.state.get<HistoryChannelIndex>(
       historyIndexKey(connectionId)

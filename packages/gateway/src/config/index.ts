@@ -197,7 +197,14 @@ export function loadEnvFile(envPath?: string): void {
     : path.resolve(process.cwd(), ".env");
 
   if (existsSync(resolvedPath)) {
-    dotenvConfig({ path: resolvedPath });
+    // Match the .env-as-single-source-of-truth contract used by
+    // docker-compose (see PR #209: compose no longer re-exports
+    // `DEPLOYMENT_MODE` from the shell). `override: true` means values in
+    // the file win over stale shell exports inherited from the user's
+    // environment, so `lobu gateway --env .env` and `docker compose up`
+    // behave consistently. Production (`NODE_ENV=production`) skips this
+    // path entirely, so real deployments are unaffected.
+    dotenvConfig({ path: resolvedPath, override: true });
     logger.debug(`Loaded environment variables from ${resolvedPath}`);
   } else if (envProvided) {
     logger.warn(
@@ -244,13 +251,20 @@ function isPluginInstalled(source: string): boolean {
       createRequire(resolverPath).resolve(source);
       return true;
     } catch {
-      const packageDir = path.join(
-        path.dirname(resolverPath),
-        "node_modules",
-        ...packagePathParts
-      );
-      if (existsSync(packageDir)) {
-        return true;
+      // require.resolve() can fail for ESM-only packages whose `exports` map
+      // omits a `require`/`default` condition (e.g. @lobu/owletto-openclaw).
+      // Fall back to walking up parent directories looking for the package
+      // folder under any ancestor `node_modules`, mirroring Node's module
+      // resolution algorithm.
+      let dir = path.dirname(resolverPath);
+      while (true) {
+        const packageDir = path.join(dir, "node_modules", ...packagePathParts);
+        if (existsSync(path.join(packageDir, "package.json"))) {
+          return true;
+        }
+        const parent = path.dirname(dir);
+        if (parent === dir) break;
+        dir = parent;
       }
     }
   }

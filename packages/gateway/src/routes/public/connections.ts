@@ -374,9 +374,11 @@ export function createConnectionWebhookRoutes(
       return c.json({ error: "Connection not found" }, 404);
     }
 
-    logger.debug(
+    // Info-level so platform webhook traffic (Slack interactivity, Telegram
+    // updates, etc.) is visible in production logs without flipping LOG_LEVEL.
+    logger.info(
       { connectionId, platform: connection.platform },
-      "Processing webhook"
+      "Inbound platform webhook"
     );
 
     try {

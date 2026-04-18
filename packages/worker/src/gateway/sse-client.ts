@@ -500,10 +500,22 @@ export class GatewayClient {
       );
     }
 
+    // Deployment names now hash `platform:channelId:conversationId` only
+    // (see `generateDeploymentName` in base-deployment-manager.ts), so every
+    // user posting in a shared Slack/Telegram thread is routed to the same
+    // SSE queue. The worker's `WORKER_TOKEN` — baked in at spawn time —
+    // encodes the ORIGINAL spawning user's id, and the gateway MCP proxy
+    // trusts `tokenData.userId` to namespace grants, integration auth, and
+    // audit. Without this equality check, a second user's message reaching
+    // the same deployment would execute with the first user's token and
+    // could read/modify their OAuth-scoped integrations.
+    //
+    // Until per-message JWT minting is in place, keep the check as the
+    // enforcement boundary for per-user isolation in shared threads.
     if (data.userId.toLowerCase() !== this.userId.toLowerCase()) {
       logger.warn(
         { traceId, receivedUserId: data.userId, expectedUserId: this.userId },
-        "Received message for wrong user"
+        "Received message for wrong user — dropping to preserve WORKER_TOKEN isolation"
       );
       return;
     }

@@ -13,7 +13,7 @@ class TestDeploymentManager extends BaseDeploymentManager {
   async listDeployments(): Promise<DeploymentInfo[]> {
     return [];
   }
-  async createDeployment(): Promise<void> {
+  protected async spawnDeployment(): Promise<void> {
     /* noop */
   }
   async scaleDeployment(): Promise<void> {
@@ -260,3 +260,151 @@ describe("BaseDeploymentManager.syncNetworkConfigGrants", () => {
     ).toBe(false);
   });
 });
+
+/**
+ * In-flight coalescing for `ensureDeployment` lives in the base class so all
+ * orchestrators share one implementation. Subclass-specific concerns (Docker
+ * 409, K8s AlreadyExists, embedded `workers.has` short-circuit) are tested
+ * separately in their own files.
+ */
+describe("BaseDeploymentManager.ensureDeployment in-flight coalescing", () => {
+  class CountingManager extends BaseDeploymentManager {
+    spawnCalls = 0;
+    /** Resolver for the most recent spawn — lets tests hold spawn open. */
+    releaseSpawn: () => void = () => {
+      // replaced by each test before spawn runs
+    };
+
+    async listDeployments(): Promise<DeploymentInfo[]> {
+      return [];
+    }
+    protected async spawnDeployment(): Promise<void> {
+      this.spawnCalls++;
+      await new Promise<void>((resolve) => {
+        this.releaseSpawn = resolve;
+      });
+    }
+    async scaleDeployment(): Promise<void> {
+      /* noop */
+    }
+    async deleteDeployment(): Promise<void> {
+      /* noop */
+    }
+    async updateDeploymentActivity(): Promise<void> {
+      /* noop */
+    }
+    async validateWorkerImage(): Promise<void> {
+      /* noop */
+    }
+    protected getDispatcherHost(): string {
+      return "localhost";
+    }
+  }
+
+  test("concurrent calls for the same name share a single spawn", async () => {
+    const manager = new CountingManager(TEST_CONFIG);
+
+    const p1 = manager.ensureDeployment("worker-1", "u", "u", buildPayload({}));
+    const p2 = manager.ensureDeployment("worker-1", "u", "u", buildPayload({}));
+    const p3 = manager.ensureDeployment("worker-1", "u", "u", buildPayload({}));
+
+    // All three callers are blocked on the single in-flight spawn.
+    expect(manager.spawnCalls).toBe(1);
+
+    manager.releaseSpawn();
+    await Promise.all([p1, p2, p3]);
+
+    expect(manager.spawnCalls).toBe(1);
+  });
+
+  test("concurrent calls for different names spawn independently", async () => {
+    const manager = new CountingManager(TEST_CONFIG);
+
+    const p1 = manager.ensureDeployment("worker-1", "u", "u", buildPayload({}));
+    // Capture the first spawn's resolver before the second call overwrites it.
+    const release1 = manager.releaseSpawn;
+    const p2 = manager.ensureDeployment("worker-2", "u", "u", buildPayload({}));
+    const release2 = manager.releaseSpawn;
+
+    expect(manager.spawnCalls).toBe(2);
+
+    release1();
+    release2();
+    await Promise.all([p1, p2]);
+  });
+
+  test("after spawn resolves, a subsequent call re-spawns (cache cleared)", async () => {
+    const manager = new CountingManager(TEST_CONFIG);
+
+    const p1 = manager.ensureDeployment("worker-1", "u", "u", buildPayload({}));
+    manager.releaseSpawn();
+    await p1;
+    expect(manager.spawnCalls).toBe(1);
+
+    // The base class only dedupes in-flight work — once it settles, a fresh
+    // call re-invokes spawn. Subclasses are responsible for their own
+    // post-completion idempotency (e.g. embedded's `workers.has` guard).
+    const p2 = manager.ensureDeployment("worker-1", "u", "u", buildPayload({}));
+    manager.releaseSpawn();
+    await p2;
+    expect(manager.spawnCalls).toBe(2);
+  });
+
+  test("rejected spawn clears the in-flight entry so the next call retries", async () => {
+    class FailingManager extends BaseDeploymentManager {
+      attempts = 0;
+      async listDeployments(): Promise<DeploymentInfo[]> {
+        return [];
+      }
+      protected async spawnDeployment(): Promise<void> {
+        this.attempts++;
+        if (this.attempts === 1) {
+          throw new Error("transient");
+        }
+      }
+      async scaleDeployment(): Promise<void> {
+        /* noop */
+      }
+      async deleteDeployment(): Promise<void> {
+        /* noop */
+      }
+      async updateDeploymentActivity(): Promise<void> {
+        /* noop */
+      }
+      async validateWorkerImage(): Promise<void> {
+        /* noop */
+      }
+      protected getDispatcherHost(): string {
+        return "localhost";
+      }
+    }
+
+    const manager = new FailingManager(TEST_CONFIG);
+    await expect(
+      manager.ensureDeployment("worker-1", "u", "u", buildPayload({}))
+    ).rejects.toThrow("transient");
+    await expect(
+      manager.ensureDeployment("worker-1", "u", "u", buildPayload({}))
+    ).resolves.toBeUndefined();
+    expect(manager.attempts).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Known coverage gap: K8sDeploymentManager
+// ---------------------------------------------------------------------------
+//
+// There is currently NO test file for `orchestration/impl/k8s/deployment.ts`.
+// As a result, the following recently-added behavior is unverified by tests:
+//
+//   1. The `409 AlreadyExists` short-circuit added in `spawnDeployment`
+//      (treats concurrent multi-replica creates as benign success and returns
+//      without touching the PVC).
+//   2. The PVC creation / cleanup paths in general.
+//   3. The deployment env / pod-spec construction.
+//
+// In production this path is covered only by manual smoke tests via
+// `make deploy` against a real cluster. Adding a `@kubernetes/client-node`
+// mock layer is non-trivial (the SDK uses class-based watchers and dynamic
+// API discovery), so coverage here was deferred. Track this gap before any
+// further changes to k8s/deployment.ts.

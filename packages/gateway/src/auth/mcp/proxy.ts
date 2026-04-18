@@ -155,7 +155,12 @@ function extractSessionToken(c: Context): string | null {
 
 export class McpProxy {
   private readonly SESSION_TTL_SECONDS = 30 * 60; // 30 minutes
-  private readonly PENDING_TOOL_TTL = 300; // 5 minutes
+  // Tool-approval cards may sit in-thread for a long time before the user
+  // actually clicks (Slack notifications, async review, etc.). The pending
+  // invocation key holds the args needed to execute the tool after approval;
+  // 24h gives users a realistic window to respond. Anything shorter silently
+  // drops late clicks (the GETDEL returns null and the click no-ops).
+  private readonly PENDING_TOOL_TTL = 24 * 60 * 60; // 24 hours
   private readonly redisClient: any;
   private app: Hono;
   private readonly toolCache?: McpToolCache;
@@ -666,6 +671,10 @@ export class McpProxy {
                   args: toolArguments,
                   agentId,
                   userId: requesterUserId,
+                  channelId: auth.tokenData.channelId || "",
+                  conversationId: auth.tokenData.conversationId || "",
+                  teamId: auth.tokenData.teamId,
+                  connectionId: auth.tokenData.connectionId,
                 }),
                 "EX",
                 this.PENDING_TOOL_TTL
@@ -1070,6 +1079,10 @@ export class McpProxy {
                         args: toolArgs,
                         agentId,
                         userId: tokenData.userId,
+                        channelId: tokenData.channelId || "",
+                        conversationId: tokenData.conversationId || "",
+                        teamId: tokenData.teamId,
+                        connectionId: tokenData.connectionId,
                       }),
                       "EX",
                       this.PENDING_TOOL_TTL

@@ -734,6 +734,8 @@ export class CoreServices {
       configResolver: this.providerConfigResolver,
     });
 
+    this.syncOwlettoMcpFromEnv();
+
     // Initialize instruction service (needed by WorkerGateway)
     this.instructionService = new InstructionService(
       this.mcpConfigService,
@@ -862,6 +864,30 @@ export class CoreServices {
   // File-First Helpers
   // ============================================================================
 
+  /**
+   * Mirror the resolved `MEMORY_URL` env var into the MCP config service as a
+   * global `owletto` server. Without this, requests to `/mcp/owletto` (issued
+   * by the Owletto plugin running inside workers) fail with "MCP server
+   * 'owletto' not found" because `getHttpServer("owletto")` would otherwise
+   * return undefined — the upstream URL only lives in env, not in any
+   * agent settings entry.
+   *
+   * NOTE: do NOT set `oauth: {}` here. Owletto auth is owned by the
+   * worker-side `owletto_login` plugin tool (device-code flow). Adding
+   * `oauth: {}` would trigger the gateway's MCP OAuth auth-code/PKCE
+   * discovery as a parallel flow, producing two competing login links
+   * for the user.
+   */
+  private syncOwlettoMcpFromEnv(): void {
+    if (!this.mcpConfigService) return;
+    const memoryUrl = process.env.MEMORY_URL?.trim();
+    if (!memoryUrl) return;
+    this.mcpConfigService.upsertGlobalServer("owletto", {
+      url: memoryUrl,
+      type: "streamable-http",
+    });
+  }
+
   private async populateStoreFromFiles(
     store: InMemoryAgentStore,
     agents: FileLoadedAgent[]
@@ -913,6 +939,7 @@ export class CoreServices {
     }
 
     await applyOwlettoMemoryEnvFromProject(this.projectPath);
+    this.syncOwlettoMcpFromEnv();
 
     // Re-load from disk
     this.fileLoadedAgents = await loadAgentConfigFromFiles(this.projectPath);

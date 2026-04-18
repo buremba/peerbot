@@ -79,6 +79,19 @@ export class Gateway {
     this.platforms.set(platform.name, platform);
     // Also register in global platform registry for deployment managers
     platformRegistry.register(platform);
+
+    // If the gateway is already running, the start() registration loop has
+    // already passed. Register the instruction provider eagerly so platforms
+    // added post-start (chat adapters) still contribute identity context.
+    if (this.isRunning && platform.getInstructionProvider) {
+      const provider = platform.getInstructionProvider();
+      if (provider) {
+        this.coreServices
+          .getInstructionService()
+          ?.registerPlatformProvider(platform.name, provider);
+      }
+    }
+
     logger.debug(`Platform registered: ${platform.name}`);
     return this;
   }

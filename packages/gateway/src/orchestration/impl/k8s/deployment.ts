@@ -480,7 +480,7 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
     }
   }
 
-  async createDeployment(
+  protected async spawnDeployment(
     deploymentName: string,
     username: string,
     userId: string,
@@ -761,6 +761,21 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
         response?: { statusMessage?: string };
         code?: string;
       };
+
+      // Another gateway replica created this deployment concurrently — the
+      // K8s API server enforces unique names atomically, so 409 AlreadyExists
+      // is the cluster-wide serialization signal. Treat it as benign success
+      // and DO NOT touch the PVC: it belongs to the deployment the winning
+      // replica just created and is now in active use.
+      if (k8sError.statusCode === 409) {
+        logger.info(
+          `Deployment ${deploymentName} already exists (created by another replica); treating as success`
+        );
+        workerSpan?.setStatus({ code: SpanStatusCode.OK });
+        workerSpan?.end();
+        return;
+      }
+
       // Log detailed error information
       logger.error(`❌ Failed to create deployment ${deploymentName}:`, {
         statusCode: k8sError.statusCode,
@@ -799,15 +814,7 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
       });
       workerSpan?.end();
 
-      // Check for specific error conditions and throw OrchestratorError
-      if (k8sError.statusCode === 409) {
-        throw new OrchestratorError(
-          ErrorCode.DEPLOYMENT_CREATE_FAILED,
-          `Deployment ${deploymentName} already exists`,
-          { deploymentName, statusCode: 409 },
-          false
-        );
-      } else if (k8sError.statusCode === 403) {
+      if (k8sError.statusCode === 403) {
         throw new OrchestratorError(
           ErrorCode.DEPLOYMENT_CREATE_FAILED,
           `Insufficient permissions to create deployment ${deploymentName}`,

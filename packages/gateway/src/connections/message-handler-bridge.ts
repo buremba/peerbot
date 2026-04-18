@@ -236,12 +236,21 @@ export class MessageHandlerBridge {
     const channelId = thread.channelId ?? thread.id ?? "unknown";
     const messageId = message.id ?? String(Date.now());
     const isGroup = source === "mention" || source === "subscribed";
-    // Use the Chat SDK's canonical `thread.id` for group threads so a reply in
-    // an existing thread collapses to the same conversation as its parent
-    // (Slack: `slack:{channel}:{parent_thread_ts}`, Telegram: `telegram:{chatId}:{topicId}`).
-    // DMs use the bare channel id — they're channel-level, not thread-level.
+    // Collapse to the canonical `thread.id` whenever we're inside an existing
+    // thread — group thread reply OR DM thread reply alike. Slack encodes
+    // `slack:{channel}:{thread_ts}` (top-level DM has empty thread_ts so the id
+    // ends with a trailing `:`); Telegram encodes `telegram:{chatId}` for
+    // top-level and `telegram:{chatId}:{topicId}` inside a forum topic. Without
+    // this, a `onDirectMessage` event for a reply in a DM thread (e.g. the
+    // worker posted a `ScheduleReminder` ALARM_FIRED message and the user
+    // clicked Reply on it) would fall back to the channel id and the bot's
+    // response would land in the main DM pane instead of the thread.
+    const isThreadReply =
+      typeof thread.id === "string" &&
+      thread.id !== channelId &&
+      thread.id !== `${channelId}:`;
     const conversationId =
-      isGroup && typeof thread.id === "string" ? thread.id : channelId;
+      isGroup || isThreadReply ? (thread.id as string) : channelId;
 
     logger.info(
       {
@@ -382,11 +391,21 @@ export class MessageHandlerBridge {
       }
     }
 
-    // Remove bot mention from text
-    const botUsername = this.manager.getInstance(this.connection.id)?.connection
-      .metadata.botUsername;
+    // Remove bot mention from text. Slack delivers raw `<@Uxxx>` tokens; the
+    // Chat SDK may strip the brackets, so we also catch the bare `@Uxxx` form.
+    const botMetadata = this.manager.getInstance(this.connection.id)?.connection
+      .metadata;
+    const botUsername = botMetadata?.botUsername as string | undefined;
+    const botUserId = botMetadata?.botUserId as string | undefined;
     if (botUsername) {
       messageText = messageText.replace(`@${botUsername}`, "").trim();
+    }
+    if (botUserId) {
+      messageText = messageText
+        .replace(new RegExp(`<@${botUserId}>`, "g"), "")
+        .replace(new RegExp(`@${botUserId}\\b`, "g"), "")
+        .replace(/\s+/g, " ")
+        .trim();
     }
 
     // Intercept /new and /clear before slash dispatch
@@ -423,6 +442,69 @@ export class MessageHandlerBridge {
 
     // Gap 1: Retrieve + append conversation history via the SDK state adapter.
     const conversationState = this.conversationState();
+
+    // Backfill: when the bot is first activated in a thread (mention or
+    // first subscribed event), ask the Chat SDK adapter for the thread's
+    // prior messages. Slack maps this to `conversations.replies` (Tier 3,
+    // generous limit). Without this, a mid-thread mention has no context
+    // for the messages that preceded it. `claimThreadBackfill` is an
+    // atomic per-thread one-shot guard — runs at most once per thread per
+    // HISTORY_TTL_MS window, regardless of how many events race in.
+    if (
+      conversationState &&
+      isGroup &&
+      (await conversationState.claimThreadBackfill(
+        this.connection.id,
+        thread.id
+      ))
+    ) {
+      let backfillSucceeded = false;
+      try {
+        const adapter = (thread as any).adapter;
+        if (adapter?.fetchMessages) {
+          const result = await adapter.fetchMessages(thread.id, {
+            limit: 50,
+            direction: "forward",
+          });
+          for (const prior of result.messages ?? []) {
+            if (prior.id === messageId) continue;
+            const text = (prior.text ?? "").trim();
+            if (!text) continue;
+            const sentAt =
+              prior.metadata?.dateSent instanceof Date
+                ? prior.metadata.dateSent.getTime()
+                : Date.now();
+            await conversationState.appendHistory(
+              this.connection.id,
+              channelId,
+              {
+                role: prior.author?.isMe ? "assistant" : "user",
+                content: text,
+                authorName: prior.author?.fullName,
+                timestamp: sentAt,
+              }
+            );
+          }
+          backfillSucceeded = true;
+        } else {
+          // Adapter doesn't expose fetchMessages — nothing to retry, treat
+          // as "successful" so we don't hammer it on every event.
+          backfillSucceeded = true;
+        }
+      } catch (error) {
+        logger.warn(
+          { connectionId: this.connection.id, channelId, error: String(error) },
+          "Thread backfill failed; will retry on next event"
+        );
+      }
+      if (!backfillSucceeded) {
+        await conversationState.releaseThreadBackfill(
+          this.connection.id,
+          thread.id
+        );
+      }
+    }
+
     const conversationHistory =
       (await conversationState?.getHistory(this.connection.id, channelId)) ??
       [];

@@ -315,7 +315,12 @@ export function createGatewayApp(
         agentConfigStore: coreServices.getConfigStore(),
         platformRegistry,
         approveToolCall: async (requestId: string, decision: string) => {
-          const raw = await approveRedis.get(`pending-tool:${requestId}`);
+          // GETDEL atomically claims the pending invocation so a retry of
+          // POST /api/v1/agents/approve (CLI re-tries, double-clicks, Slack
+          // webhook retries that ultimately reach the same key, etc.) cannot
+          // double-execute the tool. The Slack/Telegram interaction-bridge
+          // path has the same guard — both consumers MUST use GETDEL.
+          const raw = await approveRedis.getdel(`pending-tool:${requestId}`);
           if (!raw)
             return { success: false, error: "Request not found or expired" };
           const pending = JSON.parse(raw);
@@ -332,7 +337,6 @@ export function createGatewayApp(
               null,
               true
             );
-            await approveRedis.del(`pending-tool:${requestId}`);
             return { success: true };
           }
           await approveGrantStore?.grant(
@@ -348,10 +352,8 @@ export function createGatewayApp(
               pending.toolName,
               pending.args
             );
-            await approveRedis.del(`pending-tool:${requestId}`);
             return { success: true, result } as any;
           }
-          await approveRedis.del(`pending-tool:${requestId}`);
           return { success: true };
         },
       });

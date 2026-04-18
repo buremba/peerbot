@@ -77,11 +77,20 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
     logger.debug(`Worker entry point verified: ${entryPoint}`);
   }
 
-  async createDeployment(
-    ...args: Parameters<BaseDeploymentManager["createDeployment"]>
+  protected async spawnDeployment(
+    deploymentName: string,
+    username: string,
+    userId: string,
+    messageData?: MessagePayload
   ): Promise<void> {
-    const [deploymentName, username, userId, messageDataRaw] = args;
-    const messageData = messageDataRaw as MessagePayload | undefined;
+    // Embedded mode is single-process by definition, so there is no cross-
+    // process orchestrator to enforce uniqueness. The base class's in-flight
+    // cache catches concurrent calls; this guards the rare case where a
+    // fully-completed worker is still in the map and a fresh create slips
+    // past the upstream `listDeployments()` check (e.g. stale snapshot).
+    if (this.workers.has(deploymentName)) {
+      return;
+    }
 
     const agentId = messageData?.agentId;
     if (!agentId) {
@@ -201,7 +210,7 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
       logger.info(`Stopped embedded worker ${deploymentName}`);
     } else if (replicas === 1 && !entry) {
       logger.warn(
-        `Cannot scale up ${deploymentName} — use createDeployment to re-spawn`
+        `Cannot scale up ${deploymentName} — use ensureDeployment to re-spawn`
       );
     }
   }

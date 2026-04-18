@@ -101,7 +101,7 @@ for (const { sourcePath, route } of entries) {
   ]
     .filter(Boolean)
     .join("\n\n");
-  const md = [header, clean].filter(Boolean).join("\n\n") + "\n";
+  const md = `${[header, clean].filter(Boolean).join("\n\n")}\n`;
 
   const outPath = join(publicRoot, `${route}.md`);
   mkdirSync(dirname(outPath), { recursive: true });

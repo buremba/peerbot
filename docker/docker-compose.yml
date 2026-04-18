@@ -35,9 +35,10 @@ services:
       dockerfile: docker/Dockerfile.gateway
     image: lobu-gateway:latest
     environment:
-      # Docker context overrides (gateway loads mounted .env file via dotenv)
+      # Docker context overrides (gateway loads mounted .env file via dotenv).
+      # DEPLOYMENT_MODE is read from the mounted .env so operators can pick
+      # embedded vs docker without exporting shell vars.
       NODE_ENV: development
-      DEPLOYMENT_MODE: ${DEPLOYMENT_MODE:-docker}
       QUEUE_URL: redis://redis:6379
       # Host project path for worker bind mounts (Docker-in-Docker)
       LOBU_DEV_PROJECT_PATH: ${PWD}

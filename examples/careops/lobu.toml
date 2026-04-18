@@ -13,6 +13,13 @@ id = "gemini"
 model = "gemini/gemini-2.5-flash"
 key = "$GEMINI_API_KEY"
 
+# Secondary: OpenAI — only used by the built-in GenerateImage tool
+# (gpt-image-1). Gemini handles all chat/tool-use; OpenAI is opt-in
+# for image generation. Leave $OPENAI_API_KEY unset to disable.
+[[agents.careops.providers]]
+id = "openai"
+key = "$OPENAI_API_KEY"
+
 # Alternative providers — swap one of these in if you prefer.
 # [[agents.careops.providers]]
 # id = "openrouter"

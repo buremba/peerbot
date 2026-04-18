@@ -1,0 +1,51 @@
+{
+  "$schema": "https://modelcontextprotocol.io/schemas/server-card/v0.1.json",
+  "serverInfo": {
+    "name": "lobu-gateway",
+    "title": "Lobu Gateway MCP",
+    "version": "3.0.8",
+    "vendor": "Lobu",
+    "homepage": "https://lobu.ai/",
+    "documentation": "https://lobu.ai/guides/mcp-proxy/",
+    "sourceRepository": "https://github.com/lobu-ai/lobu",
+    "license": "Apache-2.0"
+  },
+  "description": "Lobu is self-hosted. Each deployment exposes its own MCP endpoint through the gateway proxy at /api/mcp. Workers call MCP tools using deployment-scoped JWTs; credentials are resolved server-side and never leave the gateway.",
+  "transports": [
+    {
+      "type": "streamable-http",
+      "endpointTemplate": "{gateway-origin}/api/mcp",
+      "note": "Replace {gateway-origin} with the hostname of your self-hosted Lobu gateway (see https://lobu.ai/deployment/)."
+    }
+  ],
+  "capabilities": {
+    "tools": {
+      "listChanged": true
+    },
+    "resources": {
+      "listChanged": false
+    },
+    "prompts": {
+      "listChanged": false
+    },
+    "logging": {}
+  },
+  "builtInTools": [
+    {
+      "name": "AskUser",
+      "description": "Request structured input from the end user mid-conversation."
+    },
+    {
+      "name": "UploadUserFile",
+      "description": "Share a file with the end user through the active platform connection."
+    }
+  ],
+  "authentication": {
+    "scheme": "per-deployment",
+    "description": "Authentication is configured per gateway deployment. See the OAuth discovery documents when hosted against an OAuth-protected gateway."
+  },
+  "discovery": {
+    "apiCatalog": "https://lobu.ai/.well-known/api-catalog",
+    "agentSkills": "https://lobu.ai/.well-known/agent-skills/index.json"
+  }
+}

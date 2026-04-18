@@ -1,0 +1,73 @@
+# Lobu
+
+> Open-source platform for deploying persistent, sandboxed AI agents on Slack, Telegram, WhatsApp, Discord, Microsoft Teams, Google Chat, and REST API. Self-hosted on Docker or Kubernetes with per-agent MCP tools, skills, and memory.
+
+## Start here
+
+- [Home](https://lobu.ai/): Product overview and architecture
+- [Getting started](https://lobu.ai/getting-started/): Install and run your first agent
+- [Comparison](https://lobu.ai/getting-started/comparison/): How Lobu compares to other agent platforms
+- [Pricing](https://lobu.ai/pricing/): Free open source; paid support available
+
+## Core concepts
+
+- [Skills](https://lobu.ai/getting-started/skills/): Reusable agent capabilities via SKILL.md
+- [Memory](https://lobu.ai/getting-started/memory/): Persistent agent memory powered by Owletto
+- [Architecture](https://lobu.ai/guides/architecture/): Gateway + worker + orchestration overview
+- [Security](https://lobu.ai/guides/security/): Sandboxing, network policy, credential isolation
+- [Tool policy](https://lobu.ai/guides/tool-policy/): Approval model for destructive MCP tools
+
+## Deployment
+
+- [Docker](https://lobu.ai/deployment/docker/)
+- [Kubernetes](https://lobu.ai/deployment/kubernetes/)
+- [AWS](https://lobu.ai/deployment/aws/)
+- [Embedding](https://lobu.ai/deployment/embedding/): Embed Lobu in your own Node process
+
+## Messaging platforms
+
+- [Slack](https://lobu.ai/platforms/slack/)
+- [Telegram](https://lobu.ai/platforms/telegram/)
+- [WhatsApp](https://lobu.ai/platforms/whatsapp/)
+- [Discord](https://lobu.ai/platforms/discord/)
+- [Microsoft Teams](https://lobu.ai/platforms/teams/)
+- [Google Chat](https://lobu.ai/platforms/google-chat/)
+- [REST API](https://lobu.ai/platforms/rest-api/)
+
+## Connect external agents
+
+- [ChatGPT](https://lobu.ai/connect-from/chatgpt/)
+- [Claude](https://lobu.ai/connect-from/claude/)
+- [OpenClaw](https://lobu.ai/connect-from/openclaw/)
+
+## Reference
+
+- [CLI](https://lobu.ai/reference/cli/)
+- [lobu.toml](https://lobu.ai/reference/lobu-toml/)
+- [SKILL.md](https://lobu.ai/reference/skill-md/)
+- [Providers](https://lobu.ai/reference/providers/)
+- [REST API reference](https://lobu.ai/reference/api-reference/)
+- [Owletto CLI](https://lobu.ai/reference/owletto-cli/)
+
+## Guides
+
+- [Admin UI](https://lobu.ai/guides/admin-ui/)
+- [Agent prompts](https://lobu.ai/guides/agent-prompts/)
+- [Agent settings](https://lobu.ai/guides/agent-settings/)
+- [MCP proxy](https://lobu.ai/guides/mcp-proxy/)
+- [Evals](https://lobu.ai/guides/evals/)
+- [Observability](https://lobu.ai/guides/observability/)
+- [Testing](https://lobu.ai/guides/testing/)
+- [Troubleshooting](https://lobu.ai/guides/troubleshooting/)
+
+## Blog
+
+- [Filesystem vs database agent memory](https://lobu.ai/blog/filesystem-vs-database-agent-memory/)
+- [MCP is overengineered, skills are too primitive](https://lobu.ai/blog/mcp-is-overengineered-skills-are-too-primitive/)
+- [Add AI agents to Next.js](https://lobu.ai/blog/add-ai-agents-to-nextjs/)
+
+## Optional
+
+- [Privacy](https://lobu.ai/privacy/)
+- [Terms](https://lobu.ai/terms/)
+- [GitHub](https://github.com/lobu-ai/lobu)

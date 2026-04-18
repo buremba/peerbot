@@ -1,7 +1,20 @@
 ---
 import DefaultHead from "@astrojs/starlight/components/Head.astro";
 import PosthogAnalytics from "../PosthogAnalytics.astro";
+import WebMCP from "../WebMCP.astro";
+
+const markdownPath =
+  Astro.url.pathname === "/"
+    ? "/index.md"
+    : `${Astro.url.pathname.replace(/\/$/, "")}.md`;
+const markdownURL = new URL(markdownPath, Astro.site);
 ---
 
 <DefaultHead />
 <PosthogAnalytics />
+<WebMCP />
+
+<link rel="alternate" type="text/markdown" href={markdownURL} />
+<link rel="describedby" type="text/plain" href="/llms.txt" />
+<link rel="https://modelcontextprotocol.io/rel/server-card" type="application/json" href="/.well-known/mcp/server-card.json" />
+<link rel="api-catalog" href="/.well-known/api-catalog" />

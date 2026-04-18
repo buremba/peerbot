@@ -1,0 +1,11 @@
+{
+  "_todo": "The authorization_servers URL points at lobu.ai but no OAuth AS is running there yet. Implement the OAuth server declared in oauth-authorization-server or remove this file.",
+  "resource": "https://lobu.ai/",
+  "authorization_servers": ["https://lobu.ai/"],
+  "scopes_supported": ["mcp:tools", "mcp:resources"],
+  "bearer_methods_supported": ["header"],
+  "resource_documentation": "https://lobu.ai/guides/mcp-proxy/",
+  "resource_signing_alg_values_supported": ["RS256", "ES256"],
+  "resource_policy_uri": "https://lobu.ai/privacy/",
+  "resource_tos_uri": "https://lobu.ai/terms/"
+}

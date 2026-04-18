@@ -1,0 +1,57 @@
+{
+  "$schema": "https://agentskills.io/schemas/v0.2.0/index.json",
+  "name": "Lobu",
+  "description": "Agent skills published by the Lobu open-source platform. Each skill can be installed into a Lobu agent via its SKILL.md manifest.",
+  "homepage": "https://lobu.ai/",
+  "documentation": "https://lobu.ai/getting-started/skills/",
+  "skills": [
+    {
+      "name": "getting-started",
+      "type": "documentation",
+      "description": "Install and run your first Lobu agent end-to-end.",
+      "url": "https://lobu.ai/getting-started/"
+    },
+    {
+      "name": "skills-guide",
+      "type": "documentation",
+      "description": "How Lobu skills work: SKILL.md manifests, nix packages, and allowed domains.",
+      "url": "https://lobu.ai/getting-started/skills/"
+    },
+    {
+      "name": "memory",
+      "type": "documentation",
+      "description": "Persistent agent memory via the Owletto integration.",
+      "url": "https://lobu.ai/getting-started/memory/"
+    },
+    {
+      "name": "mcp-proxy",
+      "type": "documentation",
+      "description": "How the gateway proxies MCP tool calls and resolves provider credentials server-side.",
+      "url": "https://lobu.ai/guides/mcp-proxy/"
+    },
+    {
+      "name": "tool-policy",
+      "type": "documentation",
+      "description": "Approval model for destructive MCP tools and per-agent tool configuration.",
+      "url": "https://lobu.ai/guides/tool-policy/"
+    },
+    {
+      "name": "evals",
+      "type": "documentation",
+      "description": "Automated agent-behavior evaluation with YAML eval definitions.",
+      "url": "https://lobu.ai/guides/evals/"
+    },
+    {
+      "name": "skill-md-reference",
+      "type": "reference",
+      "description": "Reference for the SKILL.md manifest format.",
+      "url": "https://lobu.ai/reference/skill-md/"
+    },
+    {
+      "name": "lobu-toml-reference",
+      "type": "reference",
+      "description": "Reference for the lobu.toml agent configuration file.",
+      "url": "https://lobu.ai/reference/lobu-toml/"
+    }
+  ]
+}

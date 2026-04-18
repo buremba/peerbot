@@ -1,0 +1,44 @@
+{
+  "linkset": [
+    {
+      "anchor": "https://lobu.ai/",
+      "service-doc": [
+        {
+          "href": "https://lobu.ai/reference/api-reference/",
+          "type": "text/html",
+          "title": "Lobu REST API reference"
+        },
+        {
+          "href": "https://lobu.ai/platforms/rest-api/",
+          "type": "text/html",
+          "title": "Lobu REST API platform guide"
+        }
+      ],
+      "service-meta": [
+        {
+          "href": "https://lobu.ai/.well-known/mcp/server-card.json",
+          "type": "application/json",
+          "title": "Lobu MCP server card"
+        },
+        {
+          "href": "https://lobu.ai/.well-known/agent-skills/index.json",
+          "type": "application/json",
+          "title": "Lobu agent skills index"
+        }
+      ],
+      "describedby": [
+        {
+          "href": "https://lobu.ai/llms.txt",
+          "type": "text/plain",
+          "title": "llms.txt index"
+        }
+      ],
+      "author": [
+        {
+          "href": "https://github.com/lobu-ai/lobu",
+          "title": "Source repository"
+        }
+      ]
+    }
+  ]
+}

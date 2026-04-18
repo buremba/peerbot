@@ -1,0 +1,17 @@
+{
+  "_todo": "Endpoints below are declared for agent discovery but NOT implemented yet. Stand up the OAuth/OIDC server (authorize, token, jwks, register) before advertising this publicly, or remove this file.",
+  "issuer": "https://lobu.ai/",
+  "authorization_endpoint": "https://lobu.ai/oauth/authorize",
+  "token_endpoint": "https://lobu.ai/oauth/token",
+  "jwks_uri": "https://lobu.ai/.well-known/jwks.json",
+  "registration_endpoint": "https://lobu.ai/oauth/register",
+  "scopes_supported": ["openid", "profile", "email", "offline_access", "mcp:tools"],
+  "response_types_supported": ["code"],
+  "response_modes_supported": ["query"],
+  "grant_types_supported": ["authorization_code", "refresh_token"],
+  "token_endpoint_auth_methods_supported": ["none", "client_secret_basic", "client_secret_post"],
+  "code_challenge_methods_supported": ["S256"],
+  "service_documentation": "https://lobu.ai/guides/security/",
+  "op_policy_uri": "https://lobu.ai/privacy/",
+  "op_tos_uri": "https://lobu.ai/terms/"
+}

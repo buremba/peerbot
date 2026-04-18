@@ -1,0 +1,92 @@
+---
+---
+<script is:inline>
+  (() => {
+    if (typeof navigator === "undefined") return;
+    const mc = navigator.modelContext;
+    if (!mc || typeof mc.provideContext !== "function") return;
+
+    const nav = (href) => {
+      window.location.href = href;
+      return { content: [{ type: "text", text: `Navigating to ${href}` }] };
+    };
+
+    try {
+      mc.provideContext({
+        tools: [
+          {
+            name: "lobu_open_getting_started",
+            description: "Open the Lobu getting-started guide in the user's browser.",
+            inputSchema: { type: "object", properties: {}, additionalProperties: false },
+            execute: () => nav("/getting-started/"),
+          },
+          {
+            name: "lobu_open_install_guide",
+            description:
+              "Open a specific Lobu deployment install guide (docker, kubernetes, aws, or embedding).",
+            inputSchema: {
+              type: "object",
+              properties: {
+                target: {
+                  type: "string",
+                  enum: ["docker", "kubernetes", "aws", "embedding"],
+                  description: "Deployment target to open.",
+                },
+              },
+              required: ["target"],
+              additionalProperties: false,
+            },
+            execute: ({ target }) => nav(`/deployment/${target}/`),
+          },
+          {
+            name: "lobu_open_platform_guide",
+            description:
+              "Open a Lobu messaging-platform integration guide (slack, telegram, whatsapp, discord, teams, google-chat, rest-api).",
+            inputSchema: {
+              type: "object",
+              properties: {
+                platform: {
+                  type: "string",
+                  enum: [
+                    "slack",
+                    "telegram",
+                    "whatsapp",
+                    "discord",
+                    "teams",
+                    "google-chat",
+                    "rest-api",
+                  ],
+                },
+              },
+              required: ["platform"],
+              additionalProperties: false,
+            },
+            execute: ({ platform }) => nav(`/platforms/${platform}/`),
+          },
+          {
+            name: "lobu_search_docs",
+            description:
+              "Search the Lobu documentation. Returns the documentation search page scoped to the given query.",
+            inputSchema: {
+              type: "object",
+              properties: {
+                query: { type: "string", minLength: 1 },
+              },
+              required: ["query"],
+              additionalProperties: false,
+            },
+            execute: ({ query }) => nav(`/getting-started/?q=${encodeURIComponent(query)}`),
+          },
+          {
+            name: "lobu_list_skills",
+            description: "Open the Lobu agent skills directory.",
+            inputSchema: { type: "object", properties: {}, additionalProperties: false },
+            execute: () => nav("/skills/"),
+          },
+        ],
+      });
+    } catch {
+      // WebMCP not supported in this browser; silently ignore.
+    }
+  })();
+</script>

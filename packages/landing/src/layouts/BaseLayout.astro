@@ -18,9 +18,15 @@ const {
 } = Astro.props;
 
 import PosthogAnalytics from "../components/PosthogAnalytics.astro";
+import WebMCP from "../components/WebMCP.astro";
 
 const canonicalURL = new URL(Astro.url.pathname, Astro.site);
 const ogImage = new URL("/lobster-icon.png", Astro.site);
+const markdownPath =
+  Astro.url.pathname === "/"
+    ? "/index.md"
+    : `${Astro.url.pathname.replace(/\/$/, "")}.md`;
+const markdownURL = new URL(markdownPath, Astro.site);
 ---
 
 <!doctype html>
@@ -81,6 +87,13 @@ const ogImage = new URL("/lobster-icon.png", Astro.site);
       ]
     })} />
     <PosthogAnalytics />
+    <WebMCP />
+
+    <!-- Agent discovery hints -->
+    <link rel="alternate" type="text/markdown" href={markdownURL} />
+    <link rel="describedby" type="text/plain" href="/llms.txt" />
+    <link rel="https://modelcontextprotocol.io/rel/server-card" type="application/json" href="/.well-known/mcp/server-card.json" />
+    <link rel="api-catalog" href="/.well-known/api-catalog" />
   </head>
   <body>
     <slot />

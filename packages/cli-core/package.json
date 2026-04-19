@@ -1,13 +1,35 @@
 {
   "name": "@lobu/cli-core",
   "version": "3.5.0",
-  "private": true,
   "license": "Apache-2.0",
   "type": "module",
-  "description": "Shared CLI internals for @lobu/cli and owletto — local-config loader, credential store, gateway HTTP client, output formatting",
-  "main": "src/index.ts",
-  "types": "src/index.ts",
+  "description": "Shared CLI internals for @lobu/cli — local-config loader, credential store, context resolution",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lobu-ai/lobu.git",
+    "directory": "packages/cli-core"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }

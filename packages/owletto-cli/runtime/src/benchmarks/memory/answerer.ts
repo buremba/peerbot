@@ -434,12 +434,28 @@ class ExtractiveAnswerer implements BenchmarkAnswerer {
 }
 
 export class OpenAiCompatibleAnswerer implements BenchmarkAnswerer {
-  // Cached at construction so describe() never reads from `this.config`,
-  // which CodeQL flags as carrying tainted data via the apiKeyEnv field.
+  // Public-safe fields are stored separately from the apiKeyEnv name so
+  // CodeQL doesn't taint the description via class-wide field access on
+  // an object that also exposes the secret env name.
+  private readonly model: string;
+  private readonly baseUrl: string;
+  private readonly temperature: number;
+  private readonly maxTokens: number;
   private readonly description: string;
+  private readonly apiKeyEnvLabel: string;
+  // Held in a closure so it never appears as a class field reachable
+  // from describe() or other public surfaces.
+  private readonly readApiKey: () => string | undefined;
 
-  constructor(private readonly config: OpenAiCompatibleAnswererConfig) {
-    this.description = `${config.model} via ${config.baseUrl ?? 'https://api.openai.com/v1'}`;
+  constructor(config: OpenAiCompatibleAnswererConfig) {
+    this.model = config.model;
+    this.baseUrl = (config.baseUrl ?? 'https://api.openai.com/v1').replace(/\/+$/, '');
+    this.temperature = config.temperature ?? 0;
+    this.maxTokens = config.maxTokens ?? 300;
+    this.description = `${this.model} via ${this.baseUrl}`;
+    const apiKeyEnv = config.apiKeyEnv;
+    this.apiKeyEnvLabel = apiKeyEnv;
+    this.readApiKey = () => process.env[apiKeyEnv];
   }
 
   describe(): string {
@@ -471,21 +487,20 @@ export class OpenAiCompatibleAnswerer implements BenchmarkAnswerer {
       total_tokens?: number;
     };
   }> {
-    const baseUrl = (this.config.baseUrl ?? 'https://api.openai.com/v1').replace(/\/+$/, '');
-    const isZai = /api\.z\.ai/i.test(baseUrl);
+    const isZai = /api\.z\.ai/i.test(this.baseUrl);
     const maxAttempts = 4;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       try {
-        const response = await fetch(`${baseUrl}/chat/completions`, {
+        const response = await fetch(`${this.baseUrl}/chat/completions`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             Authorization: `Bearer ${args.apiKey}`,
           },
           body: JSON.stringify({
-            model: this.config.model,
-            temperature: this.config.temperature ?? 0,
+            model: this.model,
+            temperature: this.temperature,
             max_tokens: args.maxTokens,
             response_format: { type: 'json_object' },
             ...(isZai ? { thinking: { type: 'disabled' } } : {}),
@@ -536,12 +551,12 @@ export class OpenAiCompatibleAnswerer implements BenchmarkAnswerer {
       return { answer: 'unknown', citedIds: [] };
     }
 
-    const apiKey = process.env[this.config.apiKeyEnv];
+    const apiKey = this.readApiKey();
     if (!apiKey) {
-      throw new Error(`Missing answerer API key env '${this.config.apiKeyEnv}'`);
+      throw new Error(`Missing answerer API key env '${this.apiKeyEnvLabel}'`);
     }
 
-    const initialMaxTokens = this.config.maxTokens ?? 300;
+    const initialMaxTokens = this.maxTokens;
     let json = await this.requestCompletion({
       apiKey,
       question,

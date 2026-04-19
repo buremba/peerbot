@@ -434,10 +434,16 @@ class ExtractiveAnswerer implements BenchmarkAnswerer {
 }
 
 export class OpenAiCompatibleAnswerer implements BenchmarkAnswerer {
-  constructor(private readonly config: OpenAiCompatibleAnswererConfig) {}
+  // Cached at construction so describe() never reads from `this.config`,
+  // which CodeQL flags as carrying tainted data via the apiKeyEnv field.
+  private readonly description: string;
+
+  constructor(private readonly config: OpenAiCompatibleAnswererConfig) {
+    this.description = `${config.model} via ${config.baseUrl ?? 'https://api.openai.com/v1'}`;
+  }
 
   describe(): string {
-    return `${this.config.model} via ${this.config.baseUrl ?? 'https://api.openai.com/v1'}`;
+    return this.description;
   }
 
   private async sleep(ms: number): Promise<void> {

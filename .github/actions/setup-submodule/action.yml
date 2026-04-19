@@ -34,11 +34,14 @@ runs:
         set -euo pipefail
         echo "No deploy key — writing stub package.json for packages/owletto-web"
         mkdir -p packages/owletto-web
+        # Version/name must match what's recorded in bun.lock so
+        # `bun install --frozen-lockfile` doesn't detect drift. The stub
+        # has no deps so the build step simply skips web assets.
         printf '%s\n' \
           '{' \
           '  "name": "@owletto/web",' \
           '  "private": true,' \
-          '  "version": "0.0.0-stub",' \
+          '  "version": "1.6.0",' \
           '  "description": "Stub — private submodule not initialized"' \
           '}' \
           > packages/owletto-web/package.json

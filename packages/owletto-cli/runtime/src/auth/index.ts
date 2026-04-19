@@ -1,0 +1,497 @@
+import { createHash } from 'node:crypto';
+import { betterAuth } from 'better-auth';
+import { magicLink, organization, phoneNumber } from 'better-auth/plugins';
+import { Pool } from 'pg';
+import { Resend } from 'resend';
+import type { Env } from '../index';
+import { notifyInvitationReceived } from '../notifications/triggers';
+import {
+  deleteMemberEntity,
+  ensureMemberEntity,
+  updateMemberEntityAccess,
+  updateMemberEntityStatus,
+} from '../utils/member-entity';
+import { getConfiguredPublicOrigin } from '../utils/public-origin';
+import { TtlCache } from '../utils/ttl-cache';
+import { resolveBaseUrl, safeParseUrl } from './base-url';
+import {
+  getAuthConfig as getAuthConfigFromEnv,
+  getEnabledLoginProviderConfigs,
+  resolveLoginProviderCredentials,
+  resolveRequestOrganizationId,
+} from './config';
+
+let authPool: Pool | null = null;
+function getAuthPool(connectionString: string): Pool {
+  if (!authPool) {
+    const ssl =
+      process.env.PGSSLMODE === 'require' || process.env.PGSSLMODE === 'prefer'
+        ? { rejectUnauthorized: false }
+        : undefined;
+    authPool = new Pool({
+      connectionString,
+      max: parseInt(process.env.AUTH_DB_POOL_MAX || '8', 10),
+      ssl,
+    });
+  }
+  return authPool;
+}
+
+function gravatarUrl(email: string): string {
+  const hash = createHash('md5').update(email.trim().toLowerCase()).digest('hex');
+  return `https://www.gravatar.com/avatar/${hash}?d=retro&s=256`;
+}
+
+// Cache betterAuth instances per organizationId to avoid re-creating on every request.
+// The config (OAuth providers) rarely changes, so 60s TTL is safe.
+const authCache = new TtlCache<ReturnType<typeof betterAuth>>(60_000);
+
+/**
+ * Create a better-auth instance with all plugins configured.
+ *
+ * OAuth providers are dynamically loaded from connector_definitions where login_enabled=true.
+ * This allows enabling/disabling login providers via the admin UI without code changes.
+ */
+export async function createAuth(env: Env, request?: Request) {
+  const organizationId = (await resolveRequestOrganizationId(request)) ?? null;
+  const cacheKey = organizationId ?? '__system__';
+  const cached = authCache.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
+  const authConfig = await getAuthConfigFromEnv(env, { organizationId, request });
+  const pool = getAuthPool(env.DATABASE_URL!);
+  const runtimeNodeEnv = env.NODE_ENV || process.env.NODE_ENV || 'development';
+
+  const providerRows = await getEnabledLoginProviderConfigs(organizationId);
+
+  // Build dynamic social providers from enabled connectors
+  const socialProviders: Record<
+    string,
+    { clientId: string; clientSecret: string; scope?: string[] }
+  > = {};
+
+  for (const row of providerRows) {
+    const provider = row.provider;
+    const credentials = await resolveLoginProviderCredentials({
+      env,
+      provider,
+      connectorKey: row.connectorKey,
+      clientIdKey: row.clientIdKey,
+      clientSecretKey: row.clientSecretKey,
+      organizationId,
+    });
+    const clientId = credentials.clientId ?? '';
+    const clientSecret = credentials.clientSecret ?? '';
+
+    if (!clientId || !clientSecret) continue;
+    if (socialProviders[provider]) continue;
+
+    // Pass the connector-declared login scopes directly to Better Auth.
+    // Each connector owns its OAuth configuration; core does not inject defaults.
+    socialProviders[provider] = {
+      clientId,
+      clientSecret,
+      ...(row.loginScopes.length > 0 && { scope: row.loginScopes }),
+    };
+  }
+
+  const trustedOriginSet = new Set<string>([
+    'http://localhost:4821',
+    'http://localhost:3000',
+    'http://localhost:5173',
+    'http://127.0.0.1:4821',
+    'http://127.0.0.1:3000',
+    'http://127.0.0.1:5173',
+  ]);
+
+  // In development, trust localhost on the configured port
+  if (runtimeNodeEnv === 'development') {
+    const port = process.env.PORT || '8787';
+    trustedOriginSet.add(`http://localhost:${port}`);
+    trustedOriginSet.add(`http://127.0.0.1:${port}`);
+  }
+  const addTrustedOriginVariants = (rawUrl?: string) => {
+    const parsed = safeParseUrl(rawUrl);
+    if (!parsed) return;
+    trustedOriginSet.add(parsed.origin);
+
+    // Support frontends served on the default port for the same hostname
+    // when BASE_URL includes explicit ports (e.g. :8787/:4822).
+    if (parsed.port) {
+      trustedOriginSet.add(`${parsed.protocol}//${parsed.hostname}`);
+    }
+  };
+  addTrustedOriginVariants(getConfiguredPublicOrigin());
+  // Also trust the baseURL (resolves from PUBLIC_WEB_URL, forwarded headers, or request URL)
+  addTrustedOriginVariants(resolveBaseUrl({ request }));
+
+  const auth = betterAuth({
+    secret: env.BETTER_AUTH_SECRET,
+    database: pool,
+    baseURL: resolveBaseUrl({ request }),
+    basePath: '/api/auth',
+
+    emailAndPassword: {
+      enabled: authConfig.emailPassword,
+      requireEmailVerification: false,
+      sendResetPassword: async ({ user, url }) => {
+        if (!env.RESEND_API_KEY) {
+          throw new Error(
+            'Password reset email delivery is not configured (RESEND_API_KEY missing).'
+          );
+        }
+        const fromAddress =
+          env.AUTH_EMAIL_FROM ||
+          (runtimeNodeEnv !== 'production' ? 'Owletto <onboarding@resend.dev>' : null);
+        if (!fromAddress) {
+          throw new Error(
+            'AUTH_EMAIL_FROM is required for password reset email delivery in production.'
+          );
+        }
+
+        const resend = new Resend(env.RESEND_API_KEY);
+        const { data, error } = await resend.emails.send({
+          from: fromAddress,
+          to: user.email,
+          subject: 'Reset your Owletto password',
+          html: `<p>We received a request to reset your password.</p><p><a href="${url}">Reset your password</a></p><p>This link expires in 1 hour.</p>`,
+        });
+        if (error) {
+          console.error(
+            { email: user.email, from: fromAddress, error },
+            '[Auth] Resend failed to deliver password reset email'
+          );
+          throw new Error(error.message || 'Password reset email delivery failed.');
+        }
+        console.info(
+          { email: user.email, from: fromAddress, emailId: data?.id ?? null },
+          '[Auth] Password reset email queued'
+        );
+      },
+    },
+
+    // OAuth providers - dynamically loaded from connector_definitions
+    // Tokens are reusable for both login AND connectors
+    socialProviders,
+
+    account: {
+      accountLinking: {
+        enabled: true,
+        // Trust only the social providers that are actually configured for this org.
+        // Keep core auth connector-agnostic: provider trust should be data-driven from
+        // enabled login providers, not hardcoded per connector/provider in app code.
+        trustedProviders: Object.keys(socialProviders),
+        updateUserInfoOnLink: true,
+      },
+    },
+
+    // Session configuration
+    session: {
+      expiresIn: 60 * 60 * 24 * 7, // 7 days
+      updateAge: 60 * 60 * 24, // Update session daily
+    },
+
+    // Plugins
+    plugins: [
+      // Organization plugin with teams support
+      organization({
+        allowUserToCreateOrganization: true,
+        creatorRole: 'owner',
+        organizationHooks: {
+          afterAddMember: async ({ member, user, organization: org }) => {
+            try {
+              await ensureMemberEntity({
+                organizationId: org.id,
+                userId: user.id,
+                name: user.name || user.email,
+                email: user.email,
+                image: user.image ?? undefined,
+                role: member.role,
+              });
+              const { invalidateMembershipRoleCache } = await import('../workspace/multi-tenant');
+              invalidateMembershipRoleCache(org.id, user.id);
+            } catch (err) {
+              console.error('[Auth] Failed to create $member entity after addMember:', err);
+            }
+          },
+          afterAcceptInvitation: async ({ member, user, organization: org }) => {
+            try {
+              // Update existing invited entity to active, or create if missing
+              await updateMemberEntityStatus(org.id, user.email, 'active');
+              await ensureMemberEntity({
+                organizationId: org.id,
+                userId: user.id,
+                name: user.name || user.email,
+                email: user.email,
+                image: user.image ?? undefined,
+                role: member.role,
+                status: 'active',
+              });
+              const { invalidateMembershipRoleCache } = await import('../workspace/multi-tenant');
+              invalidateMembershipRoleCache(org.id, user.id);
+            } catch (err) {
+              console.error('[Auth] Failed to update $member entity after acceptInvitation:', err);
+            }
+          },
+          afterRemoveMember: async ({ user, organization: org }) => {
+            try {
+              await deleteMemberEntity(org.id, user.email);
+              const { invalidateMembershipRoleCache } = await import('../workspace/multi-tenant');
+              invalidateMembershipRoleCache(org.id, user.id);
+            } catch (err) {
+              console.error('[Auth] Failed to clean up $member entity after removeMember:', err);
+            }
+          },
+          afterUpdateMemberRole: async ({ member, user, organization: org }) => {
+            try {
+              await updateMemberEntityAccess(org.id, user.email, {
+                role: member.role,
+                status: 'active',
+              });
+              const { invalidateMembershipRoleCache } = await import('../workspace/multi-tenant');
+              invalidateMembershipRoleCache(org.id, user.id);
+            } catch (err) {
+              console.error('[Auth] Failed to update $member entity after updateMemberRole:', err);
+            }
+          },
+          afterCreateInvitation: async ({ invitation, inviter, organization: org }) => {
+            try {
+              await ensureMemberEntity({
+                organizationId: org.id,
+                userId: inviter.id,
+                name: invitation.email,
+                email: invitation.email,
+                role: invitation.role,
+                status: 'invited',
+              });
+            } catch (err) {
+              console.error('[Auth] Failed to create $member entity after createInvitation:', err);
+            }
+          },
+          afterCancelInvitation: async ({ invitation, organization: org }) => {
+            try {
+              await deleteMemberEntity(org.id, invitation.email);
+            } catch (err) {
+              console.error('[Auth] Failed to delete $member entity after cancelInvitation:', err);
+            }
+          },
+          afterRejectInvitation: async ({ invitation, organization: org }) => {
+            try {
+              await deleteMemberEntity(org.id, invitation.email);
+            } catch (err) {
+              console.error('[Auth] Failed to delete $member entity after rejectInvitation:', err);
+            }
+          },
+        },
+        sendInvitationEmail: async (data, request) => {
+          const orgId = data.organization.id;
+          const orgName = data.organization.name;
+          const email = data.email;
+          const inviterName = data.inviter?.user?.name ?? undefined;
+
+          // Send invitation email via Resend
+          try {
+            if (env.RESEND_API_KEY) {
+              const fromAddress =
+                env.AUTH_EMAIL_FROM ||
+                (runtimeNodeEnv !== 'production' ? 'Owletto <onboarding@resend.dev>' : null);
+              if (fromAddress) {
+                const baseUrl = resolveBaseUrl({ request });
+                const acceptUrl = `${baseUrl}/auth/accept-invitation?invitationId=${data.id}`;
+                const inviterLabel = inviterName ? ` ${inviterName}` : ' Someone';
+
+                const resend = new Resend(env.RESEND_API_KEY);
+                const { data: emailData, error } = await resend.emails.send({
+                  from: fromAddress,
+                  to: email,
+                  subject: `You've been invited to ${orgName}`,
+                  html: `<p>${inviterLabel} invited you to join <strong>${orgName}</strong> on Owletto.</p><p><a href="${acceptUrl}">Accept invitation</a></p><p>This invitation will expire in 48 hours.</p>`,
+                });
+                if (error) {
+                  console.error(
+                    { email, from: fromAddress, error },
+                    '[Auth] Resend failed to deliver invitation email'
+                  );
+                } else {
+                  console.info(
+                    { email, from: fromAddress, emailId: emailData?.id ?? null },
+                    '[Auth] Invitation email queued'
+                  );
+                }
+              }
+            }
+          } catch (err) {
+            console.error('[Auth] Failed to send invitation email:', err);
+          }
+
+          // Also send in-app notification if user already exists
+          try {
+            const userRows = await pool.query('SELECT id FROM "user" WHERE email = $1 LIMIT 1', [
+              email,
+            ]);
+            const userId = userRows.rows[0]?.id;
+            if (userId) {
+              await notifyInvitationReceived({ orgId, userId, orgName, inviterName });
+            }
+          } catch (err) {
+            console.error('[Auth] Failed to send invitation notification:', err);
+          }
+        },
+      }),
+
+      // Magic link authentication
+      magicLink({
+        sendMagicLink: async ({ email, url }) => {
+          if (!env.RESEND_API_KEY) {
+            if (runtimeNodeEnv !== 'production') {
+              console.info(
+                { email, url },
+                '[Auth] Development magic link generated (RESEND_API_KEY not configured)'
+              );
+              throw new Error(
+                'Magic-link email delivery is not configured (RESEND_API_KEY missing). Check server logs for the generated link.'
+              );
+            }
+            console.warn('[Auth] RESEND_API_KEY not configured, cannot send magic link email');
+            throw new Error('Magic-link email delivery is not configured.');
+          }
+          const fromAddress =
+            env.AUTH_EMAIL_FROM ||
+            (runtimeNodeEnv !== 'production' ? 'Owletto <onboarding@resend.dev>' : null);
+          if (!fromAddress) {
+            throw new Error(
+              'AUTH_EMAIL_FROM is required for magic-link email delivery in production.'
+            );
+          }
+
+          const resend = new Resend(env.RESEND_API_KEY);
+          const { data, error } = await resend.emails.send({
+            from: fromAddress,
+            to: email,
+            subject: 'Sign in to Owletto',
+            html: `<p>Click the link below to sign in:</p><p><a href="${url}">Sign in to Owletto</a></p><p>This link expires in 15 minutes.</p>`,
+          });
+          if (error) {
+            console.error(
+              { email, from: fromAddress, error },
+              '[Auth] Resend failed to deliver magic link'
+            );
+            throw new Error(error.message || 'Magic-link email delivery failed.');
+          }
+          console.info(
+            { email, from: fromAddress, emailId: data?.id ?? null },
+            '[Auth] Magic-link email queued'
+          );
+        },
+        expiresIn: 60 * 15, // 15 minutes
+      }),
+
+      // Phone number authentication via WhatsApp
+      phoneNumber({
+        sendOTP: async ({ phoneNumber: phone, code }) => {
+          if (!env.TWILIO_SID || !env.TWILIO_TOKEN) {
+            console.warn('[Auth] Twilio not configured, skipping WhatsApp OTP');
+            return;
+          }
+          // Use Twilio REST API directly to avoid dependency
+          const twilioUrl = `https://api.twilio.com/2010-04-01/Accounts/${env.TWILIO_SID}/Messages.json`;
+          const auth = Buffer.from(`${env.TWILIO_SID}:${env.TWILIO_TOKEN}`).toString('base64');
+
+          const response = await fetch(twilioUrl, {
+            method: 'POST',
+            headers: {
+              Authorization: `Basic ${auth}`,
+              'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            body: new URLSearchParams({
+              From: `whatsapp:${env.TWILIO_WHATSAPP_NUMBER}`,
+              To: `whatsapp:${phone}`,
+              Body: `Your Owletto verification code: ${code}`,
+            }),
+          });
+
+          if (!response.ok) {
+            const error = await response.text();
+            console.error('[Auth] Twilio error:', error);
+            throw new Error('Failed to send verification code');
+          }
+        },
+        otpLength: 6,
+        expiresIn: 60 * 5, // 5 minutes
+      }),
+    ],
+
+    databaseHooks: {
+      user: {
+        create: {
+          before: async (user) => {
+            if (!user.image && user.email) {
+              return { data: { ...user, image: gravatarUrl(user.email) } };
+            }
+            return { data: user };
+          },
+        },
+      },
+      account: {
+        create: {
+          after: async (account, context) => {
+            try {
+              const { provisionConnectorFromSocialLogin } = await import(
+                './social-login-provisioning'
+              );
+              await provisionConnectorFromSocialLogin({
+                env,
+                request: context?.request ?? undefined,
+                account: {
+                  id: account.id,
+                  userId: account.userId,
+                  providerId: account.providerId,
+                  accessToken: (account as Record<string, unknown>).accessToken as string | null,
+                  scope: (account as Record<string, unknown>).scope as string | null,
+                },
+              });
+            } catch (error) {
+              console.error('[Auth] Failed to auto-provision connector from social login:', error);
+            }
+          },
+        },
+        update: {
+          after: async (account, context) => {
+            try {
+              const { provisionConnectorFromSocialLogin } = await import(
+                './social-login-provisioning'
+              );
+              await provisionConnectorFromSocialLogin({
+                env,
+                request: context?.request ?? undefined,
+                account: {
+                  id: account.id,
+                  userId: account.userId,
+                  providerId: account.providerId,
+                  accessToken: (account as Record<string, unknown>).accessToken as string | null,
+                  scope: (account as Record<string, unknown>).scope as string | null,
+                },
+              });
+            } catch (error) {
+              console.error(
+                '[Auth] Failed to refresh connector provisioning from social login:',
+                error
+              );
+            }
+          },
+        },
+      },
+    },
+
+    advanced: {
+      useSecureCookies:
+        runtimeNodeEnv === 'production' ||
+        safeParseUrl(getConfiguredPublicOrigin())?.protocol === 'https:',
+    },
+
+    trustedOrigins: Array.from(trustedOriginSet),
+  });
+  authCache.set(cacheKey, auth);
+  return auth;
+}

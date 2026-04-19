@@ -151,7 +151,7 @@ export class ApiKeyProviderModule extends BaseProviderModule {
         Authorization: `Bearer ${apiKey}`,
       },
     }).catch(() => null);
-    if (!response || !response.ok) return [];
+    if (!response?.ok) return [];
 
     const payload = (await response.json().catch(() => ({}))) as {
       data?: Array<{ id?: string }>;
@@ -194,7 +194,7 @@ export class ApiKeyProviderModule extends BaseProviderModule {
     const response = await fetch(url.toString(), {
       headers: { Accept: "application/json" },
     }).catch(() => null);
-    if (!response || !response.ok) return [];
+    if (!response?.ok) return [];
 
     const payload = (await response.json().catch(() => ({}))) as {
       models?: Array<{ name?: string; displayName?: string }>;

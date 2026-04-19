@@ -1,0 +1,76 @@
+.popup {
+  padding: 16px;
+}
+
+.platform-detected {
+  background: var(--success-bg);
+  border-radius: 8px;
+  padding: 12px;
+  text-align: center;
+  margin-bottom: 16px;
+}
+
+.badge {
+  display: inline-block;
+  background: var(--accent-color);
+  color: white;
+  padding: 4px 12px;
+  border-radius: 16px;
+  font-size: 13px;
+  font-weight: 500;
+  margin-bottom: 8px;
+}
+
+.platform-detected p {
+  color: var(--success-text);
+  font-size: 12px;
+}
+
+.no-platform {
+  background: var(--bg-secondary);
+  border-radius: 8px;
+  padding: 16px;
+  text-align: center;
+  margin-bottom: 16px;
+}
+
+.no-platform p {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.actions button {
+  width: 100%;
+  background: var(--accent-color);
+  color: white;
+  border: none;
+  padding: 10px 16px;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.actions button:hover {
+  background: var(--accent-hover);
+}
+
+footer {
+  margin-top: 12px;
+  text-align: center;
+}
+
+footer .link-button {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-decoration: none;
+  cursor: pointer;
+  padding: 0;
+}
+
+footer .link-button:hover {
+  color: var(--accent-color);
+}

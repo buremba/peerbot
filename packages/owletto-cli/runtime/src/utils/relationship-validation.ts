@@ -1,0 +1,175 @@
+/**
+ * Relationship Validation Helpers
+ *
+ * Validates entity relationship constraints: self-reference, confidence bounds,
+ * source enums, symmetric canonicalization, scope enforcement, type-pair rules, and
+ * duplicate edge detection.
+ */
+
+import { type DbClient, getDb } from '../db/client';
+import type { Env } from '../index';
+import type { ToolContext } from '../tools/registry';
+
+// Valid relationship sources
+const RELATIONSHIP_SOURCES = ['ui', 'llm', 'feed', 'api'] as const;
+export type RelationshipSource = (typeof RELATIONSHIP_SOURCES)[number];
+
+/**
+ * Validate that a relationship does not reference itself.
+ */
+export function validateNoSelfReference(fromId: number, toId: number): void {
+  if (fromId === toId) {
+    throw new Error('Self-referencing relationships are not allowed');
+  }
+}
+
+/**
+ * Validate confidence is in [0, 1] range.
+ */
+export function validateConfidence(confidence: number | undefined | null): void {
+  if (confidence === undefined || confidence === null) return;
+  if (typeof confidence !== 'number' || confidence < 0 || confidence > 1) {
+    throw new Error('Confidence must be a number between 0 and 1');
+  }
+}
+
+/**
+ * Validate source is a known enum value.
+ */
+export function validateSource(source: string | undefined | null): void {
+  if (source === undefined || source === null) return;
+  if (!RELATIONSHIP_SOURCES.includes(source as RelationshipSource)) {
+    throw new Error(
+      `Invalid source "${source}". Must be one of: ${RELATIONSHIP_SOURCES.join(', ')}`
+    );
+  }
+}
+
+/**
+ * Canonicalize a symmetric edge so from_entity_id < to_entity_id.
+ */
+export function canonicalizeSymmetricEdge(
+  fromId: number,
+  toId: number
+): { from: number; to: number } {
+  return fromId <= toId ? { from: fromId, to: toId } : { from: toId, to: fromId };
+}
+
+/**
+ * Validate scope rule for a relationship.
+ * Both entities must belong to the same organization.
+ */
+export async function validateScopeRule(
+  fromEntityId: number,
+  toEntityId: number,
+  _env: Env,
+  ctx: ToolContext
+): Promise<void> {
+  const sql = getDb();
+
+  const rows = await sql`
+    SELECT id, organization_id
+    FROM entities
+    WHERE id IN (${fromEntityId}, ${toEntityId})
+  `;
+
+  if (rows.length < 2) {
+    const foundIds = rows.map((r) => r.id);
+    const missingId = [fromEntityId, toEntityId].find((id) => !foundIds.includes(id));
+    throw new Error(`Entity ${missingId} not found`);
+  }
+
+  const fromEntity = rows.find((r) => Number(r.id) === fromEntityId)!;
+  const toEntity = rows.find((r) => Number(r.id) === toEntityId)!;
+
+  // Multi-tenant: both entities must be in the same organization as the user
+  if (String(fromEntity.organization_id) !== ctx.organizationId) {
+    throw new Error(`Entity ${fromEntityId} does not belong to your organization`);
+  }
+  if (String(toEntity.organization_id) !== ctx.organizationId) {
+    throw new Error(`Entity ${toEntityId} does not belong to your organization`);
+  }
+}
+
+/**
+ * Validate that the relationship type allows the given entity type pair.
+ * For symmetric types, checks both directions.
+ */
+export async function validateTypeRule(
+  relationshipTypeId: number,
+  fromEntityId: number,
+  toEntityId: number,
+  sql: DbClient
+): Promise<void> {
+  // Get the relationship type to check if it's symmetric
+  const typeRows = await sql`
+    SELECT is_symmetric
+    FROM entity_relationship_types
+    WHERE id = ${relationshipTypeId}
+      AND deleted_at IS NULL
+  `;
+  if (typeRows.length === 0) {
+    throw new Error(`Relationship type ${relationshipTypeId} not found`);
+  }
+  const isSymmetric = Boolean(typeRows[0].is_symmetric);
+
+  // Get entity types for both entities
+  const entityRows = await sql`
+    SELECT id, entity_type
+    FROM entities
+    WHERE id IN (${fromEntityId}, ${toEntityId})
+  `;
+  const fromEntityType = String(entityRows.find((r) => Number(r.id) === fromEntityId)?.entity_type);
+  const toEntityType = String(entityRows.find((r) => Number(r.id) === toEntityId)?.entity_type);
+
+  // Check if there are any rules for this relationship type
+  const ruleRows = await sql`
+    SELECT source_entity_type_slug, target_entity_type_slug
+    FROM entity_relationship_type_rules
+    WHERE relationship_type_id = ${relationshipTypeId}
+      AND deleted_at IS NULL
+  `;
+
+  // No rules = any pair is allowed
+  if (ruleRows.length === 0) return;
+
+  // Check if the pair matches any rule (check both directions for symmetric types)
+  const matches = ruleRows.some((rule) => {
+    const srcSlug = String(rule.source_entity_type_slug);
+    const tgtSlug = String(rule.target_entity_type_slug);
+
+    if (srcSlug === fromEntityType && tgtSlug === toEntityType) return true;
+    if (isSymmetric && srcSlug === toEntityType && tgtSlug === fromEntityType) return true;
+    return false;
+  });
+
+  if (!matches) {
+    throw new Error(
+      `Relationship type ${relationshipTypeId} does not allow ${fromEntityType} → ${toEntityType}`
+    );
+  }
+}
+
+/**
+ * Check for duplicate active edge between two entities of the same type.
+ */
+export async function checkDuplicateEdge(
+  fromId: number,
+  toId: number,
+  typeId: number,
+  sql: DbClient
+): Promise<void> {
+  const existing = await sql`
+    SELECT id FROM entity_relationships
+    WHERE from_entity_id = ${fromId}
+      AND to_entity_id = ${toId}
+      AND relationship_type_id = ${typeId}
+      AND deleted_at IS NULL
+    LIMIT 1
+  `;
+  if (existing.length > 0) {
+    throw new Error(
+      `An active relationship of this type already exists between entities ${fromId} and ${toId}`
+    );
+  }
+}

@@ -90,7 +90,7 @@ export class ChatGPTOAuthModule extends BaseProviderModule {
       },
     }).catch(() => null);
 
-    if (!response || !response.ok) {
+    if (!response?.ok) {
       return [];
     }
 

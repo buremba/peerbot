@@ -4,11 +4,7 @@
   "description": "Deploy autonomous AI agents with sandboxing, network isolation, and multi-platform access.",
   "license": "Apache-2.0",
   "workspaces": [
-    "packages/cli",
-    "packages/gateway",
-    "packages/core",
-    "packages/worker",
-    "packages/landing"
+    "packages/*"
   ],
   "scripts": {
     "build": "cd packages/core && bun run build && cd ../gateway && bun run build && cd ../worker && bun run build && cd ../..",
@@ -54,17 +50,7 @@
   "patchedDependencies": {
     "@chat-adapter/telegram@4.20.0": "patches/@chat-adapter%2Ftelegram@4.20.0.patch"
   },
-  "pnpm": {
-    "packageExtensions": {
-      "chat": {
-        "exports": {
-          ".": {
-            "types": "./dist/index.d.ts",
-            "import": "./dist/index.js",
-            "default": "./dist/index.js"
-          }
-        }
-      }
-    }
+  "overrides": {
+    "@types/node": "20.19.9"
   }
 }

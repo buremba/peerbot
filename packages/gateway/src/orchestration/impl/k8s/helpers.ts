@@ -501,7 +501,7 @@ export async function removeFinalizerFromResource(
       currentFinalizers = (resource as any).body?.metadata?.finalizers;
     }
 
-    if (!currentFinalizers || !currentFinalizers.includes(LOBU_FINALIZER)) {
+    if (!currentFinalizers?.includes(LOBU_FINALIZER)) {
       return; // Finalizer not present, nothing to do
     }
 

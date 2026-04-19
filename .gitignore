@@ -70,3 +70,5 @@ packages/.pi/
 
 # Accidental clipboard artifacts
 pbcopy
+.pi/
+packages/*/~/

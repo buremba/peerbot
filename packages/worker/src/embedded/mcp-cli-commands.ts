@@ -155,7 +155,7 @@ export function parsePayload(
 ):
   | { ok: true; payload: Record<string, unknown> }
   | { ok: false; error: string } {
-  const raw = (stdin && stdin.trim()) || (inlineArg && inlineArg.trim()) || "";
+  const raw = stdin?.trim() || inlineArg?.trim() || "";
   if (!raw) {
     return { ok: true, payload: {} };
   }

@@ -276,7 +276,7 @@ function extractProxyCredentials(
 
   // Parse Basic auth: "Basic base64(username:password)"
   const match = authHeader.match(/^Basic\s+(.+)$/i);
-  if (!match || !match[1]) {
+  if (!match?.[1]) {
     return null;
   }
 

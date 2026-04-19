@@ -23,7 +23,7 @@ export function createApiAuthMiddleware(opts: {
     if (opts.allowSettingsSession && verifySettingsSession(c)) return next();
 
     const authHeader = c.req.header("Authorization");
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    if (!authHeader?.startsWith("Bearer ")) {
       return c.json({ success: false, error: "Unauthorized" }, 401);
     }
     const token = authHeader.substring(7);

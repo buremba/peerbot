@@ -74,7 +74,7 @@ export class UnifiedThreadResponseConsumer {
   ): Promise<void> {
     const data = job.data;
 
-    if (!data || !data.messageId) {
+    if (!data?.messageId) {
       logger.error(`Invalid thread response data: ${JSON.stringify(data)}`);
       return;
     }

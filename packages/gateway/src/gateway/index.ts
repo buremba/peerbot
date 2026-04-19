@@ -525,7 +525,7 @@ export class WorkerGateway {
   ): { tokenData: WorkerTokenData; token: string } | null {
     const authHeader = c.req.header("authorization");
 
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    if (!authHeader?.startsWith("Bearer ")) {
       return null;
     }
 

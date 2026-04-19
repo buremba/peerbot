@@ -70,7 +70,7 @@ function normalizeReturnUrl(
   returnUrl: string | null | undefined
 ): string | null {
   const value = returnUrl?.trim();
-  if (!value || !value.startsWith("/") || value.startsWith("//")) {
+  if (!value?.startsWith("/") || value.startsWith("//")) {
     return null;
   }
   return value;

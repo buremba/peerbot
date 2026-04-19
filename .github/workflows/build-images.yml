@@ -1,0 +1,187 @@
+name: Build and Push Images
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME_APP: ${{ github.repository }}-app
+  IMAGE_NAME_WORKER: ${{ github.repository }}-worker
+  IMAGE_NAME_EMBEDDINGS: ${{ github.repository }}-embeddings
+
+jobs:
+  generate-tag:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.timestamp.outputs.tag }}
+    steps:
+      - name: Generate shared timestamp tag
+        id: timestamp
+        run: echo "tag=$(date -u +'%Y%m%d-%H%M%S')" >> $GITHUB_OUTPUT
+
+  build-app:
+    runs-on: ubuntu-latest
+    needs: [generate-tag]
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Set up SSH for private submodule
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SUBMODULE_DEPLOY_KEY }}
+
+      - name: Rewrite submodule URL to SSH
+        run: git config --global url."git@github.com:lobu-ai/owletto-web.git".insteadOf "https://github.com/lobu-ai/owletto-web.git"
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_APP }}
+          tags: |
+            type=raw,value=${{ needs.generate-tag.outputs.tag }}
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push App image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./docker/app/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            CACHEBUST=${{ github.sha }}
+            APP_GIT_SHA=${{ github.sha }}
+            APP_BUILD_TIME=${{ github.event.head_commit.timestamp || github.run_id }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Make image public
+        run: |
+          curl -L -X PATCH \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/user/packages/container/owletto-app/visibility \
+            -d '{"visibility":"public"}' || true
+
+  build-worker:
+    runs-on: ubuntu-latest
+    needs: [generate-tag]
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_WORKER }}
+          tags: |
+            type=raw,value=${{ needs.generate-tag.outputs.tag }}
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push Worker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./docker/worker/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Make image public
+        run: |
+          curl -L -X PATCH \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/user/packages/container/owletto-worker/visibility \
+            -d '{"visibility":"public"}' || true
+
+  build-embeddings-service:
+    runs-on: ubuntu-latest
+    needs: [generate-tag]
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_EMBEDDINGS }}
+          tags: |
+            type=raw,value=${{ needs.generate-tag.outputs.tag }}
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push Embeddings Service image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./docker/embeddings-service/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Make image public
+        run: |
+          curl -L -X PATCH \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/user/packages/container/owletto-embeddings/visibility \
+            -d '{"visibility":"public"}' || true

@@ -217,7 +217,7 @@ export async function uploadUserFile(
       : path.join(gw.workspaceDir as string, args.file_path);
 
     const stats = await fs.stat(filePath).catch(() => null);
-    if (!stats || !stats.isFile()) {
+    if (!stats?.isFile()) {
       return textResult(
         `Error: Cannot show file - not found or is not a file: ${args.file_path}`
       );

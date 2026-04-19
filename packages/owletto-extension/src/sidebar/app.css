@@ -1,0 +1,149 @@
+.container {
+  padding: 16px;
+  max-width: 400px;
+  margin: 0 auto;
+}
+
+.loading {
+  text-align: center;
+  padding: 40px;
+  color: var(--text-secondary);
+}
+
+.spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid var(--border-color);
+  border-top-color: var(--accent-color);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  margin: 0 auto 12px;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.login-section {
+  text-align: center;
+  padding: 20px;
+}
+
+.btn-primary {
+  background: var(--accent-color);
+  color: white;
+  border: none;
+  padding: 12px 24px;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.btn-primary:hover {
+  background: var(--accent-hover);
+}
+
+.btn-secondary {
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-color);
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-secondary:hover {
+  background: var(--bg-primary);
+  border-color: var(--text-muted);
+}
+
+.error {
+  color: var(--error-color);
+  margin-top: 12px;
+  font-size: 13px;
+}
+
+.status-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.status {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.status.connected {
+  color: var(--accent-color);
+}
+
+.status.connected::before {
+  content: '\u25CF ';
+}
+
+.actions {
+  margin-bottom: 24px;
+}
+
+.actions button {
+  width: 100%;
+}
+
+.activity-section {
+  background: var(--bg-secondary);
+  border-radius: 8px;
+  padding: 16px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.activity-section h2 {
+  font-size: 16px;
+  color: var(--text-primary);
+  margin-bottom: 12px;
+}
+
+.empty {
+  color: var(--text-muted);
+  font-size: 13px;
+  text-align: center;
+  padding: 20px;
+}
+
+.activity-log {
+  list-style: none;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.activity-entry {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-color);
+  font-size: 13px;
+}
+
+.activity-entry:last-child {
+  border-bottom: none;
+}
+
+.activity-entry .icon {
+  flex-shrink: 0;
+}
+
+.activity-entry .message {
+  flex: 1;
+  color: var(--text-primary);
+}
+
+.activity-entry .time {
+  color: var(--text-muted);
+  font-size: 11px;
+}

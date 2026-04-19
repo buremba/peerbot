@@ -1,0 +1,291 @@
+/**
+ * Test Helpers
+ *
+ * HTTP client helpers for testing the Hono app directly (without starting a server).
+ * Also includes MCP-specific helpers for JSON-RPC requests.
+ *
+ * MCP calls perform proper protocol initialization per session (keyed by token).
+ */
+
+import { app, type Env } from '../../index';
+import { initWorkspaceProvider } from '../../workspace';
+
+let workspaceReady: Promise<void> | null = null;
+
+function ensureWorkspaceProvider(): Promise<void> {
+  if (!workspaceReady) {
+    workspaceReady = initWorkspaceProvider().then(() => {});
+  }
+  return workspaceReady;
+}
+
+// ============================================
+// Test Environment
+// ============================================
+
+/**
+ * Default test environment variables
+ */
+const testEnv: Env = {
+  ENVIRONMENT: 'test',
+  DATABASE_URL: process.env.DATABASE_URL,
+  JWT_SECRET: 'test-jwt-secret-for-testing-only',
+  BETTER_AUTH_SECRET: 'test-auth-secret-for-testing-only',
+  MAX_CONSECUTIVE_FAILURES: '3',
+  RATE_LIMIT_ENABLED: 'false', // Disable rate limiting in tests
+  // Forward embeddings config when set in the host process (benchmark runs set these);
+  // without this, content-search.ts sees env?.EMBEDDINGS_SERVICE_URL as undefined and
+  // silently falls back to text-only ranking, even if embeddings are written to the DB.
+  EMBEDDINGS_SERVICE_URL: process.env.EMBEDDINGS_SERVICE_URL,
+  EMBEDDINGS_SERVICE_TOKEN: process.env.EMBEDDINGS_SERVICE_TOKEN,
+  EMBEDDINGS_TIMEOUT_MS: process.env.EMBEDDINGS_TIMEOUT_MS,
+};
+
+// ============================================
+// HTTP Client
+// ============================================
+
+interface TestResponse {
+  status: number;
+  headers: Headers;
+  json: () => Promise<any>;
+  text: () => Promise<string>;
+}
+
+/**
+ * Make a request to the Hono app directly (no HTTP server needed)
+ */
+async function testRequest(
+  method: string,
+  path: string,
+  options?: {
+    body?: any;
+    headers?: Record<string, string>;
+    token?: string;
+    cookie?: string;
+    env?: Partial<Env>;
+  }
+): Promise<TestResponse> {
+  await ensureWorkspaceProvider();
+  const url = `http://localhost${path}`;
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...options?.headers,
+  };
+
+  if (options?.token) {
+    headers.Authorization = `Bearer ${options.token}`;
+  }
+
+  if (options?.cookie) {
+    headers.Cookie = options.cookie;
+  }
+
+  const request = new Request(url, {
+    method,
+    headers,
+    body: options?.body ? JSON.stringify(options.body) : undefined,
+  });
+
+  // Merge test env with any overrides
+  const env = { ...testEnv, ...options?.env };
+
+  // Execute against Hono app with test environment
+  const response = await app.fetch(request, env);
+
+  return {
+    status: response.status,
+    headers: response.headers,
+    json: () => response.json(),
+    text: () => response.text(),
+  };
+}
+
+// Convenience methods
+export const get = (path: string, options?: Omit<Parameters<typeof testRequest>[2], 'body'>) =>
+  testRequest('GET', path, options);
+
+export const post = (path: string, options?: Parameters<typeof testRequest>[2]) =>
+  testRequest('POST', path, options);
+
+export const put = (path: string, options?: Parameters<typeof testRequest>[2]) =>
+  testRequest('PUT', path, options);
+
+export const del = (path: string, options?: Omit<Parameters<typeof testRequest>[2], 'body'>) =>
+  testRequest('DELETE', path, options);
+
+// ============================================
+// MCP Session Management
+// ============================================
+
+/**
+ * Cache of initialized MCP sessions keyed by (token ?? '__anonymous__').
+ * Each entry stores the session ID returned by the server after initialize.
+ */
+const mcpSessions = new Map<string, string>();
+
+/**
+ * Get or create an initialized MCP session for the given auth token.
+ * Sends the proper initialize + notifications/initialized handshake
+ * and caches the resulting session ID for subsequent requests.
+ */
+async function ensureMcpSession(options?: {
+  token?: string;
+  env?: Partial<Env>;
+  agentId?: string;
+}): Promise<string> {
+  const cacheKey = `${options?.token ?? '__anonymous__'}:${options?.agentId ?? '__no_agent__'}`;
+
+  const existing = mcpSessions.get(cacheKey);
+  if (existing) return existing;
+
+  // 1. Send initialize
+  const initResponse = await post('/mcp', {
+    body: {
+      jsonrpc: '2.0',
+      id: '__test_init__',
+      method: 'initialize',
+      params: {
+        protocolVersion: '2025-03-26',
+        capabilities: {},
+        clientInfo: {
+          name: 'owletto-test',
+          version: '1.0',
+          ...(options?.agentId ? { agentId: options.agentId } : {}),
+        },
+      },
+    },
+    token: options?.token,
+    env: options?.env,
+  });
+
+  const sessionId = initResponse.headers.get('mcp-session-id');
+  if (!sessionId) {
+    const body = await initResponse.json();
+    throw new Error(
+      `MCP initialize did not return session ID (status=${initResponse.status}): ${JSON.stringify(body)}`
+    );
+  }
+
+  // 2. Send notifications/initialized
+  await post('/mcp', {
+    body: {
+      jsonrpc: '2.0',
+      method: 'notifications/initialized',
+    },
+    headers: { 'mcp-session-id': sessionId },
+    token: options?.token,
+    env: options?.env,
+  });
+
+  mcpSessions.set(cacheKey, sessionId);
+  return sessionId;
+}
+
+/**
+ * Clear cached MCP sessions (call between test suites if needed)
+ */
+export function clearMcpSessions(): void {
+  mcpSessions.clear();
+}
+
+// ============================================
+// MCP JSON-RPC Helpers
+// ============================================
+
+interface MCPResponse<T = any> {
+  jsonrpc: '2.0';
+  id: number | string;
+  result?: T;
+  error?: { code: number; message: string; data?: any };
+}
+
+/**
+ * Make an MCP JSON-RPC request (with proper session initialization)
+ */
+export async function mcpRequest<T = any>(
+  method: string,
+  params?: any,
+  options?: { token?: string; env?: Partial<Env>; agentId?: string }
+): Promise<MCPResponse<T>> {
+  const sessionId = await ensureMcpSession(options);
+
+  const response = await post('/mcp', {
+    body: {
+      jsonrpc: '2.0',
+      id: 1,
+      method,
+      params: params || {},
+    },
+    headers: { 'mcp-session-id': sessionId },
+    token: options?.token,
+    env: options?.env,
+  });
+
+  return response.json();
+}
+
+/**
+ * Make an MCP tools/call request with JSON format for raw results
+ */
+export async function mcpToolsCall<T = any>(
+  toolName: string,
+  args: any,
+  options?: { token?: string; env?: Partial<Env>; agentId?: string }
+): Promise<T> {
+  const sessionId = await ensureMcpSession(options);
+
+  const response = await post('/mcp', {
+    body: {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: { name: toolName, arguments: args },
+    },
+    headers: { 'X-MCP-Format': 'json', 'mcp-session-id': sessionId },
+    token: options?.token,
+    env: options?.env,
+  });
+
+  const json = await response.json();
+
+  if (json.error) {
+    throw new Error(`MCP Error [${json.error.code}]: ${json.error.message}`);
+  }
+
+  // Tool-level errors: MCP returns isError on the result, not at JSON-RPC level
+  if (json.result?.isError) {
+    const errText = json.result.content?.[0]?.text ?? 'Tool execution failed';
+    throw new Error(errText);
+  }
+
+  // Parse the text content which contains JSON
+  const textContent = json.result?.content?.[0]?.text;
+  if (textContent) {
+    try {
+      return JSON.parse(textContent);
+    } catch {
+      // Not JSON — return raw text (e.g. plain string results)
+      return textContent as T;
+    }
+  }
+
+  return json.result;
+}
+
+/**
+ * List all available MCP tools
+ */
+export async function mcpListTools(options?: {
+  token?: string;
+  env?: Partial<Env>;
+  agentId?: string;
+}): Promise<{ tools: Array<{ name: string; description: string }> }> {
+  const response = await mcpRequest('tools/list', {}, options);
+
+  if (response.error) {
+    throw new Error(`MCP Error: ${response.error.message}`);
+  }
+
+  return response.result;
+}

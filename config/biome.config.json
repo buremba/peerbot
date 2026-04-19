@@ -21,7 +21,16 @@
       "!**/.astro/**",
       "!**/tmp/**",
       "!**/provision-careops-watchers*",
-      "!**/*.css"
+      "!**/*.css",
+      "!**/packages/owletto-backend/**",
+      "!**/packages/owletto-cli/**",
+      "!**/packages/owletto-sdk/**",
+      "!**/packages/owletto-openclaw/**",
+      "!**/packages/owletto-worker/**",
+      "!**/packages/owletto-connectors/**",
+      "!**/packages/owletto-embeddings/**",
+      "!**/packages/owletto-extension/**",
+      "!**/packages/owletto-web/**"
     ]
   },
   "formatter": {

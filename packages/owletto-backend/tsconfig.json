@@ -1,0 +1,47 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "jsx": "react",
+
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "allowImportingTsExtensions": true,
+
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitReturns": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+
+    "noEmit": true,
+    "sourceMap": true,
+    "declaration": true,
+    "declarationMap": true,
+
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "isolatedModules": true,
+
+    "types": ["@types/node"],
+
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/*"],
+      "@/db/*": ["src/db/*"],
+      "@/tools/*": ["src/tools/*"],
+      "@/types/*": ["src/types/*"]
+    }
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx"],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "src/utils/__tests__/owletto-guidance-sync.test.ts",
+    "src/__tests__/integration/events/content-distribution.test.ts",
+    "src/__tests__/integration/cli"
+  ]
+}

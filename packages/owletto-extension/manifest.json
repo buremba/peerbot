@@ -1,0 +1,57 @@
+{
+  "manifest_version": 3,
+  "name": "Owletto",
+  "version": "0.1.0",
+  "description": "Never forget anything. Owletto is your companion to automate work on your browser.",
+
+  "permissions": [
+    "storage",
+    "alarms",
+    "activeTab",
+    "tabs",
+    "identity",
+    "offscreen",
+    "sidePanel",
+    "notifications"
+  ],
+
+  "host_permissions": [
+    "https://owletto.com/*",
+    "https://localhost:5173/*",
+    "http://localhost:5173/*"
+  ],
+
+  "optional_host_permissions": ["*://*/*"],
+
+  "background": {
+    "service_worker": "background/service-worker.js",
+    "type": "module"
+  },
+
+  "side_panel": {
+    "default_path": "sidebar/index.html"
+  },
+
+  "action": {
+    "default_popup": "popup/index.html",
+    "default_icon": {
+      "16": "icons/icon-16-mono.png",
+      "48": "icons/icon-48-mono.png",
+      "128": "icons/icon-128-mono.png"
+    }
+  },
+
+  "icons": {
+    "16": "icons/icon-16.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content/index.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

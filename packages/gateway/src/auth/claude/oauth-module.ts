@@ -257,7 +257,7 @@ export class ClaudeOAuthModule extends BaseProviderModule {
       return null;
     });
 
-    if (!response || !response.ok) {
+    if (!response?.ok) {
       logger.warn(
         {
           agentId,

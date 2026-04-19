@@ -129,23 +129,22 @@ describe("ingestInboundAttachments", () => {
         },
       },
     },
-  ] as const)(
-    "skips $label and still publishes the rest of the batch",
-    async ({ bad }) => {
-      const { files } = await ingest([
-        bad as InboundAttachmentLike,
-        {
-          type: "file",
-          name: "ok.txt",
-          mimeType: "text/plain",
-          data: Buffer.from("ok"),
-        },
-      ]);
+  ] as const)("skips $label and still publishes the rest of the batch", async ({
+    bad,
+  }) => {
+    const { files } = await ingest([
+      bad as InboundAttachmentLike,
+      {
+        type: "file",
+        name: "ok.txt",
+        mimeType: "text/plain",
+        data: Buffer.from("ok"),
+      },
+    ]);
 
-      expect(files).toHaveLength(1);
-      expect(files[0]?.name).toBe("ok.txt");
-    }
-  );
+    expect(files).toHaveLength(1);
+    expect(files[0]?.name).toBe("ok.txt");
+  });
 
   test("derives a filename from mimeType + index when none is provided", async () => {
     const { files } = await ingest([

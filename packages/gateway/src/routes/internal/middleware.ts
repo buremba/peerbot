@@ -10,7 +10,7 @@ export const authenticateWorker = async (
   next: () => Promise<void>
 ): Promise<Response | undefined> => {
   const authHeader = c.req.header("authorization");
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+  if (!authHeader?.startsWith("Bearer ")) {
     return c.json({ error: "Missing or invalid authorization" }, 401);
   }
   const workerToken = authHeader.substring(7);

@@ -488,6 +488,14 @@ export async function createAuth(env: Env, request?: Request) {
       useSecureCookies:
         runtimeNodeEnv === 'production' ||
         safeParseUrl(getConfiguredPublicOrigin())?.protocol === 'https:',
+      ...(process.env.AUTH_COOKIE_DOMAIN
+        ? {
+            crossSubDomainCookies: {
+              enabled: true,
+              domain: process.env.AUTH_COOKIE_DOMAIN,
+            },
+          }
+        : {}),
     },
 
     trustedOrigins: Array.from(trustedOriginSet),

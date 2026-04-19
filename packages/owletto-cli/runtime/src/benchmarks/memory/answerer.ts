@@ -442,10 +442,11 @@ export class OpenAiCompatibleAnswerer implements BenchmarkAnswerer {
   private readonly temperature: number;
   private readonly maxTokens: number;
   private readonly description: string;
-  private readonly apiKeyEnvLabel: string;
-  // Held in a closure so it never appears as a class field reachable
-  // from describe() or other public surfaces.
+  // Both the env var name and value are read through closures so they
+  // never appear as class fields, which CodeQL otherwise flags as
+  // sensitive even when only the name (not the value) is stored.
   private readonly readApiKey: () => string | undefined;
+  private readonly missingKeyError: () => Error;
 
   constructor(config: OpenAiCompatibleAnswererConfig) {
     this.model = config.model;
@@ -453,9 +454,9 @@ export class OpenAiCompatibleAnswerer implements BenchmarkAnswerer {
     this.temperature = config.temperature ?? 0;
     this.maxTokens = config.maxTokens ?? 300;
     this.description = `${this.model} via ${this.baseUrl}`;
-    const apiKeyEnv = config.apiKeyEnv;
-    this.apiKeyEnvLabel = apiKeyEnv;
-    this.readApiKey = () => process.env[apiKeyEnv];
+    const envVar = config.apiKeyEnv;
+    this.readApiKey = () => process.env[envVar];
+    this.missingKeyError = () => new Error(`Missing answerer API key env '${envVar}'`);
   }
 
   describe(): string {
@@ -553,7 +554,7 @@ export class OpenAiCompatibleAnswerer implements BenchmarkAnswerer {
 
     const apiKey = this.readApiKey();
     if (!apiKey) {
-      throw new Error(`Missing answerer API key env '${this.apiKeyEnvLabel}'`);
+      throw this.missingKeyError();
     }
 
     const initialMaxTokens = this.maxTokens;

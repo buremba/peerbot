@@ -27,7 +27,7 @@
     "typecheck:packages": "cd packages/core && bun run typecheck && cd ../cli-core && bun run typecheck && cd ../gateway && bun run typecheck && cd ../worker && bun run typecheck",
     "knip": "bunx knip --config config/knip.ts",
     "gitleaks": "docker run --rm -v $(pwd):/repo -w /repo zricethezav/gitleaks:latest detect --source=/repo --no-git --redact --config=/repo/config/gitleaks.toml",
-    "dev:gateway": "bun run packages/gateway/src/index.ts",
+    "dev:gateway": "bun run packages/gateway/src/cli/index.ts",
     "dev:worker": "bun run packages/worker/src/index.ts",
     "docker:build": "docker build -f docker/Dockerfile.gateway -t lobu-gateway . && docker build -f docker/Dockerfile.worker -t lobu-worker .",
     "k8s:deploy": "helm upgrade --install lobu charts/lobu --dependency-update",

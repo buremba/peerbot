@@ -1,11 +1,10 @@
-#!/usr/bin/env bun
-
 /**
- * Main entry point for Lobu Gateway
+ * Library entry point for @lobu/gateway.
  *
- * When run directly (CLI mode): starts the gateway server.
- * When imported as a library (embedded mode): exports Gateway, config builders,
- * and the Hono app factory for mounting on a host server.
+ * Exports the Gateway, config builders, and the Hono app factory so the
+ * gateway can be embedded inside a host process (e.g. `owletto-backend`).
+ * The standalone CLI/server lives in `./cli/index.ts` for callers that want
+ * to run the gateway as its own process.
  */
 
 // ── Primary API ─────────────────────────────────────────────────────────────
@@ -50,7 +49,3 @@ export type {
   AgentStore,
 } from "@lobu/core";
 
-// ── CLI mode (run directly, not when imported as library) ───────────────────
-if (require.main === module) {
-  import("./cli");
-}

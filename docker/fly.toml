@@ -5,7 +5,7 @@ primary_region = "ams"
   dockerfile = "docker/Dockerfile.gateway"
 
 [processes]
-  app = "bun packages/gateway/src/index.ts"
+  app = "bun packages/gateway/src/cli/index.ts"
 
 [env]
   NODE_ENV = "production"

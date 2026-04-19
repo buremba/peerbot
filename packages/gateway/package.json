@@ -32,8 +32,8 @@
   },
   "scripts": {
     "build": "tsc",
-    "dev": "DEPLOYMENT_MODE=docker bun --watch src/index.ts -- --env ../../.env",
-    "start": "cd ../core && bun run build && cd ../gateway && bun src/index.ts",
+    "dev": "DEPLOYMENT_MODE=docker bun --watch src/cli/index.ts -- --env ../../.env",
+    "start": "cd ../core && bun run build && cd ../gateway && bun src/cli/index.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit"
   },

@@ -46,7 +46,7 @@ spec:
               {{- if and .Values.redis.enabled .Values.redis.auth.enabled }}
               export QUEUE_URL="redis://:${REDIS_PASSWORD}@{{ include "lobu.fullname" . }}-redis-master:6379";
               {{- end }}
-              exec bun packages/gateway/src/index.ts
+              exec bun packages/gateway/src/cli/index.ts
           ports:
             - name: http
               containerPort: 8080

@@ -64,4 +64,4 @@ RUN chmod -R a+rX /app
 
 # Run with bun for TypeScript support and hot reload in dev
 ENTRYPOINT []
-CMD ["sh", "-lc", "exec bun --watch /app/packages/gateway/src/index.ts"]
+CMD ["sh", "-lc", "exec bun --watch /app/packages/gateway/src/cli/index.ts"]

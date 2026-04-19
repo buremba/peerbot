@@ -602,17 +602,34 @@ export default class YouTubeConnector extends ConnectorRuntime {
 
     while ((match = textRegex.exec(xml)) !== null) {
       let text = match[1];
-      // Decode HTML entities
-      text = text
-        .replace(/&amp;/g, '&')
-        .replace(/&lt;/g, '<')
-        .replace(/&gt;/g, '>')
-        .replace(/&quot;/g, '"')
-        .replace(/&#39;/g, "'")
-        .replace(/&apos;/g, "'")
-        .replace(/&#(\d+);/g, (_m, code) => String.fromCharCode(parseInt(code, 10)));
-      // Strip any remaining HTML tags
-      text = text.replace(/<[^>]+>/g, '');
+      // Decode HTML entities in a single pass so '&amp;lt;' does not become '<'.
+      text = text.replace(
+        /&(amp|lt|gt|quot|apos|#39|#(\d+));/g,
+        (_match, name, numeric) => {
+          switch (name) {
+            case 'amp':
+              return '&';
+            case 'lt':
+              return '<';
+            case 'gt':
+              return '>';
+            case 'quot':
+              return '"';
+            case 'apos':
+            case '#39':
+              return "'";
+            default:
+              return numeric ? String.fromCharCode(parseInt(numeric, 10)) : '';
+          }
+        }
+      );
+      // Strip any remaining HTML tags (loop to handle nested/broken markup
+      // like '<<script>script>' that a single pass would leave behind).
+      let previous: string;
+      do {
+        previous = text;
+        text = text.replace(/<[^>]*>/g, '');
+      } while (text !== previous);
       const trimmed = text.trim();
       if (trimmed) {
         textSegments.push(trimmed);

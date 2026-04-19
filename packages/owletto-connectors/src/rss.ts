@@ -392,17 +392,33 @@ export default class RSSConnector extends ConnectorRuntime {
   // String helpers
   // -------------------------------------------------------------------------
 
-  /** Decode common HTML entities and numeric character references. */
+  /**
+   * Decode common HTML entities in a single pass so chained entities like
+   * '&amp;lt;' are not double-unescaped into '<'.
+   */
   private decodeEntities(text: string): string {
-    return text
-      .replace(/&amp;/g, '&')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      .replace(/&quot;/g, '"')
-      .replace(/&#39;/g, "'")
-      .replace(/&apos;/g, "'")
-      .replace(/&#x([0-9a-fA-F]+);/g, (_m, hex) => String.fromCharCode(parseInt(hex, 16)))
-      .replace(/&#(\d+);/g, (_m, code) => String.fromCharCode(parseInt(code, 10)));
+    return text.replace(
+      /&(amp|lt|gt|quot|apos|#39|#x([0-9a-fA-F]+)|#(\d+));/g,
+      (_match, name, hex, decimal) => {
+        switch (name) {
+          case 'amp':
+            return '&';
+          case 'lt':
+            return '<';
+          case 'gt':
+            return '>';
+          case 'quot':
+            return '"';
+          case 'apos':
+          case '#39':
+            return "'";
+          default:
+            if (hex) return String.fromCharCode(parseInt(hex, 16));
+            if (decimal) return String.fromCharCode(parseInt(decimal, 10));
+            return _match;
+        }
+      }
+    );
   }
 
   /** Strip HTML tags from text. */

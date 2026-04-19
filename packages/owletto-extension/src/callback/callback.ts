@@ -23,15 +23,22 @@ chrome.runtime.sendMessage({
 // Update UI based on result
 const container = document.querySelector('.container');
 if (container) {
+  container.replaceChildren();
   if (success) {
-    container.innerHTML = `
-      <p style="color: #4CAF50; font-size: 18px;">✓ Signed in successfully!</p>
-      <p>This tab will close automatically...</p>
-    `;
+    const heading = document.createElement('p');
+    heading.style.color = '#4CAF50';
+    heading.style.fontSize = '18px';
+    heading.textContent = '✓ Signed in successfully!';
+    const body = document.createElement('p');
+    body.textContent = 'This tab will close automatically...';
+    container.append(heading, body);
   } else {
-    container.innerHTML = `
-      <p style="color: #f44336; font-size: 18px;">✗ Sign in failed</p>
-      <p>${error || errorDescription || 'Unknown error'}</p>
-    `;
+    const heading = document.createElement('p');
+    heading.style.color = '#f44336';
+    heading.style.fontSize = '18px';
+    heading.textContent = '✗ Sign in failed';
+    const body = document.createElement('p');
+    body.textContent = error || errorDescription || 'Unknown error';
+    container.append(heading, body);
   }
 }

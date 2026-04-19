@@ -20,6 +20,10 @@ function flattenQuestions(system: AggregateSystemResult): QuestionResult[] {
   return system.trials.flatMap((trial) => trial.questions);
 }
 
+function escapeMarkdownCell(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/\|/g, '\\|');
+}
+
 function summarizeIssue(question: QuestionResult): string {
   if (question.score.retrievalRecall < 1) return 'retrieval miss';
   if (question.score.answerCorrect === 0) return 'answer miss';
@@ -50,7 +54,7 @@ function renderMisses(system: AggregateSystemResult): string {
   const rows = misses
     .map(
       (question) =>
-        `| ${question.category} | ${question.prompt.replace(/\|/g, '\\|')} | ${summarizeIssue(question)} | ${question.expectedSourceStepIds.join(', ')} | ${question.retrievedIds.join(', ') || '—'} | ${(question.answer ?? 'unknown').replace(/\|/g, '\\|')} | ${(question.citedIds.join(', ') || '—').replace(/\|/g, '\\|')} |`
+        `| ${question.category} | ${escapeMarkdownCell(question.prompt)} | ${summarizeIssue(question)} | ${question.expectedSourceStepIds.join(', ')} | ${question.retrievedIds.join(', ') || '—'} | ${escapeMarkdownCell(question.answer ?? 'unknown')} | ${escapeMarkdownCell(question.citedIds.join(', ') || '—')} |`
     )
     .join('\n');
 

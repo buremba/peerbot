@@ -162,5 +162,9 @@ function normalizeAndValidateApiUrl(apiUrl: string): string {
 }
 
 function normalizeApiUrl(url: string): string {
-  return url.replace(/\/+$/, "");
+  let end = url.length;
+  while (end > 0 && url.charCodeAt(end - 1) === 47) {
+    end--;
+  }
+  return end === url.length ? url : url.slice(0, end);
 }

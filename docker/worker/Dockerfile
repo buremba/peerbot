@@ -1,65 +1,82 @@
 # ===========================================
-# Stage 1: Builder
+# Owletto Worker (owletto-worker daemon)
 # ===========================================
+# Self-hosted worker for Owletto connectors and embedding generation.
+
 FROM node:22-bookworm AS builder
 
 WORKDIR /app
 
-# Install pnpm
-RUN npm install -g pnpm@9
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      git ca-certificates curl unzip \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash \
+    && chmod +x /usr/local/bin/bun
 
-# Copy root package files and workspace config
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+ENV PATH="/usr/local/bin:${PATH}"
 
-# Copy worker package.json for workspace install
-COPY packages/worker/package.json packages/worker/
+# Root workspace files
+COPY bun.lock package.json tsconfig.json ./
+COPY patches/ ./patches/
 
-# Install all workspace dependencies
-RUN pnpm install --frozen-lockfile
+# Manifests for the worker and its workspace deps
+COPY packages/owletto-worker/package.json packages/owletto-worker/
+COPY packages/owletto-sdk/package.json packages/owletto-sdk/
+COPY packages/owletto-connectors/package.json packages/owletto-connectors/
+COPY packages/owletto-embeddings/package.json packages/owletto-embeddings/
 
-# Copy source code (connectors from root + worker + embeddings-service utils)
-COPY tsconfig.json ./
-COPY connectors/ connectors/
-COPY src/ src/
-COPY packages/worker/src/ packages/worker/src/
-COPY packages/worker/tsconfig.json packages/worker/
-COPY packages/embeddings-service/src/ packages/embeddings-service/src/
+# Stub workspaces not needed at build time
+RUN mkdir -p packages/cli packages/cli-core packages/core packages/gateway packages/landing \
+               packages/owletto-backend packages/owletto-cli packages/owletto-extension \
+               packages/owletto-openclaw packages/owletto-web packages/worker packages/mcpsandbox \
+    && for p in cli cli-core core gateway landing owletto-backend owletto-cli \
+                owletto-extension owletto-openclaw owletto-web worker mcpsandbox; do \
+        echo "{\"name\":\"@lobu/$p\",\"version\":\"0.0.0\",\"private\":true}" > "packages/$p/package.json"; \
+      done
+
+RUN --mount=type=cache,target=/root/.bun/install/cache bun install
+
+# Source code
+COPY packages/owletto-sdk/ packages/owletto-sdk/
+COPY packages/owletto-connectors/ packages/owletto-connectors/
+COPY packages/owletto-embeddings/ packages/owletto-embeddings/
+COPY packages/owletto-worker/ packages/owletto-worker/
+
+# Build SDK dist (worker imports compiled sdk)
+RUN cd packages/owletto-sdk && bunx tsc
 
 # ===========================================
-# Stage 2: Runtime
+# Runtime
 # ===========================================
 FROM node:22-bookworm-slim AS runtime
 
 WORKDIR /app
 
-# Install system deps for Chromium + exiftool
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libimage-exiftool-perl \
-    # Chromium runtime deps
-    libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
-    libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libgbm1 libpango-1.0-0 \
-    libcairo2 libasound2 libxshmfence1 libxfixes3 libglib2.0-0 fonts-liberation \
-    && rm -rf /var/lib/apt/lists/*
-RUN npm install -g pnpm@9 tsx@4
+      ca-certificates curl unzip \
+      libimage-exiftool-perl \
+      libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
+      libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libgbm1 libpango-1.0-0 \
+      libcairo2 libasound2 libxshmfence1 libxfixes3 libglib2.0-0 fonts-liberation \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash \
+    && chmod +x /usr/local/bin/bun
 
-# Create non-root user for security
+ENV PATH="/usr/local/bin:${PATH}"
+
+# Non-root user
 RUN useradd -m -s /bin/bash worker && \
     mkdir -p /app/.cache/transformers /ms-playwright && \
     chown -R worker:worker /app /ms-playwright
 
-# Copy installed dependencies and source from builder
 COPY --from=builder --chown=worker:worker /app/node_modules ./node_modules
-COPY --from=builder --chown=worker:worker /app/connectors ./connectors
-COPY --from=builder --chown=worker:worker /app/src ./src
-COPY --from=builder --chown=worker:worker /app/packages/worker/src ./packages/worker/src
-COPY --from=builder --chown=worker:worker /app/packages/worker/tsconfig.json ./packages/worker/
-COPY --from=builder --chown=worker:worker /app/packages/worker/package.json ./packages/worker/
-COPY --from=builder --chown=worker:worker /app/packages/worker/node_modules ./packages/worker/node_modules
-COPY --from=builder --chown=worker:worker /app/packages/embeddings-service/src ./packages/embeddings-service/src
-COPY --from=builder --chown=worker:worker /app/tsconfig.json ./
 COPY --from=builder --chown=worker:worker /app/package.json ./
+COPY --from=builder --chown=worker:worker /app/tsconfig.json ./
+COPY --from=builder --chown=worker:worker /app/packages/owletto-sdk ./packages/owletto-sdk
+COPY --from=builder --chown=worker:worker /app/packages/owletto-connectors ./packages/owletto-connectors
+COPY --from=builder --chown=worker:worker /app/packages/owletto-embeddings ./packages/owletto-embeddings
+COPY --from=builder --chown=worker:worker /app/packages/owletto-worker ./packages/owletto-worker
 
-# Copy health check script
 COPY --chown=worker:worker docker/worker/healthcheck.sh /healthcheck.sh
 RUN chmod +x /healthcheck.sh
 
@@ -73,11 +90,9 @@ RUN node -e " \
     { stdio: 'inherit' } \
   );"
 
-# Environment defaults
 ENV NODE_ENV=production
 ENV TRANSFORMERS_CACHE=/app/.cache/transformers
 
-WORKDIR /app/packages/worker
+WORKDIR /app/packages/owletto-worker
 
-# Start the worker daemon
-CMD ["tsx", "src/bin.ts", "daemon"]
+CMD ["bun", "src/bin.ts", "daemon"]

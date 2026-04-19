@@ -1,36 +1,61 @@
 # ===========================================
-# Embeddings Service
+# Embeddings Service (owletto-embeddings)
 # ===========================================
 
 FROM node:22-slim AS builder
 
 WORKDIR /app
 
-RUN npm install -g pnpm@9
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      git ca-certificates curl unzip \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash \
+    && chmod +x /usr/local/bin/bun
 
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-COPY packages/embeddings-service/package.json packages/embeddings-service/
+ENV PATH="/usr/local/bin:${PATH}"
 
-RUN pnpm install --frozen-lockfile
+COPY bun.lock package.json tsconfig.json ./
+COPY patches/ ./patches/
+COPY packages/owletto-embeddings/package.json packages/owletto-embeddings/
 
-COPY packages/embeddings-service/src/ packages/embeddings-service/src/
-COPY packages/embeddings-service/tsconfig.json packages/embeddings-service/
+# Stub workspaces not needed at build time
+RUN mkdir -p packages/cli packages/cli-core packages/core packages/gateway packages/landing \
+               packages/owletto-backend packages/owletto-cli packages/owletto-connectors \
+               packages/owletto-extension packages/owletto-openclaw packages/owletto-sdk \
+               packages/owletto-web packages/owletto-worker packages/worker packages/mcpsandbox \
+    && for p in cli cli-core core gateway landing owletto-backend owletto-cli owletto-connectors \
+                owletto-extension owletto-openclaw owletto-sdk owletto-web owletto-worker worker mcpsandbox; do \
+        echo "{\"name\":\"@lobu/$p\",\"version\":\"0.0.0\",\"private\":true}" > "packages/$p/package.json"; \
+      done
 
-RUN pnpm --filter @owletto/embeddings-service exec tsc --noEmit
+RUN --mount=type=cache,target=/root/.bun/install/cache bun install
 
+COPY packages/owletto-embeddings/ packages/owletto-embeddings/
+
+RUN cd packages/owletto-embeddings && bunx tsc --noEmit
+
+# ===========================================
+# Runtime
+# ===========================================
 FROM node:22-slim AS runtime
 
 WORKDIR /app
 
-RUN npm install -g pnpm@9 tsx@4
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates curl unzip \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash \
+    && chmod +x /usr/local/bin/bun
+
+ENV PATH="/usr/local/bin:${PATH}"
 
 RUN useradd -m -s /bin/bash embeddings && \
     mkdir -p /app/.cache/transformers && \
     chown -R embeddings:embeddings /app
 
 COPY --from=builder --chown=embeddings:embeddings /app/node_modules ./node_modules
-COPY --from=builder --chown=embeddings:embeddings /app/packages/embeddings-service ./packages/embeddings-service
 COPY --from=builder --chown=embeddings:embeddings /app/package.json ./
+COPY --from=builder --chown=embeddings:embeddings /app/packages/owletto-embeddings ./packages/owletto-embeddings
 
 ENV NODE_ENV=production
 ENV TRANSFORMERS_CACHE=/app/.cache/transformers
@@ -41,6 +66,6 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
   CMD node -e "fetch('http://localhost:8790/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
 USER embeddings
-WORKDIR /app/packages/embeddings-service
+WORKDIR /app/packages/owletto-embeddings
 
-CMD ["tsx", "src/server.ts"]
+CMD ["bun", "src/server.ts"]

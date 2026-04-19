@@ -50,7 +50,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
+
+      - uses: ./.github/actions/setup-submodule
+        with:
+          deploy-key: ${{ secrets.OWLETTO_WEB_DEPLOY_KEY }}
+
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.5

@@ -8,6 +8,9 @@ const PACKAGES = [
   "packages/gateway",
   "packages/worker",
   "packages/cli",
+  "packages/owletto-sdk",
+  "packages/owletto-openclaw",
+  "packages/owletto-cli",
 ];
 
 async function main() {

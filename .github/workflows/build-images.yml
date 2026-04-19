@@ -8,9 +8,12 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME_APP: ${{ github.repository }}-app
-  IMAGE_NAME_WORKER: ${{ github.repository }}-worker
-  IMAGE_NAME_EMBEDDINGS: ${{ github.repository }}-embeddings
+  # Image names are pinned so the GitOps repo's ImageUpdateAutomation keeps
+  # tracking ghcr.io/lobu-ai/owletto-{app,worker,embeddings} after the
+  # owletto -> lobu monorepo consolidation.
+  IMAGE_NAME_APP: lobu-ai/owletto-app
+  IMAGE_NAME_WORKER: lobu-ai/owletto-worker
+  IMAGE_NAME_EMBEDDINGS: lobu-ai/owletto-embeddings
 
 jobs:
   generate-tag:
@@ -30,18 +33,12 @@ jobs:
       packages: write
 
     steps:
-      - name: Set up SSH for private submodule
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.SUBMODULE_DEPLOY_KEY }}
-
-      - name: Rewrite submodule URL to SSH
-        run: git config --global url."git@github.com:lobu-ai/owletto-web.git".insteadOf "https://github.com/lobu-ai/owletto-web.git"
-
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup-submodule
         with:
-          submodules: recursive
+          deploy-key: ${{ secrets.OWLETTO_WEB_DEPLOY_KEY }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3

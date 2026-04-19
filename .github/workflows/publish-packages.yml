@@ -30,6 +30,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: ./.github/actions/setup-submodule
+        with:
+          deploy-key: ${{ secrets.OWLETTO_WEB_DEPLOY_KEY }}
+
       - uses: actions/setup-node@v4
         with:
           # Node 24 ships with npm >= 11.5.1 which supports OIDC trusted

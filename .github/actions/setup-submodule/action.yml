@@ -1,0 +1,44 @@
+name: "Set up private submodule"
+description: >
+  Checks out packages/owletto-web via deploy key when available. For forks and
+  runs without the secret, writes a stub package.json so bun workspaces still
+  resolve (the web assets just won't build).
+
+inputs:
+  deploy-key:
+    description: "SSH deploy key with read access to lobu-ai/owletto-web"
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Set up SSH agent for submodule
+      if: inputs.deploy-key != ''
+      uses: webfactory/ssh-agent@v0.9.0
+      with:
+        ssh-private-key: ${{ inputs.deploy-key }}
+
+    - name: Initialize submodule via SSH
+      if: inputs.deploy-key != ''
+      shell: bash
+      run: |
+        set -euo pipefail
+        git config --global url."git@github.com:lobu-ai/owletto-web.git".insteadOf "https://github.com/lobu-ai/owletto-web.git"
+        git submodule update --init --recursive packages/owletto-web
+
+    - name: Write stub package.json when submodule is unavailable
+      if: inputs.deploy-key == ''
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "No deploy key — writing stub package.json for packages/owletto-web"
+        mkdir -p packages/owletto-web
+        printf '%s\n' \
+          '{' \
+          '  "name": "@owletto/web",' \
+          '  "private": true,' \
+          '  "version": "0.0.0-stub",' \
+          '  "description": "Stub — private submodule not initialized"' \
+          '}' \
+          > packages/owletto-web/package.json

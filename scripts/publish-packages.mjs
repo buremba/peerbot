@@ -23,7 +23,15 @@ const PACKAGES = [
   { dir: "packages/gateway", transform: rewriteWorkspaceRefs },
   { dir: "packages/worker", transform: rewriteWorkspaceRefs },
   { dir: "packages/cli", transform: rewriteWorkspaceRefs },
+  { dir: "packages/owletto-sdk", transform: rewriteWorkspaceRefs },
+  { dir: "packages/owletto-openclaw", transform: rewriteWorkspaceRefs },
+  { dir: "packages/owletto-cli", transform: rewriteWorkspaceRefs },
 ];
+
+// Published package names that don't use the @lobu/ scope. Kept as a small
+// allow-list so rewriteWorkspaceRefs can still reject unexpected workspace
+// references slipping into published package.jsons.
+const UNSCOPED_ALLOWED_PUBLISHED_NAMES = new Set(["owletto"]);
 
 /**
  * `workspace:*` / `workspace:^` / `workspace:~` references are a Bun/Yarn
@@ -37,12 +45,15 @@ function rewriteWorkspaceRefs(pkg) {
     if (!deps) return;
     for (const [name, spec] of Object.entries(deps)) {
       if (typeof spec !== "string" || !spec.startsWith("workspace:")) continue;
-      if (!name.startsWith("@lobu/")) {
+      if (
+        !name.startsWith("@lobu/") &&
+        !UNSCOPED_ALLOWED_PUBLISHED_NAMES.has(name)
+      ) {
         throw new Error(
           `Unexpected workspace ref outside @lobu scope: ${name}@${spec}`
         );
       }
-      // All @lobu/* packages are version-locked to the root version by
+      // All workspace packages are version-locked to the root version by
       // bump-version.mjs, so the current root version is the right target.
       deps[name] = rootVersion();
     }

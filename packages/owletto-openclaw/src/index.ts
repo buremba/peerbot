@@ -880,11 +880,13 @@ function fetchMcpBootstrapSync(config: ResolvedPluginConfig): McpBootstrap {
     }
   }
 
-  const authHeader = token ? `'Authorization': 'Bearer ${token.replace(/'/g, '')}'` : '';
-  // Sequential requests: initialize first (to get session ID), then tools/list
+  // Pass mcpUrl + auth token through env vars so neither the shell nor the
+  // node -e argument carries attacker-controlled text.
   const script = `
-    const url = '${config.mcpUrl}';
-    const base = { 'Content-Type': 'application/json', 'Accept': 'application/json', ${authHeader} };
+    const url = process.env.__MCP_URL;
+    const token = process.env.__MCP_TOKEN;
+    const base = { 'Content-Type': 'application/json', 'Accept': 'application/json' };
+    if (token) base.Authorization = 'Bearer ' + token;
     async function run() {
       const initRes = await fetch(url, { method: 'POST', headers: base, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'openclaw-owletto', version: '1.0.0' } } }) });
       const initData = await initRes.json();
@@ -899,13 +901,19 @@ function fetchMcpBootstrapSync(config: ResolvedPluginConfig): McpBootstrap {
   `;
 
   try {
-    const output = execSync(`node -e "${script.replace(/\n/g, ' ')}"`, {
+    const output = spawnSync('node', ['-e', script], {
       timeout: 15_000,
       maxBuffer: 1024 * 1024,
       stdio: ['pipe', 'pipe', 'pipe'],
+      env: {
+        ...process.env,
+        __MCP_URL: config.mcpUrl,
+        __MCP_TOKEN: token ?? '',
+      },
     })
-      .toString()
+      .stdout?.toString()
       .trim();
+    if (!output) return { tools: [], instructions: null, sessionId: null };
     return JSON.parse(output) as McpBootstrap;
   } catch {
     return { tools: [], instructions: null, sessionId: null };

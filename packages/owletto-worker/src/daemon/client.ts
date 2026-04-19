@@ -5,6 +5,12 @@
  * Updated for V1 integration platform: runs-based job model.
  */
 
+function trimTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === 47) end--;
+  return end === value.length ? value : value.slice(0, end);
+}
+
 // ============================================
 // ExecutorClient Interface
 // ============================================
@@ -202,7 +208,7 @@ export class WorkerClient implements ExecutorClient {
     capabilities: WorkerCapabilities;
     version?: string;
   }) {
-    this.apiUrl = config.apiUrl.replace(/\/+$/, '');
+    this.apiUrl = trimTrailingSlashes(config.apiUrl);
     this.workerId = config.workerId;
     this.capabilities = config.capabilities;
     this.authToken = config.authToken?.trim() || undefined;

@@ -17,7 +17,9 @@ export interface CdpVersionInfo {
 }
 
 export function normalizeCdpUrl(value: string): string {
-  return value.replace(/\/+$/, '');
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === 47) end--;
+  return end === value.length ? value : value.slice(0, end);
 }
 
 // ---------------------------------------------------------------------------

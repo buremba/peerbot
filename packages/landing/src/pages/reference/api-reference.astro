@@ -4,7 +4,7 @@ import StarlightPage from "@astrojs/starlight/components/StarlightPage.astro";
 // Fetch spec server-side (build time for prod, per-request in dev) — no CORS issues
 const specOrigin = import.meta.env.DEV
   ? "http://localhost:8080"
-  : "https://community.lobu.ai";
+  : "https://app.lobu.ai";
 
 let spec: string | null = null;
 try {

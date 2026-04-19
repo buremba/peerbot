@@ -3,8 +3,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 export const LOBU_CONFIG_DIR = join(homedir(), ".config", "lobu");
-export const DEFAULT_CONTEXT_NAME = "community";
-const DEFAULT_API_URL = "https://community.lobu.ai/api/v1";
+export const DEFAULT_CONTEXT_NAME = "lobu";
+const DEFAULT_API_URL = "https://app.lobu.ai/api/v1";
 
 const CONTEXTS_FILE = join(LOBU_CONFIG_DIR, "config.json");
 

@@ -55,7 +55,7 @@ async function loadSlackBotScopes(): Promise<string[]> {
 
   const manifestPath =
     process.env.SLACK_MANIFEST_PATH ||
-    "config/slack-app-manifest.community.json";
+    "config/slack-app-manifest.self-install.json";
 
   try {
     const raw = await readFile(manifestPath, "utf8");

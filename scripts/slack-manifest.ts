@@ -169,7 +169,7 @@ async function main(): Promise<void> {
   const cmd = process.argv[2] || "print";
   const manifestPath =
     process.env.SLACK_MANIFEST_PATH ||
-    "config/slack-app-manifest.community.json";
+    "config/slack-app-manifest.self-install.json";
 
   const raw = await readFile(manifestPath, "utf8");
   const manifest = JSON.parse(raw) as Record<string, unknown>;

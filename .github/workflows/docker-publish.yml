@@ -151,16 +151,3 @@ jobs:
           helm dependency update charts/lobu/
           helm package charts/lobu/
           helm push lobu-${CHART_VERSION}.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
-
-  deploy-community:
-    needs: [build-and-push, publish-chart]
-    name: Trigger deployment
-    runs-on: ubuntu-latest
-    if: success() && github.ref == 'refs/heads/main'
-    steps:
-      - name: Trigger deployment
-        uses: peter-evans/repository-dispatch@v2
-        with:
-          token: ${{ secrets.GH_TOKEN_PEERBOT }}
-          event-type: deploy-community
-          client-payload: '{"tag": "${{ needs.build-and-push.outputs.image-tag }}", "ref": "${{ github.ref }}", "sha": "${{ github.sha }}"}'

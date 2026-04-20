@@ -31,4 +31,19 @@ describe('getCanonicalRedirectUrl', () => {
       getCanonicalRedirectUrl('http://localhost:8787/brand/acme', 'https://community.lobu.ai')
     ).toBeNull();
   });
+
+  it('preserves sibling subdomains under the auth cookie zone', () => {
+    expect(
+      getCanonicalRedirectUrl('https://acme.lobu.ai/dashboard', 'https://app.lobu.ai', '.lobu.ai')
+    ).toBeNull();
+    expect(
+      getCanonicalRedirectUrl('https://lobu.ai/marketing', 'https://app.lobu.ai', '.lobu.ai')
+    ).toBeNull();
+  });
+
+  it('still redirects unrelated hosts when a cookie zone is set', () => {
+    expect(
+      getCanonicalRedirectUrl('https://owletto.com/foo', 'https://app.lobu.ai', '.lobu.ai')
+    ).toBe('https://app.lobu.ai/foo');
+  });
 });

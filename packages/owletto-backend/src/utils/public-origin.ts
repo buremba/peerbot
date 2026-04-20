@@ -75,11 +75,14 @@ const LOCALHOST_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
 /**
  * Returns a canonical redirect URL when browser traffic lands on a non-canonical
  * host while a public origin is configured. Subdomains of the canonical host are
- * preserved so workspace routing keeps working.
+ * preserved so workspace routing keeps working. When AUTH_COOKIE_DOMAIN is set
+ * (e.g. ".lobu.ai") sibling subdomains of that zone are also preserved so
+ * per-org subdomains like acme.lobu.ai are not bounced to app.lobu.ai.
  */
 export function getCanonicalRedirectUrl(
   requestUrl: string,
-  configuredOrigin = getConfiguredPublicOrigin()
+  configuredOrigin = getConfiguredPublicOrigin(),
+  cookieDomain = process.env.AUTH_COOKIE_DOMAIN
 ): string | null {
   if (!configuredOrigin) return null;
 
@@ -99,6 +102,11 @@ export function getCanonicalRedirectUrl(
   if (LOCALHOST_HOSTNAMES.has(requestHost)) return null;
   if (request.origin === canonical.origin) return null;
   if (requestHost === canonicalHost || requestHost.endsWith(`.${canonicalHost}`)) {
+    return null;
+  }
+
+  const cookieZone = cookieDomain?.trim().replace(/^\./, '').toLowerCase();
+  if (cookieZone && (requestHost === cookieZone || requestHost.endsWith(`.${cookieZone}`))) {
     return null;
   }
 

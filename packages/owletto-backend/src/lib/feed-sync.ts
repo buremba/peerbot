@@ -4,7 +4,7 @@
  * Extracted from scripts/sync-local.ts for programmatic reuse.
  */
 
-import { executeCompiledConnector } from '../../packages/worker/src/executor/runtime';
+import { executeCompiledConnector } from '../../../owletto-worker/src/executor/runtime';
 import { getDb } from '../db/client';
 import { resolveConnectorCode } from '../utils/ensure-connector-installed';
 import { mergeExecutionConfig, resolveExecutionAuth } from '../utils/execution-context';

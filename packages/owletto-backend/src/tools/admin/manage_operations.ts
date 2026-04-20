@@ -198,7 +198,7 @@ async function executeLocalActionInline(
 
   try {
     const { executeCompiledConnector, getActionOutput } = await import(
-      '../../../packages/worker/src/executor/runtime'
+      '../../../../owletto-worker/src/executor/runtime'
     );
     const result = await executeCompiledConnector({
       mode: 'action',

@@ -138,7 +138,7 @@ export async function createAuth(env: Env, request?: Request) {
   }
 
   const auth = betterAuth({
-    secret: env.BETTER_AUTH_SECRET,
+    ...(env.BETTER_AUTH_SECRET ? { secret: env.BETTER_AUTH_SECRET } : {}),
     database: pool,
     baseURL: resolveBaseUrl({ request }),
     basePath: '/api/auth',
@@ -511,6 +511,9 @@ export async function createAuth(env: Env, request?: Request) {
 
     trustedOrigins: Array.from(trustedOriginSet),
   });
-  authCache.set(cacheKey, auth);
+  // betterAuth's inferred return narrows generics per call site (socialProviders
+  // shape, required-vs-optional database/secret); the cache stores the general
+  // Auth<BetterAuthOptions> shape, so widen via unknown.
+  authCache.set(cacheKey, auth as unknown as ReturnType<typeof betterAuth>);
   return auth;
 }

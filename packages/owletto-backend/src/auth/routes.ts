@@ -87,7 +87,7 @@ credentialRoutes.post('/credentials', requireAuth, async (c) => {
  */
 credentialRoutes.patch('/credentials/:id', requireAuth, async (c) => {
   const user = getAuthenticatedUser(c);
-  const credentialId = parseInt(c.req.param('id'), 10);
+  const credentialId = parseInt(c.req.param('id') ?? '', 10);
   if (Number.isNaN(credentialId)) {
     return c.json({ error: 'Invalid credential ID' }, 400);
   }
@@ -124,7 +124,7 @@ credentialRoutes.patch('/credentials/:id', requireAuth, async (c) => {
  */
 credentialRoutes.delete('/credentials/:id', requireAuth, async (c) => {
   const user = getAuthenticatedUser(c);
-  const credentialId = parseInt(c.req.param('id'), 10);
+  const credentialId = parseInt(c.req.param('id') ?? '', 10);
   if (Number.isNaN(credentialId)) {
     return c.json({ error: 'Invalid credential ID' }, 400);
   }
@@ -259,7 +259,7 @@ credentialRoutes.post('/tokens', requireAuth, async (c) => {
  */
 credentialRoutes.get('/tokens/:id', requireAuth, async (c) => {
   const user = getAuthenticatedUser(c);
-  const tokenId = parseInt(c.req.param('id'), 10);
+  const tokenId = parseInt(c.req.param('id') ?? '', 10);
   if (Number.isNaN(tokenId)) {
     return c.json({ error: 'Invalid token ID' }, 400);
   }
@@ -280,7 +280,7 @@ credentialRoutes.get('/tokens/:id', requireAuth, async (c) => {
  */
 credentialRoutes.patch('/tokens/:id', requireAuth, async (c) => {
   const user = getAuthenticatedUser(c);
-  const tokenId = parseInt(c.req.param('id'), 10);
+  const tokenId = parseInt(c.req.param('id') ?? '', 10);
   if (Number.isNaN(tokenId)) {
     return c.json({ error: 'Invalid token ID' }, 400);
   }
@@ -310,7 +310,7 @@ credentialRoutes.patch('/tokens/:id', requireAuth, async (c) => {
  */
 credentialRoutes.delete('/tokens/:id', requireAuth, async (c) => {
   const user = getAuthenticatedUser(c);
-  const tokenId = parseInt(c.req.param('id'), 10);
+  const tokenId = parseInt(c.req.param('id') ?? '', 10);
   if (Number.isNaN(tokenId)) {
     return c.json({ error: 'Invalid token ID' }, 400);
   }

@@ -83,6 +83,9 @@ async function withPublicOrg<T>(
 ): Promise<Response> {
   try {
     const orgSlug = c.req.param('orgSlug');
+    if (!orgSlug) {
+      return c.json({ error: 'Organization slug is required' }, 400);
+    }
     const organizationId = await resolvePublicOrganizationId(orgSlug);
     if (!organizationId) {
       return c.json({ error: 'Not found' }, 404);
@@ -214,6 +217,9 @@ export async function restToolProxy(
 ) {
   try {
     const toolName = explicitToolName ?? c.req.param('toolName');
+    if (!toolName) {
+      return c.json({ error: 'Tool name is required' }, 400);
+    }
     const args: Record<string, unknown> = explicitArgs ?? (await c.req.json());
     const authCtx = extractAuthContext(c);
     const result = await executeTool(toolName, args, c.env, authCtx);
@@ -405,6 +411,9 @@ export async function publicRestGetConnector(c: Context<{ Bindings: Env }>) {
   return withPublicOrg(c, async (organizationId) => {
     const sql = getDb();
     const connectorKey = c.req.param('connectorKey');
+    if (!connectorKey) {
+      throw new Error('Connector key is required');
+    }
 
     const connector = await getScopedConnectorDefinition({
       organizationId,
@@ -483,7 +492,7 @@ export async function publicRestGetConnector(c: Context<{ Bindings: Env }>) {
  */
 export async function restUpdateContentClassification(c: Context<{ Bindings: Env }>) {
   try {
-    const contentId = parseInt(c.req.param('id'), 10);
+    const contentId = parseInt(c.req.param('id') ?? '', 10);
     const classifierSlug = c.req.param('classifier_slug');
     const body = await c.req.json<{ value: string | null }>();
 

@@ -552,6 +552,9 @@ routes.delete('/mcp/:clientId', mcpAuth, async (c) => {
   return withOrg(c, async () => {
     const organizationId = c.get('organizationId') as string;
     const clientId = c.req.param('clientId');
+    if (!clientId) {
+      return c.json({ error: 'Client ID is required' }, 400);
+    }
     const sql = getDb();
 
     const rows = await sql`

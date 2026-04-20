@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { filterPostsSinceCheckpoint } from '../../../../connectors/linkedin';
+import { filterPostsSinceCheckpoint } from '../../../../../owletto-connectors/src/linkedin';
 
 describe('LinkedIn checkpoint filtering', () => {
   it('drops posts at or before the saved timestamp', () => {

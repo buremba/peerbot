@@ -8,6 +8,7 @@
 
 import type { PluginsConfig } from "./plugin-types";
 import type {
+  AuthProfile,
   InstalledProvider,
   McpServerConfig,
   ModelSelectionState,
@@ -52,6 +53,12 @@ export interface AgentSettings {
   toolsConfig?: ToolsConfig;
   /** OpenClaw plugin configuration */
   pluginsConfig?: PluginsConfig;
+  /**
+   * Reusable auth profiles persisted by host stores (e.g. Owletto's Postgres
+   * store). Lobu's gateway runtime uses UserAuthProfileStore instead, but the
+   * host's settings JSON column still round-trips this list.
+   */
+  authProfiles?: AuthProfile[];
   /** Installed providers for this agent (index 0 = primary). */
   installedProviders?: InstalledProvider[];
   /** Enable verbose logging (show tool calls, reasoning, etc.) */

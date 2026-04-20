@@ -212,7 +212,11 @@ async function serveStaticFile(c: Context<{ Bindings: Env }>, filePath: string) 
     'Cache-Control',
     isHtml ? 'no-cache, no-store, must-revalidate' : 'public, max-age=31536000, immutable'
   );
-  return c.body(body);
+  // Hono's Data type expects Uint8Array<ArrayBuffer>; copy into a fresh
+  // ArrayBuffer since fs.readFile returns Buffer<ArrayBufferLike>.
+  const ab = new ArrayBuffer(body.byteLength);
+  new Uint8Array(ab).set(body);
+  return c.body(new Uint8Array(ab));
 }
 
 const app = new Hono<{ Bindings: Env }>();

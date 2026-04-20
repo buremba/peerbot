@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { getMcpInstallTargets } from '../../../packages/web/src/lib/mcp-install-targets';
+import { getMcpInstallTargets } from '../../../../owletto-web/src/lib/mcp-install-targets';
 
 describe('getMcpInstallTargets', () => {
   const mcpUrl = 'http://localhost:4821/mcp/public-owletto';

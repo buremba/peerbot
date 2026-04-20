@@ -746,13 +746,6 @@ export abstract class BaseDeploymentManager {
     }
 
     if (hasSecrets) {
-      const proxyUrl = `${this.getDispatcherUrl()}/api/proxy`;
-      for (const provider of this.providerModules) {
-        Object.assign(
-          envVars,
-          provider.getProxyBaseUrlMappings(proxyUrl, agentId, context)
-        );
-      }
       logger.info(
         `🔐 Generated secret placeholders for ${deploymentName}, routing through proxy`
       );

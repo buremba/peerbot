@@ -872,8 +872,7 @@ export class OpenClawWorker implements WorkerExecutor {
     if (!providerBaseUrl) {
       const baseUrlEnvVar = DEFAULT_PROVIDER_BASE_URL_ENV[rawProvider];
       if (baseUrlEnvVar) {
-        const baseUrlValue =
-          credentialStore.get(baseUrlEnvVar) || process.env[baseUrlEnvVar];
+        const baseUrlValue = credentialStore.get(baseUrlEnvVar);
         if (baseUrlValue) {
           providerBaseUrl = baseUrlValue;
         }
@@ -1117,8 +1116,7 @@ export class OpenClawWorker implements WorkerExecutor {
     if (!providerBaseUrl) {
       const baseUrlEnvVar = DEFAULT_PROVIDER_BASE_URL_ENV[rawProvider];
       if (baseUrlEnvVar) {
-        const baseUrlValue =
-          credentialStore.get(baseUrlEnvVar) || process.env[baseUrlEnvVar];
+        const baseUrlValue = credentialStore.get(baseUrlEnvVar);
         if (baseUrlValue) {
           providerBaseUrl = baseUrlValue;
         }

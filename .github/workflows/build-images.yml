@@ -40,7 +40,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - uses: ./.github/actions/setup-submodule
+      - id: submodule
+        uses: ./.github/actions/setup-submodule
         with:
           deploy-key: ${{ secrets.OWLETTO_WEB_DEPLOY_KEY }}
 
@@ -75,6 +76,7 @@ jobs:
             CACHEBUST=${{ github.sha }}
             APP_GIT_SHA=${{ github.sha }}
             APP_BUILD_TIME=${{ github.event.head_commit.timestamp || github.run_id }}
+            SKIP_WEB_BUILD=${{ steps.submodule.outputs.stubbed == 'true' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

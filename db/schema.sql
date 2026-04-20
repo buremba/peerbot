@@ -1765,7 +1765,7 @@ CREATE TABLE public.organization (
     metadata text,
     visibility text DEFAULT 'private'::text NOT NULL,
     description text,
-    CONSTRAINT org_slug_not_reserved CHECK ((slug <> ALL (ARRAY['settings'::text, 'auth'::text, 'api'::text, 'templates'::text, 'help'::text, 'account'::text, 'admin'::text, 'health'::text, 'login'::text, 'logout'::text, 'signup'::text, 'register'::text])))
+    CONSTRAINT org_slug_not_reserved CHECK ((slug <> ALL (ARRAY['settings'::text, 'auth'::text, 'api'::text, 'templates'::text, 'help'::text, 'account'::text, 'admin'::text, 'health'::text, 'login'::text, 'logout'::text, 'signup'::text, 'register'::text, 'www'::text, 'mcp'::text, 'static'::text, 'assets'::text, 'cdn'::text, 'docs'::text, 'mail'::text])))
 );
 
 

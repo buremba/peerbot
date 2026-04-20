@@ -67,9 +67,11 @@ COPY packages/owletto-web packages/owletto-web
 # Build dist for packages whose `exports` map points at dist subpaths.
 # owletto-backend imports `@lobu/gateway/dist/connections` and
 # `@lobu/gateway/dist/api`, so gateway must be built before typechecking.
-RUN cd packages/core && bunx tsc
-RUN cd packages/owletto-sdk && bunx tsc
-RUN cd packages/gateway && bunx tsc
+# Use `tsc -b` (build mode) for gateway so it transitively builds its
+# `composite: true` reference (core) in dependency order with a coherent
+# tsbuildinfo. owletto-sdk has no references so a plain tsc is fine.
+RUN cd packages/owletto-sdk && bunx tsc \
+    && cd ../gateway && bunx tsc -b
 
 # Type check
 RUN cd packages/owletto-backend && bunx tsc --noEmit

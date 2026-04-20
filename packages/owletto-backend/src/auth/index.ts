@@ -17,6 +17,7 @@ import { resolveBaseUrl, safeParseUrl } from './base-url';
 import {
   getAuthConfig as getAuthConfigFromEnv,
   getEnabledLoginProviderConfigs,
+  resolveDefaultOrganizationId,
   resolveLoginProviderCredentials,
   resolveRequestOrganizationId,
 } from './config';
@@ -63,7 +64,8 @@ export async function createAuth(env: Env, request?: Request) {
   const pool = getAuthPool(env.DATABASE_URL!);
   const runtimeNodeEnv = env.NODE_ENV || process.env.NODE_ENV || 'development';
 
-  const providerRows = await getEnabledLoginProviderConfigs(organizationId);
+  const effectiveOrgId = organizationId ?? (await resolveDefaultOrganizationId());
+  const providerRows = await getEnabledLoginProviderConfigs(effectiveOrgId);
 
   // Build dynamic social providers from enabled connectors
   const socialProviders: Record<
@@ -79,7 +81,7 @@ export async function createAuth(env: Env, request?: Request) {
       connectorKey: row.connectorKey,
       clientIdKey: row.clientIdKey,
       clientSecretKey: row.clientSecretKey,
-      organizationId,
+      organizationId: effectiveOrgId,
     });
     const clientId = credentials.clientId ?? '';
     const clientSecret = credentials.clientSecret ?? '';

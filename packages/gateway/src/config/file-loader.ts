@@ -18,7 +18,7 @@ import { parse as parseToml } from "smol-toml";
 import { parse as parseYaml } from "yaml";
 
 const logger = createLogger("file-loader");
-const DEFAULT_OWLETTO_MCP_URL = "https://owletto.com/mcp";
+const DEFAULT_OWLETTO_MCP_URL = "https://app.lobu.ai/mcp";
 
 // ── Public Types ──────────────────────────────────────────────────────────
 

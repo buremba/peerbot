@@ -14,7 +14,7 @@ import {
 } from "../commands/providers/registry.js";
 import { renderTemplate } from "../utils/template.js";
 
-const DEFAULT_OWLETTO_MCP_URL = "https://owletto.com/mcp";
+const DEFAULT_OWLETTO_MCP_URL = "https://app.lobu.ai/mcp";
 const LOCAL_OWLETTO_MCP_URL = "http://owletto:8787/mcp";
 
 export async function initCommand(
@@ -234,7 +234,7 @@ export async function initCommand(
       message: "Memory:",
       choices: [
         { name: "None (filesystem memory)", value: "none" },
-        { name: "Owletto Cloud (owletto.com)", value: "owletto-cloud" },
+        { name: "Lobu Cloud (app.lobu.ai)", value: "owletto-cloud" },
         {
           name: "Owletto Local (runs alongside gateway)",
           value: "owletto-local",

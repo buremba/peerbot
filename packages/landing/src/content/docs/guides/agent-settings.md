@@ -50,7 +50,7 @@ Memory is pluggable. In file-first projects, the gateway first checks `[memory.o
 - `data/`
 - `[memory.owletto]` in `lobu.toml`
 
-For **Owletto Cloud**, Lobu can use the hosted default automatically. For **Owletto Local** and **Custom URL**, `MEMORY_URL` remains the base-endpoint override.
+For **Lobu Cloud**, Lobu can use the hosted default automatically. For **Owletto Local** and **Custom URL**, `MEMORY_URL` remains the base-endpoint override.
 
 If the preferred plugin isn't installed, the gateway falls back to the other one (or to no memory if neither is installed).
 

@@ -3,7 +3,7 @@ import { defineCommand } from 'citty';
 import { healthPing, runInitWizard } from '../lib/init-wizard.ts';
 import { normalizeMcpUrl } from '../lib/openclaw-auth.ts';
 
-const CLOUD_MCP_URL = 'https://owletto.com/mcp';
+const CLOUD_MCP_URL = 'https://app.lobu.ai/mcp';
 
 async function chooseMcpUrl(urlFlag?: string): Promise<string> {
   if (urlFlag) return normalizeMcpUrl(urlFlag);
@@ -11,7 +11,7 @@ async function chooseMcpUrl(urlFlag?: string): Promise<string> {
   const mode = await p.select({
     message: 'Which Owletto MCP endpoint should your agents use?',
     options: [
-      { value: 'cloud', label: 'Owletto Cloud', hint: 'https://owletto.com/mcp' },
+      { value: 'cloud', label: 'Lobu Cloud', hint: 'https://app.lobu.ai/mcp' },
       { value: 'local', label: 'Local runtime', hint: 'http://localhost:8787/mcp' },
       { value: 'custom', label: 'Custom MCP URL', hint: 'enter URL' },
     ],

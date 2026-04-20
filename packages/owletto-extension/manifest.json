@@ -16,7 +16,7 @@
   ],
 
   "host_permissions": [
-    "https://owletto.com/*",
+    "https://app.lobu.ai/*",
     "https://localhost:5173/*",
     "http://localhost:5173/*"
   ],

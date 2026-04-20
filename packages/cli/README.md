@@ -23,7 +23,7 @@ Scaffold a new Lobu project with interactive prompts:
 - **AI provider** selection from the bundled provider registry + API key
 - **Providers** to enable (from `config/providers.json`)
 - **Messaging platform** (Telegram, Slack, Discord, or none)
-- **Memory** selection (filesystem, Owletto Cloud, Owletto Local, or custom Owletto URL)
+- **Memory** selection (filesystem, Lobu Cloud, Owletto Local, or custom Owletto URL)
 
 **Generates:** `docker-compose.yml`, `.env`, `Dockerfile.worker`, `lobu.toml`, `IDENTITY.md`, `.gitignore`, `README.md`
 

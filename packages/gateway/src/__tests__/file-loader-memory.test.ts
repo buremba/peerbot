@@ -62,8 +62,8 @@ org: careops
 
     const memoryUrl = await applyOwlettoMemoryEnvFromProject(projectDir);
 
-    expect(memoryUrl).toBe("https://owletto.com/mcp/careops");
-    expect(process.env.MEMORY_URL).toBe("https://owletto.com/mcp/careops");
+    expect(memoryUrl).toBe("https://app.lobu.ai/mcp/careops");
+    expect(process.env.MEMORY_URL).toBe("https://app.lobu.ai/mcp/careops");
   });
 
   test("uses MEMORY_URL as the base endpoint before scoping to the project org", async () => {

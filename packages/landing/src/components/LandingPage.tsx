@@ -5,6 +5,7 @@ import {
   type SurfaceHeroCopy,
 } from "../use-case-showcases";
 import { ArchitectureSection } from "./ArchitectureSection";
+import { BenchmarkSection } from "./BenchmarkSection";
 import { CTA } from "./CTA";
 import { DemoSection } from "./DemoSection";
 import { HeroSection } from "./HeroSection";
@@ -41,6 +42,7 @@ export function LandingPage(props: {
         <ArchitectureSection activeUseCaseId={activeUseCaseId} />
         <div class="section-divider" />
       </div>
+      <BenchmarkSection />
       {props.latestPosts?.length ? (
         <>
           <div class="section-divider" />

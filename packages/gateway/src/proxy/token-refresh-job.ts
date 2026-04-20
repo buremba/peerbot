@@ -21,7 +21,7 @@ export interface RefreshableProvider {
  * 3. Writes the rotated credentials back through `AuthProfilesManager.upsertProfile`.
  */
 export class TokenRefreshJob {
-  private timer: Timer | null = null;
+  private timer: ReturnType<typeof setInterval> | null = null;
   private refreshLocks = new Map<string, Promise<void>>();
 
   constructor(

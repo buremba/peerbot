@@ -17,7 +17,8 @@
     "skipLibCheck": true,
     "noUnusedLocals": false,
     "noUnusedParameters": false,
-    "composite": true
+    "composite": true,
+    "types": ["node"]
   },
   "include": ["src/**/*", "../core/src/deployment/base-deployment-manager.ts"],
   "exclude": [

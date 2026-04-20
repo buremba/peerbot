@@ -264,8 +264,23 @@ app.use('/*', async (c, next) => {
 
 /**
  * Subdomain org extraction middleware
- * Parses Host header for {org}.{baseDomain} pattern and sets subdomainOrg
+ * Parses Host header for {org}.{baseDomain} pattern and sets subdomainOrg.
+ * Reserved subdomains (www, api, app, admin, etc.) are not treated as orgs.
  */
+const RESERVED_SUBDOMAINS = new Set([
+  'www',
+  'api',
+  'app',
+  'admin',
+  'auth',
+  'mcp',
+  'static',
+  'assets',
+  'cdn',
+  'docs',
+  'mail',
+]);
+
 app.use('/*', async (c, next) => {
   c.set('subdomainOrg', null);
   const baseUrlValue = getConfiguredPublicOrigin();
@@ -275,7 +290,7 @@ app.use('/*', async (c, next) => {
       const host = c.req.header('host')?.split(':')[0];
       if (host?.endsWith(`.${baseDomain}`)) {
         const sub = host.slice(0, -(baseDomain.length + 1));
-        if (sub && !sub.includes('.')) {
+        if (sub && !sub.includes('.') && !RESERVED_SUBDOMAINS.has(sub.toLowerCase())) {
           c.set('subdomainOrg', sub);
         }
       }

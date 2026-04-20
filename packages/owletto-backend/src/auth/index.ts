@@ -126,6 +126,17 @@ export async function createAuth(env: Env, request?: Request) {
   // Also trust the baseURL (resolves from PUBLIC_WEB_URL, forwarded headers, or request URL)
   addTrustedOriginVariants(resolveBaseUrl({ request }));
 
+  // When AUTH_COOKIE_DOMAIN is set (e.g. ".lobu.ai"), trust all subdomains so
+  // session cookies travel across {org}.lobu.ai → lobu.ai cross-origin requests.
+  const cookieDomain = process.env.AUTH_COOKIE_DOMAIN?.trim();
+  if (cookieDomain) {
+    const normalized = cookieDomain.startsWith('.') ? cookieDomain.slice(1) : cookieDomain;
+    if (normalized) {
+      trustedOriginSet.add(`https://*.${normalized}`);
+      trustedOriginSet.add(`https://${normalized}`);
+    }
+  }
+
   const auth = betterAuth({
     secret: env.BETTER_AUTH_SECRET,
     database: pool,

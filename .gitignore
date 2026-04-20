@@ -54,6 +54,7 @@ dump.rdb
 
 # Auto-generated page CSS
 packages/gateway/src/routes/public/page-styles.ts
+packages/owletto-cli/runtime/
 
 # Auto-generated history page JS bundle
 packages/gateway/src/routes/public/history-page-bundle.ts

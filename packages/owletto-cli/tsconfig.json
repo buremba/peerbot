@@ -21,8 +21,8 @@
     "baseUrl": "../..",
     "paths": {
       "@/*": ["src/*"],
-      "@lobu/owletto-sdk": ["packages/sdk/src/index.ts"],
-      "@lobu/owletto-sdk/*": ["packages/sdk/src/*"]
+      "@lobu/owletto-sdk": ["packages/owletto-sdk/src/index.ts"],
+      "@lobu/owletto-sdk/*": ["packages/owletto-sdk/src/*"]
     }
   },
   "include": ["src/**/*"],

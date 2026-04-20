@@ -47,20 +47,24 @@ function findPackagedRuntimeRoot(start: string): string | null {
 }
 
 export interface RuntimeRootResolution {
-  root: string;
+  runtimeRoot: string;
+  workspaceRoot: string;
   source: 'repo' | 'packaged';
 }
 
 export function resolveOwlettoRuntimeRoot(): RuntimeRootResolution | null {
   const repoRoot = resolveOwlettoRepoRoot();
   if (repoRoot) {
-    return { root: repoRoot, source: 'repo' };
+    const backendRoot = join(repoRoot, 'packages', 'owletto-backend');
+    if (existsSync(join(backendRoot, 'src', 'server.ts'))) {
+      return { runtimeRoot: backendRoot, workspaceRoot: repoRoot, source: 'repo' };
+    }
   }
 
   const moduleDir = dirname(fileURLToPath(import.meta.url));
   const packagedRoot = findPackagedRuntimeRoot(moduleDir);
   if (packagedRoot) {
-    return { root: packagedRoot, source: 'packaged' };
+    return { runtimeRoot: packagedRoot, workspaceRoot: packagedRoot, source: 'packaged' };
   }
 
   return null;

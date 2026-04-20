@@ -126,9 +126,10 @@ async function resolveWebDistDirectory(): Promise<string | null> {
 
   const candidates = [
     process.env.WEB_DIST_DIR?.trim(),
-    path.resolve(APP_ROOT, 'packages/web/dist'),
-    path.resolve(process.cwd(), 'packages/web/dist'),
-    path.resolve(process.cwd(), '../packages/web/dist'),
+    path.resolve(APP_ROOT, 'packages/owletto-web/dist'),
+    path.resolve(APP_ROOT, '../owletto-web/dist'),
+    path.resolve(process.cwd(), 'packages/owletto-web/dist'),
+    path.resolve(process.cwd(), '../packages/owletto-web/dist'),
   ].filter((candidate): candidate is string => Boolean(candidate));
 
   for (const candidate of candidates) {
@@ -162,11 +163,22 @@ async function loadSpaHtmlTemplate(): Promise<string | null> {
 }
 
 async function loadFallbackSpaHtmlTemplate(): Promise<string | null> {
-  try {
-    return await fs.readFile(path.resolve(APP_ROOT, 'packages/web/index.html'), 'utf-8');
-  } catch {
-    return null;
+  const candidates = [
+    path.resolve(APP_ROOT, 'packages/owletto-web/index.html'),
+    path.resolve(APP_ROOT, '../owletto-web/index.html'),
+    path.resolve(process.cwd(), 'packages/owletto-web/index.html'),
+    path.resolve(process.cwd(), '../packages/owletto-web/index.html'),
+  ];
+
+  for (const candidate of candidates) {
+    try {
+      return await fs.readFile(candidate, 'utf-8');
+    } catch {
+      // Try next candidate.
+    }
   }
+
+  return null;
 }
 
 async function loadAnySpaHtmlTemplate(): Promise<string | null> {
@@ -882,7 +894,7 @@ app.all('/mcp/:orgSlug/', handleMcp);
  * Catch-all route
  * Dev: Vite middleware handles source files/HMR before reaching here.
  *      This catch-all serves SPA index.html via Vite's transformIndexHtml.
- * Prod: Serves static files from packages/web/dist with SPA fallback.
+ * Prod: Serves static files from packages/owletto-web/dist with SPA fallback.
  */
 app.get('*', async (c) => {
   const requestPath = c.req.path;

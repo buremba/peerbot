@@ -15,6 +15,7 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
+import { existsSync } from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -29,6 +30,23 @@ import { initWorkspaceProvider } from './workspace';
 // Create a wrapper app that injects environment into each request
 const app = new Hono<{ Bindings: Env }>();
 const APP_ROOT = path.resolve(fileURLToPath(new URL('.', import.meta.url)), '..');
+
+function resolveWebSourceRoot(): string {
+  const candidates = [
+    process.env.WEB_SOURCE_DIR?.trim(),
+    path.resolve(APP_ROOT, 'packages/owletto-web'),
+    path.resolve(process.cwd(), 'packages/owletto-web'),
+    path.resolve(process.cwd(), '../packages/owletto-web'),
+  ].filter((candidate): candidate is string => Boolean(candidate));
+
+  for (const candidate of candidates) {
+    if (existsSync(path.join(candidate, 'index.html'))) {
+      return candidate;
+    }
+  }
+
+  throw new Error('Owletto web source directory not found');
+}
 
 // Inject environment variables into Hono context
 const env = getEnvFromProcess();
@@ -86,7 +104,7 @@ async function main() {
     try {
       const { createServer } = await import('vite');
       vite = await createServer({
-        root: path.resolve(APP_ROOT, 'packages/web'),
+        root: resolveWebSourceRoot(),
         server: {
           middlewareMode: true,
           hmr: { server: httpServer },

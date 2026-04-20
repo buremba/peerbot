@@ -10,9 +10,9 @@ function findDataDir(runtime: RuntimeRootResolution, explicit?: string): string 
   // Prefer ./data only for a real repo checkout. Packaged installs should use ~/.owletto/data.
   if (
     runtime.source === 'repo' &&
-    existsSync(join(runtime.root, 'db', 'migrations', '00000000000000_baseline.sql'))
+    existsSync(join(runtime.workspaceRoot, 'db', 'migrations', '00000000000000_baseline.sql'))
   ) {
-    return join(runtime.root, 'data');
+    return join(runtime.workspaceRoot, 'data');
   }
   // Otherwise ~/.owletto/data (handled by start-local.ts default)
   return undefined;
@@ -34,14 +34,14 @@ export default defineCommand({
   },
   async run({ args }) {
     const runtime = requireOwlettoRuntimeRoot();
-    const runCwd = runtime.source === 'repo' ? runtime.root : process.cwd();
+    const runCwd = runtime.source === 'repo' ? runtime.workspaceRoot : process.cwd();
     const mode = detectMode();
     const env: Record<string, string | undefined> = {
       PORT: args.port,
     };
 
     if (mode === 'postgres') {
-      const invocation = getTsxInvocation([join(runtime.root, 'src', 'server.ts')]);
+      const invocation = getTsxInvocation([join(runtime.runtimeRoot, 'src', 'server.ts')]);
       // DATABASE_URL is set — use the regular server against external Postgres
       const result = await run(invocation.cmd, {
         args: invocation.args,
@@ -58,7 +58,7 @@ export default defineCommand({
         env.EMBEDDINGS_SERVICE_URL = process.env.EMBEDDINGS_SERVICE_URL;
       }
 
-      const invocation = getTsxInvocation([join(runtime.root, 'src', 'start-local.ts')]);
+      const invocation = getTsxInvocation([join(runtime.runtimeRoot, 'src', 'start-local.ts')]);
       const result = await run(invocation.cmd, {
         args: invocation.args,
         cwd: runCwd,

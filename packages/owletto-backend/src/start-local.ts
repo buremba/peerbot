@@ -38,8 +38,17 @@ const DATA_DIR = process.env.OWLETTO_DATA_DIR || join(homedir(), '.owletto', 'da
 const PORT = parseInt(process.env.PORT || '8787', 10);
 const HOST = process.env.HOST?.trim() || '0.0.0.0';
 const EMBEDDINGS_PORT = parseInt(process.env.EMBEDDINGS_PORT || '0', 10);
-const REPO_ROOT = join(fileURLToPath(new URL('.', import.meta.url)), '..');
+const APP_ROOT = join(fileURLToPath(new URL('.', import.meta.url)), '..');
 const require = createRequire(import.meta.url);
+
+function resolveExistingPath(...candidates: Array<string | undefined>): string | null {
+  for (const candidate of candidates) {
+    if (candidate && existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+}
 
 function readPositiveIntEnv(name: string, fallback: number): number {
   const raw = process.env[name]?.trim();
@@ -176,9 +185,12 @@ async function runMigrations(dbUrl: string) {
       return;
     }
 
-    const migrationsDir = join(REPO_ROOT, 'db', 'migrations');
-    if (!existsSync(migrationsDir)) {
-      throw new Error(`Migrations directory not found: ${migrationsDir}.`);
+    const migrationsDir = resolveExistingPath(
+      join(APP_ROOT, 'db', 'migrations'),
+      join(process.cwd(), 'db', 'migrations')
+    );
+    if (!migrationsDir) {
+      throw new Error('Migrations directory not found.');
     }
 
     logger.info('Running migrations...');
@@ -297,8 +309,11 @@ function findFreePort(): Promise<number> {
 }
 
 async function startEmbeddings(): Promise<ReturnType<typeof fork> | null> {
-  const serverPath = join(REPO_ROOT, 'packages', 'embeddings-service', 'src', 'server.ts');
-  if (!existsSync(serverPath)) {
+  const serverPath = resolveExistingPath(
+    join(APP_ROOT, 'packages', 'owletto-embeddings', 'src', 'server.ts'),
+    join(process.cwd(), 'packages', 'owletto-embeddings', 'src', 'server.ts')
+  );
+  if (!serverPath) {
     logger.warn('Embeddings service not found — embedding generation will not be available');
     return null;
   }

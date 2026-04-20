@@ -18,6 +18,7 @@
     "build": "tsup && node ./scripts/prepare-runtime.mjs",
     "clean": "rm -rf dist runtime",
     "dev": "tsx src/bin.ts",
+    "runtime:prepare": "node ./scripts/prepare-runtime.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

@@ -626,7 +626,7 @@ oauthRoutes.post('/oauth/device_authorization', async (c) => {
   return c.json(result);
 });
 
-// GET /oauth/device is served by the SPA fallback (packages/web/src/app/oauth/device.tsx).
+// GET /oauth/device is served by the SPA fallback (packages/owletto-web/src/app/oauth/device.tsx).
 // No API route needed — the web app and API share the same origin.
 
 /**

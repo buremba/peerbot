@@ -114,3 +114,46 @@ export function getCanonicalRedirectUrl(
 
   return `${canonical.origin}${request.pathname}${request.search}`;
 }
+
+/**
+ * Returns the DNS zone used to map `{sub}.{zone}` hostnames to an organization
+ * slug. Prefers AUTH_COOKIE_DOMAIN (e.g. `.lobu.ai`) so per-org subdomains like
+ * `acme.lobu.ai` resolve even when PUBLIC_WEB_URL points at a non-apex canonical
+ * host like `app.lobu.ai`. Falls back to the configured origin's hostname so
+ * deployments without a cookie zone still get subdomain extraction for
+ * `{sub}.{canonicalHost}`.
+ */
+export function getSubdomainZone(
+  configuredOrigin = getConfiguredPublicOrigin(),
+  cookieDomain = process.env.AUTH_COOKIE_DOMAIN
+): string | null {
+  const cookieZone = cookieDomain?.trim().replace(/^\./, '').toLowerCase();
+  if (cookieZone) return cookieZone;
+
+  if (!configuredOrigin) return null;
+  try {
+    return new URL(configuredOrigin).hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Extracts the org slug from a Host header for `{org}.{zone}` requests.
+ * Reserved subdomains (www, api, app, etc.) are skipped so infra hostnames are
+ * not mistaken for org slugs. Returns null when the host does not belong to the
+ * zone, is the bare zone, or is a reserved/multi-label subdomain.
+ */
+export function extractSubdomainOrg(
+  host: string | undefined | null,
+  zone: string | null | undefined,
+  reservedSubdomains: ReadonlySet<string>
+): string | null {
+  if (!host || !zone) return null;
+  const normalizedHost = host.split(':')[0]?.toLowerCase();
+  if (!normalizedHost || !normalizedHost.endsWith(`.${zone}`)) return null;
+
+  const sub = normalizedHost.slice(0, -(zone.length + 1));
+  if (!sub || sub.includes('.') || reservedSubdomains.has(sub)) return null;
+  return sub;
+}

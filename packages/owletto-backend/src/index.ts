@@ -58,7 +58,12 @@ import { entityLinkMatchSql } from './utils/content-search';
 import { errorMessage } from './utils/errors';
 import logger from './utils/logger';
 import { generateOpenAPISpec } from './utils/openapi-generator';
-import { getCanonicalRedirectUrl, getConfiguredPublicOrigin } from './utils/public-origin';
+import {
+  extractSubdomainOrg,
+  getCanonicalRedirectUrl,
+  getConfiguredPublicOrigin,
+  getSubdomainZone,
+} from './utils/public-origin';
 import { getClientIP, getRateLimiter, RateLimitPresets } from './utils/rate-limiter';
 import { getRuntimeInfo } from './utils/runtime-info';
 import { getWorkspaceProvider } from './workspace';
@@ -86,8 +91,16 @@ function isAllowedCorsOrigin(origin: string, _env: Env, requestUrl: string): boo
   if (parsed.origin === canonicalOrigin) return true;
 
   // Allow wildcard subdomains of the canonical origin (e.g. acme.owletto.com)
-  const baseDomain = new URL(canonicalOrigin).hostname;
-  if (parsed.hostname.endsWith(`.${baseDomain}`)) return true;
+  // and — when AUTH_COOKIE_DOMAIN is configured — sibling subdomains under the
+  // cookie zone so browsers on `acme.lobu.ai` can call `app.lobu.ai`.
+  const parsedHost = parsed.hostname.toLowerCase();
+  const baseDomain = new URL(canonicalOrigin).hostname.toLowerCase();
+  if (parsedHost.endsWith(`.${baseDomain}`)) return true;
+
+  const subdomainZone = getSubdomainZone(canonicalOrigin);
+  if (subdomainZone && (parsedHost === subdomainZone || parsedHost.endsWith(`.${subdomainZone}`))) {
+    return true;
+  }
 
   return false;
 }
@@ -280,8 +293,11 @@ app.use('/*', async (c, next) => {
 
 /**
  * Subdomain org extraction middleware
- * Parses Host header for {org}.{baseDomain} pattern and sets subdomainOrg.
- * Reserved subdomains (www, api, app, admin, etc.) are not treated as orgs.
+ * Parses Host header for {org}.{zone} pattern and sets subdomainOrg.
+ * The zone is AUTH_COOKIE_DOMAIN when set (so per-org hosts like `acme.lobu.ai`
+ * resolve even though PUBLIC_WEB_URL is `app.lobu.ai`), otherwise the
+ * PUBLIC_WEB_URL hostname. Reserved subdomains (www, api, app, admin, etc.)
+ * are not treated as orgs.
  */
 const RESERVED_SUBDOMAINS = new Set([
   'www',
@@ -298,22 +314,9 @@ const RESERVED_SUBDOMAINS = new Set([
 ]);
 
 app.use('/*', async (c, next) => {
-  c.set('subdomainOrg', null);
-  const baseUrlValue = getConfiguredPublicOrigin();
-  if (baseUrlValue) {
-    try {
-      const baseDomain = new URL(baseUrlValue).hostname;
-      const host = c.req.header('host')?.split(':')[0];
-      if (host?.endsWith(`.${baseDomain}`)) {
-        const sub = host.slice(0, -(baseDomain.length + 1));
-        if (sub && !sub.includes('.') && !RESERVED_SUBDOMAINS.has(sub.toLowerCase())) {
-          c.set('subdomainOrg', sub);
-        }
-      }
-    } catch {
-      // ignore
-    }
-  }
+  const zone = getSubdomainZone();
+  const sub = extractSubdomainOrg(c.req.header('host'), zone, RESERVED_SUBDOMAINS);
+  c.set('subdomainOrg', sub);
   await next();
 });
 

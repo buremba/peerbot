@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { getCanonicalRedirectUrl } from '../public-origin';
+import {
+  extractSubdomainOrg,
+  getCanonicalRedirectUrl,
+  getSubdomainZone,
+} from '../public-origin';
+
+const RESERVED = new Set(['www', 'api', 'app', 'admin', 'auth', 'mcp']);
 
 describe('getCanonicalRedirectUrl', () => {
   it('redirects non-canonical hosts to the configured origin', () => {
@@ -45,5 +51,59 @@ describe('getCanonicalRedirectUrl', () => {
     expect(
       getCanonicalRedirectUrl('https://owletto.com/foo', 'https://app.lobu.ai', '.lobu.ai')
     ).toBe('https://app.lobu.ai/foo');
+  });
+});
+
+describe('getSubdomainZone', () => {
+  it('prefers AUTH_COOKIE_DOMAIN over the configured origin host', () => {
+    expect(getSubdomainZone('https://app.lobu.ai', '.lobu.ai')).toBe('lobu.ai');
+  });
+
+  it('accepts cookie domains without a leading dot', () => {
+    expect(getSubdomainZone('https://app.lobu.ai', 'lobu.ai')).toBe('lobu.ai');
+  });
+
+  it('falls back to the configured origin host when no cookie domain is set', () => {
+    expect(getSubdomainZone('https://app.example.com', undefined)).toBe('app.example.com');
+  });
+
+  it('returns null when nothing is configured', () => {
+    expect(getSubdomainZone(undefined, undefined)).toBeNull();
+  });
+});
+
+describe('extractSubdomainOrg', () => {
+  it('extracts the org slug from a matching host', () => {
+    expect(extractSubdomainOrg('acme.lobu.ai', 'lobu.ai', RESERVED)).toBe('acme');
+  });
+
+  it('strips port numbers before matching', () => {
+    expect(extractSubdomainOrg('acme.lobu.ai:443', 'lobu.ai', RESERVED)).toBe('acme');
+  });
+
+  it('returns null for reserved subdomains', () => {
+    expect(extractSubdomainOrg('app.lobu.ai', 'lobu.ai', RESERVED)).toBeNull();
+    expect(extractSubdomainOrg('www.lobu.ai', 'lobu.ai', RESERVED)).toBeNull();
+  });
+
+  it('returns null for the bare zone', () => {
+    expect(extractSubdomainOrg('lobu.ai', 'lobu.ai', RESERVED)).toBeNull();
+  });
+
+  it('returns null for multi-label subdomains', () => {
+    expect(extractSubdomainOrg('foo.bar.lobu.ai', 'lobu.ai', RESERVED)).toBeNull();
+  });
+
+  it('returns null for unrelated hosts', () => {
+    expect(extractSubdomainOrg('acme.example.com', 'lobu.ai', RESERVED)).toBeNull();
+  });
+
+  it('returns null when host or zone is missing', () => {
+    expect(extractSubdomainOrg(undefined, 'lobu.ai', RESERVED)).toBeNull();
+    expect(extractSubdomainOrg('acme.lobu.ai', null, RESERVED)).toBeNull();
+  });
+
+  it('is case-insensitive', () => {
+    expect(extractSubdomainOrg('ACME.Lobu.AI', 'lobu.ai', RESERVED)).toBe('acme');
   });
 });

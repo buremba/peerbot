@@ -1,0 +1,26 @@
+{
+  "suitePath": "benchmarks/memory/suites/locomo.30.json",
+  "outputDir": ".owletto/benchmarks/memory/locomo-local-dev",
+  "trials": 1,
+  "topK": 8,
+  "answerer": {
+    "type": "openai-compatible",
+    "model": "glm-5.1",
+    "baseUrl": "https://api.z.ai/api/coding/paas/v4/",
+    "apiKeyEnv": "ZAI_API_KEY",
+    "temperature": 0,
+    "maxTokens": 300
+  },
+  "systems": [
+    {
+      "id": "owletto-local",
+      "label": "Owletto (local in-process)",
+      "type": "owletto-inprocess",
+      "embedWrites": true,
+      "topK": 8,
+      "searchLimit": 5,
+      "readLimit": 8,
+      "linkLimit": 8
+    }
+  ]
+}

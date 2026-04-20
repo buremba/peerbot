@@ -1,0 +1,21 @@
+{
+  "suitePath": "benchmarks/memory/suites/owletto-memory-bench.v1.json",
+  "outputDir": ".owletto/benchmarks/memory",
+  "trials": 1,
+  "topK": 8,
+  "answerer": {
+    "type": "extractive"
+  },
+  "systems": [
+    {
+      "id": "owletto-local",
+      "label": "Owletto (local in-process)",
+      "type": "owletto-inprocess",
+      "embedWrites": false,
+      "topK": 8,
+      "searchLimit": 5,
+      "readLimit": 8,
+      "linkLimit": 8
+    }
+  ]
+}

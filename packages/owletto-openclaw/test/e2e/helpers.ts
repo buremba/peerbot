@@ -504,7 +504,7 @@ export function removeAuthFile(): void {
 // ---------------------------------------------------------------------------
 
 const EXTENSION_DIST_DIR = resolve(REPO_ROOT, 'data/openclaw/extensions/openclaw-owletto/dist');
-const PLUGIN_DIST_DIR = resolve(REPO_ROOT, 'packages/openclaw-plugin/dist');
+const PLUGIN_DIST_DIR = resolve(REPO_ROOT, 'packages/owletto-openclaw/dist');
 
 /**
  * Copy the locally built plugin dist into the extension directory that the

@@ -1,0 +1,20 @@
+{
+  "suitePath": "benchmarks/memory/suites/locomo.50.json",
+  "outputDir": ".owletto/benchmarks/memory/public",
+  "trials": 1,
+  "topK": 8,
+  "answerer": { "type": "none" },
+  "systems": [
+    {
+      "id": "owletto-local",
+      "label": "Owletto (local in-process)",
+      "type": "owletto-inprocess",
+      "embedWrites": true,
+      "vectorWeight": 0.85,
+      "topK": 8,
+      "searchLimit": 5,
+      "readLimit": 8,
+      "linkLimit": 8
+    }
+  ]
+}

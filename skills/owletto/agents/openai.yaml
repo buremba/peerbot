@@ -1,0 +1,7 @@
+interface:
+  display_name: "Owletto"
+  short_description: "Connect Owletto MCP and use workspace memory safely"
+  default_prompt: "Use $owletto to install Owletto for this agent or operate its MCP tools with the canonical Owletto workflows."
+
+policy:
+  allow_implicit_invocation: true

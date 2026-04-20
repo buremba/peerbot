@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import {
   renderFallbackSystemContext,
   renderSkillMemorySection,
-} from '../../../packages/openclaw-plugin/src/owletto-guidance';
+} from '../../../../owletto-openclaw/src/owletto-guidance';
 
 const skillPath = resolve(process.cwd(), 'skills/owletto/SKILL.md');
 const START_MARKER = '<!-- owletto-memory-guidance:start -->';

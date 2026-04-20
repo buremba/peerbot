@@ -1,0 +1,530 @@
+{
+  "id": "owletto-memory-bench",
+  "version": "1.1.0",
+  "description": "Synthetic suite for fair memory-system comparison across paraphrased recall, latest-wins updates, temporal reasoning, multi-hop relationships, distractors, reverse lookup, and provenance.",
+  "entityTypes": [
+    {
+      "slug": "bench_person",
+      "name": "Benchmark Person",
+      "eventKinds": {
+        "preference": { "description": "Preferences and stable profile facts" },
+        "employment": { "description": "Employment and role updates" },
+        "observation": { "description": "Observations" },
+        "decision": { "description": "Decisions" }
+      }
+    },
+    {
+      "slug": "bench_team",
+      "name": "Benchmark Team",
+      "eventKinds": {
+        "observation": { "description": "Team observations" },
+        "decision": { "description": "Team decisions" }
+      }
+    },
+    {
+      "slug": "bench_product",
+      "name": "Benchmark Product",
+      "eventKinds": {
+        "observation": { "description": "Product observations" },
+        "decision": { "description": "Product decisions" }
+      }
+    },
+    {
+      "slug": "bench_feature",
+      "name": "Benchmark Feature",
+      "eventKinds": {
+        "observation": { "description": "Feature observations" },
+        "decision": { "description": "Feature decisions" }
+      }
+    },
+    {
+      "slug": "bench_project",
+      "name": "Benchmark Project",
+      "eventKinds": {
+        "budget": { "description": "Budget updates" },
+        "decision": { "description": "Project decisions" },
+        "observation": { "description": "Project observations" }
+      }
+    }
+  ],
+  "relationshipTypes": [
+    {
+      "slug": "bench_owns",
+      "name": "owns",
+      "rules": [
+        {
+          "sourceEntityTypeSlug": "bench_team",
+          "targetEntityTypeSlug": "bench_product"
+        }
+      ]
+    },
+    {
+      "slug": "bench_part_of",
+      "name": "part of",
+      "rules": [
+        {
+          "sourceEntityTypeSlug": "bench_feature",
+          "targetEntityTypeSlug": "bench_product"
+        }
+      ]
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "preference-distractor",
+      "category": "immutable_recall",
+      "entities": [
+        { "ref": "alice", "entityType": "bench_person", "name": "Alice Chen" },
+        { "ref": "alicia", "entityType": "bench_person", "name": "Alicia Chen" }
+      ],
+      "steps": [
+        {
+          "id": "p1",
+          "kind": "memory",
+          "entityRefs": ["alice"],
+          "semanticType": "preference",
+          "title": "Alice drink preference",
+          "content": "Alice Chen prefers matcha.",
+          "metadata": { "slot": "favorite_drink", "value": "matcha" }
+        },
+        {
+          "id": "p2",
+          "kind": "memory",
+          "entityRefs": ["alicia"],
+          "semanticType": "preference",
+          "title": "Alicia drink preference",
+          "content": "Alicia Chen prefers espresso.",
+          "metadata": { "slot": "favorite_drink", "value": "espresso" }
+        }
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "prompt": "What drink does Alice Chen prefer?",
+          "expectedAnswers": ["matcha"],
+          "expectedSourceStepIds": ["p1"],
+          "tags": ["base", "paraphrase_family"]
+        },
+        {
+          "id": "q2",
+          "prompt": "Who prefers espresso?",
+          "expectedAnswers": ["Alicia Chen"],
+          "expectedSourceStepIds": ["p2"],
+          "tags": ["reverse_lookup"]
+        },
+        {
+          "id": "q3",
+          "prompt": "Which beverage does Alice Chen go for?",
+          "expectedAnswers": ["matcha"],
+          "expectedSourceStepIds": ["p1"],
+          "tags": ["paraphrase"]
+        },
+        {
+          "id": "q4",
+          "prompt": "Alicia Chen likes which drink?",
+          "expectedAnswers": ["espresso"],
+          "expectedSourceStepIds": ["p2"],
+          "tags": ["paraphrase"]
+        }
+      ]
+    },
+    {
+      "id": "latest-wins-employment",
+      "category": "latest_wins",
+      "entities": [
+        { "ref": "jordan_lee", "entityType": "bench_person", "name": "Jordan Lee" },
+        { "ref": "jordan_lin", "entityType": "bench_person", "name": "Jordan Lin" }
+      ],
+      "steps": [
+        {
+          "id": "e1",
+          "kind": "memory",
+          "entityRefs": ["jordan_lee"],
+          "semanticType": "employment",
+          "title": "Jordan Lee initial employer",
+          "content": "Jordan Lee works at Stripe.",
+          "metadata": { "slot": "employer", "value": "Stripe" }
+        },
+        {
+          "id": "e2",
+          "kind": "memory",
+          "entityRefs": ["jordan_lee"],
+          "semanticType": "employment",
+          "title": "Jordan Lee current employer",
+          "content": "Jordan Lee now works at Figma.",
+          "metadata": { "slot": "employer", "value": "Figma" },
+          "supersedes": "e1"
+        },
+        {
+          "id": "e3",
+          "kind": "memory",
+          "entityRefs": ["jordan_lin"],
+          "semanticType": "employment",
+          "title": "Jordan Lin employer",
+          "content": "Jordan Lin works at Stripe.",
+          "metadata": { "slot": "employer", "value": "Stripe" }
+        }
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "prompt": "Where does Jordan Lee work now?",
+          "expectedAnswers": ["Figma"],
+          "expectedSourceStepIds": ["e2"],
+          "tags": ["base"]
+        },
+        {
+          "id": "q2",
+          "prompt": "Which company employs Jordan Lee at the moment?",
+          "expectedAnswers": ["Figma"],
+          "expectedSourceStepIds": ["e2"],
+          "tags": ["paraphrase"]
+        },
+        {
+          "id": "q3",
+          "prompt": "Who currently works at Stripe?",
+          "expectedAnswers": ["Jordan Lin"],
+          "expectedSourceStepIds": ["e3"],
+          "tags": ["reverse_lookup", "stale_conflict"]
+        }
+      ]
+    },
+    {
+      "id": "temporal-budget",
+      "category": "temporal_reasoning",
+      "entities": [
+        { "ref": "sparrow", "entityType": "bench_project", "name": "Project Sparrow" },
+        { "ref": "falcon", "entityType": "bench_project", "name": "Project Falcon" }
+      ],
+      "steps": [
+        {
+          "id": "b1",
+          "kind": "memory",
+          "entityRefs": ["sparrow"],
+          "semanticType": "budget",
+          "title": "Initial Sparrow budget",
+          "content": "Project Sparrow budget was approved at $120000.",
+          "metadata": { "slot": "budget", "value": "$120000" }
+        },
+        {
+          "id": "b2",
+          "kind": "memory",
+          "entityRefs": ["sparrow"],
+          "semanticType": "budget",
+          "title": "Revised Sparrow budget",
+          "content": "Project Sparrow budget was later revised to $150000.",
+          "metadata": { "slot": "budget", "value": "$150000" },
+          "supersedes": "b1"
+        },
+        {
+          "id": "b3",
+          "kind": "memory",
+          "entityRefs": ["sparrow"],
+          "semanticType": "observation",
+          "title": "Launch delay",
+          "content": "After the budget revision, Project Sparrow launch was delayed by two weeks.",
+          "metadata": { "slot": "timeline_change", "value": "launch delayed by two weeks" }
+        },
+        {
+          "id": "b4",
+          "kind": "memory",
+          "entityRefs": ["falcon"],
+          "semanticType": "budget",
+          "title": "Falcon budget",
+          "content": "Project Falcon budget was approved at $180000.",
+          "metadata": { "slot": "budget", "value": "$180000" }
+        }
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "prompt": "What is the latest approved budget for Project Sparrow?",
+          "expectedAnswers": ["$150000", "150000"],
+          "expectedSourceStepIds": ["b2"],
+          "tags": ["base", "latest"]
+        },
+        {
+          "id": "q2",
+          "prompt": "What changed after the budget revision for Project Sparrow?",
+          "expectedAnswers": ["launch was delayed by two weeks", "delayed by two weeks"],
+          "expectedSourceStepIds": ["b3"],
+          "tags": ["base", "after_event"]
+        },
+        {
+          "id": "q3",
+          "prompt": "How much was Project Sparrow approved for after the revision?",
+          "expectedAnswers": ["$150000", "150000"],
+          "expectedSourceStepIds": ["b2"],
+          "tags": ["paraphrase", "latest"]
+        },
+        {
+          "id": "q4",
+          "prompt": "What was the original approved budget for Project Sparrow?",
+          "expectedAnswers": ["$120000", "120000"],
+          "expectedSourceStepIds": ["b1"],
+          "tags": ["temporal", "original"]
+        }
+      ]
+    },
+    {
+      "id": "multi-hop-ownership",
+      "category": "relationship_reasoning",
+      "entities": [
+        { "ref": "orion", "entityType": "bench_team", "name": "Team Orion" },
+        { "ref": "vega", "entityType": "bench_team", "name": "Team Vega" },
+        { "ref": "compass", "entityType": "bench_product", "name": "Compass" },
+        { "ref": "atlas", "entityType": "bench_product", "name": "Atlas" },
+        { "ref": "route_planner", "entityType": "bench_feature", "name": "Route Planner" },
+        { "ref": "risk_dashboard", "entityType": "bench_feature", "name": "Risk Dashboard" }
+      ],
+      "steps": [
+        {
+          "id": "r1",
+          "kind": "relationship",
+          "fromRef": "orion",
+          "toRef": "compass",
+          "relationshipType": "bench_owns",
+          "content": "Team Orion owns Compass."
+        },
+        {
+          "id": "r2",
+          "kind": "relationship",
+          "fromRef": "route_planner",
+          "toRef": "compass",
+          "relationshipType": "bench_part_of",
+          "content": "Route Planner is part of Compass."
+        },
+        {
+          "id": "r3",
+          "kind": "relationship",
+          "fromRef": "vega",
+          "toRef": "atlas",
+          "relationshipType": "bench_owns",
+          "content": "Team Vega owns Atlas."
+        },
+        {
+          "id": "r4",
+          "kind": "relationship",
+          "fromRef": "risk_dashboard",
+          "toRef": "atlas",
+          "relationshipType": "bench_part_of",
+          "content": "Risk Dashboard is part of Atlas."
+        }
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "prompt": "Which team owns the Route Planner feature?",
+          "expectedAnswers": ["Team Orion"],
+          "expectedSourceStepIds": ["r1", "r2"],
+          "tags": ["base", "multi_hop"]
+        },
+        {
+          "id": "q2",
+          "prompt": "Route Planner belongs to a product owned by which team?",
+          "expectedAnswers": ["Team Orion"],
+          "expectedSourceStepIds": ["r1", "r2"],
+          "tags": ["paraphrase", "multi_hop"]
+        },
+        {
+          "id": "q3",
+          "prompt": "Which team owns the Risk Dashboard feature?",
+          "expectedAnswers": ["Team Vega"],
+          "expectedSourceStepIds": ["r3", "r4"],
+          "tags": ["multi_hop", "distractor"]
+        }
+      ]
+    },
+    {
+      "id": "decision-provenance",
+      "category": "provenance",
+      "entities": [
+        { "ref": "apollo", "entityType": "bench_project", "name": "Project Apollo" },
+        { "ref": "artemis", "entityType": "bench_project", "name": "Project Artemis" }
+      ],
+      "steps": [
+        {
+          "id": "d1",
+          "kind": "memory",
+          "entityRefs": ["apollo"],
+          "semanticType": "decision",
+          "title": "Apollo kickoff decision",
+          "content": "At the Project Apollo kickoff, the team decided to delay beta until the security review is complete.",
+          "metadata": {
+            "slot": "decision",
+            "value": "delay beta until the security review is complete"
+          }
+        },
+        {
+          "id": "d2",
+          "kind": "memory",
+          "entityRefs": ["artemis"],
+          "semanticType": "decision",
+          "title": "Artemis kickoff decision",
+          "content": "At the Project Artemis kickoff, the team decided to freeze hiring until the finance review is complete.",
+          "metadata": {
+            "slot": "decision",
+            "value": "freeze hiring until the finance review is complete"
+          }
+        }
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "prompt": "What decision was made at the Project Apollo kickoff?",
+          "expectedAnswers": [
+            "delay beta until the security review is complete",
+            "delay beta until security review is complete"
+          ],
+          "expectedSourceStepIds": ["d1"],
+          "tags": ["base"]
+        },
+        {
+          "id": "q2",
+          "prompt": "At kickoff, what did Project Apollo decide?",
+          "expectedAnswers": [
+            "delay beta until the security review is complete",
+            "delay beta until security review is complete"
+          ],
+          "expectedSourceStepIds": ["d1"],
+          "tags": ["paraphrase"]
+        },
+        {
+          "id": "q3",
+          "prompt": "Which project decided to freeze hiring until the finance review is complete?",
+          "expectedAnswers": ["Project Artemis", "Artemis"],
+          "expectedSourceStepIds": ["d2"],
+          "tags": ["reverse_lookup", "distractor"]
+        }
+      ]
+    },
+    {
+      "id": "role-update-distractor",
+      "category": "distractor_resistance",
+      "entities": [
+        { "ref": "maya_patel", "entityType": "bench_person", "name": "Maya Patel" },
+        { "ref": "maya_santos", "entityType": "bench_person", "name": "Maya Santos" }
+      ],
+      "steps": [
+        {
+          "id": "m1",
+          "kind": "memory",
+          "entityRefs": ["maya_patel"],
+          "semanticType": "employment",
+          "title": "Maya Patel initial role",
+          "content": "Maya Patel is the design lead.",
+          "metadata": { "slot": "role", "value": "design lead" }
+        },
+        {
+          "id": "m2",
+          "kind": "memory",
+          "entityRefs": ["maya_santos"],
+          "semanticType": "employment",
+          "title": "Maya Santos role",
+          "content": "Maya Santos is the support lead.",
+          "metadata": { "slot": "role", "value": "support lead" }
+        },
+        {
+          "id": "m3",
+          "kind": "memory",
+          "entityRefs": ["maya_patel"],
+          "semanticType": "employment",
+          "title": "Maya Patel current role",
+          "content": "Maya Patel is now the product lead.",
+          "metadata": { "slot": "role", "value": "product lead" },
+          "supersedes": "m1"
+        }
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "prompt": "Who is the current product lead?",
+          "expectedAnswers": ["Maya Patel"],
+          "expectedSourceStepIds": ["m3"],
+          "tags": ["base", "latest"]
+        },
+        {
+          "id": "q2",
+          "prompt": "Which Maya is the support lead?",
+          "expectedAnswers": ["Maya Santos"],
+          "expectedSourceStepIds": ["m2"],
+          "tags": ["base", "name_collision"]
+        },
+        {
+          "id": "q3",
+          "prompt": "Who is the support lead?",
+          "expectedAnswers": ["Maya Santos"],
+          "expectedSourceStepIds": ["m2"],
+          "tags": ["reverse_lookup"]
+        },
+        {
+          "id": "q4",
+          "prompt": "Maya Patel holds which role now?",
+          "expectedAnswers": ["product lead"],
+          "expectedSourceStepIds": ["m3"],
+          "tags": ["paraphrase", "latest"]
+        }
+      ]
+    },
+    {
+      "id": "location-disambiguation",
+      "category": "distractor_resistance",
+      "entities": [
+        { "ref": "sam_rivera", "entityType": "bench_person", "name": "Sam Rivera" },
+        { "ref": "samir_rivera", "entityType": "bench_person", "name": "Samir Rivera" }
+      ],
+      "steps": [
+        {
+          "id": "l1",
+          "kind": "memory",
+          "entityRefs": ["sam_rivera"],
+          "semanticType": "observation",
+          "title": "Sam Rivera location",
+          "content": "Sam Rivera is based in Berlin.",
+          "metadata": { "slot": "location", "value": "Berlin" }
+        },
+        {
+          "id": "l2",
+          "kind": "memory",
+          "entityRefs": ["samir_rivera"],
+          "semanticType": "observation",
+          "title": "Samir Rivera location",
+          "content": "Samir Rivera is based in Lisbon.",
+          "metadata": { "slot": "location", "value": "Lisbon" }
+        },
+        {
+          "id": "l3",
+          "kind": "memory",
+          "entityRefs": ["sam_rivera"],
+          "semanticType": "observation",
+          "title": "Sam Rivera responsibility",
+          "content": "Sam Rivera manages onboarding.",
+          "metadata": { "slot": "responsibility", "value": "onboarding" }
+        }
+      ],
+      "questions": [
+        {
+          "id": "q1",
+          "prompt": "Which Rivera is based in Lisbon?",
+          "expectedAnswers": ["Samir Rivera"],
+          "expectedSourceStepIds": ["l2"],
+          "tags": ["name_collision", "reverse_lookup"]
+        },
+        {
+          "id": "q2",
+          "prompt": "Where is Sam Rivera based?",
+          "expectedAnswers": ["Berlin"],
+          "expectedSourceStepIds": ["l1"],
+          "tags": ["entity_lookup"]
+        },
+        {
+          "id": "q3",
+          "prompt": "Who manages onboarding?",
+          "expectedAnswers": ["Sam Rivera"],
+          "expectedSourceStepIds": ["l3"],
+          "tags": ["reverse_lookup"]
+        }
+      ]
+    }
+  ]
+}

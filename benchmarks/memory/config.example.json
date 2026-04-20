@@ -1,0 +1,108 @@
+{
+  "suitePath": "benchmarks/memory/suites/owletto-memory-bench.v1.json",
+  "outputDir": ".owletto/benchmarks/memory",
+  "trials": 3,
+  "topK": 8,
+  "answerer": {
+    "type": "openai-compatible",
+    "model": "gpt-4.1-mini",
+    "baseUrl": "https://api.openai.com/v1",
+    "apiKeyEnv": "OPENAI_API_KEY",
+    "temperature": 0,
+    "maxTokens": 300
+  },
+  "systems": [
+    {
+      "id": "owletto-local",
+      "label": "Owletto (local in-process)",
+      "type": "owletto-inprocess",
+      "embedWrites": false,
+      "topK": 8,
+      "searchLimit": 5,
+      "readLimit": 8,
+      "linkLimit": 8
+    },
+    {
+      "id": "owletto",
+      "label": "Owletto (external MCP)",
+      "type": "owletto-mcp",
+      "mcpUrl": "http://localhost:8787/mcp/your-org-slug",
+      "tokenEnv": "OWLETTO_BENCH_TOKEN",
+      "enabled": false,
+      "topK": 8,
+      "searchLimit": 5,
+      "readLimit": 8,
+      "linkLimit": 8
+    },
+    {
+      "id": "mem0",
+      "label": "Mem0",
+      "type": "command",
+      "argv": ["python3", "benchmarks/memory/adapters/mem0_adapter.py"],
+      "env": {
+        "MEM0_API_KEY": "$MEM0_API_KEY"
+      },
+      "enabled": false,
+      "topK": 8
+    },
+    {
+      "id": "supermemory",
+      "label": "Supermemory",
+      "type": "command",
+      "argv": ["python3", "benchmarks/memory/adapters/supermemory_adapter.py"],
+      "env": {
+        "SUPERMEMORY_API_KEY": "$SUPERMEMORY_API_KEY"
+      },
+      "enabled": false,
+      "topK": 8
+    },
+    {
+      "id": "supermemory-rerank",
+      "label": "Supermemory (rerank)",
+      "type": "command",
+      "argv": ["python3", "benchmarks/memory/adapters/supermemory_adapter.py"],
+      "env": {
+        "SUPERMEMORY_API_KEY": "$SUPERMEMORY_API_KEY",
+        "SUPERMEMORY_RERANK": "1",
+        "SUPERMEMORY_THRESHOLD": "0.6"
+      },
+      "enabled": false,
+      "topK": 8
+    },
+    {
+      "id": "supermemory-profile",
+      "label": "Supermemory (profile+search)",
+      "type": "command",
+      "argv": ["python3", "benchmarks/memory/adapters/supermemory_adapter.py"],
+      "env": {
+        "SUPERMEMORY_API_KEY": "$SUPERMEMORY_API_KEY",
+        "SUPERMEMORY_USE_PROFILE": "1",
+        "SUPERMEMORY_THRESHOLD": "0.6"
+      },
+      "enabled": false,
+      "topK": 8
+    },
+    {
+      "id": "zep",
+      "label": "Zep",
+      "type": "command",
+      "argv": ["python3", "benchmarks/memory/adapters/zep_adapter.py"],
+      "env": {
+        "ZEP_API_KEY": "$ZEP_API_KEY"
+      },
+      "enabled": false,
+      "topK": 8
+    },
+    {
+      "id": "letta",
+      "label": "Letta",
+      "type": "command",
+      "argv": ["python3", "benchmarks/memory/adapters/letta_adapter.py"],
+      "env": {
+        "LETTA_API_KEY": "$LETTA_API_KEY"
+      },
+      "enabled": false,
+      "topK": 8
+    }
+  ]
+}

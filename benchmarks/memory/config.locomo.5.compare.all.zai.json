@@ -1,0 +1,57 @@
+{
+  "suitePath": "benchmarks/memory/suites/locomo.5.json",
+  "outputDir": ".owletto/benchmarks/memory/smoke-compare-all",
+  "trials": 1,
+  "topK": 8,
+  "parallelSystems": true,
+  "answerer": {
+    "type": "openai-compatible",
+    "model": "glm-5.1",
+    "baseUrl": "https://api.z.ai/api/coding/paas/v4/",
+    "apiKeyEnv": "ZAI_API_KEY",
+    "temperature": 0,
+    "maxTokens": 300
+  },
+  "systems": [
+    {
+      "id": "owletto-local",
+      "label": "Owletto (local in-process)",
+      "type": "owletto-inprocess",
+      "embedWrites": true,
+      "topK": 8,
+      "searchLimit": 5,
+      "readLimit": 8,
+      "linkLimit": 8
+    },
+    {
+      "id": "supermemory",
+      "label": "Supermemory",
+      "type": "command",
+      "argv": ["python3", "benchmarks/memory/adapters/supermemory_adapter.py"],
+      "env": {
+        "SUPERMEMORY_API_KEY": "$SUPERMEMORY_API_KEY"
+      },
+      "topK": 8
+    },
+    {
+      "id": "mem0",
+      "label": "Mem0",
+      "type": "command",
+      "argv": ["python3", "benchmarks/memory/adapters/mem0_adapter.py"],
+      "env": {
+        "MEM0_API_KEY": "$MEM0_API_KEY"
+      },
+      "topK": 8
+    },
+    {
+      "id": "zep",
+      "label": "Zep",
+      "type": "command",
+      "argv": ["python3", "benchmarks/memory/adapters/zep_adapter.py"],
+      "env": {
+        "ZEP_API_KEY": "$ZEP_API_KEY"
+      },
+      "topK": 8
+    }
+  ]
+}

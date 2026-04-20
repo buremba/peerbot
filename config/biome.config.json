@@ -30,7 +30,10 @@
       "!**/packages/owletto-connectors/**",
       "!**/packages/owletto-embeddings/**",
       "!**/packages/owletto-extension/**",
-      "!**/packages/owletto-web/**"
+      "!**/packages/owletto-web/**",
+      "!**/scripts/owletto/**",
+      "!**/benchmarks/**",
+      "!**/skills/**"
     ]
   },
   "formatter": {

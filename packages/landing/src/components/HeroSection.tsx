@@ -2,11 +2,11 @@ import type { LandingUseCaseId } from "../use-case-definitions";
 import {
   getLandingUseCaseShowcase,
   getOwlettoUrl,
-  landingUseCaseOptions,
+  landingUseCaseGroupedOptions,
   type SurfaceHeroCopy,
 } from "../use-case-showcases";
 import { HighlightedText } from "./HighlightedText";
-import { UseCaseTabs } from "./UseCaseTabs";
+import { ScopedUseCaseTabs } from "./ScopedUseCaseTabs";
 
 const SecondaryCtaIcon = ({ external }: { external: boolean }) =>
   external ? (
@@ -158,10 +158,9 @@ export function HeroSection(props: {
         </div>
 
         <div class="mt-8 mb-6">
-          <UseCaseTabs
-            tabs={landingUseCaseOptions}
+          <ScopedUseCaseTabs
+            groups={landingUseCaseGroupedOptions}
             activeId={activeUseCase.id}
-            label="Pick a use case"
             onSelect={
               props.linkTabsToCampaigns
                 ? undefined

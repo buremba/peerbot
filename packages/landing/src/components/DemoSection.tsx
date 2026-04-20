@@ -1,14 +1,24 @@
 import type { ComponentChildren } from "preact";
 import { useEffect, useMemo, useState } from "preact/hooks";
-import type { LandingUseCaseId } from "../use-case-definitions";
+import type {
+  ExampleRelation,
+  LandingUseCaseId,
+  RecordNode,
+} from "../use-case-definitions";
 import {
   DEFAULT_LANDING_USE_CASE_ID,
   getLandingUseCaseShowcase,
-  landingUseCaseOptions,
+  landingUseCaseGroupedOptions,
+  type TraceRow,
 } from "../use-case-showcases";
 import { deliverySurfaces } from "./platforms";
-import { UseCaseTabs } from "./UseCaseTabs";
-import { accentCyan, accentPink, textColor } from "./memory/styles";
+import { ScopedUseCaseTabs } from "./ScopedUseCaseTabs";
+import {
+  accentAmber,
+  accentCyan,
+  accentPink,
+  textColor,
+} from "./memory/styles";
 
 function Card({
   title,
@@ -81,42 +91,375 @@ function PillList({ items }: { items: string[] }) {
   );
 }
 
-function StepsList({
-  steps,
-}: {
-  steps: Array<{ title: string; detail: string; chips?: string[] }>;
-}) {
+function ResponseBlock({ label, text }: { label: string; text: string }) {
   return (
-    <div class="grid gap-4">
-      {steps.map((step, index) => (
-        <div key={step.title} class="grid gap-2">
-          <div class="flex items-start gap-3">
-            <div
-              class="w-7 h-7 rounded-full flex items-center justify-center text-xs font-semibold shrink-0"
+    <div
+      class="rounded-xl p-4"
+      style={{
+        backgroundColor: "rgba(255,255,255,0.03)",
+        border: "1px solid var(--color-tg-accent)",
+      }}
+    >
+      <div
+        class="text-[10px] uppercase tracking-[0.18em] mb-2"
+        style={{ color: "var(--color-tg-accent)" }}
+      >
+        {label}
+      </div>
+      <div
+        class="text-sm leading-7"
+        style={{ color: "var(--color-page-text)" }}
+      >
+        {text}
+      </div>
+    </div>
+  );
+}
+
+const TRACE_KIND_META: Record<
+  TraceRow["kind"],
+  { label: string; color: string }
+> = {
+  skill: { label: "skill", color: "var(--color-tg-accent)" },
+  memory_recall: { label: "recall", color: accentCyan },
+  memory_upsert: { label: "upsert", color: accentPink },
+  memory_link: { label: "link", color: accentPink },
+};
+
+type TraceTile = { text: string; fg: string; bg: string; border: string };
+
+function getTraceTile(row: TraceRow): TraceTile {
+  const call = row.call.toLowerCase();
+  if (row.kind === "skill") {
+    if (call.startsWith("pagerduty")) {
+      return {
+        text: "PD",
+        fg: "#f59e0b",
+        bg: "rgba(245, 158, 11, 0.14)",
+        border: "rgba(245, 158, 11, 0.4)",
+      };
+    }
+    if (call.startsWith("k8s") || call.startsWith("helm")) {
+      return {
+        text: "K8",
+        fg: "#60a5fa",
+        bg: "rgba(96, 165, 250, 0.14)",
+        border: "rgba(96, 165, 250, 0.4)",
+      };
+    }
+    if (call.startsWith("approval")) {
+      return {
+        text: "OK",
+        fg: accentAmber,
+        bg: "rgba(248, 184, 78, 0.14)",
+        border: "rgba(248, 184, 78, 0.4)",
+      };
+    }
+    return {
+      text: row.source.slice(0, 2).toUpperCase(),
+      fg: "var(--color-tg-accent)",
+      bg: "rgba(255,255,255,0.06)",
+      border: "rgba(255,255,255,0.16)",
+    };
+  }
+  if (row.kind === "memory_recall") {
+    return {
+      text: "\u21BA",
+      fg: accentCyan,
+      bg: "rgba(103, 232, 249, 0.12)",
+      border: "rgba(103, 232, 249, 0.4)",
+    };
+  }
+  if (row.kind === "memory_upsert") {
+    return {
+      text: "+",
+      fg: accentPink,
+      bg: "rgba(251, 113, 133, 0.12)",
+      border: "rgba(251, 113, 133, 0.4)",
+    };
+  }
+  return {
+    text: "\u2192",
+    fg: accentPink,
+    bg: "rgba(251, 113, 133, 0.12)",
+    border: "rgba(251, 113, 133, 0.4)",
+  };
+}
+
+function EntityCard({ node }: { node: RecordNode }) {
+  return (
+    <div
+      class="rounded-lg p-3 grid gap-1.5"
+      style={{
+        backgroundColor: "rgba(255,255,255,0.03)",
+        border: "1px solid rgba(255,255,255,0.08)",
+      }}
+    >
+      <div class="flex items-center gap-2 flex-wrap">
+        <span
+          class="text-[10px] uppercase tracking-[0.16em] px-1.5 py-0.5 rounded"
+          style={{
+            color: accentCyan,
+            border: `1px solid rgba(103, 232, 249, 0.35)`,
+            backgroundColor: `rgba(103, 232, 249, 0.06)`,
+          }}
+        >
+          {node.kind}
+        </span>
+        <span class="text-sm" style={{ color: "var(--color-page-text)" }}>
+          {node.label}
+        </span>
+      </div>
+      {node.chips?.length ? (
+        <div class="flex flex-wrap gap-1">
+          {node.chips.map((chip) => (
+            <span
+              key={chip}
+              class="text-[10px] px-1.5 py-0.5 rounded-full"
               style={{
-                color: "var(--color-page-bg)",
-                backgroundColor: "var(--color-tg-accent)",
+                color: "var(--color-page-text-muted)",
+                backgroundColor: "rgba(255,255,255,0.04)",
+                border: "1px solid rgba(255,255,255,0.06)",
               }}
             >
-              {index + 1}
-            </div>
-            <div class="min-w-0">
-              <div
-                class="text-sm font-semibold mb-1"
-                style={{ color: "var(--color-page-text)" }}
-              >
-                {step.title}
+              {chip}
+            </span>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function RelationshipTriple({ relation }: { relation: ExampleRelation }) {
+  return (
+    <div class="flex flex-wrap items-center gap-1.5">
+      <span
+        class="px-2 py-0.5 rounded-full text-xs"
+        style={{
+          color: textColor,
+          backgroundColor: `rgba(103, 232, 249, 0.08)`,
+          border: "1px solid rgba(103, 232, 249, 0.22)",
+        }}
+      >
+        <span class="font-semibold">{relation.sourceType}</span>{" "}
+        {relation.source}
+      </span>
+      <span
+        class="px-1.5 py-0.5 rounded-full text-[10px] uppercase tracking-[0.16em]"
+        style={{
+          color: accentCyan,
+          backgroundColor: `rgba(103, 232, 249, 0.06)`,
+          border: "1px solid rgba(103, 232, 249, 0.18)",
+        }}
+      >
+        {relation.label}
+      </span>
+      <span
+        class="px-2 py-0.5 rounded-full text-xs"
+        style={{
+          color: textColor,
+          backgroundColor: `rgba(134, 239, 172, 0.08)`,
+          border: "1px solid rgba(134, 239, 172, 0.22)",
+        }}
+      >
+        <span class="font-semibold">{relation.targetType}</span>{" "}
+        {relation.target}
+      </span>
+    </div>
+  );
+}
+
+function TraceSection({
+  rows,
+  skillsHref,
+  memoryHref,
+  mcpServer,
+  allowedDomains,
+  entities,
+  relation,
+}: {
+  rows: TraceRow[];
+  skillsHref: string;
+  memoryHref: string;
+  mcpServer: string;
+  allowedDomains: string[];
+  entities: RecordNode[];
+  relation?: ExampleRelation;
+}) {
+  return (
+    <div class="mt-5">
+      <div
+        class="text-[10px] uppercase tracking-[0.18em] mb-3"
+        style={{ color: "var(--color-page-text-muted)" }}
+      >
+        Trace
+      </div>
+      <div class="flex flex-col">
+        {rows.map((row, i) => {
+          const meta = TRACE_KIND_META[row.kind];
+          const tile = getTraceTile(row);
+          const isLast = i === rows.length - 1;
+          return (
+            <div
+              key={`${row.call}-${i}`}
+              class="flex items-stretch gap-3"
+              style={{ paddingBottom: isLast ? 0 : "12px" }}
+            >
+              <div class="relative flex flex-col items-center shrink-0 w-8">
+                <div
+                  class="w-8 h-8 shrink-0 rounded-lg flex items-center justify-center text-[11px] font-semibold relative z-10"
+                  style={{
+                    color: tile.fg,
+                    backgroundColor: tile.bg,
+                    border: `1px solid ${tile.border}`,
+                  }}
+                >
+                  {tile.text}
+                </div>
+                {!isLast ? (
+                  <div
+                    class="absolute w-px"
+                    style={{
+                      left: "50%",
+                      top: "32px",
+                      bottom: "-12px",
+                      transform: "translateX(-50%)",
+                      background:
+                        "linear-gradient(180deg, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0.08) 100%)",
+                    }}
+                  />
+                ) : null}
               </div>
               <div
-                class="text-sm leading-6"
-                style={{ color: "var(--color-page-text-muted)" }}
+                class="flex-1 min-w-0 rounded-xl px-3 py-3"
+                style={{
+                  backgroundColor: "rgba(255,255,255,0.035)",
+                  border: "1px solid rgba(255,255,255,0.07)",
+                }}
               >
-                {step.detail}
+                <div class="flex items-center gap-2 flex-wrap">
+                  <span
+                    class="text-sm font-semibold"
+                    style={{ color: "var(--color-page-text)" }}
+                  >
+                    {row.source}
+                  </span>
+                  <span
+                    class="text-[10px] uppercase tracking-[0.18em] px-1.5 py-0.5 rounded"
+                    style={{
+                      color: meta.color,
+                      border: `1px solid ${meta.color}`,
+                    }}
+                  >
+                    {meta.label}
+                  </span>
+                </div>
+                <div
+                  class="font-mono text-[11px] mt-1 break-all"
+                  style={{ color: "var(--color-page-text-muted)" }}
+                >
+                  {row.call}
+                </div>
+                <div
+                  class="text-sm mt-1.5"
+                  style={{ color: "var(--color-page-text)" }}
+                >
+                  <span style={{ color: meta.color }}>{"\u2192 "}</span>
+                  {row.result}
+                </div>
               </div>
             </div>
+          );
+        })}
+      </div>
+
+      <div class="mt-5 grid gap-3">
+        <div class="grid gap-2 sm:grid-cols-[8rem_1fr] items-start">
+          <div
+            class="text-[10px] uppercase tracking-[0.18em] sm:pt-1"
+            style={{ color: "var(--color-page-text-muted)" }}
+          >
+            MCP server
+          </div>
+          <div class="flex flex-wrap gap-1.5">
+            <span
+              class="text-[11px] font-mono px-2 py-1 rounded-full"
+              style={{
+                color: "var(--color-page-text)",
+                backgroundColor: "rgba(255,255,255,0.05)",
+                border: "1px solid rgba(255,255,255,0.09)",
+              }}
+            >
+              {mcpServer}
+            </span>
+          </div>
+          <div
+            class="text-[10px] uppercase tracking-[0.18em] sm:pt-1"
+            style={{ color: "var(--color-page-text-muted)" }}
+          >
+            Network allowlist
+          </div>
+          <div class="flex flex-wrap gap-1.5">
+            {allowedDomains.map((domain) => (
+              <span
+                key={domain}
+                class="text-[11px] font-mono px-2 py-1 rounded-full"
+                style={{
+                  color: "var(--color-page-text-muted)",
+                  backgroundColor: "rgba(255,255,255,0.03)",
+                  border: "1px solid rgba(255,255,255,0.08)",
+                }}
+              >
+                {domain}
+              </span>
+            ))}
           </div>
         </div>
-      ))}
+        {entities.length ? (
+          <div class="grid gap-2">
+            <div
+              class="text-[10px] uppercase tracking-[0.18em]"
+              style={{ color: "var(--color-page-text-muted)" }}
+            >
+              Entities touched
+            </div>
+            <div class="grid gap-2 sm:grid-cols-2">
+              {entities.map((node) => (
+                <EntityCard key={node.id} node={node} />
+              ))}
+            </div>
+          </div>
+        ) : null}
+        {relation ? (
+          <div class="grid gap-1">
+            <div
+              class="text-[10px] uppercase tracking-[0.18em]"
+              style={{ color: "var(--color-page-text-muted)" }}
+            >
+              Relationship
+            </div>
+            <RelationshipTriple relation={relation} />
+          </div>
+        ) : null}
+      </div>
+
+      <div class="mt-4 flex flex-wrap gap-4">
+        <a
+          href={skillsHref}
+          class="text-xs hover:underline"
+          style={{ color: "var(--color-tg-accent)" }}
+        >
+          Learn more about Skills →
+        </a>
+        <a
+          href={memoryHref}
+          class="text-xs hover:underline"
+          style={{ color: "var(--color-tg-accent)" }}
+        >
+          Learn more about Memory →
+        </a>
+      </div>
     </div>
   );
 }
@@ -175,30 +518,6 @@ function RequestBlock({
   );
 }
 
-function HighlightGrid({
-  items,
-}: {
-  items: Array<{ label: string; value: string }>;
-}) {
-  return (
-    <div class="grid gap-3 sm:grid-cols-2">
-      {items.map((item) => (
-        <div key={item.label} class="grid gap-0.5">
-          <div
-            class="text-[10px] uppercase tracking-[0.18em]"
-            style={{ color: "var(--color-page-text-muted)" }}
-          >
-            {item.label}
-          </div>
-          <div class="text-sm" style={{ color: "var(--color-page-text)" }}>
-            {item.value}
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 export function DemoSection(props: {
   defaultUseCaseId?: LandingUseCaseId;
   activeUseCaseId?: LandingUseCaseId;
@@ -232,8 +551,8 @@ export function DemoSection(props: {
     <section id="how-it-works" class="pt-4 pb-14 px-8">
       <div class="w-full max-w-[72rem] mx-auto px-2 sm:px-6 lg:px-6 box-border">
         {props.showTabs === false ? null : (
-          <UseCaseTabs
-            tabs={landingUseCaseOptions}
+          <ScopedUseCaseTabs
+            groups={landingUseCaseGroupedOptions}
             activeId={activeUseCase.id}
             onSelect={
               props.linkTabsToCampaigns
@@ -263,233 +582,21 @@ export function DemoSection(props: {
               text={activeUseCase.runtime.request}
               showPlatforms
             />
-            <StepsList steps={activeUseCase.runtime.steps} />
-          </Card>
-        </div>
-
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <Card
-            title="Skills"
-            description={activeUseCase.skills.description}
-            href={skillsHref}
-            hrefLabel="Learn more about Skills"
-          >
-            <div class="grid gap-4 md:grid-cols-3">
-              <div>
-                <div
-                  class="text-[10px] uppercase tracking-[0.18em] mb-2"
-                  style={{ color: "var(--color-page-text-muted)" }}
-                >
-                  Skills
-                </div>
-                <PillList items={activeUseCase.skills.skills} />
-              </div>
-              <div>
-                <div
-                  class="text-[10px] uppercase tracking-[0.18em] mb-2"
-                  style={{ color: "var(--color-page-text-muted)" }}
-                >
-                  Nix packages
-                </div>
-                <PillList items={activeUseCase.skills.nixPackages} />
-              </div>
-              <div>
-                <div
-                  class="text-[10px] uppercase tracking-[0.18em] mb-2"
-                  style={{ color: "var(--color-page-text-muted)" }}
-                >
-                  Allowed domains
-                </div>
-                <PillList items={activeUseCase.skills.allowedDomains} />
-              </div>
-            </div>
-            <div class="grid gap-3 sm:grid-cols-2 mt-5">
-              <div class="grid gap-0.5">
-                <div
-                  class="text-[10px] uppercase tracking-[0.18em]"
-                  style={{ color: "var(--color-page-text-muted)" }}
-                >
-                  Agent
-                </div>
-                <div
-                  class="text-sm"
-                  style={{ color: "var(--color-page-text)" }}
-                >
-                  {activeUseCase.skills.agentId}
-                </div>
-              </div>
-              <div class="grid gap-0.5">
-                <div
-                  class="text-[10px] uppercase tracking-[0.18em]"
-                  style={{ color: "var(--color-page-text-muted)" }}
-                >
-                  MCP server
-                </div>
-                <div
-                  class="text-sm"
-                  style={{ color: "var(--color-page-text)" }}
-                >
-                  {activeUseCase.skills.mcpServer}
-                </div>
-              </div>
-              <div class="grid gap-0.5">
-                <div
-                  class="text-[10px] uppercase tracking-[0.18em]"
-                  style={{ color: "var(--color-page-text-muted)" }}
-                >
-                  Provider
-                </div>
-                <div
-                  class="text-sm"
-                  style={{ color: "var(--color-page-text)" }}
-                >
-                  {activeUseCase.skills.providerId}
-                </div>
-              </div>
-              <div class="grid gap-0.5">
-                <div
-                  class="text-[10px] uppercase tracking-[0.18em]"
-                  style={{ color: "var(--color-page-text-muted)" }}
-                >
-                  Model
-                </div>
-                <div
-                  class="text-sm"
-                  style={{ color: "var(--color-page-text)" }}
-                >
-                  {activeUseCase.skills.model}
-                </div>
-              </div>
-            </div>
-            <div class="mt-5 grid gap-2">
-              {activeUseCase.skills.skillInstructions.map((instruction) => (
-                <div
-                  key={instruction}
-                  class="rounded-lg px-3 py-2 text-sm leading-6"
-                  style={{
-                    color: "var(--color-page-text)",
-                    backgroundColor: "rgba(255,255,255,0.04)",
-                    border: "1px solid rgba(255,255,255,0.06)",
-                  }}
-                >
-                  {instruction}
-                </div>
-              ))}
-            </div>
-            <p
-              class="text-xs leading-6 mt-5"
-              style={{ color: "var(--color-page-text-muted)" }}
-            >
-              Need another service or workflow? Add your own MCP servers, Nix
-              packages, and custom skills. See the{" "}
-              <a
-                href={skillsHref}
-                class="hover:underline"
-                style={{ color: "var(--color-tg-accent)" }}
-              >
-                skills page
-              </a>
-              .
-            </p>
-          </Card>
-
-          <Card
-            title="Memory"
-            description={activeUseCase.memory.description}
-            href={memoryHref}
-            hrefLabel="Learn more about Memory"
-          >
-            <RequestBlock
-              label={activeUseCase.memory.sourceLabel}
-              text={activeUseCase.memory.sourceText}
+            <ResponseBlock
+              label={activeUseCase.runtime.responseLabel}
+              text={activeUseCase.runtime.response}
             />
-            <HighlightGrid items={activeUseCase.memory.highlights} />
-            <div class="mt-5">
-              <div
-                class="text-[10px] uppercase tracking-[0.18em] mb-2"
-                style={{ color: "var(--color-page-text-muted)" }}
-              >
-                Structured entities
-              </div>
-              <PillList items={activeUseCase.memory.entityTypes} />
-            </div>
-            <div class="mt-5">
-              <div
-                class="text-[10px] uppercase tracking-[0.18em] mb-2"
-                style={{ color: "var(--color-page-text-muted)" }}
-              >
-                Relationships
-              </div>
-              <div class="flex flex-wrap items-center gap-1.5">
-                <span
-                  class="px-2 py-0.5 rounded-full text-xs"
-                  style={{
-                    color: textColor,
-                    backgroundColor: `rgba(103, 232, 249, 0.08)`,
-                    border: "1px solid rgba(103, 232, 249, 0.22)",
-                  }}
-                >
-                  <span class="font-semibold">
-                    {activeUseCase.memory.relations[0]?.sourceType}
-                  </span>{" "}
-                  {activeUseCase.memory.relations[0]?.source}
-                </span>
-                <span
-                  class="px-1.5 py-0.5 rounded-full text-[10px] uppercase tracking-[0.16em]"
-                  style={{
-                    color: accentCyan,
-                    backgroundColor: `rgba(103, 232, 249, 0.06)`,
-                    border: "1px solid rgba(103, 232, 249, 0.18)",
-                  }}
-                >
-                  {activeUseCase.memory.relations[0]?.label}
-                </span>
-                <span
-                  class="px-2 py-0.5 rounded-full text-xs"
-                  style={{
-                    color: textColor,
-                    backgroundColor: `rgba(134, 239, 172, 0.08)`,
-                    border: "1px solid rgba(134, 239, 172, 0.22)",
-                  }}
-                >
-                  <span class="font-semibold">
-                    {activeUseCase.memory.relations[0]?.targetType}
-                  </span>{" "}
-                  {activeUseCase.memory.relations[0]?.target}
-                </span>
-              </div>
-            </div>
-
-            <div class="mt-5">
-              <div
-                class="text-[10px] uppercase tracking-[0.18em] mb-2"
-                style={{ color: "var(--color-page-text-muted)" }}
-              >
-                Watcher
-              </div>
-              <div class="flex flex-wrap items-center gap-2">
-                <span
-                  class="px-2 py-0.5 rounded-full text-xs"
-                  style={{
-                    color: textColor,
-                    backgroundColor: `rgba(251, 113, 133, 0.08)`,
-                    border: "1px solid rgba(251, 113, 133, 0.22)",
-                  }}
-                >
-                  {activeUseCase.memory.watcher.name}
-                </span>
-                <span
-                  class="px-1.5 py-0.5 rounded-full text-[10px] uppercase tracking-[0.14em]"
-                  style={{
-                    color: accentPink,
-                    backgroundColor: `rgba(251, 113, 133, 0.06)`,
-                    border: "1px solid rgba(251, 113, 133, 0.18)",
-                  }}
-                >
-                  {activeUseCase.memory.watcher.schedule}
-                </span>
-              </div>
-            </div>
+            {activeUseCase.runtime.trace?.length ? (
+              <TraceSection
+                rows={activeUseCase.runtime.trace}
+                skillsHref={skillsHref}
+                memoryHref={memoryHref}
+                mcpServer={activeUseCase.skills.mcpServer}
+                allowedDomains={activeUseCase.skills.allowedDomains}
+                entities={activeUseCase.memory.recordTree.children ?? []}
+                relation={activeUseCase.memory.relations[0]}
+              />
+            ) : null}
           </Card>
         </div>
       </div>

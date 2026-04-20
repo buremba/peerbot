@@ -865,12 +865,36 @@ function injectIntoTemplate(templateHtml: string, model: PublicPageModel): strin
     : `${withRoot}${bootstrapScript}`;
 }
 
+function stripSubdomainPrefix(path: string, sub: string | null | undefined): string {
+  if (!sub) return path;
+  const prefix = `/${sub}`;
+  if (path === prefix) return '/';
+  if (path.startsWith(`${prefix}/`)) return path.slice(prefix.length);
+  return path;
+}
+
+function applyBootstrapStrip<T extends PublicPageModel>(model: T, sub: string | null | undefined): T {
+  if (!sub) return model;
+  return {
+    ...model,
+    bootstrap: { ...model.bootstrap, path: stripSubdomainPrefix(model.bootstrap.path, sub) },
+  };
+}
+
 export async function buildPublicPageModel(
   path: string,
   env: Env,
-  requestUrl: string
+  requestUrl: string,
+  subdomainOrg?: string | null
 ): Promise<PublicPageModel | null> {
-  const normalizedPath = `/${path.replace(/^\/+|\/+$/g, '')}`;
+  const rawPath = `/${path.replace(/^\/+|\/+$/g, '')}`;
+  // On a subdomain host, synthesize the owner segment when the request path
+  // doesn't already carry it, so downstream segment-based routing works
+  // identically to the canonical-host (`app.lobu.ai/{org}/...`) form.
+  const normalizedPath =
+    subdomainOrg && rawPath !== `/${subdomainOrg}` && !rawPath.startsWith(`/${subdomainOrg}/`)
+      ? `/${subdomainOrg}${rawPath === '/' ? '' : rawPath}`
+      : rawPath;
   const segments = normalizedPath.split('/').filter(Boolean);
   if (segments.length === 0) return null;
 
@@ -891,25 +915,34 @@ export async function buildPublicPageModel(
         env,
         toolCtx
       );
-      return buildWorkspaceModel(organization, resolvedPath, requestUrl);
+      return applyBootstrapStrip(
+        buildWorkspaceModel(organization, resolvedPath, requestUrl),
+        subdomainOrg
+      );
     }
 
     if (segments.length === 2) {
       const entityType = await getPublicEntityType(organization.id, segments[1]!);
       if (!entityType) {
-        return buildNotFoundModel(organization, requestUrl, normalizedPath);
+        return applyBootstrapStrip(
+          buildNotFoundModel(organization, requestUrl, normalizedPath),
+          subdomainOrg
+        );
       }
       const [ownerResolvedPath, entityList] = await Promise.all([
         resolvePath({ path: `/${organization.slug}`, include_bootstrap: true }, env, toolCtx),
         getPublicEntityTypeList(organization.id, env, requestUrl, entityType.slug),
       ]);
-      return buildEntityTypeModel({
-        organization,
-        entityType,
-        entityList,
-        ownerResolvedPath,
-        requestUrl,
-      });
+      return applyBootstrapStrip(
+        buildEntityTypeModel({
+          organization,
+          entityType,
+          entityList,
+          ownerResolvedPath,
+          requestUrl,
+        }),
+        subdomainOrg
+      );
     }
 
     // If any segment after the owner is a known app-route prefix (e.g. watchers, agents),
@@ -927,12 +960,21 @@ export async function buildPublicPageModel(
         env,
         toolCtx
       );
-      return buildEntityModel(organization, resolvedPath, requestUrl);
+      return applyBootstrapStrip(
+        buildEntityModel(organization, resolvedPath, requestUrl),
+        subdomainOrg
+      );
     }
 
-    return buildNotFoundModel(organization, requestUrl, normalizedPath);
+    return applyBootstrapStrip(
+      buildNotFoundModel(organization, requestUrl, normalizedPath),
+      subdomainOrg
+    );
   } catch {
-    return buildNotFoundModel(organization, requestUrl, normalizedPath);
+    return applyBootstrapStrip(
+      buildNotFoundModel(organization, requestUrl, normalizedPath),
+      subdomainOrg
+    );
   }
 }
 

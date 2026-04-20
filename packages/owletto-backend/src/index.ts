@@ -317,7 +317,21 @@ app.use('/*', async (c, next) => {
   const zone = getSubdomainZone();
   const sub = extractSubdomainOrg(c.req.header('host'), zone, RESERVED_SUBDOMAINS);
   c.set('subdomainOrg', sub);
-  await next();
+
+  // On a subdomain host, redirect HTML GETs that carry a redundant `/{sub}`
+  // prefix to the stripped path so direct/bookmarked links normalize to the
+  // SPA's expected URL. Scoped to HTML so API clients are unaffected.
+  if (sub && c.req.method === 'GET' && c.req.header('accept')?.includes('text/html')) {
+    const prefix = `/${sub}`;
+    const path = c.req.path;
+    if (path === prefix || path.startsWith(`${prefix}/`)) {
+      const stripped = path.slice(prefix.length) || '/';
+      const url = new URL(c.req.url);
+      return c.redirect(`${stripped}${url.search}`, 301);
+    }
+  }
+
+  return next();
 });
 
 app.use('/*', async (c, next) => {
@@ -907,7 +921,12 @@ app.get('*', async (c) => {
       requestPath
     );
   if (acceptsHtml && !hasFileExtension && !isExcludedSpaPath(requestPath)) {
-    const publicPageModel = await buildPublicPageModel(requestPath, c.env, c.req.url);
+    const publicPageModel = await buildPublicPageModel(
+      requestPath,
+      c.env,
+      c.req.url,
+      c.get('subdomainOrg')
+    );
     if (publicPageModel) {
       const template = await loadAnySpaHtmlTemplate();
       if (template) {

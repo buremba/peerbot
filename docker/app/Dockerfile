@@ -82,7 +82,7 @@ ARG VITE_API_URL=
 ENV VITE_API_URL=$VITE_API_URL
 ARG SKIP_WEB_BUILD=false
 RUN if [ "$SKIP_WEB_BUILD" = "false" ] && [ -f packages/owletto-web/package.json ]; then \
-      cd packages/owletto-web && bunx vite build; \
+      cd packages/owletto-web && bun run build; \
     else \
       mkdir -p /app/packages/owletto-web/dist; \
     fi

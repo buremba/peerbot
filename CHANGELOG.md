@@ -1,5 +1,34 @@
 # Changelog
 
+## [3.6.0](https://github.com/lobu-ai/lobu/compare/lobu-v3.5.0...lobu-v3.6.0) (2026-04-20)
+
+
+### Features
+
+* **backend:** wildcard trusted origins + reserved subdomain skip-list ([#214](https://github.com/lobu-ai/lobu/issues/214)) ([7656f2b](https://github.com/lobu-ai/lobu/commit/7656f2bf465a0cb2ea7eb91ec123c42ae015bb02))
+* consolidate owletto into the lobu monorepo (PRs 1–4) ([#212](https://github.com/lobu-ai/lobu/issues/212)) ([a6d0d3f](https://github.com/lobu-ai/lobu/commit/a6d0d3f9a46696b5874e1a4029ab8f73e579a4e3))
+* **gateway:** file-driven agent schedules in lobu.toml ([#211](https://github.com/lobu-ai/lobu/issues/211)) ([6b2eb51](https://github.com/lobu-ai/lobu/commit/6b2eb5128584d0d7d7cfaa38f203684ce422709f))
+* **landing:** architecture diagram badges, blog section, and use-case chat examples ([#206](https://github.com/lobu-ai/lobu/issues/206)) ([969e5ee](https://github.com/lobu-ai/lobu/commit/969e5ee6e96858521187c7af8aaeeb35786516d3))
+* **landing:** consolidate use-case demo into unified trace view ([#226](https://github.com/lobu-ai/lobu/issues/226)) ([c030fa7](https://github.com/lobu-ai/lobu/commit/c030fa709bcd9423224214276e3cd315cce67cff))
+* **landing:** per-use-case chat switcher on platform pages ([#202](https://github.com/lobu-ai/lobu/issues/202)) ([f65cc35](https://github.com/lobu-ai/lobu/commit/f65cc3567a30059c8589264610f4531ec11e89e8))
+* **landing:** publish agent-readiness signals for lobu.ai ([#208](https://github.com/lobu-ai/lobu/issues/208)) ([8360cef](https://github.com/lobu-ai/lobu/commit/8360cefd6401afa1271f21a01f11a09231aada09))
+
+
+### Bug Fixes
+
+* **ci:** skip web build when owletto-web is stubbed ([#222](https://github.com/lobu-ai/lobu/issues/222)) ([acee38a](https://github.com/lobu-ai/lobu/commit/acee38aae91b8389553800ccdbbace542460b89f))
+* **docker:** build gateway dist + exclude tests from backend typecheck ([#219](https://github.com/lobu-ai/lobu/issues/219)) ([96b0033](https://github.com/lobu-ai/lobu/commit/96b00332c637262d6a22bc624ddee802e938d519))
+* **docker:** name owletto-cli stub package as 'owletto' (unscoped) ([#215](https://github.com/lobu-ai/lobu/issues/215)) ([17fba3f](https://github.com/lobu-ai/lobu/commit/17fba3fac7b910f39d3bad256befa85e9ad9876c))
+* **docker:** unzip in runtime + worker chromium install via bunx ([#216](https://github.com/lobu-ai/lobu/issues/216)) ([019253e](https://github.com/lobu-ai/lobu/commit/019253e8977cf8b0c14b38d5045abd6952b25a5c))
+* **docker:** use bun run build for owletto-web (local vite) ([#221](https://github.com/lobu-ai/lobu/issues/221)) ([7734259](https://github.com/lobu-ai/lobu/commit/7734259b4886b2ab1cbb44468a689b8b5aff33f2))
+* **gateway,worker:** deliver provider base URLs via session context only ([#225](https://github.com/lobu-ai/lobu/issues/225)) ([9171d37](https://github.com/lobu-ai/lobu/commit/9171d37d34cbe07fd004ee2e7842b8a66328e46b))
+* **gateway:** isolate tsconfig from root bun-types ([#220](https://github.com/lobu-ai/lobu/issues/220)) ([c533e27](https://github.com/lobu-ai/lobu/commit/c533e274217d2af6177f902fd4cf0502f73192b5))
+* **gateway:** Owletto MCP sync, Slack markdown/threading, tool-approval lifecycle, deployment coalescing ([#210](https://github.com/lobu-ai/lobu/issues/210)) ([92ce0eb](https://github.com/lobu-ai/lobu/commit/92ce0eb3308e4d4b476c96b60d5f8e45803d9597))
+* **landing:** refine Owletto memory section copy ([#205](https://github.com/lobu-ai/lobu/issues/205)) ([9075d6c](https://github.com/lobu-ai/lobu/commit/9075d6c74f33716429b030c4406b10e28450b63d))
+* **owletto-backend:** resolve *.lobu.ai as org subdomain under AUTH_COOKIE_DOMAIN ([#224](https://github.com/lobu-ai/lobu/issues/224)) ([c893aae](https://github.com/lobu-ai/lobu/commit/c893aaedb64ac3437e081641947dca297f390f79))
+* **owletto-backend:** resolve typecheck errors blocking build-images ([#218](https://github.com/lobu-ai/lobu/issues/218)) ([7ce6271](https://github.com/lobu-ai/lobu/commit/7ce62711bd2c35d763d01f35426e24e07dc88bf4))
+* **worker:** QA hardening for careops agent (Gemini support, UploadUserFile workspace paths, dedup error messages) ([#203](https://github.com/lobu-ai/lobu/issues/203)) ([8026d5d](https://github.com/lobu-ai/lobu/commit/8026d5d341c5738961f8179a3ab9f5acb72b797e))
+
 ## [3.5.0](https://github.com/lobu-ai/lobu/compare/lobu-v3.4.3...lobu-v3.5.0) (2026-04-16)
 
 

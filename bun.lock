@@ -219,6 +219,7 @@
       "version": "1.6.0",
       "dependencies": {
         "@lobu/owletto-sdk": "workspace:*",
+        "playwright": "npm:patchright@^1.57.0",
       },
     },
     "packages/owletto-embeddings": {

@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@lobu/owletto-sdk": "workspace:*"
+    "@lobu/owletto-sdk": "workspace:*",
+    "playwright": "npm:patchright@^1.57.0"
   }
 }

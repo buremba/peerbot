@@ -40,8 +40,6 @@
   "exclude": [
     "node_modules",
     "dist",
-    "src/utils/__tests__/owletto-guidance-sync.test.ts",
-    "src/__tests__/integration/events/content-distribution.test.ts",
-    "src/__tests__/integration/cli"
+    "src/**/__tests__/**"
   ]
 }

@@ -64,13 +64,15 @@ COPY packages/owletto-backend/ packages/owletto-backend/
 # Copy the private frontend submodule when present.
 COPY packages/owletto-web packages/owletto-web
 
-# Build core + SDK dist (runtime imports from dist)
+# Build dist for packages whose `exports` map points at dist subpaths.
+# owletto-backend imports `@lobu/gateway/dist/connections` and
+# `@lobu/gateway/dist/api`, so gateway must be built before typechecking.
 RUN cd packages/core && bunx tsc
 RUN cd packages/owletto-sdk && bunx tsc
+RUN cd packages/gateway && bunx tsc
 
 # Type check
-ARG SKIP_TSC=false
-RUN if [ "$SKIP_TSC" = "false" ]; then cd packages/owletto-backend && bunx tsc --noEmit; fi
+RUN cd packages/owletto-backend && bunx tsc --noEmit
 
 # Build frontend static assets (production only)
 ARG VITE_API_URL=

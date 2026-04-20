@@ -16,18 +16,28 @@ type RuntimeStep = {
   chips?: string[];
 };
 
+export type TraceRow = {
+  kind: "skill" | "memory_recall" | "memory_upsert" | "memory_link";
+  source: string;
+  call: string;
+  result: string;
+};
+
 type RuntimeJourney = {
   requestLabel: string;
   request: string;
   summary: string;
   steps: RuntimeStep[];
+  trace?: TraceRow[];
+  responseLabel: string;
+  response: string;
   outcomeLabel: string;
   outcome: string[];
 };
 
 type RuntimeJourneyInput = Omit<
   RuntimeJourney,
-  "requestLabel" | "outcomeLabel"
+  "requestLabel" | "outcomeLabel" | "responseLabel"
 >;
 
 type CampaignMeta = {
@@ -1253,6 +1263,8 @@ const runtimeContent: Record<LandingUseCaseId, RuntimeJourneyInput> = {
         result: "flagged counsel-required",
       },
     ],
+    response:
+      "Clause §7 carries uncapped indemnity language — the same pattern that blocked the Acme NDA in September, so it needs counsel sign-off before you countersign. I've filed REV-88 with Priya and linked the clause to the Redwood counterparty record for future drafts.",
     outcome: [
       "Clause-level risk summary with citations",
       "Recommended edits and unresolved approval items",
@@ -1315,6 +1327,8 @@ const runtimeContent: Record<LandingUseCaseId, RuntimeJourneyInput> = {
         result: "awaiting oncall confirmation",
       },
     ],
+    response:
+      "Blocker is INC-4421: the checkout-v43 rollout has 3 of 5 pods unhealthy and ties to PR #882. checkout-v41 was the last safe version, so I've queued a rollback and it's waiting on oncall confirmation before it executes.",
     outcome: [
       "A current deploy-risk answer with blockers called out",
       "Incident and rollback context shared across the team",
@@ -1378,6 +1392,8 @@ const runtimeContent: Record<LandingUseCaseId, RuntimeJourneyInput> = {
         result: "set for Oct 24 10:00",
       },
     ],
+    response:
+      "Draft reply to Alex is ready in your outbox, matched to his usual tone. Owner set to Priya and a Thursday 10am follow-up is on the calendar.",
     outcome: [
       "Faster first replies with consistent context",
       "Less re-triage across shifts and escalations",
@@ -1441,6 +1457,8 @@ const runtimeContent: Record<LandingUseCaseId, RuntimeJourneyInput> = {
         result: "draft ready for sign-off",
       },
     ],
+    response:
+      "The 4100 variance traces to merchant STR-44 — same 3-day settlement lag we saw in September, $12,480 net. Month-end note is drafted and ready for your sign-off.",
     outcome: [
       "A structured explanation for the variance",
       "Operator-ready notes for the month-end deck",
@@ -1504,6 +1522,8 @@ const runtimeContent: Record<LandingUseCaseId, RuntimeJourneyInput> = {
         result: "usage down 38% since Aug",
       },
     ],
+    response:
+      "Northstar's renewal owner changed — Jake Chen is the new contact after Maria moved roles, and usage is down 38% since August. Recommend an exec sync with Jake and Jane before the Oct renewal to reset the relationship.",
     outcome: [
       "Renewal summaries grounded in account evidence",
       "Expansion and risk signals in one place",
@@ -1567,6 +1587,8 @@ const runtimeContent: Record<LandingUseCaseId, RuntimeJourneyInput> = {
         result: "escalation draft ready",
       },
     ],
+    response:
+      "Phoenix is blocked on shard-14 — same pattern we saw in the Apollo rollout — and Lena owns the fix on the backend side. Escalation draft to Rahul is ready if shard-14 isn't cleared by end of day Tuesday.",
     outcome: [
       "Consistent rollout updates with owners and blockers",
       "Project context that survives across standups and escalations",
@@ -1630,6 +1652,8 @@ const runtimeContent: Record<LandingUseCaseId, RuntimeJourneyInput> = {
         result: "due Fri Apr 25",
       },
     ],
+    response:
+      "Board approved the $4M Series A bridge and the Q1 hiring freeze. Blocked: the Frankfurt office lease pending legal diligence — Priya owns the counter with a decision due Fri Apr 25.",
     outcome: [
       "Action-oriented board summaries grounded in source material",
       "Durable decision history across review cycles",
@@ -1693,6 +1717,8 @@ const runtimeContent: Record<LandingUseCaseId, RuntimeJourneyInput> = {
         result: "draft ready · references Devon's repo",
       },
     ],
+    response:
+      "Top matches for Sarah this week are Devon Lin (shipped a similar embeddings eval harness) and Mira Sato (deep MCP work). Intro drafts for both are queued in your outbox referencing Devon's repo and Mira's recent post.",
     outcome: [
       "Higher-quality member discovery and introductions",
       "Fresh profile context without manual curation",
@@ -1756,6 +1782,8 @@ const runtimeContent: Record<LandingUseCaseId, RuntimeJourneyInput> = {
         result: "competitor pair updated",
       },
     ],
+    response:
+      "Airtable AI launched this week — automation-heavy but Reddit's flagging reliability issues (12 posts, 2 with concerns). Versus Notion: Airtable still leads on automation depth, Notion still leads on docs and collaboration — the Q3 gap hasn't closed.",
     outcome: [
       "Weekly competitive scans with feature and pricing changes",
       "Durable brand and product memory for pattern recognition",
@@ -1819,6 +1847,8 @@ const runtimeContent: Record<LandingUseCaseId, RuntimeJourneyInput> = {
         result: "plan=annual · cancel-risk=low",
       },
     ],
+    response:
+      "Emma's plan switched from monthly to annual ($199/yr, saves $48) and April's shipment is skipped — next delivery May 3. Confirmation email is queued with the updated billing date.",
     outcome: [
       "Faster subscription and order changes with approval flows",
       "Customer context that persists across interactions",
@@ -1882,6 +1912,8 @@ const runtimeContent: Record<LandingUseCaseId, RuntimeJourneyInput> = {
         result: "re-auth due May 1",
       },
     ],
+    response:
+      "James's next appointment is Apr 24 at 2:00pm with Dr. Patel. Treatment progress: 8 of 12 sessions complete, PHQ-9 down from 17 to 9 — on track. Insurance re-auth is due May 1.",
     outcome: [
       "Current patient status and appointment availability",
       "Treatment progress summaries across sessions",
@@ -1945,6 +1977,8 @@ const runtimeContent: Record<LandingUseCaseId, RuntimeJourneyInput> = {
         result: "linked Company Lovable · Lead Accel",
       },
     ],
+    response:
+      "Lovable just closed a $15M Series A led by Accel — already in portfolio. Also worth tracking: v0, Bolt, and Replit Agent in the same prompt-to-app space. Adam K. (ex-Replit) is a warm intro through your network.",
     outcome: [
       "Company summaries with funding and team history",
       "Portfolio health and competitive signals",
@@ -3058,6 +3092,7 @@ export const landingUseCaseShowcases: LandingUseCaseShowcase[] = (
   const runtime: RuntimeJourney = {
     ...input,
     requestLabel: "Incoming request",
+    responseLabel: "Agent response",
     outcomeLabel: "What the team gets",
   };
 

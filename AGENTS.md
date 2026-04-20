@@ -19,6 +19,10 @@
 - When fixing unused parameter errors, remove the parameter entirely if possible rather than prefixing with underscore
 - Worker prompt delivery: prompts are passed to the agent runtime directly (no named pipes used)
 
+### Submodules
+- `packages/owletto-web` is a git submodule pointing at `lobu-ai/owletto-web`. ANY code change inside it must ship as TWO PRs in this order: (1) submodule PR in `lobu-ai/owletto-web`, merge it; (2) parent PR in `lobu-ai/lobu` that bumps the submodule pointer. Never push parent commits that reference an unmerged submodule SHA — the production build resolves submodule SHAs from the parent and the deploy will break.
+- After the submodule PR merges, run `git -C packages/owletto-web pull --ff-only origin main`, stage `packages/owletto-web` in the parent, and open the parent bump PR.
+
 ### Architecture
 
 #### Platform

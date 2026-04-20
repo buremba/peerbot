@@ -81,15 +81,12 @@ COPY --from=builder --chown=worker:worker /app/packages/owletto-worker ./package
 COPY --chown=worker:worker docker/worker/healthcheck.sh /healthcheck.sh
 RUN chmod +x /healthcheck.sh
 
-# Install patchright's Chromium (aliased as playwright in package.json)
+# Install patchright's Chromium (declared as `playwright` alias in worker package.json).
+# Use bunx from the worker workspace so bun's resolver finds the alias.
 USER worker
-RUN node -e " \
-  const p = require('path'); \
-  const dir = p.dirname(require.resolve('playwright/package.json')); \
-  require('child_process').execSync( \
-    'node ' + p.join(dir, 'cli.js') + ' install chromium', \
-    { stdio: 'inherit' } \
-  );"
+WORKDIR /app/packages/owletto-worker
+RUN bunx --bun playwright install chromium
+WORKDIR /app
 
 ENV NODE_ENV=production
 ENV TRANSFORMERS_CACHE=/app/.cache/transformers

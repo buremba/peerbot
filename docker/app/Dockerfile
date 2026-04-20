@@ -37,9 +37,10 @@ COPY packages/owletto-web/package.jso[n] packages/owletto-web/
 # Stub out workspace packages we don't build in this image so bun install doesn't
 # error on missing manifests.
 RUN mkdir -p packages/cli packages/cli-core packages/landing packages/owletto-cli packages/owletto-extension packages/mcpsandbox \
-    && for p in cli cli-core landing owletto-cli owletto-extension mcpsandbox; do \
+    && for p in cli cli-core landing owletto-extension mcpsandbox; do \
         echo "{\"name\":\"@lobu/$p\",\"version\":\"0.0.0\",\"private\":true}" > "packages/$p/package.json"; \
-      done
+      done \
+    && echo '{"name":"owletto","version":"0.0.0","private":true}' > packages/owletto-cli/package.json
 
 RUN --mount=type=cache,target=/root/.bun/install/cache bun install
 

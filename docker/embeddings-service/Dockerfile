@@ -23,10 +23,11 @@ RUN mkdir -p packages/cli packages/cli-core packages/core packages/gateway packa
                packages/owletto-backend packages/owletto-cli packages/owletto-connectors \
                packages/owletto-extension packages/owletto-openclaw packages/owletto-sdk \
                packages/owletto-web packages/owletto-worker packages/worker packages/mcpsandbox \
-    && for p in cli cli-core core gateway landing owletto-backend owletto-cli owletto-connectors \
+    && for p in cli cli-core core gateway landing owletto-backend owletto-connectors \
                 owletto-extension owletto-openclaw owletto-sdk owletto-web owletto-worker worker mcpsandbox; do \
         echo "{\"name\":\"@lobu/$p\",\"version\":\"0.0.0\",\"private\":true}" > "packages/$p/package.json"; \
-      done
+      done \
+    && echo '{"name":"owletto","version":"0.0.0","private":true}' > packages/owletto-cli/package.json
 
 RUN --mount=type=cache,target=/root/.bun/install/cache bun install
 

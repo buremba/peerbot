@@ -54,28 +54,25 @@ function readYamlDir<T = Record<string, unknown>>(dirPath: string): T[] {
 }
 
 interface ExampleOwlettoLayout {
-  projectPath: string;
+  org: string;
   modelsPath: string;
 }
 
 function resolveOwlettoLayout(exampleDir: string): ExampleOwlettoLayout | null {
-  const rootProjectPath = join(exampleDir, "owletto.yaml");
-  if (existsSync(rootProjectPath)) {
-    return {
-      projectPath: rootProjectPath,
-      modelsPath: join(exampleDir, "models"),
-    };
-  }
+  const tomlPath = join(exampleDir, "lobu.toml");
+  if (!existsSync(tomlPath)) return null;
 
-  const legacyProjectPath = join(exampleDir, "owletto", "project.yaml");
-  if (existsSync(legacyProjectPath)) {
-    return {
-      projectPath: legacyProjectPath,
-      modelsPath: join(exampleDir, "owletto", "models"),
-    };
-  }
+  const toml = parseToml(readFileSync(tomlPath, "utf-8")) as {
+    memory?: { owletto?: { enabled?: boolean; org?: string; models?: string } };
+  };
+  const memory = toml.memory?.owletto;
+  if (!memory || memory.enabled === false) return null;
+  const org = memory.org?.trim();
+  if (!org) return null;
 
-  return null;
+  const modelsRel = memory.models?.trim() || "./models";
+  const modelsPath = resolve(exampleDir, modelsRel);
+  return { org, modelsPath };
 }
 
 // ── Types — imported from Owletto schema ────────────────────────────
@@ -87,8 +84,6 @@ type EntityYaml =
   import("../../owletto/packages/cli/src/lib/schema.ts").EntitySchema;
 type WatcherYaml =
   import("../../owletto/packages/cli/src/lib/schema.ts").WatcherSchema;
-type ProjectYaml =
-  import("../../owletto/packages/cli/src/lib/schema.ts").ProjectSchema;
 
 // ── TOML types ───────────────────────────────────────────────────────
 
@@ -137,8 +132,7 @@ function buildModel(exampleName: string): UseCaseModel | null {
   const layout = resolveOwlettoLayout(exampleDir);
   if (!layout) return null;
 
-  const project = readYamlFile<ProjectYaml>(layout.projectPath)!;
-  const owlettoOrg = project.org;
+  const owlettoOrg = layout.org;
 
   type AnyModel = EntityYaml | WatcherYaml;
   const allModels = readYamlDir<AnyModel>(layout.modelsPath);

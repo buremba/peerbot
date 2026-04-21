@@ -31,7 +31,7 @@ describe("applyOwlettoMemoryEnvFromProject", () => {
     rmSync(projectDir, { recursive: true, force: true });
   });
 
-  function writeProject(memoryBlock: string, owlettoYaml?: string): void {
+  function writeProject(memoryBlock: string): void {
     writeFileSync(
       join(projectDir, "lobu.toml"),
       `
@@ -43,20 +43,14 @@ ${memoryBlock}
 `,
       "utf-8"
     );
-
-    if (owlettoYaml !== undefined) {
-      writeFileSync(join(projectDir, "owletto.yaml"), owlettoYaml, "utf-8");
-    }
   }
 
   test("derives a hosted scoped MCP URL from [memory.owletto]", async () => {
     writeProject(
       `[memory.owletto]
 enabled = true
-config = "./owletto.yaml"
-`,
-      `version: 1
-org: careops
+org = "careops"
+name = "Healthcare"
 `
     );
 
@@ -71,10 +65,8 @@ org: careops
     writeProject(
       `[memory.owletto]
 enabled = true
-config = "./owletto.yaml"
-`,
-      `version: 1
-org: careops
+org = "careops"
+name = "Healthcare"
 `
     );
 
@@ -91,10 +83,8 @@ org: careops
     writeProject(
       `[memory.owletto]
 enabled = false
-config = "./owletto.yaml"
-`,
-      `version: 1
-org: careops
+org = "careops"
+name = "Healthcare"
 `
     );
 

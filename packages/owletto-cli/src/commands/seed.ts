@@ -1,6 +1,7 @@
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { basename, dirname, join, resolve } from 'node:path';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { defineCommand } from 'citty';
+import { parse as parseToml } from 'smol-toml';
 import { parse as parseYaml } from 'yaml';
 import { ApiError, ValidationError } from '../lib/errors.ts';
 import {
@@ -20,7 +21,6 @@ import {
   type SeedRelationshipSchema,
   validateDataRecord,
   validateModel,
-  validateProject,
 } from '../lib/schema.ts';
 
 interface SeedContext {
@@ -47,6 +47,9 @@ interface ProjectLayout {
   projectPath: string;
   modelsPath: string;
   dataPath: string;
+  org: string;
+  name: string;
+  description?: string;
 }
 
 function readYamlFiles(dir: string): Array<{ data: Record<string, unknown>; file: string }> {
@@ -100,24 +103,80 @@ function checkErrors(errors: SchemaError[]): void {
 function resolveProjectLayout(inputPath?: string): ProjectLayout {
   const requestedPath = resolve(inputPath || '.');
 
-  if (existsSync(requestedPath) && basename(requestedPath) === 'owletto.yaml') {
-    return {
-      projectRoot: dirname(requestedPath),
-      projectPath: requestedPath,
-      modelsPath: join(dirname(requestedPath), 'models'),
-      dataPath: join(dirname(requestedPath), 'data'),
-    };
+  let projectPath: string;
+  let projectRoot: string;
+  if (existsSync(requestedPath) && statSync(requestedPath).isFile()) {
+    if (basename(requestedPath) !== 'lobu.toml') {
+      throw new ValidationError(
+        `Expected a lobu.toml file, got ${basename(requestedPath)}`
+      );
+    }
+    projectPath = requestedPath;
+    projectRoot = dirname(requestedPath);
+  } else {
+    projectPath = join(requestedPath, 'lobu.toml');
+    projectRoot = requestedPath;
+    if (!existsSync(projectPath)) {
+      throw new ValidationError(`Could not find lobu.toml at ${projectPath}`);
+    }
   }
 
-  const projectPath = join(requestedPath, 'owletto.yaml');
-  if (!existsSync(projectPath)) {
-    throw new ValidationError(`Could not find owletto project config at ${projectPath}`);
+  const toml = parseToml(readFileSync(projectPath, 'utf8')) as Record<
+    string,
+    unknown
+  >;
+  const memory = (toml.memory as Record<string, unknown> | undefined)?.owletto as
+    | Record<string, unknown>
+    | undefined;
+
+  if (!memory) {
+    throw new ValidationError(
+      `lobu.toml at ${projectPath} is missing a [memory.owletto] section`
+    );
   }
+  if (memory.enabled === false) {
+    throw new ValidationError(
+      `[memory.owletto] in ${projectPath} is disabled (enabled = false)`
+    );
+  }
+
+  const org = typeof memory.org === 'string' ? memory.org.trim() : '';
+  const name = typeof memory.name === 'string' ? memory.name.trim() : '';
+  if (!org) {
+    throw new ValidationError(
+      `[memory.owletto] in ${projectPath} is missing required field "org"`
+    );
+  }
+  if (!name) {
+    throw new ValidationError(
+      `[memory.owletto] in ${projectPath} is missing required field "name"`
+    );
+  }
+
+  const description =
+    typeof memory.description === 'string' ? memory.description : undefined;
+  const modelsRel =
+    typeof memory.models === 'string' && memory.models.trim()
+      ? memory.models
+      : './models';
+  const dataRel =
+    typeof memory.data === 'string' && memory.data.trim()
+      ? memory.data
+      : './data';
+
+  const modelsPath = isAbsolute(modelsRel)
+    ? modelsRel
+    : resolve(projectRoot, modelsRel);
+  const dataPath = isAbsolute(dataRel) ? dataRel : resolve(projectRoot, dataRel);
+
   return {
-    projectRoot: requestedPath,
+    projectRoot,
     projectPath,
-    modelsPath: join(requestedPath, 'models'),
-    dataPath: join(requestedPath, 'data'),
+    modelsPath,
+    dataPath,
+    org,
+    name,
+    description,
   };
 }
 
@@ -478,12 +537,13 @@ async function resolveAuth(
 export default defineCommand({
   meta: {
     name: 'seed',
-    description: 'Provision an Owletto workspace from owletto.yaml + models/ + optional data/',
+    description:
+      'Provision an Owletto workspace from [memory.owletto] in lobu.toml + models/ + optional data/',
   },
   args: {
     path: {
       type: 'positional',
-      description: 'Project root or path to owletto.yaml (default: current directory).',
+      description: 'Project root or path to lobu.toml (default: current directory).',
       required: false,
     },
     dryRun: {
@@ -493,7 +553,7 @@ export default defineCommand({
     },
     org: {
       type: 'string',
-      description: 'Organization slug (overrides owletto.yaml / project.yaml and session default)',
+      description: 'Organization slug (overrides [memory.owletto].org and session default)',
     },
     url: {
       type: 'string',
@@ -506,10 +566,8 @@ export default defineCommand({
   },
   async run({ args }) {
     const layout = resolveProjectLayout(args.path);
-    const project = parseYaml(readFileSync(layout.projectPath, 'utf8')) as Record<string, unknown>;
-    checkErrors(validateProject(project, basename(layout.projectPath)));
 
-    const orgOverride = args.org || (project.org as string | undefined);
+    const orgOverride = args.org || layout.org;
     const { token, mcpUrl, orgSlug } = await resolveAuth(args.url, orgOverride, args.storePath);
     const apiBaseUrl = deriveApiBaseUrl(mcpUrl);
     const dryRun = args.dryRun ?? false;
@@ -517,9 +575,7 @@ export default defineCommand({
 
     printText(`Seeding org: ${orgSlug}${dryRun ? ' (dry-run)' : ''}`);
     printText(`Config: ${layout.projectPath}`);
-    if (project.name) {
-      printText(`Project: ${project.name as string}`);
-    }
+    printText(`Project: ${layout.name}`);
     const models = loadModels(layout.modelsPath);
     const dataRecords = loadDataRecords(layout.dataPath);
 

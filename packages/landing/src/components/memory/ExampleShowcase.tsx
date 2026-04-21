@@ -1,18 +1,15 @@
 import type { ComponentChildren } from "preact";
 import { useEffect, useMemo, useState } from "preact/hooks";
 import { examples, type RecordNode } from "../../memory-examples";
-import { landingUseCaseOptions } from "../../use-case-showcases";
+import { landingUseCaseGroupedOptions } from "../../use-case-showcases";
 import { Chip } from "../Chip";
 import { CompactContentRail } from "../CompactContentRail";
 import { SectionHeader } from "../SectionHeader";
-import { UseCaseTabs } from "../UseCaseTabs";
+import { ScopedUseCaseTabs } from "../ScopedUseCaseTabs";
 import {
   accentCyan,
-  cardBg,
-  cardBorder,
   cardBorderFaint,
   cardBorderSubtle,
-  darkBase,
   deepBg,
   innerCardBg,
   labelGray,
@@ -331,7 +328,6 @@ export function ExampleShowcase(props: {
       ([, nodeId]) => nodeId === selectedNodeId
     )?.[0] ?? selectedNode.kind;
   const selectedNodeAliases = getNodeAliases(selectedNode, selectedHighlights);
-  const evidenceTrailToggleId = `evidence-trail-${activeExample.useCaseId}`;
 
   const switchExample = (id: string) => {
     onActiveUseCaseChange?.(id);
@@ -343,8 +339,8 @@ export function ExampleShowcase(props: {
   return (
     <div class="max-w-[68rem] mx-auto px-4 sm:px-6 pt-1">
       {showTabs ? (
-        <UseCaseTabs
-          tabs={landingUseCaseOptions}
+        <ScopedUseCaseTabs
+          groups={landingUseCaseGroupedOptions}
           activeId={activeExample.useCaseId}
           onSelect={switchExample}
           className="mb-5"
@@ -371,212 +367,6 @@ export function ExampleShowcase(props: {
           See full example on GitHub →
         </a>
       </div>
-
-      <CompactContentRail className="mb-5">
-        <div
-          class="rounded-[2rem] border overflow-hidden"
-          style={{
-            background: cardBg,
-            borderColor: cardBorder,
-            boxShadow: "0 18px 48px rgba(0, 0, 0, 0.18)",
-          }}
-        >
-          <div class="px-4 sm:px-5 pt-4 sm:pt-5 pb-3 sm:pb-4">
-            <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
-              <div
-                class="text-xs uppercase tracking-[0.24em]"
-                style={{ color: labelGray }}
-              >
-                {activeExample.sourceLabel}
-              </div>
-            </div>
-
-            <p
-              class="text-lg sm:text-[1rem] lg:text-[1.05rem] leading-8 sm:leading-9 m-0"
-              style={{ color: textColor }}
-            >
-              {activeExample.sourceText}
-            </p>
-          </div>
-
-          <input
-            id={evidenceTrailToggleId}
-            type="checkbox"
-            class="peer sr-only"
-          />
-
-          <div
-            class="px-3 sm:px-4 py-3 border-t flex flex-wrap items-center justify-between gap-2"
-            style={{
-              borderColor: cardBorderSubtle,
-              backgroundColor: "rgba(255,255,255,0.02)",
-            }}
-          >
-            <div class="flex items-center gap-2">
-              <label
-                for={evidenceTrailToggleId}
-                class="inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-sm font-medium border cursor-pointer transition-all hover:opacity-90 peer-checked:hidden"
-                style={{
-                  color: primaryAccent,
-                  backgroundColor: "rgba(var(--color-tg-accent-rgb), 0.08)",
-                  borderColor: "rgba(var(--color-tg-accent-rgb), 0.22)",
-                }}
-              >
-                <span
-                  class="w-4 h-4 rounded-full flex items-center justify-center text-[9px]"
-                  style={{
-                    color: primaryAccent,
-                    backgroundColor: "rgba(var(--color-tg-accent-rgb), 0.12)",
-                  }}
-                >
-                  +
-                </span>
-                Show evidence trail
-              </label>
-              <label
-                for={evidenceTrailToggleId}
-                class="hidden items-center gap-2 rounded-full px-3 py-1.5 text-sm font-medium border cursor-pointer transition-all hover:opacity-90 peer-checked:inline-flex"
-                style={{
-                  color: textColor,
-                  backgroundColor: primaryAccentSoft,
-                  borderColor: "rgba(var(--color-tg-accent-rgb), 0.35)",
-                }}
-              >
-                <span
-                  class="w-4 h-4 rounded-full flex items-center justify-center text-[9px]"
-                  style={{
-                    color: darkBase,
-                    backgroundColor: "var(--color-tg-accent)",
-                  }}
-                >
-                  −
-                </span>
-                Hide evidence trail
-              </label>
-            </div>
-
-            <div
-              class="inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-sm font-medium border"
-              style={{
-                color: textMuted,
-                backgroundColor: innerCardBg,
-                borderColor: cardBorderSubtle,
-              }}
-            >
-              <span
-                class="w-5 h-5 rounded-full flex items-center justify-center text-[10px]"
-                style={{
-                  color: darkBase,
-                  backgroundColor: "var(--color-tg-accent)",
-                }}
-              >
-                →
-              </span>
-              Send message
-            </div>
-          </div>
-
-          <div
-            class="hidden peer-checked:block px-4 sm:px-5 py-3 border-t"
-            style={{ borderColor: cardBorderSubtle }}
-          >
-            <div class="grid gap-3">
-              <div class="flex flex-wrap items-center justify-between gap-2">
-                <div
-                  class="text-xs uppercase tracking-[0.24em]"
-                  style={{ color: labelGray }}
-                >
-                  {activeExample.eventLog.title}
-                </div>
-                <span
-                  class="inline-flex items-center rounded-full px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em]"
-                  style={{
-                    color: primaryAccent,
-                    backgroundColor: primaryAccentSoft,
-                    border: primaryAccentBorder,
-                  }}
-                >
-                  Prompt additions highlighted
-                </span>
-              </div>
-              <p
-                class="text-xs leading-5 m-0 max-w-3xl"
-                style={{ color: textMuted }}
-              >
-                {activeExample.eventLog.description}
-              </p>
-
-              <div
-                class="overflow-hidden rounded-lg border"
-                style={{
-                  borderColor: cardBorderSubtle,
-                  backgroundColor: deepBg,
-                }}
-              >
-                <div class="overflow-x-auto">
-                  <table class="min-w-full border-collapse text-left">
-                    <thead>
-                      <tr>
-                        {activeExample.eventLog.columns.map((column) => (
-                          <th
-                            key={column}
-                            class="px-2.5 py-1.5 text-[9px] font-semibold uppercase tracking-[0.16em]"
-                            style={{
-                              color: labelGray,
-                              borderBottom: `1px solid ${cardBorderSubtle}`,
-                              backgroundColor: innerCardBg,
-                            }}
-                          >
-                            {column}
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {activeExample.eventLog.rows.map((row, rowIndex) => {
-                        const highlighted =
-                          activeExample.eventLog.highlightedRows?.includes(
-                            rowIndex
-                          ) ?? false;
-
-                        return (
-                          <tr
-                            key={`${row[0]}-${row[1]}`}
-                            style={{
-                              backgroundColor: highlighted
-                                ? "rgba(var(--color-tg-accent-rgb), 0.08)"
-                                : "transparent",
-                            }}
-                          >
-                            {row.map((cell, cellIndex) => (
-                              <td
-                                key={`${row[0]}-${row[1]}-${cellIndex}`}
-                                class="px-2.5 py-2 align-top text-[11px] leading-4"
-                                style={{
-                                  color:
-                                    cellIndex === 1 ? primaryAccent : textColor,
-                                  borderTop:
-                                    rowIndex === 0
-                                      ? "none"
-                                      : `1px solid ${cardBorderFaint}`,
-                                  fontWeight:
-                                    highlighted && cellIndex === 3 ? 600 : 400,
-                                }}
-                              >
-                                {cell}
-                              </td>
-                            ))}
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </CompactContentRail>
 
       <CompactContentRail className="mt-10">
         <SectionHeader

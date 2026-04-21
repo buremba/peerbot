@@ -50,14 +50,6 @@ export type HowItWorksPanel = {
   table?: HowItWorksPanelTable;
 };
 
-export type MemoryEventLog = {
-  title: string;
-  description: string;
-  columns: string[];
-  rows: string[][];
-  highlightedRows?: number[];
-};
-
 export type HowItWorksStep = {
   id: "model" | "connect" | "auth" | "reuse" | "fresh";
   label: string;
@@ -73,12 +65,9 @@ export type MemoryExample = {
   tab: string;
   title: string;
   description: string;
-  sourceLabel: string;
-  sourceText: string;
   entityTypes: string[];
   entitySelections?: Record<string, string>;
   howItWorks: HowItWorksStep[];
-  eventLog: MemoryEventLog;
   highlights: MemoryField[];
   nodeHighlights?: Record<string, MemoryField[]>;
   watcher: {
@@ -137,11 +126,8 @@ export type LandingUseCaseSkillsDefinition = {
 export type LandingUseCaseMemoryDefinition = {
   id: string;
   description: string;
-  sourceLabel: string;
-  sourceText: string;
   entitySelections?: Record<string, string>;
   howItWorks: HowItWorksStep[];
-  eventLog?: MemoryEventLog;
   highlights: MemoryField[];
   nodeHighlights?: Record<string, MemoryField[]>;
   watcher: {
@@ -254,9 +240,6 @@ export const landingUseCases = {
       id: "contract",
       description:
         "Store contracts, clauses, counterparties, and risk so every review starts with context.",
-      sourceLabel: "From your messaging app",
-      sourceText:
-        "Remember that Redwood Capital's NDA keeps residuals broad, asks for Delaware venue, and still lacks a cap on the confidentiality term.",
       entitySelections: {
         Contract: "legal-contract",
         Clause: "legal-clause",
@@ -416,25 +399,22 @@ export const landingUseCases = {
     },
     owlettoOrg: g("legal").owlettoOrg,
   },
-  devops: {
-    id: "devops",
-    label: "DevOps",
-    examplePath: "devops",
-    agent: g("devops").agent,
-    model: g("devops").model,
-    skills: g("devops").skills,
+  engineering: {
+    id: "engineering",
+    label: "Engineering",
+    examplePath: "engineering",
+    agent: g("engineering").agent,
+    model: g("engineering").model,
+    skills: g("engineering").skills,
     memory: {
       id: "incident",
       description:
         "Track incidents, services, deploys, and remediation work in one shared operational memory graph.",
-      sourceLabel: "From your messaging app",
-      sourceText:
-        "Remember that checkout-api incident started right after deploy 2026.04.13.2, impacts EU checkout traffic, and rollback depends on PR #482 landing first.",
       entitySelections: {
-        Incident: "devops-incident",
-        Service: "devops-service",
-        Deploy: "devops-deploy",
-        "Pull request": "devops-pr",
+        Incident: "engineering-incident",
+        Service: "engineering-service",
+        Deploy: "engineering-deploy",
+        "Pull request": "engineering-pr",
       },
       howItWorks: buildHowItWorks({
         model: {
@@ -481,31 +461,31 @@ export const landingUseCases = {
         { label: "Blocker", value: "PR #482 must merge before rollback" },
       ],
       nodeHighlights: {
-        "devops-root": [
+        "engineering-root": [
           { label: "Incident", value: "checkout-api degradation" },
           { label: "Service", value: "EU checkout" },
           { label: "Trigger", value: "Deploy 2026.04.13.2" },
           { label: "Blocked by", value: "PR #482" },
         ],
-        "devops-incident": [
+        "engineering-incident": [
           { label: "Type", value: "Incident" },
           { label: "Status", value: "Active" },
           { label: "Impact", value: "EU checkout traffic degraded" },
           { label: "Started after", value: "Deploy 2026.04.13.2" },
         ],
-        "devops-service": [
+        "engineering-service": [
           { label: "Type", value: "Service" },
           { label: "Name", value: "checkout-api" },
           { label: "Region", value: "EU" },
           { label: "Customer impact", value: "Checkout latency and failures" },
         ],
-        "devops-deploy": [
+        "engineering-deploy": [
           { label: "Type", value: "Deploy" },
           { label: "ID", value: "2026.04.13.2" },
           { label: "State", value: "Suspected trigger" },
           { label: "Action", value: "Rollback under review" },
         ],
-        "devops-pr": [
+        "engineering-pr": [
           { label: "Type", value: "Pull request" },
           { label: "PR", value: "#482" },
           { label: "Role", value: "Rollback prerequisite" },
@@ -513,7 +493,7 @@ export const landingUseCases = {
         ],
       },
       recordTree: {
-        id: "devops-root",
+        id: "engineering-root",
         label: "Record: checkout-api incident",
         kind: "Model record",
         summary:
@@ -521,7 +501,7 @@ export const landingUseCases = {
         chips: ["incident memory", "live context", "operational"],
         children: [
           {
-            id: "devops-incident",
+            id: "engineering-incident",
             label: "Entity: checkout-api degradation",
             kind: "Incident",
             summary:
@@ -529,7 +509,7 @@ export const landingUseCases = {
             chips: ["incident", "active"],
           },
           {
-            id: "devops-service",
+            id: "engineering-service",
             label: "Service: EU checkout",
             kind: "Service",
             summary:
@@ -537,7 +517,7 @@ export const landingUseCases = {
             chips: ["service", "impact"],
           },
           {
-            id: "devops-deploy",
+            id: "engineering-deploy",
             label: "Deploy: 2026.04.13.2",
             kind: "Deploy",
             summary:
@@ -545,7 +525,7 @@ export const landingUseCases = {
             chips: ["deploy", "trigger"],
           },
           {
-            id: "devops-pr",
+            id: "engineering-pr",
             label: "PR: #482",
             kind: "Pull request",
             summary:
@@ -581,7 +561,7 @@ export const landingUseCases = {
         },
       ],
     },
-    owlettoOrg: g("devops").owlettoOrg,
+    owlettoOrg: g("engineering").owlettoOrg,
   },
   support: {
     id: "support",
@@ -594,9 +574,6 @@ export const landingUseCases = {
       id: "person",
       description:
         "Remember contacts, preferences, owners, and follow-ups across conversations.",
-      sourceLabel: "From your messaging app",
-      sourceText:
-        "Remember that Alex Kim from Acme Health owns vendor onboarding, prefers weekly email summaries, and asked us to send the draft by Thursday.",
       entitySelections: {
         Person: "person-entity",
         Organization: "person-org",
@@ -780,9 +757,6 @@ export const landingUseCases = {
       id: "variance",
       description:
         "Track accounts and transactions so close workflows can reuse the same structured state.",
-      sourceLabel: "From your messaging app",
-      sourceText:
-        "Remember that March close shows a $42k Stripe payout variance on Account 4100, refunds are the likely cause, and the reconciliation note must land in the month-end deck.",
       entitySelections: {
         Account: "finance-account",
         Transaction: "finance-transaction",
@@ -949,9 +923,6 @@ export const landingUseCases = {
     memory: {
       id: "company",
       description: "Track accounts, pilots, renewal risk, and buying signals.",
-      sourceLabel: "From your messaging app",
-      sourceText:
-        "Remember that Northstar Foods expanded into EMEA, launched the Warehouse OS pilot under the Operations team, and raised a pricing concern ahead of the October renewal.",
       entitySelections: {
         Organization: "company-entity",
         Region: "company-region",
@@ -1142,9 +1113,6 @@ export const landingUseCases = {
       id: "project",
       description:
         "Keep milestones, blockers, owners, and reporting context in one shared record.",
-      sourceLabel: "From your messaging app",
-      sourceText:
-        "Remember that Phoenix migration is in phase two, Maya owns the rollout, infra is blocking the SSO cutover, the design review is in the launch doc, and leadership wants a risk update every Monday.",
       entitySelections: {
         Project: "project-node",
         Milestone: "project-phase",
@@ -1340,9 +1308,6 @@ export const landingUseCases = {
       id: "document",
       description:
         "Turn decisions, blockers, and assignments from source documents into reusable context.",
-      sourceLabel: "From your messaging app",
-      sourceText:
-        "From this board memo, remember that the LATAM expansion budget was approved, the warehouse lease decision is delayed pending legal review, and Elena needs to update the forecast for next week's board packet.",
       entitySelections: {
         Document: "document-node",
         Decision: "document-decision-approved",
@@ -1530,9 +1495,6 @@ export const landingUseCases = {
       id: "member",
       description:
         "Build a private member graph from connected profiles, projects, posts, and stated interests so introductions get better over time.",
-      sourceLabel: "Example member profile",
-      sourceText:
-        "Remember that Sarah Chen is the founder of Relay Labs, is building agent infrastructure for orchestration and long-term memory, maintains active GitHub repositories for eval tooling, writes a Substack about agent memory and developer workflows, and wants to meet founders and engineers working on agent infrastructure, MCP tools, and developer tooling.",
       entitySelections: {
         Member: "community-member",
         Company: "community-company",
@@ -1784,9 +1746,6 @@ export const landingUseCases = {
       id: "brand",
       description:
         "Track brands, products, and market positioning with source-linked evidence.",
-      sourceLabel: "From your messaging app",
-      sourceText:
-        "Remember that Airtable launched Airtable Interfaces, added AI features to their product suite, and was mentioned in a comparison against Notion in three recent reviews.",
       entitySelections: {
         Brand: "brand-entity",
         Product: "brand-product",
@@ -1916,9 +1875,6 @@ export const landingUseCases = {
       id: "patient",
       description:
         "Coordinate patient care, track treatment progress, and manage therapist assignments.",
-      sourceLabel: "From your messaging app",
-      sourceText:
-        "Remember that James McManus is assigned to therapist Nicole Musto for OCD treatment, has an appointment next Tuesday at 2 PM, and his treatment plan includes weekly exposure therapy sessions covered by Blue Cross Blue Shield.",
       entitySelections: {
         Patient: "patient-entity",
         Appointment: "patient-appointment",
@@ -2084,9 +2040,6 @@ export const landingUseCases = {
       id: "customer",
       description:
         "Track customers, subscriptions, order history, and preferences across interactions.",
-      sourceLabel: "From your messaging app",
-      sourceText:
-        "Remember that Emma Torres has a monthly coffee subscription on the Gold plan, requested to skip next month's delivery, and prefers email communication for order updates.",
       entitySelections: {
         Customer: "ecommerce-customer",
         Subscription: "ecommerce-subscription",
@@ -2252,9 +2205,6 @@ export const landingUseCases = {
       id: "company",
       description:
         "Track companies, founders, funding rounds, and investment signals with full context.",
-      sourceLabel: "From your messaging app",
-      sourceText:
-        "Remember that Lovable raised a $653M Series B at a $6.6B valuation, was founded by Anton Osika and Fabian Hedin, operates in the AI Developer Tools sector, and their round was led by a16z.",
       entitySelections: {
         Company: "company-entity",
         Founder: "company-founder",

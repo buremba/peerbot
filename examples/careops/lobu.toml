@@ -73,6 +73,8 @@ enabled = false
 
 [memory.owletto]
 enabled = true
-config = "./owletto.yaml"
+org = "careops"
+name = "Healthcare"
+description = "Help healthcare practices manage patient care, appointments, and treatment workflows"
 models = "./models"
 data = "./data"

@@ -2,9 +2,11 @@
  * Owletto project YAML schema definitions.
  *
  * These types define the canonical format for project-local memory files:
- *   - owletto.yaml        — org-level config
  *   - models/*.y{a,}ml    — entity types, relationship types, watchers
  *   - data/(nested).yml   — seed entities and relationships
+ *
+ * Project-level metadata (org/name/description/visibility) lives in
+ * [memory.owletto] inside lobu.toml.
  *
  * Bump CURRENT_SCHEMA_VERSION when making breaking changes.
  */
@@ -13,16 +15,6 @@ export const CURRENT_SCHEMA_VERSION = 1;
 
 export type ModelType = 'entity' | 'relationship' | 'watcher';
 export type DataRecordType = 'entity' | 'relationship';
-
-// ── Project ─────────────────────────────────────────────────────────
-
-export interface ProjectSchema {
-  version?: number;
-  org: string;
-  name: string;
-  description?: string;
-  visibility?: 'public' | 'private';
-}
 
 // ── Model files ─────────────────────────────────────────────────────
 
@@ -138,27 +130,6 @@ function requireObject(
     return false;
   }
   return true;
-}
-
-export function validateProject(parsed: Record<string, unknown>, file: string): ValidationError[] {
-  const errors: ValidationError[] = [];
-  checkVersion(parsed, file, errors);
-  requireString(parsed, 'org', file, errors);
-  requireString(parsed, 'name', file, errors);
-
-  if (
-    parsed.visibility !== undefined &&
-    parsed.visibility !== 'public' &&
-    parsed.visibility !== 'private'
-  ) {
-    errors.push({
-      file,
-      field: 'visibility',
-      message: '"visibility" must be one of: public, private',
-    });
-  }
-
-  return errors;
 }
 
 export function validateModel(parsed: Record<string, unknown>, file: string): ValidationError[] {

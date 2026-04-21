@@ -17,6 +17,8 @@ allowed = ["producthunt.com", "crunchbase.com", ".techcrunch.com", "github.com",
 
 [memory.owletto]
 enabled = true
-config = "./owletto.yaml"
+org = "market-intelligence"
+name = "Market Intelligence"
+description = "Track brands, products, and market signals across the competitive landscape"
 models = "./models"
 data = "./data"

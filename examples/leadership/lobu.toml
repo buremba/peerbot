@@ -17,6 +17,8 @@ allowed = ["github.com", ".github.com", ".githubusercontent.com", "registry.npmj
 
 [memory.owletto]
 enabled = true
-config = "./owletto.yaml"
+org = "leadership"
+name = "Leadership"
+description = "Turn memos, decisions, and board materials into reusable operating context"
 models = "./models"
 data = "./data"

@@ -359,10 +359,17 @@ export async function initCommand(
     await mkdir(join(projectDir, "data"), { recursive: true });
 
     if (includeOwlettoMemory) {
-      await generateOwlettoProjectLayout(projectDir, {
-        org: projectName,
-        name: humanizeSlug(projectName),
+      await mkdir(join(projectDir, "models"), { recursive: true });
+      await mkdir(join(projectDir, "data", "entities"), { recursive: true });
+      await mkdir(join(projectDir, "data", "relationships"), {
+        recursive: true,
       });
+      await writeFile(join(projectDir, "models", ".gitkeep"), "");
+      await writeFile(join(projectDir, "data", "entities", ".gitkeep"), "");
+      await writeFile(
+        join(projectDir, "data", "relationships", ".gitkeep"),
+        ""
+      );
     }
 
     // Generate lobu.toml
@@ -376,6 +383,8 @@ export async function initCommand(
       connectionConfig:
         Object.keys(connectionConfig).length > 0 ? connectionConfig : undefined,
       includeOwlettoMemory,
+      owlettoOrg: includeOwlettoMemory ? projectName : undefined,
+      owlettoName: includeOwlettoMemory ? humanizeSlug(projectName) : undefined,
     });
 
     const variables = {
@@ -536,11 +545,6 @@ turns:
     );
     if (includeOwlettoMemory) {
       console.log(
-        chalk.dim(
-          "     - owletto.yaml                 (Owletto project config)"
-        )
-      );
-      console.log(
         chalk.dim("     - models/                      (Owletto model files)")
       );
       console.log(
@@ -605,38 +609,6 @@ function humanizeSlug(slug: string): string {
     .join(" ");
 }
 
-export async function generateOwlettoProjectLayout(
-  projectDir: string,
-  options: {
-    org: string;
-    name: string;
-    description?: string;
-  }
-): Promise<void> {
-  await mkdir(join(projectDir, "models"), { recursive: true });
-  await mkdir(join(projectDir, "data", "entities"), { recursive: true });
-  await mkdir(join(projectDir, "data", "relationships"), {
-    recursive: true,
-  });
-
-  await writeFile(
-    join(projectDir, "owletto.yaml"),
-    [
-      "version: 1",
-      `org: ${options.org}`,
-      `name: ${JSON.stringify(options.name)}`,
-      ...(options.description
-        ? [`description: ${JSON.stringify(options.description)}`]
-        : []),
-      "",
-    ].join("\n")
-  );
-
-  await writeFile(join(projectDir, "models", ".gitkeep"), "");
-  await writeFile(join(projectDir, "data", "entities", ".gitkeep"), "");
-  await writeFile(join(projectDir, "data", "relationships", ".gitkeep"), "");
-}
-
 export async function generateLobuToml(
   projectDir: string,
   options: {
@@ -648,6 +620,9 @@ export async function generateLobuToml(
     connectionType?: string;
     connectionConfig?: Record<string, string>;
     includeOwlettoMemory?: boolean;
+    owlettoOrg?: string;
+    owlettoName?: string;
+    owlettoDescription?: string;
   }
 ): Promise<void> {
   const id = options.agentName;
@@ -731,12 +706,18 @@ export async function generateLobuToml(
   }
 
   if (options.includeOwlettoMemory) {
+    const org = options.owlettoOrg ?? options.agentName;
+    const name = options.owlettoName ?? humanizeSlug(options.agentName);
     lines.push(
       "",
       "# Project-scoped Owletto memory",
       `[memory.owletto]`,
       "enabled = true",
-      'config = "./owletto.yaml"',
+      `org = ${JSON.stringify(org)}`,
+      `name = ${JSON.stringify(name)}`,
+      ...(options.owlettoDescription
+        ? [`description = ${JSON.stringify(options.owlettoDescription)}`]
+        : []),
       'models = "./models"',
       'data = "./data"'
     );
@@ -878,7 +859,7 @@ ${owlettoServices}
       WORKER_ALLOWED_DOMAINS: \${WORKER_ALLOWED_DOMAINS:-}
       WORKER_DISALLOWED_DOMAINS: \${WORKER_DISALLOWED_DOMAINS:-}
       # Optional Owletto base MCP URL override. File-first projects derive scoped
-      # memory from [memory.owletto] in lobu.toml and owletto.yaml.
+      # memory from [memory.owletto] in lobu.toml.
       MEMORY_URL: \${MEMORY_URL:-}
       LOBU_WORKSPACE_ROOT: /workspace/project
       # Provider API keys — passthrough any that are set in the host env so

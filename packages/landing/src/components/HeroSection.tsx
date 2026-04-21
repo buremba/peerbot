@@ -1,10 +1,12 @@
 import type { LandingUseCaseId } from "../use-case-definitions";
 import {
+  getLandingPrompt,
   getLandingUseCaseShowcase,
   getOwlettoUrl,
   landingUseCaseGroupedOptions,
   type SurfaceHeroCopy,
 } from "../use-case-showcases";
+import { CopyPromptButton } from "./CopyPromptButton";
 import { HighlightedText } from "./HighlightedText";
 import { ScopedUseCaseTabs } from "./ScopedUseCaseTabs";
 
@@ -37,7 +39,6 @@ const SecondaryCtaIcon = ({ external }: { external: boolean }) =>
   );
 
 const GITHUB_URL = "https://github.com/lobu-ai/lobu";
-const GETTING_STARTED_HREF = "/getting-started/";
 
 export function HeroSection(props: {
   activeUseCaseId?: LandingUseCaseId;
@@ -54,32 +55,30 @@ export function HeroSection(props: {
   );
   const primaryCtaLabel = props.heroCopy
     ? `See ${activeUseCase.label} demo`
-    : "See live demo";
-  const secondaryCta = props.heroCopy
-    ? {
-        href: `${GITHUB_URL}/tree/main/examples/${activeUseCase.examplePath}`,
-        label: "View source on GitHub",
-        external: true,
-      }
-    : {
-        href: GETTING_STARTED_HREF,
-        label: "Get started",
-        external: false,
-      };
+    : "See demo";
 
   return (
     <section class="pt-24 pb-4 px-8 relative">
       <div class="max-w-5xl mx-auto text-center relative">
+        <a
+          href={GITHUB_URL}
+          target="_blank"
+          rel="noopener noreferrer"
+          class="inline-flex items-center gap-2 text-xs font-semibold tracking-wider uppercase px-3 py-1 mb-5 rounded-full transition-all hover:opacity-80"
+          style={{
+            color: "var(--color-page-text-muted)",
+            border: "1px solid var(--color-page-border)",
+          }}
+        >
+          Open source · Self-hosted
+        </a>
         <h1
           class="text-4xl sm:text-5xl font-bold tracking-tight leading-[1.1] mb-5"
           style={{ color: "var(--color-page-text)" }}
         >
           <HighlightedText
-            text={
-              props.heroCopy?.title ??
-              "Your AI team, running on your infrastructure"
-            }
-            highlight={props.heroCopy?.highlight ?? "AI team"}
+            text="AI agents that remember everything"
+            highlight="remember everything"
           />
         </h1>
         {props.heroCopy ? (
@@ -91,41 +90,11 @@ export function HeroSection(props: {
           </p>
         ) : (
           <p
-            class="text-lg mx-auto mb-4 leading-relaxed"
+            class="text-lg mx-auto mb-4 leading-relaxed max-w-3xl"
             style={{ color: "var(--color-page-text-muted)" }}
           >
-            <a
-              href="/guides/security"
-              class="underline decoration-dotted underline-offset-2 transition-opacity hover:opacity-80"
-              style={{ color: "var(--color-page-text-muted)" }}
-            >
-              Sandboxed
-            </a>{" "}
-            persistent agents powered by the{" "}
-            <a
-              href="/getting-started/comparison/"
-              class="underline decoration-dotted underline-offset-2 transition-opacity hover:opacity-80"
-              style={{ color: "var(--color-page-text-muted)" }}
-            >
-              OpenClaw harness
-            </a>
-            , <br />
-            <a
-              href={memoryHref}
-              class="underline decoration-dotted underline-offset-2 transition-opacity hover:opacity-80"
-              style={{ color: "var(--color-page-text-muted)" }}
-            >
-              long-term memory
-            </a>{" "}
-            and installable{" "}
-            <a
-              href={skillsHref}
-              class="underline decoration-dotted underline-offset-2 transition-opacity hover:opacity-80"
-              style={{ color: "var(--color-page-text-muted)" }}
-            >
-              skills
-            </a>
-            .
+            Pre-built templates for research, internal ops, and personal memory.
+            Fork one to build your own.
           </p>
         )}
         {/* CTA buttons */}
@@ -142,19 +111,28 @@ export function HeroSection(props: {
           >
             {primaryCtaLabel}
           </a>
-          <a
-            href={secondaryCta.href}
-            target={secondaryCta.external ? "_blank" : undefined}
-            rel={secondaryCta.external ? "noopener noreferrer" : undefined}
-            class="inline-flex items-center gap-2 text-sm font-medium px-5 py-2.5 rounded-lg transition-all hover:opacity-90"
-            style={{
-              color: "var(--color-page-text-muted)",
-              border: "1px solid var(--color-page-border)",
-            }}
-          >
-            <SecondaryCtaIcon external={secondaryCta.external} />
-            {secondaryCta.label}
-          </a>
+          {props.heroCopy ? (
+            <a
+              href={`${GITHUB_URL}/tree/main/examples/${activeUseCase.examplePath}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              class="inline-flex items-center gap-2 text-sm font-medium px-5 py-2.5 rounded-lg transition-all hover:opacity-90"
+              style={{
+                color: "var(--color-page-text-muted)",
+                border: "1px solid var(--color-page-border)",
+              }}
+            >
+              <SecondaryCtaIcon external />
+              View source on GitHub
+            </a>
+          ) : (
+            <CopyPromptButton
+              prompt={getLandingPrompt(activeUseCase)}
+              label="Copy prompt to your agent"
+              variant="outline-muted"
+              supportedClients={["chatgpt", "openclaw", "claude", "mcp-client"]}
+            />
+          )}
         </div>
 
         <div class="mt-8 mb-6">

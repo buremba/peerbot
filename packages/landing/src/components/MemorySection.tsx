@@ -4,8 +4,8 @@ import {
   DEFAULT_LANDING_USE_CASE_ID,
   getLandingUseCaseShowcase,
   getMemoryPrompt,
-  getOwlettoUrl,
-  landingUseCaseOptions,
+  getOwlettoLoginUrl,
+  landingUseCaseGroupedOptions,
   type SurfaceHeroCopy,
 } from "../use-case-showcases";
 import { CommandHero } from "./CommandHero";
@@ -14,7 +14,7 @@ import { CompactContentRail } from "./CompactContentRail";
 import { ExampleShowcase } from "./memory/ExampleShowcase";
 import { LatestBlogPosts, type LatestBlogPost } from "./LatestBlogPosts";
 import { ScheduleCallButton, ScheduleCallIcon } from "./ScheduleDialog";
-import { UseCaseTabs } from "./UseCaseTabs";
+import { ScopedUseCaseTabs } from "./ScopedUseCaseTabs";
 import { textColor, textMuted } from "./memory/styles";
 
 function SectionDivider() {
@@ -50,10 +50,6 @@ export function MemorySection(props: {
     () => getLandingUseCaseShowcase(activeUseCaseId),
     [activeUseCaseId]
   );
-  const owlettoUrl = useMemo(
-    () => getOwlettoUrl(activeUseCaseId),
-    [activeUseCaseId]
-  );
 
   return (
     <section class="pt-32 pb-24 px-4 sm:px-8">
@@ -61,11 +57,8 @@ export function MemorySection(props: {
         <CommandHero
           title={
             <HighlightedText
-              text={
-                props.heroCopy?.title ??
-                "Turn data into shared, structured memory"
-              }
-              highlight={props.heroCopy?.highlight ?? "structured memory"}
+              text="Turn data into shared, structured memory"
+              highlight="structured memory"
             />
           }
           description={
@@ -73,10 +66,9 @@ export function MemorySection(props: {
             "Owletto gives all your agents the same durable graph: connectors, recall, and managed auth without leaking credentials to the runtime."
           }
           prompt={getMemoryPrompt(activeUseCase)}
-          startTitle={props.heroCopy?.startTitle ?? "Start Owletto in seconds"}
           actions={
             <a
-              href={owlettoUrl}
+              href={getOwlettoLoginUrl()}
               target="_blank"
               rel="noopener noreferrer"
               class="inline-flex items-center gap-2 text-sm font-semibold px-5 py-2.5 rounded-lg transition-all hover:opacity-90"
@@ -85,17 +77,20 @@ export function MemorySection(props: {
                 color: "var(--color-page-bg)",
               }}
             >
-              Open in Owletto
+              Build Memory
             </a>
           }
         />
 
         <div class="mb-10 text-center">
-          <UseCaseTabs
-            tabs={landingUseCaseOptions}
+          <ScopedUseCaseTabs
+            groups={landingUseCaseGroupedOptions}
             activeId={activeUseCaseId}
-            label="Pick a use case"
-            onSelect={props.linkTabsToPages ? undefined : setActiveUseCaseId}
+            onSelect={
+              props.linkTabsToPages
+                ? undefined
+                : (id) => setActiveUseCaseId(id as LandingUseCaseId)
+            }
             hrefForId={
               props.linkTabsToPages ? (id) => `/memory/for/${id}` : undefined
             }

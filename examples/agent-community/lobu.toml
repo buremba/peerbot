@@ -17,6 +17,8 @@ allowed = ["github.com", ".github.com", ".githubusercontent.com", "registry.npmj
 
 [memory.owletto]
 enabled = true
-config = "./owletto.yaml"
+org = "venture-capital"
+name = "Agent Community"
+description = "Discover aligned members, explain why they should meet, and draft warm introductions"
 models = "./models"
 data = "./data"

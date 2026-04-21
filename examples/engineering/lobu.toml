@@ -1,22 +1,24 @@
 # lobu.toml — Agent configuration
 # Docs: https://lobu.ai/docs/getting-started
 
-[agents.devops-control]
-name = "devops-control"
+[agents.engineering-control]
+name = "engineering-control"
 description = "Help platform teams triage incidents, reviews, and deploy safety checks"
-dir = "./agents/devops"
+dir = "./agents/engineering"
 
-[[agents.devops-control.providers]]
+[[agents.engineering-control.providers]]
 id = "anthropic"
 model = "claude/sonnet-4-5"
 key = "$ANTHROPIC_API_KEY"
 
 
-[agents.devops-control.network]
+[agents.engineering-control.network]
 allowed = ["github.com", ".github.com", ".githubusercontent.com", "registry.npmjs.org", ".npmjs.org"]
 
 [memory.owletto]
 enabled = true
-config = "./owletto.yaml"
+org = "devops"
+name = "Engineering"
+description = "Help platform teams triage incidents, reviews, and deploy safety checks"
 models = "./models"
 data = "./data"

@@ -3,8 +3,9 @@ import type { LandingUseCaseId } from "../use-case-definitions";
 import {
   DEFAULT_LANDING_USE_CASE_ID,
   getLandingUseCaseShowcase,
+  getOwlettoLoginUrl,
   getSkillsPrompt,
-  landingUseCaseOptions,
+  landingUseCaseGroupedOptions,
   type ShowcaseSkillWorkspacePreview,
   type SurfaceHeroCopy,
 } from "../use-case-showcases";
@@ -13,7 +14,7 @@ import { HighlightedText } from "./HighlightedText";
 import { ContentRail } from "./ContentRail";
 import { SkillsWorkflowSection } from "./SkillsWorkflowSection";
 import { ScheduleCallButton, ScheduleCallIcon } from "./ScheduleDialog";
-import { UseCaseTabs } from "./UseCaseTabs";
+import { ScopedUseCaseTabs } from "./ScopedUseCaseTabs";
 
 const GITHUB_URL = "https://github.com/lobu-ai/lobu";
 
@@ -696,11 +697,8 @@ export function SkillsSection(props: {
         <CommandHero
           title={
             <HighlightedText
-              text={
-                props.heroCopy?.title ??
-                "Build reliable agents with Lobu skills"
-              }
-              highlight={props.heroCopy?.highlight ?? "Lobu skills"}
+              text="Build reliable agents with Lobu skills"
+              highlight="Lobu skills"
             />
           }
           description={
@@ -708,16 +706,26 @@ export function SkillsSection(props: {
             "A skill isn't a prompt template, it's a full sandboxed computer. All capabilities bundled into one installable unit."
           }
           prompt={getSkillsPrompt(activeUseCase)}
-          startTitle={
-            props.heroCopy?.startTitle ?? "Start a new agent in seconds"
+          actions={
+            <a
+              href={getOwlettoLoginUrl()}
+              target="_blank"
+              rel="noopener noreferrer"
+              class="inline-flex items-center gap-2 text-sm font-semibold px-5 py-2.5 rounded-lg transition-all hover:opacity-90"
+              style={{
+                backgroundColor: "var(--color-page-text)",
+                color: "var(--color-page-bg)",
+              }}
+            >
+              Build in Cloud
+            </a>
           }
         />
 
         <div class="mb-16 text-center">
-          <UseCaseTabs
-            tabs={landingUseCaseOptions}
+          <ScopedUseCaseTabs
+            groups={landingUseCaseGroupedOptions}
             activeId={activeUseCaseId}
-            label="Pick a use case"
             onSelect={
               props.linkTabsToCampaigns || props.linkTabsToPages
                 ? undefined

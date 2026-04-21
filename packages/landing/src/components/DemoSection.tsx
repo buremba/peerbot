@@ -8,8 +8,11 @@ import type {
 import {
   DEFAULT_LANDING_USE_CASE_ID,
   getLandingUseCaseShowcase,
+  getOwlettoOrgSlug,
+  getOwlettoUrl,
   landingUseCaseGroupedOptions,
   type TraceRow,
+  type WatcherEvent,
 } from "../use-case-showcases";
 import { deliverySurfaces } from "./platforms";
 import { ScopedUseCaseTabs } from "./ScopedUseCaseTabs";
@@ -71,22 +74,113 @@ function Card({
   );
 }
 
-function PillList({ items }: { items: string[] }) {
+function Panel({
+  children,
+  extraClass,
+}: {
+  children: ComponentChildren;
+  extraClass?: string;
+}) {
   return (
-    <div class="flex flex-wrap gap-1.5">
-      {items.map((item) => (
-        <span
-          key={item}
-          class="text-[11px] font-medium px-2 py-1 rounded-full"
+    <div
+      class={`rounded-xl p-4${extraClass ? ` ${extraClass}` : ""}`}
+      style={{
+        backgroundColor: "rgba(0,0,0,0.28)",
+        border: "1px solid rgba(255,255,255,0.06)",
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+function SectionLabel({
+  children,
+  accent,
+  extraClass,
+}: {
+  children: ComponentChildren;
+  accent?: boolean;
+  extraClass?: string;
+}) {
+  return (
+    <div
+      class={`text-[10px] uppercase tracking-[0.18em]${extraClass ? ` ${extraClass}` : ""}`}
+      style={{
+        color: accent
+          ? "var(--color-tg-accent)"
+          : "var(--color-page-text-muted)",
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+function TraceStep({
+  tile,
+  call,
+  result,
+  resultAccent,
+  isLast,
+  children,
+}: {
+  tile: TraceTile;
+  call: string;
+  result: string;
+  resultAccent: string;
+  isLast: boolean;
+  children?: ComponentChildren;
+}) {
+  return (
+    <div
+      class="flex items-stretch gap-2"
+      style={{ paddingBottom: isLast ? 0 : "8px" }}
+    >
+      <div class="relative flex flex-col items-center shrink-0 w-5">
+        <div
+          class="w-4 h-4 shrink-0 rounded-full relative z-10"
+          title={tile.text}
           style={{
-            color: "var(--color-page-text-muted)",
-            backgroundColor: "rgba(255,255,255,0.05)",
-            border: "1px solid rgba(255,255,255,0.09)",
+            backgroundColor: tile.bg,
+            border: `1px solid ${tile.border}`,
           }}
         >
-          {item}
-        </span>
-      ))}
+          <span
+            class="absolute inset-[3px] rounded-full"
+            style={{ backgroundColor: tile.fg }}
+          />
+        </div>
+        {!isLast ? (
+          <div
+            class="absolute w-px"
+            style={{
+              left: "50%",
+              top: "16px",
+              bottom: "-8px",
+              transform: "translateX(-50%)",
+              background:
+                "linear-gradient(180deg, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0.08) 100%)",
+            }}
+          />
+        ) : null}
+      </div>
+      <div class="flex-1 min-w-0 py-0.5">
+        <div
+          class="font-mono text-[11px] break-all"
+          style={{ color: "var(--color-page-text)" }}
+        >
+          {call}
+        </div>
+        <div
+          class="text-[12px] mt-0.5 leading-snug"
+          style={{ color: "var(--color-page-text-muted)" }}
+        >
+          <span style={{ color: resultAccent }}>{"\u2192 "}</span>
+          {result}
+        </div>
+        {children}
+      </div>
     </div>
   );
 }
@@ -100,12 +194,9 @@ function ResponseBlock({ label, text }: { label: string; text: string }) {
         border: "1px solid var(--color-tg-accent)",
       }}
     >
-      <div
-        class="text-[10px] uppercase tracking-[0.18em] mb-2"
-        style={{ color: "var(--color-tg-accent)" }}
-      >
+      <SectionLabel accent extraClass="mb-2">
         {label}
-      </div>
+      </SectionLabel>
       <div
         class="text-sm leading-7"
         style={{ color: "var(--color-page-text)" }}
@@ -270,160 +361,177 @@ function RelationshipTriple({ relation }: { relation: ExampleRelation }) {
   );
 }
 
-function TraceSection({
-  rows,
-  skillsHref,
-  memoryHref,
-  mcpServer,
-  allowedDomains,
-  entities,
-  relation,
+function PanelHeader({
+  label,
+  href,
+  hrefLabel,
 }: {
-  rows: TraceRow[];
-  skillsHref: string;
-  memoryHref: string;
-  mcpServer: string;
-  allowedDomains: string[];
-  entities: RecordNode[];
-  relation?: ExampleRelation;
+  label: string;
+  href: string;
+  hrefLabel: string;
 }) {
   return (
-    <div class="mt-5">
-      <div
-        class="text-[10px] uppercase tracking-[0.18em] mb-3"
-        style={{ color: "var(--color-page-text-muted)" }}
+    <div class="flex items-center justify-between gap-3 mb-3">
+      <SectionLabel>{label}</SectionLabel>
+      <a
+        href={href}
+        class="text-[11px] hover:underline shrink-0"
+        style={{ color: "var(--color-tg-accent)" }}
       >
-        Trace
-      </div>
+        {hrefLabel} →
+      </a>
+    </div>
+  );
+}
+
+const watcherTile: TraceTile = {
+  text: "◉",
+  fg: accentCyan,
+  bg: "rgba(103, 232, 249, 0.12)",
+  border: "rgba(103, 232, 249, 0.4)",
+};
+
+function TraceList({
+  rows,
+  events,
+}: {
+  rows: TraceRow[];
+  events: WatcherEvent[];
+}) {
+  return (
+    <Panel extraClass="h-full">
+      <SectionLabel extraClass="mb-3">Trace</SectionLabel>
       <div class="flex flex-col">
-        {rows.map((row, i) => {
-          const meta = TRACE_KIND_META[row.kind];
-          const tile = getTraceTile(row);
-          const isLast = i === rows.length - 1;
-          return (
-            <div
-              key={`${row.call}-${i}`}
-              class="flex items-stretch gap-3"
-              style={{ paddingBottom: isLast ? 0 : "12px" }}
-            >
-              <div class="relative flex flex-col items-center shrink-0 w-8">
-                <div
-                  class="w-8 h-8 shrink-0 rounded-lg flex items-center justify-center text-[11px] font-semibold relative z-10"
-                  style={{
-                    color: tile.fg,
-                    backgroundColor: tile.bg,
-                    border: `1px solid ${tile.border}`,
-                  }}
-                >
-                  {tile.text}
-                </div>
-                {!isLast ? (
-                  <div
-                    class="absolute w-px"
-                    style={{
-                      left: "50%",
-                      top: "32px",
-                      bottom: "-12px",
-                      transform: "translateX(-50%)",
-                      background:
-                        "linear-gradient(180deg, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0.08) 100%)",
-                    }}
-                  />
-                ) : null}
-              </div>
+        <TraceStep
+          tile={watcherTile}
+          call="watcher.poll(since: last_run)"
+          result={`${events.length} event${events.length === 1 ? "" : "s"} collected`}
+          resultAccent={accentCyan}
+          isLast={false}
+        >
+          <div class="flex flex-col gap-1 mt-2">
+            {events.map((event, i) => (
               <div
-                class="flex-1 min-w-0 rounded-xl px-3 py-3"
-                style={{
-                  backgroundColor: "rgba(255,255,255,0.035)",
-                  border: "1px solid rgba(255,255,255,0.07)",
-                }}
+                key={`${event.source}-${i}`}
+                class="flex items-start gap-2 text-[12px] leading-snug"
               >
-                <div class="flex items-center gap-2 flex-wrap">
-                  <span
-                    class="text-sm font-semibold"
-                    style={{ color: "var(--color-page-text)" }}
-                  >
-                    {row.source}
-                  </span>
-                  <span
-                    class="text-[10px] uppercase tracking-[0.18em] px-1.5 py-0.5 rounded"
-                    style={{
-                      color: meta.color,
-                      border: `1px solid ${meta.color}`,
-                    }}
-                  >
-                    {meta.label}
-                  </span>
-                </div>
-                <div
-                  class="font-mono text-[11px] mt-1 break-all"
+                <span
+                  class="font-mono text-[10px] shrink-0 pt-0.5"
                   style={{ color: "var(--color-page-text-muted)" }}
                 >
-                  {row.call}
-                </div>
-                <div
-                  class="text-sm mt-1.5"
+                  {event.time}
+                </span>
+                <span
+                  class="font-semibold shrink-0"
                   style={{ color: "var(--color-page-text)" }}
                 >
-                  <span style={{ color: meta.color }}>{"\u2192 "}</span>
-                  {row.result}
-                </div>
+                  {event.source}
+                </span>
+                <span style={{ color: "var(--color-page-text-muted)" }}>
+                  {event.text}
+                </span>
               </div>
-            </div>
-          );
-        })}
-      </div>
-
-      <div class="mt-5 grid gap-3">
-        <div class="grid gap-2 sm:grid-cols-[8rem_1fr] items-start">
-          <div
-            class="text-[10px] uppercase tracking-[0.18em] sm:pt-1"
-            style={{ color: "var(--color-page-text-muted)" }}
-          >
-            MCP server
-          </div>
-          <div class="flex flex-wrap gap-1.5">
-            <span
-              class="text-[11px] font-mono px-2 py-1 rounded-full"
-              style={{
-                color: "var(--color-page-text)",
-                backgroundColor: "rgba(255,255,255,0.05)",
-                border: "1px solid rgba(255,255,255,0.09)",
-              }}
-            >
-              {mcpServer}
-            </span>
-          </div>
-          <div
-            class="text-[10px] uppercase tracking-[0.18em] sm:pt-1"
-            style={{ color: "var(--color-page-text-muted)" }}
-          >
-            Network allowlist
-          </div>
-          <div class="flex flex-wrap gap-1.5">
-            {allowedDomains.map((domain) => (
-              <span
-                key={domain}
-                class="text-[11px] font-mono px-2 py-1 rounded-full"
-                style={{
-                  color: "var(--color-page-text-muted)",
-                  backgroundColor: "rgba(255,255,255,0.03)",
-                  border: "1px solid rgba(255,255,255,0.08)",
-                }}
-              >
-                {domain}
-              </span>
             ))}
           </div>
+        </TraceStep>
+        {rows.map((row, i) => (
+          <TraceStep
+            key={`${row.call}-${i}`}
+            tile={getTraceTile(row)}
+            call={row.call}
+            result={row.result}
+            resultAccent={TRACE_KIND_META[row.kind].color}
+            isLast={i === rows.length - 1}
+          />
+        ))}
+      </div>
+    </Panel>
+  );
+}
+
+function Chip({
+  children,
+  emphasize,
+}: {
+  children: ComponentChildren;
+  emphasize?: boolean;
+}) {
+  return (
+    <span
+      class="text-[11px] font-mono px-2 py-1 rounded-full"
+      style={{
+        color: emphasize
+          ? "var(--color-page-text)"
+          : "var(--color-page-text-muted)",
+        backgroundColor: emphasize
+          ? "rgba(255,255,255,0.05)"
+          : "rgba(255,255,255,0.03)",
+        border: emphasize
+          ? "1px solid rgba(255,255,255,0.09)"
+          : "1px solid rgba(255,255,255,0.08)",
+      }}
+    >
+      {children}
+    </span>
+  );
+}
+
+function SkillsPanel({
+  mcpServers,
+  allowedDomains,
+  skillsHref,
+}: {
+  mcpServers: string[];
+  allowedDomains: string[];
+  skillsHref: string;
+}) {
+  return (
+    <Panel>
+      <PanelHeader
+        label="Skills"
+        href={skillsHref}
+        hrefLabel="Learn about Skills"
+      />
+      <div class="grid gap-2 sm:grid-cols-[5.5rem_1fr] items-start">
+        <SectionLabel extraClass="sm:pt-1">MCP</SectionLabel>
+        <div class="flex flex-wrap gap-1.5">
+          {mcpServers.map((server) => (
+            <Chip key={server} emphasize>
+              {server}
+            </Chip>
+          ))}
         </div>
+        <SectionLabel extraClass="sm:pt-1">Network</SectionLabel>
+        <div class="flex flex-wrap gap-1.5">
+          {allowedDomains.map((domain) => (
+            <Chip key={domain}>{domain}</Chip>
+          ))}
+        </div>
+      </div>
+    </Panel>
+  );
+}
+
+function MemoryPanel({
+  entities,
+  relation,
+  memoryHref,
+}: {
+  entities: RecordNode[];
+  relation?: ExampleRelation;
+  memoryHref: string;
+}) {
+  return (
+    <Panel>
+      <PanelHeader
+        label="Memory"
+        href={memoryHref}
+        hrefLabel="Learn about Memory"
+      />
+      <div class="grid gap-3">
         {entities.length ? (
-          <div class="grid gap-2">
-            <div
-              class="text-[10px] uppercase tracking-[0.18em]"
-              style={{ color: "var(--color-page-text-muted)" }}
-            >
-              Entities touched
-            </div>
+          <div class="grid gap-1.5">
+            <SectionLabel>Entities touched</SectionLabel>
             <div class="grid gap-2 sm:grid-cols-2">
               {entities.map((node) => (
                 <EntityCard key={node.id} node={node} />
@@ -433,59 +541,31 @@ function TraceSection({
         ) : null}
         {relation ? (
           <div class="grid gap-1">
-            <div
-              class="text-[10px] uppercase tracking-[0.18em]"
-              style={{ color: "var(--color-page-text-muted)" }}
-            >
-              Relationship
-            </div>
+            <SectionLabel>Relationship</SectionLabel>
             <RelationshipTriple relation={relation} />
           </div>
         ) : null}
       </div>
-
-      <div class="mt-4 flex flex-wrap gap-4">
-        <a
-          href={skillsHref}
-          class="text-xs hover:underline"
-          style={{ color: "var(--color-tg-accent)" }}
-        >
-          Learn more about Skills →
-        </a>
-        <a
-          href={memoryHref}
-          class="text-xs hover:underline"
-          style={{ color: "var(--color-tg-accent)" }}
-        >
-          Learn more about Memory →
-        </a>
-      </div>
-    </div>
+    </Panel>
   );
 }
 
 function RequestBlock({
-  label,
   text,
+  schedule,
   showPlatforms = false,
 }: {
-  label: string;
   text: string;
+  schedule: string;
   showPlatforms?: boolean;
 }) {
   return (
-    <div
-      class="rounded-xl p-4 mb-5"
-      style={{
-        backgroundColor: "rgba(0,0,0,0.28)",
-        border: "1px solid rgba(255,255,255,0.06)",
-      }}
-    >
-      <div
-        class="text-[10px] uppercase tracking-[0.18em] mb-2"
-        style={{ color: "var(--color-page-text-muted)" }}
-      >
-        {label}
+    <Panel extraClass="mb-5">
+      <div class="flex items-center gap-3 mb-3">
+        <SectionLabel accent>Cron</SectionLabel>
+        <span class="text-sm" style={{ color: "var(--color-page-text)" }}>
+          {schedule}
+        </span>
       </div>
       <div
         class="text-sm leading-7"
@@ -514,7 +594,7 @@ function RequestBlock({
           ))}
         </div>
       ) : null}
-    </div>
+    </Panel>
   );
 }
 
@@ -546,6 +626,19 @@ export function DemoSection(props: {
   );
   const memoryHref = `/memory/for/${activeUseCase.id}`;
   const skillsHref = `/skills/for/${activeUseCase.id}`;
+  const orgSlug = getOwlettoOrgSlug(activeUseCase.id);
+  const embedUrl = orgSlug ? getOwlettoUrl(activeUseCase.id) : null;
+  const mcpServers = useMemo(() => {
+    const declared = activeUseCase.skills.skills?.filter(Boolean) ?? [];
+    if (declared.length) return declared;
+    const fromTrace = new Set<string>();
+    for (const row of activeUseCase.runtime.trace ?? []) {
+      if (row.kind !== "skill") continue;
+      const prefix = row.call.split(/[.:(]/)[0]?.trim();
+      if (prefix) fromTrace.add(prefix);
+    }
+    return Array.from(fromTrace);
+  }, [activeUseCase]);
 
   return (
     <section id="how-it-works" class="pt-4 pb-14 px-8">
@@ -573,32 +666,71 @@ export function DemoSection(props: {
         )}
 
         <div class="mb-6">
-          <Card
-            title={activeUseCase.label || " Agent"}
-            description={activeUseCase.runtime.summary}
-          >
+          <Card title={activeUseCase.label || " Agent"}>
             <RequestBlock
-              label={activeUseCase.runtime.requestLabel}
               text={activeUseCase.runtime.request}
+              schedule={activeUseCase.runtime.schedule}
               showPlatforms
             />
-            <ResponseBlock
-              label={activeUseCase.runtime.responseLabel}
-              text={activeUseCase.runtime.response}
-            />
             {activeUseCase.runtime.trace?.length ? (
-              <TraceSection
-                rows={activeUseCase.runtime.trace}
-                skillsHref={skillsHref}
-                memoryHref={memoryHref}
-                mcpServer={activeUseCase.skills.mcpServer}
-                allowedDomains={activeUseCase.skills.allowedDomains}
-                entities={activeUseCase.memory.recordTree.children ?? []}
-                relation={activeUseCase.memory.relations[0]}
-              />
+              <div class="mt-5 grid gap-4 md:grid-cols-2">
+                <TraceList
+                  rows={activeUseCase.runtime.trace}
+                  events={activeUseCase.runtime.events}
+                />
+                <div class="flex flex-col gap-4">
+                  <SkillsPanel
+                    mcpServers={mcpServers}
+                    allowedDomains={activeUseCase.skills.allowedDomains}
+                    skillsHref={skillsHref}
+                  />
+                  <MemoryPanel
+                    entities={activeUseCase.memory.recordTree.children ?? []}
+                    relation={activeUseCase.memory.relations[0]}
+                    memoryHref={memoryHref}
+                  />
+                </div>
+              </div>
             ) : null}
+            <div class="mt-5">
+              <ResponseBlock
+                label={`Outcome → ${activeUseCase.runtime.outcomeChannel}`}
+                text={activeUseCase.runtime.response}
+              />
+            </div>
           </Card>
         </div>
+
+        {embedUrl ? (
+          <div class="mb-6">
+            <Card
+              title="Live workspace"
+              description={`Read-only preview of the ${activeUseCase.label} workspace running on Lobu.`}
+              href={embedUrl}
+              hrefLabel="Open workspace"
+            >
+              <div
+                class="rounded-xl overflow-hidden"
+                style={{
+                  border: "1px solid var(--color-page-border)",
+                  height: "640px",
+                }}
+              >
+                <iframe
+                  src={embedUrl}
+                  title={`${activeUseCase.label} workspace`}
+                  loading="lazy"
+                  style={{
+                    width: "100%",
+                    height: "100%",
+                    border: "0",
+                    background: "var(--color-page-bg)",
+                  }}
+                />
+              </div>
+            </Card>
+          </div>
+        ) : null}
       </div>
     </section>
   );

@@ -1,18 +1,14 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
-  statSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  generateDockerCompose,
-  generateLobuToml,
-  generateOwlettoProjectLayout,
-} from "../commands/init";
+import { generateDockerCompose, generateLobuToml } from "../commands/init";
 
 describe("init memory scaffolding", () => {
   let projectDir: string;
@@ -26,38 +22,39 @@ describe("init memory scaffolding", () => {
     rmSync(projectDir, { recursive: true, force: true });
   });
 
-  test("generateLobuToml writes the [memory.owletto] block when enabled", async () => {
+  test("generateLobuToml inlines the [memory.owletto] fields when enabled", async () => {
     await generateLobuToml(projectDir, {
       agentName: "support",
       allowedDomains: "github.com,.github.com",
       includeOwlettoMemory: true,
+      owlettoOrg: "support",
+      owlettoName: "Support",
+      owlettoDescription: "Help support teams",
     });
 
     const content = readFileSync(join(projectDir, "lobu.toml"), "utf-8");
 
     expect(content).toContain("[memory.owletto]");
-    expect(content).toContain('config = "./owletto.yaml"');
+    expect(content).toContain('org = "support"');
+    expect(content).toContain('name = "Support"');
+    expect(content).toContain('description = "Help support teams"');
     expect(content).toContain('models = "./models"');
     expect(content).toContain('data = "./data"');
+    expect(content).not.toContain("owletto.yaml");
+    expect(existsSync(join(projectDir, "owletto.yaml"))).toBe(false);
   });
 
-  test("generateOwlettoProjectLayout creates the new Owletto structure", async () => {
-    await generateOwlettoProjectLayout(projectDir, {
-      org: "support",
-      name: "Support",
+  test("generateLobuToml falls back to the agent name when org/name are omitted", async () => {
+    await generateLobuToml(projectDir, {
+      agentName: "support",
+      allowedDomains: "github.com",
+      includeOwlettoMemory: true,
     });
 
-    const owlettoYaml = readFileSync(join(projectDir, "owletto.yaml"), "utf-8");
+    const content = readFileSync(join(projectDir, "lobu.toml"), "utf-8");
 
-    expect(owlettoYaml).toContain("version: 1");
-    expect(owlettoYaml).toContain("org: support");
-    expect(statSync(join(projectDir, "models")).isDirectory()).toBe(true);
-    expect(statSync(join(projectDir, "data", "entities")).isDirectory()).toBe(
-      true
-    );
-    expect(
-      statSync(join(projectDir, "data", "relationships")).isDirectory()
-    ).toBe(true);
+    expect(content).toContain('org = "support"');
+    expect(content).toContain('name = "Support"');
   });
 
   test("generateDockerCompose keeps MEMORY_URL as an optional base override", () => {

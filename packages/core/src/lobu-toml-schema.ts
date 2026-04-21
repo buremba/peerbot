@@ -196,7 +196,10 @@ const agentEntrySchema = z.object({
 
 const owlettoMemorySchema = z.object({
   enabled: z.boolean().optional(),
-  config: z.string().optional(),
+  org: z.string().optional(),
+  name: z.string().optional(),
+  description: z.string().optional(),
+  visibility: z.enum(["public", "private"]).optional(),
   models: z.string().optional(),
   data: z.string().optional(),
 });

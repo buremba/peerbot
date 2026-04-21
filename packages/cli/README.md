@@ -29,10 +29,9 @@ Scaffold a new Lobu project with interactive prompts:
 
 When Owletto memory is enabled, `lobu init` also scaffolds the file-first memory layout:
 
-- `owletto.yaml`
+- `[memory.owletto]` in `lobu.toml` (org, name, description, models, data)
 - `models/`
 - `data/`
-- `[memory.owletto]` in `lobu.toml`
 
 For Owletto Local or a custom Owletto deployment, `.env` keeps `MEMORY_URL` as the optional base MCP URL override.
 

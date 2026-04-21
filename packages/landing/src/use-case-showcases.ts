@@ -5,16 +5,9 @@ import {
   type HowItWorksPanel,
   type LandingUseCaseDefinition,
   type LandingUseCaseId,
-  type MemoryEventLog,
   type MemoryExample,
   type SkillWorkspacePreviewData,
 } from "./use-case-definitions";
-
-type RuntimeStep = {
-  title: string;
-  detail: string;
-  chips?: string[];
-};
 
 export type TraceRow = {
   kind: "skill" | "memory_recall" | "memory_upsert" | "memory_link";
@@ -23,22 +16,21 @@ export type TraceRow = {
   result: string;
 };
 
-type RuntimeJourney = {
-  requestLabel: string;
-  request: string;
-  summary: string;
-  steps: RuntimeStep[];
-  trace?: TraceRow[];
-  responseLabel: string;
-  response: string;
-  outcomeLabel: string;
-  outcome: string[];
+export type WatcherEvent = {
+  source: string;
+  time: string;
+  text: string;
 };
 
-type RuntimeJourneyInput = Omit<
-  RuntimeJourney,
-  "requestLabel" | "outcomeLabel" | "responseLabel"
->;
+type RuntimeJourney = {
+  request: string;
+  events: WatcherEvent[];
+  trace?: TraceRow[];
+  response: string;
+  outcome: string[];
+  schedule: string;
+  outcomeChannel: string;
+};
 
 type CampaignMeta = {
   title: string;
@@ -55,7 +47,6 @@ export type SurfaceHeroCopy = {
   title: string;
   highlight?: string;
   description: string;
-  startTitle?: string;
 };
 
 type SurfaceHeroCopyConfig = {
@@ -91,7 +82,10 @@ export type LandingUseCaseShowcase = {
 };
 
 const docsLinks = {
-  owlettoDocs: { label: "What is Owletto?", href: "/getting-started/memory/" },
+  owlettoDocs: {
+    label: "Learn more about memory",
+    href: "/getting-started/memory/",
+  },
   ...technicalLinks,
 };
 
@@ -636,7 +630,7 @@ const memoryStepPanels: Record<
       ],
     },
   },
-  devops: {
+  engineering: {
     connect: {
       title: "Operational events",
       description:
@@ -702,7 +696,7 @@ const memoryStepPanels: Record<
       },
     },
     reuse: {
-      title: "DevOps agents",
+      title: "Engineering agents",
       description:
         "The same incident memory powers operational agents wherever teams work.",
       items: [
@@ -1208,27 +1202,27 @@ const memoryStepPanels: Record<
   },
 };
 
-const runtimeContent: Record<LandingUseCaseId, RuntimeJourneyInput> = {
+const runtimeContent: Record<LandingUseCaseId, RuntimeJourney> = {
   legal: {
+    schedule: "When a new contract drops in the inbox",
+    outcomeChannel: "#legal-reviews",
     request:
-      "Review Redwood's NDA, flag risk, and tell me what still needs counsel approval.",
-    summary:
-      "Run a legal review agent in chat, bundle the tools it needs, and keep contract context in shared memory for the next draft.",
-    steps: [
+      "Review new contracts for risk, flag clauses that need counsel approval, and file a review ticket.",
+    events: [
       {
-        title: "Runtime handles the live task",
-        detail:
-          "Lobu receives the request in chat, opens the right skill bundle, and runs the review inside a sandboxed worker.",
+        source: "Redwood",
+        time: "10:02",
+        text: "uploaded NDA v2 for signature review",
       },
       {
-        title: "Skills bring the right tools",
-        detail:
-          "The legal skill bundles research access, contract workflows, network policy, and instructions into one installable unit.",
+        source: "Lena",
+        time: "10:04",
+        text: "needs legal readout before today's customer call",
       },
       {
-        title: "Memory keeps legal context durable",
-        detail:
-          "Owletto stores the contract, clause, risk, and counterparty graph so future reviews begin with the same evidence.",
+        source: "DocuSign",
+        time: "10:06",
+        text: "detected updated indemnity language in §7",
       },
     ],
     trace: [
@@ -1271,93 +1265,98 @@ const runtimeContent: Record<LandingUseCaseId, RuntimeJourneyInput> = {
       "Durable contract context for future negotiation turns",
     ],
   },
-  devops: {
-    request: "What's blocking today's deploy, and can we roll back safely?",
-    summary:
-      "Combine live operational checks with persistent incident memory so on-call engineers get a useful answer fast.",
-    steps: [
+  engineering: {
+    schedule: "Weekdays at 9:30 AM — gathers DMs from 9:00 to 9:30",
+    request:
+      "Summarize overnight standup DMs, pair people with overlapping work, and post the digest to #eng-standup.",
+    events: [
       {
-        title: "Runtime gathers the live state",
-        detail:
-          "Lobu checks incidents, PRs, and deploy tools in a sandbox and asks for approval before any risky action.",
-        chips: ["PagerDuty", "GitHub", "k8s", "approvals"],
+        source: "Dan",
+        time: "9:02",
+        text: "picking up INC-4421, rolling back checkout-v43",
       },
       {
-        title: "Skills package the ops workflow",
-        detail:
-          "The DevOps skill bundles MCP servers, allowed domains, and instructions for triage, rollback, and handoff.",
-        chips: ["MCP", "network allowlist", "tool policy"],
+        source: "Priya",
+        time: "9:05",
+        text: "still blocked on k8s cluster admin creds — can someone grant?",
       },
       {
-        title: "Memory tracks the incident graph",
-        detail:
-          "Owletto links the current outage to affected services, triggering deploys, and remediation work so context survives handoffs.",
-        chips: ["incident memory", "service graph"],
+        source: "Jay",
+        time: "9:11",
+        text: "caching layer PR is ready for review, needs to land by EOD",
+      },
+      {
+        source: "Sam",
+        time: "9:18",
+        text: "OOO today — family thing",
+      },
+      {
+        source: "Nina",
+        time: "9:27",
+        text: "writing INC-4378 postmortem, sharing draft at lunch",
       },
     ],
     trace: [
       {
         kind: "skill",
-        source: "DevOps",
-        call: "pagerduty.incidents.list(active)",
-        result: "INC-4421 checkout p95 latency · sev-2",
+        source: "Slack",
+        call: "slack.dms.collect(since: 9:00, until: 9:30)",
+        result: "5 updates from Dan, Priya, Jay, Sam, Nina",
       },
       {
         kind: "memory_recall",
         source: "Owletto",
-        call: "recall(service: checkout, topic: rollback)",
-        result: "checkout-v41 last safe · v42 tied to INC-4102",
+        call: "recall(incident: INC-4421, owner: Dan)",
+        result: "checkout rollback in progress · needs cluster access",
       },
       {
         kind: "skill",
-        source: "DevOps",
-        call: "k8s.deploy.status(checkout)",
-        result: "rollout 3/5 pods unhealthy · ReplicaSet checkout-v43",
+        source: "Standup",
+        call: "pair(Priya.blocker, Dan.work)",
+        result: "both need checkout cluster — pair suggested",
       },
       {
         kind: "memory_upsert",
         source: "Owletto",
-        call: "upsert(Incident INC-4421 → checkout-v43)",
-        result: "linked to deploy, PR #882, oncall Priya",
+        call: "upsert(Engineer Sam → OOO today)",
+        result: "linked to on-call schedule",
       },
       {
         kind: "skill",
-        source: "DevOps",
-        call: "approval.request(rollback checkout → v41)",
-        result: "awaiting oncall confirmation",
+        source: "Slack",
+        call: "slack.channels.post(#eng-standup)",
+        result: "digest + pairings posted",
       },
     ],
+    outcomeChannel: "#eng-standup",
     response:
-      "Blocker is INC-4421: the checkout-v43 rollout has 3 of 5 pods unhealthy and ties to PR #882. checkout-v41 was the last safe version, so I've queued a rollback and it's waiting on oncall confirmation before it executes.",
+      "Morning team. Dan is rolling back checkout-v43 (INC-4421). Priya is blocked on k8s admin creds — pairing her with Dan since they both need checkout cluster access. Jay's caching PR is ready for review by EOD; Nina, can you take it once the INC-4378 postmortem draft is out? Sam is OOO today.",
     outcome: [
-      "A current deploy-risk answer with blockers called out",
-      "Incident and rollback context shared across the team",
-      "Fewer repeated explanations during on-call handoffs",
+      "Who's working on what, visible before the standup call",
+      "Blockers paired with teammates who can unblock them",
+      "Rolling memory of owners, incidents, and OOO across days",
     ],
   },
   support: {
+    schedule: "Every 10 min — scans new Zendesk tickets",
+    outcomeChannel: "Zendesk draft + owner DM",
     request:
-      "Draft a response for Alex Kim, note the owner, and remind me about the Thursday follow-up.",
-    summary:
-      "Use one support workflow to pull account context, draft the next response, and keep relationship memory updated for the next conversation.",
-    steps: [
+      "Draft responses for new tickets, note the owner, and schedule follow-ups when commitments are made.",
+    events: [
       {
-        title: "Runtime responds in the channel the team already uses",
-        detail:
-          "Lobu receives the support request in chat, runs the agent safely, and can trigger approvals or routing when needed.",
-        chips: ["Slack", "WhatsApp", "REST API"],
+        source: "Alex Kim",
+        time: "9:12",
+        text: "billing still looks wrong after the latest refund",
       },
       {
-        title: "Skills connect the operational systems",
-        detail:
-          "The support bundle can talk to ticketing, knowledge, and escalation tools without leaking credentials to workers.",
-        chips: ["Zendesk", "knowledge base", "auth proxy"],
+        source: "Zendesk",
+        time: "9:13",
+        text: "ticket #4912 tagged billing + priority account",
       },
       {
-        title: "Memory remembers the relationship",
-        detail:
-          "Owletto stores the contact, organization, communication preferences, and promised follow-up so the next reply starts from context.",
-        chips: ["contact memory", "follow-ups", "preferences"],
+        source: "Priya",
+        time: "9:14",
+        text: "keep the reply direct and set a Thursday follow-up",
       },
     ],
     trace: [
@@ -1401,28 +1400,25 @@ const runtimeContent: Record<LandingUseCaseId, RuntimeJourneyInput> = {
     ],
   },
   finance: {
+    schedule: "Daily at 7 AM — reconciles Stripe vs NetSuite",
+    outcomeChannel: "#finance-digest",
     request:
-      "Explain the Stripe variance on Account 4100 and prep the month-end note.",
-    summary:
-      "Let a finance operator agent pull live sources, explain the variance, and store structured reconciliation context for the close.",
-    steps: [
+      "Reconcile payment sources against the ledger, explain any variances, and prep the reconciliation note.",
+    events: [
       {
-        title: "Runtime reads live finance systems safely",
-        detail:
-          "Lobu runs the reconciliation flow in a sandbox and uses configured tools to inspect payment and accounting sources.",
-        chips: ["sandbox", "close workflow", "tool access"],
+        source: "NetSuite",
+        time: "6:58",
+        text: "Account 4100 opened with a $12,480 variance",
       },
       {
-        title: "Skills bundle accounting integrations",
-        detail:
-          "The finance skill package carries the MCP servers, domains, and instructions needed for reconciliations and reporting.",
-        chips: ["QuickBooks", "Stripe", "CSV tools"],
+        source: "Stripe",
+        time: "7:00",
+        text: "3 refunds settled after the ledger cutoff",
       },
       {
-        title: "Memory keeps variance context durable",
-        detail:
-          "Owletto saves the account, variance, source transactions, and reporting destination so the next close starts with history.",
-        chips: ["variance memory", "reporting context"],
+        source: "Close checklist",
+        time: "7:03",
+        text: "month-end reconciliation note due before review",
       },
     ],
     trace: [
@@ -1466,28 +1462,25 @@ const runtimeContent: Record<LandingUseCaseId, RuntimeJourneyInput> = {
     ],
   },
   sales: {
+    schedule: "Daily at 9 AM — scans accounts 60 days from renewal",
+    outcomeChannel: "#sales-renewals",
     request:
-      "What changed in Northstar before the October renewal, and what should we do next?",
-    summary:
-      "Combine revenue signals, rollout context, and shared account memory so teams can act before renewal risk grows.",
-    steps: [
+      "Scan accounts approaching renewal, surface usage and sentiment changes, and recommend next steps.",
+    events: [
       {
-        title: "Runtime works the live account question",
-        detail:
-          "Lobu answers from chat, runs the revenue workflow in a sandbox, and can request approval before any external action.",
-        chips: ["chat", "sandbox", "approval flow"],
+        source: "Salesforce",
+        time: "9:01",
+        text: "Northstar renewal due Oct 31 at $420K ARR",
       },
       {
-        title: "Skills package the GTM systems",
-        detail:
-          "The sales bundle can pull CRM, call, and account-health signals through one installable unit.",
-        chips: ["Salesforce", "Gong", "HubSpot"],
+        source: "LinkedIn",
+        time: "9:05",
+        text: "Maria Rivera moved to Globex and Jake Chen joined the account thread",
       },
       {
-        title: "Memory tracks the account graph",
-        detail:
-          "Owletto stores the account, region, pilot, and renewal-risk signals so commercial context compounds over time.",
-        chips: ["account memory", "renewal risk"],
+        source: "Gong",
+        time: "9:08",
+        text: "usage trend down 38% over the last 60 days",
       },
     ],
     trace: [
@@ -1531,28 +1524,25 @@ const runtimeContent: Record<LandingUseCaseId, RuntimeJourneyInput> = {
     ],
   },
   delivery: {
+    schedule: "Weekdays at 8 AM — scans rollout status and blockers",
+    outcomeChannel: "#delivery-standup",
     request:
       "Give me the Monday Phoenix rollout update with blockers, owners, and the next escalation.",
-    summary:
-      "Use one delivery workflow to inspect live rollout tools, summarize blockers, and keep the project graph fresh.",
-    steps: [
+    events: [
       {
-        title: "Runtime drives the live status update",
-        detail:
-          "Lobu runs the delivery assistant in chat, pulls the current state, and keeps execution inside your infrastructure.",
-        chips: ["chat", "self-hosted", "sandbox"],
+        source: "Linear",
+        time: "8:02",
+        text: "Phoenix rollout marked 72% complete with 28 shards pending",
       },
       {
-        title: "Skills bundle rollout systems",
-        detail:
-          "The delivery bundle connects issue tracking, source control, and docs so one install brings the full workflow.",
-        chips: ["Linear", "GitHub", "docs"],
+        source: "Datadog",
+        time: "8:07",
+        text: "shard-14 started throwing DB timeouts at 03:14",
       },
       {
-        title: "Memory preserves the project graph",
-        detail:
-          "Owletto stores milestones, blockers, stakeholders, and artifacts so every update starts from current project context.",
-        chips: ["project memory", "blockers", "owners"],
+        source: "Rahul",
+        time: "8:10",
+        text: "wants an escalation draft ready if the blocker survives today",
       },
     ],
     trace: [
@@ -1596,28 +1586,25 @@ const runtimeContent: Record<LandingUseCaseId, RuntimeJourneyInput> = {
     ],
   },
   leadership: {
+    schedule: "When a new board memo is posted",
+    outcomeChannel: "#exec-digest",
     request:
-      "Summarize this board memo: what was approved, what is blocked, and who owns the next action?",
-    summary:
-      "Turn executive materials into a workflow where agents can answer live questions and keep decision context durable.",
-    steps: [
+      "Summarize new board memos: what was approved, what is blocked, and who owns each next action.",
+    events: [
       {
-        title: "Runtime handles the active executive request",
-        detail:
-          "Lobu processes the memo or chat message in a sandbox, applies the right instructions, and returns an operator-ready summary.",
-        chips: ["docs", "chat", "sandbox"],
+        source: "Notion",
+        time: "1:02",
+        text: "board memo Q4 posted to the exec workspace",
       },
       {
-        title: "Skills package the source systems",
-        detail:
-          "The leadership bundle can reach board materials, shared docs, and meeting-note tools through one installable workflow.",
-        chips: ["Google Drive", "meeting notes", "board packets"],
+        source: "Board notes",
+        time: "1:05",
+        text: "bridge financing approved and hiring freeze reaffirmed",
       },
       {
-        title: "Memory keeps decision history reusable",
-        detail:
-          "Owletto stores decisions, blockers, regions, and assignments so future executive reviews start with the same context.",
-        chips: ["decision memory", "assignments", "blockers"],
+        source: "Priya",
+        time: "1:09",
+        text: "Frankfurt lease counter needs a decision by Fri Apr 25",
       },
     ],
     trace: [
@@ -1661,28 +1648,25 @@ const runtimeContent: Record<LandingUseCaseId, RuntimeJourneyInput> = {
     ],
   },
   "agent-community": {
+    schedule: "Every 15 min — matches new launches and posts to members",
+    outcomeChannel: "#community-matches",
     request:
-      "Who in the community should Sarah meet this week, and draft intro messages for the best two matches.",
-    summary:
-      "Build a private member graph from connected professional profiles, then use watcher-driven opportunity matching to turn launches, posts, and project updates into warm introductions.",
-    steps: [
+      "Match community members to new launches and posts in their space, and draft intro messages for the best two matches.",
+    events: [
       {
-        title: "Runtime handles member matching safely",
-        detail:
-          "Lobu runs the community workflow in a sandbox, answers matching questions in chat, and asks for approval before any outreach is sent.",
-        chips: ["Slack", "email", "approval flow"],
+        source: "Sarah",
+        time: "2:00",
+        text: "asked for two strong intros in embeddings infra this week",
       },
       {
-        title: "Skills package member connectors",
-        detail:
-          "The community bundle connects GitHub, LinkedIn, newsletters, websites, and manual profile imports through one installable workflow.",
-        chips: ["GitHub", "LinkedIn", "Substack", "profile imports"],
+        source: "GitHub",
+        time: "2:06",
+        text: "Devon shipped a new embeddings eval harness",
       },
       {
-        title: "Memory keeps the member graph current",
-        detail:
-          "Owletto stores members, companies, projects, topics, and match history so new launches, posts, and project updates can trigger relevant intros instead of manual research.",
-        chips: ["member graph", "connected profiles", "intro history"],
+        source: "Mira",
+        time: "2:12",
+        text: "posted a fresh MCP auth breakdown to the community feed",
       },
     ],
     trace: [
@@ -1726,28 +1710,25 @@ const runtimeContent: Record<LandingUseCaseId, RuntimeJourneyInput> = {
     ],
   },
   "market-intelligence": {
+    schedule: "Every 30 min — scans competitor launches and reviews",
+    outcomeChannel: "#market-intel",
     request:
-      "What's new with Airtable this week, and how do they compare to Notion?",
-    summary:
-      "Track brands and products across the competitive landscape so teams can reuse market intelligence in every conversation.",
-    steps: [
+      "Track competitor launches and review sentiment, compare against our positioning, and surface new signals.",
+    events: [
       {
-        title: "Runtime gathers market signals",
-        detail:
-          "Lobu monitors brands, products, and competitive positioning from news, reviews, and social channels in a sandbox.",
-        chips: ["Product Hunt", "Crunchbase", "reviews", "social"],
+        source: "Product Hunt",
+        time: "11:30",
+        text: "Airtable AI launched with new automation positioning",
       },
       {
-        title: "Skills package market research tools",
-        detail:
-          "The market intelligence skill bundles content monitors, research databases, and comparison tools through one installable unit.",
-        chips: ["web monitoring", "Crunchbase", "comparison"],
+        source: "Reddit",
+        time: "11:42",
+        text: "2 new reliability complaints surfaced this week",
       },
       {
-        title: "Memory builds the brand graph",
-        detail:
-          "Owletto stores brands, products, mentions, and positioning so every competitive analysis starts with the same evidence.",
-        chips: ["brand memory", "mentions", "positioning"],
+        source: "PMM",
+        time: "11:50",
+        text: "needs an Airtable vs Notion comparison before noon",
       },
     ],
     trace: [
@@ -1791,28 +1772,25 @@ const runtimeContent: Record<LandingUseCaseId, RuntimeJourneyInput> = {
     ],
   },
   ecommerce: {
+    schedule: "When a subscription request arrives",
+    outcomeChannel: "Customer DM",
     request:
       "Switch Emma's subscription from monthly to annual and skip next month's delivery.",
-    summary:
-      "Automate subscription management and order operations so customers get fast resolution and the team keeps full context.",
-    steps: [
+    events: [
       {
-        title: "Runtime handles the customer request",
-        detail:
-          "Lobu receives the request in chat, pulls the customer's subscription and order state, and asks for approval before making changes.",
-        chips: ["Slack", "WhatsApp", "approval flow"],
+        source: "Emma K",
+        time: "8:15",
+        text: "asked to switch to annual billing and skip next month's box",
       },
       {
-        title: "Skills connect the store systems",
-        detail:
-          "The ecommerce skill bundles Shopify, subscription management, and customer tools through one installable workflow.",
-        chips: ["Shopify", "Recharge", "customer tools"],
+        source: "Shopify",
+        time: "8:16",
+        text: "next shipment scheduled for Apr 3",
       },
       {
-        title: "Memory preserves the customer graph",
-        detail:
-          "Owletto stores customers, subscriptions, orders, and preferences so every interaction starts with full purchase context.",
-        chips: ["customer memory", "subscriptions", "preferences"],
+        source: "Retention log",
+        time: "8:18",
+        text: "last cancellation attempt was saved during the Aug retention window",
       },
     ],
     trace: [
@@ -1856,28 +1834,25 @@ const runtimeContent: Record<LandingUseCaseId, RuntimeJourneyInput> = {
     ],
   },
   careops: {
+    schedule: "Daily at 6 AM — scans appointment status and treatment progress",
+    outcomeChannel: "#care-team",
     request:
       "Check James McManus's appointment status and summarize his treatment progress.",
-    summary:
-      "Coordinate patient care across therapists, appointments, and treatment plans so clinical context is always available.",
-    steps: [
+    events: [
       {
-        title: "Runtime accesses care systems",
-        detail:
-          "Lobu checks calendars, EHR systems, and patient portals in a sandbox and can request approval before any sensitive access.",
-        chips: ["EHR", "calendars", "patient portals"],
+        source: "Athena",
+        time: "5:58",
+        text: "James McManus is booked Apr 24 at 2:00pm with Dr. Patel",
       },
       {
-        title: "Skills bundle care coordination tools",
-        detail:
-          "The careops bundle connects scheduling, treatment tracking, and insurance verification through one installable unit.",
-        chips: ["calendar sync", "EHR integration", "insurance"],
+        source: "Session tracker",
+        time: "6:02",
+        text: "8 of 12 visits complete and PHQ-9 improved from 17 to 9",
       },
       {
-        title: "Memory preserves the care graph",
-        detail:
-          "Owletto stores patients, appointments, treatments, and therapist assignments so care coordination continues across handoffs.",
-        chips: ["patient memory", "therapists", "treatments"],
+        source: "Insurance",
+        time: "6:05",
+        text: "re-auth requirement opens May 1",
       },
     ],
     trace: [
@@ -1921,28 +1896,26 @@ const runtimeContent: Record<LandingUseCaseId, RuntimeJourneyInput> = {
     ],
   },
   "venture-capital": {
+    schedule:
+      "Daily at 8 AM — new Crunchbase activity on portfolio & watchlist",
+    outcomeChannel: "#deal-flow",
     request:
-      "What's the latest on Lovable, and what other AI dev tools should we track?",
-    summary:
-      "Combine portfolio tracking, deal sourcing, and market signals so investment teams can reuse company context.",
-    steps: [
+      "Pull new funding, launches, and market signals on portfolio and watchlist companies, and surface what to track next.",
+    events: [
       {
-        title: "Runtime checks portfolio and pipeline",
-        detail:
-          "Lobu pulls company data, funding rounds, and market signals from multiple sources in a sandbox.",
-        chips: ["Crunchbase", "LinkedIn", "news feeds"],
+        source: "Crunchbase",
+        time: "8:02",
+        text: "Lovable closed a $15M Series A led by Accel",
       },
       {
-        title: "Skills package deal flow tools",
-        detail:
-          "The VC skill bundles company databases, founder tracking, and market monitoring through one installable unit.",
-        chips: ["deal tracking", "founder research", "market scans"],
+        source: "Market feed",
+        time: "8:07",
+        text: "v0, Bolt, and Replit Agent all posted fresh product signals",
       },
       {
-        title: "Memory builds the venture graph",
-        detail:
-          "Owletto stores companies, founders, investors, and sectors so deal context compounds over time.",
-        chips: ["portfolio memory", "deal flow", "network"],
+        source: "Network",
+        time: "8:15",
+        text: "Adam K. flagged a warm ex-Replit intro path",
       },
     ],
     trace: [
@@ -2054,50 +2027,6 @@ function toSkillPreview(
   };
 }
 
-function buildMemoryEventLog(
-  useCase: LandingUseCaseDefinition
-): MemoryEventLog {
-  const primaryHighlight = useCase.memory.highlights[0]?.value ?? useCase.label;
-  const relation = useCase.memory.relations[0];
-  const entityPreview = useCase.model.entities.slice(0, 3).join(", ");
-
-  return {
-    title: "Evidence trail",
-    description:
-      "Each memory update is recorded as a timestamped event so operators can inspect how a prompt became durable system context.",
-    columns: ["Time", "Event kind", "Source", "What changed"],
-    highlightedRows: [0, 1],
-    rows: [
-      [
-        "10:14:02.100",
-        "source_ingested",
-        useCase.memory.sourceLabel,
-        `Captured source evidence for ${primaryHighlight}`,
-      ],
-      [
-        "10:14:04.850",
-        "extraction_completed",
-        "memory pipeline",
-        `Identified ${entityPreview}`,
-      ],
-      [
-        "10:14:05.120",
-        "relation_linked",
-        "record builder",
-        relation
-          ? `${relation.source} ${relation.label} ${relation.target}`
-          : `Updated ${useCase.memory.id} record relationships`,
-      ],
-      [
-        "10:14:05.400",
-        "watcher_scheduled",
-        useCase.memory.watcher.name,
-        `Scheduled ${useCase.memory.watcher.schedule.toLowerCase()}`,
-      ],
-    ],
-  };
-}
-
 function toMemoryExample(
   useCaseId: LandingUseCaseId,
   useCase: LandingUseCaseDefinition
@@ -2111,12 +2040,9 @@ function toMemoryExample(
     tab: useCase.label,
     title: useCase.label,
     description: memory.description,
-    sourceLabel: memory.sourceLabel,
-    sourceText: memory.sourceText,
     entityTypes: useCase.model.entities,
     entitySelections: memory.entitySelections,
     howItWorks: memory.howItWorks,
-    eventLog: memory.eventLog ?? buildMemoryEventLog(useCase),
     highlights: memory.highlights,
     nodeHighlights: memory.nodeHighlights,
     watcher: memory.watcher,
@@ -2128,7 +2054,7 @@ function toMemoryExample(
 function toCampaignMeta(
   useCaseId: LandingUseCaseId,
   useCase: LandingUseCaseDefinition,
-  runtime: RuntimeJourneyInput
+  runtime: RuntimeJourney
 ): CampaignMeta {
   return {
     title: `Deploy secure ${useCase.label.toLowerCase()} agents on your infrastructure`,
@@ -2143,15 +2069,15 @@ function toCampaignMeta(
 const chatScenarioContent: Partial<
   Record<LandingUseCaseId, LandingUseCaseChatScenarios>
 > = {
-  devops: {
+  engineering: {
     permission: {
-      id: "devops-permission",
+      id: "engineering-permission",
       tabLabel: "Permission",
       title: "Pull live incident state",
       description: "Agent asks to reach PagerDuty before querying incidents.",
       settingsLabel: "Domains and tool permissions",
       chatLabel: "Allow api.pagerduty.com",
-      botName: "DevOps",
+      botName: "Engineering",
       botInitial: "D",
       botColor: "#f97316",
       messages: [
@@ -2169,14 +2095,14 @@ const chatScenarioContent: Partial<
       ],
     },
     skill: {
-      id: "devops-skill",
+      id: "engineering-skill",
       tabLabel: "Rollback",
       title: "Safe rollback with approval",
       description:
         "Agent checks deploy state and waits for confirmation before any write.",
       settingsLabel: "Domains and tool permissions",
       chatLabel: "Agent runs a safe rollback",
-      botName: "DevOps",
+      botName: "Engineering",
       botInitial: "D",
       botColor: "#f97316",
       messages: [
@@ -2194,14 +2120,14 @@ const chatScenarioContent: Partial<
       ],
     },
     settings: {
-      id: "devops-settings",
+      id: "engineering-settings",
       tabLabel: "Handoff",
       title: "Structured handoff for the night team",
       description:
         "Agent summarizes incident state from memory so the next engineer has full context.",
       settingsLabel: "Incident memory",
       chatLabel: "Agent generates a handoff brief",
-      botName: "DevOps",
+      botName: "Engineering",
       botInitial: "D",
       botColor: "#f97316",
       messages: [
@@ -3083,32 +3009,34 @@ const chatScenarioContent: Partial<
   },
 };
 
+const HIDDEN_USE_CASE_IDS: ReadonlySet<LandingUseCaseId> = new Set([
+  "careops",
+  "ecommerce",
+  "delivery",
+]);
+
 export const landingUseCaseShowcases: LandingUseCaseShowcase[] = (
   Object.entries(landingUseCases) as Array<
     [LandingUseCaseId, LandingUseCaseDefinition]
   >
-).map(([useCaseId, useCase]) => {
-  const input = runtimeContent[useCaseId];
-  const runtime: RuntimeJourney = {
-    ...input,
-    requestLabel: "Incoming request",
-    responseLabel: "Agent response",
-    outcomeLabel: "What the team gets",
-  };
+)
+  .filter(([useCaseId]) => !HIDDEN_USE_CASE_IDS.has(useCaseId))
+  .map(([useCaseId, useCase]) => {
+    const runtime: RuntimeJourney = runtimeContent[useCaseId];
 
-  return {
-    id: useCaseId,
-    label: useCase.label,
-    examplePath: useCase.examplePath,
-    campaign: toCampaignMeta(useCaseId, useCase, input),
-    runtime,
-    skills: toSkillPreview(useCaseId, useCase),
-    memory: toMemoryExample(useCaseId, useCase),
-    chatScenarios: chatScenarioContent[useCaseId],
-  };
-});
+    return {
+      id: useCaseId,
+      label: useCase.label,
+      examplePath: useCase.examplePath,
+      campaign: toCampaignMeta(useCaseId, useCase, runtime),
+      runtime,
+      skills: toSkillPreview(useCaseId, useCase),
+      memory: toMemoryExample(useCaseId, useCase),
+      chatScenarios: chatScenarioContent[useCaseId],
+    };
+  });
 
-export const DEFAULT_LANDING_USE_CASE_ID: LandingUseCaseId = "devops";
+export const DEFAULT_LANDING_USE_CASE_ID: LandingUseCaseId = "engineering";
 
 const surfaceHeroCopy: Record<SurfaceId, SurfaceHeroCopyConfig> = {
   landing: {
@@ -3125,7 +3053,7 @@ const surfaceHeroCopy: Record<SurfaceId, SurfaceHeroCopyConfig> = {
         description:
           "Sandboxed legal agents with durable contract memory, secure tool access, and full control in your infrastructure.",
       },
-      devops: {
+      engineering: {
         title: "AI agents for incident response",
         highlight: "incident response",
         description:
@@ -3199,11 +3127,10 @@ const surfaceHeroCopy: Record<SurfaceId, SurfaceHeroCopyConfig> = {
       highlight: "skills",
       description:
         "A skill isn't a prompt template, it's a full sandboxed computer. All capabilities bundled into one installable unit.",
-      startTitle: "Start a new agent in seconds",
     },
     byUseCase: {
       legal: { title: "Skills for secure legal workflows" },
-      devops: { title: "Skills for incident response agents" },
+      engineering: { title: "Skills for incident response agents" },
       support: { title: "Skills for customer operations agents" },
       finance: { title: "Skills for finance workflows" },
       sales: { title: "Skills for account and pipeline agents" },
@@ -3224,11 +3151,10 @@ const surfaceHeroCopy: Record<SurfaceId, SurfaceHeroCopyConfig> = {
       highlight: "collective memory",
       description:
         "Owletto gives all your agents the same durable graph: connectors, recall, and managed auth without leaking credentials to the runtime.",
-      startTitle: "Start Owletto in seconds",
     },
     byUseCase: {
       legal: { title: "Contract memory for legal agents" },
-      devops: { title: "Incident memory for ops teams" },
+      engineering: { title: "Incident memory for ops teams" },
       support: { title: "Shared customer memory for support agents" },
       finance: { title: "Structured finance memory for every close" },
       sales: { title: "Account memory for revenue teams" },
@@ -3250,17 +3176,17 @@ export const landingUseCaseOptions = landingUseCaseShowcases.map((useCase) => ({
   label: useCase.label,
 }));
 
-export type LandingUseCaseScope = "personal" | "organizations" | "public";
+export type LandingUseCaseRole = "departments" | "personal" | "public";
 
-const useCaseScopeMap: Record<LandingUseCaseId, LandingUseCaseScope> = {
-  legal: "organizations",
-  devops: "organizations",
-  support: "organizations",
-  finance: "organizations",
-  sales: "organizations",
-  delivery: "organizations",
-  ecommerce: "organizations",
-  careops: "organizations",
+const useCaseRoleMap: Record<LandingUseCaseId, LandingUseCaseRole> = {
+  legal: "departments",
+  engineering: "departments",
+  support: "departments",
+  finance: "departments",
+  sales: "departments",
+  delivery: "departments",
+  ecommerce: "departments",
+  careops: "departments",
   leadership: "personal",
   "venture-capital": "personal",
   "agent-community": "public",
@@ -3269,7 +3195,7 @@ const useCaseScopeMap: Record<LandingUseCaseId, LandingUseCaseScope> = {
 
 const useCaseEmojiMap: Record<LandingUseCaseId, string> = {
   legal: "\u2696\uFE0F",
-  devops: "\uD83D\uDEA8",
+  engineering: "\uD83D\uDEE0\uFE0F",
   support: "\uD83D\uDCAC",
   finance: "\uD83D\uDCCA",
   sales: "\uD83D\uDCC8",
@@ -3282,35 +3208,33 @@ const useCaseEmojiMap: Record<LandingUseCaseId, string> = {
   "market-intelligence": "\uD83D\uDD2D",
 };
 
-const landingUseCaseScopeMeta: Array<{
-  id: LandingUseCaseScope;
+const landingUseCaseRoleMeta: Array<{
+  id: LandingUseCaseRole;
   label: string;
   description: string;
 }> = [
   {
-    id: "personal",
-    label: "Personal",
-    description:
-      "Solo-professional memory — your own decisions, deals, and context.",
+    id: "departments",
+    label: "Company",
+    description: "Team agents with shared memory across roles and tools.",
   },
   {
-    id: "organizations",
-    label: "Organizations",
-    description: "Team agents with shared memory and shared skills.",
+    id: "personal",
+    label: "Personal",
+    description: "Solo memory — your own decisions, deals, and context.",
   },
   {
     id: "public",
     label: "Public",
-    description:
-      "Community-scale memory — members, markets, and open knowledge.",
+    description: "Community-scale memory — members, markets, open knowledge.",
   },
 ];
 
-export const landingUseCaseGroupedOptions = landingUseCaseScopeMeta
-  .map((scope) => ({
-    ...scope,
+export const landingUseCaseGroupedOptions = landingUseCaseRoleMeta
+  .map((role) => ({
+    ...role,
     useCases: landingUseCaseShowcases
-      .filter((uc) => useCaseScopeMap[uc.id] === scope.id)
+      .filter((uc) => useCaseRoleMap[uc.id] === role.id)
       .map((uc) => ({
         id: uc.id,
         label: uc.label,
@@ -3319,10 +3243,10 @@ export const landingUseCaseGroupedOptions = landingUseCaseScopeMeta
   }))
   .filter((group) => group.useCases.length > 0);
 
-export function getLandingUseCaseScope(
+export function getLandingUseCaseRole(
   useCaseId: LandingUseCaseId
-): LandingUseCaseScope {
-  return useCaseScopeMap[useCaseId];
+): LandingUseCaseRole {
+  return useCaseRoleMap[useCaseId];
 }
 
 export function getLandingUseCaseShowcase(
@@ -3358,6 +3282,10 @@ export const showcaseMemoryExamples = landingUseCaseShowcases.map(
   (useCase) => useCase.memory
 );
 
+export function getLandingPrompt(showcase: LandingUseCaseShowcase) {
+  return `I want to build a Lobu agent for ${showcase.label}.\n\nPlease:\n1. Start with \`npx @lobu/cli@latest init\`.\n2. Shape the project around this workflow: ${showcase.runtime.request}\n3. After scaffolding, read AGENTS.md, lobu.toml, and the agent prompt files first.\n4. Add the right skills, connections, and Owletto memory model.\n5. Keep the project runnable with \`npx @lobu/cli@latest run -d\`.\n\nExplain what you change and why.`;
+}
+
 export function getSkillsPrompt(showcase: LandingUseCaseShowcase) {
   const workspace = showcase.skills;
 
@@ -3367,11 +3295,26 @@ export function getSkillsPrompt(showcase: LandingUseCaseShowcase) {
 export function getMemoryPrompt(showcase: LandingUseCaseShowcase) {
   const memory = showcase.memory;
 
-  return `Run \`npx owletto@latest init\` to initialize Owletto memory for ${showcase.label}. Model these entities: ${memory.entityTypes.join(", ")}. Use this source text as the first example: "${memory.sourceText}". Keep the extracted memory durable, typed, and linked so the runtime can reuse it across future tasks.`;
+  return `Run \`npx owletto@latest init\` to initialize Owletto memory for ${showcase.label}. Model these entities: ${memory.entityTypes.join(", ")}. Keep the extracted memory durable, typed, and linked so the runtime can reuse it across future tasks.`;
 }
 
-const OWLETTO_URL = "https://owletto.com";
-const OWLETTO_MCP_URL = `${OWLETTO_URL}/mcp`;
+const LOBU_ZONE =
+  (import.meta.env.PUBLIC_LOBU_ZONE as string | undefined) || "lobu.ai";
+const LOBU_APP_OVERRIDE = (
+  import.meta.env.PUBLIC_LOBU_APP_URL as string | undefined
+)?.replace(/\/$/, "");
+const LOBU_APP_BASE_URL = LOBU_APP_OVERRIDE ?? `https://app.${LOBU_ZONE}`;
+
+function stripScheme(url: string): string {
+  return url.replace(/^https?:\/\//, "");
+}
+
+function buildOrgUrl(orgSlug: string | undefined): string {
+  if (!orgSlug) return LOBU_APP_BASE_URL;
+  return LOBU_APP_OVERRIDE
+    ? `${LOBU_APP_OVERRIDE}/${orgSlug}`
+    : `https://${orgSlug}.${LOBU_ZONE}`;
+}
 
 export function getOwlettoOrgSlug(useCaseId?: LandingUseCaseId) {
   if (!useCaseId) return undefined;
@@ -3380,32 +3323,48 @@ export function getOwlettoOrgSlug(useCaseId?: LandingUseCaseId) {
 }
 
 export function getOwlettoUrl(useCaseId?: LandingUseCaseId) {
-  const orgSlug = getOwlettoOrgSlug(useCaseId);
-  return orgSlug ? `${OWLETTO_URL}/${orgSlug}` : OWLETTO_URL;
+  return buildOrgUrl(getOwlettoOrgSlug(useCaseId));
 }
 
 export function getOwlettoMcpUrl() {
-  return OWLETTO_MCP_URL;
+  return `${LOBU_APP_BASE_URL}/mcp`;
 }
 
 export function getOwlettoScopedMcpUrl(useCaseId?: LandingUseCaseId) {
-  const orgSlug = getOwlettoOrgSlug(useCaseId);
-  return orgSlug ? `${OWLETTO_MCP_URL}/${orgSlug}` : OWLETTO_MCP_URL;
+  return `${getOwlettoUrl(useCaseId)}/mcp`;
 }
 
 export function getOwlettoBaseUrl() {
-  return OWLETTO_URL;
+  return LOBU_APP_BASE_URL;
+}
+
+export function getOwlettoLoginUrl() {
+  return `${LOBU_APP_BASE_URL}/auth/login`;
+}
+
+export function getOwlettoBaseHostLabel() {
+  return stripScheme(LOBU_APP_BASE_URL);
 }
 
 export type LandingUseCaseWorkspaceOption = {
   id: LandingUseCaseId;
   label: string;
   orgSlug?: string;
+  owlettoUrl: string;
+  mcpUrl: string;
+  hostLabel: string;
 };
 
 export const landingUseCaseWorkspaceOptions: LandingUseCaseWorkspaceOption[] =
-  landingUseCaseShowcases.map((useCase) => ({
-    id: useCase.id,
-    label: useCase.label,
-    orgSlug: getOwlettoOrgSlug(useCase.id),
-  }));
+  landingUseCaseShowcases.map((useCase) => {
+    const orgSlug = getOwlettoOrgSlug(useCase.id);
+    const owlettoUrl = buildOrgUrl(orgSlug);
+    return {
+      id: useCase.id,
+      label: useCase.label,
+      orgSlug,
+      owlettoUrl,
+      mcpUrl: `${owlettoUrl}/mcp`,
+      hostLabel: stripScheme(owlettoUrl),
+    };
+  });

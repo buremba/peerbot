@@ -17,6 +17,8 @@ allowed = ["github.com", ".github.com", ".githubusercontent.com", "registry.npmj
 
 [memory.owletto]
 enabled = true
-config = "./owletto.yaml"
+org = "legal-review"
+name = "Legal"
+description = "Review contracts, summarize risk, and surface missing protections"
 models = "./models"
 data = "./data"

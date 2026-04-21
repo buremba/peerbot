@@ -143,10 +143,6 @@ async function loadAndValidateToml(
   return result.data;
 }
 
-interface OwlettoProjectConfig {
-  org?: string;
-}
-
 function normalizeOwlettoMcpBaseUrl(input: string): string | null {
   try {
     const url = new URL(input);
@@ -167,48 +163,14 @@ function buildOwlettoScopedMcpUrl(baseMcpUrl: string, org: string): string {
   return url.toString().replace(/\/+$/, "");
 }
 
-async function readOwlettoOrgFromConfig(
-  projectPath: string,
-  configPath: string | undefined
-): Promise<string | null> {
-  if (!configPath?.trim()) {
-    return null;
-  }
-
-  const resolvedConfigPath = resolve(projectPath, configPath);
-
-  try {
-    const raw = await readFile(resolvedConfigPath, "utf-8");
-    const parsed = parseYaml(raw) as OwlettoProjectConfig;
-    const org = parsed?.org?.trim();
-    if (org) {
-      return org;
-    }
-
-    logger.warn(`Owletto config at ${resolvedConfigPath} does not declare org`);
-    return null;
-  } catch (error) {
-    logger.warn(`Failed to read Owletto config at ${resolvedConfigPath}`, {
-      error: error instanceof Error ? error.message : String(error),
-    });
-    return null;
-  }
-}
-
-async function resolveOwlettoMemoryUrl(
-  projectPath: string,
-  config: LobuTomlConfig
-): Promise<string | null> {
+function resolveOwlettoMemoryUrl(config: LobuTomlConfig): string | null {
   const owlettoMemory = config.memory?.owletto;
   if (!owlettoMemory || owlettoMemory.enabled === false) {
     return null;
   }
 
   const configuredMemoryUrl = process.env.MEMORY_URL?.trim();
-  const owlettoOrg = await readOwlettoOrgFromConfig(
-    projectPath,
-    owlettoMemory.config
-  );
+  const owlettoOrg = owlettoMemory.org?.trim();
 
   if (owlettoOrg) {
     const baseMcpUrl = configuredMemoryUrl
@@ -218,6 +180,9 @@ async function resolveOwlettoMemoryUrl(
     return buildOwlettoScopedMcpUrl(baseMcpUrl, owlettoOrg);
   }
 
+  logger.warn(
+    "[memory.owletto] is enabled but does not declare `org`; skipping MEMORY_URL scoping"
+  );
   return configuredMemoryUrl || null;
 }
 
@@ -229,7 +194,7 @@ export async function applyOwlettoMemoryEnvFromProject(
     return null;
   }
 
-  const resolvedMemoryUrl = await resolveOwlettoMemoryUrl(projectPath, config);
+  const resolvedMemoryUrl = resolveOwlettoMemoryUrl(config);
   if (!resolvedMemoryUrl) {
     return null;
   }

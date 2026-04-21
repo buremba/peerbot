@@ -63,7 +63,7 @@ export const generatedUseCaseModels: Record<string, GeneratedUseCaseModel> = {
       skillId: "agent-community",
       description:
         "Discover aligned members, explain why they should meet, and draft warm introductions",
-      skills: ["github"],
+      skills: [],
       nixPackages: [],
       allowedDomains: [
         "github.com",
@@ -72,7 +72,7 @@ export const generatedUseCaseModels: Record<string, GeneratedUseCaseModel> = {
         "registry.npmjs.org",
         ".npmjs.org",
       ],
-      mcpServer: "github",
+      mcpServer: "",
       providerId: "anthropic",
       model: "claude/sonnet-4-5",
       apiKeyEnv: "ANTHROPIC_API_KEY",
@@ -122,7 +122,7 @@ export const generatedUseCaseModels: Record<string, GeneratedUseCaseModel> = {
       skillId: "careops",
       description:
         "Manage patient care, appointments, and treatment workflows for healthcare practices",
-      skills: ["github"],
+      skills: [],
       nixPackages: [],
       allowedDomains: [
         "github.com",
@@ -131,10 +131,10 @@ export const generatedUseCaseModels: Record<string, GeneratedUseCaseModel> = {
         "registry.npmjs.org",
         ".npmjs.org",
       ],
-      mcpServer: "github",
-      providerId: "z-ai",
-      model: "z-ai/glm-4.7",
-      apiKeyEnv: "Z_AI_API_KEY",
+      mcpServer: "",
+      providerId: "gemini",
+      model: "gemini/gemini-2.5-flash",
+      apiKeyEnv: "GEMINI_API_KEY",
       skillInstructions: [
         "- Protect patient privacy and confidentiality.",
         "- Preserve treatment history and provider assignments.",
@@ -180,7 +180,7 @@ export const generatedUseCaseModels: Record<string, GeneratedUseCaseModel> = {
       skillId: "delivery",
       description:
         "Help delivery teams keep milestones, blockers, owners, and artifacts aligned",
-      skills: ["github"],
+      skills: [],
       nixPackages: [],
       allowedDomains: [
         "github.com",
@@ -189,7 +189,7 @@ export const generatedUseCaseModels: Record<string, GeneratedUseCaseModel> = {
         "registry.npmjs.org",
         ".npmjs.org",
       ],
-      mcpServer: "github",
+      mcpServer: "",
       providerId: "anthropic",
       model: "claude/sonnet-4-5",
       apiKeyEnv: "ANTHROPIC_API_KEY",
@@ -207,63 +207,6 @@ export const generatedUseCaseModels: Record<string, GeneratedUseCaseModel> = {
         "Check project blockers, milestone progress, and generate the weekly risk summary for leadership.",
       extractionSchema:
         '{"type":"object","required":["blockers_resolved","milestone_state","new_risks","risk_summary"],"properties":{"blockers_resolved":{"type":"array","items":{"type":"string"}},"milestone_state":{"type":"string"},"new_risks":{"type":"array","items":{"type":"string"}},"risk_summary":{"type":"string"}}}',
-    },
-  },
-  devops: {
-    id: "devops",
-    owlettoOrg: "devops",
-    agent: {
-      identity: [
-        "You are a DevOps agent that helps platform teams triage incidents, reviews, and deploy safety checks.",
-        "You keep humans aligned on what is broken, blocked, or ready to ship.",
-      ],
-      soul: [
-        "- Prefer signal over noise.",
-        "- Highlight user impact and rollout risk.",
-        "- Never auto-deploy without approval.",
-        "- Summarize incidents with user impact first.",
-      ],
-      user: [
-        "- Team: Platform engineering",
-        "- Rotation: Primary on-call this week",
-        "- Preference: Incident-first summaries",
-      ],
-    },
-    model: {
-      entities: ["Deploy", "Incident", "Pull Request", "Service"],
-    },
-    skills: {
-      agentId: "devops-control",
-      skillId: "devops-control",
-      description:
-        "Help platform teams triage incidents, reviews, and deploy safety checks",
-      skills: ["github"],
-      nixPackages: [],
-      allowedDomains: [
-        "github.com",
-        ".github.com",
-        ".githubusercontent.com",
-        "registry.npmjs.org",
-        ".npmjs.org",
-      ],
-      mcpServer: "github",
-      providerId: "anthropic",
-      model: "claude/sonnet-4-5",
-      apiKeyEnv: "ANTHROPIC_API_KEY",
-      skillInstructions: [
-        "- Prefer signal over noise.",
-        "- Highlight user impact and rollout risk.",
-        "- Never auto-deploy without approval.",
-        "- Summarize incidents with user impact first.",
-      ],
-    },
-    watcher: {
-      name: "Incident monitor",
-      schedule: "*/15 * * * *",
-      prompt:
-        "Check for active incidents, pending deploys, and blocked PRs. Highlight user impact and rollout risk for on-call triage.",
-      extractionSchema:
-        '{"type":"object","required":["active_incidents","pending_deploys","blocked_prs"],"properties":{"active_incidents":{"type":"array","items":{"type":"string"}},"pending_deploys":{"type":"array","items":{"type":"string"}},"blocked_prs":{"type":"array","items":{"type":"string"}},"rollback_candidates":{"type":"array","items":{"type":"string"}}}}',
     },
   },
   ecommerce: {
@@ -295,7 +238,7 @@ export const generatedUseCaseModels: Record<string, GeneratedUseCaseModel> = {
       skillId: "ecommerce-ops",
       description:
         "Manage subscriptions, process order changes, and resolve customer requests",
-      skills: ["github"],
+      skills: [],
       nixPackages: [],
       allowedDomains: [
         "github.com",
@@ -304,7 +247,7 @@ export const generatedUseCaseModels: Record<string, GeneratedUseCaseModel> = {
         "registry.npmjs.org",
         ".npmjs.org",
       ],
-      mcpServer: "github",
+      mcpServer: "",
       providerId: "anthropic",
       model: "claude/sonnet-4-5",
       apiKeyEnv: "ANTHROPIC_API_KEY",
@@ -323,6 +266,63 @@ export const generatedUseCaseModels: Record<string, GeneratedUseCaseModel> = {
         "Monitor customers for new orders, subscription changes, delivery requests, and support interactions.",
       extractionSchema:
         '{"type":"object","required":["subscription_status","pending_changes","recent_orders","communication_preferences","open_requests"],"properties":{"subscription_status":{"type":"string"},"pending_changes":{"type":"array","items":{"type":"string"}},"recent_orders":{"type":"array","items":{"type":"string"}},"communication_preferences":{"type":"string"},"open_requests":{"type":"array","items":{"type":"string"}}}}',
+    },
+  },
+  engineering: {
+    id: "engineering",
+    owlettoOrg: "devops",
+    agent: {
+      identity: [
+        "You are an engineering agent that helps platform teams triage incidents, reviews, and deploy safety checks.",
+        "You keep humans aligned on what is broken, blocked, or ready to ship.",
+      ],
+      soul: [
+        "- Prefer signal over noise.",
+        "- Highlight user impact and rollout risk.",
+        "- Never auto-deploy without approval.",
+        "- Summarize incidents with user impact first.",
+      ],
+      user: [
+        "- Team: Platform engineering",
+        "- Rotation: Primary on-call this week",
+        "- Preference: Incident-first summaries",
+      ],
+    },
+    model: {
+      entities: ["Deploy", "Incident", "Pull Request", "Service"],
+    },
+    skills: {
+      agentId: "engineering-control",
+      skillId: "engineering-control",
+      description:
+        "Help platform teams triage incidents, reviews, and deploy safety checks",
+      skills: [],
+      nixPackages: [],
+      allowedDomains: [
+        "github.com",
+        ".github.com",
+        ".githubusercontent.com",
+        "registry.npmjs.org",
+        ".npmjs.org",
+      ],
+      mcpServer: "",
+      providerId: "anthropic",
+      model: "claude/sonnet-4-5",
+      apiKeyEnv: "ANTHROPIC_API_KEY",
+      skillInstructions: [
+        "- Prefer signal over noise.",
+        "- Highlight user impact and rollout risk.",
+        "- Never auto-deploy without approval.",
+        "- Summarize incidents with user impact first.",
+      ],
+    },
+    watcher: {
+      name: "Incident monitor",
+      schedule: "*/15 * * * *",
+      prompt:
+        "Check for active incidents, pending deploys, and blocked PRs. Highlight user impact and rollout risk for on-call triage.",
+      extractionSchema:
+        '{"type":"object","required":["active_incidents","pending_deploys","blocked_prs"],"properties":{"active_incidents":{"type":"array","items":{"type":"string"}},"pending_deploys":{"type":"array","items":{"type":"string"}},"blocked_prs":{"type":"array","items":{"type":"string"}},"rollback_candidates":{"type":"array","items":{"type":"string"}}}}',
     },
   },
   finance: {
@@ -353,7 +353,7 @@ export const generatedUseCaseModels: Record<string, GeneratedUseCaseModel> = {
       skillId: "finance",
       description:
         "Help finance teams reconcile data, explain variance, and prepare reporting runs",
-      skills: ["github"],
+      skills: [],
       nixPackages: [],
       allowedDomains: [
         "github.com",
@@ -362,7 +362,7 @@ export const generatedUseCaseModels: Record<string, GeneratedUseCaseModel> = {
         "registry.npmjs.org",
         ".npmjs.org",
       ],
-      mcpServer: "github",
+      mcpServer: "",
       providerId: "anthropic",
       model: "claude/sonnet-4-5",
       apiKeyEnv: "ANTHROPIC_API_KEY",
@@ -410,7 +410,7 @@ export const generatedUseCaseModels: Record<string, GeneratedUseCaseModel> = {
       skillId: "leadership",
       description:
         "Help leadership teams turn memos, decisions, and board materials into reusable operating context",
-      skills: ["github"],
+      skills: [],
       nixPackages: [],
       allowedDomains: [
         "github.com",
@@ -419,7 +419,7 @@ export const generatedUseCaseModels: Record<string, GeneratedUseCaseModel> = {
         "registry.npmjs.org",
         ".npmjs.org",
       ],
-      mcpServer: "github",
+      mcpServer: "",
       providerId: "anthropic",
       model: "claude/sonnet-4-5",
       apiKeyEnv: "ANTHROPIC_API_KEY",
@@ -468,7 +468,7 @@ export const generatedUseCaseModels: Record<string, GeneratedUseCaseModel> = {
       skillId: "legal-review",
       description:
         "Review contracts, summarize risk, and surface missing protections",
-      skills: ["github"],
+      skills: [],
       nixPackages: [],
       allowedDomains: [
         "github.com",
@@ -477,7 +477,7 @@ export const generatedUseCaseModels: Record<string, GeneratedUseCaseModel> = {
         "registry.npmjs.org",
         ".npmjs.org",
       ],
-      mcpServer: "github",
+      mcpServer: "",
       providerId: "anthropic",
       model: "claude/sonnet-4-5",
       apiKeyEnv: "ANTHROPIC_API_KEY",
@@ -527,7 +527,7 @@ export const generatedUseCaseModels: Record<string, GeneratedUseCaseModel> = {
       skillId: "market-intel",
       description:
         "Track brands, products, and market signals across the competitive landscape",
-      skills: ["web-monitor", "github"],
+      skills: [],
       nixPackages: [],
       allowedDomains: [
         "producthunt.com",
@@ -537,7 +537,7 @@ export const generatedUseCaseModels: Record<string, GeneratedUseCaseModel> = {
         ".github.com",
         ".githubusercontent.com",
       ],
-      mcpServer: "web-monitor",
+      mcpServer: "",
       providerId: "anthropic",
       model: "claude/sonnet-4-5",
       apiKeyEnv: "ANTHROPIC_API_KEY",
@@ -586,7 +586,7 @@ export const generatedUseCaseModels: Record<string, GeneratedUseCaseModel> = {
       skillId: "sales",
       description:
         "Help revenue teams track account health, rollout progress, and renewal signals",
-      skills: ["github"],
+      skills: [],
       nixPackages: [],
       allowedDomains: [
         "github.com",
@@ -595,7 +595,7 @@ export const generatedUseCaseModels: Record<string, GeneratedUseCaseModel> = {
         "registry.npmjs.org",
         ".npmjs.org",
       ],
-      mcpServer: "github",
+      mcpServer: "",
       providerId: "anthropic",
       model: "claude/sonnet-4-5",
       apiKeyEnv: "ANTHROPIC_API_KEY",
@@ -643,7 +643,7 @@ export const generatedUseCaseModels: Record<string, GeneratedUseCaseModel> = {
       skillId: "support",
       description:
         "Help support teams route tickets, draft replies, and escalate urgent issues",
-      skills: ["github"],
+      skills: [],
       nixPackages: [],
       allowedDomains: [
         "github.com",
@@ -652,7 +652,7 @@ export const generatedUseCaseModels: Record<string, GeneratedUseCaseModel> = {
         "registry.npmjs.org",
         ".npmjs.org",
       ],
-      mcpServer: "github",
+      mcpServer: "",
       providerId: "anthropic",
       model: "claude/sonnet-4-5",
       apiKeyEnv: "ANTHROPIC_API_KEY",
@@ -695,7 +695,7 @@ export const generatedUseCaseModels: Record<string, GeneratedUseCaseModel> = {
       skillId: "vc-tracking",
       description:
         "Track companies, founders, and investment opportunities for venture firms",
-      skills: ["github"],
+      skills: [],
       nixPackages: [],
       allowedDomains: [
         "github.com",
@@ -704,7 +704,7 @@ export const generatedUseCaseModels: Record<string, GeneratedUseCaseModel> = {
         "registry.npmjs.org",
         ".npmjs.org",
       ],
-      mcpServer: "github",
+      mcpServer: "",
       providerId: "anthropic",
       model: "claude/sonnet-4-5",
       apiKeyEnv: "ANTHROPIC_API_KEY",

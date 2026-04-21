@@ -150,13 +150,25 @@ services:
     develop:
       watch:
         - action: sync+restart
-          path: ../packages/worker/src
-          target: /app/packages/worker/src
+          path: ../packages/owletto-worker/src
+          target: /app/packages/owletto-worker/src
         - action: sync+restart
-          path: ../packages/owletto-backend/src
-          target: /app/packages/owletto-backend/src
+          path: ../packages/owletto-sdk/src
+          target: /app/packages/owletto-sdk/src
+        - action: sync+restart
+          path: ../packages/owletto-connectors/src
+          target: /app/packages/owletto-connectors/src
+        - action: sync+restart
+          path: ../packages/owletto-embeddings/src
+          target: /app/packages/owletto-embeddings/src
         - action: rebuild
-          path: ../packages/worker/package.json
+          path: ../packages/owletto-worker/package.json
+        - action: rebuild
+          path: ../packages/owletto-sdk/package.json
+        - action: rebuild
+          path: ../packages/owletto-connectors/package.json
+        - action: rebuild
+          path: ../packages/owletto-embeddings/package.json
 
   openclaw:
     build:
@@ -173,7 +185,6 @@ services:
     volumes:
       - ../data/openclaw:/home/openclaw/.openclaw
       - ../data/openclaw-auth:/home/openclaw/.owletto
-      - ../packages/owletto-openclaw/dist:/plugin/dist
     depends_on:
       app:
         condition: service_healthy

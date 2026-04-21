@@ -6,13 +6,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends git ca-certific
 RUN git config --global url."https://github.com/".insteadOf "git+https://github.com/" && \
     git config --global url."https://github.com/".insteadOf "git://github.com/"
 
+# Install OpenClaw only. The plugin handles auth itself, so the container
+# does not need a host-built local CLI to start correctly.
 RUN npm install -g openclaw@latest
-
-# Install the prebuilt local Owletto CLI so the container matches the repo's OpenClaw flow.
-WORKDIR /owletto-cli
-COPY packages/cli/package.json ./
-COPY packages/cli/dist ./dist
-RUN npm install -g .
 
 # Copy and build the owletto plugin
 WORKDIR /plugin
@@ -21,16 +17,21 @@ COPY packages/owletto-openclaw/src ./src
 COPY packages/owletto-openclaw/openclaw.plugin.json ./
 RUN npm install && npm run build
 
+# Seed defaults outside mounted directories so first compose startup can
+# populate ~/.openclaw even when the bind mounts start empty.
+RUN mkdir -p /usr/local/share/openclaw/openclaw-owletto/dist \
+    && cp -R /plugin/dist/. /usr/local/share/openclaw/openclaw-owletto/dist/ \
+    && cp /plugin/openclaw.plugin.json /usr/local/share/openclaw/openclaw-owletto/openclaw.plugin.json
+COPY docker/openclaw/openclaw.json /usr/local/share/openclaw/openclaw.json
+COPY docker/openclaw/start.sh /usr/local/bin/openclaw-start
+RUN chmod +x /usr/local/bin/openclaw-start
+
 # Set up openclaw home
 RUN useradd -m -s /bin/bash openclaw
 USER openclaw
 WORKDIR /home/openclaw
 ENV HOME=/home/openclaw
 
-# Openclaw config
-RUN mkdir -p .openclaw
-COPY --chown=openclaw:openclaw docker/openclaw/openclaw.json .openclaw/openclaw.json
-
 EXPOSE 18789
 
-CMD ["openclaw", "gateway", "--port", "18789"]
+CMD ["openclaw-start"]

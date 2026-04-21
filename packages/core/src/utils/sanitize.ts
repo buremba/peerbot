@@ -125,3 +125,36 @@ export function sanitizeForLogging(
 
   return sanitized;
 }
+
+/**
+ * Strip entries with sensitive keys (exact-match) and drop undefined values.
+ *
+ * Unlike {@link sanitizeForLogging}, which recursively redacts sensitive values
+ * in place, this helper returns a pruned copy with the sensitive keys removed
+ * entirely. Intended for building a safe env record to hand off to child
+ * processes.
+ *
+ * @param env - Source env record (string | undefined values)
+ * @param sensitiveKeys - Exact key names to strip
+ * @returns A record with undefined values dropped and sensitive keys omitted
+ *
+ * @example
+ * ```typescript
+ * stripEnv(process.env, ["WORKER_TOKEN", "DISPATCHER_URL"])
+ * ```
+ */
+export function stripEnv(
+  env: Record<string, string | undefined>,
+  sensitiveKeys: readonly string[]
+): Record<string, string> {
+  const stripped: Record<string, string> = {};
+  const blocked = new Set(sensitiveKeys);
+
+  for (const [key, value] of Object.entries(env)) {
+    if (value === undefined) continue;
+    if (blocked.has(key)) continue;
+    stripped[key] = value;
+  }
+
+  return stripped;
+}

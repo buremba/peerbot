@@ -6,6 +6,7 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import {
   createLogger,
+  getOptionalEnv,
   type PluginsConfig,
   type ToolsConfig,
   type WorkerTransport,
@@ -1039,8 +1040,8 @@ export class OpenClawWorker implements WorkerExecutor {
     };
 
     const gwParams: GatewayParams = {
-      gatewayUrl: process.env.DISPATCHER_URL ?? "",
-      workerToken: process.env.WORKER_TOKEN ?? "",
+      gatewayUrl: getOptionalEnv("DISPATCHER_URL", ""),
+      workerToken: getOptionalEnv("WORKER_TOKEN", ""),
       channelId: this.config.channelId,
       conversationId: this.config.conversationId,
       platform: this.config.platform,
@@ -1087,8 +1088,8 @@ export class OpenClawWorker implements WorkerExecutor {
       });
     }
 
-    const gatewayUrl = process.env.DISPATCHER_URL ?? "";
-    const workerToken = process.env.WORKER_TOKEN ?? "";
+    const gatewayUrl = getOptionalEnv("DISPATCHER_URL", "");
+    const workerToken = getOptionalEnv("WORKER_TOKEN", "");
 
     // Credential injection — resolve API key from the in-memory credential store,
     // falling back to process.env only for values that were present at startup.

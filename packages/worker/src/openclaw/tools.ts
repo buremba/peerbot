@@ -10,8 +10,9 @@ import {
   createWriteTool,
 } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
+import { stripEnv } from "@lobu/core";
 import { isDirectPackageInstallCommand } from "./tool-policy";
-import { stripSensitiveWorkerEnv } from "../shared/sensitive-env";
+import { SENSITIVE_WORKER_ENV_KEYS } from "../shared/worker-env-keys";
 
 type RequiredParamGroup = {
   keys: readonly string[];
@@ -166,7 +167,7 @@ export function createOpenClawTools(
     }) => ({
       command: params.command,
       cwd: params.cwd,
-      env: stripSensitiveWorkerEnv(params.env),
+      env: stripEnv(params.env, SENSITIVE_WORKER_ENV_KEYS),
     }),
   };
   const bash = wrapBashWithProxyHint(createBashTool(cwd, bashToolOpts));

@@ -152,6 +152,7 @@ export type { McpStatus, McpToolDef } from "./utils/mcp-tool-instructions";
 export * from "./utils/network-domains";
 export * from "./utils/retry";
 export * from "./utils/sanitize";
+export * from "./utils/urls";
 export * from "./worker/auth";
 export type {
   WorkerTransport,

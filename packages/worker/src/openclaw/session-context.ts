@@ -1,10 +1,10 @@
 import {
   type ConfigProviderMeta,
   createLogger,
+  ensureBaseUrl,
   type McpStatus,
   type McpToolDef,
 } from "@lobu/core";
-import { ensureBaseUrl } from "../core/url-utils";
 
 const logger = createLogger("openclaw-session-context");
 

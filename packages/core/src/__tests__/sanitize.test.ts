@@ -3,6 +3,7 @@ import {
   sanitizeConversationId,
   sanitizeFilename,
   sanitizeForLogging,
+  stripEnv,
 } from "../utils/sanitize";
 
 describe("sanitizeFilename", () => {
@@ -154,5 +155,34 @@ describe("sanitizeForLogging", () => {
     const result = sanitizeForLogging(obj);
     // Non-string sensitive values are not redacted
     expect(result.token).toBe(12345);
+  });
+});
+
+describe("stripEnv", () => {
+  test("removes listed keys and drops undefined values", () => {
+    const env = stripEnv(
+      {
+        PATH: "/usr/bin",
+        WORKER_TOKEN: "secret",
+        DISPATCHER_URL: "http://gateway:8080",
+        HOME: "/workspace",
+        EMPTY: undefined,
+      },
+      ["WORKER_TOKEN", "DISPATCHER_URL"]
+    );
+
+    expect(env).toEqual({
+      PATH: "/usr/bin",
+      HOME: "/workspace",
+    });
+  });
+
+  test("returns empty object when all values are stripped or undefined", () => {
+    expect(stripEnv({ A: undefined, B: "hidden" }, ["B"])).toEqual({});
+  });
+
+  test("matches keys exactly (case-sensitive)", () => {
+    const env = stripEnv({ Token: "keep", TOKEN: "strip" }, ["TOKEN"]);
+    expect(env).toEqual({ Token: "keep" });
   });
 });

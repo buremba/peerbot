@@ -12,8 +12,9 @@
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { stripEnv } from "@lobu/core";
 import type { BashOperations } from "@mariozechner/pi-coding-agent";
-import { stripSensitiveWorkerEnv } from "../shared/sensitive-env";
+import { SENSITIVE_WORKER_ENV_KEYS } from "../shared/worker-env-keys";
 import type { GatewayParams } from "../shared/tool-implementations";
 import type { McpCliCommand, McpRuntimeRef } from "./mcp-cli-commands";
 import { buildMcpCliCommands } from "./mcp-cli-commands";
@@ -101,7 +102,7 @@ async function buildCustomCommands(
         const invocation = buildBinaryInvocation(binaryPath, args);
 
         // Convert ctx.env (Map-like) to a plain Record for child_process
-        const envRecord = stripSensitiveWorkerEnv(process.env);
+        const envRecord = stripEnv(process.env, SENSITIVE_WORKER_ENV_KEYS);
         if (ctx.env && typeof ctx.env.forEach === "function") {
           ctx.env.forEach((v: string, k: string) => {
             envRecord[k] = v;
@@ -254,7 +255,7 @@ export async function createEmbeddedBashOps(
   const bashInstance = new Bash({
     fs: bashFs,
     cwd: "/",
-    env: stripSensitiveWorkerEnv(process.env),
+    env: stripEnv(process.env, SENSITIVE_WORKER_ENV_KEYS),
     executionLimits: EMBEDDED_BASH_LIMITS,
     ...(network && { network }),
     ...(customCommands.length > 0 && { customCommands }),

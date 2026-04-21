@@ -7,7 +7,12 @@ import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { getRequestListener } from "@hono/node-server";
-import { createLogger } from "@lobu/core";
+import {
+  createLogger,
+  getOptionalEnv,
+  getOptionalNumber,
+  safeJsonParse,
+} from "@lobu/core";
 import { Hono } from "hono";
 
 const logger = createLogger("worker-http");
@@ -16,7 +21,7 @@ const app = new Hono();
 
 async function findSessionFile(): Promise<string | null> {
   const { readdir, stat } = await import("node:fs/promises");
-  const workspaceDir = process.env.WORKSPACE_DIR || "/workspace";
+  const workspaceDir = getOptionalEnv("WORKSPACE_DIR", "/workspace");
 
   // Direct path: {WORKSPACE_DIR}/.openclaw/session.jsonl
   const directPath = join(workspaceDir, ".openclaw", "session.jsonl");
@@ -93,16 +98,16 @@ function parseSessionFile(content: string): {
   let sessionId: string | undefined;
 
   for (const line of lines) {
-    try {
-      const parsed = JSON.parse(line);
-      if (parsed.type === "session") {
-        sessionId = parsed.id;
-        continue;
-      }
-      entries.push(parsed);
-    } catch {
+    const parsed = safeJsonParse<SessionEntry & { id: string }>(line);
+    if (!parsed) {
       // Skip malformed lines
+      continue;
     }
+    if (parsed.type === "session") {
+      sessionId = parsed.id;
+      continue;
+    }
+    entries.push(parsed);
   }
 
   return { entries, sessionId };
@@ -298,7 +303,7 @@ let server: ReturnType<typeof createServer> | null = null;
 
 export function startWorkerHttpServer(): Promise<number> {
   // Use port 0 to let the OS assign a free port (multiple workers share the host network)
-  const port = parseInt(process.env.WORKER_HTTP_PORT || "0", 10);
+  const port = getOptionalNumber("WORKER_HTTP_PORT", 0);
 
   return new Promise((resolve, reject) => {
     const listener = getRequestListener(app.fetch);

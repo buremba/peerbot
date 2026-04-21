@@ -281,10 +281,27 @@ app.use('/*', async (c, next) => {
   c.header('X-XSS-Protection', '1; mode=block');
   c.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
 
-  // No CSP header for JSON APIs - CSP is designed to protect HTML events erom XSS
-  // MCP/API endpoints only return JSON, so CSP restrictions aren't necessary
-  // and can interfere with ChatGPT's connector validation
-  // Removed: Content-Security-Policy header
+  // For HTML responses (SPA entrypoints), add a CSP frame-ancestors directive
+  // that allows the lobu.ai landing page to embed the app. Modern browsers
+  // prefer frame-ancestors over X-Frame-Options when both are present, so this
+  // effectively loosens the SAMEORIGIN restriction for our own properties while
+  // still blocking third-party clickjacking. JSON/API responses keep the
+  // stricter header and no CSP, preserving ChatGPT connector validation.
+  const contentType = c.res.headers.get('content-type') ?? '';
+  if (contentType.startsWith('text/html')) {
+    const rawFrameAncestors = c.env.FRAME_ANCESTORS?.trim();
+    const frameAncestors = rawFrameAncestors
+      ? rawFrameAncestors
+          .split(/[\s,]+/)
+          .map((entry) => entry.trim())
+          .filter(Boolean)
+          .join(' ')
+      : 'https://lobu.ai https://*.lobu.ai';
+    c.header(
+      'Content-Security-Policy',
+      `frame-ancestors 'self' ${frameAncestors}`
+    );
+  }
 
   c.header('Referrer-Policy', 'strict-origin-when-cross-origin');
   // Minimal permissions policy to prevent FLoC without blocking ChatGPT validation

@@ -109,6 +109,11 @@ export interface Env {
   PUBLIC_LOGO_URL?: string;
   PUBLIC_LEGAL_URL?: string;
 
+  // Space- or comma-separated list of origins allowed to iframe the SPA.
+  // Applied as `Content-Security-Policy: frame-ancestors 'self' <list>` on
+  // HTML responses. Defaults to `https://lobu.ai https://*.lobu.ai` when unset.
+  FRAME_ANCESTORS?: string;
+
   // Sync intervals
   DEFAULT_SYNC_INTERVAL_MS?: string;
   DEFAULT_SYNC_INTERVAL_HOURS?: string;

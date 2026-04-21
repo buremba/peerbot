@@ -3,6 +3,7 @@
 import { createLogger } from "@lobu/core";
 import { Hono } from "hono";
 import { platformRegistry } from "../../platform";
+import { errorResponse, getVerifiedWorker } from "../shared/helpers";
 import { authenticateWorker } from "./middleware";
 import type { WorkerContext } from "./types";
 
@@ -21,7 +22,7 @@ export function createHistoryRoutes(): Hono<WorkerContext> {
    */
   router.get("/history", authenticateWorker, async (c) => {
     try {
-      const worker = c.get("worker");
+      const worker = getVerifiedWorker(c);
       const platform = c.req.query("platform") || worker.platform || "api";
       const channelId = c.req.query("channelId") || worker.channelId;
       const conversationId =
@@ -32,7 +33,7 @@ export function createHistoryRoutes(): Hono<WorkerContext> {
       const limit = Math.min(Math.max(parseInt(limitStr, 10) || 50, 1), 100);
 
       if (!channelId) {
-        return c.json({ error: "Missing channelId parameter" }, 400);
+        return errorResponse(c, "Missing channelId parameter", 400);
       }
 
       logger.info(`Fetching history for ${platform}/${channelId}`, {
@@ -61,7 +62,7 @@ export function createHistoryRoutes(): Hono<WorkerContext> {
       logger.error(
         `Failed to fetch history: ${error instanceof Error ? error.message : String(error)}`
       );
-      return c.json({ error: "Internal server error" }, 500);
+      return errorResponse(c, "Internal server error", 500);
     }
   });
 

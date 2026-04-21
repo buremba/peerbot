@@ -6,6 +6,7 @@ import { Hono } from "hono";
 import type { ArtifactStore } from "../../files/artifact-store";
 import type { PlatformRegistry } from "../../platform";
 import type { IFileHandler } from "../../platform/file-handler";
+import { errorResponse, getVerifiedWorker } from "../shared/helpers";
 import { authenticateWorker } from "./middleware";
 import type { WorkerContext } from "./types";
 
@@ -58,13 +59,13 @@ export function createFileRoutes(
    */
   router.post("/upload", authenticateWorker, async (c) => {
     try {
-      const worker = c.get("worker");
+      const worker = getVerifiedWorker(c);
       const channelId = c.req.header("x-channel-id");
       const conversationId = c.req.header("x-conversation-id");
       const voiceMessage = c.req.header("x-voice-message") === "true";
 
       if (!channelId || !conversationId) {
-        return c.json({ error: "Missing channel or conversation ID" }, 400);
+        return errorResponse(c, "Missing channel or conversation ID", 400);
       }
 
       const fileHandler = resolveFileHandler(platformRegistry, {
@@ -79,7 +80,7 @@ export function createFileRoutes(
       const file = formData.get("file") as File | null;
 
       if (!file) {
-        return c.json({ error: "No file provided" }, 400);
+        return errorResponse(c, "No file provided", 400);
       }
 
       const filename = (formData.get("filename") as string) || file.name;
@@ -148,7 +149,7 @@ export function createFileRoutes(
       });
     } catch (error) {
       logger.error("Failed to upload file:", error);
-      return c.json({ error: "Failed to upload file" }, 500);
+      return errorResponse(c, "Failed to upload file", 500);
     }
   });
 
@@ -158,12 +159,12 @@ export function createFileRoutes(
    */
   router.post("/upload-batch", authenticateWorker, async (c) => {
     try {
-      const worker = c.get("worker");
+      const worker = getVerifiedWorker(c);
       const channelId = c.req.header("x-channel-id");
       const conversationId = c.req.header("x-conversation-id");
 
       if (!channelId || !conversationId) {
-        return c.json({ error: "Missing channel or conversation ID" }, 400);
+        return errorResponse(c, "Missing channel or conversation ID", 400);
       }
 
       const fileHandler = resolveFileHandler(platformRegistry, {
@@ -178,7 +179,7 @@ export function createFileRoutes(
       const fileEntries = formData.getAll("files");
 
       if (!fileEntries || fileEntries.length === 0) {
-        return c.json({ error: "No files provided" }, 400);
+        return errorResponse(c, "No files provided", 400);
       }
 
       logger.info(
@@ -244,7 +245,7 @@ export function createFileRoutes(
       return c.json({ results });
     } catch (error) {
       logger.error("Failed to batch upload files:", error);
-      return c.json({ error: "Failed to batch upload files" }, 500);
+      return errorResponse(c, "Failed to batch upload files", 500);
     }
   });
 

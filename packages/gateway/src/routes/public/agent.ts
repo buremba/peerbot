@@ -26,6 +26,7 @@ import { getModelProviderModules } from "../../modules/module-system";
 import type { PlatformRegistry } from "../../platform";
 import { resolveAgentOptions } from "../../services/platform-helpers";
 import type { ISessionManager, ThreadSession } from "../../session";
+import { errorResponse } from "../shared/helpers";
 
 const logger = createLogger("agent-api");
 
@@ -1157,20 +1158,19 @@ export function createAgentApi(
     app.post("/api/v1/agents/approve", async (c) => {
       const { requestId, decision } = await c.req.json();
       if (!requestId || !decision) {
-        return c.json({ error: "Missing requestId or decision" }, 400);
+        return errorResponse(c, "Missing requestId or decision", 400);
       }
       const validDecisions = ["1h", "24h", "always", "deny"];
       if (!validDecisions.includes(decision)) {
-        return c.json(
-          {
-            error: `Invalid decision. Must be one of: ${validDecisions.join(", ")}`,
-          },
+        return errorResponse(
+          c,
+          `Invalid decision. Must be one of: ${validDecisions.join(", ")}`,
           400
         );
       }
       const result = await approveHandler(requestId, decision);
       if (!result.success) {
-        return c.json({ error: result.error || "Approval failed" }, 400);
+        return errorResponse(c, result.error || "Approval failed", 400);
       }
       return c.json({ success: true });
     });

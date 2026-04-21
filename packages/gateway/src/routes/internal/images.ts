@@ -7,6 +7,7 @@
 import { createLogger } from "@lobu/core";
 import { Hono } from "hono";
 import type { ImageGenerationService } from "../../services/image-generation-service";
+import { errorResponse, getVerifiedWorker } from "../shared/helpers";
 import { authenticateWorker } from "./middleware";
 import type { WorkerContext } from "./types";
 
@@ -23,7 +24,7 @@ export function createImageRoutes(
    */
   router.post("/internal/images/generate", authenticateWorker, async (c) => {
     try {
-      const worker = c.get("worker");
+      const worker = getVerifiedWorker(c);
       const { prompt, size, quality, background, format } = await c.req.json<{
         prompt?: string;
         size?: "1024x1024" | "1024x1536" | "1536x1024" | "auto";
@@ -33,18 +34,15 @@ export function createImageRoutes(
       }>();
 
       if (!prompt || typeof prompt !== "string") {
-        return c.json(
-          { error: "prompt is required and must be a string" },
-          400
-        );
+        return errorResponse(c, "prompt is required and must be a string", 400);
       }
       if (prompt.length > 4000) {
-        return c.json({ error: "prompt must be 4000 characters or less" }, 400);
+        return errorResponse(c, "prompt must be 4000 characters or less", 400);
       }
 
       const agentId = worker.agentId;
       if (!agentId) {
-        return c.json({ error: "Missing agentId in worker context" }, 400);
+        return errorResponse(c, "Missing agentId in worker context", 400);
       }
 
       logger.info("Generating image", {
@@ -81,12 +79,7 @@ export function createImageRoutes(
       });
     } catch (error) {
       logger.error("Image generation error", { error });
-      return c.json(
-        {
-          error: "Failed to generate image",
-        },
-        500
-      );
+      return errorResponse(c, "Failed to generate image", 500);
     }
   });
 
@@ -96,10 +89,10 @@ export function createImageRoutes(
    */
   router.get("/internal/images/capabilities", authenticateWorker, async (c) => {
     try {
-      const worker = c.get("worker");
+      const worker = getVerifiedWorker(c);
       const agentId = worker.agentId;
       if (!agentId) {
-        return c.json({ error: "Missing agentId in worker context" }, 400);
+        return errorResponse(c, "Missing agentId in worker context", 400);
       }
 
       const config = await imageGenerationService.getConfig(agentId);
@@ -118,7 +111,7 @@ export function createImageRoutes(
       });
     } catch (error) {
       logger.error("Image capabilities check error", { error });
-      return c.json({ error: "Failed to check capabilities" }, 500);
+      return errorResponse(c, "Failed to check capabilities", 500);
     }
   });
 

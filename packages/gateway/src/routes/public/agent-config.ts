@@ -30,6 +30,7 @@ import {
 } from "../../modules/module-system";
 import type { ScheduleService } from "../../orchestration/scheduled-wakeup";
 import type { GrantStore } from "../../permissions/grant-store";
+import { errorResponse } from "../shared/helpers";
 import { createTokenVerifier } from "../shared/token-verifier";
 import { verifySettingsSessionOrToken } from "./settings-auth";
 
@@ -521,7 +522,7 @@ export function createAgentConfigRoutes(
   app.openapi(getConfigRoute, async (c): Promise<any> => {
     const agentId = c.req.param("agentId") || "";
     const payload = await verifyToken(verifySettingsSessionOrToken(c), agentId);
-    if (!payload) return c.json({ error: "Unauthorized" }, 401);
+    if (!payload) return errorResponse(c, "Unauthorized", 401);
     const providerModels = await collectProviderModelOptions(
       agentId,
       payload.userId
@@ -542,10 +543,10 @@ export function createAgentConfigRoutes(
   app.get("/providers/catalog", async (c): Promise<any> => {
     const agentId = c.req.param("agentId") || "";
     const payload = await verifyToken(verifySettingsSessionOrToken(c), agentId);
-    if (!payload) return c.json({ error: "Unauthorized" }, 401);
+    if (!payload) return errorResponse(c, "Unauthorized", 401);
 
     if (!config.providerCatalogService) {
-      return c.json({ error: "Provider catalog not available" }, 503);
+      return errorResponse(c, "Provider catalog not available", 503);
     }
 
     const allProviders = config.providerCatalogService.listCatalogProviders();
@@ -578,7 +579,7 @@ export function createAgentConfigRoutes(
         verifySettingsSessionOrToken(c),
         agentId
       );
-      if (!payload) return c.json({ error: "Unauthorized" }, 401);
+      if (!payload) return errorResponse(c, "Unauthorized", 401);
 
       const grants = await grantStore.listGrants(agentId);
       return c.json(grants);

@@ -14,7 +14,7 @@ import { createLogger } from "@lobu/core";
 import { Hono } from "hono";
 import type { UserAgentsStore } from "../../auth/user-agents-store";
 import type { ChatInstanceManager } from "../../connections/chat-instance-manager";
-import { verifyAgentAccess } from "./agent-access";
+import { verifyOwnedAgentAccess } from "../shared/agent-ownership";
 import { verifySettingsSession } from "./settings-auth";
 
 const logger = createLogger("connection-routes");
@@ -487,7 +487,12 @@ export function createConnectionCrudRoutes(
     let connections;
 
     if (templateAgentId) {
-      if (!(await verifyAgentAccess(session, templateAgentId, accessConfig))) {
+      const access = await verifyOwnedAgentAccess(
+        session,
+        templateAgentId,
+        accessConfig
+      );
+      if (!access.authorized) {
         return c.json({ error: "Forbidden" }, 403);
       }
 
@@ -518,15 +523,15 @@ export function createConnectionCrudRoutes(
     if (!connection) {
       return c.json({ error: "Connection not found" }, 404);
     }
-    if (
-      connection.templateAgentId &&
-      !(await verifyAgentAccess(
+    if (connection.templateAgentId) {
+      const access = await verifyOwnedAgentAccess(
         session,
         connection.templateAgentId,
         accessConfig
-      ))
-    ) {
-      return c.json({ error: "Forbidden" }, 403);
+      );
+      if (!access.authorized) {
+        return c.json({ error: "Forbidden" }, 403);
+      }
     }
 
     return c.json(connection);
@@ -544,15 +549,15 @@ export function createConnectionCrudRoutes(
     if (!connection) {
       return c.json({ error: "Connection not found" }, 404);
     }
-    if (
-      connection.templateAgentId &&
-      !(await verifyAgentAccess(
+    if (connection.templateAgentId) {
+      const access = await verifyOwnedAgentAccess(
         session,
         connection.templateAgentId,
         accessConfig
-      ))
-    ) {
-      return c.json({ error: "Forbidden" }, 403);
+      );
+      if (!access.authorized) {
+        return c.json({ error: "Forbidden" }, 403);
+      }
     }
     if (
       !connection.templateAgentId &&

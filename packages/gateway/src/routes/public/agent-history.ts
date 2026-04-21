@@ -13,6 +13,7 @@ import { Hono } from "hono";
 import type { UserAgentsStore } from "../../auth/user-agents-store";
 import type { ChatInstanceManager } from "../../connections/chat-instance-manager";
 import type { WorkerConnectionManager } from "../../gateway/connection-manager";
+import { errorResponse } from "../shared/helpers";
 import { createTokenVerifier } from "../shared/token-verifier";
 import { verifySettingsSession } from "./settings-auth";
 
@@ -355,7 +356,7 @@ export function createAgentHistoryRoutes(deps: {
   // Agent status
   app.get("/status", async (c) => {
     const agentId = await getAuthorizedAgentId(c);
-    if (!agentId) return c.json({ error: "Unauthorized" }, 401);
+    if (!agentId) return errorResponse(c, "Unauthorized", 401);
 
     const { connected, resolvedAgentId } = await resolveActiveAgent(agentId);
 
@@ -373,7 +374,7 @@ export function createAgentHistoryRoutes(deps: {
   // Session messages
   app.get("/session/messages", async (c) => {
     const agentId = await getAuthorizedAgentId(c);
-    if (!agentId) return c.json({ error: "Unauthorized" }, 401);
+    if (!agentId) return errorResponse(c, "Unauthorized", 401);
 
     const cursor = c.req.query("cursor") || "";
     const limit = Math.min(parseInt(c.req.query("limit") || "50", 10), 200);
@@ -403,7 +404,7 @@ export function createAgentHistoryRoutes(deps: {
   // Session stats
   app.get("/session/stats", async (c) => {
     const agentId = await getAuthorizedAgentId(c);
-    if (!agentId) return c.json({ error: "Unauthorized" }, 401);
+    if (!agentId) return errorResponse(c, "Unauthorized", 401);
 
     const result = await proxyOrFallback(
       agentId,

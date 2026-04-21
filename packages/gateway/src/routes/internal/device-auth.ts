@@ -4,6 +4,7 @@ import type Redis from "ioredis";
 import { GenericDeviceCodeClient } from "../../auth/external/device-code-client";
 import type { McpConfigService } from "../../auth/mcp/config-service";
 import type { WritableSecretStore } from "../../secrets";
+import { errorResponse, getVerifiedWorker } from "../shared/helpers";
 import { authenticateWorker } from "./middleware";
 import type { WorkerContext } from "./types";
 
@@ -740,10 +741,10 @@ export function createDeviceAuthRoutes(
     const body = await c.req.json<{ mcpId: string }>();
     const mcpId = body?.mcpId;
     if (!mcpId) {
-      return c.json({ error: "Missing required field: mcpId" }, 400);
+      return errorResponse(c, "Missing required field: mcpId", 400);
     }
 
-    const worker = c.get("worker");
+    const worker = getVerifiedWorker(c);
     const agentId = worker.agentId || worker.userId;
     const userId = worker.userId;
 
@@ -758,10 +759,9 @@ export function createDeviceAuthRoutes(
       );
 
       if (!result) {
-        return c.json(
-          {
-            error: `MCP server '${mcpId}' not found or client registration failed`,
-          },
+        return errorResponse(
+          c,
+          `MCP server '${mcpId}' not found or client registration failed`,
           404
         );
       }
@@ -773,7 +773,7 @@ export function createDeviceAuthRoutes(
         error: error instanceof Error ? error.message : String(error),
         stack: error instanceof Error ? error.stack : undefined,
       });
-      return c.json({ error: "Failed to start device authentication" }, 500);
+      return errorResponse(c, "Failed to start device authentication", 500);
     }
   });
 
@@ -782,10 +782,10 @@ export function createDeviceAuthRoutes(
     const body = await c.req.json<{ mcpId: string }>();
     const mcpId = body?.mcpId;
     if (!mcpId) {
-      return c.json({ error: "Missing required field: mcpId" }, 400);
+      return errorResponse(c, "Missing required field: mcpId", 400);
     }
 
-    const worker = c.get("worker");
+    const worker = getVerifiedWorker(c);
     const agentId = worker.agentId || worker.userId;
     const userId = worker.userId;
 
@@ -913,10 +913,10 @@ export function createDeviceAuthRoutes(
   router.get("/internal/device-auth/status", authenticateWorker, async (c) => {
     const mcpId = c.req.query("mcpId");
     if (!mcpId) {
-      return c.json({ error: "Missing required query param: mcpId" }, 400);
+      return errorResponse(c, "Missing required query param: mcpId", 400);
     }
 
-    const worker = c.get("worker");
+    const worker = getVerifiedWorker(c);
     const agentId = worker.agentId || worker.userId;
     const userId = worker.userId;
 
@@ -938,10 +938,10 @@ export function createDeviceAuthRoutes(
     async (c) => {
       const mcpId = c.req.query("mcpId");
       if (!mcpId) {
-        return c.json({ error: "Missing required query param: mcpId" }, 400);
+        return errorResponse(c, "Missing required query param: mcpId", 400);
       }
 
-      const worker = c.get("worker");
+      const worker = getVerifiedWorker(c);
       const agentId = worker.agentId || worker.userId;
       const userId = worker.userId;
 

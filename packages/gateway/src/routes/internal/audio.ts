@@ -8,6 +8,7 @@
 import { createLogger } from "@lobu/core";
 import { Hono } from "hono";
 import type { TranscriptionService } from "../../services/transcription-service";
+import { errorResponse, getVerifiedWorker } from "../shared/helpers";
 import { authenticateWorker } from "./middleware";
 import type { WorkerContext } from "./types";
 
@@ -35,20 +36,20 @@ export function createAudioRoutes(
    */
   router.post("/internal/audio/synthesize", authenticateWorker, async (c) => {
     try {
-      const worker = c.get("worker");
+      const worker = getVerifiedWorker(c);
       const { text, voice, speed } = await c.req.json();
 
       if (!text || typeof text !== "string") {
-        return c.json({ error: "text is required and must be a string" }, 400);
+        return errorResponse(c, "text is required and must be a string", 400);
       }
 
       if (text.length > 4096) {
-        return c.json({ error: "text must be 4096 characters or less" }, 400);
+        return errorResponse(c, "text must be 4096 characters or less", 400);
       }
 
       const agentId = worker.agentId;
       if (!agentId) {
-        return c.json({ error: "Missing agentId in worker context" }, 400);
+        return errorResponse(c, "Missing agentId in worker context", 400);
       }
 
       logger.info("Synthesizing audio", {
@@ -83,13 +84,9 @@ export function createAudioRoutes(
       });
     } catch (error) {
       logger.error("Audio synthesis error", { error });
-      return c.json(
-        {
-          error:
-            error instanceof Error
-              ? error.message
-              : "Failed to synthesize audio",
-        },
+      return errorResponse(
+        c,
+        error instanceof Error ? error.message : "Failed to synthesize audio",
         500
       );
     }
@@ -107,11 +104,11 @@ export function createAudioRoutes(
    */
   router.get("/internal/audio/capabilities", authenticateWorker, async (c) => {
     try {
-      const worker = c.get("worker");
+      const worker = getVerifiedWorker(c);
       const agentId = worker.agentId;
 
       if (!agentId) {
-        return c.json({ error: "Missing agentId in worker context" }, 400);
+        return errorResponse(c, "Missing agentId in worker context", 400);
       }
 
       const config = await transcriptionService.getConfig(agentId);
@@ -131,7 +128,7 @@ export function createAudioRoutes(
       });
     } catch (error) {
       logger.error("Capabilities check error", { error });
-      return c.json({ error: "Failed to check capabilities" }, 500);
+      return errorResponse(c, "Failed to check capabilities", 500);
     }
   });
 

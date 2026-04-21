@@ -3,6 +3,7 @@
 import { createLogger } from "@lobu/core";
 import { Hono } from "hono";
 import type { InteractionService } from "../../interactions";
+import { errorResponse, getVerifiedWorker } from "../shared/helpers";
 import { authenticateWorker } from "./middleware";
 import type { WorkerContext } from "./types";
 
@@ -25,7 +26,7 @@ export function createInteractionRoutes(
     authenticateWorker,
     async (c) => {
       try {
-        const worker = c.get("worker");
+        const worker = getVerifiedWorker(c);
         const {
           userId,
           conversationId,
@@ -73,7 +74,7 @@ export function createInteractionRoutes(
         return c.json({ id: posted.id, status: "posted" });
       } catch (error) {
         logger.error("Failed to post question:", error);
-        return c.json({ error: "Failed to post question" }, 500);
+        return errorResponse(c, "Failed to post question", 500);
       }
     }
   );
@@ -84,7 +85,7 @@ export function createInteractionRoutes(
    */
   router.post("/internal/suggestions/create", authenticateWorker, async (c) => {
     try {
-      const worker = c.get("worker");
+      const worker = getVerifiedWorker(c);
       const { userId, conversationId, channelId, teamId } = worker;
       const { prompts } = await c.req.json();
 
@@ -103,7 +104,7 @@ export function createInteractionRoutes(
       return c.json({ success: true });
     } catch (error) {
       logger.error("Failed to send suggestions:", error);
-      return c.json({ error: "Failed to send suggestions" }, 500);
+      return errorResponse(c, "Failed to send suggestions", 500);
     }
   });
 

@@ -20,7 +20,7 @@ import {
   resolveSettingsLookupUserId,
   verifyOwnedAgentAccess,
 } from "../shared/agent-ownership";
-import { verifySettingsSession } from "./settings-auth";
+import { errorResponse, requireSession } from "../shared/helpers";
 
 const logger = createLogger("agent-routes");
 
@@ -74,10 +74,8 @@ export function createAgentRoutes(config: AgentRoutesConfig): Hono {
 
   // POST /api/v1/agents - Create a new agent
   router.post("/", async (c) => {
-    const payload = verifySettingsSession(c);
-    if (!payload) {
-      return c.json({ error: "Invalid or expired token" }, 401);
-    }
+    const payload = requireSession(c);
+    if (payload instanceof Response) return payload;
 
     try {
       const lookupUserId = resolveSettingsLookupUserId(payload);
@@ -89,16 +87,14 @@ export function createAgentRoutes(config: AgentRoutesConfig): Hono {
       }>();
 
       if (!body.agentId || !body.name) {
-        return c.json({ error: "agentId and name are required" }, 400);
+        return errorResponse(c, "agentId and name are required", 400);
       }
 
       const agentId = sanitizeAgentId(body.agentId);
       if (!agentId) {
-        return c.json(
-          {
-            error:
-              "Invalid agentId. Must be 3-40 chars, lowercase alphanumeric with hyphens, starting with a letter.",
-          },
+        return errorResponse(
+          c,
+          "Invalid agentId. Must be 3-40 chars, lowercase alphanumeric with hyphens, starting with a letter.",
           400
         );
       }
@@ -106,17 +102,16 @@ export function createAgentRoutes(config: AgentRoutesConfig): Hono {
       // Check if agentId already exists
       const existing = await config.agentMetadataStore.hasAgent(agentId);
       if (existing) {
-        return c.json({ error: "An agent with this ID already exists" }, 409);
+        return errorResponse(c, "An agent with this ID already exists", 409);
       }
 
       // Check per-user limit (admins bypass)
       if (!payload.isAdmin && MAX_AGENTS_PER_USER > 0) {
         const userAgents = await listOwnedAgentIds(payload, config);
         if (userAgents.length >= MAX_AGENTS_PER_USER) {
-          return c.json(
-            {
-              error: `Agent limit reached (${MAX_AGENTS_PER_USER}). Delete an existing agent first.`,
-            },
+          return errorResponse(
+            c,
+            `Agent limit reached (${MAX_AGENTS_PER_USER}). Delete an existing agent first.`,
             429
           );
         }
@@ -185,21 +180,14 @@ export function createAgentRoutes(config: AgentRoutesConfig): Hono {
       });
     } catch (error) {
       logger.error("Failed to create agent", { error });
-      return c.json(
-        {
-          error: "Internal server error",
-        },
-        500
-      );
+      return errorResponse(c, "Internal server error", 500);
     }
   });
 
   // GET /api/v1/agents - List user's agents
   router.get("/", async (c) => {
-    const payload = verifySettingsSession(c);
-    if (!payload) {
-      return c.json({ error: "Invalid or expired token" }, 401);
-    }
+    const payload = requireSession(c);
+    if (payload instanceof Response) return payload;
 
     try {
       const agentIds = await listOwnedAgentIds(payload, config);
@@ -228,20 +216,18 @@ export function createAgentRoutes(config: AgentRoutesConfig): Hono {
       return c.json({ agents });
     } catch (error) {
       logger.error("Failed to list agents", { error });
-      return c.json({ error: "Failed to list agents" }, 500);
+      return errorResponse(c, "Failed to list agents", 500);
     }
   });
 
   // PATCH /api/v1/agents/{agentId} - Update agent name/description
   router.patch("/:agentId", async (c) => {
-    const payload = verifySettingsSession(c);
-    if (!payload) {
-      return c.json({ error: "Invalid or expired token" }, 401);
-    }
+    const payload = requireSession(c);
+    if (payload instanceof Response) return payload;
 
     const agentId = c.req.param("agentId");
     if (!agentId) {
-      return c.json({ error: "Missing agentId" }, 400);
+      return errorResponse(c, "Missing agentId", 400);
     }
 
     try {
@@ -252,7 +238,7 @@ export function createAgentRoutes(config: AgentRoutesConfig): Hono {
           agentMetadataStore: config.agentMetadataStore,
         });
         if (!access.authorized) {
-          return c.json({ error: "Agent not found or not owned by you" }, 404);
+          return errorResponse(c, "Agent not found or not owned by you", 404);
         }
       }
 
@@ -262,7 +248,7 @@ export function createAgentRoutes(config: AgentRoutesConfig): Hono {
       if (body.name !== undefined) {
         const name = body.name.trim();
         if (!name || name.length > 100) {
-          return c.json({ error: "Name must be 1-100 characters" }, 400);
+          return errorResponse(c, "Name must be 1-100 characters", 400);
         }
         updates.name = name;
       }
@@ -270,8 +256,9 @@ export function createAgentRoutes(config: AgentRoutesConfig): Hono {
       if (body.description !== undefined) {
         const desc = body.description.trim();
         if (desc.length > 200) {
-          return c.json(
-            { error: "Description must be at most 200 characters" },
+          return errorResponse(
+            c,
+            "Description must be at most 200 characters",
             400
           );
         }
@@ -279,7 +266,7 @@ export function createAgentRoutes(config: AgentRoutesConfig): Hono {
       }
 
       if (Object.keys(updates).length === 0) {
-        return c.json({ error: "No fields to update" }, 400);
+        return errorResponse(c, "No fields to update", 400);
       }
 
       await config.agentMetadataStore.updateMetadata(agentId, updates);
@@ -287,25 +274,18 @@ export function createAgentRoutes(config: AgentRoutesConfig): Hono {
       return c.json({ success: true });
     } catch (error) {
       logger.error("Failed to update agent", { error, agentId });
-      return c.json(
-        {
-          error: "Internal server error",
-        },
-        500
-      );
+      return errorResponse(c, "Internal server error", 500);
     }
   });
 
   // DELETE /api/v1/agents/{agentId} - Delete an agent
   router.delete("/:agentId", async (c) => {
-    const payload = verifySettingsSession(c);
-    if (!payload) {
-      return c.json({ error: "Invalid or expired token" }, 401);
-    }
+    const payload = requireSession(c);
+    if (payload instanceof Response) return payload;
 
     const agentId = c.req.param("agentId");
     if (!agentId) {
-      return c.json({ error: "Missing agentId" }, 400);
+      return errorResponse(c, "Missing agentId", 400);
     }
 
     try {
@@ -318,7 +298,7 @@ export function createAgentRoutes(config: AgentRoutesConfig): Hono {
           agentMetadataStore: config.agentMetadataStore,
         });
         if (!access.authorized) {
-          return c.json({ error: "Agent not found or not owned by you" }, 404);
+          return errorResponse(c, "Agent not found or not owned by you", 404);
         }
         ownerPlatform = access.ownerPlatform;
         ownerUserId = access.ownerUserId;
@@ -359,12 +339,7 @@ export function createAgentRoutes(config: AgentRoutesConfig): Hono {
       return c.json({ success: true, unboundChannels: unboundCount });
     } catch (error) {
       logger.error("Failed to delete agent", { error, agentId });
-      return c.json(
-        {
-          error: "Internal server error",
-        },
-        500
-      );
+      return errorResponse(c, "Internal server error", 500);
     }
   });
 

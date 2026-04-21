@@ -109,8 +109,7 @@ kubectl describe pvc <pvc-name> -n lobu
 curl http://localhost:8787/health
 
 # Check file-first memory config
-# - lobu.toml should contain [memory.owletto]
-# - owletto.yaml should exist and declare org:
+# - lobu.toml should contain [memory.owletto] with enabled = true and an org
 # - MEMORY_URL is optional; use it mainly for local/custom Owletto base URLs
 
 # Test connection

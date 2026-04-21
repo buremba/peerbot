@@ -6,6 +6,7 @@ import {
 } from "../../connect-from-config";
 import {
   getLandingUseCaseShowcase,
+  getOwlettoBaseHostLabel,
   getOwlettoBaseUrl,
   getOwlettoMcpUrl,
   landingUseCaseWorkspaceOptions,
@@ -22,6 +23,7 @@ const client = getConnectFromClientConfig(clientId);
 const showcase = useCaseId ? getLandingUseCaseShowcase(useCaseId) : undefined;
 const owlettoMcpUrl = getOwlettoMcpUrl();
 const owlettoBaseUrl = getOwlettoBaseUrl();
+const owlettoBaseHostLabel = getOwlettoBaseHostLabel();
 
 const clientSwitcherLinks = connectFromClientIds
   .filter((id) => id !== clientId)
@@ -60,6 +62,7 @@ const relatedLinks = client.docsRelated.map((link) => {
   clientLabel={client.label}
   mcpBaseUrl={owlettoMcpUrl}
   owlettoBaseUrl={owlettoBaseUrl}
+  owlettoBaseHostLabel={owlettoBaseHostLabel}
   workspaces={landingUseCaseWorkspaceOptions}
   initialUseCaseId={useCaseId}
 />

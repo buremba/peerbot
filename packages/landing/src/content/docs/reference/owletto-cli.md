@@ -6,7 +6,7 @@ description: What the owletto CLI does, how it authenticates, and how to use it 
 The `owletto` CLI starts local Owletto servers, connects agent clients, and runs memory tools directly.
 
 - GitHub: [lobu-ai/owletto](https://github.com/lobu-ai/owletto)
-- Hosted: [owletto.com](https://owletto.com)
+- Hosted: [app.lobu.ai](https://app.lobu.ai)
 
 ## Install And Run
 
@@ -88,7 +88,7 @@ Detects supported clients and auto-configures them. Falls back to manual steps w
 Authenticates the CLI against an Owletto MCP server using OAuth.
 
 ```bash
-npx owletto@latest login https://owletto.com/mcp
+npx owletto@latest login https://app.lobu.ai/mcp
 ```
 
 By default, the CLI opens a browser and completes an authorization-code flow with a local callback server.
@@ -102,7 +102,7 @@ Useful flags:
 Example for a headless box:
 
 ```bash
-npx owletto@latest login https://owletto.com/mcp --device
+npx owletto@latest login https://app.lobu.ai/mcp --device
 ```
 
 ### `owletto token`

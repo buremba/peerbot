@@ -3,7 +3,7 @@ import { ScheduleCallButton, ScheduleCallIcon } from "./ScheduleDialog";
 import { deliverySurfaces, formatLabelList } from "./platforms";
 
 const GITHUB_URL = "https://github.com/lobu-ai/lobu";
-const CLOUD_URL = "https://owletto.com/auth/login";
+const CLOUD_URL = "https://app.lobu.ai/auth/login";
 
 const deliverySurfacesLabel = formatLabelList(
   deliverySurfaces.map((surface) => surface.label)

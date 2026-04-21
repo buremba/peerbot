@@ -10,7 +10,7 @@ Lobu has two different memory layers:
 
 They solve different problems. The filesystem is where an agent does work. Owletto is where the organization remembers what matters.
 
-- Owletto site: [owletto.com](https://owletto.com)
+- Owletto site: [app.lobu.ai](https://app.lobu.ai)
 - GitHub: [lobu-ai/owletto](https://github.com/lobu-ai/owletto)
 - Lobu memory overview: [/memory](/memory)
 
@@ -129,7 +129,6 @@ For file-first projects, the default setup is:
 ```text
 project/
 ├── lobu.toml
-├── owletto.yaml
 ├── models/
 └── data/
 ```
@@ -137,14 +136,15 @@ project/
 ```toml
 [memory.owletto]
 enabled = true
-config = "./owletto.yaml"
+org = "my-org"
+name = "My Project"
 models = "./models"
 data = "./data"
 ```
 
 At runtime, Lobu resolves the memory backend like this:
 
-- If `[memory.owletto]` is enabled, Lobu derives the effective Owletto MCP endpoint from `owletto.yaml`.
+- If `[memory.owletto]` is enabled, Lobu derives the effective Owletto MCP endpoint from `org` in `[memory.owletto]`.
 - `MEMORY_URL` is still supported as an optional base-endpoint override, mainly for local or custom Owletto deployments.
 - If no Owletto endpoint is resolved, Lobu falls back to `@openclaw/native-memory`.
 - Agents can also override plugin configuration through `pluginsConfig` in agent settings.

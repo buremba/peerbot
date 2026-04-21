@@ -109,7 +109,7 @@ Good agents should be able to **think messily and remember cleanly**.
 Lobu makes this split explicit.
 
 - Every agent has a local workspace.
-- In file-first projects, Lobu enables Owletto from `[memory.owletto]` in `lobu.toml` plus `owletto.yaml`.
+- In file-first projects, Lobu enables Owletto from `[memory.owletto]` in `lobu.toml`.
 - `MEMORY_URL` is still supported as an optional base-endpoint override for local or custom Owletto deployments.
 - If no Owletto config is resolved, Lobu uses `@openclaw/native-memory`, so memory stays local to that workspace.
 - If Owletto is configured, Lobu uses `@lobu/owletto-openclaw` when that plugin is installed, otherwise it falls back to native memory.

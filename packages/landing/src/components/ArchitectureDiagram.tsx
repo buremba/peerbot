@@ -249,7 +249,7 @@ function GatewayColumn({ useCaseId }: { useCaseId?: LandingUseCaseId }) {
       </div>
       <AgentStack useCaseId={useCaseId} />
       <AttachmentPill
-        label="Owletto Memory"
+        label="Lobu Memory"
         href={`/memory${suffix}`}
         icon={<MemoryIcon size={11} />}
       />

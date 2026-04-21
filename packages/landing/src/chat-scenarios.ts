@@ -49,14 +49,14 @@ export const PERMISSION_SCENARIO: UseCase = {
 /**
  * Skill install flow — user asks for a capability, agent proposes installing
  * a Lobu provider (real ID from providers.json), OAuth flows handled by
- * Owletto, user approves via in-chat button.
+ * Lobu, user approves via in-chat button.
  */
 export const SKILL_INSTALL_SCENARIO: UseCase = {
   id: "skill-install",
   tabLabel: "Skill",
   title: "Install a skill",
   description:
-    "Agents propose Lobu skills when they need a capability. Owletto manages OAuth and API keys.",
+    "Agents propose Lobu skills when they need a capability. Lobu manages OAuth and API keys.",
   settingsLabel: "Skills and integrations",
   chatLabel: "Agent installs linear skill",
   botName: "Ops Assistant",
@@ -69,7 +69,7 @@ export const SKILL_INSTALL_SCENARIO: UseCase = {
     },
     {
       role: "bot",
-      text: "I need the `linear` skill to query Linear.\n\nIt bundles the Linear MCP and handles OAuth via Owletto.",
+      text: "I need the `linear` skill to query Linear.\n\nIt bundles the Linear MCP and handles OAuth via Lobu.",
       buttons: [{ label: "Install linear", action: "link" }],
     },
     {

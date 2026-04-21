@@ -119,7 +119,7 @@ function getInitLinesForUseCase(useCase: LandingUseCaseShowcase): TermLine[] {
           selected: config.memory === "filesystem",
         },
         {
-          label: "Owletto",
+          label: "Lobu memory",
           href: `/memory/for/${useCase.id}`,
           selected: config.memory === "owletto",
         },

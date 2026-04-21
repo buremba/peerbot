@@ -59,9 +59,9 @@ See [Tool Policy](/guides/tool-policy/) for that split.
 
 ## Integrations
 
-Integration auth for third-party APIs (GitHub, Google, Linear, etc.) is handled by **Owletto**. Workers access these APIs through Owletto MCP tools, which manage OAuth credentials, token refresh, and API proxying. Workers never see OAuth tokens directly.
+Integration auth for third-party APIs (GitHub, Google, Linear, etc.) is handled by **Lobu**. Workers access these APIs through Lobu MCP tools, which manage OAuth credentials, token refresh, and API proxying. Workers never see OAuth tokens directly.
 
-Owletto also powers Lobu's richer shared-memory model: workspace-scoped knowledge, typed entities, hybrid recall, connectors, and watchers. See [Memory](/getting-started/memory/) for how that layer works and when to use it instead of local-only memory.
+Lobu memory also powers Lobu's richer shared-memory model: workspace-scoped knowledge, typed entities, hybrid recall, connectors, and watchers. See [Memory](/getting-started/memory/) for how that layer works and when to use it instead of local-only memory.
 
 <SkillsRegistryTable client:load />
 
@@ -70,6 +70,6 @@ Owletto also powers Lobu's richer shared-memory model: workspace-scoped knowledg
 ## Read Next
 
 - [SKILL.md Reference](/reference/skill-md/) for the file format and supported frontmatter
-- [Memory](/getting-started/memory/) for how Owletto powers Lobu's shared memory layer
+- [Memory](/getting-started/memory/) for how Lobu memory powers Lobu's shared memory layer
 - [`lobu.toml` Reference](/reference/lobu-toml/) for agent-level configuration
 - [Tool Policy](/guides/tool-policy/) for tool visibility and MCP approval overrides

@@ -20,7 +20,7 @@
     {
       "name": "memory",
       "type": "documentation",
-      "description": "Persistent agent memory via the Owletto integration.",
+      "description": "Persistent agent memory via Lobu memory.",
       "url": "https://lobu.ai/getting-started/memory/"
     },
     {

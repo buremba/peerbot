@@ -12,7 +12,7 @@
 ## Core concepts
 
 - [Skills](https://lobu.ai/getting-started/skills/): Reusable agent capabilities via SKILL.md
-- [Memory](https://lobu.ai/getting-started/memory/): Persistent agent memory powered by Owletto
+- [Memory](https://lobu.ai/getting-started/memory/): Persistent agent memory powered by Lobu
 - [Architecture](https://lobu.ai/guides/architecture/): Gateway + worker + orchestration overview
 - [Security](https://lobu.ai/guides/security/): Sandboxing, network policy, credential isolation
 - [Tool policy](https://lobu.ai/guides/tool-policy/): Approval model for destructive MCP tools
@@ -47,7 +47,7 @@
 - [SKILL.md](https://lobu.ai/reference/skill-md/)
 - [Providers](https://lobu.ai/reference/providers/)
 - [REST API reference](https://lobu.ai/reference/api-reference/)
-- [Owletto CLI](https://lobu.ai/reference/owletto-cli/)
+- [Lobu memory CLI](https://lobu.ai/reference/owletto-cli/)
 
 ## Guides
 

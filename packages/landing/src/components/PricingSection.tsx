@@ -58,7 +58,7 @@ const plans: PricingPlan[] = [
     features: [
       "Deploy in minutes",
       "Managed gateway and scaling",
-      "Built-in integrations via Owletto",
+      "Built-in integrations via Lobu memory",
       "Credential isolation included",
       "No infrastructure to operate",
     ],

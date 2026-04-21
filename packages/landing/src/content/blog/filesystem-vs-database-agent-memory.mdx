@@ -109,12 +109,12 @@ Good agents should be able to **think messily and remember cleanly**.
 Lobu makes this split explicit.
 
 - Every agent has a local workspace.
-- In file-first projects, Lobu enables Owletto from `[memory.owletto]` in `lobu.toml`.
-- `MEMORY_URL` is still supported as an optional base-endpoint override for local or custom Owletto deployments.
-- If no Owletto config is resolved, Lobu uses `@openclaw/native-memory`, so memory stays local to that workspace.
-- If Owletto is configured, Lobu uses `@lobu/owletto-openclaw` when that plugin is installed, otherwise it falls back to native memory.
+- In file-first projects, Lobu enables Lobu memory from `[memory.owletto]` in `lobu.toml`.
+- `MEMORY_URL` is still supported as an optional base-endpoint override for local or custom Lobu memory deployments.
+- If no Lobu memory config is resolved, Lobu uses `@openclaw/native-memory`, so memory stays local to that workspace.
+- If Lobu memory is configured, Lobu uses `@lobu/owletto-openclaw` when that plugin is installed, otherwise it falls back to native memory.
 
-Owletto is the shared organizational memory layer:
+Lobu memory is the shared organizational memory layer:
 
 - shared across agents and sessions
 - structured as entities, relationships, and events
@@ -124,7 +124,7 @@ Owletto is the shared organizational memory layer:
 So the practical model is:
 
 - **filesystem** = ephemeral working state
-- **Owletto** = durable organizational knowledge
+- **Lobu memory** = durable organizational knowledge
 
 ## The short version
 
@@ -137,5 +137,5 @@ That is why serious agent systems usually need both.
 ## Read next
 
 - [Memory](/getting-started/memory/)
-- [Owletto memory overview](/memory)
+- [Lobu memory overview](/memory)
 - [Agent Settings](/guides/agent-settings/)

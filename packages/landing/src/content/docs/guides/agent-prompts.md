@@ -140,7 +140,7 @@ Use the [`lobu.toml` Reference](/reference/lobu-toml/) for the exact schema. Kee
 
 The sandbox filesystem is short-term working memory: drafts, scripts, downloaded files, generated artifacts, and intermediate results for one user or channel workspace.
 
-When you use Owletto, it adds long-term memory across workspaces. The filesystem stays local to one sandbox, while Owletto stores durable knowledge that other sessions, users, or agents can recall later.
+When you use Lobu memory, it adds long-term memory across workspaces. The filesystem stays local to one sandbox, while Lobu memory stores durable knowledge that other sessions, users, or agents can recall later.
 
 See [Memory](/getting-started/memory/) for the full model.
 

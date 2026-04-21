@@ -1,9 +1,9 @@
 ---
 title: Memory benchmarks
-description: How Owletto compares to Mem0, Supermemory, and Letta on public memory benchmarks, and how to reproduce the numbers.
+description: How Lobu compares to Mem0, Supermemory, and Letta on public memory benchmarks, and how to reproduce the numbers.
 ---
 
-Owletto, the memory system bundled with Lobu, is benchmarked against external memory systems (Mem0, Supermemory, Letta, Zep) on public datasets. This page summarises the headline numbers and points at the reproducible harness in the Owletto repo.
+Lobu's memory system is benchmarked against external memory systems (Mem0, Supermemory, Letta, Zep) on public datasets. This page summarises the headline numbers and points at the reproducible harness.
 
 ## Headline results
 
@@ -15,7 +15,7 @@ Single-session knowledge retention.
 
 | System | Overall | Answer | Retrieval | Latency |
 |---|---:|---:|---:|---:|
-| **Owletto** | **87.1%** | **78.0%** | **100.0%** | 237ms |
+| **Lobu** | **87.1%** | **78.0%** | **100.0%** | 237ms |
 | Supermemory | 69.1% | 56.0% | 96.6% | 702ms |
 | Mem0 | 65.7% | 54.0% | 85.3% | 753ms |
 
@@ -25,7 +25,7 @@ Multi-session conversational memory (each scenario is ~19 sessions of 18+ turns,
 
 | System | Overall | Answer | Retrieval | Latency |
 |---|---:|---:|---:|---:|
-| **Owletto** | **57.8%** | **38.0%** | **79.5%** | **121ms** |
+| **Lobu** | **57.8%** | **38.0%** | **79.5%** | **121ms** |
 | Mem0 | 41.5% | 28.0% | 66.9% | 606ms |
 | Supermemory | 23.2% | 14.0% | 36.5% | 532ms |
 
@@ -43,11 +43,11 @@ The harness applies the following fairness constraints:
 
 ### Latency caveat
 
-Latency is **retrieval-only latency**, not end-to-end wall clock. It is not fully apples-to-apples when one system is local/in-process and another is a hosted API. Owletto's retrieval path is a multi-step plan (query expansion, entity search, content search, linked-context fetches) — that orchestration is what gets it to 100% retrieval recall on LongMemEval but also costs round trips. Mem0 and Supermemory adapters issue a single provider search per question.
+Latency is **retrieval-only latency**, not end-to-end wall clock. It is not fully apples-to-apples when one system is local/in-process and another is a hosted API. Lobu's retrieval path is a multi-step plan (query expansion, entity search, content search, linked-context fetches) — that orchestration is what gets it to 100% retrieval recall on LongMemEval but also costs round trips. Mem0 and Supermemory adapters issue a single provider search per question.
 
 ## Reproducing the results
 
-The full harness lives in the [Owletto repo](https://github.com/lobu-ai/owletto) under [`benchmarks/memory/`](https://github.com/lobu-ai/owletto/tree/main/benchmarks/memory). The TypeScript runner is at `src/benchmarks/memory/`. External systems are integrated as long-lived Python adapter subprocesses framed over JSONL-on-stdin, which avoids per-op fork/exec cost.
+The full harness lives in the [`owletto` repo](https://github.com/lobu-ai/owletto) under [`benchmarks/memory/`](https://github.com/lobu-ai/owletto/tree/main/benchmarks/memory). The TypeScript runner is at `src/benchmarks/memory/`. External systems are integrated as long-lived Python adapter subprocesses framed over JSONL-on-stdin, which avoids per-op fork/exec cost.
 
 ### Prerequisites
 
@@ -62,14 +62,14 @@ ZAI_API_KEY=... MEM0_API_KEY=... SUPERMEMORY_API_KEY=... LETTA_API_KEY=... \
   pnpm benchmark:memory --config benchmarks/memory/config.longmemeval.oracle.50.compare.all.zai.json
 ```
 
-### LoCoMo-50, three-way (Owletto vs Mem0 vs Supermemory)
+### LoCoMo-50, three-way (Lobu vs Mem0 vs Supermemory)
 
 ```bash
 ZAI_API_KEY=... MEM0_API_KEY=... SUPERMEMORY_API_KEY=... \
   pnpm benchmark:memory --config benchmarks/memory/config.locomo.50.compare.top-memory.zai.json
 ```
 
-### Owletto-only, no external API keys
+### Lobu-only, no external API keys
 
 ```bash
 # Retrieval-only (no answerer)
@@ -110,14 +110,12 @@ Inputs include `dataset` (`longmemeval-oracle` or `locomo`), `limit`, `trials`, 
 
 To add a new system, write a Python adapter that defines `reset` / `setup` / `ingest` / `retrieve` action handlers. The shared protocol module is at [`adapters/_bench_protocol.py`](https://github.com/lobu-ai/owletto/blob/main/benchmarks/memory/adapters/_bench_protocol.py).
 
-## Why Owletto wins on retention
+## Why Lobu wins on retention
 
-Owletto blends three signals for recall:
+Lobu blends three signals for recall:
 
 1. Entity name matching
 2. Full-text search
 3. Semantic vector search
 
-Plus structured retrieval — Owletto stores knowledge in entity types backed by JSON Schema, with first-class relationships and superseding writes. That is why it reaches 100% retrieval on LongMemEval where vector-only systems plateau in the 80–90% range.
-
-For deeper context on the architecture, see the [Owletto README](https://github.com/lobu-ai/owletto/blob/main/README.md#how-it-works).
+Plus structured retrieval — Lobu stores knowledge in entity types backed by JSON Schema, with first-class relationships and superseding writes. That is why it reaches 100% retrieval on LongMemEval where vector-only systems plateau in the 80–90% range.

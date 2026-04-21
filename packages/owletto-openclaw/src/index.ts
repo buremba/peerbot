@@ -26,7 +26,7 @@ type PluginLogger = {
 };
 
 const AUTH_REQUIRED_MSG =
-  'Owletto memory is not connected. Call the owletto_login tool to authenticate, then show the user the login URL and code. After the user completes login in their browser, call owletto_login_check to finish authentication.';
+  'Lobu memory is not connected. Call the owletto_login tool to authenticate, then show the user the login URL and code. After the user completes login in their browser, call owletto_login_check to finish authentication.';
 const DEFAULT_RECALL_LIMIT = 6;
 
 // Minimal fallback context used before the workspace instructions are fetched.
@@ -957,8 +957,8 @@ function registerMcpTools(
 
 const plugin = {
   id: 'openclaw-owletto',
-  name: 'Owletto Memory',
-  description: 'Owletto long-term memory plugin via MCP.',
+  name: 'Lobu Memory',
+  description: 'Lobu long-term memory plugin via MCP.',
   kind: 'memory' as const,
   register(api: Record<string, unknown>) {
     const log = getLogger(api);
@@ -1063,7 +1063,7 @@ const plugin = {
         name: 'owletto_login',
         label: 'Owletto Login',
         description:
-          'Start Owletto authentication. Only call this if other Owletto tools return authentication errors. If Owletto memory is already connected, skip this step. Returns a URL and code for the user to complete login in their browser. After the user completes login, call owletto_login_check to finish.',
+          'Start Lobu memory authentication. Only call this if other Lobu memory tools return authentication errors. If Lobu memory is already connected, skip this step. Returns a URL and code for the user to complete login in their browser. After the user completes login, call owletto_login_check to finish.',
         parameters: {
           type: 'object',
           properties: {},

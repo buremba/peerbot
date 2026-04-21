@@ -10,12 +10,12 @@ import {
 //   - this component
 //   - packages/landing/src/content/docs/guides/memory-benchmarks.md
 //   - packages/landing/src/content/docs/getting-started/comparison.md
-//   - packages/owletto/README.md (source of truth)
-// Refresh all four on each Owletto memory-benchmark release.
+//   - Lobu memory (Owletto) benchmarks README (source of truth)
+// Refresh all four on each Lobu memory-benchmark release.
 // last updated: 2026-04-21
 export const LONGMEMEVAL_ROWS: BenchmarkRow[] = [
   {
-    system: "Owletto",
+    system: "Lobu",
     overall: "87.1%",
     answer: "78.0%",
     retrieval: "100.0%",
@@ -40,7 +40,7 @@ export const LONGMEMEVAL_ROWS: BenchmarkRow[] = [
 
 export const LOCOMO_ROWS: BenchmarkRow[] = [
   {
-    system: "Owletto",
+    system: "Lobu",
     overall: "57.8%",
     answer: "38.0%",
     retrieval: "79.5%",
@@ -79,7 +79,7 @@ export function BenchmarkTable(props: {
 }) {
   return (
     <div
-      class="rounded-2xl p-6 sm:p-8"
+      class="rounded-2xl p-5 sm:p-6"
       style={{
         background: cardBg,
         border: `1px solid ${cardBorder}`,
@@ -93,68 +93,76 @@ export function BenchmarkTable(props: {
           {props.subtitle}
         </p>
       </div>
-      <div class="overflow-x-auto">
-        <table class="w-full text-sm" style={{ color: textColor }}>
-          <thead>
+      <table
+        class="w-full table-fixed text-sm"
+        style={{ color: textColor }}
+      >
+        <colgroup>
+          <col style={{ width: "34%" }} />
+          <col style={{ width: "17%" }} />
+          <col style={{ width: "15%" }} />
+          <col style={{ width: "17%" }} />
+          <col style={{ width: "17%" }} />
+        </colgroup>
+        <thead>
+          <tr
+            class="text-left text-[10px] uppercase tracking-wide"
+            style={{ color: textMuted }}
+          >
+            <th class="font-medium pb-3 pr-2">System</th>
+            <th class="font-medium pb-3 px-1.5 text-right">Overall</th>
+            <th class="font-medium pb-3 px-1.5 text-right">Answer</th>
+            <th class="font-medium pb-3 px-1.5 text-right">Retrieval</th>
+            <th class="font-medium pb-3 pl-1.5 text-right">Latency</th>
+          </tr>
+        </thead>
+        <tbody>
+          {props.rows.map((row) => (
             <tr
-              class="text-left text-[11px] uppercase tracking-wider"
-              style={{ color: textMuted }}
+              key={row.system}
+              style={{
+                background: row.leader ? innerCardBg : "transparent",
+              }}
             >
-              <th class="font-medium pb-3 pr-4">System</th>
-              <th class="font-medium pb-3 px-3 text-right">Overall</th>
-              <th class="font-medium pb-3 px-3 text-right">Answer</th>
-              <th class="font-medium pb-3 px-3 text-right">Retrieval</th>
-              <th class="font-medium pb-3 pl-3 text-right">Latency</th>
-            </tr>
-          </thead>
-          <tbody>
-            {props.rows.map((row) => (
-              <tr
-                key={row.system}
+              <td
+                class="py-2.5 pr-2 font-medium truncate"
                 style={{
-                  background: row.leader ? innerCardBg : "transparent",
+                  color: row.leader ? textColor : textMuted,
                 }}
               >
-                <td
-                  class="py-2.5 pr-4 font-medium"
-                  style={{
-                    color: row.leader ? textColor : textMuted,
-                  }}
-                >
-                  {row.system}
-                </td>
-                <td
-                  class="py-2.5 px-3 text-right tabular-nums"
-                  style={{
-                    color: row.leader ? textColor : textMuted,
-                    fontWeight: row.leader ? 600 : 400,
-                  }}
-                >
-                  {row.overall}
-                </td>
-                <td
-                  class="py-2.5 px-3 text-right tabular-nums"
-                  style={{ color: row.leader ? textColor : textMuted }}
-                >
-                  {row.answer}
-                </td>
-                <td
-                  class="py-2.5 px-3 text-right tabular-nums"
-                  style={{ color: row.leader ? textColor : textMuted }}
-                >
-                  {row.retrieval}
-                </td>
-                <td
-                  class="py-2.5 pl-3 text-right tabular-nums"
-                  style={{ color: row.leader ? textColor : textMuted }}
-                >
-                  {row.latency}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+                {row.system}
+              </td>
+              <td
+                class="py-2.5 px-1.5 text-right tabular-nums"
+                style={{
+                  color: row.leader ? textColor : textMuted,
+                  fontWeight: row.leader ? 600 : 400,
+                }}
+              >
+                {row.overall}
+              </td>
+              <td
+                class="py-2.5 px-1.5 text-right tabular-nums"
+                style={{ color: row.leader ? textColor : textMuted }}
+              >
+                {row.answer}
+              </td>
+              <td
+                class="py-2.5 px-1.5 text-right tabular-nums"
+                style={{ color: row.leader ? textColor : textMuted }}
+              >
+                {row.retrieval}
+              </td>
+              <td
+                class="py-2.5 pl-1.5 text-right tabular-nums"
+                style={{ color: row.leader ? textColor : textMuted }}
+              >
+                {row.latency}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }

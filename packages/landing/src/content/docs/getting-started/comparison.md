@@ -23,14 +23,14 @@ This page compares Lobu against alternatives for deploying agents to production.
 | **MCP support** | Proxied through gateway with secret injection | Direct | HTTP/SSE only | Yes |
 | **Agent Protocol / A2A** | Not yet | No | Yes | No |
 | **Built-in evals** | YAML eval framework with model comparison | No | No | No |
-| **Memory** | Owletto plugin (self-hosted) | Local | LangSmith APIs | Platform-managed |
+| **Memory** | Self-hosted Lobu memory plugin | Local | LangSmith APIs | Platform-managed |
 | **Scale-to-zero** | Built-in idle timeout | Always running | Managed by LangSmith | Managed |
 | **Config format** | `lobu.toml` + IDENTITY/SOUL/USER.md | CLI flags | `deepagents.toml` + AGENTS.md | Dashboard |
 | **License** | Open source | Open source | MIT (harness), proprietary (hosting) | Proprietary |
 
 ## Memory benchmarks
 
-Lobu's bundled memory system (Owletto) is benchmarked against Mem0 and Supermemory on public datasets. Same answerer (`glm-5.1` via z.ai), same top-K, same questions.
+Lobu's bundled memory system is benchmarked against Mem0 and Supermemory on public datasets. Same answerer (`glm-5.1` via z.ai), same top-K, same questions.
 
 ### LongMemEval (oracle-50)
 
@@ -38,7 +38,7 @@ Single-session knowledge retention.
 
 | System | Overall | Answer | Retrieval | Latency |
 |---|---:|---:|---:|---:|
-| **Owletto** | **87.1%** | **78.0%** | **100.0%** | 237ms |
+| **Lobu** | **87.1%** | **78.0%** | **100.0%** | 237ms |
 | Supermemory | 69.1% | 56.0% | 96.6% | 702ms |
 | Mem0 | 65.7% | 54.0% | 85.3% | 753ms |
 
@@ -48,11 +48,11 @@ Multi-session conversational memory.
 
 | System | Overall | Answer | Retrieval | Latency |
 |---|---:|---:|---:|---:|
-| **Owletto** | **57.8%** | **38.0%** | **79.5%** | **121ms** |
+| **Lobu** | **57.8%** | **38.0%** | **79.5%** | **121ms** |
 | Mem0 | 41.5% | 28.0% | 66.9% | 606ms |
 | Supermemory | 23.2% | 14.0% | 36.5% | 532ms |
 
-See the [memory benchmarks methodology](/guides/memory-benchmarks/) for fairness guardrails and reproduction steps, or the [harness README](https://github.com/lobu-ai/owletto/blob/main/benchmarks/memory/README.md) in the Owletto repo.
+See the [memory benchmarks methodology](/guides/memory-benchmarks/) for fairness guardrails and reproduction steps.
 
 ## Sandboxing and deployment modes
 
@@ -102,7 +102,7 @@ Workers call MCP tools through the gateway. The gateway resolves `${env:VAR}` se
 | | Lobu | DeepAgents Deploy | Claude Managed Agents | Direct MCP |
 |---|---|---|---|---|
 | Secret injection | Gateway proxy resolves at request time | Environment variables | Platform-managed | Direct env vars |
-| OAuth management | Owletto handles token refresh | Manual | Platform-managed | Manual |
+| OAuth management | Lobu handles token refresh | Manual | Platform-managed | Manual |
 | Transport support | HTTP, SSE, stdio (proxied) | HTTP/SSE only (no stdio) | Yes | All |
 | Worker sees credentials | Never | Yes (env vars) | N/A | Yes |
 | Audit trail | Gateway logs all MCP calls | No | No | No |
@@ -167,7 +167,7 @@ Inside each Lobu worker, the full OpenClaw runtime runs untouched. Lobu rewrites
 | Network isolation | Gateway-mediated domain filtering | Sandbox-level |
 | Protocols | MCP | MCP, A2A, Agent Protocol |
 | Evals | Built-in YAML framework | Not included |
-| Memory ownership | Fully self-hosted (Owletto) | LangSmith APIs (self-host option) |
+| Memory ownership | Fully self-hosted (Lobu memory) | LangSmith APIs (self-host option) |
 | Runtime | OpenClaw | LangGraph |
 
 **Choose DeepAgents Deploy** if you want zero-ops hosted deployment and need A2A multi-agent orchestration.

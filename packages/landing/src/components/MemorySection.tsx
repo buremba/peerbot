@@ -65,7 +65,7 @@ export function MemorySection(props: {
           }
           description={
             props.heroCopy?.description ??
-            "Owletto gives all your agents the same durable graph: connectors, recall, and managed auth without leaking credentials to the runtime."
+            "Lobu memory gives all your agents the same durable graph: connectors, recall, and managed auth without leaking credentials to the runtime."
           }
           prompt={getMemoryPrompt(activeUseCase)}
           promptTriggerLabel="Integrate"
@@ -122,8 +122,8 @@ export function MemorySection(props: {
 
         <ContentRail variant="compact">
           <SectionHeader
-            title="Beats Mem0 and Supermemory on public benchmarks"
-            body="Apples-to-apples comparison on public memory datasets. Same answerer (glm-5.1 via z.ai), same top-K, same questions."
+            title="Beats other memory systems on public benchmarks"
+            body="Apples-to-apples comparison on public memory datasets. Same answerer (glm-5.1) and same questions."
             className="mb-10"
           />
 
@@ -173,7 +173,7 @@ export function MemorySection(props: {
               }}
             >
               <GitHubIcon />
-              Owletto on GitHub
+              Lobu on GitHub
             </a>
             <ScheduleCallButton
               class="inline-flex items-center gap-2 text-xs font-medium px-4 py-2 rounded-lg transition-all hover:opacity-80"

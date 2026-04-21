@@ -236,10 +236,10 @@ export async function initCommand(
         { name: "None (filesystem memory)", value: "none" },
         { name: "Lobu Cloud (app.lobu.ai)", value: "owletto-cloud" },
         {
-          name: "Owletto Local (runs alongside gateway)",
+          name: "Lobu memory Local (runs alongside gateway)",
           value: "owletto-local",
         },
-        { name: "Custom Owletto URL", value: "owletto-custom" },
+        { name: "Custom Lobu memory URL", value: "owletto-custom" },
       ],
       default: "none",
     },
@@ -269,7 +269,7 @@ export async function initCommand(
       {
         type: "input",
         name: "customOwlettoUrl",
-        message: "Owletto MCP URL:",
+        message: "Lobu memory MCP URL:",
         validate: (v: string) => (v ? true : "URL is required"),
       },
     ]);
@@ -563,13 +563,13 @@ turns:
       const displayUrl = includeOwlettoLocal
         ? "http://localhost:8787"
         : owlettoUrl;
-      console.log(chalk.cyan("  Owletto:"));
+      console.log(chalk.cyan("  Lobu memory:"));
       console.log(chalk.dim(`     ${displayUrl}\n`));
     }
     console.log(chalk.cyan("  3. Start the services:"));
     console.log(chalk.dim("     npx @lobu/cli@latest run -d\n"));
     if (includeOwlettoLocal) {
-      console.log(chalk.cyan("  4. Set up Owletto (first run):"));
+      console.log(chalk.cyan("  4. Set up Lobu memory (first run):"));
       console.log(
         chalk.dim("     Visit http://localhost:8787 to create your account\n")
       );
@@ -710,7 +710,7 @@ export async function generateLobuToml(
     const name = options.owlettoName ?? humanizeSlug(options.agentName);
     lines.push(
       "",
-      "# Project-scoped Owletto memory",
+      "# Project-scoped Lobu memory",
       `[memory.owletto]`,
       "enabled = true",
       `org = ${JSON.stringify(org)}`,
@@ -858,7 +858,7 @@ ${owlettoServices}
       ENCRYPTION_KEY: \${ENCRYPTION_KEY}
       WORKER_ALLOWED_DOMAINS: \${WORKER_ALLOWED_DOMAINS:-}
       WORKER_DISALLOWED_DOMAINS: \${WORKER_DISALLOWED_DOMAINS:-}
-      # Optional Owletto base MCP URL override. File-first projects derive scoped
+      # Optional Lobu memory base MCP URL override. File-first projects derive scoped
       # memory from [memory.owletto] in lobu.toml.
       MEMORY_URL: \${MEMORY_URL:-}
       LOBU_WORKSPACE_ROOT: /workspace/project

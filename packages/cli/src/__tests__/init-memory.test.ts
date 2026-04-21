@@ -66,7 +66,7 @@ describe("init memory scaffolding", () => {
       includeOwlettoLocal: true,
     });
 
-    expect(content).toContain("Optional Owletto base MCP URL override");
+    expect(content).toContain("Optional Lobu memory base MCP URL override");
     expect(content).toContain("MEMORY_URL: ${MEMORY_URL:-}");
     expect(content).toContain("owletto:");
     expect(content).toContain("owletto-postgres:");

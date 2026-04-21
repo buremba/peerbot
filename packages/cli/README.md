@@ -23,17 +23,17 @@ Scaffold a new Lobu project with interactive prompts:
 - **AI provider** selection from the bundled provider registry + API key
 - **Providers** to enable (from `config/providers.json`)
 - **Messaging platform** (Telegram, Slack, Discord, or none)
-- **Memory** selection (filesystem, Lobu Cloud, Owletto Local, or custom Owletto URL)
+- **Memory** selection (filesystem, Lobu Cloud, Lobu memory Local, or custom Lobu memory URL)
 
 **Generates:** `docker-compose.yml`, `.env`, `Dockerfile.worker`, `lobu.toml`, `IDENTITY.md`, `.gitignore`, `README.md`
 
-When Owletto memory is enabled, `lobu init` also scaffolds the file-first memory layout:
+When Lobu memory is enabled, `lobu init` also scaffolds the file-first memory layout:
 
 - `[memory.owletto]` in `lobu.toml` (org, name, description, models, data)
 - `models/`
 - `data/`
 
-For Owletto Local or a custom Owletto deployment, `.env` keeps `MEMORY_URL` as the optional base MCP URL override.
+For Lobu memory Local or a custom Lobu memory deployment, `.env` keeps `MEMORY_URL` as the optional base MCP URL override.
 
 ## Worker Customization
 

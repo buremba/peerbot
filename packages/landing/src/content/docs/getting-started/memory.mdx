@@ -1,17 +1,16 @@
 ---
 title: Memory
-description: How Lobu uses Owletto for shared, structured memory across agents, threads, and teams.
+description: How Lobu memory provides shared, structured memory across agents, threads, and teams.
 ---
 
 Lobu has two memory layers:
 
 - **Filesystem** for short-term working memory inside a specific channel or user space
-- **Owletto** for long-term organizational memory shared across the workspace
+- **Lobu memory** for long-term organizational memory shared across the workspace
 
-The filesystem is where an agent does work. Owletto is where the organization remembers what matters.
+The filesystem is where an agent does work. Lobu memory is where the organization remembers what matters.
 
-- Owletto site: [app.lobu.ai](https://app.lobu.ai)
-- GitHub: [lobu-ai/owletto](https://github.com/lobu-ai/owletto)
+- Lobu memory site: [app.lobu.ai](https://app.lobu.ai)
 - Lobu memory overview: [/memory](/memory)
 
 ## Short-Term Vs Long-Term Memory
@@ -25,7 +24,7 @@ Each Lobu channel or user space gets its own filesystem — the agent's working 
 
 Useful, but not a good long-term system of record. The agent may know where files are in its local workspace, but other agents and future sessions usually do not.
 
-Owletto is the shared knowledge system for the organization:
+Lobu memory is the shared knowledge system for the organization:
 
 - stores durable knowledge in entities
 - makes that knowledge queryable and analyzable
@@ -34,18 +33,18 @@ Owletto is the shared knowledge system for the organization:
 
 ```text
 filesystem = short-term working memory + artifacts
-owletto = long-term organizational memory
+lobu memory = long-term organizational memory
 ```
 
 ## Why Both Exist
 
 An analyst might download PDFs into a local folder, write Python to parse them, generate CSVs and charts, then load the final result into a warehouse so the rest of the org can query it later.
 
-Lobu agents work the same way. The filesystem is where the messy work happens. Owletto is where the agent stores the durable, structured result so it can be recalled later across users, channels, and agents.
+Lobu agents work the same way. The filesystem is where the messy work happens. Lobu memory is where the agent stores the durable, structured result so it can be recalled later across users, channels, and agents.
 
-## What Owletto Adds
+## What Lobu Memory Adds
 
-Compared with local filesystem memory, Owletto gives Lobu:
+Compared with local filesystem memory, Lobu memory gives agents:
 
 - Workspace-scoped memory shared across agents, users, and threads
 - Typed entities and relationships instead of loose notes
@@ -58,23 +57,23 @@ Useful when memory needs to outlive one sandbox, machine, channel, or user sessi
 
 ## How Memory Recall Works
 
-Owletto is not just a vector store. It keeps a structured graph of organizations, entity types, entities, events, relationships, connectors, and watcher output.
+Lobu memory is not just a vector store. It keeps a structured graph of organizations, entity types, entities, events, relationships, connectors, and watcher output.
 
 At a high level, the recall loop is:
 
 1. A user sends a message to a Lobu agent.
 2. Lobu routes the request into the worker and loads the active memory plugin.
-3. Owletto identifies likely entities from the prompt and retrieves related knowledge.
+3. Lobu memory identifies likely entities from the prompt and retrieves related knowledge.
 4. Recall combines entity-name matching, full-text search, and semantic vector search.
 5. The recalled memory is injected before prompt construction, so the model reasons with that context from the start.
-6. During the turn, the agent can search, read, and save new knowledge back into Owletto entities.
-7. Users can review or correct the resulting memory in the Owletto UI, which immediately affects future recall.
+6. During the turn, the agent can search, read, and save new knowledge back into Lobu memory entities.
+7. Users can review or correct the resulting memory in the Lobu memory UI, which immediately affects future recall.
 
 That gives you both automatic recall and explicit long-term memory writes.
 
 ## Memory Model
 
-Owletto stores memory under an organization:
+Lobu memory stores data under an organization:
 
 ```text
 Organization
@@ -103,13 +102,13 @@ The append-only event history lets agents and operators inspect what changed ove
 
 That makes it easier to recover from mistakes, understand why an agent believed something, and improve future recall.
 
-The boundary: **artifacts stay in the filesystem**, **durable organizational knowledge gets written into Owletto**. For example:
+The boundary: **artifacts stay in the filesystem**, **durable organizational knowledge gets written into Lobu memory**. For example:
 
 - keep a downloaded PDF, generated chart, or temporary CSV in the filesystem
-- save "customer prefers weekly summaries" or "vendor X owns system Y" into Owletto
-- move final structured outputs into your org systems, and store the durable facts or references in Owletto so agents can find them later
+- save "customer prefers weekly summaries" or "vendor X owns system Y" into Lobu memory
+- move final structured outputs into your org systems, and store the durable facts or references in Lobu memory so agents can find them later
 
-## How Lobu Connects To Owletto
+## How Lobu Wires Memory In
 
 In Lobu, memory is pluggable per agent.
 
@@ -133,12 +132,12 @@ data = "./data"
 
 At runtime, Lobu resolves the memory backend like this:
 
-- If `[memory.owletto]` is enabled, Lobu derives the effective Owletto MCP endpoint from `org` in `[memory.owletto]`.
-- `MEMORY_URL` is still supported as an optional base-endpoint override, mainly for local or custom Owletto deployments.
-- If no Owletto endpoint is resolved, Lobu falls back to `@openclaw/native-memory`.
+- If `[memory.owletto]` is enabled, Lobu derives the effective Lobu memory MCP endpoint from `org` in `[memory.owletto]`.
+- `MEMORY_URL` is still supported as an optional base-endpoint override, mainly for local or custom Lobu memory deployments.
+- If no Lobu memory endpoint is resolved, Lobu falls back to `@openclaw/native-memory`.
 - Agents can also override plugin configuration through `pluginsConfig` in agent settings.
 
-The `@lobu/owletto-openclaw` plugin adapts OpenClaw to Owletto. OpenClaw calls normal memory operations through its plugin interface; the plugin translates those reads and writes into Owletto MCP calls through the gateway proxy, so the worker never needs raw OAuth tokens or direct Owletto credentials.
+The `@lobu/owletto-openclaw` plugin adapts OpenClaw to Lobu memory. OpenClaw calls normal memory operations through its plugin interface; the plugin translates those reads and writes into Lobu memory MCP calls through the gateway proxy, so the worker never needs raw OAuth tokens or direct Lobu memory credentials.
 
 The split lets agents keep using local files for active work while persisting the durable parts into shared structured memory.
 
@@ -146,7 +145,7 @@ See also: [Architecture](/guides/architecture/) and [Agent Settings](/guides/age
 
 ## Compatible Agent Clients
 
-Owletto memory can be used from MCP-compatible clients and agent runtimes, not just Lobu.
+Lobu memory can be used from MCP-compatible clients and agent runtimes, not just Lobu.
 
 Common examples include:
 
@@ -156,7 +155,7 @@ Common examples include:
 - Codex
 - Cursor
 
-For the most up-to-date list of compatible clients and integration patterns, see the [Owletto CLI Reference](/reference/owletto-cli/#which-mcp-tools-are-available).
+For the most up-to-date list of compatible clients and integration patterns, see the [Lobu memory CLI Reference](/reference/owletto-cli/#which-mcp-tools-are-available).
 
 For setup instructions by client, see:
 
@@ -168,11 +167,11 @@ For setup instructions by client, see:
 
 Watchers analyze incoming event streams on a schedule and write structured results back into the memory graph.
 
-To inspect available watcher tooling and related MCP operations, see the [Owletto CLI Reference](/reference/owletto-cli/#which-mcp-tools-are-available).
+To inspect available watcher tooling and related MCP operations, see the [Lobu memory CLI Reference](/reference/owletto-cli/#which-mcp-tools-are-available).
 
 ## Tool-Level Workflow
 
-Agents that talk to Owletto directly usually use three core MCP tools:
+Agents that talk to Lobu memory directly usually use three core MCP tools:
 
 - `search_knowledge` to find entities and graph context first
 - `read_knowledge` to retrieve saved events or semantic matches
@@ -186,9 +185,9 @@ search_knowledge -> read_knowledge -> save_knowledge
 
 Coding agents like Codex, Claude Code, and Cursor use the same pattern when they lack automatic memory hooks in the runtime.
 
-## When To Use Owletto
+## When To Use Lobu Memory
 
-Owletto is the right fit when you want:
+Lobu memory is the right fit when you want:
 
 - Multiple Lobu agents to share one memory space
 - Memory that survives local sandboxes and channel-specific filesystems
@@ -196,11 +195,10 @@ Owletto is the right fit when you want:
 - Scheduled ingestion and analysis of external sources
 - Operator-visible memory that can be audited and corrected
 
-If you only need a local working directory for one session, the filesystem is enough. If you want the organization to remember something in a structured, queryable way, use Owletto.
+If you only need a local working directory for one session, the filesystem is enough. If you want the organization to remember something in a structured, queryable way, use Lobu memory.
 
 ## Read Next
 
 - [Skills](/getting-started/skills/)
-- [Owletto CLI Reference](/reference/owletto-cli/)
+- [Lobu memory CLI Reference](/reference/owletto-cli/)
 - [Lobu CLI Reference](/reference/cli/)
-- [Owletto GitHub Repository](https://github.com/lobu-ai/owletto)

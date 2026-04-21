@@ -91,7 +91,7 @@ export default defineConfig({
             { label: "SKILL.md", link: "/reference/skill-md/" },
             { label: "Providers", link: "/reference/providers/" },
             { label: "CLI", link: "/reference/cli/" },
-            { label: "Owletto CLI", link: "/reference/owletto-cli/" },
+            { label: "Lobu memory CLI", link: "/reference/owletto-cli/" },
             { label: "API Reference", link: "/reference/api-reference/" },
           ],
         },

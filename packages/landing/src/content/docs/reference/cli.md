@@ -31,7 +31,7 @@ npx @lobu/cli@latest init my-agent
 Generates:
 
 - `lobu.toml` — agent configuration (skills, providers, connections, network)
-- `docker-compose.yml` — service definitions (gateway, Redis, optional Owletto)
+- `docker-compose.yml` — service definitions (gateway, Redis, optional Lobu memory)
 - `.env` — credentials and environment variables
 - `agents/{name}/` — agent directory with `IDENTITY.md`, `SOUL.md`, `USER.md`, and `skills/`
 - `skills/` — shared skills directory (available to all agents)

@@ -1,11 +1,10 @@
 ---
-title: Owletto CLI Reference
-description: What the owletto CLI does, how it authenticates, and how to use it to run Owletto memory tools directly.
+title: Lobu memory CLI Reference
+description: What the owletto CLI does, how it authenticates, and how to use it to run Lobu memory tools directly.
 ---
 
-The `owletto` CLI starts local Owletto servers, connects agent clients, and runs memory tools directly.
+The `owletto` CLI starts local Lobu memory servers, connects agent clients, and runs memory tools directly.
 
-- GitHub: [lobu-ai/owletto](https://github.com/lobu-ai/owletto)
 - Hosted: [app.lobu.ai](https://app.lobu.ai)
 
 ## Install And Run
@@ -23,7 +22,7 @@ The published package name is `owletto`.
 
 ## Architecture Overview
 
-Owletto is a layered memory system that separates raw capture from structured knowledge:
+Lobu memory is a layered system that separates raw capture from structured knowledge:
 
 ```
 external source
@@ -43,7 +42,7 @@ external source
 
 ## Connector SDK
 
-Owletto's data integration layer. Each connector declares:
+Lobu memory's data integration layer. Each connector declares:
 
 - `ConnectorDefinition` — auth, feeds, actions, schemas
 - `ConnectorRuntime` — implements `sync()` and optional `execute()`
@@ -54,7 +53,7 @@ Docs: [Connector SDK](https://github.com/lobu-ai/owletto/blob/main/connectors/RE
 
 ### `owletto start`
 
-Starts a local Owletto runtime.
+Starts a local Lobu memory runtime.
 
 ```bash
 npx owletto@latest start
@@ -66,13 +65,13 @@ Default behavior:
 - listens on `http://localhost:8787`
 - uses embedded Postgres (`PGlite`) by default
 - stores local data in `~/.owletto/data/` for packaged installs
-- uses `./data/` when running from a real Owletto repo checkout
+- uses `./data/` when running from an `owletto` repo checkout
 
 If `DATABASE_URL` is set, the CLI starts the server against external Postgres instead.
 
 ### `owletto init`
 
-Configures local agent clients to use an Owletto MCP endpoint.
+Configures local agent clients to use a Lobu memory MCP endpoint.
 
 ```bash
 npx owletto@latest init
@@ -85,7 +84,7 @@ Detects supported clients and auto-configures them. Falls back to manual steps w
 
 ### `owletto login`
 
-Authenticates the CLI against an Owletto MCP server using OAuth.
+Authenticates the CLI against a Lobu memory MCP server using OAuth.
 
 ```bash
 npx owletto@latest login https://app.lobu.ai/mcp
@@ -126,7 +125,7 @@ npx owletto@latest health
 
 ## Organization Selection
 
-Owletto sessions are organization-aware. After login, set the default org if needed:
+Lobu memory sessions are organization-aware. After login, set the default org if needed:
 
 ```bash
 npx owletto@latest org current
@@ -160,7 +159,7 @@ npx owletto@latest run read_knowledge '{"query":"customer preferences"}'
 npx owletto@latest run save_knowledge '{"content":"Prefers weekly summaries","semantic_type":"preference","metadata":{}}'
 ```
 
-This is the most direct way to inspect or test Owletto memory behavior outside an agent runtime.
+This is the most direct way to inspect or test Lobu memory behavior outside an agent runtime.
 
 ### Which MCP tools are available?
 
@@ -196,7 +195,7 @@ Writes OpenClaw plugin config for `@lobu/owletto-openclaw` using an `owletto tok
 
 ## Repo-Local Development
 
-When working inside the Owletto repository itself, you can run the TypeScript entrypoint directly:
+When working inside the `owletto` repository itself, you can run the TypeScript entrypoint directly:
 
 ```bash
 pnpm -C packages/cli exec tsx src/bin.ts start
@@ -206,7 +205,7 @@ pnpm -C packages/cli exec tsx src/bin.ts run search_knowledge '{"query":"spotify
 
 ## How This Fits With Lobu
 
-Use the Lobu CLI to scaffold and run Lobu projects. Use the Owletto CLI when you need to stand up or inspect the memory system behind Lobu.
+Use the Lobu CLI to scaffold and run Lobu projects. Use the `owletto` CLI when you need to stand up or inspect the Lobu memory system behind them.
 
 - Lobu CLI: [CLI Reference](/reference/cli/)
 - Lobu memory docs: [Memory](/getting-started/memory/)

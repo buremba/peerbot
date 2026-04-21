@@ -1,5 +1,31 @@
 # Changelog
 
+## [3.7.0](https://github.com/lobu-ai/lobu/compare/lobu-v3.6.0...lobu-v3.7.0) (2026-04-21)
+
+
+### Features
+
+* inline memory config into lobu.toml and rename devops→engineering ([#247](https://github.com/lobu-ai/lobu/issues/247)) ([1daf272](https://github.com/lobu-ai/lobu/commit/1daf2728bec2b374a52c2212231ae641f439e89a))
+* **landing:** add memory benchmarks section + methodology docs ([#242](https://github.com/lobu-ai/lobu/issues/242)) ([28e2980](https://github.com/lobu-ai/lobu/commit/28e2980796ed037aca37f90ab7785f95050c83d0))
+* **owletto-backend:** allow lobu.ai to embed app via CSP frame-ancestors ([#246](https://github.com/lobu-ai/lobu/issues/246)) ([6cbf3d2](https://github.com/lobu-ai/lobu/commit/6cbf3d29aafee5b5c80f389c25e54c9eb3afc267))
+* **owletto:** absorb skills, benchmarks, and dev scripts from deprecated owletto repo ([#231](https://github.com/lobu-ai/lobu/issues/231)) ([ccef71e](https://github.com/lobu-ai/lobu/commit/ccef71e1b2e3c58d79a767a84f919777b724cc44))
+* **owletto:** consolidate CLI profiles into lobu.toml ([#233](https://github.com/lobu-ai/lobu/issues/233)) ([577ec37](https://github.com/lobu-ai/lobu/commit/577ec3731c70faea3272128b26ad2787d4198a99))
+* subdomain-aware SPA + SSR routing ([#234](https://github.com/lobu-ai/lobu/issues/234)) ([9c66f16](https://github.com/lobu-ai/lobu/commit/9c66f16cd4b16d96356de05e3aa401e6499f0d5e))
+
+
+### Bug Fixes
+
+* **ci:** initialize owletto-web submodule in landing deploy ([#229](https://github.com/lobu-ai/lobu/issues/229)) ([0dee7bc](https://github.com/lobu-ai/lobu/commit/0dee7bc8c229562b9335aa226f765af563fe25f5))
+* **deps:** sync bun.lock with release-please 3.6.0 version bump ([#227](https://github.com/lobu-ai/lobu/issues/227)) ([e14500c](https://github.com/lobu-ai/lobu/commit/e14500c1ab0d60e50ad38c5c59b8b4f8fa45362b))
+* **landing:** restore campaign description from runtime.request ([#250](https://github.com/lobu-ai/lobu/issues/250)) ([56eac67](https://github.com/lobu-ai/lobu/commit/56eac673486777867c5115ba174f019a0dbe245b))
+* **owletto-backend:** resolve default org when loading social credentials ([#235](https://github.com/lobu-ai/lobu/issues/235)) ([90419cc](https://github.com/lobu-ai/lobu/commit/90419ccd931328f402f9dfbc16b97fb7f355a1a9))
+* ship app.lobu.ai SPA + retire owletto.com defaults ([#230](https://github.com/lobu-ai/lobu/issues/230)) ([e3817d4](https://github.com/lobu-ai/lobu/commit/e3817d41732b51fcbde1b56e69b0da85a1fb51d8))
+* **web:** bump owletto-web for history adapter import fix ([#237](https://github.com/lobu-ai/lobu/issues/237)) ([279a3ed](https://github.com/lobu-ai/lobu/commit/279a3edabeb32080168180f33cf42ccae11f9ef0))
+* **web:** bump owletto-web for public-org auth-redirect fix ([#240](https://github.com/lobu-ai/lobu/issues/240)) ([f4641eb](https://github.com/lobu-ai/lobu/commit/f4641eb163bdc78fdc90dcd5d826f62360144e69))
+* **web:** bump owletto-web for sidebar auth gating ([#238](https://github.com/lobu-ai/lobu/issues/238)) ([e51458e](https://github.com/lobu-ai/lobu/commit/e51458e2998705c987c4de84478719d34d093c3e))
+* **web:** bump owletto-web for sidebar gating + add reserved-subdomain parity test ([#241](https://github.com/lobu-ai/lobu/issues/241)) ([8961e58](https://github.com/lobu-ai/lobu/commit/8961e5865e99d12996e70df1679188f38ad95458))
+* **web:** bump owletto-web for subdomain history adapter ([#236](https://github.com/lobu-ai/lobu/issues/236)) ([a53c978](https://github.com/lobu-ai/lobu/commit/a53c978331acb9fff5b0b2eda2830dc68a6f42e5))
+
 ## [3.6.0](https://github.com/lobu-ai/lobu/compare/lobu-v3.5.0...lobu-v3.6.0) (2026-04-20)
 
 

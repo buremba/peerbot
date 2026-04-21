@@ -1,6 +1,6 @@
 {
   "name": "@lobu/owletto-sdk",
-  "version": "3.6.0",
+  "version": "3.7.0",
   "description": "Owletto SDK - build pluggable connectors for the Owletto integration platform",
   "type": "module",
   "main": "dist/index.js",

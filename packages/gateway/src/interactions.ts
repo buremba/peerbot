@@ -2,20 +2,19 @@
 
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { createLogger, type UserSuggestion } from "@lobu/core";
+import {
+  type BaseMessage,
+  createLogger,
+  type UserSuggestion,
+} from "@lobu/core";
 
 const logger = createLogger("interactions");
 
 /**
  * Payload emitted on "question:created" — platform renderers listen for this.
  */
-export interface PostedQuestion {
-  id: string;
+export interface PostedQuestion extends BaseMessage {
   userId: string;
-  conversationId: string;
-  channelId: string;
-  teamId?: string;
-  connectionId?: string;
   question: string;
   options: string[];
 }
@@ -28,13 +27,8 @@ export interface PostedQuestion {
  * renderer will skip the card-body text entirely rather than duplicate the
  * button's own label.
  */
-export interface PostedLinkButton {
-  id: string;
+export interface PostedLinkButton extends BaseMessage {
   userId: string;
-  conversationId: string;
-  channelId: string;
-  teamId?: string;
-  connectionId?: string;
   platform: string;
   url: string;
   label: string;
@@ -45,14 +39,9 @@ export interface PostedLinkButton {
 /**
  * Payload emitted on "tool:approval-needed" — platform renderers listen for this.
  */
-export interface PostedToolApproval {
-  id: string;
+export interface PostedToolApproval extends BaseMessage {
   agentId: string;
   userId: string;
-  conversationId: string;
-  channelId: string;
-  teamId?: string;
-  connectionId?: string;
   mcpId: string;
   toolName: string;
   args: Record<string, unknown>;
@@ -62,12 +51,7 @@ export interface PostedToolApproval {
 /**
  * Payload emitted on "status-message:created" — platform renderers listen for this.
  */
-export interface PostedStatusMessage {
-  id: string;
-  conversationId: string;
-  channelId: string;
-  teamId?: string;
-  connectionId?: string;
+export interface PostedStatusMessage extends BaseMessage {
   platform: string;
   text: string;
 }

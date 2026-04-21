@@ -142,6 +142,8 @@ export type {
   UserSuggestion,
 } from "./types";
 export { hasCredentialSource } from "./types";
+// Shared message/interaction base shape
+export type { BaseMessage } from "./types/message";
 
 // Utilities
 export * from "./utils/encryption";

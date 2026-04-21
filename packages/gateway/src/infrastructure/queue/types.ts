@@ -98,40 +98,7 @@ export interface IMessageQueue {
 // Payload Types
 // ============================================================================
 
-/**
- * Shared payload contract for worker → platform thread responses.
- * Ensures gateway consumers and workers stay type-aligned.
- */
-export interface ThreadResponsePayload {
-  messageId: string;
-  channelId: string;
-  conversationId: string;
-  userId: string;
-  teamId: string;
-  platform?: string; // Platform identifier (slack, whatsapp, api, etc.) for multi-platform routing
-  content?: string; // Used only for ephemeral messages (OAuth/auth flows)
-  delta?: string;
-  isFullReplacement?: boolean;
-  processedMessageIds?: string[];
-  error?: string;
-  errorCode?: string;
-  timestamp: number;
-  originalMessageId?: string;
-  moduleData?: Record<string, unknown>;
-  botResponseId?: string;
-  ephemeral?: boolean;
-  statusUpdate?: {
-    elapsedSeconds: number;
-    state: string;
-  };
-  platformMetadata?: Record<string, unknown>; // Platform-specific metadata (e.g., sessionId for API)
-  customEvent?: {
-    name: string;
-    data: Record<string, unknown>;
-  };
-
-  // Exec-specific response fields (for jobType === "exec")
-  execId?: string; // Exec job ID for response routing
-  execStream?: "stdout" | "stderr"; // Which stream this delta is from
-  execExitCode?: number; // Process exit code (sent on completion)
-}
+// `ThreadResponsePayload` is defined once in `@lobu/core` and re-exported
+// from this package's queue index for convenience. It is shared by workers
+// and platform renderers, so keeping a single source of truth is essential.
+export type { ThreadResponsePayload } from "@lobu/core";

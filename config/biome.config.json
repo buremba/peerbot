@@ -14,6 +14,7 @@
       "!**/packages/**/*/workspaces/**",
       "!**/workspaces/**",
       "!**/.claude/debug/**",
+      "!**/.claude/worktrees/**",
       "!**/dist/**",
       "!**/src/errors.js",
       "!**/*.raw.js",

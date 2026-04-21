@@ -1,6 +1,6 @@
 {
   "name": "@lobu/owletto-sdk",
-  "version": "3.7.0",
+  "version": "4.0.0",
   "description": "Lobu memory SDK — build pluggable connectors for Lobu memory",
   "type": "module",
   "main": "dist/index.js",

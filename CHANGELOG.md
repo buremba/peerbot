@@ -1,5 +1,32 @@
 # Changelog
 
+## [4.0.0](https://github.com/lobu-ai/lobu/compare/lobu-v3.7.0...lobu-v4.0.0) (2026-04-21)
+
+
+### ⚠ BREAKING CHANGES
+
+* **core, worker:** drop unused public exports from @lobu/core ([#281](https://github.com/lobu-ai/lobu/issues/281))
+
+### Features
+
+* **landing:** restore Integrate dropdown on copy-prompt CTAs ([#289](https://github.com/lobu-ai/lobu/issues/289)) ([bf565f1](https://github.com/lobu-ai/lobu/commit/bf565f190a3f211b6be5b135fe0cb1cda1f1f1e7))
+
+
+### Bug Fixes
+
+* **docker:** include owletto workspaces in Dockerfile.worker ([#274](https://github.com/lobu-ai/lobu/issues/274)) ([2aa042b](https://github.com/lobu-ai/lobu/commit/2aa042bce577fd4c498a5defbaa532515b39dd23))
+* **gateway:** escape user input in MCP OAuth callback to prevent XSS ([#284](https://github.com/lobu-ai/lobu/issues/284)) ([ab19e8a](https://github.com/lobu-ai/lobu/commit/ab19e8ac569df321866921fd64b59bca9d01920d))
+* **gateway:** require worker auth on /api/bedrock/* to prevent unauthenticated AWS spend ([#287](https://github.com/lobu-ai/lobu/issues/287)) ([5e6e91c](https://github.com/lobu-ai/lobu/commit/5e6e91c32a75e872a052705854277d8114b5c240))
+* **landing:** repair broken links surfaced by audit ([#275](https://github.com/lobu-ai/lobu/issues/275)) ([1de4aee](https://github.com/lobu-ai/lobu/commit/1de4aee458e9039396f62b6d357c1c5450040b27))
+* **landing:** resolve zod parse error on connect-from route ([#271](https://github.com/lobu-ai/lobu/issues/271)) ([cef2284](https://github.com/lobu-ai/lobu/commit/cef2284ab1c1e10f1406f43301378036767dbafa))
+* **landing:** wire benchmark methodology link and add tables to memory + comparison ([#276](https://github.com/lobu-ai/lobu/issues/276)) ([39a0436](https://github.com/lobu-ai/lobu/commit/39a043696a4910f931d885dfe6baa48f5570d0fe))
+* **owletto-backend:** use parameter binding in content-search to prevent SQL injection ([#286](https://github.com/lobu-ai/lobu/issues/286)) ([65511c1](https://github.com/lobu-ai/lobu/commit/65511c1fc2eb13a3ebd180ca341a8d74ea57a877))
+
+
+### Code Refactoring
+
+* **core, worker:** drop unused public exports from @lobu/core ([#281](https://github.com/lobu-ai/lobu/issues/281)) ([7c5ffa4](https://github.com/lobu-ai/lobu/commit/7c5ffa40139add5f100cb34fcda4aa173b3180f2))
+
 ## [3.7.0](https://github.com/lobu-ai/lobu/compare/lobu-v3.6.0...lobu-v3.7.0) (2026-04-21)
 
 

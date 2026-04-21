@@ -1,6 +1,6 @@
 {
   "name": "@lobu/gateway",
-  "version": "3.7.0",
+  "version": "4.0.0",
   "license": "Apache-2.0",
   "description": "Lobu SDK — embed AI agents with platform adapters, worker orchestration, and MCP proxy",
   "repository": {

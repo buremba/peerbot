@@ -1,6 +1,6 @@
 # @lobu/owletto-worker
 
-Self-hosted Owletto worker. Polls the backend for sync jobs, executes connectors locally, generates embeddings, and streams results back. Private workspace package — not published to npm.
+Self-hosted Lobu memory worker. Polls the backend for sync jobs, executes connectors locally, generates embeddings, and streams results back. Private workspace package — not published to npm.
 
 ## Usage
 

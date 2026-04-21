@@ -1,7 +1,7 @@
 {
   "name": "@lobu/owletto-sdk",
   "version": "3.7.0",
-  "description": "Owletto SDK - build pluggable connectors for the Owletto integration platform",
+  "description": "Lobu memory SDK — build pluggable connectors for Lobu memory",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

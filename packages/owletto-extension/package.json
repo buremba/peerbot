@@ -3,7 +3,7 @@
   "version": "1.6.0",
   "private": true,
   "license": "BUSL-1.1",
-  "description": "Owletto Chrome Extension - Your companion to connect and manage data sources from your browser.",
+  "description": "Lobu memory Chrome Extension — connect and manage data sources from your browser.",
   "type": "module",
   "scripts": {
     "dev": "vite build --watch --mode development",

@@ -1,7 +1,7 @@
 {
   "name": "owletto",
   "version": "3.7.0",
-  "description": "Unified CLI for Owletto — dev, deploy, and manage from one command",
+  "description": "Unified CLI for Lobu memory — dev, deploy, and manage from one command",
   "type": "module",
   "bin": {
     "owletto": "./dist/bin.js"

@@ -1,7 +1,7 @@
 {
   "id": "openclaw-owletto",
   "kind": "memory",
-  "description": "Owletto long-term memory over MCP. Set mcpUrl to enable. Authentication via token, tokenCommand, or interactive device login.",
+  "description": "Lobu memory over MCP. Set mcpUrl to enable. Authentication via token, tokenCommand, or interactive device login.",
   "entry": "./dist/index.js",
   "configSchema": {
     "type": "object",
@@ -9,11 +9,11 @@
     "properties": {
       "mcpUrl": {
         "type": "string",
-        "description": "Full MCP endpoint URL (for example, https://owletto.com/mcp/acme). Required."
+        "description": "Full MCP endpoint URL (for example, https://app.lobu.ai/mcp/acme). Required."
       },
       "webUrl": {
         "type": "string",
-        "description": "Public web URL for the Owletto instance (for example, https://owletto.com). Used to generate links for the agent."
+        "description": "Public web URL for the Lobu memory instance (for example, https://app.lobu.ai). Used to generate links for the agent."
       },
       "token": {
         "type": "string",
@@ -33,7 +33,7 @@
       "autoRecall": {
         "type": "boolean",
         "default": true,
-        "description": "When true, searches Owletto for relevant memories before each prompt."
+        "description": "When true, searches Lobu memory for relevant memories before each prompt."
       },
       "recallLimit": {
         "type": "integer",

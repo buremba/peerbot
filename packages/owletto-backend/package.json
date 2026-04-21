@@ -4,7 +4,7 @@
   "private": true,
   "license": "BUSL-1.1",
   "type": "module",
-  "description": "Owletto backend — Hono HTTP server, MCP handler, REST API, embedded @lobu/gateway",
+  "description": "Lobu memory backend — Hono HTTP server, MCP handler, REST API, embedded @lobu/gateway",
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",

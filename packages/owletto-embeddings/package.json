@@ -4,7 +4,7 @@
   "private": true,
   "license": "BUSL-1.1",
   "type": "module",
-  "description": "Embeddings HTTP service for the Owletto platform",
+  "description": "Embeddings HTTP service for Lobu memory",
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx watch --tsconfig tsconfig.json src/server.ts",

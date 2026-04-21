@@ -1,7 +1,7 @@
 {
   "name": "@lobu/owletto-openclaw",
   "version": "3.7.0",
-  "description": "Owletto long-term memory plugin for OpenClaw",
+  "description": "Lobu memory plugin for OpenClaw",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

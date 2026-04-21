@@ -181,6 +181,7 @@ async function main() {
   } else {
     console.log("\n[2/3] Building packages");
     run("bun", ["run", "build:packages"]);
+    run("bun", ["run", "build:owletto"]);
   }
 
   console.log("\n[3/3] Publishing to npm");

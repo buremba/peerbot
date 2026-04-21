@@ -21,7 +21,7 @@ spec:
     matchNames:
       - {{ .Values.kubernetes.namespace }}
   endpoints:
-    - port: health-proxy
+    - port: http
       path: /metrics
       interval: {{ .Values.metrics.serviceMonitor.interval | default "30s" }}
       scrapeTimeout: {{ .Values.metrics.serviceMonitor.scrapeTimeout | default "10s" }}

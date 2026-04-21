@@ -16,8 +16,8 @@ spec:
   {{- end }}
   selector:
     matchLabels:
-      app: {{ include "lobu.name" . }}
-      component: gateway
+      {{- include "lobu.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: gateway
 
 ---
 # PDB for worker jobs - allow more disruption since they are transient
@@ -29,7 +29,7 @@ metadata:
   namespace: {{ .Values.kubernetes.namespace }}
   labels:
     {{- include "lobu.labels" . | nindent 4 }}
-    component: worker
+    app.kubernetes.io/component: worker
 spec:
   # Allow more aggressive disruption for worker pods
   {{- if .Values.podDisruptionBudget.worker.minAvailable }}
@@ -39,8 +39,7 @@ spec:
   {{- end }}
   selector:
     matchLabels:
-      app: {{ include "lobu.name" . }}
-      component: worker
+      app.kubernetes.io/component: worker
 {{- end }}
 
 {{- end }}

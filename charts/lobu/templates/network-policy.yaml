@@ -9,11 +9,12 @@ metadata:
 spec:
   podSelector:
     matchLabels:
-      app: {{ include "lobu.name" . }}
+      {{- include "lobu.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: gateway
   policyTypes:
   - Ingress
   - Egress
-  
+
   # Ingress rules - only allow traffic from within namespace and to gateway
   ingress:
   - from:
@@ -22,7 +23,7 @@ spec:
           name: {{ .Values.kubernetes.namespace }}
     - podSelector:
         matchLabels:
-          app: {{ include "lobu.name" . }}
+          {{- include "lobu.selectorLabels" . | nindent 10 }}
     ports:
     - protocol: TCP
       port: 8080

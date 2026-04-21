@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 # Bot testing script with multi-message and multi-platform support
 # Usage: ./scripts/test-bot.sh "message 1" ["message 2"] ["message 3"] ...

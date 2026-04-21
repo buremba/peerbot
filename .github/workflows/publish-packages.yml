@@ -54,9 +54,10 @@ jobs:
           # Trusted publishing via OIDC: npm CLI automatically exchanges the
           # GitHub Actions OIDC token for a short-lived publish token when
           # id-token: write is granted and a trusted publisher is registered
-          # on npmjs.com. No NPM_TOKEN secret is used. `--provenance`
-          # enables provenance attestations tied to this workflow run.
-          NPM_CONFIG_PROVENANCE: "true"
+          # on npmjs.com. No NPM_TOKEN secret is used.
+          # NPM_CONFIG_PROVENANCE enables provenance attestations when the
+          # provenance input is true (requires trusted publisher on npmjs.com).
+          NPM_CONFIG_PROVENANCE: "${{ inputs.provenance }}"
         run: |
           if [ "${{ inputs.bump }}" = "skip" ]; then
             node scripts/publish-packages.mjs --skip-bump

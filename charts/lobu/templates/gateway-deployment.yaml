@@ -228,7 +228,7 @@ spec:
             # Admin password (direct value override, not in sealed secrets)
             {{- if .Values.secrets.adminPassword }}
             - name: ADMIN_PASSWORD
-              value: "{{ .Values.secrets.adminPassword }}"
+              value: {{ .Values.secrets.adminPassword | quote }}
             {{- end }}
           volumeMounts:
             # Tmpfs for tsx and other temp files (required for readOnlyRootFilesystem)

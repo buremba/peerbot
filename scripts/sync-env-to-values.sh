@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 
 # Sync .env values to Helm values.yaml
 # Usage: ./scripts/sync-env-to-values.sh [values-file] [environment]

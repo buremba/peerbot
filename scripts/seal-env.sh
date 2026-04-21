@@ -10,7 +10,7 @@
 #   ./scripts/seal-env.sh -o values.yaml     # Output to file
 #   ./scripts/seal-env.sh --apply            # Apply directly to cluster
 
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -83,12 +83,7 @@ SEALED_SECRET=$(kubectl create secret generic lobu-secrets \
   "${SECRET_ARGS[@]}" \
   --dry-run=client -o yaml | \
 kubeseal --controller-name=sealed-secrets-controller --controller-namespace=kube-system \
-  --scope namespace-wide --format yaml 2>/dev/null)
-
-if [[ $? -ne 0 ]]; then
-  echo "Error: Failed to seal secrets. Is the Sealed Secrets controller running?" >&2
-  exit 1
-fi
+  --scope namespace-wide --format yaml)
 
 if [[ "$APPLY_DIRECT" == "true" ]]; then
   echo "$SEALED_SECRET" | kubectl apply -f -

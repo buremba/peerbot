@@ -68,10 +68,6 @@ spec:
   limits:
   # More restrictive limits for worker containers
   - type: Container
-    # Apply to containers with worker label
-    selector:
-      matchLabels:
-        component: worker
     default:
       cpu: {{ .Values.limitRange.worker.default.cpu | default "1" }}
       memory: {{ .Values.limitRange.worker.default.memory | default "2Gi" }}

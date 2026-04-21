@@ -99,9 +99,9 @@ services:
         - action: sync+restart
           path: ../packages/worker/src
           target: /app/packages/worker/src
-        - action: sync+restart
-          path: ../config
-          target: /app/config
+        # config/ is bind-mounted read-only (../config:/app/config:ro), so file
+        # edits are already visible to the process — a sync+restart watch here
+        # would fail to write into the read-only target.
         - action: rebuild
           path: ../packages/owletto-backend/package.json
         - action: rebuild

@@ -183,6 +183,9 @@ services:
       OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:-dev-openclaw-token}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
     networks:
+      # lobu-public for outbound access to Telegram / hosted LLM providers;
+      # lobu-internal to reach the embedded gateway on the `app` service.
+      - lobu-public
       - lobu-internal
     ports:
       - "18789:18789"

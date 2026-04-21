@@ -19,7 +19,7 @@ set -e
 #   WhatsApp: WHATSAPP_SELF_PHONE (defaults to bot's own number for self-chat)
 #   Telegram: TELEGRAM_TEST_CHAT_ID, TG_API_ID, TG_API_HASH (uses tguser to send as real user)
 
-GATEWAY_URL="${GATEWAY_URL:-http://localhost:8080}"
+GATEWAY_URL="${GATEWAY_URL:-http://localhost:8787/lobu}"
 
 fetch_telegram_bot_peer() {
     local username

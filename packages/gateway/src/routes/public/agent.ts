@@ -25,6 +25,7 @@ import type { QueueProducer } from "../../infrastructure/queue/queue-producer";
 import { getModelProviderModules } from "../../modules/module-system";
 import type { PlatformRegistry } from "../../platform";
 import { resolveAgentOptions } from "../../services/platform-helpers";
+import type { SseManager } from "../../services/sse-manager";
 import type { ISessionManager, ThreadSession } from "../../session";
 import { errorResponse } from "../shared/helpers";
 
@@ -36,28 +37,6 @@ const logger = createLogger("agent-api");
 
 const MAX_CONNECTIONS_PER_AGENT = 5;
 const MAX_TOTAL_CONNECTIONS = 1000;
-
-// SSE connection tracking
-const sseConnections = new Map<string, Set<any>>();
-const sseEventBacklog = new Map<
-  string,
-  Array<{ event: string; data: unknown; timestamp: number }>
->();
-const SSE_EVENT_BACKLOG_LIMIT = 100;
-const SSE_EVENT_BACKLOG_TTL_MS = 2 * 60 * 1000;
-
-function pruneExpiredSseEventBacklog(now = Date.now()): void {
-  for (const [agentId, entries] of sseEventBacklog.entries()) {
-    const freshEntries = entries.filter(
-      (entry) => now - entry.timestamp <= SSE_EVENT_BACKLOG_TTL_MS
-    );
-    if (freshEntries.length === 0) {
-      sseEventBacklog.delete(agentId);
-      continue;
-    }
-    sseEventBacklog.set(agentId, freshEntries);
-  }
-}
 
 // =============================================================================
 // Zod Schemas
@@ -264,65 +243,6 @@ function validateMcpConfig(
 }
 
 // =============================================================================
-// Broadcast Functions (exported for use by other modules)
-// =============================================================================
-
-function rememberSseEvent(agentId: string, event: string, data: unknown): void {
-  const now = Date.now();
-  pruneExpiredSseEventBacklog(now);
-  const existing = sseEventBacklog.get(agentId) || [];
-  const next = existing
-    .concat({ event, data, timestamp: now })
-    .slice(-SSE_EVENT_BACKLOG_LIMIT);
-  sseEventBacklog.set(agentId, next);
-}
-
-function getRecentSseEvents(
-  agentId: string
-): Array<{ event: string; data: unknown; timestamp: number }> {
-  const now = Date.now();
-  pruneExpiredSseEventBacklog(now);
-  return sseEventBacklog.get(agentId) || [];
-}
-
-export function broadcastToAgent(
-  agentId: string,
-  event: string,
-  data: unknown
-): void {
-  rememberSseEvent(agentId, event, data);
-
-  const connections = sseConnections.get(agentId);
-  if (!connections || connections.size === 0) return;
-
-  const deadConnections = new Set<any>();
-
-  for (const res of connections) {
-    try {
-      if (res.closed || res.destroyed || res.writableEnded) {
-        deadConnections.add(res);
-        continue;
-      }
-      if (typeof res.writeSSE === "function") {
-        res.writeSSE({ event, data: JSON.stringify(data) });
-      } else if (typeof res.write === "function") {
-        const message = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
-        res.write(message);
-      }
-    } catch {
-      deadConnections.add(res);
-    }
-  }
-
-  for (const deadRes of deadConnections) {
-    connections.delete(deadRes);
-  }
-  if (connections.size === 0) {
-    sseConnections.delete(agentId);
-  }
-}
-
-// =============================================================================
 // OpenAPI Route Definitions
 // =============================================================================
 
@@ -473,6 +393,7 @@ const sendMessageRoute = createRoute({
 export interface AgentApiConfig {
   queueProducer: QueueProducer;
   sessionManager: ISessionManager;
+  sseManager: SseManager;
   publicGatewayUrl: string;
   adminPassword?: string;
   cliTokenService?: CliTokenService;
@@ -486,26 +407,7 @@ export interface AgentApiConfig {
   ) => Promise<{ success: boolean; error?: string }>;
 }
 
-export function createAgentApi(config: AgentApiConfig): OpenAPIHono;
-export function createAgentApi(
-  queueProducer: QueueProducer,
-  sessionManager: ISessionManager,
-  publicGatewayUrl: string
-): OpenAPIHono;
-export function createAgentApi(
-  configOrQueue: AgentApiConfig | QueueProducer,
-  sessionManager?: ISessionManager,
-  publicGatewayUrl?: string
-): OpenAPIHono {
-  const config: AgentApiConfig =
-    configOrQueue instanceof Object && "queueProducer" in configOrQueue
-      ? configOrQueue
-      : {
-          queueProducer: configOrQueue as QueueProducer,
-          sessionManager: sessionManager!,
-          publicGatewayUrl: publicGatewayUrl!,
-        };
-
+export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
   const {
     queueProducer,
     adminPassword,
@@ -515,6 +417,7 @@ export function createAgentApi(
     platformRegistry,
   } = config;
   const sessMgr = config.sessionManager;
+  const sseManager = config.sseManager;
   const pubUrl = config.publicGatewayUrl;
   const app = new OpenAPIHono();
 
@@ -730,9 +633,7 @@ export function createAgentApi(
       return c.json({ success: false, error: "Agent not found" }, 404);
     }
 
-    const hasActiveConnection =
-      sseConnections.has(sessionKey) &&
-      (sseConnections.get(sessionKey)?.size ?? 0) > 0;
+    const hasActiveConnection = sseManager.hasActiveConnection(sessionKey);
 
     return c.json({
       success: true,
@@ -751,33 +652,10 @@ export function createAgentApi(
   app.openapi(deleteAgentRoute, async (c): Promise<any> => {
     const { agentId: sessionKey } = c.req.valid("param");
 
-    const connections = sseConnections.get(sessionKey);
-    if (connections) {
-      for (const connection of connections) {
-        try {
-          if (typeof connection.writeSSE === "function") {
-            connection.writeSSE({
-              event: "closed",
-              data: JSON.stringify({ reason: "agent_deleted" }),
-            });
-          } else if (typeof connection.write === "function") {
-            connection.write(
-              `event: closed\ndata: ${JSON.stringify({ reason: "agent_deleted" })}\n\n`
-            );
-          }
-          connection.close?.();
-          connection.end?.();
-        } catch {
-          // Ignore
-        }
-      }
-      sseConnections.delete(sessionKey);
-    }
-
-    // Drop any remembered SSE events so a later connection with the same key
-    // (rare, but possible with deterministic conversationIds) can't replay
-    // stale completion events from this deleted session.
-    sseEventBacklog.delete(sessionKey);
+    // Close connections + drop backlog so a later connection with the same
+    // key (rare, but possible with deterministic conversationIds) can't
+    // replay stale completion events from this deleted session.
+    sseManager.closeAgent(sessionKey, "agent_deleted");
 
     // Get real agentId from session before deleting
     const session = await sessMgr.getSession(sessionKey);
@@ -812,24 +690,16 @@ export function createAgentApi(
     }
 
     // Check connection limits
-    const totalConnections = Array.from(sseConnections.values()).reduce(
-      (acc, set) => acc + set.size,
-      0
-    );
-    if (totalConnections >= MAX_TOTAL_CONNECTIONS) {
+    if (sseManager.totalConnections() >= MAX_TOTAL_CONNECTIONS) {
       return c.json(
         { success: false, error: "Server connection limit reached" },
         429
       );
     }
 
-    // Use conversationId as the SSE connection key (matches broadcastToAgent calls)
+    // Use conversationId as the SSE connection key (matches broadcast calls)
     const sseKey = session.conversationId;
-    if (!sseConnections.has(sseKey)) {
-      sseConnections.set(sseKey, new Set());
-    }
-    const agentConnections = sseConnections.get(sseKey)!;
-    if (agentConnections.size >= MAX_CONNECTIONS_PER_AGENT) {
+    if (sseManager.connectionCount(sseKey) >= MAX_CONNECTIONS_PER_AGENT) {
       return c.json(
         {
           success: false,
@@ -841,7 +711,7 @@ export function createAgentApi(
 
     // Return SSE stream
     return streamSSE(c, async (stream) => {
-      agentConnections.add(stream);
+      sseManager.addConnection(sseKey, stream);
 
       await stream.writeSSE({
         event: "connected",
@@ -851,7 +721,7 @@ export function createAgentApi(
         }),
       });
 
-      for (const entry of getRecentSseEvents(sseKey)) {
+      for (const entry of sseManager.getRecentEvents(sseKey)) {
         await stream.writeSSE({
           event: entry.event,
           data: JSON.stringify(entry.data),
@@ -871,10 +741,7 @@ export function createAgentApi(
 
       stream.onAbort(() => {
         clearInterval(heartbeatInterval);
-        agentConnections.delete(stream);
-        if (agentConnections.size === 0) {
-          sseConnections.delete(sseKey);
-        }
+        sseManager.removeConnection(sseKey, stream);
         logger.info(`SSE connection closed for session ${sseKey}`);
       });
 

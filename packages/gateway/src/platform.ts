@@ -23,6 +23,7 @@ import type { SecretProxy } from "./proxy/secret-proxy";
 import type { WritableSecretStore } from "./secrets";
 import type { DeclaredAgentRegistry } from "./services/declared-agent-registry";
 import type { InstructionService } from "./services/instruction-service";
+import type { SseManager } from "./services/sse-manager";
 import type { TranscriptionService } from "./services/transcription-service";
 import type { ISessionManager } from "./session";
 
@@ -48,6 +49,7 @@ export interface CoreServices {
   getSessionManager(): ISessionManager;
   getInstructionService(): InstructionService | undefined;
   getInteractionService(): InteractionService;
+  getSseManager(): SseManager;
   getAgentSettingsStore(): AgentSettingsStore;
   getChannelBindingService(): ChannelBindingService;
   getTranscriptionService(): TranscriptionService | undefined;

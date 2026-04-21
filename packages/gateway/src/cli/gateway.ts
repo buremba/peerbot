@@ -296,6 +296,7 @@ export function createGatewayApp(
       const agentApi = createAgentApi({
         queueProducer,
         sessionManager: sessionMgr,
+        sseManager: coreServices.getSseManager(),
         publicGatewayUrl: publicUrl,
         adminPassword,
         cliTokenService,

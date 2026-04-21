@@ -13,7 +13,7 @@ import type {
 } from "../infrastructure/queue";
 import { getScheduleServiceInstance } from "../orchestration/scheduled-wakeup";
 import type { PlatformRegistry } from "../platform";
-import { broadcastToAgent } from "../routes/public/agent";
+import type { SseManager } from "../services/sse-manager";
 import type { ResponseRenderer } from "./response-renderer";
 
 const logger = createLogger("unified-thread-consumer");
@@ -29,7 +29,8 @@ export class UnifiedThreadResponseConsumer {
 
   constructor(
     private queue: IMessageQueue,
-    private platformRegistry: PlatformRegistry
+    private platformRegistry: PlatformRegistry,
+    private sseManager: SseManager
   ) {}
 
   setChatResponseBridge(bridge: ChatResponseBridge): void {
@@ -182,13 +183,17 @@ export class UnifiedThreadResponseConsumer {
         timestamp: data.timestamp,
         messageId: data.messageId,
       };
-      broadcastToAgent(
+      this.sseManager.broadcast(
         data.conversationId,
         data.customEvent.name,
         eventPayload
       );
       if (cliSessionId) {
-        broadcastToAgent(cliSessionId, data.customEvent.name, eventPayload);
+        this.sseManager.broadcast(
+          cliSessionId,
+          data.customEvent.name,
+          eventPayload
+        );
       }
 
       if (
@@ -205,7 +210,7 @@ export class UnifiedThreadResponseConsumer {
     // Handle ephemeral messages (OAuth/auth flows)
     if (data.ephemeral && data.content && renderer.handleEphemeral) {
       if (cliSessionId) {
-        broadcastToAgent(cliSessionId, "ephemeral", {
+        this.sseManager.broadcast(cliSessionId, "ephemeral", {
           type: "ephemeral",
           content: data.content,
           messageId: data.messageId,
@@ -219,7 +224,7 @@ export class UnifiedThreadResponseConsumer {
     // Handle status updates (heartbeat with elapsed time)
     if (data.statusUpdate && renderer.handleStatusUpdate) {
       if (cliSessionId) {
-        broadcastToAgent(cliSessionId, "status", {
+        this.sseManager.broadcast(cliSessionId, "status", {
           type: "status",
           status: data.statusUpdate,
           messageId: data.messageId,
@@ -233,7 +238,7 @@ export class UnifiedThreadResponseConsumer {
     // Handle streaming delta
     if (data.delta && renderer.handleDelta) {
       if (cliSessionId) {
-        broadcastToAgent(cliSessionId, "output", {
+        this.sseManager.broadcast(cliSessionId, "output", {
           type: "delta",
           content: data.delta,
           timestamp: data.timestamp,
@@ -250,7 +255,7 @@ export class UnifiedThreadResponseConsumer {
     // Handle error
     if (data.error) {
       if (cliSessionId) {
-        broadcastToAgent(cliSessionId, "error", {
+        this.sseManager.broadcast(cliSessionId, "error", {
           type: "error",
           error: data.error,
           messageId: data.messageId,
@@ -260,7 +265,7 @@ export class UnifiedThreadResponseConsumer {
       await renderer.handleError(data, sessionKey);
       // Also complete session on error
       if (cliSessionId) {
-        broadcastToAgent(cliSessionId, "complete", {
+        this.sseManager.broadcast(cliSessionId, "complete", {
           type: "complete",
           messageId: data.messageId,
           processedMessageIds: data.processedMessageIds,
@@ -274,7 +279,7 @@ export class UnifiedThreadResponseConsumer {
     // Handle completion
     if (data.processedMessageIds?.length) {
       if (cliSessionId) {
-        broadcastToAgent(cliSessionId, "complete", {
+        this.sseManager.broadcast(cliSessionId, "complete", {
           type: "complete",
           messageId: data.messageId,
           processedMessageIds: data.processedMessageIds,

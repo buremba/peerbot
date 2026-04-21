@@ -138,7 +138,8 @@ export class Gateway {
     // Single consumer routes responses to platforms via registry
     this.unifiedConsumer = new UnifiedThreadResponseConsumer(
       this.coreServices.getQueue(),
-      platformRegistry
+      platformRegistry,
+      this.coreServices.getSseManager()
     );
     await this.unifiedConsumer.start();
 

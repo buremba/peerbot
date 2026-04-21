@@ -75,6 +75,7 @@ import { ImageGenerationService } from "./image-generation-service";
 import { InstructionService } from "./instruction-service";
 import { SessionManager, StateAdapterSessionStore } from "./session-manager";
 import { SettingsResolver } from "./settings-resolver";
+import { SseManager } from "./sse-manager";
 import { ProviderConfigResolver } from "./provider-config-resolver";
 import { ProviderRegistryService } from "./provider-registry-service";
 import { TranscriptionService } from "./transcription-service";
@@ -97,6 +98,7 @@ export class CoreServices {
   private sessionManager?: SessionManager;
   private instructionService?: InstructionService;
   private interactionService?: InteractionService;
+  private sseManager?: SseManager;
 
   // ============================================================================
   // Auth & Provider Services
@@ -350,6 +352,9 @@ export class CoreServices {
 
     this.interactionService = new InteractionService();
     logger.debug("Interaction service initialized");
+
+    this.sseManager = new SseManager();
+    logger.debug("SSE manager initialized");
 
     // Initialize grant store for unified permissions
     this.grantStore = new GrantStore(redisClient);
@@ -1143,6 +1148,11 @@ export class CoreServices {
     if (!this.interactionService)
       throw new Error("Interaction service not initialized");
     return this.interactionService;
+  }
+
+  getSseManager(): SseManager {
+    if (!this.sseManager) throw new Error("SSE manager not initialized");
+    return this.sseManager;
   }
 
   getAgentSettingsStore(): AgentSettingsStore {

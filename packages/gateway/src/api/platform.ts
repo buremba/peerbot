@@ -10,7 +10,6 @@ import { randomUUID } from "node:crypto";
 import { createLogger, type InstructionProvider } from "@lobu/core";
 import type { CoreServices, PlatformAdapter } from "../platform";
 import type { ResponseRenderer } from "../platform/response-renderer";
-import { broadcastToAgent } from "../routes/public/agent";
 import { ApiResponseRenderer } from "./response-renderer";
 
 const logger = createLogger("api-platform");
@@ -46,16 +45,17 @@ export class ApiPlatform implements PlatformAdapter {
     logger.debug("Initializing API platform...");
 
     this.services = services;
+    const sseManager = services.getSseManager();
 
     // Create response renderer for routing worker responses to SSE clients
-    this.responseRenderer = new ApiResponseRenderer();
+    this.responseRenderer = new ApiResponseRenderer(sseManager);
 
     // Subscribe to interaction events to broadcast to SSE clients
     const interactionService = services.getInteractionService();
 
     interactionService.on("question:created", (event: any) => {
       if (event.teamId !== "api") return;
-      broadcastToAgent(event.conversationId, "question", {
+      sseManager.broadcast(event.conversationId, "question", {
         type: "question",
         questionId: event.id,
         question: event.question,
@@ -66,7 +66,7 @@ export class ApiPlatform implements PlatformAdapter {
 
     interactionService.on("link-button:created", (event: any) => {
       if (event.platform !== "api") return;
-      broadcastToAgent(event.conversationId, "link-button", {
+      sseManager.broadcast(event.conversationId, "link-button", {
         type: "link-button",
         url: event.url,
         label: event.label,
@@ -77,7 +77,7 @@ export class ApiPlatform implements PlatformAdapter {
 
     interactionService.on("tool:approval-needed", (event: any) => {
       if (event.teamId !== "api") return;
-      broadcastToAgent(event.conversationId, "tool-approval", {
+      sseManager.broadcast(event.conversationId, "tool-approval", {
         type: "tool-approval",
         requestId: event.id,
         mcpId: event.mcpId,
@@ -91,7 +91,7 @@ export class ApiPlatform implements PlatformAdapter {
 
     interactionService.on("suggestion:created", (event: any) => {
       if (event.teamId !== "api") return;
-      broadcastToAgent(event.conversationId, "suggestion", {
+      sseManager.broadcast(event.conversationId, "suggestion", {
         type: "suggestion",
         prompts: event.prompts,
         timestamp: Date.now(),

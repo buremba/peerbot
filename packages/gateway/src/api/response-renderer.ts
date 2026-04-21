@@ -8,7 +8,7 @@
 import { createLogger } from "@lobu/core";
 import type { ThreadResponsePayload } from "../infrastructure/queue/types";
 import type { ResponseRenderer } from "../platform/response-renderer";
-import { broadcastToAgent } from "../routes/public/agent";
+import type { SseManager } from "../services/sse-manager";
 
 const logger = createLogger("api-response-renderer");
 
@@ -17,6 +17,8 @@ const logger = createLogger("api-response-renderer");
  * Broadcasts responses to SSE clients instead of external platforms
  */
 export class ApiResponseRenderer implements ResponseRenderer {
+  constructor(private readonly sseManager: SseManager) {}
+
   /**
    * Handle streaming delta content
    * Broadcasts delta to SSE connections
@@ -34,7 +36,7 @@ export class ApiResponseRenderer implements ResponseRenderer {
     }
 
     // Broadcast delta to SSE clients
-    broadcastToAgent(sessionId, "output", {
+    this.sseManager.broadcast(sessionId, "output", {
       type: "delta",
       content: payload.delta,
       timestamp: payload.timestamp || Date.now(),
@@ -65,7 +67,7 @@ export class ApiResponseRenderer implements ResponseRenderer {
     }
 
     // Broadcast completion to SSE clients
-    broadcastToAgent(sessionId, "complete", {
+    this.sseManager.broadcast(sessionId, "complete", {
       type: "complete",
       messageId: payload.messageId,
       processedMessageIds: payload.processedMessageIds,
@@ -92,7 +94,7 @@ export class ApiResponseRenderer implements ResponseRenderer {
     }
 
     // Broadcast error to SSE clients
-    broadcastToAgent(sessionId, "error", {
+    this.sseManager.broadcast(sessionId, "error", {
       type: "error",
       error: payload.error,
       messageId: payload.messageId,
@@ -115,7 +117,7 @@ export class ApiResponseRenderer implements ResponseRenderer {
     }
 
     // Broadcast status to SSE clients
-    broadcastToAgent(sessionId, "status", {
+    this.sseManager.broadcast(sessionId, "status", {
       type: "status",
       status: payload.statusUpdate,
       messageId: payload.messageId,
@@ -136,7 +138,7 @@ export class ApiResponseRenderer implements ResponseRenderer {
     }
 
     // Broadcast ephemeral content to SSE clients
-    broadcastToAgent(sessionId, "ephemeral", {
+    this.sseManager.broadcast(sessionId, "ephemeral", {
       type: "ephemeral",
       content: payload.content,
       messageId: payload.messageId,

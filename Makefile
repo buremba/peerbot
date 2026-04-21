@@ -161,7 +161,7 @@ logs:
 		echo "  kubectl logs -f <pod-name> -n lobu"; \
 	else \
 		echo "View logs with:"; \
-		echo "  docker compose logs -f gateway"; \
+		echo "  docker compose logs -f app"; \
 	fi
 
 # Stop worker containers

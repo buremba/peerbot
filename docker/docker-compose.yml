@@ -140,7 +140,10 @@ services:
       context: ..
       dockerfile: docker/worker/Dockerfile
       target: runtime
-    image: lobu-worker:latest
+    # Distinct tag from the Lobu agent worker image (also `lobu-worker:latest`)
+    # built by scripts/setup-dev.sh and `make build-worker`, so running compose
+    # does not clobber the tag those flows rely on.
+    image: lobu-owletto-worker:latest
     environment:
       NODE_ENV: development
       API_URL: http://app:8787

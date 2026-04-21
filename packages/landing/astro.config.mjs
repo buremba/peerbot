@@ -10,7 +10,11 @@ import { defineConfig } from "astro/config";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
 // Force Zod v3 for Astro action runtime compatibility.
-const zodPath = dirname(require.resolve("zod/package.json"));
+// Resolve zod from Astro's own dependency tree so we always pick up the
+// v3 copy that Astro/Starlight were built against, even when a newer zod
+// (e.g. v4) is hoisted higher in the workspace.
+const astroRequire = createRequire(require.resolve("astro/package.json"));
+const zodPath = dirname(astroRequire.resolve("zod/package.json"));
 
 const settingsDir = resolve(
   __dirname,

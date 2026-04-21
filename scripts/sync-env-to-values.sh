@@ -5,6 +5,16 @@
 
 ENV_FILE=".env"
 
+if ! command -v yq >/dev/null 2>&1; then
+    echo "❌ yq is required. Install it and retry:" >&2
+    case "$(uname -s)" in
+        Darwin) echo "   brew install yq" >&2 ;;
+        Linux)  echo "   sudo apt-get install -y yq  (or see https://github.com/mikefarah/yq#install)" >&2 ;;
+        *)      echo "   https://github.com/mikefarah/yq#install" >&2 ;;
+    esac
+    exit 1
+fi
+
 # Determine values file based on environment or explicit path
 if [ -n "$2" ]; then
     # Environment specified (dev, production, local)
@@ -49,13 +59,7 @@ update_yaml_value() {
 
     if [ -n "$value" ]; then
         echo "  ✓ $key: $value"
-        # Use yq if available, otherwise sed
-        if command -v yq >/dev/null 2>&1; then
-            yq eval "$yaml_path = \"$value\"" -i "$TEMP_VALUES"
-        else
-            # Fallback to sed for simple cases
-            sed -i.bak "s|$yaml_path:.*|$yaml_path: $value|g" "$TEMP_VALUES" && rm "$TEMP_VALUES.bak"
-        fi
+        yq eval "$yaml_path = \"$value\"" -i "$TEMP_VALUES"
     fi
 }
 

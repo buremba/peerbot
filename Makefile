@@ -1,5 +1,15 @@
 # Development Makefile for Lobu
 
+# Resolve deployment mode once: honor explicit env var, else parse .env, else default to docker.
+DEPLOYMENT_MODE := $(shell \
+	if [ -n "$$DEPLOYMENT_MODE" ]; then \
+		echo "$$DEPLOYMENT_MODE"; \
+	elif [ -f .env ]; then \
+		grep "^DEPLOYMENT_MODE=" .env | cut -d'=' -f2 | tr -d ' '; \
+	else \
+		echo docker; \
+	fi)
+
 .PHONY: help setup build test eval clean logs deploy down build-packages dev
 
 # Default target
@@ -142,13 +152,7 @@ deploy:
 
 # View logs based on deployment mode
 logs:
-	@# Read DEPLOYMENT_MODE from .env file
-	@if [ -f .env ]; then \
-		DEPLOYMENT_MODE=$$(grep "^DEPLOYMENT_MODE=" .env | cut -d'=' -f2 | tr -d ' '); \
-	else \
-		DEPLOYMENT_MODE="docker"; \
-	fi; \
-	if [ "$$DEPLOYMENT_MODE" = "kubernetes" ] || [ "$$DEPLOYMENT_MODE" = "k8s" ]; then \
+	@if [ "$(DEPLOYMENT_MODE)" = "kubernetes" ] || [ "$(DEPLOYMENT_MODE)" = "k8s" ]; then \
 		echo "☸️  Viewing Kubernetes logs..."; \
 		echo "Select a pod to view logs:"; \
 		kubectl get pods -n lobu; \
@@ -169,14 +173,8 @@ down:
 
 # Clean up everything including volumes
 clean:
-	@# Load deployment mode from .env
-	@if [ -f .env ]; then \
-		DEPLOYMENT_MODE=$$(grep "^DEPLOYMENT_MODE=" .env | cut -d'=' -f2 | tr -d ' '); \
-	else \
-		DEPLOYMENT_MODE="docker"; \
-	fi; \
-	echo "🧹 Cleaning up lobu resources (mode: $$DEPLOYMENT_MODE)..."; \
-	if [ "$$DEPLOYMENT_MODE" = "kubernetes" ] || [ "$$DEPLOYMENT_MODE" = "k8s" ]; then \
+	@echo "🧹 Cleaning up lobu resources (mode: $(DEPLOYMENT_MODE))..."; \
+	if [ "$(DEPLOYMENT_MODE)" = "kubernetes" ] || [ "$(DEPLOYMENT_MODE)" = "k8s" ]; then \
 		echo "☸️  Cleaning Kubernetes resources..."; \
 		helm uninstall lobu -n lobu 2>/dev/null || true; \
 		kubectl delete namespace lobu --wait=false 2>/dev/null || true; \
@@ -191,14 +189,8 @@ clean:
 	fi
 
 clean-workers:
-	@# Load deployment mode from .env
-	@if [ -f .env ]; then \
-		DEPLOYMENT_MODE=$$(grep "^DEPLOYMENT_MODE=" .env | cut -d'=' -f2 | tr -d ' '); \
-	else \
-		DEPLOYMENT_MODE="docker"; \
-	fi; \
-	echo "🧹 Removing worker containers (mode: $$DEPLOYMENT_MODE)..."; \
-	if [ "$$DEPLOYMENT_MODE" = "kubernetes" ] || [ "$$DEPLOYMENT_MODE" = "k8s" ]; then \
+	@echo "🧹 Removing worker containers (mode: $(DEPLOYMENT_MODE))..."; \
+	if [ "$(DEPLOYMENT_MODE)" = "kubernetes" ] || [ "$(DEPLOYMENT_MODE)" = "k8s" ]; then \
 		echo "☸️  Removing Kubernetes worker pods..."; \
 		kubectl delete pods -n lobu -l app.kubernetes.io/component=worker --wait=false 2>/dev/null || true; \
 		echo "✅ Kubernetes worker pods removed"; \

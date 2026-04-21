@@ -67,14 +67,19 @@ RUN echo 'export PATH="/home/bun/.bun/bin:$PATH"' >> /home/worker/.bashrc && \
     echo 'export BUN_INSTALL="/home/bun/.bun"' >> /home/worker/.bashrc && \
     echo 'export PATH="/root/.cargo/bin:$PATH"' >> /home/worker/.bashrc
 
-# Create minimal package.json for worker-only workspace
-RUN echo '{ "name": "@lobu/worker-build", "private": true, "workspaces": [ "packages/core", "packages/worker" ] }' > package.json
+# Create minimal package.json for worker-only workspace.
+# Must include every workspace the worker depends on (directly or transitively)
+# so `bun install` can resolve workspace:* specifiers.
+RUN echo '{ "name": "@lobu/worker-build", "private": true, "workspaces": [ "packages/core", "packages/worker", "packages/owletto-openclaw", "packages/owletto-cli", "packages/owletto-sdk" ] }' > package.json
 
 # Copy dependency manifests
 COPY bun.lock ./bun.lock
 COPY tsconfig.json ./
 COPY packages/worker/package.json ./packages/worker/
 COPY packages/core/package.json ./packages/core/
+COPY packages/owletto-openclaw/package.json ./packages/owletto-openclaw/
+COPY packages/owletto-cli/package.json ./packages/owletto-cli/
+COPY packages/owletto-sdk/package.json ./packages/owletto-sdk/
 
 # Install all dependencies including devDependencies for building
 RUN --mount=type=cache,target=/root/.bun/install/cache bun install

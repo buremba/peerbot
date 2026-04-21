@@ -119,39 +119,6 @@ export class SessionError extends BaseError {
   }
 }
 
-/**
- * Worker error variant with workerId for core operations
- */
-export class CoreWorkerError extends WorkerError {
-  constructor(
-    public workerId: string,
-    operation: string,
-    message: string,
-    cause?: Error
-  ) {
-    super(operation, message, cause);
-  }
-
-  override toJSON(): Record<string, any> {
-    return {
-      ...super.toJSON(),
-      workerId: this.workerId,
-    };
-  }
-}
-
-/**
- * Error class for dispatcher-related operations
- */
-export class DispatcherError extends BaseError {
-  override readonly name = "DispatcherError";
-
-  constructor(operation: string, message: string, cause?: Error) {
-    super(message, cause);
-    this.operation = operation;
-  }
-}
-
 // ErrorCode enum for orchestration operations
 export enum ErrorCode {
   DATABASE_CONNECTION_FAILED = "DATABASE_CONNECTION_FAILED",

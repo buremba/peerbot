@@ -1,8 +1,6 @@
 import * as crypto from "node:crypto";
-import { createLogger } from "../logger";
 
 const IV_LENGTH = 12; // 96-bit nonce for AES-GCM
-const logger = createLogger("encryption");
 
 /**
  * Get encryption key from environment with validation
@@ -18,22 +16,19 @@ function getEncryptionKey(): Buffer {
     );
   }
 
-  // Try to decode as base64 first (most common format)
-  let keyBuffer: Buffer;
-  try {
-    keyBuffer = Buffer.from(key, "base64");
-    if (keyBuffer.length === 32) {
-      return keyBuffer;
-    }
-  } catch (err) {
-    logger.debug("ENCRYPTION_KEY is not valid base64, trying hex format", err);
+  // Try to decode as base64 first (most common format).
+  // Buffer.from with "base64" does not throw on invalid input — it silently
+  // discards non-base64 chars — so we only need a length check here.
+  const base64Buffer = Buffer.from(key, "base64");
+  if (base64Buffer.length === 32) {
+    return base64Buffer;
   }
 
   // Try as hex (must be exactly 64 hex characters for 32 bytes)
   if (/^[0-9a-fA-F]{64}$/.test(key)) {
-    keyBuffer = Buffer.from(key, "hex");
-    if (keyBuffer.length === 32) {
-      return keyBuffer;
+    const hexBuffer = Buffer.from(key, "hex");
+    if (hexBuffer.length === 32) {
+      return hexBuffer;
     }
   }
 

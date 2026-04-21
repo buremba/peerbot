@@ -1,3 +1,5 @@
+import { useReveal } from "./use-reveal";
+
 type SectionHeaderProps = {
   title: string;
   body?: string;
@@ -9,8 +11,17 @@ export function SectionHeader({
   body,
   className = "",
 }: SectionHeaderProps) {
+  const { ref, className: revealClassName } = useReveal<HTMLDivElement>();
+  const composed = [
+    "max-w-3xl mx-auto text-center",
+    className,
+    revealClassName,
+  ]
+    .filter(Boolean)
+    .join(" ");
+
   return (
-    <div class={`max-w-3xl mx-auto text-center ${className}`.trim()}>
+    <div ref={ref} class={composed}>
       <h2
         class="text-2xl sm:text-3xl font-bold tracking-tight mb-3"
         style={{ color: "var(--color-page-text)" }}

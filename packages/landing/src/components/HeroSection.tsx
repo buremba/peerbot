@@ -64,7 +64,7 @@ export function HeroSection(props: {
           href={GITHUB_URL}
           target="_blank"
           rel="noopener noreferrer"
-          class="inline-flex items-center gap-2 text-xs font-semibold tracking-wider uppercase px-3 py-1 mb-5 rounded-full transition-all hover:opacity-80"
+          class="hero-rise hero-rise-1 inline-flex items-center gap-2 text-xs font-semibold tracking-wider uppercase px-3 py-1 mb-5 rounded-full transition-all hover:opacity-80"
           style={{
             color: "var(--color-page-text-muted)",
             border: "1px solid var(--color-page-border)",
@@ -73,7 +73,7 @@ export function HeroSection(props: {
           Open source · Self-hosted
         </a>
         <h1
-          class="text-4xl sm:text-5xl font-bold tracking-tight leading-[1.1] mb-5"
+          class="hero-rise hero-rise-2 text-4xl sm:text-5xl font-bold tracking-tight leading-[1.1] mb-5"
           style={{ color: "var(--color-page-text)" }}
         >
           <HighlightedText
@@ -83,14 +83,14 @@ export function HeroSection(props: {
         </h1>
         {props.heroCopy ? (
           <p
-            class="text-lg mx-auto mb-4 leading-relaxed max-w-3xl"
+            class="hero-rise hero-rise-3 text-lg mx-auto mb-4 leading-relaxed max-w-3xl"
             style={{ color: "var(--color-page-text-muted)" }}
           >
             {props.heroCopy.description}
           </p>
         ) : (
           <p
-            class="text-lg mx-auto mb-4 leading-relaxed max-w-3xl"
+            class="hero-rise hero-rise-3 text-lg mx-auto mb-4 leading-relaxed max-w-3xl"
             style={{ color: "var(--color-page-text-muted)" }}
           >
             Pre-built templates for research, internal ops, and personal memory.
@@ -98,7 +98,7 @@ export function HeroSection(props: {
           </p>
         )}
         {/* CTA buttons */}
-        <div class="flex flex-wrap gap-3 mb-6 justify-center items-center">
+        <div class="hero-rise hero-rise-4 flex flex-wrap gap-3 mb-6 justify-center items-center">
           <a
             href={owlettoUrl}
             target="_blank"
@@ -135,7 +135,7 @@ export function HeroSection(props: {
           )}
         </div>
 
-        <div class="mt-8 mb-6">
+        <div class="hero-rise hero-rise-5 mt-8 mb-6">
           <ScopedUseCaseTabs
             groups={landingUseCaseGroupedOptions}
             activeId={activeUseCase.id}

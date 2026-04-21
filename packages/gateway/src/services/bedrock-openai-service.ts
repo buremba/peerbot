@@ -4,6 +4,7 @@ import type { Model } from "@mariozechner/pi-ai/dist/types.js";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { createLogger } from "@lobu/core";
+import { authenticateWorker } from "../routes/internal/middleware";
 import {
   BedrockModelCatalog,
   buildDynamicBedrockModel,
@@ -533,6 +534,11 @@ export class BedrockOpenAIService {
         region: resolveAwsRegion() || null,
       })
     );
+
+    // All routes below this line require a valid worker JWT. Without auth
+    // anyone on the network could burn AWS Bedrock spend through this
+    // gateway-owned IAM bridge and exfiltrate model outputs.
+    this.app.use("/openai/*", authenticateWorker);
 
     this.app.get("/openai/a/:agentId/v1/models", async (c) => {
       const models = await this.modelCatalog.listModelOptions();

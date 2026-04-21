@@ -462,7 +462,8 @@ export class WorkerGateway {
       const providerConfig = await this.resolveProviderConfig(
         agentSettings?.templateAgentId || agentId || "",
         resolveEffectiveModelRef(agentSettings),
-        baseUrl
+        baseUrl,
+        auth.token
       );
 
       // Fetch enabled skills with content for worker filesystem sync
@@ -576,7 +577,8 @@ export class WorkerGateway {
   private async resolveProviderConfig(
     agentId: string,
     agentModel?: string,
-    requestBaseUrl?: string
+    requestBaseUrl?: string,
+    workerToken?: string
   ): Promise<{
     credentialEnvVarName?: string;
     defaultProvider?: string;
@@ -662,12 +664,14 @@ export class WorkerGateway {
 
     // Build credential placeholders for proxy mode — in-process workers need
     // these so the runtime doesn't reject requests before they reach the proxy.
+    // Providers that authenticate via the worker JWT (e.g. Bedrock) receive
+    // the worker token so their placeholder *is* a verifiable credential.
     const credentialPlaceholders: Record<string, string> = {};
     for (const provider of effectiveProviders) {
       if (provider.hasSystemKey() || (await provider.hasCredentials(agentId))) {
         const credVar = provider.getCredentialEnvVarName();
         const placeholder = provider.buildCredentialPlaceholder
-          ? await provider.buildCredentialPlaceholder(agentId)
+          ? await provider.buildCredentialPlaceholder(agentId, { workerToken })
           : "lobu-proxy";
         credentialPlaceholders[credVar] = placeholder;
       }

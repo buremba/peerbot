@@ -1,7 +1,18 @@
 import { describe, expect, test } from "bun:test";
+import { generateWorkerToken } from "@lobu/core";
 import type { Model } from "@mariozechner/pi-ai/dist/types.js";
 import { BedrockModelCatalog } from "../services/bedrock-model-catalog";
 import { BedrockOpenAIService } from "../services/bedrock-openai-service";
+
+process.env.ENCRYPTION_KEY ??=
+  "0000000000000000000000000000000000000000000000000000000000000000";
+
+function workerAuthHeader(): Record<string, string> {
+  const token = generateWorkerToken("user-test", "conv-test", "deploy-test", {
+    channelId: "channel-test",
+  });
+  return { Authorization: `Bearer ${token}` };
+}
 
 function createCatalog() {
   return new BedrockModelCatalog({
@@ -27,7 +38,9 @@ describe("BedrockOpenAIService", () => {
 
     const response = await service
       .getApp()
-      .request("http://localhost/openai/a/test-agent/v1/models");
+      .request("http://localhost/openai/a/test-agent/v1/models", {
+        headers: workerAuthHeader(),
+      });
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
@@ -81,7 +94,7 @@ describe("BedrockOpenAIService", () => {
       .getApp()
       .request("http://localhost/openai/a/test-agent/v1/chat/completions", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...workerAuthHeader() },
         body: JSON.stringify({
           model: "amazon.nova-lite-v1:0",
           stream: true,
@@ -140,7 +153,7 @@ describe("BedrockOpenAIService", () => {
       .getApp()
       .request("http://localhost/openai/a/test-agent/v1/chat/completions", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...workerAuthHeader() },
         body: JSON.stringify({
           model: "custom.model-v1:0",
           stream: true,
@@ -153,5 +166,44 @@ describe("BedrockOpenAIService", () => {
     expect(resolvedModel?.id).toBe("custom.model-v1:0");
     expect(resolvedModel?.provider).toBe("amazon-bedrock");
     expect(resolvedModel?.api).toBe("bedrock-converse-stream");
+  });
+
+  test("rejects unauthenticated /openai requests with 401", async () => {
+    const service = new BedrockOpenAIService({
+      modelCatalog: createCatalog(),
+    });
+
+    const models = await service
+      .getApp()
+      .request("http://localhost/openai/a/test-agent/v1/models");
+    expect(models.status).toBe(401);
+
+    const completion = await service
+      .getApp()
+      .request("http://localhost/openai/a/test-agent/v1/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "amazon.nova-lite-v1:0",
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      });
+    expect(completion.status).toBe(401);
+
+    const badToken = await service
+      .getApp()
+      .request("http://localhost/openai/a/test-agent/v1/models", {
+        headers: { Authorization: "Bearer not-a-real-token" },
+      });
+    expect(badToken.status).toBe(401);
+  });
+
+  test("leaves /health unauthenticated for probes", async () => {
+    const service = new BedrockOpenAIService({
+      modelCatalog: createCatalog(),
+    });
+
+    const response = await service.getApp().request("http://localhost/health");
+    expect(response.status).toBe(200);
   });
 });

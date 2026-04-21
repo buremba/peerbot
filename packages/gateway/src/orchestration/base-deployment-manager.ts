@@ -698,9 +698,16 @@ export abstract class BaseDeploymentManager {
     }
 
     let hasSecrets = false;
+    const workerToken = envVars.WORKER_TOKEN;
     for (const [key, value] of Object.entries(envVars)) {
       if (!value || !isSecretEnvVar(key, this.providerModules)) continue;
       if (key === "WORKER_TOKEN") continue;
+      // Some providers (e.g. Bedrock) authenticate workers by JWT and
+      // legitimately put the worker's own WORKER_TOKEN into the credential
+      // env var — the gateway verifies it on the incoming request. In that
+      // case we must not swap the value for a placeholder; the worker needs
+      // the real JWT to call the gateway route.
+      if (workerToken && value === workerToken) continue;
 
       if (providerCredentialVars.has(key)) {
         // Provider credentials use a proxy placeholder. The worker never

@@ -10,6 +10,13 @@ export interface ProviderCredentialContext {
   deploymentName?: string;
   platform?: string;
   connectionId?: string;
+  /**
+   * The worker's JWT, when the caller is a worker. Providers whose gateway
+   * routes authenticate via worker auth (e.g. Bedrock) use this as the
+   * credential/placeholder handed back to the runtime so the OpenAI SDK
+   * sends `Authorization: Bearer <workerToken>` on upstream calls.
+   */
+  workerToken?: string;
 }
 
 export interface RuntimeProviderCredentialLookup

@@ -4,10 +4,10 @@ import type { BedrockModelCatalog } from "../../services/bedrock-model-catalog";
 import { BaseProviderModule } from "../base-provider-module";
 import type { AuthProfilesManager } from "../settings/auth-profiles-manager";
 
-const BEDROCK_PROXY_CREDENTIAL = "bedrock-proxy";
 const BEDROCK_ROUTE_PREFIX = "/api/bedrock/openai";
 const BEDROCK_BASE_URL_ENV = "AMAZON_BEDROCK_BASE_URL";
 const BEDROCK_CREDENTIAL_ENV = "AMAZON_BEDROCK_API_KEY";
+const WORKER_TOKEN_ENV = "WORKER_TOKEN";
 const DEFAULT_BEDROCK_MODEL = "amazon.nova-lite-v1:0";
 
 function hasAwsCredentialHint(): boolean {
@@ -58,8 +58,13 @@ export class BedrockProviderModule extends BaseProviderModule {
   override injectSystemKeyFallback(
     envVars: Record<string, string>
   ): Record<string, string> {
-    if (!envVars[BEDROCK_CREDENTIAL_ENV]) {
-      envVars[BEDROCK_CREDENTIAL_ENV] = BEDROCK_PROXY_CREDENTIAL;
+    // The Bedrock service authenticates callers with a worker JWT, so the
+    // SDK-facing "API key" is populated with the worker's own token. That
+    // way the OpenAI SDK's `Authorization: Bearer <key>` header carries a
+    // verifiable worker credential to /api/bedrock/*.
+    const workerToken = envVars[WORKER_TOKEN_ENV];
+    if (workerToken) {
+      envVars[BEDROCK_CREDENTIAL_ENV] = workerToken;
     }
     return envVars;
   }
@@ -68,8 +73,9 @@ export class BedrockProviderModule extends BaseProviderModule {
     _agentId: string,
     envVars: Record<string, string>
   ): Promise<Record<string, string>> {
-    if (!envVars[BEDROCK_CREDENTIAL_ENV]) {
-      envVars[BEDROCK_CREDENTIAL_ENV] = BEDROCK_PROXY_CREDENTIAL;
+    const workerToken = envVars[WORKER_TOKEN_ENV];
+    if (workerToken) {
+      envVars[BEDROCK_CREDENTIAL_ENV] = workerToken;
     }
     return envVars;
   }
@@ -89,8 +95,17 @@ export class BedrockProviderModule extends BaseProviderModule {
     };
   }
 
-  buildCredentialPlaceholder(): string {
-    return BEDROCK_PROXY_CREDENTIAL;
+  buildCredentialPlaceholder(
+    _agentId: string,
+    context?: import("../../embedded").ProviderCredentialContext
+  ): string {
+    // The /api/bedrock/* route authenticates callers with a worker JWT.
+    // Workers forward their WORKER_TOKEN as the Bearer credential via the
+    // OpenAI SDK's `Authorization` header, so the "placeholder" handed to
+    // the runtime is the worker's own token. Orchestrated deploys inject
+    // the same value through `buildEnvVars` / `injectSystemKeyFallback`;
+    // embedded workers receive it through the session-context endpoint.
+    return context?.workerToken ?? "";
   }
 
   getProviderMetadata(): ConfigProviderMeta {

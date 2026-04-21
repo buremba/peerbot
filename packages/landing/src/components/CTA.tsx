@@ -20,13 +20,13 @@ export function CTA(props: {
           class="text-2xl sm:text-3xl font-bold mb-3 tracking-tight"
           style={{ color: "var(--color-page-text)" }}
         >
-          Ready to try it?
+          Two ways to see it run.
         </h2>
         <p
           class="text-sm mb-8"
           style={{ color: "var(--color-page-text-muted)" }}
         >
-          Get started locally, then self-host or embed with TypeScript.
+          Click through a live workspace, or book 20 minutes with the founder.
         </p>
         <div class="flex flex-wrap justify-center gap-3 mb-8">
           <a
@@ -37,7 +37,7 @@ export function CTA(props: {
               color: "var(--color-page-bg)",
             }}
           >
-            See demo now
+            Open live workspace
           </a>
           <ScheduleCallButton
             class="inline-flex items-center gap-2 text-sm font-medium px-6 py-3 rounded-lg transition-all hover:opacity-90"

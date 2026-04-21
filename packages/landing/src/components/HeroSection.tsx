@@ -54,8 +54,8 @@ export function HeroSection(props: {
     props.useScopedOwlettoUrl ? activeUseCase.id : undefined
   );
   const primaryCtaLabel = props.heroCopy
-    ? `See ${activeUseCase.label} demo`
-    : "See demo";
+    ? `Try the ${activeUseCase.label} demo`
+    : "Try it live";
 
   return (
     <section class="pt-24 pb-4 px-8 relative">
@@ -93,8 +93,8 @@ export function HeroSection(props: {
             class="text-lg mx-auto mb-4 leading-relaxed max-w-3xl"
             style={{ color: "var(--color-page-text-muted)" }}
           >
-            Pre-built templates for research, internal ops, and personal memory.
-            Fork one to build your own.
+            Pre-built agents for team ops, personal memory, and community
+            workflows — fork one, wire it to your tools, let it run.
           </p>
         )}
         {/* CTA buttons */}

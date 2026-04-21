@@ -162,7 +162,7 @@ export function BenchmarkSection() {
     <section class="pt-20 pb-20 px-4 sm:px-8">
       <CompactContentRail>
         <SectionHeader
-          title="Beats most common memory benchmarks"
+          title="Beats Mem0 and Supermemory on public benchmarks"
           body="Apples-to-apples comparison on public memory datasets. Same answerer (glm-5.1 via z.ai), same top-K, same questions."
           className="mb-10"
         />

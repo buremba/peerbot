@@ -5,7 +5,7 @@ sidebar:
   order: 0
 ---
 
-Lobu can run inside your existing application as a library instead of a standalone server. Import `@lobu/gateway`, define your agents in code, and mount the HTTP handler into whatever framework you already use.
+Run Lobu inside your application as a library instead of a standalone server. Import `@lobu/gateway`, define your agents in code, and mount the HTTP handler into whatever framework you already use.
 
 ## Install
 
@@ -42,9 +42,7 @@ await lobu.initialize();
 const app = lobu.getApp(); // Hono app with .fetch(Request) → Response
 ```
 
-`getApp()` returns a [Hono](https://hono.dev) application. Hono implements the Web Standard `fetch(Request) → Response` interface, which means it can be mounted in any framework that speaks Web Standard Request/Response — or adapted to Node.js `IncomingMessage`/`ServerResponse` via `@hono/node-server`'s `getRequestListener`.
-
-All examples below reuse the `new Lobu({ ... })` config shown above.
+`getApp()` returns a [Hono](https://hono.dev) application. Hono implements the Web Standard `fetch(Request) → Response` interface, so it mounts in any framework that speaks Web Standard Request/Response — or adapts to Node.js `IncomingMessage`/`ServerResponse` via `@hono/node-server`'s `getRequestListener`.
 
 ---
 
@@ -71,7 +69,7 @@ export const DELETE = handler;
 ```
 
 :::note
-Call `lobu.initialize()` once and await the returned promise in each request. This ensures services start exactly once regardless of how many requests arrive concurrently.
+Call `lobu.initialize()` once and await the returned promise in each request. Services start exactly once regardless of how many requests arrive concurrently.
 :::
 
 ## Next.js (Pages Router)
@@ -191,7 +189,7 @@ Each agent in the `agents` array:
 
 ## What's included
 
-When you embed Lobu, you get the full gateway feature set:
+Embedding gives you the full gateway feature set:
 
 - Agent orchestration and worker lifecycle
 - MCP tool proxy
@@ -200,4 +198,4 @@ When you embed Lobu, you get the full gateway feature set:
 - OpenAPI-documented REST API at `/api/docs`
 - Skills and memory support
 
-The only difference from a standalone deployment is that your application controls the HTTP server.
+The only difference from a standalone deployment: your application controls the HTTP server.

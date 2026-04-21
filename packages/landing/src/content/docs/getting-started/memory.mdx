@@ -3,12 +3,12 @@ title: Memory
 description: How Lobu uses Owletto for shared, structured memory across agents, threads, and teams.
 ---
 
-Lobu has two different memory layers:
+Lobu has two memory layers:
 
 - **Filesystem** for short-term working memory inside a specific channel or user space
 - **Owletto** for long-term organizational memory shared across the workspace
 
-They solve different problems. The filesystem is where an agent does work. Owletto is where the organization remembers what matters.
+The filesystem is where an agent does work. Owletto is where the organization remembers what matters.
 
 - Owletto site: [app.lobu.ai](https://app.lobu.ai)
 - GitHub: [lobu-ai/owletto](https://github.com/lobu-ai/owletto)
@@ -16,23 +16,21 @@ They solve different problems. The filesystem is where an agent does work. Owlet
 
 ## Short-Term Vs Long-Term Memory
 
-Each Lobu channel or user space gets its own filesystem. That filesystem is the agent's working area for the current job:
+Each Lobu channel or user space gets its own filesystem — the agent's working area for the current job:
 
 - downloaded PDFs, screenshots, and other raw inputs
 - temporary Python scripts, notebooks, and scratch files
 - generated CSVs, images, reports, and intermediate outputs
-- duplicate files, renamed files, and ad hoc folder structures that make sense to the agent while it works
+- duplicate files, renamed files, and ad hoc folder structures
 
-That is useful, but it is not a good long-term system of record. The agent may know where files are in its local workspace, but other agents and future sessions usually do not.
+Useful, but not a good long-term system of record. The agent may know where files are in its local workspace, but other agents and future sessions usually do not.
 
-Owletto plays the role of the shared data warehouse or knowledge system for the organization:
+Owletto is the shared knowledge system for the organization:
 
-- it stores durable knowledge in entities
-- it makes that knowledge queryable and analyzable
-- it structures what should be remembered after the local working session is over
-- it lets multiple agents access the same long-term context
-
-The right mental model is:
+- stores durable knowledge in entities
+- makes that knowledge queryable and analyzable
+- structures what should be remembered after the local session ends
+- lets multiple agents access the same long-term context
 
 ```text
 filesystem = short-term working memory + artifacts
@@ -41,29 +39,22 @@ owletto = long-term organizational memory
 
 ## Why Both Exist
 
-An analyst might:
+An analyst might download PDFs into a local folder, write Python to parse them, generate CSVs and charts, then load the final result into a warehouse so the rest of the org can query it later.
 
-1. download PDFs into a local folder
-2. write Python to parse them
-3. generate CSVs and charts
-4. load the final result into a warehouse so the rest of the org can query it later
-
-Lobu agents work the same way.
-
-The filesystem is where the messy work happens. Owletto is where the agent stores the durable, structured result so it can be recalled later across users, channels, and agents.
+Lobu agents work the same way. The filesystem is where the messy work happens. Owletto is where the agent stores the durable, structured result so it can be recalled later across users, channels, and agents.
 
 ## What Owletto Adds
 
 Compared with local filesystem memory, Owletto gives Lobu:
 
 - Workspace-scoped memory shared across agents, users, and threads
-- Typed entities and relationships instead of loose notes only
+- Typed entities and relationships instead of loose notes
 - Hybrid recall using entity matching, full-text search, and semantic search
 - External data ingestion through connectors
 - Scheduled watchers that turn raw events into structured analysis
 - A web UI where operators can review, edit, and correct memory
 
-This matters when memory needs to outlive one sandbox, one machine, one channel, or one user session.
+Useful when memory needs to outlive one sandbox, machine, channel, or user session.
 
 ## How Memory Recall Works
 
@@ -103,7 +94,7 @@ A few details matter in practice:
 - **Relationships** are first-class, so context such as `owned-by`, `depends-on`, or `integrates-with` can influence recall.
 - **Watchers** analyze incoming event streams on a schedule and write structured results back into the graph.
 
-That append-only event history matters because it lets agents and operators inspect what changed over time:
+The append-only event history lets agents and operators inspect what changed over time:
 
 - what arrived from a connector
 - what an agent saved
@@ -112,9 +103,7 @@ That append-only event history matters because it lets agents and operators insp
 
 That makes it easier to recover from mistakes, understand why an agent believed something, and improve future recall.
 
-The important boundary is that **artifacts stay in the filesystem**, while **durable organizational knowledge gets written into Owletto**.
-
-For example:
+The boundary: **artifacts stay in the filesystem**, **durable organizational knowledge gets written into Owletto**. For example:
 
 - keep a downloaded PDF, generated chart, or temporary CSV in the filesystem
 - save "customer prefers weekly summaries" or "vendor X owns system Y" into Owletto
@@ -149,14 +138,9 @@ At runtime, Lobu resolves the memory backend like this:
 - If no Owletto endpoint is resolved, Lobu falls back to `@openclaw/native-memory`.
 - Agents can also override plugin configuration through `pluginsConfig` in agent settings.
 
-The `@lobu/owletto-openclaw` plugin is the adapter between OpenClaw and Owletto. OpenClaw still calls normal memory operations through its plugin interface; the plugin translates those reads and writes into Owletto MCP calls through the gateway proxy, so the worker never needs raw OAuth tokens or direct Owletto credentials.
+The `@lobu/owletto-openclaw` plugin adapts OpenClaw to Owletto. OpenClaw calls normal memory operations through its plugin interface; the plugin translates those reads and writes into Owletto MCP calls through the gateway proxy, so the worker never needs raw OAuth tokens or direct Owletto credentials.
 
-In practice:
-
-- native filesystem memory is the local scratchpad
-- Owletto is the long-term organizational memory layer
-
-That split lets agents keep using local files for active work while persisting the durable parts of that work into shared structured memory.
+The split lets agents keep using local files for active work while persisting the durable parts into shared structured memory.
 
 See also: [Architecture](/guides/architecture/) and [Agent Settings](/guides/agent-settings/).
 
@@ -200,7 +184,7 @@ Typical flow:
 search_knowledge -> read_knowledge -> save_knowledge
 ```
 
-That is the same pattern used by coding agents like Codex, Claude Code, and Cursor when they do not have automatic memory hooks built into the runtime.
+Coding agents like Codex, Claude Code, and Cursor use the same pattern when they lack automatic memory hooks in the runtime.
 
 ## When To Use Owletto
 

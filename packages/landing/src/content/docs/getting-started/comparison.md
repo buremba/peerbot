@@ -5,7 +5,7 @@ description: How Lobu compares to other agent deployment options.
 
 Lobu is multi-tenant agent infrastructure. It handles sandboxing, persistence, platform delivery, and network isolation so you can ship agents to your users without building that plumbing yourself.
 
-This page compares Lobu against the alternatives you'd evaluate when deploying agents to production.
+This page compares Lobu against alternatives for deploying agents to production.
 
 ## At a glance
 
@@ -30,7 +30,7 @@ This page compares Lobu against the alternatives you'd evaluate when deploying a
 
 ## Sandboxing and deployment modes
 
-Lobu offers three deployment modes, each with different isolation guarantees. No other platform in this space provides all three.
+Lobu offers three deployment modes, each with different isolation guarantees.
 
 ### Kubernetes (production, on-premise)
 
@@ -41,7 +41,7 @@ Each user session gets its own **pod** with:
 - **PVC per session** — workspace files persist across restarts while remaining isolated per user
 - **Runtime hardening** — designed to run with **gVisor** (GCP), **Kata Containers**, or **Firecracker microVMs** where available
 
-This is the strongest isolation model and the one suited for on-premise enterprise deployments where compliance requires that agent-generated code cannot escape its sandbox.
+The strongest isolation model, suited for on-premise deployments where compliance requires agent-generated code cannot escape its sandbox.
 
 ### Docker Compose (single-machine production)
 
@@ -71,9 +71,7 @@ Mount Lobu inside Next.js, Express, Hono, Fastify, or Bun — no Docker or Kuber
 
 ## MCP proxy and credential isolation
 
-Lobu's MCP proxy is a key differentiator for on-premise and security-conscious deployments.
-
-**How it works**: workers call MCP tools through the gateway. The gateway resolves `${env:VAR}` secrets and injects OAuth tokens before forwarding to the upstream MCP server. Workers never see credentials — they receive opaque proxy URLs.
+Workers call MCP tools through the gateway. The gateway resolves `${env:VAR}` secrets and injects OAuth tokens before forwarding to the upstream MCP server. Workers never see credentials — they receive opaque proxy URLs.
 
 | | Lobu | DeepAgents Deploy | Claude Managed Agents | Direct MCP |
 |---|---|---|---|---|
@@ -83,7 +81,7 @@ Lobu's MCP proxy is a key differentiator for on-premise and security-conscious d
 | Worker sees credentials | Never | Yes (env vars) | N/A | Yes |
 | Audit trail | Gateway logs all MCP calls | No | No | No |
 
-For enterprises with compliance requirements, the fact that agent code never touches API keys or OAuth tokens — even if the agent is compromised — is the deciding factor.
+For compliance-bound deployments, agent code never touches API keys or OAuth tokens — even if the agent is compromised.
 
 ## Why Lobu for on-premise
 
@@ -112,7 +110,7 @@ If you need a single personal agent for yourself, use OpenClaw directly.
 
 Lobu and OpenClaw are complementary. OpenClaw is the agent runtime — the execution engine that runs tools, manages sessions, and talks to LLM providers. Lobu is the infrastructure layer that deploys, isolates, and delivers that runtime to multiple users.
 
-OpenClaw is a powerful runtime (~800k lines of code), but it was designed as a **single-tenant, single-user system**. Production deployments need multi-tenant isolation, platform routing, credential separation, network control, and scale-to-zero — concerns OpenClaw doesn't have opinions about.
+OpenClaw (~800k LOC) was designed as a **single-tenant, single-user system**. Production deployments need multi-tenant isolation, platform routing, credential separation, network control, and scale-to-zero — concerns OpenClaw doesn't have opinions about.
 
 | Capability | Lobu | OpenClaw |
 |---|---|---|
@@ -170,7 +168,7 @@ Claude Managed Agents is Anthropic's hosted agent platform.
 
 ## Lobu vs building it yourself
 
-The alternative to Lobu is often "we'll build it ourselves." Here's what that entails:
+What "we'll build it ourselves" entails:
 
 - **Sandboxing**: per-user container orchestration with workspace persistence
 - **Platform adapters**: Slack Events API, Telegram long-polling, WhatsApp webhooks, each with their own auth flows

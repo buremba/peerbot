@@ -7,7 +7,7 @@ Lobu provides multiple ways to test your agent during development.
 
 ## CLI chat
 
-The fastest way to test. Sends a prompt and streams the response in your terminal.
+Send a prompt and stream the response in your terminal.
 
 ```bash
 # Basic test
@@ -31,7 +31,7 @@ This uses **API mode** — the agent runs and responds directly to your terminal
 
 ## Testing through a platform
 
-To test the full end-to-end flow as a real user would experience it, route messages through a connected platform.
+Route messages through a connected platform to test the full end-to-end flow.
 
 ### Using the CLI
 

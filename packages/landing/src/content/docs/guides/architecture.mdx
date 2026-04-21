@@ -31,11 +31,9 @@ In file-first projects, Lobu resolves persistent memory from `[memory.owletto]` 
 - **`MEMORY_URL`**: still supported as an optional base-endpoint override for local or custom Owletto deployments.
 - **No Owletto config resolved**: uses `@openclaw/native-memory`, which is effectively filesystem-backed short-term memory inside the agent's local workspace.
 
-Memory plugins are configurable per agent through `pluginsConfig` in agent settings.
+Memory plugins are configurable per agent through `pluginsConfig` in agent settings. The split is intentional:
 
-This is an intentional split:
-
-- **Filesystem** is per channel or user space. It is the agent's working area for artifacts such as PDFs, images, scripts, CSVs, and temporary outputs.
+- **Filesystem** is per channel or user space — the agent's working area for artifacts such as PDFs, images, scripts, CSVs, and temporary outputs.
 - **Owletto** is long-term organizational memory. Agents write durable facts into entities so other sessions, users, and agents can query and reuse that knowledge later.
 
 ### How It Works
@@ -46,10 +44,7 @@ This is an intentional split:
 4. If memory is set to `@lobu/owletto-openclaw`, that plugin converts OpenClaw memory reads/writes into Owletto MCP calls through the gateway proxy.
 5. The memory plugin handles persistent memory operations so context can be reused across future runs.
 
-The practical model is:
-
-- local filesystem for short-term working state
-- Owletto for long-term shared knowledge
+In short: local filesystem for short-term working state; Owletto for long-term shared knowledge.
 
 ## Security-Critical Path
 

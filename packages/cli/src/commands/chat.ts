@@ -1,6 +1,10 @@
 import { createInterface } from "node:readline";
 import chalk from "chalk";
-import { getToken, resolveContext, resolveGatewayUrl } from "../internal/index.js";
+import {
+  getToken,
+  resolveContext,
+  resolveGatewayUrl,
+} from "../internal/index.js";
 import { isLoadError, loadConfig } from "../config/loader.js";
 import { renderMarkdown } from "../utils/markdown.js";
 

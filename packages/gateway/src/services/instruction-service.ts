@@ -27,55 +27,103 @@ interface SessionContextData {
 }
 
 /**
+ * Shared base class for InstructionProviders.
+ *
+ * Subclasses implement `buildInstructions(context)` with their domain logic.
+ * The base wraps every call in a try-catch + structured logging, so unexpected
+ * errors yield an empty string instead of crashing the session context
+ * assembly. This removes the identical boilerplate each subclass used to
+ * declare.
+ */
+abstract class BaseInstructionProvider implements InstructionProvider {
+  abstract readonly name: string;
+  abstract readonly priority: number;
+
+  async getInstructions(context: InstructionContext): Promise<string> {
+    try {
+      return await this.buildInstructions(context);
+    } catch (error) {
+      logger.error(`Failed to build ${this.name} instructions`, { error });
+      return "";
+    }
+  }
+
+  protected abstract buildInstructions(
+    context: InstructionContext
+  ): Promise<string> | string;
+}
+
+/**
  * Provides instructions from enabled skills for the agent.
  * Fetches skill content from AgentSettings and injects as instructions.
  * Falls back to generic skills.sh discovery instructions if no skills configured.
  */
-class SkillsInstructionProvider implements InstructionProvider {
-  name = "skills";
-  priority = 15;
+class SkillsInstructionProvider extends BaseInstructionProvider {
+  readonly name = "skills";
+  readonly priority = 15;
 
-  constructor(private agentSettingsStore?: AgentSettingsStore) {}
+  constructor(private agentSettingsStore?: AgentSettingsStore) {
+    super();
+  }
 
-  async getInstructions(context: InstructionContext): Promise<string> {
+  protected async buildInstructions(
+    context: InstructionContext
+  ): Promise<string> {
     // If no settings store or agentId, return generic skills.sh instructions
     if (!this.agentSettingsStore || !context.agentId) {
       return this.getGenericSkillsInstructions();
     }
 
+    // Settings lookup uses a local try/catch because the domain-specific
+    // fallback here is "return the generic skills blurb", not "empty string".
+    // The base class's catch-all still guards against any bug outside this
+    // block.
+    let enabledSkills: Array<{
+      name: string;
+      description?: string;
+      repo: string;
+      content?: string;
+      modelPreference?: string;
+      thinkingLevel?: string;
+      instructions?: string;
+    }> = [];
     try {
       const settings = await this.agentSettingsStore.getSettings(
         context.agentId
       );
       const skills = settings?.skillsConfig?.skills || [];
-      const enabledSkills = skills.filter((s) => s.enabled && s.content);
+      enabledSkills = skills.filter((s) => s.enabled && s.content);
+    } catch (error) {
+      logger.error("Failed to load skill settings", { error });
+      return this.getGenericSkillsInstructions();
+    }
 
-      if (enabledSkills.length === 0) {
-        return this.getGenericSkillsInstructions();
-      }
+    if (enabledSkills.length === 0) {
+      return this.getGenericSkillsInstructions();
+    }
 
-      // Progressive disclosure: inject only metadata (name + description + model/thinking tags)
-      // to reduce prompt size. Agent reads full SKILL.md on demand.
-      const skillSummaries = enabledSkills
-        .map((skill) => {
-          const desc = skill.description ? ` - ${skill.description}` : "";
-          const tags: string[] = [];
-          if (skill.modelPreference) {
-            tags.push(`[model: ${skill.modelPreference}]`);
-          }
-          if (skill.thinkingLevel) {
-            tags.push(`[thinking: ${skill.thinkingLevel}]`);
-          }
-          const tagStr = tags.length > 0 ? ` ${tags.join(" ")}` : "";
-          const line = `- **${skill.name}**${desc} (\`${skill.repo}\`)${tagStr}`;
-          if (skill.instructions?.trim()) {
-            return `${line}\n  → ${skill.instructions.trim()}`;
-          }
-          return line;
-        })
-        .join("\n");
+    // Progressive disclosure: inject only metadata (name + description + model/thinking tags)
+    // to reduce prompt size. Agent reads full SKILL.md on demand.
+    const skillSummaries = enabledSkills
+      .map((skill) => {
+        const desc = skill.description ? ` - ${skill.description}` : "";
+        const tags: string[] = [];
+        if (skill.modelPreference) {
+          tags.push(`[model: ${skill.modelPreference}]`);
+        }
+        if (skill.thinkingLevel) {
+          tags.push(`[thinking: ${skill.thinkingLevel}]`);
+        }
+        const tagStr = tags.length > 0 ? ` ${tags.join(" ")}` : "";
+        const line = `- **${skill.name}**${desc} (\`${skill.repo}\`)${tagStr}`;
+        if (skill.instructions?.trim()) {
+          return `${line}\n  → ${skill.instructions.trim()}`;
+        }
+        return line;
+      })
+      .join("\n");
 
-      return `# Enabled Skills
+    return `# Enabled Skills
 
 The following skills are installed and available. When a task matches a skill, read the full skill instructions before using it. Skills tagged with [model: ...] prefer a specific model — delegate to the corresponding coding agent when available.
 
@@ -86,10 +134,6 @@ ${skillSummaries}
 ---
 
 ${this.getGenericSkillsInstructions()}`;
-    } catch (error) {
-      logger.error("Failed to get skills instructions", { error });
-      return this.getGenericSkillsInstructions();
-    }
   }
 
   private getGenericSkillsInstructions(): string {
@@ -102,11 +146,11 @@ Your available skills are listed above. To read full instructions for a skill, u
 /**
  * Provides information about network access rules and allowed domains
  */
-class NetworkInstructionProvider implements InstructionProvider {
-  name = "network";
-  priority = 20;
+class NetworkInstructionProvider extends BaseInstructionProvider {
+  readonly name = "network";
+  readonly priority = 20;
 
-  getInstructions(_context: InstructionContext): string {
+  protected buildInstructions(_context: InstructionContext): string {
     const allowedDomains = process.env.WORKER_ALLOWED_DOMAINS?.trim() || "";
     const disallowedDomains =
       process.env.WORKER_DISALLOWED_DOMAINS?.trim() || "";

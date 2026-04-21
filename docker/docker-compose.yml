@@ -151,6 +151,7 @@ services:
       DATABASE_URL: ${DATABASE_URL}
       PGSSLMODE: ${PGSSLMODE:-require}
       WORKER_MAX_CONCURRENT_JOBS: ${WORKER_MAX_CONCURRENT_JOBS:-4}
+      WORKER_API_TOKEN: ${WORKER_API_TOKEN:-}
       # Route worker egress through the gateway proxy (embedded in the app service).
       # lobu-internal is internal: true, so without this the worker has no path
       # to provider/connector endpoints.

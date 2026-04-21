@@ -1234,13 +1234,13 @@ const runtimeContent: Record<LandingUseCaseId, RuntimeJourney> = {
       },
       {
         kind: "memory_recall",
-        source: "Lobu memory",
+        source: "Owletto",
         call: "recall(counterparty: Redwood, topic: risk)",
         result: "Acme NDA blocked Sep — similar §7 language",
       },
       {
         kind: "memory_upsert",
-        source: "Lobu memory",
+        source: "Owletto",
         call: "upsert(Contract Redwood-NDA-v2)",
         result: 'linked Clause §7 "uncapped indemnity"',
       },
@@ -1252,7 +1252,7 @@ const runtimeContent: Record<LandingUseCaseId, RuntimeJourney> = {
       },
       {
         kind: "memory_link",
-        source: "Lobu memory",
+        source: "Owletto",
         call: "link(Contract → Clause §7 → Risk)",
         result: "flagged counsel-required",
       },
@@ -1299,7 +1299,7 @@ const runtimeContent: Record<LandingUseCaseId, RuntimeJourney> = {
     trace: [
       {
         kind: "memory_recall",
-        source: "Lobu memory",
+        source: "Owletto",
         call: "recall(incident: INC-4421, owner: Dan)",
         result: "checkout rollback in progress · needs cluster access",
       },
@@ -1311,7 +1311,7 @@ const runtimeContent: Record<LandingUseCaseId, RuntimeJourney> = {
       },
       {
         kind: "memory_upsert",
-        source: "Lobu memory",
+        source: "Owletto",
         call: "upsert(Engineer Sam → OOO today)",
         result: "linked to on-call schedule",
       },
@@ -1362,7 +1362,7 @@ const runtimeContent: Record<LandingUseCaseId, RuntimeJourney> = {
       },
       {
         kind: "memory_recall",
-        source: "Lobu memory",
+        source: "Owletto",
         call: "recall(customer: Alex Kim)",
         result: "Feb billing escalation · tone: direct, concise",
       },
@@ -1374,7 +1374,7 @@ const runtimeContent: Record<LandingUseCaseId, RuntimeJourney> = {
       },
       {
         kind: "memory_upsert",
-        source: "Lobu memory",
+        source: "Owletto",
         call: "upsert(Account alex-kim)",
         result: "owner=Priya · next-touch=Thu 10am",
       },
@@ -1430,13 +1430,13 @@ const runtimeContent: Record<LandingUseCaseId, RuntimeJourney> = {
       },
       {
         kind: "memory_recall",
-        source: "Lobu memory",
+        source: "Owletto",
         call: "recall(account: 4100, topic: variance)",
         result: "Sep same merchant · 3-day settlement lag",
       },
       {
         kind: "memory_upsert",
-        source: "Lobu memory",
+        source: "Owletto",
         call: "upsert(Variance Oct-4100-12480)",
         result: "linked merchant STR-44",
       },
@@ -1492,13 +1492,13 @@ const runtimeContent: Record<LandingUseCaseId, RuntimeJourney> = {
       },
       {
         kind: "memory_recall",
-        source: "Lobu memory",
+        source: "Owletto",
         call: "recall(account: northstar)",
         result: "champion=Maria · exec-sponsor=Jane",
       },
       {
         kind: "memory_upsert",
-        source: "Lobu memory",
+        source: "Owletto",
         call: "upsert(Contact Jake Chen)",
         result: "new renewal owner at Northstar",
       },
@@ -1554,13 +1554,13 @@ const runtimeContent: Record<LandingUseCaseId, RuntimeJourney> = {
       },
       {
         kind: "memory_recall",
-        source: "Lobu memory",
+        source: "Owletto",
         call: "recall(project: phoenix, topic: shards)",
         result: "Apollo rollout had same shard-pattern",
       },
       {
         kind: "memory_upsert",
-        source: "Lobu memory",
+        source: "Owletto",
         call: "upsert(Blocker phoenix-shard-14)",
         result: "owner=Lena (backend)",
       },
@@ -1610,19 +1610,19 @@ const runtimeContent: Record<LandingUseCaseId, RuntimeJourney> = {
       },
       {
         kind: "memory_recall",
-        source: "Lobu memory",
+        source: "Owletto",
         call: "recall(topic: Series A)",
         result: "seed approval same pattern · closed in 2 wks",
       },
       {
         kind: "memory_upsert",
-        source: "Lobu memory",
+        source: "Owletto",
         call: "upsert(Decision bridge-4M-approved)",
         result: "linked to Board Q4",
       },
       {
         kind: "memory_upsert",
-        source: "Lobu memory",
+        source: "Owletto",
         call: "upsert(Blocker q1-hiring-freeze)",
         result: "condition: until close",
       },
@@ -1672,19 +1672,19 @@ const runtimeContent: Record<LandingUseCaseId, RuntimeJourney> = {
       },
       {
         kind: "memory_recall",
-        source: "Lobu memory",
+        source: "Owletto",
         call: "recall(member: Sarah, topic: needs)",
         result: "needs infra feedback · embeddings, MCP",
       },
       {
         kind: "memory_recall",
-        source: "Lobu memory",
+        source: "Owletto",
         call: "recall(members, overlap: embeddings)",
         result: "Devon Lin · Mira Sato",
       },
       {
         kind: "memory_link",
-        source: "Lobu memory",
+        source: "Owletto",
         call: "link(Sarah ↔ Devon)",
         result: "match · shared topic: embeddings",
       },
@@ -1740,19 +1740,19 @@ const runtimeContent: Record<LandingUseCaseId, RuntimeJourney> = {
       },
       {
         kind: "memory_recall",
-        source: "Lobu memory",
+        source: "Owletto",
         call: "recall(product: Airtable)",
         result: "Q3 scan: automation strong, docs weak",
       },
       {
         kind: "memory_upsert",
-        source: "Lobu memory",
+        source: "Owletto",
         call: "upsert(Release airtable-ai-mar18)",
         result: "linked Product Airtable",
       },
       {
         kind: "memory_link",
-        source: "Lobu memory",
+        source: "Owletto",
         call: "link(Airtable ↔ Notion)",
         result: "competitor pair updated",
       },
@@ -1796,7 +1796,7 @@ const runtimeContent: Record<LandingUseCaseId, RuntimeJourney> = {
       },
       {
         kind: "memory_recall",
-        source: "Lobu memory",
+        source: "Owletto",
         call: "recall(customer: Emma K, topic: cancel)",
         result: "Aug 2024 · 14-day retention window",
       },
@@ -1814,7 +1814,7 @@ const runtimeContent: Record<LandingUseCaseId, RuntimeJourney> = {
       },
       {
         kind: "memory_upsert",
-        source: "Lobu memory",
+        source: "Owletto",
         call: "upsert(Customer emma-k)",
         result: "plan=annual · cancel-risk=low",
       },
@@ -1864,13 +1864,13 @@ const runtimeContent: Record<LandingUseCaseId, RuntimeJourney> = {
       },
       {
         kind: "memory_recall",
-        source: "Lobu memory",
+        source: "Owletto",
         call: "recall(patient: James M)",
         result: "PHQ-9 baseline 17 · weekly exposure therapy",
       },
       {
         kind: "memory_upsert",
-        source: "Lobu memory",
+        source: "Owletto",
         call: "upsert(Treatment james-12wk)",
         result: "progress 67% · on-track",
       },
@@ -1927,19 +1927,19 @@ const runtimeContent: Record<LandingUseCaseId, RuntimeJourney> = {
       },
       {
         kind: "memory_recall",
-        source: "Lobu memory",
+        source: "Owletto",
         call: "recall(sector: ai-dev-tools)",
         result: "Q4 thesis · Lovable in portfolio",
       },
       {
         kind: "memory_recall",
-        source: "Lobu memory",
+        source: "Owletto",
         call: "recall(network, topic: replit-alumni)",
         result: "Adam K. · ex-Replit, warm intro",
       },
       {
         kind: "memory_upsert",
-        source: "Lobu memory",
+        source: "Owletto",
         call: "upsert(Round lovable-series-a)",
         result: "linked Company Lovable · Lead Accel",
       },
@@ -3144,7 +3144,7 @@ const surfaceHeroCopy: Record<SurfaceId, SurfaceHeroCopyConfig> = {
       title: "Build long-term collective memory",
       highlight: "collective memory",
       description:
-        "Lobu memory gives all your agents the same durable graph: connectors, recall, and managed auth without leaking credentials to the runtime.",
+        "Owletto gives all your agents the same durable graph: connectors, recall, and managed auth without leaking credentials to the runtime.",
     },
     byUseCase: {
       legal: { title: "Contract memory for legal agents" },
@@ -3262,7 +3262,7 @@ export const showcaseMemoryExamples = landingUseCaseShowcases.map(
 );
 
 export function getLandingPrompt(showcase: LandingUseCaseShowcase) {
-  return `I want to build a Lobu agent for ${showcase.label}.\n\nPlease:\n1. Start with \`npx @lobu/cli@latest init\`.\n2. Shape the project around this workflow: ${showcase.runtime.request}\n3. After scaffolding, read AGENTS.md, lobu.toml, and the agent prompt files first.\n4. Add the right skills, connections, and Lobu memory model.\n5. Keep the project runnable with \`npx @lobu/cli@latest run -d\`.\n\nExplain what you change and why.`;
+  return `I want to build a Lobu agent for ${showcase.label}.\n\nPlease:\n1. Start with \`npx @lobu/cli@latest init\`.\n2. Shape the project around this workflow: ${showcase.runtime.request}\n3. After scaffolding, read AGENTS.md, lobu.toml, and the agent prompt files first.\n4. Add the right skills, connections, and the right Owletto memory model when shared memory is needed.\n5. Keep the project runnable with \`npx @lobu/cli@latest run -d\`.\n\nExplain what you change and why.`;
 }
 
 export function getSkillsPrompt(showcase: LandingUseCaseShowcase) {
@@ -3274,7 +3274,7 @@ export function getSkillsPrompt(showcase: LandingUseCaseShowcase) {
 export function getMemoryPrompt(showcase: LandingUseCaseShowcase) {
   const memory = showcase.memory;
 
-  return `Run \`npx owletto@latest init\` to initialize Lobu memory for ${showcase.label}. Model these entities: ${memory.entityTypes.join(", ")}. Keep the extracted memory durable, typed, and linked so the runtime can reuse it across future tasks.`;
+  return `Run \`npx owletto@latest skills add owletto\` and then \`npx owletto@latest init\` to set up Owletto for ${showcase.label}. Model these entities: ${memory.entityTypes.join(", ")}. Keep the extracted memory durable, typed, and linked so the runtime can reuse it across future tasks.`;
 }
 
 const LOBU_ZONE =

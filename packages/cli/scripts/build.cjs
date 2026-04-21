@@ -1,14 +1,20 @@
 const fs = require("node:fs");
+const path = require("node:path");
 
-// Copy templates
-const src = "src/templates";
-const dest = "dist/templates";
-if (fs.existsSync(src)) {
+function copyDirIfExists(src, dest) {
+  if (!fs.existsSync(src)) return;
   if (fs.existsSync(dest)) {
     fs.rmSync(dest, { recursive: true, force: true });
   }
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
   fs.cpSync(src, dest, { recursive: true });
 }
+
+// Copy templates
+copyDirIfExists("src/templates", "dist/templates");
+
+// Copy bundled starter skills
+copyDirIfExists("../../skills/lobu", "dist/bundled-skills/lobu");
 
 // Copy mcp-servers.json
 const jsonSrc = "src/mcp-servers.json";

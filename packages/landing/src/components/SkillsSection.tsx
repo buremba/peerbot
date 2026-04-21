@@ -792,22 +792,29 @@ export function SkillsSection(props: {
             class="text-xl font-bold mb-2 text-center"
             style={{ color: "var(--color-page-text)" }}
           >
-            Built-in registry
+            What starter skills can bundle
           </h2>
           <p
             class="text-sm text-center mb-8 max-w-lg mx-auto"
             style={{ color: "var(--color-page-text-muted)" }}
           >
-            System skills ship with every agent. Additional skills are
-            configured via{" "}
+            Install the Lobu starter skill with{" "}
             <code
               class="text-[11px] px-1 py-0.5 rounded"
               style={{ backgroundColor: "var(--color-page-surface-dim)" }}
             >
-              lobu.toml
+              npx @lobu/cli@latest skills add lobu
+            </code>{" "}
+            and install Owletto separately with{" "}
+            <code
+              class="text-[11px] px-1 py-0.5 rounded"
+              style={{ backgroundColor: "var(--color-page-surface-dim)" }}
+            >
+              npx owletto@latest skills add owletto
             </code>
-            . Need another service or use case? Add custom MCP servers,
-            packages, and instructions for it.
+            . Local <code>SKILL.md</code> files are still discovered
+            automatically. The cards below show the kinds of MCP servers and
+            providers those skills can bundle.
           </p>
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
             {registryGroups.map((group) => (

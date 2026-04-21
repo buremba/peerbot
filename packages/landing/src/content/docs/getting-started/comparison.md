@@ -23,7 +23,7 @@ This page compares Lobu against alternatives for deploying agents to production.
 | **MCP support** | Proxied through gateway with secret injection | Direct | HTTP/SSE only | Yes |
 | **Agent Protocol / A2A** | Not yet | No | Yes | No |
 | **Built-in evals** | YAML eval framework with model comparison | No | No | No |
-| **Memory** | Self-hosted Lobu memory plugin | Local | LangSmith APIs | Platform-managed |
+| **Memory** | Self-hosted Owletto plugin | Local | LangSmith APIs | Platform-managed |
 | **Scale-to-zero** | Built-in idle timeout | Always running | Managed by LangSmith | Managed |
 | **Config format** | `lobu.toml` + IDENTITY/SOUL/USER.md | CLI flags | `deepagents.toml` + AGENTS.md | Dashboard |
 | **License** | Open source | Open source | MIT (harness), proprietary (hosting) | Proprietary |
@@ -167,7 +167,7 @@ Inside each Lobu worker, the full OpenClaw runtime runs untouched. Lobu rewrites
 | Network isolation | Gateway-mediated domain filtering | Sandbox-level |
 | Protocols | MCP | MCP, A2A, Agent Protocol |
 | Evals | Built-in YAML framework | Not included |
-| Memory ownership | Fully self-hosted (Lobu memory) | LangSmith APIs (self-host option) |
+| Memory ownership | Fully self-hosted (Owletto) | LangSmith APIs (self-host option) |
 | Runtime | OpenClaw | LangGraph |
 
 **Choose DeepAgents Deploy** if you want zero-ops hosted deployment and need A2A multi-agent orchestration.

@@ -28,6 +28,21 @@ npx @lobu/cli@latest init my-bot
 cd my-bot && npx @lobu/cli@latest run -d
 ```
 
+## Starter Skills
+
+Install the Lobu starter skill into any local `skills/` directory:
+
+```bash
+npx @lobu/cli@latest skills add lobu
+```
+
+Install the Owletto starter skill separately when the agent should understand Owletto memory and tooling:
+
+```bash
+npx owletto@latest skills add owletto
+npx owletto@latest init
+```
+
 ### Deployment modes
 
 - **Docker Compose** — `docker compose up` (single-machine production).

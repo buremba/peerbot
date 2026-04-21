@@ -31,7 +31,7 @@ npx @lobu/cli@latest init my-agent
 Generates:
 
 - `lobu.toml` — agent configuration (skills, providers, connections, network)
-- `docker-compose.yml` — service definitions (gateway, Redis, optional Lobu memory)
+- `docker-compose.yml` — service definitions (gateway, Redis, optional Owletto)
 - `.env` — credentials and environment variables
 - `agents/{name}/` — agent directory with `IDENTITY.md`, `SOUL.md`, `USER.md`, and `skills/`
 - `skills/` — shared skills directory (available to all agents)
@@ -221,21 +221,24 @@ npx @lobu/cli@latest secrets delete OPENAI_API_KEY
 
 ### `skills`
 
-Browse and manage skills from the registry.
+Install bundled starter skills into a local `skills/` directory.
 
 ```bash
-npx @lobu/cli@latest skills list                # browse all skills
-npx @lobu/cli@latest skills search "calendar"   # search by name or description
-npx @lobu/cli@latest skills info google-workspace  # show details and required secrets
-npx @lobu/cli@latest skills add google-workspace   # add to lobu.toml
+npx @lobu/cli@latest skills list
+npx @lobu/cli@latest skills add lobu
+npx @lobu/cli@latest skills add lobu --force
 ```
 
 | Subcommand | Description |
 |------------|-------------|
-| `list` | Browse the skill registry |
-| `search <query>` | Search skills by name or description |
-| `info <id>` | Show skill details and required secrets |
-| `add <id>` | Add a skill to `lobu.toml` |
+| `list` | Show bundled Lobu starter skills |
+| `add <id>` | Copy a bundled starter skill into `skills/<id>` |
+
+Use the Owletto CLI to install Owletto starter skills separately:
+
+```bash
+npx owletto@latest skills add owletto
+```
 
 ---
 
@@ -261,9 +264,12 @@ npx @lobu/cli@latest init my-agent
 
 # 2. Configure
 cd my-agent
-npx @lobu/cli@latest skills add google-workspace
+npx @lobu/cli@latest skills add lobu
 npx @lobu/cli@latest providers add gemini
 npx @lobu/cli@latest secrets set GEMINI_API_KEY ...
+
+# Optional: install the Owletto starter skill separately
+npx owletto@latest skills add owletto
 
 # 3. Validate
 npx @lobu/cli@latest validate

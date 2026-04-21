@@ -25,13 +25,13 @@ type ConnectFromClientConfig = {
   docsHref: string;
   docsLabel: string;
   /**
-   * One-liner shown directly under the page title that explains what Lobu memory
+   * One-liner shown directly under the page title that explains what Owletto
    * adds to this agent.
    */
   valueProp: string;
   /**
    * The text the user copies into their agent (or assistant) so it can install
-   * Lobu memory for them.
+   * Owletto for them.
    */
   installPrompt: string;
   /**
@@ -62,12 +62,12 @@ export const connectFromClientConfigs: Record<
     valueProp:
       "Add structured, queryable long-term memory to ChatGPT — the same graph other agents share, recalled and updated through one MCP endpoint.",
     installPrompt:
-      "Connect ChatGPT to Lobu memory: open Settings → Integrations → Model Context Protocol → Add Server, name it `Lobu memory`, and paste the MCP URL https://app.lobu.ai/mcp. Sign in with your Lobu account when prompted, then point ChatGPT at the workspace I want it to use.",
+      "Connect ChatGPT to Owletto: open Settings → Integrations → Model Context Protocol → Add Server, name it `Owletto`, and paste the MCP URL https://app.lobu.ai/mcp. Sign in with your Lobu account when prompted, then point ChatGPT at the workspace I want it to use.",
     describe: mcpClientDescribe("ChatGPT"),
     docsSetupTitle: "Connect ChatGPT",
     docsSetupSteps: [
       "Open Settings → Integrations → Model Context Protocol → Add Server in ChatGPT.",
-      "Name the server `Lobu memory` and paste https://app.lobu.ai/mcp as the URL.",
+      "Name the server `Owletto` and paste https://app.lobu.ai/mcp as the URL.",
       "Complete the Lobu sign-in flow in the popup.",
       "Pick the workspace ChatGPT should read and write.",
     ],
@@ -75,7 +75,7 @@ export const connectFromClientConfigs: Record<
       "ChatGPT discovers the available memory tools automatically once the MCP connection is approved.",
     docsRelated: [
       { label: "Memory", href: "/getting-started/memory/" },
-      { label: "Lobu memory CLI Reference", href: "/reference/owletto-cli/" },
+      { label: "Owletto CLI Reference", href: "/reference/owletto-cli/" },
     ],
   },
   claude: {
@@ -86,7 +86,7 @@ export const connectFromClientConfigs: Record<
     valueProp:
       "Give Claude durable, structured memory it can search and append to — so the same recall is available across Claude, ChatGPT, and your own agents.",
     installPrompt:
-      "Connect Claude to Lobu memory: open Settings → Connectors → Add Custom Connector, paste the MCP URL https://app.lobu.ai/mcp, complete the Lobu sign-in, then enable the connector. Pick the workspace I want Claude to read and write.",
+      "Connect Claude to Owletto: open Settings → Connectors → Add Custom Connector, paste the MCP URL https://app.lobu.ai/mcp, complete the Lobu sign-in, then enable the connector. Pick the workspace I want Claude to read and write.",
     describe: mcpClientDescribe("Claude"),
     docsSetupTitle: "Connect Claude",
     docsSetupSteps: [
@@ -107,7 +107,7 @@ export const connectFromClientConfigs: Record<
     docsRelated: [
       { label: "Memory", href: "/getting-started/memory/" },
       { label: "Skills", href: "/getting-started/skills/" },
-      { label: "Lobu memory CLI Reference", href: "/reference/owletto-cli/" },
+      { label: "Owletto CLI Reference", href: "/reference/owletto-cli/" },
     ],
   },
   openclaw: {
@@ -116,9 +116,9 @@ export const connectFromClientConfigs: Record<
     docsHref: "/connect-from/openclaw/",
     docsLabel: "OpenClaw setup docs",
     valueProp:
-      "Layer structured, shareable memory on top of OpenClaw's built-in filesystem memory — the plugin extends OpenClaw's filesystem plugin and can optionally take over its memory slot, so different OpenClaw agents can talk to each other through the same Lobu memory graph.",
+      "Layer structured, shareable Owletto memory on top of OpenClaw's built-in filesystem memory — the plugin extends OpenClaw's filesystem plugin and can optionally take over its memory slot, so different OpenClaw agents can talk to each other through the same Owletto graph.",
     installPrompt:
-      "Install Lobu memory in OpenClaw. Run:\n\n  openclaw plugins install owletto-openclaw-plugin\n  owletto login https://app.lobu.ai/mcp\n  owletto configure\n  owletto health\n\nThe plugin extends OpenClaw's filesystem plugin and can replace its memory slot. After install, point me at the Lobu memory workspace I should use as shared memory across my OpenClaw agents.",
+      "Install Owletto in OpenClaw. Run:\n\n  openclaw plugins install owletto-openclaw-plugin\n  owletto login https://app.lobu.ai/mcp\n  owletto configure\n  owletto health\n\nThe plugin extends OpenClaw's filesystem plugin and can replace its memory slot. After install, point me at the Owletto workspace I should use as shared memory across my OpenClaw agents.",
     npmPackage: {
       name: "@lobu/owletto-openclaw",
       registryUrl: "https://www.npmjs.com/package/@lobu/owletto-openclaw",
@@ -127,7 +127,7 @@ export const connectFromClientConfigs: Record<
       installCommand: "openclaw plugins install owletto-openclaw-plugin",
     },
     describe: (showcase) =>
-      `Install Lobu memory into OpenClaw and point it at the ${showcase.label.toLowerCase()} workspace so multiple OpenClaw agents share the same memory shown in this example.`,
+      `Install Owletto into OpenClaw and point it at the ${showcase.label.toLowerCase()} workspace so multiple OpenClaw agents share the same memory shown in this example.`,
     docsSetupTitle: "Install in OpenClaw",
     docsSetupSteps: [
       "Install the plugin: `openclaw plugins install owletto-openclaw-plugin`.",
@@ -136,16 +136,16 @@ export const connectFromClientConfigs: Record<
       "Verify: `owletto health`.",
     ],
     docsSetupNote:
-      "The plugin extends OpenClaw's filesystem plugin. Leave that plugin enabled if you want both, or let `owletto configure` swap Lobu memory in as the memory slot.",
+      "The plugin extends OpenClaw's filesystem plugin. Leave that plugin enabled if you want both, or let `owletto configure` swap Owletto in as the memory slot.",
     docsExtraSection: {
       title: "Cross-agent memory",
       paragraphs: [
-        "Once two OpenClaw agents point at the same Lobu memory workspace, they read and write the same entities, observations, and decisions — that is how a team of OpenClaw agents stays coherent without copy-pasting context.",
+        "Once two OpenClaw agents point at the same Owletto workspace, they read and write the same entities, observations, and decisions — that is how a team of OpenClaw agents stays coherent without copy-pasting context.",
       ],
     },
     docsRelated: [
       { label: "Memory", href: "/getting-started/memory/" },
-      { label: "Lobu memory CLI Reference", href: "/reference/owletto-cli/" },
+      { label: "Owletto CLI Reference", href: "/reference/owletto-cli/" },
     ],
   },
 };

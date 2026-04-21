@@ -34,12 +34,12 @@ Workers never receive raw provider credentials or OAuth tokens. The gateway reso
 | Category | How it works | Where secret material can live |
 |---|---|---|
 | Provider secrets | Standalone `lobu run` can read from `.env` / `$ENV_VAR` or `secret_ref`. Embedded mode can pass `key` / `secretRef` at startup or resolve credentials dynamically per request. | Built-in encrypted Redis-backed secret store, external refs such as `secret://...` or `aws-sm://...`, or a host-provided embedded secret store |
-| Per-user MCP / OAuth tokens | Collected through device-auth and injected by the gateway MCP proxy per call. Integration auth for GitHub, Google, Linear, and similar services is handled through [Lobu memory](/getting-started/memory/). | Writable gateway secret store or host-provided embedded secret store |
+| Per-user MCP / OAuth tokens | Collected through device-auth and injected by the gateway MCP proxy per call. Integration auth for GitHub, Google, Linear, and similar services is handled through [Owletto](/getting-started/memory/). | Writable gateway secret store or host-provided embedded secret store |
 | Redis role | Redis may be the built-in encrypted secret store, or it may hold only metadata and `secretRef` pointers when secrets live elsewhere. | Redis-backed secret store or metadata only |
 
 - **AWS Secrets Manager refs are read-only**. `aws-sm://...` works well for durable provider secret references, but refreshed user tokens still need a writable secret store.
 - **User-scoped provider credentials are supported in embedded mode**. A host app can resolve credentials at runtime from request context such as `userId` without persisting plaintext keys in Lobu state.
-- **Workers never touch third-party OAuth tokens directly**. They call integrations through Lobu memory MCP tools and the gateway proxy.
+- **Workers never touch third-party OAuth tokens directly**. They call integrations through Owletto MCP tools and the gateway proxy.
 
 For concrete config examples, see [Embedding](/deployment/embedding/), [AWS](/deployment/aws/), the [`lobu.toml` reference](/reference/lobu-toml/), and the [CLI reference](/reference/cli/).
 

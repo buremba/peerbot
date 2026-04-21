@@ -25,7 +25,7 @@ npx @lobu/cli@latest eval
 my-agent/
 ├── lobu.toml                  # agents, providers, skills, network
 ├── .env                       # secrets (API keys, OAuth tokens)
-├── docker-compose.yml         # Redis + gateway + optional Lobu memory
+├── docker-compose.yml         # Redis + gateway + optional Owletto
 ├── AGENTS.md                  # briefing for coding agents
 ├── README.md
 ├── TESTING.md
@@ -37,8 +37,8 @@ my-agent/
 │   └── evals/
 │       └── ping.yaml          # test cases for agent quality
 ├── skills/                    # skills shared across all agents
-├── models/                    # Lobu memory entity schemas (if memory enabled)
-└── data/                      # Lobu memory seed entities and relationships
+├── models/                    # Owletto entity schemas (if memory enabled)
+└── data/                      # Owletto seed entities and relationships
 ```
 
 | Path | Docs |
@@ -91,17 +91,19 @@ Lobu supports two configuration approaches depending on how you deploy:
 
 ### CLI
 
-After `init`, your project is configured through `lobu.toml`. Use the CLI to add providers and skills at any time:
+After `init`, your project is configured through `lobu.toml`. Use the CLI to add providers and install starter skills at any time:
 
 ```bash
 # Browse and add providers
 npx @lobu/cli@latest providers list
 npx @lobu/cli@latest providers add gemini          # prompts for API key, updates lobu.toml + .env
 
-# Browse and add skills
+# Install the Lobu starter skill into skills/lobu
 npx @lobu/cli@latest skills list
-npx @lobu/cli@latest skills add github
-npx @lobu/cli@latest skills add linear
+npx @lobu/cli@latest skills add lobu
+
+# Install the Owletto starter skill separately
+npx owletto@latest skills add owletto
 
 # Manage secrets
 npx @lobu/cli@latest secrets set GEMINI_API_KEY AIza...

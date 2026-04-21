@@ -65,7 +65,7 @@ export function MemorySection(props: {
           }
           description={
             props.heroCopy?.description ??
-            "Lobu memory gives all your agents the same durable graph: connectors, recall, and managed auth without leaking credentials to the runtime."
+            "Owletto gives all your agents the same durable graph: connectors, recall, and managed auth without leaking credentials to the runtime. Lobu can optionally use it as the shared memory backend."
           }
           prompt={getMemoryPrompt(activeUseCase)}
           promptTriggerLabel="Integrate"

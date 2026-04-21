@@ -27,27 +27,27 @@ Lobu runs as a gateway + worker architecture.
 
 In file-first projects, Lobu resolves persistent memory from `[memory.owletto]` in `lobu.toml`.
 
-- **`[memory.owletto]` enabled**: Lobu derives a Lobu memory MCP endpoint and uses `@lobu/owletto-openclaw`, falling back to native memory if the plugin is unavailable.
-- **`MEMORY_URL`**: still supported as an optional base-endpoint override for local or custom Lobu memory deployments.
-- **No Lobu memory config resolved**: uses `@openclaw/native-memory`, which is effectively filesystem-backed short-term memory inside the agent's local workspace.
+- **`[memory.owletto]` enabled**: Lobu derives an Owletto MCP endpoint and uses `@lobu/owletto-openclaw`, falling back to native memory if the plugin is unavailable.
+- **`MEMORY_URL`**: still supported as an optional base-endpoint override for local or custom Owletto deployments.
+- **No Owletto config resolved**: uses `@openclaw/native-memory`, which is effectively filesystem-backed short-term memory inside the agent's local workspace.
 
 Memory plugins are configurable per agent through `pluginsConfig` in agent settings. The split is intentional:
 
 - **Filesystem** is per channel or user space — the agent's working area for artifacts such as PDFs, images, scripts, CSVs, and temporary outputs.
-- **Lobu memory** is long-term organizational memory. Agents write durable facts into entities so other sessions, users, and agents can query and reuse that knowledge later.
+- **Owletto** is long-term organizational memory. Agents write durable facts into entities so other sessions, users, and agents can query and reuse that knowledge later.
 
 ### How It Works
 
-1. Gateway resolves an effective Lobu memory endpoint from `[memory.owletto]` (and optional `MEMORY_URL` override), then selects the default memory plugin and sets it in `agentDefaults.pluginsConfig`.
+1. Gateway resolves an effective Owletto endpoint from `[memory.owletto]` (and optional `MEMORY_URL` override), then selects the default memory plugin and sets it in `agentDefaults.pluginsConfig`.
 2. Worker fetches session context from gateway and passes `pluginsConfig` into OpenClaw runtime startup.
 3. OpenClaw loads enabled plugins for that agent session.
-4. If memory is set to `@lobu/owletto-openclaw`, that plugin converts OpenClaw memory reads/writes into Lobu memory MCP calls through the gateway proxy.
+4. If memory is set to `@lobu/owletto-openclaw`, that plugin converts OpenClaw memory reads/writes into Owletto MCP calls through the gateway proxy.
 5. The memory plugin handles persistent memory operations so context can be reused across future runs.
 
-In short: local filesystem for short-term working state; Lobu memory for long-term shared knowledge.
+In short: local filesystem for short-term working state; Owletto for long-term shared knowledge.
 
 ## Security-Critical Path
 
 - Workers do not directly own global provider secrets.
 - Outbound access is controlled via gateway proxy and domain policy.
-- MCP credentials are resolved by the gateway proxy. Integration auth is handled by Lobu memory.
+- MCP credentials are resolved by the gateway proxy. Integration auth is handled by Owletto.

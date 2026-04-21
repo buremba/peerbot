@@ -274,6 +274,34 @@ export async function runCli(
       await providersAddCommand(process.cwd(), id);
     });
 
+  // ─── skills ─────────────────────────────────────────────────────────
+  const skills = program
+    .command("skills")
+    .description(
+      "Install bundled starter skills into the local skills/ directory"
+    );
+
+  skills
+    .command("list")
+    .description("List bundled starter skills")
+    .action(async () => {
+      const { skillsListCommand } = await import("./commands/skills/list.js");
+      await skillsListCommand();
+    });
+
+  skills
+    .command("add <id>")
+    .description("Install a bundled starter skill into skills/<id>")
+    .option(
+      "-d, --dir <path>",
+      "Target directory (defaults to current working directory)"
+    )
+    .option("-f, --force", "Overwrite an existing skills/<id> directory")
+    .action(async (id: string, options: { dir?: string; force?: boolean }) => {
+      const { skillsAddCommand } = await import("./commands/skills/add.js");
+      await skillsAddCommand(process.cwd(), id, options);
+    });
+
   // ─── connections ────────────────────────────────────────────────────
   const connections = program
     .command("connections")

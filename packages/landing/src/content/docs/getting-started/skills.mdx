@@ -1,21 +1,41 @@
 ---
 title: Skills
-description: What skills are in Lobu, how they are enabled, and where to find the detailed reference docs.
+description: How Lobu skills work, where they live, and how Lobu and Owletto starter skills are installed separately.
 ---
 
 import { SkillsRegistryTable } from "../../../components/SkillsRegistryTable";
 
-A **skill** is a reusable capability bundle for a Lobu agent. Skills can add instructions, integrations, MCP servers, system packages, and network requirements.
+A **skill** is a reusable capability bundle for an agent. In Lobu, skills can add:
 
-## What Skills Do
+- markdown instructions
+- MCP servers
+- system packages
+- network requirements
 
-- Add capability declarations through `SKILL.md`
-- Extend the agent's instructions with markdown content
-- Let the gateway prepare the worker with the packages, MCP servers, and network access the skill requires
+Lobu still discovers local `SKILL.md` files at runtime. The CLI starter-skill commands simply copy a bundled skill folder into your local `skills/` directory so you can commit it and customize it.
 
-When a user enables a skill, the gateway reads the skill manifest, resolves the declared config, and starts the worker with those capabilities in place.
+## Separate Starter Skills
 
-## Create A Local Skill
+Lobu and Owletto are separate products, so their starter skills install separately too.
+
+```bash
+# Install the Lobu starter skill
+npx @lobu/cli@latest skills add lobu
+
+# Install the Owletto starter skill
+npx owletto@latest skills add owletto
+
+# Install the Owletto OpenClaw variant
+npx owletto@latest skills add owletto-openclaw
+```
+
+- Use the **Lobu** skill when the agent should understand Lobu projects, `lobu.toml`, prompt files, evals, and project structure.
+- Use the **Owletto** skill when the agent should understand Owletto memory, knowledge tools, watchers, and client setup.
+- Use **both** when you are building Lobu agents that also rely on Owletto memory.
+
+<SkillsRegistryTable client:load />
+
+## Local Skill Locations
 
 Lobu supports two local skill locations:
 
@@ -24,7 +44,9 @@ Lobu supports two local skill locations:
 | Shared skill | `skills/<name>/SKILL.md` | Available to all agents |
 | Agent skill | `agents/<agent>/skills/<name>/SKILL.md` | Available to one agent |
 
-Local skills are discovered automatically at startup. You do not need to list them in `lobu.toml`.
+If the file exists, Lobu loads it automatically at startup.
+
+## Minimal Example
 
 ```markdown
 ---
@@ -46,30 +68,28 @@ mcpServers:
 Use the support API tools for account lookups and ticket status checks.
 ```
 
-For simple instruction-only skills, omit frontmatter and keep only the markdown body.
+For instruction-only skills, omit frontmatter and keep only the markdown body.
 
 ## What Does Not Belong In A Skill
 
-- Tool visibility and MCP approval bypasses are configured in [`lobu.toml`](/reference/lobu-toml/), not in `SKILL.md`
+- Tool visibility and MCP approval bypasses belong in [`lobu.toml`](/reference/lobu-toml/), not in `SKILL.md`
 - Destructive MCP tools still follow the normal approval flow unless the operator configures `[agents.<id>.tools].pre_approved`
 
 See [Tool Policy](/guides/tool-policy/) for that split.
 
----
+## Skills Vs Memory
 
-## Integrations
+Skills and memory are related but different:
 
-Integration auth for third-party APIs (GitHub, Google, Linear, etc.) is handled by **Lobu**. Workers access these APIs through Lobu MCP tools, which manage OAuth credentials, token refresh, and API proxying. Workers never see OAuth tokens directly.
+- **Skills** teach the agent how to work and what capabilities to request.
+- **Owletto** is the separate long-term memory and integrations product.
+- **Lobu** can optionally use Owletto as its memory backend through `[memory.owletto]` in `lobu.toml`.
 
-Lobu memory also powers Lobu's richer shared-memory model: workspace-scoped knowledge, typed entities, hybrid recall, connectors, and watchers. See [Memory](/getting-started/memory/) for how that layer works and when to use it instead of local-only memory.
-
-<SkillsRegistryTable client:load />
-
----
+Installing the Owletto skill does not by itself wire Lobu to Owletto memory. That runtime wiring lives in Lobu configuration. See [Memory](/getting-started/memory/) for that setup.
 
 ## Read Next
 
-- [SKILL.md Reference](/reference/skill-md/) for the file format and supported frontmatter
-- [Memory](/getting-started/memory/) for how Lobu memory powers Lobu's shared memory layer
-- [`lobu.toml` Reference](/reference/lobu-toml/) for agent-level configuration
-- [Tool Policy](/guides/tool-policy/) for tool visibility and MCP approval overrides
+- [SKILL.md Reference](/reference/skill-md/)
+- [Memory](/getting-started/memory/)
+- [`lobu.toml` Reference](/reference/lobu-toml/)
+- [Owletto CLI Reference](/reference/owletto-cli/)

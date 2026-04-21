@@ -15,7 +15,7 @@
     "runtime"
   ],
   "scripts": {
-    "build": "tsup && node ./scripts/prepare-runtime.mjs",
+    "build": "tsup && node ./scripts/copy-bundled-skills.mjs && node ./scripts/prepare-runtime.mjs",
     "clean": "rm -rf dist runtime",
     "dev": "tsx src/bin.ts",
     "runtime:prepare": "node ./scripts/prepare-runtime.mjs",

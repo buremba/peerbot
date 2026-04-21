@@ -102,15 +102,15 @@ kubectl get pvc -n lobu
 kubectl describe pvc <pvc-name> -n lobu
 ```
 
-## Lobu memory connection issues
+## Owletto connection issues
 
 ```bash
-# Verify local Lobu memory is running (if you're using owletto-local)
+# Verify local Owletto is running (if you're using owletto-local)
 curl http://localhost:8787/health
 
 # Check file-first memory config
 # - lobu.toml should contain [memory.owletto] with enabled = true and an org
-# - MEMORY_URL is optional; use it mainly for local/custom Lobu memory base URLs
+# - MEMORY_URL is optional; use it mainly for local/custom Owletto base URLs
 
 # Test connection
 npx owletto@latest health

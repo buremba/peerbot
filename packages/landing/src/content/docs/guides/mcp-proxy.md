@@ -34,7 +34,7 @@ There are three ways an MCP server can authenticate:
 |--------|-------------|----------|
 | **Static headers** | `headers` | API keys, service tokens — no per-user auth needed |
 | **Device-code OAuth** | `oauth` on the MCP server | Per-user OAuth — each user authenticates in their browser |
-| **Lobu-memory-managed** | N/A (Lobu memory handles internally) | Third-party APIs (GitHub, Google, Linear, etc.) |
+| **Owletto-managed** | N/A (Owletto handles internally) | Third-party APIs (GitHub, Google, Linear, etc.) |
 
 ### Static headers
 
@@ -176,9 +176,9 @@ When `clientId` is provided, dynamic client registration is skipped entirely —
 
 ### Lobu-memory-managed auth
 
-Third-party API integrations (GitHub, Google, Linear, Notion, etc.) are handled by Lobu memory MCP servers. Lobu memory manages OAuth flows, token storage, and API proxying internally. The gateway acts as a thin proxy — it doesn't know or care about the integration's auth.
+Third-party API integrations (GitHub, Google, Linear, Notion, etc.) are handled by Owletto MCP servers. Owletto manages OAuth flows, token storage, and API proxying internally. The gateway acts as a thin proxy — it doesn't know or care about the integration's auth.
 
-Workers access these APIs through Lobu memory tools (e.g., `owletto_github_read_repo`). If Lobu memory needs the user to authenticate, it returns instructions for the user to call `owletto_login`.
+Workers access these APIs through Owletto tools (e.g., `owletto_github_read_repo`). If Owletto needs the user to authenticate, it returns instructions for the user to call `owletto_login`.
 
 ## Worker auth awareness
 

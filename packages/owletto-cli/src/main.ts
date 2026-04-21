@@ -19,5 +19,6 @@ export const main = defineCommand({
     run: () => import('./commands/run.ts').then((m) => m.default),
     seed: () => import('./commands/seed.ts').then((m) => m.default),
     'browser-auth': () => import('./commands/browser-auth.ts').then((m) => m.default),
+    skills: () => import('./commands/skills.ts').then((m) => m.default),
   },
 });

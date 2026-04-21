@@ -127,17 +127,19 @@ Same SKILL.md. Same environment. Every time.
 
 First boot pays the install cost. After that packages are cached on the workspace volume (Docker) or PVC (Kubernetes), so they survive container restarts and scale-to-zero.
 
-#### The CLI
+#### Starter skills
 
 ```bash
-$ npx @lobu/cli@latest skills search "video"
-  video-processor  Process and transcode video files  [integration]
+$ npx @lobu/cli@latest skills add lobu
+  Installed "lobu"
+  → ./skills/lobu
 
-$ npx @lobu/cli@latest skills add video-processor
-  Added "video-processor" to lobu.toml
+$ npx owletto@latest skills add owletto
+  Installed "owletto"
+  → ./skills/owletto
 ```
 
-Next time the agent starts it has ffmpeg, jq, mediainfo, cloud storage access, and the right sandbox rules. No manual setup.
+Those commands copy a starter skill folder into your local `skills/` directory. From there you can commit it, customize it, and let your runtime discover it like any other local skill.
 
 ---
 

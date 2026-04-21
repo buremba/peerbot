@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.0.1](https://github.com/lobu-ai/lobu/compare/lobu-v4.0.0...lobu-v4.0.1) (2026-04-21)
+
+
+### Bug Fixes
+
+* **ci:** correct jq precedence in codex-auto-approve lookup ([#300](https://github.com/lobu-ai/lobu/issues/300)) ([86063c6](https://github.com/lobu-ai/lobu/commit/86063c647af6f92c0cd8f32b46f0237ff3487c7d))
+* **gateway:** gate agent API handlers with ownership check to prevent cross-tenant access ([#285](https://github.com/lobu-ai/lobu/issues/285)) ([ec8ff6b](https://github.com/lobu-ai/lobu/commit/ec8ff6bb28389acc023a9b363bb8bbd7813518ad))
+
 ## [4.0.0](https://github.com/lobu-ai/lobu/compare/lobu-v3.7.0...lobu-v4.0.0) (2026-04-21)
 
 

@@ -182,7 +182,7 @@ export function BenchmarkSection() {
 
         <div class="mt-8 text-center">
           <a
-            href="/docs/guides/memory-benchmarks/"
+            href="/guides/memory-benchmarks/"
             class="inline-flex items-center gap-2 text-xs font-medium px-4 py-2 rounded-lg transition-all hover:opacity-80"
             style={{
               backgroundColor: "var(--color-page-surface)",

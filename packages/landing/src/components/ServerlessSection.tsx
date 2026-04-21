@@ -63,7 +63,7 @@ const docsLinks = [
   { label: "Security", href: "/guides/security" },
   { label: "Kubernetes Deploy", href: "/deployment/kubernetes" },
   { label: "Docker Deploy", href: "/deployment/docker" },
-  { label: "MCP & Integrations", href: "/guides/integrations-mcp" },
+  { label: "MCP Proxy", href: "/guides/mcp-proxy/" },
 ];
 
 export function ServerlessSection() {

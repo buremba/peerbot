@@ -1,17 +1,17 @@
 # Security
 
-Lobu's security model: what's isolated, what's trusted, how deployment mode changes the controls.
+Lobu's security model: what's isolated, what's trusted, and how deployment mode changes the controls.
 
 ## Threat Model
 
-Assume:
+Assumptions:
 - The agent executes untrusted LLM-generated code and fetches untrusted dependencies.
 - Skills and MCP servers can be third-party.
-- Users in different channels/DMs must not read or write each other's workspaces or secrets.
+- Users in different channels/DMs must never read or write each other's workspaces or secrets.
 
-Goal:
+Goals:
 - Contain compromise to a single worker/session.
-- Centralize secrets and outbound access decisions in the gateway.
+- Centralize secrets and outbound-access decisions in the gateway.
 
 ## Kubernetes
 

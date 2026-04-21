@@ -1,6 +1,6 @@
 # Releasing
 
-Four packages ship to npm as a synchronized release: `@lobu/core`, `@lobu/gateway`, `@lobu/worker`, `@lobu/cli`. `charts/lobu/Chart.yaml` bumps in lockstep. [release-please](https://github.com/googleapis/release-please) reads conventional commits from `main` and drives versioning; publishing uses npm OIDC trusted publishing (no `NPM_TOKEN`, no OTP).
+Eight packages ship to npm as a synchronized release: `@lobu/core`, `@lobu/cli-core`, `@lobu/gateway`, `@lobu/worker`, `@lobu/cli`, `@lobu/owletto-sdk`, `@lobu/owletto-openclaw`, `@lobu/owletto-cli`. `charts/lobu/Chart.yaml` bumps in lockstep. [release-please](https://github.com/googleapis/release-please) reads conventional commits on `main` and drives versioning; publishing uses npm OIDC trusted publishing (no `NPM_TOKEN`, no OTP).
 
 ## Flow
 
@@ -73,10 +73,9 @@ After a local publish, land a `chore(release)` commit on `main` so `.release-ple
 ## Verify
 
 ```bash
-npm view @lobu/core version
-npm view @lobu/gateway version
-npm view @lobu/worker version
-npm view @lobu/cli version
+for pkg in core cli-core gateway worker cli owletto-sdk owletto-openclaw owletto-cli; do
+  npm view "@lobu/$pkg" version
+done
 ```
 
-All four should match the release PR.
+All versions should match the release PR.

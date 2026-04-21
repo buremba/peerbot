@@ -66,14 +66,10 @@ export class OpenClawProgressProcessor {
         if (event.message.role !== "assistant") {
           return false;
         }
-        const assistantMessage = event.message as {
-          stopReason?: string;
-          errorMessage?: string;
-        };
+        const assistantMessage = event.message;
         if (
           assistantMessage.stopReason === "error" &&
-          typeof assistantMessage.errorMessage === "string" &&
-          assistantMessage.errorMessage.trim()
+          assistantMessage.errorMessage?.trim()
         ) {
           this.fatalErrorMessage = assistantMessage.errorMessage.trim();
           return false;
@@ -83,25 +79,11 @@ export class OpenClawProgressProcessor {
           return false;
         }
         // Fallback: extract text from final message content
-        const content = event.message.content;
-        if (!Array.isArray(content)) {
-          return false;
-        }
         let extracted = false;
-        for (const block of content) {
-          if (
-            block &&
-            typeof block === "object" &&
-            "type" in block &&
-            (block as { type: string }).type === "text" &&
-            "text" in block &&
-            typeof (block as { text: unknown }).text === "string"
-          ) {
-            const text = (block as { text: string }).text;
-            if (text.trim()) {
-              this.chronologicalOutput += text;
-              extracted = true;
-            }
+        for (const block of assistantMessage.content) {
+          if (block.type === "text" && block.text.trim()) {
+            this.chronologicalOutput += block.text;
+            extracted = true;
           }
         }
         return extracted;

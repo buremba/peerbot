@@ -154,12 +154,6 @@ export const connectFromClientIds = Object.keys(
   connectFromClientConfigs
 ) as ConnectFromClientId[];
 
-export function isConnectFromClientId(
-  value: string
-): value is ConnectFromClientId {
-  return value in connectFromClientConfigs;
-}
-
 export function getConnectFromClientConfig(clientId: ConnectFromClientId) {
   return connectFromClientConfigs[clientId];
 }

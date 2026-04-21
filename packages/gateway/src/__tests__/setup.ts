@@ -12,14 +12,7 @@ import { join } from "node:path";
 import { createMockJob as _createMockJob } from "@lobu/core/testing";
 import { ArtifactStore } from "../files/artifact-store";
 
-export {
-  createInstructionContext,
-  createMockJob,
-  createWorkerConfig,
-  MockMessageQueue,
-  MockRedisClient,
-  mockFetch,
-} from "@lobu/core/testing";
+export { MockMessageQueue } from "@lobu/core/testing";
 
 /**
  * Mock Express Response for SSE testing (gateway-specific)

@@ -4,7 +4,6 @@ export const cardBorder = "rgba(62, 77, 97, 0.55)";
 export const cardBorderSubtle = "rgba(62, 77, 97, 0.45)";
 export const cardBorderFaint = "rgba(62, 77, 97, 0.42)";
 export const innerCardBg = "rgba(255,255,255,0.03)";
-export const innerCardBgLight = "rgba(255,255,255,0.04)";
 export const deepBg = "rgba(5, 7, 10, 0.88)";
 export const textColor = "var(--color-page-text)";
 export const textMuted = "var(--color-page-text-muted)";
@@ -13,7 +12,5 @@ export const darkBase = "rgb(8, 10, 14)";
 // Accent colors
 export const accentAmber = "#f8b84e";
 export const accentCyan = "#67e8f9";
-export const accentPurple = "#c084fc";
-export const accentGreen = "#86efac";
 export const accentPink = "#fb7185";
 export const labelGray = "#93a6be";

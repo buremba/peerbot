@@ -3171,11 +3171,6 @@ const surfaceHeroCopy: Record<SurfaceId, SurfaceHeroCopyConfig> = {
   },
 };
 
-export const landingUseCaseOptions = landingUseCaseShowcases.map((useCase) => ({
-  id: useCase.id,
-  label: useCase.label,
-}));
-
 export type LandingUseCaseRole = "departments" | "personal" | "public";
 
 const useCaseRoleMap: Record<LandingUseCaseId, LandingUseCaseRole> = {
@@ -3243,12 +3238,6 @@ export const landingUseCaseGroupedOptions = landingUseCaseRoleMeta
   }))
   .filter((group) => group.useCases.length > 0);
 
-export function getLandingUseCaseRole(
-  useCaseId: LandingUseCaseId
-): LandingUseCaseRole {
-  return useCaseRoleMap[useCaseId];
-}
-
 export function getLandingUseCaseShowcase(
   useCaseId?: string
 ): LandingUseCaseShowcase {
@@ -3273,10 +3262,6 @@ export function getSurfaceHeroCopy(
     ...useCaseCopy,
   };
 }
-
-export const showcaseSkillWorkspacePreviews = landingUseCaseShowcases.map(
-  (useCase) => useCase.skills
-);
 
 export const showcaseMemoryExamples = landingUseCaseShowcases.map(
   (useCase) => useCase.memory
@@ -3328,10 +3313,6 @@ export function getOwlettoUrl(useCaseId?: LandingUseCaseId) {
 
 export function getOwlettoMcpUrl() {
   return `${LOBU_APP_BASE_URL}/mcp`;
-}
-
-export function getOwlettoScopedMcpUrl(useCaseId?: LandingUseCaseId) {
-  return `${getOwlettoUrl(useCaseId)}/mcp`;
 }
 
 export function getOwlettoBaseUrl() {

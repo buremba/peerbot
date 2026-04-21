@@ -11,13 +11,6 @@ import {
   mockFetch as sharedMockFetch,
 } from "@lobu/core/testing";
 
-export {
-  createInstructionContext,
-  createWorkerConfig,
-  MockRedisClient,
-  mockFetch,
-} from "@lobu/core/testing";
-
 export const mockWorkerConfig = createWorkerConfig();
 
 // Mock environment variables for testing

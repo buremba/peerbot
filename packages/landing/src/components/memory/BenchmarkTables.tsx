@@ -1,4 +1,10 @@
-import { cardBg, cardBorder, innerCardBg, textColor, textMuted } from "./styles";
+import {
+  cardBg,
+  cardBorder,
+  innerCardBg,
+  textColor,
+  textMuted,
+} from "./styles";
 
 // Benchmark numbers mirrored across:
 //   - this component

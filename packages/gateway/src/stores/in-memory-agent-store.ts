@@ -1,20 +1,26 @@
 /**
  * InMemoryAgentStore — default AgentStore backed by in-memory Maps.
  *
- * Populated from files (dev mode) or via API (embedded mode).
+ * Populated from files (dev mode) or via API (embedded mode). Raw CRUD
+ * primitives operate on Maps; the public AgentStore surface is inherited
+ * from BaseAgentStore.
  */
 
 import {
   normalizeDomainPattern,
   type AgentMetadata,
   type AgentSettings,
-  type AgentStore,
   type ChannelBinding,
   type Grant,
   type StoredConnection,
 } from "@lobu/core";
+import {
+  BaseAgentStore,
+  buildKey,
+  getOrCreateSet,
+} from "./base-agent-store";
 
-export class InMemoryAgentStore implements AgentStore {
+export class InMemoryAgentStore extends BaseAgentStore {
   private settings = new Map<string, AgentSettings>();
   private metadata = new Map<string, AgentMetadata>();
   private connections = new Map<string, StoredConnection>();
@@ -29,51 +35,44 @@ export class InMemoryAgentStore implements AgentStore {
   private userAgents = new Map<string, Set<string>>();
   private sandboxes = new Map<string, Set<string>>();
 
-  // ── Agent Settings ──────────────────────────────────────────────────
+  // ── Settings primitives ───────────────────────────────────────────
 
-  async getSettings(agentId: string): Promise<AgentSettings | null> {
+  protected async readSettings(
+    agentId: string
+  ): Promise<AgentSettings | null> {
     return this.settings.get(agentId) ?? null;
   }
 
-  async saveSettings(agentId: string, settings: AgentSettings): Promise<void> {
-    this.settings.set(agentId, { ...settings, updatedAt: Date.now() });
-  }
-
-  async updateSettings(
+  protected async writeSettings(
     agentId: string,
-    updates: Partial<AgentSettings>
+    settings: AgentSettings
   ): Promise<void> {
-    const existing = this.settings.get(agentId);
-    this.settings.set(agentId, {
-      ...(existing || {}),
-      ...updates,
-      updatedAt: Date.now(),
-    } as AgentSettings);
+    this.settings.set(agentId, settings);
   }
 
-  async deleteSettings(agentId: string): Promise<void> {
+  protected async deleteSettingsRaw(agentId: string): Promise<void> {
     this.settings.delete(agentId);
   }
 
-  async hasSettings(agentId: string): Promise<boolean> {
+  protected async hasSettingsRaw(agentId: string): Promise<boolean> {
     return this.settings.has(agentId);
   }
 
-  // ── Agent Metadata ────────────────────────────────────────────────
+  // ── Metadata primitives ───────────────────────────────────────────
 
-  async getMetadata(agentId: string): Promise<AgentMetadata | null> {
+  protected async readMetadata(
+    agentId: string
+  ): Promise<AgentMetadata | null> {
     return this.metadata.get(agentId) ?? null;
   }
 
-  async saveMetadata(agentId: string, metadata: AgentMetadata): Promise<void> {
+  async saveMetadata(
+    agentId: string,
+    metadata: AgentMetadata
+  ): Promise<void> {
     this.metadata.set(agentId, metadata);
     if (metadata.parentConnectionId) {
-      let set = this.sandboxes.get(metadata.parentConnectionId);
-      if (!set) {
-        set = new Set();
-        this.sandboxes.set(metadata.parentConnectionId, set);
-      }
-      set.add(agentId);
+      getOrCreateSet(this.sandboxes, metadata.parentConnectionId).add(agentId);
     }
   }
 
@@ -86,7 +85,7 @@ export class InMemoryAgentStore implements AgentStore {
     await this.saveMetadata(agentId, { ...existing, ...updates });
   }
 
-  async deleteMetadata(agentId: string): Promise<void> {
+  protected async deleteMetadataRaw(agentId: string): Promise<void> {
     const existing = this.metadata.get(agentId);
     this.metadata.delete(agentId);
     if (existing?.parentConnectionId) {
@@ -98,15 +97,17 @@ export class InMemoryAgentStore implements AgentStore {
     }
   }
 
-  async hasAgent(agentId: string): Promise<boolean> {
+  protected async hasMetadataRaw(agentId: string): Promise<boolean> {
     return this.metadata.has(agentId);
   }
 
-  async listAgents(): Promise<AgentMetadata[]> {
+  protected async listAllMetadata(): Promise<AgentMetadata[]> {
     return Array.from(this.metadata.values());
   }
 
-  async listSandboxes(connectionId: string): Promise<AgentMetadata[]> {
+  protected async listSandboxMetadata(
+    connectionId: string
+  ): Promise<AgentMetadata[]> {
     const ids = this.sandboxes.get(connectionId);
     if (!ids) return [];
     const results: AgentMetadata[] = [];
@@ -117,63 +118,27 @@ export class InMemoryAgentStore implements AgentStore {
     return results;
   }
 
-  // ── Connections ──────────────────────────────────────────────────
+  // ── Connection primitives ─────────────────────────────────────────
 
-  async getConnection(connectionId: string): Promise<StoredConnection | null> {
+  protected async readConnection(
+    connectionId: string
+  ): Promise<StoredConnection | null> {
     return this.connections.get(connectionId) ?? null;
   }
 
-  async listConnections(filter?: {
-    templateAgentId?: string;
-    platform?: string;
-  }): Promise<StoredConnection[]> {
-    let ids: Iterable<string>;
-    if (filter?.templateAgentId) {
-      ids = this.connectionsByAgent.get(filter.templateAgentId) ?? [];
-    } else {
-      ids = this.connectionsAll;
-    }
-
-    let connections: StoredConnection[] = [];
-    for (const id of ids) {
-      const conn = this.connections.get(id);
-      if (conn) connections.push(conn);
-    }
-
-    if (filter?.platform) {
-      connections = connections.filter((c) => c.platform === filter.platform);
-    }
-    return connections;
-  }
-
-  async saveConnection(connection: StoredConnection): Promise<void> {
+  protected async writeConnection(
+    connection: StoredConnection
+  ): Promise<void> {
     this.connections.set(connection.id, connection);
     this.connectionsAll.add(connection.id);
     if (connection.templateAgentId) {
-      let set = this.connectionsByAgent.get(connection.templateAgentId);
-      if (!set) {
-        set = new Set();
-        this.connectionsByAgent.set(connection.templateAgentId, set);
-      }
-      set.add(connection.id);
+      getOrCreateSet(this.connectionsByAgent, connection.templateAgentId).add(
+        connection.id
+      );
     }
   }
 
-  async updateConnection(
-    connectionId: string,
-    updates: Partial<StoredConnection>
-  ): Promise<void> {
-    const existing = this.connections.get(connectionId);
-    if (!existing) return;
-    await this.saveConnection({
-      ...existing,
-      ...updates,
-      id: connectionId,
-      updatedAt: Date.now(),
-    });
-  }
-
-  async deleteConnection(connectionId: string): Promise<void> {
+  protected async deleteConnectionRaw(connectionId: string): Promise<void> {
     const conn = this.connections.get(connectionId);
     this.connections.delete(connectionId);
     this.connectionsAll.delete(connectionId);
@@ -187,6 +152,21 @@ export class InMemoryAgentStore implements AgentStore {
     }
   }
 
+  protected async listConnectionsByTemplate(
+    templateAgentId?: string
+  ): Promise<StoredConnection[]> {
+    const ids: Iterable<string> = templateAgentId
+      ? (this.connectionsByAgent.get(templateAgentId) ?? [])
+      : this.connectionsAll;
+
+    const connections: StoredConnection[] = [];
+    for (const id of ids) {
+      const conn = this.connections.get(id);
+      if (conn) connections.push(conn);
+    }
+    return connections;
+  }
+
   // ── Grants ──────────────────────────────────────────────────────
 
   private grantKey(agentId: string, pattern: string): string {
@@ -194,7 +174,7 @@ export class InMemoryAgentStore implements AgentStore {
       ? pattern
       : normalizeDomainPattern(pattern);
 
-    return `${agentId}:${normalizedPattern}`;
+    return buildKey([agentId, normalizedPattern]);
   }
 
   private getValidGrant(
@@ -284,7 +264,7 @@ export class InMemoryAgentStore implements AgentStore {
   // ── User-Agent Associations ─────────────────────────────────────
 
   private userKey(platform: string, userId: string): string {
-    return `${platform}:${userId}`;
+    return buildKey([platform, userId]);
   }
 
   async addUserAgent(
@@ -292,13 +272,9 @@ export class InMemoryAgentStore implements AgentStore {
     userId: string,
     agentId: string
   ): Promise<void> {
-    const key = this.userKey(platform, userId);
-    let set = this.userAgents.get(key);
-    if (!set) {
-      set = new Set();
-      this.userAgents.set(key, set);
-    }
-    set.add(agentId);
+    getOrCreateSet(this.userAgents, this.userKey(platform, userId)).add(
+      agentId
+    );
   }
 
   async removeUserAgent(
@@ -336,8 +312,8 @@ export class InMemoryAgentStore implements AgentStore {
     teamId?: string
   ): string {
     return teamId
-      ? `${platform}:${channelId}:${teamId}`
-      : `${platform}:${channelId}`;
+      ? buildKey([platform, channelId, teamId])
+      : buildKey([platform, channelId]);
   }
 
   async getChannelBinding(
@@ -359,12 +335,7 @@ export class InMemoryAgentStore implements AgentStore {
       binding.teamId
     );
     this.channelBindings.set(key, binding);
-    let set = this.channelBindingIndex.get(binding.agentId);
-    if (!set) {
-      set = new Set();
-      this.channelBindingIndex.set(binding.agentId, set);
-    }
-    set.add(key);
+    getOrCreateSet(this.channelBindingIndex, binding.agentId).add(key);
   }
 
   async deleteChannelBinding(

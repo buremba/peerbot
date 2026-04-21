@@ -1,7 +1,13 @@
+/**
+ * RedisAgentStore — Redis-backed AgentStore that extends BaseAgentStore.
+ *
+ * Primitives delegate to the purpose-built Redis services
+ * (AgentSettingsStore, AgentMetadataStore, GrantStore, UserAgentsStore,
+ * ChannelBindingService). Connections are stored directly against Redis
+ * because they have no standalone service.
+ */
+
 import type {
-  AgentAccessStore,
-  AgentConfigStore,
-  AgentConnectionStore,
   AgentMetadata,
   AgentSettings,
   ChannelBinding,
@@ -11,44 +17,77 @@ import type {
 import type Redis from "ioredis";
 import type { AgentMetadataStore } from "../auth/agent-metadata-store";
 import type { AgentSettingsStore } from "../auth/settings";
+import type { UserAgentsStore } from "../auth/user-agents-store";
 import type { ChannelBindingService } from "../channels";
 import type { GrantStore } from "../permissions/grant-store";
-import type { UserAgentsStore } from "../auth/user-agents-store";
+import { BaseAgentStore } from "./base-agent-store";
 
-export class RedisAgentConfigStore implements AgentConfigStore {
+export class RedisAgentStore extends BaseAgentStore {
   constructor(
+    private readonly redis: Redis,
     private readonly settingsStore: AgentSettingsStore,
-    private readonly metadataStore: AgentMetadataStore
-  ) {}
+    private readonly metadataStore: AgentMetadataStore,
+    private readonly grantStore: GrantStore,
+    private readonly userAgentsStore: UserAgentsStore,
+    private readonly channelBindingService: ChannelBindingService
+  ) {
+    super();
+  }
 
-  async getSettings(agentId: string): Promise<AgentSettings | null> {
+  // ── Settings primitives ───────────────────────────────────────────
+
+  protected async readSettings(
+    agentId: string
+  ): Promise<AgentSettings | null> {
     return this.settingsStore.getSettings(agentId);
   }
 
-  async saveSettings(agentId: string, settings: AgentSettings): Promise<void> {
+  protected async writeSettings(
+    agentId: string,
+    settings: AgentSettings
+  ): Promise<void> {
+    // `AgentSettingsStore.saveSettings` re-stamps `updatedAt`; the base class
+    // already stamped it, so this is effectively a no-op overwrite.
     await this.settingsStore.saveSettings(agentId, settings);
   }
 
-  async updateSettings(
-    agentId: string,
-    updates: Partial<AgentSettings>
-  ): Promise<void> {
-    await this.settingsStore.updateSettings(agentId, updates);
-  }
-
-  async deleteSettings(agentId: string): Promise<void> {
+  protected async deleteSettingsRaw(agentId: string): Promise<void> {
     await this.settingsStore.deleteSettings(agentId);
   }
 
-  async hasSettings(agentId: string): Promise<boolean> {
+  protected async hasSettingsRaw(agentId: string): Promise<boolean> {
     return this.settingsStore.hasSettings(agentId);
   }
 
-  async getMetadata(agentId: string): Promise<AgentMetadata | null> {
+  // ── Metadata primitives ───────────────────────────────────────────
+
+  protected async readMetadata(
+    agentId: string
+  ): Promise<AgentMetadata | null> {
     return this.metadataStore.getMetadata(agentId);
   }
 
+  protected async deleteMetadataRaw(agentId: string): Promise<void> {
+    await this.metadataStore.deleteAgent(agentId);
+  }
+
+  protected async hasMetadataRaw(agentId: string): Promise<boolean> {
+    return this.metadataStore.hasAgent(agentId);
+  }
+
+  protected async listAllMetadata(): Promise<AgentMetadata[]> {
+    return this.metadataStore.listAllAgents();
+  }
+
+  protected async listSandboxMetadata(
+    connectionId: string
+  ): Promise<AgentMetadata[]> {
+    return this.metadataStore.listSandboxes(connectionId);
+  }
+
   async saveMetadata(agentId: string, metadata: AgentMetadata): Promise<void> {
+    // `createAgent` overwrites unconditionally and stamps `createdAt` with
+    // Date.now(); it accepts no `lastUsedAt` param, so we patch that in after.
     await this.metadataStore.createAgent(
       agentId,
       metadata.name,
@@ -72,60 +111,25 @@ export class RedisAgentConfigStore implements AgentConfigStore {
     agentId: string,
     updates: Partial<AgentMetadata>
   ): Promise<void> {
+    // AgentMetadataStore.updateMetadata only supports a narrow subset of
+    // fields (name/description/lastUsedAt). Other fields are silently
+    // dropped — same behavior as before the refactor.
     await this.metadataStore.updateMetadata(agentId, updates);
   }
 
-  async deleteMetadata(agentId: string): Promise<void> {
-    await this.metadataStore.deleteAgent(agentId);
-  }
+  // ── Connection primitives ─────────────────────────────────────────
 
-  async hasAgent(agentId: string): Promise<boolean> {
-    return this.metadataStore.hasAgent(agentId);
-  }
-
-  async listAgents(): Promise<AgentMetadata[]> {
-    return this.metadataStore.listAllAgents();
-  }
-
-  async listSandboxes(connectionId: string): Promise<AgentMetadata[]> {
-    return this.metadataStore.listSandboxes(connectionId);
-  }
-}
-
-export class RedisAgentConnectionStore implements AgentConnectionStore {
-  constructor(
-    private readonly redis: Redis,
-    private readonly channelBindingService: ChannelBindingService
-  ) {}
-
-  async getConnection(connectionId: string): Promise<StoredConnection | null> {
+  protected async readConnection(
+    connectionId: string
+  ): Promise<StoredConnection | null> {
     const raw = await this.redis.get(`connection:${connectionId}`);
     return raw ? (JSON.parse(raw) as StoredConnection) : null;
   }
 
-  async listConnections(filter?: {
-    templateAgentId?: string;
-    platform?: string;
-  }): Promise<StoredConnection[]> {
-    const ids = filter?.templateAgentId
-      ? await this.redis.smembers(`connections:agent:${filter.templateAgentId}`)
-      : await this.redis.smembers("connections:all");
-
-    const connections: StoredConnection[] = [];
-    for (const id of ids) {
-      const raw = await this.redis.get(`connection:${id}`);
-      if (!raw) continue;
-      const connection = JSON.parse(raw) as StoredConnection;
-      if (filter?.platform && connection.platform !== filter.platform) {
-        continue;
-      }
-      connections.push(connection);
-    }
-    return connections;
-  }
-
-  async saveConnection(connection: StoredConnection): Promise<void> {
-    const existing = await this.getConnection(connection.id);
+  protected async writeConnection(
+    connection: StoredConnection
+  ): Promise<void> {
+    const existing = await this.readConnection(connection.id);
     await this.redis.set(
       `connection:${connection.id}`,
       JSON.stringify(connection)
@@ -147,22 +151,8 @@ export class RedisAgentConnectionStore implements AgentConnectionStore {
     }
   }
 
-  async updateConnection(
-    connectionId: string,
-    updates: Partial<StoredConnection>
-  ): Promise<void> {
-    const existing = await this.getConnection(connectionId);
-    if (!existing) return;
-    await this.saveConnection({
-      ...existing,
-      ...updates,
-      id: connectionId,
-      updatedAt: Date.now(),
-    });
-  }
-
-  async deleteConnection(connectionId: string): Promise<void> {
-    const existing = await this.getConnection(connectionId);
+  protected async deleteConnectionRaw(connectionId: string): Promise<void> {
+    const existing = await this.readConnection(connectionId);
     await this.redis.del(`connection:${connectionId}`);
     await this.redis.srem("connections:all", connectionId);
     if (existing?.templateAgentId) {
@@ -172,6 +162,81 @@ export class RedisAgentConnectionStore implements AgentConnectionStore {
       );
     }
   }
+
+  protected async listConnectionsByTemplate(
+    templateAgentId?: string
+  ): Promise<StoredConnection[]> {
+    const ids = templateAgentId
+      ? await this.redis.smembers(`connections:agent:${templateAgentId}`)
+      : await this.redis.smembers("connections:all");
+
+    const connections: StoredConnection[] = [];
+    for (const id of ids) {
+      const raw = await this.redis.get(`connection:${id}`);
+      if (!raw) continue;
+      connections.push(JSON.parse(raw) as StoredConnection);
+    }
+    return connections;
+  }
+
+  // ── Grants ──────────────────────────────────────────────────────
+
+  async grant(
+    agentId: string,
+    pattern: string,
+    expiresAt: number | null,
+    denied?: boolean
+  ): Promise<void> {
+    await this.grantStore.grant(agentId, pattern, expiresAt, denied);
+  }
+
+  async hasGrant(agentId: string, pattern: string): Promise<boolean> {
+    return this.grantStore.hasGrant(agentId, pattern);
+  }
+
+  async isDenied(agentId: string, pattern: string): Promise<boolean> {
+    return this.grantStore.isDenied(agentId, pattern);
+  }
+
+  async listGrants(agentId: string): Promise<Grant[]> {
+    return this.grantStore.listGrants(agentId);
+  }
+
+  async revokeGrant(agentId: string, pattern: string): Promise<void> {
+    await this.grantStore.revoke(agentId, pattern);
+  }
+
+  // ── User-Agent Associations ─────────────────────────────────────
+
+  async addUserAgent(
+    platform: string,
+    userId: string,
+    agentId: string
+  ): Promise<void> {
+    await this.userAgentsStore.addAgent(platform, userId, agentId);
+  }
+
+  async removeUserAgent(
+    platform: string,
+    userId: string,
+    agentId: string
+  ): Promise<void> {
+    await this.userAgentsStore.removeAgent(platform, userId, agentId);
+  }
+
+  async listUserAgents(platform: string, userId: string): Promise<string[]> {
+    return this.userAgentsStore.listAgents(platform, userId);
+  }
+
+  async ownsAgent(
+    platform: string,
+    userId: string,
+    agentId: string
+  ): Promise<boolean> {
+    return this.userAgentsStore.ownsAgent(platform, userId, agentId);
+  }
+
+  // ── Channel Bindings ────────────────────────────────────────────
 
   async getChannelBinding(
     platform: string,
@@ -215,65 +280,5 @@ export class RedisAgentConnectionStore implements AgentConnectionStore {
 
   async deleteAllChannelBindings(agentId: string): Promise<number> {
     return this.channelBindingService.deleteAllBindings(agentId);
-  }
-}
-
-export class RedisAgentAccessStore implements AgentAccessStore {
-  constructor(
-    private readonly grantStore: GrantStore,
-    private readonly userAgentsStore: UserAgentsStore
-  ) {}
-
-  async grant(
-    agentId: string,
-    pattern: string,
-    expiresAt: number | null,
-    denied?: boolean
-  ): Promise<void> {
-    await this.grantStore.grant(agentId, pattern, expiresAt, denied);
-  }
-
-  async hasGrant(agentId: string, pattern: string): Promise<boolean> {
-    return this.grantStore.hasGrant(agentId, pattern);
-  }
-
-  async isDenied(agentId: string, pattern: string): Promise<boolean> {
-    return this.grantStore.isDenied(agentId, pattern);
-  }
-
-  async listGrants(agentId: string): Promise<Grant[]> {
-    return this.grantStore.listGrants(agentId);
-  }
-
-  async revokeGrant(agentId: string, pattern: string): Promise<void> {
-    await this.grantStore.revoke(agentId, pattern);
-  }
-
-  async addUserAgent(
-    platform: string,
-    userId: string,
-    agentId: string
-  ): Promise<void> {
-    await this.userAgentsStore.addAgent(platform, userId, agentId);
-  }
-
-  async removeUserAgent(
-    platform: string,
-    userId: string,
-    agentId: string
-  ): Promise<void> {
-    await this.userAgentsStore.removeAgent(platform, userId, agentId);
-  }
-
-  async listUserAgents(platform: string, userId: string): Promise<string[]> {
-    return this.userAgentsStore.listAgents(platform, userId);
-  }
-
-  async ownsAgent(
-    platform: string,
-    userId: string,
-    agentId: string
-  ): Promise<boolean> {
-    return this.userAgentsStore.ownsAgent(platform, userId, agentId);
   }
 }

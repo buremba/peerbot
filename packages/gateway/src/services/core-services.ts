@@ -63,11 +63,7 @@ import {
   SecretStoreRegistry,
 } from "../secrets";
 import { InMemoryAgentStore } from "../stores/in-memory-agent-store";
-import {
-  RedisAgentAccessStore,
-  RedisAgentConfigStore,
-  RedisAgentConnectionStore,
-} from "../stores/redis-agent-store";
+import { RedisAgentStore } from "../stores/redis-agent-store";
 import { BedrockModelCatalog } from "./bedrock-model-catalog";
 import { BedrockOpenAIService } from "./bedrock-openai-service";
 import {
@@ -436,24 +432,17 @@ export class CoreServices {
             `Agent sub-stores initialized (in-memory, ${this.fileLoadedAgents.length} agent(s) from files)`
           );
         } else {
-          if (!this.configStore) {
-            this.configStore = new RedisAgentConfigStore(
-              this.agentSettingsStore,
-              this.agentMetadataStore
-            );
-          }
-          if (!this.connectionStore) {
-            this.connectionStore = new RedisAgentConnectionStore(
-              redisClient,
-              this.channelBindingService
-            );
-          }
-          if (!this.accessStore) {
-            this.accessStore = new RedisAgentAccessStore(
-              this.grantStore,
-              this.userAgentsStore
-            );
-          }
+          const redisStore = new RedisAgentStore(
+            redisClient,
+            this.agentSettingsStore,
+            this.agentMetadataStore,
+            this.grantStore,
+            this.userAgentsStore,
+            this.channelBindingService
+          );
+          if (!this.configStore) this.configStore = redisStore;
+          if (!this.connectionStore) this.connectionStore = redisStore;
+          if (!this.accessStore) this.accessStore = redisStore;
           logger.debug("Agent sub-stores initialized (Redis-backed defaults)");
         }
       }

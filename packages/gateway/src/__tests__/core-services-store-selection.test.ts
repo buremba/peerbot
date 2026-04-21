@@ -7,11 +7,7 @@ import {
   SecretStoreRegistry,
   type WritableSecretStore,
 } from "../secrets";
-import {
-  RedisAgentAccessStore,
-  RedisAgentConfigStore,
-  RedisAgentConnectionStore,
-} from "../stores/redis-agent-store";
+import { RedisAgentStore } from "../stores/redis-agent-store";
 import { MockMessageQueue } from "./setup";
 
 function createGatewayConfig(
@@ -144,11 +140,9 @@ describe("CoreServices store selection", () => {
 
     await (coreServices as any).initializeSessionServices();
 
-    expect(coreServices.getConfigStore()).toBeInstanceOf(RedisAgentConfigStore);
-    expect(coreServices.getConnectionStore()).toBeInstanceOf(
-      RedisAgentConnectionStore
-    );
-    expect(coreServices.getAccessStore()).toBeInstanceOf(RedisAgentAccessStore);
+    expect(coreServices.getConfigStore()).toBeInstanceOf(RedisAgentStore);
+    expect(coreServices.getConnectionStore()).toBeInstanceOf(RedisAgentStore);
+    expect(coreServices.getAccessStore()).toBeInstanceOf(RedisAgentStore);
   });
 
   test("uses the host-provided secret store for persisted auth profiles", async () => {

@@ -601,13 +601,7 @@ function MemoryPanel({
   );
 }
 
-function RequestBlock({
-  text,
-  schedule,
-}: {
-  text: string;
-  schedule: string;
-}) {
+function RequestBlock({ text, schedule }: { text: string; schedule: string }) {
   return (
     <Panel extraClass="mb-5">
       <div class="flex items-center gap-3 mb-3">

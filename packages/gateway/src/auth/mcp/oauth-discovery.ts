@@ -497,4 +497,3 @@ export async function discoverOAuth(
 
   return result;
 }
-

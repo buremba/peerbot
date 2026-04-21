@@ -49,21 +49,20 @@ function configsEqual(
 }
 
 const logger = createLogger("chat-instance-manager");
-const ADAPTER_FACTORIES: Record<string, (config: any) => Promise<any>> =
-  {
-    telegram: async (c) =>
-      (await import("@chat-adapter/telegram")).createTelegramAdapter(c),
-    slack: async (c) =>
-      (await import("@chat-adapter/slack")).createSlackAdapter(c),
-    discord: async (c) =>
-      (await import("@chat-adapter/discord")).createDiscordAdapter(c),
-    whatsapp: async (c) =>
-      (await import("@chat-adapter/whatsapp")).createWhatsAppAdapter(c),
-    teams: async (c) =>
-      (await import("@chat-adapter/teams")).createTeamsAdapter(c),
-    gchat: async (c) =>
-      (await import("@chat-adapter/gchat")).createGoogleChatAdapter(c),
-  };
+const ADAPTER_FACTORIES: Record<string, (config: any) => Promise<any>> = {
+  telegram: async (c) =>
+    (await import("@chat-adapter/telegram")).createTelegramAdapter(c),
+  slack: async (c) =>
+    (await import("@chat-adapter/slack")).createSlackAdapter(c),
+  discord: async (c) =>
+    (await import("@chat-adapter/discord")).createDiscordAdapter(c),
+  whatsapp: async (c) =>
+    (await import("@chat-adapter/whatsapp")).createWhatsAppAdapter(c),
+  teams: async (c) =>
+    (await import("@chat-adapter/teams")).createTeamsAdapter(c),
+  gchat: async (c) =>
+    (await import("@chat-adapter/gchat")).createGoogleChatAdapter(c),
+};
 
 interface ManagedInstance {
   connection: PlatformConnection;

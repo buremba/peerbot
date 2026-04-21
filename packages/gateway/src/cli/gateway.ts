@@ -332,7 +332,6 @@ export function createGatewayApp(
   }
 
   if (coreServices) {
-    // Mount OAuth modules under unified auth router
     const authRouter = new OpenAPIHono();
     const registeredProviders: string[] = [];
 
@@ -578,12 +577,10 @@ export function createGatewayApp(
       });
     }
 
-    // Get shared dependencies (needed before mounting auth router)
     const agentSettingsStore = coreServices.getAgentSettingsStore();
     const claudeOAuthStateStore = coreServices.getOAuthStateStore();
     const scheduleService = coreServices.getScheduleService();
 
-    // Build provider stores and overrides dynamically from registered modules
     const providerStores: Record<
       string,
       { hasCredentials(agentId: string): Promise<boolean> }
@@ -616,7 +613,6 @@ export function createGatewayApp(
       );
     }
 
-    // Landing page (docs + integrations)
     {
       const { createLandingRoutes } = require("../routes/public/landing");
       const landingRouter = createLandingRoutes();
@@ -624,7 +620,6 @@ export function createGatewayApp(
       logger.debug("Landing page enabled at :8080/");
     }
 
-    // Agent history routes (proxy to worker HTTP server)
     {
       const connectionManager = coreServices
         .getWorkerGateway()
@@ -646,7 +641,6 @@ export function createGatewayApp(
       }
     }
 
-    // Agent config routes (/api/v1/agents/{id}/config)
     if (agentSettingsStore) {
       const {
         createAgentConfigRoutes,
@@ -674,7 +668,6 @@ export function createGatewayApp(
       );
     }
 
-    // OAuth routes (mounted under unified auth router)
     if (agentSettingsStore) {
       const { createOAuthRoutes } = require("../routes/public/oauth");
       const { OAuthClient } = require("../auth/oauth/client");
@@ -690,7 +683,6 @@ export function createGatewayApp(
       registeredProviders.push("oauth");
     }
 
-    // Mount unified auth router (includes provider modules + OAuth)
     if (registeredProviders.length > 0) {
       app.route("/api/v1/auth", authRouter);
       logger.debug(

@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { parseEnvContent, resolveGatewayUrl } from "@lobu/cli-core";
 import chalk from "chalk";
 
 interface StatusResponse {
@@ -110,27 +111,12 @@ function timeAgo(ts: number): string {
 async function resolveConfig(
   cwd: string
 ): Promise<{ gatewayUrl: string; adminPassword: string }> {
-  let gatewayPort = "8080";
-  let adminPassword = "";
+  const gatewayUrl = await resolveGatewayUrl({ cwd });
 
+  let adminPassword = "";
   try {
     const envContent = await readFile(join(cwd, ".env"), "utf-8");
-    for (const line of envContent.split("\n")) {
-      const trimmed = line.trim();
-      if (trimmed.startsWith("#")) continue;
-      const match = trimmed.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)/);
-      if (!match) continue;
-      const key = match[1];
-      let val = match[2] || "";
-      if (
-        (val.startsWith('"') && val.endsWith('"')) ||
-        (val.startsWith("'") && val.endsWith("'"))
-      ) {
-        val = val.slice(1, -1);
-      }
-      if (key === "GATEWAY_PORT" && val) gatewayPort = val;
-      if (key === "ADMIN_PASSWORD" && val) adminPassword = val;
-    }
+    adminPassword = parseEnvContent(envContent).ADMIN_PASSWORD ?? "";
   } catch {
     // No .env file
   }
@@ -139,8 +125,5 @@ async function resolveConfig(
     adminPassword = process.env.ADMIN_PASSWORD || "";
   }
 
-  return {
-    gatewayUrl: `http://localhost:${gatewayPort}`,
-    adminPassword,
-  };
+  return { gatewayUrl, adminPassword };
 }

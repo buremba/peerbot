@@ -10,9 +10,12 @@ interface Check {
 }
 
 function checkBinaryExists(name: string): Check {
+  const cmd = process.platform === 'win32' ? 'where' : 'which';
   try {
-    const path = execFileSync('which', [name], { encoding: 'utf-8' }).trim();
-    return { name, status: 'ok', detail: path };
+    const out = execFileSync(cmd, [name], { encoding: 'utf-8', timeout: 5000 }).trim();
+    const first = out.split('\n')[0]?.trim();
+    if (!first) return { name, status: 'fail', detail: 'not found' };
+    return { name, status: 'ok', detail: first };
   } catch {
     return { name, status: 'fail', detail: 'not found' };
   }

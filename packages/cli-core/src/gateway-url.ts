@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { parseEnvContent } from "./env-file.js";
 
 export const GATEWAY_DEFAULT_URL = "http://localhost:8080";
 
@@ -18,19 +19,8 @@ export async function resolveGatewayUrl(
   const cwd = options.cwd ?? process.cwd();
   try {
     const envContent = await readFile(join(cwd, ".env"), "utf-8");
-    for (const line of envContent.split("\n")) {
-      const trimmed = line.trim();
-      if (trimmed.startsWith("GATEWAY_PORT=")) {
-        let port = trimmed.slice("GATEWAY_PORT=".length);
-        if (
-          (port.startsWith('"') && port.endsWith('"')) ||
-          (port.startsWith("'") && port.endsWith("'"))
-        ) {
-          port = port.slice(1, -1);
-        }
-        if (port) return `http://localhost:${port}`;
-      }
-    }
+    const port = parseEnvContent(envContent).GATEWAY_PORT;
+    if (port) return `http://localhost:${port}`;
   } catch {
     // No .env file
   }

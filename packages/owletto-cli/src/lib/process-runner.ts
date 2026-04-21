@@ -2,8 +2,12 @@ import { execFileSync, spawn } from 'node:child_process';
 import { CliError, DependencyError } from './errors.ts';
 
 export function checkBinary(name: string): string {
+  const cmd = process.platform === 'win32' ? 'where' : 'which';
   try {
-    return execFileSync('which', [name], { encoding: 'utf-8' }).trim();
+    const out = execFileSync(cmd, [name], { encoding: 'utf-8', timeout: 5000 }).trim();
+    const first = out.split('\n')[0]?.trim();
+    if (!first) throw new DependencyError(name);
+    return first;
   } catch {
     throw new DependencyError(name);
   }
@@ -42,17 +46,23 @@ export function run(
       });
     }
 
-    // Forward signals to child
+    // Forward signals to child so Ctrl+C / terminal hangup propagate correctly.
+    const forwardedSignals: NodeJS.Signals[] =
+      process.platform === 'win32' ? ['SIGINT', 'SIGTERM'] : ['SIGINT', 'SIGTERM', 'SIGHUP'];
     const forwardSignal = (signal: NodeJS.Signals) => {
       child.kill(signal);
     };
-    process.on('SIGINT', forwardSignal);
-    process.on('SIGTERM', forwardSignal);
+    for (const sig of forwardedSignals) {
+      process.on(sig, forwardSignal);
+    }
+    const removeSignalHandlers = () => {
+      for (const sig of forwardedSignals) {
+        process.off(sig, forwardSignal);
+      }
+    };
 
     child.on('close', (code, signal) => {
-      process.off('SIGINT', forwardSignal);
-      process.off('SIGTERM', forwardSignal);
-
+      removeSignalHandlers();
       if (signal) {
         reject(new CliError(`${binary} killed by signal ${signal}`, 128));
         return;
@@ -61,8 +71,7 @@ export function run(
     });
 
     child.on('error', (err) => {
-      process.off('SIGINT', forwardSignal);
-      process.off('SIGTERM', forwardSignal);
+      removeSignalHandlers();
       reject(new CliError(`Failed to start ${binary}: ${err.message}`));
     });
   });

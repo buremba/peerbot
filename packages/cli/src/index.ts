@@ -249,45 +249,6 @@ export async function runCli(
       await secretsDeleteCommand(process.cwd(), key);
     });
 
-  // ─── skills ─────────────────────────────────────────────────────────
-  const skills = program
-    .command("skills")
-    .description("Local skill guidance (bundled skill registry removed)");
-
-  skills
-    .command("list")
-    .description("Show how to define local skills")
-    .action(async () => {
-      const { skillsListCommand } = await import("./commands/skills/list.js");
-      await skillsListCommand();
-    });
-
-  skills
-    .command("search <query>")
-    .description("Explain local skill-based workflow")
-    .action(async (query: string) => {
-      const { skillsSearchCommand } = await import(
-        "./commands/skills/search.js"
-      );
-      await skillsSearchCommand(query);
-    });
-
-  skills
-    .command("add <id>")
-    .description("Explain how to define a local skill")
-    .action(async (id: string) => {
-      const { skillsAddCommand } = await import("./commands/skills/add.js");
-      await skillsAddCommand(process.cwd(), id);
-    });
-
-  skills
-    .command("info <id>")
-    .description("Explain local skill definitions")
-    .action(async (id: string) => {
-      const { skillsInfoCommand } = await import("./commands/skills/info.js");
-      await skillsInfoCommand(id);
-    });
-
   // ─── providers ──────────────────────────────────────────────────────
   const providers = program
     .command("providers")

@@ -1,10 +1,11 @@
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { findConfigFile } from './config.ts';
 
 function globalContextDir(): string {
   const xdg = process.env.XDG_CONFIG_HOME;
-  const base = xdg || resolve(process.env.HOME || '~', '.config');
+  const base = xdg || resolve(homedir(), '.config');
   return resolve(base, 'owletto');
 }
 

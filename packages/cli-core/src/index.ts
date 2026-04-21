@@ -18,6 +18,7 @@ export {
   refreshCredentials,
   saveCredentials,
 } from "./credentials.js";
+export { parseEnvContent } from "./env-file.js";
 export {
   GATEWAY_DEFAULT_URL,
   resolveGatewayUrl,

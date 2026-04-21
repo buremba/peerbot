@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
+import { parseEnvContent } from "@lobu/cli-core";
 import chalk from "chalk";
 import ora from "ora";
 import { isLoadError, loadConfig } from "../config/loader.js";
@@ -39,7 +40,7 @@ export async function devCommand(
     } catch {
       // No existing .env, start fresh
     }
-    const dotenvVars = parseEnvFile(existingEnv);
+    const dotenvVars = parseEnvContent(existingEnv);
 
     const agentCount = Object.keys(config.agents).length;
 
@@ -145,27 +146,6 @@ export async function devCommand(
     );
     process.exit(1);
   }
-}
-
-function parseEnvFile(content: string): Record<string, string> {
-  const vars: Record<string, string> = {};
-  for (const line of content.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-    const eqIdx = trimmed.indexOf("=");
-    if (eqIdx === -1) continue;
-    const key = trimmed.slice(0, eqIdx);
-    let value = trimmed.slice(eqIdx + 1);
-    // Strip surrounding quotes (double or single)
-    if (
-      (value.startsWith('"') && value.endsWith('"')) ||
-      (value.startsWith("'") && value.endsWith("'"))
-    ) {
-      value = value.slice(1, -1);
-    }
-    vars[key] = value;
-  }
-  return vars;
 }
 
 /**

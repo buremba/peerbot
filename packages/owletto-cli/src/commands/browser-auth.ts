@@ -10,7 +10,7 @@ import { execSync, spawn } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { get as httpGet } from 'node:http';
 import { createServer } from 'node:net';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type CdpVersionInfo, fetchCdpVersionInfo, resolveCdpUrl } from '@lobu/owletto-sdk';
 import { defineCommand } from 'citty';
@@ -18,16 +18,17 @@ import { getProfile } from '../globals.ts';
 import { printText } from '../lib/output.ts';
 
 function getChromePaths(): { binary: string; profileDir: string } {
+  const home = homedir();
   if (process.platform === 'darwin') {
     return {
       binary: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-      profileDir: join(process.env.HOME!, 'Library/Application Support/Google/Chrome'),
+      profileDir: join(home, 'Library/Application Support/Google/Chrome'),
     };
   }
   if (process.platform === 'linux') {
     return {
       binary: '/usr/bin/google-chrome',
-      profileDir: join(process.env.HOME!, '.config/google-chrome'),
+      profileDir: join(home, '.config/google-chrome'),
     };
   }
   throw new Error(`Unsupported platform: ${process.platform}`);
@@ -151,7 +152,7 @@ async function extractCookiesMacOS(
   }
 
   // Copy to temp file to avoid locking issues with running Chrome
-  const tmpDir = mkdtempSync('/tmp/owletto-auth-');
+  const tmpDir = mkdtempSync(join(tmpdir(), 'owletto-auth-'));
   const tmpCookiePath = join(tmpDir, 'Cookies');
   copyFileSync(cookiePath, tmpCookiePath);
   const journalSrc = join(profileDir, chromeProfileDir, 'Cookies-journal');
@@ -300,7 +301,7 @@ async function extractCookiesCDP(
     });
   });
 
-  const tmpDir = mkdtempSync('/tmp/owletto-auth-');
+  const tmpDir = mkdtempSync(join(tmpdir(), 'owletto-auth-'));
   mkdirSync(join(tmpDir, 'Default'), { recursive: true });
 
   const cookieSrc = join(profileDir, chromeProfileDir, 'Cookies');

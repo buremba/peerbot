@@ -23,10 +23,10 @@ type HistoryChannelIndex = Record<string, number>;
 
 export const MAX_HISTORY_MESSAGES = 10;
 export const HISTORY_TTL_MS = 86_400_000; // 24 hours
-export const SESSION_TTL_MS = DEFAULTS.SESSION_TTL_MS;
+const SESSION_TTL_MS = DEFAULTS.SESSION_TTL_MS;
 const HISTORY_INDEX_LOCK_TTL_MS = 5_000;
 
-export function historyKey(connectionId: string, channelId: string): string {
+function historyKey(connectionId: string, channelId: string): string {
   return `history:${connectionId}:${channelId}`;
 }
 

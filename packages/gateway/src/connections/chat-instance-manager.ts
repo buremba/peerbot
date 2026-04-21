@@ -49,7 +49,7 @@ function configsEqual(
 }
 
 const logger = createLogger("chat-instance-manager");
-export const ADAPTER_FACTORIES: Record<string, (config: any) => Promise<any>> =
+const ADAPTER_FACTORIES: Record<string, (config: any) => Promise<any>> =
   {
     telegram: async (c) =>
       (await import("@chat-adapter/telegram")).createTelegramAdapter(c),

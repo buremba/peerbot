@@ -422,7 +422,7 @@ export class ScheduleService {
  * Returns null when the string is missing or malformed (caller falls back to
  * headless mode).
  */
-export function parseDeliveryTarget(deliverTo: string | undefined): {
+function parseDeliveryTarget(deliverTo: string | undefined): {
   platform: string;
   connectionSlug: string;
   channelId: string;

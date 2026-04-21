@@ -163,7 +163,7 @@ function parseToolArguments(raw?: string): Record<string, unknown> {
   }
 }
 
-export function buildBedrockContext(
+function buildBedrockContext(
   request: OpenAIChatCompletionRequest
 ): BedrockContextPayload {
   const messages: PiMessage[] = [];

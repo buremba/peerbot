@@ -99,7 +99,7 @@ export interface PlatformResponseStrategy {
  * `target.post(AsyncIterable)` path. Used for Telegram and anything without
  * platform-specific buffering requirements.
  */
-export class DefaultResponseStrategy implements PlatformResponseStrategy {
+class DefaultResponseStrategy implements PlatformResponseStrategy {
   async disposeOnFullReplacement(existing: StreamState): Promise<void> {
     // Close current stream and await delivery so a new one can open cleanly.
     existing.iterator.close();
@@ -360,7 +360,7 @@ async function postSlackMarkdown(
  * Buffer-and-post on completion gives us paragraph-aligned chunks AND
  * markdown-native rendering.
  */
-export class SlackResponseStrategy implements PlatformResponseStrategy {
+class SlackResponseStrategy implements PlatformResponseStrategy {
   async disposeOnFullReplacement(_existing: StreamState): Promise<void> {
     // Slack never opens a real streaming target — no async teardown needed.
     // The bridge simply drops the prior state so the next delta opens a
@@ -455,7 +455,7 @@ export class SlackResponseStrategy implements PlatformResponseStrategy {
  * Kept as a named subclass so future Telegram-specific tweaks have an obvious
  * home and the bridge's strategy map reads explicitly.
  */
-export class TelegramResponseStrategy extends DefaultResponseStrategy {}
+class TelegramResponseStrategy extends DefaultResponseStrategy {}
 
 const slackStrategy = new SlackResponseStrategy();
 const telegramStrategy = new TelegramResponseStrategy();

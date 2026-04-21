@@ -201,9 +201,11 @@ function TraceStep({
 function ResponseBlock({
   text,
   platforms,
+  outcomeChannel,
 }: {
   text: string;
   platforms?: typeof deliverySurfaces;
+  outcomeChannel?: string;
 }) {
   return (
     <div
@@ -213,6 +215,14 @@ function ResponseBlock({
         border: "1px solid var(--color-tg-accent)",
       }}
     >
+      {outcomeChannel ? (
+        <div class="flex items-center gap-2 mb-3">
+          <SectionLabel accent>Outcome →</SectionLabel>
+          <span class="text-sm" style={{ color: "var(--color-page-text)" }}>
+            {outcomeChannel}
+          </span>
+        </div>
+      ) : null}
       <div
         class="text-sm leading-7"
         style={{ color: "var(--color-page-text)" }}
@@ -594,11 +604,9 @@ function MemoryPanel({
 function RequestBlock({
   text,
   schedule,
-  outcomeChannel,
 }: {
   text: string;
   schedule: string;
-  outcomeChannel?: string;
 }) {
   return (
     <Panel extraClass="mb-5">
@@ -614,17 +622,6 @@ function RequestBlock({
       >
         {text}
       </div>
-      {outcomeChannel ? (
-        <div
-          class="flex items-center gap-2 mt-4 pt-4"
-          style={{ borderTop: "1px solid rgba(255,255,255,0.08)" }}
-        >
-          <SectionLabel accent>Outcome →</SectionLabel>
-          <span class="text-sm" style={{ color: "var(--color-page-text)" }}>
-            {outcomeChannel}
-          </span>
-        </div>
-      ) : null}
     </Panel>
   );
 }
@@ -701,7 +698,6 @@ export function DemoSection(props: {
             <RequestBlock
               text={activeUseCase.runtime.request}
               schedule={activeUseCase.runtime.schedule}
-              outcomeChannel={activeUseCase.runtime.outcomeChannel}
             />
             {activeUseCase.runtime.trace?.length ? (
               <div class="mt-5 grid gap-4 md:grid-cols-2">
@@ -727,6 +723,7 @@ export function DemoSection(props: {
               <ResponseBlock
                 text={activeUseCase.runtime.response}
                 platforms={deliverySurfaces}
+                outcomeChannel={activeUseCase.runtime.outcomeChannel}
               />
             </div>
           </Card>

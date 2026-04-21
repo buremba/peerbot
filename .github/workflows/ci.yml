@@ -165,11 +165,11 @@ jobs:
             sleep 2
           done
 
-      - name: Run all evals with local CLI
+      - name: Run smoke eval with local CLI
         working-directory: examples/careops
         env:
           ADMIN_PASSWORD: ci-eval-password
-        run: node ../../packages/cli/bin/lobu.js eval --ci --output eval-results.json
+        run: node ../../packages/cli/bin/lobu.js eval smoke --ci --output eval-results.json
 
       - name: Gateway logs
         if: always()

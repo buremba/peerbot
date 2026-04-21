@@ -59,7 +59,9 @@ function Card({
             >
               {title}
             </h3>
-          ) : <div />}
+          ) : (
+            <div />
+          )}
           {href ? (
             <a
               href={href}

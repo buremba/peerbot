@@ -93,8 +93,8 @@ export function HeroSection(props: {
             class="hero-rise hero-rise-3 text-lg mx-auto mb-4 leading-relaxed max-w-3xl"
             style={{ color: "var(--color-page-text-muted)" }}
           >
-            Deploy AI agents with long-term memory, secure access to your
-            tools, and the same context everywhere they run.
+            Deploy AI agents with long-term memory, secure access to your tools,
+            and the same context everywhere they run.
           </p>
         )}
         {/* CTA buttons */}

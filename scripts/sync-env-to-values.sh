@@ -17,15 +17,17 @@ if ! command -v yq >/dev/null 2>&1; then
 fi
 
 # Determine values file based on environment or explicit path
-if [ -n "$2" ]; then
+ARG1="${1:-}"
+ARG2="${2:-}"
+if [ -n "$ARG2" ]; then
     # Environment specified (dev, production, local)
-    VALUES_FILE="charts/lobu/values-$2.yaml"
-elif [ -n "$1" ] && [[ "$1" == *.yaml ]]; then
+    VALUES_FILE="charts/lobu/values-$ARG2.yaml"
+elif [ -n "$ARG1" ] && [[ "$ARG1" == *.yaml ]]; then
     # Explicit values file path provided
-    VALUES_FILE="$1"
-elif [ -n "$1" ]; then
+    VALUES_FILE="$ARG1"
+elif [ -n "$ARG1" ]; then
     # Environment name provided as first argument
-    VALUES_FILE="charts/lobu/values-$1.yaml"
+    VALUES_FILE="charts/lobu/values-$ARG1.yaml"
 else
     # Default to base values.yaml
     VALUES_FILE="charts/lobu/values.yaml"
@@ -65,37 +67,37 @@ update_yaml_value() {
 }
 
 # Sync orchestrator configuration
-if [ -n "$MAX_WORKER_DEPLOYMENTS" ]; then
+if [ -n "${MAX_WORKER_DEPLOYMENTS:-}" ]; then
     update_yaml_value "MAX_WORKER_DEPLOYMENTS" "$MAX_WORKER_DEPLOYMENTS" ".orchestrator.maxWorkerDeployments"
 fi
 
-if [ -n "$WORKER_IDLE_CLEANUP_MINUTES" ]; then
+if [ -n "${WORKER_IDLE_CLEANUP_MINUTES:-}" ]; then
     update_yaml_value "WORKER_IDLE_CLEANUP_MINUTES" "$WORKER_IDLE_CLEANUP_MINUTES" ".orchestrator.idleCleanupMinutes"
 fi
 
 # Sync worker configuration
-if [ -n "$WORKER_CPU_LIMIT" ]; then
+if [ -n "${WORKER_CPU_LIMIT:-}" ]; then
     update_yaml_value "WORKER_CPU_LIMIT" "$WORKER_CPU_LIMIT" ".worker.resources.limits.cpu"
 fi
 
-if [ -n "$WORKER_MEMORY_LIMIT" ]; then
+if [ -n "${WORKER_MEMORY_LIMIT:-}" ]; then
     update_yaml_value "WORKER_MEMORY_LIMIT" "$WORKER_MEMORY_LIMIT" ".worker.resources.limits.memory"
 fi
 
-if [ -n "$WORKER_CPU_REQUEST" ]; then
+if [ -n "${WORKER_CPU_REQUEST:-}" ]; then
     update_yaml_value "WORKER_CPU_REQUEST" "$WORKER_CPU_REQUEST" ".worker.resources.requests.cpu"
 fi
 
-if [ -n "$WORKER_MEMORY_REQUEST" ]; then
+if [ -n "${WORKER_MEMORY_REQUEST:-}" ]; then
     update_yaml_value "WORKER_MEMORY_REQUEST" "$WORKER_MEMORY_REQUEST" ".worker.resources.requests.memory"
 fi
 
 # Sync agent model configuration
-if [ -n "$AGENT_DEFAULT_MODEL" ]; then
+if [ -n "${AGENT_DEFAULT_MODEL:-}" ]; then
     update_yaml_value "AGENT_DEFAULT_MODEL" "$AGENT_DEFAULT_MODEL" ".claude.model"
 fi
 
-if [ -n "$CLAUDE_TIMEOUT_MINUTES" ]; then
+if [ -n "${CLAUDE_TIMEOUT_MINUTES:-}" ]; then
     update_yaml_value "CLAUDE_TIMEOUT_MINUTES" "$CLAUDE_TIMEOUT_MINUTES" ".claude.timeoutMinutes"
 fi
 

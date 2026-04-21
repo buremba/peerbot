@@ -461,7 +461,9 @@ const slackStrategy = new SlackResponseStrategy();
 const telegramStrategy = new TelegramResponseStrategy();
 const defaultStrategy = new DefaultResponseStrategy();
 
-export function getResponseStrategy(platform: string): PlatformResponseStrategy {
+export function getResponseStrategy(
+  platform: string
+): PlatformResponseStrategy {
   switch (platform) {
     case "slack":
       return slackStrategy;

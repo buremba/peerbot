@@ -90,7 +90,9 @@ export abstract class BaseAgentStore implements AgentStore {
   protected abstract readConnection(
     connectionId: string
   ): Promise<StoredConnection | null>;
-  protected abstract writeConnection(connection: StoredConnection): Promise<void>;
+  protected abstract writeConnection(
+    connection: StoredConnection
+  ): Promise<void>;
   protected abstract deleteConnectionRaw(connectionId: string): Promise<void>;
   protected abstract listConnectionsByTemplate(
     templateAgentId?: string

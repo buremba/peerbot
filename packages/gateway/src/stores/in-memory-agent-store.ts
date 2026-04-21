@@ -14,11 +14,7 @@ import {
   type Grant,
   type StoredConnection,
 } from "@lobu/core";
-import {
-  BaseAgentStore,
-  buildKey,
-  getOrCreateSet,
-} from "./base-agent-store";
+import { BaseAgentStore, buildKey, getOrCreateSet } from "./base-agent-store";
 
 export class InMemoryAgentStore extends BaseAgentStore {
   private settings = new Map<string, AgentSettings>();
@@ -37,9 +33,7 @@ export class InMemoryAgentStore extends BaseAgentStore {
 
   // ── Settings primitives ───────────────────────────────────────────
 
-  protected async readSettings(
-    agentId: string
-  ): Promise<AgentSettings | null> {
+  protected async readSettings(agentId: string): Promise<AgentSettings | null> {
     return this.settings.get(agentId) ?? null;
   }
 
@@ -60,16 +54,11 @@ export class InMemoryAgentStore extends BaseAgentStore {
 
   // ── Metadata primitives ───────────────────────────────────────────
 
-  protected async readMetadata(
-    agentId: string
-  ): Promise<AgentMetadata | null> {
+  protected async readMetadata(agentId: string): Promise<AgentMetadata | null> {
     return this.metadata.get(agentId) ?? null;
   }
 
-  async saveMetadata(
-    agentId: string,
-    metadata: AgentMetadata
-  ): Promise<void> {
+  async saveMetadata(agentId: string, metadata: AgentMetadata): Promise<void> {
     this.metadata.set(agentId, metadata);
     if (metadata.parentConnectionId) {
       getOrCreateSet(this.sandboxes, metadata.parentConnectionId).add(agentId);
@@ -126,9 +115,7 @@ export class InMemoryAgentStore extends BaseAgentStore {
     return this.connections.get(connectionId) ?? null;
   }
 
-  protected async writeConnection(
-    connection: StoredConnection
-  ): Promise<void> {
+  protected async writeConnection(connection: StoredConnection): Promise<void> {
     this.connections.set(connection.id, connection);
     this.connectionsAll.add(connection.id);
     if (connection.templateAgentId) {

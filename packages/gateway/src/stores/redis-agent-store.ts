@@ -36,9 +36,7 @@ export class RedisAgentStore extends BaseAgentStore {
 
   // ── Settings primitives ───────────────────────────────────────────
 
-  protected async readSettings(
-    agentId: string
-  ): Promise<AgentSettings | null> {
+  protected async readSettings(agentId: string): Promise<AgentSettings | null> {
     return this.settingsStore.getSettings(agentId);
   }
 
@@ -61,9 +59,7 @@ export class RedisAgentStore extends BaseAgentStore {
 
   // ── Metadata primitives ───────────────────────────────────────────
 
-  protected async readMetadata(
-    agentId: string
-  ): Promise<AgentMetadata | null> {
+  protected async readMetadata(agentId: string): Promise<AgentMetadata | null> {
     return this.metadataStore.getMetadata(agentId);
   }
 
@@ -126,9 +122,7 @@ export class RedisAgentStore extends BaseAgentStore {
     return raw ? (JSON.parse(raw) as StoredConnection) : null;
   }
 
-  protected async writeConnection(
-    connection: StoredConnection
-  ): Promise<void> {
+  protected async writeConnection(connection: StoredConnection): Promise<void> {
     const existing = await this.readConnection(connection.id);
     await this.redis.set(
       `connection:${connection.id}`,

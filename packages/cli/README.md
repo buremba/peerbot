@@ -35,40 +35,9 @@ When Owletto memory is enabled, `lobu init` also scaffolds the file-first memory
 
 For Owletto Local or a custom Owletto deployment, `.env` keeps `MEMORY_URL` as the optional base MCP URL override.
 
-## Usage
-
-```bash
-# Start services
-docker compose up -d
-
-# View logs
-docker compose logs -f
-
-# Stop services
-docker compose down
-
-# Rebuild worker after changes
-docker compose build worker
-```
-
 ## Worker Customization
 
-Extend the generated `Dockerfile.worker` to add tools:
-
-```dockerfile
-FROM ghcr.io/lobu-ai/lobu-worker-base:0.1.0
-
-# Add system packages
-RUN apt-get update && apt-get install -y postgresql-client
-
-# Add Python packages
-RUN pip install pandas matplotlib
-
-# Copy custom scripts
-COPY ./scripts /workspace/scripts
-```
-
-See [custom base image docs](../worker/docs/custom-base-image.md) for using your own base image.
+Extend the generated `Dockerfile.worker` to add system packages, Python packages, or custom scripts on top of `ghcr.io/lobu-ai/lobu-worker-base`. See [custom base image docs](../worker/docs/custom-base-image.md).
 
 ## License
 

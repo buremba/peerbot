@@ -33,6 +33,7 @@ export interface ExecutorClient {
   ): Promise<void>;
   stream(batch: StreamBatch): Promise<void>;
   complete(req: CompleteRequest): Promise<void>;
+  completeAction(req: CompleteActionRequest): Promise<void>;
   fetchEventsForEmbedding(eventIds: number[]): Promise<EmbedEvent[]>;
   completeEmbeddings(req: CompleteEmbeddingsRequest): Promise<void>;
   emitAuthArtifact(req: EmitAuthArtifactRequest): Promise<void>;

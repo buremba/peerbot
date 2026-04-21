@@ -282,22 +282,12 @@ async function executeActionRun(
     // For actions, the "contents" array may contain a single result envelope
     const actionOutput = getActionOutput(result);
 
-    // Use completeAction if available, otherwise fall back to complete
-    if ('completeAction' in client && typeof (client as any).completeAction === 'function') {
-      await (client as any).completeAction({
-        run_id,
-        worker_id: client.id,
-        status: 'success',
-        action_output: actionOutput,
-      });
-    } else {
-      await client.complete({
-        run_id,
-        worker_id: client.id,
-        status: 'success',
-        items_collected: 0,
-      });
-    }
+    await client.completeAction({
+      run_id,
+      worker_id: client.id,
+      status: 'success',
+      action_output: actionOutput,
+    });
 
     console.error(`[executor] Action run ${run_id} completed`);
     return { itemsCollected: 0 };
@@ -305,21 +295,12 @@ async function executeActionRun(
     const errorMessage = error instanceof Error ? error.message : String(error);
     console.error(`[executor] Action run ${run_id} failed:`, errorMessage);
 
-    if ('completeAction' in client && typeof (client as any).completeAction === 'function') {
-      await (client as any).completeAction({
-        run_id,
-        worker_id: client.id,
-        status: 'failed',
-        error_message: errorMessage,
-      });
-    } else {
-      await client.complete({
-        run_id,
-        worker_id: client.id,
-        status: 'failed',
-        error_message: errorMessage,
-      });
-    }
+    await client.completeAction({
+      run_id,
+      worker_id: client.id,
+      status: 'failed',
+      error_message: errorMessage,
+    });
 
     return { itemsCollected: 0, error: errorMessage };
   }
@@ -460,8 +441,25 @@ async function executeEmbedBackfillRun(
   }
 
   // Parse event_ids from action_input
-  const input = typeof action_input === 'string' ? JSON.parse(action_input) : action_input;
-  const eventIds: number[] = input?.event_ids ?? [];
+  let input: Record<string, unknown> | null | undefined;
+  if (typeof action_input === 'string') {
+    try {
+      input = JSON.parse(action_input);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[executor] Embed backfill run ${run_id}: invalid action_input JSON:`, msg);
+      await client.complete({
+        run_id,
+        worker_id: client.id,
+        status: 'failed',
+        error_message: `Invalid action_input JSON: ${msg}`,
+      });
+      return { itemsCollected: 0, error: `Invalid action_input JSON: ${msg}` };
+    }
+  } else {
+    input = action_input;
+  }
+  const eventIds: number[] = (input?.event_ids as number[]) ?? [];
 
   if (eventIds.length === 0) {
     console.error(`[executor] Embed backfill run ${run_id}: no event_ids`);

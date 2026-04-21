@@ -350,12 +350,6 @@ function hasAuthConfigured(config: ResolvedPluginConfig): boolean {
   return !!(sessionToken || config.token || config.tokenCommand);
 }
 
-// Cached result of gateway auth status check
-// In standalone mode, tracks whether gateway device-auth has completed.
-// In gateway mode this is unused — hasAuthConfigured always returns true
-// and the proxy handles credential management automatically.
-let _gatewayAuthStatus = false;
-
 function getWorkerToken(): string | null {
   return asString(process.env.WORKER_TOKEN);
 }
@@ -1077,7 +1071,6 @@ const plugin = {
               // Check if already authenticated via gateway
               const alreadyAuth = await gatewayDeviceAuthCheck(config.gatewayAuthUrl);
               if (alreadyAuth) {
-                _gatewayAuthStatus = true;
                 return {
                   content: [
                     {
@@ -1184,7 +1177,6 @@ const plugin = {
               const result = await gatewayDeviceAuthPoll(config.gatewayAuthUrl);
 
               if (result.status === 'complete') {
-                _gatewayAuthStatus = true;
                 log.info('owletto: gateway device auth completed');
 
                 // Fetch workspace instructions now that we're authenticated

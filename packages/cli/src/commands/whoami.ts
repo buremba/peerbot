@@ -3,7 +3,7 @@ import {
   loadCredentials,
   refreshCredentials,
   resolveContext,
-} from "@lobu/cli-core";
+} from "../internal/index.js";
 
 export async function whoamiCommand(options?: {
   context?: string;

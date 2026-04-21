@@ -56,7 +56,6 @@ jobs:
       - name: Build CLI
         run: |
           cd packages/core && bun run build
-          cd ../cli-core && bun run build
           cd ../cli && bun run build
 
       - name: Build local gateway image

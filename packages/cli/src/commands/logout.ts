@@ -3,7 +3,7 @@ import {
   clearCredentials,
   loadCredentials,
   resolveContext,
-} from "@lobu/cli-core";
+} from "../internal/index.js";
 
 export async function logoutCommand(options?: {
   context?: string;

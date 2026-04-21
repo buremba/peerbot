@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
-import { parseEnvContent } from "@lobu/cli-core";
+import { parseEnvContent } from "../internal/index.js";
 import chalk from "chalk";
 import ora from "ora";
 import { isLoadError, loadConfig } from "../config/loader.js";

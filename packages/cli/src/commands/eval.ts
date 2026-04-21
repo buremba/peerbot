@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import chalk from "chalk";
 import { parse as parseYaml } from "yaml";
-import { getToken, resolveGatewayUrl } from "@lobu/cli-core";
+import { getToken, resolveGatewayUrl } from "../internal/index.js";
 import { isLoadError, loadConfig } from "../config/loader.js";
 import { CURRENT_EVAL_VERSION, evalDefinitionSchema } from "../eval/types.js";
 import type { EvalDefinition, EvalReport, EvalResult } from "../eval/types.js";

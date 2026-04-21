@@ -38,11 +38,6 @@
         },
         {
           "type": "json",
-          "path": "packages/cli-core/package.json",
-          "jsonpath": "$.version"
-        },
-        {
-          "type": "json",
           "path": "packages/owletto-sdk/package.json",
           "jsonpath": "$.version"
         },

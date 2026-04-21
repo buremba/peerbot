@@ -5,7 +5,6 @@ import path from "node:path";
 
 const PACKAGES = [
   "packages/core",
-  "packages/cli-core",
   "packages/gateway",
   "packages/worker",
   "packages/cli",

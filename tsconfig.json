@@ -35,8 +35,6 @@
       "@lobu/gateway/*": ["packages/gateway/src/*"],
       "@lobu/worker": ["packages/worker/src/index.ts"],
       "@lobu/worker/*": ["packages/worker/src/*"],
-      "@lobu/cli-core": ["packages/cli-core/src/index.ts"],
-      "@lobu/cli-core/*": ["packages/cli-core/src/*"],
       "@lobu/owletto-sdk": ["packages/owletto-sdk/src/index.ts"],
       "@lobu/owletto-sdk/*": ["packages/owletto-sdk/src/*"],
       "@lobu/owletto-openclaw": ["packages/owletto-openclaw/src/index.ts"],

@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 
 import chalk from "chalk";
 import { Command } from "commander";
-import { GATEWAY_DEFAULT_URL } from "@lobu/cli-core";
+import { GATEWAY_DEFAULT_URL } from "./internal/index.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 

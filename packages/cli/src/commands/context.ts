@@ -5,7 +5,7 @@ import {
   loadContextConfig,
   resolveContext,
   setCurrentContext,
-} from "@lobu/cli-core";
+} from "../internal/index.js";
 
 export async function contextListCommand(): Promise<void> {
   const config = await loadContextConfig();

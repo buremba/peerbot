@@ -20,7 +20,6 @@ const REPO_ROOT = process.cwd();
 
 const PACKAGES = [
   { dir: "packages/core", transform: transformCorePublish },
-  { dir: "packages/cli-core", transform: rewriteWorkspaceRefs },
   { dir: "packages/gateway", transform: rewriteWorkspaceRefs },
   { dir: "packages/worker", transform: rewriteWorkspaceRefs },
   { dir: "packages/cli", transform: rewriteWorkspaceRefs },

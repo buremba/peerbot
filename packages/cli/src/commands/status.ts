@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { parseEnvContent, resolveGatewayUrl } from "@lobu/cli-core";
+import { parseEnvContent, resolveGatewayUrl } from "../internal/index.js";
 import chalk from "chalk";
 
 interface StatusResponse {

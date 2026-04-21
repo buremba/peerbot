@@ -7,7 +7,7 @@ import {
   loadCredentials,
   resolveContext,
   saveCredentials,
-} from "@lobu/cli-core";
+} from "../internal/index.js";
 
 function extractIdentity(payload: unknown): {
   email?: string;

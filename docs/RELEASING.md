@@ -1,6 +1,6 @@
 # Releasing
 
-Eight packages ship to npm as a synchronized release: `@lobu/core`, `@lobu/cli-core`, `@lobu/gateway`, `@lobu/worker`, `@lobu/cli`, `@lobu/owletto-sdk`, `@lobu/owletto-openclaw`, `owletto` (unscoped; source at `packages/owletto-cli`). `charts/lobu/Chart.yaml` bumps in lockstep. [release-please](https://github.com/googleapis/release-please) reads conventional commits on `main` and drives versioning; publishing uses npm OIDC trusted publishing (no `NPM_TOKEN`, no OTP).
+Seven packages ship to npm as a synchronized release: `@lobu/core`, `@lobu/gateway`, `@lobu/worker`, `@lobu/cli`, `@lobu/owletto-sdk`, `@lobu/owletto-openclaw`, `owletto` (unscoped; source at `packages/owletto-cli`). `charts/lobu/Chart.yaml` bumps in lockstep. [release-please](https://github.com/googleapis/release-please) reads conventional commits on `main` and drives versioning; publishing uses npm OIDC trusted publishing (no `NPM_TOKEN`, no OTP).
 
 ## Flow
 
@@ -73,7 +73,7 @@ After a local publish, land a `chore(release)` commit on `main` so `.release-ple
 ## Verify
 
 ```bash
-for pkg in @lobu/core @lobu/cli-core @lobu/gateway @lobu/worker @lobu/cli @lobu/owletto-sdk @lobu/owletto-openclaw owletto; do
+for pkg in @lobu/core @lobu/gateway @lobu/worker @lobu/cli @lobu/owletto-sdk @lobu/owletto-openclaw owletto; do
   npm view "$pkg" version
 done
 ```

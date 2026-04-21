@@ -26,10 +26,10 @@ COPY packages/owletto-connectors/package.json packages/owletto-connectors/
 COPY packages/owletto-embeddings/package.json packages/owletto-embeddings/
 
 # Stub workspaces not needed at build time
-RUN mkdir -p packages/cli packages/cli-core packages/core packages/gateway packages/landing \
+RUN mkdir -p packages/cli packages/core packages/gateway packages/landing \
                packages/owletto-backend packages/owletto-cli packages/owletto-extension \
                packages/owletto-openclaw packages/owletto-web packages/worker packages/mcpsandbox \
-    && for p in cli cli-core core gateway landing owletto-backend \
+    && for p in cli core gateway landing owletto-backend \
                 owletto-extension owletto-openclaw owletto-web worker mcpsandbox; do \
         echo "{\"name\":\"@lobu/$p\",\"version\":\"0.0.0\",\"private\":true}" > "packages/$p/package.json"; \
       done \

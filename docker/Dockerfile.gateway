@@ -33,12 +33,11 @@ COPY packages/worker/package.json ./packages/worker/
 # Create stubs for workspace packages not included in the gateway image.
 # Names+versions must match what bun.lock records or `bun install` will refuse
 # to resolve cross-workspace deps (e.g. worker → @lobu/owletto-openclaw).
-RUN mkdir -p packages/cli packages/cli-core packages/landing \
+RUN mkdir -p packages/cli packages/landing \
         packages/owletto-backend packages/owletto-cli packages/owletto-connectors \
         packages/owletto-embeddings packages/owletto-extension packages/owletto-openclaw \
         packages/owletto-sdk packages/owletto-web packages/owletto-worker && \
     echo '{"name":"@lobu/cli","version":"3.5.0"}' > packages/cli/package.json && \
-    echo '{"name":"@lobu/cli-core","version":"3.5.0"}' > packages/cli-core/package.json && \
     echo '{"name":"@lobu/landing","version":"3.0.8"}' > packages/landing/package.json && \
     echo '{"name":"@lobu/owletto-backend","version":"1.6.0","private":true}' > packages/owletto-backend/package.json && \
     echo '{"name":"owletto","version":"1.6.0"}' > packages/owletto-cli/package.json && \

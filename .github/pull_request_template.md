@@ -1,28 +1,12 @@
-## Description
-Brief description of the changes in this PR.
+## Summary
+<!-- Why this change? 1–3 bullets. Skip if the PR title is self-explanatory. -->
 
-## Type of Change
-- [ ] Bug fix (non-breaking change which fixes an issue)
-- [ ] New feature (non-breaking change which adds functionality)
-- [ ] Breaking change (fix or feature that would cause existing functionality to not work as expected)
-- [ ] Documentation update
-- [ ] Performance improvement
-- [ ] Refactoring
+## Test plan
+<!-- Check only what you actually ran. See AGENTS.md → "Validation after code changes". -->
+- [ ] `bun run check:fix` clean
+- [ ] `bun run typecheck` passes (or `make build-packages` if TS packages changed)
+- [ ] Package-specific validation (landing: `cd packages/landing && bun run build`)
+- [ ] If bot behavior: ran `./scripts/test-bot.sh` or relevant eval
 
-## Testing
-- [ ] Ran `bun test` and all tests pass
-- [ ] Ran `bun run format` and `bun run lint` 
-- [ ] Verified changes work in Docker Compose (`make dev`)
-
-## Checklist
-- [ ] My code follows the project's style guidelines
-- [ ] I have performed a self-review of my code
-- [ ] I have commented my code, particularly in hard-to-understand areas
-- [ ] My changes generate no new warnings
-- [ ] Any dependent changes have been merged and published
-
-## Related Issues
-Closes #(issue number)
-
-## Additional Notes
-Any additional information or context about the PR.
+## Notes
+<!-- Screenshots, follow-ups, linked issues (`Closes #123`), breaking-change callouts. Delete if none. -->

@@ -88,11 +88,43 @@ jobs:
       - name: Run TypeScript type check
         run: bun run typecheck
 
+  detect-smoke:
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.check.outputs.run }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: check
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          non_trivial=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" \
+            | grep -Ev '^(\.gitignore|LICENSE|CODEOWNERS|.*\.md|\.github/.*|docs/.*|config/.*)$' \
+            || true)
+          if [ -n "$non_trivial" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Docs/config-only diff; skipping smoke eval."
+          fi
+
   smoke-example:
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    needs: [test, format-lint, typecheck]
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    needs: [test, format-lint, typecheck, detect-smoke]
+    if: >
+      needs.detect-smoke.outputs.run == 'true' &&
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
     env:
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
     steps:

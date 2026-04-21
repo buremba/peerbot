@@ -29,22 +29,33 @@ jobs:
   pr-size:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      
       - name: Check PR size
         uses: actions/github-script@v7
         with:
           script: |
             const pr = context.payload.pull_request;
-            const additions = pr.additions;
-            const deletions = pr.deletions;
-            const total = additions + deletions;
-            
-            if (total > 1000) {
-              core.warning(`Large PR detected: ${total} lines changed. Consider breaking into smaller PRs.`);
+            const labels = (pr.labels || []).map(l => l.name);
+            const total = pr.additions + pr.deletions;
+
+            console.log(`PR size: +${pr.additions} -${pr.deletions} (total ${total})`);
+
+            const HARD_LIMIT = 1000;
+            const SOFT_LIMIT = 500;
+
+            if (labels.includes('skip-size-check')) {
+              core.notice(`Size gate skipped via 'skip-size-check' label (${total} lines).`);
+              return;
             }
-            
-            console.log(`PR size: +${additions} -${deletions}`);
+
+            if (total > HARD_LIMIT) {
+              core.setFailed(
+                `PR exceeds ${HARD_LIMIT} lines (has ${total}). ` +
+                `AGENTS.md: "one branch = one concern" — split the PR, or add the ` +
+                `'skip-size-check' label if this is genuinely one concern (e.g. generated code).`,
+              );
+            } else if (total > SOFT_LIMIT) {
+              core.warning(`PR has ${total} lines; consider splitting if it covers multiple concerns.`);
+            }
   
   build-test:
     runs-on: ubuntu-latest

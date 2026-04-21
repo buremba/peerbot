@@ -2,10 +2,15 @@ name: Auto review PRs
 
 on:
   pull_request:
-    types: [opened]
+    types: [opened, synchronize, ready_for_review]
+
+concurrency:
+  group: claude-auto-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
   auto-review:
+    if: github.event.pull_request.draft == false
     permissions:
       contents: read
       id-token: write

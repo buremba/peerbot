@@ -68,6 +68,10 @@ services:
     networks:
       - lobu-public
       - lobu-internal
+    extra_hosts:
+      # Tailscale MagicDNS isn't available to Docker's embedded resolver on macOS,
+      # so map the prod Postgres tailnet host to its tailnet IP.
+      - "summaries-db.brill-kanyu.ts.net:100.101.120.15"
     restart: unless-stopped
     depends_on:
       redis:

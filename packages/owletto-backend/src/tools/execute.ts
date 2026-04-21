@@ -140,12 +140,19 @@ export async function executeTool(
   env: Env,
   authCtx: AuthContext
 ): Promise<unknown> {
-  // join_organization bypasses the standard access check — its whole purpose
-  // is to upgrade a non-member / read-only session into a member.
-  // It only requires an authenticated user; the tool itself enforces public-org policy.
+  // join_organization bypasses the standard membership/role check — its whole
+  // purpose is to upgrade a non-member / read-only session into a member.
+  // It still requires the caller to hold at least mcp:read, so OAuth tokens
+  // without any MCP scope cannot change membership. The tool itself enforces
+  // public-org policy.
   if (toolName === 'join_organization') {
     if (!authCtx.userId) {
       throw new Error('Authentication required to join an organization. Sign in with OAuth first.');
+    }
+    if (!hasRequiredMcpScope('read', authCtx.scopes)) {
+      throw new Error(
+        'This MCP session does not include any mcp:* scope. Reconnect with at least read access before calling `join_organization`.'
+      );
     }
     return trackMCPToolCall(toolName, args, () =>
       joinOrganization(args as any, env, {

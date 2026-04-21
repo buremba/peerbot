@@ -290,6 +290,28 @@ describe('Public org read access + self-serve join', () => {
       expect(parsed.note).toContain('mcp:write');
     });
 
+    it('rejects join_organization when the token has no mcp:* scope', async () => {
+      const user = await createTestUser({ email: 'mcp-noscope-joiner@test.example.com' });
+      const { token } = await createTestAccessToken(user.id, publicOrg.id, client.client_id, {
+        scope: 'profile:read',
+      });
+      const sessionId = await initializeScopedSession(`/mcp/${publicOrg.slug}`, token);
+
+      const joinResponse = await post(`/mcp/${publicOrg.slug}`, {
+        body: {
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/call',
+          params: { name: 'join_organization', arguments: {} },
+        },
+        headers: { 'mcp-session-id': sessionId },
+        token,
+      });
+      const joinBody = await joinResponse.json();
+      expect(joinBody.result?.isError).toBe(true);
+      expect(joinBody.result?.content?.[0]?.text ?? '').toContain('mcp:');
+    });
+
     it('rejects joining a private workspace via MCP tool', async () => {
       const user = await createTestUser({ email: 'mcp-private-joiner@test.example.com' });
       const { token } = await createTestAccessToken(user.id, privateOrg.id, client.client_id, {

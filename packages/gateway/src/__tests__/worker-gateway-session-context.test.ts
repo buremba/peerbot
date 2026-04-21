@@ -25,7 +25,6 @@ describe("WorkerGateway session context", () => {
     const gateway = new WorkerGateway(
       { send: async () => undefined } as any,
       "https://gateway.example.com",
-      {} as any,
       {
         getWorkerConfig: async () => ({ mcpServers: {} }),
       } as any,

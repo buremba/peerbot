@@ -849,15 +849,9 @@ export class CoreServices {
     logger.debug("MCP proxy initialized");
 
     // Initialize worker gateway
-    if (!this.sessionManager) {
-      throw new Error(
-        "Session manager must be initialized before worker gateway"
-      );
-    }
     this.workerGateway = new WorkerGateway(
       this.queue,
       this.config.mcp.publicGatewayUrl,
-      this.sessionManager,
       this.mcpConfigService,
       this.instructionService,
       this.mcpProxy,

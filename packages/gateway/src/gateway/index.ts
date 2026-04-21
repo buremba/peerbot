@@ -20,7 +20,6 @@ import { resolveEffectiveModelRef } from "../auth/settings/model-selection";
 import type { IMessageQueue } from "../infrastructure/queue";
 import type { InstructionService } from "../services/instruction-service";
 import type { SettingsResolver } from "../services/settings-resolver";
-import type { ISessionManager } from "../session";
 import { type SSEWriter, WorkerConnectionManager } from "./connection-manager";
 import { WorkerJobRouter } from "./job-router";
 
@@ -47,7 +46,6 @@ export class WorkerGateway {
   constructor(
     queue: IMessageQueue,
     publicGatewayUrl: string,
-    sessionManager: ISessionManager,
     mcpConfigService: McpConfigService,
     instructionService: InstructionService,
     mcpProxy?: McpProxy,
@@ -58,11 +56,7 @@ export class WorkerGateway {
     this.queue = queue;
     this.publicGatewayUrl = publicGatewayUrl;
     this.connectionManager = new WorkerConnectionManager();
-    this.jobRouter = new WorkerJobRouter(
-      queue,
-      this.connectionManager,
-      sessionManager
-    );
+    this.jobRouter = new WorkerJobRouter(queue, this.connectionManager);
     this.mcpConfigService = mcpConfigService;
     this.instructionService = instructionService;
     this.mcpProxy = mcpProxy;

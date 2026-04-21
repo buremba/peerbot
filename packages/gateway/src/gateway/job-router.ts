@@ -2,7 +2,6 @@
 
 import { createLogger } from "@lobu/core";
 import type { IMessageQueue } from "../infrastructure/queue";
-import type { ISessionManager } from "../session";
 import type { WorkerConnectionManager } from "./connection-manager";
 
 const logger = createLogger("worker-job-router");
@@ -23,8 +22,7 @@ export class WorkerJobRouter {
 
   constructor(
     private queue: IMessageQueue,
-    private connectionManager: WorkerConnectionManager,
-    _sessionManager: ISessionManager
+    private connectionManager: WorkerConnectionManager
   ) {}
 
   /**

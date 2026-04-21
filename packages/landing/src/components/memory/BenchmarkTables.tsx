@@ -93,10 +93,7 @@ export function BenchmarkTable(props: {
           {props.subtitle}
         </p>
       </div>
-      <table
-        class="w-full table-fixed text-sm"
-        style={{ color: textColor }}
-      >
+      <table class="w-full table-fixed text-sm" style={{ color: textColor }}>
         <colgroup>
           <col style={{ width: "34%" }} />
           <col style={{ width: "17%" }} />

@@ -690,7 +690,6 @@ export function createGatewayApp(
       );
     }
 
-    // Channel binding routes (mount under agent API)
     const channelBindingService = coreServices.getChannelBindingService();
     if (channelBindingService) {
       const {
@@ -701,14 +700,12 @@ export function createGatewayApp(
         userAgentsStore: coreServices.getUserAgentsStore(),
         agentMetadataStore: coreServices.getAgentMetadataStore(),
       });
-      // Mount as a sub-router under /api/v1/agents/:agentId/channels
       app.route("/api/v1/agents/:agentId/channels", channelBindingRouter);
       logger.debug(
         "Channel binding routes enabled at :8080/api/v1/agents/{agentId}/channels/*"
       );
     }
 
-    // Agent management routes (separate from Agent API's /api/v1/agents)
     {
       const userAgentsStore = coreServices.getUserAgentsStore();
       const agentMetadataStore = coreServices.getAgentMetadataStore();
@@ -724,7 +721,6 @@ export function createGatewayApp(
     }
   }
 
-  // Chat SDK connection routes (webhook + CRUD)
   if (chatInstanceManager) {
     const {
       createSlackRoutes,
@@ -748,9 +744,6 @@ export function createGatewayApp(
     );
   }
 
-  // ─── Reload endpoint (file-first dev mode) ──────────────────────────────────
-  // Re-reads lobu.toml + markdown and re-populates InMemoryAgentStore.
-  // Only works in dev mode (files exist), authenticated with ADMIN_PASSWORD.
   app.post("/api/v1/reload", async (c) => {
     if (process.env.NODE_ENV === "production") {
       return c.json({ error: "Not found" }, 404);
@@ -778,9 +771,6 @@ export function createGatewayApp(
     }
   });
 
-  // ─── Internal CLI status endpoint ──────────────────────────────────────────
-  // Returns agents, connections, and sandboxes for `lobu status`.
-  // Only available in non-production, authenticated with ADMIN_PASSWORD.
   app.get("/internal/status", async (c) => {
     if (process.env.NODE_ENV === "production") {
       return c.json({ error: "Not found" }, 404);
@@ -853,10 +843,8 @@ export function createGatewayApp(
     });
   });
 
-  // Auto-register any non-openapi routes so everything shows up in the schema
   registerAutoOpenApiRoutes(app);
 
-  // OpenAPI Documentation
   app.doc("/api/docs/openapi.json", {
     openapi: "3.0.0",
     info: {
@@ -1001,7 +989,6 @@ function createExpressCompatObjects(c: any, overridePath?: string) {
     headers[key] = value;
   });
 
-  // Express-compatible request object
   const req: any = {
     method: c.req.method,
     url: c.req.url,
@@ -1012,18 +999,16 @@ function createExpressCompatObjects(c: any, overridePath?: string) {
     body: null,
     get: (name: string) => headers[name.toLowerCase()],
     on: () => {
-      // Express event listener stub - not used in Hono compat layer
+      /* no-op */
     },
   };
 
-  // Response state
   let statusCode = 200;
   const responseHeaders = new Headers();
   let isStreaming = false;
   let streamController: ReadableStreamDefaultController<Uint8Array> | null =
     null;
 
-  // Express-compatible response object
   const res: any = {
     statusCode: 200,
     destroyed: false,
@@ -1122,11 +1107,10 @@ function createExpressCompatObjects(c: any, overridePath?: string) {
     },
 
     flushHeaders() {
-      // No-op for compatibility
+      /* no-op */
     },
   };
 
-  // Parse body for POST/PUT/PATCH
   if (["POST", "PUT", "PATCH"].includes(c.req.method)) {
     const contentType = c.req.header("content-type") || "";
     c.req.raw
@@ -1171,7 +1155,7 @@ function createExpressAdapter(honoApp: any) {
     },
     use: (pathOrHandler: any, handler?: any) => {
       if (typeof pathOrHandler === "function") {
-        // Global middleware - skip for now
+        // no-op
       } else if (handler) {
         honoApp.all(`${pathOrHandler}/*`, (c: any) =>
           handleExpressHandler(c, handler)
@@ -1187,30 +1171,24 @@ function createExpressAdapter(honoApp: any) {
 export async function startGateway(config: GatewayConfig): Promise<void> {
   logger.info("Starting Lobu Gateway");
 
-  // Start filtering proxy for worker network isolation (if enabled)
   const { startFilteringProxy } = await import("../proxy/proxy-manager");
   await startFilteringProxy();
 
-  // Import dependencies
   const { Orchestrator } = await import("../orchestration");
   const { Gateway } = await import("../gateway-main");
 
-  // Create and start orchestrator
   logger.debug("Creating orchestrator", { mode: process.env.DEPLOYMENT_MODE });
   const orchestrator = new Orchestrator(config.orchestration);
   await orchestrator.start();
   logger.debug("Orchestrator started");
 
-  // Create Gateway
   const gateway = new Gateway(config);
 
-  // Register API platform (always enabled)
   const { ApiPlatform } = await import("../api");
   const apiPlatform = new ApiPlatform();
   gateway.registerPlatform(apiPlatform);
   logger.debug("API platform registered");
 
-  // Start gateway
   await gateway.start();
   logger.debug("Gateway started");
 
@@ -1225,7 +1203,6 @@ export async function startGateway(config: GatewayConfig): Promise<void> {
     logger.debug("Grant store connected to HTTP proxy");
   }
 
-  // Inject core services into orchestrator (provider modules carry their own credential stores)
   await orchestrator.injectCoreServices(
     coreServices.getQueue().getRedisClient(),
     coreServices.getSecretStore(),
@@ -1248,7 +1225,6 @@ export async function startGateway(config: GatewayConfig): Promise<void> {
     );
   });
 
-  // Initialize Chat SDK connection manager (API-driven platform connections)
   const { ChatInstanceManager, ChatResponseBridge } = await import(
     "../connections"
   );
@@ -1256,13 +1232,11 @@ export async function startGateway(config: GatewayConfig): Promise<void> {
   try {
     await chatInstanceManager.initialize(coreServices);
 
-    // Register chat platform adapters (delegates to ChatInstanceManager)
     for (const adapter of chatInstanceManager.createPlatformAdapters()) {
       gateway.registerPlatform(adapter);
     }
     logger.debug("ChatInstanceManager initialized");
 
-    // Seed connections from file-loaded agents (file-first architecture)
     const fileLoadedAgents = coreServices.getFileLoadedAgents();
     if (fileLoadedAgents.length > 0) {
       for (const agent of fileLoadedAgents) {
@@ -1298,7 +1272,6 @@ export async function startGateway(config: GatewayConfig): Promise<void> {
       }
     }
 
-    // Wire ChatResponseBridge into unified thread consumer
     const unifiedConsumer = gateway.getUnifiedConsumer();
     if (unifiedConsumer) {
       const chatResponseBridge = new ChatResponseBridge(chatInstanceManager);
@@ -1312,7 +1285,6 @@ export async function startGateway(config: GatewayConfig): Promise<void> {
     );
   }
 
-  // Setup server on port 8080 (single port for all HTTP traffic)
   if (!httpServer) {
     const app = createGatewayApp({
       secretProxy: coreServices.getSecretProxy(),
@@ -1328,7 +1300,6 @@ export async function startGateway(config: GatewayConfig): Promise<void> {
 
   logger.info("Lobu Gateway is running!");
 
-  // Setup graceful shutdown
   const cleanup = async () => {
     logger.info("Shutting down gateway...");
 

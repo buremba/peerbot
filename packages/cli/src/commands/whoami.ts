@@ -1,6 +1,9 @@
 import chalk from "chalk";
-import { resolveContext } from "../api/context.js";
-import { loadCredentials, refreshCredentials } from "../api/credentials.js";
+import {
+  loadCredentials,
+  refreshCredentials,
+  resolveContext,
+} from "@lobu/cli-core";
 
 export async function whoamiCommand(options?: {
   context?: string;

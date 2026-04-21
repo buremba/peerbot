@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from "preact/hooks";
 import { examples, type RecordNode } from "../../memory-examples";
 import { landingUseCaseGroupedOptions } from "../../use-case-showcases";
 import { Chip } from "../Chip";
-import { CompactContentRail } from "../CompactContentRail";
+import { ContentRail } from "../ContentRail";
 import { SectionHeader } from "../SectionHeader";
 import { ScopedUseCaseTabs } from "../ScopedUseCaseTabs";
 import {
@@ -368,7 +368,7 @@ export function ExampleShowcase(props: {
         </a>
       </div>
 
-      <CompactContentRail className="mt-10">
+      <ContentRail variant="compact" className="mt-10">
         <SectionHeader
           title="How it works"
           body="Turn scattered prompts, tools, and application data into a shared context layer your agents can use everywhere."
@@ -845,7 +845,7 @@ export function ExampleShowcase(props: {
             );
           })}
         </div>
-      </CompactContentRail>
+      </ContentRail>
     </div>
   );
 }

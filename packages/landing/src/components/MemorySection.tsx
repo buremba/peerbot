@@ -10,7 +10,7 @@ import {
 } from "../use-case-showcases";
 import { CommandHero } from "./CommandHero";
 import { HighlightedText } from "./HighlightedText";
-import { CompactContentRail } from "./CompactContentRail";
+import { ContentRail } from "./ContentRail";
 import { ExampleShowcase } from "./memory/ExampleShowcase";
 import { LatestBlogPosts, type LatestBlogPost } from "./LatestBlogPosts";
 import { ScheduleCallButton, ScheduleCallIcon } from "./ScheduleDialog";
@@ -109,7 +109,7 @@ export function MemorySection(props: {
 
         <SectionDivider />
 
-        <CompactContentRail className="text-center">
+        <ContentRail variant="compact" className="text-center">
           <h2
             class="text-2xl font-bold mb-3 mt-12"
             style={{ color: textColor }}
@@ -149,7 +149,7 @@ export function MemorySection(props: {
               Talk to Founder
             </ScheduleCallButton>
           </div>
-        </CompactContentRail>
+        </ContentRail>
       </div>
     </section>
   );

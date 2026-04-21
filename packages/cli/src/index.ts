@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 
 import chalk from "chalk";
 import { Command } from "commander";
+import { GATEWAY_DEFAULT_URL } from "@lobu/cli-core";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -48,7 +49,7 @@ export async function runCli(
     .option("-t, --thread <id>", "Thread/conversation ID for multi-turn")
     .option(
       "-g, --gateway <url>",
-      "Gateway URL (default: http://localhost:8080)"
+      `Gateway URL (default: ${GATEWAY_DEFAULT_URL})`
     )
     .option("--dry-run", "Process without persisting history")
     .option("--new", "Force new session (ignore existing)")
@@ -78,7 +79,7 @@ export async function runCli(
     .option("-a, --agent <id>", "Agent ID (defaults to first in lobu.toml)")
     .option(
       "-g, --gateway <url>",
-      "Gateway URL (default: http://localhost:8080)"
+      `Gateway URL (default: ${GATEWAY_DEFAULT_URL})`
     )
     .option(
       "-m, --model <model>",

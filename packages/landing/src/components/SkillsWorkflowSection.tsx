@@ -1,4 +1,3 @@
-import { CompactContentRail } from "./CompactContentRail";
 import { SectionHeader } from "./SectionHeader";
 import {
   deliverySurfaces,
@@ -461,7 +460,7 @@ export function SkillsWorkflowSection({
   return (
     <section class="py-14">
       <ContentRail>
-        <CompactContentRail>
+        <ContentRail variant="compact">
           <SectionHeader
             title="How it works"
             body="Scaffold a project, iterate with your coding agent, test it, and ship it."
@@ -571,7 +570,7 @@ export function SkillsWorkflowSection({
               </div>
             </div>
           </div>
-        </CompactContentRail>
+        </ContentRail>
       </ContentRail>
     </section>
   );

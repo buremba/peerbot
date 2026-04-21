@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import chalk from "chalk";
 import { parse as parseYaml } from "yaml";
-import { getToken } from "../api/credentials.js";
+import { getToken, resolveGatewayUrl } from "@lobu/cli-core";
 import { isLoadError, loadConfig } from "../config/loader.js";
 import { CURRENT_EVAL_VERSION, evalDefinitionSchema } from "../eval/types.js";
 import type { EvalDefinition, EvalReport, EvalResult } from "../eval/types.js";
@@ -108,7 +108,7 @@ export async function evalCommand(
 
   // Auth and gateway required from here (not needed for --list)
   const gatewayUrl = (
-    options.gateway ?? (await resolveGatewayUrl(cwd))
+    options.gateway ?? (await resolveGatewayUrl({ cwd }))
   ).replace(/\/$/, "");
 
   const authToken = (await getToken()) ?? process.env.ADMIN_PASSWORD;
@@ -241,26 +241,4 @@ async function discoverEvals(
   } catch {
     return [];
   }
-}
-
-async function resolveGatewayUrl(cwd: string): Promise<string> {
-  try {
-    const envContent = await readFile(join(cwd, ".env"), "utf-8");
-    for (const line of envContent.split("\n")) {
-      const trimmed = line.trim();
-      if (trimmed.startsWith("GATEWAY_PORT=")) {
-        let port = trimmed.slice("GATEWAY_PORT=".length);
-        if (
-          (port.startsWith('"') && port.endsWith('"')) ||
-          (port.startsWith("'") && port.endsWith("'"))
-        ) {
-          port = port.slice(1, -1);
-        }
-        if (port) return `http://localhost:${port}`;
-      }
-    }
-  } catch {
-    // No .env file
-  }
-  return "http://localhost:8080";
 }

@@ -1,4 +1,4 @@
-import { CompactContentRail } from "./CompactContentRail";
+import { ContentRail } from "./ContentRail";
 import { SectionHeader } from "./SectionHeader";
 import {
   cardBg,
@@ -160,7 +160,7 @@ function BenchmarkTable(props: {
 export function BenchmarkSection() {
   return (
     <section class="pt-20 pb-20 px-4 sm:px-8">
-      <CompactContentRail>
+      <ContentRail variant="compact">
         <SectionHeader
           title="Beats most common memory benchmarks"
           body="Apples-to-apples comparison on public memory datasets. Same answerer (glm-5.1 via z.ai), same top-K, same questions."
@@ -193,7 +193,7 @@ export function BenchmarkSection() {
             Read the methodology
           </a>
         </div>
-      </CompactContentRail>
+      </ContentRail>
     </section>
   );
 }

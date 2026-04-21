@@ -1,4 +1,4 @@
-import { CompactContentRail } from "./CompactContentRail";
+import { ContentRail } from "./ContentRail";
 
 export type LatestBlogPost = {
   id: string;
@@ -13,7 +13,7 @@ export function LatestBlogPosts({ posts }: { posts: LatestBlogPost[] }) {
   if (!posts.length) return null;
 
   return (
-    <CompactContentRail>
+    <ContentRail variant="compact">
       <div class="flex flex-col items-center text-center mb-8 mt-12">
         <div
           class="text-xs uppercase tracking-[0.22em] mb-3"
@@ -83,6 +83,6 @@ export function LatestBlogPosts({ posts }: { posts: LatestBlogPost[] }) {
           </a>
         ))}
       </div>
-    </CompactContentRail>
+    </ContentRail>
   );
 }

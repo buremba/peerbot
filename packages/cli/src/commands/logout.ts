@@ -1,6 +1,9 @@
 import chalk from "chalk";
-import { resolveContext } from "../api/context.js";
-import { clearCredentials, loadCredentials } from "../api/credentials.js";
+import {
+  clearCredentials,
+  loadCredentials,
+  resolveContext,
+} from "@lobu/cli-core";
 
 export async function logoutCommand(options?: {
   context?: string;

@@ -18,3 +18,8 @@ export {
   refreshCredentials,
   saveCredentials,
 } from "./credentials.js";
+export {
+  GATEWAY_DEFAULT_URL,
+  resolveGatewayUrl,
+  type ResolveGatewayUrlOptions,
+} from "./gateway-url.js";

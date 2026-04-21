@@ -1,9 +1,6 @@
-import { readFile } from "node:fs/promises";
 import { createInterface } from "node:readline";
-import { join } from "node:path";
 import chalk from "chalk";
-import { resolveContext } from "../api/context.js";
-import { getToken } from "../api/credentials.js";
+import { getToken, resolveContext, resolveGatewayUrl } from "@lobu/cli-core";
 import { isLoadError, loadConfig } from "../config/loader.js";
 import { renderMarkdown } from "../utils/markdown.js";
 
@@ -35,7 +32,7 @@ export async function chatCommand(
     const ctx = await resolveContext(options.context);
     gatewayUrl = ctx.apiUrl;
   } else {
-    gatewayUrl = await resolveGatewayUrl(cwd);
+    gatewayUrl = await resolveGatewayUrl({ cwd });
   }
   gatewayUrl = gatewayUrl.replace(/\/$/, "");
 
@@ -484,26 +481,4 @@ function parseJSON(str: string): Record<string, unknown> | null {
   } catch {
     return null;
   }
-}
-
-async function resolveGatewayUrl(cwd: string): Promise<string> {
-  try {
-    const envContent = await readFile(join(cwd, ".env"), "utf-8");
-    for (const line of envContent.split("\n")) {
-      const trimmed = line.trim();
-      if (trimmed.startsWith("GATEWAY_PORT=")) {
-        let port = trimmed.slice("GATEWAY_PORT=".length);
-        if (
-          (port.startsWith('"') && port.endsWith('"')) ||
-          (port.startsWith("'") && port.endsWith("'"))
-        ) {
-          port = port.slice(1, -1);
-        }
-        if (port) return `http://localhost:${port}`;
-      }
-    }
-  } catch {
-    // No .env file
-  }
-  return "http://localhost:8080";
 }

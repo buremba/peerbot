@@ -2,12 +2,12 @@ import chalk from "chalk";
 import inquirer from "inquirer";
 import open from "open";
 import ora from "ora";
-import { resolveContext } from "../api/context.js";
 import {
   clearCredentials,
   loadCredentials,
+  resolveContext,
   saveCredentials,
-} from "../api/credentials.js";
+} from "@lobu/cli-core";
 
 function extractIdentity(payload: unknown): {
   email?: string;

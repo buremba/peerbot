@@ -56,7 +56,7 @@ jobs:
           echo "Checking PR #$PR for Codex 👍 on $REPO"
 
           existing=$(gh api "repos/$REPO/pulls/$PR/reviews" \
-            --jq '[.[] | select(.user.type == "Bot" and .user.login | startswith("codex-approver")) | select(.state == "APPROVED")] | length')
+            --jq '[.[] | select((.user.login | startswith("codex-approver")) and .state == "APPROVED")] | length')
           if [ "$existing" -gt 0 ]; then
             echo "Already approved by this app; nothing to do."
             exit 0
@@ -68,8 +68,8 @@ jobs:
             echo "attempt $i: codex 👍 reactions=$reacts"
             if [ "$reacts" -gt 0 ]; then
               gh api -X POST "repos/$REPO/pulls/$PR/reviews" \
-                -F event=APPROVE \
-                -F body="Auto-approved: Codex review left a 👍 reaction (no suggestions remaining)."
+                -f event=APPROVE \
+                -f body="Auto-approved: Codex review left a 👍 reaction (no suggestions remaining)."
               echo "Approved PR #$PR"
               exit 0
             fi

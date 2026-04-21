@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
 import {
   type AgentConfigStore,
@@ -12,8 +12,10 @@ import {
   normalizeDomainPatterns,
   verifyWorkerToken,
 } from "@lobu/core";
+import type { Context } from "hono";
 import { streamSSE } from "hono/streaming";
 import { z } from "zod";
+import type { AgentMetadataStore } from "../../auth/agent-metadata-store";
 import {
   createApiAuthMiddleware,
   TOKEN_EXPIRATION_MS,
@@ -21,13 +23,17 @@ import {
 import type { CliTokenService } from "../../auth/cli/token-service";
 import type { ExternalAuthClient } from "../../auth/external/client";
 import type { AgentSettingsStore } from "../../auth/settings/agent-settings-store";
+import type { SettingsTokenPayload } from "../../auth/settings/token-service";
+import type { UserAgentsStore } from "../../auth/user-agents-store";
 import type { QueueProducer } from "../../infrastructure/queue/queue-producer";
 import { getModelProviderModules } from "../../modules/module-system";
 import type { PlatformRegistry } from "../../platform";
 import { resolveAgentOptions } from "../../services/platform-helpers";
 import type { SseManager } from "../../services/sse-manager";
 import type { ISessionManager, ThreadSession } from "../../session";
+import { verifyOwnedAgentAccess } from "../shared/agent-ownership";
 import { errorResponse } from "../shared/helpers";
+import { verifySettingsSession } from "./settings-auth";
 
 const logger = createLogger("agent-api");
 
@@ -451,7 +457,12 @@ export interface AgentApiConfig {
   cliTokenService?: CliTokenService;
   externalAuthClient?: ExternalAuthClient;
   agentSettingsStore?: AgentSettingsStore;
-  agentConfigStore?: Pick<AgentConfigStore, "getSettings" | "listAgents">;
+  agentConfigStore?: Pick<
+    AgentConfigStore,
+    "getSettings" | "listAgents" | "getMetadata"
+  >;
+  userAgentsStore?: UserAgentsStore;
+  agentMetadataStore?: Pick<AgentMetadataStore, "getMetadata">;
   platformRegistry?: PlatformRegistry;
   approveToolCall?: (
     requestId: string,
@@ -464,8 +475,11 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
     queueProducer,
     adminPassword,
     cliTokenService,
+    externalAuthClient,
     agentSettingsStore,
     agentConfigStore,
+    userAgentsStore,
+    agentMetadataStore,
     platformRegistry,
   } = config;
   const sessMgr = config.sessionManager;
@@ -479,10 +493,145 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
     createApiAuthMiddleware({
       adminPassword,
       cliTokenService,
-      externalAuthClient: config.externalAuthClient,
+      externalAuthClient,
       allowSettingsSession: true,
     })
   );
+
+  // =============================================================================
+  // Ownership Verification
+  // =============================================================================
+
+  // Accept either an AgentMetadataStore or an AgentConfigStore exposing
+  // getMetadata for ownership resolution.
+  const ownershipMetadataStore:
+    | { getMetadata: AgentMetadataStore["getMetadata"] }
+    | undefined = agentMetadataStore ?? agentConfigStore;
+
+  const ownershipAccessConfig = {
+    userAgentsStore,
+    agentMetadataStore: ownershipMetadataStore,
+  } as const;
+
+  function tokenFromHeader(c: Context): string | null {
+    const authHeader = c.req.header("Authorization");
+    if (!authHeader?.startsWith("Bearer ")) return null;
+    const token = authHeader.substring(7);
+    return token.length > 0 ? token : null;
+  }
+
+  function matchesAdminPassword(token: string): boolean {
+    if (!adminPassword) return false;
+    const a = Buffer.from(token);
+    const b = Buffer.from(adminPassword);
+    if (a.length !== b.length) return false;
+    return timingSafeEqual(a, b);
+  }
+
+  /**
+   * Verify that the caller is authorized to act on `resolvedAgentId`.
+   *
+   * The agent API middleware accepts five auth methods (admin password,
+   * worker token, CLI JWT, external OAuth, settings session). Each needs
+   * its own ownership rule:
+   *
+   *   - admin password       → full access
+   *   - worker token         → scoped to its own agentId
+   *   - settings session     → verifyOwnedAgentAccess (handles admin bypass,
+   *                            agent-scoped sessions, and UserAgentsStore
+   *                            / AgentMetadataStore lookups)
+   *   - CLI JWT / external   → treated as an external-platform identity and
+   *                            run through verifyOwnedAgentAccess
+   *
+   * Returns a Response when the caller is not authorized (the handler
+   * should early-return it). Returns null on success.
+   */
+  async function requireAgentOwnership(
+    c: Context,
+    resolvedAgentId: string
+  ): Promise<Response | null> {
+    const deny = () =>
+      c.json({ success: false, error: "Forbidden" }, 403) as Response;
+
+    const bearer = tokenFromHeader(c);
+
+    // 1. Admin password bypasses ownership entirely, regardless of any cookie.
+    if (bearer && matchesAdminPassword(bearer)) return null;
+
+    // 2. Settings session cookie (or injected auth provider for embedded mode).
+    const settingsSession = verifySettingsSession(c);
+    if (settingsSession) {
+      const access = await verifyOwnedAgentAccess(
+        settingsSession,
+        resolvedAgentId,
+        ownershipAccessConfig
+      );
+      return access.authorized ? null : deny();
+    }
+
+    if (!bearer) return deny();
+
+    // 3. Worker token — must target its own agent.
+    const workerData = verifyWorkerToken(bearer);
+    if (workerData) {
+      const tokenAge = Date.now() - workerData.timestamp;
+      if (tokenAge > TOKEN_EXPIRATION_MS) return deny();
+      const workerAgentId = workerData.agentId || workerData.userId;
+      return workerAgentId && workerAgentId === resolvedAgentId ? null : deny();
+    }
+
+    // 4. CLI JWT — synthesize an external-platform settings payload.
+    if (cliTokenService) {
+      const identity = await cliTokenService.verifyAccessToken(bearer);
+      if (identity) {
+        const synthesized: SettingsTokenPayload = {
+          userId: identity.userId,
+          platform: "external",
+          oauthUserId: identity.userId,
+          email: identity.email,
+          name: identity.name,
+          exp: identity.expiresAt,
+        };
+        const access = await verifyOwnedAgentAccess(
+          synthesized,
+          resolvedAgentId,
+          ownershipAccessConfig
+        );
+        return access.authorized ? null : deny();
+      }
+    }
+
+    // 5. External OAuth (Owletto / memory-url userinfo).
+    if (externalAuthClient) {
+      try {
+        const userInfo = (await externalAuthClient.fetchUserInfo(bearer)) as {
+          sub?: string;
+          email?: string;
+          name?: string;
+        };
+        if (userInfo?.sub) {
+          const synthesized: SettingsTokenPayload = {
+            userId: userInfo.sub,
+            platform: "external",
+            oauthUserId: userInfo.sub,
+            email: userInfo.email,
+            name: userInfo.name,
+            exp: Date.now() + TOKEN_EXPIRATION_MS,
+          };
+          const access = await verifyOwnedAgentAccess(
+            synthesized,
+            resolvedAgentId,
+            ownershipAccessConfig
+          );
+          return access.authorized ? null : deny();
+        }
+      } catch {
+        // fall through to deny
+      }
+    }
+
+    return deny();
+  }
 
   // =============================================================================
   // Route Handlers
@@ -542,6 +691,13 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
 
     const isEphemeral = !requestedAgentId?.trim();
     const agentId = requestedAgentId?.trim() || randomUUID();
+
+    // If the caller pinned a specific agentId, require ownership so a signed-in
+    // user cannot open a session against another tenant's agent.
+    if (!isEphemeral) {
+      const denial = await requireAgentOwnership(c, agentId);
+      if (denial) return denial;
+    }
 
     // For ephemeral agents, auto-provision settings so the worker gets provider config
     if (isEphemeral && agentSettingsStore) {
@@ -695,6 +851,12 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
       return c.json({ success: false, error: "Agent not found" }, 404);
     }
 
+    const denial = await requireAgentOwnership(
+      c,
+      session.agentId || sessionKey
+    );
+    if (denial) return denial;
+
     const hasActiveConnection = sseManager.hasActiveConnection(sessionKey);
 
     return c.json({
@@ -714,15 +876,23 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
   app.openapi(deleteAgentRoute, async (c): Promise<any> => {
     const { agentId: sessionKey } = c.req.valid("param");
 
+    // Resolve the real agentId BEFORE any mutation so ownership can be
+    // checked against the actual agent (the path param is a sessionKey).
+    const existingSession = await sessMgr.getSession(sessionKey);
+    const denial = await requireAgentOwnership(
+      c,
+      existingSession?.agentId || sessionKey
+    );
+    if (denial) return denial;
+
     // Close connections + drop backlog so a later connection with the same
     // key (rare, but possible with deterministic conversationIds) can't
     // replay stale completion events from this deleted session.
     sseManager.closeAgent(sessionKey, "agent_deleted");
 
-    // Get real agentId from session before deleting
-    const session = await sessMgr.getSession(sessionKey);
-    const realAgentId = session?.agentId || sessionKey;
-    const wasEphemeral = session?.isEphemeral === true;
+    // Reuse the session we loaded for ownership verification above.
+    const realAgentId = existingSession?.agentId || sessionKey;
+    const wasEphemeral = existingSession?.isEphemeral === true;
 
     await sessMgr.deleteSession(sessionKey);
     // Only tear down agent settings if we auto-provisioned them for an
@@ -750,6 +920,14 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
     if (!session) {
       return c.json({ success: false, error: "Agent not found" }, 404);
     }
+
+    // Gate BEFORE opening the stream or replaying the backlog — otherwise a
+    // cross-tenant caller would receive another agent's buffered events.
+    const denial = await requireAgentOwnership(
+      c,
+      session.agentId || sessionKey
+    );
+    if (denial) return denial;
 
     // Check connection limits
     if (sseManager.totalConnections() >= MAX_TOTAL_CONNECTIONS) {
@@ -819,6 +997,16 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
   //   2. Platform-routed (platform field present): delegates to platform adapter
   app.openapi(sendMessageRoute, async (c): Promise<any> => {
     const { agentId } = c.req.valid("param");
+
+    // Gate ownership BEFORE parsing body / uploading files. The path param is
+    // usually a sessionKey (conversationId); resolve to the real agentId when
+    // a session exists.
+    const preSession = await sessMgr.getSession(agentId);
+    const ownershipDenial = await requireAgentOwnership(
+      c,
+      preSession?.agentId || agentId
+    );
+    if (ownershipDenial) return ownershipDenial;
 
     // Parse body — multipart for file uploads, JSON otherwise
     const contentType = c.req.header("content-type") || "";
@@ -1010,7 +1198,7 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
 
     // ── Direct API path ───────────────────────────────────────────────────────
     // No platform field: use existing session-based direct enqueue
-    const session = await sessMgr.getSession(agentId);
+    const session = preSession;
     if (!session) {
       return c.json({ success: false, error: "Agent not found" }, 404);
     }

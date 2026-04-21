@@ -281,6 +281,8 @@ export function createGatewayApp(
         externalAuthClient: coreServices.getExternalAuthClient(),
         agentSettingsStore: coreServices.getAgentSettingsStore(),
         agentConfigStore: coreServices.getConfigStore(),
+        userAgentsStore: coreServices.getUserAgentsStore(),
+        agentMetadataStore: coreServices.getAgentMetadataStore(),
         platformRegistry,
         approveToolCall: async (requestId: string, decision: string) => {
           // GETDEL atomically claims the pending invocation so a retry of

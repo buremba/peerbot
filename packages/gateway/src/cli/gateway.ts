@@ -969,7 +969,7 @@ export function startGatewayServer(app: OpenAPIHono, port = 8080): Server {
  * Handle Express-style handler with Hono context
  */
 async function handleExpressHandler(c: any, handler: any): Promise<Response> {
-  const { req, res, responsePromise } = createExpressCompatObjects(c);
+  const { req, res, responsePromise } = await createExpressCompatObjects(c);
   await handler(req, res);
   return responsePromise;
 }
@@ -977,7 +977,7 @@ async function handleExpressHandler(c: any, handler: any): Promise<Response> {
 /**
  * Create Express-compatible request/response objects from Hono context
  */
-function createExpressCompatObjects(c: any, overridePath?: string) {
+async function createExpressCompatObjects(c: any, overridePath?: string) {
   let resolveResponse: (response: Response) => void;
   const responsePromise = new Promise<Response>((resolve) => {
     resolveResponse = resolve;
@@ -1113,20 +1113,16 @@ function createExpressCompatObjects(c: any, overridePath?: string) {
 
   if (["POST", "PUT", "PATCH"].includes(c.req.method)) {
     const contentType = c.req.header("content-type") || "";
-    c.req.raw
-      .clone()
-      .arrayBuffer()
-      .then((buffer: ArrayBuffer) => {
-        if (contentType.includes("application/json")) {
-          try {
-            req.body = JSON.parse(new TextDecoder().decode(buffer));
-          } catch {
-            req.body = buffer;
-          }
-        } else {
-          req.body = buffer;
-        }
-      });
+    const buffer = await c.req.raw.clone().arrayBuffer();
+    if (contentType.includes("application/json")) {
+      try {
+        req.body = JSON.parse(new TextDecoder().decode(buffer));
+      } catch {
+        req.body = buffer;
+      }
+    } else {
+      req.body = buffer;
+    }
   }
 
   return { req, res, responsePromise };

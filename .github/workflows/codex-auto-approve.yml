@@ -1,5 +1,6 @@
 name: Codex Auto-Approve
 
+# Bridges Codex's +1 reaction into a formal APPROVE review via a GitHub App.
 on:
   pull_request_review:
     types: [submitted]

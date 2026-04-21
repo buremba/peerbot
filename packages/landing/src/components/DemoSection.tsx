@@ -198,7 +198,13 @@ function TraceStep({
   );
 }
 
-function ResponseBlock({ label, text }: { label: string; text: string }) {
+function ResponseBlock({
+  text,
+  platforms,
+}: {
+  text: string;
+  platforms?: typeof deliverySurfaces;
+}) {
   return (
     <div
       class="rounded-xl p-4"
@@ -207,15 +213,37 @@ function ResponseBlock({ label, text }: { label: string; text: string }) {
         border: "1px solid var(--color-tg-accent)",
       }}
     >
-      <SectionLabel accent extraClass="mb-2">
-        {label}
-      </SectionLabel>
       <div
         class="text-sm leading-7"
         style={{ color: "var(--color-page-text)" }}
       >
         {text}
       </div>
+      {platforms?.length ? (
+        <div
+          class="flex flex-wrap items-center gap-2 mt-4 pt-4"
+          style={{ borderTop: "1px solid rgba(255,255,255,0.08)" }}
+        >
+          <SectionLabel extraClass="mr-1">Available in</SectionLabel>
+          {platforms.map((surface) => (
+            <a
+              key={surface.id}
+              href={surface.href}
+              class="inline-flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-full transition-opacity hover:opacity-80"
+              style={{
+                color: "var(--color-page-text-muted)",
+                backgroundColor: "rgba(255,255,255,0.04)",
+                border: "1px solid rgba(255,255,255,0.06)",
+              }}
+            >
+              <span class="shrink-0" aria-hidden="true">
+                {surface.renderIcon(12)}
+              </span>
+              {surface.label}
+            </a>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -566,11 +594,11 @@ function MemoryPanel({
 function RequestBlock({
   text,
   schedule,
-  showPlatforms = false,
+  outcomeChannel,
 }: {
   text: string;
   schedule: string;
-  showPlatforms?: boolean;
+  outcomeChannel?: string;
 }) {
   return (
     <Panel extraClass="mb-5">
@@ -586,25 +614,15 @@ function RequestBlock({
       >
         {text}
       </div>
-      {showPlatforms ? (
-        <div class="flex flex-wrap gap-2 mt-4">
-          {deliverySurfaces.map((surface) => (
-            <a
-              key={surface.id}
-              href={surface.href}
-              class="inline-flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-full transition-opacity hover:opacity-80"
-              style={{
-                color: "var(--color-page-text-muted)",
-                backgroundColor: "rgba(255,255,255,0.04)",
-                border: "1px solid rgba(255,255,255,0.06)",
-              }}
-            >
-              <span class="shrink-0" aria-hidden="true">
-                {surface.renderIcon(12)}
-              </span>
-              {surface.label}
-            </a>
-          ))}
+      {outcomeChannel ? (
+        <div
+          class="flex items-center gap-2 mt-4 pt-4"
+          style={{ borderTop: "1px solid rgba(255,255,255,0.08)" }}
+        >
+          <SectionLabel accent>Outcome →</SectionLabel>
+          <span class="text-sm" style={{ color: "var(--color-page-text)" }}>
+            {outcomeChannel}
+          </span>
         </div>
       ) : null}
     </Panel>
@@ -683,7 +701,7 @@ export function DemoSection(props: {
             <RequestBlock
               text={activeUseCase.runtime.request}
               schedule={activeUseCase.runtime.schedule}
-              showPlatforms
+              outcomeChannel={activeUseCase.runtime.outcomeChannel}
             />
             {activeUseCase.runtime.trace?.length ? (
               <div class="mt-5 grid gap-4 md:grid-cols-2">
@@ -707,8 +725,8 @@ export function DemoSection(props: {
             ) : null}
             <div class="mt-5">
               <ResponseBlock
-                label={`Outcome → ${activeUseCase.runtime.outcomeChannel}`}
                 text={activeUseCase.runtime.response}
+                platforms={deliverySurfaces}
               />
             </div>
           </Card>

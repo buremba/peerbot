@@ -12,6 +12,7 @@ import { Hono } from "hono";
 import type Redis from "ioredis";
 import { completeAuthCodeFlow } from "../../auth/mcp/oauth-flow";
 import { postOAuthCompletionPrompt } from "../../auth/mcp/resume-after-oauth";
+import { escapeHtml } from "../../auth/oauth-templates";
 import type { ChatInstanceManager } from "../../connections/chat-instance-manager";
 import type { CoreServices } from "../../platform";
 import type { WritableSecretStore } from "../../secrets";
@@ -38,12 +39,13 @@ function renderResultPage(opts: {
   body: string;
 }): string {
   const color = opts.success ? "#16a34a" : "#dc2626";
+  const safeTitle = escapeHtml(opts.title);
   return `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>${opts.title}</title>
+  <title>${safeTitle}</title>
   <style>
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
            display: flex; align-items: center; justify-content: center;
@@ -59,7 +61,7 @@ function renderResultPage(opts: {
 </head>
 <body>
   <div class="card">
-    <h1>${opts.title}</h1>
+    <h1>${safeTitle}</h1>
     ${opts.body}
   </div>
 </body>
@@ -89,12 +91,16 @@ export function createMcpOAuthRoutes(config: McpOAuthRoutesConfig): Hono {
         error,
         errorDescription,
       });
+      const safeError = escapeHtml(error);
+      const safeErrorDescription = errorDescription
+        ? escapeHtml(errorDescription)
+        : "Please try again from the chat.";
       return c.html(
         renderResultPage({
           success: false,
           title: "Authorization failed",
-          body: `<p>The provider returned <span class="mono">${error}</span>.</p>
-                 <p>${errorDescription ?? "Please try again from the chat."}</p>`,
+          body: `<p>The provider returned <span class="mono">${safeError}</span>.</p>
+                 <p>${safeErrorDescription}</p>`,
         }),
         400
       );
@@ -155,23 +161,30 @@ export function createMcpOAuthRoutes(config: McpOAuthRoutesConfig): Hono {
         }
       }
 
+      const safeMcpId = escapeHtml(result.mcpId);
+      const scopeLabel = result.scopeKey.startsWith("channel-")
+        ? "channel"
+        : "user";
       return c.html(
         renderResultPage({
           success: true,
           title: `Connected ${result.mcpId}`,
           body: `<p>You can close this tab and return to the chat.</p>
-                 <p>Signed in as <span class="mono">${result.mcpId}</span> for this ${result.scopeKey.startsWith("channel-") ? "channel" : "user"}.</p>`,
+                 <p>Signed in as <span class="mono">${safeMcpId}</span> for this ${scopeLabel}.</p>`,
         })
       );
     } catch (err) {
       logger.error("Failed to complete MCP OAuth flow", {
         error: err instanceof Error ? err.message : String(err),
       });
+      const safeMessage = escapeHtml(
+        err instanceof Error ? err.message : "Unknown error"
+      );
       return c.html(
         renderResultPage({
           success: false,
           title: "Authorization failed",
-          body: `<p>${err instanceof Error ? err.message : "Unknown error"}</p>
+          body: `<p>${safeMessage}</p>
                  <p>Please try again from the chat.</p>`,
         }),
         500

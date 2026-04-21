@@ -32,6 +32,7 @@ export class Orchestrator {
   private isRunning = false;
   private shuttingDown = false;
   private cleanupInterval?: NodeJS.Timeout;
+  private initialReconcileTimer?: NodeJS.Timeout;
   private activeReconciliation: Promise<void> | null = null;
   private isReconciling = false;
 
@@ -231,6 +232,10 @@ export class Orchestrator {
         clearInterval(this.cleanupInterval);
         this.cleanupInterval = undefined;
       }
+      if (this.initialReconcileTimer) {
+        clearTimeout(this.initialReconcileTimer);
+        this.initialReconcileTimer = undefined;
+      }
 
       // Wait for in-flight reconciliation to finish (with 10s timeout)
       if (this.activeReconciliation) {
@@ -262,7 +267,8 @@ export class Orchestrator {
   }
 
   private setupIdleCleanup(): void {
-    setTimeout(() => {
+    this.initialReconcileTimer = setTimeout(() => {
+      this.initialReconcileTimer = undefined;
       if (this.shuttingDown) return;
       const p = this.deploymentManager.reconcileDeployments().catch((error) => {
         logger.error("❌ Initial deployment reconciliation failed:", error);

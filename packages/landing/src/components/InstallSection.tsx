@@ -120,4 +120,3 @@ export function ModeCard({ mode }: { mode: Mode }) {
     </div>
   );
 }
-

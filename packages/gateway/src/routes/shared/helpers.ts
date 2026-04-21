@@ -32,9 +32,7 @@ export function errorResponse(
  *   const session = requireSession(c);
  *   if (session instanceof Response) return session;
  */
-export function requireSession(
-  c: Context
-): SettingsTokenPayload | Response {
+export function requireSession(c: Context): SettingsTokenPayload | Response {
   const payload = verifySettingsSession(c);
   if (!payload) {
     return errorResponse(c, "Unauthorized", 401);

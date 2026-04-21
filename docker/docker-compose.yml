@@ -1,7 +1,6 @@
 name: lobu
 
 services:
-  # Redis for queue and state management
   redis:
     image: redis:7-alpine
     command: redis-server --maxmemory 256mb --maxmemory-policy noeviction --save 60 1 --dir /data
@@ -16,79 +15,172 @@ services:
       timeout: 3s
       retries: 3
 
-  # Build worker image that orchestrator will use
-  worker:
+  # owletto-backend + owletto-web static serving; embeds @lobu/gateway at /lobu.
+  # Connects to prod Postgres via DATABASE_URL from ../.env (no local postgres).
+  app:
     build:
       context: ..
-      dockerfile: docker/Dockerfile.worker
+      dockerfile: docker/app/Dockerfile
+      target: runtime
       args:
-        NODE_ENV: production
-    image: lobu-worker:latest
-    # This service only builds the image, doesn't run continuously
-    command: echo "Worker image built successfully"
-    profiles:
-      - build-only
-
-  gateway:
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile.gateway
-    image: lobu-gateway:latest
+        SKIP_WEB_BUILD: "true"
+        SKIP_TSC: "true"
     environment:
-      # Docker context overrides (gateway loads mounted .env file via dotenv).
-      # DEPLOYMENT_MODE is read from the mounted .env so operators can pick
-      # embedded vs docker without exporting shell vars.
       NODE_ENV: development
-      QUEUE_URL: redis://redis:6379
-      # Host project path for worker bind mounts (Docker-in-Docker)
+      ENVIRONMENT: development
+      PORT: 8787
+      HOST: 0.0.0.0
+      PUBLIC_WEB_URL: ${PUBLIC_WEB_URL:-http://localhost:8787}
+      FRAME_ANCESTORS: ${FRAME_ANCESTORS:-http://localhost:4321 https://lobu.ai https://*.lobu.ai}
+      DATABASE_URL: ${DATABASE_URL}
+      PGSSLMODE: ${PGSSLMODE:-require}
+      REDIS_URL: redis://redis:6379
+      EMBEDDINGS_SERVICE_URL: http://embeddings:8790
+      VITE_HMR_HOST: ${TAILSCALE_HOSTNAME:-localhost}
+      VITE_HMR_PROTOCOL: wss
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:-dev-secret-change-me}
+      JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-change-me}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-Jz9s2AmRGvu+uCICS07GvjvGxl5Fov+zZ3saS0Gui2Q=}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      AUTH_EMAIL_FROM: ${AUTH_EMAIL_FROM:-}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      LOBU_PROVIDER_REGISTRY_PATH: ${LOBU_PROVIDER_REGISTRY_PATH:-/app/config/providers.json}
       LOBU_DEV_PROJECT_PATH: ${PWD}
-      # Read-only workspace mount used for file-first agent config loading
       LOBU_WORKSPACE_ROOT: ${LOBU_WORKSPACE_ROOT:-/workspace/project}
     env_file:
       - ../.env
     volumes:
-      # Mount Docker socket
       - /var/run/docker.sock:/var/run/docker.sock
-      # Mount .env so gateway can load it via dotenv (avoids ARG_MAX with large vars)
       - ../.env:/app/.env:ro
-      # Mount workspace root so the gateway can read lobu.toml directly
       - ..:/workspace/project:ro
-      # Mount integrations config for live editing
       - ../config:/app/config:ro
-      # Mount source for hot reload (bun --watch detects changes)
-      - ../packages/core/src:/app/packages/core/src
-      - ../packages/gateway/src:/app/packages/gateway/src
-      # Mount worker source so spawned worker containers get latest code
-      - ../packages/worker/src:/app/packages/worker/src
-      - ../packages/worker/scripts:/app/packages/worker/scripts
-      # Mount workspaces for embedded mode session access
+      - ../packages/owletto-web:/app/packages/owletto-web
+      - /app/packages/owletto-web/node_modules
+      - ../packages/owletto-connectors:/app/packages/owletto-connectors
       - ../workspaces:/app/workspaces
     ports:
-      - "8080:8080"
-      - "8118:8118" # HTTP proxy for workers
+      - "8787:8787"
+      - "8118:8118" # HTTP proxy for workers (embedded gateway)
     networks:
-      - lobu-public   # Internet access
-      - lobu-internal # Internal services (redis, workers)
+      - lobu-public
+      - lobu-internal
     restart: unless-stopped
     depends_on:
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://127.0.0.1:8787/health || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
     develop:
       watch:
+        - action: sync+restart
+          path: ../packages/owletto-backend/src
+          target: /app/packages/owletto-backend/src
+        - action: sync+restart
+          path: ../packages/core/src
+          target: /app/packages/core/src
+        - action: sync+restart
+          path: ../packages/gateway/src
+          target: /app/packages/gateway/src
+        - action: sync+restart
+          path: ../config
+          target: /app/config
         - action: rebuild
-          path: ../packages/gateway/package.json
+          path: ../packages/owletto-backend/package.json
         - action: rebuild
           path: ../packages/core/package.json
         - action: rebuild
+          path: ../packages/gateway/package.json
+
+  embeddings:
+    build:
+      context: ..
+      dockerfile: docker/embeddings-service/Dockerfile
+      target: runtime
+    environment:
+      NODE_ENV: development
+      PORT: 8790
+    networks:
+      - lobu-internal
+    ports:
+      - "8790:8790"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:8790/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    develop:
+      watch:
+        - action: sync+restart
+          path: ../packages/owletto-embeddings/src
+          target: /app/packages/owletto-embeddings/src
+        - action: rebuild
+          path: ../packages/owletto-embeddings/package.json
+
+  worker:
+    build:
+      context: ..
+      dockerfile: docker/worker/Dockerfile
+      target: runtime
+    image: lobu-worker:latest
+    environment:
+      NODE_ENV: development
+      API_URL: http://app:8787
+      EMBEDDINGS_SERVICE_URL: http://embeddings:8790
+      DATABASE_URL: ${DATABASE_URL}
+      PGSSLMODE: ${PGSSLMODE:-require}
+      WORKER_MAX_CONCURRENT_JOBS: ${WORKER_MAX_CONCURRENT_JOBS:-4}
+    networks:
+      - lobu-internal
+    depends_on:
+      app:
+        condition: service_healthy
+      embeddings:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    develop:
+      watch:
+        - action: sync+restart
+          path: ../packages/worker/src
+          target: /app/packages/worker/src
+        - action: sync+restart
+          path: ../packages/owletto-backend/src
+          target: /app/packages/owletto-backend/src
+        - action: rebuild
           path: ../packages/worker/package.json
 
+  openclaw:
+    build:
+      context: ..
+      dockerfile: docker/openclaw/Dockerfile
+    environment:
+      OPENCLAW_GATEWAY_PORT: 18789
+      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:-dev-openclaw-token}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+    networks:
+      - lobu-internal
+    ports:
+      - "18789:18789"
+    volumes:
+      - ../data/openclaw:/home/openclaw/.openclaw
+      - ../data/openclaw-auth:/home/openclaw/.owletto
+      - ../packages/owletto-openclaw/dist:/plugin/dist
+    depends_on:
+      app:
+        condition: service_healthy
+
 networks:
-  # Public network with internet access (gateway only)
   lobu-public:
     driver: bridge
-
-  # Internal network - no direct internet access
-  # Workers use this network and can only reach internet via gateway's proxy
   lobu-internal:
     internal: true
     driver: bridge

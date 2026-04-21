@@ -17,8 +17,8 @@ export function ArchitectureSection(props: {
           class="text-center text-sm mb-12 max-w-xl mx-auto"
           style={{ color: "var(--color-page-text-muted)" }}
         >
-          Zero trust by default. Every agent runs in an isolated sandbox with no
-          direct network access.
+          Agents runs in an isolated sandbox with no direct network access, in
+          your infrastructure.
         </p>
 
         <div class="max-w-3xl mx-auto xl:max-w-none">

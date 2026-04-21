@@ -6,6 +6,7 @@ type TryItSectionProps = {
   clientLabel: string;
   mcpBaseUrl: string;
   owlettoBaseUrl: string;
+  owlettoBaseHostLabel: string;
   workspaces: LandingUseCaseWorkspaceOption[];
   initialUseCaseId?: string;
 };
@@ -14,6 +15,7 @@ export function TryItSection({
   clientLabel,
   mcpBaseUrl,
   owlettoBaseUrl,
+  owlettoBaseHostLabel,
   workspaces,
   initialUseCaseId,
 }: TryItSectionProps) {
@@ -26,17 +28,9 @@ export function TryItSection({
     [workspaces, selectedId]
   );
 
-  const mcpUrl = selected?.orgSlug
-    ? `${mcpBaseUrl}/${selected.orgSlug}`
-    : mcpBaseUrl;
-
-  const signInHref = selected?.orgSlug
-    ? `${owlettoBaseUrl}/${selected.orgSlug}`
-    : owlettoBaseUrl;
-
-  const signInLabel = selected?.orgSlug
-    ? `owletto.com/${selected.orgSlug}`
-    : "owletto.com";
+  const mcpUrl = selected?.mcpUrl ?? mcpBaseUrl;
+  const signInHref = selected?.owlettoUrl ?? owlettoBaseUrl;
+  const signInLabel = selected?.hostLabel ?? owlettoBaseHostLabel;
 
   const tabs = useMemo(
     () => workspaces.map((w) => ({ id: w.id, label: w.label })),

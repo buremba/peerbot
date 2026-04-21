@@ -1,7 +1,7 @@
 /**
  * Renders a full chat-grid showcase for a platform docs page.
  * A use-case chip row at the top lets the visitor re-skin the three chat
- * windows with use-case-appropriate transcripts (devops, support, legal, …).
+ * windows with use-case-appropriate transcripts (engineering, support, legal, …).
  * The platform-specific theme (colors, chrome) stays fixed.
  */
 

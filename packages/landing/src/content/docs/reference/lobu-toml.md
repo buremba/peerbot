@@ -23,7 +23,8 @@ allowed = ["github.com"]
 
 [memory.owletto]
 enabled = true
-config = "./owletto.yaml"
+org = "my-agent"
+name = "My Agent"
 models = "./models"
 data = "./data"
 ```
@@ -95,7 +96,9 @@ nix_packages = ["imagemagick", "ffmpeg"]
 # File-first Owletto memory
 [memory.owletto]
 enabled = true
-config = "./owletto.yaml"
+org = "support"
+name = "Support"
+description = "Customer support agent"
 models = "./models"
 data = "./data"
 ```
@@ -111,7 +114,6 @@ Typical companion layout:
 ```text
 project/
 ├── lobu.toml
-├── owletto.yaml
 ├── models/
 └── data/
 ```
@@ -119,11 +121,14 @@ project/
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `enabled` | boolean | no | Enables file-first Owletto memory resolution for the project |
-| `config` | string | no | Path to the Owletto project config file, usually `./owletto.yaml` |
+| `org` | string | yes (when enabled) | Owletto organization slug — scopes the MCP endpoint |
+| `name` | string | yes (when enabled) | Human-readable project name |
+| `description` | string | no | Short project description |
+| `visibility` | string | no | `public` or `private`; defaults to Owletto's account setting |
 | `models` | string | no | Path to Owletto model files, usually `./models` |
 | `data` | string | no | Path to Owletto seed data, usually `./data` |
 
-When `[memory.owletto]` is enabled, Lobu reads `owletto.yaml`, extracts the project org, and derives the effective Owletto MCP endpoint. `MEMORY_URL` remains available as an optional base-endpoint override for local or custom Owletto deployments.
+When `[memory.owletto]` is enabled, Lobu reads `org` directly from `lobu.toml` and derives the effective Owletto MCP endpoint. `MEMORY_URL` remains available as an optional base-endpoint override for local or custom Owletto deployments.
 
 
 ### `[agents.<id>]`

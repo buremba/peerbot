@@ -25,7 +25,7 @@ Lobu runs as a gateway + worker architecture.
 
 ## Persistent Memory
 
-In file-first projects, Lobu resolves persistent memory from `[memory.owletto]` in `lobu.toml` plus the referenced `owletto.yaml`.
+In file-first projects, Lobu resolves persistent memory from `[memory.owletto]` in `lobu.toml`.
 
 - **`[memory.owletto]` enabled**: Lobu derives an Owletto MCP endpoint and uses `@lobu/owletto-openclaw`, falling back to native memory if the plugin is unavailable.
 - **`MEMORY_URL`**: still supported as an optional base-endpoint override for local or custom Owletto deployments.

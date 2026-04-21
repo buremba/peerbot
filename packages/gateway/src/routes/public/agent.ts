@@ -193,10 +193,7 @@ function formatValidationError(err: ValidationError): string {
   return first.message;
 }
 
-function validateDomainPattern(
-  pattern: string,
-  path: string
-): ValidationError {
+function validateDomainPattern(pattern: string, path: string): ValidationError {
   if (!pattern || typeof pattern !== "string") {
     return [{ path, message: "Domain pattern must be a non-empty string" }];
   }

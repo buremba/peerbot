@@ -93,12 +93,12 @@ export function HeroSection(props: {
             class="hero-rise hero-rise-3 text-lg mx-auto mb-4 leading-relaxed max-w-3xl"
             style={{ color: "var(--color-page-text-muted)" }}
           >
-            Pre-built agents for team ops, personal memory, and community
-            workflows — fork one, wire it to your tools, let it run.
+            Deploy AI agents with long-term memory, secure access to your
+            tools, and the same context everywhere they run.
           </p>
         )}
         {/* CTA buttons */}
-        <div class="hero-rise hero-rise-4 flex flex-wrap gap-3 mb-6 justify-center items-center">
+        <div class="hero-rise hero-rise-4 relative z-20 flex flex-wrap gap-3 mb-6 justify-center items-center">
           <a
             href={owlettoUrl}
             target="_blank"
@@ -129,8 +129,16 @@ export function HeroSection(props: {
             <CopyPromptButton
               prompt={getLandingPrompt(activeUseCase)}
               label="Copy prompt to your agent"
+              triggerLabel="Integrate"
               variant="outline-muted"
               supportedClients={["chatgpt", "openclaw", "claude", "mcp-client"]}
+              supportedClientHrefForId={(clientId) => {
+                if (clientId === "mcp-client") {
+                  return "/getting-started/memory/";
+                }
+
+                return `/connect-from/${clientId}/for/${activeUseCase.id}/`;
+              }}
             />
           )}
         </div>

@@ -68,6 +68,15 @@ export function MemorySection(props: {
             "Owletto gives all your agents the same durable graph: connectors, recall, and managed auth without leaking credentials to the runtime."
           }
           prompt={getMemoryPrompt(activeUseCase)}
+          promptTriggerLabel="Integrate"
+          supportedClients={["chatgpt", "openclaw", "claude", "mcp-client"]}
+          supportedClientHrefForId={(clientId) => {
+            if (clientId === "mcp-client") {
+              return "/getting-started/memory/";
+            }
+
+            return `/connect-from/${clientId}/for/${activeUseCase.id}/`;
+          }}
           actions={
             <a
               href={getOwlettoLoginUrl()}

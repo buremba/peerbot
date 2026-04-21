@@ -8,8 +8,8 @@ export function BenchmarkSection() {
     <section class="pt-20 pb-20 px-4 sm:px-8">
       <ContentRail variant="compact">
         <SectionHeader
-          title="Beats Mem0 and Supermemory on public benchmarks"
-          body="Apples-to-apples comparison on public memory datasets. Same answerer (glm-5.1 via z.ai), same top-K, same questions."
+          title="Lobu in memory benchmarks"
+          body="Apples-to-apples comparison on public memory datasets. The model is GLM 5.1 via z.ai."
           className="mb-10"
         />
 

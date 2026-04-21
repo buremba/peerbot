@@ -28,39 +28,49 @@ function Card({
   description,
   href,
   hrefLabel,
+  surface = true,
   children,
 }: {
-  title: string;
+  title?: string;
   description?: string;
   href?: string;
   hrefLabel?: string;
+  surface?: boolean;
   children: ComponentChildren;
 }) {
   return (
     <div
-      class="rounded-2xl p-6 h-full"
-      style={{
-        backgroundColor: "var(--color-page-bg-elevated)",
-        border: "1px solid var(--color-page-border)",
-      }}
+      class={surface ? "rounded-2xl p-6 h-full" : "h-full"}
+      style={
+        surface
+          ? {
+              backgroundColor: "var(--color-page-bg-elevated)",
+              border: "1px solid var(--color-page-border)",
+            }
+          : undefined
+      }
     >
-      <div class="flex items-center justify-between gap-3 mb-2">
-        <h3
-          class="text-lg font-semibold"
-          style={{ color: "var(--color-page-text)" }}
-        >
-          {title}
-        </h3>
-        {href ? (
-          <a
-            href={href}
-            class="text-sm font-medium transition-opacity hover:opacity-80 shrink-0"
-            style={{ color: "var(--color-tg-accent)" }}
-          >
-            {hrefLabel ?? `${title} page`} →
-          </a>
-        ) : null}
-      </div>
+      {title || href ? (
+        <div class="flex items-center justify-between gap-3 mb-2">
+          {title ? (
+            <h3
+              class="text-lg font-semibold"
+              style={{ color: "var(--color-page-text)" }}
+            >
+              {title}
+            </h3>
+          ) : <div />}
+          {href ? (
+            <a
+              href={href}
+              class="text-sm font-medium transition-opacity hover:opacity-80 shrink-0"
+              style={{ color: "var(--color-tg-accent)" }}
+            >
+              {hrefLabel ?? `${title ?? "Details"} page`} →
+            </a>
+          ) : null}
+        </div>
+      ) : null}
       {description ? (
         <p
           class="text-sm leading-relaxed mb-4"
@@ -85,8 +95,9 @@ function Panel({
     <div
       class={`rounded-xl p-4${extraClass ? ` ${extraClass}` : ""}`}
       style={{
-        backgroundColor: "rgba(0,0,0,0.28)",
-        border: "1px solid rgba(255,255,255,0.06)",
+        background:
+          "linear-gradient(180deg, rgba(20, 20, 24, 0.98), rgba(12, 12, 16, 0.98))",
+        border: "1px solid rgba(255, 255, 255, 0.09)",
       }}
     >
       {children}
@@ -666,7 +677,7 @@ export function DemoSection(props: {
         )}
 
         <div class="mb-6">
-          <Card title={activeUseCase.label || " Agent"}>
+          <Card surface={false}>
             <RequestBlock
               text={activeUseCase.runtime.request}
               schedule={activeUseCase.runtime.schedule}

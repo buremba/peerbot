@@ -1,11 +1,19 @@
 import type { ComponentChildren } from "preact";
-import { CopyPromptButton } from "./CopyPromptButton";
+import {
+  CopyPromptButton,
+  type SupportedPromptClientId,
+} from "./CopyPromptButton";
 
 type CommandHeroProps = {
   title: ComponentChildren;
   description: string;
   prompt?: string;
   promptLabel?: string;
+  promptTriggerLabel?: string;
+  supportedClients?: SupportedPromptClientId[];
+  supportedClientHrefForId?: (
+    clientId: SupportedPromptClientId
+  ) => string | undefined;
   actions?: ComponentChildren;
   footer?: ComponentChildren;
 };
@@ -15,6 +23,9 @@ export function CommandHero({
   description,
   prompt,
   promptLabel = "Copy prompt to your agent",
+  promptTriggerLabel,
+  supportedClients,
+  supportedClientHrefForId,
   actions,
   footer,
 }: CommandHeroProps) {
@@ -35,7 +46,14 @@ export function CommandHero({
 
       <div class="mt-10 flex flex-wrap items-center justify-center gap-3 mb-4">
         {actions}
-        <CopyPromptButton prompt={prompt} label={promptLabel} />
+        <CopyPromptButton
+          prompt={prompt}
+          label={promptLabel}
+          triggerLabel={promptTriggerLabel}
+          variant="outline-muted"
+          supportedClients={supportedClients}
+          supportedClientHrefForId={supportedClientHrefForId}
+        />
       </div>
 
       {footer ? <div class="mt-6">{footer}</div> : null}

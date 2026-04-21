@@ -1,5 +1,5 @@
 import type { JSX } from "preact";
-import { useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 
 export type SupportedPromptClientId =
   | "chatgpt"
@@ -10,8 +10,12 @@ export type SupportedPromptClientId =
 type CopyPromptButtonProps = {
   prompt?: string;
   label: string;
+  triggerLabel?: string;
   variant?: "surface" | "outline-muted";
   supportedClients?: SupportedPromptClientId[];
+  supportedClientHrefForId?: (
+    clientId: SupportedPromptClientId
+  ) => string | undefined;
 };
 
 function useCopy(value?: string) {
@@ -99,6 +103,24 @@ function McpClientIcon({ size = 12 }: { size?: number }) {
   );
 }
 
+function ChevronDownIcon({ size = 12 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      aria-hidden="true"
+    >
+      <path d="m6 9 6 6 6-6" />
+    </svg>
+  );
+}
+
 const supportedClientMeta: Record<
   SupportedPromptClientId,
   {
@@ -127,113 +149,202 @@ const supportedClientMeta: Record<
 export function CopyPromptButton({
   prompt,
   label,
+  triggerLabel,
   variant = "surface",
   supportedClients = [],
+  supportedClientHrefForId,
 }: CopyPromptButtonProps) {
   const { copied, handleCopy } = useCopy(prompt);
-  const [previewOpen, setPreviewOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
   const isOutline = variant === "outline-muted";
-  const supportedClientLabel = supportedClients.length
+  const hasSupportedClients = supportedClients.length > 0;
+  const supportedClientLabel = hasSupportedClients
     ? `Works with ${supportedClients
         .map((clientId) => supportedClientMeta[clientId].label)
         .join(", ")}`
     : undefined;
 
+  useEffect(() => {
+    if (!menuOpen) {
+      return;
+    }
+
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!menuRef.current?.contains(event.target as Node)) {
+        setMenuOpen(false);
+      }
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setMenuOpen(false);
+      }
+    };
+
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [menuOpen]);
+
   if (!prompt) return null;
 
+  const buttonBackground = copied
+    ? "rgba(122,162,247,0.18)"
+    : isOutline
+      ? "transparent"
+      : "var(--color-page-surface)";
+  const buttonColor = copied
+    ? "var(--color-page-text)"
+    : isOutline
+      ? "var(--color-page-text-muted)"
+      : "var(--color-page-text)";
+  const buttonBorder = isOutline
+    ? "var(--color-page-border)"
+    : "var(--color-page-border-active)";
+  const buttonText = hasSupportedClients
+    ? (triggerLabel ?? label)
+    : copied
+      ? "Copied"
+      : label;
+
   return (
-    // biome-ignore lint/a11y/noStaticElementInteractions: hover is a progressive enhancement; button itself exposes focus/blur handlers for keyboard users
-    <div
-      class="relative inline-flex flex-col items-center"
-      onMouseEnter={() => setPreviewOpen(true)}
-      onMouseLeave={() => setPreviewOpen(false)}
-    >
+    <div ref={menuRef} class="relative inline-flex flex-col items-center">
       <button
         type="button"
-        onClick={handleCopy}
-        onFocus={() => setPreviewOpen(true)}
-        onBlur={() => setPreviewOpen(false)}
+        onClick={() => {
+          if (hasSupportedClients) {
+            setMenuOpen((open) => !open);
+            return;
+          }
+
+          handleCopy();
+        }}
         class={
           isOutline
             ? "inline-flex items-center gap-2 text-sm font-medium px-5 py-2.5 rounded-lg cursor-pointer transition-all hover:opacity-90"
             : "inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-[13px] font-medium cursor-pointer transition-colors hover:opacity-90"
         }
         aria-label={
-          supportedClientLabel ? `${label}. ${supportedClientLabel}` : label
+          supportedClientLabel
+            ? `${triggerLabel ?? label}. ${supportedClientLabel}`
+            : buttonText
         }
+        aria-expanded={hasSupportedClients ? menuOpen : undefined}
+        aria-haspopup={hasSupportedClients ? "dialog" : undefined}
         style={{
-          backgroundColor: copied
+          backgroundColor: menuOpen
             ? "rgba(122,162,247,0.18)"
-            : isOutline
-              ? "transparent"
-              : "var(--color-page-surface)",
-          color: copied
-            ? "var(--color-page-text)"
-            : isOutline
-              ? "var(--color-page-text-muted)"
-              : "var(--color-page-text)",
-          border: isOutline
-            ? "1px solid var(--color-page-border)"
-            : "1px solid var(--color-page-border-active)",
+            : buttonBackground,
+          color: menuOpen ? "var(--color-page-text)" : buttonColor,
+          border: `1px solid ${buttonBorder}`,
         }}
       >
-        <span>{copied ? "Copied" : label}</span>
+        <span>{buttonText}</span>
 
-        {supportedClients.length ? (
+        {hasSupportedClients ? (
           <span
-            class="inline-flex items-center gap-1.5 pl-2 ml-1"
             aria-hidden="true"
-            title={supportedClientLabel}
             style={{
-              borderLeft: "1px solid var(--color-page-border)",
+              transform: menuOpen ? "rotate(180deg)" : "rotate(0deg)",
+              transition: "transform 150ms ease",
             }}
           >
-            {supportedClients.map((clientId) => {
-              const client = supportedClientMeta[clientId];
-
-              return (
-                <span
-                  key={clientId}
-                  class="inline-flex h-4 w-4 items-center justify-center"
-                  title={client.label}
-                  style={{ color: "currentColor" }}
-                >
-                  {client.renderIcon(12)}
-                </span>
-              );
-            })}
+            <ChevronDownIcon size={12} />
           </span>
         ) : null}
       </button>
 
-      <div
-        role="tooltip"
-        class="absolute left-1/2 top-full z-20 mt-3 w-[32rem] max-w-[calc(100vw-2rem)] rounded-xl p-3"
-        style={{
-          opacity: previewOpen ? 1 : 0,
-          pointerEvents: previewOpen ? "auto" : "none",
-          transform: previewOpen
-            ? "translateX(-50%) translateY(0)"
-            : "translateX(-50%) translateY(-4px)",
-          transition: "opacity 150ms ease, transform 150ms ease",
-          backgroundColor: "var(--color-page-bg-elevated)",
-          border: "1px solid var(--color-page-border)",
-          boxShadow: "0 18px 50px rgba(0,0,0,0.35)",
-        }}
-      >
+      {hasSupportedClients ? (
         <div
-          class="mb-2 text-[10px] uppercase tracking-[0.18em]"
-          style={{ color: "var(--color-page-text-muted)" }}
+          role="dialog"
+          aria-label="Copy prompt and integration docs"
+          class="absolute left-1/2 top-full z-20 mt-3 min-w-[18rem] max-w-[calc(100vw-2rem)] rounded-xl p-2"
+          style={{
+            opacity: menuOpen ? 1 : 0,
+            pointerEvents: menuOpen ? "auto" : "none",
+            transform: menuOpen
+              ? "translateX(-50%) translateY(0)"
+              : "translateX(-50%) translateY(-4px)",
+            transition: "opacity 150ms ease, transform 150ms ease",
+            backgroundColor: "var(--color-page-bg-elevated)",
+            border: "1px solid var(--color-page-border)",
+            boxShadow: "0 18px 50px rgba(0,0,0,0.35)",
+          }}
         >
-          Prompt preview
+          <div class="grid gap-1">
+            <button
+              type="button"
+              onClick={() => {
+                handleCopy();
+                setMenuOpen(false);
+              }}
+              class="w-full rounded-lg px-3 py-2 text-left text-sm font-medium transition-all hover:opacity-90"
+              style={{
+                backgroundColor: "var(--color-page-surface)",
+                color: "var(--color-page-text)",
+                border: "1px solid var(--color-page-border)",
+              }}
+            >
+              {copied ? "Copied" : label}
+            </button>
+
+            {supportedClients.map((clientId) => {
+              const client = supportedClientMeta[clientId];
+              const href = supportedClientHrefForId?.(clientId);
+              const rowLabel = client.label;
+
+              const rowContent = (
+                <>
+                  <span
+                    class="inline-flex h-4 w-4 items-center justify-center"
+                    aria-hidden="true"
+                  >
+                    {client.renderIcon(12)}
+                  </span>
+                  <span>{rowLabel}</span>
+                </>
+              );
+
+              if (href) {
+                return (
+                  <a
+                    key={clientId}
+                    href={href}
+                    onClick={() => setMenuOpen(false)}
+                    class="inline-flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm font-medium transition-all hover:opacity-90"
+                    style={{
+                      backgroundColor: "var(--color-page-surface)",
+                      color: "var(--color-page-text)",
+                      border: "1px solid var(--color-page-border)",
+                    }}
+                  >
+                    {rowContent}
+                  </a>
+                );
+              }
+
+              return (
+                <span
+                  key={clientId}
+                  class="inline-flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm font-medium"
+                  style={{
+                    backgroundColor: "var(--color-page-surface)",
+                    color: "var(--color-page-text)",
+                    border: "1px solid var(--color-page-border)",
+                  }}
+                >
+                  {rowContent}
+                </span>
+              );
+            })}
+          </div>
         </div>
-        <code
-          class="block text-left text-[11px] leading-6 font-mono whitespace-pre-wrap break-words"
-          style={{ color: "var(--color-page-text)" }}
-        >
-          {prompt}
-        </code>
-      </div>
+      ) : null}
     </div>
   );
 }

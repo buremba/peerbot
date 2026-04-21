@@ -706,6 +706,15 @@ export function SkillsSection(props: {
             "A skill isn't a prompt template, it's a full sandboxed computer. All capabilities bundled into one installable unit."
           }
           prompt={getSkillsPrompt(activeUseCase)}
+          promptTriggerLabel="Integrate"
+          supportedClients={["chatgpt", "openclaw", "claude", "mcp-client"]}
+          supportedClientHrefForId={(clientId) => {
+            if (clientId === "mcp-client") {
+              return "/getting-started/skills/";
+            }
+
+            return `/connect-from/${clientId}/for/${activeUseCase.id}/`;
+          }}
           actions={
             <a
               href={getOwlettoLoginUrl()}

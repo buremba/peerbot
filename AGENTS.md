@@ -71,6 +71,20 @@ Rules for agents:
 - When the user pastes a Slack link (`slack.com/archives/…?thread_ts=`), call `./scripts/slack-thread-viewer.js "<link>"` first.
 - In planning mode, when unsure, ask: `codex exec "QUESTION" --config model_reasoning_effort="high"`.
 
+## Scope discipline and branch hygiene
+
+When the user pivots mid-session, the default failure mode is piling unrelated work onto one branch and producing a tangled PR. Prevent that:
+
+- **One branch = one concern.** Never mix unrelated features on a single branch.
+- **When the user asks for something tangential to the current branch**, stop and say out loud: *"that's a separate concern — I'll finish/push the current work and start a fresh branch."* Then:
+  1. Commit and push what you have.
+  2. Open the PR for the current branch (or leave it draft if not ready).
+  3. `git switch main && git pull && git switch -c feat/<new-thing>` before touching any new code.
+- **When the new ask genuinely builds on unmerged code**, stack it: `git switch -c feat/b feat/a` off the existing feature branch and open PR #2 targeting `feat/a` (not `main`). Rebase PR #2 onto `main` once PR #1 merges.
+- **Never `git stash`.** Stashes are invisible, easy to lose, and collide across agents. If you need to pivot without finishing, commit WIP to the current branch (`git add -A && git commit -m "wip"`) and squash later. WIP commits are visible, pushable, recoverable.
+- **Per-agent isolation:** when launching a parallel Claude Code session, use `claude --worktree <name>` so each agent gets its own checkout + branch. No shared working dir = no cross-agent collisions.
+- **If a branch has already gotten mixed**, recover with `git rebase -i` + `git reset HEAD~N` and re-commit in clean groups before opening PRs.
+
 ## Development
 
 Prerequisites: Bun, Docker Desktop.

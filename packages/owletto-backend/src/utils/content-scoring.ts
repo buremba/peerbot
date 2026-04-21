@@ -3,34 +3,7 @@ import { buildClassificationFilterSQL } from './content-query-filters';
 import { entityLinkMatchSql } from './content-search';
 import logger from './logger';
 import { getScoringFormulaSql, resolveStoredScoringProfile } from './scoring-profiles';
-
-/**
- * Validate and format an array of IDs for safe SQL usage.
- * Ensures all values are valid integers to prevent SQL injection.
- * @throws Error if any value is not a valid integer
- */
-function validateAndFormatIds(ids: number[], fieldName: string): string {
-  if (!ids || ids.length === 0) {
-    throw new Error(`${fieldName} must be a non-empty array`);
-  }
-  for (const id of ids) {
-    if (!Number.isInteger(id) || id < 0) {
-      throw new Error(`Invalid ${fieldName}: ${id} is not a valid positive integer`);
-    }
-  }
-  return ids.join(',');
-}
-
-/**
- * Validate a single numeric ID for safe SQL usage.
- * @throws Error if value is not a valid integer
- */
-function validateNumericId(value: number, fieldName: string): number {
-  if (!Number.isInteger(value) || value < 0) {
-    throw new Error(`Invalid ${fieldName}: ${value} is not a valid positive integer`);
-  }
-  return value;
-}
+import { validateAndFormatIds, validateNumericId } from './sql-validation';
 
 export interface NormalizedScoreFilters {
   connection_ids?: number[];

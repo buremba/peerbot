@@ -19,6 +19,7 @@ import { generateEmbeddings } from './embeddings';
 import { toVectorLiteral } from './entity-management';
 import logger from './logger';
 import { expandSearchQueries } from './query-expansion';
+import { validateNumericId } from './sql-validation';
 
 const CONTEXT_CASE_SQL = `
         CASE
@@ -219,18 +220,31 @@ const WINDOW_JOIN_SQL = `LEFT JOIN watcher_window_events iwf
           AND iwf.window_id = $5::int`;
 
 /**
- * Build NOT EXISTS clause to exclude content already in any window for a given watcher
+ * Build NOT EXISTS clause to exclude content already in any window for a given
+ * watcher. The watcher id is both validated (integer check) and bound as a query
+ * parameter — validation guards against obvious injection attempts and the
+ * parameter binding is the real defense.
+ *
  * @param excludeWatcherId - Watcher ID to exclude content for
+ * @param baseParamIndex - Next 1-based `$N` index to allocate for bound params
  * @param tableAlias - Alias for the content table (default: 'f')
- * @returns SQL clause string or empty string if not filtering
+ * @returns `{ sql, params }` — empty strings/arrays when no filter is applied
  */
-function buildExcludeWatcherClause(excludeWatcherId: number | undefined, tableAlias = 'f'): string {
-  if (excludeWatcherId === undefined) return '';
-  return ` AND NOT EXISTS (
+function buildExcludeWatcherClause(
+  excludeWatcherId: number | undefined,
+  baseParamIndex: number,
+  tableAlias = 'f'
+): { sql: string; params: unknown[] } {
+  if (excludeWatcherId === undefined) return { sql: '', params: [] };
+  const validated = validateNumericId(excludeWatcherId, 'exclude_watcher_id');
+  return {
+    sql: ` AND NOT EXISTS (
     SELECT 1 FROM watcher_window_events exc_iwe
     JOIN watcher_windows exc_iw ON exc_iw.id = exc_iwe.window_id
-    WHERE exc_iwe.event_id = ${tableAlias}.id AND exc_iw.watcher_id = ${excludeWatcherId}
-  )`;
+    WHERE exc_iwe.event_id = ${tableAlias}.id AND exc_iw.watcher_id = $${baseParamIndex}::bigint
+  )`,
+    params: [validated],
+  };
 }
 
 /**
@@ -767,7 +781,6 @@ async function listContentInternal(
   if (hasClassificationFilters && filtersBySlug) {
     const classifierVersionIds = await resolveClassifierVersionIds(sql, filtersBySlug, entityId);
     const connectionFilterClause = buildConnectionFilter(connectionIdsArray);
-    const excludeClause = buildExcludeWatcherClause(options.exclude_watcher_id);
 
     const baseConditions: string[] = [];
     const baseParams: any[] = [];
@@ -842,10 +855,15 @@ async function listContentInternal(
 
     baseConditions.push(...classificationExists.clauses);
     const whereSql = baseConditions.length > 0 ? baseConditions.join(' AND ') : '1=1';
-    const allFilterParams = [...baseParams, ...classificationExists.params];
+    const filterParamsBeforeExclude = [...baseParams, ...classificationExists.params];
+    const excludeClause = buildExcludeWatcherClause(
+      options.exclude_watcher_id,
+      filterParamsBeforeExclude.length + 1
+    );
+    const allFilterParams = [...filterParamsBeforeExclude, ...excludeClause.params];
 
     const countResult = await sql.unsafe<{ total: number | string }>(
-      `SELECT COUNT(*) as total FROM current_event_records f LEFT JOIN connections c ON c.id = f.connection_id WHERE ${whereSql} ${excludeClause}`,
+      `SELECT COUNT(*) as total FROM current_event_records f LEFT JOIN connections c ON c.id = f.connection_id WHERE ${whereSql} ${excludeClause.sql}`,
       allFilterParams
     );
     const total = parseInt(String(countResult[0]?.total ?? '0'), 10);
@@ -859,6 +877,7 @@ async function listContentInternal(
     const queryBaseParams = [...allFilterParams, ...cursorClause.params];
     const limitIndex = queryBaseParams.length + 1;
     const offsetIndex = queryBaseParams.length + 2;
+    const validatedLimit = validateNumericId(limit, 'limit');
     const ctes = needClassifications
       ? `${threadMetaCteSql},\n        ${latestClassificationsCteSql}`
       : threadMetaCteSql;
@@ -872,7 +891,7 @@ async function listContentInternal(
           FROM current_event_records f
           LEFT JOIN connections c ON c.id = f.connection_id
           WHERE ${whereSql}
-            ${excludeClause}
+            ${excludeClause.sql}
             ${cursorClause.sql}
           ORDER BY ${buildDateCandidateOrderBy(cursor, 'f')}
           LIMIT $${limitIndex}
@@ -883,7 +902,7 @@ async function listContentInternal(
             (SELECT COUNT(*) FROM candidate_set) as cursor_fetched_count
           FROM candidate_set cs
           ORDER BY ${buildDateCandidateOrderBy(cursor, 'cs')}
-          LIMIT ${limit}
+          LIMIT ${validatedLimit}
         ),
         ${ctes}
         ${mkFinalSelect(!!needClassifications)}`
@@ -894,7 +913,7 @@ async function listContentInternal(
             NULL::bigint as cursor_fetched_count
           FROM current_event_records f
           LEFT JOIN connections c ON c.id = f.connection_id
-          WHERE ${whereSql} ${excludeClause}
+          WHERE ${whereSql} ${excludeClause.sql}
           ORDER BY ${orderByForResultSet}
           LIMIT $${limitIndex} OFFSET $${offsetIndex}
         ),
@@ -926,14 +945,18 @@ async function listContentInternal(
   }
 
   const connectionCondition = buildConnectionFilter(connectionIdsArray);
-  const excludeClause = buildExcludeWatcherClause(options.exclude_watcher_id);
   const standardParams = buildStandardParams(options, { sinceDate, untilDate });
   const orgScope = buildOrgScopeWhere({
     entity_id: entityId,
     organization_id: organizationId,
     baseParamIndex: standardParams.length + 1,
   });
-  const countParams = [...standardParams, ...orgScope.params];
+  const paramsBeforeExclude = [...standardParams, ...orgScope.params];
+  const excludeClause = buildExcludeWatcherClause(
+    options.exclude_watcher_id,
+    paramsBeforeExclude.length + 1
+  );
+  const countParams = [...paramsBeforeExclude, ...excludeClause.params];
 
   const countResult = await sql.unsafe(
     `SELECT COUNT(*) as total FROM current_event_records f
@@ -941,7 +964,7 @@ async function listContentInternal(
       ${WINDOW_JOIN_SQL}
       WHERE ${STANDARD_WHERE_SQL}
         AND ${connectionCondition}
-        ${excludeClause}
+        ${excludeClause.sql}
         ${orgScope.sql}`,
     countParams
   );
@@ -960,6 +983,7 @@ async function listContentInternal(
   const queryBaseParams = [...countParams, ...cursorClause.params];
   const limitIdx = queryBaseParams.length + 1;
   const offsetIdx = queryBaseParams.length + 2;
+  const validatedLimit = validateNumericId(limit, 'limit');
   const querySQL = useDateFeed
     ? `
       WITH RECURSIVE candidate_set AS (
@@ -971,7 +995,7 @@ async function listContentInternal(
         ${WINDOW_JOIN_SQL}
         WHERE ${STANDARD_WHERE_SQL}
           AND ${connectionCondition}
-          ${excludeClause}
+          ${excludeClause.sql}
           ${orgScope.sql}
           ${cursorClause.sql}
         ORDER BY ${buildDateCandidateOrderBy(cursor, 'f')}
@@ -983,7 +1007,7 @@ async function listContentInternal(
           (SELECT COUNT(*) FROM candidate_set) as cursor_fetched_count
         FROM candidate_set cs
         ORDER BY ${buildDateCandidateOrderBy(cursor, 'cs')}
-        LIMIT ${limit}
+        LIMIT ${validatedLimit}
       ),
       ${ctes}
       ${mkFinalSelect(!!needClassifications)}`
@@ -997,7 +1021,7 @@ async function listContentInternal(
         ${WINDOW_JOIN_SQL}
         WHERE ${STANDARD_WHERE_SQL}
           AND ${connectionCondition}
-          ${excludeClause}
+          ${excludeClause.sql}
           ${orgScope.sql}
         ORDER BY ${orderByForResultSet}
         LIMIT $${limitIdx} OFFSET $${offsetIdx}
@@ -1116,7 +1140,14 @@ async function searchContentBySingleQuery(
     }
   }
   const hasEmbedding = queryEmbedding !== null;
-  const minSimilarity = options.min_similarity ?? 0.3;
+  // Clamp to [0, 1] so a caller can't produce an always-true / always-false
+  // predicate with an out-of-range value. Non-numeric input falls back to the
+  // default. The parameter is still bound (not interpolated) below for defense
+  // in depth.
+  const rawMinSimilarity = Number(options.min_similarity ?? 0.3);
+  const minSimilarity = Number.isFinite(rawMinSimilarity)
+    ? Math.max(0, Math.min(1, rawMinSimilarity))
+    : 0.3;
 
   const sinceDate = options.since ? parseDateAlias(options.since).date : null;
   const untilDate = options.until ? toEndOfDay(parseDateAlias(options.until).date) : null;
@@ -1128,15 +1159,24 @@ async function searchContentBySingleQuery(
     (options.classification_filters && options.classification_filters.length > 0);
 
   const connectionCondition = buildConnectionFilter(connectionIdsArray);
-  const excludeClause = buildExcludeWatcherClause(options.exclude_watcher_id);
 
   const orgScope = buildOrgScopeWhere({
     entity_id: entityId,
     organization_id: options.organization_id,
     baseParamIndex: 11,
   });
-  const baseParamIdx = 11 + orgScope.params.length;
+  // Exclude-watcher param slot sits immediately after orgScope so its $N index
+  // is stable regardless of whether an embedding param follows.
+  const excludeParamIdx = 11 + orgScope.params.length;
+  const excludeClause = buildExcludeWatcherClause(
+    options.exclude_watcher_id,
+    excludeParamIdx
+  );
+  const baseParamIdx = excludeParamIdx + excludeClause.params.length;
   const vectorParamIdx = hasEmbedding ? baseParamIdx : null;
+  // Bind min_similarity as a numeric parameter after the vector slot (when
+  // present) so a hostile float can't break out of the comparison expression.
+  const minSimilarityParamIdx = baseParamIdx + (hasEmbedding ? 1 : 0);
 
   const standardFiltersSQL = `($2::bigint IS NULL OR ${entityLinkMatchSql('$2::bigint')})
           AND ${connectionCondition}
@@ -1148,7 +1188,7 @@ async function searchContentBySingleQuery(
           AND ($8::numeric IS NULL OR f.score <= $8::numeric)
           AND ($9::text IS NULL OR f.semantic_type = $9::text)
           AND ($10::text IS NULL OR f.interaction_status = $10::text)
-          ${excludeClause}
+          ${excludeClause.sql}
           ${orgScope.sql}`;
 
   const textDocumentExpr = buildSearchDocumentExpr('f');
@@ -1158,8 +1198,9 @@ async function searchContentBySingleQuery(
   // branch to be the sole filter in that case.
   const textMatchExpr = `(LENGTH($1) > 0 AND (f.payload_text ILIKE '%' || $1 || '%' OR COALESCE(${textDocumentExpr} @@ ${TSQUERY_SQL}, false)))`;
   const vecParam = vectorParamIdx ? `$${vectorParamIdx}::vector` : 'NULL::vector';
+  const minSimilarityParam = `$${minSimilarityParamIdx}::numeric`;
   const matchCondition = hasEmbedding
-    ? `(${textMatchExpr} OR (f.embedding IS NOT NULL AND 1 - (f.embedding <=> ${vecParam}) >= ${minSimilarity}))`
+    ? `(${textMatchExpr} OR (f.embedding IS NOT NULL AND 1 - (f.embedding <=> ${vecParam}) >= ${minSimilarityParam}))`
     : textMatchExpr;
 
   const searchWhereSQL = `${matchCondition}
@@ -1228,10 +1269,13 @@ async function searchContentBySingleQuery(
     ? `${searchThreadCteSql},\n      ${latestClassificationsCteSql}`
     : searchThreadCteSql;
 
-  const cursorBaseParamIdx = baseParamIdx + (hasEmbedding ? 1 : 0);
+  // When hasEmbedding, two params (vector + min_similarity) follow baseParamIdx;
+  // otherwise neither is bound, so the cursor params resume at baseParamIdx.
+  const cursorBaseParamIdx = baseParamIdx + (hasEmbedding ? 2 : 0);
   const cursorClause = buildDateCursorClause(cursor, 'fi.occurred_at', 'fi.id', cursorBaseParamIdx);
   const limitParamIdx = cursorBaseParamIdx + cursorClause.params.length;
   const offsetParamIdx = limitParamIdx + 1;
+  const validatedLimit = validateNumericId(limit, 'limit');
   const querySQL = useDateFeed
     ? `
       WITH RECURSIVE filtered_ids AS (
@@ -1269,7 +1313,7 @@ async function searchContentBySingleQuery(
           (SELECT COUNT(*) FROM candidate_set) as cursor_fetched_count
         FROM candidate_set cs
         ORDER BY ${buildDateCandidateOrderBy(cursor, 'cs')}
-        LIMIT ${limit}
+        LIMIT ${validatedLimit}
       ),
       ${ctes}
       ${searchFinalSelect}`
@@ -1312,7 +1356,8 @@ async function searchContentBySingleQuery(
     options.semantic_type ?? null,
     options.interaction_status ?? null,
     ...orgScope.params,
-    ...(hasEmbedding ? [toVectorLiteral(queryEmbedding!)] : []),
+    ...excludeClause.params,
+    ...(hasEmbedding ? [toVectorLiteral(queryEmbedding!), minSimilarity] : []),
     ...cursorClause.params,
     ...(useDateFeed ? [fetchLimit] : [limit, effectiveOffset]),
   ];

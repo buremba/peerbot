@@ -12,7 +12,11 @@ import { ADMIN_TOOLS } from './admin';
 import { ListWatchersSchema, listWatchers } from './admin/manage_watchers';
 import { GetContentSchema, getContent } from './get_content';
 import { GetWatcherSchema, getWatcher } from './get_watchers';
-import { ListOrganizationsSchema, SwitchOrganizationSchema } from './organizations';
+import {
+  JoinOrganizationSchema,
+  ListOrganizationsSchema,
+  SwitchOrganizationSchema,
+} from './organizations';
 import { ResolvePathSchema, resolvePath } from './resolve_path';
 import { SaveContentSchema, saveContent } from './save_content';
 // Import tool implementations and their schemas
@@ -157,6 +161,18 @@ WATCHER MODE: When \`watcher_id\` is provided with \`since\`/\`until\`, returns 
     inputSchema: SwitchOrganizationSchema,
     annotations: { readOnlyHint: false },
     orgSwitching: true,
+    handler: async () => {
+      throw new Error('Handled directly in executeTool');
+    },
+  },
+  {
+    name: 'join_organization',
+    description:
+      'Join the current public workspace as a member so you can write (create entities, save knowledge, update classifications). Only works on workspaces with visibility=public; private workspaces still require an invitation. Idempotent — calling when already a member is safe. On the unscoped /mcp endpoint, pass `organization_slug`; on /mcp/{slug} sessions the current workspace is used.',
+    inputSchema: JoinOrganizationSchema,
+    // readOnlyHint:true lets read-scoped MCP sessions invoke it — the whole
+    // point of this tool is to flip an anonymous reader into a member.
+    annotations: { readOnlyHint: true, idempotentHint: true },
     handler: async () => {
       throw new Error('Handled directly in executeTool');
     },

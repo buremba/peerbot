@@ -43,8 +43,11 @@ import {
   renderPublicPageTemplate,
 } from './public-pages';
 import {
+  publicRestEventsStream,
   publicRestGetConnector,
+  publicRestGetOrganization,
   publicRestGetWatchers,
+  publicRestListAgents,
   publicRestListClassifiers,
   publicRestListConnectors,
   publicRestSearchKnowledge,
@@ -67,6 +70,7 @@ import {
 import { getClientIP, getRateLimiter, RateLimitPresets } from './utils/rate-limiter';
 import { getRuntimeInfo } from './utils/runtime-info';
 import { getWorkspaceProvider } from './workspace';
+import { joinPublicOrganization } from './workspace/join-public';
 
 export type { Env };
 
@@ -659,6 +663,9 @@ app.get('/api/:orgSlug/public/knowledge/search', publicRestSearchKnowledge);
 app.get('/api/:orgSlug/public/classifiers', publicRestListClassifiers);
 app.get('/api/:orgSlug/public/connectors', publicRestListConnectors);
 app.get('/api/:orgSlug/public/connectors/:connectorKey', publicRestGetConnector);
+app.get('/api/:orgSlug/public/organization', publicRestGetOrganization);
+app.get('/api/:orgSlug/public/agents', publicRestListAgents);
+app.get('/api/:orgSlug/public/events', publicRestEventsStream);
 app.patch(
   '/api/:orgSlug/content/:id/classifications/:classifier_slug',
   mcpAuth,
@@ -861,6 +868,56 @@ app.get('/api/features', (c) => {
   return c.json({
     agents: true,
     lobuEmbedded: isLobuGatewayRunning(),
+  });
+});
+
+/**
+ * Self-serve join a public organization. Authenticated session required.
+ * Inserts a member row with role='member' and mirrors Better Auth's
+ * afterAddMember side effects (see workspace/join-public.ts).
+ */
+app.post('/api/:orgSlug/join', async (c) => {
+  const rateLimiter = getRateLimiter();
+  const clientIP = getClientIP(c.req.raw);
+  const rateLimit = rateLimiter.checkLimit(
+    `rate:join-public-org:${clientIP}`,
+    RateLimitPresets.JOIN_PUBLIC_ORG_PER_IP_HOUR
+  );
+  if (!rateLimit.allowed) {
+    return c.json({ error: rateLimit.errorMessage }, 429);
+  }
+
+  const auth = await createAuth(c.env);
+  const session = await auth.api.getSession({ headers: c.req.raw.headers });
+  const userId = session?.session?.userId;
+  if (!userId) {
+    return c.json(
+      { error: 'unauthorized', error_description: 'Sign in to join a workspace.' },
+      401
+    );
+  }
+
+  const orgSlug = c.req.param('orgSlug');
+  if (!orgSlug) return c.json({ error: 'invalid_request' }, 400);
+
+  const result = await joinPublicOrganization({ userId, orgSlug });
+  if (result.status === 'not_found') {
+    return c.json({ error: 'not_found', error_description: 'Workspace not found.' }, 404);
+  }
+  if (result.status === 'not_public') {
+    return c.json(
+      {
+        error: 'forbidden',
+        error_description: 'This workspace is private. Ask an owner for an invitation.',
+      },
+      403
+    );
+  }
+
+  return c.json({
+    status: result.status,
+    organizationId: result.organizationId,
+    role: result.role,
   });
 });
 

@@ -172,6 +172,13 @@ export const RateLimitPresets = {
     windowSeconds: 60,
     errorMessage: 'Too many invitation lookups. Try again shortly.',
   } as RateLimitConfig,
+
+  /** Self-serve join public org: 10/hour per IP */
+  JOIN_PUBLIC_ORG_PER_IP_HOUR: {
+    limit: 10,
+    windowSeconds: 3600,
+    errorMessage: 'Join rate limit exceeded. Maximum 10 join attempts per hour.',
+  } as RateLimitConfig,
 };
 
 /** Module-level singleton rate limiter. */

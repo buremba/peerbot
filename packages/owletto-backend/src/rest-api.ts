@@ -7,6 +7,7 @@
 
 import type { Context } from 'hono';
 import { getDb } from './db/client';
+import * as invalidationEmitter from './events/emitter';
 import type { Env } from './index';
 import {
   EMPTY_SUMMARY,
@@ -477,6 +478,143 @@ export async function publicRestGetConnector(c: Context<{ Bindings: Env }>) {
       feeds,
     };
   });
+}
+
+/**
+ * GET /api/:orgSlug/public/organization
+ * Sanitized org metadata for non-members of a public workspace.
+ * No member roster, no internal settings.
+ */
+export async function publicRestGetOrganization(c: Context<{ Bindings: Env }>) {
+  return withPublicOrg(c, async (organizationId) => {
+    const sql = getDb();
+    const rows = await sql<{
+      id: string;
+      slug: string;
+      name: string;
+      description: string | null;
+      logo: string | null;
+      visibility: string;
+      created_at: string;
+    }>`
+      SELECT id, slug, name, description, logo, visibility, "createdAt" AS created_at
+      FROM "organization"
+      WHERE id = ${organizationId}
+      LIMIT 1
+    `;
+    const org = rows[0];
+    if (!org) throw new Error('Organization not found');
+
+    const [{ count: agent_count }] = await sql<{ count: number }>`
+      SELECT COUNT(*)::int AS count FROM agents
+      WHERE organization_id = ${organizationId}
+        AND parent_connection_id IS NULL
+    `;
+    const [{ count: entity_type_count }] = await sql<{ count: number }>`
+      SELECT COUNT(*)::int AS count FROM entity_types
+      WHERE organization_id = ${organizationId}
+        AND deleted_at IS NULL
+    `;
+    return {
+      organization: {
+        ...org,
+        agent_count,
+        entity_type_count,
+      },
+    };
+  });
+}
+
+/**
+ * GET /api/:orgSlug/public/agents
+ * Sanitized agent list for non-members of a public workspace.
+ * Only name/description/id are exposed — no credentials, MCP server URLs,
+ * auth profiles, or configuration.
+ */
+export async function publicRestListAgents(c: Context<{ Bindings: Env }>) {
+  return withPublicOrg(c, async (organizationId) => {
+    const sql = getDb();
+    const rows = await sql<{
+      id: string;
+      name: string;
+      description: string | null;
+      created_at: string;
+    }>`
+      SELECT id, name, description, created_at
+      FROM agents
+      WHERE organization_id = ${organizationId}
+        AND parent_connection_id IS NULL
+      ORDER BY created_at ASC
+    `;
+    return { agents: rows };
+  });
+}
+
+/**
+ * Cache keys safe to forward to anonymous / non-member viewers of a public org.
+ * Must exclude notifications, member-admin, and connector-admin events.
+ */
+const PUBLIC_INVALIDATION_KEYS = new Set([
+  'resolve-path',
+  'entity-types',
+  'view-template-history',
+  'contents-filtered',
+]);
+
+/**
+ * GET /api/:orgSlug/public/events
+ * SSE stream of cache invalidation events for non-members of a public workspace.
+ * Only public-readable keys are forwarded; notifications / member / connector
+ * admin invalidations are filtered out.
+ */
+export async function publicRestEventsStream(c: Context<{ Bindings: Env }>) {
+  const orgSlug = c.req.param('orgSlug');
+  if (!orgSlug) return c.json({ error: 'Organization slug is required' }, 400);
+
+  const organizationId = await resolvePublicOrganizationId(orgSlug);
+  if (!organizationId) return c.json({ error: 'Not found' }, 404);
+
+  const encoder = new TextEncoder();
+  let cleanup: (() => void) | null = null;
+
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(encoder.encode('event: connected\ndata: {}\n\n'));
+
+      const unsubscribe = invalidationEmitter.subscribe(organizationId, (event) => {
+        const publicKeys = event.keys.filter((k) => PUBLIC_INVALIDATION_KEYS.has(k));
+        if (publicKeys.length === 0) return;
+        try {
+          const data = JSON.stringify({ ...event, keys: publicKeys });
+          controller.enqueue(encoder.encode(`event: invalidate\ndata: ${data}\n\n`));
+        } catch {
+          // Connection closed
+        }
+      });
+
+      const keepAlive = setInterval(() => {
+        try {
+          controller.enqueue(encoder.encode(': keepalive\n\n'));
+        } catch {
+          clearInterval(keepAlive);
+        }
+      }, 30000);
+
+      cleanup = () => {
+        unsubscribe();
+        clearInterval(keepAlive);
+      };
+    },
+    cancel() {
+      cleanup?.();
+    },
+  });
+
+  c.header('Content-Type', 'text/event-stream');
+  c.header('Cache-Control', 'no-cache');
+  c.header('Connection', 'keep-alive');
+
+  return c.body(stream);
 }
 
 /**

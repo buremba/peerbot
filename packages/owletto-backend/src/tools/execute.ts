@@ -9,7 +9,7 @@ import { getRequiredAccessLevel, isPublicReadable } from '../auth/tool-access';
 import type { Env } from '../index';
 import { trackMCPToolCall } from '../sentry';
 import { getConfiguredPublicOrigin } from '../utils/public-origin';
-import { listOrganizations, switchOrganization } from './organizations';
+import { joinOrganization, listOrganizations, switchOrganization } from './organizations';
 import { getTool, type ToolContext } from './registry';
 
 /**
@@ -95,8 +95,13 @@ export function checkToolAccess(toolName: string, args: unknown, authCtx: AuthCo
   const requiredAccess = getRequiredAccessLevel(toolName, args, isReadOnly);
 
   if (!role && !isPublicReadable(toolName, args)) {
+    if (authCtx.userId) {
+      throw new Error(
+        'This public workspace is read-only for your account. Call the `join_organization` tool to become a member and unlock write access (or join via the web UI).'
+      );
+    }
     throw new Error(
-      'This public workspace is read-only for your account. Ask an organization admin to invite you for write access.'
+      'This public workspace is read-only for anonymous access. Sign in with an OAuth client that has write access, then call `join_organization` to become a member.'
     );
   }
 
@@ -116,7 +121,7 @@ export function checkToolAccess(toolName: string, args: unknown, authCtx: AuthCo
     }
     if (requiredAccess === 'write') {
       throw new Error(
-        'This MCP session is read-only. Reconnect with write access after you are added to the organization.'
+        'This MCP session is read-only. If this is a public workspace, call `join_organization` first, then reconnect with write-scoped OAuth. Otherwise ask an owner to add you.'
       );
     }
     throw new Error(
@@ -135,6 +140,22 @@ export async function executeTool(
   env: Env,
   authCtx: AuthContext
 ): Promise<unknown> {
+  // join_organization bypasses the standard access check — its whole purpose
+  // is to upgrade a non-member / read-only session into a member.
+  // It only requires an authenticated user; the tool itself enforces public-org policy.
+  if (toolName === 'join_organization') {
+    if (!authCtx.userId) {
+      throw new Error('Authentication required to join an organization. Sign in with OAuth first.');
+    }
+    return trackMCPToolCall(toolName, args, () =>
+      joinOrganization(args as any, env, {
+        userId: authCtx.userId!,
+        currentOrgId: authCtx.organizationId,
+        scopes: authCtx.scopes ?? null,
+      })
+    );
+  }
+
   checkToolAccess(toolName, args, authCtx);
 
   // Org-agnostic tools get a minimal context with just userId

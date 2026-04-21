@@ -60,6 +60,10 @@ const PUBLIC_READ_ACTIONS: Record<string, Set<string> | null> = {
   read_knowledge: null,
   get_watcher: null,
   list_watchers: null,
+  // Visible to anonymous/non-member sessions so the LLM can discover the
+  // self-serve join path on a public workspace. The tool itself enforces
+  // authentication and public-org policy at call time.
+  join_organization: null,
   manage_entity: new Set(['list', 'get', 'list_links']),
   manage_entity_schema: new Set(['list', 'get', 'audit', 'list_rules']),
   manage_connections: new Set(['list', 'get', 'list_connector_definitions']),

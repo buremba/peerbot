@@ -28,6 +28,32 @@ This page compares Lobu against the alternatives you'd evaluate when deploying a
 | **Config format** | `lobu.toml` + IDENTITY/SOUL/USER.md | CLI flags | `deepagents.toml` + AGENTS.md | Dashboard |
 | **License** | Open source | Open source | MIT (harness), proprietary (hosting) | Proprietary |
 
+## Memory benchmarks
+
+Lobu's bundled memory system (Owletto) is benchmarked against Mem0 and Supermemory on public datasets. Same answerer (`glm-5.1` via z.ai), same top-K, same questions.
+
+### LongMemEval (oracle-50)
+
+Single-session knowledge retention.
+
+| System | Overall | Answer | Retrieval | Latency |
+|---|---:|---:|---:|---:|
+| **Owletto** | **87.1%** | **78.0%** | **100.0%** | 237ms |
+| Supermemory | 69.1% | 56.0% | 96.6% | 702ms |
+| Mem0 | 65.7% | 54.0% | 85.3% | 753ms |
+
+### LoCoMo-50
+
+Multi-session conversational memory.
+
+| System | Overall | Answer | Retrieval | Latency |
+|---|---:|---:|---:|---:|
+| **Owletto** | **57.8%** | **38.0%** | **79.5%** | **121ms** |
+| Mem0 | 41.5% | 28.0% | 66.9% | 606ms |
+| Supermemory | 23.2% | 14.0% | 36.5% | 532ms |
+
+See the [memory benchmarks methodology](/guides/memory-benchmarks/) for fairness guardrails and reproduction steps, or the [harness README](https://github.com/lobu-ai/owletto/blob/main/benchmarks/memory/README.md) in the Owletto repo.
+
 ## Sandboxing and deployment modes
 
 Lobu offers three deployment modes, each with different isolation guarantees. No other platform in this space provides all three.

@@ -1,9 +1,5 @@
 import type { SecretRef } from "./secret-refs";
 
-// ============================================================================
-// Model Selection
-// ============================================================================
-
 export type ModelSelectionMode = "auto" | "pinned";
 
 /**
@@ -18,10 +14,6 @@ export interface ModelSelectionState {
 
 /** Per-provider preferred model for auto mode, keyed by provider id. */
 export type ProviderModelPreferences = Record<string, string>;
-
-// ============================================================================
-// Provider Catalog Types
-// ============================================================================
 
 /**
  * Represents a provider installed for a specific agent.
@@ -48,10 +40,6 @@ export interface CliBackendConfig {
   modelArg?: string; // "--model"
   sessionArg?: string; // "--session"
 }
-
-// ============================================================================
-// Auth Profile Types
-// ============================================================================
 
 /**
  * Unified authentication profile for any model provider.
@@ -131,10 +119,6 @@ export interface ConversationMessage {
   timestamp: number;
 }
 
-// ============================================================================
-// Schedule Types
-// ============================================================================
-
 /**
  * Concurrency policy applied when a schedule fires while the previous
  * run for the same id is still executing.
@@ -192,14 +176,6 @@ export interface DeclaredSchedule {
   /** Default "queue". */
   concurrency?: ScheduleConcurrency;
 }
-
-// ============================================================================
-// Conversation History Types
-// ============================================================================
-
-// ============================================================================
-// Skills Configuration Types
-// ============================================================================
 
 /**
  * Per-skill thinking budget level.
@@ -338,10 +314,6 @@ export interface NixConfig {
   packages?: string[];
 }
 
-// ============================================================================
-// Tools Configuration Types
-// ============================================================================
-
 /**
  * Tool permission configuration for agent settings.
  * Follows Claude Code's permission patterns for consistency.
@@ -457,10 +429,6 @@ export interface AgentOptions {
  */
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
-// ============================================================================
-// Instruction Provider Types
-// ============================================================================
-
 /**
  * Context information passed to instruction providers
  */
@@ -490,10 +458,6 @@ export interface InstructionProvider {
    */
   getInstructions(context: InstructionContext): Promise<string> | string;
 }
-
-// ============================================================================
-// Thread Response Types
-// ============================================================================
 
 /**
  * Shared payload contract for worker → platform thread responses.
@@ -532,10 +496,6 @@ export interface ThreadResponsePayload {
   execStream?: "stdout" | "stderr"; // Which stream this delta is from
   execExitCode?: number; // Process exit code (sent on completion)
 }
-
-// ============================================================================
-// User Interaction Types
-// ============================================================================
 
 /**
  * Suggested prompt for user

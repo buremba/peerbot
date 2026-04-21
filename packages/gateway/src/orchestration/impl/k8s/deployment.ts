@@ -209,7 +209,6 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
 
     const kc = new k8s.KubeConfig();
     try {
-      // Try in-cluster config first, then fall back to default
       if (process.env.KUBERNETES_SERVICE_HOST) {
         try {
           kc.loadFromCluster();
@@ -220,7 +219,7 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
         kc.loadFromDefault();
       }
 
-      // For development environments, disable TLS verification to avoid certificate issues
+      // Dev clusters often have self-signed certs
       if (
         process.env.NODE_ENV === "development" ||
         process.env.KUBERNETES_SERVICE_HOST?.includes("127.0.0.1") ||
@@ -233,7 +232,6 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
           typeof cluster === "object" &&
           cluster.skipTLSVerify !== true
         ) {
-          // Safely set skipTLSVerify property with type checking
           Object.defineProperty(cluster, "skipTLSVerify", {
             value: true,
             writable: true,
@@ -252,30 +250,20 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
       );
     }
 
-    // Store KubeConfig for informer creation
     this.kc = kc;
 
-    // Configure K8s API clients
     this.appsV1Api = kc.makeApiClient(k8s.AppsV1Api);
     this.coreV1Api = kc.makeApiClient(k8s.CoreV1Api);
     this.nodeV1Api = kc.makeApiClient(k8s.NodeV1Api);
-
-    // API clients are already configured with authentication through makeApiClient
 
     logger.info(
       `🔧 K8s client initialized for namespace: ${this.config.kubernetes.namespace}`
     );
 
-    // Validate namespace exists and we have access
     this.validateNamespace();
-
-    // Check runtime class availability on initialization (like Docker's gVisor check)
     this.checkRuntimeClassAvailability();
   }
 
-  /**
-   * Validate that the target namespace exists and we have access to it
-   */
   private async validateNamespace(): Promise<void> {
     const namespace = this.config.kubernetes.namespace;
 
@@ -297,26 +285,18 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
           true
         );
       } else if (k8sError.statusCode === 403) {
-        // 403 Forbidden for namespace read is expected with namespace-scoped Roles
-        // The gateway can still create resources in the namespace without cluster-level namespace read permission
         logger.info(
           `ℹ️  Namespace '${namespace}' access check skipped (namespace-scoped RBAC). ` +
             `Will validate via resource operations.`
         );
-        // Don't throw - we're running in this namespace so it exists
       } else {
         logger.warn(
           `⚠️  Could not validate namespace '${namespace}': ${error instanceof Error ? error.message : String(error)}`
         );
-        // Don't throw - let operations fail with more specific errors
       }
     }
   }
 
-  /**
-   * Check if the configured RuntimeClass exists in the cluster
-   * Similar to Docker's checkGvisorAvailability()
-   */
   private async checkRuntimeClassAvailability(): Promise<void> {
     const runtimeClassName = this.config.worker.runtimeClassName || "kata";
 
@@ -337,7 +317,6 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
           `⚠️  Failed to verify RuntimeClass '${runtimeClassName}': ${error instanceof Error ? error.message : String(error)}`
         );
       }
-      // Clear runtime class if not available or verification failed (workers will use default)
       this.config.worker.runtimeClassName = undefined;
     }
   }
@@ -361,11 +340,11 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
   private async listRawWorkerDeployments(): Promise<k8s.V1Deployment[]> {
     const k8sDeployments = await this.appsV1Api.listNamespacedDeployment(
       this.config.kubernetes.namespace,
-      undefined, // pretty
-      undefined, // allowWatchBookmarks
-      undefined, // _continue
-      undefined, // fieldSelector
-      "app.kubernetes.io/component=worker" // labelSelector - only worker deployments
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "app.kubernetes.io/component=worker"
     );
 
     const response = k8sDeployments as {
@@ -375,10 +354,6 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
     return response.body?.items || [];
   }
 
-  /**
-   * Validate that the worker image exists and is pullable
-   * Called on gateway startup to ensure workers can be created
-   */
   async validateWorkerImage(): Promise<void> {
     const imageName = this.getWorkerImageReference();
     logger.info(
@@ -424,7 +399,6 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
       for (const deployment of await this.listRawWorkerDeployments()) {
         const deploymentName = deployment.metadata?.name || "";
 
-        // Clean up orphaned finalizers on Terminating deployments (avoids extra API call)
         if (
           deployment.metadata?.deletionTimestamp &&
           deployment.metadata?.finalizers?.includes(LOBU_FINALIZER)
@@ -444,10 +418,9 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
               err instanceof Error ? err.message : String(err)
             )
           );
-          continue; // Skip Terminating deployments from the active list
+          continue;
         }
 
-        // Get last activity from annotations or fallback to creation time
         const lastActivityStr =
           deployment.metadata?.annotations?.["lobu.io/last-activity"] ||
           deployment.metadata?.annotations?.["lobu.io/created"] ||
@@ -486,7 +459,6 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
     userId: string,
     messageData?: MessagePayload
   ): Promise<void> {
-    // Extract traceparent for distributed tracing
     const traceparent = messageData?.platformMetadata?.traceparent as
       | string
       | undefined;
@@ -496,7 +468,6 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
       "Creating K8s deployment"
     );
 
-    // Use agentId for PVC naming (shared across threads in same space)
     const agentId = messageData?.agentId;
     if (!agentId) {
       throw new OrchestratorError(
@@ -506,12 +477,11 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
     }
     const pvcName = `lobu-workspace-${agentId}`;
 
-    // Check if Nix packages are configured (need init container + subPath mounts)
     const hasNixConfig =
       (messageData?.nixConfig?.packages?.length ?? 0) > 0 ||
       !!messageData?.nixConfig?.flakeUrl;
 
-    // Use larger PVC when Nix packages are configured (Chromium etc. need space)
+    // Nix PVC holds Chromium etc.
     const pvcSize = hasNixConfig ? "5Gi" : undefined;
     await createPVC(
       this.coreV1Api,
@@ -524,14 +494,12 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
       this.config.worker.persistence?.size
     );
 
-    // Get environment variables before creating the deployment spec
-    // Include secrets (same as Docker behavior) - secrets are passed via env vars
     const envVars = await this.generateEnvironmentVariables(
       username,
       userId,
       deploymentName,
       messageData,
-      true // Include secrets to match Docker behavior
+      true
     );
 
     const platform = messageData?.platform || "unknown";
@@ -562,7 +530,6 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
         template: {
           metadata: {
             annotations: {
-              // Add platform-specific metadata
               ...resolvePlatformDeploymentMetadata(messageData),
               "lobu.io/created": new Date().toISOString(),
               "lobu.io/agent-id": agentId,
@@ -576,7 +543,6 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
           spec: {
             serviceAccountName: this.getWorkerServiceAccountName(),
             imagePullSecrets: this.getWorkerImagePullSecrets(),
-            // Only set runtimeClassName if configured and available (validated on startup)
             ...(this.config.worker.runtimeClassName
               ? { runtimeClassName: this.config.worker.runtimeClassName }
               : {}),
@@ -584,7 +550,6 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
               fsGroup: WORKER_SECURITY.GROUP_ID,
               fsGroupChangePolicy: "OnRootMismatch",
             },
-            // Init container to bootstrap Nix store from image to PVC (first time only)
             ...(hasNixConfig
               ? {
                   initContainers: [
@@ -629,23 +594,17 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
                   runAsUser: WORKER_SECURITY.USER_ID,
                   runAsGroup: WORKER_SECURITY.GROUP_ID,
                   runAsNonRoot: true,
-                  // Enable read-only root filesystem for security (matches Docker behavior)
                   readOnlyRootFilesystem: true,
-                  // Prevent privilege escalation
                   allowPrivilegeEscalation: false,
-                  // Drop all capabilities (matches Docker CAP_DROP: ALL)
                   capabilities: {
                     drop: ["ALL"],
                   },
                 },
                 env: [
-                  // Common environment variables from base class
-                  // (includes HTTP_PROXY, HTTPS_PROXY, NO_PROXY, NODE_ENV, DEBUG)
                   ...Object.entries(envVars).map(([key, value]) => ({
                     name: key,
                     value: value,
                   })),
-                  // Add traceparent for distributed tracing (passed to worker)
                   ...(traceparent
                     ? [{ name: "TRACEPARENT", value: traceparent }]
                     : []),
@@ -659,17 +618,14 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
                     name: "workspace",
                     mountPath: "/workspace",
                   },
-                  // Tmpfs mounts for writable directories (matches Docker behavior)
                   {
                     name: "tmp",
                     mountPath: "/tmp",
                   },
-                  // /dev/shm for shared memory (needed by Chromium and other apps)
                   {
                     name: "dshm",
                     mountPath: "/dev/shm",
                   },
-                  // When Nix packages configured, mount PVC subpaths at /nix/store and /nix/var
                   ...(hasNixConfig
                     ? [
                         {
@@ -690,12 +646,10 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
             volumes: [
               {
                 name: "workspace",
-                // Use per-deployment PVC for session persistence across scale-to-zero
                 persistentVolumeClaim: {
                   claimName: pvcName,
                 },
               },
-              // Tmpfs volumes for temporary files (in-memory, matches Docker Tmpfs)
               {
                 name: "tmp",
                 emptyDir: {
@@ -703,7 +657,6 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
                   sizeLimit: WORKER_SECURITY.TMP_SIZE_LIMIT,
                 },
               },
-              // Shared memory for Chromium and other apps requiring /dev/shm
               {
                 name: "dshm",
                 emptyDir: {
@@ -717,7 +670,6 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
       },
     };
 
-    // Create child span for worker creation (linked to parent via traceparent)
     const workerSpan = createChildSpan("worker_creation", traceparent, {
       "lobu.deployment_name": deploymentName,
       "lobu.user_id": userId,
@@ -776,7 +728,6 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
         return;
       }
 
-      // Log detailed error information
       logger.error(`❌ Failed to create deployment ${deploymentName}:`, {
         statusCode: k8sError.statusCode,
         message: k8sError.message,
@@ -784,7 +735,6 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
         response: k8sError.response?.statusMessage,
       });
 
-      // Clean up the PVC that was created before the deployment failed
       try {
         await this.coreV1Api.deleteNamespacedPersistentVolumeClaim(
           pvcName,
@@ -807,7 +757,6 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
         }
       }
 
-      // End span with error
       workerSpan?.setStatus({
         code: SpanStatusCode.ERROR,
         message: k8sError.message || "Deployment failed",
@@ -908,7 +857,6 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
   }
 
   async deleteDeployment(deploymentName: string): Promise<void> {
-    // Remove our finalizer before deleting so the resource can be garbage-collected
     await removeFinalizerFromResource(
       this.appsV1Api,
       this.coreV1Api,
@@ -917,7 +865,6 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
       deploymentName
     );
 
-    // Delete the deployment with propagation policy
     try {
       await this.appsV1Api.deleteNamespacedDeployment(
         deploymentName,
@@ -926,7 +873,7 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
         undefined,
         undefined,
         undefined,
-        "Foreground" // Wait for pods to terminate before returning
+        "Foreground"
       );
       logger.info(`✅ Deleted deployment: ${deploymentName}`);
     } catch (error) {
@@ -940,16 +887,9 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
       }
     }
 
-    // NOTE: Space PVCs are NOT deleted on deployment deletion
-    // They are shared across threads in the same space and persist
-    // for future conversations. Cleanup is done manually or via separate process.
+    // Space PVCs are shared across threads in the same space; cleanup runs separately.
   }
 
-  /**
-   * Override reconcileDeployments to also clean up orphaned PVC finalizers.
-   * Deployment orphan cleanup is handled inside listDeployments() to avoid
-   * duplicate API calls (listDeployments already iterates raw K8s objects).
-   */
   async reconcileDeployments(): Promise<void> {
     await this.reconcileWorkerDeploymentImages();
     await cleanupOrphanedPvcFinalizers(
@@ -989,7 +929,6 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
         `❌ Failed to update activity for deployment ${deploymentName}:`,
         error instanceof Error ? error.message : String(error)
       );
-      // Don't throw - activity tracking should not block message processing
     }
   }
 
@@ -999,11 +938,6 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
     return `${dispatcherService}.${this.config.kubernetes.namespace}.svc.cluster.local`;
   }
 
-  /**
-   * Start a watch-based informer for worker deployments.
-   * The informer maintains a local cache that is updated via K8s watch events,
-   * reducing the need for frequent list API calls.
-   */
   async startInformer(): Promise<void> {
     if (this.informer || this.informerInitializing) return;
 
@@ -1048,9 +982,6 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
     }
   }
 
-  /**
-   * Stop the informer and clear the cache.
-   */
   async stopInformer(): Promise<void> {
     if (this.informer) {
       this.informer.stop();
@@ -1059,9 +990,6 @@ export class K8sDeploymentManager extends BaseDeploymentManager {
     }
   }
 
-  /**
-   * Whether the informer is active and has a populated cache.
-   */
   isInformerActive(): boolean {
     return this.informer !== null;
   }

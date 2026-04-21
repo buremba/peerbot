@@ -48,7 +48,6 @@ export function createGatewayApp(
     authProvider,
   } = options;
 
-  // Wire injectable auth provider (for embedded mode)
   if (authProvider) {
     const { setAuthProvider } = require("../routes/public/settings-auth");
     setAuthProvider(authProvider);
@@ -56,7 +55,6 @@ export function createGatewayApp(
 
   const app = new OpenAPIHono();
 
-  // Global middleware
   app.use(
     "*",
     secureHeaders({
@@ -85,7 +83,6 @@ export function createGatewayApp(
     })
   );
 
-  // Health endpoints
   app.get("/health", (c) => {
     const mode =
       process.env.LOBU_MODE ||
@@ -110,13 +107,11 @@ export function createGatewayApp(
 
   app.get("/ready", (c) => c.json({ ready: true }));
 
-  // Compute adminPassword once — used by Agent API, CLI auth, metrics, and messaging
   const crypto = require("node:crypto");
   const adminPassword: string =
     process.env.ADMIN_PASSWORD || crypto.randomBytes(16).toString("base64url");
 
-  // Prometheus metrics endpoint.
-  // Keep auth optional so existing ServiceMonitor configs continue to scrape.
+  // Metrics auth is optional so existing ServiceMonitor configs continue to scrape.
   app.get("/metrics", async (c) => {
     const metricsAuthToken = process.env.METRICS_AUTH_TOKEN;
     if (metricsAuthToken) {
@@ -130,7 +125,6 @@ export function createGatewayApp(
     return c.text(getMetricsText());
   });
 
-  // Secret injection proxy (Hono)
   if (secretProxy) {
     app.route("/api/proxy", secretProxy.getApp());
     logger.debug("Secret proxy enabled at :8080/api/proxy");
@@ -144,26 +138,22 @@ export function createGatewayApp(
     }
   }
 
-  // Worker Gateway routes (Hono)
   if (workerGateway) {
     app.route("/worker", workerGateway.getApp());
     logger.debug("Worker gateway routes enabled at :8080/worker/*");
   }
 
-  // Register module endpoints
   const { moduleRegistry: coreModuleRegistry } = require("@lobu/core");
   if (coreModuleRegistry.registerHonoEndpoints) {
     coreModuleRegistry.registerHonoEndpoints(app);
   } else {
-    // Create express-like adapter for module registry
     const expressApp = createExpressAdapter(app);
     coreModuleRegistry.registerEndpoints(expressApp);
   }
   logger.debug("Module endpoints registered");
 
-  // MCP OAuth auth-code callback (public — browser-facing).
-  // MUST register BEFORE the MCP proxy mount at /mcp, otherwise the proxy's
-  // catch-all `/:mcpId/*` route swallows /mcp/oauth/callback.
+  // MCP OAuth callback MUST register before the MCP proxy mount at /mcp,
+  // otherwise the proxy's `/:mcpId/*` route swallows /mcp/oauth/callback.
   if (coreServices) {
     const { createMcpOAuthRoutes } = require("../routes/public/mcp-oauth");
     const mcpOAuthRouter = createMcpOAuthRoutes({
@@ -179,22 +169,17 @@ export function createGatewayApp(
     );
   }
 
-  // MCP proxy routes (Hono)
   if (mcpProxy) {
-    // Handle root path requests with X-Mcp-Id header
     app.all("/", async (c, next) => {
       if (mcpProxy.isMcpRequest(c)) {
-        // Forward to MCP proxy - need to handle directly since it's at root
         return mcpProxy.getApp().fetch(c.req.raw);
       }
       return next();
     });
-    // Mount MCP proxy at /mcp/*
     app.route("/mcp", mcpProxy.getApp());
     logger.debug("MCP proxy routes enabled at :8080/mcp/*");
   }
 
-  // File routes (already Hono) - uses platform registry for per-platform file handling
   if (platformRegistry && coreServices) {
     const artifactStore = coreServices.getArtifactStore();
     const { createFileRoutes } = require("../routes/internal/files");
@@ -212,7 +197,6 @@ export function createGatewayApp(
     );
   }
 
-  // History routes (already Hono)
   {
     const { createHistoryRoutes } = require("../routes/internal/history");
     const historyRouter = createHistoryRoutes();
@@ -220,7 +204,6 @@ export function createGatewayApp(
     logger.debug("History routes enabled at :8080/internal/history");
   }
 
-  // Device auth routes (gateway-mediated OAuth for workers)
   if (coreServices) {
     const {
       createDeviceAuthRoutes,
@@ -240,7 +223,6 @@ export function createGatewayApp(
     }
   }
 
-  // Audio routes (TTS synthesis for workers)
   if (coreServices) {
     const transcriptionService = coreServices.getTranscriptionService();
     if (transcriptionService) {
@@ -251,7 +233,6 @@ export function createGatewayApp(
     }
   }
 
-  // Image routes (image generation for workers)
   if (coreServices) {
     const imageGenerationService = coreServices.getImageGenerationService();
     if (imageGenerationService) {
@@ -262,7 +243,6 @@ export function createGatewayApp(
     }
   }
 
-  // Interaction routes (already Hono)
   if (interactionService) {
     const {
       createInteractionRoutes,
@@ -272,7 +252,6 @@ export function createGatewayApp(
     logger.debug("Internal interaction routes enabled");
   }
 
-  // Create CLI token service early so it can be shared by messaging + agent API
   let cliTokenService: any;
   if (coreServices) {
     const { CliTokenService } = require("../auth/cli/token-service");
@@ -280,7 +259,6 @@ export function createGatewayApp(
     cliTokenService = new CliTokenService(redisClient);
   }
 
-  // Agent API routes (direct API access + platform-routed messaging)
   if (coreServices) {
     const queueProducer = coreServices.getQueueProducer();
     const sessionMgr = coreServices.getSessionManager();

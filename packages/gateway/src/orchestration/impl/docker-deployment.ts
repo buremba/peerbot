@@ -17,9 +17,6 @@ import {
   resolvePlatformDeploymentMetadata,
 } from "../deployment-utils";
 
-/**
- * Resource parsing utilities for memory and CPU limits
- */
 class ResourceParser {
   static parseMemory(memoryStr: string): number {
     const units: Record<string, number> = {
@@ -63,13 +60,9 @@ export class DockerDeploymentManager extends BaseDeploymentManager {
   ) {
     super(config, moduleEnvVarsBuilder, providerModules);
 
-    // Explicitly use the Unix socket for Docker connection
     this.docker = new Docker({ socketPath: "/var/run/docker.sock" });
 
-    // Check for gvisor availability on initialization
     this.checkGvisorAvailability();
-
-    // Ensure the internal network exists for worker isolation
     this.ensureInternalNetwork();
   }
 
@@ -95,13 +88,9 @@ export class DockerDeploymentManager extends BaseDeploymentManager {
     }
   }
 
-  /**
-   * Ensure the internal Docker network exists with `internal: true` for worker isolation.
-   * Skipped when WORKER_NETWORK is explicitly set (e.g. local dev using bridge).
-   * Creates the network if it doesn't exist (e.g. production without docker-compose).
-   */
+  // Creates the internal Docker network with `internal: true` when missing.
+  // Skipped when WORKER_NETWORK is explicitly set (e.g. local dev using bridge).
   private async ensureInternalNetwork(): Promise<void> {
-    // If explicitly overridden (e.g. WORKER_NETWORK=bridge for local dev), skip
     if (process.env.WORKER_NETWORK) {
       return;
     }
@@ -140,30 +129,17 @@ export class DockerDeploymentManager extends BaseDeploymentManager {
     }
   }
 
-  /**
-   * Check if gateway is running inside a Docker container
-   */
   private isRunningInContainer(): boolean {
     return fs.existsSync("/.dockerenv") || process.env.CONTAINER === "true";
   }
 
-  /**
-   * Get the host address that workers should use to reach the gateway
-   * When gateway runs on host, workers use host.docker.internal
-   * When gateway runs in container (docker-compose mode), workers use service name
-   */
   private getHostAddress(): string {
     if (this.isRunningInContainer()) {
       return "gateway";
     }
-    // For host-mode development, workers reach gateway via host.docker.internal
     return "host.docker.internal";
   }
 
-  /**
-   * Validate that the worker image exists locally, or pull it if missing.
-   * Called on gateway startup to ensure workers can be created.
-   */
   async validateWorkerImage(): Promise<void> {
     const imageName = this.getWorkerImageReference();
 
@@ -174,7 +150,6 @@ export class DockerDeploymentManager extends BaseDeploymentManager {
       const errorMessage =
         error instanceof Error ? error.message : String(error);
 
-      // If image not found, try to pull it
       if (
         errorMessage.includes("No such image") ||
         errorMessage.includes("404")
@@ -204,7 +179,6 @@ export class DockerDeploymentManager extends BaseDeploymentManager {
           );
         }
       } else {
-        // Other error - re-throw
         throw new OrchestratorError(
           ErrorCode.DEPLOYMENT_CREATE_FAILED,
           `Failed to validate worker image ${imageName}: ${errorMessage}`
@@ -227,9 +201,8 @@ export class DockerDeploymentManager extends BaseDeploymentManager {
       const veryOldDays = getVeryOldThresholdDays(this.config);
 
       return containers.map((containerInfo: Docker.ContainerInfo) => {
-        const deploymentName = containerInfo.Names[0]?.substring(1) || ""; // Remove leading '/'
+        const deploymentName = containerInfo.Names[0]?.substring(1) || "";
 
-        // Get last activity from in-memory tracking, labels, or creation time
         const trackedActivity = this.activityTimestamps.get(deploymentName);
         const lastActivityStr =
           containerInfo.Labels?.["lobu.io/last-activity"] ||
@@ -239,7 +212,6 @@ export class DockerDeploymentManager extends BaseDeploymentManager {
           ? new Date(lastActivityStr)
           : new Date(containerInfo.Created * 1000);
 
-        // Use the most recent timestamp from any source
         const lastActivity =
           trackedActivity && trackedActivity > labelActivity
             ? trackedActivity
@@ -264,21 +236,14 @@ export class DockerDeploymentManager extends BaseDeploymentManager {
     }
   }
 
-  /**
-   * Ensures a Docker volume exists for the given space ID.
-   * Uses named volumes for better isolation and security.
-   * Multiple threads in the same space share the same volume.
-   */
   private async ensureVolume(agentId: string): Promise<string> {
     const volumeName = `lobu-workspace-${agentId}`;
     let volumeCreated = false;
 
     try {
-      // Check if volume already exists (idempotent for concurrent creation)
       await this.docker.getVolume(volumeName).inspect();
       logger.info(`✅ Volume ${volumeName} already exists`);
     } catch (_error) {
-      // Volume doesn't exist, create it
       try {
         await this.docker.createVolume({
           Name: volumeName,
@@ -290,7 +255,7 @@ export class DockerDeploymentManager extends BaseDeploymentManager {
         logger.info(`✅ Created volume: ${volumeName}`);
         volumeCreated = true;
       } catch (createError: any) {
-        // Handle race condition: volume created by another thread
+        // Race: another thread created the volume concurrently.
         if (
           createError.statusCode === 409 ||
           createError.message?.includes("already exists")
@@ -302,8 +267,7 @@ export class DockerDeploymentManager extends BaseDeploymentManager {
       }
     }
 
-    // Fix volume permissions for new volumes
-    // The claude user in the worker container has UID 1001
+    // Worker container's claude user is UID 1001.
     if (volumeCreated) {
       try {
         const initContainer = await this.docker.createContainer({
@@ -340,7 +304,6 @@ export class DockerDeploymentManager extends BaseDeploymentManager {
     messageData?: MessagePayload
   ): Promise<void> {
     try {
-      // Use agentId for volume naming (shared across threads in same space)
       const agentId = messageData?.agentId;
       if (!agentId) {
         throw new OrchestratorError(
@@ -349,7 +312,6 @@ export class DockerDeploymentManager extends BaseDeploymentManager {
         );
       }
 
-      // Determine if running in Docker and resolve project paths
       const isRunningInDocker = process.env.DEPLOYMENT_MODE === "docker";
       const projectRoot = isRunningInDocker
         ? process.env.LOBU_DEV_PROJECT_PATH || "/app"
@@ -357,10 +319,8 @@ export class DockerDeploymentManager extends BaseDeploymentManager {
 
       const workspaceDir = `${projectRoot}/workspaces/${agentId}`;
 
-      // Ensure volume exists for production mode (space-scoped)
       const volumeName = await this.ensureVolume(agentId);
 
-      // Get common environment variables from base class
       const commonEnvVars = await this.generateEnvironmentVariables(
         username,
         userId,
@@ -369,7 +329,7 @@ export class DockerDeploymentManager extends BaseDeploymentManager {
         true
       );
 
-      // On macOS/Windows, Docker containers need to use host.docker.internal instead of localhost
+      // macOS/Windows: Docker containers cannot reach localhost on the host
       if (process.platform === "darwin" || process.platform === "win32") {
         if (
           commonEnvVars.LOBU_DATABASE_HOST === "localhost" ||
@@ -379,19 +339,15 @@ export class DockerDeploymentManager extends BaseDeploymentManager {
         }
       }
 
-      // Environment variables from base class already include:
-      // HTTP_PROXY, HTTPS_PROXY, NO_PROXY, NODE_ENV, DEBUG
-      // Provider credentials are injected via provider modules in generateEnvironmentVariables()
       const envVars = Object.entries(commonEnvVars).map(
         ([key, value]) => `${key}=${value}`
       );
 
-      // Check if Nix packages are configured (need writable rootfs for symlinks)
+      // Nix packages require writable rootfs for symlinks
       const hasNixConfig =
         (messageData?.nixConfig?.packages?.length ?? 0) > 0 ||
         !!messageData?.nixConfig?.flakeUrl;
 
-      // Get the Docker Compose project name from environment or use default
       const composeProjectName = process.env.COMPOSE_PROJECT_NAME || "lobu";
 
       const createOptions: Docker.ContainerCreateOptions = {
@@ -402,24 +358,19 @@ export class DockerDeploymentManager extends BaseDeploymentManager {
           ...BASE_WORKER_LABELS,
           "lobu.io/created": new Date().toISOString(),
           "lobu.io/agent-id": agentId,
-          // Docker Compose labels to associate with the project
           "com.docker.compose.project": composeProjectName,
-          "com.docker.compose.service": deploymentName, // Use unique service name
+          "com.docker.compose.service": deploymentName,
           "com.docker.compose.oneoff": "False",
-          // Add platform-specific metadata
           ...resolvePlatformDeploymentMetadata(messageData),
         },
         HostConfig: {
-          // Use named volumes in production for better isolation
-          // Use bind mounts in development for hot reload
+          // Dev uses bind mounts for hot reload; production uses named volumes for isolation
           ...(process.env.NODE_ENV === "development" && isRunningInDocker
             ? {
                 Binds: [
                   `${workspaceDir}:/workspace`,
-                  // Mount packages and scripts for hot reload
                   `${projectRoot}/packages:/app/packages`,
                   `${projectRoot}/scripts:/app/scripts`,
-                  // Additional custom mounts (optional)
                   ...(process.env.WORKER_VOLUME_MOUNTS
                     ? process.env.WORKER_VOLUME_MOUNTS.split(";")
                         .filter((mount) => mount.trim())
@@ -432,7 +383,6 @@ export class DockerDeploymentManager extends BaseDeploymentManager {
                 ],
               }
             : {
-                // Production: use named volumes for better isolation
                 Mounts: [
                   {
                     Type: "volume",
@@ -445,58 +395,42 @@ export class DockerDeploymentManager extends BaseDeploymentManager {
           RestartPolicy: {
             Name: "unless-stopped",
           },
-          // Resource limits similar to K8s
           Memory: ResourceParser.parseMemory(
             this.config.worker.resources.limits.memory
           ),
           NanoCpus: ResourceParser.parseCpu(
             this.config.worker.resources.limits.cpu
           ),
-          // Always connect to internal network (network isolation always enabled)
-          // In docker-compose mode: uses compose project prefix
-          // In host mode: uses plain network name (WORKER_NETWORK env var)
           NetworkMode:
             process.env.WORKER_NETWORK || `${composeProjectName}_lobu-internal`,
-          // Add host.docker.internal mapping when gateway runs on host
-          // Required on Linux, and needed on macOS/Windows when using internal networks
+          // Required on Linux + macOS/Windows when using internal networks
           ...(!this.isRunningInContainer() && {
             ExtraHosts: ["host.docker.internal:host-gateway"],
           }),
-          // Security: Drop all capabilities and only add what's needed
           CapDrop: ["ALL"],
           CapAdd: process.env.WORKER_CAPABILITIES
             ? process.env.WORKER_CAPABILITIES.split(",")
             : [],
-          // Security: Prevent privilege escalation
           SecurityOpt: [
             "no-new-privileges:true",
-            // Custom seccomp profile (default Docker seccomp is applied automatically)
             ...(process.env.WORKER_SECCOMP_PROFILE
               ? [`seccomp=${process.env.WORKER_SECCOMP_PROFILE}`]
               : []),
-            // AppArmor profile if specified
             ...(process.env.WORKER_APPARMOR_PROFILE
               ? [`apparmor=${process.env.WORKER_APPARMOR_PROFILE}`]
               : []),
           ],
-          // User namespace remapping (if Docker daemon is configured for it)
-          // This makes the root user inside container map to non-root on host
           UsernsMode: process.env.WORKER_USERNS_MODE || "",
-          // Read-only root filesystem (worker can write to /workspace and /tmp)
-          // Disabled when Nix packages configured (entrypoint needs to symlink /nix/store)
-          // Enabled by default for security, set WORKER_READONLY_ROOTFS=false to disable
+          // Nix entrypoint needs writable / to symlink /nix/store
           ReadonlyRootfs:
             !hasNixConfig && process.env.WORKER_READONLY_ROOTFS !== "false",
-          // Temporary filesystem for /tmp (writable, in-memory)
           ...(!hasNixConfig &&
             process.env.WORKER_READONLY_ROOTFS !== "false" && {
               Tmpfs: {
                 "/tmp": "rw,noexec,nosuid,size=100m",
               },
             }),
-          // Shared memory for Chromium and other apps requiring /dev/shm
-          ShmSize: 268435456, // 256MB
-          // Use gVisor runtime if available for enhanced isolation
+          ShmSize: 268435456,
           ...(this.gvisorAvailable && {
             Runtime: "runsc",
           }),
@@ -531,7 +465,6 @@ export class DockerDeploymentManager extends BaseDeploymentManager {
       try {
         await container.start();
       } catch (startError) {
-        // Clean up orphaned container if start fails
         logger.error(
           `Failed to start container ${deploymentName}, removing orphaned container`,
           startError
@@ -547,8 +480,8 @@ export class DockerDeploymentManager extends BaseDeploymentManager {
         throw startError;
       }
 
-      // In host mode, also connect the worker to the public network so it can
-      // reach the host gateway via host.docker.internal (internal network blocks host access)
+      // Host-mode workers need the public network to reach host.docker.internal
+      // (the internal network blocks host access by design)
       if (!this.isRunningInContainer()) {
         try {
           const publicNetwork = this.docker.getNetwork(
@@ -602,16 +535,13 @@ export class DockerDeploymentManager extends BaseDeploymentManager {
     try {
       const container = this.docker.getContainer(deploymentName);
 
-      // Stop container if running
       try {
         await container.stop();
         logger.info(`✅ Stopped container: ${deploymentName}`);
       } catch (_error) {
-        // Container might already be stopped
         logger.warn(`⚠️  Container ${deploymentName} was not running`);
       }
 
-      // Remove container
       await container.remove();
       this.activityTimestamps.delete(deploymentName);
       logger.info(`✅ Removed container: ${deploymentName}`);
@@ -626,14 +556,11 @@ export class DockerDeploymentManager extends BaseDeploymentManager {
       }
     }
 
-    // NOTE: Space volumes are NOT deleted on deployment deletion
-    // They are shared across threads in the same space and persist
-    // for future conversations. Cleanup is done manually or via separate process.
+    // Space volumes are shared across threads and intentionally persist; cleanup is manual.
   }
 
   async updateDeploymentActivity(deploymentName: string): Promise<void> {
-    // Docker doesn't support runtime label updates like K8s annotations
-    // Track activity in-memory for idle cleanup calculations
+    // Docker has no runtime label updates; track in-memory instead
     this.activityTimestamps.set(deploymentName, new Date());
   }
 

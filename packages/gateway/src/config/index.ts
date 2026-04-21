@@ -24,26 +24,12 @@ const WORKER_PACKAGE_JSON_CANDIDATES = [
   "/app/packages/worker/package.json",
 ] as const;
 
-// ============================================================================
-// CONSTANTS
-// ============================================================================
-
-/**
- * Gateway-specific constants
- * Core constants (TIME, REDIS_KEYS, core DEFAULTS) are imported from @lobu/core
- * This file contains gateway-specific configuration values
- */
-
-// Gateway-specific default configuration values
+// Gateway-specific constants; core ones (TIME, REDIS_KEYS, DEFAULTS) come from @lobu/core.
 const GATEWAY_DEFAULTS = {
-  /** Default HTTP server port */
   HTTP_PORT: 3000,
-  /** Default public gateway URL */
   PUBLIC_GATEWAY_URL: "",
-  /** Default queue names */
   QUEUE_DIRECT_MESSAGE: "direct_message",
   QUEUE_MESSAGE_QUEUE: "message_queue",
-  /** Default worker settings */
   WORKER_IMAGE_REPOSITORY: "lobu-worker",
   WORKER_IMAGE_TAG: "latest",
   WORKER_IMAGE_DIGEST: "",
@@ -59,25 +45,18 @@ const GATEWAY_DEFAULTS = {
   WORKER_IDLE_CLEANUP_MINUTES: 60,
   MAX_WORKER_DEPLOYMENTS: 100,
   WORKER_STALE_TIMEOUT_MINUTES: 10,
-  /** Default Kubernetes namespace */
   KUBERNETES_NAMESPACE: "lobu",
-  /** Default cleanup settings */
   CLEANUP_INITIAL_DELAY_MS: TIME.FIVE_SECONDS_MS,
-  CLEANUP_INTERVAL_MS: 60000, // 1 minute
+  CLEANUP_INTERVAL_MS: 60000,
   CLEANUP_VERY_OLD_DAYS: 7,
-  /** Default socket health settings */
-  SOCKET_HEALTH_CHECK_INTERVAL_MS: 5 * TIME.MINUTE_MS, // 5 minutes
-  SOCKET_STALE_THRESHOLD_MS: 15 * TIME.MINUTE_MS, // 15 minutes
+  SOCKET_HEALTH_CHECK_INTERVAL_MS: 5 * TIME.MINUTE_MS,
+  SOCKET_STALE_THRESHOLD_MS: 15 * TIME.MINUTE_MS,
   SOCKET_PROTECT_ACTIVE_WORKERS: true,
-  /** Default deployment settings */
   LOBU_DEV_PROJECT_PATH: "/app",
   COMPOSE_PROJECT_NAME: "lobu",
   DISPATCHER_SERVICE_NAME: "lobu-dispatcher",
-  /** Default log level */
   LOG_LEVEL: "INFO" as const,
-  /** Default kubeconfig path */
   KUBECONFIG: "~/.kube/config",
-  /** Embedded mode defaults */
   EMBEDDED_MAX_CONCURRENT_SESSIONS: 100,
   EMBEDDED_MAX_MEMORY_PER_SESSION_MB: 256,
   EMBEDDED_BASH_MAX_COMMAND_COUNT: 50_000,
@@ -85,23 +64,15 @@ const GATEWAY_DEFAULTS = {
   EMBEDDED_BASH_MAX_CALL_DEPTH: 50,
 } as const;
 
-// Merged DEFAULTS with core and gateway-specific values (internal use only)
 const DEFAULTS = {
   ...CORE_DEFAULTS,
   ...GATEWAY_DEFAULTS,
 } as const;
 
-// Display formatting (internal use only)
 const DISPLAY = {
-  /** Horizontal separator length */
   SEPARATOR_LENGTH: 50,
-  /** Token preview length for logging */
   TOKEN_PREVIEW_LENGTH: 10,
 } as const;
-
-// ============================================================================
-// TYPES
-// ============================================================================
 
 /** Recursively makes all properties optional */
 export type DeepPartial<T> = {
@@ -178,13 +149,6 @@ export interface GatewayConfig {
   };
 }
 
-// ============================================================================
-// CONFIGURATION BUILDERS
-// ============================================================================
-
-/**
- * Load environment variables from .env file if in non-production
- */
 export function loadEnvFile(envPath?: string): void {
   if (process.env.NODE_ENV === "production") {
     logger.debug("Production mode - skipping .env file");
@@ -362,7 +326,6 @@ export function buildGatewayConfig(
 ): GatewayConfig {
   logger.debug("Building gateway configuration from environment variables");
 
-  // Required variables (allow override to satisfy the requirement)
   const connectionString =
     overrides?.queues?.connectionString || getRequiredEnv("QUEUE_URL");
 
@@ -386,7 +349,6 @@ export function buildGatewayConfig(
     "PUBLIC_GATEWAY_URL",
     DEFAULTS.PUBLIC_GATEWAY_URL
   );
-  // Build configuration
   const config: GatewayConfig = {
     agentDefaults: {
       allowedTools: process.env.ALLOWED_TOOLS?.split(","),

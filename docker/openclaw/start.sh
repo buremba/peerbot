@@ -27,12 +27,11 @@ with open(path, "w") as fh:
 PY
 fi
 
-if [ ! -f "$EXTENSION_DIR/openclaw.plugin.json" ]; then
-  cp "$DEFAULTS_DIR/openclaw-owletto/openclaw.plugin.json" "$EXTENSION_DIR/openclaw.plugin.json"
-fi
-
-if [ ! -e "$EXTENSION_DIR/dist/index.js" ]; then
-  cp -R "$DEFAULTS_DIR/openclaw-owletto/dist/." "$EXTENSION_DIR/dist/"
-fi
+# Always refresh plugin manifest + dist from the image so rebuilds ship new
+# plugin code even though ../data/openclaw is a persistent bind mount.
+cp "$DEFAULTS_DIR/openclaw-owletto/openclaw.plugin.json" "$EXTENSION_DIR/openclaw.plugin.json"
+rm -rf "$EXTENSION_DIR/dist"
+mkdir -p "$EXTENSION_DIR/dist"
+cp -R "$DEFAULTS_DIR/openclaw-owletto/dist/." "$EXTENSION_DIR/dist/"
 
 exec openclaw gateway --port "${OPENCLAW_GATEWAY_PORT:-18789}"

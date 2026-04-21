@@ -25,9 +25,9 @@
       "openclaw-owletto": {
         "enabled": true,
         "config": {
-          "mcpUrl": "http://app:8787/mcp",
+          "mcpUrl": "http://app:8787/lobu/mcp/owletto",
           "webUrl": "http://app:8787",
-          "gatewayAuthUrl": "http://app:8787",
+          "gatewayAuthUrl": "http://app:8787/lobu",
           "autoRecall": true,
           "autoCapture": true
         }

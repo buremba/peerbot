@@ -2058,9 +2058,9 @@ function toCampaignMeta(
 ): CampaignMeta {
   return {
     title: `Deploy secure ${useCase.label.toLowerCase()} agents on your infrastructure`,
-    description: runtime.summary,
+    description: runtime.request,
     seoTitle: `${useCase.label} AI agents on your infrastructure - Lobu`,
-    seoDescription: runtime.summary,
+    seoDescription: runtime.request,
     ctaHref: `/for/${useCaseId}`,
     ctaLabel: `Open ${useCase.label} page`,
   };

@@ -15,7 +15,7 @@ type RevealPhase = "idle" | "armed" | "visible";
  * Honors `prefers-reduced-motion: reduce` by skipping animations outright.
  */
 export function useReveal<T extends Element = HTMLDivElement>(
-  rootMargin = "0px 0px -10% 0px",
+  rootMargin = "0px 0px -10% 0px"
 ) {
   const ref = useRef<T | null>(null);
   const [phase, setPhase] = useState<RevealPhase>("idle");
@@ -55,7 +55,7 @@ export function useReveal<T extends Element = HTMLDivElement>(
           }
         }
       },
-      { rootMargin, threshold: 0.1 },
+      { rootMargin, threshold: 0.1 }
     );
 
     observer.observe(node);
@@ -63,7 +63,11 @@ export function useReveal<T extends Element = HTMLDivElement>(
   }, [rootMargin]);
 
   const className =
-    phase === "armed" ? "reveal" : phase === "visible" ? "reveal is-visible" : "";
+    phase === "armed"
+      ? "reveal"
+      : phase === "visible"
+        ? "reveal is-visible"
+        : "";
 
   return { ref, className };
 }

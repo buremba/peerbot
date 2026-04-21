@@ -12,11 +12,7 @@ export function SectionHeader({
   className = "",
 }: SectionHeaderProps) {
   const { ref, className: revealClassName } = useReveal<HTMLDivElement>();
-  const composed = [
-    "max-w-3xl mx-auto text-center",
-    className,
-    revealClassName,
-  ]
+  const composed = ["max-w-3xl mx-auto text-center", className, revealClassName]
     .filter(Boolean)
     .join(" ");
 

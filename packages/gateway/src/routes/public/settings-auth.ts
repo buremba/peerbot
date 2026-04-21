@@ -1,6 +1,6 @@
 import { decrypt, encrypt } from "@lobu/core";
 import type { Context } from "hono";
-import { deleteCookie, getCookie, setCookie } from "hono/cookie";
+import { getCookie, setCookie } from "hono/cookie";
 import type { SettingsTokenPayload } from "../../auth/settings/token-service";
 
 export type AuthProvider = (c: Context) => SettingsTokenPayload | null;
@@ -97,8 +97,4 @@ export function setSettingsSessionCookie(
     secure: isSecureRequest(c),
     maxAge: maxAgeSeconds,
   });
-}
-
-export function clearSettingsSessionCookie(c: Context): void {
-  deleteCookie(c, SETTINGS_SESSION_COOKIE_NAME, { path: "/" });
 }

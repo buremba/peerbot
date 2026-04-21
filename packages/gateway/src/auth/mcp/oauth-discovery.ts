@@ -497,33 +497,3 @@ export async function discoverOAuth(
 
   return result;
 }
-
-/**
- * Invalidate cached discovery for a single `(mcpId, agentId, upstreamUrl)`.
- * Called on logout or when a refresh indicates the server has rotated endpoints.
- */
-export async function invalidateDiscovery(
-  redis: Redis,
-  secretStore: WritableSecretStore,
-  mcpId: string,
-  agentId: string,
-  upstreamUrl: string
-): Promise<void> {
-  const keys = [
-    discoveryCacheKey(mcpId, agentId, upstreamUrl),
-    clientCacheKey(mcpId, agentId, upstreamUrl),
-  ];
-  for (const key of keys) {
-    const raw = await redis.get(key).catch(() => null);
-    if (!raw) continue;
-    try {
-      const pointer = JSON.parse(raw) as SecretPointer;
-      if (typeof pointer.secretRef === "string") {
-        await secretStore.delete(pointer.secretRef).catch(() => undefined);
-      }
-    } catch {
-      /* ignore corrupt pointer */
-    }
-    await redis.del(key).catch(() => undefined);
-  }
-}

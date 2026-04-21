@@ -10,15 +10,6 @@ export interface PlatformPromptResult {
   connectionSecrets: Array<{ envVar: string; value: string }>;
 }
 
-export const PLATFORM_CHOICES: Array<{ name: string; value: string }> = [
-  { name: "Telegram", value: "telegram" },
-  { name: "Slack", value: "slack" },
-  { name: "Discord", value: "discord" },
-  { name: "WhatsApp", value: "whatsapp" },
-  { name: "Microsoft Teams", value: "teams" },
-  { name: "Google Chat", value: "gchat" },
-];
-
 export const PLATFORM_LABELS: Record<string, string> = {
   telegram: "Telegram",
   slack: "Slack",

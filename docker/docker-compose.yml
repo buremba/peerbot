@@ -61,6 +61,9 @@ services:
       - ../packages/owletto-web:/app/packages/owletto-web
       - /app/packages/owletto-web/node_modules
       - ../packages/owletto-connectors:/app/packages/owletto-connectors
+      # Embedded workers (spawned by the gateway) load from this path at runtime;
+      # mount so `make dev` picks up worker edits without rebuilding.
+      - ../packages/worker/src:/app/packages/worker/src
       - ../workspaces:/app/workspaces
     ports:
       - "8787:8787"
@@ -93,6 +96,9 @@ services:
         - action: sync+restart
           path: ../packages/gateway/src
           target: /app/packages/gateway/src
+        - action: sync+restart
+          path: ../packages/worker/src
+          target: /app/packages/worker/src
         - action: sync+restart
           path: ../config
           target: /app/config
@@ -142,6 +148,12 @@ services:
       DATABASE_URL: ${DATABASE_URL}
       PGSSLMODE: ${PGSSLMODE:-require}
       WORKER_MAX_CONCURRENT_JOBS: ${WORKER_MAX_CONCURRENT_JOBS:-4}
+      # Route worker egress through the gateway proxy (embedded in the app service).
+      # lobu-internal is internal: true, so without this the worker has no path
+      # to provider/connector endpoints.
+      HTTP_PROXY: http://app:8118
+      HTTPS_PROXY: http://app:8118
+      NO_PROXY: localhost,127.0.0.1,app,redis,embeddings,openclaw
     networks:
       - lobu-internal
     depends_on:

@@ -1,5 +1,14 @@
 # Changelog
 
+## [4.2.0](https://github.com/lobu-ai/lobu/compare/lobu-v4.1.0...lobu-v4.2.0) (2026-04-23)
+
+
+### Features
+
+* **core:** add guardrail primitive ([#254](https://github.com/lobu-ai/lobu/issues/254)) ([#317](https://github.com/lobu-ai/lobu/issues/317)) ([912dfff](https://github.com/lobu-ai/lobu/commit/912dfffbe78a3cfa0e0664338ee8a9c4fd826110))
+* **gateway:** Gemini Code Assist OAuth for CI smoke ([#315](https://github.com/lobu-ai/lobu/issues/315)) ([e4957d0](https://github.com/lobu-ai/lobu/commit/e4957d007993268dbaf7074721953da5a88205cd))
+* **owletto-backend:** accept entity_link_overrides at install/create/connect ([#318](https://github.com/lobu-ai/lobu/issues/318)) ([c08e052](https://github.com/lobu-ai/lobu/commit/c08e0521df83b78fd669ce794110e61e49429443))
+
 ## [4.1.0](https://github.com/lobu-ai/lobu/compare/lobu-v4.0.1...lobu-v4.1.0) (2026-04-23)
 
 

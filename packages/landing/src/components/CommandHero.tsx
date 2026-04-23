@@ -8,26 +8,22 @@ type CommandHeroProps = {
   title: ComponentChildren;
   description: string;
   prompt?: string;
-  promptLabel?: string;
   promptTriggerLabel?: string;
   supportedClients?: SupportedPromptClientId[];
   supportedClientHrefForId?: (
     clientId: SupportedPromptClientId
   ) => string | undefined;
   actions?: ComponentChildren;
-  footer?: ComponentChildren;
 };
 
 export function CommandHero({
   title,
   description,
   prompt,
-  promptLabel = "Copy prompt to your agent",
   promptTriggerLabel,
   supportedClients,
   supportedClientHrefForId,
   actions,
-  footer,
 }: CommandHeroProps) {
   return (
     <div class="text-center mb-12">
@@ -48,15 +44,12 @@ export function CommandHero({
         {actions}
         <CopyPromptButton
           prompt={prompt}
-          label={promptLabel}
+          label="Copy prompt to your agent"
           triggerLabel={promptTriggerLabel}
-          variant="outline-muted"
           supportedClients={supportedClients}
           supportedClientHrefForId={supportedClientHrefForId}
         />
       </div>
-
-      {footer ? <div class="mt-6">{footer}</div> : null}
     </div>
   );
 }

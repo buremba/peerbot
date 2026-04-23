@@ -18,13 +18,6 @@ export interface ChannelBinding {
 }
 
 /**
- * Internal storage format includes reverse lookup info
- */
-interface StoredBinding extends ChannelBinding {
-  // Stored at channel_binding:{platform}:{channelId} or channel_binding:{platform}:{teamId}:{channelId}
-}
-
-/**
  * Service for managing channel-to-agent bindings
  *
  * Storage patterns:
@@ -32,7 +25,7 @@ interface StoredBinding extends ChannelBinding {
  * - Forward lookup (Slack): channel_binding:{platform}:{teamId}:{channelId} → binding data
  * - Reverse index: channel_binding_index:{agentId} → Set of binding keys
  */
-export class ChannelBindingService extends BaseRedisStore<StoredBinding> {
+export class ChannelBindingService extends BaseRedisStore<ChannelBinding> {
   private readonly INDEX_PREFIX = "channel_binding_index";
 
   constructor(redis: Redis) {
@@ -109,7 +102,7 @@ export class ChannelBindingService extends BaseRedisStore<StoredBinding> {
     }
 
     // Create the binding
-    const binding: StoredBinding = {
+    const binding: ChannelBinding = {
       platform,
       channelId,
       agentId,

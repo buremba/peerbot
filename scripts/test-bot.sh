@@ -362,7 +362,7 @@ for i in "${!MESSAGES[@]}"; do
 
     echo "[$MSG_NUM/${#MESSAGES[@]}] 📤 Sending: $MESSAGE"
 
-    if [ "$TEST_PLATFORM" = "telegram" ] && [ -n "$TGUSER_PYTHON" ] && [ -n "$TG_API_ID" ] && [ -n "$TG_API_HASH" ]; then
+    if [ "$TEST_PLATFORM" = "telegram" ] && [ -n "${TGUSER_PYTHON:-}" ] && [ -n "${TG_API_ID:-}" ] && [ -n "${TG_API_HASH:-}" ]; then
         if [ -z "$TELEGRAM_BOT_PEER" ]; then
             echo "   ❌ Missing Telegram bot peer. Set TELEGRAM_TEST_BOT_USERNAME or TEST_CHANNEL=@botusername."
             exit 1
@@ -392,7 +392,7 @@ for i in "${!MESSAGES[@]}"; do
     #   - QA_SLACK_BOT_TOKEN  (xoxb-): posts as a *separate* QA bot. The target
     #     bot's isMessageFromSelf only matches its own bot_id, so cross-app
     #     bot posts are delivered normally.
-    QA_SEND_TOKEN="${QA_SLACK_USER_TOKEN:-$QA_SLACK_BOT_TOKEN}"
+    QA_SEND_TOKEN="${QA_SLACK_USER_TOKEN:-${QA_SLACK_BOT_TOKEN:-}}"
     if [ "$TEST_PLATFORM" = "slack" ] && [ -z "$QA_SEND_TOKEN" ]; then
         echo "   ⚠️  No QA Slack token set — using gateway-forged send."
         echo "       The message is queued directly to the worker; nothing"
@@ -402,7 +402,7 @@ for i in "${!MESSAGES[@]}"; do
         echo "       (the latter must come from a *separate* Slack app)."
     fi
     if [ "$TEST_PLATFORM" = "slack" ] && [ -n "$QA_SEND_TOKEN" ]; then
-        if [ -n "$QA_SLACK_USER_TOKEN" ]; then
+        if [ -n "${QA_SLACK_USER_TOKEN:-}" ]; then
             echo "   ✅ Sending via QA user token to $CHANNEL"
         else
             echo "   ✅ Sending via QA bot token to $CHANNEL"
@@ -512,7 +512,7 @@ for i in "${!MESSAGES[@]}"; do
             if [ "$QUEUED" = "true" ]; then
                 echo "   📋 Queued directly - checking logs..."
                 sleep 2
-            elif [ -z "$SLACK_BOT_TOKEN" ]; then
+            elif [ -z "${SLACK_BOT_TOKEN:-}" ]; then
                 echo "   📋 Sent via configured Slack connection"
                 echo "   ℹ️  Set SLACK_BOT_TOKEN to enable automatic reply polling"
             else

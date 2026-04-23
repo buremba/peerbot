@@ -38,7 +38,7 @@ async function checkUrl(name: string, url: string): Promise<Check> {
     const res = await fetch(url, { signal: controller.signal });
     clearTimeout(timeout);
     return { name, status: res.ok ? 'ok' : 'warn', detail: `${res.status} ${url}` };
-  } catch (_err) {
+  } catch {
     return { name, status: 'fail', detail: `unreachable: ${url}` };
   }
 }

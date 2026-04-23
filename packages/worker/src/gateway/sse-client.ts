@@ -762,14 +762,12 @@ export class GatewayClient {
         }
 
         // Set processedMessageIds directly on the integration instance
-        const messageIds =
+        workerTransport.processedMessageIds =
           processedIds && processedIds.length > 0
             ? processedIds
-            : message?.payload?.messageId
+            : message.payload.messageId
               ? [message.payload.messageId]
               : [];
-
-        workerTransport.processedMessageIds = messageIds;
       }
 
       await this.currentWorker.execute();

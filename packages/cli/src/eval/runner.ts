@@ -232,10 +232,7 @@ function calculateTrialScore(
     if (turn.assertions.length === 0) continue;
 
     // If assertions have no explicit weights, weight them equally
-    const totalWeight = turn.assertions.reduce(
-      (sum, _a, _i) => sum + 1, // Default weight 1 per assertion
-      0
-    );
+    const totalWeight = turn.assertions.length;
 
     for (const assertion of turn.assertions) {
       scores.push({ score: assertion.score, weight: 1 / totalWeight });

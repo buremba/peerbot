@@ -16,8 +16,11 @@ const logger = createLogger("guardrail-runner");
  * pass — guardrails must fail closed on their own if they want halt-on-error
  * semantics.
  *
- * The returned outcome includes `ran`, the list of guardrails whose run
- * actually resolved before the race ended; useful for audit logs.
+ * The returned outcome includes `ran`, a snapshot of which guardrails had
+ * produced a result at the moment the race ended (on first trip, or when all
+ * settled). Guardrails still running after short-circuit are intentionally
+ * not reflected — they complete in the background and their output is
+ * discarded.
  */
 export async function runGuardrails<S extends GuardrailStage>(
   registry: GuardrailRegistry,
@@ -44,7 +47,9 @@ export async function runGuardrails<S extends GuardrailStage>(
     const finish = () => {
       if (settled) return;
       settled = true;
-      resolve({ tripped, ran });
+      // Snapshot `ran` — background guardrails keep pushing to the live array
+      // after short-circuit, and consumers shouldn't see those late appends.
+      resolve({ tripped, ran: [...ran] });
     };
 
     for (const g of guardrails) {

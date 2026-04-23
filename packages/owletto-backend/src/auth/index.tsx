@@ -14,7 +14,7 @@ import {
   updateMemberEntityAccess,
   updateMemberEntityStatus,
 } from '../utils/member-entity';
-import { getConfiguredPublicOrigin } from '../utils/public-origin';
+import { getConfiguredPublicOrigin, normalizeHost } from '../utils/public-origin';
 import { TtlCache } from '../utils/ttl-cache';
 import { resolveBaseUrl, safeParseUrl } from './base-url';
 import {
@@ -133,13 +133,13 @@ export async function createAuth(env: Env, request?: Request) {
 
   // When AUTH_COOKIE_DOMAIN is set (e.g. ".lobu.ai"), trust all subdomains so
   // session cookies travel across {org}.lobu.ai → lobu.ai cross-origin requests.
-  const cookieDomain = process.env.AUTH_COOKIE_DOMAIN?.trim();
-  if (cookieDomain) {
-    const normalized = cookieDomain.startsWith('.') ? cookieDomain.slice(1) : cookieDomain;
-    if (normalized) {
-      trustedOriginSet.add(`https://*.${normalized}`);
-      trustedOriginSet.add(`https://${normalized}`);
-    }
+  // Normalize via normalizeHost so IDN/uppercase/trailing-dot variants of the
+  // env value cannot silently mismatch the ASCII-lowercased origin BetterAuth
+  // sees from the browser.
+  const normalizedCookieZone = normalizeHost(process.env.AUTH_COOKIE_DOMAIN);
+  if (normalizedCookieZone) {
+    trustedOriginSet.add(`https://*.${normalizedCookieZone}`);
+    trustedOriginSet.add(`https://${normalizedCookieZone}`);
   }
 
   const auth = betterAuth({

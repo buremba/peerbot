@@ -18,6 +18,7 @@ import {
   executeDataSources,
 } from '../utils/execute-data-sources';
 import { resolveMemberSchemaFieldsFromSchema } from '../utils/member-entity-type';
+import { stripMemberEmailsFromRows } from '../utils/member-redaction';
 import { RESERVED_PATHS } from '../utils/reserved';
 import { getWorkspaceProvider } from '../workspace';
 import type { ToolContext } from './registry';
@@ -456,7 +457,8 @@ async function _resolvePath(
       ])
     );
     const mergedTabs = mergeTabs(entityTabs, entityTypeTabs);
-    const processedEntityTabs = await processTabsDataSources(mergedTabs, entityDataCtx, sql);
+    let processedEntityTabs = await processTabsDataSources(mergedTabs, entityDataCtx, sql);
+    let redactedTemplateData = entityTemplateData;
     if (entityRow.entity_type === '$member' && !ctx.memberRole) {
       throw new Error(
         'Member details are only visible to members of this workspace. Join the workspace to see members.'
@@ -465,7 +467,7 @@ async function _resolvePath(
     const rawEntityMetadata = entityRow.metadata ?? {};
     let safeEntityMetadata = rawEntityMetadata;
     const canSeeEmail = ctx.memberRole === 'owner' || ctx.memberRole === 'admin';
-    if (entityRow.entity_type === '$member' && !canSeeEmail) {
+    if (!canSeeEmail) {
       const schemaRow = await simpleQuery(sql`
         SELECT metadata_schema FROM entity_types
         WHERE slug = '$member' AND organization_id = ${workspace.id} AND deleted_at IS NULL
@@ -473,10 +475,19 @@ async function _resolvePath(
       `);
       const memberSchema = (schemaRow[0]?.metadata_schema as Record<string, unknown> | null) ?? null;
       const { emailField } = resolveMemberSchemaFieldsFromSchema(memberSchema);
-      if (emailField in safeEntityMetadata) {
+      if (entityRow.entity_type === '$member' && emailField in safeEntityMetadata) {
         const { [emailField]: _drop, ...rest } = safeEntityMetadata;
         safeEntityMetadata = rest;
       }
+      // Also strip member emails that surface via template data sources or tabs
+      // (e.g. a dashboard tab that lists members). Without this, a data-source
+      // query like `SELECT * FROM entities WHERE entity_type='$member'` would
+      // leak emails even when the single-entity redaction above is not tripped.
+      redactedTemplateData = stripMemberEmailsFromRows(entityTemplateData, emailField);
+      processedEntityTabs = processedEntityTabs.map((tab) => ({
+        ...tab,
+        template_data: stripMemberEmailsFromRows(tab.template_data, emailField),
+      }));
     }
     resolvedEntity = {
       id: entityRow.id,
@@ -487,7 +498,7 @@ async function _resolvePath(
       metadata: safeEntityMetadata,
       json_template: entityCleanTpl,
       json_template_version: toVersionNumber(entityRow.json_template_version),
-      template_data: entityTemplateData,
+      template_data: redactedTemplateData,
       tabs: processedEntityTabs,
       created_at: createdAt,
       total_content: Number(eventsCount?.cnt) || 0,

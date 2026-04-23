@@ -75,6 +75,34 @@ export function hasLocalFrontend(): boolean {
 const LOCALHOST_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
 
 /**
+ * Normalize a host or DNS zone for comparison:
+ *   - strip port / leading-dot / trailing-dot / surrounding whitespace
+ *   - convert IDN labels (e.g. `müller.lobu.ai`) to ASCII punycode
+ *   - lowercase
+ *
+ * Returns null when the input cannot be parsed as a hostname. Use this on
+ * both sides of any zone/host comparison so IDN-encoded requests still match
+ * the canonical ASCII zone configured in env.
+ */
+export function normalizeHost(
+  value: string | null | undefined
+): string | null {
+  if (!value) return null;
+  const stripped = value
+    .split(':')[0]
+    ?.trim()
+    .replace(/^\./, '')
+    .replace(/\.$/, '');
+  if (!stripped) return null;
+  try {
+    // new URL() performs IDN → punycode conversion and lowercasing.
+    return new URL(`https://${stripped}`).hostname;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Returns a canonical redirect URL when browser traffic lands on a non-canonical
  * host while a public origin is configured. Subdomains of the canonical host are
  * preserved so workspace routing keeps working. When AUTH_COOKIE_DOMAIN is set
@@ -98,8 +126,9 @@ export function getCanonicalRedirectUrl(
     return null;
   }
 
-  const requestHost = request.hostname.toLowerCase();
-  const canonicalHost = canonical.hostname.toLowerCase();
+  // URL already lowercases + punycodes hostnames, so both sides are comparable.
+  const requestHost = request.hostname;
+  const canonicalHost = canonical.hostname;
 
   if (LOCALHOST_HOSTNAMES.has(requestHost)) return null;
   if (request.origin === canonical.origin) return null;
@@ -107,7 +136,7 @@ export function getCanonicalRedirectUrl(
     return null;
   }
 
-  const cookieZone = cookieDomain?.trim().replace(/^\./, '').toLowerCase();
+  const cookieZone = normalizeHost(cookieDomain);
   if (cookieZone && (requestHost === cookieZone || requestHost.endsWith(`.${cookieZone}`))) {
     return null;
   }
@@ -127,12 +156,12 @@ export function getSubdomainZone(
   configuredOrigin = getConfiguredPublicOrigin(),
   cookieDomain = process.env.AUTH_COOKIE_DOMAIN
 ): string | null {
-  const cookieZone = cookieDomain?.trim().replace(/^\./, '').toLowerCase();
+  const cookieZone = normalizeHost(cookieDomain);
   if (cookieZone) return cookieZone;
 
   if (!configuredOrigin) return null;
   try {
-    return new URL(configuredOrigin).hostname.toLowerCase();
+    return normalizeHost(new URL(configuredOrigin).hostname);
   } catch {
     return null;
   }
@@ -149,11 +178,12 @@ export function extractSubdomainOrg(
   zone: string | null | undefined,
   reservedSubdomains: ReadonlySet<string>
 ): string | null {
-  if (!host || !zone) return null;
-  const normalizedHost = host.split(':')[0]?.toLowerCase();
-  if (!normalizedHost || !normalizedHost.endsWith(`.${zone}`)) return null;
+  const normalizedHost = normalizeHost(host);
+  const normalizedZone = normalizeHost(zone);
+  if (!normalizedHost || !normalizedZone) return null;
+  if (!normalizedHost.endsWith(`.${normalizedZone}`)) return null;
 
-  const sub = normalizedHost.slice(0, -(zone.length + 1));
+  const sub = normalizedHost.slice(0, -(normalizedZone.length + 1));
   if (!sub || sub.includes('.') || reservedSubdomains.has(sub)) return null;
   return sub;
 }

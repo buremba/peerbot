@@ -58,6 +58,7 @@ import {
   restUpdateContentClassification,
 } from './rest-api';
 import { entityLinkMatchSql } from './utils/content-search';
+import { isValidFrameAncestor } from './utils/csp';
 import { errorMessage } from './utils/errors';
 import logger from './utils/logger';
 import { generateOpenAPISpec } from './utils/openapi-generator';
@@ -298,7 +299,7 @@ app.use('/*', async (c, next) => {
       ? rawFrameAncestors
           .split(/[\s,]+/)
           .map((entry) => entry.trim())
-          .filter(Boolean)
+          .filter((entry) => isValidFrameAncestor(entry))
           .join(' ')
       : 'https://lobu.ai https://*.lobu.ai';
     c.header(

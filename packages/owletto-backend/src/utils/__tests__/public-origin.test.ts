@@ -3,6 +3,7 @@ import {
   extractSubdomainOrg,
   getCanonicalRedirectUrl,
   getSubdomainZone,
+  normalizeHost,
 } from '../public-origin';
 
 const RESERVED = new Set(['www', 'api', 'app', 'admin', 'auth', 'mcp']);
@@ -105,5 +106,37 @@ describe('extractSubdomainOrg', () => {
 
   it('is case-insensitive', () => {
     expect(extractSubdomainOrg('ACME.Lobu.AI', 'lobu.ai', RESERVED)).toBe('acme');
+  });
+
+  it('ignores a trailing dot on the host', () => {
+    expect(extractSubdomainOrg('acme.lobu.ai.', 'lobu.ai', RESERVED)).toBe('acme');
+  });
+
+  it('matches IDN hosts to their ASCII zone via punycode', () => {
+    // "müller" → "xn--mller-kva" under IDNA.
+    const result = extractSubdomainOrg('müller.lobu.ai', 'lobu.ai', RESERVED);
+    expect(result).toBe('xn--mller-kva');
+  });
+
+  it('tolerates a zone with leading dot or uppercase', () => {
+    expect(extractSubdomainOrg('acme.lobu.ai', '.LOBU.AI', RESERVED)).toBe('acme');
+  });
+});
+
+describe('normalizeHost', () => {
+  it('lowercases and strips port / leading-dot / trailing-dot', () => {
+    expect(normalizeHost('App.Lobu.AI:8080')).toBe('app.lobu.ai');
+    expect(normalizeHost('.lobu.ai')).toBe('lobu.ai');
+    expect(normalizeHost('lobu.ai.')).toBe('lobu.ai');
+  });
+
+  it('converts IDN to punycode', () => {
+    expect(normalizeHost('müller.example.com')).toBe('xn--mller-kva.example.com');
+  });
+
+  it('returns null for missing or malformed input', () => {
+    expect(normalizeHost(undefined)).toBeNull();
+    expect(normalizeHost('')).toBeNull();
+    expect(normalizeHost('   ')).toBeNull();
   });
 });

@@ -132,14 +132,17 @@ registerEntityHooks('$member', {
       const baseUrl = getConfiguredPublicOrigin() || 'http://localhost:8787';
       const acceptUrl = `${baseUrl}/auth/accept-invitation?invitationId=${invRows[0].id}`;
 
+      const { createElement } = await import('react');
       const { sendTransactionalEmail } = await import('../email/send');
-      const { invitationTemplate } = await import('../email/templates/invitation');
-      const template = invitationTemplate({ inviterName, orgName, acceptUrl });
+      const { InvitationEmail, invitationSubject } = await import(
+        '../email/templates/invitation'
+      );
       await sendTransactionalEmail({
         env: ctx.env,
         to: email,
         category: 'invite',
-        ...template,
+        subject: invitationSubject({ inviterName, orgName }),
+        react: createElement(InvitationEmail, { inviterName, orgName, acceptUrl }),
       });
     } catch (err) {
       console.error('[Entity Hook] Failed to send invitation email:', err);

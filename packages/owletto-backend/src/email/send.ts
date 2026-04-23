@@ -1,4 +1,6 @@
+import { render } from '@react-email/render';
 import type { Env } from '@lobu/owletto-sdk';
+import type { ReactElement } from 'react';
 import { Resend } from 'resend';
 
 export type EmailCategory = 'auth' | 'invite';
@@ -7,8 +9,7 @@ export interface TransactionalEmailInput {
   env: Env;
   to: string;
   subject: string;
-  html: string;
-  text: string;
+  react: ReactElement;
   category: EmailCategory;
   /** Overrides the default From address for this category. */
   fromOverride?: string;
@@ -34,7 +35,7 @@ function resolveFrom(env: Env, category: EmailCategory, override?: string): stri
 
 /**
  * Send a transactional email via Resend with deliverability best practices:
- *  - multipart html + plain-text body
+ *  - React Email component rendered to multipart html + plain-text body
  *  - List-Unsubscribe + List-Unsubscribe-Post (one-click) when EMAIL_UNSUBSCRIBE is set
  *  - Reply-To pointing at a monitored inbox
  *  - Category tag for per-flow deliverability metrics
@@ -42,7 +43,7 @@ function resolveFrom(env: Env, category: EmailCategory, override?: string): stri
 export async function sendTransactionalEmail(
   input: TransactionalEmailInput
 ): Promise<TransactionalEmailResult> {
-  const { env, to, subject, html, text, category, fromOverride } = input;
+  const { env, to, subject, react, category, fromOverride } = input;
 
   if (!env.RESEND_API_KEY) {
     throw new Error(`Email delivery is not configured (RESEND_API_KEY missing) for ${category}.`);
@@ -53,6 +54,8 @@ export async function sendTransactionalEmail(
     const requiredVar = category === 'auth' ? 'EMAIL_FROM_AUTH' : 'EMAIL_FROM_INVITES';
     throw new Error(`${requiredVar} is required for ${category} email delivery in production.`);
   }
+
+  const [html, text] = await Promise.all([render(react), render(react, { plainText: true })]);
 
   const headers: Record<string, string> = {};
   if (env.EMAIL_UNSUBSCRIBE) {

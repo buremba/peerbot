@@ -4,9 +4,9 @@ import { magicLink, organization, phoneNumber } from 'better-auth/plugins';
 import { Pool } from 'pg';
 import type { Env } from '../index';
 import { sendTransactionalEmail } from '../email/send';
-import { invitationTemplate } from '../email/templates/invitation';
-import { magicLinkTemplate } from '../email/templates/magic-link';
-import { passwordResetTemplate } from '../email/templates/password-reset';
+import { InvitationEmail, invitationSubject } from '../email/templates/invitation';
+import { MagicLinkEmail, magicLinkSubject } from '../email/templates/magic-link';
+import { PasswordResetEmail, passwordResetSubject } from '../email/templates/password-reset';
 import { notifyInvitationReceived } from '../notifications/triggers';
 import {
   deleteMemberEntity,
@@ -152,12 +152,12 @@ export async function createAuth(env: Env, request?: Request) {
       enabled: authConfig.emailPassword,
       requireEmailVerification: false,
       sendResetPassword: async ({ user, url }) => {
-        const template = passwordResetTemplate({ url });
         await sendTransactionalEmail({
           env,
           to: user.email,
           category: 'auth',
-          ...template,
+          subject: passwordResetSubject,
+          react: <PasswordResetEmail url={url} />,
         });
       },
     },
@@ -284,12 +284,18 @@ export async function createAuth(env: Env, request?: Request) {
           try {
             const baseUrl = resolveBaseUrl({ request });
             const acceptUrl = `${baseUrl}/auth/accept-invitation?invitationId=${data.id}`;
-            const template = invitationTemplate({ inviterName, orgName, acceptUrl });
             await sendTransactionalEmail({
               env,
               to: email,
               category: 'invite',
-              ...template,
+              subject: invitationSubject({ inviterName, orgName }),
+              react: (
+                <InvitationEmail
+                  inviterName={inviterName}
+                  orgName={orgName}
+                  acceptUrl={acceptUrl}
+                />
+              ),
             });
           } catch (err) {
             console.error('[Auth] Failed to send invitation email:', err);
@@ -322,12 +328,12 @@ export async function createAuth(env: Env, request?: Request) {
               'Magic-link email delivery is not configured (RESEND_API_KEY missing). Check server logs for the generated link.'
             );
           }
-          const template = magicLinkTemplate({ url });
           await sendTransactionalEmail({
             env,
             to: email,
             category: 'auth',
-            ...template,
+            subject: magicLinkSubject,
+            react: <MagicLinkEmail url={url} />,
           });
         },
         expiresIn: 60 * 15, // 15 minutes

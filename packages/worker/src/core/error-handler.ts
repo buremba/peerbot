@@ -7,22 +7,14 @@ const logger = createLogger("worker");
  * Generic error formatter that works for any AI agent
  */
 function formatErrorMessage(error: unknown): string {
-  let errorMsg = `💥 Worker crashed`;
-
-  if (error instanceof Error) {
-    errorMsg += `: ${error.message}`;
-    // Add error type if it's not generic
-    if (
-      error.constructor.name !== "Error" &&
-      error.constructor.name !== "WorkspaceError"
-    ) {
-      errorMsg = `💥 Worker crashed (${error.constructor.name}): ${error.message}`;
-    }
-  } else {
-    errorMsg += ": Unknown error";
+  if (!(error instanceof Error)) {
+    return `💥 Worker crashed: Unknown error`;
   }
-
-  return errorMsg;
+  const name = error.constructor.name;
+  const isGeneric = name === "Error" || name === "WorkspaceError";
+  return isGeneric
+    ? `💥 Worker crashed: ${error.message}`
+    : `💥 Worker crashed (${name}): ${error.message}`;
 }
 
 function classifyError(error: unknown): string | undefined {

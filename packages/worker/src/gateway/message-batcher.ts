@@ -98,14 +98,11 @@ export class MessageBatcher {
           `Starting new batch window for ${this.messageQueue.length} queued messages`
         );
         this.batchTimer = setTimeout(() => {
-          void this.processBatch().catch(() => {
-            // Error already logged in processBatch
+          void this.processBatch().catch((error) => {
+            logger.error("Error during batch processing:", error);
           });
         }, this.batchWindowMs);
       }
-    } catch (error) {
-      logger.error("Error during batch processing:", error);
-      throw error;
     } finally {
       this.isProcessing = false;
     }

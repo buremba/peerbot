@@ -33,8 +33,6 @@ function getDomainGrantCandidates(pattern: string): string[] {
   const candidates = new Set<string>([normalized]);
   if (normalized.startsWith(".")) {
     candidates.add(`*.${normalized.slice(1)}`);
-  } else if (normalized.includes(".")) {
-    candidates.add(normalized);
   }
 
   return [...candidates];
@@ -216,10 +214,9 @@ export class GrantStore {
    * Revoke a grant for an agent.
    */
   async revoke(agentId: string, pattern: string): Promise<void> {
-    const patterns = new Set(getDomainGrantCandidates(pattern));
-    patterns.add(normalizeDomainPattern(pattern));
+    const candidates = getDomainGrantCandidates(pattern);
     await this.redis.del(
-      ...[...patterns].map((candidate) => this.buildKey(agentId, candidate))
+      ...candidates.map((candidate) => this.buildKey(agentId, candidate))
     );
     logger.info("Revoked grant", { agentId, pattern });
   }

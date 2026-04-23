@@ -133,76 +133,6 @@ if [ -f .env ]; then
     done < .env
 fi
 
-telegram_wait_for_reply() {
-    local peer="$1"
-    local after_ts="$2"
-    local timeout="$3"
-    local session_path
-
-    session_path="$(prepare_tg_session "${TG_SESSION:-$HOME/.config/tguser/session}")"
-
-    TG_WAIT_PEER="$peer" \
-    TG_WAIT_AFTER_TS="$after_ts" \
-    TG_WAIT_TIMEOUT="$timeout" \
-    TG_SESSION="$session_path" \
-    "$TGUSER_PYTHON" - <<'PY'
-import asyncio
-import os
-import sys
-import time
-from telethon import TelegramClient
-
-
-async def main() -> int:
-    api_id_s = os.environ.get("TG_API_ID", "").strip()
-    api_hash = os.environ.get("TG_API_HASH", "").strip()
-    peer = os.environ.get("TG_WAIT_PEER", "").strip()
-    after_ts = float(os.environ.get("TG_WAIT_AFTER_TS", "0"))
-    timeout = float(os.environ.get("TG_WAIT_TIMEOUT", "120"))
-    session = os.environ.get("TG_SESSION", "").strip() or os.path.expanduser(
-        "~/.config/tguser/session"
-    )
-
-    if not api_id_s or not api_hash or not peer:
-        print("Missing TG_API_ID, TG_API_HASH, or peer.", file=sys.stderr)
-        return 2
-
-    client = TelegramClient(session, int(api_id_s), api_hash)
-    await client.connect()
-    try:
-        if not await client.is_user_authorized():
-            print("Not authenticated. Run `tguser login`.", file=sys.stderr)
-            return 1
-
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            async for message in client.iter_messages(peer, limit=10):
-                message_ts = message.date.timestamp()
-                if message_ts <= after_ts:
-                    break
-                if message.out:
-                    continue
-
-                text = (message.message or "").strip()
-                if text:
-                    print(text)
-                else:
-                    media = type(message.media).__name__ if message.media else "unknown"
-                    print(f"[non-text reply: {media}]")
-                return 0
-
-            await asyncio.sleep(2)
-
-        print(f"Timeout waiting for Telegram reply within {int(timeout)}s", file=sys.stderr)
-        return 1
-    finally:
-        await client.disconnect()
-
-
-raise SystemExit(asyncio.run(main()))
-PY
-}
-
 telegram_send_and_wait() {
     local peer="$1"
     local message="$2"
@@ -307,8 +237,8 @@ TEST_TARGETS=$(curl -sf "$GATEWAY_URL/internal/connections/test-targets" 2>/dev/
     curl -sf "$GATEWAY_URL/api/internal/connections/test-targets" 2>/dev/null || \
     echo "")
 
-if [ -n "$TEST_TARGETS" ] && [ -z "$TEST_AGENT_ID" ]; then
-    if [ -n "$TEST_PLATFORM" ]; then
+if [ -n "$TEST_TARGETS" ] && [ -z "${TEST_AGENT_ID:-}" ]; then
+    if [ -n "${TEST_PLATFORM:-}" ]; then
         TEST_AGENT_ID=$(echo "$TEST_TARGETS" | jq -r --arg p "$TEST_PLATFORM" '.[]? | select(.platform == $p) | .agentId // empty' 2>/dev/null | head -n 1)
     else
         TEST_AGENT_ID=$(echo "$TEST_TARGETS" | jq -r '.[0].agentId // empty' 2>/dev/null || echo "")
@@ -316,30 +246,30 @@ if [ -n "$TEST_TARGETS" ] && [ -z "$TEST_AGENT_ID" ]; then
 fi
 
 # Auto-detect platform from active messaging connections, fall back to env vars
-if [ -z "$TEST_PLATFORM" ]; then
+if [ -z "${TEST_PLATFORM:-}" ]; then
     if [ -n "$TEST_TARGETS" ]; then
         TEST_PLATFORM=$(echo "$TEST_TARGETS" | jq -r '.[0].platform // empty' 2>/dev/null || echo "")
-        if [ -z "$TEST_CHANNEL" ]; then
+        if [ -z "${TEST_CHANNEL:-}" ]; then
             TEST_CHANNEL=$(echo "$TEST_TARGETS" | jq -r '.[0].defaultTarget // empty' 2>/dev/null || echo "")
         fi
-        if [ "$TEST_PLATFORM" = "telegram" ] && [ -z "$TELEGRAM_TEST_BOT_USERNAME" ]; then
+        if [ "$TEST_PLATFORM" = "telegram" ] && [ -z "${TELEGRAM_TEST_BOT_USERNAME:-}" ]; then
             TELEGRAM_TEST_BOT_USERNAME="$(fetch_telegram_bot_peer)"
         fi
     fi
 
     # Fall back to env var detection if gateway didn't respond
     if [ -z "$TEST_PLATFORM" ]; then
-        TELEGRAM_CHANNEL="${TEST_CHANNEL:-$TELEGRAM_TEST_CHAT_ID}"
+        TELEGRAM_CHANNEL="${TEST_CHANNEL:-${TELEGRAM_TEST_CHAT_ID:-}}"
         TELEGRAM_READY="false"
-        if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHANNEL" ] && command -v tguser > /dev/null 2>&1 && [ -n "$TG_API_ID" ] && [ -n "$TG_API_HASH" ]; then
+        if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "$TELEGRAM_CHANNEL" ] && command -v tguser > /dev/null 2>&1 && [ -n "${TG_API_ID:-}" ] && [ -n "${TG_API_HASH:-}" ]; then
             TELEGRAM_READY="true"
         fi
 
-        if [ -n "$SLACK_BOT_TOKEN" ]; then
+        if [ -n "${SLACK_BOT_TOKEN:-}" ]; then
             TEST_PLATFORM="slack"
         elif [ "$TELEGRAM_READY" = "true" ]; then
             TEST_PLATFORM="telegram"
-        elif [ -n "$TELEGRAM_BOT_TOKEN" ]; then
+        elif [ -n "${TELEGRAM_BOT_TOKEN:-}" ]; then
             TEST_PLATFORM="telegram"
         else
             echo "❌ No platform detected. Set TEST_PLATFORM=slack|telegram|whatsapp"
@@ -353,19 +283,19 @@ TIMEOUT="${TEST_TIMEOUT:-120}"
 # Platform-specific setup
 case "$TEST_PLATFORM" in
     slack)
-        AUTH_TOKEN="${TEST_AUTH_TOKEN:-$ADMIN_PASSWORD}"
-        CHANNEL="${TEST_CHANNEL:-$QA_SLACK_CHANNEL}"
+        AUTH_TOKEN="${TEST_AUTH_TOKEN:-${ADMIN_PASSWORD:-}}"
+        CHANNEL="${TEST_CHANNEL:-${QA_SLACK_CHANNEL:-}}"
         if [ -z "$CHANNEL" ]; then
             echo "❌ QA_SLACK_CHANNEL or TEST_CHANNEL environment variable is required for Slack"
             exit 1
         fi
         ;;
     whatsapp)
-        AUTH_TOKEN="${TEST_AUTH_TOKEN:-$ADMIN_PASSWORD}"
-        CHANNEL="${TEST_CHANNEL:-$WHATSAPP_SELF_PHONE}"
+        AUTH_TOKEN="${TEST_AUTH_TOKEN:-${ADMIN_PASSWORD:-}}"
+        CHANNEL="${TEST_CHANNEL:-${WHATSAPP_SELF_PHONE:-}}"
         if [ -z "$CHANNEL" ]; then
             # For self-chat mode, we can use "self" as a special channel
-            if [ "$WHATSAPP_SELF_CHAT" = "true" ]; then
+            if [ "${WHATSAPP_SELF_CHAT:-}" = "true" ]; then
                 CHANNEL="self"
             else
                 echo "❌ TEST_CHANNEL or WHATSAPP_SELF_PHONE environment variable is required for WhatsApp"
@@ -374,8 +304,8 @@ case "$TEST_PLATFORM" in
         fi
         ;;
     telegram)
-        AUTH_TOKEN="${TEST_AUTH_TOKEN:-$ADMIN_PASSWORD}"
-        CHANNEL="${TEST_CHANNEL:-$TELEGRAM_TEST_CHAT_ID}"
+        AUTH_TOKEN="${TEST_AUTH_TOKEN:-${ADMIN_PASSWORD:-}}"
+        CHANNEL="${TEST_CHANNEL:-${TELEGRAM_TEST_CHAT_ID:-}}"
         ACTIVE_TELEGRAM_BOT_PEER="$(fetch_telegram_bot_peer)"
         TELEGRAM_BOT_PEER="${TELEGRAM_TEST_BOT_USERNAME:-}"
         if [[ -n "$TELEGRAM_BOT_PEER" && "$TELEGRAM_BOT_PEER" != @* ]]; then

@@ -133,7 +133,7 @@ export async function restGetWatchers(c: Context<{ Bindings: Env }>) {
       page_size: safeParseInt(c.req.query('page_size'), { min: 1, max: 500 }),
       include_classification: c.req.query('include_classification') || undefined,
       // Always include template details when fetching a specific watcher (prompt/schema/json_template)
-      include_template_details: watcherId ? true : undefined,
+      include_template_details: true,
     };
 
     const ctx = toToolContext(extractAuthContext(c));

@@ -183,6 +183,11 @@ const agentEntrySchema = z.object({
   skills: skillsSchema.default({}),
   network: networkSchema.optional(),
   tools: toolsSchema.optional(),
+  /**
+   * Guardrails enabled for this agent. Each name must match a guardrail
+   * registered in the gateway's GuardrailRegistry. See packages/core/src/guardrails.
+   */
+  guardrails: z.array(z.string()).optional(),
   worker: workerSchema.optional(),
   /**
    * Default delivery target for scheduled fires that omit `deliver_to`.

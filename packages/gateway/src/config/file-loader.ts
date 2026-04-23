@@ -354,6 +354,12 @@ async function buildAgentConfig(
   // pre-approvals that bypass the in-thread approval gate).
   applyAgentToolsConfig(settings, agentConfig.tools);
 
+  // Agent-level guardrail enable list. Names resolve against the gateway's
+  // GuardrailRegistry at runtime — see packages/core/src/guardrails.
+  if (agentConfig.guardrails?.length) {
+    settings.guardrails = [...new Set(agentConfig.guardrails)];
+  }
+
   // Apply merged MCP servers
   if (Object.keys(mcpServers).length > 0) {
     settings.mcpServers = mcpServers;

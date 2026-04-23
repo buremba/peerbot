@@ -40,6 +40,8 @@ export type { CommandContext, CommandDefinition } from "./command-registry";
 // Command registry
 export { CommandRegistry } from "./command-registry";
 export * from "./constants";
+// Guardrail primitive (type + registry + parallel runner + no-op builtin)
+export * from "./guardrails";
 // Errors & logging
 export * from "./errors";
 // Integration types

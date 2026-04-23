@@ -171,6 +171,12 @@ export class MessageConsumer {
         `Conversation routing - effectiveConversationId: ${effectiveConversationId}, canonicalKey: ${canonicalConversationKey}, deploymentName: ${deploymentName}`
       );
 
+      // TODO(#254): input-stage guardrail hook. When a GuardrailRegistry is
+      // injected here, call runGuardrails("input", registry, settings.guardrails, ctx)
+      // before sendToWorkerQueue. On trip: skip dispatch, surface trip.reason
+      // to the user via the response bridge. Lookup of settings.guardrails
+      // requires threading an AgentConfigStore into MessageConsumer; deferred
+      // to the PR that registers the first real input guardrail (#251).
       // 1) Send to thread queue immediately (Redis persists; worker will drain on attach)
       await Sentry.startSpan(
         {

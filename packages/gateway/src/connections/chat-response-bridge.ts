@@ -74,6 +74,11 @@ export class ChatResponseBridge implements ResponseRenderer {
 
   constructor(private manager: ChatInstanceManager) {}
 
+  // TODO(#254): output-stage guardrail hook. Before emitting a delta to the
+  // platform strategy, call runGuardrails("output", registry, settings.guardrails,
+  // { text: payload.delta, ... }). On trip: redact or replace the delta per
+  // guardrail policy. Wiring deferred to the PR that registers the first
+  // real output guardrail (#253 secret/PII scan).
   private extractResponseContext(
     payload: ThreadResponsePayload
   ): ResponseContext | null {

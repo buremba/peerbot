@@ -51,6 +51,12 @@ export interface AgentSettings {
   skillsConfig?: SkillsConfig;
   /** Tool permission configuration — allowed/denied tools (worker-side visibility). */
   toolsConfig?: ToolsConfig;
+  /**
+   * Guardrails enabled for this agent, by registered name. The gateway
+   * resolves these against its GuardrailRegistry at each stage (input,
+   * output, pre-tool) and halts the run on the first trip.
+   */
+  guardrails?: string[];
   /** OpenClaw plugin configuration */
   pluginsConfig?: PluginsConfig;
   /**

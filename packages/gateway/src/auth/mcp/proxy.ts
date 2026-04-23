@@ -1065,6 +1065,12 @@ export class McpProxy {
           if (jsonRpc.method === "tools/call" && jsonRpc.params?.name) {
             const toolName = jsonRpc.params.name;
             const toolArgs = jsonRpc.params.arguments || {};
+            // TODO(#254): pre-tool-stage guardrail hook. Before the existing
+            // approval check below, call runGuardrails("pre-tool", registry,
+            // settings.guardrails, { toolName, arguments: toolArgs, agentId, ...}).
+            // On trip: reuse the onToolBlocked path to return a JSON-RPC error
+            // with trip.reason. Wiring deferred to the PR that registers the
+            // first real pre-tool guardrail.
             const { found, annotations } = await this.getToolAnnotations(
               mcpId!,
               toolName,

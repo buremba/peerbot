@@ -342,7 +342,6 @@ export async function initCommand(
   const encryptionKey = randomBytes(32).toString("hex");
 
   const answers = {
-    ...baseAnswers,
     deploymentMode: deploymentMode as "embedded" | "docker",
     encryptionKey,
     allowedDomains,

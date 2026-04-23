@@ -6,7 +6,6 @@
  * Tool discovery cache is stored in-process with a short TTL.
  */
 
-import { getDb } from '../db/client';
 import { errorMessage } from '../utils/errors';
 import logger from '../utils/logger';
 import { TtlCache } from '../utils/ttl-cache';

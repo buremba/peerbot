@@ -10,7 +10,7 @@ import {
   Section,
   Text,
 } from '@react-email/components';
-import type { ReactNode } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 
 export interface BrandedEmailProps {
   preview: string;
@@ -77,7 +77,7 @@ export function BrandedEmail({
   );
 }
 
-const body: React.CSSProperties = {
+const body: CSSProperties = {
   backgroundColor: '#f5f5f7',
   fontFamily:
     '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
@@ -85,17 +85,17 @@ const body: React.CSSProperties = {
   padding: '32px 0',
 };
 
-const container: React.CSSProperties = {
+const container: CSSProperties = {
   margin: '0 auto',
   maxWidth: 560,
   padding: '0 16px',
 };
 
-const header: React.CSSProperties = {
+const header: CSSProperties = {
   padding: '0 8px 16px',
 };
 
-const wordmark: React.CSSProperties = {
+const wordmark: CSSProperties = {
   color: '#0a0a0a',
   fontSize: 20,
   fontWeight: 700,
@@ -103,14 +103,14 @@ const wordmark: React.CSSProperties = {
   margin: 0,
 };
 
-const card: React.CSSProperties = {
+const card: CSSProperties = {
   backgroundColor: '#ffffff',
   border: '1px solid #e5e5e5',
   borderRadius: 12,
   padding: '32px 28px',
 };
 
-const h1: React.CSSProperties = {
+const h1: CSSProperties = {
   color: '#0a0a0a',
   fontSize: 22,
   fontWeight: 600,
@@ -119,25 +119,25 @@ const h1: React.CSSProperties = {
   margin: '0 0 16px',
 };
 
-const paragraph: React.CSSProperties = {
+const paragraph: CSSProperties = {
   color: '#333333',
   fontSize: 15,
   lineHeight: '1.6',
   margin: '0 0 20px',
 };
 
-const muted: React.CSSProperties = {
+const muted: CSSProperties = {
   color: '#6b7280',
   fontSize: 13,
   lineHeight: '1.5',
   margin: '16px 0 0',
 };
 
-const buttonWrapper: React.CSSProperties = {
+const buttonWrapper: CSSProperties = {
   margin: '24px 0',
 };
 
-const button: React.CSSProperties = {
+const button: CSSProperties = {
   backgroundColor: '#0a0a0a',
   borderRadius: 8,
   color: '#ffffff',
@@ -148,24 +148,24 @@ const button: React.CSSProperties = {
   textDecoration: 'none',
 };
 
-const hr: React.CSSProperties = {
+const hr: CSSProperties = {
   borderColor: '#e5e5e5',
   margin: '32px 0 16px',
 };
 
-const footer: React.CSSProperties = {
+const footer: CSSProperties = {
   color: '#6b7280',
   fontSize: 13,
   margin: '0 0 4px',
   padding: '0 8px',
 };
 
-const footerLink: React.CSSProperties = {
+const footerLink: CSSProperties = {
   color: '#6b7280',
   textDecoration: 'underline',
 };
 
-const footerSmall: React.CSSProperties = {
+const footerSmall: CSSProperties = {
   color: '#9ca3af',
   fontSize: 12,
   lineHeight: '1.5',

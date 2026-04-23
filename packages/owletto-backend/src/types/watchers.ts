@@ -23,30 +23,6 @@ export interface WatcherSource {
 // Watcher Version
 // ============================================
 
-/**
- * A versioned snapshot of a watcher's analysis configuration.
- * Like connector_versions for connector_definitions.
- */
-interface WatcherVersion {
-  id: number;
-  watcher_id: number;
-  version: number;
-  name: string;
-  description?: string | null;
-  prompt: string;
-  extraction_schema: Record<string, unknown>;
-  sources: WatcherSource[];
-  json_template?: unknown;
-  keying_config?: KeyingConfig | null;
-  classifiers?: unknown[];
-  condensation_prompt?: string | null;
-  condensation_window_count?: number;
-  reactions_guidance?: string | null;
-  change_notes?: string | null;
-  created_by: string;
-  created_at: string;
-}
-
 // ============================================
 // Watcher Window
 // ============================================
@@ -120,7 +96,7 @@ export interface KeyingConfig {
 // Version Info (for listing available versions)
 // ============================================
 
-interface WatcherVersionInfo {
+export interface WatcherVersionInfo {
   version: number;
   name: string;
   created_at: string;

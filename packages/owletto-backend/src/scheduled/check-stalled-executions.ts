@@ -198,11 +198,7 @@ export async function checkStalledExecutions(_env: Env) {
         LIMIT 1000
       )
     `;
-    if (deleted.count > 0) {
-      logger.info(`[StalledRuns] Cleaned up ${deleted.count} old runs (> 30 days)`);
-    }
-  } catch (error) {
-    logger.error({ error }, '[StalledRuns] Error checking stalled runs');
-    throw error;
+  if (deleted.count > 0) {
+    logger.info(`[StalledRuns] Cleaned up ${deleted.count} old runs (> 30 days)`);
   }
 }

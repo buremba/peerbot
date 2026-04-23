@@ -308,24 +308,6 @@ export function getDefaultSchedule(env: Env): string {
   return env.DEFAULT_SYNC_SCHEDULE ?? DEFAULT_SCHEDULE;
 }
 
-function getDefaultFeedKey(feedsSchema: unknown): string {
-  if (typeof feedsSchema === 'string') {
-    try {
-      const parsed = JSON.parse(feedsSchema) as unknown;
-      return getDefaultFeedKey(parsed);
-    } catch {
-      return 'default';
-    }
-  }
-
-  if (!feedsSchema || typeof feedsSchema !== 'object' || Array.isArray(feedsSchema)) {
-    return 'default';
-  }
-
-  const keys = Object.keys(feedsSchema as Record<string, unknown>);
-  return keys.length > 0 ? keys[0] : 'default';
-}
-
 export function mapConnectionStatusToFeedStatus(status: string): 'active' | 'paused' {
   return status === 'active' ? 'active' : 'paused';
 }

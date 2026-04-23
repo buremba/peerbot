@@ -38,7 +38,6 @@ type NavProps = {
 };
 
 export function Nav({ currentPath = "/" }: NavProps) {
-  const homeHref = "/";
   const leftLinks = getLeftLinks(currentPath);
 
   return (
@@ -52,7 +51,7 @@ export function Nav({ currentPath = "/" }: NavProps) {
     >
       <div class="max-w-[60rem] mx-auto flex items-center gap-3 min-w-0">
         <a
-          href={homeHref}
+          href="/"
           class="flex items-center gap-2 text-lg font-bold tracking-tight sm:mr-8 shrink-0"
           style={{ color: "var(--color-page-text)" }}
         >

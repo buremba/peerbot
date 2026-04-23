@@ -16,7 +16,7 @@ function jsonRpcError(id: unknown, code: number, message: string) {
   return JSON.stringify({ jsonrpc: '2.0', id, error: { code, message } });
 }
 
-const _server = Bun.serve({
+Bun.serve({
   port: PORT,
   async fetch(req) {
     if (req.method === 'GET') {

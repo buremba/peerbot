@@ -28,8 +28,7 @@ import {
 export async function checkStalledExecutions(_env: Env) {
   const sql = getDb();
 
-  try {
-    await reconcileWatcherRuns(sql);
+  await reconcileWatcherRuns(sql);
 
     // Find stalled runs that are still considered executing, including legacy claimed rows.
     const timedOut = await sql`

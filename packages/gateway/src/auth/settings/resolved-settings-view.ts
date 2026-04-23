@@ -82,27 +82,15 @@ function hasOwnSetting(
   return !!settings && Object.hasOwn(settings, key);
 }
 
-function sectionHasLocalOverride(
+function sectionHasSetting(
   section: SettingsSectionKey,
-  localSettings: AgentSettings | null | undefined
+  settings: AgentSettings | null | undefined
 ): boolean {
   if (section === "permissions" || section === "schedules") {
     return false;
   }
   return SECTION_SETTING_KEYS[section].some((key) =>
-    hasOwnSetting(localSettings, key)
-  );
-}
-
-function sectionHasTemplateValue(
-  section: SettingsSectionKey,
-  templateSettings: AgentSettings | null | undefined
-): boolean {
-  if (section === "permissions" || section === "schedules") {
-    return false;
-  }
-  return SECTION_SETTING_KEYS[section].some((key) =>
-    hasOwnSetting(templateSettings, key)
+    hasOwnSetting(settings, key)
   );
 }
 
@@ -250,14 +238,11 @@ export async function resolveSettingsView(
 
   const sections = Object.fromEntries(
     SETTINGS_SECTION_KEYS.map((section) => {
-      const hasLocalOverride = sectionHasLocalOverride(
+      const hasLocalOverride = sectionHasSetting(
         section,
         context.localSettings
       );
-      const hasTemplateValue = sectionHasTemplateValue(
-        section,
-        templateSettings
-      );
+      const hasTemplateValue = sectionHasSetting(section, templateSettings);
 
       return [
         section,

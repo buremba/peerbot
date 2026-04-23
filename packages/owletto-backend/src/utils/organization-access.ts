@@ -30,17 +30,6 @@ export async function getWorkspaceRole(
 }
 
 /**
- * Get organization IDs the user can READ from for the current request scope.
- * If an organizationId is set in context, the middleware already validated access,
- * so we always include it. This supports both authenticated members and
- * unauthenticated public reads (where middleware allowed org-level access).
- */
-export async function getReadableOrgIds(_sql: DbClient, ctx: ToolContext): Promise<string[]> {
-  if (!ctx.organizationId) return [];
-  return [ctx.organizationId];
-}
-
-/**
  * Check if user can read an entity
  * Allowed if entity belongs to the user's organization and user is a member.
  */

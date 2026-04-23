@@ -217,7 +217,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  throw new Error(`Unknown command: ${cmd} (expected: print|validate|update)`);
+  throw new Error(`Unknown command: ${cmd} (expected: print|validate|update|rotate)`);
 }
 
 main().catch((err) => {

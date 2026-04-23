@@ -203,7 +203,7 @@ export default class WebsiteConnector extends ConnectorRuntime {
   private readonly PAGE_TIMEOUT = 30000;
   private readonly PAGE_DELAY_MS = 2000;
 
-  private constructor() {
+  constructor() {
     super();
     this.turndown = new TurndownService({
       headingStyle: 'atx',

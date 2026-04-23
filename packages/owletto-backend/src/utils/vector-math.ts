@@ -1,4 +1,4 @@
-function cosineDistance(a: number[], b: number[]): number {
+export function cosineSimilarity(a: number[], b: number[]): number {
   let dot = 0;
   let normA = 0;
   let normB = 0;
@@ -8,12 +8,8 @@ function cosineDistance(a: number[], b: number[]): number {
     normB += b[i] * b[i];
   }
   const denom = Math.sqrt(normA) * Math.sqrt(normB);
-  if (denom === 0) return 1;
-  return 1 - dot / denom;
-}
-
-export function cosineSimilarity(a: number[], b: number[]): number {
-  return 1 - cosineDistance(a, b);
+  if (denom === 0) return 0;
+  return dot / denom;
 }
 
 export function combineEmbeddings(

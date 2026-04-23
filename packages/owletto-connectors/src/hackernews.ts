@@ -224,7 +224,7 @@ export default class HackerNewsConnector extends ConnectorRuntime {
   private readonly FETCH_DELAY_MS = 2000;
   private turndownService: TurndownService;
 
-  private constructor() {
+  constructor() {
     super();
     this.turndownService = new TurndownService({
       headingStyle: 'atx',

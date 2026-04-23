@@ -932,7 +932,6 @@ export async function getAuthRun(c: Context<{ Bindings: Env }>) {
     const auth = await createAuth(c.env, c.req.raw);
     const session = await auth.api.getSession({ headers: c.req.raw.headers });
     const userId = session?.user?.id;
-    console.log('[getAuthRun]', { runId, userId, hasSession: !!session });
     if (!userId) {
       return c.json({ error: 'Unauthorized' }, 401);
     }
@@ -973,17 +972,10 @@ export async function getAuthRun(c: Context<{ Bindings: Env }>) {
     }>;
 
     if (rows.length === 0) {
-      console.log('[getAuthRun] no rows for runId=', runId);
       return c.json({ error: 'Auth run not found' }, 404);
     }
 
     const run = rows[0];
-    console.log('[getAuthRun] db match', {
-      runId,
-      createdByUserId: run.created_by_user_id,
-      sessionUserId: userId,
-      match: run.created_by_user_id === userId,
-    });
     // Auth run artifacts may contain sensitive credentials (QR pairing codes,
     // OTPs, OAuth callback URLs). Restrict visibility to the initiator only —
     // other org members must not see them.

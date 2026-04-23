@@ -10,7 +10,7 @@
  */
 
 import { parseArgs } from 'node:util';
-import { type FeedRecord, fetchFeeds, runFeed } from '../../packages/owletto-backend/src/lib/feed-sync';
+import { fetchFeeds, runFeed } from '../../packages/owletto-backend/src/lib/feed-sync';
 
 // Parse CLI arguments
 const { values } = parseArgs({
@@ -46,10 +46,6 @@ if (!values['feed-id'] && !values.type && !values.all) {
   process.exit(1);
 }
 
-function displayContent(feed: FeedRecord, itemCount: number) {
-  console.log(`Feed ${feed.id} (${feed.feed_key}) completed: ${itemCount} items`);
-}
-
 async function main() {
   console.log('Local Sync CLI\n');
   console.log('='.repeat(70));
@@ -80,7 +76,7 @@ async function main() {
   for (const feed of feeds) {
     try {
       const { itemCount } = await runFeed(feed);
-      displayContent(feed, itemCount);
+      console.log(`Feed ${feed.id} (${feed.feed_key}) completed: ${itemCount} items`);
       successCount++;
     } catch (error: any) {
       console.error(`Feed ${feed.id} (${feed.feed_key}) failed: ${error.message}`);

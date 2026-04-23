@@ -107,35 +107,20 @@ registerEntityHooks('$member', {
     const meta = entity.metadata as Record<string, unknown> | null;
     const email = meta?.[emailField] as string | undefined;
     if (!email || !ctx.env) return;
-
-    // Send invitation email via Resend
-    const resendKey = ctx.env.RESEND_API_KEY;
-    if (!resendKey) return;
-
-    const runtimeNodeEnv = ctx.env.NODE_ENV || process.env.NODE_ENV || 'development';
-    const fromAddress =
-      ctx.env.AUTH_EMAIL_FROM ||
-      (runtimeNodeEnv !== 'production' ? 'Owletto <onboarding@resend.dev>' : null);
-    if (!fromAddress) return;
+    if (!ctx.env.RESEND_API_KEY) return;
 
     try {
-      const { Resend } = await import('resend');
-      const resend = new Resend(resendKey);
-
-      // Look up org name
       const sql = getDb();
       const orgRows =
         await sql`SELECT name FROM organization WHERE id = ${ctx.organizationId} LIMIT 1`;
       const orgName = (orgRows[0]?.name as string) || 'your organization';
 
-      // Look up inviter name
-      let inviterName = 'Someone';
+      let inviterName: string | undefined;
       if (ctx.userId) {
         const userRows = await sql`SELECT name FROM "user" WHERE id = ${ctx.userId} LIMIT 1`;
         if (userRows[0]?.name) inviterName = userRows[0].name as string;
       }
 
-      // Get the invitation ID for the accept URL
       const invRows = await sql`
         SELECT id FROM invitation
         WHERE "organizationId" = ${ctx.organizationId} AND email = ${email} AND status = 'pending'
@@ -147,13 +132,18 @@ registerEntityHooks('$member', {
       const baseUrl = getConfiguredPublicOrigin() || 'http://localhost:8787';
       const acceptUrl = `${baseUrl}/auth/accept-invitation?invitationId=${invRows[0].id}`;
 
-      await resend.emails.send({
-        from: fromAddress,
+      const { createElement } = await import('react');
+      const { sendTransactionalEmail } = await import('../email/send');
+      const { InvitationEmail, invitationSubject } = await import(
+        '../email/templates/invitation'
+      );
+      await sendTransactionalEmail({
+        env: ctx.env,
         to: email,
-        subject: `You've been invited to ${orgName}`,
-        html: `<p>${inviterName} invited you to join <strong>${orgName}</strong> on Owletto.</p><p><a href="${acceptUrl}">Accept invitation</a></p><p>This invitation will expire in 48 hours.</p>`,
+        category: 'invite',
+        subject: invitationSubject({ inviterName, orgName }),
+        react: createElement(InvitationEmail, { inviterName, orgName, acceptUrl }),
       });
-      console.info(`[Entity Hook] Invitation email sent to ${email}`);
     } catch (err) {
       console.error('[Entity Hook] Failed to send invitation email:', err);
     }

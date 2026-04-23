@@ -230,6 +230,30 @@ spec:
             - name: ADMIN_PASSWORD
               value: {{ .Values.secrets.adminPassword | quote }}
             {{- end }}
+
+            # Transactional email (Resend)
+            - name: RESEND_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "lobu.fullname" . }}-secrets
+                  key: resend-api-key
+                  optional: true
+            {{- if .Values.email.fromAuth }}
+            - name: EMAIL_FROM_AUTH
+              value: {{ .Values.email.fromAuth | quote }}
+            {{- end }}
+            {{- if .Values.email.fromInvites }}
+            - name: EMAIL_FROM_INVITES
+              value: {{ .Values.email.fromInvites | quote }}
+            {{- end }}
+            {{- if .Values.email.replyTo }}
+            - name: EMAIL_REPLY_TO
+              value: {{ .Values.email.replyTo | quote }}
+            {{- end }}
+            {{- if .Values.email.unsubscribe }}
+            - name: EMAIL_UNSUBSCRIBE
+              value: {{ .Values.email.unsubscribe | quote }}
+            {{- end }}
           volumeMounts:
             # Tmpfs for tsx and other temp files (required for readOnlyRootFilesystem)
             - name: tmp

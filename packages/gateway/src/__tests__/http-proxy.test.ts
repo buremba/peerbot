@@ -1,5 +1,13 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  test,
+} from "bun:test";
 import * as crypto from "node:crypto";
+import type { LookupAddress } from "node:dns";
 import * as http from "node:http";
 import * as net from "node:net";
 import { generateWorkerToken } from "@lobu/core";
@@ -277,5 +285,165 @@ describe("HTTP Proxy Domain Filtering (unrestricted mode)", () => {
       proxyAuth: makeBasicAuth(deploymentName, token),
     });
     expect(res.statusLine).toContain("200");
+  });
+});
+
+// ─── DNS pinning / rebinding tests ───────────────────────────────────────────
+// Regression coverage for https://github.com/lobu-ai/lobu/issues/252.
+// The proxy must do exactly one DNS lookup per request, validate that result,
+// and connect to the validated IP — so a resolver that flips between a public
+// and an internal IP cannot bypass the internal-IP block.
+
+describe("HTTP Proxy DNS pinning", () => {
+  const deploymentName = "dns-pin-worker";
+
+  afterEach(() => {
+    __testOnly.setDnsLookup(null);
+  });
+
+  interface MockLookupState {
+    calls: number;
+    firstCall: Promise<void>;
+  }
+
+  function mockLookup(addresses: LookupAddress[][]): MockLookupState {
+    let resolveFirst!: () => void;
+    const firstCall = new Promise<void>((resolve) => {
+      resolveFirst = resolve;
+    });
+    const state: MockLookupState = { calls: 0, firstCall };
+    __testOnly.setDnsLookup(async () => {
+      const i = Math.min(state.calls, addresses.length - 1);
+      state.calls += 1;
+      if (state.calls === 1) resolveFirst();
+      return addresses[i]!;
+    });
+    return state;
+  }
+
+  test("blocks when DNS returns a mix of public and loopback IPs", async () => {
+    mockLookup([
+      [
+        { address: "203.0.113.1", family: 4 },
+        { address: "127.0.0.1", family: 4 },
+      ],
+    ]);
+    const token = createValidToken(deploymentName);
+    const res = await rawProxyRequest("http://rebind.test/", {
+      proxyAuth: makeBasicAuth(deploymentName, token),
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.body).toContain("local/private IP");
+  });
+
+  test("blocks CONNECT when DNS returns a mix of public and loopback IPs", async () => {
+    mockLookup([
+      [
+        { address: "203.0.113.1", family: 4 },
+        { address: "127.0.0.1", family: 4 },
+      ],
+    ]);
+    const token = createValidToken(deploymentName);
+    const res = await connectRequest("rebind.test", 443, {
+      proxyAuth: makeBasicAuth(deploymentName, token),
+    });
+    expect(res.statusLine).toContain("403");
+  });
+
+  async function issueRawRequest(request: string): Promise<net.Socket> {
+    const client = new net.Socket();
+    await new Promise<void>((resolve, reject) => {
+      client.on("error", reject);
+      client.connect(proxyPort, "127.0.0.1", () => {
+        client.write(request);
+        resolve();
+      });
+    });
+    return client;
+  }
+
+  test("performs exactly one DNS lookup per HTTP proxy request", async () => {
+    const state = mockLookup([[{ address: "203.0.113.1", family: 4 }]]);
+    const token = createValidToken(deploymentName);
+    const auth = makeBasicAuth(deploymentName, token);
+    const client = await issueRawRequest(
+      `GET http://rebind.test/ HTTP/1.1\r\nHost: rebind.test\r\n` +
+        `Proxy-Authorization: ${auth}\r\nConnection: close\r\n\r\n`
+    );
+    try {
+      await state.firstCall;
+      await new Promise((r) => setTimeout(r, 100));
+    } finally {
+      client.destroy();
+    }
+    expect(state.calls).toBe(1);
+  });
+
+  test("performs exactly one DNS lookup per CONNECT request", async () => {
+    const state = mockLookup([[{ address: "203.0.113.1", family: 4 }]]);
+    const token = createValidToken(deploymentName);
+    const auth = makeBasicAuth(deploymentName, token);
+    const client = await issueRawRequest(
+      `CONNECT rebind.test:443 HTTP/1.1\r\nHost: rebind.test:443\r\n` +
+        `Proxy-Authorization: ${auth}\r\n\r\n`
+    );
+    try {
+      await state.firstCall;
+      await new Promise((r) => setTimeout(r, 100));
+    } finally {
+      client.destroy();
+    }
+    expect(state.calls).toBe(1);
+  });
+
+  test("is flip-resistant: connects to first IP even if resolver later returns loopback", async () => {
+    // First lookup returns a public IP; any subsequent lookup would return
+    // loopback. The proxy must never issue that second lookup, and must not
+    // land a connection on the loopback trap even if it did.
+    const state = mockLookup([
+      [{ address: "203.0.113.1", family: 4 }],
+      [{ address: "127.0.0.1", family: 4 }],
+    ]);
+
+    let loopbackHit = false;
+    const trap = http.createServer((_req, res) => {
+      loopbackHit = true;
+      res.writeHead(200);
+      res.end("trapped");
+    });
+    await new Promise<void>((resolve) => trap.listen(0, "127.0.0.1", resolve));
+    const trapAddr = trap.address() as net.AddressInfo;
+
+    const client = new net.Socket();
+    try {
+      // Fire the proxy request via a raw socket. Wait for the mocked DNS
+      // lookup to be called once (signal), then give the event loop a small
+      // settle window for any follow-up connect attempt to land on the trap
+      // before asserting. We don't wait for the upstream connect to
+      // 203.0.113.1 to fail — that can take seconds on CI.
+      const token = createValidToken(deploymentName);
+      await new Promise<void>((resolve) => {
+        client.on("error", () => resolve());
+        client.connect(proxyPort, "127.0.0.1", () => {
+          client.write(
+            `GET http://rebind.test:${trapAddr.port}/ HTTP/1.1\r\n` +
+              `Host: rebind.test:${trapAddr.port}\r\n` +
+              `Proxy-Authorization: ${makeBasicAuth(deploymentName, token)}\r\n` +
+              "Connection: close\r\n\r\n"
+          );
+          resolve();
+        });
+      });
+      await state.firstCall;
+      await new Promise((r) => setTimeout(r, 250));
+    } finally {
+      client.destroy();
+      await new Promise<void>((resolve, reject) =>
+        trap.close((err) => (err ? reject(err) : resolve()))
+      );
+    }
+
+    expect(state.calls).toBe(1);
+    expect(loopbackHit).toBe(false);
   });
 });

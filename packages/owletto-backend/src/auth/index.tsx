@@ -2,8 +2,11 @@ import { createHash } from 'node:crypto';
 import { betterAuth } from 'better-auth';
 import { magicLink, organization, phoneNumber } from 'better-auth/plugins';
 import { Pool } from 'pg';
-import { Resend } from 'resend';
 import type { Env } from '../index';
+import { sendTransactionalEmail } from '../email/send';
+import { InvitationEmail, invitationSubject } from '../email/templates/invitation';
+import { MagicLinkEmail, magicLinkSubject } from '../email/templates/magic-link';
+import { PasswordResetEmail, passwordResetSubject } from '../email/templates/password-reset';
 import { notifyInvitationReceived } from '../notifications/triggers';
 import {
   deleteMemberEntity,
@@ -149,38 +152,13 @@ export async function createAuth(env: Env, request?: Request) {
       enabled: authConfig.emailPassword,
       requireEmailVerification: false,
       sendResetPassword: async ({ user, url }) => {
-        if (!env.RESEND_API_KEY) {
-          throw new Error(
-            'Password reset email delivery is not configured (RESEND_API_KEY missing).'
-          );
-        }
-        const fromAddress =
-          env.AUTH_EMAIL_FROM ||
-          (runtimeNodeEnv !== 'production' ? 'Owletto <onboarding@resend.dev>' : null);
-        if (!fromAddress) {
-          throw new Error(
-            'AUTH_EMAIL_FROM is required for password reset email delivery in production.'
-          );
-        }
-
-        const resend = new Resend(env.RESEND_API_KEY);
-        const { data, error } = await resend.emails.send({
-          from: fromAddress,
+        await sendTransactionalEmail({
+          env,
           to: user.email,
-          subject: 'Reset your Owletto password',
-          html: `<p>We received a request to reset your password.</p><p><a href="${url}">Reset your password</a></p><p>This link expires in 1 hour.</p>`,
+          category: 'auth',
+          subject: passwordResetSubject,
+          react: <PasswordResetEmail url={url} />,
         });
-        if (error) {
-          console.error(
-            { email: user.email, from: fromAddress, error },
-            '[Auth] Resend failed to deliver password reset email'
-          );
-          throw new Error(error.message || 'Password reset email delivery failed.');
-        }
-        console.info(
-          { email: user.email, from: fromAddress, emailId: data?.id ?? null },
-          '[Auth] Password reset email queued'
-        );
       },
     },
 
@@ -303,37 +281,22 @@ export async function createAuth(env: Env, request?: Request) {
           const email = data.email;
           const inviterName = data.inviter?.user?.name ?? undefined;
 
-          // Send invitation email via Resend
           try {
-            if (env.RESEND_API_KEY) {
-              const fromAddress =
-                env.AUTH_EMAIL_FROM ||
-                (runtimeNodeEnv !== 'production' ? 'Owletto <onboarding@resend.dev>' : null);
-              if (fromAddress) {
-                const baseUrl = resolveBaseUrl({ request });
-                const acceptUrl = `${baseUrl}/auth/accept-invitation?invitationId=${data.id}`;
-                const inviterLabel = inviterName ? ` ${inviterName}` : ' Someone';
-
-                const resend = new Resend(env.RESEND_API_KEY);
-                const { data: emailData, error } = await resend.emails.send({
-                  from: fromAddress,
-                  to: email,
-                  subject: `You've been invited to ${orgName}`,
-                  html: `<p>${inviterLabel} invited you to join <strong>${orgName}</strong> on Owletto.</p><p><a href="${acceptUrl}">Accept invitation</a></p><p>This invitation will expire in 48 hours.</p>`,
-                });
-                if (error) {
-                  console.error(
-                    { email, from: fromAddress, error },
-                    '[Auth] Resend failed to deliver invitation email'
-                  );
-                } else {
-                  console.info(
-                    { email, from: fromAddress, emailId: emailData?.id ?? null },
-                    '[Auth] Invitation email queued'
-                  );
-                }
-              }
-            }
+            const baseUrl = resolveBaseUrl({ request });
+            const acceptUrl = `${baseUrl}/auth/accept-invitation?invitationId=${data.id}`;
+            await sendTransactionalEmail({
+              env,
+              to: email,
+              category: 'invite',
+              subject: invitationSubject({ inviterName, orgName }),
+              react: (
+                <InvitationEmail
+                  inviterName={inviterName}
+                  orgName={orgName}
+                  acceptUrl={acceptUrl}
+                />
+              ),
+            });
           } catch (err) {
             console.error('[Auth] Failed to send invitation email:', err);
           }
@@ -356,46 +319,22 @@ export async function createAuth(env: Env, request?: Request) {
       // Magic link authentication
       magicLink({
         sendMagicLink: async ({ email, url }) => {
-          if (!env.RESEND_API_KEY) {
-            if (runtimeNodeEnv !== 'production') {
-              console.info(
-                { email, url },
-                '[Auth] Development magic link generated (RESEND_API_KEY not configured)'
-              );
-              throw new Error(
-                'Magic-link email delivery is not configured (RESEND_API_KEY missing). Check server logs for the generated link.'
-              );
-            }
-            console.warn('[Auth] RESEND_API_KEY not configured, cannot send magic link email');
-            throw new Error('Magic-link email delivery is not configured.');
-          }
-          const fromAddress =
-            env.AUTH_EMAIL_FROM ||
-            (runtimeNodeEnv !== 'production' ? 'Owletto <onboarding@resend.dev>' : null);
-          if (!fromAddress) {
+          if (!env.RESEND_API_KEY && runtimeNodeEnv !== 'production') {
+            console.info(
+              { email, url },
+              '[Auth] Development magic link generated (RESEND_API_KEY not configured)'
+            );
             throw new Error(
-              'AUTH_EMAIL_FROM is required for magic-link email delivery in production.'
+              'Magic-link email delivery is not configured (RESEND_API_KEY missing). Check server logs for the generated link.'
             );
           }
-
-          const resend = new Resend(env.RESEND_API_KEY);
-          const { data, error } = await resend.emails.send({
-            from: fromAddress,
+          await sendTransactionalEmail({
+            env,
             to: email,
-            subject: 'Sign in to Owletto',
-            html: `<p>Click the link below to sign in:</p><p><a href="${url}">Sign in to Owletto</a></p><p>This link expires in 15 minutes.</p>`,
+            category: 'auth',
+            subject: magicLinkSubject,
+            react: <MagicLinkEmail url={url} />,
           });
-          if (error) {
-            console.error(
-              { email, from: fromAddress, error },
-              '[Auth] Resend failed to deliver magic link'
-            );
-            throw new Error(error.message || 'Magic-link email delivery failed.');
-          }
-          console.info(
-            { email, from: fromAddress, emailId: data?.id ?? null },
-            '[Auth] Magic-link email queued'
-          );
         },
         expiresIn: 60 * 15, // 15 minutes
       }),
@@ -420,7 +359,7 @@ export async function createAuth(env: Env, request?: Request) {
             body: new URLSearchParams({
               From: `whatsapp:${env.TWILIO_WHATSAPP_NUMBER}`,
               To: `whatsapp:${phone}`,
-              Body: `Your Owletto verification code: ${code}`,
+              Body: `Your Lobu verification code: ${code}`,
             }),
           });
 

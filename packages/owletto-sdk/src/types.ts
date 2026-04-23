@@ -152,9 +152,12 @@ export interface Env {
   APPLE_CLIENT_ID?: string; // Apple OAuth client ID
   APPLE_CLIENT_SECRET?: string; // Apple OAuth client secret
 
-  // Magic Link (Resend)
-  RESEND_API_KEY?: string; // Resend API key for magic link emails
-  AUTH_EMAIL_FROM?: string; // Email sender address for auth emails
+  // Transactional email (Resend)
+  RESEND_API_KEY?: string; // Resend API key
+  EMAIL_FROM_AUTH?: string; // From address for auth emails (magic link, password reset). e.g. "Lobu <auth@lobu.ai>"
+  EMAIL_FROM_INVITES?: string; // From address for org invitations. e.g. "Lobu <invites@lobu.ai>"
+  EMAIL_REPLY_TO?: string; // Reply-To address, e.g. "support@lobu.ai"
+  EMAIL_UNSUBSCRIBE?: string; // List-Unsubscribe header value, e.g. "mailto:unsubscribe@lobu.ai"
 
   // WhatsApp OTP (Twilio)
   TWILIO_SID?: string; // Twilio account SID

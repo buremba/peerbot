@@ -18,6 +18,7 @@ secrets:
   anthropicApiKey: ""  # Optional: Anthropic API key (recommended for prod runtime)
   claudeCodeOAuthToken: ""  # Required: Claude Code OAuth token
   telegramBotToken: ""  # Optional: Telegram bot token (enables Telegram when set)
+  resendApiKey: ""  # Optional: Resend API key (required for transactional auth emails)
 
 # Bitnami Sealed Secrets - for production use with Git-stored encrypted secrets
 # See templates/sealed-secrets.yaml for setup instructions
@@ -37,6 +38,14 @@ config:
   githubClientId: "" # Optional: GitHub OAuth Client ID
   ingressUrl: "" # Optional: Public URL base for OAuth callbacks
   sessionTimeoutMinutes: "5"
+
+# Transactional email (Resend) - non-secret settings.
+# Set secrets.resendApiKey for delivery to actually work.
+email:
+  fromAuth: "Lobu <auth@lobu.ai>"       # From address for magic link / password reset
+  fromInvites: "Lobu <invites@lobu.ai>" # From address for org invitations
+  replyTo: "support@lobu.ai"            # Reply-To for all transactional mail
+  unsubscribe: "mailto:unsubscribe@lobu.ai" # List-Unsubscribe header value
 
 kubernetes:
   namespace: lobu

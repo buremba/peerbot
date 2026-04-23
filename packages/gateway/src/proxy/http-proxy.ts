@@ -204,8 +204,18 @@ function isBlockedIpAddress(ip: string): boolean {
   return false;
 }
 
+type DnsLookupAllFn = (
+  hostname: string,
+  options: { all: true; verbatim: true }
+) => Promise<LookupAddress[]>;
+
+let dnsLookupOverride: DnsLookupAllFn | null = null;
+
 export const __testOnly = {
   isBlockedIpAddress,
+  setDnsLookup(fn: DnsLookupAllFn | null): void {
+    dnsLookupOverride = fn;
+  },
 };
 
 async function resolveAndValidateTarget(
@@ -226,7 +236,9 @@ async function resolveAndValidateTarget(
 
   let addresses: LookupAddress[];
   try {
-    addresses = await dns.lookup(hostname, { all: true, verbatim: true });
+    addresses = dnsLookupOverride
+      ? await dnsLookupOverride(hostname, { all: true, verbatim: true })
+      : await dns.lookup(hostname, { all: true, verbatim: true });
   } catch (error) {
     const message = error instanceof Error ? error.message : "unknown error";
     return {

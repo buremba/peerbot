@@ -41,11 +41,12 @@ config:
 
 # Transactional email (Resend) - non-secret settings.
 # Set secrets.resendApiKey for delivery to actually work.
+# All addresses default to emre@lobu.ai while dedicated mailboxes are set up.
 email:
-  fromAuth: "Lobu <auth@lobu.ai>"       # From address for magic link / password reset
-  fromInvites: "Lobu <invites@lobu.ai>" # From address for org invitations
-  replyTo: "support@lobu.ai"            # Reply-To for all transactional mail
-  unsubscribe: "mailto:unsubscribe@lobu.ai" # List-Unsubscribe header value
+  fromAuth: "Lobu <emre@lobu.ai>"
+  fromInvites: "Lobu <emre@lobu.ai>"
+  replyTo: "emre@lobu.ai"
+  unsubscribe: "mailto:emre@lobu.ai"
 
 kubernetes:
   namespace: lobu

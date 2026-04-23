@@ -38,7 +38,6 @@
   "dependencies": {
     "@hono/node-server": "^1.19.9",
     "@lobu/core": "workspace:*",
-    "@lobu/owletto-openclaw": "workspace:*",
     "@mariozechner/pi-agent-core": "^0.51.6",
     "@mariozechner/pi-ai": "^0.51.6",
     "@mariozechner/pi-coding-agent": "^0.51.6",
@@ -47,7 +46,6 @@
     "form-data": "^4.0.4",
     "hono": "^4.11.7",
     "just-bash": "^2.12.8",
-    "owletto": "workspace:*",
     "zod": "^3.24.1"
   },
   "devDependencies": {

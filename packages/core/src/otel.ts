@@ -95,13 +95,10 @@ export function createSpan(
   return span;
 }
 
-export async function withSpan<T>(
-  name: string,
-  fn: (span: Span | null) => Promise<T>,
-  attributes?: Record<string, string | number | boolean>
+async function runInSpan<T>(
+  span: Span | null,
+  fn: (span: Span | null) => Promise<T>
 ): Promise<T> {
-  const span = createSpan(name, attributes);
-
   try {
     const result = await fn(span);
     span?.setStatus({ code: SpanStatusCode.OK });
@@ -118,6 +115,14 @@ export async function withSpan<T>(
   } finally {
     span?.end();
   }
+}
+
+export async function withSpan<T>(
+  name: string,
+  fn: (span: Span | null) => Promise<T>,
+  attributes?: Record<string, string | number | boolean>
+): Promise<T> {
+  return runInSpan(createSpan(name, attributes), fn);
 }
 
 export function getCurrentSpan(): Span | undefined {
@@ -190,24 +195,7 @@ export async function withChildSpan<T>(
   fn: (span: Span | null) => Promise<T>,
   attributes?: Record<string, string | number | boolean>
 ): Promise<T> {
-  const span = createChildSpan(name, traceparent, attributes);
-
-  try {
-    const result = await fn(span);
-    span?.setStatus({ code: SpanStatusCode.OK });
-    return result;
-  } catch (error) {
-    if (span) {
-      span.setStatus({
-        code: SpanStatusCode.ERROR,
-        message: error instanceof Error ? error.message : String(error),
-      });
-      span.recordException(error as Error);
-    }
-    throw error;
-  } finally {
-    span?.end();
-  }
+  return runInSpan(createChildSpan(name, traceparent, attributes), fn);
 }
 
 export function getTraceparent(span: Span | null): string | null {

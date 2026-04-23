@@ -161,6 +161,23 @@ export function createSlackRoutes(manager: ChatInstanceManager): Hono {
   });
 
   router.post("/slack/events", async (c) => {
+    // Reject webhooks whose timestamp is outside Slack's 5-minute window.
+    // The Chat SDK adapter does its own signature check, but enforcing the
+    // freshness window at the edge defends against replay of an intercepted
+    // (still-signed) payload regardless of what the adapter does.
+    const tsHeader = c.req.header("x-slack-request-timestamp");
+    if (tsHeader) {
+      const ts = Number(tsHeader);
+      const nowSec = Math.floor(Date.now() / 1000);
+      if (!Number.isFinite(ts) || Math.abs(nowSec - ts) > 60 * 5) {
+        logger.warn(
+          { tsHeader, nowSec },
+          "Rejecting Slack webhook: timestamp outside 5-minute window"
+        );
+        return c.text("stale request", 400);
+      }
+    }
+
     try {
       return await manager.handleSlackAppWebhook(c.req.raw);
     } catch (error) {

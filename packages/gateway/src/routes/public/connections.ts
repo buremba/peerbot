@@ -79,12 +79,24 @@ async function getLocalTestDefaultTarget(
 // Field definitions mirror @lobu/core platform schemas; gateway adds .openapi()
 // and the `platform` literal discriminator for the API layer.
 
+// Telegram bot tokens have the shape `<numeric-id>:<35-char-base62-ish>`.
+// Reject anything else early so a typo'd token doesn't get persisted and
+// then crash the adapter at runtime with a confusing 401 from Telegram.
+const TELEGRAM_BOT_TOKEN_RE = /^\d{6,12}:[A-Za-z0-9_-]{30,}$/;
+
 const TelegramConfigSchema = z.object({
   platform: z.literal("telegram"),
-  botToken: z.string().optional().openapi({
-    description:
-      "Telegram bot token from BotFather. Falls back to TELEGRAM_BOT_TOKEN env var.",
-  }),
+  botToken: z
+    .string()
+    .refine((value) => value === "" || TELEGRAM_BOT_TOKEN_RE.test(value), {
+      message:
+        "Telegram bot token must look like '<digits>:<35+ char alphanumeric>' (the format BotFather returns)",
+    })
+    .optional()
+    .openapi({
+      description:
+        "Telegram bot token from BotFather. Falls back to TELEGRAM_BOT_TOKEN env var.",
+    }),
   mode: z.enum(["auto", "webhook", "polling"]).optional().openapi({
     description: "Runtime mode: auto (default), webhook, or polling.",
   }),

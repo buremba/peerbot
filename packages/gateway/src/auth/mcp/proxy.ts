@@ -181,6 +181,7 @@ export class McpProxy {
     conversationId: string,
     teamId: string | undefined,
     connectionId: string | undefined,
+    platform: string | undefined,
     approver?: {
       channelId?: string;
       conversationId?: string;
@@ -705,6 +706,7 @@ export class McpProxy {
               auth.tokenData.conversationId || "",
               auth.tokenData.teamId,
               auth.tokenData.connectionId,
+              auth.tokenData.platform,
               {
                 channelId: auth.tokenData.approverChannelId,
                 conversationId: auth.tokenData.approverConversationId,
@@ -1126,6 +1128,7 @@ export class McpProxy {
                     tokenData.conversationId || "",
                     tokenData.teamId,
                     tokenData.connectionId,
+                    tokenData.platform,
                     {
                       channelId: tokenData.approverChannelId,
                       conversationId: tokenData.approverConversationId,

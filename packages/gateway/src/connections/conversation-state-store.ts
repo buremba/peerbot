@@ -1,6 +1,8 @@
-import { DEFAULTS } from "@lobu/core";
+import { createLogger, DEFAULTS } from "@lobu/core";
 import type { StateAdapter } from "chat";
 import type { ThreadSession } from "../session";
+
+const logger = createLogger("conversation-state-store");
 
 interface SessionThreadIndex {
   sessionKey: string;
@@ -218,9 +220,29 @@ export class ConversationStateStore {
     update: (index: HistoryChannelIndex) => HistoryChannelIndex
   ): Promise<void> {
     const lockId = `lock:${historyIndexKey(connectionId)}`;
-    const lock = await this.state
-      .acquireLock(lockId, HISTORY_INDEX_LOCK_TTL_MS)
-      .catch(() => null);
+    // Retry briefly if the lock is contended; only fall through to an
+    // unlocked write if Redis itself is unavailable. Silently dropping
+    // to an unlocked path on transient contention is what allowed two
+    // concurrent appends to clobber each other's index updates.
+    let lock: Awaited<ReturnType<typeof this.state.acquireLock>> = null;
+    let lockError: unknown = null;
+    for (let attempt = 0; attempt < 3 && !lock; attempt++) {
+      try {
+        lock = await this.state.acquireLock(lockId, HISTORY_INDEX_LOCK_TTL_MS);
+      } catch (error) {
+        lockError = error;
+        break;
+      }
+      if (!lock) {
+        await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
+      }
+    }
+    if (!lock) {
+      logger.warn(
+        { connectionId, error: lockError ? String(lockError) : "contended" },
+        "Updating history index without lock — another writer holds it or Redis is unavailable"
+      );
+    }
 
     try {
       const current =

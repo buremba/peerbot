@@ -10,11 +10,33 @@ import {
 
 const logger = createLogger("interactions");
 
+const SAFE_LINK_BUTTON_SCHEMES = new Set(["http:", "https:"]);
+
+/**
+ * Reject URLs whose scheme could be used to execute code in the user's
+ * client (e.g. `javascript:`, `data:`, `vbscript:`, `file:`) when posted
+ * as a link button. We only accept normal web URLs.
+ */
+function assertSafeLinkButtonUrl(url: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error(`Invalid link button URL: ${url}`);
+  }
+  if (!SAFE_LINK_BUTTON_SCHEMES.has(parsed.protocol)) {
+    throw new Error(
+      `Refusing to post link button with unsafe scheme: ${parsed.protocol}`
+    );
+  }
+}
+
 /**
  * Payload emitted on "question:created" — platform renderers listen for this.
  */
 export interface PostedQuestion extends BaseMessage {
   userId: string;
+  platform: string;
   question: string;
   options: string[];
 }
@@ -42,6 +64,7 @@ export interface PostedLinkButton extends BaseMessage {
 export interface PostedToolApproval extends BaseMessage {
   agentId: string;
   userId: string;
+  platform: string;
   mcpId: string;
   toolName: string;
   args: Record<string, unknown>;
@@ -87,6 +110,7 @@ export class InteractionService extends EventEmitter {
     channelId: string,
     teamId: string | undefined,
     connectionId: string | undefined,
+    platform: string,
     question: string,
     options: string[]
   ): Promise<PostedQuestion> {
@@ -101,6 +125,7 @@ export class InteractionService extends EventEmitter {
       channelId,
       teamId,
       connectionId,
+      platform,
       question,
       options,
     };
@@ -129,6 +154,7 @@ export class InteractionService extends EventEmitter {
     channelId: string,
     teamId: string | undefined,
     connectionId: string | undefined,
+    platform: string,
     mcpId: string,
     toolName: string,
     args: Record<string, unknown>,
@@ -146,6 +172,7 @@ export class InteractionService extends EventEmitter {
       channelId,
       teamId,
       connectionId,
+      platform,
       mcpId,
       toolName,
       args,
@@ -176,6 +203,7 @@ export class InteractionService extends EventEmitter {
     linkType: "settings" | "install" | "oauth",
     body?: string
   ): Promise<PostedLinkButton> {
+    assertSafeLinkButtonUrl(url);
     if (this.beforeCreateHook) {
       await this.beforeCreateHook(userId, conversationId);
     }

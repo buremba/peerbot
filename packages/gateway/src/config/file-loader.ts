@@ -309,7 +309,22 @@ async function buildAgentConfig(
       mergedNixPackages.push(...skill.nixPackages);
     }
     if (skill.networkConfig?.allowedDomains?.length) {
-      mergedAllowedDomains.push(...skill.networkConfig.allowedDomains);
+      // Reject `*` from skill-declared allowlists. A wildcard from a single
+      // SKILL.md frontmatter would silently grant unrestricted egress to
+      // every worker for this agent — that escalation must require an
+      // explicit operator decision in `lobu.toml`, not a skill author.
+      const safe: string[] = [];
+      for (const domain of skill.networkConfig.allowedDomains) {
+        if (domain === "*" || domain.trim() === "*") {
+          logger.warn(
+            { skill: skill.name },
+            "Ignoring wildcard '*' in skill-declared allowedDomains; configure unrestricted egress in lobu.toml instead"
+          );
+          continue;
+        }
+        safe.push(domain);
+      }
+      mergedAllowedDomains.push(...safe);
     }
     if (skill.networkConfig?.deniedDomains?.length) {
       mergedDeniedDomains.push(...skill.networkConfig.deniedDomains);

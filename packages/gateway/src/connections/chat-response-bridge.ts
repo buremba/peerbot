@@ -192,13 +192,23 @@ export class ChatResponseBridge implements ResponseRenderer {
     const conversationState =
       this.manager.getInstance(connectionId)?.conversationState;
 
-    // Gap 1: Store outgoing response in history
+    // Gap 1: Store outgoing response in history. Wrap so that a Redis
+    // outage doesn't fail the whole response delivery — the user has
+    // already seen the message; missing history is recoverable, a 500
+    // here is not.
     if (stream?.buffer.trim() && conversationState) {
-      await conversationState.appendHistory(connectionId, channelId, {
-        role: "assistant",
-        content: stream.buffer,
-        timestamp: Date.now(),
-      });
+      try {
+        await conversationState.appendHistory(connectionId, channelId, {
+          role: "assistant",
+          content: stream.buffer,
+          timestamp: Date.now(),
+        });
+      } catch (error) {
+        logger.warn(
+          { connectionId, channelId, error: String(error) },
+          "Failed to persist assistant response to history (continuing)"
+        );
+      }
     }
 
     // Session reset: clear history and delete session file

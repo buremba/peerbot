@@ -225,6 +225,21 @@ export function registerInteractionBridge(
     }
     return entry;
   }
+  /**
+   * Put a previously-claimed entry back. Used when a click is rejected
+   * (e.g. wrong user) so the rightful owner can still answer later.
+   */
+  function restashQuestion(
+    questionId: string,
+    entry: PendingQuestionEntry
+  ): void {
+    if (pendingQuestions.has(questionId)) return;
+    trackQuestion(entry);
+    if (entry.question.id !== questionId) {
+      pendingQuestions.delete(entry.question.id);
+      pendingQuestions.set(questionId, entry);
+    }
+  }
   const onQuestionCreated = async (event: PostedQuestion) => {
     try {
       if (!shouldHandle(event, platform, connectionId, manager)) return;
@@ -449,6 +464,28 @@ export function registerInteractionBridge(
       }
 
       const { question } = entry;
+
+      // Only the user who was originally asked may answer. Without this,
+      // anyone in a Slack/Telegram channel could click another user's
+      // approval/question buttons and silently impersonate them. Re-stash
+      // the entry so the rightful owner can still click later.
+      if (
+        author?.userId &&
+        question.userId &&
+        author.userId !== question.userId
+      ) {
+        logger.warn(
+          {
+            connectionId,
+            questionId,
+            clickerUserId: author.userId,
+            originalUserId: question.userId,
+          },
+          "Question click ignored: clicker is not the original requester"
+        );
+        restashQuestion(questionId, entry);
+        return;
+      }
       const receiptText = value
         ? `*You submitted:* ${value}`
         : "*You submitted a response.*";

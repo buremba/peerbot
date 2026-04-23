@@ -148,6 +148,42 @@ export class SecretProxy {
   }
 
   /**
+   * Look up just the SecretMapping (without resolving the secret value)
+   * for a placeholder. Used to verify the calling worker's bound agentId
+   * matches the agentId in the request URL.
+   */
+  private async lookupPlaceholderMapping(
+    placeholder: string
+  ): Promise<SecretMapping | null> {
+    const prefixIdx = placeholder.indexOf(PLACEHOLDER_PREFIX);
+    if (prefixIdx === -1) return null;
+    const uuid = placeholder.slice(prefixIdx + PLACEHOLDER_PREFIX.length);
+    const raw = await this.redis.get(`${REDIS_KEY_PREFIX}${uuid}`);
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw) as SecretMapping;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Extract the bearer/api-key value the caller used to authenticate.
+   * Returns the raw token string, or null if no auth header is present.
+   */
+  private extractCallerToken(c: Context): string | null {
+    const apiKey = c.req.header("x-api-key");
+    if (apiKey) return apiKey;
+    const auth = c.req.header("authorization") || c.req.header("Authorization");
+    if (!auth) return null;
+    const parts = auth.split(" ");
+    if (parts.length === 2 && parts[0]?.toLowerCase() === "bearer") {
+      return parts[1] ?? null;
+    }
+    return auth;
+  }
+
+  /**
    * If the value contains a UUID placeholder prefix, resolve the real secret.
    * Returns the value unchanged if it's not a recognized pattern.
    */
@@ -214,11 +250,56 @@ export class SecretProxy {
       body = await c.req.text();
     }
 
+    // Bind the calling worker (identified by its placeholder credential) to
+    // the agentId in the URL. Without this, anyone with network access to the
+    // gateway could harvest another agent's credentials by changing the URL
+    // segment. We accept that legacy callers without a placeholder are not
+    // bound (logged as a warning) but reject any request whose placeholder
+    // resolves to a different agent than the URL claims.
+    if (urlAgentId) {
+      const callerToken = this.extractCallerToken(c);
+      if (callerToken?.includes(PLACEHOLDER_PREFIX)) {
+        const mapping = await this.lookupPlaceholderMapping(callerToken);
+        if (!mapping) {
+          logger.warn(
+            { urlAgentId },
+            "Rejecting proxy request: placeholder did not resolve"
+          );
+          return c.json({ error: "Unauthorized" }, 401);
+        }
+        if (mapping.agentId !== urlAgentId) {
+          logger.warn(
+            { urlAgentId, mappingAgentId: mapping.agentId },
+            "Rejecting proxy request: placeholder agentId does not match URL"
+          );
+          return c.json({ error: "Forbidden" }, 403);
+        }
+      } else if (callerToken) {
+        logger.debug(
+          { urlAgentId },
+          "Proxy request authenticated by non-placeholder token; agentId binding skipped"
+        );
+      } else {
+        logger.warn(
+          { urlAgentId },
+          "Proxy request has no auth header — agentId binding cannot be verified"
+        );
+      }
+    }
+
     // Build headers, swapping placeholder secrets in auth headers
     const headers: Record<string, string> = {};
 
-    // Forward all original headers (except host/connection)
-    const skip = new Set(["host", "connection", "transfer-encoding"]);
+    // Forward all original headers (except host/connection and inbound auth).
+    // We always set our own Authorization below, so the caller's Authorization
+    // (which carries an opaque placeholder) must never reach the upstream.
+    const skip = new Set([
+      "host",
+      "connection",
+      "transfer-encoding",
+      "authorization",
+      "x-api-key",
+    ]);
     for (const [key, val] of Object.entries(c.req.header())) {
       if (val && !skip.has(key.toLowerCase())) {
         headers[key] = val;
@@ -278,21 +359,21 @@ export class SecretProxy {
         logger.warn(`No providerId mapping for slug "${resolvedSlug}"`);
       }
     } else {
-      // Legacy path: swap UUID placeholders in auth headers (non-provider secrets)
-      const apiKey = headers["x-api-key"];
+      // Legacy path: swap UUID placeholders in auth headers (non-provider secrets).
+      // Read the originals from the request because we strip them from the
+      // forwarded headers map above.
+      const apiKey = c.req.header("x-api-key");
       if (apiKey) {
         headers["x-api-key"] = await this.swap(apiKey);
       }
 
-      const auth = headers.authorization || headers.Authorization;
+      const auth =
+        c.req.header("authorization") || c.req.header("Authorization");
       if (auth) {
         const parts = auth.split(" ");
         if (parts.length === 2 && parts[0]?.toLowerCase() === "bearer") {
           const swapped = await this.swap(parts[1]!);
-          const headerName = headers.authorization
-            ? "authorization"
-            : "Authorization";
-          headers[headerName] = `Bearer ${swapped}`;
+          headers.authorization = `Bearer ${swapped}`;
         }
       }
     }
@@ -302,13 +383,11 @@ export class SecretProxy {
     const response = await fetch(upstream, { method, headers, body });
 
     if (!response.ok) {
-      // Read body for error details (clone to avoid consuming the stream)
-      const errBody = await response
-        .clone()
-        .text()
-        .catch(() => "");
+      // Log upstream failure without echoing the body — error responses from
+      // some providers include the (rejected) credential or other sensitive
+      // values that we don't want in our logs.
       logger.warn(
-        `Upstream returned ${response.status} for ${method} ${upstream}: ${errBody.slice(0, 300)}`
+        `Upstream returned ${response.status} for ${method} ${upstream}`
       );
     }
 

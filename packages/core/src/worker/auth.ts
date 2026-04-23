@@ -102,11 +102,18 @@ export function verifyWorkerToken(token: string): WorkerTokenData | null {
       return null;
     }
 
-    // Check token expiration (default 24h)
+    // Check token expiration. Default reduced from 24h to 2h: the previous
+    // window meant a leaked token stayed usable for a full day with no
+    // revocation path. Operators that need longer can set WORKER_TOKEN_TTL_MS.
+    // Allow a 30-second skew so minor clock drift between gateway and worker
+    // doesn't reject otherwise-valid tokens.
     const parsedTtl = parseInt(process.env.WORKER_TOKEN_TTL_MS ?? "", 10);
     const ttl =
-      !Number.isNaN(parsedTtl) && parsedTtl > 0 ? parsedTtl : 86400000;
-    if (Date.now() - data.timestamp > ttl) {
+      !Number.isNaN(parsedTtl) && parsedTtl > 0
+        ? parsedTtl
+        : 2 * 60 * 60 * 1000;
+    const skewMs = 30 * 1000;
+    if (Date.now() - data.timestamp > ttl + skewMs) {
       logger.error("Worker token rejected: expired");
       return null;
     }

@@ -54,7 +54,7 @@ export class ApiPlatform implements PlatformAdapter {
     const interactionService = services.getInteractionService();
 
     interactionService.on("question:created", (event: any) => {
-      if (event.teamId !== "api") return;
+      if (event.platform !== "api") return;
       sseManager.broadcast(event.conversationId, "question", {
         type: "question",
         questionId: event.id,
@@ -76,7 +76,7 @@ export class ApiPlatform implements PlatformAdapter {
     });
 
     interactionService.on("tool:approval-needed", (event: any) => {
-      if (event.teamId !== "api") return;
+      if (event.platform !== "api") return;
       sseManager.broadcast(event.conversationId, "tool-approval", {
         type: "tool-approval",
         requestId: event.id,
@@ -90,7 +90,7 @@ export class ApiPlatform implements PlatformAdapter {
     });
 
     interactionService.on("suggestion:created", (event: any) => {
-      if (event.teamId !== "api") return;
+      if (event.platform !== "api") return;
       sseManager.broadcast(event.conversationId, "suggestion", {
         type: "suggestion",
         prompts: event.prompts,

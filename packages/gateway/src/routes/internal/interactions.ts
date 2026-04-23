@@ -67,6 +67,7 @@ export function createInteractionRoutes(
           channelId,
           teamId,
           connectionId,
+          platform || "unknown",
           body.question,
           body.options || []
         );

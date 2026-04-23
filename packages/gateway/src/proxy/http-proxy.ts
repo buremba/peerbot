@@ -218,9 +218,25 @@ export const __testOnly = {
   },
 };
 
+/**
+ * Strip surrounding brackets from an IPv6 literal so `net.isIP()` can
+ * recognise it. WHATWG URL parsing returns `parsedUrl.hostname` with
+ * brackets for IPv6 (e.g. `[::1]`), and `net.isIP("[::1]")` returns 0,
+ * which would cause the IP-blocklist check to be skipped and the value
+ * to fall through to DNS lookup — bypassing the loopback/private-IP
+ * guards. Normalising to the bare address closes that hole.
+ */
+function stripIpv6Brackets(host: string): string {
+  if (host.length >= 2 && host.startsWith("[") && host.endsWith("]")) {
+    return host.slice(1, -1);
+  }
+  return host;
+}
+
 async function resolveAndValidateTarget(
-  hostname: string
+  rawHostname: string
 ): Promise<TargetResolutionResult> {
+  const hostname = stripIpv6Brackets(rawHostname);
   const ipFamily = net.isIP(hostname);
   if (ipFamily !== 0) {
     if (isBlockedIpAddress(hostname)) {

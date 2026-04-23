@@ -149,14 +149,12 @@ export function CopyPromptButton({
   prompt,
   label,
   triggerLabel,
-  variant = "surface",
   supportedClients = [],
   supportedClientHrefForId,
 }: CopyPromptButtonProps) {
   const { copied, handleCopy } = useCopy(prompt);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
-  const isOutline = variant === "outline-muted";
   const hasSupportedClients = supportedClients.length > 0;
   const supportedClientLabel = hasSupportedClients
     ? `Works with ${supportedClients
@@ -192,19 +190,10 @@ export function CopyPromptButton({
 
   if (!prompt) return null;
 
-  const buttonBackground = copied
-    ? "rgba(122,162,247,0.18)"
-    : isOutline
-      ? "transparent"
-      : "var(--color-page-surface)";
+  const buttonBackground = copied ? "rgba(122,162,247,0.18)" : "transparent";
   const buttonColor = copied
     ? "var(--color-page-text)"
-    : isOutline
-      ? "var(--color-page-text-muted)"
-      : "var(--color-page-text)";
-  const buttonBorder = isOutline
-    ? "var(--color-page-border)"
-    : "var(--color-page-border-active)";
+    : "var(--color-page-text-muted)";
   const buttonText = hasSupportedClients
     ? (triggerLabel ?? label)
     : copied
@@ -223,11 +212,7 @@ export function CopyPromptButton({
 
           handleCopy();
         }}
-        class={
-          isOutline
-            ? "inline-flex items-center gap-2 text-sm font-medium px-5 py-2.5 rounded-lg cursor-pointer transition-all hover:opacity-90"
-            : "inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-[13px] font-medium cursor-pointer transition-colors hover:opacity-90"
-        }
+        class="inline-flex items-center gap-2 text-sm font-medium px-5 py-2.5 rounded-lg cursor-pointer transition-all hover:opacity-90"
         aria-label={
           supportedClientLabel
             ? `${triggerLabel ?? label}. ${supportedClientLabel}`
@@ -240,7 +225,7 @@ export function CopyPromptButton({
             ? "rgba(122,162,247,0.18)"
             : buttonBackground,
           color: menuOpen ? "var(--color-page-text)" : buttonColor,
-          border: `1px solid ${buttonBorder}`,
+          border: "1px solid var(--color-page-border)",
         }}
       >
         <span>{buttonText}</span>

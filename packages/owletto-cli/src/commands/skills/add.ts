@@ -41,9 +41,7 @@ export default defineCommand({
       printText('');
       printText('Next steps:');
       printText('1. Point your agent or workspace at that local skills/ directory.');
-      if (skill.id === 'owletto' || skill.id === 'owletto-openclaw') {
-        printText('2. Run `owletto init` to configure MCP/auth for your client.');
-      }
+      printText('2. Run `owletto init` to configure MCP/auth for your client.');
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (isJson()) {

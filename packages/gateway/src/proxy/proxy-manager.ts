@@ -41,16 +41,15 @@ function getProxyBindHost(): string {
  * - Both set: Allowlist with exceptions
  */
 export async function startFilteringProxy(): Promise<void> {
+  const parsedPort = Number.parseInt(
+    process.env.WORKER_PROXY_PORT || "8118",
+    10
+  );
+  const port = Number.isFinite(parsedPort) ? parsedPort : 8118;
+  const host = getProxyBindHost();
+
   try {
-    const parsedPort = Number.parseInt(
-      process.env.WORKER_PROXY_PORT || "8118",
-      10
-    );
-    const port = Number.isFinite(parsedPort) ? parsedPort : 8118;
-    const host = getProxyBindHost();
-
     proxyServer = await startHttpProxy(port, host);
-
     logger.debug(`HTTP proxy started on ${host}:${port}`);
   } catch (error) {
     logger.error("Failed to start HTTP proxy:", error);

@@ -897,7 +897,7 @@ export class GatewayClient {
       if (this.currentWorker) {
         logger.info("Cleaning up current worker due to event errors");
         try {
-          await this.currentWorker.cleanup?.();
+          await this.currentWorker.cleanup();
         } catch (cleanupError) {
           logger.error("Worker cleanup failed:", cleanupError);
         }

@@ -155,12 +155,7 @@ describe("runGuardrails", () => {
     registry.register(first);
     registry.register(second);
 
-    const outcomeP = runGuardrails(
-      registry,
-      "input",
-      ["first", "second"],
-      ctx
-    );
+    const outcomeP = runGuardrails(registry, "input", ["first", "second"], ctx);
     firstGate.resolve();
     const outcome = await outcomeP;
     expect(outcome.tripped?.guardrail).toBe("first");

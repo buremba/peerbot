@@ -213,8 +213,20 @@ export async function uploadUserFile(
       );
     }
     const filePath = path.isAbsolute(args.file_path)
-      ? args.file_path
-      : path.join(gw.workspaceDir as string, args.file_path);
+      ? path.resolve(args.file_path)
+      : path.resolve(gw.workspaceDir as string, args.file_path);
+
+    if (gw.workspaceDir) {
+      const workspaceRoot = path.resolve(gw.workspaceDir);
+      if (
+        filePath !== workspaceRoot &&
+        !filePath.startsWith(workspaceRoot + path.sep)
+      ) {
+        return textResult(
+          `Error: Refusing to read file outside the workspace: ${args.file_path}`
+        );
+      }
+    }
 
     const stats = await fs.stat(filePath).catch(() => null);
     if (!stats?.isFile()) {

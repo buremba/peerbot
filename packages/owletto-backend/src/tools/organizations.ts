@@ -8,6 +8,7 @@
 import { type Static, Type } from '@sinclair/typebox';
 import { getDb } from '../db/client';
 import type { Env } from '../index';
+import { getRateLimiter, RateLimitPresets } from '../utils/rate-limiter';
 import { buildWorkspaceInstructions } from '../utils/workspace-instructions';
 import { getWorkspaceProvider } from '../workspace';
 import { joinPublicOrganization } from '../workspace/join-public';
@@ -118,6 +119,19 @@ export async function joinOrganization(
   org: { slug: string; name: string; id: string; role: string };
   note?: string;
 }> {
+  // Match the REST endpoint's 10/hour cap (keyed on userId here since MCP tool
+  // calls don't carry a client IP).
+  const rateLimit = getRateLimiter().checkLimit(
+    `rate:join-public-org:user:${ctx.userId}`,
+    RateLimitPresets.JOIN_PUBLIC_ORG_PER_IP_HOUR
+  );
+  if (!rateLimit.allowed) {
+    throw new Error(
+      rateLimit.errorMessage ??
+        'Join rate limit exceeded. Maximum 10 join attempts per hour.'
+    );
+  }
+
   let slug = args.organization_slug ?? null;
   if (!slug) {
     if (!ctx.currentOrgId) {

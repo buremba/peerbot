@@ -35,7 +35,7 @@ interface SessionContextData {
  * assembly. This removes the identical boilerplate each subclass used to
  * declare.
  */
-abstract class BaseInstructionProvider implements InstructionProvider {
+export abstract class BaseInstructionProvider implements InstructionProvider {
   abstract readonly name: string;
   abstract readonly priority: number;
 

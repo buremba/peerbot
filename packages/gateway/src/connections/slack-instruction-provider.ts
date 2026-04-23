@@ -1,13 +1,18 @@
-import type { InstructionContext, InstructionProvider } from "@lobu/core";
+import type { InstructionContext } from "@lobu/core";
+import { BaseInstructionProvider } from "../services/instruction-service";
 import type { ChatInstanceManager } from "./chat-instance-manager";
 
-export class SlackInstructionProvider implements InstructionProvider {
-  name = "slack-identity";
-  priority = 20;
+export class SlackInstructionProvider extends BaseInstructionProvider {
+  readonly name = "slack-identity";
+  readonly priority = 20;
 
-  constructor(private readonly manager: ChatInstanceManager) {}
+  constructor(private readonly manager: ChatInstanceManager) {
+    super();
+  }
 
-  async getInstructions(context: InstructionContext): Promise<string> {
+  protected async buildInstructions(
+    context: InstructionContext
+  ): Promise<string> {
     const connections = await this.manager.listConnections({
       platform: "slack",
       templateAgentId: context.agentId,

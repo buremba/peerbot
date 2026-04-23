@@ -29,7 +29,9 @@ export async function initSentry() {
 
     Sentry.init({
       dsn: sentryDsn,
-      sendDefaultPii: true,
+      // Do not ship IP/cookies/headers by default — user content and identifiers
+      // travel through this stack and Sentry has no scrubbing for our schema.
+      sendDefaultPii: false,
       profileSessionSampleRate: 1.0,
       tracesSampleRate: 1.0, // Capture 100% of traces for better visibility
       integrations: [

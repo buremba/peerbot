@@ -1,4 +1,11 @@
-import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  test,
+} from "bun:test";
 import * as crypto from "node:crypto";
 import type { LookupAddress } from "node:dns";
 import * as http from "node:http";
@@ -368,9 +375,7 @@ describe("HTTP Proxy DNS pinning", () => {
       res.writeHead(200);
       res.end("trapped");
     });
-    await new Promise<void>((resolve) =>
-      trap.listen(0, "127.0.0.1", resolve)
-    );
+    await new Promise<void>((resolve) => trap.listen(0, "127.0.0.1", resolve));
     const trapAddr = trap.address() as net.AddressInfo;
 
     try {

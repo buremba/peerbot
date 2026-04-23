@@ -11,7 +11,6 @@ type CopyPromptButtonProps = {
   prompt?: string;
   label: string;
   triggerLabel?: string;
-  variant?: "surface" | "outline-muted";
   supportedClients?: SupportedPromptClientId[];
   supportedClientHrefForId?: (
     clientId: SupportedPromptClientId

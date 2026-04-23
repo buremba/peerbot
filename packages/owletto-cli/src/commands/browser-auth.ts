@@ -339,8 +339,7 @@ async function extractCookiesCDP(
       try {
         await new Promise<void>((resolve, reject) => {
           httpGet(`http://localhost:${port}/json/version`, (res) => {
-            let d = '';
-            res.on('data', (c: Buffer) => (d += c));
+            res.on('data', () => {});
             res.on('end', () => resolve());
           }).on('error', reject);
         });

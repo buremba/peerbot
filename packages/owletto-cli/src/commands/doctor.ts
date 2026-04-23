@@ -52,9 +52,7 @@ export default defineCommand({
     const checks: Check[] = [];
 
     checks.push(checkNodeVersion());
-    for (const bin of ['docker']) {
-      checks.push(checkBinaryExists(bin));
-    }
+    checks.push(checkBinaryExists('docker'));
 
     // Check active server connectivity
     const { session } = getActiveSession();

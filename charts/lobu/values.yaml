@@ -36,7 +36,6 @@ config:
   githubOrganization: "lobu-ai"
   githubRepository: "" # Optional: Override repository URL for all users
   githubClientId: "" # Optional: GitHub OAuth Client ID
-  ingressUrl: "" # Optional: Public URL base for OAuth callbacks
   sessionTimeoutMinutes: "5"
 
 # Transactional email (Resend) - non-secret settings.
@@ -99,10 +98,6 @@ gatekeeper:
     - "ghcr.io"
     - "ghcr.io/lobu-ai/"  # GHCR images
     - "registry-1.docker.io/bitnamicharts"  # Bitnami charts
-
-# Ingress
-ingress:
-  enabled: false
 
 # Limit Range
 limitRange:

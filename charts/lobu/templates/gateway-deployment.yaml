@@ -181,10 +181,6 @@ spec:
                   key: session-timeout-minutes
             
             # Application configuration
-            {{- if .Values.config.ingressUrl }}
-            - name: PUBLIC_GATEWAY_URL
-              value: "{{ .Values.config.ingressUrl }}"
-            {{- end }}
             - name: NODE_ENV
               value: "{{ .Values.gateway.config.nodeEnv }}"
             - name: LOG_LEVEL

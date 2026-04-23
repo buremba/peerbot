@@ -28,17 +28,6 @@ spec:
     - protocol: TCP
       port: 8080
 
-  # Allow ingress from ingress controller (if using ingress)
-  {{- if .Values.ingress.enabled }}
-  - from:
-    - namespaceSelector:
-        matchLabels:
-          name: ingress-nginx  # Adjust based on your ingress controller
-    ports:
-    - protocol: TCP
-      port: 8080
-  {{- end }}
-
   # Egress rules - restrict outbound traffic
   egress:
   # Allow DNS resolution (cluster DNS only)

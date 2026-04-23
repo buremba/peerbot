@@ -1,5 +1,23 @@
 # Changelog
 
+## [4.1.0](https://github.com/lobu-ai/lobu/compare/lobu-v4.0.1...lobu-v4.1.0) (2026-04-23)
+
+
+### Features
+
+* add separate Lobu and Owletto starter skill installs ([#304](https://github.com/lobu-ai/lobu/issues/304)) ([d0a4bc4](https://github.com/lobu-ai/lobu/commit/d0a4bc4d7ef61c56250b698805ae854396391469))
+* **landing:** rewrite hero headline and subhead for agent-first pitch ([#312](https://github.com/lobu-ai/lobu/issues/312)) ([044b1ed](https://github.com/lobu-ai/lobu/commit/044b1ed5eb2fa1ea578701673cc1922afeee1e3d))
+* **owletto-backend:** centralize transactional email + rebrand to Lobu ([#314](https://github.com/lobu-ai/lobu/issues/314)) ([4db7a1e](https://github.com/lobu-ai/lobu/commit/4db7a1e2e3dc7c214f13fa5d0bea885db080617a))
+* **owletto-backend:** gate $member list to members, emails to admins ([#309](https://github.com/lobu-ai/lobu/issues/309)) ([c37c72f](https://github.com/lobu-ai/lobu/commit/c37c72f6473838163149b12c8677d8dda6acabb2))
+* **owletto-backend:** public-org read access + self-serve join ([#296](https://github.com/lobu-ai/lobu/issues/296)) ([38cf00f](https://github.com/lobu-ai/lobu/commit/38cf00f09c51d57fbe5d1fb3f8811f84b2d35756))
+
+
+### Bug Fixes
+
+* **landing:** move outcome channel into outcome box ([#306](https://github.com/lobu-ai/lobu/issues/306)) ([885ab61](https://github.com/lobu-ai/lobu/commit/885ab6171bbc3e347e32c3dbf36583eef2b4f215))
+* **owletto-backend:** add missing memberRole to internal ToolContext literals ([#311](https://github.com/lobu-ai/lobu/issues/311)) ([dce8105](https://github.com/lobu-ai/lobu/commit/dce8105ba0de3c4e03ba7ce268cd3e2899cc2a61))
+* **owletto-backend:** exclude watcher runs from worker poll claims ([#313](https://github.com/lobu-ai/lobu/issues/313)) ([afd5d7b](https://github.com/lobu-ai/lobu/commit/afd5d7b78ed5f2125e655349079aff3b0658106e))
+
 ## [4.0.1](https://github.com/lobu-ai/lobu/compare/lobu-v4.0.0...lobu-v4.0.1) (2026-04-21)
 
 

@@ -20,7 +20,7 @@ import { type EntityHookContext, getEntityHooks } from './entity-hooks';
 import { requireWriteAccess } from './organization-access';
 import { RESERVED_ENTITY_TYPES } from './reserved';
 
-export interface EntityCreateOptions {
+interface EntityCreateOptions {
   skipHooks?: boolean;
   hookContext?: EntityHookContext;
 }
@@ -760,7 +760,7 @@ export interface RelationshipColumnSpec {
   label: string;
 }
 
-export interface RelatedEntityInfo {
+interface RelatedEntityInfo {
   id: number;
   name: string;
   slug: string;

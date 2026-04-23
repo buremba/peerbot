@@ -5,7 +5,7 @@ import type { SettingsTokenPayload } from "../../auth/settings/token-service";
 
 export type AuthProvider = (c: Context) => SettingsTokenPayload | null;
 
-export const SETTINGS_SESSION_COOKIE_NAME = "lobu_settings_session";
+const SETTINGS_SESSION_COOKIE_NAME = "lobu_settings_session";
 
 let _authProvider: AuthProvider | null = null;
 

@@ -14,7 +14,7 @@ import type { UseCase } from "./types";
  * not on the allowlist. Workers must request access and the user approves
  * via an in-chat button.
  */
-export const PERMISSION_SCENARIO: UseCase = {
+const PERMISSION_SCENARIO: UseCase = {
   id: "permission",
   tabLabel: "Permission",
   title: "Domain permission flow",
@@ -51,7 +51,7 @@ export const PERMISSION_SCENARIO: UseCase = {
  * a Lobu provider (real ID from providers.json), OAuth flows handled by
  * Lobu, user approves via in-chat button.
  */
-export const SKILL_INSTALL_SCENARIO: UseCase = {
+const SKILL_INSTALL_SCENARIO: UseCase = {
   id: "skill-install",
   tabLabel: "Skill",
   title: "Install a skill",
@@ -87,7 +87,7 @@ export const SKILL_INSTALL_SCENARIO: UseCase = {
  * Settings link flow — agents open a platform-scoped settings page for
  * config that shouldn't happen in chat (model picker, system prompt, etc.)
  */
-export const SETTINGS_LINK_SCENARIO: UseCase = {
+const SETTINGS_LINK_SCENARIO: UseCase = {
   id: "settings-link",
   tabLabel: "Settings",
   title: "Open settings",

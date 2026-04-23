@@ -12,7 +12,7 @@ import logger from './logger';
 // Types
 // ============================================
 
-export interface InsertEventParams {
+interface InsertEventParams {
   entityIds: number[];
   organizationId: string;
   originId: string;
@@ -52,7 +52,7 @@ export interface InsertEventParams {
   clientId?: string | null;
 }
 
-export interface InsertedEvent {
+interface InsertedEvent {
   id: number;
   entity_ids: number[] | null;
   origin_id: string;
@@ -256,7 +256,7 @@ export async function insertEvent(
 // Change Event (fire-and-forget audit trail)
 // ============================================
 
-export interface ChangeEventParams {
+interface ChangeEventParams {
   entityIds: number[];
   organizationId: string;
   title: string;

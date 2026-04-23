@@ -5,7 +5,7 @@ import type {
   RetrievedMemory,
 } from './types';
 
-export interface BenchmarkAnswerer {
+interface BenchmarkAnswerer {
   describe(): string;
   answer(question: string, items: RetrievedMemory[], contextPrefix?: string): Promise<AnswerResult>;
 }
@@ -433,7 +433,7 @@ class ExtractiveAnswerer implements BenchmarkAnswerer {
   }
 }
 
-export class OpenAiCompatibleAnswerer implements BenchmarkAnswerer {
+class OpenAiCompatibleAnswerer implements BenchmarkAnswerer {
   // Public-safe fields are stored separately from the apiKeyEnv name so
   // CodeQL doesn't taint the description via class-wide field access on
   // an object that also exposes the secret env name.

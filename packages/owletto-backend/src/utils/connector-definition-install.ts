@@ -29,14 +29,14 @@ export type ConnectorInstallResult = {
   openapiConfig?: Record<string, unknown> | null;
 };
 
-export type ConnectorVersionPersistence = {
+type ConnectorVersionPersistence = {
   compiledCode: string | null;
   compiledCodeHash: string | null;
   sourceCode: string | null;
   sourcePath: string | null;
 };
 
-export type ResolvedConnectorInstallSource = Omit<
+type ResolvedConnectorInstallSource = Omit<
   ConnectorVersionPersistence,
   'compiledCode' | 'compiledCodeHash' | 'sourceCode'
 > & {
@@ -50,7 +50,7 @@ export type ResolvedConnectorInstallSource = Omit<
  * Detect whether source code is already compiled JavaScript (not TypeScript).
  * Checks for common esbuild/CJS output markers and absence of TypeScript syntax.
  */
-export function isPreCompiledJs(code: string): boolean {
+function isPreCompiledJs(code: string): boolean {
   const trimmed = code.trimStart();
 
   if (

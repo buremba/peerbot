@@ -31,7 +31,7 @@ const logger = createLogger("chat-message-bridge");
  * `downloadUrl` is a signed, time-limited public artifact URL the worker
  * can fetch over the proxy without any platform-specific auth.
  */
-export interface IngestedFile {
+interface IngestedFile {
   id: string;
   name: string;
   mimetype: string;

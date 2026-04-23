@@ -8,7 +8,7 @@ import { platformAgentId } from "../spaces";
 
 const logger = createLogger("command-dispatcher");
 
-export interface CommandDispatchInput {
+interface CommandDispatchInput {
   platform: string;
   userId: string;
   channelId: string;
@@ -19,7 +19,7 @@ export interface CommandDispatchInput {
   reply: CommandContext["reply"];
 }
 
-export interface CommandDispatcherDeps {
+interface CommandDispatcherDeps {
   registry: CommandRegistry;
   channelBindingService: ChannelBindingService;
 }

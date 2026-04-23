@@ -4,7 +4,7 @@ import type { AuthProfilesManager } from "../auth/settings/auth-profiles-manager
 
 const logger = createLogger("image-generation-service");
 
-export type ImageGenerationProvider = "openai" | "gemini";
+type ImageGenerationProvider = "openai" | "gemini";
 
 interface ImageGenerationConfig {
   profileProviderId: string;
@@ -13,22 +13,20 @@ interface ImageGenerationConfig {
   apiKey: string;
 }
 
-export interface ImageGenerationSuccess {
+interface ImageGenerationSuccess {
   imageBuffer: Buffer;
   mimeType: string;
   provider: ImageGenerationProvider;
 }
 
-export interface ImageGenerationError {
+interface ImageGenerationError {
   error: string;
   availableProviders: ImageGenerationProvider[];
 }
 
-export type ImageGenerationResult =
-  | ImageGenerationSuccess
-  | ImageGenerationError;
+type ImageGenerationResult = ImageGenerationSuccess | ImageGenerationError;
 
-export interface ImageGenerationOptions {
+interface ImageGenerationOptions {
   size?: "1024x1024" | "1024x1536" | "1536x1024" | "auto";
   quality?: "low" | "medium" | "high" | "auto";
   background?: "transparent" | "opaque" | "auto";

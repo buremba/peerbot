@@ -15,7 +15,7 @@ export interface EntityHookContext {
   env?: Env;
 }
 
-export interface EntityLifecycleHooks {
+interface EntityLifecycleHooks {
   /** Runs before INSERT. Can mutate data (e.g. set status). Throw to abort. */
   beforeCreate?: (data: EntityData, ctx: EntityHookContext) => Promise<EntityData>;
   /** Runs after INSERT. For side-effects (e.g. sending notifications). */
@@ -33,7 +33,7 @@ export interface EntityLifecycleHooks {
 
 const registry: Record<string, EntityLifecycleHooks> = {};
 
-export function registerEntityHooks(entityType: string, hooks: EntityLifecycleHooks): void {
+function registerEntityHooks(entityType: string, hooks: EntityLifecycleHooks): void {
   registry[entityType] = hooks;
 }
 

@@ -3,7 +3,7 @@ import type { ModelOption } from "../modules/module-system";
 import { BaseProviderModule } from "./base-provider-module";
 import type { AuthProfilesManager } from "./settings/auth-profiles-manager";
 
-export interface ApiKeyProviderConfig {
+interface ApiKeyProviderConfig {
   providerId: string;
   providerDisplayName: string;
   providerIconUrl: string;

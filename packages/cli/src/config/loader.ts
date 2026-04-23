@@ -5,12 +5,12 @@ import { type LobuTomlConfig, lobuConfigSchema } from "./schema.js";
 
 export const CONFIG_FILENAME = "lobu.toml";
 
-export interface LoadResult {
+interface LoadResult {
   config: LobuTomlConfig;
   path: string;
 }
 
-export interface LoadError {
+interface LoadError {
   error: string;
   details?: string[];
 }

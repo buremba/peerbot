@@ -15,7 +15,7 @@ import type { Entity } from '../tools/search.js';
 /**
  * Content structure (subset of fields needed for formatting)
  */
-export interface FormattableContent {
+interface FormattableContent {
   id: number;
   platform: string;
   author_name: string | null;
@@ -125,7 +125,7 @@ function groupContentByThread(items: FormattableContent[]): ThreadGroup[] {
 /**
  * Format content as markdown with proper thread hierarchy
  */
-export function formatContentAsMarkdown(
+function formatContentAsMarkdown(
   items: FormattableContent[],
   options?: ContentFormatOptions
 ): string {

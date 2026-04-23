@@ -69,7 +69,7 @@ export interface TestUser {
   username: string;
 }
 
-export interface TestAgent {
+interface TestAgent {
   agentId: string;
   organizationId: string;
   name: string;
@@ -161,7 +161,7 @@ export async function createTestAgent(options: {
 // Entity Fixtures
 // ============================================
 
-export interface TestEntity {
+interface TestEntity {
   id: number;
   name: string;
   entity_type: string;
@@ -363,7 +363,7 @@ export async function createTestOAuthClient(options?: {
 // Token Fixtures
 // ============================================
 
-export interface TestAccessToken {
+interface TestAccessToken {
   token: string;
   userId: string;
   organizationId: string;
@@ -425,7 +425,7 @@ export async function createExpiredAccessToken(
 // Personal Access Token Fixtures
 // ============================================
 
-export interface TestPAT {
+interface TestPAT {
   token: string;
   userId: string;
   organizationId: string;
@@ -452,7 +452,7 @@ export async function createTestPAT(userId: string, organizationId: string): Pro
 // Connector Definition Fixtures
 // ============================================
 
-export interface TestConnectorDefinition {
+interface TestConnectorDefinition {
   key: string;
   name: string;
 }
@@ -507,7 +507,7 @@ export async function createTestConnectorDefinition(options: {
 // Connection Fixtures
 // ============================================
 
-export interface TestConnection {
+interface TestConnection {
   id: number;
   connector_key: string;
   status: string;
@@ -564,7 +564,7 @@ export async function createTestConnection(options: {
 // Event Fixtures
 // ============================================
 
-export interface TestEvent {
+interface TestEvent {
   id: number;
   origin_id: string;
 }
@@ -640,7 +640,7 @@ export async function createTestEvent(options: {
 // Watcher + Version Fixtures
 // ============================================
 
-export interface TestWatcherTemplate {
+interface TestWatcherTemplate {
   id: string;
   slug: string;
 }
@@ -735,7 +735,7 @@ export async function createTestWatcherTemplate(options: {
 // Watcher Fixtures (attach entity to existing watcher)
 // ============================================
 
-export interface TestWatcher {
+interface TestWatcher {
   id: number;
   entity_id: number;
   version_id: number;
@@ -785,7 +785,7 @@ export async function createTestWatcher(options: {
 // Watcher Window Fixtures
 // ============================================
 
-export interface TestWatcherWindow {
+interface TestWatcherWindow {
   id: number;
   watcher_id: number;
 }
@@ -834,7 +834,7 @@ export async function createTestWatcherWindow(options: {
 // Action Run Fixtures
 // ============================================
 
-export interface TestActionRun {
+interface TestActionRun {
   id: number;
   connection_id: number;
   status: string;
@@ -882,7 +882,7 @@ export async function createTestActionRun(options: {
 // Classifier Fixtures
 // ============================================
 
-export interface TestClassifier {
+interface TestClassifier {
   id: number;
   slug: string;
   current_version_id: number;
@@ -958,7 +958,7 @@ export async function createTestClassifier(options: {
 // Session Fixtures (for requireAuth-protected endpoints)
 // ============================================
 
-export interface TestSession {
+interface TestSession {
   sessionId: string;
   token: string;
   userId: string;
@@ -993,7 +993,7 @@ export async function createTestSession(userId: string): Promise<TestSession> {
 // Device Code Fixtures
 // ============================================
 
-export interface TestDeviceCode {
+interface TestDeviceCode {
   deviceCode: string;
   userCode: string;
   clientId: string;

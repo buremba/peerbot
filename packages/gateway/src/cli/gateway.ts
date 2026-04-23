@@ -17,7 +17,7 @@ const logger = createLogger("gateway-startup");
 
 let httpServer: Server | null = null;
 
-export interface CreateGatewayAppOptions {
+interface CreateGatewayAppOptions {
   secretProxy: any;
   workerGateway: any;
   mcpProxy: any;

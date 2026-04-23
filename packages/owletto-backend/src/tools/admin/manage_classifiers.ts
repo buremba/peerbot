@@ -163,9 +163,9 @@ export const ManageClassifiersSchema = Type.Object({
   ),
 });
 
-export type ManageClassifiersArgs = Static<typeof ManageClassifiersSchema>;
+type ManageClassifiersArgs = Static<typeof ManageClassifiersSchema>;
 
-export type ManageClassifiersResult = {
+type ManageClassifiersResult = {
   success: boolean;
   action: string;
   message?: string;

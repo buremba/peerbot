@@ -11,7 +11,7 @@ import type { AuthProfilesManager } from "./settings/auth-profiles-manager";
 
 const logger = createLogger("base-provider-module");
 
-export interface BaseProviderConfig {
+interface BaseProviderConfig {
   providerId: string;
   providerDisplayName: string;
   providerIconUrl: string;

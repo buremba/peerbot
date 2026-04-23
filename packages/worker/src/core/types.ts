@@ -110,11 +110,6 @@ export type ProgressUpdate =
     };
 
 /**
- * Callback for receiving progress updates during AI execution
- */
-export type ProgressCallback = (update: ProgressUpdate) => Promise<void>;
-
-/**
  * Session context for AI execution
  * Contains information about the current session (platform, user, workspace)
  */

@@ -10,7 +10,7 @@ import type { SettingsTokenPayload } from "../../auth/settings/token-service";
 import type { UserAgentsStore } from "../../auth/user-agents-store";
 import { verifyOwnedAgentAccess } from "./agent-ownership";
 
-export interface TokenVerifierConfig {
+interface TokenVerifierConfig {
   userAgentsStore?: UserAgentsStore;
   agentMetadataStore?: Pick<AgentConfigStore, "getMetadata">;
 }

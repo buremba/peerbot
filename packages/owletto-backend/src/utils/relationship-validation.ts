@@ -12,7 +12,7 @@ import type { ToolContext } from '../tools/registry';
 
 // Valid relationship sources
 const RELATIONSHIP_SOURCES = ['ui', 'llm', 'feed', 'api'] as const;
-export type RelationshipSource = (typeof RELATIONSHIP_SOURCES)[number];
+type RelationshipSource = (typeof RELATIONSHIP_SOURCES)[number];
 
 /**
  * Validate that a relationship does not reference itself.

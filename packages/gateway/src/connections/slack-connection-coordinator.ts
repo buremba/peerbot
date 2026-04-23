@@ -34,7 +34,7 @@ type SlackRuntimeConfig = {
   botToken?: string;
 };
 
-export interface SlackConnectionCoordinatorDeps {
+interface SlackConnectionCoordinatorDeps {
   addConnection(
     platform: string,
     templateAgentId: string | undefined,

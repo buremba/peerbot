@@ -40,7 +40,7 @@ const LOCAL_HREF_RE =
 const DELIVERY_PHRASE_RE =
   /(?:located at|saved (?:to|at|in)|file is (?:at|in)|available at|created (?:at|in)|stored (?:at|in)|written to|exported to|generated (?:at|in))[:\s]+`?((?:\/app\/workspaces\/|\/workspace\/)[^\s`]+\.\w{1,10})`?/gi;
 
-export interface LeakCheckResult {
+interface LeakCheckResult {
   /** True if the final message makes an unfulfilled file-delivery claim. */
   leaked: boolean;
   /** `finalText` with offending link/URL targets neutralised. Equal to

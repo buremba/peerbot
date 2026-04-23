@@ -8,7 +8,7 @@ import {
 
 const CREDENTIALS_FILE = join(LOBU_CONFIG_DIR, "credentials.json");
 
-export interface Credentials {
+interface Credentials {
   accessToken: string;
   refreshToken?: string;
   expiresAt?: number;

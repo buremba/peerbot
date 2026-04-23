@@ -28,7 +28,7 @@ export interface CompileResult {
   compiledCodeHash: string;
 }
 
-export interface CompileConfig {
+interface CompileConfig {
   /** Prefix for temp directory names, e.g. '.connector-compile-' */
   tmpPrefix: string;
   /** Label for log/error messages, e.g. 'ConnectorCompiler' */
@@ -37,7 +37,7 @@ export interface CompileConfig {
   buildOptions: Partial<BuildOptions>;
 }
 
-export interface ExtractConfig {
+interface ExtractConfig {
   /** Prefix for temp directory names, e.g. '.connector-meta-' */
   tmpPrefix: string;
   /** JS code that runs in the subprocess to extract metadata (see runners in each compiler) */

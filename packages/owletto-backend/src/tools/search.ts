@@ -109,7 +109,7 @@ export const SearchSchema = Type.Object({
   ),
 });
 
-export type SearchArgs = Static<typeof SearchSchema>;
+type SearchArgs = Static<typeof SearchSchema>;
 
 // ============================================
 // Type Definitions
@@ -180,7 +180,7 @@ interface ChildEntityRow {
   content_count: number;
 }
 
-export interface ContentSnippet {
+interface ContentSnippet {
   id: number;
   title: string | null;
   text_content: string;
@@ -192,7 +192,7 @@ export interface ContentSnippet {
   entity_ids: number[];
 }
 
-export interface UnifiedSearchResult {
+interface UnifiedSearchResult {
   entity_type: string | null;
   entity: Entity | null;
   matches: Entity[];

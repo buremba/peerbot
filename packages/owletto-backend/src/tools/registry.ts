@@ -339,17 +339,3 @@ export function getAllTools(options?: {
     .filter((tool): tool is NonNullable<typeof tool> => tool !== null);
 }
 
-/**
- * Check if a tool name matches a proxy tool prefix pattern (e.g. "gmail__send_email").
- * Returns the connector key prefix if matched, null otherwise.
- */
-export function parseProxyToolName(
-  toolName: string
-): { prefix: string; originalName: string } | null {
-  const idx = toolName.indexOf('__');
-  if (idx <= 0) return null;
-  return {
-    prefix: toolName.substring(0, idx),
-    originalName: toolName.substring(idx + 2),
-  };
-}

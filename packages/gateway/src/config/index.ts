@@ -75,7 +75,7 @@ const DISPLAY = {
 } as const;
 
 /** Recursively makes all properties optional */
-export type DeepPartial<T> = {
+type DeepPartial<T> = {
   [P in keyof T]?: T[P] extends (infer U)[]
     ? U[]
     : T[P] extends object

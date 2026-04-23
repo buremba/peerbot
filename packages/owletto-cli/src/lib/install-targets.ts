@@ -4,7 +4,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { openInBrowser } from './browser.ts';
 
-export interface ConfigureResult {
+interface ConfigureResult {
   status: 'configured' | 'handoff' | 'manual' | 'failed';
   message: string;
 }

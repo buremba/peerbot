@@ -274,7 +274,7 @@ export const ManageConnectionsSchema = Type.Union([
 // Result Types
 // ============================================
 
-export type ManageConnectionsResult =
+type ManageConnectionsResult =
   | { error: string; setup_url?: string }
   | { action: 'list_connector_definitions'; connector_definitions: any[] }
   | {

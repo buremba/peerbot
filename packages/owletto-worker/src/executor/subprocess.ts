@@ -33,7 +33,7 @@ function pickSystemEnv(): Record<string, string | undefined> {
   return env;
 }
 
-export interface SubprocessExecutorOptions {
+interface SubprocessExecutorOptions {
   /** Maximum execution time in ms (default: 600000 = 10 minutes) */
   timeoutMs: number;
   /** Max old space size for the child process in MB (default: 512) */

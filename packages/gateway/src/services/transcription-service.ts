@@ -17,7 +17,7 @@ import type { AuthProfilesManager } from "../auth/settings/auth-profiles-manager
 
 const logger = createLogger("transcription-service");
 
-export type TranscriptionProvider = "openai" | "gemini" | "elevenlabs";
+type TranscriptionProvider = "openai" | "gemini" | "elevenlabs";
 
 interface TranscriptionConfig {
   profileProviderId: string;
@@ -30,33 +30,33 @@ interface TranscriptionConfig {
   };
 }
 
-export interface TranscriptionSuccess {
+interface TranscriptionSuccess {
   text: string;
   provider: TranscriptionProvider;
 }
 
-export interface TranscriptionError {
+interface TranscriptionError {
   error: string;
   availableProviders: TranscriptionProvider[];
 }
 
-export type TranscriptionResult = TranscriptionSuccess | TranscriptionError;
+type TranscriptionResult = TranscriptionSuccess | TranscriptionError;
 
-export interface SynthesisSuccess {
+interface SynthesisSuccess {
   audioBuffer: Buffer;
   mimeType: string;
   provider: TranscriptionProvider;
 }
 
-export interface SynthesisError {
+interface SynthesisError {
   error: string;
   availableProviders: TranscriptionProvider[];
 }
 
-export type SynthesisResult = SynthesisSuccess | SynthesisError;
+type SynthesisResult = SynthesisSuccess | SynthesisError;
 
 // Voice options for TTS
-export interface VoiceOptions {
+interface VoiceOptions {
   voice?: string; // Provider-specific voice ID
   speed?: number; // Speech speed (0.5-2.0, default 1.0)
 }

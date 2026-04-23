@@ -36,7 +36,7 @@ import type { ToolContext } from '../../registry';
 // Auth Schema Types
 // ============================================
 
-export type OAuthAuthMethod = {
+type OAuthAuthMethod = {
   type: 'oauth';
   provider: string;
   requiredScopes?: string[];
@@ -55,7 +55,7 @@ export type OAuthAuthMethod = {
   };
 };
 
-export type EnvKeyAuthMethod = {
+type EnvKeyAuthMethod = {
   type: 'env_keys';
   required?: boolean;
   fields?: Array<{
@@ -68,7 +68,7 @@ export type EnvKeyAuthMethod = {
   }>;
 };
 
-export type BrowserAuthMethod = {
+type BrowserAuthMethod = {
   type: 'browser';
   required?: boolean;
   description?: string;
@@ -76,7 +76,7 @@ export type BrowserAuthMethod = {
   defaultCdpUrl?: string;
 };
 
-export type InteractiveAuthMethod = {
+type InteractiveAuthMethod = {
   type: 'interactive';
   required?: boolean;
   scope?: 'connection' | 'org';
@@ -85,7 +85,7 @@ export type InteractiveAuthMethod = {
   description?: string;
 };
 
-export type AuthSchema =
+type AuthSchema =
   | { methods?: Array<Record<string, unknown>> }
   | Record<string, unknown>
   | null
@@ -95,7 +95,7 @@ export type AuthSchema =
 // Auth Schema Helpers
 // ============================================
 
-export function getAuthMethods(authSchema: AuthSchema): Array<Record<string, unknown>> {
+function getAuthMethods(authSchema: AuthSchema): Array<Record<string, unknown>> {
   const methods = (authSchema as { methods?: unknown } | null)?.methods;
   return Array.isArray(methods) ? methods : [];
 }
@@ -188,7 +188,7 @@ export function buildOAuthConnectConfig(
   };
 }
 
-export function splitAuthValuesBySchema(
+function splitAuthValuesBySchema(
   authSchema: AuthSchema,
   authValues: Record<string, string>
 ): {
@@ -308,7 +308,7 @@ export function getDefaultSchedule(env: Env): string {
   return env.DEFAULT_SYNC_SCHEDULE ?? DEFAULT_SCHEDULE;
 }
 
-export function getDefaultFeedKey(feedsSchema: unknown): string {
+function getDefaultFeedKey(feedsSchema: unknown): string {
   if (typeof feedsSchema === 'string') {
     try {
       const parsed = JSON.parse(feedsSchema) as unknown;
@@ -388,7 +388,7 @@ export async function resolveConnectionDisplayName(params: {
 // Auth Selection
 // ============================================
 
-export interface AuthSelectionResult {
+interface AuthSelectionResult {
   selectedKind: 'none' | AuthProfileKind;
   authProfile: AuthProfileRow | null;
   appAuthProfile: AuthProfileRow | null;
@@ -409,7 +409,7 @@ function getPreferredAuthMethodType(
   return 'none';
 }
 
-export const EMPTY_SELECTION = (params: {
+const EMPTY_SELECTION = (params: {
   oauthMethod: OAuthAuthMethod | null;
   envMethod: EnvKeyAuthMethod | null;
   browserMethod: BrowserAuthMethod | null;

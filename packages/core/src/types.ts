@@ -392,7 +392,7 @@ export interface AgentMcpConfig {
   mcpServers: Record<string, McpServerConfig>;
 }
 
-export interface MemoryFlushOptions {
+interface MemoryFlushOptions {
   enabled?: boolean;
   softThresholdTokens?: number;
   systemPrompt?: string;

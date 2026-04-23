@@ -23,7 +23,7 @@ export type ExampleRelation = {
   note: string;
 };
 
-export type ExampleLink = {
+type ExampleLink = {
   label: string;
   href: string;
 };

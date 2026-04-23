@@ -6,7 +6,7 @@ const logger = createLogger("mcp-registry");
 /**
  * MCP server entry from the registry
  */
-export interface McpRegistryEntry {
+interface McpRegistryEntry {
   id: string;
   name: string;
   description: string;

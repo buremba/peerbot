@@ -8,7 +8,7 @@ import {
 
 const logger = createLogger("openclaw-session-context");
 
-export interface ProviderConfig {
+interface ProviderConfig {
   credentialEnvVarName?: string;
   defaultProvider?: string;
   defaultModel?: string;

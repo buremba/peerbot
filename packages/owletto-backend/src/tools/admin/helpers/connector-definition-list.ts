@@ -5,7 +5,7 @@ import type { ScopedConnectorDefinitionRow } from '../connector-definition-helpe
 
 type OperationsSummary = typeof EMPTY_SUMMARY;
 
-export type ListedConnectorDefinition = Omit<ScopedConnectorDefinitionRow, 'source_path'> & {
+type ListedConnectorDefinition = Omit<ScopedConnectorDefinitionRow, 'source_path'> & {
   source_uri: string | null;
   installed: boolean;
   installable: boolean;
@@ -14,7 +14,7 @@ export type ListedConnectorDefinition = Omit<ScopedConnectorDefinitionRow, 'sour
   has_operations: boolean;
 };
 
-export function mapInstalledConnectorDefinitions(
+function mapInstalledConnectorDefinitions(
   rows: ScopedConnectorDefinitionRow[],
   summaries: Map<string, OperationsSummary>
 ): ListedConnectorDefinition[] {

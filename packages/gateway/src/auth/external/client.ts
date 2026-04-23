@@ -14,7 +14,7 @@ const EXTERNAL_AUTH_CACHE_KEY = "external:auth:client:v3";
 const DISCOVERY_CACHE_TTL_MS = 5 * 60 * 1000;
 const DEFAULT_SCOPE = "profile:read";
 
-export interface ExternalAuthConfig {
+interface ExternalAuthConfig {
   issuerUrl: string;
   clientId?: string;
   clientSecret?: string;
@@ -74,12 +74,12 @@ interface ResolvedExternalAuthConfig {
     | "client_secret_basic";
 }
 
-export interface ExternalAuthCapabilities {
+interface ExternalAuthCapabilities {
   browser: boolean;
   device: boolean;
 }
 
-export type ExternalDeviceAuthorizationPollResult =
+type ExternalDeviceAuthorizationPollResult =
   | {
       status: "pending";
       interval?: number;

@@ -12,7 +12,7 @@ const logger = createLogger("bedrock-model-catalog");
 
 const CACHE_TTL_MS = 5 * 60 * 1000;
 
-export interface BedrockCatalogModel {
+interface BedrockCatalogModel {
   id: string;
   label: string;
   providerName?: string;
@@ -21,7 +21,7 @@ export interface BedrockCatalogModel {
   outputModalities?: string[];
 }
 
-export interface BedrockModelCatalogOptions {
+interface BedrockModelCatalogOptions {
   cacheTtlMs?: number;
   loadModels?: () => Promise<BedrockCatalogModel[]>;
 }

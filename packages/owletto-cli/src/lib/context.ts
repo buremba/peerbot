@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { findConfigFile } from './config.ts';
@@ -38,35 +38,4 @@ export function readActiveContext(): string | null {
   }
 
   return null;
-}
-
-export function writeActiveContext(name: string, scope: 'project' | 'global' = 'project') {
-  if (scope === 'project') {
-    const dir = projectContextDir();
-    if (dir) {
-      mkdirSync(dir, { recursive: true });
-      writeFileSync(resolve(dir, 'context'), name + '\n');
-      return;
-    }
-    // Fall through to global if no project config found
-  }
-
-  const dir = globalContextDir();
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(globalContextFile(), name + '\n');
-}
-
-export function deleteActiveContext(scope: 'project' | 'global' | 'both' = 'both') {
-  if (scope === 'project' || scope === 'both') {
-    const projectFile = projectContextFile();
-    if (projectFile && existsSync(projectFile)) {
-      unlinkSync(projectFile);
-    }
-  }
-  if (scope === 'global' || scope === 'both') {
-    const globalFile = globalContextFile();
-    if (existsSync(globalFile)) {
-      unlinkSync(globalFile);
-    }
-  }
 }

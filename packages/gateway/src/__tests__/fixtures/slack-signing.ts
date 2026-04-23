@@ -4,7 +4,7 @@
  */
 import { createHmac } from "node:crypto";
 
-export function signSlackRequest(
+function signSlackRequest(
   signingSecret: string,
   body: string,
   timestampSeconds: number = Math.floor(Date.now() / 1000)

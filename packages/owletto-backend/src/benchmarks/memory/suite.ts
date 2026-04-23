@@ -5,7 +5,6 @@ import type {
   BenchmarkQuestion,
   BenchmarkRelationshipType,
   BenchmarkScenario,
-  BenchmarkStep,
   BenchmarkSuite,
 } from './types';
 
@@ -210,8 +209,4 @@ export function loadBenchmarkSuite(path: string): BenchmarkSuite {
   const absolutePath = resolve(process.cwd(), path);
   const raw = readFileSync(absolutePath, 'utf-8');
   return validateBenchmarkSuite(JSON.parse(raw) as BenchmarkSuite);
-}
-
-export function isBenchmarkStep(step: BenchmarkStep): step is BenchmarkStep {
-  return step.kind === 'memory' || step.kind === 'relationship';
 }

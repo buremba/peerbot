@@ -5,7 +5,7 @@ import {
   resolveEffectiveModelRef,
 } from "../auth/settings/model-selection";
 
-export interface BuiltInCommandDeps {
+interface BuiltInCommandDeps {
   agentSettingsStore: AgentSettingsStore;
 }
 

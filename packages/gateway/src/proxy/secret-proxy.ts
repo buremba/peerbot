@@ -28,7 +28,7 @@ export interface SecretMapping {
   deploymentName: string;
 }
 
-export interface SecretProxyConfig {
+interface SecretProxyConfig {
   defaultUpstreamUrl: string;
   providerUpstreams?: ProviderUpstreamConfig[];
 }

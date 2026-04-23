@@ -12,7 +12,7 @@ const logger = createLogger("auth-profiles-manager");
 
 const ANY_MODEL_SCOPE = "*";
 
-export interface UpsertAuthProfileInput {
+interface UpsertAuthProfileInput {
   agentId: string;
   /** Owning user. Required for persistent (Redis-backed) writes. */
   userId?: string;
@@ -27,7 +27,7 @@ export interface UpsertAuthProfileInput {
   id?: string;
 }
 
-export interface AuthProfilesManagerOptions {
+interface AuthProfilesManagerOptions {
   ephemeralProfiles: EphemeralAuthProfileRegistry;
   declaredAgents: DeclaredAgentRegistry;
   userAuthProfiles: UserAuthProfileStore;

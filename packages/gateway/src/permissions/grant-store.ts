@@ -9,7 +9,7 @@ import {
 
 const logger = createLogger("grant-store");
 
-export interface Grant {
+interface Grant {
   pattern: string;
   expiresAt: number | null; // Absolute timestamp (ms). null = never expires.
   grantedAt: number;

@@ -16,7 +16,7 @@ const logger = createLogger("chat-interaction-bridge");
 const PENDING_TOOL_KEY_PREFIX = "pending-tool:";
 
 /** Signature for the direct tool execution function injected from the MCP proxy. */
-export type ExecuteToolDirectFn = (
+type ExecuteToolDirectFn = (
   agentId: string,
   userId: string,
   mcpId: string,
@@ -541,7 +541,7 @@ export function registerInteractionBridge(
  * enqueue-into-worker pipeline; `registerActionHandlers` just dispatches
  * the raw click through.
  */
-export type OnQuestionClickFn = (
+type OnQuestionClickFn = (
   questionId: string,
   value: string,
   thread: any,

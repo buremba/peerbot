@@ -3,7 +3,7 @@
  * Maps tool names to emoji and description formatting.
  */
 
-export interface ToolDisplayEntry {
+interface ToolDisplayEntry {
   emoji: string;
   action: string;
   getParam: (params: Record<string, unknown>) => string;

@@ -6,7 +6,7 @@ const logger = createLogger("channel-binding-service");
 /**
  * Channel binding - links a platform channel to a specific agent
  */
-export interface ChannelBinding {
+interface ChannelBinding {
   platform: string; // Platform identifier
   channelId: string;
   agentId: string;

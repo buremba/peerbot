@@ -44,7 +44,7 @@ function hexToRgb(hex: string): string {
  * Build a ChatTheme from a primary color + window chrome.
  * User bubble tint, border, and button glow are all derived from primary.
  */
-export function createTheme(opts: {
+function createTheme(opts: {
   primary: string;
   bg: string;
   border: string;
@@ -125,7 +125,7 @@ interface ChatBubbleProps {
   onButtonHover?: (hovering: boolean) => void;
 }
 
-export function ChatBubble({
+function ChatBubble({
   role,
   text,
   buttons,

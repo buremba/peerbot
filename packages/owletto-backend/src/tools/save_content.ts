@@ -105,13 +105,13 @@ export const SaveContentSchema = Type.Object({
   ),
 });
 
-export type SaveContentArgs = Static<typeof SaveContentSchema>;
+type SaveContentArgs = Static<typeof SaveContentSchema>;
 
 // ============================================
 // Result Type
 // ============================================
 
-export interface SaveContentResult {
+interface SaveContentResult {
   id: number;
   entity_ids: number[];
   title: string | null;

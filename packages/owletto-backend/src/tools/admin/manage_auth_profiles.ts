@@ -143,7 +143,7 @@ export const ManageAuthProfilesSchema = Type.Union([
 // Result Types
 // ============================================
 
-export type ManageAuthProfilesResult =
+type ManageAuthProfilesResult =
   | { error: string }
   | { action: 'list_auth_profiles'; auth_profiles: any[] }
   | { action: 'get_auth_profile'; auth_profile: any }

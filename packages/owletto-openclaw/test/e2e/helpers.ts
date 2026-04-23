@@ -20,7 +20,7 @@ export const APP_URL = process.env.APP_URL || 'http://localhost:8787';
 
 let sql: postgres.Sql | null = null;
 
-export function getDb(): postgres.Sql {
+function getDb(): postgres.Sql {
   if (!sql) {
     const url = process.env.DATABASE_URL;
     if (!url) {
@@ -61,14 +61,14 @@ export interface TestOrg {
   slug: string;
 }
 
-export interface TestUser {
+interface TestUser {
   id: string;
   email: string;
   name: string;
   username: string;
 }
 
-export interface TestSession {
+interface TestSession {
   sessionId: string;
   token: string;
   userId: string;
@@ -89,7 +89,7 @@ export async function createTestOrg(slug?: string): Promise<TestOrg> {
   return { id, name, slug: orgSlug };
 }
 
-export async function createTestUser(): Promise<TestUser> {
+async function createTestUser(): Promise<TestUser> {
   const db = getDb();
   const id = `user_e2e_${generateSecureToken(6)}`;
   const email = `${id}@e2e-test.example.com`;
@@ -181,7 +181,7 @@ export async function signUpTestUser(): Promise<SignedUpUser> {
 // OAuth Device Flow Helpers
 // ---------------------------------------------------------------------------
 
-export interface RegisteredClient {
+interface RegisteredClient {
   clientId: string;
   clientSecret?: string;
 }
@@ -208,7 +208,7 @@ export async function oauthRegisterClient(scope = 'mcp:read mcp:write'): Promise
   return { clientId: data.client_id, clientSecret: data.client_secret };
 }
 
-export interface DeviceAuthResponse {
+interface DeviceAuthResponse {
   device_code: string;
   user_code: string;
   verification_uri: string;
@@ -269,7 +269,7 @@ export async function oauthApproveDevice(
   }
 }
 
-export interface TokenResponse {
+interface TokenResponse {
   access_token: string;
   token_type: string;
   expires_in?: number;
@@ -335,7 +335,7 @@ export async function oauthRefreshToken(
 
 let mcpRpcCounter = 0;
 
-export interface McpRpcResult {
+interface McpRpcResult {
   status: number;
   sessionId?: string;
   body: unknown;
@@ -560,7 +560,7 @@ export function restoreOpenclawPluginConfig(): void {
 // Openclaw Agent Runner
 // ---------------------------------------------------------------------------
 
-export interface AgentResult {
+interface AgentResult {
   raw: string;
   json: unknown;
   exitCode: number;

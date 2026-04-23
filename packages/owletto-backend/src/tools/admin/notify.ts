@@ -64,8 +64,8 @@ const SendAction = Type.Object({
   ),
 });
 
-export const NotifySchema = Type.Union([SendAction]);
-export type NotifyArgs = Static<typeof NotifySchema>;
+const NotifySchema = Type.Union([SendAction]);
+type NotifyArgs = Static<typeof NotifySchema>;
 
 // ============================================
 // Handler

@@ -1,4 +1,4 @@
-export type MessagingChannelId =
+type MessagingChannelId =
   | "slack"
   | "telegram"
   | "whatsapp"
@@ -10,7 +10,7 @@ export type DeliverySurfaceId = MessagingChannelId | "rest-api";
 
 type PlatformIconRenderer = (size?: number) => JSX.Element;
 
-export type MessagingChannel = {
+type MessagingChannel = {
   id: MessagingChannelId;
   label: string;
   href: string;

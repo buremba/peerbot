@@ -3,7 +3,7 @@
  * SSE connections subscribe per-organization to receive cache invalidation signals.
  */
 
-export interface InvalidationEvent {
+interface InvalidationEvent {
   /** Query keys to invalidate (e.g. ['resolve-path'], ['workspace-bootstrap']) */
   keys: string[];
   /** Optional: specific resource that changed */

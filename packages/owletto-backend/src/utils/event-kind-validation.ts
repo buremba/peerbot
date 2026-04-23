@@ -16,7 +16,7 @@ import { formatAjvError, getAjv } from './ajv-singleton';
 // Types
 // ============================================
 
-export interface KindValidationResult {
+interface KindValidationResult {
   valid: boolean;
   errors: string[];
   validKinds: string[];
@@ -80,10 +80,6 @@ interface EventKindsCacheEntry {
 }
 
 const eventKindsCache = new Map<string, EventKindsCacheEntry>();
-
-export function clearEventKindsCache(): void {
-  eventKindsCache.clear();
-}
 
 // ============================================
 // Event Kinds Resolution

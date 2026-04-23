@@ -26,7 +26,7 @@ export interface ConnectTokenRow {
   created_at: Date;
 }
 
-export interface CreateConnectTokenParams {
+interface CreateConnectTokenParams {
   connectionId?: number | null;
   authProfileId?: number | null;
   organizationId: string;

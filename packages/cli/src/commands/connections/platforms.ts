@@ -5,7 +5,7 @@
 
 import inquirer from "inquirer";
 
-export interface PlatformPromptResult {
+interface PlatformPromptResult {
   connectionConfig: Record<string, string>;
   connectionSecrets: Array<{ envVar: string; value: string }>;
 }

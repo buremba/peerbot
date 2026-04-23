@@ -8,7 +8,7 @@
  * Stringify a value to JSON, converting bigint values to numbers (when safe)
  * or strings. Use this when serializing query results that may contain bigint columns.
  */
-export function stringifyBigIntSafe(value: unknown): string {
+function stringifyBigIntSafe(value: unknown): string {
   return JSON.stringify(value, (_key, candidate) => {
     if (typeof candidate === 'bigint') {
       const numeric = Number(candidate);

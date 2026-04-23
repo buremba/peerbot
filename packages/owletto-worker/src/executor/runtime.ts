@@ -2,7 +2,7 @@ import type { Checkpoint, Content, FeedOptions, SessionState } from '@lobu/owlet
 import type { ExecutionHooks, FeedSyncResult, SyncContext, SyncExecutor } from './interface';
 import { SubprocessExecutor } from './subprocess';
 
-export interface ConnectorOAuthCredentials {
+interface ConnectorOAuthCredentials {
   provider: string;
   accessToken: string;
   refreshToken?: string | null;
@@ -21,7 +21,7 @@ interface BaseExecutionParams {
   hooks?: ExecutionHooks;
 }
 
-export interface SyncConnectorExecutionParams extends BaseExecutionParams {
+interface SyncConnectorExecutionParams extends BaseExecutionParams {
   mode: 'sync';
   config?: Record<string, unknown> | null;
   checkpoint?: Checkpoint | null;
@@ -29,14 +29,14 @@ export interface SyncConnectorExecutionParams extends BaseExecutionParams {
   entityIds?: number[] | null;
 }
 
-export interface ActionConnectorExecutionParams extends BaseExecutionParams {
+interface ActionConnectorExecutionParams extends BaseExecutionParams {
   mode: 'action';
   actionKey: string;
   actionInput?: Record<string, unknown> | null;
   checkpoint?: Checkpoint | null;
 }
 
-export interface AuthConnectorExecutionParams extends BaseExecutionParams {
+interface AuthConnectorExecutionParams extends BaseExecutionParams {
   mode: 'authenticate';
   /** Connector-specific auth input (rare). */
   config?: Record<string, unknown> | null;
@@ -44,12 +44,12 @@ export interface AuthConnectorExecutionParams extends BaseExecutionParams {
   previousCredentials?: Record<string, unknown> | null;
 }
 
-export type ConnectorExecutionParams =
+type ConnectorExecutionParams =
   | SyncConnectorExecutionParams
   | ActionConnectorExecutionParams
   | AuthConnectorExecutionParams;
 
-export function mergeExecutionEnv(
+function mergeExecutionEnv(
   env?: Record<string, string | undefined>,
   connectionCredentials?: Record<string, string | undefined> | null
 ): Record<string, string | undefined> {
@@ -59,7 +59,7 @@ export function mergeExecutionEnv(
   };
 }
 
-export function mergeExecutionSessionState(
+function mergeExecutionSessionState(
   sessionState?: SessionState | null,
   credentials?: ConnectorOAuthCredentials | null
 ): SessionState | null {
@@ -71,7 +71,7 @@ export function mergeExecutionSessionState(
   };
 }
 
-export function buildConnectorExecutionContext(params: ConnectorExecutionParams): SyncContext {
+function buildConnectorExecutionContext(params: ConnectorExecutionParams): SyncContext {
   const env = mergeExecutionEnv(params.env, params.connectionCredentials);
   const sessionState = mergeExecutionSessionState(params.sessionState, params.credentials);
 

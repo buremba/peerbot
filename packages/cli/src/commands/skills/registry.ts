@@ -12,7 +12,7 @@ interface SkillFrontmatter {
   description?: string;
 }
 
-export interface BundledSkill {
+interface BundledSkill {
   id: PublicSkillId;
   name: string;
   description: string;
@@ -77,11 +77,11 @@ export function listBundledSkills(): BundledSkill[] {
   });
 }
 
-export function getBundledSkill(id: string): BundledSkill | undefined {
+function getBundledSkill(id: string): BundledSkill | undefined {
   return listBundledSkills().find((skill) => skill.id === id);
 }
 
-export interface InstallBundledSkillResult {
+interface InstallBundledSkillResult {
   skill: BundledSkill;
   destinationDir: string;
 }

@@ -13,7 +13,7 @@ export function checkBinary(name: string): string {
   }
 }
 
-export interface RunOptions {
+interface RunOptions {
   args: string[];
   env?: Record<string, string | undefined>;
   cwd?: string;

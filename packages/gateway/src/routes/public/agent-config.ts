@@ -39,21 +39,6 @@ const ErrorResponse = z.object({ error: z.string() });
 const TokenQuery = z.object({ token: z.string().optional() });
 const REDACTED_VALUE = "__LOBU_REDACTED__";
 
-export interface ConfigChangeEntry {
-  category:
-    | "mcp"
-    | "provider"
-    | "model"
-    | "packages"
-    | "skills"
-    | "instructions"
-    | "env"
-    | "plugins"
-    | "logging";
-  action: "added" | "removed" | "updated" | "reordered";
-  summary: string;
-  details?: string[];
-}
 const SENSITIVE_KEY_PATTERN =
   /(?:credential|secret|token|password|api(?:_|-)?key|authorization)/i;
 
@@ -81,14 +66,14 @@ const getConfigRoute = createRoute({
   },
 });
 
-export interface ProviderCredentialStore {
+interface ProviderCredentialStore {
   hasCredentials(
     agentId: string,
     context?: { userId?: string }
   ): Promise<boolean>;
 }
 
-export interface AgentConfigRoutesConfig {
+interface AgentConfigRoutesConfig {
   agentSettingsStore: AgentSettingsStore;
   agentConfigStore: Pick<AgentConfigStore, "getMetadata" | "getSettings">;
   userAgentsStore?: UserAgentsStore;

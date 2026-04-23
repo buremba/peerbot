@@ -7,7 +7,7 @@ import { errorMessage } from './errors';
 import { parseJsonObject } from './json';
 import logger from './logger';
 
-export interface ExecutionOAuthCredentials {
+interface ExecutionOAuthCredentials {
   provider: string;
   accessToken: string;
   refreshToken?: string | null;
@@ -15,7 +15,7 @@ export interface ExecutionOAuthCredentials {
   scope?: string | null;
 }
 
-export interface ResolvedExecutionAuth {
+interface ResolvedExecutionAuth {
   credentials: ExecutionOAuthCredentials | null;
   connectionCredentials: Record<string, string>;
   sessionState: Record<string, unknown> | null;

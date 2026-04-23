@@ -19,7 +19,7 @@
  *    a late subscriber can replay recent events.
  */
 
-export interface SseEvent {
+interface SseEvent {
   event: string;
   data: unknown;
   timestamp: number;

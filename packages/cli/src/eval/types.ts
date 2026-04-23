@@ -36,7 +36,6 @@ export const evalDefinitionSchema = z.object({
 });
 
 export type EvalDefinition = z.infer<typeof evalDefinitionSchema>;
-export type Turn = z.infer<typeof turnSchema>;
 export type Assertion = z.infer<typeof assertionSchema>;
 
 // ─── Results ────────────────────────────────────────────────────────────

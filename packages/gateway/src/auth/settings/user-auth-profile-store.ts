@@ -36,7 +36,7 @@ function buildProfileSecretPrefix(
   return `users/${userId}/agents/${agentId}/auth-profiles/${profileId}/`;
 }
 
-export interface UserAgentRef {
+interface UserAgentRef {
   userId: string;
   agentId: string;
 }

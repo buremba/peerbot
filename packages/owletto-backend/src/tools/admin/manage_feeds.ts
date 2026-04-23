@@ -94,7 +94,7 @@ export const ManageFeedsSchema = Type.Union([
 // Result Types
 // ============================================
 
-export type ManageFeedsResult =
+type ManageFeedsResult =
   | { error: string }
   | { action: 'list_feeds'; feeds: any[]; total: number; limit: number; offset: number }
   | { action: 'get_feed'; feed: any; recent_runs: any[] }

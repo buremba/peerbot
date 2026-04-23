@@ -8,7 +8,7 @@ import { type DetectedAgent, detectAgents } from './agent-detect.ts';
 import { getInstallTarget, INSTALL_TARGETS } from './install-targets.ts';
 import { getUsableToken } from './openclaw-auth.ts';
 
-export function isLocalUrl(url: string): boolean {
+function isLocalUrl(url: string): boolean {
   try {
     const host = new URL(url).hostname;
     return host === 'localhost' || host === '127.0.0.1' || host === '::1';
@@ -30,7 +30,7 @@ export async function healthPing(url: string, timeoutMs = 5000): Promise<boolean
   }
 }
 
-export async function authenticate(mcpUrl: string, skipAuth: boolean): Promise<void> {
+async function authenticate(mcpUrl: string, skipAuth: boolean): Promise<void> {
   if (skipAuth) {
     p.log.info('Skipping authentication (--skip-auth)');
     return;
@@ -75,7 +75,7 @@ function formatDetectionLine(agent: DetectedAgent): string {
   return `${agent.name} — not found`;
 }
 
-export async function selectAgents(agentFlag?: string): Promise<string[]> {
+async function selectAgents(agentFlag?: string): Promise<string[]> {
   if (agentFlag) {
     const target = getInstallTarget(agentFlag);
     if (!target) {
@@ -130,7 +130,7 @@ export async function selectAgents(agentFlag?: string): Promise<string[]> {
   return selected as string[];
 }
 
-export async function configureAgents(selectedIds: string[], mcpUrl: string): Promise<void> {
+async function configureAgents(selectedIds: string[], mcpUrl: string): Promise<void> {
   if (selectedIds.length === 0) {
     p.log.info('No agents selected.');
     return;

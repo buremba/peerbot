@@ -3,7 +3,7 @@ import { getDb } from '../db/client';
 import { ensureMemberEntity } from '../utils/member-entity';
 import { invalidateMembershipRoleCache } from './multi-tenant';
 
-export type JoinPublicResult =
+type JoinPublicResult =
   | { status: 'joined' | 'already_member'; organizationId: string; role: string }
   | { status: 'not_found' }
   | { status: 'not_public' };

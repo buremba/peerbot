@@ -40,24 +40,24 @@ interface ActiveWatcherRunInfo {
   error_message: string | null;
 }
 
-export interface MaterializeDueWatcherRunsResult {
+interface MaterializeDueWatcherRunsResult {
   dueWatchers: number;
   runsCreated: number;
   skipped: number;
 }
 
-export interface DispatchWatcherRunsResult {
+interface DispatchWatcherRunsResult {
   claimed: number;
   dispatched: number;
   reconciled: number;
   failed: number;
 }
 
-export interface ReconcileWatcherRunsResult {
+interface ReconcileWatcherRunsResult {
   reconciled: number;
 }
 
-export interface QueueWatcherRunResult {
+interface QueueWatcherRunResult {
   runId: number;
   status: string;
   created: boolean;
@@ -169,7 +169,7 @@ async function enqueueWatcherRunForRecord(
   return queued;
 }
 
-export async function enqueueWatcherRunForWatcher(
+async function enqueueWatcherRunForWatcher(
   watcherId: number,
   dispatchSource: WatcherRunPayload['dispatch_source'],
   db?: DbClient

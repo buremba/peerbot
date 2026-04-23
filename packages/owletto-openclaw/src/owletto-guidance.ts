@@ -20,7 +20,7 @@ function renderTemplate(template: string, tools: MemoryGuidanceTools): string {
     .replaceAll('{{searchTool}}', tools.searchTool);
 }
 
-export function renderOwlettoMemoryGuidance(tools: MemoryGuidanceTools): string[] {
+function renderOwlettoMemoryGuidance(tools: MemoryGuidanceTools): string[] {
   return MEMORY_RULE_TEMPLATES.map((template) => renderTemplate(template, tools));
 }
 

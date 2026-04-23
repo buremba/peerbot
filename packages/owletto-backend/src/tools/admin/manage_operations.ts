@@ -93,7 +93,7 @@ export const ManageOperationsSchema = Type.Union([
   RejectAction,
 ]);
 
-export type ManageOperationsResult =
+type ManageOperationsResult =
   | { error: string }
   | {
       action: 'list_available';

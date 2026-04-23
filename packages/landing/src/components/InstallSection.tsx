@@ -45,7 +45,7 @@ const embedWithTypescript = {
   ],
 };
 
-export type Mode = typeof localDev;
+type Mode = typeof localDev;
 
 export const modes = [localDev, embedWithTypescript];
 

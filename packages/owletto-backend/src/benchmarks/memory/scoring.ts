@@ -202,7 +202,7 @@ export function summarizeTrial(trial: TrialResult): TrialSummary {
   return summarizeQuestions(trial.questions);
 }
 
-export function summarizeByCategory(questions: QuestionResult[]): CategorySummary[] {
+function summarizeByCategory(questions: QuestionResult[]): CategorySummary[] {
   const grouped = new Map<string, QuestionResult[]>();
   for (const question of questions) {
     const existing = grouped.get(question.category) ?? [];

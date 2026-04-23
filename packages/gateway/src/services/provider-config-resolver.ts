@@ -1,7 +1,7 @@
 import type { ProviderConfigEntry } from "@lobu/core";
 import type { ProviderRegistryService } from "./provider-registry-service";
 
-export interface ResolvedMcpRegistryServer {
+interface ResolvedMcpRegistryServer {
   id: string;
   name: string;
   description: string;

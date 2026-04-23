@@ -306,7 +306,7 @@ export const GetContentSchema = Type.Object({
   ),
 });
 
-export type GetContentArgs = Static<typeof GetContentSchema>;
+type GetContentArgs = Static<typeof GetContentSchema>;
 
 export function getIncludeSupersededValidationErrors(args: Partial<GetContentArgs>): string[] {
   const errors: string[] = [];
@@ -361,7 +361,7 @@ interface ClassifierConfig {
 
 import type { UnprocessedRange } from '../types/watchers';
 
-export interface GetContentResult {
+interface GetContentResult {
   content: ContentItem[];
   total: number;
   page: {

@@ -55,7 +55,7 @@ type ExtractedConnectorCatalogMetadata = {
   login_enabled: boolean;
 };
 
-export interface CatalogConnectorDefinition {
+interface CatalogConnectorDefinition {
   key: string;
   name: string;
   description: string | null;
@@ -89,7 +89,7 @@ export function getDefaultConnectorCatalogDir(): string {
   return DEFAULT_CONNECTOR_DIR_CANDIDATES[0];
 }
 
-export function getDefaultConnectorCatalogUri(): string {
+function getDefaultConnectorCatalogUri(): string {
   return pathToFileURL(getDefaultConnectorCatalogDir()).toString();
 }
 

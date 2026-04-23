@@ -59,7 +59,7 @@ interface PublicEntityListResult {
   };
 }
 
-export interface PublicPageBootstrap {
+interface PublicPageBootstrap {
   path: string;
   ownerSlug: string;
   kind: 'workspace' | 'entity' | 'entity-type';

@@ -22,18 +22,18 @@ export interface AvailableOperation {
   output_schema?: Record<string, unknown>;
 }
 
-export interface LocalActionBackendConfig {
+interface LocalActionBackendConfig {
   backend: 'local_action';
   actionKey: string;
 }
 
-export interface McpToolBackendConfig {
+interface McpToolBackendConfig {
   backend: 'mcp_tool';
   toolName: string;
   upstreamUrl: string;
 }
 
-export interface HttpOperationBackendConfig {
+interface HttpOperationBackendConfig {
   backend: 'http_operation';
   method: string;
   pathTemplate: string;

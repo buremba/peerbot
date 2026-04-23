@@ -9,7 +9,7 @@ import { manageConnections } from '../tools/admin/manage_connections';
 import logger from './logger';
 import { getConfiguredPublicOrigin } from './public-origin';
 
-export interface CreateProvisionedConnectionParams {
+interface CreateProvisionedConnectionParams {
   organizationId: string;
   connectorKey: string;
   displayName: string;
@@ -21,7 +21,7 @@ export interface CreateProvisionedConnectionParams {
   requestUrl?: string;
 }
 
-export interface CreateProvisionedConnectionResult {
+interface CreateProvisionedConnectionResult {
   connectionId: number | null;
   error: string | null;
 }

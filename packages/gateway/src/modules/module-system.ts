@@ -14,7 +14,7 @@ export interface ModelOption {
   label: string;
 }
 
-export interface OrchestratorModule<TModuleData = unknown>
+interface OrchestratorModule<TModuleData = unknown>
   extends ModuleInterface<TModuleData> {
   buildEnvVars(
     agentId: string,
@@ -79,7 +79,7 @@ export interface ModelProviderModule extends OrchestratorModule {
   }>;
 }
 
-export interface DispatcherContext<TModuleData = unknown> {
+interface DispatcherContext<TModuleData = unknown> {
   userId: string;
   channelId: string;
   threadTs: string;
@@ -87,7 +87,7 @@ export interface DispatcherContext<TModuleData = unknown> {
   moduleData: TModuleData;
 }
 
-export interface DispatcherModule<TModuleData = unknown>
+interface DispatcherModule<TModuleData = unknown>
   extends ModuleInterface<TModuleData> {
   generateActionButtons(
     context: DispatcherContext<TModuleData>
@@ -98,10 +98,6 @@ export interface DispatcherModule<TModuleData = unknown>
     agentId: string,
     context: any
   ): Promise<boolean>;
-}
-
-export interface DispatcherModuleSource {
-  getDispatcherModules(): DispatcherModule[];
 }
 
 export abstract class BaseModule<TModuleData = unknown>

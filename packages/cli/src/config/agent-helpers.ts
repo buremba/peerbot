@@ -11,7 +11,7 @@ import { parse as parseToml } from "smol-toml";
 import { secretsSetCommand } from "../commands/secrets.js";
 import { CONFIG_FILENAME } from "./loader.js";
 
-export interface AgentContext {
+interface AgentContext {
   /** Absolute path to lobu.toml */
   configPath: string;
   /** Raw TOML text */

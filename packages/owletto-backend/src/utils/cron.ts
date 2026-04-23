@@ -17,15 +17,6 @@ export function nextRunAt(schedule: string, from: Date = new Date()): string {
 }
 
 /**
- * Compute the previous fire time from a cron expression relative to `from`.
- * Useful for computing watcher window boundaries.
- */
-export function prevRunAt(schedule: string, from: Date = new Date()): string {
-  const interval = CronExpressionParser.parse(schedule, { currentDate: from });
-  return interval.prev().toDate().toISOString();
-}
-
-/**
  * Validate a cron expression. Returns null if valid, error message if invalid.
  */
 export function validateSchedule(schedule: string): string | null {

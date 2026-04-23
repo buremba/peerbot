@@ -41,7 +41,7 @@ type CampaignMeta = {
   ctaLabel: string;
 };
 
-export type SurfaceId = "landing" | "skills" | "memory";
+type SurfaceId = "landing" | "skills" | "memory";
 
 export type SurfaceHeroCopy = {
   title: string;
@@ -3165,7 +3165,7 @@ const surfaceHeroCopy: Record<SurfaceId, SurfaceHeroCopyConfig> = {
   },
 };
 
-export type LandingUseCaseRole = "departments" | "personal" | "public";
+type LandingUseCaseRole = "departments" | "personal" | "public";
 
 const useCaseRoleMap: Record<LandingUseCaseId, LandingUseCaseRole> = {
   legal: "departments",

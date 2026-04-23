@@ -59,7 +59,7 @@ interface ConnectOauthState {
   codeVerifier: string;
 }
 
-export interface CliAuthRoutesConfig {
+interface CliAuthRoutesConfig {
   queue: IMessageQueue;
   externalAuthClient?: ExternalAuthClient;
   allowAdminPasswordLogin?: boolean;

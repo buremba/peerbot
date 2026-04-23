@@ -204,7 +204,7 @@ export const ManageEntitySchema = Type.Object({
   ),
 });
 
-export type ManageEntityArgs = Static<typeof ManageEntitySchema>;
+type ManageEntityArgs = Static<typeof ManageEntitySchema>;
 
 // ============================================
 // Result Types
@@ -240,7 +240,7 @@ interface RelationshipCountByType {
   count: number;
 }
 
-export type ManageEntityResult =
+type ManageEntityResult =
   | {
       action: 'create';
       entity: {

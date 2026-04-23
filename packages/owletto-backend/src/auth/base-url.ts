@@ -26,7 +26,7 @@ export function safeOrigin(value: string | undefined | null): string | null {
   return safeParseUrl(value)?.origin ?? null;
 }
 
-export interface ResolveBaseUrlOptions {
+interface ResolveBaseUrlOptions {
   /** Incoming request — used for forwarded headers and URL fallback. */
   request?: Request | null;
   /** Hono-style header accessor (alternative to a full Request). */

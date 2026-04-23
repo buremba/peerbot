@@ -13,7 +13,7 @@ import {
 //   - Lobu memory (Owletto) benchmarks README (source of truth)
 // Refresh all four on each Lobu memory-benchmark release.
 // last updated: 2026-04-21
-export const LONGMEMEVAL_ROWS: BenchmarkRow[] = [
+const LONGMEMEVAL_ROWS: BenchmarkRow[] = [
   {
     system: "Lobu",
     overall: "87.1%",
@@ -38,7 +38,7 @@ export const LONGMEMEVAL_ROWS: BenchmarkRow[] = [
   },
 ];
 
-export const LOCOMO_ROWS: BenchmarkRow[] = [
+const LOCOMO_ROWS: BenchmarkRow[] = [
   {
     system: "Lobu",
     overall: "57.8%",
@@ -63,7 +63,7 @@ export const LOCOMO_ROWS: BenchmarkRow[] = [
   },
 ];
 
-export type BenchmarkRow = {
+type BenchmarkRow = {
   system: string;
   overall: string;
   answer: string;
@@ -72,7 +72,7 @@ export type BenchmarkRow = {
   leader?: boolean;
 };
 
-export function BenchmarkTable(props: {
+function BenchmarkTable(props: {
   title: string;
   subtitle: string;
   rows: BenchmarkRow[];

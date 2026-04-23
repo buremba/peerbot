@@ -56,13 +56,13 @@ export const ManageViewTemplatesSchema = Type.Object({
   version: Type.Optional(Type.Number({ description: '[rollback] Version number to rollback to' })),
 });
 
-export type ManageViewTemplatesArgs = Static<typeof ManageViewTemplatesSchema>;
+type ManageViewTemplatesArgs = Static<typeof ManageViewTemplatesSchema>;
 
 // ============================================
 // Result Types
 // ============================================
 
-export type ManageViewTemplatesResult =
+type ManageViewTemplatesResult =
   | { action: 'set'; version: ViewTemplateVersionRow; message: string }
   | {
       action: 'get';

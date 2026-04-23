@@ -5,8 +5,6 @@
 
 import type { ModelSelectionState, RegistryEntry } from "./types";
 
-export type { RegistryEntry };
-
 export interface ProviderInfo {
   name: string;
   authType: "oauth" | "device-code" | "api-key";
@@ -42,9 +40,9 @@ export interface ModelOption {
   value: string;
 }
 
-export type SettingsScope = "agent" | "sandbox";
-export type SettingsSource = "local" | "inherited" | "mixed";
-export type SettingsSectionKey =
+type SettingsScope = "agent" | "sandbox";
+type SettingsSource = "local" | "inherited" | "mixed";
+type SettingsSectionKey =
   | "model"
   | "system-prompt"
   | "skills"
@@ -53,14 +51,14 @@ export type SettingsSectionKey =
   | "schedules"
   | "logging";
 
-export interface SectionView {
+interface SectionView {
   source: SettingsSource;
   editable: boolean;
   canReset: boolean;
   hasLocalOverride: boolean;
 }
 
-export interface ProviderView {
+interface ProviderView {
   id: string;
   source: SettingsSource;
   canEdit: boolean;

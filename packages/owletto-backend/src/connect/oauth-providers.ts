@@ -7,7 +7,7 @@
 
 import logger from '../utils/logger';
 
-export type OAuthTokenEndpointAuthMethod = 'client_secret_post' | 'client_secret_basic' | 'none';
+type OAuthTokenEndpointAuthMethod = 'client_secret_post' | 'client_secret_basic' | 'none';
 
 interface OAuthProviderConfig {
   authorizationUrl: string;
@@ -135,7 +135,7 @@ export function buildAuthorizationUrl(params: {
   return url.toString();
 }
 
-export interface OAuthTokens {
+interface OAuthTokens {
   accessToken: string;
   refreshToken: string | null;
   expiresIn: number | null;
@@ -234,13 +234,13 @@ export async function exchangeCodeForTokens(params: {
   }
 }
 
-export interface OAuthUserInfo {
+interface OAuthUserInfo {
   id: string;
   email: string | null;
   name: string | null;
 }
 
-export async function fetchRawUserInfo(params: {
+async function fetchRawUserInfo(params: {
   provider: string;
   accessToken: string;
   userinfoUrl?: string;
@@ -288,19 +288,6 @@ export async function fetchUserInfoWithRaw(params: {
   const raw = await fetchRawUserInfo(params);
   if (!raw) return { raw: null, normalized: null };
   return { raw, normalized: normalizeUserInfo(params.provider, raw) };
-}
-
-/**
- * Fetch user info from the OAuth provider
- */
-export async function fetchUserInfo(params: {
-  provider: string;
-  accessToken: string;
-  userinfoUrl?: string;
-}): Promise<OAuthUserInfo | null> {
-  const data = await fetchRawUserInfo(params);
-  if (!data) return null;
-  return normalizeUserInfo(params.provider, data);
 }
 
 function normalizeUserInfo(provider: string, data: Record<string, unknown>): OAuthUserInfo | null {

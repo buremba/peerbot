@@ -1,7 +1,7 @@
 /**
  * Pre-filled skill configuration for an agent config session
  */
-export interface PrefillSkill {
+interface PrefillSkill {
   /** Skill repository (e.g., "anthropics/skills/pdf") */
   repo: string;
   /** Display name */
@@ -13,7 +13,7 @@ export interface PrefillSkill {
 /**
  * Pre-filled MCP server configuration for an agent config session
  */
-export interface PrefillMcpServer {
+interface PrefillMcpServer {
   /** MCP server ID (key in mcpServers record) */
   id: string;
   /** Display name/description */
@@ -34,7 +34,7 @@ export interface PrefillMcpServer {
  * Source message context where settings link was requested.
  * Used to send follow-up notifications back to the same conversation.
  */
-export interface SettingsSourceContext {
+interface SettingsSourceContext {
   conversationId: string;
   channelId: string;
   teamId?: string;

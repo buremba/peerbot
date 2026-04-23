@@ -19,19 +19,19 @@ const logger = createLogger("openclaw-plugin-loader");
 
 type PluginHookName = "before_agent_start" | "agent_end";
 
-export type PluginHookHandler = (
+type PluginHookHandler = (
   event: Record<string, unknown>,
   ctx: Record<string, unknown>
 ) => unknown | Promise<unknown>;
 
-export interface PluginService {
+interface PluginService {
   id: string;
   start?: () => unknown | Promise<unknown>;
   stop?: () => unknown | Promise<unknown>;
 }
 
 /** Result of loading a single plugin */
-export interface LoadedPlugin {
+interface LoadedPlugin {
   manifest: PluginManifest;
   /** Raw ToolDefinition objects captured from registerTool() — no bridging needed */
   tools: ToolDefinition[];

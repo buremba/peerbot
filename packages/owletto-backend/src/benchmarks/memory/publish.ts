@@ -67,7 +67,7 @@ function renderMisses(system: AggregateSystemResult): string {
   ].join('\n');
 }
 
-export interface RetrievalDiagnostics {
+interface RetrievalDiagnostics {
   questionCount: number;
   distinctRetrievedIds: number;
   totalRetrievals: number;

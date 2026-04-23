@@ -3,12 +3,12 @@ import type { SettingsTokenPayload } from "../../auth/settings/token-service";
 import type { UserAgentsStore } from "../../auth/user-agents-store";
 import { getAuthMethod } from "../../connections/platform-auth-methods";
 
-export interface AgentOwnershipConfig {
+interface AgentOwnershipConfig {
   userAgentsStore?: UserAgentsStore;
   agentMetadataStore?: Pick<AgentConfigStore, "getMetadata">;
 }
 
-export interface AgentOwnershipResult {
+interface AgentOwnershipResult {
   authorized: boolean;
   ownerPlatform?: string;
   ownerUserId?: string;

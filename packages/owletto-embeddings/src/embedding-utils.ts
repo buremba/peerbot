@@ -1,4 +1,4 @@
-export function l2Normalize(vec: number[]): number[] {
+function l2Normalize(vec: number[]): number[] {
   const norm = Math.sqrt(vec.reduce((sum, x) => sum + x * x, 0));
   if (norm === 0) {
     return vec;

@@ -19,7 +19,7 @@ import type { WritableSecretStore } from "../../secrets";
 
 const logger = createLogger("mcp-oauth-callback");
 
-export interface McpOAuthRoutesConfig {
+interface McpOAuthRoutesConfig {
   redis: Redis;
   secretStore: WritableSecretStore;
   /** Absolute URL mounted on the gateway — used as redirect_uri verbatim. */

@@ -8,7 +8,7 @@
 import { getDb } from '../db/client';
 import logger from './logger';
 
-export interface AutoLinkParams {
+interface AutoLinkParams {
   eventId: number;
   entityIds: number[];
   content: string;

@@ -35,7 +35,7 @@ const SECRET_PLACEHOLDER_TTL_SECONDS = 7 * 24 * 60 * 60;
  */
 const GRANT_SYNC_CACHE_MAX = 1000;
 
-export interface DeploymentIdentity {
+interface DeploymentIdentity {
   conversationId: string;
   channelId?: string;
   platform?: string;

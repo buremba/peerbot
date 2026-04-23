@@ -1,17 +1,17 @@
-export interface RedisRateLimitStore {
+interface RedisRateLimitStore {
   incr(key: string): Promise<number>;
   expire(key: string, seconds: number): Promise<number>;
   ttl?(key: string): Promise<number>;
   del?(key: string): Promise<number>;
 }
 
-export interface FixedWindowRateLimitOptions {
+interface FixedWindowRateLimitOptions {
   key: string;
   limit: number;
   windowSeconds: number;
 }
 
-export interface FixedWindowRateLimitResult {
+interface FixedWindowRateLimitResult {
   allowed: boolean;
   count: number;
   limit: number;

@@ -13,7 +13,7 @@ const logger = createLogger("device-auth");
 const DEFAULT_MCP_SCOPE = "mcp:read mcp:write profile:read";
 const DEVICE_CODE_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code";
 
-export interface StoredCredential {
+interface StoredCredential {
   accessToken: string;
   refreshToken?: string;
   expiresAt: number;
@@ -58,7 +58,7 @@ interface StoredClient {
   clientSecret?: string;
 }
 
-export interface DeviceAuthConfig {
+interface DeviceAuthConfig {
   redis: Redis;
   mcpConfigService: McpConfigService;
   secretStore: WritableSecretStore;
@@ -316,7 +316,7 @@ export async function storeCredentialForScope(
  * Removes both the Redis pointer and the secret value from the store so no
  * orphaned tokens linger for the remainder of the 90-day TTL.
  */
-export async function deleteCredential(
+async function deleteCredential(
   redis: Redis,
   secretStore: WritableSecretStore,
   agentId: string,

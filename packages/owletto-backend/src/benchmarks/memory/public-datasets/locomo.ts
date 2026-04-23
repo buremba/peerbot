@@ -5,26 +5,26 @@ import type { BenchmarkQuestion, BenchmarkScenario, BenchmarkStep, BenchmarkSuit
 const LOCOMO_DATASET_URL =
   'https://raw.githubusercontent.com/snap-research/locomo/main/data/locomo10.json';
 
-export interface LoCoMoMessage {
+interface LoCoMoMessage {
   speaker: string;
   dia_id: string;
   text: string;
 }
 
-export interface LoCoMoQA {
+interface LoCoMoQA {
   question: string;
   answer: string | number;
   evidence: string[];
   category: number;
 }
 
-export interface LoCoMoConversation {
+interface LoCoMoConversation {
   speaker_a: string;
   speaker_b: string;
   [key: string]: string | LoCoMoMessage[] | undefined;
 }
 
-export interface LoCoMoItem {
+interface LoCoMoItem {
   sample_id: string;
   qa: LoCoMoQA[];
   conversation: LoCoMoConversation;
@@ -33,7 +33,7 @@ export interface LoCoMoItem {
   session_summary: Record<string, unknown>;
 }
 
-export interface ConvertLoCoMoOptions {
+interface ConvertLoCoMoOptions {
   limit?: number;
   offset?: number;
   suiteId?: string;
@@ -212,7 +212,7 @@ function questionToScenario(
   };
 }
 
-export async function downloadLoCoMoDataset(): Promise<LoCoMoItem[]> {
+async function downloadLoCoMoDataset(): Promise<LoCoMoItem[]> {
   const response = await fetch(LOCOMO_DATASET_URL);
   if (!response.ok) {
     throw new Error(`Failed to download LoCoMo: ${response.status} ${response.statusText}`);

@@ -30,7 +30,7 @@ const MAX_AGENTS_PER_USER = parseInt(
   10
 );
 
-export interface AgentRoutesConfig {
+interface AgentRoutesConfig {
   userAgentsStore: UserAgentsStore;
   agentMetadataStore: AgentMetadataStore;
   agentSettingsStore: AgentSettingsStore;

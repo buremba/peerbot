@@ -483,7 +483,7 @@ export const ManageWatchersSchema = Type.Object({
 // Type Definitions
 // ============================================
 
-export type ManageWatchersArgs = Static<typeof ManageWatchersSchema>;
+type ManageWatchersArgs = Static<typeof ManageWatchersSchema>;
 
 interface WatcherOperationResult {
   watcher_id: string;
@@ -492,7 +492,7 @@ interface WatcherOperationResult {
   version?: number;
 }
 
-export type ManageWatchersResult =
+type ManageWatchersResult =
   | {
       action: 'create';
       watcher_id: string;
@@ -581,8 +581,8 @@ export const ListWatchersSchema = Type.Object({
   ),
 });
 
-export type ListWatchersArgs = Static<typeof ListWatchersSchema>;
-export type ListWatchersResult = { watchers: any[] };
+type ListWatchersArgs = Static<typeof ListWatchersSchema>;
+type ListWatchersResult = { watchers: any[] };
 
 // ============================================
 // Main Function

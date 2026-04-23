@@ -47,7 +47,7 @@ Rules:
 ## Conversation
 {{transcript}}`;
 
-export interface JudgeSessionOptions {
+interface JudgeSessionOptions {
   agentId?: string;
   provider?: string;
   model?: string;

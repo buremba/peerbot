@@ -8,7 +8,7 @@ const SCORING_PROFILE_VALUES = [
   'inverse_rating_votesum_content_30_40_30',
 ] as const;
 
-export type ScoringProfile = (typeof SCORING_PROFILE_VALUES)[number];
+type ScoringProfile = (typeof SCORING_PROFILE_VALUES)[number];
 
 const SCORING_PROFILE_SET = new Set<string>(SCORING_PROFILE_VALUES);
 

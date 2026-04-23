@@ -117,7 +117,7 @@ export const ManageEntitySchemaSchema = Type.Object({
   ),
 });
 
-export type ManageEntitySchemaArgs = Static<typeof ManageEntitySchemaSchema>;
+type ManageEntitySchemaArgs = Static<typeof ManageEntitySchemaSchema>;
 
 // ============================================
 // Result Types
@@ -177,7 +177,7 @@ interface RelationshipTypeRuleRow {
   created_at: string;
 }
 
-export type ManageEntitySchemaResult =
+type ManageEntitySchemaResult =
   // Entity type results
   | { schema_type: 'entity_type'; action: 'list'; entity_types: EntityTypeRow[] }
   | { schema_type: 'entity_type'; action: 'get'; entity_type: EntityTypeRow | null }

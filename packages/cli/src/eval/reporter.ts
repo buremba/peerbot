@@ -123,9 +123,7 @@ export async function writeJsonReport(
 
 // ─── Markdown comparison report ────────────────────────────────────────
 
-export async function loadSavedResults(
-  evalsDir: string
-): Promise<EvalReport[]> {
+async function loadSavedResults(evalsDir: string): Promise<EvalReport[]> {
   const resultsDir = join(evalsDir, ".results");
   try {
     const files = await readdir(resultsDir);
@@ -160,7 +158,7 @@ function latestPerModel(reports: EvalReport[]): EvalReport[] {
   return Array.from(byModel.values());
 }
 
-export async function generateComparisonReport(
+async function generateComparisonReport(
   evalsDir: string,
   currentReport?: EvalReport
 ): Promise<string> {

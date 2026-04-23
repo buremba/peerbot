@@ -45,7 +45,7 @@ export interface DataSourceContext {
 }
 
 /** Operations that bypass READ ONLY transactions or have side-effects. */
-export const FORBIDDEN_OPS = /\b(COPY|IMPORT|PRAGMA|CALL)\b/i;
+const FORBIDDEN_OPS = /\b(COPY|IMPORT|PRAGMA|CALL)\b/i;
 const MAX_ROWS = 1000;
 const QUERY_TIMEOUT_MS = 5000;
 
@@ -60,7 +60,7 @@ const sqlParser = new Parser();
  * Rejects schema-qualified references (e.g. public.users, pg_catalog.pg_roles).
  * Filters out user-defined CTE names so they aren't treated as virtual tables.
  */
-export function extractTableRefs(query: string): string[] {
+function extractTableRefs(query: string): string[] {
   // Replace {{...}} placeholders with a literal so the parser doesn't choke
   const forParsing = query.replace(/\{\{\w+(?:\.\w+)?\}\}/g, '0');
 
@@ -154,7 +154,7 @@ export function validateAndScopeQuery(
  * Core tables get predefined scoping patterns. Unknown table names are
  * treated as entity_type slugs (filtered from the entities table).
  */
-export function buildScopedQuery(
+function buildScopedQuery(
   userQuery: string,
   tableRefs: string[],
   context: DataSourceContext,

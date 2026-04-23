@@ -14,7 +14,7 @@ import logger from '../utils/logger';
 import { createSyncRun } from '../utils/queue-helpers';
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from '../utils/run-statuses';
 
-export interface CheckDueFeedsResult {
+interface CheckDueFeedsResult {
   dueFeeds: number;
   runsCreated: number;
   skipped: number;
@@ -82,6 +82,3 @@ export async function materializeDueFeeds(env: Env, db?: DbClient): Promise<Chec
   return { dueFeeds: dueFeedRows.length, runsCreated, skipped };
 }
 
-export async function checkDueFeeds(env: Env): Promise<CheckDueFeedsResult> {
-  return materializeDueFeeds(env);
-}

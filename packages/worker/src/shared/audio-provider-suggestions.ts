@@ -1,4 +1,4 @@
-export interface AudioProviderSuggestions {
+interface AudioProviderSuggestions {
   providerIds: string[];
   providerDisplayList: string;
   available: boolean | null;

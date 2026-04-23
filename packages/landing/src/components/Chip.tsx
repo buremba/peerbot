@@ -3,7 +3,7 @@ import { darkBase, textColor } from "./memory/styles";
 const primaryAccent = "var(--color-tg-accent)";
 const primaryAccentSoft = "rgba(var(--color-tg-accent-rgb), 0.08)";
 
-export interface ChipProps {
+interface ChipProps {
   label: string;
   active?: boolean;
   onClick?: () => void;

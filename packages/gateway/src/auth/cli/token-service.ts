@@ -35,20 +35,20 @@ interface CliSessionRecord {
   expiresAt: number;
 }
 
-export interface CliTokenIdentity {
+interface CliTokenIdentity {
   userId: string;
   email?: string;
   name?: string;
 }
 
-export interface CliIssuedTokens {
+interface CliIssuedTokens {
   accessToken: string;
   refreshToken: string;
   expiresAt: number;
   user: CliTokenIdentity;
 }
 
-export interface CliAccessTokenIdentity extends CliTokenIdentity {
+interface CliAccessTokenIdentity extends CliTokenIdentity {
   sessionId: string;
   expiresAt: number;
 }

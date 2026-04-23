@@ -49,9 +49,9 @@ export const QuerySqlSchema = Type.Object({
   ),
 });
 
-export type QuerySqlArgs = Static<typeof QuerySqlSchema>;
+type QuerySqlArgs = Static<typeof QuerySqlSchema>;
 
-export interface QuerySqlResult {
+interface QuerySqlResult {
   rows: Record<string, unknown>[];
   columns: { name: string; type: string }[];
   total_count: number;

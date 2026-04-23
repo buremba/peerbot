@@ -6,7 +6,6 @@ import type {
   ConnectorAuthSchema,
 } from '@lobu/owletto-sdk';
 
-export type { ConnectorAuthEnvField, ConnectorAuthMethod, ConnectorAuthSchema };
 export type ConnectorAuthOAuthMethod = ConnectorAuthOAuth & {
   userinfoUrl?: string;
   authParams?: Record<string, string>;

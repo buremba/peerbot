@@ -6,7 +6,7 @@ export type BashCommandPolicy = {
   denyPrefixes: string[];
 };
 
-export type ToolPolicy = {
+type ToolPolicy = {
   toolsConfig?: ToolsConfig;
   allowedPatterns: string[];
   deniedPatterns: string[];

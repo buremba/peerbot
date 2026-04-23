@@ -140,7 +140,7 @@ async function buildCustomCommands(
   return commands;
 }
 
-export interface EmbeddedBashOpsOptions {
+interface EmbeddedBashOpsOptions {
   /** Thread-specific workspace directory used as the sandbox filesystem root. */
   workspaceDir?: string;
   /**

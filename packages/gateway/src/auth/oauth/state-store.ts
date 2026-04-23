@@ -115,10 +115,6 @@ export interface ProviderOAuthStateData {
   context?: OAuthPlatformContext;
 }
 
-export type ProviderOAuthState = ProviderOAuthStateData & {
-  createdAt: number;
-};
-
 /**
  * Create a provider OAuth state store for PKCE flow
  */
@@ -133,11 +129,9 @@ export function createOAuthStateStore(
   );
 }
 
-export interface SlackInstallStateData {
+interface SlackInstallStateData {
   redirectUri: string;
 }
-
-export type SlackInstallState = SlackInstallStateData & { createdAt: number };
 
 export function createSlackInstallStateStore(
   redis: Redis

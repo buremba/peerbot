@@ -32,14 +32,6 @@ const NEXT_FIRE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days; tick will refresh
 const REDIS_NEXT_FIRE_PREFIX = "schedule:next_fire:";
 const REDIS_LEASE_PREFIX = "schedule:lease:";
 
-export interface ScheduleFirePayload {
-  scheduleId: string;
-  agentId: string;
-  task: string;
-  deliverTo?: string;
-  approver?: string;
-}
-
 let scheduleServiceInstance: ScheduleService | undefined;
 
 export function setScheduleServiceInstance(service: ScheduleService): void {

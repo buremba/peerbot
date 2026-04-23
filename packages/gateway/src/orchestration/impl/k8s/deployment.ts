@@ -43,7 +43,7 @@ const WORKER_SELECTOR_LABELS = {
     BASE_WORKER_LABELS["app.kubernetes.io/component"],
 } as const;
 
-export interface K8sProbe {
+interface K8sProbe {
   httpGet?: {
     path: string;
     port: number | string;
@@ -62,7 +62,7 @@ export interface K8sProbe {
   failureThreshold?: number;
 }
 
-export interface SimpleDeployment {
+interface SimpleDeployment {
   apiVersion: "apps/v1";
   kind: "Deployment";
   metadata: {

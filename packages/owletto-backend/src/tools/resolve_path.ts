@@ -36,7 +36,7 @@ export const ResolvePathSchema = Type.Object({
   ),
 });
 
-export type ResolvePathArgs = Static<typeof ResolvePathSchema>;
+type ResolvePathArgs = Static<typeof ResolvePathSchema>;
 
 export interface ResolvedWorkspace {
   slug: string;
@@ -52,7 +52,7 @@ export interface ResolvedPathEntity {
   name: string;
 }
 
-export interface ViewTemplateTab {
+interface ViewTemplateTab {
   tab_name: string;
   tab_order: number;
   json_template: Record<string, any>;
@@ -112,7 +112,7 @@ export interface ResolvePathResult {
   bootstrap: ResolvePathBootstrap | null;
 }
 
-export interface BootstrapEntityTypeSummary {
+interface BootstrapEntityTypeSummary {
   id: number;
   slug: string;
   name: string;
@@ -122,13 +122,13 @@ export interface BootstrapEntityTypeSummary {
   entity_count: number;
 }
 
-export interface BootstrapScopeSummary {
+interface BootstrapScopeSummary {
   total_content: number;
   active_connections: number;
   watchers_count: number;
 }
 
-export interface BootstrapContentItem {
+interface BootstrapContentItem {
   id: number;
   entity_ids: number[];
   platform: string;
@@ -141,7 +141,7 @@ export interface BootstrapContentItem {
   occurred_at: string | null;
 }
 
-export interface BootstrapFeedItem {
+interface BootstrapFeedItem {
   id: number;
   connection_id: number;
   connector_key: string;
@@ -155,7 +155,7 @@ export interface BootstrapFeedItem {
   updated_at: string;
 }
 
-export interface BootstrapWatcherItem {
+interface BootstrapWatcherItem {
   watcher_id: string;
   name: string;
   status: string;
@@ -172,7 +172,7 @@ export interface BootstrapWatcherItem {
   updated_at: string;
 }
 
-export interface BootstrapConnectorDefinition {
+interface BootstrapConnectorDefinition {
   key: string;
   name: string;
   description: string | null;

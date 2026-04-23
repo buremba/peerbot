@@ -14,7 +14,7 @@ interface McpInput {
   description: string;
 }
 
-export interface HttpMcpServerConfig {
+interface HttpMcpServerConfig {
   id: string;
   upstreamUrl: string;
   oauth?: McpOAuthConfig;

@@ -9,7 +9,7 @@ const logger = createLogger("artifact-store");
 const DEFAULT_ARTIFACTS_DIR = path.join(os.tmpdir(), "lobu-artifacts");
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
 
-export interface StoredArtifactMetadata {
+interface StoredArtifactMetadata {
   artifactId: string;
   filename: string;
   contentType: string;
@@ -17,7 +17,7 @@ export interface StoredArtifactMetadata {
   createdAt: number;
 }
 
-export interface PublishArtifactResult {
+interface PublishArtifactResult {
   artifactId: string;
   filename: string;
   size: number;

@@ -3,7 +3,7 @@ import { readActiveContext } from './lib/context.ts';
 import { loadEnvFile } from './lib/env-loader.ts';
 import { setOutputMode } from './lib/output.ts';
 
-export interface GlobalFlags {
+interface GlobalFlags {
   profile?: string;
   json: boolean;
   quiet: boolean;

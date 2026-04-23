@@ -14,7 +14,7 @@ import type {
   TurnResult,
 } from "./types.js";
 
-export interface RunOptions {
+interface RunOptions {
   gatewayUrl: string;
   authToken: string;
   agentId?: string;

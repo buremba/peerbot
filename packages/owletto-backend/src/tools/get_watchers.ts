@@ -106,21 +106,21 @@ export const GetWatcherSchema = Type.Object({
 // Type Definitions
 // ============================================
 
-export type GetWatcherArgs = Static<typeof GetWatcherSchema>;
+type GetWatcherArgs = Static<typeof GetWatcherSchema>;
 
-export interface WatcherStatus {
+interface WatcherStatus {
   watcher_id: string;
   watcher_name: string;
   status: string;
   total_windows: number;
 }
 
-export interface WindowGap {
+interface WindowGap {
   start: string;
   end: string;
 }
 
-export interface GetWatcherResult {
+interface GetWatcherResult {
   windows: WatcherWindow[];
   classification_timeline?: ClassificationTimeline;
   watcher?: WatcherMetadata;

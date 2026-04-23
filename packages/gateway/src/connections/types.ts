@@ -79,6 +79,3 @@ export function isSecretField(fieldName: string): boolean {
   const lower = fieldName.toLowerCase();
   return SECRET_FIELD_PATTERNS.some((p) => lower.includes(p));
 }
-
-/** Derived from PlatformAdapterConfig — no separate list to maintain. */
-export type SupportedPlatform = PlatformAdapterConfig["platform"];

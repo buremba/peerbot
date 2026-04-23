@@ -5,7 +5,7 @@ import type { FileLoadedAgent } from "../config/file-loader";
 
 const logger = createLogger("declared-agent-registry");
 
-export interface DeclaredAgentEntry {
+interface DeclaredAgentEntry {
   settings: Partial<AgentSettings>;
   credentials: DeclaredCredential[];
 }

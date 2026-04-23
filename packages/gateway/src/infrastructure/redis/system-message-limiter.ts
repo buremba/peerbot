@@ -3,7 +3,7 @@ import type Redis from "ioredis";
 
 const logger = createLogger("system-message-limiter");
 
-export interface SendOnceOptions {
+interface SendOnceOptions {
   /**
    * How long to remember that this message was successfully sent.
    * This is the main debounce window.

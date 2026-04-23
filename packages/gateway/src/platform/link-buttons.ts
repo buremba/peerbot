@@ -26,7 +26,7 @@ function isLocalhostUrl(url: string): boolean {
   }
 }
 
-export interface LinkButton {
+interface LinkButton {
   text: string;
   url: string;
 }

@@ -15,7 +15,7 @@ import {
 /**
  * User credential with account info
  */
-export interface UserCredential {
+interface UserCredential {
   id: number;
   userId: string;
   accountId: string;
@@ -34,7 +34,7 @@ export interface UserCredential {
 /**
  * Credential tokens for sync execution
  */
-export interface CredentialTokens {
+interface CredentialTokens {
   provider: string;
   accessToken: string | null;
   refreshToken: string | null;

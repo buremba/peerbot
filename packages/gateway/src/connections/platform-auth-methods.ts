@@ -1,4 +1,4 @@
-export interface PlatformAuthMethod {
+interface PlatformAuthMethod {
   type: "oauth" | "claim-code";
 }
 

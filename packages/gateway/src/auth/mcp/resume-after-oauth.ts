@@ -22,7 +22,7 @@ import {
 
 const logger = createLogger("mcp-oauth-resume");
 
-export interface PostOAuthCompletionParams {
+interface PostOAuthCompletionParams {
   coreServices: CoreServices;
   /** Optional — used to pull conversation history for the worker payload. */
   chatInstanceManager?: ChatInstanceManager;

@@ -100,7 +100,7 @@ function truncate(text: string, max: number): string {
   return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
 }
 
-export function renderHelp(
+function renderHelp(
   mcpId: string,
   state: McpRuntimeState
 ): { stdout: string; exitCode: number } {

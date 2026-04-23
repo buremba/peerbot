@@ -31,7 +31,7 @@ const BASE_MEMBER_EVENT_METADATA_SCHEMA = {
   },
 } as const;
 
-export const DEFAULT_MEMBER_EVENT_KINDS = {
+const DEFAULT_MEMBER_EVENT_KINDS = {
   identity: {
     description: 'Facts about who a person or entity is',
     metadataSchema: BASE_MEMBER_EVENT_METADATA_SCHEMA,
@@ -73,7 +73,7 @@ export const DEFAULT_MEMBER_EVENT_KINDS = {
   change: { description: 'Entity field changes and audit trail' },
 } as const;
 
-export const DEFAULT_MEMBER_METADATA_SCHEMA = {
+const DEFAULT_MEMBER_METADATA_SCHEMA = {
   type: 'object',
   properties: {
     email: {
@@ -137,7 +137,7 @@ function mergeEnumValues(existing: string[] | undefined, required: readonly stri
   return merged;
 }
 
-export function mergeMemberMetadataSchema(
+function mergeMemberMetadataSchema(
   schema: Record<string, unknown> | null | undefined
 ): MemberMetadataSchema {
   const existing = (schema ?? null) as MemberMetadataSchema | null;
@@ -297,7 +297,7 @@ export function resolveMemberSchemaFieldsFromSchema(
   };
 }
 
-export function memberMetadataSchemasEqual(
+function memberMetadataSchemasEqual(
   a: Record<string, unknown> | MemberMetadataSchema | null | undefined,
   b: Record<string, unknown> | MemberMetadataSchema | null | undefined
 ): boolean {

@@ -1,15 +1,8 @@
 import type {
   AgentSettings,
-  ModelSelectionMode,
   ModelSelectionState,
   ProviderModelPreferences,
 } from "@lobu/core";
-
-export type {
-  ModelSelectionMode,
-  ModelSelectionState,
-  ProviderModelPreferences,
-};
 
 function normalizePreferenceMap(
   map: ProviderModelPreferences | undefined

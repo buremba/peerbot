@@ -27,7 +27,7 @@ export interface WatcherSource {
  * A versioned snapshot of a watcher's analysis configuration.
  * Like connector_versions for connector_definitions.
  */
-export interface WatcherVersion {
+interface WatcherVersion {
   id: number;
   watcher_id: number;
   version: number;
@@ -120,7 +120,7 @@ export interface KeyingConfig {
 // Version Info (for listing available versions)
 // ============================================
 
-export interface WatcherVersionInfo {
+interface WatcherVersionInfo {
   version: number;
   name: string;
   created_at: string;

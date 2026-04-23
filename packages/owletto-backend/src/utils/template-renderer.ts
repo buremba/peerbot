@@ -11,7 +11,7 @@ interface TemplateEntity {
   type: string;
 }
 
-export interface TemplateContext {
+interface TemplateContext {
   sources: Record<string, ContentItem[]>;
   content: ContentItem[];
   entities: TemplateEntity[];

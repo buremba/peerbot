@@ -7,7 +7,7 @@ const logger = createLogger("token-refresh-job");
 const REFRESH_INTERVAL_MS = 2 * 60 * 1000; // 2 minutes
 const EXPIRY_BUFFER_MS = 5 * 60 * 1000; // Refresh tokens expiring within 5 minutes
 
-export interface RefreshableProvider {
+interface RefreshableProvider {
   providerId: string;
   oauthClient: OAuthClient;
 }

@@ -41,7 +41,7 @@ export interface DiscoveredClient {
   tokenEndpointAuthMethod?: string;
 }
 
-export interface DiscoveryResult {
+interface DiscoveryResult {
   endpoints: DiscoveredOAuthEndpoints;
   client: DiscoveredClient;
 }
@@ -72,7 +72,7 @@ interface AuthServerMetadata {
  * emits both a generic and an MCP-specific one), the LAST value is returned —
  * servers list refinements after the generic default per RFC 9728 guidance.
  */
-export function parseResourceMetadataFromWwwAuth(
+function parseResourceMetadataFromWwwAuth(
   header: string | null
 ): string | null {
   if (!header) return null;
@@ -326,7 +326,7 @@ async function writeSecretJson<T>(
   }
 }
 
-export interface DiscoverOptions {
+interface DiscoverOptions {
   mcpId: string;
   /** Agent that owns this MCP binding — used for cache scoping. */
   agentId: string;

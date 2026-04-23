@@ -105,7 +105,7 @@ export interface AnswerResult {
   raw?: unknown;
 }
 
-export interface TrialRunContext {
+interface TrialRunContext {
   runId: string;
   trialIndex: number;
 }
@@ -118,7 +118,7 @@ export interface ScenarioContext extends TrialContext {
   scenario: BenchmarkScenario;
 }
 
-export interface ScenarioRunContext extends TrialRunContext {
+interface ScenarioRunContext extends TrialRunContext {
   scenarioId: string;
 }
 
@@ -160,7 +160,7 @@ export type AnswererConfig =
   | ExtractiveAnswererConfig
   | NoneAnswererConfig;
 
-export interface BenchSystemConfigBase {
+interface BenchSystemConfigBase {
   id: string;
   label: string;
   type: string;
@@ -186,7 +186,7 @@ export interface CommandSystemConfig extends BenchSystemConfigBase {
   env?: Record<string, string>;
 }
 
-export interface OwlettoInprocessSystemConfig extends BenchSystemConfigBase {
+interface OwlettoInprocessSystemConfig extends BenchSystemConfigBase {
   type: 'owletto-inprocess';
   embedWrites?: boolean;
 }

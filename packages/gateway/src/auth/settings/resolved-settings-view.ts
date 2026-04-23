@@ -16,7 +16,7 @@ export const SETTINGS_SECTION_KEYS = [
 ] as const;
 
 export type SettingsSectionKey = (typeof SETTINGS_SECTION_KEYS)[number];
-export type SettingsScope = "agent" | "sandbox";
+type SettingsScope = "agent" | "sandbox";
 export type SettingsSource = "local" | "inherited" | "mixed";
 
 export interface ResolvedSectionView {
@@ -34,7 +34,7 @@ export interface ResolvedProviderView {
   hasLocalOverride: boolean;
 }
 
-export interface ResolvedSettingsView {
+interface ResolvedSettingsView {
   agentId: string;
   scope: SettingsScope;
   isSandbox: boolean;
@@ -46,13 +46,13 @@ export interface ResolvedSettingsView {
   providerSources: Record<string, ResolvedProviderView>;
 }
 
-export interface ResolvedSettingsViewer {
+interface ResolvedSettingsViewer {
   settingsMode?: "admin" | "user";
   allowedScopes?: string[];
   isAdmin?: boolean;
 }
 
-export interface ResolvedSettingsViewInput {
+interface ResolvedSettingsViewInput {
   agentId: string;
   agentSettingsStore: AgentSettingsStore;
   agentMetadataStore?: AgentMetadataStore;

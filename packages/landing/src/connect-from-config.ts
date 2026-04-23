@@ -12,7 +12,7 @@ type ConnectFromDocSection = {
   paragraphs: string[];
 };
 
-export type ConnectFromNpmPackage = {
+type ConnectFromNpmPackage = {
   name: string;
   registryUrl: string;
   sourceUrl: string;
@@ -50,7 +50,7 @@ const mcpClientDescribe =
   (label: string) => (showcase: LandingUseCaseShowcase) =>
     `Use ${label} on top of the ${showcase.label.toLowerCase()} workspace so it can read and write the same shared memory shown in this example.`;
 
-export const connectFromClientConfigs: Record<
+const connectFromClientConfigs: Record<
   ConnectFromClientId,
   ConnectFromClientConfig
 > = {

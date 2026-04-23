@@ -4,7 +4,7 @@ import { parseEnvContent } from "./env-file.js";
 
 export const GATEWAY_DEFAULT_URL = "http://localhost:8080";
 
-export interface ResolveGatewayUrlOptions {
+interface ResolveGatewayUrlOptions {
   cwd?: string;
 }
 

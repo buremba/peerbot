@@ -8,7 +8,7 @@
  * so tools without annotations require approval (conservative default).
  */
 
-export interface McpToolAnnotations {
+interface McpToolAnnotations {
   readOnlyHint?: boolean;
   destructiveHint?: boolean;
   idempotentHint?: boolean;

@@ -503,7 +503,7 @@ function createSseStream(
   });
 }
 
-export interface BedrockOpenAIServiceOptions {
+interface BedrockOpenAIServiceOptions {
   modelCatalog?: BedrockModelCatalog;
   modelResolver?: ModelResolver;
   bedrockStreamer?: BedrockStreamer;

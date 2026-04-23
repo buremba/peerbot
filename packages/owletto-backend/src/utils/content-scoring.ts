@@ -5,7 +5,7 @@ import logger from './logger';
 import { getScoringFormulaSql, resolveStoredScoringProfile } from './scoring-profiles';
 import { validateAndFormatIds, validateNumericId } from './sql-validation';
 
-export interface NormalizedScoreFilters {
+interface NormalizedScoreFilters {
   connection_ids?: number[];
   platform?: string;
   since?: Date;
@@ -26,7 +26,7 @@ export interface NormalizedScoreFilters {
  * IMPORTANT: This must include `classifications` to match ContentsTab expectations.
  * The frontend relies on classifications being present for all sort modes (date AND score).
  */
-export interface NormalizedScoreContent {
+interface NormalizedScoreContent {
   id: number;
   entity_ids: number[] | string;
   connection_id: number;

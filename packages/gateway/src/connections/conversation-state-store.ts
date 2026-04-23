@@ -13,7 +13,7 @@ export interface HistoryEntry {
   timestamp: number;
 }
 
-export interface HistoryMessage {
+interface HistoryMessage {
   role: "user" | "assistant";
   content: string;
   name?: string;

@@ -34,7 +34,7 @@ const STATE_KEY_PREFIX = "mcp-oauth:state";
  * Bound to `state` (CSRF) and loaded by the callback handler to exchange the
  * returned `code` for tokens.
  */
-export interface McpOAuthStateData extends ProviderOAuthStateData {
+interface McpOAuthStateData extends ProviderOAuthStateData {
   mcpId: string;
   /** Opaque credential-scope key — `userId` for per-user, `channel-<id>` for channel scope. */
   scopeKey: string;
@@ -71,7 +71,7 @@ function generateCodeChallenge(verifier: string): string {
   return createHash("sha256").update(verifier).digest("base64url");
 }
 
-export interface StartFlowOptions {
+interface StartFlowOptions {
   redis: Redis;
   secretStore: WritableSecretStore;
   mcpId: string;
@@ -90,7 +90,7 @@ export interface StartFlowOptions {
   connectionId?: string;
 }
 
-export interface StartFlowResult {
+interface StartFlowResult {
   authorizationUrl: string;
   state: string;
 }
@@ -195,7 +195,7 @@ export async function startAuthCodeFlow(
   };
 }
 
-export interface CompleteFlowOptions {
+interface CompleteFlowOptions {
   redis: Redis;
   secretStore: WritableSecretStore;
   state: string;
@@ -203,7 +203,7 @@ export interface CompleteFlowOptions {
   redirectUri: string;
 }
 
-export interface CompleteFlowResult {
+interface CompleteFlowResult {
   mcpId: string;
   agentId: string;
   userId: string;

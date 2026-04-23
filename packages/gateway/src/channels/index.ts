@@ -1,4 +1,1 @@
-export {
-  type ChannelBinding,
-  ChannelBindingService,
-} from "./binding-service";
+export { ChannelBindingService } from "./binding-service";

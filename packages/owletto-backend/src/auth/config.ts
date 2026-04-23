@@ -4,16 +4,16 @@ import { getPrimaryAuthProfileForKind, normalizeAuthValues } from '../utils/auth
 import { TtlCache } from '../utils/ttl-cache';
 import { safeParseUrl } from './base-url';
 
-export interface AuthConfig {
+interface AuthConfig {
   social: Record<string, boolean>;
   magicLink: boolean;
   phone: boolean;
   emailPassword: boolean;
 }
 
-export type TokenEndpointAuthMethod = 'client_secret_post' | 'client_secret_basic' | 'none';
+type TokenEndpointAuthMethod = 'client_secret_post' | 'client_secret_basic' | 'none';
 
-export interface EnabledLoginProviderConfig {
+interface EnabledLoginProviderConfig {
   connectorKey: string;
   provider: string;
   loginScopes: string[];
@@ -23,7 +23,7 @@ export interface EnabledLoginProviderConfig {
   tokenEndpointAuthMethod?: TokenEndpointAuthMethod;
 }
 
-export interface AuthConfigOptions {
+interface AuthConfigOptions {
   request?: Request;
   organizationId?: string | null;
 }

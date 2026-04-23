@@ -48,7 +48,7 @@ interface CitationConfig {
 /**
  * Classifier definition from template
  */
-export interface ClassifierDefinition {
+interface ClassifierDefinition {
   slug: string;
   name: string;
   source_path: string; // JSONPath like "$.problems_analysis.top_problems[*]"

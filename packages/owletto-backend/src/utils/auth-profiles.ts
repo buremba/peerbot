@@ -25,7 +25,7 @@ export interface AuthProfileRow {
   updated_at: string;
 }
 
-export interface BrowserSessionSummary {
+interface BrowserSessionSummary {
   auth_mode: 'cdp' | 'cookies' | 'empty';
   cookie_count: number;
   captured_at: string | null;
@@ -35,7 +35,7 @@ export interface BrowserSessionSummary {
   cdp_url: string | null;
 }
 
-export interface BrowserSessionReadiness extends BrowserSessionSummary {
+interface BrowserSessionReadiness extends BrowserSessionSummary {
   usable: boolean;
   resolved_cdp_url: string | null;
 }
@@ -62,7 +62,7 @@ export function normalizeAuthValues(raw: unknown): Record<string, string> {
   return normalized;
 }
 
-export function normalizeAuthData(
+function normalizeAuthData(
   profileKind: AuthProfileKind,
   raw: unknown
 ): Record<string, unknown> {
@@ -100,7 +100,7 @@ function scoreAuthCookie(cookie: BrowserCookie, connectorKey?: string | null): n
   return score;
 }
 
-export function findLikelyBrowserAuthCookie(
+function findLikelyBrowserAuthCookie(
   authData: Record<string, unknown> | null | undefined,
   connectorKey?: string | null
 ): BrowserCookie | null {

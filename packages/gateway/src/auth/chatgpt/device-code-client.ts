@@ -31,13 +31,13 @@ const TOKEN_HEADERS = {
   "User-Agent": "reqwest/0.12.24",
 };
 
-export interface DeviceCodeResponse {
+interface DeviceCodeResponse {
   userCode: string;
   deviceAuthId: string;
   interval: number;
 }
 
-export interface DeviceTokenResult {
+interface DeviceTokenResult {
   accessToken: string;
   refreshToken: string;
   expiresIn: number;

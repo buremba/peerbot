@@ -271,7 +271,7 @@ function buildOrgScopeWhere(options: {
 /**
  * Search options for content vector search
  */
-export interface ContentSearchOptions {
+interface ContentSearchOptions {
   // Entity filtering
   entity_id?: number;
   organization_id?: string; // Required when entity_id is omitted (org-wide mode)
@@ -318,7 +318,7 @@ export interface ContentSearchOptions {
 /**
  * Content search result with combined score and thread metadata
  */
-export interface ContentSearchResult {
+interface ContentSearchResult {
   id: number;
   entity_ids: number[];
   connection_id: number | null;
@@ -375,7 +375,7 @@ export interface ContentSearchResult {
   cursor_fetched_count?: number | null;
 }
 
-export interface ContentSearchPageInfo {
+interface ContentSearchPageInfo {
   limit: number;
   offset: number;
   has_more: boolean;
@@ -383,7 +383,7 @@ export interface ContentSearchPageInfo {
   has_newer?: boolean;
 }
 
-export interface ContentSearchResponse {
+interface ContentSearchResponse {
   content: ContentSearchResult[];
   total: number;
   page: ContentSearchPageInfo;

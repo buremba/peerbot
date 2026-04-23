@@ -13,14 +13,3 @@ export const PaginationFields = {
   offset: Type.Optional(Type.Number({ description: 'Pagination offset (default: 0)', default: 0 })),
 };
 
-/** Entity ID field used for scoping operations. */
-export const EntityIdField = Type.Optional(
-  Type.Number({ description: 'Entity ID to scope operations' })
-);
-
-/** Freeform metadata record. */
-export const MetadataField = Type.Optional(
-  Type.Record(Type.String(), Type.Unknown(), {
-    description: 'Custom metadata',
-  })
-);

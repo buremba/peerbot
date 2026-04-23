@@ -18,7 +18,7 @@ export interface ValidationError {
   message: string;
 }
 
-export interface ValidationResult {
+interface ValidationResult {
   valid: boolean;
   errors?: ValidationError[];
 }

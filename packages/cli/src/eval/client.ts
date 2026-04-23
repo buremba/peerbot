@@ -64,7 +64,7 @@ export async function createSession(
   };
 }
 
-export async function sendMessage(
+async function sendMessage(
   session: Session,
   content: string
 ): Promise<{ traceId?: string; messageId?: string }> {
@@ -99,7 +99,7 @@ export async function sendMessage(
  * prevents SSE backlog replay from prior turns in the same session from being
  * misread as the current turn's response.
  */
-export async function collectResponse(
+async function collectResponse(
   session: Session,
   timeoutMs: number,
   messageId?: string

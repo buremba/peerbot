@@ -7,7 +7,7 @@ export function listMigrationFiles(migrationsDir: string): string[] {
     .sort();
 }
 
-export function extractMigrationUpSection(content: string): string {
+function extractMigrationUpSection(content: string): string {
   return (
     content
       .split('-- migrate:down')[0]

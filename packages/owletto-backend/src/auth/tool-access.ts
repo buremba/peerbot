@@ -5,7 +5,7 @@
  * callers are allowed to read.
  */
 
-export type ToolAccessLevel = 'read' | 'write' | 'admin';
+type ToolAccessLevel = 'read' | 'write' | 'admin';
 
 const MEMBER_WRITE_ACTIONS: Record<string, Set<string> | null> = {
   save_knowledge: null,

@@ -9,7 +9,7 @@ export interface FeedDefinition {
   } | null;
 }
 
-export function getFeedDefinition(
+function getFeedDefinition(
   feedsSchema: Record<string, FeedDefinition> | null,
   feedKey: string
 ): FeedDefinition | null {

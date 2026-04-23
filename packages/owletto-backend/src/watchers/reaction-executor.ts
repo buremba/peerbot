@@ -15,7 +15,7 @@ import { getAvailableOperations, trackWatcherReaction } from '../utils/watcher-r
 
 const REACTION_TIMEOUT_MS = 60_000;
 
-export interface ExecuteReactionOptions {
+interface ExecuteReactionOptions {
   compiledScript: string;
   context: ReactionContext;
   env: Record<string, string | undefined>;

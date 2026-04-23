@@ -20,7 +20,7 @@ import { combineEmbeddings, cosineSimilarity, roundTo4 } from './vector-math';
 const CHILD_EMBEDDING_WEIGHT = 0.7;
 const PARENT_EMBEDDING_WEIGHT = 0.3;
 
-export interface ClassificationQueryOptions {
+interface ClassificationQueryOptions {
   /**
    * Target selection mode
    */

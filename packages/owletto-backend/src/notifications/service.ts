@@ -3,7 +3,7 @@ import { isLobuGatewayRunning } from '../lobu/gateway';
 import { getLobuServiceToken } from '../lobu/service-token';
 import logger from '../utils/logger';
 
-export interface CreateNotificationParams {
+interface CreateNotificationParams {
   organizationId: string;
   userId: string;
   type:
@@ -22,7 +22,7 @@ export interface CreateNotificationParams {
   connectionId?: string | null;
 }
 
-export interface NotificationRow {
+interface NotificationRow {
   id: number;
   organization_id: string;
   user_id: string;
@@ -34,32 +34,6 @@ export interface NotificationRow {
   resource_url: string | null;
   is_read: boolean;
   created_at: string;
-}
-
-export async function createNotification(params: CreateNotificationParams): Promise<number> {
-  const sql = getDb();
-  const rows = await sql`
-    INSERT INTO notifications (organization_id, user_id, type, title, body, resource_type, resource_id, resource_url)
-    VALUES (
-      ${params.organizationId},
-      ${params.userId},
-      ${params.type},
-      ${params.title},
-      ${params.body ?? null},
-      ${params.resourceType ?? null},
-      ${params.resourceId ?? null},
-      ${params.resourceUrl ?? null}
-    )
-    RETURNING id
-  `;
-  const id = (rows[0] as { id: number }).id;
-
-  // Deliver to bot connections (fire-and-forget)
-  deliverToBotConnections(params).catch((err) =>
-    logger.warn({ err }, '[Notifications] Failed to deliver to bot connections')
-  );
-
-  return id;
 }
 
 /**

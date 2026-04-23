@@ -360,25 +360,6 @@ export async function createAuthRun(params: {
   }
 }
 
-export async function createActionRun(params: {
-  organizationId: string;
-  connectionId: number;
-  connectorKey: string;
-  actionKey: string;
-  actionInput: Record<string, unknown>;
-  approvalMode: 'inline' | 'queued';
-}): Promise<number> {
-  return createConnectorOperationRun({
-    organizationId: params.organizationId,
-    connectionId: params.connectionId,
-    connectorKey: params.connectorKey,
-    operationKey: params.actionKey,
-    operationInput: params.actionInput,
-    approvalMode: params.approvalMode,
-    requireCompiledCode: true,
-  });
-}
-
 export async function createConnectorOperationRun(params: {
   organizationId: string;
   connectionId: number;

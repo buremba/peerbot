@@ -5,7 +5,7 @@ import { withAdvisoryLock } from './advisory-lock';
 const MAINTENANCE_LOCK_KEY = 71002;
 const MAINTENANCE_INTERVAL_MS = 5 * 60_000;
 
-export async function runMaintenanceTasks(env: Env): Promise<void> {
+async function runMaintenanceTasks(env: Env): Promise<void> {
   logger.info('Running scheduled maintenance tasks');
   let failures = 0;
 

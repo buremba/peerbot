@@ -43,7 +43,7 @@ interface WindowState {
  * - Interpolates between windows for smooth limiting
  * - Periodic cleanup of stale entries
  */
-export class RateLimiter {
+class RateLimiter {
   private windows = new Map<string, WindowState>();
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
 

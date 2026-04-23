@@ -8,16 +8,16 @@ const DEFAULT_API_URL = "https://app.lobu.ai/api/v1";
 
 const CONTEXTS_FILE = join(LOBU_CONFIG_DIR, "config.json");
 
-export interface LobuContextEntry {
+interface LobuContextEntry {
   apiUrl: string;
 }
 
-export interface LobuContextConfig {
+interface LobuContextConfig {
   currentContext: string;
   contexts: Record<string, LobuContextEntry>;
 }
 
-export interface ResolvedContext {
+interface ResolvedContext {
   name: string;
   apiUrl: string;
   source: "default" | "config" | "env";

@@ -21,7 +21,7 @@ function findOwlettoRepoRoot(start: string): string | null {
   }
 }
 
-export function resolveOwlettoRepoRoot(): string | null {
+function resolveOwlettoRepoRoot(): string | null {
   const fromCwd = findOwlettoRepoRoot(process.cwd());
   if (fromCwd) return fromCwd;
 
@@ -52,7 +52,7 @@ export interface RuntimeRootResolution {
   source: 'repo' | 'packaged';
 }
 
-export function resolveOwlettoRuntimeRoot(): RuntimeRootResolution | null {
+function resolveOwlettoRuntimeRoot(): RuntimeRootResolution | null {
   const repoRoot = resolveOwlettoRepoRoot();
   if (repoRoot) {
     const backendRoot = join(repoRoot, 'packages', 'owletto-backend');
@@ -68,15 +68,6 @@ export function resolveOwlettoRuntimeRoot(): RuntimeRootResolution | null {
   }
 
   return null;
-}
-
-export function requireOwlettoRepoRoot(): string {
-  const repoRoot = resolveOwlettoRepoRoot();
-  if (repoRoot) return repoRoot;
-
-  throw new CliError(
-    'This command requires an Owletto repo checkout. Run it from the repository after `pnpm install`.'
-  );
 }
 
 export function requireOwlettoRuntimeRoot(): RuntimeRootResolution {

@@ -4,7 +4,7 @@ import type { OAuthCredentials } from "../oauth/credentials";
 export const DEVICE_CODE_GRANT_TYPE =
   "urn:ietf:params:oauth:grant-type:device_code";
 
-export interface DeviceCodeClientConfig {
+interface DeviceCodeClientConfig {
   clientId: string;
   clientSecret?: string;
   tokenUrl: string;
@@ -27,7 +27,7 @@ export interface DeviceAuthorizationStartResult {
   expiresIn: number;
 }
 
-export type DeviceAuthorizationPollResult =
+type DeviceAuthorizationPollResult =
   | {
       status: "pending";
       interval?: number;

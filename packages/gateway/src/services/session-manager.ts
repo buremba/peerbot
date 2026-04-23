@@ -29,23 +29,13 @@ export class StateAdapterSessionStore implements SessionStore {
   }
 
   async set(sessionKey: string, session: ThreadSession): Promise<void> {
-    try {
-      await this.conversations.setSession(sessionKey, session);
-      logger.debug(`Stored session ${sessionKey}`);
-    } catch (error) {
-      logger.error(`Failed to set session ${sessionKey}:`, error);
-      throw error;
-    }
+    await this.conversations.setSession(sessionKey, session);
+    logger.debug(`Stored session ${sessionKey}`);
   }
 
   async delete(sessionKey: string): Promise<void> {
-    try {
-      await this.conversations.deleteSession(sessionKey);
-      logger.debug(`Deleted session ${sessionKey}`);
-    } catch (error) {
-      logger.error(`Failed to delete session ${sessionKey}:`, error);
-      throw error;
-    }
+    await this.conversations.deleteSession(sessionKey);
+    logger.debug(`Deleted session ${sessionKey}`);
   }
 
   async getByThread(

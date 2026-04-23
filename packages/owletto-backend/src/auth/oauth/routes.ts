@@ -502,16 +502,6 @@ oauthRoutes.post('/oauth/authorize/consent', requireAuth, async (c) => {
     return c.json(createOAuthError('invalid_request', 'Invalid JSON body'), 400);
   }
 
-  console.log(
-    '[OAuth] Consent body:',
-    JSON.stringify({
-      organization_id: body.organization_id,
-      scope: body.scope,
-      approved: body.approved,
-      resource: body.resource,
-    })
-  );
-
   const consentHasMcpScopes = hasMcpScopes(body.scope);
 
   // User denied consent

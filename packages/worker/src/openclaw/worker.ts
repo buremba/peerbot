@@ -616,12 +616,8 @@ export class OpenClawWorker implements WorkerExecutor {
   }
 
   async cleanup(): Promise<void> {
-    try {
-      logger.info("Cleaning up worker resources...");
-      logger.info("Worker cleanup completed");
-    } catch (error) {
-      logger.error("Error during cleanup:", error);
-    }
+    logger.info("Cleaning up worker resources...");
+    logger.info("Worker cleanup completed");
   }
 
   getWorkerTransport(): WorkerTransport | null {

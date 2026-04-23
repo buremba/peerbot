@@ -112,7 +112,6 @@ export default class G2Connector extends ConnectorRuntime {
     const productKey = productMatch ? productMatch[1] : 'unknown';
 
     const baseUrl = productUrl;
-    const _checkpoint = (ctx.checkpoint ?? {}) as G2Checkpoint;
     const allEvents: EventEnvelope[] = [];
 
     const session = await openStealthBrowser({ cdpUrl: 'auto' });

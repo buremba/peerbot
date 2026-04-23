@@ -221,17 +221,12 @@ export class WorkerClient implements ExecutorClient {
     return { Authorization: `Bearer ${this.authToken}` };
   }
 
-  private async requestJson<T>(
-    path: string,
-    body: Record<string, unknown>,
-    headers?: Record<string, string>
-  ): Promise<T> {
+  private async requestJson<T>(path: string, body: Record<string, unknown>): Promise<T> {
     const response = await fetch(`${this.apiUrl}${path}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         ...this.authHeaders(),
-        ...headers,
       },
       body: JSON.stringify(body),
     });
@@ -244,17 +239,12 @@ export class WorkerClient implements ExecutorClient {
     return response.json() as Promise<T>;
   }
 
-  private async requestVoid(
-    path: string,
-    body: Record<string, unknown>,
-    headers?: Record<string, string>
-  ): Promise<void> {
+  private async requestVoid(path: string, body: Record<string, unknown>): Promise<void> {
     const response = await fetch(`${this.apiUrl}${path}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         ...this.authHeaders(),
-        ...headers,
       },
       body: JSON.stringify(body),
     });
@@ -298,21 +288,7 @@ export class WorkerClient implements ExecutorClient {
    * Stream content batch to backend
    */
   async stream(batch: StreamBatch): Promise<void> {
-    const response = await fetch(`${this.apiUrl}/api/workers/stream`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...this.authHeaders(),
-      },
-      body: JSON.stringify(batch),
-    });
-
-    if (!response.ok) {
-      const responseText = await response.text();
-      throw new Error(
-        `/api/workers/stream failed: ${response.status} ${response.statusText} ${responseText}`
-      );
-    }
+    await this.requestVoid('/api/workers/stream', batch as unknown as Record<string, unknown>);
   }
 
   /**

@@ -269,7 +269,7 @@ export class GatewayClient {
               logger.error(
                 `❌ Event error threshold reached (${this.eventErrorCount} errors). Triggering cleanup...`
               );
-              this.cleanupOnEventError(eventType, error).catch((cleanupErr) => {
+              this.cleanupOnEventError(eventType).catch((cleanupErr) => {
                 logger.error(
                   "Failed to cleanup after event errors:",
                   cleanupErr
@@ -889,10 +889,7 @@ export class GatewayClient {
   /**
    * Cleanup resources after event handling errors exceed threshold
    */
-  private async cleanupOnEventError(
-    eventType: string,
-    _error: unknown
-  ): Promise<void> {
+  private async cleanupOnEventError(eventType: string): Promise<void> {
     logger.warn(
       `Cleaning up after ${this.eventErrorCount} event handling errors (last: ${eventType})`
     );

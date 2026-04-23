@@ -11,37 +11,34 @@ const logger = createLogger("network-allowlist");
  * - "domain1,domain2": Allowlist mode (deny by default, allow only these)
  */
 export function loadAllowedDomains(): string[] {
-  const domains: string[] = [];
-
   const allowedDomains = process.env.WORKER_ALLOWED_DOMAINS;
-  if (allowedDomains) {
-    const trimmed = allowedDomains.trim();
-
-    // Special case: * means unrestricted access
-    if (trimmed === "*") {
-      logger.debug("WORKER_ALLOWED_DOMAINS=* - unrestricted internet access");
-      return ["*"];
-    }
-
-    const parsed =
-      normalizeDomainPatterns(
-        trimmed
-          .split(",")
-          .map((d) => d.trim())
-          .filter((d) => d.length > 0)
-      ) ?? [];
-
-    domains.push(...parsed);
-    logger.debug(
-      `Loaded ${parsed.length} allowed domains from WORKER_ALLOWED_DOMAINS`
-    );
-  } else {
+  if (!allowedDomains) {
     logger.warn(
       "⚠️  WORKER_ALLOWED_DOMAINS not set - workers will have NO internet access (complete isolation)"
     );
+    return [];
   }
 
-  return domains;
+  const trimmed = allowedDomains.trim();
+
+  // Special case: * means unrestricted access
+  if (trimmed === "*") {
+    logger.debug("WORKER_ALLOWED_DOMAINS=* - unrestricted internet access");
+    return ["*"];
+  }
+
+  const parsed =
+    normalizeDomainPatterns(
+      trimmed
+        .split(",")
+        .map((d) => d.trim())
+        .filter((d) => d.length > 0)
+    ) ?? [];
+
+  logger.debug(
+    `Loaded ${parsed.length} allowed domains from WORKER_ALLOWED_DOMAINS`
+  );
+  return parsed;
 }
 
 /**
@@ -55,23 +52,19 @@ export function isUnrestrictedMode(allowedDomains: string[]): boolean {
  * Load disallowed domains from environment
  */
 export function loadDisallowedDomains(): string[] {
-  const domains: string[] = [];
-
   const disallowedDomains = process.env.WORKER_DISALLOWED_DOMAINS;
-  if (disallowedDomains) {
-    const parsed =
-      normalizeDomainPatterns(
-        disallowedDomains
-          .split(",")
-          .map((d) => d.trim())
-          .filter((d) => d.length > 0)
-      ) ?? [];
+  if (!disallowedDomains) return [];
 
-    domains.push(...parsed);
-    logger.debug(
-      `Loaded ${parsed.length} disallowed domains from WORKER_DISALLOWED_DOMAINS`
-    );
-  }
+  const parsed =
+    normalizeDomainPatterns(
+      disallowedDomains
+        .split(",")
+        .map((d) => d.trim())
+        .filter((d) => d.length > 0)
+    ) ?? [];
 
-  return domains;
+  logger.debug(
+    `Loaded ${parsed.length} disallowed domains from WORKER_DISALLOWED_DOMAINS`
+  );
+  return parsed;
 }

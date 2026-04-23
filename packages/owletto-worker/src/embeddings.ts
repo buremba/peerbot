@@ -57,16 +57,6 @@ async function getExtractor(): Promise<FeatureExtractionPipeline> {
   return extractorPromise;
 }
 
-async function _generateLocalEmbedding(text: string): Promise<number[]> {
-  const extractor = await getExtractor();
-  const output = await extractor(text, {
-    pooling: 'cls',
-    normalize: true,
-  });
-
-  return Array.from(output.data) as number[];
-}
-
 async function batchGenerateLocalEmbeddings(
   texts: string[],
   batchSize: number = DEFAULT_BATCH_SIZE

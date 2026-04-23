@@ -72,21 +72,16 @@ export class GrantStore {
       ...(denied && { denied: true }),
     };
 
-    try {
-      if (expiresAt === null) {
-        await setJsonValue(this.redis, key, value);
-      } else {
-        const ttlSeconds = Math.max(
-          1,
-          Math.ceil((expiresAt - Date.now()) / 1000)
-        );
-        await setJsonValue(this.redis, key, value, ttlSeconds);
-      }
-      logger.info("Granted access", { agentId, pattern, expiresAt });
-    } catch (error) {
-      logger.error("Failed to grant access", { agentId, pattern, error });
-      throw error;
+    if (expiresAt === null) {
+      await setJsonValue(this.redis, key, value);
+    } else {
+      const ttlSeconds = Math.max(
+        1,
+        Math.ceil((expiresAt - Date.now()) / 1000)
+      );
+      await setJsonValue(this.redis, key, value, ttlSeconds);
     }
+    logger.info("Granted access", { agentId, pattern, expiresAt });
   }
 
   private async getStoredGrant(key: string): Promise<StoredGrant | null> {
@@ -221,17 +216,12 @@ export class GrantStore {
    * Revoke a grant for an agent.
    */
   async revoke(agentId: string, pattern: string): Promise<void> {
-    try {
-      const patterns = new Set(getDomainGrantCandidates(pattern));
-      patterns.add(normalizeDomainPattern(pattern));
-      await this.redis.del(
-        ...[...patterns].map((candidate) => this.buildKey(agentId, candidate))
-      );
-      logger.info("Revoked grant", { agentId, pattern });
-    } catch (error) {
-      logger.error("Failed to revoke grant", { agentId, pattern, error });
-      throw error;
-    }
+    const patterns = new Set(getDomainGrantCandidates(pattern));
+    patterns.add(normalizeDomainPattern(pattern));
+    await this.redis.del(
+      ...[...patterns].map((candidate) => this.buildKey(agentId, candidate))
+    );
+    logger.info("Revoked grant", { agentId, pattern });
   }
 
   private buildKey(agentId: string, pattern: string): string {

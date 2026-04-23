@@ -241,7 +241,7 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
     if (checkpoint.sync_token) {
       const result = await this.syncWithToken(token, calendarId, checkpoint.sync_token, maxResults);
       if (result) {
-        return this.buildResult(result.events, result.nextSyncToken, events.length);
+        return this.buildResult(result.events, result.nextSyncToken, result.events.length);
       }
       // syncToken invalid (410) -- fall through to full sync
     }

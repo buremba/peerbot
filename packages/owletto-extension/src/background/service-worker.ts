@@ -26,15 +26,6 @@ chrome.runtime.onInstalled.addListener(async (details) => {
   await chrome.alarms.create(POLL_ALARM_NAME, {
     periodInMinutes: POLL_INTERVAL_MINUTES,
   });
-
-  // Open side panel on install
-  if (details.reason === 'install') {
-    // Check if user is already logged in
-    const isLoggedIn = await auth.isLoggedIn();
-    if (!isLoggedIn) {
-      console.log('[Owletto] Opening sidebar for onboarding');
-    }
-  }
 });
 
 /**
@@ -90,7 +81,7 @@ async function executeJob(job: Job): Promise<void> {
     }
 
     // Build target URL from job options
-    const targetUrl = buildTargetUrl(job, config);
+    const targetUrl = buildTargetUrl(job);
     console.log(`[Owletto] Target URL: ${targetUrl}`);
 
     // Execute extraction
@@ -128,7 +119,7 @@ async function executeJob(job: Job): Promise<void> {
 /**
  * Build target URL from job options
  */
-function buildTargetUrl(job: Job, _config: ExtractorDefinition): string {
+function buildTargetUrl(job: Job): string {
   const options = job.config || {};
 
   // Platform-specific URL building
@@ -250,25 +241,22 @@ async function extractWithTab(
     let totalItems = result.items?.length || 0;
     let currentPage = 1;
     const maxPages = 10; // Limit pages per run
+    let nextResult = result;
 
-    while (result.hasNextPage && result.nextPageUrl && currentPage < maxPages) {
+    while (nextResult.hasNextPage && nextResult.nextPageUrl && currentPage < maxPages) {
       currentPage++;
-      console.log(`[Owletto] Navigating to page ${currentPage}: ${result.nextPageUrl}`);
+      console.log(`[Owletto] Navigating to page ${currentPage}: ${nextResult.nextPageUrl}`);
 
-      await chrome.tabs.update(tab.id, { url: result.nextPageUrl });
+      await chrome.tabs.update(tab.id, { url: nextResult.nextPageUrl });
       await waitForTabLoad(tab.id);
       await delay(config.rate_limits?.delay_between_pages_ms || 2000);
 
-      const pageResult = await sendExtractionRequest(tab.id, config);
-      const pageItems = pageResult.items ?? [];
+      nextResult = await sendExtractionRequest(tab.id, config);
+      const pageItems = nextResult.items ?? [];
 
-      if (pageResult.success && pageItems.length > 0) {
+      if (nextResult.success && pageItems.length > 0) {
         await api.stream(job.run_id, pageItems);
         totalItems += pageItems.length;
-      }
-
-      if (!pageResult.hasNextPage || !pageResult.nextPageUrl) {
-        break;
       }
     }
 
@@ -448,12 +436,11 @@ async function testExtraction(
   try {
     // Get config
     const config = await state.getExtractorConfig(platform);
-    const activeConfig = config;
-    if (!activeConfig) {
+    if (!config) {
       return { success: false, error: `No cached config for platform: ${platform}` };
     }
 
-    const result = await sendExtractionRequest(tabId, activeConfig);
+    const result = await sendExtractionRequest(tabId, config);
     return {
       success: result.success,
       items: result.items,

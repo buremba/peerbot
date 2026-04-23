@@ -70,7 +70,6 @@ interface NetworkBrowser {
 async function acquireForNetworkSync(
   cdpUrl: string | 'auto' | null | undefined,
   cookies: Cookie[],
-  _authDomains: string[],
   stealth: boolean
 ): Promise<NetworkBrowser> {
   // --- Layer 1: CDP via Playwright connectOverCDP ---
@@ -160,7 +159,6 @@ export async function browserNetworkSync<TItem>(opts: {
   const acquired = await acquireForNetworkSync(
     opts.cdpUrl ?? null,
     opts.cookies,
-    cfg.authDomains,
     cfg.stealth ?? false
   );
 

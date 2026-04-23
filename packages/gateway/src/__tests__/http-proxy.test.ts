@@ -301,11 +301,21 @@ describe("HTTP Proxy DNS pinning", () => {
     __testOnly.setDnsLookup(null);
   });
 
-  function mockLookup(addresses: LookupAddress[][]): { calls: number } {
-    const state = { calls: 0 };
+  interface MockLookupState {
+    calls: number;
+    firstCall: Promise<void>;
+  }
+
+  function mockLookup(addresses: LookupAddress[][]): MockLookupState {
+    let resolveFirst!: () => void;
+    const firstCall = new Promise<void>((resolve) => {
+      resolveFirst = resolve;
+    });
+    const state: MockLookupState = { calls: 0, firstCall };
     __testOnly.setDnsLookup(async () => {
       const i = Math.min(state.calls, addresses.length - 1);
       state.calls += 1;
+      if (state.calls === 1) resolveFirst();
       return addresses[i]!;
     });
     return state;
@@ -340,23 +350,49 @@ describe("HTTP Proxy DNS pinning", () => {
     expect(res.statusLine).toContain("403");
   });
 
+  async function issueRawRequest(request: string): Promise<net.Socket> {
+    const client = new net.Socket();
+    await new Promise<void>((resolve, reject) => {
+      client.on("error", reject);
+      client.connect(proxyPort, "127.0.0.1", () => {
+        client.write(request);
+        resolve();
+      });
+    });
+    return client;
+  }
+
   test("performs exactly one DNS lookup per HTTP proxy request", async () => {
     const state = mockLookup([[{ address: "203.0.113.1", family: 4 }]]);
     const token = createValidToken(deploymentName);
-    // Upstream connection to TEST-NET-3 will fail/time out — irrelevant.
-    // What matters is that the proxy only resolves once.
-    await rawProxyRequest("http://rebind.test/", {
-      proxyAuth: makeBasicAuth(deploymentName, token),
-    }).catch(() => undefined);
+    const auth = makeBasicAuth(deploymentName, token);
+    const client = await issueRawRequest(
+      `GET http://rebind.test/ HTTP/1.1\r\nHost: rebind.test\r\n` +
+        `Proxy-Authorization: ${auth}\r\nConnection: close\r\n\r\n`
+    );
+    try {
+      await state.firstCall;
+      await new Promise((r) => setTimeout(r, 100));
+    } finally {
+      client.destroy();
+    }
     expect(state.calls).toBe(1);
   });
 
   test("performs exactly one DNS lookup per CONNECT request", async () => {
     const state = mockLookup([[{ address: "203.0.113.1", family: 4 }]]);
     const token = createValidToken(deploymentName);
-    await connectRequest("rebind.test", 443, {
-      proxyAuth: makeBasicAuth(deploymentName, token),
-    }).catch(() => undefined);
+    const auth = makeBasicAuth(deploymentName, token);
+    const client = await issueRawRequest(
+      `CONNECT rebind.test:443 HTTP/1.1\r\nHost: rebind.test:443\r\n` +
+        `Proxy-Authorization: ${auth}\r\n\r\n`
+    );
+    try {
+      await state.firstCall;
+      await new Promise((r) => setTimeout(r, 100));
+    } finally {
+      client.destroy();
+    }
     expect(state.calls).toBe(1);
   });
 
@@ -378,12 +414,14 @@ describe("HTTP Proxy DNS pinning", () => {
     await new Promise<void>((resolve) => trap.listen(0, "127.0.0.1", resolve));
     const trapAddr = trap.address() as net.AddressInfo;
 
+    const client = new net.Socket();
     try {
-      // Fire the proxy request via a raw socket and give the proxy time to
-      // do DNS + attempt an upstream connect, then bail. We don't wait for
-      // the upstream connect to 203.0.113.1 to fail — that can take seconds.
+      // Fire the proxy request via a raw socket. Wait for the mocked DNS
+      // lookup to be called once (signal), then give the event loop a small
+      // settle window for any follow-up connect attempt to land on the trap
+      // before asserting. We don't wait for the upstream connect to
+      // 203.0.113.1 to fail — that can take seconds on CI.
       const token = createValidToken(deploymentName);
-      const client = new net.Socket();
       await new Promise<void>((resolve) => {
         client.on("error", () => resolve());
         client.connect(proxyPort, "127.0.0.1", () => {
@@ -393,13 +431,13 @@ describe("HTTP Proxy DNS pinning", () => {
               `Proxy-Authorization: ${makeBasicAuth(deploymentName, token)}\r\n` +
               "Connection: close\r\n\r\n"
           );
-          setTimeout(() => {
-            client.destroy();
-            resolve();
-          }, 500);
+          resolve();
         });
       });
+      await state.firstCall;
+      await new Promise((r) => setTimeout(r, 250));
     } finally {
+      client.destroy();
       await new Promise<void>((resolve, reject) =>
         trap.close((err) => (err ? reject(err) : resolve()))
       );

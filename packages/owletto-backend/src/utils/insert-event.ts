@@ -169,6 +169,21 @@ async function upsertEmbedding(eventId: number, embedding?: number[] | null): Pr
   `;
 }
 
+function isEventsClientIdForeignKeyViolation(error: unknown): boolean {
+  const err = error as {
+    code?: unknown;
+    constraint?: unknown;
+    constraint_name?: unknown;
+    message?: unknown;
+  };
+  if (err?.code !== '23503') return false;
+  return (
+    err.constraint === 'events_client_id_fkey' ||
+    err.constraint_name === 'events_client_id_fkey' ||
+    (typeof err.message === 'string' && err.message.includes('events_client_id_fkey'))
+  );
+}
+
 /**
  * Insert a single event into the events table.
  *
@@ -184,22 +199,7 @@ export async function insertEvent(
   const entityIdsValue = params.entityIds.length > 0 ? `{${params.entityIds.join(',')}}` : null;
   let supersedesEventId = params.supersedesEventId ?? null;
 
-  // `events.client_id` is a soft tag, but the FK to `oauth_clients` rejects
-  // inserts when the referenced row has been removed (manual cleanup, e2e
-  // teardown, expired registration) while a token is still in flight. Drop
-  // the value to NULL when the referenced client no longer exists so the
-  // event still lands. (Sentry: OWLETTO-34.)
-  let clientId = params.clientId ?? null;
-  if (clientId) {
-    const exists = await sql`SELECT 1 FROM oauth_clients WHERE id = ${clientId} LIMIT 1`;
-    if (exists.length === 0) {
-      logger.warn(
-        { clientId },
-        '[insert-event] dropping client_id — referenced oauth_clients row no longer exists'
-      );
-      clientId = null;
-    }
-  }
+  const requestedClientId = params.clientId ?? null;
 
   if (options?.onConflictUpdate) {
     const existing = await findCurrentEventByOrigin(sql, params);
@@ -218,7 +218,7 @@ export async function insertEvent(
     }
   }
 
-  const result = await sql`
+  const insertWithClientId = (clientId: string | null) => sql`
     INSERT INTO events (
       entity_ids, organization_id, source_id, origin_id, title,
       payload_type, payload_text, payload_data, payload_template, attachments, metadata,
@@ -263,6 +263,20 @@ export async function insertEvent(
     )
     RETURNING id, entity_ids, origin_id, title, semantic_type, created_at
   `;
+
+  let result: Awaited<ReturnType<typeof insertWithClientId>>;
+  try {
+    result = await insertWithClientId(requestedClientId);
+  } catch (error) {
+    if (!requestedClientId || !isEventsClientIdForeignKeyViolation(error)) {
+      throw error;
+    }
+    logger.warn(
+      { clientId: requestedClientId },
+      '[insert-event] retrying insert with client_id NULL — referenced oauth_clients row no longer exists'
+    );
+    result = await insertWithClientId(null);
+  }
 
   const inserted = result[0] as InsertedEvent;
   await upsertEmbedding(inserted.id, params.embedding);

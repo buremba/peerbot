@@ -9,22 +9,39 @@
 -- Match the relaxation already applied to other event-side FKs
 -- (connection_id, feed_id, run_id) and let stale client references reset
 -- to NULL instead of breaking inserts.
+--
+-- Add and validate the replacement constraint before the quick final swap so
+-- existing traffic stays protected and the ACCESS EXCLUSIVE window is short.
+
+ALTER TABLE public.events
+    ADD CONSTRAINT events_client_id_fkey_v2
+    FOREIGN KEY (client_id)
+    REFERENCES public.oauth_clients(id)
+    ON DELETE SET NULL
+    NOT VALID;
+
+ALTER TABLE public.events
+    VALIDATE CONSTRAINT events_client_id_fkey_v2;
 
 ALTER TABLE public.events
     DROP CONSTRAINT IF EXISTS events_client_id_fkey;
 
 ALTER TABLE public.events
-    ADD CONSTRAINT events_client_id_fkey
-    FOREIGN KEY (client_id)
-    REFERENCES public.oauth_clients(id)
-    ON DELETE SET NULL;
+    RENAME CONSTRAINT events_client_id_fkey_v2 TO events_client_id_fkey;
 
 -- migrate:down
 
 ALTER TABLE public.events
+    ADD CONSTRAINT events_client_id_fkey_v2
+    FOREIGN KEY (client_id)
+    REFERENCES public.oauth_clients(id)
+    NOT VALID;
+
+ALTER TABLE public.events
+    VALIDATE CONSTRAINT events_client_id_fkey_v2;
+
+ALTER TABLE public.events
     DROP CONSTRAINT IF EXISTS events_client_id_fkey;
 
 ALTER TABLE public.events
-    ADD CONSTRAINT events_client_id_fkey
-    FOREIGN KEY (client_id)
-    REFERENCES public.oauth_clients(id);
+    RENAME CONSTRAINT events_client_id_fkey_v2 TO events_client_id_fkey;

@@ -17,6 +17,7 @@ import type { Env } from '../index';
 import type { ToolContext } from '../tools/registry';
 import { entityLinkMatchSql } from './content-search';
 import { type EntityHookContext, getEntityHooks } from './entity-hooks';
+import { ToolUserError } from './errors';
 import { requireWriteAccess } from './organization-access';
 import { RESERVED_ENTITY_TYPES } from './reserved';
 
@@ -241,8 +242,9 @@ export async function createEntity(
     [data.entity_type, data.organization_id]
   );
   if (typeCheck.length === 0) {
-    throw new Error(
-      `Unknown entity type '${data.entity_type}'. Use manage_entity_schema(schema_type="entity_type", action="list") to list available types or create a custom type first.`
+    throw new ToolUserError(
+      `Unknown entity type '${data.entity_type}'. Use manage_entity_schema(schema_type="entity_type", action="list") to list available types or create a custom type first.`,
+      400
     );
   }
 

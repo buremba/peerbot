@@ -485,8 +485,27 @@ function withSSEHeartbeat(response: Response): Response {
   const writer = writable.getWriter();
   const heartbeat = new TextEncoder().encode(': ping\n\n');
 
-  const intervalId = setInterval(() => {
-    writer.write(heartbeat).catch(() => clearInterval(intervalId));
+  // The heartbeat, the pipe, the source close handler, and the pipe error
+  // handler can all race to terminate the writer. Once it transitions
+  // closed/aborted any further close()/abort() throws "Invalid state"
+  // (Sentry: OWLETTO-30). Latch on the first terminal call.
+  let terminated = false;
+  let intervalId: NodeJS.Timeout | undefined;
+  const closeWriter = () => {
+    if (terminated) return;
+    terminated = true;
+    if (intervalId) clearInterval(intervalId);
+    writer.close().catch(() => undefined);
+  };
+  const abortWriter = (reason: unknown) => {
+    if (terminated) return;
+    terminated = true;
+    if (intervalId) clearInterval(intervalId);
+    writer.abort(reason).catch(() => undefined);
+  };
+
+  intervalId = setInterval(() => {
+    writer.write(heartbeat).catch(() => abortWriter(new Error('SSE heartbeat write failed')));
   }, SSE_HEARTBEAT_INTERVAL_MS);
 
   response.body
@@ -496,18 +515,15 @@ function withSSEHeartbeat(response: Response): Response {
           return writer.write(chunk);
         },
         close() {
-          clearInterval(intervalId);
-          writer.close();
+          closeWriter();
         },
         abort(reason) {
-          clearInterval(intervalId);
-          writer.abort(reason);
+          abortWriter(reason);
         },
       })
     )
     .catch(() => {
-      clearInterval(intervalId);
-      writer.abort(new Error('Source SSE stream error'));
+      abortWriter(new Error('Source SSE stream error'));
     });
 
   return new Response(readable, { status: response.status, headers: response.headers });

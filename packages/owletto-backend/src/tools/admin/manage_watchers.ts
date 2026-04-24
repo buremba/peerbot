@@ -1534,16 +1534,10 @@ async function handleCompleteWindow(
 
       if (tokenWindowId) {
         const windowResult = await tx`
-          UPDATE watcher_windows
-          SET
-            extracted_data = ${sql.json(cleanedExtractedData)},
-            content_analyzed = 0,
-            model_used = ${provenanceModel},
-            client_id = ${provenanceClientId},
-            run_metadata = ${sql.json(provenanceMetadata)},
-            created_at = COALESCE(created_at, NOW())
+          SELECT id, content_analyzed
+          FROM watcher_windows
           WHERE id = ${tokenWindowId} AND watcher_id = ${watcherId}
-          RETURNING id
+          LIMIT 1
         `;
         if (windowResult.length === 0) {
           throw new Error(
@@ -1552,18 +1546,7 @@ async function handleCompleteWindow(
           );
         }
         windowId = tokenWindowId;
-      } else {
-        const existingWindow = await tx`
-          SELECT id FROM watcher_windows
-          WHERE watcher_id = ${watcherId}
-            AND window_start = ${window_start}
-            AND window_end = ${window_end}
-            AND granularity = ${timeGranularity}
-          LIMIT 1
-        `;
-
-        if (existingWindow.length > 0) {
-          windowId = existingWindow[0].id as number;
+        if (Number(windowResult[0].content_analyzed ?? 0) === 0) {
           await tx`
             UPDATE watcher_windows
             SET extracted_data = ${sql.json(cleanedExtractedData)},
@@ -1574,6 +1557,31 @@ async function handleCompleteWindow(
                 created_at = COALESCE(created_at, NOW())
             WHERE id = ${windowId} AND watcher_id = ${watcherId}
           `;
+        }
+      } else {
+        const existingWindow = await tx`
+          SELECT id, content_analyzed FROM watcher_windows
+          WHERE watcher_id = ${watcherId}
+            AND window_start = ${window_start}
+            AND window_end = ${window_end}
+            AND granularity = ${timeGranularity}
+          LIMIT 1
+        `;
+
+        if (existingWindow.length > 0) {
+          windowId = existingWindow[0].id as number;
+          if (Number(existingWindow[0].content_analyzed ?? 0) === 0) {
+            await tx`
+              UPDATE watcher_windows
+              SET extracted_data = ${sql.json(cleanedExtractedData)},
+                  content_analyzed = 0,
+                  model_used = ${provenanceModel},
+                  client_id = ${provenanceClientId},
+                  run_metadata = ${sql.json(provenanceMetadata)},
+                  created_at = COALESCE(created_at, NOW())
+              WHERE id = ${windowId} AND watcher_id = ${watcherId}
+            `;
+          }
         } else {
           const newWindowId = await getNextNumericId(tx, 'watcher_windows');
           try {

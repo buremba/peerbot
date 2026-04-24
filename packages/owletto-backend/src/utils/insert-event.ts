@@ -184,6 +184,23 @@ export async function insertEvent(
   const entityIdsValue = params.entityIds.length > 0 ? `{${params.entityIds.join(',')}}` : null;
   let supersedesEventId = params.supersedesEventId ?? null;
 
+  // `events.client_id` is a soft tag, but the FK to `oauth_clients` rejects
+  // inserts when the referenced row has been removed (manual cleanup, e2e
+  // teardown, expired registration) while a token is still in flight. Drop
+  // the value to NULL when the referenced client no longer exists so the
+  // event still lands. (Sentry: OWLETTO-34.)
+  let clientId = params.clientId ?? null;
+  if (clientId) {
+    const exists = await sql`SELECT 1 FROM oauth_clients WHERE id = ${clientId} LIMIT 1`;
+    if (exists.length === 0) {
+      logger.warn(
+        { clientId },
+        '[insert-event] dropping client_id — referenced oauth_clients row no longer exists'
+      );
+      clientId = null;
+    }
+  }
+
   if (options?.onConflictUpdate) {
     const existing = await findCurrentEventByOrigin(sql, params);
     if (existing) {
@@ -234,7 +251,7 @@ export async function insertEvent(
       ${params.feedId ?? null},
       ${params.runId ?? null},
       ${params.semanticType},
-      ${params.clientId ?? null},
+      ${clientId},
       ${params.createdBy ?? null},
       ${params.interactionType ?? 'none'},
       ${params.interactionStatus ?? null},

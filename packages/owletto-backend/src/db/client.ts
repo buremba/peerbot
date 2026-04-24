@@ -5,6 +5,7 @@
  * for creating additional connections when needed.
  */
 
+import { PostgresJSDialect } from 'kysely-postgres-js';
 import postgres from 'postgres';
 import type { Env } from '../index';
 import logger from '../utils/logger';
@@ -66,8 +67,17 @@ function createDbClient(connectionString: string, maxConnections?: number): DbCl
     : {};
 
   const rawClient = postgres(connectionString, {
-    max: maxConnections ?? parseInt(process.env.DB_POOL_MAX || '10', 10),
-    idle_timeout: 20,
+    max: maxConnections ?? parseInt(process.env.DB_POOL_MAX || '20', 10),
+    // Keep connections forever client-side. Postgres handles eviction via its
+    // own idle/lifetime settings; recycling every 20s on the client side
+    // forces every spotty-traffic burst to pay a ~1s TCP+TLS handshake.
+    idle_timeout: 0,
+    // Cap connection lifetime so long-lived sockets survive a finite duration
+    // (defends against PG-side state drift, certificate rotations, etc.).
+    max_lifetime: 60 * 30,
+    connection: {
+      application_name: 'owletto-backend',
+    },
     fetch_types: false,
     ...embeddedProtocolOptions,
     transform: {
@@ -182,4 +192,16 @@ export async function closeDbSingleton(): Promise<void> {
     await dbSingleton.end();
   }
   dbSingleton = null;
+}
+
+/**
+ * Kysely dialect bound to the singleton postgres.js client. Used by better-auth
+ * so that auth queries share the same connection pool as the rest of the app
+ * instead of opening a second pg.Pool with its own (cold-prone) connections.
+ */
+export function getAuthDialect(): PostgresJSDialect {
+  // postgres.js's Sql client is a callable; our DbClient interface narrows it,
+  // but the runtime object exposes everything PostgresJSDialect needs.
+  const sql = getDb() as unknown as ConstructorParameters<typeof PostgresJSDialect>[0]['postgres'];
+  return new PostgresJSDialect({ postgres: sql });
 }

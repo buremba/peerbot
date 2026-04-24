@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
 import { betterAuth } from 'better-auth';
 import { magicLink, organization, phoneNumber } from 'better-auth/plugins';
-import { Pool } from 'pg';
 import type { Env } from '../index';
+import { getAuthDialect, getDb } from '../db/client';
 import { sendTransactionalEmail } from '../email/send';
 import { InvitationEmail, invitationSubject } from '../email/templates/invitation';
 import { MagicLinkEmail, magicLinkSubject } from '../email/templates/magic-link';
@@ -24,22 +24,6 @@ import {
   resolveLoginProviderCredentials,
   resolveRequestOrganizationId,
 } from './config';
-
-let authPool: Pool | null = null;
-function getAuthPool(connectionString: string): Pool {
-  if (!authPool) {
-    const ssl =
-      process.env.PGSSLMODE === 'require' || process.env.PGSSLMODE === 'prefer'
-        ? { rejectUnauthorized: false }
-        : undefined;
-    authPool = new Pool({
-      connectionString,
-      max: parseInt(process.env.AUTH_DB_POOL_MAX || '8', 10),
-      ssl,
-    });
-  }
-  return authPool;
-}
 
 function gravatarUrl(email: string): string {
   const hash = createHash('md5').update(email.trim().toLowerCase()).digest('hex');
@@ -64,7 +48,6 @@ export async function createAuth(env: Env, request?: Request) {
     return cached;
   }
   const authConfig = await getAuthConfigFromEnv(env, { organizationId, request });
-  const pool = getAuthPool(env.DATABASE_URL!);
   const runtimeNodeEnv = env.NODE_ENV || process.env.NODE_ENV || 'development';
 
   const effectiveOrgId = organizationId ?? (await resolveDefaultOrganizationId());
@@ -144,7 +127,7 @@ export async function createAuth(env: Env, request?: Request) {
 
   const auth = betterAuth({
     ...(env.BETTER_AUTH_SECRET ? { secret: env.BETTER_AUTH_SECRET } : {}),
-    database: pool,
+    database: { dialect: getAuthDialect(), type: 'postgres' },
     baseURL: resolveBaseUrl({ request }),
     basePath: '/api/auth',
 
@@ -303,10 +286,11 @@ export async function createAuth(env: Env, request?: Request) {
 
           // Also send in-app notification if user already exists
           try {
-            const userRows = await pool.query('SELECT id FROM "user" WHERE email = $1 LIMIT 1', [
-              email,
-            ]);
-            const userId = userRows.rows[0]?.id;
+            const sql = getDb();
+            const userRows = await sql<{ id: string }>`
+              SELECT id FROM "user" WHERE email = ${email} LIMIT 1
+            `;
+            const userId = userRows[0]?.id;
             if (userId) {
               await notifyInvitationReceived({ orgId, userId, orgName, inviterName });
             }

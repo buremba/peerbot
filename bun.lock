@@ -140,6 +140,8 @@
         "handlebars": "^4.7.9",
         "hono": "^4.10.4",
         "hono-pino": "^0.10.3",
+        "kysely": "^0.28.0",
+        "kysely-postgres-js": "^2.0.0",
         "node-sql-parser": "^5.4.0",
         "pg": "^8.16.3",
         "pino": "^10.1.0",
@@ -2621,6 +2623,8 @@
     "ky": ["ky@1.14.3", "", {}, "sha512-9zy9lkjac+TR1c2tG+mkNSVlyOpInnWdSMiue4F+kq8TwJSgv6o8jhLRg8Ho6SnZ9wOYUq/yozts9qQCfk7bIw=="],
 
     "kysely": ["kysely@0.28.16", "", {}, "sha512-3i5pmOiZvMDj00qhrIVbH0AnioVTx22DMP7Vn5At4yJO46iy+FM8Y/g61ltenLVSo3fiO8h8Q3QOFgf/gQ72ww=="],
+
+    "kysely-postgres-js": ["kysely-postgres-js@2.0.0", "", { "peerDependencies": { "kysely": ">= 0.24.0 < 1", "postgres": ">= 3.4.0 < 4" } }, "sha512-R1tWx6/x3tSatWvsmbHJxpBZYhNNxcnMw52QzZaHKg7ZOWtHib4iZyEaw4gb2hNKVctWQ3jfMxZT/ZaEMK6kBQ=="],
 
     "leac": ["leac@0.6.0", "", {}, "sha512-y+SqErxb8h7nE/fiEX07jsbuhrpO9lL8eca7/Y1nuWV2moNlXhyd59iDGcRf6moVyDMbmTNzL40SUyrFU/yDpg=="],
 

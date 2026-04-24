@@ -1513,13 +1513,61 @@ async function handleCompleteWindow(
   }
 
   // ============================================
-  // STEP 5: Fail fast if no content (NO DB WRITES YET!)
+  // STEP 5: No-op if there's nothing to analyze
+  //
+  // Watchers can be triggered for periods where every candidate event was
+  // already consumed by an earlier window. Throwing here causes the agent
+  // loop to retry the same period indefinitely (Sentry: OWLETTO-Q). Treat
+  // it as a successful no-op completion: bump the schedule, mark the run
+  // completed, and return a zero-content result.
   // ============================================
   if (uniqueContentIds.length === 0) {
-    throw new Error(
-      'Cannot complete window: no NEW events found for the specified date range ' +
-        `(${window_start} to ${window_end}). ${skippedCount > 0 ? `All ${skippedCount} content items were already analyzed by other windows.` : ''}`
+    await sql.begin(async (tx) => {
+      const watcherScheduleRows = await tx`
+        SELECT schedule, next_run_at
+        FROM watchers
+        WHERE id = ${watcherId}
+        LIMIT 1
+      `;
+      const watcherSchedule = (watcherScheduleRows[0]?.schedule as string | null) ?? null;
+      const currentNextRunAt = (watcherScheduleRows[0]?.next_run_at as string | null) ?? null;
+      if (watcherSchedule) {
+        const nextRunBase = currentNextRunAt
+          ? new Date(Math.max(Date.now(), new Date(currentNextRunAt).getTime()))
+          : new Date();
+        await tx`
+          UPDATE watchers
+          SET next_run_at = ${nextRunAt(watcherSchedule, nextRunBase)}::timestamptz,
+              updated_at = NOW()
+          WHERE id = ${watcherId}
+        `;
+      }
+      if (watcherRunId && Number.isFinite(watcherRunId)) {
+        await tx`
+          UPDATE runs
+          SET status = 'completed',
+              completed_at = current_timestamp,
+              error_message = NULL
+          WHERE id = ${watcherRunId}
+            AND run_type = 'watcher'
+        `;
+      }
+    });
+
+    logger.info(
+      `[complete_window] No new content for watcher ${watcherId} (${window_start} - ${window_end}); ` +
+        `${skippedCount} item(s) already analyzed by prior windows. Marked as no-op completion.`
     );
+
+    return {
+      action: 'complete_window' as const,
+      watcher_id: String(watcherId),
+      window_id: 0,
+      window_start,
+      window_end,
+      content_linked: 0,
+      reaction_status: 'skipped' as const,
+    };
   }
 
   // ============================================

@@ -30,12 +30,14 @@ export async function computePendingWindow(
   watcherId: number,
   granularity: WatcherTimeGranularity
 ): Promise<WindowDates> {
-  // Find the last completed window for this watcher
+  // Find the last completed leaf window for this watcher. Zero-content
+  // windows are durable cursor progress too; otherwise empty periods can be
+  // reprocessed forever.
   const lastWindow = await sql`
     SELECT window_end
     FROM watcher_windows
     WHERE watcher_id = ${watcherId}
-      AND content_analyzed > 0
+      AND COALESCE(is_rollup, false) = false
     ORDER BY window_end DESC
     LIMIT 1
   `;

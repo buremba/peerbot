@@ -1,0 +1,16 @@
+version: 1
+name: ping
+description: Agent suggests an aligned community match in concierge style
+trials: 3
+timeout: 30
+tags: [smoke, fast]
+
+turns:
+  - content: "A new member just joined and described themselves as 'building developer tooling for AI agents'. In one sentence, who in our community should they meet first and why?"
+    assert:
+      - type: regex
+        value: ".{40,}"
+        weight: 0.3
+      - type: llm-rubric
+        value: "Names a plausible community match (someone in AI tooling, dev infra, or adjacent space) and gives a clear, warm reason to connect. Avoids generic 'reach out to other members' answers."
+        weight: 0.7

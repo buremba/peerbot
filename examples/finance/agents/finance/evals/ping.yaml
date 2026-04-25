@@ -1,0 +1,16 @@
+version: 1
+name: ping
+description: Agent proposes a concrete reconciliation step
+trials: 3
+timeout: 30
+tags: [smoke, fast]
+
+turns:
+  - content: "Stripe shows $4,200 settled today; NetSuite account 4100 is $4,000. What do you check first?"
+    assert:
+      - type: regex
+        value: ".{40,}"
+        weight: 0.3
+      - type: llm-rubric
+        value: "Names a concrete reconciliation step — for example settlement timing/cutoff, processor fees or refunds, currency conversion, or account mapping. Avoids generic advice like 'review the data' or 'check both sources'."
+        weight: 0.7

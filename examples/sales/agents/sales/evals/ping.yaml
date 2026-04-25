@@ -1,0 +1,16 @@
+version: 1
+name: ping
+description: Agent proposes a concrete next step on a renewal at risk
+trials: 3
+timeout: 30
+tags: [smoke, fast]
+
+turns:
+  - content: "Northstar's renewal is in 60 days and their usage dropped 30% last month. Give me one next step."
+    assert:
+      - type: regex
+        value: ".{40,}"
+        weight: 0.3
+      - type: llm-rubric
+        value: "Recommends a concrete, time-appropriate next step — for example an exec touch, a value review, a churn-risk flag, a usage drop investigation, or a success plan. Avoids generic 'reach out to the customer' answers."
+        weight: 0.7

@@ -1,0 +1,16 @@
+version: 1
+name: ping
+description: Agent names a concrete market signal to monitor
+trials: 3
+timeout: 30
+tags: [smoke, fast]
+
+turns:
+  - content: "Acme just announced an AI feature. What signal should I watch over the next 30 days?"
+    assert:
+      - type: regex
+        value: ".{40,}"
+        weight: 0.3
+      - type: llm-rubric
+        value: "Names at least one concrete signal to monitor — for example pricing changes, public user reviews, hiring patterns for relevant roles, partnership or integration announcements, or pickup in case studies. Avoids generic 'watch their website' advice."
+        weight: 0.7

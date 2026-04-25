@@ -1,0 +1,16 @@
+version: 1
+name: ping
+description: Agent triages a vague engineering status request
+trials: 3
+timeout: 30
+tags: [smoke, fast]
+
+turns:
+  - content: "Tell me what's broken and what's blocked. Use one short bullet for each."
+    assert:
+      - type: regex
+        value: ".{40,}"
+        weight: 0.3
+      - type: llm-rubric
+        value: "Either responds with a triage-style summary using bullets covering broken vs blocked, or asks a focused clarifying question (system name, time range, scope). Avoids generic boilerplate or unrelated content."
+        weight: 0.7

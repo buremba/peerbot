@@ -1,0 +1,16 @@
+version: 1
+name: ping
+description: Agent captures a leadership decision as structured operating context
+trials: 3
+timeout: 30
+tags: [smoke, fast]
+
+turns:
+  - content: "Capture a leadership decision: 'we're freezing hiring in EMEA through Q3'. Reply with a structured summary I can drop in a memo."
+    assert:
+      - type: regex
+        value: ".{40,}"
+        weight: 0.3
+      - type: llm-rubric
+        value: "Returns a structured note covering at minimum the decision, the scope (EMEA), and the timeframe (through Q3), plus either a stated owner or an explicit open question about owner. Stays concise and memo-ready."
+        weight: 0.7

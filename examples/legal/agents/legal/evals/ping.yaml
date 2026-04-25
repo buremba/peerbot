@@ -1,0 +1,16 @@
+version: 1
+name: ping
+description: Agent surfaces a specific missing legal protection
+trials: 3
+timeout: 30
+tags: [smoke, fast]
+
+turns:
+  - content: "Give me one missing protection commonly absent from a startup's first SaaS subscription agreement."
+    assert:
+      - type: regex
+        value: ".{40,}"
+        weight: 0.3
+      - type: llm-rubric
+        value: "Names a specific, real missing protection — for example a limitation of liability cap, mutual indemnification carve-outs, a data processing addendum, or termination-for-cause language. Avoids vague 'add legal review' or 'consult a lawyer' non-answers."
+        weight: 0.7

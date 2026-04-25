@@ -1,0 +1,16 @@
+version: 1
+name: ping
+description: Agent asks a focused first clarifying question on a vague support report
+trials: 3
+timeout: 30
+tags: [smoke, fast]
+
+turns:
+  - content: "A customer says 'login is broken'. What's your first clarifying question?"
+    assert:
+      - type: regex
+        value: ".{20,}"
+        weight: 0.3
+      - type: llm-rubric
+        value: "Asks one focused, useful clarifying question — for example the exact error message, the auth method (SSO vs password), the browser/device, or when it last worked. Avoids open-ended 'tell me more' or empathy-only replies."
+        weight: 0.7

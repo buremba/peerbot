@@ -138,9 +138,7 @@ export function EntityMemoryDiagram({
                       <TreeBranch key={item.text}>
                         <TreeRow last={itemIdx === items.length - 1}>
                           <div class="flex items-start gap-2 py-0.5 text-[0.9rem] leading-6 text-[var(--color-page-text-muted)]">
-                            <span aria-hidden="true">
-                              {item.emoji ?? "•"}
-                            </span>
+                            <span aria-hidden="true">{item.emoji ?? "•"}</span>
                             <span>{item.text}</span>
                           </div>
                         </TreeRow>

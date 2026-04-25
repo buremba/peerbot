@@ -95,9 +95,7 @@ export function WatcherTraceCard({
               {entityEmoji}
             </span>
           )}
-          <span style={{ color: "var(--color-tg-accent)" }}>
-            {entityLabel}
-          </span>
+          <span style={{ color: "var(--color-tg-accent)" }}>{entityLabel}</span>
         </div>
         <ul class="m-0 mt-2 flex list-none flex-col gap-1 p-0 text-[0.9rem] leading-6 text-[var(--color-page-text-muted)]">
           {consolidated.map((item) => (

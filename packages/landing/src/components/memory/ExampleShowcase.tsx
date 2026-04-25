@@ -726,9 +726,7 @@ export function ExampleShowcase(props: {
 
                         {(() => {
                           if (step.panel.trace) {
-                            return (
-                              <WatcherTraceCard {...step.panel.trace} />
-                            );
+                            return <WatcherTraceCard {...step.panel.trace} />;
                           }
                           if (panelTable) {
                             return (

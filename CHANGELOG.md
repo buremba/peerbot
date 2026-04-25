@@ -1,5 +1,37 @@
 # Changelog
 
+## [4.3.0](https://github.com/lobu-ai/lobu/compare/lobu-v4.2.0...lobu-v4.3.0) (2026-04-25)
+
+
+### Features
+
+* **ci:** autonomous PR triage workflow ([#349](https://github.com/lobu-ai/lobu/issues/349)) ([1fd4add](https://github.com/lobu-ai/lobu/commit/1fd4add1c69f62e11f5a9a788017253ff23fb0af))
+* **examples:** add LLM-judged ping eval to each surfaced example ([#366](https://github.com/lobu-ai/lobu/issues/366)) ([d6aa5ad](https://github.com/lobu-ai/lobu/commit/d6aa5adb70f98220a3b583a994d0a155c86bed07))
+* **gateway:** LLM-judged egress via per-skill `action: judge` ([#319](https://github.com/lobu-ai/lobu/issues/319)) ([#327](https://github.com/lobu-ai/lobu/issues/327)) ([0171679](https://github.com/lobu-ai/lobu/commit/017167907246f65ae83da6091b0b5b6670c4fe2d))
+* **watchers:** in-process lifecycle tracker, durable correlation, drop heartbeat ([#336](https://github.com/lobu-ai/lobu/issues/336)) ([51be366](https://github.com/lobu-ai/lobu/commit/51be366129315ffcc1c7f94bdc135e541eaf4a3a))
+
+
+### Bug Fixes
+
+* **auth:** align Claude OAuth client with public CLI to avoid 429 ([#345](https://github.com/lobu-ai/lobu/issues/345)) ([aa91a81](https://github.com/lobu-ai/lobu/commit/aa91a81da7ce0caa1afa18f3ab37a24888f37502))
+* **ci:** bump landing deploy to Node 22 for Astro 6 ([#344](https://github.com/lobu-ai/lobu/issues/344)) ([1eb9d60](https://github.com/lobu-ai/lobu/commit/1eb9d603cb1c6be549ac6b8927f4875d024253b7))
+* **cli:** migrate to @inquirer/prompts to fix Node 25 readline crash ([#364](https://github.com/lobu-ai/lobu/issues/364)) ([8ab0dd9](https://github.com/lobu-ai/lobu/commit/8ab0dd9c9d41f9bc8436a7e2d038f78bb5453f50))
+* **embedded-lobu:** make the embedded gateway boot cleanly in the owletto app image ([#332](https://github.com/lobu-ai/lobu/issues/332)) ([c378015](https://github.com/lobu-ai/lobu/commit/c378015e51adf7fbf688684bcb1684680b2f38d3))
+* **events:** tolerate stale client_id refs on insert + relax FK ([#339](https://github.com/lobu-ai/lobu/issues/339)) ([5c19d26](https://github.com/lobu-ai/lobu/commit/5c19d26bdf6604aba88c44ee437773abb2e9f071))
+* **gateway,dev-native:** thread worker entryPoint through config, unblock native dev ([#347](https://github.com/lobu-ai/lobu/issues/347)) ([e5ff4d8](https://github.com/lobu-ai/lobu/commit/e5ff4d8d5bd73b02cf010d64a668610a4fde7767))
+* **mcp-handler,entity-management:** SSE close race + classify entity-type errors ([#340](https://github.com/lobu-ai/lobu/issues/340)) ([4b4649a](https://github.com/lobu-ai/lobu/commit/4b4649aef22db89f8a4fe6abe787ec7bd321b01b))
+* **owletto-backend:** unblock image builds after dead-code refactor ([#329](https://github.com/lobu-ai/lobu/issues/329)) ([5619e1f](https://github.com/lobu-ai/lobu/commit/5619e1f338c312cff299e73170e6d247a4382704))
+* post-merge review follow-ups (path traversal, Sentry PII, Slack instr guard, MCP join rate-limit) ([#325](https://github.com/lobu-ai/lobu/issues/325)) ([3faad40](https://github.com/lobu-ai/lobu/commit/3faad40d0da299f683c492de84623aea2332f6eb))
+* **resolve_path:** return 4xx instead of throwing on client-input errors ([#338](https://github.com/lobu-ai/lobu/issues/338)) ([326f543](https://github.com/lobu-ai/lobu/commit/326f543a90539a7504918b8c56743140384a5f17))
+* **sentry:** disable NodeSystemError integration to unblock node v24 builds ([#341](https://github.com/lobu-ai/lobu/issues/341)) ([4124e00](https://github.com/lobu-ai/lobu/commit/4124e0094129d4c625cbad5f3026bac031159542))
+* stabilize multiple security and reliability gaps across gateway ([#321](https://github.com/lobu-ai/lobu/issues/321)) ([3c6efc2](https://github.com/lobu-ai/lobu/commit/3c6efc284d8273cd598ad3747922e5ac36d2316b))
+* **watchers:** no-op complete_window when all events already analyzed ([#337](https://github.com/lobu-ai/lobu/issues/337)) ([495d615](https://github.com/lobu-ai/lobu/commit/495d615034804382ed9e8606a74b979f57cb0136))
+
+
+### Performance Improvements
+
+* **auth:** consolidate better-auth onto shared postgres.js pool ([#342](https://github.com/lobu-ai/lobu/issues/342)) ([012754a](https://github.com/lobu-ai/lobu/commit/012754ad70f78e9b25a9664133db19eafdacd747))
+
 ## [4.2.0](https://github.com/lobu-ai/lobu/compare/lobu-v4.1.0...lobu-v4.2.0) (2026-04-23)
 
 

@@ -1,5 +1,5 @@
+import { password as passwordPrompt } from "@inquirer/prompts";
 import chalk from "chalk";
-import inquirer from "inquirer";
 import open from "open";
 import ora from "ora";
 import {
@@ -190,18 +190,11 @@ export async function loginCommand(options: {
   }
 
   if (options.adminPassword) {
-    const answers = await inquirer.prompt([
-      {
-        type: "password",
-        name: "password",
-        message: `Admin password for ${target.name}:`,
-        mask: "*",
-      },
-    ]);
-    const password =
-      answers && typeof answers.password === "string"
-        ? answers.password.trim()
-        : "";
+    const adminPasswordInput = await passwordPrompt({
+      message: `Admin password for ${target.name}:`,
+      mask: true,
+    });
+    const password = adminPasswordInput.trim();
 
     if (!password) {
       console.log(chalk.red("\n  Password cannot be empty.\n"));

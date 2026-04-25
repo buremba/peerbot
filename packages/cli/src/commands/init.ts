@@ -2,8 +2,8 @@ import { randomBytes } from "node:crypto";
 import { constants } from "node:fs";
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { confirm, input, password, select } from "@inquirer/prompts";
 import chalk from "chalk";
-import inquirer from "inquirer";
 import ora from "ora";
 import { promptPlatformConfig } from "../commands/connections/platforms.js";
 import { secretsSetCommand } from "../commands/secrets.js";
@@ -37,24 +37,18 @@ export async function initCommand(
   }
 
   // Interactive prompts - basic setup
-  const baseAnswers = await inquirer.prompt([
-    {
-      type: "input",
-      name: "projectName",
+  const projectName =
+    projectNameArg ||
+    (await input({
       message: "Project name?",
-      default: projectNameArg || "my-lobu",
-      validate: (input: string) => {
-        if (!/^[a-z0-9-]+$/.test(input)) {
+      default: "my-lobu",
+      validate: (value: string) => {
+        if (!/^[a-z0-9-]+$/.test(value)) {
           return "Project name must be lowercase alphanumeric with hyphens only";
         }
         return true;
       },
-      when: !projectNameArg, // Skip prompt if project name provided as argument
-    },
-  ]);
-
-  // Use project name from argument or prompt
-  const projectName = projectNameArg || baseAnswers.projectName;
+    }));
   const projectDir = join(cwd, projectName);
   try {
     await access(projectDir, constants.F_OK);
@@ -73,92 +67,72 @@ export async function initCommand(
   }
 
   // Deployment mode selection
-  const { deploymentMode } = await inquirer.prompt([
-    {
-      type: "list",
-      name: "deploymentMode",
-      message: "How should workers run?",
-      choices: [
-        {
-          name: "Embedded — virtual bash & filesystem, no package installs, lower resource usage",
-          value: "embedded",
-        },
-        {
-          name: "Docker — isolated containers per user, full OS access, heavier but more capable",
-          value: "docker",
-        },
-      ],
-      default: "embedded",
-    },
-  ]);
+  const deploymentMode = await select<"embedded" | "docker">({
+    message: "How should workers run?",
+    choices: [
+      {
+        name: "Embedded — virtual bash & filesystem, no package installs, lower resource usage",
+        value: "embedded",
+      },
+      {
+        name: "Docker — isolated containers per user, full OS access, heavier but more capable",
+        value: "docker",
+      },
+    ],
+    default: "embedded",
+  });
 
   // Gateway port selection
-  const { gatewayPort } = await inquirer.prompt([
-    {
-      type: "input",
-      name: "gatewayPort",
-      message: "Gateway port?",
-      default: "8080",
-      validate: (input: string) => {
-        const port = Number(input);
-        if (!Number.isInteger(port) || port < 1 || port > 65535) {
-          return "Please enter a valid port number (1-65535)";
-        }
-        return true;
-      },
+  const gatewayPort = await input({
+    message: "Gateway port?",
+    default: "8080",
+    validate: (value: string) => {
+      const port = Number(value);
+      if (!Number.isInteger(port) || port < 1 || port > 65535) {
+        return "Please enter a valid port number (1-65535)";
+      }
+      return true;
     },
-  ]);
+  });
 
   // Public gateway URL (optional — only needed for OAuth callbacks and external webhooks)
-  const { publicGatewayUrl } = await inquirer.prompt([
-    {
-      type: "input",
-      name: "publicGatewayUrl",
-      message:
-        "Public gateway URL? (leave empty for local dev, set for OAuth/webhooks)",
-      default: "",
-    },
-  ]);
+  const publicGatewayUrl = await input({
+    message:
+      "Public gateway URL? (leave empty for local dev, set for OAuth/webhooks)",
+    default: "",
+  });
 
   // Admin password
-  const { adminPassword } = await inquirer.prompt([
-    {
-      type: "password",
-      name: "adminPassword",
-      message: "Admin password?",
-      mask: "*",
-      validate: (input: string) => {
-        if (!input || input.length < 4) {
-          return "Password must be at least 4 characters";
-        }
-        return true;
-      },
+  const adminPassword = await password({
+    message: "Admin password?",
+    mask: true,
+    validate: (value: string) => {
+      if (!value || value.length < 4) {
+        return "Password must be at least 4 characters";
+      }
+      return true;
     },
-  ]);
+  });
 
   // Worker network access policy
-  const { networkPolicy } = await inquirer.prompt([
-    {
-      type: "list",
-      name: "networkPolicy",
-      message: "Worker network access?",
-      choices: [
-        {
-          name: "Restricted (recommended) — common registries only (npm, GitHub, PyPI)",
-          value: "restricted",
-        },
-        {
-          name: "Open — workers can access any domain",
-          value: "open",
-        },
-        {
-          name: "Isolated — workers have no internet access",
-          value: "isolated",
-        },
-      ],
-      default: "restricted",
-    },
-  ]);
+  const networkPolicy = await select<"restricted" | "open" | "isolated">({
+    message: "Worker network access?",
+    choices: [
+      {
+        name: "Restricted (recommended) — common registries only (npm, GitHub, PyPI)",
+        value: "restricted",
+      },
+      {
+        name: "Open — workers can access any domain",
+        value: "open",
+      },
+      {
+        name: "Isolated — workers have no internet access",
+        value: "isolated",
+      },
+    ],
+    default: "restricted",
+  });
 
   // Provider selection (from the bundled providers registry)
   const providerSkills = loadProviderRegistry();
@@ -170,15 +144,11 @@ export async function initCommand(
     })),
   ];
 
-  const { providerId } = await inquirer.prompt([
-    {
-      type: "list",
-      name: "providerId",
-      message: "AI provider?",
-      choices: providerChoices,
-      default: "",
-    },
-  ]);
+  const providerId = await select<string>({
+    message: "AI provider?",
+    choices: providerChoices,
+    default: "",
+  });
 
   let providerApiKey = "";
   let selectedProvider: RegistryProvider | undefined;
@@ -186,15 +156,10 @@ export async function initCommand(
     selectedProvider = getProviderById(providerId);
     const p = selectedProvider?.providers?.[0];
     if (p) {
-      const { apiKey } = await inquirer.prompt([
-        {
-          type: "password",
-          name: "apiKey",
-          message: `${p.displayName} API key:`,
-          mask: "*",
-        },
-      ]);
-      providerApiKey = apiKey || "";
+      providerApiKey = await password({
+        message: `${p.displayName} API key:`,
+        mask: true,
+      });
     }
   }
 
@@ -212,38 +177,32 @@ export async function initCommand(
     { name: "Google Chat", value: "gchat" },
   ];
 
-  const { platformType } = await inquirer.prompt([
-    {
-      type: "list",
-      name: "platformType",
-      message: "Connect a messaging platform?",
-      choices: platformChoices,
-      default: "",
-    },
-  ]);
+  const platformType = await select<string>({
+    message: "Connect a messaging platform?",
+    choices: platformChoices,
+    default: "",
+  });
 
   const { connectionConfig, connectionSecrets } = platformType
     ? await promptPlatformConfig(platformType)
     : { connectionConfig: {}, connectionSecrets: [] };
 
   // Memory
-  const { memoryChoice } = await inquirer.prompt([
-    {
-      type: "list",
-      name: "memoryChoice",
-      message: "Memory:",
-      choices: [
-        { name: "None (filesystem memory)", value: "none" },
-        { name: "Lobu Cloud (app.lobu.ai)", value: "owletto-cloud" },
-        {
-          name: "Lobu memory Local (runs alongside gateway)",
-          value: "owletto-local",
-        },
-        { name: "Custom Lobu memory URL", value: "owletto-custom" },
-      ],
-      default: "none",
-    },
-  ]);
+  const memoryChoice = await select<
+    "none" | "owletto-cloud" | "owletto-local" | "owletto-custom"
+  >({
+    message: "Memory:",
+    choices: [
+      { name: "None (filesystem memory)", value: "none" },
+      { name: "Lobu Cloud (app.lobu.ai)", value: "owletto-cloud" },
+      {
+        name: "Lobu memory Local (runs alongside gateway)",
+        value: "owletto-local",
+      },
+      { name: "Custom Lobu memory URL", value: "owletto-custom" },
+    ],
+    default: "none",
+  });
 
   const envSecrets: Array<{ envVar: string; value: string }> = [];
   const includeOwlettoMemory = memoryChoice !== "none";
@@ -265,29 +224,20 @@ export async function initCommand(
       value: randomBytes(16).toString("hex"),
     });
   } else if (memoryChoice === "owletto-custom") {
-    const { customOwlettoUrl } = await inquirer.prompt([
-      {
-        type: "input",
-        name: "customOwlettoUrl",
-        message: "Lobu memory MCP URL:",
-        validate: (v: string) => (v ? true : "URL is required"),
-      },
-    ]);
-    owlettoUrl = customOwlettoUrl;
+    owlettoUrl = await input({
+      message: "Lobu memory MCP URL:",
+      validate: (v: string) => (v ? true : "URL is required"),
+    });
     envSecrets.push({ envVar: "MEMORY_URL", value: owlettoUrl });
   }
   // "none" — no Owletto scaffold, gateway defaults to filesystem memory
 
   // Observability — OTEL tracing endpoint
-  const { otelEndpoint } = await inquirer.prompt([
-    {
-      type: "input",
-      name: "otelEndpoint",
-      message:
-        "OpenTelemetry collector endpoint? (leave empty to disable tracing)",
-      default: "",
-    },
-  ]);
+  const otelEndpoint = await input({
+    message:
+      "OpenTelemetry collector endpoint? (leave empty to disable tracing)",
+    default: "",
+  });
 
   if (otelEndpoint) {
     envSecrets.push({
@@ -297,15 +247,11 @@ export async function initCommand(
   }
 
   // Observability — Sentry error reporting
-  const { enableSentry } = await inquirer.prompt([
-    {
-      type: "confirm",
-      name: "enableSentry",
-      message:
-        "Help improve Lobu by sharing anonymous error reports with Sentry?",
-      default: true,
-    },
-  ]);
+  const enableSentry = await confirm({
+    message:
+      "Help improve Lobu by sharing anonymous error reports with Sentry?",
+    default: true,
+  });
 
   if (enableSentry) {
     envSecrets.push({

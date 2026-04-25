@@ -1,5 +1,5 @@
+import { password } from "@inquirer/prompts";
 import chalk from "chalk";
-import inquirer from "inquirer";
 import {
   appendTomlBlock,
   loadAgentContext,
@@ -42,14 +42,10 @@ export async function providersAddCommand(
   const defaultModel = provider.defaultModel;
   const envVar = provider.envVarName;
 
-  const { apiKey } = await inquirer.prompt([
-    {
-      type: "password",
-      name: "apiKey",
-      message: `${provider.displayName} API key:`,
-      mask: "*",
-    },
-  ]);
+  const apiKey = await password({
+    message: `${provider.displayName} API key:`,
+    mask: true,
+  });
 
   await appendTomlBlock(ctx, [
     "",

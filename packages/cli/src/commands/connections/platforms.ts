@@ -3,7 +3,7 @@
  * Used by both `lobu init` and `lobu connections add <platform>`.
  */
 
-import inquirer from "inquirer";
+import { input, password } from "@inquirer/prompts";
 
 interface PlatformPromptResult {
   connectionConfig: Record<string, string>;
@@ -26,14 +26,10 @@ export async function promptPlatformConfig(
   const connectionSecrets: Array<{ envVar: string; value: string }> = [];
 
   if (platform === "telegram") {
-    const { botToken } = await inquirer.prompt([
-      {
-        type: "password",
-        name: "botToken",
-        message: "Telegram bot token (from @BotFather):",
-        mask: "*",
-      },
-    ]);
+    const botToken = await password({
+      message: "Telegram bot token (from @BotFather):",
+      mask: true,
+    });
     if (botToken) {
       connectionConfig.botToken = "$TELEGRAM_BOT_TOKEN";
       connectionSecrets.push({ envVar: "TELEGRAM_BOT_TOKEN", value: botToken });
@@ -63,112 +59,86 @@ export async function promptPlatformConfig(
     console.log(
       "  4. Install the app to your workspace to mint the bot token.\n"
     );
-    const slackAnswers = await inquirer.prompt([
-      {
-        type: "password",
-        name: "botToken",
-        message: "Slack bot token (xoxb-...):",
-        mask: "*",
-      },
-      {
-        type: "password",
-        name: "signingSecret",
-        message: "Slack signing secret:",
-        mask: "*",
-      },
-    ]);
-    if (slackAnswers.botToken) {
+    const slackBotToken = await password({
+      message: "Slack bot token (xoxb-...):",
+      mask: true,
+    });
+    const slackSigningSecret = await password({
+      message: "Slack signing secret:",
+      mask: true,
+    });
+    if (slackBotToken) {
       connectionConfig.botToken = "$SLACK_BOT_TOKEN";
       connectionSecrets.push({
         envVar: "SLACK_BOT_TOKEN",
-        value: slackAnswers.botToken,
+        value: slackBotToken,
       });
     }
-    if (slackAnswers.signingSecret) {
+    if (slackSigningSecret) {
       connectionConfig.signingSecret = "$SLACK_SIGNING_SECRET";
       connectionSecrets.push({
         envVar: "SLACK_SIGNING_SECRET",
-        value: slackAnswers.signingSecret,
+        value: slackSigningSecret,
       });
     }
   } else if (platform === "discord") {
-    const { botToken } = await inquirer.prompt([
-      {
-        type: "password",
-        name: "botToken",
-        message: "Discord bot token:",
-        mask: "*",
-      },
-    ]);
+    const botToken = await password({
+      message: "Discord bot token:",
+      mask: true,
+    });
     if (botToken) {
       connectionConfig.botToken = "$DISCORD_BOT_TOKEN";
       connectionSecrets.push({ envVar: "DISCORD_BOT_TOKEN", value: botToken });
     }
   } else if (platform === "whatsapp") {
-    const whatsappAnswers = await inquirer.prompt([
-      {
-        type: "password",
-        name: "accessToken",
-        message: "WhatsApp Business access token:",
-        mask: "*",
-      },
-      {
-        type: "input",
-        name: "phoneNumberId",
-        message: "WhatsApp phone number ID:",
-      },
-    ]);
-    if (whatsappAnswers.accessToken) {
+    const accessToken = await password({
+      message: "WhatsApp Business access token:",
+      mask: true,
+    });
+    const phoneNumberId = await input({
+      message: "WhatsApp phone number ID:",
+    });
+    if (accessToken) {
       connectionConfig.accessToken = "$WHATSAPP_ACCESS_TOKEN";
       connectionSecrets.push({
         envVar: "WHATSAPP_ACCESS_TOKEN",
-        value: whatsappAnswers.accessToken,
+        value: accessToken,
       });
     }
-    if (whatsappAnswers.phoneNumberId) {
+    if (phoneNumberId) {
       connectionConfig.phoneNumberId = "$WHATSAPP_PHONE_NUMBER_ID";
       connectionSecrets.push({
         envVar: "WHATSAPP_PHONE_NUMBER_ID",
-        value: whatsappAnswers.phoneNumberId,
+        value: phoneNumberId,
       });
     }
   } else if (platform === "teams") {
-    const teamsAnswers = await inquirer.prompt([
-      {
-        type: "input",
-        name: "appId",
-        message: "Teams App ID (from Azure Bot):",
-      },
-      {
-        type: "password",
-        name: "appPassword",
-        message: "Teams App Password (client secret):",
-        mask: "*",
-      },
-    ]);
-    if (teamsAnswers.appId) {
+    const appId = await input({
+      message: "Teams App ID (from Azure Bot):",
+    });
+    const appPassword = await password({
+      message: "Teams App Password (client secret):",
+      mask: true,
+    });
+    if (appId) {
       connectionConfig.appId = "$TEAMS_APP_ID";
       connectionSecrets.push({
         envVar: "TEAMS_APP_ID",
-        value: teamsAnswers.appId,
+        value: appId,
       });
     }
-    if (teamsAnswers.appPassword) {
+    if (appPassword) {
       connectionConfig.appPassword = "$TEAMS_APP_PASSWORD";
       connectionSecrets.push({
         envVar: "TEAMS_APP_PASSWORD",
-        value: teamsAnswers.appPassword,
+        value: appPassword,
       });
     }
   } else if (platform === "gchat") {
-    const { credentials } = await inquirer.prompt([
-      {
-        type: "password",
-        name: "credentials",
-        message: "Google Chat service account JSON:",
-        mask: "*",
-      },
-    ]);
+    const credentials = await password({
+      message: "Google Chat service account JSON:",
+      mask: true,
+    });
     if (credentials) {
       connectionConfig.credentials = "$GOOGLE_CHAT_CREDENTIALS";
       connectionSecrets.push({

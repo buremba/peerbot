@@ -634,34 +634,57 @@ const memoryStepPanels: Record<
     connect: {
       title: "Operational events",
       description:
-        "Turn live operational signals into structured incident memory.",
-      table: {
-        columns: ["Entity", "Events", "Sources", "Added context"],
-        rows: [
-          [
-            "Alerts",
-            "Triggered, resolved, severity changed",
-            "PagerDuty, Datadog",
-            "State, urgency, impact",
-          ],
-          [
-            "Code",
-            "PRs, fixes, rollbacks",
-            "GitHub, GitLab",
-            "Change timeline",
-          ],
-          [
-            "Deploys",
-            "Started, failed, rolled back",
-            "CI/CD, Argo, Kubernetes",
-            "Rollout history",
-          ],
-          [
-            "Notes",
-            "Updates, handoffs, comments",
-            "Slack, incident tools",
-            "Decisions and context",
-          ],
+        "A scheduled watcher polls the channels and tools your team already uses, then writes the relevant signals back to the right entity. The prompt is the filter — chatter that doesn't match never becomes memory.",
+      trace: {
+        schedule: "30m",
+        prompt:
+          "Track changes to active incidents, blockers, and pending PRs for Acme. Skip OOO and personal chatter.",
+        events: [
+          {
+            time: "9:02",
+            source: "Dan",
+            text: "picking up INC-4421, rolling back checkout-v43",
+          },
+          {
+            time: "9:05",
+            source: "Priya",
+            text: "still blocked on k8s cluster admin creds — can someone grant?",
+          },
+          {
+            time: "9:11",
+            source: "Jay",
+            text: "caching layer PR is ready for review, needs to land by EOD",
+          },
+          {
+            time: "9:18",
+            source: "Sam",
+            text: "OOO today — family thing",
+          },
+          {
+            time: "9:27",
+            source: "Nina",
+            text: "writing INC-4378 postmortem, sharing draft at lunch",
+          },
+        ],
+        entityLabel: "Company:Acme",
+        entityEmoji: "🏢",
+        consolidated: [
+          {
+            emoji: "🚨",
+            text: "Incident INC-4421 — checkout-v43 rollback in progress (Dan)",
+          },
+          {
+            emoji: "🚧",
+            text: "Priya blocked on k8s cluster admin creds",
+          },
+          {
+            emoji: "⏳",
+            text: "Caching layer PR pending merge by EOD (Jay)",
+          },
+          {
+            emoji: "📝",
+            text: "INC-4378 postmortem drafting (Nina)",
+          },
         ],
       },
     },

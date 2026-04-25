@@ -6,6 +6,7 @@ import { Chip } from "../Chip";
 import { ContentRail } from "../ContentRail";
 import { SectionHeader } from "../SectionHeader";
 import { ScopedUseCaseTabs } from "../ScopedUseCaseTabs";
+import { WatcherTraceCard } from "./WatcherTraceCard";
 import {
   accentCyan,
   cardBorderFaint,
@@ -723,114 +724,128 @@ export function ExampleShowcase(props: {
                           ) : null}
                         </div>
 
-                        {panelTable ? (
-                          <div
-                            class="mb-4 overflow-hidden rounded-xl border"
-                            style={{
-                              borderColor: cardBorderSubtle,
-                              backgroundColor: deepBg,
-                            }}
-                          >
-                            <div class="overflow-x-auto">
-                              <table class="min-w-full border-collapse text-left">
-                                <thead>
-                                  <tr>
-                                    {panelTable.columns.map((column) => (
-                                      <th
-                                        key={column}
-                                        class="px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.18em]"
-                                        style={{
-                                          color,
-                                          borderBottom: `1px solid ${cardBorderSubtle}`,
-                                          backgroundColor:
-                                            "rgba(255,255,255,0.02)",
-                                        }}
-                                      >
-                                        {column}
-                                      </th>
-                                    ))}
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {panelTable.rows.map((row) => (
-                                    <tr key={row.join("-")}>
-                                      {row.map((cell, index) => (
-                                        <td
-                                          key={`${row[0] ?? "row"}-${index}`}
-                                          class="px-3 py-2 text-xs leading-5 align-top"
-                                          style={{
-                                            color:
-                                              index === 0
-                                                ? textColor
-                                                : textMuted,
-                                            borderBottom: `1px solid ${cardBorderFaint}`,
-                                          }}
-                                        >
-                                          {cell}
-                                        </td>
-                                      ))}
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            </div>
-                          </div>
-                        ) : step.panel.items?.length ? (
-                          <div class="grid gap-3 sm:grid-cols-2 mb-4">
-                            {step.panel.items.map((item) => (
+                        {(() => {
+                          if (step.panel.trace) {
+                            return (
+                              <WatcherTraceCard {...step.panel.trace} />
+                            );
+                          }
+                          if (panelTable) {
+                            return (
                               <div
-                                key={`${item.meta ?? ""}-${item.label}`}
-                                class="rounded-xl p-3 border"
+                                class="mb-4 overflow-hidden rounded-xl border"
                                 style={{
-                                  backgroundColor: deepBg,
                                   borderColor: cardBorderSubtle,
+                                  backgroundColor: deepBg,
                                 }}
                               >
-                                {item.meta ? (
+                                <div class="overflow-x-auto">
+                                  <table class="min-w-full border-collapse text-left">
+                                    <thead>
+                                      <tr>
+                                        {panelTable.columns.map((column) => (
+                                          <th
+                                            key={column}
+                                            class="px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.18em]"
+                                            style={{
+                                              color,
+                                              borderBottom: `1px solid ${cardBorderSubtle}`,
+                                              backgroundColor:
+                                                "rgba(255,255,255,0.02)",
+                                            }}
+                                          >
+                                            {column}
+                                          </th>
+                                        ))}
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {panelTable.rows.map((row) => (
+                                        <tr key={row.join("-")}>
+                                          {row.map((cell, index) => (
+                                            <td
+                                              key={`${row[0] ?? "row"}-${index}`}
+                                              class="px-3 py-2 text-xs leading-5 align-top"
+                                              style={{
+                                                color:
+                                                  index === 0
+                                                    ? textColor
+                                                    : textMuted,
+                                                borderBottom: `1px solid ${cardBorderFaint}`,
+                                              }}
+                                            >
+                                              {cell}
+                                            </td>
+                                          ))}
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              </div>
+                            );
+                          }
+                          if (step.panel.items?.length) {
+                            return (
+                              <div class="grid gap-3 sm:grid-cols-2 mb-4">
+                                {step.panel.items.map((item) => (
                                   <div
-                                    class="text-[10px] uppercase tracking-[0.18em] mb-1"
-                                    style={{ color }}
-                                  >
-                                    {item.meta}
-                                  </div>
-                                ) : null}
-                                <div
-                                  class="text-sm font-semibold mb-1"
-                                  style={{ color: textColor }}
-                                >
-                                  {item.label}
-                                </div>
-                                <div
-                                  class="text-xs leading-5"
-                                  style={{ color: textMuted }}
-                                >
-                                  {item.detail}
-                                </div>
-                                {item.platform ? (
-                                  <a
-                                    href={getConnectionHref(
-                                      item.platform.id,
-                                      activeExample.useCaseId
-                                    )}
-                                    class="mt-3 inline-flex items-center gap-1.5 rounded-full px-2 py-1 text-[10px] font-medium transition-colors hover:opacity-80"
+                                    key={`${item.meta ?? ""}-${item.label}`}
+                                    class="rounded-xl p-3 border"
                                     style={{
-                                      color: labelGray,
-                                      backgroundColor: "rgba(255,255,255,0.03)",
-                                      border: `1px solid ${cardBorderSubtle}`,
+                                      backgroundColor: deepBg,
+                                      borderColor: cardBorderSubtle,
                                     }}
                                   >
-                                    <PlatformLogo
-                                      platformId={item.platform.id}
-                                    />
-                                    <span>
-                                      {getConnectionLabel(item.platform.id)}
-                                    </span>
-                                  </a>
-                                ) : null}
+                                    {item.meta ? (
+                                      <div
+                                        class="text-[10px] uppercase tracking-[0.18em] mb-1"
+                                        style={{ color }}
+                                      >
+                                        {item.meta}
+                                      </div>
+                                    ) : null}
+                                    <div
+                                      class="text-sm font-semibold mb-1"
+                                      style={{ color: textColor }}
+                                    >
+                                      {item.label}
+                                    </div>
+                                    <div
+                                      class="text-xs leading-5"
+                                      style={{ color: textMuted }}
+                                    >
+                                      {item.detail}
+                                    </div>
+                                    {item.platform ? (
+                                      <a
+                                        href={getConnectionHref(
+                                          item.platform.id,
+                                          activeExample.useCaseId
+                                        )}
+                                        class="mt-3 inline-flex items-center gap-1.5 rounded-full px-2 py-1 text-[10px] font-medium transition-colors hover:opacity-80"
+                                        style={{
+                                          color: labelGray,
+                                          backgroundColor:
+                                            "rgba(255,255,255,0.03)",
+                                          border: `1px solid ${cardBorderSubtle}`,
+                                        }}
+                                      >
+                                        <PlatformLogo
+                                          platformId={item.platform.id}
+                                        />
+                                        <span>
+                                          {getConnectionLabel(item.platform.id)}
+                                        </span>
+                                      </a>
+                                    ) : null}
+                                  </div>
+                                ))}
                               </div>
-                            ))}
-                          </div>
-                        ) : null}
+                            );
+                          }
+                          return null;
+                        })()}
                       </>
                     ) : step.chips?.length ? (
                       <div class="flex flex-wrap gap-1.5 mb-4">

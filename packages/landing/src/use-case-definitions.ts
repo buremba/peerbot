@@ -43,11 +43,32 @@ export type HowItWorksPanelTable = {
   rows: string[][];
 };
 
+export type HowItWorksPanelTraceEvent = {
+  time: string;
+  source: string;
+  text: string;
+};
+
+export type HowItWorksPanelTraceMemory = {
+  emoji?: string;
+  text: string;
+};
+
+export type HowItWorksPanelTrace = {
+  schedule: string;
+  prompt: string;
+  events: HowItWorksPanelTraceEvent[];
+  entityLabel: string;
+  entityEmoji?: string;
+  consolidated: HowItWorksPanelTraceMemory[];
+};
+
 export type HowItWorksPanel = {
   title: string;
   description?: string;
   items?: HowItWorksPanelItem[];
   table?: HowItWorksPanelTable;
+  trace?: HowItWorksPanelTrace;
 };
 
 export type HowItWorksStep = {

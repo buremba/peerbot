@@ -266,6 +266,29 @@ Before recommending these as references in agent prompts, do a one-off
 prune. Pure SQL pass against prod (we have direct access). No PR needed —
 just a documented changelog of what was removed.
 
+#### 2026-04-27 — first pass
+
+Inventory taken across all `visibility='public'` orgs (~200 entities, 12
+catalogs). Soft-deleted:
+
+- `entities.id = 45` `classification-test-brand` "Classification Test
+  Brand" in `market-intelligence` (no inbound rels) — clearly test data.
+
+Held back, pending user judgment:
+
+- `$member` rows in public orgs (careops 26, market-intelligence 2,
+  venture-capital 6). These represent real cross-org membership; auto-
+  provisioned when a user joins. Soft-deleting them would either be
+  re-created on next access or break member lookups for those users.
+  Treating them as catalog cruft was a misread.
+- `stripe-test` brand in market-intelligence — name suggests test data
+  but plausibly intentional (Stripe sandbox). Skipped.
+- The ~5-entity verticals (`leadership`, `sales`, `devops`, `delivery`,
+  `ecommerce`, `finance`, `legal-review`, `support`) — generic placeholder
+  rows that look like template seeds. Pruning a whole org is destructive
+  and may break downstream agents pointing at them. Needs explicit user
+  call before any further removal.
+
 ### 7. `is_catalog` flag on `organization` (~30 LOC + migration)
 
 Pi flagged that `visibility='public'` alone trusts every public org as

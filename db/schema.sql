@@ -1,4 +1,4 @@
-\restrict yPseyczHShSrIqawjVUmfWrB9Pz35TAROpf9iU3KThZVhO4FOYhotkUDqwmder9
+\restrict bqBE913aGPDwzJsfFpJo9ktouNunyv25fIQIyfTS9VJm4SUnYw8b0K9sqZozUWV
 
 -- Dumped from database version 18.1 (Debian 18.1-1.pgdg13+2)
 -- Dumped by pg_dump version 18.1 (Homebrew)
@@ -532,6 +532,18 @@ CREATE TABLE pgboss.warning (
 
 
 --
+-- Name: _reactions_backup_2026_04_25; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public._reactions_backup_2026_04_25 (
+    id text NOT NULL,
+    reaction_script text,
+    reaction_script_compiled text,
+    backed_up_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
 -- Name: account; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -613,6 +625,26 @@ ALTER TABLE public.agent_grants ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY
 
 
 --
+-- Name: agent_secrets; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.agent_secrets (
+    name text NOT NULL,
+    ciphertext text NOT NULL,
+    expires_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: TABLE agent_secrets; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.agent_secrets IS 'Encrypted secret values referenced via secret:// refs. Backs the PostgresSecretStore implementation of @lobu/gateway WritableSecretStore.';
+
+
+--
 -- Name: agent_users; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -682,7 +714,8 @@ CREATE TABLE public.auth_profiles (
     created_by text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT auth_profiles_profile_kind_check CHECK ((profile_kind = ANY (ARRAY['env'::text, 'oauth_app'::text, 'oauth_account'::text, 'browser_session'::text]))),
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    CONSTRAINT auth_profiles_profile_kind_check CHECK ((profile_kind = ANY (ARRAY['env'::text, 'oauth_app'::text, 'oauth_account'::text, 'browser_session'::text, 'interactive'::text]))),
     CONSTRAINT auth_profiles_status_check CHECK ((status = ANY (ARRAY['active'::text, 'pending_auth'::text, 'error'::text, 'revoked'::text])))
 );
 
@@ -812,8 +845,17 @@ CREATE TABLE public.connector_definitions (
     api_type text DEFAULT 'api'::text NOT NULL,
     favicon_domain text,
     openapi_config jsonb,
+    default_connection_config jsonb,
+    entity_link_overrides jsonb,
     CONSTRAINT connector_definitions_status_check CHECK ((status = ANY (ARRAY['active'::text, 'archived'::text, 'draft'::text])))
 );
+
+
+--
+-- Name: COLUMN connector_definitions.entity_link_overrides; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.connector_definitions.entity_link_overrides IS 'Per-install override of connector entityLinks rules. See resolveEntityLinkRules() for merge semantics.';
 
 
 --
@@ -1007,7 +1049,6 @@ CREATE VIEW public.current_event_records AS
 
 CREATE TABLE public.entities (
     id bigint NOT NULL,
-    entity_type text NOT NULL,
     parent_id bigint,
     name text NOT NULL,
     metadata jsonb DEFAULT '{}'::jsonb,
@@ -1022,7 +1063,8 @@ CREATE TABLE public.entities (
     embedding public.vector(768),
     content_tsv tsvector GENERATED ALWAYS AS (to_tsvector('english'::regconfig, ((COALESCE(name, ''::text) || ' '::text) || COALESCE(content, ''::text)))) STORED,
     content_hash text,
-    deleted_at timestamp with time zone
+    deleted_at timestamp with time zone,
+    entity_type_id integer NOT NULL
 );
 
 
@@ -1031,13 +1073,6 @@ CREATE TABLE public.entities (
 --
 
 COMMENT ON TABLE public.entities IS 'Unified entity table (brands, products, and future entity types)';
-
-
---
--- Name: COLUMN entities.entity_type; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.entities.entity_type IS 'Type of entity: brand, product (future: location, feature, team)';
 
 
 --
@@ -1071,6 +1106,70 @@ CREATE SEQUENCE public.entities_id_seq
 --
 
 ALTER SEQUENCE public.entities_id_seq OWNED BY public.entities.id;
+
+
+--
+-- Name: entity_identities; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.entity_identities (
+    id bigint NOT NULL,
+    organization_id text NOT NULL,
+    entity_id bigint NOT NULL,
+    namespace text NOT NULL,
+    identifier text NOT NULL,
+    source_connector text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    deleted_at timestamp with time zone
+);
+
+
+--
+-- Name: TABLE entity_identities; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.entity_identities IS 'Normalized identifier claims per entity. See docs/identity-linking.md for the full pattern.';
+
+
+--
+-- Name: COLUMN entity_identities.namespace; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.entity_identities.namespace IS 'Identifier kind. Standard values: phone, email, wa_jid, slack_user_id, github_login, auth_user_id, google_contact_id. Custom namespaces allowed but connectors sharing a namespace must agree on its format.';
+
+
+--
+-- Name: COLUMN entity_identities.identifier; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.entity_identities.identifier IS 'Normalized identifier value (E.164 digits for phone, lowercase for email, etc.). Normalizers in @lobu/owletto-sdk own the canonical form.';
+
+
+--
+-- Name: COLUMN entity_identities.source_connector; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.entity_identities.source_connector IS 'Who claimed this identifier: "connector:whatsapp", "manual", or null when seeded by migration.';
+
+
+--
+-- Name: entity_identities_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.entity_identities_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: entity_identities_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.entity_identities_id_seq OWNED BY public.entity_identities.id;
 
 
 --
@@ -1126,6 +1225,8 @@ CREATE TABLE public.entity_relationship_types (
     deleted_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now(),
     updated_at timestamp with time zone DEFAULT now(),
+    managed_by_template_agent_id text,
+    source_template_org_id text,
     CONSTRAINT entity_relationship_types_status_check CHECK ((status = ANY (ARRAY['active'::text, 'archived'::text])))
 );
 
@@ -1246,7 +1347,9 @@ CREATE TABLE public.entity_types (
     created_at timestamp with time zone DEFAULT now(),
     updated_at timestamp with time zone DEFAULT now(),
     current_view_template_version_id integer,
-    event_kinds jsonb
+    event_kinds jsonb,
+    managed_by_template_agent_id text,
+    source_template_org_id text
 );
 
 
@@ -1379,6 +1482,8 @@ CREATE TABLE public.event_classifiers (
     watcher_id bigint,
     organization_id text,
     entity_ids bigint[],
+    managed_by_template_agent_id text,
+    source_template_org_id text,
     CONSTRAINT event_classifiers_status_check CHECK ((status = ANY (ARRAY['active'::text, 'deprecated'::text])))
 );
 
@@ -1870,8 +1975,12 @@ CREATE TABLE public.runs (
     watcher_id integer,
     window_id bigint,
     approved_input jsonb,
+    auth_profile_id bigint,
+    auth_signal jsonb,
+    created_by_user_id text,
+    dispatched_message_id text,
     CONSTRAINT runs_approval_status_check CHECK ((approval_status = ANY (ARRAY['pending'::text, 'approved'::text, 'rejected'::text, 'auto'::text]))),
-    CONSTRAINT runs_run_type_check CHECK ((run_type = ANY (ARRAY['sync'::text, 'action'::text, 'code'::text, 'insight'::text, 'embed_backfill'::text, 'watcher'::text]))),
+    CONSTRAINT runs_run_type_check CHECK ((run_type = ANY (ARRAY['sync'::text, 'action'::text, 'code'::text, 'insight'::text, 'watcher'::text, 'embed_backfill'::text, 'auth'::text]))),
     CONSTRAINT runs_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'claimed'::text, 'running'::text, 'completed'::text, 'failed'::text, 'cancelled'::text, 'timeout'::text])))
 );
 
@@ -2268,26 +2377,29 @@ ALTER SEQUENCE public.watcher_window_content_id_seq OWNED BY public.watcher_wind
 
 
 --
--- Name: watcher_window_feedback; Type: TABLE; Schema: public; Owner: -
+-- Name: watcher_window_field_feedback; Type: TABLE; Schema: public; Owner: -
 --
 
-CREATE TABLE public.watcher_window_feedback (
+CREATE TABLE public.watcher_window_field_feedback (
     id bigint NOT NULL,
     window_id integer NOT NULL,
     watcher_id integer NOT NULL,
     organization_id text NOT NULL,
-    corrections jsonb NOT NULL,
-    notes text,
+    field_path text NOT NULL,
+    mutation text DEFAULT 'set'::text NOT NULL,
+    corrected_value jsonb,
+    note text,
     created_by text NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT watcher_window_field_feedback_mutation_check CHECK ((mutation = ANY (ARRAY['set'::text, 'remove'::text, 'add'::text])))
 );
 
 
 --
--- Name: watcher_window_feedback_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: watcher_window_field_feedback_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
-CREATE SEQUENCE public.watcher_window_feedback_id_seq
+CREATE SEQUENCE public.watcher_window_field_feedback_id_seq
     START WITH 1
     INCREMENT BY 1
     NO MINVALUE
@@ -2296,10 +2408,10 @@ CREATE SEQUENCE public.watcher_window_feedback_id_seq
 
 
 --
--- Name: watcher_window_feedback_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+-- Name: watcher_window_field_feedback_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
-ALTER SEQUENCE public.watcher_window_feedback_id_seq OWNED BY public.watcher_window_feedback.id;
+ALTER SEQUENCE public.watcher_window_field_feedback_id_seq OWNED BY public.watcher_window_field_feedback.id;
 
 
 --
@@ -2323,7 +2435,8 @@ CREATE TABLE public.watcher_windows (
     version_id integer,
     depth integer DEFAULT 0,
     client_id text,
-    run_metadata jsonb DEFAULT '{}'::jsonb NOT NULL
+    run_metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    run_id bigint
 );
 
 
@@ -2400,6 +2513,8 @@ CREATE TABLE public.watchers (
     scheduler_client_id text,
     source_watcher_id integer,
     watcher_group_id integer NOT NULL,
+    managed_by_template_agent_id text,
+    source_template_org_id text,
     CONSTRAINT insights_status_check CHECK ((status = ANY (ARRAY['active'::text, 'archived'::text])))
 );
 
@@ -2587,6 +2702,13 @@ ALTER TABLE ONLY public.entities ALTER COLUMN id SET DEFAULT nextval('public.ent
 
 
 --
+-- Name: entity_identities id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.entity_identities ALTER COLUMN id SET DEFAULT nextval('public.entity_identities_id_seq'::regclass);
+
+
+--
 -- Name: entity_relationship_type_rules id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -2720,10 +2842,10 @@ ALTER TABLE ONLY public.watcher_window_events ALTER COLUMN id SET DEFAULT nextva
 
 
 --
--- Name: watcher_window_feedback id; Type: DEFAULT; Schema: public; Owner: -
+-- Name: watcher_window_field_feedback id; Type: DEFAULT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.watcher_window_feedback ALTER COLUMN id SET DEFAULT nextval('public.watcher_window_feedback_id_seq'::regclass);
+ALTER TABLE ONLY public.watcher_window_field_feedback ALTER COLUMN id SET DEFAULT nextval('public.watcher_window_field_feedback_id_seq'::regclass);
 
 
 --
@@ -2805,6 +2927,14 @@ ALTER TABLE ONLY pgboss.warning
 
 
 --
+-- Name: _reactions_backup_2026_04_25 _reactions_backup_2026_04_25_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public._reactions_backup_2026_04_25
+    ADD CONSTRAINT _reactions_backup_2026_04_25_pkey PRIMARY KEY (id, backed_up_at);
+
+
+--
 -- Name: account account_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2842,6 +2972,14 @@ ALTER TABLE ONLY public.agent_grants
 
 ALTER TABLE ONLY public.agent_grants
     ADD CONSTRAINT agent_grants_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: agent_secrets agent_secrets_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.agent_secrets
+    ADD CONSTRAINT agent_secrets_pkey PRIMARY KEY (name);
 
 
 --
@@ -2909,19 +3047,19 @@ ALTER TABLE ONLY public.connector_versions
 
 
 --
--- Name: entities entities_organization_id_entity_type_slug_parent_id_key; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.entities
-    ADD CONSTRAINT entities_organization_id_entity_type_slug_parent_id_key UNIQUE (organization_id, entity_type, slug, parent_id);
-
-
---
 -- Name: entities entities_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.entities
     ADD CONSTRAINT entities_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: entity_identities entity_identities_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.entity_identities
+    ADD CONSTRAINT entity_identities_pkey PRIMARY KEY (id);
 
 
 --
@@ -3341,11 +3479,11 @@ ALTER TABLE ONLY public.watcher_reactions
 
 
 --
--- Name: watcher_window_feedback watcher_window_feedback_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: watcher_window_field_feedback watcher_window_field_feedback_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.watcher_window_feedback
-    ADD CONSTRAINT watcher_window_feedback_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.watcher_window_field_feedback
+    ADD CONSTRAINT watcher_window_field_feedback_pkey PRIMARY KEY (id);
 
 
 --
@@ -3474,6 +3612,20 @@ CREATE INDEX agent_connections_platform_idx ON public.agent_connections USING bt
 --
 
 CREATE INDEX agent_grants_agent_id_idx ON public.agent_grants USING btree (agent_id);
+
+
+--
+-- Name: agent_secrets_expires_at_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX agent_secrets_expires_at_idx ON public.agent_secrets USING btree (expires_at) WHERE (expires_at IS NOT NULL);
+
+
+--
+-- Name: agent_secrets_name_prefix_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX agent_secrets_name_prefix_idx ON public.agent_secrets USING btree (name text_pattern_ops);
 
 
 --
@@ -3729,6 +3881,13 @@ CREATE INDEX idx_entities_embedding ON public.entities USING ivfflat (embedding 
 
 
 --
+-- Name: idx_entities_entity_type_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_entities_entity_type_id ON public.entities USING btree (entity_type_id) WHERE (deleted_at IS NULL);
+
+
+--
 -- Name: idx_entities_metadata_domain; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3750,6 +3909,27 @@ CREATE INDEX idx_entities_organization_id ON public.entities USING btree (organi
 
 
 --
+-- Name: idx_entity_identities_by_entity; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_entity_identities_by_entity ON public.entity_identities USING btree (entity_id) WHERE (deleted_at IS NULL);
+
+
+--
+-- Name: idx_entity_identities_live_unique; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_entity_identities_live_unique ON public.entity_identities USING btree (organization_id, namespace, identifier) WHERE (deleted_at IS NULL);
+
+
+--
+-- Name: idx_entity_identities_lookup; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_entity_identities_lookup ON public.entity_identities USING btree (organization_id, namespace, identifier) WHERE (deleted_at IS NULL);
+
+
+--
 -- Name: idx_entity_rel_type_rules_type; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3761,6 +3941,13 @@ CREATE INDEX idx_entity_rel_type_rules_type ON public.entity_relationship_type_r
 --
 
 CREATE UNIQUE INDEX idx_entity_rel_types_org_slug ON public.entity_relationship_types USING btree (organization_id, slug) WHERE (status = 'active'::text);
+
+
+--
+-- Name: idx_entity_relationship_types_managed_by_template; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_entity_relationship_types_managed_by_template ON public.entity_relationship_types USING btree (managed_by_template_agent_id) WHERE (managed_by_template_agent_id IS NOT NULL);
 
 
 --
@@ -3810,6 +3997,13 @@ CREATE INDEX idx_entity_type_audit_type_id ON public.entity_type_audit USING btr
 --
 
 CREATE INDEX idx_entity_types_active ON public.entity_types USING btree (id) WHERE (deleted_at IS NULL);
+
+
+--
+-- Name: idx_entity_types_managed_by_template; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_entity_types_managed_by_template ON public.entity_types USING btree (managed_by_template_agent_id) WHERE (managed_by_template_agent_id IS NOT NULL);
 
 
 --
@@ -3873,6 +4067,13 @@ CREATE INDEX idx_event_classifiers_entity_ids ON public.event_classifiers USING 
 --
 
 CREATE INDEX idx_event_classifiers_insight_id ON public.event_classifiers USING btree (watcher_id) WHERE (watcher_id IS NOT NULL);
+
+
+--
+-- Name: idx_event_classifiers_managed_by_template; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_event_classifiers_managed_by_template ON public.event_classifiers USING btree (managed_by_template_agent_id) WHERE (managed_by_template_agent_id IS NOT NULL);
 
 
 --
@@ -3985,6 +4186,55 @@ CREATE INDEX idx_events_feed_id ON public.events USING btree (feed_id);
 --
 
 CREATE INDEX idx_events_fulltext ON public.events USING gin (to_tsvector('english'::regconfig, COALESCE(payload_text, ''::text)));
+
+
+--
+-- Name: idx_events_metadata_auth_user_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_events_metadata_auth_user_id ON public.events USING btree (((metadata ->> 'auth_user_id'::text))) WHERE (metadata ? 'auth_user_id'::text);
+
+
+--
+-- Name: idx_events_metadata_email; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_events_metadata_email ON public.events USING btree (((metadata ->> 'email'::text))) WHERE (metadata ? 'email'::text);
+
+
+--
+-- Name: idx_events_metadata_github_login; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_events_metadata_github_login ON public.events USING btree (((metadata ->> 'github_login'::text))) WHERE (metadata ? 'github_login'::text);
+
+
+--
+-- Name: idx_events_metadata_google_contact_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_events_metadata_google_contact_id ON public.events USING btree (((metadata ->> 'google_contact_id'::text))) WHERE (metadata ? 'google_contact_id'::text);
+
+
+--
+-- Name: idx_events_metadata_phone; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_events_metadata_phone ON public.events USING btree (((metadata ->> 'phone'::text))) WHERE (metadata ? 'phone'::text);
+
+
+--
+-- Name: idx_events_metadata_slack_user_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_events_metadata_slack_user_id ON public.events USING btree (((metadata ->> 'slack_user_id'::text))) WHERE (metadata ? 'slack_user_id'::text);
+
+
+--
+-- Name: idx_events_metadata_wa_jid; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_events_metadata_wa_jid ON public.events USING btree (((metadata ->> 'wa_jid'::text))) WHERE (metadata ? 'wa_jid'::text);
 
 
 --
@@ -4156,6 +4406,13 @@ CREATE INDEX idx_rate_limits_updated_at ON public.rate_limits USING btree (updat
 
 
 --
+-- Name: idx_runs_active_auth_per_profile; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_runs_active_auth_per_profile ON public.runs USING btree (auth_profile_id) WHERE ((run_type = 'auth'::text) AND (auth_profile_id IS NOT NULL) AND (status = ANY (ARRAY['pending'::text, 'claimed'::text, 'running'::text])));
+
+
+--
 -- Name: idx_runs_active_embed_backfill_per_org; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -4181,6 +4438,20 @@ CREATE UNIQUE INDEX idx_runs_active_watcher_per_watcher ON public.runs USING btr
 --
 
 CREATE INDEX idx_runs_connection ON public.runs USING btree (connection_id);
+
+
+--
+-- Name: idx_runs_created_by_user; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_runs_created_by_user ON public.runs USING btree (created_by_user_id) WHERE (created_by_user_id IS NOT NULL);
+
+
+--
+-- Name: idx_runs_dispatched_message_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_runs_dispatched_message_id ON public.runs USING btree (dispatched_message_id) WHERE (dispatched_message_id IS NOT NULL);
 
 
 --
@@ -4289,6 +4560,13 @@ CREATE INDEX idx_watcher_windows_parent ON public.watcher_windows USING btree (p
 
 
 --
+-- Name: idx_watcher_windows_run_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_watcher_windows_run_id ON public.watcher_windows USING btree (run_id) WHERE (run_id IS NOT NULL);
+
+
+--
 -- Name: idx_watcher_windows_template_version; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -4335,6 +4613,13 @@ CREATE INDEX idx_watchers_created_by ON public.watchers USING btree (created_by)
 --
 
 CREATE INDEX idx_watchers_entity_ids ON public.watchers USING gin (entity_ids);
+
+
+--
+-- Name: idx_watchers_managed_by_template; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_watchers_managed_by_template ON public.watchers USING btree (managed_by_template_agent_id) WHERE (managed_by_template_agent_id IS NOT NULL);
 
 
 --
@@ -4401,17 +4686,17 @@ CREATE INDEX idx_workers_user ON public.workers USING btree (user_id) WHERE (use
 
 
 --
--- Name: idx_wwf_watcher; Type: INDEX; Schema: public; Owner: -
+-- Name: idx_wwff_watcher_field_recent; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX idx_wwf_watcher ON public.watcher_window_feedback USING btree (watcher_id);
+CREATE INDEX idx_wwff_watcher_field_recent ON public.watcher_window_field_feedback USING btree (watcher_id, field_path, created_at DESC);
 
 
 --
--- Name: idx_wwf_window; Type: INDEX; Schema: public; Owner: -
+-- Name: idx_wwff_window; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX idx_wwf_window ON public.watcher_window_feedback USING btree (window_id);
+CREATE INDEX idx_wwff_window ON public.watcher_window_field_feedback USING btree (window_id);
 
 
 --
@@ -4858,6 +5143,14 @@ ALTER TABLE ONLY public.entities
 
 
 --
+-- Name: entities entities_entity_type_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.entities
+    ADD CONSTRAINT entities_entity_type_id_fkey FOREIGN KEY (entity_type_id) REFERENCES public.entity_types(id);
+
+
+--
 -- Name: entities entities_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -4879,6 +5172,22 @@ ALTER TABLE ONLY public.entities
 
 ALTER TABLE ONLY public.entities
     ADD CONSTRAINT entities_view_template_version_fk FOREIGN KEY (current_view_template_version_id) REFERENCES public.view_template_versions(id);
+
+
+--
+-- Name: entity_identities entity_identities_entity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.entity_identities
+    ADD CONSTRAINT entity_identities_entity_id_fkey FOREIGN KEY (entity_id) REFERENCES public.entities(id) ON DELETE CASCADE;
+
+
+--
+-- Name: entity_identities entity_identities_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.entity_identities
+    ADD CONSTRAINT entity_identities_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organization(id) ON DELETE CASCADE;
 
 
 --
@@ -5102,7 +5411,7 @@ ALTER TABLE ONLY public.event_embeddings
 --
 
 ALTER TABLE ONLY public.events
-    ADD CONSTRAINT events_client_id_fkey FOREIGN KEY (client_id) REFERENCES public.oauth_clients(id);
+    ADD CONSTRAINT events_client_id_fkey FOREIGN KEY (client_id) REFERENCES public.oauth_clients(id) ON DELETE SET NULL;
 
 
 --
@@ -5410,11 +5719,27 @@ ALTER TABLE ONLY public.personal_access_tokens
 
 
 --
+-- Name: runs runs_auth_profile_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.runs
+    ADD CONSTRAINT runs_auth_profile_id_fkey FOREIGN KEY (auth_profile_id) REFERENCES public.auth_profiles(id) ON DELETE CASCADE;
+
+
+--
 -- Name: runs runs_connection_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.runs
     ADD CONSTRAINT runs_connection_id_fkey FOREIGN KEY (connection_id) REFERENCES public.connections(id) ON DELETE SET NULL;
+
+
+--
+-- Name: runs runs_created_by_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.runs
+    ADD CONSTRAINT runs_created_by_user_id_fkey FOREIGN KEY (created_by_user_id) REFERENCES public."user"(id) ON DELETE SET NULL;
 
 
 --
@@ -5506,19 +5831,27 @@ ALTER TABLE ONLY public.watcher_versions
 
 
 --
--- Name: watcher_window_feedback watcher_window_feedback_watcher_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: watcher_window_field_feedback watcher_window_field_feedback_watcher_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.watcher_window_feedback
-    ADD CONSTRAINT watcher_window_feedback_watcher_id_fkey FOREIGN KEY (watcher_id) REFERENCES public.watchers(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.watcher_window_field_feedback
+    ADD CONSTRAINT watcher_window_field_feedback_watcher_id_fkey FOREIGN KEY (watcher_id) REFERENCES public.watchers(id) ON DELETE CASCADE;
 
 
 --
--- Name: watcher_window_feedback watcher_window_feedback_window_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: watcher_window_field_feedback watcher_window_field_feedback_window_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.watcher_window_feedback
-    ADD CONSTRAINT watcher_window_feedback_window_id_fkey FOREIGN KEY (window_id) REFERENCES public.watcher_windows(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.watcher_window_field_feedback
+    ADD CONSTRAINT watcher_window_field_feedback_window_id_fkey FOREIGN KEY (window_id) REFERENCES public.watcher_windows(id) ON DELETE CASCADE;
+
+
+--
+-- Name: watcher_windows watcher_windows_run_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.watcher_windows
+    ADD CONSTRAINT watcher_windows_run_id_fkey FOREIGN KEY (run_id) REFERENCES public.runs(id) ON DELETE SET NULL;
 
 
 --
@@ -5557,7 +5890,7 @@ ALTER TABLE ONLY public.workspace_settings
 -- PostgreSQL database dump complete
 --
 
-\unrestrict yPseyczHShSrIqawjVUmfWrB9Pz35TAROpf9iU3KThZVhO4FOYhotkUDqwmder9
+\unrestrict bqBE913aGPDwzJsfFpJo9ktouNunyv25fIQIyfTS9VJm4SUnYw8b0K9sqZozUWV
 
 
 --
@@ -5577,4 +5910,19 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20260402120000'),
     ('20260405193000'),
     ('20260408120000'),
-    ('20260408120001');
+    ('20260408120001'),
+    ('20260409110000'),
+    ('20260409130000'),
+    ('20260410120000'),
+    ('20260413170000'),
+    ('20260416120000'),
+    ('20260417100000'),
+    ('20260418100000'),
+    ('20260418110000'),
+    ('20260419120000'),
+    ('20260420120000'),
+    ('20260424030000'),
+    ('20260424130000'),
+    ('20260425100000'),
+    ('20260425120000'),
+    ('20260426120000');

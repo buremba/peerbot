@@ -172,10 +172,7 @@ function CardShell({
       >
         {eyebrow}
       </div>
-      <h3
-        class="mb-5 text-lg font-semibold"
-        style={{ color: textColor }}
-      >
+      <h3 class="mb-5 text-lg font-semibold" style={{ color: textColor }}>
         {title}
       </h3>
 

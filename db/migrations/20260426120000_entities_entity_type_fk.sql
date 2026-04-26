@@ -22,13 +22,20 @@ ALTER TABLE public.entities
     ADD COLUMN entity_type_id integer REFERENCES public.entity_types(id);
 
 -- 2. Backfill from existing (organization_id, entity_type slug) → entity_types.id.
--- Soft-deleted entity_types still resolve — preserves history of soft-removed types.
+-- Prefer live entity_types rows; fall back to soft-deleted ones to preserve
+-- history. Without the ORDER BY, a slug+org pair with both an active and a
+-- soft-deleted row would resolve non-deterministically — entity_types' UNIQUE
+-- index on slug only covers `deleted_at IS NULL` rows, so collisions can exist.
 UPDATE public.entities e
-SET entity_type_id = et.id
-FROM public.entity_types et
-WHERE et.slug = e.entity_type
-  AND et.organization_id = e.organization_id
-  AND e.entity_type_id IS NULL;
+SET entity_type_id = (
+  SELECT et.id
+  FROM public.entity_types et
+  WHERE et.slug = e.entity_type
+    AND et.organization_id = e.organization_id
+  ORDER BY (et.deleted_at IS NULL) DESC, et.id DESC
+  LIMIT 1
+)
+WHERE e.entity_type_id IS NULL;
 
 -- 3. Fail loudly on orphans. If any entities reference a slug with no matching
 -- entity_types row, that's pre-existing data corruption from the slug-based

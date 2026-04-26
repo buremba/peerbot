@@ -402,11 +402,12 @@ async function fetchTopEntitiesByType(
 ): Promise<Array<{ entity_type: string; entities: Array<{ id: number; name: string }> }>> {
   const sql = getDb();
   const rows = await sql`
-    SELECT id, name, entity_type
-    FROM entities
-    WHERE organization_id = ${organizationId}
-      AND deleted_at IS NULL
-    ORDER BY (SELECT COUNT(*) FROM current_event_records ev WHERE ${sql.unsafe(entityLinkMatchSql('entities.id::bigint', 'ev'))}) DESC
+    SELECT e.id, e.name, et.slug AS entity_type
+    FROM entities e
+    JOIN entity_types et ON et.id = e.entity_type_id
+    WHERE e.organization_id = ${organizationId}
+      AND e.deleted_at IS NULL
+    ORDER BY (SELECT COUNT(*) FROM current_event_records ev WHERE ${sql.unsafe(entityLinkMatchSql('e.id::bigint', 'ev'))}) DESC
     LIMIT 30
   `;
 

@@ -22,10 +22,12 @@ export async function buildWorkspaceInstructions(organizationId: string): Promis
         [organizationId]
       ),
       sql`
-        SELECT entity_type, COUNT(*)::int as entity_count
-        FROM entities
-        WHERE organization_id = ${organizationId}
-        GROUP BY entity_type
+        SELECT et.slug AS entity_type, COUNT(*)::int as entity_count
+        FROM entities e
+        JOIN entity_types et ON et.id = e.entity_type_id
+        WHERE e.organization_id = ${organizationId}
+          AND e.deleted_at IS NULL
+        GROUP BY et.slug
       `,
       sql.unsafe(
         `SELECT rt.slug, rt.name, rt.is_symmetric, inv.slug as inverse_type_slug,

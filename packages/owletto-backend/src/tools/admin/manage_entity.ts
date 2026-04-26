@@ -542,9 +542,10 @@ async function handleUpdate(
 
   // Fetch before state for change tracking and validation
   const beforeRows = await sql`
-    SELECT name, slug, parent_id, metadata, entity_type
-    FROM entities
-    WHERE id = ${entityId} AND deleted_at IS NULL
+    SELECT e.name, e.slug, e.parent_id, e.metadata, et.slug AS entity_type
+    FROM entities e
+    JOIN entity_types et ON et.id = e.entity_type_id
+    WHERE e.id = ${entityId} AND e.deleted_at IS NULL
   `;
   if (beforeRows.length === 0) {
     throw new Error(`Entity with ID ${entityId} not found`);

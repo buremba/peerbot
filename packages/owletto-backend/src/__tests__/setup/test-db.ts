@@ -261,7 +261,7 @@ async function fixSchemaConstraints(db: postgres.Sql): Promise<void> {
     await db.unsafe(`
       ALTER TABLE IF EXISTS runs DROP CONSTRAINT IF EXISTS runs_run_type_check;
       ALTER TABLE IF EXISTS runs ADD CONSTRAINT runs_run_type_check
-        CHECK (run_type IN ('sync','action','code','insight','watcher','embed_backfill'));
+        CHECK (run_type IN ('sync','action','watcher','embed_backfill','auth'));
     `);
     // connections.status needs 'pending_auth'
     await db.unsafe(`

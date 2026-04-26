@@ -948,7 +948,7 @@ CREATE TABLE public.events (
     run_id bigint,
     semantic_type text DEFAULT 'content'::text NOT NULL,
     client_id text,
-    created_by text,
+    created_by text NOT NULL,
     interaction_type text DEFAULT 'none'::text NOT NULL,
     interaction_status text,
     interaction_input_schema jsonb,
@@ -1470,13 +1470,13 @@ CREATE TABLE public.event_classifiers (
     name text NOT NULL,
     description text,
     attribute_key text NOT NULL,
-    status text DEFAULT 'active'::text,
+    status text DEFAULT 'active'::text NOT NULL,
     created_at timestamp with time zone DEFAULT now(),
     updated_at timestamp with time zone DEFAULT now(),
     created_by text NOT NULL,
     entity_id bigint,
     watcher_id bigint,
-    organization_id text,
+    organization_id text NOT NULL,
     entity_ids bigint[],
     CONSTRAINT event_classifiers_status_check CHECK ((status = ANY (ARRAY['active'::text, 'deprecated'::text])))
 );
@@ -1520,41 +1520,6 @@ CREATE VIEW public.event_thread_tree AS
     ARRAY[(COALESCE(parent.occurred_at, e.occurred_at))::text, (e.id)::text] AS sort_path
    FROM (public.current_event_records e
      LEFT JOIN public.current_event_records parent ON (((e.origin_parent_id = parent.origin_id) AND (e.entity_ids && parent.entity_ids))));
-
-
---
--- Name: events_legacy_pre_append_only_20260406; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.events_legacy_pre_append_only_20260406 (
-    id integer,
-    source_id integer,
-    external_id text,
-    title text,
-    raw_content text,
-    author text,
-    url text,
-    published_at timestamp with time zone,
-    score numeric(10,2),
-    embedding public.vector(768),
-    metadata jsonb,
-    created_at timestamp with time zone,
-    parent_external_id text,
-    execution_id bigint,
-    content_length integer,
-    event_type text,
-    entity_ids bigint[],
-    connector_key text,
-    connection_id bigint,
-    feed_key text,
-    feed_id bigint,
-    run_id bigint,
-    kind text,
-    client_id text,
-    organization_id text,
-    created_by text,
-    superseded_by bigint
-);
 
 
 --
@@ -1974,7 +1939,7 @@ CREATE TABLE public.runs (
     created_by_user_id text,
     dispatched_message_id text,
     CONSTRAINT runs_approval_status_check CHECK ((approval_status = ANY (ARRAY['pending'::text, 'approved'::text, 'rejected'::text, 'auto'::text]))),
-    CONSTRAINT runs_run_type_check CHECK ((run_type = ANY (ARRAY['sync'::text, 'action'::text, 'code'::text, 'insight'::text, 'watcher'::text, 'embed_backfill'::text, 'auth'::text]))),
+    CONSTRAINT runs_run_type_check CHECK ((run_type = ANY (ARRAY['sync'::text, 'action'::text, 'embed_backfill'::text, 'watcher'::text, 'auth'::text]))),
     CONSTRAINT runs_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'claimed'::text, 'running'::text, 'completed'::text, 'failed'::text, 'cancelled'::text, 'timeout'::text])))
 );
 
@@ -2481,7 +2446,7 @@ ALTER SEQUENCE public.watcher_windows_id_seq OWNED BY public.watcher_windows.id;
 CREATE TABLE public.watchers (
     id integer CONSTRAINT insights_id_not_null NOT NULL,
     model_config jsonb DEFAULT '{}'::jsonb,
-    status text DEFAULT 'active'::text,
+    status text DEFAULT 'active'::text NOT NULL,
     created_at timestamp with time zone DEFAULT now(),
     updated_at timestamp with time zone DEFAULT now(),
     sources jsonb DEFAULT '[]'::jsonb,
@@ -2489,7 +2454,7 @@ CREATE TABLE public.watchers (
     entity_ids bigint[],
     reaction_script text,
     reaction_script_compiled text,
-    organization_id text,
+    organization_id text NOT NULL,
     name text,
     slug text,
     description text,
@@ -3131,7 +3096,7 @@ ALTER TABLE ONLY public.event_classifiers
 --
 
 ALTER TABLE ONLY public.event_classifiers
-    ADD CONSTRAINT event_classifiers_unique_per_insight UNIQUE (entity_id, watcher_id, slug);
+    ADD CONSTRAINT event_classifiers_unique_per_insight UNIQUE NULLS NOT DISTINCT (entity_id, watcher_id, slug);
 
 
 --
@@ -3779,6 +3744,13 @@ CREATE INDEX idx_connections_deleted_at ON public.connections USING btree (delet
 --
 
 CREATE INDEX idx_connections_org ON public.connections USING btree (organization_id);
+
+
+--
+-- Name: idx_connections_org_connector_account_live; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_connections_org_connector_account_live ON public.connections USING btree (organization_id, connector_key, account_id) WHERE ((deleted_at IS NULL) AND (account_id IS NOT NULL));
 
 
 --

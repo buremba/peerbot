@@ -11,7 +11,8 @@ function extractMigrationUpSection(content: string): string {
   return (
     content
       .split('-- migrate:down')[0]
-      .replace('-- migrate:up', '')
+      // Strip the marker line including any dbmate options (e.g. `transaction:false`).
+      .replace(/^-- migrate:up.*$/m, '')
       // Older local Postgres versions do not support this GUC from newer pg_dump output.
       .replace(/^SET transaction_timeout = 0;\s*$/gm, '')
       .trim()

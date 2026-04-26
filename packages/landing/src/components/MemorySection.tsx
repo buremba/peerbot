@@ -12,6 +12,7 @@ import { CommandHero } from "./CommandHero";
 import { HighlightedText } from "./HighlightedText";
 import { ContentRail } from "./ContentRail";
 import { ExampleShowcase } from "./memory/ExampleShowcase";
+import { MemoryTopologyCompare } from "./memory/MemoryTopologyCompare";
 import { LatestBlogPosts, type LatestBlogPost } from "./LatestBlogPosts";
 import { ScheduleCallButton, ScheduleCallIcon } from "./ScheduleDialog";
 import { ScopedUseCaseTabs } from "./ScopedUseCaseTabs";
@@ -92,6 +93,15 @@ export function MemorySection(props: {
             </a>
           }
         />
+
+        <ContentRail variant="compact" className="mb-16 mt-10">
+          <SectionHeader
+            title="Two ways to give agents memory"
+            body="One sandbox, one filesystem — or one shared layer your whole org reads and writes."
+            className="mb-8"
+          />
+          <MemoryTopologyCompare />
+        </ContentRail>
 
         <div class="mb-10 text-center">
           <ScopedUseCaseTabs

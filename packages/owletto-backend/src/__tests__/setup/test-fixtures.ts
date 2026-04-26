@@ -277,8 +277,11 @@ export async function createTestEntity(options: {
     }
   }
 
+  // Tests routinely create entities in fresh orgs without first calling
+  // seedSystemEntityTypes(); ensure the requested type exists so the FK
+  // (entities.entity_type_id) resolves without forcing every test to seed.
   const entityTypeSlug = options.entity_type || 'brand';
-  const typeRows = await sql<{ id: number }[]>`
+  let typeRows = await sql<{ id: number }[]>`
     SELECT id FROM entity_types
     WHERE slug = ${entityTypeSlug}
       AND organization_id = ${options.organization_id}
@@ -286,9 +289,11 @@ export async function createTestEntity(options: {
     LIMIT 1
   `;
   if (typeRows.length === 0) {
-    throw new Error(
-      `createTestEntity: entity_type '${entityTypeSlug}' not registered in org ${options.organization_id}`
-    );
+    typeRows = await sql<{ id: number }[]>`
+      INSERT INTO entity_types (organization_id, slug, name, created_at, updated_at)
+      VALUES (${options.organization_id}, ${entityTypeSlug}, ${entityTypeSlug}, current_timestamp, current_timestamp)
+      RETURNING id
+    `;
   }
   const entityTypeId = typeRows[0].id;
 

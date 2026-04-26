@@ -135,6 +135,7 @@ interface EntityTypeRow {
   is_system: boolean;
   created_by?: string | null;
   organization_id?: string | null;
+  organization_slug?: string | null;
   created_at: Date;
   updated_at: Date;
   entity_count?: number;
@@ -157,6 +158,7 @@ interface RelationshipTypeRow {
   name: string;
   description?: string | null;
   organization_id?: string | null;
+  organization_slug?: string | null;
   created_by?: string | null;
   metadata_schema?: Record<string, unknown> | null;
   is_symmetric: boolean;
@@ -238,6 +240,11 @@ export async function manageEntitySchema(
 const ENTITY_TYPE_COLUMNS =
   'id, slug, name, description, icon, color, metadata_schema, event_kinds, created_by, organization_id, created_at, updated_at, current_view_template_version_id';
 
+const ENTITY_TYPE_COLUMNS_WITH_ORG = `et.id, et.slug, et.name, et.description, et.icon, et.color,
+  et.metadata_schema, et.event_kinds, et.created_by, et.organization_id,
+  et.created_at, et.updated_at, et.current_view_template_version_id,
+  o.slug AS organization_slug`;
+
 function mapRowToEntityType(row: Record<string, unknown>): EntityTypeRow {
   return {
     ...(row as unknown as EntityTypeRow),
@@ -281,30 +288,28 @@ function validateEntityMetadataSchemaDisplayConfig(
   }
 }
 
-async function getEntityCountsByType(organizationId: string): Promise<Map<string, number>> {
+async function getEntityCountsByType(organizationId: string): Promise<Map<number, number>> {
   const sql = getDb();
   const rows = await sql`
-    SELECT et.slug AS entity_type, COUNT(*)::int as entity_count
+    SELECT e.entity_type_id AS entity_type_id, COUNT(*)::int as entity_count
     FROM entities e
-    JOIN entity_types et ON et.id = e.entity_type_id
     WHERE e.organization_id = ${organizationId}
       AND e.deleted_at IS NULL
-    GROUP BY et.slug
+    GROUP BY e.entity_type_id
   `;
-  const counts = new Map<string, number>();
+  const counts = new Map<number, number>();
   for (const row of rows) {
-    counts.set(row.entity_type as string, Number(row.entity_count));
+    counts.set(Number(row.entity_type_id), Number(row.entity_count));
   }
   return counts;
 }
 
-async function getEntityCountForType(slug: string, organizationId: string): Promise<number> {
+async function getEntityCountForType(typeId: number, organizationId: string): Promise<number> {
   const sql = getDb();
   const rows = await sql`
     SELECT COUNT(*)::int as count
     FROM entities e
-    JOIN entity_types et ON et.id = e.entity_type_id
-    WHERE et.slug = ${slug}
+    WHERE e.entity_type_id = ${typeId}
       AND e.organization_id = ${organizationId}
       AND e.deleted_at IS NULL
   `;
@@ -337,10 +342,12 @@ async function etHandleList(ctx: ToolContext): Promise<ManageEntitySchemaResult>
   const sql = getDb();
 
   const rows = await sql.unsafe(
-    `SELECT ${ENTITY_TYPE_COLUMNS} FROM entity_types
-     WHERE deleted_at IS NULL
-       AND organization_id = $1
-     ORDER BY name ASC`,
+    `SELECT ${ENTITY_TYPE_COLUMNS_WITH_ORG}
+     FROM entity_types et
+     LEFT JOIN organization o ON o.id = et.organization_id
+     WHERE et.deleted_at IS NULL
+       AND (et.organization_id = $1 OR o.visibility = 'public')
+     ORDER BY (et.organization_id = $1) DESC, et.name ASC`,
     [ctx.organizationId]
   );
 
@@ -352,11 +359,14 @@ async function etHandleList(ctx: ToolContext): Promise<ManageEntitySchemaResult>
 
   const entityTypes = resolved.map((row) => {
     const mapped = mapRowToEntityType(row);
-    mapped.entity_count = counts.get(mapped.slug) || 0;
+    mapped.entity_count = counts.get(mapped.id) || 0;
     return mapped;
   });
 
   entityTypes.sort((a, b) => {
+    const aLocal = a.organization_id === ctx.organizationId ? 0 : 1;
+    const bLocal = b.organization_id === ctx.organizationId ? 0 : 1;
+    if (aLocal !== bLocal) return aLocal - bLocal;
     const countDiff = (b.entity_count || 0) - (a.entity_count || 0);
     if (countDiff !== 0) return countDiff;
     return a.name.localeCompare(b.name);
@@ -374,17 +384,24 @@ async function etHandleGet(
   const sql = getDb();
   const fetchRow = () =>
     sql.unsafe(
-      `SELECT ${ENTITY_TYPE_COLUMNS} FROM entity_types
-       WHERE slug = $1
-         AND deleted_at IS NULL
-         AND organization_id = $2
+      `SELECT ${ENTITY_TYPE_COLUMNS_WITH_ORG}
+       FROM entity_types et
+       LEFT JOIN organization o ON o.id = et.organization_id
+       WHERE et.slug = $1
+         AND et.deleted_at IS NULL
+         AND (et.organization_id = $2 OR o.visibility = 'public')
+       ORDER BY (et.organization_id = $2) DESC, et.id ASC
        LIMIT 1`,
       [slug, ctx.organizationId]
     );
 
   let rows = await fetchRow();
 
-  if (rows.length === 0 && slug === '$member') {
+  // $member is per-tenant: if the resolved row is cross-org (or missing), provision in the caller's org.
+  const needsMemberProvision =
+    slug === '$member' &&
+    (rows.length === 0 || rows[0].organization_id !== ctx.organizationId);
+  if (needsMemberProvision) {
     await ensureMemberEntityType(ctx.organizationId);
     rows = await fetchRow();
   }
@@ -395,7 +412,7 @@ async function etHandleGet(
 
   const [resolved] = await resolveUsernames([rows[0] as Record<string, unknown>], 'created_by');
   const mapped = mapRowToEntityType(resolved);
-  mapped.entity_count = await getEntityCountForType(slug, ctx.organizationId);
+  mapped.entity_count = await getEntityCountForType(Number(mapped.id), ctx.organizationId);
 
   return { schema_type: 'entity_type', action: 'get', entity_type: mapped };
 }
@@ -536,7 +553,7 @@ async function etHandleUpdate(
   if (updated.length === 0) throw new Error(`Entity type '${args.slug}' not found after update`);
 
   const result = mapRowToEntityType(updated[0] as Record<string, unknown>);
-  result.entity_count = await getEntityCountForType(args.slug, ctx.organizationId);
+  result.entity_count = await getEntityCountForType(Number(result.id), ctx.organizationId);
 
   await recordAudit(
     sql,
@@ -569,7 +586,7 @@ async function etHandleDelete(
   if (existing.length === 0) throw new Error(`Entity type '${slug}' not found`);
 
   const current = existing[0];
-  const entityCount = await getEntityCountForType(slug, ctx.organizationId);
+  const entityCount = await getEntityCountForType(Number(current.id), ctx.organizationId);
   if (entityCount > 0) {
     throw new Error(
       `Cannot delete entity type '${slug}': ${entityCount} entities of this type exist. Remove or reassign them first.`
@@ -706,18 +723,20 @@ async function rtHandleList(
       rt.metadata_schema, rt.is_symmetric, rt.inverse_type_id,
       inv.slug as inverse_type_slug,
       rt.status, rt.created_at, rt.updated_at, rt.deleted_at,
+      o.slug AS organization_slug,
       COALESCE(rc.relationship_count, 0) as relationship_count
     FROM entity_relationship_types rt
     LEFT JOIN entity_relationship_types inv ON rt.inverse_type_id = inv.id
+    LEFT JOIN organization o ON o.id = rt.organization_id
     LEFT JOIN (
       SELECT relationship_type_id, COUNT(*)::int as relationship_count
       FROM entity_relationships
       WHERE deleted_at IS NULL
       GROUP BY relationship_type_id
     ) rc ON rc.relationship_type_id = rt.id
-    WHERE rt.organization_id = $1
+    WHERE (rt.organization_id = $1 OR o.visibility = 'public')
       ${deletedClause}
-    ORDER BY rt.name ASC`,
+    ORDER BY (rt.organization_id = $1) DESC, rt.name ASC`,
     [ctx.organizationId]
   );
 
@@ -748,12 +767,15 @@ async function rtHandleGet(
       rt.id, rt.slug, rt.name, rt.description, rt.organization_id, rt.created_by,
       rt.metadata_schema, rt.is_symmetric, rt.inverse_type_id,
       inv.slug as inverse_type_slug,
-      rt.status, rt.created_at, rt.updated_at, rt.deleted_at
+      rt.status, rt.created_at, rt.updated_at, rt.deleted_at,
+      o.slug AS organization_slug
     FROM entity_relationship_types rt
     LEFT JOIN entity_relationship_types inv ON rt.inverse_type_id = inv.id
+    LEFT JOIN organization o ON o.id = rt.organization_id
     WHERE rt.slug = ${args.slug}
-      AND rt.organization_id = ${ctx.organizationId}
+      AND (rt.organization_id = ${ctx.organizationId} OR o.visibility = 'public')
       AND rt.deleted_at IS NULL
+    ORDER BY (rt.organization_id = ${ctx.organizationId}) DESC, rt.id ASC
     LIMIT 1
   `;
 

@@ -443,8 +443,9 @@ export async function getEntity(
     JOIN entity_types et ON et.id = e.entity_type_id
     LEFT JOIN entities pe ON e.parent_id = pe.id
     LEFT JOIN entity_types pet ON pet.id = pe.entity_type_id
+    LEFT JOIN organization eo ON eo.id = e.organization_id
     WHERE e.id = ${entityId}
-      AND e.organization_id = ${ctx.organizationId}
+      AND (e.organization_id = ${ctx.organizationId} OR eo.visibility = 'public')
       AND e.deleted_at IS NULL
   `;
 

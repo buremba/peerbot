@@ -353,18 +353,22 @@ async function _resolvePath(
     const isLeaf = i === parsedSegments.length - 1;
 
     if (!isLeaf) {
-      // Lightweight query for intermediate path entities – no COUNT subqueries, no template joins
+      // Lightweight query for intermediate path entities – no COUNT subqueries, no template joins.
+      // Cross-org tolerance: a tenant path can traverse into a public-catalog entity.
       const row = await simpleQuery(sql`
         SELECT e.id, et.slug AS entity_type, e.slug, e.name, e.parent_id
         FROM entities e
         JOIN entity_types et ON et.id = e.entity_type_id
-        WHERE e.organization_id = ${workspace.id}
+        LEFT JOIN organization eo ON eo.id = e.organization_id
+        WHERE (e.organization_id = ${workspace.id} OR eo.visibility = 'public')
+          AND e.deleted_at IS NULL
           AND et.slug = ${segment.entity_type}
           AND e.slug = ${segment.slug}
           AND (
             (${parentId}::bigint IS NULL AND e.parent_id IS NULL)
             OR e.parent_id = ${parentId}
           )
+        ORDER BY (e.organization_id = ${workspace.id}) DESC, e.id ASC
         LIMIT 1
       `);
 
@@ -386,7 +390,8 @@ async function _resolvePath(
       continue;
     }
 
-    // Leaf entity: fetch core data (without expensive COUNT subqueries)
+    // Leaf entity: fetch core data (without expensive COUNT subqueries).
+    // Cross-org tolerance: same widening as the intermediate query.
     const row = await simpleQuery(sql`
         SELECT
           e.id,
@@ -404,13 +409,16 @@ async function _resolvePath(
           ON vtv_entity.id = e.current_view_template_version_id
         LEFT JOIN view_template_versions vtv_et
           ON vtv_et.id = et.current_view_template_version_id
-        WHERE e.organization_id = ${workspace.id}
+        LEFT JOIN organization eo ON eo.id = e.organization_id
+        WHERE (e.organization_id = ${workspace.id} OR eo.visibility = 'public')
+          AND e.deleted_at IS NULL
           AND et.slug = ${segment.entity_type}
           AND e.slug = ${segment.slug}
           AND (
             (${parentId}::bigint IS NULL AND e.parent_id IS NULL)
             OR e.parent_id = ${parentId}
           )
+        ORDER BY (e.organization_id = ${workspace.id}) DESC, e.id ASC
         LIMIT 1
       `);
 

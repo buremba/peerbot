@@ -232,12 +232,23 @@ export async function createEntity(
 
   const sql = getDb();
 
-  // Resolve entity_type slug to FK on entity_types(id).
+  // Resolve entity_type slug → entity_types(id) via the schema search path:
+  //   1. The entity's own org (the user's tenant — local types win).
+  //   2. Any org with visibility='public' (canonical/world-knowledge catalogs).
+  // First match wins. The resolved id is materialized on the row so reads
+  // never need to repeat the search. ORDER BY (e.organization_id = own_org)
+  // DESC keeps tenant-local types ahead of public ones when both exist.
   const typeRow = await sql<{ id: number }>`
-    SELECT id FROM entity_types
-    WHERE slug = ${data.entity_type}
-      AND deleted_at IS NULL
-      AND organization_id = ${data.organization_id}
+    SELECT et.id
+    FROM entity_types et
+    LEFT JOIN organization o ON o.id = et.organization_id
+    WHERE et.slug = ${data.entity_type}
+      AND et.deleted_at IS NULL
+      AND (
+        et.organization_id = ${data.organization_id}
+        OR o.visibility = 'public'
+      )
+    ORDER BY (et.organization_id = ${data.organization_id}) DESC, et.id ASC
     LIMIT 1
   `;
   if (typeRow.length === 0) {

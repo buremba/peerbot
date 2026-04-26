@@ -57,7 +57,17 @@ export function canonicalizeSymmetricEdge(
 
 /**
  * Validate scope rule for a relationship.
- * Both entities must belong to the same organization.
+ *
+ * The from_entity must belong to the caller's organization (relationships are
+ * always authored from the source's org). The to_entity may be either in the
+ * same org or in a public-catalog org (`organization.visibility='public'`),
+ * which lets a tenant's relationship reference canonical world entities like
+ * HMRC or Barclays without copying them locally.
+ *
+ * Public → tenant references are forbidden — public catalogs never reach into
+ * private orgs. The relationship row's organization_id always matches the
+ * source's org (the caller's), keeping the assertion under the caller's
+ * delete/visibility control.
  */
 export async function validateScopeRule(
   fromEntityId: number,
@@ -68,9 +78,10 @@ export async function validateScopeRule(
   const sql = getDb();
 
   const rows = await sql`
-    SELECT id, organization_id
-    FROM entities
-    WHERE id IN (${fromEntityId}, ${toEntityId})
+    SELECT e.id, e.organization_id, o.visibility
+    FROM entities e
+    LEFT JOIN organization o ON o.id = e.organization_id
+    WHERE e.id IN (${fromEntityId}, ${toEntityId})
   `;
 
   if (rows.length < 2) {
@@ -82,12 +93,20 @@ export async function validateScopeRule(
   const fromEntity = rows.find((r) => Number(r.id) === fromEntityId)!;
   const toEntity = rows.find((r) => Number(r.id) === toEntityId)!;
 
-  // Multi-tenant: both entities must be in the same organization as the user
+  // Source must always be in the caller's org — you can't author relationships
+  // *from* someone else's entity.
   if (String(fromEntity.organization_id) !== ctx.organizationId) {
     throw new Error(`Entity ${fromEntityId} does not belong to your organization`);
   }
-  if (String(toEntity.organization_id) !== ctx.organizationId) {
-    throw new Error(`Entity ${toEntityId} does not belong to your organization`);
+
+  // Target may be same-org OR a public-catalog entity. Anything else (a
+  // private org you don't control) is rejected.
+  const toOrgId = String(toEntity.organization_id);
+  const toVisibility = String(toEntity.visibility ?? 'private');
+  if (toOrgId !== ctx.organizationId && toVisibility !== 'public') {
+    throw new Error(
+      `Entity ${toEntityId} is in a private organization that does not belong to you. Cross-org references are only allowed to entities in public catalogs.`
+    );
   }
 }
 

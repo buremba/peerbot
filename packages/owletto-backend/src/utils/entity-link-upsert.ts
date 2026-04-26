@@ -212,12 +212,20 @@ async function createEntityWithIdentities(params: {
   const metadata: Record<string, unknown> = {};
   for (const [key, value] of params.traits) metadata[key] = value;
 
-  // Resolve entity_type slug to FK on entity_types(id).
+  // Resolve entity_type slug → entity_types(id). Same schema search path as
+  // createEntity: try the entity's own org first, then any visibility='public'
+  // catalog. First match wins.
   const typeRow = await sql<{ id: number }>`
-    SELECT id FROM entity_types
-    WHERE slug = ${params.entityType}
-      AND organization_id = ${params.orgId}
-      AND deleted_at IS NULL
+    SELECT et.id
+    FROM entity_types et
+    LEFT JOIN organization o ON o.id = et.organization_id
+    WHERE et.slug = ${params.entityType}
+      AND et.deleted_at IS NULL
+      AND (
+        et.organization_id = ${params.orgId}
+        OR o.visibility = 'public'
+      )
+    ORDER BY (et.organization_id = ${params.orgId}) DESC, et.id ASC
     LIMIT 1
   `;
   if (typeRow.length === 0) {

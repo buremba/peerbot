@@ -61,7 +61,20 @@ CREATE INDEX idx_entities_entity_type_id
     ON public.entities (entity_type_id)
     WHERE deleted_at IS NULL;
 
--- 6. Drop the text column. All readers JOIN to entity_types for the slug.
+-- 6. Drop the redundant UNIQUE constraint that referenced entity_type. The
+-- stronger `entities_slug_parent_unique` (UNIQUE on org_id, COALESCE(parent_id,
+-- 0), slug) already enforces slug uniqueness within (org, parent) regardless
+-- of entity type, with NULL-parent collapsing — so this constraint never
+-- caught anything the index didn't already catch. Drop it explicitly rather
+-- than letting DROP COLUMN cascade silently.
+ALTER TABLE public.entities
+    DROP CONSTRAINT IF EXISTS entities_organization_id_entity_type_slug_parent_id_key;
+
+-- 7. Drop the column comment so DROP COLUMN doesn't carry a stale doc string
+-- if this migration is ever rolled back and re-applied.
+COMMENT ON COLUMN public.entities.entity_type IS NULL;
+
+-- 8. Drop the text column. All readers JOIN to entity_types for the slug.
 ALTER TABLE public.entities DROP COLUMN entity_type;
 
 
@@ -75,6 +88,13 @@ FROM public.entity_types et
 WHERE et.id = e.entity_type_id;
 
 ALTER TABLE public.entities ALTER COLUMN entity_type SET NOT NULL;
+
+COMMENT ON COLUMN public.entities.entity_type IS
+    'Type of entity: brand, product (future: location, feature, team)';
+
+ALTER TABLE public.entities
+    ADD CONSTRAINT entities_organization_id_entity_type_slug_parent_id_key
+    UNIQUE (organization_id, entity_type, slug, parent_id);
 
 DROP INDEX IF EXISTS public.idx_entities_entity_type_id;
 

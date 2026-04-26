@@ -72,12 +72,12 @@ export function orgFromMcpUrl(mcpUrl: string): string | null {
   }
 }
 
-export function getOpenClawAuthStorePath(customPath?: string): string {
+function getOpenClawAuthStorePath(customPath?: string): string {
   return customPath ? resolve(customPath) : DEFAULT_STORE_PATH;
 }
 
 /** Load and migrate the auth store (handles old field names). */
-export function loadOpenClawAuthStore(storePath?: string): OpenClawAuthStore {
+function loadOpenClawAuthStore(storePath?: string): OpenClawAuthStore {
   const path = getOpenClawAuthStorePath(storePath);
   try {
     const raw = readFileSync(path, 'utf-8');
@@ -110,13 +110,13 @@ export function loadOpenClawAuthStore(storePath?: string): OpenClawAuthStore {
   }
 }
 
-export function saveOpenClawAuthStore(store: OpenClawAuthStore, storePath?: string) {
+function saveOpenClawAuthStore(store: OpenClawAuthStore, storePath?: string) {
   const path = getOpenClawAuthStorePath(storePath);
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, JSON.stringify(store, null, 2) + '\n', { mode: 0o600 });
 }
 
-export function getStoredSession(
+function getStoredSession(
   mcpUrl: string,
   storePath?: string
 ): { session: OpenClawOAuthSession | null; path: string } {

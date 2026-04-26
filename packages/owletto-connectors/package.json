@@ -5,7 +5,6 @@
   "license": "BUSL-1.1",
   "type": "module",
   "description": "Lobu memory connectors — third-party integration implementations built on @lobu/owletto-sdk",
-  "main": "src/index.ts",
   "scripts": {
     "typecheck": "tsc --noEmit"
   },

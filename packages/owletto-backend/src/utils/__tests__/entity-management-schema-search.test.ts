@@ -5,13 +5,16 @@
  * same slug).
  */
 
+import type { EntityLinkRule } from '@lobu/owletto-sdk';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { cleanupTestDatabase, getTestDb } from '../../__tests__/setup/test-db';
 import {
   addUserToOrganization,
+  createTestConnectorDefinition,
   createTestOrganization,
   createTestUser,
 } from '../../__tests__/setup/test-fixtures';
+import { applyEntityLinks, clearEntityLinkRulesCache } from '../entity-link-upsert';
 import { createEntity } from '../entity-management';
 
 async function seedEntityType(orgId: string, slug: string) {
@@ -119,5 +122,56 @@ describe('entity-management schema search path', () => {
         created_by: user.id,
       } as Parameters<typeof createEntity>[0])
     ).rejects.toThrow(/Unknown entity type/i);
+  });
+
+  // The same resolver lives in entity-link-upsert.ts (auto-link path). Drift
+  // here would be caught by this test.
+  it('entity-link-upsert resolves a public-catalog type when no tenant type matches', async () => {
+    const tenant = await createTestOrganization({ name: 'Tenant Auto-Link' });
+    const publicCatalog = await createTestOrganization({
+      name: 'Public Catalog C',
+      visibility: 'public',
+    });
+    const user = await createTestUser();
+    await addUserToOrganization(user.id, tenant.id, 'owner');
+
+    const publicTypeId = await seedEntityType(publicCatalog.id, 'public_actor');
+
+    const connectorKey = 'auto-link-cross-org';
+    const feedKey = 'msgs';
+    const originType = 'msg';
+    const rule: EntityLinkRule = {
+      entityType: 'public_actor',
+      autoCreate: true,
+      titlePath: 'metadata.name',
+      identities: [{ namespace: 'phone', eventPath: 'metadata.phone' }],
+    };
+    await createTestConnectorDefinition({
+      key: connectorKey,
+      name: connectorKey,
+      organization_id: tenant.id,
+      feeds_schema: {
+        [feedKey]: { eventKinds: { [originType]: { entityLinks: [rule] } } },
+      },
+    });
+    clearEntityLinkRulesCache();
+
+    await applyEntityLinks({
+      connectorKey,
+      feedKey,
+      orgId: tenant.id,
+      items: [
+        { origin_type: originType, metadata: { phone: '14155551234', name: 'Alex' } },
+      ],
+    });
+
+    const sql = getTestDb();
+    const rows = await sql<{ id: number; entity_type_id: number; organization_id: string }[]>`
+      SELECT id, entity_type_id, organization_id
+      FROM entities
+      WHERE organization_id = ${tenant.id} AND name = 'Alex' AND deleted_at IS NULL
+    `;
+    expect(rows.length).toBe(1);
+    expect(Number(rows[0].entity_type_id)).toBe(publicTypeId);
   });
 });

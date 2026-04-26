@@ -606,6 +606,25 @@ describe('Entity Relationships', () => {
       expect(result.relationship.organization_id).toBe(orgA.id);
     });
 
+    it('should reject a relationship whose source is in a different org from the caller', async () => {
+      // userA is signed in (tokenA → orgA), but the source entity is in orgB.
+      // Even though tokenA's caller has access to read entityB1, they cannot
+      // author a relationship *from* it — sources must always be in the
+      // caller's org.
+      await expect(
+        mcpToolsCall(
+          'manage_entity',
+          {
+            action: 'link',
+            from_entity_id: entityB1.id,
+            to_entity_id: entityA2.id,
+            relationship_type_slug: 'depends-on',
+          },
+          { token: tokenA }
+        )
+      ).rejects.toThrow(/does not belong to your organization/i);
+    });
+
     it('should reject nonexistent relationship type', async () => {
       await expect(
         mcpToolsCall(

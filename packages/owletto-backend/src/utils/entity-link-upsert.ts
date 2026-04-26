@@ -214,7 +214,7 @@ async function createEntityWithIdentities(params: {
 
   // Resolve entity_type slug → entity_types(id). Same schema search path as
   // createEntity: try the entity's own org first, then any visibility='public'
-  // catalog. First match wins.
+  // catalog. First match wins. See createEntity for the slug-poisoning caveat.
   const typeRow = await sql<{ id: number }>`
     SELECT et.id
     FROM entity_types et

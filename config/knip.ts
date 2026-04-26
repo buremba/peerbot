@@ -31,14 +31,15 @@ const config: KnipConfig = {
       ],
     },
     "packages/owletto-embeddings": {
-      // package.json "main" points to dist/; the real source entries are these.
-      // embedding-utils.ts is imported by both — listing explicitly because
-      // src/ contains stale compiled .js siblings that confuse knip's resolver.
-      entry: ["src/server.ts", "src/openai.ts", "src/embedding-utils.ts"],
+      // src/openai.ts and src/embedding-utils.ts are reached transitively from
+      // server.ts (the package "main"); listing embedding-utils explicitly
+      // because src/ contains stale compiled .js siblings that confuse knip's
+      // resolver.
+      entry: ["src/openai.ts", "src/embedding-utils.ts"],
     },
     "packages/owletto-worker": {
       // child-runner is fork()ed by absolute path, not imported.
-      entry: ["src/index.ts", "src/executor/child-runner.ts"],
+      entry: ["src/executor/child-runner.ts"],
       ignoreDependencies: [
         // Loaded via dynamic specifier in src/index.ts.
         "@lobu/worker",

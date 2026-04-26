@@ -1,4 +1,4 @@
-\restrict bqBE913aGPDwzJsfFpJo9ktouNunyv25fIQIyfTS9VJm4SUnYw8b0K9sqZozUWV
+\restrict PwjQGaJej1kRx35QDCNCfuR07o0LY8kUstkGIScyyKBLopQVzj4KOWcJsHs0Btf
 
 -- Dumped from database version 18.1 (Debian 18.1-1.pgdg13+2)
 -- Dumped by pg_dump version 18.1 (Homebrew)
@@ -1225,8 +1225,6 @@ CREATE TABLE public.entity_relationship_types (
     deleted_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now(),
     updated_at timestamp with time zone DEFAULT now(),
-    managed_by_template_agent_id text,
-    source_template_org_id text,
     CONSTRAINT entity_relationship_types_status_check CHECK ((status = ANY (ARRAY['active'::text, 'archived'::text])))
 );
 
@@ -1347,9 +1345,7 @@ CREATE TABLE public.entity_types (
     created_at timestamp with time zone DEFAULT now(),
     updated_at timestamp with time zone DEFAULT now(),
     current_view_template_version_id integer,
-    event_kinds jsonb,
-    managed_by_template_agent_id text,
-    source_template_org_id text
+    event_kinds jsonb
 );
 
 
@@ -1482,8 +1478,6 @@ CREATE TABLE public.event_classifiers (
     watcher_id bigint,
     organization_id text,
     entity_ids bigint[],
-    managed_by_template_agent_id text,
-    source_template_org_id text,
     CONSTRAINT event_classifiers_status_check CHECK ((status = ANY (ARRAY['active'::text, 'deprecated'::text])))
 );
 
@@ -2513,8 +2507,6 @@ CREATE TABLE public.watchers (
     scheduler_client_id text,
     source_watcher_id integer,
     watcher_group_id integer NOT NULL,
-    managed_by_template_agent_id text,
-    source_template_org_id text,
     CONSTRAINT insights_status_check CHECK ((status = ANY (ARRAY['active'::text, 'archived'::text])))
 );
 
@@ -3944,13 +3936,6 @@ CREATE UNIQUE INDEX idx_entity_rel_types_org_slug ON public.entity_relationship_
 
 
 --
--- Name: idx_entity_relationship_types_managed_by_template; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_entity_relationship_types_managed_by_template ON public.entity_relationship_types USING btree (managed_by_template_agent_id) WHERE (managed_by_template_agent_id IS NOT NULL);
-
-
---
 -- Name: idx_entity_relationships_from; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3997,13 +3982,6 @@ CREATE INDEX idx_entity_type_audit_type_id ON public.entity_type_audit USING btr
 --
 
 CREATE INDEX idx_entity_types_active ON public.entity_types USING btree (id) WHERE (deleted_at IS NULL);
-
-
---
--- Name: idx_entity_types_managed_by_template; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_entity_types_managed_by_template ON public.entity_types USING btree (managed_by_template_agent_id) WHERE (managed_by_template_agent_id IS NOT NULL);
 
 
 --
@@ -4067,13 +4045,6 @@ CREATE INDEX idx_event_classifiers_entity_ids ON public.event_classifiers USING 
 --
 
 CREATE INDEX idx_event_classifiers_insight_id ON public.event_classifiers USING btree (watcher_id) WHERE (watcher_id IS NOT NULL);
-
-
---
--- Name: idx_event_classifiers_managed_by_template; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_event_classifiers_managed_by_template ON public.event_classifiers USING btree (managed_by_template_agent_id) WHERE (managed_by_template_agent_id IS NOT NULL);
 
 
 --
@@ -4613,13 +4584,6 @@ CREATE INDEX idx_watchers_created_by ON public.watchers USING btree (created_by)
 --
 
 CREATE INDEX idx_watchers_entity_ids ON public.watchers USING gin (entity_ids);
-
-
---
--- Name: idx_watchers_managed_by_template; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_watchers_managed_by_template ON public.watchers USING btree (managed_by_template_agent_id) WHERE (managed_by_template_agent_id IS NOT NULL);
 
 
 --
@@ -5890,7 +5854,7 @@ ALTER TABLE ONLY public.workspace_settings
 -- PostgreSQL database dump complete
 --
 
-\unrestrict bqBE913aGPDwzJsfFpJo9ktouNunyv25fIQIyfTS9VJm4SUnYw8b0K9sqZozUWV
+\unrestrict PwjQGaJej1kRx35QDCNCfuR07o0LY8kUstkGIScyyKBLopQVzj4KOWcJsHs0Btf
 
 
 --
@@ -5924,5 +5888,4 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20260424030000'),
     ('20260424130000'),
     ('20260425100000'),
-    ('20260425120000'),
     ('20260426120000');

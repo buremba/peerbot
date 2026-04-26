@@ -933,9 +933,27 @@ async function handleLink(
   let fromId = args.from_entity_id;
   let toId = args.to_entity_id;
   if (isSymmetric) {
-    const canonical = canonicalizeSymmetricEdge(fromId, toId);
-    fromId = canonical.from;
-    toId = canonical.to;
+    // For symmetric same-org pairs we canonicalize by id so dedup catches
+    // a → b and b → a as the same edge. For cross-org pairs (target in a
+    // public catalog), keep the caller's-org entity as `from` even if its
+    // id is higher, so the stored source matches the semantic source. The
+    // canonical form would otherwise leave rows where `from_entity_id`
+    // points at a public catalog row under a tenant `organization_id` —
+    // tenant-owned but cosmetically inverted.
+    const orgRows = await sql<{ id: number; organization_id: string }>`
+      SELECT id, organization_id FROM entities WHERE id IN (${fromId}, ${toId})
+    `;
+    const orgOf = (id: number) =>
+      String(orgRows.find((r) => Number(r.id) === id)?.organization_id);
+    const sameOrg =
+      orgOf(fromId) === ctx.organizationId && orgOf(toId) === ctx.organizationId;
+    if (sameOrg) {
+      const canonical = canonicalizeSymmetricEdge(fromId, toId);
+      fromId = canonical.from;
+      toId = canonical.to;
+    }
+    // else: cross-org symmetric — preserve caller-from / public-to.
+    // validateScopeRule already required `from` to be in caller's org.
   }
 
   await checkDuplicateEdge(fromId, toId, typeId, sql);

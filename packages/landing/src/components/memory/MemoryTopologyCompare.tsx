@@ -1,4 +1,5 @@
 import type { ComponentChildren } from "preact";
+import { useId } from "preact/hooks";
 import {
   accentCyan,
   cardBg,
@@ -71,16 +72,18 @@ function DownArrow() {
 }
 
 function ConvergingArrows() {
+  const reactId = useId();
+  const markerId = `memory-arrow-head-${reactId.replace(/[:]/g, "")}`;
   return (
     <svg
-      viewBox="0 0 240 60"
-      class="h-14 w-full"
+      viewBox="0 0 240 70"
+      class="h-16 w-full"
       aria-hidden="true"
       style={{ color: accentCyan }}
     >
       <defs>
         <marker
-          id="memory-arrow-head"
+          id={markerId}
           viewBox="0 0 10 10"
           refX="8"
           refY="5"
@@ -95,52 +98,78 @@ function ConvergingArrows() {
         x1="32"
         y1="2"
         x2="120"
-        y2="56"
+        y2="62"
         stroke="currentColor"
         stroke-width="1.1"
         stroke-dasharray="3 3"
-        marker-end="url(#memory-arrow-head)"
+        marker-end={`url(#${markerId})`}
       />
       <line
         x1="120"
         y1="2"
         x2="120"
-        y2="56"
+        y2="62"
         stroke="currentColor"
         stroke-width="1.1"
         stroke-dasharray="3 3"
-        marker-end="url(#memory-arrow-head)"
+        marker-end={`url(#${markerId})`}
       />
       <line
         x1="208"
         y1="2"
         x2="120"
-        y2="56"
+        y2="62"
         stroke="currentColor"
         stroke-width="1.1"
         stroke-dasharray="3 3"
-        marker-end="url(#memory-arrow-head)"
+        marker-end={`url(#${markerId})`}
       />
-      <text
-        x="68"
-        y="34"
-        font-size="9"
-        font-family="ui-monospace, SFMono-Regular, monospace"
-        fill="currentColor"
-        opacity="0.85"
-      >
-        mcp
-      </text>
-      <text
-        x="148"
-        y="34"
-        font-size="9"
-        font-family="ui-monospace, SFMono-Regular, monospace"
-        fill="currentColor"
-        opacity="0.85"
-      >
-        mcp
-      </text>
+      <g>
+        <rect
+          x="58"
+          y="30"
+          width="22"
+          height="13"
+          rx="3"
+          fill="rgba(5,7,10,0.92)"
+          stroke="currentColor"
+          stroke-width="0.6"
+          opacity="0.95"
+        />
+        <text
+          x="69"
+          y="39"
+          font-size="9"
+          font-family="ui-monospace, SFMono-Regular, monospace"
+          fill="currentColor"
+          text-anchor="middle"
+        >
+          mcp
+        </text>
+      </g>
+      <g>
+        <rect
+          x="160"
+          y="30"
+          width="22"
+          height="13"
+          rx="3"
+          fill="rgba(5,7,10,0.92)"
+          stroke="currentColor"
+          stroke-width="0.6"
+          opacity="0.95"
+        />
+        <text
+          x="171"
+          y="39"
+          font-size="9"
+          font-family="ui-monospace, SFMono-Regular, monospace"
+          fill="currentColor"
+          text-anchor="middle"
+        >
+          mcp
+        </text>
+      </g>
     </svg>
   );
 }
@@ -205,8 +234,15 @@ function CardShell({
 
 function SiloedDiagram() {
   return (
-    <div class="flex flex-col items-center">
-      <div class="flex items-end justify-around gap-6 sm:gap-10">
+    <div
+      class="flex flex-col items-center"
+      role="img"
+      aria-label="Three agents, each pointing down to its own private filesystem. No shared layer between them."
+    >
+      <div
+        class="flex items-end justify-around gap-6 sm:gap-10"
+        aria-hidden="true"
+      >
         {AGENT_LABELS.map((label) => (
           <div key={label} class="flex flex-col items-center gap-1">
             <AgentTile label={label} />
@@ -216,6 +252,7 @@ function SiloedDiagram() {
         ))}
       </div>
       <div
+        aria-hidden="true"
         class="mt-4 text-[10px] uppercase tracking-[0.18em]"
         style={{ color: labelGray }}
       >
@@ -227,8 +264,15 @@ function SiloedDiagram() {
 
 function SharedDiagram() {
   return (
-    <div class="flex flex-col items-center">
-      <div class="grid w-full max-w-[18rem] grid-cols-3 items-center gap-4">
+    <div
+      class="flex flex-col items-center"
+      role="img"
+      aria-label="Three agents converging through MCP onto a single shared Lobu Memory layer of entities and events."
+    >
+      <div
+        class="grid w-full max-w-[18rem] grid-cols-3 items-center gap-4"
+        aria-hidden="true"
+      >
         {AGENT_LABELS.map((label) => (
           <div key={label} class="flex justify-center">
             <AgentTile label={label} />
@@ -237,6 +281,7 @@ function SharedDiagram() {
       </div>
       <ConvergingArrows />
       <div
+        aria-hidden="true"
         class="mt-1 flex w-full max-w-[18rem] flex-col items-center rounded-lg px-3 py-2"
         style={{
           backgroundColor: "rgba(103, 232, 249, 0.08)",
@@ -265,8 +310,8 @@ export function MemoryTopologyCompare() {
         title="Each agent has its own filesystem"
         bullets={[
           "no cross-agent recall",
-          "no audit trail",
-          "dies with the sandbox",
+          "audit is per-agent and manual",
+          "tied to one sandbox / session",
         ]}
       >
         <SiloedDiagram />

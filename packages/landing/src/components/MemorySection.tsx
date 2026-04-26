@@ -97,7 +97,7 @@ export function MemorySection(props: {
         <ContentRail variant="compact" className="mb-16 mt-10">
           <SectionHeader
             title="Two ways to give agents memory"
-            body="One sandbox, one filesystem — or one shared layer your whole org reads and writes."
+            body="Per-agent files keep memory local to one sandbox. Lobu Memory gives every agent a shared, auditable graph through MCP."
             className="mb-8"
           />
           <MemoryTopologyCompare />

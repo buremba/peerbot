@@ -277,11 +277,26 @@ export async function createTestEntity(options: {
     }
   }
 
+  const entityTypeSlug = options.entity_type || 'brand';
+  const typeRows = await sql<{ id: number }[]>`
+    SELECT id FROM entity_types
+    WHERE slug = ${entityTypeSlug}
+      AND organization_id = ${options.organization_id}
+      AND deleted_at IS NULL
+    LIMIT 1
+  `;
+  if (typeRows.length === 0) {
+    throw new Error(
+      `createTestEntity: entity_type '${entityTypeSlug}' not registered in org ${options.organization_id}`
+    );
+  }
+  const entityTypeId = typeRows[0].id;
+
   const [inserted] = await sql`
     INSERT INTO entities (
       name,
       slug,
-      entity_type,
+      entity_type_id,
       organization_id,
       parent_id,
       metadata,
@@ -291,7 +306,7 @@ export async function createTestEntity(options: {
     ) VALUES (
       ${options.name},
       ${slug},
-      ${options.entity_type || 'brand'},
+      ${entityTypeId},
       ${options.organization_id},
       ${options.parent_id || null},
       ${sql.json(metadata)},

@@ -553,14 +553,16 @@ export async function getContent(
       const entityResult = await sql`
         SELECT
           e.id,
-          e.entity_type,
+          et.slug AS entity_type,
           e.slug,
           e.parent_id,
           parent.slug as parent_slug,
-          parent.entity_type as parent_entity_type,
+          pet.slug as parent_entity_type,
           e.organization_id
         FROM entities e
+        JOIN entity_types et ON et.id = e.entity_type_id
         LEFT JOIN entities parent ON e.parent_id = parent.id
+        LEFT JOIN entity_types pet ON pet.id = parent.entity_type_id
         WHERE e.id = ${entityId}
       `;
 
@@ -1218,7 +1220,10 @@ export async function getContent(
         const uniqueEntityIds = Array.from(entityCountMap.keys());
         const idList = `{${uniqueEntityIds.join(',')}}`;
         const entityRows = await sql`
-          SELECT id, name, entity_type FROM entities WHERE id = ANY(${idList}::int[])
+          SELECT e.id, e.name, et.slug AS entity_type
+          FROM entities e
+          JOIN entity_types et ON et.id = e.entity_type_id
+          WHERE e.id = ANY(${idList}::int[])
         `;
 
         const entitySummary = entityRows
@@ -1352,7 +1357,7 @@ async function handleWatcherMode(
       cv.condensation_prompt,
       cv.condensation_window_count,
       cv.version_sources,
-      (SELECT COALESCE(json_agg(json_build_object('id', e.id, 'name', e.name, 'type', e.entity_type)), '[]'::json) FROM entities e WHERE e.id = ANY(i.entity_ids)) as entities
+      (SELECT COALESCE(json_agg(json_build_object('id', e.id, 'name', e.name, 'type', et.slug)), '[]'::json) FROM entities e JOIN entity_types et ON et.id = e.entity_type_id WHERE e.id = ANY(i.entity_ids)) as entities
     FROM watchers i
     LEFT JOIN watcher_versions cv ON i.current_version_id = cv.id
     WHERE i.id = ${watcherId}

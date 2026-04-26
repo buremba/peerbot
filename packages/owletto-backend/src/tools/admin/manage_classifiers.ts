@@ -489,7 +489,7 @@ async function handleList(args: ManageClassifiersArgs): Promise<ManageClassifier
   const classifiers = await sql.unsafe(
     `SELECT
       fc.id, fc.slug, fc.name, fc.description, fc.attribute_key, fc.entity_ids,
-      e.entity_type, fc.status, fc.created_at, fc.updated_at,
+      et.slug AS entity_type, fc.status, fc.created_at, fc.updated_at,
       fcv.version as current_version, fcv.min_similarity, fcv.fallback_value, fcv.attribute_values,
       fc.watcher_id,
       w.name as watcher_name,
@@ -501,6 +501,7 @@ async function handleList(args: ManageClassifiersArgs): Promise<ManageClassifier
     FROM event_classifiers fc
     LEFT JOIN event_classifier_versions fcv ON fc.id = fcv.classifier_id AND fcv.is_current = true
     LEFT JOIN entities e ON e.id = ANY(fc.entity_ids)
+    LEFT JOIN entity_types et ON et.id = e.entity_type_id
     LEFT JOIN watchers w ON fc.watcher_id = w.id
     ${whereClause}
     ORDER BY

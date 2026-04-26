@@ -48,11 +48,11 @@ describe('$member visibility policy on public orgs', () => {
 
     await sql`
       INSERT INTO entities (
-        name, slug, entity_type, organization_id, metadata, created_by, created_at, updated_at
+        name, slug, entity_type_id, organization_id, metadata, created_by, created_at, updated_at
       ) VALUES (
         'Plain Member',
         'plain-member',
-        '$member',
+        (SELECT id FROM entity_types WHERE slug = '$member' AND organization_id = ${publicOrg.id} AND deleted_at IS NULL),
         ${publicOrg.id},
         ${sql.json({ email: MEMBER_EMAIL, status: 'active', role: 'member' })},
         ${adminUser.id},

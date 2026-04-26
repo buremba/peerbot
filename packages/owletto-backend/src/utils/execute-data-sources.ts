@@ -215,13 +215,33 @@ function buildScopedQuery(
     return buildColumnList(defs, alias);
   };
 
+  // Build the SELECT list for the entities CTE, where entity_type is now a
+  // derived column from a JOIN to entity_types (et.slug AS entity_type).
+  const selEntitiesJoined = (entityAlias: string, typeAlias: string): string => {
+    const defs = sc?.get('entities');
+    if (!defs) return `${entityAlias}.*, ${typeAlias}.slug AS entity_type`;
+    return defs
+      .map((c) => {
+        if (c.name === 'entity_type') return `${typeAlias}.slug AS "entity_type"`;
+        if (c.expr) {
+          const prefixed = c.expr.replace(/^(\w+)/, `${entityAlias}.$1`);
+          return `${prefixed} as "${c.name}"`;
+        }
+        return `${entityAlias}."${c.name}"`;
+      })
+      .join(', ');
+  };
+
   for (const table of tableRefs) {
     // Escape double quotes in table name for safe identifier quoting
     const safeName = table.replace(/"/g, '""');
 
     if (table === 'entities') {
       ctes.push(
-        `"${safeName}" AS (SELECT ${sel(table)} FROM public.entities WHERE organization_id = ${orgP})`
+        `"${safeName}" AS (SELECT ${selEntitiesJoined('e', 'et')} ` +
+          `FROM public.entities e ` +
+          `JOIN public.entity_types et ON et.id = e.entity_type_id ` +
+          `WHERE e.organization_id = ${orgP})`
       );
     } else if (table === 'events') {
       let eventsCte =
@@ -318,7 +338,10 @@ function buildScopedQuery(
       idx++;
       params.push(table);
       ctes.push(
-        `"${safeName}" AS (SELECT ${sel('entities')} FROM public.entities WHERE organization_id = ${orgP} AND entity_type = $${idx})`
+        `"${safeName}" AS (SELECT ${selEntitiesJoined('e', 'et')} ` +
+          `FROM public.entities e ` +
+          `JOIN public.entity_types et ON et.id = e.entity_type_id ` +
+          `WHERE e.organization_id = ${orgP} AND et.slug = $${idx})`
       );
     }
   }

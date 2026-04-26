@@ -284,11 +284,12 @@ function validateEntityMetadataSchemaDisplayConfig(
 async function getEntityCountsByType(organizationId: string): Promise<Map<string, number>> {
   const sql = getDb();
   const rows = await sql`
-    SELECT entity_type, COUNT(*)::int as entity_count
-    FROM entities
-    WHERE organization_id = ${organizationId}
-      AND deleted_at IS NULL
-    GROUP BY entity_type
+    SELECT et.slug AS entity_type, COUNT(*)::int as entity_count
+    FROM entities e
+    JOIN entity_types et ON et.id = e.entity_type_id
+    WHERE e.organization_id = ${organizationId}
+      AND e.deleted_at IS NULL
+    GROUP BY et.slug
   `;
   const counts = new Map<string, number>();
   for (const row of rows) {
@@ -301,10 +302,11 @@ async function getEntityCountForType(slug: string, organizationId: string): Prom
   const sql = getDb();
   const rows = await sql`
     SELECT COUNT(*)::int as count
-    FROM entities
-    WHERE entity_type = ${slug}
-      AND organization_id = ${organizationId}
-      AND deleted_at IS NULL
+    FROM entities e
+    JOIN entity_types et ON et.id = e.entity_type_id
+    WHERE et.slug = ${slug}
+      AND e.organization_id = ${organizationId}
+      AND e.deleted_at IS NULL
   `;
   return Number(rows[0]?.count || 0);
 }

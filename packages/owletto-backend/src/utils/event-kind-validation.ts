@@ -134,7 +134,7 @@ async function getEntityTypeEventKinds(
   const rows = await sql`
     SELECT et.event_kinds
     FROM entities e
-    JOIN entity_types et ON et.slug = e.entity_type AND et.organization_id = e.organization_id
+    JOIN entity_types et ON et.id = e.entity_type_id
     WHERE e.id = ${entityId}
       AND e.organization_id = ${orgId}
       AND e.deleted_at IS NULL

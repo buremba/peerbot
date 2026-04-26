@@ -355,10 +355,11 @@ async function _resolvePath(
     if (!isLeaf) {
       // Lightweight query for intermediate path entities – no COUNT subqueries, no template joins
       const row = await simpleQuery(sql`
-        SELECT e.id, e.entity_type, e.slug, e.name, e.parent_id
+        SELECT e.id, et.slug AS entity_type, e.slug, e.name, e.parent_id
         FROM entities e
+        JOIN entity_types et ON et.id = e.entity_type_id
         WHERE e.organization_id = ${workspace.id}
-          AND e.entity_type = ${segment.entity_type}
+          AND et.slug = ${segment.entity_type}
           AND e.slug = ${segment.slug}
           AND (
             (${parentId}::bigint IS NULL AND e.parent_id IS NULL)
@@ -389,7 +390,7 @@ async function _resolvePath(
     const row = await simpleQuery(sql`
         SELECT
           e.id,
-          e.entity_type,
+          et.slug AS entity_type,
           e.slug,
           e.name,
           e.parent_id,
@@ -398,15 +399,13 @@ async function _resolvePath(
           COALESCE(vtv_entity.json_template, vtv_et.json_template) as json_template,
           COALESCE(vtv_entity.version, vtv_et.version) as json_template_version
         FROM entities e
-        LEFT JOIN entity_types et
-          ON et.slug = e.entity_type
-          AND et.organization_id = e.organization_id
+        JOIN entity_types et ON et.id = e.entity_type_id
         LEFT JOIN view_template_versions vtv_entity
           ON vtv_entity.id = e.current_view_template_version_id
         LEFT JOIN view_template_versions vtv_et
           ON vtv_et.id = et.current_view_template_version_id
         WHERE e.organization_id = ${workspace.id}
-          AND e.entity_type = ${segment.entity_type}
+          AND et.slug = ${segment.entity_type}
           AND e.slug = ${segment.slug}
           AND (
             (${parentId}::bigint IS NULL AND e.parent_id IS NULL)
@@ -534,18 +533,20 @@ async function _resolvePath(
     // content_count is omitted to avoid expensive GIN index scans over the events table.
     const [childRows, siblingRows] = await Promise.all([
       simpleQuery(sql`
-        SELECT e.id, e.entity_type, e.slug, e.name,
+        SELECT e.id, et.slug AS entity_type, e.slug, e.name,
           e.metadata::jsonb->>'market' as market
         FROM entities e
+        JOIN entity_types et ON et.id = e.entity_type_id
         WHERE e.organization_id = ${workspace.id}
           AND e.parent_id = ${resolvedEntity.id}
         ORDER BY e.name ASC
       `),
       simpleQuery(sql`
-        SELECT e.id, e.entity_type, e.slug, e.name
+        SELECT e.id, et.slug AS entity_type, e.slug, e.name
         FROM entities e
+        JOIN entity_types et ON et.id = e.entity_type_id
         WHERE e.organization_id = ${workspace.id}
-          AND e.entity_type = ${resolvedEntity.entity_type}
+          AND et.slug = ${resolvedEntity.entity_type}
           AND (
             (${resolvedEntity.parent_id}::bigint IS NULL AND e.parent_id IS NULL)
             OR e.parent_id = ${resolvedEntity.parent_id}
@@ -667,8 +668,7 @@ async function listEntityTypes(
       COUNT(e.id)::int AS entity_count
     FROM entity_types et
     LEFT JOIN entities e
-      ON e.organization_id = et.organization_id
-      AND e.entity_type = et.slug
+      ON e.entity_type_id = et.id
     WHERE et.deleted_at IS NULL
       AND et.organization_id = ${organizationId}
     GROUP BY et.id, et.slug, et.name, et.description, et.icon, et.color
@@ -911,17 +911,19 @@ async function fetchRecentWatchers(
       e.name AS entity_name,
       e.slug AS entity_slug,
       parent.slug AS parent_slug,
-      parent.entity_type AS parent_entity_type,
+      pet.slug AS parent_entity_type,
       COALESCE(wwc.windows_count, 0)::int AS windows_count
     FROM scoped_watchers sw
     LEFT JOIN LATERAL (
-      SELECT entity.id, entity.entity_type, entity.name, entity.slug, entity.parent_id
+      SELECT entity.id, et_ent.slug AS entity_type, entity.name, entity.slug, entity.parent_id
       FROM entities entity
+      JOIN entity_types et_ent ON et_ent.id = entity.entity_type_id
       WHERE entity.id = ANY(sw.entity_ids)
       ORDER BY entity.name ASC
       LIMIT 1
     ) e ON TRUE
     LEFT JOIN entities parent ON parent.id = e.parent_id
+    LEFT JOIN entity_types pet ON pet.id = parent.entity_type_id
     LEFT JOIN watcher_window_counts wwc ON wwc.watcher_id = sw.id
     ORDER BY COALESCE(sw.updated_at, sw.created_at) DESC
   `);

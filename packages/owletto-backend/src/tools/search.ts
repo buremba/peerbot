@@ -428,8 +428,8 @@ async function fetchTopEntitiesByType(
 // ============================================
 
 const ENTITY_SELECT_COLUMNS = `
-  e.id, e.organization_id, e.name, e.entity_type, e.slug, e.metadata, e.parent_id,
-  pe.name as parent_name, pe.slug as parent_slug, pe.entity_type as parent_entity_type,
+  e.id, e.organization_id, e.name, et.slug AS entity_type, e.slug, e.metadata, e.parent_id,
+  pe.name as parent_name, pe.slug as parent_slug, pet.slug as parent_entity_type,
   COALESCE((SELECT COUNT(*) FROM current_event_records ev WHERE ${entityLinkMatchSql('e.id::bigint', 'ev')}), 0) as content_count,
   COALESCE((
     SELECT COUNT(DISTINCT cn.connector_key)
@@ -453,7 +453,9 @@ const ENTITY_SELECT_COLUMNS = `
 
 const ENTITY_JOINS = `
   FROM entities e
-  LEFT JOIN entities pe ON e.parent_id = pe.id`;
+  JOIN entity_types et ON et.id = e.entity_type_id
+  LEFT JOIN entities pe ON e.parent_id = pe.id
+  LEFT JOIN entity_types pet ON pet.id = pe.entity_type_id`;
 
 /**
  * Query entities by name with optional filters
@@ -509,7 +511,7 @@ async function queryEntities(
   // Organization filter
   conditions.push(`e.organization_id = $${addParam(organizationId)}`);
 
-  if (args.entity_type) conditions.push(`e.entity_type = $${addParam(args.entity_type)}`);
+  if (args.entity_type) conditions.push(`et.slug = $${addParam(args.entity_type)}`);
   if (args.parent_id) conditions.push(`e.parent_id = $${addParam(args.parent_id)}`);
   if (args.category)
     conditions.push(`e.metadata::jsonb->>'category' = $${addParam(args.category)}`);
@@ -640,13 +642,14 @@ async function formatEntityResult(
       SELECT
         e.id,
         e.name,
-        e.entity_type,
+        et.slug AS entity_type,
         e.metadata::jsonb->>'market' as market,
         COALESCE(
           (SELECT COUNT(*) FROM current_event_records WHERE e.id = ANY(entity_ids)),
           0
         ) as content_count
       FROM entities e
+      JOIN entity_types et ON et.id = e.entity_type_id
       WHERE e.parent_id = ${primaryEntity.id}
       ORDER BY e.created_at DESC
     `;

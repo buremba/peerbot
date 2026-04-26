@@ -183,11 +183,12 @@ export async function saveContent(
         SELECT e.id
         FROM entity_identities ei
         JOIN entities e ON e.id = ei.entity_id
+        JOIN entity_types et ON et.id = e.entity_type_id
         WHERE ei.organization_id = ${ctx.organizationId}
           AND ei.namespace = 'auth_user_id'
           AND ei.identifier = ${authId}
           AND ei.deleted_at IS NULL
-          AND e.entity_type = '$member'
+          AND et.slug = '$member'
           AND e.deleted_at IS NULL
         LIMIT 1
       `;
@@ -202,11 +203,12 @@ export async function saveContent(
           SELECT e.id
           FROM entity_identities ei
           JOIN entities e ON e.id = ei.entity_id
+          JOIN entity_types et ON et.id = e.entity_type_id
           WHERE ei.organization_id = ${ctx.organizationId}
             AND ei.namespace = 'email'
             AND ei.identifier = ${userEmail}
             AND ei.deleted_at IS NULL
-            AND e.entity_type = '$member'
+            AND et.slug = '$member'
             AND e.deleted_at IS NULL
           LIMIT 1
         `;

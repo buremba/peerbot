@@ -35,11 +35,13 @@ async function getOrgEntities(organizationId: string): Promise<EntityCandidate[]
 
   const sql = getDb();
   const rows = await sql`
-    SELECT id, name, entity_type FROM entities
-    WHERE organization_id = ${organizationId}
-      AND deleted_at IS NULL
-      AND length(name) >= ${MIN_NAME_LENGTH}
-    ORDER BY length(name) DESC
+    SELECT e.id, e.name, et.slug AS entity_type
+    FROM entities e
+    JOIN entity_types et ON et.id = e.entity_type_id
+    WHERE e.organization_id = ${organizationId}
+      AND e.deleted_at IS NULL
+      AND length(e.name) >= ${MIN_NAME_LENGTH}
+    ORDER BY length(e.name) DESC
   `;
 
   const entities = rows.map((r) => ({

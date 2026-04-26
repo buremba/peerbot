@@ -52,11 +52,13 @@ export async function ensureMemberEntity(params: EnsureMemberEntityParams): Prom
 
   // Check if a $member entity with this email already exists
   const existing = await sql.unsafe(
-    `SELECT id FROM entities
-    WHERE entity_type = '$member'
-      AND organization_id = $1
-      AND metadata->>$2 = $3
-      AND deleted_at IS NULL
+    `SELECT e.id
+    FROM entities e
+    JOIN entity_types et ON et.id = e.entity_type_id
+    WHERE et.slug = '$member'
+      AND e.organization_id = $1
+      AND e.metadata->>$2 = $3
+      AND e.deleted_at IS NULL
     LIMIT 1`,
     [params.organizationId, emailField, params.email]
   );
@@ -95,7 +97,10 @@ export async function updateMemberEntityStatus(
     UPDATE entities
     SET metadata = jsonb_set(metadata, '{status}', to_jsonb(${status}::text)),
         updated_at = current_timestamp
-    WHERE entity_type = '$member'
+    WHERE entity_type_id = (
+        SELECT id FROM entity_types
+        WHERE slug = '$member' AND organization_id = ${organizationId} AND deleted_at IS NULL
+      )
       AND organization_id = ${organizationId}
       AND metadata->>${emailField} = ${email}
       AND deleted_at IS NULL
@@ -111,11 +116,13 @@ export async function updateMemberEntityAccess(
   const { emailField } = await resolveMemberSchemaFields(organizationId);
   const sql = getDb();
   const rows = await sql.unsafe<{ id: number; metadata: Record<string, unknown> }>(
-    `SELECT id, metadata FROM entities
-     WHERE entity_type = '$member'
-       AND organization_id = $1
-       AND metadata->>$2 = $3
-       AND deleted_at IS NULL
+    `SELECT e.id, e.metadata
+     FROM entities e
+     JOIN entity_types et ON et.id = e.entity_type_id
+     WHERE et.slug = '$member'
+       AND e.organization_id = $1
+       AND e.metadata->>$2 = $3
+       AND e.deleted_at IS NULL
      LIMIT 1`,
     [organizationId, emailField, email]
   );
@@ -143,7 +150,10 @@ export async function deleteMemberEntity(organizationId: string, email: string):
   await sql.unsafe(
     `UPDATE entities
     SET deleted_at = current_timestamp, updated_at = current_timestamp
-    WHERE entity_type = '$member'
+    WHERE entity_type_id = (
+        SELECT id FROM entity_types
+        WHERE slug = '$member' AND organization_id = $1 AND deleted_at IS NULL
+      )
       AND organization_id = $1
       AND metadata->>$2 = $3
       AND deleted_at IS NULL`,

@@ -319,11 +319,13 @@ export async function getWatcher(
 
   if (args.entity_id) {
     const entityCheck = await sql`
-      SELECT e.id, e.name, e.entity_type, e.slug, e.parent_id,
-        parent.slug as parent_slug, parent.entity_type as parent_entity_type,
+      SELECT e.id, e.name, et.slug AS entity_type, e.slug, e.parent_id,
+        parent.slug as parent_slug, pet.slug as parent_entity_type,
         e.organization_id
       FROM entities e
+      JOIN entity_types et ON et.id = e.entity_type_id
       LEFT JOIN entities parent ON e.parent_id = parent.id
+      LEFT JOIN entity_types pet ON pet.id = parent.entity_type_id
       WHERE e.id = ${args.entity_id}
     `;
 
@@ -336,12 +338,14 @@ export async function getWatcher(
     entitiesForTemplate = [{ name: info.entityName ?? '', type: info.entityType ?? '' }];
   } else if (args.watcher_id) {
     const watcherEntityQuery = await sql`
-      SELECT e.id, e.name, e.entity_type, e.slug, e.parent_id,
-        parent.slug as parent_slug, parent.entity_type as parent_entity_type,
+      SELECT e.id, e.name, et.slug AS entity_type, e.slug, e.parent_id,
+        parent.slug as parent_slug, pet.slug as parent_entity_type,
         e.organization_id
       FROM watchers i
       JOIN entities e ON e.id = ANY(i.entity_ids)
+      JOIN entity_types et ON et.id = e.entity_type_id
       LEFT JOIN entities parent ON e.parent_id = parent.id
+      LEFT JOIN entity_types pet ON pet.id = parent.entity_type_id
       WHERE i.id = ${args.watcher_id}
     `;
 
@@ -1085,16 +1089,17 @@ export async function getWatcher(
         SELECT
           CAST(e.id AS TEXT) as entity_id,
           e.name as entity_name,
-          e.entity_type,
+          et.slug AS entity_type,
           COUNT(DISTINCT f.id) as total_content,
           COUNT(DISTINCT c.connector_key) as active_connections,
           MAX(f.occurred_at) as latest_content_date
         FROM entities e
+        JOIN entity_types et ON et.id = e.entity_type_id
         LEFT JOIN feeds fc ON e.id = ANY(fc.entity_ids) AND fc.deleted_at IS NULL
         LEFT JOIN connections c ON c.id = fc.connection_id AND c.organization_id = e.organization_id
         LEFT JOIN current_event_records f ON ${sql.unsafe(entityLinkMatchSql('e.id::bigint', 'f'))}
         WHERE e.id = ${contextEntityId}
-        GROUP BY e.id, e.name, e.entity_type
+        GROUP BY e.id, e.name, et.slug
       `;
 
       if (entityContextQuery.length > 0) {

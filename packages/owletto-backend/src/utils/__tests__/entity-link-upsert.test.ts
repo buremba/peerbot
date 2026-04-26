@@ -84,8 +84,9 @@ describe('applyEntityLinks', () => {
 
     const sql = getTestDb();
     const entities = await sql`
-      SELECT id, name, metadata FROM entities
-      WHERE organization_id = ${org.id} AND entity_type = '$member' AND deleted_at IS NULL
+      SELECT e.id, e.name, e.metadata FROM entities e
+      JOIN entity_types et ON et.id = e.entity_type_id
+      WHERE e.organization_id = ${org.id} AND et.slug = '$member' AND e.deleted_at IS NULL
     `;
     expect(entities).toHaveLength(1);
     expect(entities[0].name).toBe('Alex');
@@ -107,8 +108,12 @@ describe('applyEntityLinks', () => {
 
     const sql = getTestDb();
     const [{ id: entityId }] = await sql<{ id: number | string }[]>`
-      INSERT INTO entities (organization_id, entity_type, name, slug, metadata, created_by)
-      VALUES (${org.id}, '$member', 'Alex', 'member-seed', '{}'::jsonb, ${user.id})
+      INSERT INTO entities (organization_id, entity_type_id, name, slug, metadata, created_by)
+      VALUES (
+        ${org.id},
+        (SELECT id FROM entity_types WHERE slug = '$member' AND organization_id = ${org.id} AND deleted_at IS NULL),
+        'Alex', 'member-seed', '{}'::jsonb, ${user.id}
+      )
       RETURNING id
     `;
     await sql`
@@ -138,8 +143,9 @@ describe('applyEntityLinks', () => {
     });
 
     const entityCount = await sql<{ count: string }[]>`
-      SELECT COUNT(*)::text AS count FROM entities
-      WHERE organization_id = ${org.id} AND entity_type = '$member' AND deleted_at IS NULL
+      SELECT COUNT(*)::text AS count FROM entities e
+      JOIN entity_types et ON et.id = e.entity_type_id
+      WHERE e.organization_id = ${org.id} AND et.slug = '$member' AND e.deleted_at IS NULL
     `;
     expect(entityCount[0].count).toBe('1');
 
@@ -156,13 +162,21 @@ describe('applyEntityLinks', () => {
 
     const sql = getTestDb();
     const entA = await sql<{ id: number | string }[]>`
-      INSERT INTO entities (organization_id, entity_type, name, slug, metadata, created_by)
-      VALUES (${org.id}, '$member', 'A', 'member-a', '{}'::jsonb, ${user.id})
+      INSERT INTO entities (organization_id, entity_type_id, name, slug, metadata, created_by)
+      VALUES (
+        ${org.id},
+        (SELECT id FROM entity_types WHERE slug = '$member' AND organization_id = ${org.id} AND deleted_at IS NULL),
+        'A', 'member-a', '{}'::jsonb, ${user.id}
+      )
       RETURNING id
     `;
     const entB = await sql<{ id: number | string }[]>`
-      INSERT INTO entities (organization_id, entity_type, name, slug, metadata, created_by)
-      VALUES (${org.id}, '$member', 'B', 'member-b', '{}'::jsonb, ${user.id})
+      INSERT INTO entities (organization_id, entity_type_id, name, slug, metadata, created_by)
+      VALUES (
+        ${org.id},
+        (SELECT id FROM entity_types WHERE slug = '$member' AND organization_id = ${org.id} AND deleted_at IS NULL),
+        'B', 'member-b', '{}'::jsonb, ${user.id}
+      )
       RETURNING id
     `;
     await sql`
@@ -194,8 +208,9 @@ describe('applyEntityLinks', () => {
 
     // No new entity created, no new identifiers accreted to either side.
     const entities = await sql<{ count: string }[]>`
-      SELECT COUNT(*)::text AS count FROM entities
-      WHERE organization_id = ${org.id} AND entity_type = '$member' AND deleted_at IS NULL
+      SELECT COUNT(*)::text AS count FROM entities e
+      JOIN entity_types et ON et.id = e.entity_type_id
+      WHERE e.organization_id = ${org.id} AND et.slug = '$member' AND e.deleted_at IS NULL
     `;
     expect(entities[0].count).toBe('2');
 
@@ -247,8 +262,12 @@ describe('applyEntityLinks', () => {
 
     const sql = getTestDb();
     const [{ id: entityId }] = await sql<{ id: number | string }[]>`
-      INSERT INTO entities (organization_id, entity_type, name, slug, metadata, created_by)
-      VALUES (${org.id}, '$member', 'Alex', 'member-alex', '{}'::jsonb, ${user.id})
+      INSERT INTO entities (organization_id, entity_type_id, name, slug, metadata, created_by)
+      VALUES (
+        ${org.id},
+        (SELECT id FROM entity_types WHERE slug = '$member' AND organization_id = ${org.id} AND deleted_at IS NULL),
+        'Alex', 'member-alex', '{}'::jsonb, ${user.id}
+      )
       RETURNING id
     `;
     await sql`

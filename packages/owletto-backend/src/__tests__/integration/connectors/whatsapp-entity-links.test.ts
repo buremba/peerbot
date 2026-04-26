@@ -80,8 +80,9 @@ describe('whatsapp connector > entityLinks', () => {
     const entitiesAfterFirst = await sql<
       { id: number; name: string; metadata: Record<string, unknown> }[]
     >`
-      SELECT id, name, metadata FROM entities
-      WHERE organization_id = ${org.id} AND entity_type = '$member' AND deleted_at IS NULL
+      SELECT e.id, e.name, e.metadata FROM entities e
+      JOIN entity_types et ON et.id = e.entity_type_id
+      WHERE e.organization_id = ${org.id} AND et.slug = '$member' AND e.deleted_at IS NULL
     `;
     expect(entitiesAfterFirst).toHaveLength(1);
     expect(entitiesAfterFirst[0].name).toBe('Alex');
@@ -120,8 +121,9 @@ describe('whatsapp connector > entityLinks', () => {
     });
 
     const countAfterSecond = await sql<{ count: string }[]>`
-      SELECT COUNT(*)::text AS count FROM entities
-      WHERE organization_id = ${org.id} AND entity_type = '$member' AND deleted_at IS NULL
+      SELECT COUNT(*)::text AS count FROM entities e
+      JOIN entity_types et ON et.id = e.entity_type_id
+      WHERE e.organization_id = ${org.id} AND et.slug = '$member' AND e.deleted_at IS NULL
     `;
     expect(countAfterSecond[0].count).toBe('1');
   });
@@ -149,8 +151,9 @@ describe('whatsapp connector > entityLinks', () => {
     });
 
     const count = await sql<{ count: string }[]>`
-      SELECT COUNT(*)::text AS count FROM entities
-      WHERE organization_id = ${org.id} AND entity_type = '$member' AND deleted_at IS NULL
+      SELECT COUNT(*)::text AS count FROM entities e
+      JOIN entity_types et ON et.id = e.entity_type_id
+      WHERE e.organization_id = ${org.id} AND et.slug = '$member' AND e.deleted_at IS NULL
     `;
     expect(count[0].count).toBe('0');
   });
@@ -185,8 +188,9 @@ describe('whatsapp connector > entityLinks', () => {
     });
 
     const count = await sql<{ count: string }[]>`
-      SELECT COUNT(*)::text AS count FROM entities
-      WHERE organization_id = ${org.id} AND entity_type = '$member' AND deleted_at IS NULL
+      SELECT COUNT(*)::text AS count FROM entities e
+      JOIN entity_types et ON et.id = e.entity_type_id
+      WHERE e.organization_id = ${org.id} AND et.slug = '$member' AND e.deleted_at IS NULL
     `;
     expect(count[0].count).toBe('0');
   });

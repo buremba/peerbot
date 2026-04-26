@@ -902,10 +902,12 @@ async function handleCreate(
 
   const entityResult = await sql`
     SELECT
-      e.id, e.entity_type, e.parent_id, e.slug, e.organization_id,
-      parent.slug as parent_slug, parent.entity_type as parent_entity_type
+      e.id, et.slug AS entity_type, e.parent_id, e.slug, e.organization_id,
+      parent.slug as parent_slug, pet.slug as parent_entity_type
     FROM entities e
+    JOIN entity_types et ON et.id = e.entity_type_id
     LEFT JOIN entities parent ON e.parent_id = parent.id
+    LEFT JOIN entity_types pet ON pet.id = parent.entity_type_id
     WHERE e.id = ${entityId}
   `;
   if (entityResult.length === 0) {
@@ -1059,7 +1061,10 @@ async function handleCreateFromVersion(
 
   // Fetch entity names for name pattern substitution
   const entityRows = await sql`
-    SELECT id, name, entity_type, slug FROM entities WHERE id = ANY(${`{${args.entity_ids.join(',')}}`}::bigint[])
+    SELECT e.id, e.name, et.slug AS entity_type, e.slug
+    FROM entities e
+    JOIN entity_types et ON et.id = e.entity_type_id
+    WHERE e.id = ANY(${`{${args.entity_ids.join(',')}}`}::bigint[])
   `;
   const entityMap = new Map(entityRows.map((e: any) => [Number(e.id), e]));
 
@@ -1791,7 +1796,12 @@ async function handleCompleteWindow(
       const eIds = Array.isArray(row.entity_ids) ? row.entity_ids.map(Number) : [];
       const entityRows =
         eIds.length > 0
-          ? await sql`SELECT id, name, entity_type, metadata FROM entities WHERE id = ANY(${`{${eIds.join(',')}}`}::bigint[])`
+          ? await sql`
+              SELECT e.id, e.name, et.slug AS entity_type, e.metadata
+              FROM entities e
+              JOIN entity_types et ON et.id = e.entity_type_id
+              WHERE e.id = ANY(${`{${eIds.join(',')}}`}::bigint[])
+            `
           : [];
 
       // Fetch watcher name from version, slug from template (pre-consolidation)
@@ -2069,14 +2079,14 @@ async function handleList(
       wr.created_at as watcher_run_created_at,
       wr.completed_at as watcher_run_completed_at,
       e.id as entity_id,
-      e.entity_type,
+      et.slug AS entity_type,
       e.name as entity_name,
       e.slug as entity_slug,
       e.organization_id,
       parent.id as parent_id,
       parent.name as parent_name,
       parent.slug as parent_slug,
-      parent.entity_type as parent_entity_type,
+      pet.slug as parent_entity_type,
       i.current_version_id,
       (SELECT COUNT(*) FROM watcher_windows iw WHERE iw.watcher_id = i.id) as windows_count
   `;
@@ -2098,7 +2108,9 @@ async function handleList(
   query += `
     FROM watchers i
     LEFT JOIN entities e ON e.id = ANY(i.entity_ids)
+    LEFT JOIN entity_types et ON et.id = e.entity_type_id
     LEFT JOIN entities parent ON e.parent_id = parent.id
+    LEFT JOIN entity_types pet ON pet.id = parent.entity_type_id
     LEFT JOIN watcher_versions cv ON i.current_version_id = cv.id
     ${buildLatestWatcherRunJoinSql('i', 'wr')}
   `;

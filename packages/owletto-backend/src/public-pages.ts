@@ -352,7 +352,7 @@ async function getPublicEntityType(
           SELECT COUNT(*)::int
           FROM entities e
           WHERE e.organization_id = et.organization_id
-            AND e.entity_type = et.slug
+            AND e.entity_type_id = et.id
             AND e.deleted_at IS NULL
         ) AS entity_count
       FROM entity_types et
@@ -1026,12 +1026,13 @@ export async function buildSitemapEntries(origin: string): Promise<SitemapEntry[
         SELECT
           e.id,
           e.organization_id,
-          e.entity_type,
+          et.slug AS entity_type,
           e.slug,
           e.parent_id,
-          ('/' || o.slug || '/' || e.entity_type || '/' || e.slug) AS path,
+          ('/' || o.slug || '/' || et.slug || '/' || e.slug) AS path,
           e.updated_at
         FROM entities e
+        JOIN entity_types et ON et.id = e.entity_type_id
         JOIN "organization" o ON o.id = e.organization_id
         WHERE o.visibility = 'public'
           AND e.deleted_at IS NULL
@@ -1042,12 +1043,13 @@ export async function buildSitemapEntries(origin: string): Promise<SitemapEntry[
         SELECT
           child.id,
           child.organization_id,
-          child.entity_type,
+          et_child.slug AS entity_type,
           child.slug,
           child.parent_id,
-          (entity_paths.path || '/' || child.entity_type || '/' || child.slug) AS path,
+          (entity_paths.path || '/' || et_child.slug || '/' || child.slug) AS path,
           child.updated_at
         FROM entities child
+        JOIN entity_types et_child ON et_child.id = child.entity_type_id
         JOIN entity_paths ON entity_paths.id = child.parent_id
         WHERE child.deleted_at IS NULL
       )

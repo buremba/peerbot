@@ -26,6 +26,8 @@ function cols(...names: string[]): ColumnDef[] {
 export const QUERYABLE_SCHEMA = {
   tables: [
     // entities (excludes: embedding, content_tsv, content_hash)
+    // entity_type is exposed as a derived column — the CTE JOINs entity_types
+    // and aliases et.slug AS entity_type, so user queries can keep referencing it.
     {
       name: 'entities',
       columns: cols(

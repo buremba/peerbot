@@ -232,21 +232,21 @@ export async function createEntity(
 
   const sql = getDb();
 
-  // Validate entity type exists in entity_types table
-  const typeCheck = await sql.unsafe(
-    `SELECT id FROM entity_types
-     WHERE slug = $1
-       AND deleted_at IS NULL
-       AND organization_id = $2
-     LIMIT 1`,
-    [data.entity_type, data.organization_id]
-  );
-  if (typeCheck.length === 0) {
+  // Resolve entity_type slug to FK on entity_types(id).
+  const typeRow = await sql<{ id: number }>`
+    SELECT id FROM entity_types
+    WHERE slug = ${data.entity_type}
+      AND deleted_at IS NULL
+      AND organization_id = ${data.organization_id}
+    LIMIT 1
+  `;
+  if (typeRow.length === 0) {
     throw new ToolUserError(
       `Unknown entity type '${data.entity_type}'. Use manage_entity_schema(schema_type="entity_type", action="list") to list available types or create a custom type first.`,
       400
     );
   }
+  const entityTypeId = typeRow[0].id;
 
   // Generate slug from name if not provided
   const slug = data.slug || generateSlug(data.name);
@@ -265,22 +265,24 @@ export async function createEntity(
   const contentHash = data.content_hash || null;
 
   try {
-    const result = await sql<CreatedEntity>`
+    const result = await sql<Omit<CreatedEntity, 'entity_type'>>`
       INSERT INTO entities (
-        organization_id, entity_type, name, slug, parent_id, metadata, enabled_classifiers, created_by, content, embedding, content_hash, created_at, updated_at
+        organization_id, entity_type_id, name, slug, parent_id, metadata, enabled_classifiers, created_by, content, embedding, content_hash, created_at, updated_at
       ) VALUES (
-        ${data.organization_id}, ${data.entity_type}, ${data.name.trim()}, ${slug}, ${data.parent_id || null},
+        ${data.organization_id}, ${entityTypeId}, ${data.name.trim()}, ${slug}, ${data.parent_id || null},
         ${sql.json(metadata)}, ${data.enabled_classifiers || null}, ${createdBy},
         ${contentValue}, ${embeddingLiteral}::vector, ${contentHash}, current_timestamp, current_timestamp
       )
-      RETURNING id, entity_type, name, slug, parent_id, metadata, created_at
+      RETURNING id, name, slug, parent_id, metadata, created_at
     `;
 
     if (result.length === 0) {
       throw new Error('Failed to create entity');
     }
 
-    const created = result[0];
+    // The validator above already resolved data.entity_type → entityTypeId.
+    // Pass the slug back through directly rather than JOIN-ing on every insert.
+    const created: CreatedEntity = { ...result[0], entity_type: data.entity_type };
 
     // Run afterCreate hook
     if (!opts?.skipHooks && opts?.hookContext) {
@@ -376,9 +378,10 @@ export async function updateEntity(
   `;
 
   const result = await sql<CreatedEntity>`
-    SELECT id, entity_type, name, slug, parent_id, metadata, created_at
-    FROM entities
-    WHERE id = ${entityId}
+    SELECT e.id, et.slug AS entity_type, e.name, e.slug, e.parent_id, e.metadata, e.created_at
+    FROM entities e
+    JOIN entity_types et ON et.id = e.entity_type_id
+    WHERE e.id = ${entityId}
     LIMIT 1
   `;
 
@@ -403,9 +406,9 @@ export async function getEntity(
 
   const result = await sql<CreatedEntity>`
     SELECT
-      e.id, e.entity_type, e.name, e.slug, e.parent_id, e.metadata, e.created_at,
+      e.id, et.slug AS entity_type, e.name, e.slug, e.parent_id, e.metadata, e.created_at,
       e.current_view_template_version_id,
-      pe.name as parent_name, pe.slug as parent_slug, pe.entity_type as parent_entity_type,
+      pe.name as parent_name, pe.slug as parent_slug, pet.slug as parent_entity_type,
       (SELECT COUNT(*) FROM current_event_records ev WHERE ${sql.unsafe(entityLinkMatchSql('e.id::bigint', 'ev'))}) as total_content,
       (
         SELECT COUNT(DISTINCT c.connector_key)
@@ -418,7 +421,9 @@ export async function getEntity(
       (SELECT COUNT(*) FROM watchers i WHERE e.id = ANY(i.entity_ids)) as watchers_count,
       (SELECT COUNT(*) FROM entities c WHERE c.parent_id = e.id) as children_count
     FROM entities e
+    JOIN entity_types et ON et.id = e.entity_type_id
     LEFT JOIN entities pe ON e.parent_id = pe.id
+    LEFT JOIN entity_types pet ON pet.id = pe.entity_type_id
     WHERE e.id = ${entityId}
       AND e.organization_id = ${ctx.organizationId}
       AND e.deleted_at IS NULL
@@ -448,7 +453,10 @@ export async function deleteEntity(
   // Run beforeDelete hook
   if (!opts?.skipHooks) {
     const entityRow = await sql`
-      SELECT entity_type, metadata FROM entities WHERE id = ${entityId} AND deleted_at IS NULL
+      SELECT et.slug AS entity_type, e.metadata
+      FROM entities e
+      JOIN entity_types et ON et.id = e.entity_type_id
+      WHERE e.id = ${entityId} AND e.deleted_at IS NULL
     `;
     if (entityRow.length > 0) {
       const hooks = getEntityHooks(entityRow[0].entity_type as string);
@@ -655,7 +663,7 @@ export async function listEntities(
   params.push(ctx.organizationId);
 
   if (filters.entity_type) {
-    conditions.push(`e.entity_type = $${paramIdx++}`);
+    conditions.push(`et.slug = $${paramIdx++}`);
     params.push(filters.entity_type);
   }
 
@@ -707,7 +715,9 @@ export async function listEntities(
 
   const baseQuery = `
     FROM entities e
+    JOIN entity_types et ON et.id = e.entity_type_id
     LEFT JOIN entities pe ON e.parent_id = pe.id
+    LEFT JOIN entity_types pet ON pet.id = pe.entity_type_id
     LEFT JOIN LATERAL (SELECT COUNT(*) as cnt FROM current_event_records ev WHERE ${entityLinkMatchSql('e.id::bigint', 'ev')}) tc ON true
     LEFT JOIN LATERAL (
       SELECT COUNT(DISTINCT c.connector_key) as cnt
@@ -729,12 +739,12 @@ export async function listEntities(
 
   const result = await sql.unsafe<CreatedEntity>(
     `SELECT
-      e.id, e.entity_type, e.name, e.slug, e.parent_id, e.metadata, e.created_at,
+      e.id, et.slug AS entity_type, e.name, e.slug, e.parent_id, e.metadata, e.created_at,
       COALESCE(tc.cnt, 0) as total_content,
       COALESCE(ac.cnt, 0) as active_connections,
       COALESCE(ic.cnt, 0) as watchers_count,
       COALESCE(cc.cnt, 0) as children_count,
-      pe.name as parent_name, pe.slug as parent_slug, pe.entity_type as parent_entity_type
+      pe.name as parent_name, pe.slug as parent_slug, pet.slug as parent_entity_type
     ${baseQuery}
     ORDER BY ${orderBy}
     LIMIT ${limit + 1}
@@ -786,12 +796,14 @@ export async function batchLoadRelationships(
       r.from_entity_id,
       r.to_entity_id,
       rt.slug AS relationship_type_slug,
-      fe.id AS from_id, fe.name AS from_name, fe.slug AS from_slug, fe.entity_type AS from_entity_type,
-      te.id AS to_id, te.name AS to_name, te.slug AS to_slug, te.entity_type AS to_entity_type
+      fe.id AS from_id, fe.name AS from_name, fe.slug AS from_slug, fet.slug AS from_entity_type,
+      te.id AS to_id, te.name AS to_name, te.slug AS to_slug, tet.slug AS to_entity_type
     FROM entity_relationships r
     JOIN entity_relationship_types rt ON r.relationship_type_id = rt.id
     LEFT JOIN entities fe ON r.from_entity_id = fe.id
+    LEFT JOIN entity_types fet ON fet.id = fe.entity_type_id
     LEFT JOIN entities te ON r.to_entity_id = te.id
+    LEFT JOIN entity_types tet ON tet.id = te.entity_type_id
     WHERE r.organization_id = ${organizationId}
       AND r.deleted_at IS NULL
       AND rt.slug = ANY(${typeSlugs}::text[])

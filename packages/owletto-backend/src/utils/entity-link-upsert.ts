@@ -178,10 +178,11 @@ async function lookupMatches(params: {
     SELECT ei.entity_id, ei.namespace, ei.identifier
     FROM entity_identities ei
     JOIN entities e ON e.id = ei.entity_id
+    JOIN entity_types et ON et.id = e.entity_type_id
     WHERE ei.organization_id = ${params.orgId}
       AND ei.deleted_at IS NULL
       AND e.deleted_at IS NULL
-      AND e.entity_type = ${params.entityType}
+      AND et.slug = ${params.entityType}
       AND (ei.namespace, ei.identifier) IN (
         SELECT ns, ident FROM unnest(${pgTextArray(namespaces)}::text[], ${pgTextArray(identifiers)}::text[]) AS u(ns, ident)
       )
@@ -211,6 +212,23 @@ async function createEntityWithIdentities(params: {
   const metadata: Record<string, unknown> = {};
   for (const [key, value] of params.traits) metadata[key] = value;
 
+  // Resolve entity_type slug to FK on entity_types(id).
+  const typeRow = await sql<{ id: number }>`
+    SELECT id FROM entity_types
+    WHERE slug = ${params.entityType}
+      AND organization_id = ${params.orgId}
+      AND deleted_at IS NULL
+    LIMIT 1
+  `;
+  if (typeRow.length === 0) {
+    logger.warn(
+      { entityType: params.entityType, orgId: params.orgId },
+      'entity create failed: unknown entity type'
+    );
+    return null;
+  }
+  const entityTypeId = typeRow[0].id;
+
   // Try a few slug variants to defuse improbable random collisions.
   let entityId: number | null = null;
   for (let attempt = 0; attempt < 3 && entityId === null; attempt++) {
@@ -218,11 +236,11 @@ async function createEntityWithIdentities(params: {
     try {
       const rows = await sql<{ id: number | string }>`
         INSERT INTO entities (
-          organization_id, entity_type, name, slug, metadata,
+          organization_id, entity_type_id, name, slug, metadata,
           created_by, created_at, updated_at
         )
         VALUES (
-          ${params.orgId}, ${params.entityType}, ${name}, ${slug},
+          ${params.orgId}, ${entityTypeId}, ${name}, ${slug},
           ${sql.json(metadata)},
           ${params.creatorUserId}, current_timestamp, current_timestamp
         )

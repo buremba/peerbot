@@ -55,11 +55,13 @@ async function findMemberEntityIdByEmail(
 ): Promise<number | null> {
   const { emailField } = await resolveMemberSchemaFields(organizationId);
   const rows = await sql.unsafe(
-    `SELECT id FROM entities
-    WHERE entity_type = '$member'
-      AND organization_id = $1
-      AND metadata->>$2 = $3
-      AND deleted_at IS NULL
+    `SELECT e.id
+    FROM entities e
+    JOIN entity_types et ON et.id = e.entity_type_id
+    WHERE et.slug = '$member'
+      AND e.organization_id = $1
+      AND e.metadata->>$2 = $3
+      AND e.deleted_at IS NULL
     LIMIT 1`,
     [organizationId, emailField, email]
   );

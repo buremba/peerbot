@@ -698,18 +698,19 @@ app.get('/api/:orgSlug/watchers/windows/:windowId', mcpAuth, async (c) => {
         i.slug as watcher_slug,
         i.name as watcher_name,
         e.name as entity_name,
-        e.entity_type,
+        et.slug AS entity_type,
         parent.name as parent_name,
         CAST(COUNT(iwf.event_id) AS INTEGER) as content_count
       FROM watcher_windows iw
       JOIN watchers i ON iw.watcher_id = i.id
       JOIN entities e ON e.id = ANY(i.entity_ids)
+      JOIN entity_types et ON et.id = e.entity_type_id
       LEFT JOIN entities parent ON e.parent_id = parent.id
       LEFT JOIN watcher_window_events iwf ON iwf.window_id = iw.id
       WHERE iw.id = ${windowId}
         AND e.organization_id = ${organizationId}
         AND i.status = 'active'
-      GROUP BY iw.id, i.entity_ids, i.slug, i.name, e.name, e.entity_type, parent.name
+      GROUP BY iw.id, i.entity_ids, i.slug, i.name, e.name, et.slug, parent.name
     `;
 
     if (windowResult.length === 0) {

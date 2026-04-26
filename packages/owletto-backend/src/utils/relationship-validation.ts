@@ -115,9 +115,10 @@ export async function validateTypeRule(
 
   // Get entity types for both entities
   const entityRows = await sql`
-    SELECT id, entity_type
-    FROM entities
-    WHERE id IN (${fromEntityId}, ${toEntityId})
+    SELECT e.id, et.slug AS entity_type
+    FROM entities e
+    JOIN entity_types et ON et.id = e.entity_type_id
+    WHERE e.id IN (${fromEntityId}, ${toEntityId})
   `;
   const fromEntityType = String(entityRows.find((r) => Number(r.id) === fromEntityId)?.entity_type);
   const toEntityType = String(entityRows.find((r) => Number(r.id) === toEntityId)?.entity_type);

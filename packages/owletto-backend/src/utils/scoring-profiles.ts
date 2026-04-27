@@ -14,11 +14,11 @@ const SCORING_PROFILE_SET = new Set<string>(SCORING_PROFILE_VALUES);
 
 const SCORING_PROFILE_SQL_MAP: Record<ScoringProfile, string> = {
   engagement_percentile_content_60_40: `
-    PERCENT_RANK() OVER (PARTITION BY f.source_id ORDER BY f.score) * 100 * 0.6 +
+    PERCENT_RANK() OVER (PARTITION BY f.connection_id ORDER BY f.score) * 100 * 0.6 +
     LEAST(f.content_length / 20.0, 100) * 0.4
   `,
   engagement_percentile_content_70_30_shortform: `
-    PERCENT_RANK() OVER (PARTITION BY f.source_id ORDER BY f.score) * 100 * 0.7 +
+    PERCENT_RANK() OVER (PARTITION BY f.connection_id ORDER BY f.score) * 100 * 0.7 +
     LEAST(f.content_length / 2.8, 100) * 0.3
   `,
   inverse_rating_content_50_50: `
@@ -27,22 +27,22 @@ const SCORING_PROFILE_SQL_MAP: Record<ScoringProfile, string> = {
   `,
   inverse_rating_engagement_content_30_40_30: `
     (5.0 - COALESCE((f.metadata->>'rating')::numeric, 3)) / 4.0 * 100 * 0.3 +
-    PERCENT_RANK() OVER (PARTITION BY f.source_id ORDER BY f.score) * 100 * 0.4 +
+    PERCENT_RANK() OVER (PARTITION BY f.connection_id ORDER BY f.score) * 100 * 0.4 +
     LEAST(f.content_length / 20.0, 100) * 0.3
   `,
   inverse_rating_helpful_content_30_40_30: `
     (5.0 - COALESCE((f.metadata->>'rating')::numeric, 3)) / 4.0 * 100 * 0.3 +
-    PERCENT_RANK() OVER (PARTITION BY f.source_id ORDER BY COALESCE((f.metadata->>'helpful_count')::numeric, 0)) * 100 * 0.4 +
+    PERCENT_RANK() OVER (PARTITION BY f.connection_id ORDER BY COALESCE((f.metadata->>'helpful_count')::numeric, 0)) * 100 * 0.4 +
     LEAST(f.content_length / 20.0, 100) * 0.3
   `,
   inverse_rating_thumbs_content_30_40_30: `
     (5.0 - COALESCE((f.metadata->>'rating')::numeric, 3)) / 4.0 * 100 * 0.3 +
-    PERCENT_RANK() OVER (PARTITION BY f.source_id ORDER BY COALESCE((f.metadata->>'thumbs_up')::numeric, 0)) * 100 * 0.4 +
+    PERCENT_RANK() OVER (PARTITION BY f.connection_id ORDER BY COALESCE((f.metadata->>'thumbs_up')::numeric, 0)) * 100 * 0.4 +
     LEAST(f.content_length / 20.0, 100) * 0.3
   `,
   inverse_rating_votesum_content_30_40_30: `
     (5.0 - COALESCE((f.metadata->>'rating')::numeric, 3)) / 4.0 * 100 * 0.3 +
-    PERCENT_RANK() OVER (PARTITION BY f.source_id ORDER BY COALESCE((f.metadata->>'vote_sum')::numeric, 0)) * 100 * 0.4 +
+    PERCENT_RANK() OVER (PARTITION BY f.connection_id ORDER BY COALESCE((f.metadata->>'vote_sum')::numeric, 0)) * 100 * 0.4 +
     LEAST(f.content_length / 20.0, 100) * 0.3
   `,
 };

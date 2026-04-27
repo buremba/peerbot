@@ -642,7 +642,7 @@ async function handleUpdate(
       title: `Entity updated: ${changes.map((c) => c.field).join(', ')}`,
       content: `Entity "${entityDetails.name}" (id: ${entityId}) updated:\n${contentLines.join('\n')}`,
       metadata: { changes },
-      createdBy: ctx.userId ?? 'system',
+      createdBy: ctx.userId ?? null,
       clientId: ctx.clientId ?? null,
     });
   }

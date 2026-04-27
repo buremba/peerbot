@@ -220,7 +220,7 @@ export async function insertEvent(
 
   const insertWithClientId = (clientId: string | null) => sql`
     INSERT INTO events (
-      entity_ids, organization_id, source_id, origin_id, title,
+      entity_ids, organization_id, origin_id, title,
       payload_type, payload_text, payload_data, payload_template, attachments, metadata,
       score, author_name, source_url, occurred_at, origin_parent_id, origin_type,
       connector_key, connection_id, feed_key, feed_id, run_id,
@@ -230,7 +230,6 @@ export async function insertEvent(
     ) VALUES (
       ${entityIdsValue}::bigint[],
       ${params.organizationId},
-      ${params.connectionId ?? null},
       ${params.originId},
       ${params.title ?? null},
       ${params.payloadType ?? 'text'},
@@ -293,7 +292,7 @@ interface ChangeEventParams {
   title: string;
   content: string;
   metadata: Record<string, unknown>;
-  createdBy?: string;
+  createdBy?: string | null;
   clientId?: string | null;
 }
 
@@ -316,7 +315,7 @@ export function recordChangeEvent(params: ChangeEventParams): void {
     content: params.content,
     semanticType: 'change',
     metadata: params.metadata,
-    createdBy: params.createdBy ?? 'system',
+    createdBy: params.createdBy ?? null,
     clientId: params.clientId ?? null,
   }).catch((err) => {
     logger.warn({ err, title: params.title }, 'Failed to record change event');

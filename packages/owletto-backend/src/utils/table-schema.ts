@@ -54,7 +54,6 @@ export const QUERYABLE_SCHEMA = {
         'id',
         'organization_id',
         'entity_ids',
-        'source_id',
         'origin_id',
         'title',
         'payload_type',

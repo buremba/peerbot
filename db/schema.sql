@@ -948,7 +948,7 @@ CREATE TABLE public.events (
     run_id bigint,
     semantic_type text DEFAULT 'content'::text NOT NULL,
     client_id text,
-    created_by text NOT NULL,
+    created_by text,
     interaction_type text DEFAULT 'none'::text NOT NULL,
     interaction_status text,
     interaction_input_schema jsonb,
@@ -5348,6 +5348,14 @@ ALTER TABLE ONLY public.event_embeddings
 
 ALTER TABLE ONLY public.events
     ADD CONSTRAINT events_client_id_fkey FOREIGN KEY (client_id) REFERENCES public.oauth_clients(id) ON DELETE SET NULL;
+
+
+--
+-- Name: events events_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.events
+    ADD CONSTRAINT events_created_by_fkey FOREIGN KEY (created_by) REFERENCES public."user"(id) ON DELETE SET NULL;
 
 
 --

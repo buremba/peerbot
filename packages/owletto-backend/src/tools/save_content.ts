@@ -9,6 +9,7 @@
 
 import { normalizeAuthUserId, normalizeEmail } from '@lobu/owletto-sdk';
 import { type Static, Type } from '@sinclair/typebox';
+import { hasRequiredMcpScope } from '../auth/tool-access';
 import { getDb } from '../db/client';
 import type { Env } from '../index';
 import { autoLinkEvent } from '../utils/auto-linker';
@@ -130,6 +131,19 @@ export async function saveContent(
   _env: Env,
   ctx: ToolContext
 ): Promise<SaveContentResult> {
+  // SDK delegates (`client.knowledge.save`) skip `checkToolAccess`, so apply
+  // the same member+scope gate here. System contexts (userId=null + auth=true)
+  // bypass — watcher reactions don't carry a user identity.
+  const isSystem = ctx.userId === null && ctx.isAuthenticated;
+  if (!isSystem) {
+    if (!ctx.memberRole) {
+      throw new Error('save_knowledge requires workspace membership with write access.');
+    }
+    if (!hasRequiredMcpScope('write', ctx.scopes)) {
+      throw new Error('save_knowledge requires an MCP session with write access.');
+    }
+  }
+
   const sql = getDb();
 
   // 0. Ensure $member entity type exists for this org

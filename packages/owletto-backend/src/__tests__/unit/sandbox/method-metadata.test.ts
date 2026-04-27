@@ -88,7 +88,7 @@ const NAMESPACE_METHODS: Record<string, readonly string[]> = {
 };
 
 /** Top-level SDK methods that aren't inside a namespace. */
-const TOP_LEVEL_METHODS = ["query", "log"] as const;
+const TOP_LEVEL_METHODS = ["query", "log", "org"] as const;
 
 describe("method-metadata", () => {
   it("has at least one entry per namespace method", () => {

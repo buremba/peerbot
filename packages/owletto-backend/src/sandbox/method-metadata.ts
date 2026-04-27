@@ -1,28 +1,18 @@
 /**
- * ClientSDK method metadata.
- *
- * Describes each SDK method for:
- * - `search` MCP tool (summary, example, throws)
- * - Dry-run classification (read | write | external) — PR-2 wires this into
- *   the wrapper so writes and external side-effects are intercepted.
- * - Static bans (e.g. `client.execute` must not be exposed recursively)
- *
- * Keyed by dotted SDK path (e.g. `watchers.list`, `entities.create`). The
- * PR-1 coverage unit test asserts every method exported from a namespace has
- * an entry here.
+ * ClientSDK method metadata, keyed by dotted path. Drives the `search` MCP
+ * tool, the read-only SDK filter (`access`), and the BANNED_PATHS guard.
  */
 
 export type MethodAccess = "read" | "write" | "external";
 
 export interface MethodMetadata {
-  /** One-line human description. Shown in namespace listings. */
   summary: string;
-  /** Dry-run classification. Writes are intercepted; externals are never sent. */
   access: MethodAccess;
-  /** Declared error names the method may throw. Surfaces in drill-down. */
   throws?: readonly string[];
-  /** Copy-pasteable TS snippet. Kept short (≤2 lines). */
+  /** Single-line copy-pasteable snippet. */
   example?: string;
+  /** Multi-line example surfaced by `search` for hot-path methods. */
+  usageExample?: string;
   /** Cost hint: 'cheap' | 'normal' | 'expensive'. Normal if omitted. */
   cost?: "cheap" | "normal" | "expensive";
 }
@@ -45,14 +35,21 @@ export const METHOD_METADATA: Record<string, MethodMetadata> = {
   "entities.list": {
     summary: "List entities in the current organization with optional filters.",
     access: "read",
-    example:
-      "const rows = await client.entities.list({ entity_type: 'company' });",
+    example: "const rows = await client.entities.list({ entity_type: 'company' });",
+    usageExample: `// All companies in the workspace, newest first.
+export default async (_ctx, client) => {
+  return client.entities.list({ entity_type: 'company', sort_by: 'created_at', sort_order: 'desc' });
+};`,
   },
   "entities.get": {
     summary: "Fetch a single entity by id.",
     access: "read",
     throws: ["EntityNotFound"],
     example: "const entity = await client.entities.get(42);",
+    usageExample: `export default async (_ctx, client) => {
+  const entity = await client.entities.get(42);
+  return { id: entity.id, name: entity.name, type: entity.entity_type };
+};`,
   },
   "entities.create": {
     summary:
@@ -89,6 +86,11 @@ export const METHOD_METADATA: Record<string, MethodMetadata> = {
   "entities.search": {
     summary: "Fuzzy search entities by name, optionally filtered by type.",
     access: "read",
+    example: "const hits = await client.entities.search('acme', { limit: 5 });",
+    usageExample: `// Resolve a free-text mention into entity ids before linking knowledge to it.
+export default async (_ctx, client) => {
+  return client.entities.search('Acme', { limit: 5 });
+};`,
   },
 
   // entitySchema
@@ -154,12 +156,20 @@ export const METHOD_METADATA: Record<string, MethodMetadata> = {
   "knowledge.search": {
     summary: "Semantic + structured search over stored knowledge events.",
     access: "read",
-    example:
-      "const hits = await client.knowledge.search({ query: 'revenue update', limit: 10 });",
+    example: "const hits = await client.knowledge.search({ query: 'revenue update', limit: 10 });",
+    usageExample: `// Pull recent revenue updates across all watcher windows.
+export default async (_ctx, client) => {
+  return client.knowledge.search({ query: 'revenue update', limit: 10 });
+};`,
   },
   "knowledge.save": {
     summary: "Persist a knowledge event, optionally associated with entities.",
     access: "write",
+    example: "await client.knowledge.save({ entity_ids: [42], content: 'CEO confirmed Q4 revenue ...', semantic_type: 'fact' });",
+    usageExample: `// Append a new fact. Pass \`supersedes_event_id\` to replace prior facts.
+export default async (_ctx, client) => {
+  return client.knowledge.save({ entity_ids: [42], content: 'CEO confirmed Q4 revenue $1.2M.', semantic_type: 'fact' });
+};`,
   },
   "knowledge.read": {
     summary: "Read a knowledge event by id, or watcher-window context.",
@@ -171,6 +181,9 @@ export const METHOD_METADATA: Record<string, MethodMetadata> = {
     summary: "List watchers, optionally filtered by entity.",
     access: "read",
     example: "const ws = await client.watchers.list({ entity_id: 42 });",
+    usageExample: `export default async (_ctx, client) => {
+  return client.watchers.list({ entity_id: 42 });
+};`,
   },
   "watchers.get": {
     summary: "Fetch a watcher by id.",
@@ -181,6 +194,16 @@ export const METHOD_METADATA: Record<string, MethodMetadata> = {
     summary: "Create a watcher with prompt, extraction schema, and sources.",
     access: "write",
     throws: ["EntityNotFound", "InvalidExtractionSchema"],
+    example: "await client.watchers.create({ entity_id: 42, prompt: '...', extraction_schema: {...} });",
+    usageExample: `// Stand up a watcher that extracts pricing facts from a customer's site.
+export default async (_ctx, client) => {
+  return client.watchers.create({
+    entity_id: 42,
+    prompt: 'Extract current pricing.',
+    extraction_schema: { price: { type: 'number' } },
+    sources: [{ name: 'home', query: 'https://example.com/pricing' }],
+  });
+};`,
   },
   "watchers.update": {
     summary: "Update watcher config (schedule, model, sources).",
@@ -371,8 +394,22 @@ export const METHOD_METADATA: Record<string, MethodMetadata> = {
     summary:
       "Run a read-only SQL query against the organization-scoped virtual tables. No positional parameters — use Handlebars {{query.name}} substitutions inside the SQL when you need values.",
     access: "read",
-    example:
-      "const rows = await client.query(\"SELECT id, name FROM entities WHERE entity_type = 'company'\");",
+    example: "const rows = await client.query(\"SELECT id, name FROM entities WHERE entity_type = 'company'\");",
+    usageExample: `// Run a one-off SQL read scoped to the bound organization.
+export default async (_ctx, client) => {
+  return client.query("SELECT id, name FROM entities WHERE entity_type = 'company' LIMIT 10");
+};`,
+  },
+  org: {
+    summary:
+      "Return a new SDK bound to a different organization the caller is a member of (OAuth on /mcp only). Throws CrossOrgAccessDenied on scoped endpoints, on PAT auth, or when the caller is not a member.",
+    access: "read",
+    example: "const otherSdk = await client.org('acme'); const rows = await otherSdk.entities.list();",
+    usageExample: `// Cross-org read of company entities (OAuth on /mcp only).
+export default async (_ctx, client) => {
+  const acme = await client.org('acme');
+  return acme.entities.list({ entity_type: 'company' });
+};`,
   },
   log: {
     summary:

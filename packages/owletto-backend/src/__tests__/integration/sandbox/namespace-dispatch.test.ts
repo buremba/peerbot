@@ -55,6 +55,9 @@ describe("ClientSDK namespace dispatch (read paths)", () => {
       userId: user.id,
       memberRole: "owner",
       isAuthenticated: true,
+      tokenType: "oauth",
+      scopedToOrg: false,
+      allowCrossOrg: true,
     };
     sdk = buildClientSDK(ctx, testEnv);
   });

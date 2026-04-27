@@ -19,7 +19,7 @@ function isSystemContext(ctx: ToolContext): boolean {
 function enforceActionAccess(toolName: string, action: string, ctx: ToolContext): void {
   // Watcher reactions and other in-process system calls historically run with
   // userId=null + isAuthenticated=true. Preserve that path while enforcing the
-  // policy table for real user/OAuth sessions that reach handlers via execute.
+  // policy table for real user/OAuth sessions that reach handlers via run / query.
   if (isSystemContext(ctx)) return;
 
   const requiredAccess = getRequiredAccessLevel(toolName, { action }, false);

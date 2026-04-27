@@ -38,19 +38,26 @@ export async function executeReaction(options: ExecuteReactionOptions): Promise<
 }> {
   const { compiledScript, context, env, params, timeoutMs = REACTION_TIMEOUT_MS } = options;
 
-  const sdk = buildClientSDK(
-    {
-      organizationId: context.organization_id,
-      userId: null,
-      memberRole: null,
-      isAuthenticated: true,
-    },
-    env as Env
-  );
+  // Reactions are scoped to the watcher's own workspace — they have no user
+  // identity to validate cross-org membership against, so `client.org(...)`
+  // is intentionally disabled. The builder form lets the sandbox forward its
+  // wall-clock signal into `ctx.abortSignal` so SQL via `client.query` can
+  // cancel upstream when the script times out.
+  const reactionCtx = {
+    organizationId: context.organization_id,
+    userId: null,
+    memberRole: null,
+    isAuthenticated: true,
+    tokenType: 'session' as const,
+    scopedToOrg: true,
+    allowCrossOrg: false,
+  };
 
   const result = await runScript({
     source: compiledScript,
-    sdk,
+    sdk: (abortSignal) =>
+      buildClientSDK(reactionCtx, env as Env, { allowCrossOrg: false, abortSignal }),
+    allowCrossOrg: false,
     context: context as unknown as Record<string, unknown>,
     extraArgs: params ? [params] : [],
     limits: { timeoutMs },

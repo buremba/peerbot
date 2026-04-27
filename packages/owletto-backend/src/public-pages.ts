@@ -109,6 +109,9 @@ function buildToolContext(requestUrl: string, organizationId: string): ToolConte
     userId: null,
     memberRole: null,
     isAuthenticated: false,
+    tokenType: 'anonymous',
+    scopedToOrg: true,
+    allowCrossOrg: false,
     requestUrl,
     baseUrl: getPublicOrigin(requestUrl),
   };

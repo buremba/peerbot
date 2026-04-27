@@ -268,7 +268,7 @@ describe('MCP Authentication', () => {
       // Writes and admin reads must not be visible to anonymous public callers.
       expect(toolNames).not.toContain('save_knowledge');
       expect(toolNames).not.toContain('query_sql');
-      expect(toolNames).not.toContain('execute');
+      expect(toolNames).not.toContain('run');
       // Legacy `manage_*` tools are no longer registered as external MCP tools.
       expect(toolNames).not.toContain('manage_entity');
     });
@@ -380,7 +380,7 @@ describe('MCP Authentication', () => {
       expect(toolNames).toContain('search');
       expect(toolNames).not.toContain('save_knowledge');
       expect(toolNames).not.toContain('query_sql');
-      expect(toolNames).not.toContain('execute');
+      expect(toolNames).not.toContain('run');
       expect(toolNames).not.toContain('manage_entity');
     });
 
@@ -884,16 +884,22 @@ describe('MCP Authentication', () => {
 
       // Verify expected tools are present. The legacy `manage_*`,
       // `read_knowledge`, `get_watcher`, `list_watchers` MCP tools are now
-      // internal-only and reachable via the SDK from `execute` scripts.
+      // internal-only and reachable via the SDK from `run` / `query` scripts.
       const toolNames = result.tools.map((t: any) => t.name);
       expect(toolNames).toContain('search_knowledge');
       expect(toolNames).toContain('save_knowledge');
       expect(toolNames).toContain('search');
-      expect(toolNames).toContain('execute');
+      expect(toolNames).toContain('query');
+      expect(toolNames).toContain('run');
+      expect(toolNames).not.toContain('execute');
       expect(toolNames).not.toContain('read_knowledge');
       expect(toolNames).not.toContain('get_watcher');
       expect(toolNames).not.toContain('list_watchers');
       expect(toolNames).not.toContain('manage_entity');
+      // `manage_connections` and `manage_auth_profiles` stay public-MCP for
+      // owletto-cli's browser-auth flow; flip to internal once the CLI migrates.
+      expect(toolNames).toContain('manage_connections');
+      expect(toolNames).toContain('manage_auth_profiles');
       expect(toolNames).not.toContain('join_organization');
     });
 

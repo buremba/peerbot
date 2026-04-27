@@ -11,13 +11,18 @@ import { trackMCPToolCall } from '../sentry';
 import { ToolNotRegisteredError } from '../utils/errors';
 import { getConfiguredPublicOrigin } from '../utils/public-origin';
 import { listOrganizations } from './organizations';
-import { getTool, type ToolContext } from './registry';
+import { getTool, type TokenType, type ToolContext } from './registry';
 
-/**
- * Auth context extracted from Hono middleware variables.
- */
 export interface AuthContext {
   organizationId: string | null;
+  /**
+   * Raw `organization_id` from the OAuth/PAT record itself (null for legacy
+   * tokens minted before the binding was required, and always null for
+   * session/anonymous). Distinct from `organizationId`, which is the
+   * *resolved* org for the request and may come from a URL slug on
+   * `/mcp/{slug}` even when the token has no claim of its own.
+   */
+  tokenOrganizationId: string | null;
   userId: string | null;
   memberRole: string | null;
   agentId: string | null;
@@ -25,33 +30,40 @@ export interface AuthContext {
   isAuthenticated: boolean;
   clientId: string | null;
   scopes?: string[] | null;
+  tokenType: TokenType;
   requestUrl: string;
   baseUrl: string;
-  /** True when the MCP URL included an org slug (e.g. /mcp/acme). */
   scopedToOrg: boolean;
-  /** Workspace instructions (populated after org resolution in MCP sessions). */
+  allowCrossOrg: boolean;
   instructions?: string;
-  /** REST/session compatibility path may invoke tools hidden from external MCP. */
   allowInternalTools?: boolean;
 }
 
-/**
- * Extract auth context from a Hono request context.
- */
 export function extractAuthContext(c: Context<{ Bindings: Env }>): AuthContext {
   const pathname = new URL(c.req.url).pathname;
+  const mcpAuthInfo = c.var.mcpAuthInfo ?? null;
+  const tokenType: TokenType =
+    mcpAuthInfo?.tokenType === 'pat' ? 'pat'
+    : mcpAuthInfo?.tokenType === 'access_token' ? 'oauth'
+    : c.var.session?.userId ? 'session'
+    : 'anonymous';
+  const scopedToOrg = !!c.req.param('orgSlug');
+
   return {
     organizationId: c.var.organizationId,
-    userId: c.var.mcpAuthInfo?.userId || c.var.session?.userId || null,
+    tokenOrganizationId: mcpAuthInfo?.organizationId ?? null,
+    userId: mcpAuthInfo?.userId || c.var.session?.userId || null,
     memberRole: c.var.memberRole,
     agentId: null,
     requestedAgentId: null,
     isAuthenticated: c.var.mcpIsAuthenticated || false,
-    clientId: c.var.mcpAuthInfo?.clientId ?? null,
-    scopes: c.var.mcpAuthInfo?.scopes ?? null,
+    clientId: mcpAuthInfo?.clientId ?? null,
+    scopes: mcpAuthInfo?.scopes ?? null,
+    tokenType,
     requestUrl: c.req.url,
     baseUrl: getConfiguredPublicOrigin() ?? '',
-    scopedToOrg: !!c.req.param('orgSlug'),
+    scopedToOrg,
+    allowCrossOrg: tokenType === 'oauth' && !scopedToOrg,
     allowInternalTools: !pathname.startsWith('/mcp'),
   };
 }
@@ -150,7 +162,10 @@ export async function executeTool(
     }
     if (toolName === 'list_organizations') {
       return trackMCPToolCall(toolName, args, () =>
-        listOrganizations(args as any, env, { userId: authCtx.userId! })
+        listOrganizations(args as any, env, {
+          userId: authCtx.userId!,
+          currentOrganizationId: authCtx.organizationId,
+        })
       );
     }
   }
@@ -176,6 +191,9 @@ export function toToolContext(authCtx: AuthContext): ToolContext {
     isAuthenticated: authCtx.isAuthenticated,
     clientId: authCtx.clientId,
     scopes: authCtx.scopes,
+    tokenType: authCtx.tokenType,
+    scopedToOrg: authCtx.scopedToOrg,
+    allowCrossOrg: authCtx.allowCrossOrg,
     requestUrl: authCtx.requestUrl,
     baseUrl: authCtx.baseUrl,
   };

@@ -44,7 +44,7 @@ describe("sandbox runtime", () => {
     expect(limits.memoryMb).toBe(64);
     expect(limits.timeoutMs).toBe(60_000);
     expect(limits.sdkCallQuota).toBe(200);
-    expect(limits.outputBytes).toBe(262_144);
+    expect(limits.outputBytes).toBe(1_048_576);
   });
 
   it("returns structured result shape", async () => {
@@ -84,6 +84,7 @@ describe("sandbox runtime", () => {
       source:
         'export default async (_ctx, client) => client.org("atlas").entities.get({ id: 123 });',
       sdk: stubSdk,
+      allowCrossOrg: true,
     });
 
     expect(result.success).toBe(true);

@@ -767,6 +767,30 @@ export async function handleMcp(c: Context<{ Bindings: Env }>): Promise<Response
   if (req.method === 'POST') {
     const initialize = await readInitializeRequest(req);
     const authCtx = await resolveAuthWithInstructions(c, req);
+
+    // Authenticated OAuth/PAT tokens must carry an org binding on the token
+    // itself — `tokenOrganizationId`, not `organizationId`. The latter is
+    // resolved from URL slug on `/mcp/{slug}` and would mask a legacy null-
+    // org token. Sessions/anonymous are unaffected (no token to bind).
+    if (
+      authCtx.isAuthenticated &&
+      authCtx.userId &&
+      authCtx.tokenType !== 'session' &&
+      authCtx.tokenType !== 'anonymous' &&
+      !authCtx.tokenOrganizationId
+    ) {
+      const reauthOrigin = getConfiguredPublicOrigin() ?? new URL(req.url).origin;
+      const remediation =
+        authCtx.tokenType === 'pat'
+          ? `Reissue this PAT bound to a workspace (settings → personal access tokens) at ${reauthOrigin}.`
+          : `Re-authorize the OAuth client and pick a workspace at ${reauthOrigin}/oauth/authorize.`;
+      return buildJsonRpcErrorResponse(
+        `This token has no organization binding and cannot connect to /mcp. ${remediation}`,
+        initialize?.id ?? null,
+        400
+      );
+    }
+
     const bindingError = await syncAgentBinding(authCtx);
     if (bindingError) {
       return buildJsonRpcErrorResponse(bindingError, initialize?.id ?? null, 400);

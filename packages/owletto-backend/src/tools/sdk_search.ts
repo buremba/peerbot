@@ -1,16 +1,7 @@
 /**
- * MCP tool `search` — method discovery against the `ClientSDK`.
- *
- * Two-tier output:
- *   - Namespace listing for queries like "watchers" — one line per method.
- *   - Drill-down for "watchers.create" — summary, access tier, throws,
- *     example call.
- *
- * Match order: exact path → namespace prefix → substring on path + summary.
- *
- * The data source is `method-metadata.ts`. PR-2 ships hand-maintained
- * entries; PR-2 also adds a CI test that fails if a new SDK method is
- * exposed without a metadata entry.
+ * Method discovery for the `ClientSDK`. Match order: exact path drill-down →
+ * namespace prefix listing → substring on path + summary. Source of truth is
+ * `method-metadata.ts`.
  */
 
 import { type Static, Type } from "@sinclair/typebox";
@@ -61,6 +52,12 @@ function renderDrillDown(path: string, meta: MethodMetadata): string {
   }
   if (meta.example) {
     lines.push(`  example: ${meta.example}`);
+  }
+  if (meta.usageExample) {
+    lines.push("  usage_example:");
+    for (const exampleLine of meta.usageExample.split("\n")) {
+      lines.push(`    ${exampleLine}`);
+    }
   }
   return lines.join("\n");
 }

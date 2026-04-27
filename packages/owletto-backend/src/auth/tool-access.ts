@@ -4,21 +4,22 @@
  * Centralizes role/scoped MCP access checks and what anonymous/public
  * callers are allowed to read.
  *
- * Note on `execute`: the MCP entry point requires write-tier access, and
+ * Note on `run`: the MCP entry point requires write-tier access, and
  * admin-only SDK methods still re-check role + MCP scope at the delegated
- * handler boundary before any mutation runs.
+ * handler boundary before any mutation runs. `query` runs over the read-only
+ * SDK so it falls through to the default read-tier check.
  */
 
 export type ToolAccessLevel = 'read' | 'write' | 'admin';
 
 const MEMBER_WRITE_ACTIONS: Record<string, Set<string> | null> = {
   save_knowledge: null,
-  // `execute` reaches admin handlers inside the script; per-call gates fire
+  // `run` reaches admin handlers inside the script; per-call gates fire
   // on each SDK method, so the entry-point check is just write-tier.
-  execute: null,
+  run: null,
   // Legacy `manage_*` policy entries — the tools themselves are no longer
-  // registered with MCP, but the handlers are still reached via SDK
-  // namespace wrappers from inside `execute`, and `routeAction` consults
+  // exposed on the external MCP surface, but the handlers are still reached
+  // via SDK namespace wrappers from inside `run`, and `routeAction` consults
   // these tables to fire the same per-action access decisions.
   manage_entity: new Set(['create', 'update', 'link', 'unlink', 'update_link']),
 };
@@ -79,7 +80,7 @@ const PUBLIC_READ_ACTIONS: Record<string, Set<string> | null> = {
   // SDK method discovery — safe to expose; surfaces no data.
   search: null,
   // Internal read-paths — kept for tests that exercise public-readability
-  // semantics; legitimate external access is via `execute`.
+  // semantics; legitimate external access is via `query` / `run`.
   read_knowledge: null,
   get_watcher: null,
   list_watchers: null,

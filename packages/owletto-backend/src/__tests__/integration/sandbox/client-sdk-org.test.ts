@@ -57,6 +57,9 @@ describe("ClientSDK.org() accessor", () => {
       userId,
       memberRole: "owner",
       isAuthenticated: true,
+      tokenType: "oauth",
+      scopedToOrg: false,
+      allowCrossOrg: true,
     };
   }
 

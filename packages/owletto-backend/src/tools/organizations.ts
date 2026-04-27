@@ -3,9 +3,13 @@
  *
  * Discovery for the orgs the authenticated user belongs to (and any public
  * workspaces the session can read). Exposed on both unscoped /mcp and
- * scoped /mcp/{slug} endpoints. Cross-org reads from inside `execute` go
- * through `client.org(slug)`; scripts that need a different default org
- * should use a different /mcp/{slug} URL or PAT.
+ * scoped /mcp/{slug} endpoints. The response marks the token's bound org
+ * with `is_current: true` — agents use that field to know which workspace
+ * memory tools target by default.
+ *
+ * Cross-org reads from inside `query` / `run` go through `client.org(slug)`;
+ * scripts that need a different default org should reconnect via /mcp/{slug}
+ * or a different OAuth token.
  */
 
 import { type Static, Type } from '@sinclair/typebox';
@@ -22,7 +26,7 @@ export const ListOrganizationsSchema = Type.Object({
 export async function listOrganizations(
   args: Static<typeof ListOrganizationsSchema>,
   _env: Env,
-  ctx: { userId: string }
+  ctx: { userId: string; currentOrganizationId: string | null }
 ): Promise<unknown> {
   const provider = getWorkspaceProvider();
   const orgs = await provider.listOrganizations(args.search, ctx.userId);
@@ -30,6 +34,7 @@ export async function listOrganizations(
     slug: o.slug,
     name: o.name,
     is_member: o.is_member,
+    is_current: ctx.currentOrganizationId !== null && o.id === ctx.currentOrganizationId,
     visibility: o.visibility,
   }));
 }

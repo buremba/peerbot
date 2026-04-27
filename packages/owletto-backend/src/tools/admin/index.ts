@@ -1,7 +1,7 @@
 /**
  * Internal REST/CLI tool surface.
  *
- * External MCP clients see the small `search`/`execute`/`save_knowledge`/...
+ * External MCP clients see the small `search`/`query`/`run`/`save_knowledge`/...
  * surface from `registry.ts`. The frontend, owletto-cli, and other REST/session
  * callers reach the named handlers below by `name` via `POST /api/:orgSlug/:toolName`.
  *

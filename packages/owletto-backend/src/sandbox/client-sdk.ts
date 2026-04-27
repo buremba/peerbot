@@ -1,26 +1,22 @@
 /**
- * ClientSDK — one in-process SDK shared by the `execute` MCP tool (PR-2) and
- * watcher reactions (PR-2 swap). Each namespace delegates to existing tool
- * handlers, preserving per-call auth checks and audit/change events.
- *
- * Multi-org support is provided by `client.org(slugOrId)`: it resolves the
- * identifier (slug preferred, id fallback) via the auth layer's existing
- * caches (see `workspace/multi-tenant.ts`), re-reads the caller's role on
- * every call, and returns a proxy SDK bound to a swapped `ToolContext`.
- *
- * No separate LRU lives here — `MultiTenantProvider.memberRoleCache` is the
- * single source of truth, which means explicit invalidations from member-write
- * paths flow through to sandbox callers without extra plumbing.
+ * In-process SDK shared by the `query` / `run` MCP tools and watcher reactions.
+ * `mode: "read"` filters namespaces against `METHOD_METADATA[*].access === "read"`;
+ * `allowCrossOrg: false` makes `client.org(...)` throw `CrossOrgAccessDenied`.
  */
 
 import { hasRequiredMcpScope } from "../auth/tool-access";
 import type { Env } from "../index";
 import type { ToolContext } from "../tools/registry";
+import { raceAbort } from "../utils/race-abort";
 import {
   getCachedMembershipRole,
   getCachedOrgBySlug,
   getOrgById,
 } from "../workspace/multi-tenant";
+import { METHOD_METADATA } from "./method-metadata";
+import type { SDKMode } from "./sdk-manifest";
+
+export { type SDKMode, enumerateSDKManifest } from "./sdk-manifest";
 import {
   buildAuthProfilesNamespace,
   buildClassifiersNamespace,
@@ -59,35 +55,10 @@ export interface ClientSDK {
   knowledge: KnowledgeNamespace;
   organizations: OrganizationsNamespace;
 
-  /**
-   * Return a ClientSDK bound to a different organization the caller belongs
-   * to. Resolves `slugOrId` against the organization table (slug first, id
-   * fallback), then re-reads the caller's role from `member` via the shared
-   * `memberRoleCache`. Throws `AccessDenied` for private orgs the caller isn't
-   * a member of.
-   *
-   * Public-visibility orgs return an SDK with `memberRole: null` — reads
-   * succeed, writes fail at the handler-level access check.
-   *
-   * Chained hops like `client.org('a').org('b')` are legal when the caller is
-   * a member of both; each hop re-validates against the original user.
-   */
   org(slugOrId: string): Promise<ClientSDK>;
-
-  /**
-   * Run a read-only SQL query scoped to the current organization. User-side
-   * positional parameters are not supported (`validateAndScopeQuery` rejects
-   * `$N`); pass values via Handlebars `{{query.name}}` substitutions instead.
-   */
   query(sql: string): Promise<unknown[]>;
-
-  /** Emit a structured log entry (captured by the invocation audit row in PR-3). */
   log(message: string, data?: Record<string, unknown>): void;
 }
-
-// ---------------------------------------------------------------------------
-// Errors
-// ---------------------------------------------------------------------------
 
 export class SdkError extends Error {
   readonly code: string;
@@ -110,9 +81,11 @@ export class OrgNotFoundError extends SdkError {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Membership resolution
-// ---------------------------------------------------------------------------
+export class CrossOrgAccessDenied extends SdkError {
+  constructor(message: string) {
+    super("CrossOrgAccessDenied", message);
+  }
+}
 
 export interface ResolvedOrgMembership {
   orgId: string;
@@ -121,12 +94,6 @@ export interface ResolvedOrgMembership {
   visibility: "public" | "private";
 }
 
-/**
- * Resolve an org identifier (slug or id) into a membership record. Slug is
- * tried first (covers the common case and hits the auth-layer cache); on miss,
- * the id path runs. Throws `OrgNotFound` if neither matches, `AccessDenied` if
- * the caller has no read access (non-member on a private org).
- */
 export async function resolveOrgMembership(
   slugOrId: string,
   ctx: ToolContext,
@@ -161,21 +128,36 @@ export async function resolveOrgMembership(
   return { orgId, slug, role, visibility };
 }
 
-// ---------------------------------------------------------------------------
-// SDK construction
-// ---------------------------------------------------------------------------
-
 function isSystemContext(ctx: ToolContext): boolean {
   return ctx.isAuthenticated === true && ctx.userId === null && ctx.memberRole === null;
 }
 
-/**
- * Build a `ClientSDK` bound to the caller's current `ToolContext`. The SDK
- * exposes `.org()` which constructs a fresh `ClientSDK` after re-validating
- * membership against the shared auth-layer cache.
- */
-export function buildClientSDK(ctx: ToolContext, env: Env): ClientSDK {
-  const sdk: ClientSDK = {
+export interface BuildClientSDKOptions {
+  mode?: SDKMode;
+  allowCrossOrg?: boolean;
+  /**
+   * Forwarded onto every handler's `ToolContext.abortSignal`. Handlers that
+   * opt in (e.g. `query_sql` / `client.query`) race their work against this
+   * signal so the awaiting caller unblocks immediately on script timeout.
+   * The underlying postgres connection isn't cancelled — see
+   * `ToolContext.abortSignal` for the full caveat.
+   */
+  abortSignal?: AbortSignal;
+}
+
+export function buildClientSDK(
+  ctx: ToolContext,
+  env: Env,
+  opts?: BuildClientSDKOptions,
+): ClientSDK {
+  const mode: SDKMode = opts?.mode ?? "full";
+  const allowCrossOrg = opts?.allowCrossOrg ?? ctx.allowCrossOrg ?? false;
+  const ctxWithSignal: ToolContext = opts?.abortSignal
+    ? { ...ctx, abortSignal: opts.abortSignal }
+    : ctx;
+  ctx = ctxWithSignal;
+
+  const namespaces = {
     entities: buildEntitiesNamespace(ctx, env),
     entitySchema: buildEntitySchemaNamespace(ctx, env),
     connections: buildConnectionsNamespace(ctx, env),
@@ -187,22 +169,42 @@ export function buildClientSDK(ctx: ToolContext, env: Env): ClientSDK {
     viewTemplates: buildViewTemplatesNamespace(ctx, env),
     knowledge: buildKnowledgeNamespace(ctx, env),
     organizations: buildOrganizationsNamespace(ctx),
+  };
+
+  if (mode === "read") {
+    for (const [ns, namespace] of Object.entries(namespaces)) {
+      // Drop methods missing a metadata entry or marked write/external.
+      // The Proxy in run-script.ts then advertises only the survivors.
+      const record = namespace as unknown as Record<string, unknown>;
+      for (const method of Object.keys(record)) {
+        if (METHOD_METADATA[`${ns}.${method}`]?.access !== "read") {
+          delete record[method];
+        }
+      }
+      Object.freeze(namespace);
+    }
+  }
+
+  const sdk: ClientSDK = {
+    ...namespaces,
 
     async org(slugOrId) {
+      if (!allowCrossOrg) {
+        throw new CrossOrgAccessDenied(
+          "Cross-org access is not available on this connection. Use the unscoped /mcp endpoint with an OAuth session, or reconnect to /mcp/{slug} for the target workspace.",
+        );
+      }
       const member = await resolveOrgMembership(slugOrId, ctx);
-      const swapped: ToolContext = {
-        ...ctx,
-        organizationId: member.orgId,
-        memberRole: member.role,
-      };
-      return buildClientSDK(swapped, env);
+      return buildClientSDK(
+        { ...ctx, organizationId: member.orgId, memberRole: member.role },
+        env,
+        { mode, allowCrossOrg, abortSignal: ctx.abortSignal },
+      );
     },
 
     async query(querySql) {
-      // Mirrors `query_sql` MCP tool: admin/owner only for user sessions,
-      // even though the method is read-only. The query allowlist exposes
-      // audit/event tables that should not be reachable by member-tier callers
-      // via `execute`. Watcher reactions remain system calls and are allowed.
+      // The SQL allowlist exposes audit/event tables — admin/owner only for
+      // user sessions; system contexts (watcher reactions) bypass this gate.
       if (!isSystemContext(ctx)) {
         if (ctx.memberRole !== "owner" && ctx.memberRole !== "admin") {
           throw new AccessDeniedError(
@@ -220,21 +222,23 @@ export function buildClientSDK(ctx: ToolContext, env: Env): ClientSDK {
         import("../utils/execute-data-sources"),
       ]);
       const scoped = validateAndScopeQuery(querySql, ctx.organizationId);
-      const db = getDb();
-      const rows = await db.begin(async (tx) => {
-        await tx.unsafe("SET TRANSACTION READ ONLY");
-        await tx.unsafe("SET LOCAL statement_timeout = '5000'");
-        return tx.unsafe(scoped.sql, scoped.params as unknown[]);
-      });
+      const rows = await raceAbort(
+        getDb().begin(async (tx) => {
+          await tx.unsafe("SET TRANSACTION READ ONLY");
+          await tx.unsafe("SET LOCAL statement_timeout = '5000'");
+          return tx.unsafe(scoped.sql, scoped.params as unknown[]);
+        }),
+        ctx.abortSignal,
+      );
       return rows.map((r: Record<string, unknown>) => ({ ...r }));
     },
 
     log(message, data) {
-      // Structured log; PR-3 routes these into the execute_invocation audit row.
-      // biome-ignore lint/suspicious/noConsole: dev-level fallback; PR-3 swaps for a proper sink.
+      // biome-ignore lint/suspicious/noConsole: structured-log fallback; routes through Sentry breadcrumbs in prod.
       console.log(`[client-sdk] ${message}`, data ?? {});
     },
   };
 
+  if (mode === "read") Object.freeze(sdk);
   return sdk;
 }

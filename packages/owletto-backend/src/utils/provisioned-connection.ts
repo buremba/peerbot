@@ -45,6 +45,9 @@ export async function createProvisionedConnection(
         userId: params.userId,
         memberRole: null,
         isAuthenticated: true,
+        tokenType: 'session',
+        scopedToOrg: true,
+        allowCrossOrg: false,
         requestUrl: params.requestUrl,
         baseUrl: getConfiguredPublicOrigin() ?? undefined,
       }

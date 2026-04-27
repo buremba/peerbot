@@ -13,7 +13,7 @@ import { ListOrganizationsSchema } from './organizations';
 import { ResolvePathSchema, resolvePath } from './resolve_path';
 import { SaveContentSchema, saveContent } from './save_content';
 import { SearchSchema, search } from './search';
-import { ExecuteSchema, executeScript } from './sdk_execute';
+import { QuerySchema, RunSchema, querySdkScript, runSdkScript } from './sdk_run';
 import { SdkSearchSchema, sdkSearch } from './sdk_search';
 
 // ============================================
@@ -35,6 +35,8 @@ export interface ToolAnnotations {
   idempotentHint?: boolean;
 }
 
+export type TokenType = 'oauth' | 'session' | 'pat' | 'anonymous';
+
 /**
  * Tool execution context from authentication
  * Passed to all tool handlers for organization scoping
@@ -54,6 +56,22 @@ export interface ToolContext {
   clientId?: string | null;
   /** OAuth scopes granted to this MCP/tool session, when applicable. */
   scopes?: string[] | null;
+  tokenType: TokenType;
+  /** True when the MCP URL pinned an org slug (e.g. `/mcp/acme`). */
+  scopedToOrg: boolean;
+  /**
+   * Whether `client.org(other)` is allowed inside the sandbox. Computed at session
+   * start as `tokenType === 'oauth' && !scopedToOrg`.
+   */
+  allowCrossOrg: boolean;
+  /**
+   * Set by the sandbox when the script's wall-clock budget runs out. Handlers
+   * that opt in (today: `query_sql` and `client.query`) race their work
+   * against this signal so the awaiting caller unblocks immediately. The
+   * underlying postgres connection isn't cancelled — `statement_timeout` is
+   * the actual server-side cap.
+   */
+  abortSignal?: AbortSignal;
   /** Original request URL, used to derive public-facing origin for URL generation */
   requestUrl?: string;
   /** PUBLIC_WEB_URL env var fallback for URL generation when requestUrl is unreliable */
@@ -73,11 +91,11 @@ export interface ToolDefinition<T = any> {
 const READ_ONLY = { readOnlyHint: true, idempotentHint: true } as const;
 
 const TOOLS: ToolDefinition[] = [
-  // ─── Hot-path read/write surface ──────────────────────────────────────────
+  // ─── Memory hot path — read ───────────────────────────────────────────────
   {
     name: 'search_knowledge',
     description:
-      'Search the workspace knowledge graph and saved memory for entities and related context. Supports fuzzy matching and filtering by entity_type. Use this as the FIRST step when the user asks about a specific entity. To create or modify entities, use the `execute` tool with a TypeScript script over the `client` SDK.',
+      'First step when answering anything about the user. Searches the workspace knowledge graph for entities, saved facts, decisions, preferences, and notes. Supports fuzzy matching and entity_type filtering. Pair writes with `save_knowledge`; reach for `query` only when a TS script is needed.',
     inputSchema: SearchSchema,
     annotations: READ_ONLY,
     handler: search,
@@ -85,37 +103,54 @@ const TOOLS: ToolDefinition[] = [
   {
     name: 'save_knowledge',
     description:
-      "Save knowledge to the workspace, optionally associated with entities via entity_ids. Supports multiple content formats via payload_type: 'text' (default), 'markdown' (rich text), 'json_template' (structured UI with payload_template + payload_data), 'media' (media-focused), 'empty' (metadata only). Metadata is validated against the entity type schema when entities are provided. To update an existing fact, pass supersedes_event_id with the old event ID — the old event is hidden from future searches. Always search first to avoid duplicates.",
+      "Save user-shared facts, preferences, decisions, observations, and notes the moment they surface. Storage is append-only — pass `supersedes_event_id` to replace an existing fact (the old event is hidden from future searches without losing history). Optionally attach to entities via `entity_ids`. Always search first to avoid duplicates.",
     inputSchema: SaveContentSchema,
-    annotations: { readOnlyHint: false, destructiveHint: false },
+    annotations: { readOnlyHint: true },
     handler: saveContent,
   },
+  // ─── Discovery ────────────────────────────────────────────────────────────
   {
-    name: 'query_sql',
+    name: 'list_organizations',
     description:
-      'Execute paginated, sortable, searchable read-only SQL queries. Table references are auto-scoped to your organization. Do NOT include ORDER BY/LIMIT/OFFSET or positional parameters in your SQL.',
-    inputSchema: QuerySqlSchema,
+      'List organizations the authenticated user belongs to, plus any public workspaces the session can read. The response marks the bound org with `is_current: true` — that is the default target for memory and SDK calls. Use the slug with `client.org(slug)` from `query` / `run` for cross-org reads on /mcp + OAuth, or reconnect to /mcp/{slug} to pin a different default.',
+    inputSchema: ListOrganizationsSchema,
     annotations: READ_ONLY,
-    handler: querySql,
+    handler: async () => {
+      throw new Error('Handled directly in executeTool');
+    },
   },
-  // ─── Generic surface: discover + execute over the typed ClientSDK ─────────
   {
     name: 'search',
     description:
-      "Discover ClientSDK methods. Pass a namespace ('watchers', 'entities', etc.) for a listing, a dotted path ('watchers.create') for a drill-down with signature/throws/example, or a free-text query for fuzzy matches. Pair with `execute` to actually call methods.",
+      "Discover ClientSDK methods. Pass a namespace ('watchers', 'entities', etc.) for a listing, a dotted path ('watchers.create') for a drill-down with signature/throws/example, or a free-text query for fuzzy matches. Hot-path methods include a usage_example. Pair with `query` (read-only) or `run` (full SDK) to actually call methods.",
     inputSchema: SdkSearchSchema,
     annotations: READ_ONLY,
     handler: sdkSearch,
   },
+  // ─── Power tools — TS scripting + raw SQL ─────────────────────────────────
   {
-    name: 'execute',
+    name: 'query',
     description:
-      "Run a TypeScript script in a sandboxed isolate over the typed `ClientSDK`. The script must `export default async (ctx, client) => { ... }` and may use `client.entities`, `client.watchers`, `client.knowledge`, `client.org(slug)` for cross-org calls, `client.query(sql)` for read-only SQL, etc. Use `search` to find method names and signatures. Replaces the previous `manage_*` MCP tool surface — call those handlers via `client.<namespace>.<method>(...)` from inside the script.",
-    inputSchema: ExecuteSchema,
-    // The script can delete entities, drop watchers, trigger external operations
-    // — host clients should treat it as destructive and require approval.
+      'Run a TypeScript script in a sandboxed isolate over a READ-ONLY `ClientSDK`. The script signature is `export default async (ctx, client) => ...`. Mutating methods are absent from `client` — attempts surface as undefined methods, retry with `run`. Output capped at 1 MB. Use `search` to find method names. Example: `export default async (_ctx, client) => client.entities.list({ entity_type: "company" });`',
+    inputSchema: QuerySchema,
+    annotations: READ_ONLY,
+    handler: querySdkScript,
+  },
+  {
+    name: 'query_sql',
+    description:
+      'Run a paginated, sortable, searchable read-only SQL query. Table references auto-scope to the bound org. Do NOT include ORDER BY/LIMIT/OFFSET or positional parameters. Optional `org_slug` (OAuth on /mcp only) redirects the query to a different member org; rejected on /mcp/{slug} and on PAT auth.',
+    inputSchema: QuerySqlSchema,
+    annotations: READ_ONLY,
+    handler: querySql,
+  },
+  {
+    name: 'run',
+    description:
+      'Destructive — confirm before running. Runs a TypeScript script in a sandboxed isolate over the FULL `ClientSDK`. Signature: `export default async (ctx, client) => ...`. Can mutate entities, watchers, knowledge, classifiers, connections, etc. Use `query` for reads. Output capped at 1 MB. Example: `export default async (_ctx, client) => client.entities.create({ type: "company", name: "Acme" });`',
+    inputSchema: RunSchema,
     annotations: { destructiveHint: true },
-    handler: executeScript,
+    handler: runSdkScript,
   },
   // ─── REST/session/CLI surface (manage_*, list_watchers, get_watcher, ...) ─
   ...INTERNAL_REST_TOOLS,
@@ -128,17 +163,6 @@ const TOOLS: ToolDefinition[] = [
     annotations: READ_ONLY,
     internal: true,
     handler: resolvePath,
-  },
-  // ─── Org discovery (exposed on both unscoped and scoped /mcp endpoints) ───
-  {
-    name: 'list_organizations',
-    description:
-      'List organizations the authenticated user belongs to, plus any public workspaces the session can read. Use the slug with `client.org(slug)` inside an `execute` script for cross-org reads, or reconnect the MCP client to /mcp/{slug} to pin a different default.',
-    inputSchema: ListOrganizationsSchema,
-    annotations: READ_ONLY,
-    handler: async () => {
-      throw new Error('Handled directly in executeTool');
-    },
   },
 ];
 

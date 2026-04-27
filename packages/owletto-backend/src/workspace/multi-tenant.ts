@@ -258,7 +258,10 @@ export class MultiTenantProvider implements WorkspaceProvider {
 
       let effectiveOrgId = requestedOrgId;
 
-      // Preserve scoping for org-bound tokens (PATs and previously issued OAuth tokens).
+      // Token's bound org is the default. On scoped routes the URL slug must
+      // match the token's binding (already enforced); on unscoped /mcp we now
+      // resolve the default to the bound org instead of leaving it null. This
+      // matches the contract documented in `mcp-query-run-split.md`.
       if (authInfo.organizationId) {
         if (requestedOrgId && requestedOrgId !== authInfo.organizationId) {
           return c.json(
@@ -269,9 +272,7 @@ export class MultiTenantProvider implements WorkspaceProvider {
             403
           );
         }
-        if (!isUnscopedMcpRoute) {
-          effectiveOrgId = authInfo.organizationId;
-        }
+        effectiveOrgId = authInfo.organizationId;
       }
 
       if (!effectiveOrgId) {

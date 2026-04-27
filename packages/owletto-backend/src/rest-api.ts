@@ -24,7 +24,7 @@ import { listWatchers } from './tools/admin/manage_watchers';
 import { executeTool, extractAuthContext, toToolContext } from './tools/execute';
 import { getContent } from './tools/get_content';
 import { getWatcher } from './tools/get_watchers';
-import { getTool } from './tools/registry';
+import { getTool, type ToolContext } from './tools/registry';
 import { ToolNotRegisteredError, ToolUserError, errorMessage } from './utils/errors';
 import { toJsonSafe } from './utils/json';
 import logger from './utils/logger';
@@ -68,13 +68,16 @@ async function resolvePublicOrganizationId(orgSlug: string): Promise<string | nu
   return (rows[0]?.id as string | undefined) ?? null;
 }
 
-function publicToolContext(requestUrl: string, organizationId: string) {
+function publicToolContext(requestUrl: string, organizationId: string): ToolContext {
   return {
     organizationId,
     userId: null,
     memberRole: null,
     isAuthenticated: false,
     clientId: null,
+    tokenType: 'anonymous',
+    scopedToOrg: true,
+    allowCrossOrg: false,
     requestUrl,
     baseUrl: new URL(requestUrl).origin,
   };

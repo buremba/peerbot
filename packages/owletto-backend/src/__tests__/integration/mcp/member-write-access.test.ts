@@ -166,11 +166,10 @@ describe('MCP member write access', () => {
       token,
     });
     const beforeBody = await beforeResponse.json();
-    const beforeManageConnections = beforeBody.result.tools.find(
-      (tool: any) => tool.name === 'manage_connections'
-    );
-    expect(beforeManageConnections).toBeDefined();
-    expect(beforeManageConnections.inputSchema.properties.action.enum).toContain('create');
+    const beforeNames = beforeBody.result.tools.map((tool: any) => tool.name);
+    // Admin/owner sessions see `query_sql` (admin-tier read).
+    expect(beforeNames).toContain('query_sql');
+    expect(beforeNames).toContain('run');
 
     const downgradeResponse = await post('/api/auth/organization/update-member-role', {
       body: {
@@ -189,13 +188,9 @@ describe('MCP member write access', () => {
     });
     const afterBody = await afterResponse.json();
     const afterTools = afterBody.result.tools.map((tool: any) => tool.name);
-    const afterManageConnections = afterBody.result.tools.find(
-      (tool: any) => tool.name === 'manage_connections'
-    );
     expect(afterTools).toContain('save_knowledge');
-    expect(afterManageConnections).toBeDefined();
-    expect(afterManageConnections.inputSchema.properties.action.enum).not.toContain('create');
-    expect(afterManageConnections.inputSchema.properties.action.enum).toContain('list');
+    // Member tier loses admin-only `query_sql`.
+    expect(afterTools).not.toContain('query_sql');
   });
 
   it('applies member removal immediately to existing MCP sessions', async () => {

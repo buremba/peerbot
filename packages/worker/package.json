@@ -1,6 +1,6 @@
 {
   "name": "@lobu/worker",
-  "version": "4.3.0",
+  "version": "5.0.0",
   "description": "Lobu worker runtime - run in your own Docker image or use our base image",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

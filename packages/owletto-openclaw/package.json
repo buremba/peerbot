@@ -1,6 +1,6 @@
 {
   "name": "@lobu/owletto-openclaw",
-  "version": "4.3.0",
+  "version": "5.0.0",
   "description": "Lobu memory plugin for OpenClaw",
   "type": "module",
   "main": "dist/index.js",

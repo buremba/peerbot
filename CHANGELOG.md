@@ -1,5 +1,60 @@
 # Changelog
 
+## [5.0.0](https://github.com/lobu-ai/lobu/compare/lobu-v4.3.0...lobu-v5.0.0) (2026-04-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* **db:** convert entities.entity_type to entity_type_id FK ([#370](https://github.com/lobu-ai/lobu/issues/370))
+
+### Features
+
+* **agents:** public install endpoint for template agents ([#357](https://github.com/lobu-ai/lobu/issues/357)) ([4fb42ed](https://github.com/lobu-ai/lobu/commit/4fb42edc321afcaabc4f84add654ec8c4a290df6))
+* **agents:** public install manifest endpoint + slug-based install ([#362](https://github.com/lobu-ai/lobu/issues/362)) ([74d8e39](https://github.com/lobu-ai/lobu/commit/74d8e398de9821c8b168e9d5ed7a095940751757))
+* **agents:** schema-mirror + install flow for template agents ([#369](https://github.com/lobu-ai/lobu/issues/369)) ([48bdb20](https://github.com/lobu-ai/lobu/commit/48bdb201fd88ec5054544bcbe791efd2ae4a1d80))
+* **auth:** auto-provision personal org on user signup ([#352](https://github.com/lobu-ai/lobu/issues/352)) ([deff32a](https://github.com/lobu-ai/lobu/commit/deff32aa14c8d7d0bf9b4dcfc38fbe25de51e740))
+* **auth:** provision $member entity + identities on signup and install ([#359](https://github.com/lobu-ai/lobu/issues/359)) ([db1e199](https://github.com/lobu-ai/lobu/commit/db1e199b1f3ee92c4afcaae549faf8359965cf01))
+* **db:** convert entities.entity_type to entity_type_id FK ([#370](https://github.com/lobu-ai/lobu/issues/370)) ([ab7ecde](https://github.com/lobu-ai/lobu/commit/ab7ecde23bc0d257595fa44c6e16cecdbfb3966e))
+* **examples:** add personal-finance project for UK Self Assessment ([#350](https://github.com/lobu-ai/lobu/issues/350)) ([5852ea6](https://github.com/lobu-ai/lobu/commit/5852ea6de6650077ca7ed025f3b9f8924a4117cf))
+* **examples:** company-aware world model for personal-finance ([#358](https://github.com/lobu-ai/lobu/issues/358)) ([0df7e19](https://github.com/lobu-ai/lobu/commit/0df7e190a0e901cbdbdcb8b1107648dc45b7083b))
+* **examples:** evals for personal-finance agent (SA102/SA105/SA108 + behavioral) ([#356](https://github.com/lobu-ai/lobu/issues/356)) ([cf49872](https://github.com/lobu-ai/lobu/commit/cf49872e09ab866577b193aff44c39d33506f813))
+* **examples:** Phase 2 — FX, allowance windows, filing timeline ([#360](https://github.com/lobu-ai/lobu/issues/360)) ([820af04](https://github.com/lobu-ai/lobu/commit/820af0430d54ae798a2aa577f81e95af157b8dde))
+* **examples:** SA100 assembly playbook for personal-finance agent ([#354](https://github.com/lobu-ai/lobu/issues/354)) ([76d627d](https://github.com/lobu-ai/lobu/commit/76d627d61795c0ef5cbdff67c81382340d15132f))
+* **examples:** statement ingestion playbook + Nix tooling ([#355](https://github.com/lobu-ai/lobu/issues/355)) ([d82d76c](https://github.com/lobu-ai/lobu/commit/d82d76ce236ad98d754f13a2da0ba02373d142b7))
+* **landing:** add siloed-vs-shared memory topology section ([#375](https://github.com/lobu-ai/lobu/issues/375)) ([c759955](https://github.com/lobu-ai/lobu/commit/c7599556764bc1b9437f55b85e966ccb84c70b6c))
+* **landing:** canonical https://lobu.ai/mcp endpoint with OAuth proxy and tracing ([#389](https://github.com/lobu-ai/lobu/issues/389)) ([29c6d2f](https://github.com/lobu-ai/lobu/commit/29c6d2f74ff622c6f1a78ec8c359a13f88c9ba1c))
+* **owletto-backend:** multi-org execute + search MCP tools ([#348](https://github.com/lobu-ai/lobu/issues/348)) ([bb4ff94](https://github.com/lobu-ai/lobu/commit/bb4ff94d046acc4c8db74e5585764bb592e925a9))
+* **watchers:** per-field feedback storage with mutation kinds ([#363](https://github.com/lobu-ai/lobu/issues/363)) ([5e0c16e](https://github.com/lobu-ai/lobu/commit/5e0c16ed4012a2e4330ae5802d60c1752797c4b9))
+* **worker,backend:** capture subprocess output and exit metadata on run records ([#376](https://github.com/lobu-ai/lobu/issues/376)) ([02eb47a](https://github.com/lobu-ai/lobu/commit/02eb47a2af63b57538a75393a576d76ceb0ff2ab))
+* **world-model:** allow read-only cross-org list_rules ([#399](https://github.com/lobu-ai/lobu/issues/399)) ([b30dc63](https://github.com/lobu-ai/lobu/commit/b30dc6347eea136a78d7b24fb98f63e0bbdc5ef0))
+* **world-model:** cross-org references — schema search path + write guard ([#374](https://github.com/lobu-ai/lobu/issues/374)) ([426b2e2](https://github.com/lobu-ai/lobu/commit/426b2e2efda58dc73f57cb510ad4afe3cf4c7549))
+* **world-model:** cross-org relationship_types + catalog discovery ([#377](https://github.com/lobu-ai/lobu/issues/377)) ([bfb7dfb](https://github.com/lobu-ai/lobu/commit/bfb7dfbd05c45047b2cecc2a2d07897da2f23f17))
+* **world-model:** cross-org schema CRUD + read-side tolerance ([#386](https://github.com/lobu-ai/lobu/issues/386)) ([1fbdd35](https://github.com/lobu-ai/lobu/commit/1fbdd35f02a0a3ebf08b36ffd7a5758581441ee4))
+
+
+### Bug Fixes
+
+* **ci:** deploy landing functions by running wrangler from packages/landing ([#391](https://github.com/lobu-ai/lobu/issues/391)) ([7c3676b](https://github.com/lobu-ai/lobu/commit/7c3676be2c34ae4e9c7b9710a4d464882e53fa7e))
+* **connector-catalog,worker-auth:** externalize on resolve fail; pino err serialization ([#405](https://github.com/lobu-ai/lobu/issues/405)) ([eb84fe4](https://github.com/lobu-ai/lobu/commit/eb84fe4f8d3ceebbd40fceaf47291092504bb4cb))
+* **db:** add dbmate up/down directives to repair-agent migrations ([#390](https://github.com/lobu-ai/lobu/issues/390)) ([8a115dd](https://github.com/lobu-ai/lobu/commit/8a115dd520ee3c9768f2aebcf5ea262eb49ab23d))
+* **db:** backfill events.created_by NULLs before NOT NULL validate ([#392](https://github.com/lobu-ai/lobu/issues/392)) ([bb7cce3](https://github.com/lobu-ai/lobu/commit/bb7cce3b5ca8de9a6825c8ed7cf9984430c2ac81))
+* **db:** drop CONCURRENTLY from migration's index recreation ([#402](https://github.com/lobu-ai/lobu/issues/402)) ([bccd3da](https://github.com/lobu-ai/lobu/commit/bccd3daceae6ddc444004e723a8cfa01bd7177d8))
+* **db:** drop CONCURRENTLY from migration's index recreation ([#403](https://github.com/lobu-ai/lobu/issues/403)) ([7870f0d](https://github.com/lobu-ai/lobu/commit/7870f0dab002004ae1569cffb54b064d07651182))
+* **db:** scope baseline's search_path reset to migration transaction ([#406](https://github.com/lobu-ai/lobu/issues/406)) ([ba33bae](https://github.com/lobu-ai/lobu/commit/ba33baec1013ec209c966eb961fa86a634bac27f))
+* **db:** SET lock_timeout = 0 for events.created_by backfill ([#396](https://github.com/lobu-ai/lobu/issues/396)) ([5224b92](https://github.com/lobu-ai/lobu/commit/5224b92a464956ef32b3373fd1706a6f771756c8))
+* **db:** single UPDATE backfill — chunked DO LOOP exceeded liveness budget ([#395](https://github.com/lobu-ai/lobu/issues/395)) ([b9cd8ca](https://github.com/lobu-ai/lobu/commit/b9cd8cad38d0b85ef9762b9370bcd4656e8a4835))
+* **landing:** defer cal.com iframe until schedule dialog opens ([#398](https://github.com/lobu-ai/lobu/issues/398)) ([d86e7db](https://github.com/lobu-ai/lobu/commit/d86e7dbcfedee084911b778042ab7b1786c6cd59))
+* **landing:** point Scalar API reference at the real /openapi.json ([#394](https://github.com/lobu-ai/lobu/issues/394)) ([8046abe](https://github.com/lobu-ai/lobu/commit/8046abe0b1eac7f1fd03bda8463f4146158fa0cd))
+* **landing:** satisfy isitagentready.com checks for markdown + OAuth metadata ([#397](https://github.com/lobu-ai/lobu/issues/397)) ([8d84627](https://github.com/lobu-ai/lobu/commit/8d84627ed6412fa8daad7ad2d6d02d2f0d1dea8c))
+* set working-directory to packages/landing and deploy ./dist. ([7c3676b](https://github.com/lobu-ai/lobu/commit/7c3676be2c34ae4e9c7b9710a4d464882e53fa7e))
+* **worker:** drop unused code/signal params from computeExitReason ([#388](https://github.com/lobu-ai/lobu/issues/388)) ([7aa3406](https://github.com/lobu-ai/lobu/commit/7aa340621b6a4910b42b41682db1a538dd00d458))
+* **world-model:** cross-org schema validation + defensive count scoping + tests ([#407](https://github.com/lobu-ai/lobu/issues/407)) ([576dae5](https://github.com/lobu-ai/lobu/commit/576dae56d48ebf87704cfc30b3f38bdcbeec1ce7))
+
+
+### Reverts
+
+* **install-flow:** remove template-install pipeline ([#369](https://github.com/lobu-ai/lobu/issues/369), [#357](https://github.com/lobu-ai/lobu/issues/357), [#362](https://github.com/lobu-ai/lobu/issues/362), [#359](https://github.com/lobu-ai/lobu/issues/359) install-half) ([#372](https://github.com/lobu-ai/lobu/issues/372)) ([d5dfbc2](https://github.com/lobu-ai/lobu/commit/d5dfbc22814906999efc86fc618fb515e622f14e))
+
 ## [4.3.0](https://github.com/lobu-ai/lobu/compare/lobu-v4.2.0...lobu-v4.3.0) (2026-04-25)
 
 

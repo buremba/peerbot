@@ -7,7 +7,15 @@ SET lock_timeout = 0;
 SET idle_in_transaction_session_timeout = 0;
 SET client_encoding = 'UTF8';
 SET standard_conforming_strings = on;
-SELECT pg_catalog.set_config('search_path', '', false);
+-- pg_dump emits this with `false` (session-wide) to make every CREATE
+-- statement below schema-unambiguous via fully-qualified names. dbmate
+-- reuses one connection across migrations, so a session-wide blank
+-- `search_path` persists into the NEXT migration — which uses bare
+-- table names (e.g. `INSERT INTO connector_definitions ...`) and fails
+-- with `relation does not exist` on a fresh DB. Setting `true` scopes
+-- the change to this migration's transaction; subsequent migrations get
+-- the default `"$user", public` again.
+SELECT pg_catalog.set_config('search_path', '', true);
 SET check_function_bodies = false;
 SET xmloption = content;
 SET client_min_messages = warning;

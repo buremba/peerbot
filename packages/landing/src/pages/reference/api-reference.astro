@@ -18,9 +18,7 @@ try {
 }
 
 const config = JSON.stringify({
-  ...(spec
-    ? { content: spec }
-    : { url: `${specOrigin}/openapi.json` }),
+  ...(spec ? { content: spec } : { url: `${specOrigin}/openapi.json` }),
   theme: "kepler",
   layout: "modern",
   defaultHttpClient: { targetKey: "js", clientKey: "fetch" },

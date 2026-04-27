@@ -95,10 +95,7 @@ export async function proxyWellKnown(context: PagesContext): Promise<Response> {
   headers.set("access-control-allow-methods", "GET, HEAD, OPTIONS");
   headers.delete("access-control-allow-credentials");
   const existingVary = headers.get("vary");
-  headers.set(
-    "vary",
-    existingVary ? `${existingVary}, Accept` : "Accept"
-  );
+  headers.set("vary", existingVary ? `${existingVary}, Accept` : "Accept");
 
   return new Response(upstream.body, {
     status: upstream.status,

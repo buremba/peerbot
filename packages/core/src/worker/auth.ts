@@ -120,7 +120,15 @@ export function verifyWorkerToken(token: string): WorkerTokenData | null {
 
     return data;
   } catch (error) {
-    logger.error("Error verifying token:", error);
+    // Pino expects `(obj, msg)` for Error serialization. The previous
+    // `(msg, error)` form fell through to message-only logging and rendered
+    // the actual decryption / parse error as `{}`, hiding the real cause.
+    logger.error(
+      {
+        err: error instanceof Error ? { name: error.name, message: error.message } : error,
+      },
+      "Error verifying token"
+    );
     return null;
   }
 }

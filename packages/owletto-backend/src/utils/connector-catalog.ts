@@ -20,15 +20,39 @@ const DEFAULT_CONNECTOR_DIR_CANDIDATES = [
   resolve(process.cwd(), 'connectors'),
 ];
 
+// Connectors declare their npm deps via `import x from 'npm:foo@1.2.3'`. This
+// plugin strips the prefix so esbuild can resolve the bare package against
+// node_modules. When the package isn't installed in the gateway image (e.g.
+// heavyweight deps like `baileys` that only the worker pod needs), we mark
+// the import as external rather than failing the whole bundle. The bundle
+// still emits `import 'baileys'` and the worker — which has those packages
+// installed — can run it. Without this, one un-installable npm dep takes
+// down the entire connector-catalog path, breaking /api/workers/poll for
+// every worker.
 const npmSpecifierPlugin: Plugin = {
   name: 'npm-specifier',
   setup(b) {
-    b.onResolve({ filter: /^npm:/ }, (args) => {
+    b.onResolve({ filter: /^npm:/ }, async (args) => {
       const bare = args.path
         .slice(4)
         .replace(/^(@[^/]+\/[^/@]+)@[^/]*/, '$1')
         .replace(/^([^/@]+)@[^/]*/, '$1');
-      return b.resolve(bare, { resolveDir: args.resolveDir, kind: args.kind });
+      const resolved = await b.resolve(bare, {
+        resolveDir: args.resolveDir,
+        kind: args.kind,
+      });
+      if (resolved.errors.length > 0) {
+        // Package isn't installed in this image — externalize so the bundle
+        // still produces. Worker runtime supplies the implementation.
+        // Log so an actual typo or missing-dep regression is diagnosable
+        // rather than silently producing a bundle that crashes at runtime.
+        logger.warn(
+          { package: bare, importer: args.importer },
+          'externalising npm:* import — package not resolvable in gateway image (worker runtime must provide it)'
+        );
+        return { path: bare, external: true, errors: [], warnings: [] };
+      }
+      return resolved;
     });
   },
 };

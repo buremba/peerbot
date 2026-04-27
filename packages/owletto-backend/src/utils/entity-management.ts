@@ -423,29 +423,50 @@ export async function getEntity(
   const sql = getDb();
   if (!ctx.organizationId) return null;
 
+  // Operational counts always scope to the caller's org. When `e` is a
+  // public-catalog entity, totals reflect the caller's events/feeds/watchers/
+  // children that reference it — never cross-tenant activity around the
+  // public row.
   const result = await sql<CreatedEntity>`
     SELECT
       e.id, et.slug AS entity_type, e.name, e.slug, e.parent_id, e.metadata, e.created_at,
       e.current_view_template_version_id,
       pe.name as parent_name, pe.slug as parent_slug, pet.slug as parent_entity_type,
-      (SELECT COUNT(*) FROM current_event_records ev WHERE ${sql.unsafe(entityLinkMatchSql('e.id::bigint', 'ev'))}) as total_content,
+      (
+        SELECT COUNT(*) FROM current_event_records ev
+        WHERE ${sql.unsafe(entityLinkMatchSql('e.id::bigint', 'ev'))}
+          AND ev.organization_id = ${ctx.organizationId}
+      ) as total_content,
       (
         SELECT COUNT(DISTINCT c.connector_key)
         FROM feeds f
         JOIN connections c ON c.id = f.connection_id
         WHERE e.id = ANY(f.entity_ids)
+          AND f.organization_id = ${ctx.organizationId}
           AND f.deleted_at IS NULL
           AND c.deleted_at IS NULL
       ) as active_connections,
-      (SELECT COUNT(*) FROM watchers i WHERE e.id = ANY(i.entity_ids)) as watchers_count,
-      (SELECT COUNT(*) FROM entities c WHERE c.parent_id = e.id) as children_count
+      (
+        SELECT COUNT(*) FROM watchers i
+        WHERE e.id = ANY(i.entity_ids)
+          AND i.organization_id = ${ctx.organizationId}
+      ) as watchers_count,
+      (
+        SELECT COUNT(*) FROM entities c
+        WHERE c.parent_id = e.id
+          AND c.organization_id = ${ctx.organizationId}
+          AND c.deleted_at IS NULL
+      ) as children_count
     FROM entities e
     JOIN entity_types et ON et.id = e.entity_type_id
     LEFT JOIN entities pe ON e.parent_id = pe.id
     LEFT JOIN entity_types pet ON pet.id = pe.entity_type_id
     LEFT JOIN organization eo ON eo.id = e.organization_id
     WHERE e.id = ${entityId}
-      AND (e.organization_id = ${ctx.organizationId} OR eo.visibility = 'public')
+      AND (
+        e.organization_id = ${ctx.organizationId}
+        OR (eo.visibility = 'public' AND et.slug <> '$member')
+      )
       AND e.deleted_at IS NULL
   `;
 

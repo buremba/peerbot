@@ -732,6 +732,7 @@ async function rtHandleList(
       SELECT relationship_type_id, COUNT(*)::int as relationship_count
       FROM entity_relationships
       WHERE deleted_at IS NULL
+        AND organization_id = $1
       GROUP BY relationship_type_id
     ) rc ON rc.relationship_type_id = rt.id
     WHERE (rt.organization_id = $1 OR o.visibility = 'public')

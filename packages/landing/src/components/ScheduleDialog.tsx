@@ -1,5 +1,5 @@
 import type { ComponentChildren } from "preact";
-import { useRef } from "preact/hooks";
+import { useRef, useState } from "preact/hooks";
 
 const CAL_URL =
   "https://cal.com/buremba/lobu-discovery?duration=15&overlayCalendar=true&embed=true&layout=month_view";
@@ -33,6 +33,17 @@ export function ScheduleCallButton({
   style?: Record<string, string>;
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
+  // Mount the cal.com iframe only after the user opens the dialog. Loading it
+  // up-front (even hidden via <dialog> default display:none) blocks the page
+  // `load` event in headless browsers, which makes agent-readiness scanners
+  // time out before they can detect WebMCP. `loading="lazy"` is added too as
+  // belt-and-suspenders.
+  const [hasOpened, setHasOpened] = useState(false);
+
+  const open = () => {
+    setHasOpened(true);
+    dialogRef.current?.showModal();
+  };
 
   return (
     <>
@@ -40,7 +51,7 @@ export function ScheduleCallButton({
         type="button"
         class={className}
         style={{ cursor: "pointer", ...style }}
-        onClick={() => dialogRef.current?.showModal()}
+        onClick={open}
       >
         {children}
       </button>
@@ -63,11 +74,14 @@ export function ScheduleCallButton({
           >
             &times;
           </button>
-          <iframe
-            src={CAL_URL}
-            title="Schedule a call"
-            class="schedule-dialog-iframe"
-          />
+          {hasOpened && (
+            <iframe
+              src={CAL_URL}
+              title="Schedule a call"
+              class="schedule-dialog-iframe"
+              loading="lazy"
+            />
+          )}
         </div>
       </dialog>
     </>

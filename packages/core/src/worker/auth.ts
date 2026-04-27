@@ -125,7 +125,10 @@ export function verifyWorkerToken(token: string): WorkerTokenData | null {
     // the actual decryption / parse error as `{}`, hiding the real cause.
     logger.error(
       {
-        err: error instanceof Error ? { name: error.name, message: error.message } : error,
+        err:
+          error instanceof Error
+            ? { name: error.name, message: error.message }
+            : error,
       },
       "Error verifying token"
     );

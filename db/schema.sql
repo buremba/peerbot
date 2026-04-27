@@ -925,7 +925,6 @@ CREATE TABLE public.events (
     id bigint CONSTRAINT event_id_not_null NOT NULL,
     organization_id text NOT NULL,
     entity_ids bigint[],
-    source_id integer,
     origin_id text,
     title text,
     payload_type text DEFAULT 'text'::text NOT NULL,
@@ -1003,7 +1002,6 @@ CREATE VIEW public.current_event_records AS
  SELECT e.id,
     e.organization_id,
     e.entity_ids,
-    e.source_id,
     e.origin_id,
     e.title,
     e.payload_type,
@@ -4038,20 +4036,6 @@ CREATE INDEX idx_event_classifiers_slug ON public.event_classifiers USING btree 
 --
 
 CREATE INDEX idx_event_classifiers_status ON public.event_classifiers USING btree (status);
-
-
---
--- Name: idx_event_length; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_event_length ON public.events USING btree (source_id, COALESCE(length(payload_text), 0));
-
-
---
--- Name: idx_event_source_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_event_source_id ON public.events USING btree (source_id);
 
 
 --

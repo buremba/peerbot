@@ -1,5 +1,5 @@
 /**
- * Unit tests for the WhatsApp connector's `toEvent` and `jidToPhone`.
+ * Tests for the WhatsApp connector's `toEvent` and `jidToPhone`.
  *
  * These cover the shape-translation path between real Baileys WAMessage
  * objects and the EventEnvelope metadata the entityLinks rule reads —
@@ -8,13 +8,15 @@
  * only exercises applyEntityLinks with synthetic metadata, so regressions
  * in toEvent would otherwise pass undetected.
  *
- * Uses a string-built path for the dynamic import so tsc doesn't follow the
- * connector's `npm:baileys@...` specifier — that specifier is rewritten at
- * install time by the connector compiler and isn't meant for tsc.
+ * Lives under `__tests__/integration/connectors/` because the test
+ * dynamically imports a sibling-package source file (the same one the
+ * runtime resolves via `findBundledConnectorFile`). The dynamic import
+ * keeps tsc from chasing the connector's `npm:baileys@...` specifier
+ * through the static graph.
  */
-import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { beforeAll, describe, expect, it } from 'vitest';
+import { findBundledConnectorFile } from '../../../utils/connector-catalog';
 
 type ToEventFn = (
   m: unknown,
@@ -31,9 +33,15 @@ let toEvent: ToEventFn;
 let jidToPhone: JidToPhoneFn;
 
 beforeAll(async () => {
-  // Build the path at runtime so tsc doesn't chase `npm:baileys@...` through
-  // the static import graph. Use a file:// URL so this works on Windows too.
-  const target = pathToFileURL(path.join(process.cwd(), 'connectors', 'whatsapp.ts')).href;
+  // Resolve via the same catalog the runtime uses so the test stays valid
+  // regardless of CWD or where the connector source lives on disk.
+  const filePath = findBundledConnectorFile('whatsapp');
+  if (!filePath) {
+    throw new Error(
+      'whatsapp connector source not found via findBundledConnectorFile — check connector-catalog candidates.'
+    );
+  }
+  const target = pathToFileURL(filePath).href;
   const mod = (await import(target)) as {
     toEvent: ToEventFn;
     jidToPhone: JidToPhoneFn;

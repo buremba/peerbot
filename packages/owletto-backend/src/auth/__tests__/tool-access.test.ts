@@ -420,13 +420,20 @@ describe('first-party tool-name coverage', () => {
     expect(stale).toEqual([]);
   }
 
-  it('every owletto-web apiCall(...) tool name is registered', () => {
+  it('every owletto-web tool reference (apiCall + hook-factory) is registered', () => {
     if (!present(webSrcRoot)) return; // submodule not checked out (shallow clone)
-    const used = extractMatches(
+    // Two patterns: direct `apiCall(<...>?)('foo', …)` and the hook-factory
+    // config form `tool: 'foo'` (used at api/entities.ts:165, api/connections.ts,
+    // etc. — over 30 sites the direct-apiCall regex would otherwise miss).
+    const apiCallNames = extractMatches(
       webSrcRoot,
       /\bapiCall(?:<[^>]*>)?\(\s*['"]([a-zA-Z_][a-zA-Z0-9_]*)['"]/g
     );
-    assertRegistered(used);
+    const hookFactoryNames = extractMatches(
+      webSrcRoot,
+      /\btool:\s*['"]([a-zA-Z_][a-zA-Z0-9_]*)['"]/g
+    );
+    assertRegistered(new Set([...apiCallNames, ...hookFactoryNames]));
   });
 
   it('every owletto-cli REST callTool(ctx, name) is registered', () => {
@@ -438,38 +445,37 @@ describe('first-party tool-name coverage', () => {
     assertRegistered(used);
   });
 
-  it('every owletto-cli MCP tools/call name is registered AND visible on the public MCP surface', () => {
+  // CLI tools that flow through MCP RPC (`mcpRpc(url, 'tools/call', { name })`)
+  // — must be registered AND non-internal, since `tools/list` filters out
+  // `internal: true`. Hardcoded rather than regex-derived so a removal from
+  // the CLI source can't silently shrink the assertion set.
+  const CLI_PUBLIC_MCP_TOOLS = ['manage_connections', 'manage_auth_profiles'] as const;
+
+  it.each(CLI_PUBLIC_MCP_TOOLS)(
+    'CLI MCP tool %s is registered and visible on the public MCP surface',
+    (name) => {
+      const tool = getTool(name);
+      expect(tool).toBeDefined();
+      // `internal: true` would hide the tool from external `tools/list`,
+      // silently breaking `owletto browser-auth`.
+      expect(tool?.internal ?? false).toBe(false);
+    }
+  );
+
+  it('CLI browser-auth tools/call literals match the pinned set', () => {
+    // Drift detector: if browser-auth.ts starts calling a new MCP tool, fail
+    // here rather than silently expand the public-MCP surface unannounced.
     if (!present(cliSrcRoot)) return;
-    // Match `name: 'foo'` literals inside browser-auth.ts (the file using
-    // mcpRpc 'tools/call'). Scoped by file rather than context to keep the
-    // regex simple — false positives on unrelated `name:` literals are caught
-    // by the registry check anyway.
     const browserAuth = join(cliSrcRoot, 'commands', 'browser-auth.ts');
     if (!present(browserAuth)) return;
     const content = readFileSync(browserAuth, 'utf-8');
     const used = new Set<string>();
-    for (const match of content.matchAll(/\bname:\s*['"]([a-zA-Z_][a-zA-Z0-9_]*)['"]/g)) {
+    // Match `mcpRpc(…, 'tools/call', { … name: 'X' … })` across newlines.
+    for (const match of content.matchAll(
+      /'tools\/call'[\s\S]{0,300}?\bname:\s*['"]([a-zA-Z_][a-zA-Z0-9_]*)['"]/g
+    )) {
       used.add(match[1]);
     }
-    // The defineCommand frontmatter uses `name: 'browser-auth'` — that's not
-    // a tool, just the CLI command's own name. Filter to actually-registered
-    // tools to avoid false positives without hiding genuine drift.
-    const candidates = [...used].filter((n) => getTool(n));
-    expect(candidates.length).toBeGreaterThan(0); // sanity: we found at least one
-
-    const internal: string[] = [];
-    const missing: string[] = [];
-    for (const name of candidates) {
-      const tool = getTool(name);
-      if (!tool) {
-        missing.push(name);
-        continue;
-      }
-      if (tool.internal) internal.push(name);
-    }
-    expect(missing).toEqual([]);
-    // CLI hits these via MCP RPC; flipping any to `internal: true` silently
-    // breaks `owletto browser-auth`. Pin the invariant.
-    expect(internal).toEqual([]);
+    expect([...used].sort()).toEqual([...CLI_PUBLIC_MCP_TOOLS].sort());
   });
 });

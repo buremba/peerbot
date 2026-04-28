@@ -234,8 +234,11 @@ export async function restToolProxy(
     if (error instanceof ToolNotRegisteredError) {
       // Registry/frontend drift — surface to Sentry so the next "Tool not
       // found" outage doesn't sit silent behind a 400 the page swallows.
+      // `tool_name` goes in `extra` (not `tags`) because the URL segment is
+      // attacker-controlled and would otherwise blow up tag cardinality.
       Sentry.captureException(error, {
-        tags: { tool_name: error.toolName, source: 'rest_proxy' },
+        tags: { source: 'rest_proxy' },
+        extra: { tool_name: error.toolName },
       });
     }
     return c.json({ error: errorMessage(error) }, 400);

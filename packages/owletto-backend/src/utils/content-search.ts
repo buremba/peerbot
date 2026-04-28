@@ -261,7 +261,7 @@ function buildExcludeWatcherClause(
  * to entities/connections here. Stand-alone events with no entity links and
  * no connection are still findable via the direct `f.organization_id` match.
  */
-function buildOrgScopeWhere(options: {
+export function buildOrgScopeWhere(options: {
   entity_id?: number;
   organization_id?: string;
   baseParamIndex: number;

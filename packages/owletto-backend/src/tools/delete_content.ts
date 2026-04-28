@@ -6,6 +6,16 @@
  * that supersede the target have their `supersedes_event_id` reset (ON DELETE
  * SET NULL) so historical chains stay intact.
  *
+ * Authorization is intentionally narrower than `save_knowledge`:
+ *   - Requires an explicit member identity with write scope. We do NOT honor
+ *     the watcher-reaction "system" bypass (`userId=null + isAuthenticated`)
+ *     because reactions running unattended should not be able to mass-delete
+ *     prior knowledge — saves can be reverted via `supersedes_event_id`,
+ *     deletes cannot.
+ *   - Only events stamped to the caller's org (`events.organization_id`) are
+ *     removed. Cross-linked events surfaced via the entity- or connection-
+ *     bridge in search/query stay intact (`not_found_ids` reports them).
+ *
  * Use `save_knowledge` with `supersedes_event_id` when you want to *replace* an
  * event while keeping the audit trail. Use this when you want it gone — for
  * example, to clean up a smoke-test write or remove a row that was never meant
@@ -44,14 +54,14 @@ export async function deleteContent(
   _env: Env,
   ctx: ToolContext
 ): Promise<DeleteContentResult> {
-  const isSystem = ctx.userId === null && ctx.isAuthenticated;
-  if (!isSystem) {
-    if (!ctx.memberRole) {
-      throw new Error('delete_knowledge requires workspace membership with write access.');
-    }
-    if (!hasRequiredMcpScope('write', ctx.scopes)) {
-      throw new Error('delete_knowledge requires an MCP session with write access.');
-    }
+  // No system bypass: watcher reactions and other unattended contexts must
+  // not be able to hard-delete events. Hard delete requires an explicit
+  // member with write scope.
+  if (!ctx.memberRole) {
+    throw new Error('delete_knowledge requires workspace membership with write access.');
+  }
+  if (!hasRequiredMcpScope('write', ctx.scopes)) {
+    throw new Error('delete_knowledge requires an MCP session with write access.');
   }
 
   const requested = collectIds(args);

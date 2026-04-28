@@ -184,12 +184,15 @@ export default async (_ctx, client) => {
   },
   "knowledge.delete": {
     summary:
-      "Hard-delete one or more knowledge events. FK cascades clean up embeddings, classifications, and watcher-window links. Use `knowledge.save` with `supersedes_event_id` instead when you want to replace an event but keep history.",
+      "Hard-delete one or more knowledge events your org owns. Returns `{ deleted_ids, not_found_ids }`. Only events with `events.organization_id = caller` are removed — cross-org events visible via entity/connection bridges are reported in `not_found_ids` so deletes never silently reach across workspaces. FK cascades clean up embeddings, classifications, and watcher-window links; superseding chains use ON DELETE SET NULL so history stays intact. Use `knowledge.save` with `supersedes_event_id` to replace an event while keeping the audit trail.",
     access: "write",
     example: "await client.knowledge.delete(2321593);",
     usageExample: `// Remove a smoke-test write that should not have landed.
 export default async (_ctx, client) => {
-  return client.knowledge.delete({ event_ids: [2321593, 2321594] });
+  const { deleted_ids, not_found_ids } = await client.knowledge.delete({
+    event_ids: [2321593, 2321594],
+  });
+  return { deleted_ids, not_found_ids };
 };`,
   },
 

@@ -244,10 +244,18 @@ function buildScopedQuery(
           `WHERE e.organization_id = ${orgP})`
       );
     } else if (table === 'events') {
+      // Match buildOrgScopeWhere in content-search.ts: an event is in scope if
+      // it was stamped to the caller's org directly, OR any of its entity_ids
+      // belong to the caller's org, OR it came in through a connection in the
+      // caller's org. Mirroring that here keeps query_sql consistent with
+      // what search_knowledge/get_content surface.
       let eventsCte =
-        `"${safeName}" AS (SELECT ${sel(table, 'ev')} FROM public.current_event_records ev WHERE EXISTS (` +
-        'SELECT 1 FROM public.entities ent WHERE ent.id = ANY(ev.entity_ids) ' +
-        `AND ent.organization_id = ${orgP})`;
+        `"${safeName}" AS (SELECT ${sel(table, 'ev')} FROM public.current_event_records ev ` +
+        `WHERE (ev.organization_id = ${orgP} ` +
+        'OR EXISTS (SELECT 1 FROM public.entities ent WHERE ent.id = ANY(ev.entity_ids) ' +
+        `AND ent.organization_id = ${orgP}) ` +
+        'OR EXISTS (SELECT 1 FROM public.connections con WHERE con.id = ev.connection_id ' +
+        `AND con.organization_id = ${orgP}))`;
 
       // Entity scoping: filter events to the watcher's entities
       if (context.entityIds && context.entityIds.length > 0) {

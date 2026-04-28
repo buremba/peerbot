@@ -1,9 +1,9 @@
 /**
  * ClientSDK `knowledge` namespace.
  *
- * Wraps `search` (aka search_knowledge), `saveContent` (save_knowledge), and
- * `getContent` (read_knowledge). These are the hot-path tools kept in PR-2 —
- * the SDK surface mirrors the MCP tool surface for consistency.
+ * Wraps `search` (aka search_knowledge), `saveContent` (save_knowledge),
+ * `getContent` (read_knowledge), and `deleteContent` (delete_knowledge).
+ * The SDK surface mirrors the MCP tool surface for consistency.
  */
 
 import type { Env } from "../../index";
@@ -43,10 +43,13 @@ export interface KnowledgeReadInput {
   entity_ids?: number[];
 }
 
+export type KnowledgeDeleteInput = number | { event_id?: number; event_ids?: number[] };
+
 export interface KnowledgeNamespace {
   search(input: KnowledgeSearchInput): Promise<unknown>;
   save(input: KnowledgeSaveInput): Promise<unknown>;
   read(input: KnowledgeReadInput): Promise<unknown>;
+  delete(input: KnowledgeDeleteInput): Promise<unknown>;
 }
 
 export function buildKnowledgeNamespace(
@@ -65,6 +68,12 @@ export function buildKnowledgeNamespace(
     async read(input) {
       const { getContent } = await import("../../tools/get_content");
       return getContent(input as never, env, ctx) as Promise<unknown>;
+    },
+    async delete(input) {
+      const { deleteContent } = await import("../../tools/delete_content");
+      const args =
+        typeof input === "number" ? { event_id: input } : input ?? {};
+      return deleteContent(args as never, env, ctx) as Promise<unknown>;
     },
   };
 }

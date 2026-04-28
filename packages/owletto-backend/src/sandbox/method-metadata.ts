@@ -33,12 +33,19 @@ export const METHOD_METADATA: Record<string, MethodMetadata> = {
 
   // entities
   "entities.list": {
-    summary: "List entities in the current organization with optional filters.",
+    summary:
+      "List entities in the current organization with optional filters. Returns `{ action, entities, metadata }` where `entities` is the page and `metadata` carries `total_count`, `has_more`, `limit`, `offset`.",
     access: "read",
-    example: "const rows = await client.entities.list({ entity_type: 'company' });",
+    example:
+      "const { entities } = await client.entities.list({ entity_type: 'company' });",
     usageExample: `// All companies in the workspace, newest first.
 export default async (_ctx, client) => {
-  return client.entities.list({ entity_type: 'company', sort_by: 'created_at', sort_order: 'desc' });
+  const { entities, metadata } = await client.entities.list({
+    entity_type: 'company',
+    sort_by: 'created_at',
+    sort_order: 'desc',
+  });
+  return { count: metadata.total_count, page: entities };
 };`,
   },
   "entities.get": {
@@ -175,14 +182,27 @@ export default async (_ctx, client) => {
     summary: "Read a knowledge event by id, or watcher-window context.",
     access: "read",
   },
+  "knowledge.delete": {
+    summary:
+      "Hard-delete one or more knowledge events. FK cascades clean up embeddings, classifications, and watcher-window links. Use `knowledge.save` with `supersedes_event_id` instead when you want to replace an event but keep history.",
+    access: "write",
+    example: "await client.knowledge.delete(2321593);",
+    usageExample: `// Remove a smoke-test write that should not have landed.
+export default async (_ctx, client) => {
+  return client.knowledge.delete({ event_ids: [2321593, 2321594] });
+};`,
+  },
 
   // watchers
   "watchers.list": {
-    summary: "List watchers, optionally filtered by entity.",
+    summary:
+      "List watchers, optionally filtered by entity. Returns `{ watchers: [...] }`.",
     access: "read",
-    example: "const ws = await client.watchers.list({ entity_id: 42 });",
+    example:
+      "const { watchers } = await client.watchers.list({ entity_id: 42 });",
     usageExample: `export default async (_ctx, client) => {
-  return client.watchers.list({ entity_id: 42 });
+  const { watchers } = await client.watchers.list({ entity_id: 42 });
+  return watchers;
 };`,
   },
   "watchers.get": {

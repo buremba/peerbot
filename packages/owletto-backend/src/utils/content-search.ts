@@ -251,6 +251,15 @@ function buildExcludeWatcherClause(
  * Build an org/workspace-scoping WHERE clause using EXISTS (no JOIN needed).
  * Returns an empty string when no scoping is needed (e.g. entity_id is set).
  * Assumes the query has `f` aliasing events and `c` aliasing connections.
+ *
+ * An event is in scope when ANY of these hold:
+ *  - the event itself was stamped to the caller's org (`f.organization_id`),
+ *  - one of its `entity_ids` belongs to the caller's org, or
+ *  - the connection that produced it belongs to the caller's org.
+ *
+ * The bridge clauses cover events ingested into another org but cross-linked
+ * to entities/connections here. Stand-alone events with no entity links and
+ * no connection are still findable via the direct `f.organization_id` match.
  */
 function buildOrgScopeWhere(options: {
   entity_id?: number;
@@ -260,10 +269,11 @@ function buildOrgScopeWhere(options: {
   if (options.entity_id || !options.organization_id) return { sql: '', params: [] };
 
   const p = `$${options.baseParamIndex}::text`;
-  const existsCond = `EXISTS (SELECT 1 FROM entities ent_org WHERE ent_org.id = ANY(f.entity_ids) AND ent_org.organization_id = ${p})`;
-  const connCond = `(c.organization_id = ${p} OR f.organization_id = ${p})`;
+  const directCond = `f.organization_id = ${p}`;
+  const entityCond = `EXISTS (SELECT 1 FROM entities ent_org WHERE ent_org.id = ANY(f.entity_ids) AND ent_org.organization_id = ${p})`;
+  const connCond = `c.organization_id = ${p}`;
   return {
-    sql: `AND (${existsCond} OR ((f.entity_ids IS NULL OR f.entity_ids = '{}') AND ${connCond}))`,
+    sql: `AND (${directCond} OR ${entityCond} OR ${connCond})`,
     params: [options.organization_id],
   };
 }

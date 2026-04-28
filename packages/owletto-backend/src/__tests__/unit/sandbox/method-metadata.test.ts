@@ -83,7 +83,7 @@ const NAMESPACE_METHODS: Record<string, readonly string[]> = {
     "classify",
   ],
   viewTemplates: ["get", "set", "rollback", "removeTab"],
-  knowledge: ["search", "save", "read"],
+  knowledge: ["search", "save", "read", "delete"],
   organizations: ["list", "current"],
 };
 

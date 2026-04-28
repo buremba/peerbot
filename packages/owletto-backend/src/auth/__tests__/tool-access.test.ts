@@ -305,7 +305,7 @@ describe('checkToolAccess', () => {
     ).toThrow(ToolNotRegisteredError);
   });
 
-  it('allows REST compatibility paths to reach legacy internal tools subject to access', () => {
+  it('allows REST compatibility paths to reach internal tools subject to access', () => {
     expect(() =>
       checkToolAccess('manage_entity', { action: 'create' }, {
         ...baseAuth,
@@ -315,6 +315,25 @@ describe('checkToolAccess', () => {
       })
     ).not.toThrow();
   });
+
+  it.each(['list_watchers', 'get_watcher', 'read_knowledge'])(
+    'hides %s from external MCP but keeps it reachable via REST',
+    (toolName) => {
+      // External MCP — must look like an unknown tool to the caller.
+      expect(() =>
+        checkToolAccess(toolName, {}, { ...baseAuth, memberRole: 'owner' })
+      ).toThrow(`Tool not found: ${toolName}`);
+
+      // REST proxy — frontend reaches the same handler.
+      expect(() =>
+        checkToolAccess(
+          toolName,
+          {},
+          { ...baseAuth, memberRole: 'member', allowInternalTools: true }
+        )
+      ).not.toThrow();
+    }
+  );
 
   it('keeps admin-only tools restricted for members', () => {
     // query_sql is the canonical admin-only tool on the post-PR-2 surface.

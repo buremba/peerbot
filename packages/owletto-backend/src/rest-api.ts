@@ -5,6 +5,7 @@
  * for use with ChatGPT, Zapier, and other REST-based integrations
  */
 
+import * as Sentry from '@sentry/node';
 import type { Context } from 'hono';
 import { getDb } from './db/client';
 import * as invalidationEmitter from './events/emitter';
@@ -24,7 +25,7 @@ import { executeTool, extractAuthContext, toToolContext } from './tools/execute'
 import { getContent } from './tools/get_content';
 import { getWatcher } from './tools/get_watchers';
 import { getTool } from './tools/registry';
-import { ToolUserError, errorMessage } from './utils/errors';
+import { ToolNotRegisteredError, ToolUserError, errorMessage } from './utils/errors';
 import { toJsonSafe } from './utils/json';
 import logger from './utils/logger';
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from './utils/run-statuses';
@@ -229,6 +230,13 @@ export async function restToolProxy(
   } catch (error) {
     if (error instanceof ToolUserError) {
       return c.json({ error: error.message }, error.httpStatus as 400 | 404);
+    }
+    if (error instanceof ToolNotRegisteredError) {
+      // Registry/frontend drift — surface to Sentry so the next "Tool not
+      // found" outage doesn't sit silent behind a 400 the page swallows.
+      Sentry.captureException(error, {
+        tags: { tool_name: error.toolName, source: 'rest_proxy' },
+      });
     }
     return c.json({ error: errorMessage(error) }, 400);
   }

@@ -17,3 +17,21 @@ export class ToolUserError extends Error {
     this.httpStatus = httpStatus;
   }
 }
+
+/**
+ * Thrown when a tool name reaches `executeTool` but is not registered. Indicates
+ * registry/frontend drift (e.g. frontend `apiCall('foo', …)` references a name
+ * the backend no longer registers) — the kind of regression that produced a
+ * silent prod outage when `list_watchers` was removed without migrating the
+ * frontend. The REST proxy captures this to Sentry so the next drift surfaces
+ * as an alert rather than a 400 the page swallows.
+ */
+export class ToolNotRegisteredError extends Error {
+  readonly toolName: string;
+
+  constructor(toolName: string) {
+    super(`Tool not found: ${toolName}`);
+    this.name = 'ToolNotRegisteredError';
+    this.toolName = toolName;
+  }
+}

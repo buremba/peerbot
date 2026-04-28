@@ -4,10 +4,14 @@
  * Tests for requiresOwnerAdmin and isPublicReadable authorization checks.
  */
 
+import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { ToolNotRegisteredError } from '../../utils/errors';
 import { routeAction } from '../../tools/admin/action-router';
 import { type AuthContext, checkToolAccess } from '../../tools/execute';
-import type { ToolContext } from '../../tools/registry';
+import { getTool, type ToolContext } from '../../tools/registry';
 import {
   getRequiredAccessLevel,
   isPublicReadable,
@@ -289,10 +293,16 @@ describe('checkToolAccess', () => {
     ).not.toThrow();
   });
 
-  it('hides legacy internal tools from external MCP calls even when the name is known', () => {
+  it('hides internal tools from external MCP calls even when the name is known', () => {
     expect(() =>
       checkToolAccess('manage_entity', { action: 'list' }, { ...baseAuth, memberRole: 'owner' })
     ).toThrow('Tool not found: manage_entity');
+  });
+
+  it('throws ToolNotRegisteredError for genuinely unregistered names so REST proxy can alert', () => {
+    expect(() =>
+      checkToolAccess('this_tool_does_not_exist', {}, { ...baseAuth, memberRole: 'owner' })
+    ).toThrow(ToolNotRegisteredError);
   });
 
   it('allows REST compatibility paths to reach legacy internal tools subject to access', () => {
@@ -321,5 +331,74 @@ describe('checkToolAccess', () => {
     ).toThrow(
       'This action requires admin or owner access. Ask an organization owner to grant elevated access.'
     );
+  });
+});
+
+describe('frontend apiCall coverage', () => {
+  // owletto-web is a submodule and may be absent on shallow clones.
+  const __dirname = dirname(fileURLToPath(import.meta.url));
+  const webSrcRoot = join(__dirname, '..', '..', '..', '..', 'owletto-web', 'src');
+  let webPresent = true;
+  try {
+    statSync(webSrcRoot);
+  } catch {
+    webPresent = false;
+  }
+
+  function collectTsFiles(dir: string, out: string[] = []): string[] {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === 'node_modules' || entry.name === 'dist') continue;
+        collectTsFiles(full, out);
+      } else if (/\.(ts|tsx)$/.test(entry.name)) {
+        out.push(full);
+      }
+    }
+    return out;
+  }
+
+  function extractApiCallNames(): Set<string> {
+    const files = collectTsFiles(webSrcRoot);
+    const pattern = /\bapiCall(?:<[^>]*>)?\(\s*['"]([a-zA-Z_][a-zA-Z0-9_]*)['"]/g;
+    const names = new Set<string>();
+    for (const file of files) {
+      for (const match of readFileSync(file, 'utf-8').matchAll(pattern)) {
+        names.add(match[1]);
+      }
+    }
+    return names;
+  }
+
+  // Names the frontend calls that have no backend handler. Each entry is dead
+  // code (unused hook) — kept here so the test fails the day someone wires it
+  // up without first registering the tool. Empty this set when the frontend
+  // is cleaned up.
+  const KNOWN_DEAD_NAMES = new Set<string>([
+    // useDeleteWindow in packages/owletto-web/src/hooks/use-watchers.ts has
+    // no caller; manage_queue was never registered. Either delete the hook
+    // or add a manage_queue tool.
+    'manage_queue',
+  ]);
+
+  it('every apiCall(...) tool name is registered in the backend', () => {
+    if (!webPresent) {
+      // Submodule not checked out (shallow clone). Skip rather than fail.
+      return;
+    }
+    const used = extractApiCallNames();
+    const drift: string[] = [];
+    const stale: string[] = [];
+    for (const name of used) {
+      const registered = !!getTool(name);
+      if (KNOWN_DEAD_NAMES.has(name)) {
+        if (registered) stale.push(name);
+        continue;
+      }
+      if (!registered) drift.push(name);
+    }
+    expect(drift).toEqual([]);
+    // If a previously-dead name is now registered, remove it from the allowlist.
+    expect(stale).toEqual([]);
   });
 });

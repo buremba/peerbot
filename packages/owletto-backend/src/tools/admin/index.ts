@@ -1,11 +1,23 @@
 /**
- * Legacy admin tools kept for REST/session callers while external MCP clients
- * use the smaller search/execute surface.
+ * Internal REST/CLI tool surface.
+ *
+ * External MCP clients see the small `search`/`execute`/`save_knowledge`/...
+ * surface from `registry.ts`. The frontend, owletto-cli, and other REST/session
+ * callers reach the named handlers below by `name` via `POST /api/:orgSlug/:toolName`.
+ *
+ * `restToolProxy` sets `allowInternalTools=true` (since the request didn't come
+ * in over `/mcp`), so `internal: true` tools are reachable by REST but hidden
+ * from MCP `tools/list`.
+ *
+ * The two non-internal entries (`manage_connections`, `manage_auth_profiles`)
+ * stay on the public MCP surface for owletto-cli's `browser-auth` flow.
  */
 
-import type { Static } from '@sinclair/typebox';
+import type { TSchema } from '@sinclair/typebox';
 import type { Env } from '../../index';
-import type { ToolContext, ToolDefinition } from '../registry';
+import { GetContentSchema, getContent } from '../get_content';
+import { GetWatcherSchema, getWatcher } from '../get_watchers';
+import type { ToolAnnotations, ToolContext, ToolDefinition } from '../registry';
 import { ManageAuthProfilesSchema, manageAuthProfiles } from './manage_auth_profiles';
 import { ManageClassifiersSchema, manageClassifiers } from './manage_classifiers';
 import { ManageConnectionsSchema, manageConnections } from './manage_connections';
@@ -14,112 +26,120 @@ import { ManageEntitySchemaSchema, manageEntitySchema } from './manage_entity_sc
 import { ManageFeedsSchema, manageFeeds } from './manage_feeds';
 import { ManageOperationsSchema, manageOperations } from './manage_operations';
 import { ManageViewTemplatesSchema, manageViewTemplates } from './manage_view_templates';
-import { ManageWatchersSchema, manageWatchers } from './manage_watchers';
+import {
+  ListWatchersSchema,
+  ManageWatchersSchema,
+  listWatchers,
+  manageWatchers,
+} from './manage_watchers';
 
-export const LEGACY_ADMIN_TOOLS: ToolDefinition[] = [
+interface InternalToolEntry {
+  name: string;
+  description: string;
+  schema: TSchema;
+  handler: (args: any, env: Env, ctx: ToolContext) => Promise<unknown>;
+  /** Defaults to `{ destructiveHint: false }`. */
+  annotations?: ToolAnnotations;
+  /**
+   * `true` (default) hides from MCP `tools/list` — REST/session callers can
+   * still reach it. `false` keeps it on the public MCP surface (currently
+   * just the two CLI browser-auth tools).
+   */
+  internal?: boolean;
+}
+
+const READ_ONLY: ToolAnnotations = { readOnlyHint: true, idempotentHint: true };
+const WRITE: ToolAnnotations = { destructiveHint: false };
+
+const ENTRIES: InternalToolEntry[] = [
   {
     name: 'manage_entity',
-    description:
-      'Legacy internal entity management tool for REST/session callers. External MCP clients should use execute + client.entities instead.',
-    inputSchema: ManageEntitySchema,
-    annotations: { destructiveHint: false },
-    internal: true,
-    handler: async (args: Static<typeof ManageEntitySchema>, env: Env, ctx: ToolContext) => {
-      return await manageEntity(args, env, ctx);
-    },
+    description: 'Entity management. SDK alternative: client.entities.',
+    schema: ManageEntitySchema,
+    handler: manageEntity,
   },
   {
     name: 'manage_entity_schema',
-    description:
-      'Legacy internal schema management tool for REST/session callers. External MCP clients should use execute + client.entitySchema instead.',
-    inputSchema: ManageEntitySchemaSchema,
-    annotations: { destructiveHint: false },
-    internal: true,
-    handler: async (args: Static<typeof ManageEntitySchemaSchema>, env: Env, ctx: ToolContext) => {
-      return await manageEntitySchema(args, env, ctx);
-    },
+    description: 'Entity-type schema management. SDK alternative: client.entitySchema.',
+    schema: ManageEntitySchemaSchema,
+    handler: manageEntitySchema,
   },
   {
-    // Kept on the public MCP surface (not internal) because owletto-cli's
-    // `browser-auth` flow drives connection setup via MCP RPC. New external
-    // clients should still prefer execute + client.connections; we'll flip
-    // this back to internal once the CLI migrates.
     name: 'manage_connections',
     description:
-      'Connection management. New external MCP clients should prefer execute + client.connections; this tool is kept public for the owletto-cli browser-auth flow.',
-    inputSchema: ManageConnectionsSchema,
-    annotations: { destructiveHint: false },
-    handler: async (args: Static<typeof ManageConnectionsSchema>, env: Env, ctx: ToolContext) => {
-      return await manageConnections(args, env, ctx);
-    },
+      'Connection management. Kept on the public MCP surface for the owletto-cli browser-auth flow. SDK alternative: client.connections.',
+    schema: ManageConnectionsSchema,
+    handler: manageConnections,
+    internal: false,
   },
   {
     name: 'manage_feeds',
-    description:
-      'Legacy internal feed management tool for REST/session callers. External MCP clients should use execute + client.feeds instead.',
-    inputSchema: ManageFeedsSchema,
-    annotations: { destructiveHint: false },
-    internal: true,
-    handler: async (args: Static<typeof ManageFeedsSchema>, env: Env, ctx: ToolContext) => {
-      return await manageFeeds(args, env, ctx);
-    },
+    description: 'Feed management. SDK alternative: client.feeds.',
+    schema: ManageFeedsSchema,
+    handler: manageFeeds,
   },
   {
-    // Kept on the public MCP surface (not internal) because owletto-cli's
-    // `browser-auth` flow exchanges credential blobs via MCP RPC. New external
-    // clients should still prefer execute + client.authProfiles; we'll flip
-    // this back to internal once the CLI migrates.
     name: 'manage_auth_profiles',
     description:
-      'Auth-profile management. New external MCP clients should prefer execute + client.authProfiles; this tool is kept public for the owletto-cli browser-auth flow.',
-    inputSchema: ManageAuthProfilesSchema,
-    annotations: { destructiveHint: false },
-    handler: async (args: Static<typeof ManageAuthProfilesSchema>, env: Env, ctx: ToolContext) => {
-      return await manageAuthProfiles(args, env, ctx);
-    },
+      'Auth-profile management. Kept on the public MCP surface for the owletto-cli browser-auth flow. SDK alternative: client.authProfiles.',
+    schema: ManageAuthProfilesSchema,
+    handler: manageAuthProfiles,
+    internal: false,
   },
   {
     name: 'manage_operations',
-    description:
-      'Legacy internal operations tool for REST/session callers. External MCP clients should use execute + client.operations instead.',
-    inputSchema: ManageOperationsSchema,
+    description: 'Operation execution / approval. SDK alternative: client.operations.',
+    schema: ManageOperationsSchema,
+    handler: manageOperations,
     annotations: { destructiveHint: false, openWorldHint: true },
-    internal: true,
-    handler: async (args: Static<typeof ManageOperationsSchema>, env: Env, ctx: ToolContext) => {
-      return await manageOperations(args, env, ctx);
-    },
   },
   {
     name: 'manage_watchers',
+    description: 'Watcher management. SDK alternative: client.watchers.',
+    schema: ManageWatchersSchema,
+    handler: manageWatchers,
+  },
+  {
+    name: 'list_watchers',
+    description: 'List watchers. SDK alternative: client.watchers.list.',
+    schema: ListWatchersSchema,
+    handler: listWatchers,
+    annotations: READ_ONLY,
+  },
+  {
+    name: 'get_watcher',
+    description: 'Watcher detail + windows. SDK alternative: client.watchers.get.',
+    schema: GetWatcherSchema,
+    handler: getWatcher,
+    annotations: READ_ONLY,
+  },
+  {
+    name: 'read_knowledge',
     description:
-      'Legacy internal watcher management tool for REST/session callers. External MCP clients should use execute + client.watchers instead.',
-    inputSchema: ManageWatchersSchema,
-    annotations: { destructiveHint: false },
-    internal: true,
-    handler: async (args: Static<typeof ManageWatchersSchema>, env: Env, ctx: ToolContext) => {
-      return await manageWatchers(args, env, ctx);
-    },
+      'Read content/knowledge. SDK alternatives: search_knowledge, client.knowledge.search.',
+    schema: GetContentSchema,
+    handler: getContent,
+    annotations: READ_ONLY,
   },
   {
     name: 'manage_classifiers',
-    description:
-      'Legacy internal classifier management tool for REST/session callers. External MCP clients should use execute + client.classifiers instead.',
-    inputSchema: ManageClassifiersSchema,
-    annotations: { destructiveHint: false },
-    internal: true,
-    handler: async (args: Static<typeof ManageClassifiersSchema>, env: Env, ctx: ToolContext) => {
-      return await manageClassifiers(args, env, ctx);
-    },
+    description: 'Classifier management. SDK alternative: client.classifiers.',
+    schema: ManageClassifiersSchema,
+    handler: manageClassifiers,
   },
   {
     name: 'manage_view_templates',
-    description:
-      'Legacy internal view-template management tool for REST/session callers. External MCP clients should use execute + client.viewTemplates instead.',
-    inputSchema: ManageViewTemplatesSchema,
-    annotations: { destructiveHint: false },
-    internal: true,
-    handler: async (args: Static<typeof ManageViewTemplatesSchema>, env: Env, ctx: ToolContext) => {
-      return await manageViewTemplates(args, env, ctx);
-    },
+    description: 'View-template management. SDK alternative: client.viewTemplates.',
+    schema: ManageViewTemplatesSchema,
+    handler: manageViewTemplates,
   },
 ];
+
+export const INTERNAL_REST_TOOLS: ToolDefinition[] = ENTRIES.map((entry) => ({
+  name: entry.name,
+  description: entry.description,
+  inputSchema: entry.schema,
+  annotations: entry.annotations ?? WRITE,
+  internal: entry.internal ?? true,
+  handler: entry.handler,
+}));

@@ -8,6 +8,7 @@ import type { Context } from 'hono';
 import { getRequiredAccessLevel, hasRequiredMcpScope, isPublicReadable } from '../auth/tool-access';
 import type { Env } from '../index';
 import { trackMCPToolCall } from '../sentry';
+import { ToolNotRegisteredError } from '../utils/errors';
 import { getConfiguredPublicOrigin } from '../utils/public-origin';
 import { listOrganizations } from './organizations';
 import { getTool, type ToolContext } from './registry';
@@ -80,7 +81,13 @@ export function checkToolAccess(toolName: string, args: unknown, authCtx: AuthCo
   }
 
   const tool = getTool(toolName);
-  if (!tool || (tool.internal && !authCtx.allowInternalTools)) {
+  // Genuinely unregistered → typed error so the REST proxy can fire a Sentry
+  // alert (registry/frontend drift). Internal-tool hidden from MCP → plain
+  // Error to avoid leaking the existence of internal handlers.
+  if (!tool) {
+    throw new ToolNotRegisteredError(toolName);
+  }
+  if (tool.internal && !authCtx.allowInternalTools) {
     throw new Error(`Tool not found: ${toolName}`);
   }
 

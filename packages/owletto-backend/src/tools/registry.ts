@@ -5,10 +5,9 @@
  * Typebox provides compile-time type safety and runtime JSON schema generation.
  */
 
-import type { Static } from '@sinclair/typebox';
 import { getPublicReadableActions, getRequiredAccessLevel } from '../auth/tool-access';
 import type { Env } from '../index';
-import { LEGACY_ADMIN_TOOLS } from './admin';
+import { INTERNAL_REST_TOOLS } from './admin';
 import { QuerySqlSchema, querySql } from './admin/query_sql';
 import { ListOrganizationsSchema } from './organizations';
 import { ResolvePathSchema, resolvePath } from './resolve_path';
@@ -71,6 +70,8 @@ export interface ToolDefinition<T = any> {
   handler: (args: T, env: Env, ctx: ToolContext) => Promise<any>;
 }
 
+const READ_ONLY = { readOnlyHint: true, idempotentHint: true } as const;
+
 const TOOLS: ToolDefinition[] = [
   // ─── Hot-path read/write surface ──────────────────────────────────────────
   {
@@ -78,10 +79,8 @@ const TOOLS: ToolDefinition[] = [
     description:
       'Search the workspace knowledge graph and saved memory for entities and related context. Supports fuzzy matching and filtering by entity_type. Use this as the FIRST step when the user asks about a specific entity. To create or modify entities, use the `execute` tool with a TypeScript script over the `client` SDK.',
     inputSchema: SearchSchema,
-    annotations: { readOnlyHint: true, idempotentHint: true },
-    handler: async (args: Static<typeof SearchSchema>, env: Env, ctx: ToolContext) => {
-      return await search(args, env, ctx);
-    },
+    annotations: READ_ONLY,
+    handler: search,
   },
   {
     name: 'save_knowledge',
@@ -89,19 +88,15 @@ const TOOLS: ToolDefinition[] = [
       "Save knowledge to the workspace, optionally associated with entities via entity_ids. Supports multiple content formats via payload_type: 'text' (default), 'markdown' (rich text), 'json_template' (structured UI with payload_template + payload_data), 'media' (media-focused), 'empty' (metadata only). Metadata is validated against the entity type schema when entities are provided. To update an existing fact, pass supersedes_event_id with the old event ID — the old event is hidden from future searches. Always search first to avoid duplicates.",
     inputSchema: SaveContentSchema,
     annotations: { readOnlyHint: false, destructiveHint: false },
-    handler: async (args: Static<typeof SaveContentSchema>, env: Env, ctx: ToolContext) => {
-      return await saveContent(args, env, ctx);
-    },
+    handler: saveContent,
   },
   {
     name: 'query_sql',
     description:
       'Execute paginated, sortable, searchable read-only SQL queries. Table references are auto-scoped to your organization. Do NOT include ORDER BY/LIMIT/OFFSET or positional parameters in your SQL.',
     inputSchema: QuerySqlSchema,
-    annotations: { readOnlyHint: true, idempotentHint: true },
-    handler: async (args: Static<typeof QuerySqlSchema>, env: Env, ctx: ToolContext) => {
-      return await querySql(args, env, ctx);
-    },
+    annotations: READ_ONLY,
+    handler: querySql,
   },
   // ─── Generic surface: discover + execute over the typed ClientSDK ─────────
   {
@@ -109,10 +104,8 @@ const TOOLS: ToolDefinition[] = [
     description:
       "Discover ClientSDK methods. Pass a namespace ('watchers', 'entities', etc.) for a listing, a dotted path ('watchers.create') for a drill-down with signature/throws/example, or a free-text query for fuzzy matches. Pair with `execute` to actually call methods.",
     inputSchema: SdkSearchSchema,
-    annotations: { readOnlyHint: true, idempotentHint: true },
-    handler: async (args: Static<typeof SdkSearchSchema>, env: Env, ctx: ToolContext) => {
-      return await sdkSearch(args, env, ctx);
-    },
+    annotations: READ_ONLY,
+    handler: sdkSearch,
   },
   {
     name: 'execute',
@@ -122,23 +115,19 @@ const TOOLS: ToolDefinition[] = [
     // The script can delete entities, drop watchers, trigger external operations
     // — host clients should treat it as destructive and require approval.
     annotations: { destructiveHint: true },
-    handler: async (args: Static<typeof ExecuteSchema>, env: Env, ctx: ToolContext) => {
-      return await executeScript(args, env, ctx);
-    },
+    handler: executeScript,
   },
-  // ─── Legacy REST/session-only admin tools ────────────────────────────────
-  ...LEGACY_ADMIN_TOOLS,
+  // ─── REST/session/CLI surface (manage_*, list_watchers, get_watcher, ...) ─
+  ...INTERNAL_REST_TOOLS,
   // ─── Path resolution (frontend internal) ──────────────────────────────────
   {
     name: 'resolve_path',
     description:
       'Resolve a namespace-based URL path like /acme/entity-type/entity-slug into namespace and entity details. Returns template_data with executed data source query results when templates define data_sources.',
     inputSchema: ResolvePathSchema,
-    annotations: { readOnlyHint: true, idempotentHint: true },
+    annotations: READ_ONLY,
     internal: true,
-    handler: async (args: Static<typeof ResolvePathSchema>, env: Env, ctx: ToolContext) => {
-      return await resolvePath(args, env, ctx);
-    },
+    handler: resolvePath,
   },
   // ─── Org discovery (exposed on both unscoped and scoped /mcp endpoints) ───
   {
@@ -146,7 +135,7 @@ const TOOLS: ToolDefinition[] = [
     description:
       'List organizations the authenticated user belongs to, plus any public workspaces the session can read. Use the slug with `client.org(slug)` inside an `execute` script for cross-org reads, or reconnect the MCP client to /mcp/{slug} to pin a different default.',
     inputSchema: ListOrganizationsSchema,
-    annotations: { readOnlyHint: true, idempotentHint: true },
+    annotations: READ_ONLY,
     handler: async () => {
       throw new Error('Handled directly in executeTool');
     },

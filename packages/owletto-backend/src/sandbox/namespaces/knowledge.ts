@@ -43,7 +43,9 @@ export interface KnowledgeReadInput {
   entity_ids?: number[];
 }
 
-export type KnowledgeDeleteInput = number | { event_id?: number; event_ids?: number[] };
+export type KnowledgeDeleteInput =
+  | number
+  | { event_id?: number; event_ids?: number[]; reason?: string };
 
 export interface KnowledgeNamespace {
   search(input: KnowledgeSearchInput): Promise<unknown>;

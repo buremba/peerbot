@@ -1,31 +1,27 @@
 /**
  * Tool: delete_knowledge
  *
- * Hard-delete one or more knowledge events by id. Cascades clean up embeddings,
- * classifications, and watcher-window links via FK ON DELETE CASCADE; events
- * that supersede the target have their `supersedes_event_id` reset (ON DELETE
- * SET NULL) so historical chains stay intact.
+ * The `events` table is append-only — no row is ever physically removed. To
+ * "delete" an event we insert a small tombstone event whose
+ * `supersedes_event_id` points at the target. The `current_event_records`
+ * view filters out events that have a newer superseder, so the original
+ * disappears from default search/query/read paths. The full history stays
+ * recoverable via `include_superseded` and direct `events`-table reads.
  *
- * Authorization is intentionally narrower than `save_knowledge`:
- *   - Requires an explicit member identity with write scope. We do NOT honor
- *     the watcher-reaction "system" bypass (`userId=null + isAuthenticated`)
- *     because reactions running unattended should not be able to mass-delete
- *     prior knowledge — saves can be reverted via `supersedes_event_id`,
- *     deletes cannot.
- *   - Only events stamped to the caller's org (`events.organization_id`) are
- *     removed. Cross-linked events surfaced via the entity- or connection-
- *     bridge in search/query stay intact (`not_found_ids` reports them).
+ * This matches the contract advertised by `save_knowledge`:
+ *   "Storage is append-only — pass `supersedes_event_id` to replace an
+ *    existing fact (the old event is hidden from future searches without
+ *    losing history)."
  *
- * Use `save_knowledge` with `supersedes_event_id` when you want to *replace* an
- * event while keeping the audit trail. Use this when you want it gone — for
- * example, to clean up a smoke-test write or remove a row that was never meant
- * to land.
+ * Authorization mirrors `save_knowledge` since the underlying primitive is
+ * the same (insert an event with `supersedes_event_id`).
  */
 
 import { type Static, Type } from '@sinclair/typebox';
 import { hasRequiredMcpScope } from '../auth/tool-access';
 import { getDb } from '../db/client';
 import type { Env } from '../index';
+import { insertEvent } from '../utils/insert-event';
 import logger from '../utils/logger';
 import type { ToolContext } from './registry';
 
@@ -40,28 +36,38 @@ export const DeleteContentSchema = Type.Object({
       description: 'Batch of event ids to delete. Provide either this or `event_id`.',
     })
   ),
+  reason: Type.Optional(
+    Type.String({
+      description:
+        'Optional human-readable reason; persisted on the tombstone for audit trails.',
+    })
+  ),
 });
 
 type DeleteContentArgs = Static<typeof DeleteContentSchema>;
 
-interface DeleteContentResult {
+export interface DeleteContentResult {
   deleted_ids: number[];
+  tombstone_ids: number[];
   not_found_ids: number[];
+  already_superseded_ids: number[];
 }
+
+const TOMBSTONE_SEMANTIC_TYPE = 'tombstone';
 
 export async function deleteContent(
   args: DeleteContentArgs,
   _env: Env,
   ctx: ToolContext
 ): Promise<DeleteContentResult> {
-  // No system bypass: watcher reactions and other unattended contexts must
-  // not be able to hard-delete events. Hard delete requires an explicit
-  // member with write scope.
-  if (!ctx.memberRole) {
-    throw new Error('delete_knowledge requires workspace membership with write access.');
-  }
-  if (!hasRequiredMcpScope('write', ctx.scopes)) {
-    throw new Error('delete_knowledge requires an MCP session with write access.');
+  const isSystem = ctx.userId === null && ctx.isAuthenticated;
+  if (!isSystem) {
+    if (!ctx.memberRole) {
+      throw new Error('delete_knowledge requires workspace membership with write access.');
+    }
+    if (!hasRequiredMcpScope('write', ctx.scopes)) {
+      throw new Error('delete_knowledge requires an MCP session with write access.');
+    }
   }
 
   const requested = collectIds(args);
@@ -71,23 +77,67 @@ export async function deleteContent(
 
   const sql = getDb();
 
-  const deleted = await sql<{ id: number }[]>`
-    DELETE FROM events
+  const inOrg = await sql<{ id: number }[]>`
+    SELECT id FROM events
     WHERE id = ANY(${requested}::bigint[])
       AND organization_id = ${ctx.organizationId}
-    RETURNING id
   `;
+  const inOrgIds = new Set(inOrg.map((row) => Number(row.id)));
+  const notFoundIds = requested.filter((id) => !inOrgIds.has(id));
 
-  const deletedIds = deleted.map((row) => Number(row.id));
-  const deletedSet = new Set(deletedIds);
-  const notFoundIds = requested.filter((id) => !deletedSet.has(id));
+  const candidateIds = [...inOrgIds];
+  const alreadySupersededRows =
+    candidateIds.length > 0
+      ? await sql<{ supersedes_event_id: number }[]>`
+        SELECT supersedes_event_id FROM events
+        WHERE supersedes_event_id = ANY(${candidateIds}::bigint[])
+      `
+      : [];
+  const alreadySupersededIds = Array.from(
+    new Set(alreadySupersededRows.map((row) => Number(row.supersedes_event_id)))
+  );
+  const alreadySupersededSet = new Set(alreadySupersededIds);
+
+  const targetIds = candidateIds.filter((id) => !alreadySupersededSet.has(id));
+
+  const tombstoneIds: number[] = [];
+  for (const targetId of targetIds) {
+    const tombstone = await insertEvent({
+      entityIds: [],
+      organizationId: ctx.organizationId,
+      originId: `tomb_${crypto.randomUUID()}`,
+      semanticType: TOMBSTONE_SEMANTIC_TYPE,
+      payloadType: 'empty',
+      content: null,
+      metadata: {
+        tombstone: true,
+        deleted_event_id: targetId,
+        ...(args.reason ? { reason: args.reason } : {}),
+      },
+      supersedesEventId: targetId,
+      createdBy: ctx.userId,
+      clientId: ctx.clientId,
+    });
+    tombstoneIds.push(Number(tombstone.id));
+  }
 
   logger.info(
-    { deletedIds, notFoundIds, organizationId: ctx.organizationId },
+    {
+      organizationId: ctx.organizationId,
+      deletedIds: targetIds,
+      tombstoneIds,
+      notFoundIds,
+      alreadySupersededIds,
+    },
     'delete_knowledge'
   );
 
-  return { deleted_ids: deletedIds, not_found_ids: notFoundIds };
+  return {
+    deleted_ids: targetIds,
+    tombstone_ids: tombstoneIds,
+    not_found_ids: notFoundIds,
+    already_superseded_ids: alreadySupersededIds,
+  };
 }
 
 function collectIds(args: DeleteContentArgs): number[] {

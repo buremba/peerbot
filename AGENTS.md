@@ -39,6 +39,7 @@ All chat platforms (Telegram, Slack, Discord, WhatsApp, Teams) run through Chat 
 - Workers call MCP tools via the gateway proxy using their JWT.
 - Built-in MCPs: `AskUser` (request user input), `UploadFile` (share files with user).
 - **Integration auth lives in Owletto** — OAuth, token refresh, and API proxying for third-party services (GitHub, Google, etc.) are handled by Owletto MCP servers. Workers never see OAuth tokens.
+- **`events` is append-only.** Never `DELETE FROM events`. To hide a row, insert a tombstone event whose `supersedes_event_id` points at it — the `current_event_records` view filters out anything that has a newer superseder, and `include_superseded` recovers history. `client.knowledge.delete()` and `save_knowledge({ supersedes_event_id, ... })` are the only sanctioned write paths for "removing" content.
 
 #### Guardrails
 - Primitive lives in `packages/core/src/guardrails/`: `Guardrail<stage>`, `GuardrailRegistry`, `runGuardrails()`. Stages: `input` (user message → worker), `output` (worker text → user), `pre-tool` (tool call authorization).

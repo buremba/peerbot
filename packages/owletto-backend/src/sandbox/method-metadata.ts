@@ -184,15 +184,16 @@ export default async (_ctx, client) => {
   },
   "knowledge.delete": {
     summary:
-      "Hard-delete one or more knowledge events your org owns. Returns `{ deleted_ids, not_found_ids }`. Only events with `events.organization_id = caller` are removed — cross-org events visible via entity/connection bridges are reported in `not_found_ids` so deletes never silently reach across workspaces. FK cascades clean up embeddings, classifications, and watcher-window links; superseding chains use ON DELETE SET NULL so history stays intact. Use `knowledge.save` with `supersedes_event_id` to replace an event while keeping the audit trail.",
+      "Soft-delete one or more knowledge events your org owns by writing a tombstone superseding event. The original is hidden from default search/query/read paths via the `current_event_records` view; the full row stays on disk and is recoverable via `include_superseded`. Only events with `events.organization_id = caller` are touched — cross-org events visible via entity/connection bridges are reported in `not_found_ids`, and events already superseded come back as `already_superseded_ids`. Returns `{ deleted_ids, tombstone_ids, not_found_ids, already_superseded_ids }`. Pair with `knowledge.save({ supersedes_event_id, content: ... })` when you want to *replace* an event rather than just hide it.",
     access: "write",
     example: "await client.knowledge.delete(2321593);",
-    usageExample: `// Remove a smoke-test write that should not have landed.
+    usageExample: `// Hide a smoke-test write that should not have landed.
 export default async (_ctx, client) => {
-  const { deleted_ids, not_found_ids } = await client.knowledge.delete({
+  const result = await client.knowledge.delete({
     event_ids: [2321593, 2321594],
+    reason: 'smoke test cleanup',
   });
-  return { deleted_ids, not_found_ids };
+  return result;
 };`,
   },
 

@@ -353,15 +353,23 @@ describe('checkToolAccess', () => {
   });
 });
 
-describe('frontend apiCall coverage', () => {
-  // owletto-web is a submodule and may be absent on shallow clones.
+describe('first-party tool-name coverage', () => {
+  // Both surfaces share the same dispatch (`POST /api/:orgSlug/:toolName` →
+  // `restToolProxy` → `executeTool` → `getTool(name)`), but the CLI's
+  // browser-auth flow goes through MCP RPC and needs its tools to *also* be
+  // visible on `tools/list` (i.e. NOT `internal: true`). These tests pin both
+  // invariants.
   const __dirname = dirname(fileURLToPath(import.meta.url));
   const webSrcRoot = join(__dirname, '..', '..', '..', '..', 'owletto-web', 'src');
-  let webPresent = true;
-  try {
-    statSync(webSrcRoot);
-  } catch {
-    webPresent = false;
+  const cliSrcRoot = join(__dirname, '..', '..', '..', '..', 'owletto-cli', 'src');
+
+  function present(path: string): boolean {
+    try {
+      statSync(path);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   function collectTsFiles(dir: string, out: string[] = []): string[] {
@@ -377,11 +385,9 @@ describe('frontend apiCall coverage', () => {
     return out;
   }
 
-  function extractApiCallNames(): Set<string> {
-    const files = collectTsFiles(webSrcRoot);
-    const pattern = /\bapiCall(?:<[^>]*>)?\(\s*['"]([a-zA-Z_][a-zA-Z0-9_]*)['"]/g;
+  function extractMatches(root: string, pattern: RegExp): Set<string> {
     const names = new Set<string>();
-    for (const file of files) {
+    for (const file of collectTsFiles(root)) {
       for (const match of readFileSync(file, 'utf-8').matchAll(pattern)) {
         names.add(match[1]);
       }
@@ -389,23 +395,16 @@ describe('frontend apiCall coverage', () => {
     return names;
   }
 
-  // Names the frontend calls that have no backend handler. Each entry is dead
-  // code (unused hook) — kept here so the test fails the day someone wires it
-  // up without first registering the tool. Empty this set when the frontend
-  // is cleaned up.
+  // Names a first-party caller invokes that have no backend handler. Each
+  // entry is dead code — kept here so the test fails the day someone wires
+  // it up without first registering the tool. Empty this set when cleaned up.
   const KNOWN_DEAD_NAMES = new Set<string>([
-    // useDeleteWindow in packages/owletto-web/src/hooks/use-watchers.ts has
-    // no caller; manage_queue was never registered. Either delete the hook
-    // or add a manage_queue tool.
+    // useDeleteWindow in owletto-web/src/hooks/use-watchers.ts has no caller;
+    // manage_queue was never registered. Delete the hook or add the tool.
     'manage_queue',
   ]);
 
-  it('every apiCall(...) tool name is registered in the backend', () => {
-    if (!webPresent) {
-      // Submodule not checked out (shallow clone). Skip rather than fail.
-      return;
-    }
-    const used = extractApiCallNames();
+  function assertRegistered(used: Set<string>): void {
     const drift: string[] = [];
     const stale: string[] = [];
     for (const name of used) {
@@ -419,5 +418,58 @@ describe('frontend apiCall coverage', () => {
     expect(drift).toEqual([]);
     // If a previously-dead name is now registered, remove it from the allowlist.
     expect(stale).toEqual([]);
+  }
+
+  it('every owletto-web apiCall(...) tool name is registered', () => {
+    if (!present(webSrcRoot)) return; // submodule not checked out (shallow clone)
+    const used = extractMatches(
+      webSrcRoot,
+      /\bapiCall(?:<[^>]*>)?\(\s*['"]([a-zA-Z_][a-zA-Z0-9_]*)['"]/g
+    );
+    assertRegistered(used);
+  });
+
+  it('every owletto-cli REST callTool(ctx, name) is registered', () => {
+    if (!present(cliSrcRoot)) return;
+    const used = extractMatches(
+      cliSrcRoot,
+      /\bcallTool\(\s*[A-Za-z_][A-Za-z0-9_]*\s*,\s*['"]([a-zA-Z_][a-zA-Z0-9_]*)['"]/g
+    );
+    assertRegistered(used);
+  });
+
+  it('every owletto-cli MCP tools/call name is registered AND visible on the public MCP surface', () => {
+    if (!present(cliSrcRoot)) return;
+    // Match `name: 'foo'` literals inside browser-auth.ts (the file using
+    // mcpRpc 'tools/call'). Scoped by file rather than context to keep the
+    // regex simple — false positives on unrelated `name:` literals are caught
+    // by the registry check anyway.
+    const browserAuth = join(cliSrcRoot, 'commands', 'browser-auth.ts');
+    if (!present(browserAuth)) return;
+    const content = readFileSync(browserAuth, 'utf-8');
+    const used = new Set<string>();
+    for (const match of content.matchAll(/\bname:\s*['"]([a-zA-Z_][a-zA-Z0-9_]*)['"]/g)) {
+      used.add(match[1]);
+    }
+    // The defineCommand frontmatter uses `name: 'browser-auth'` — that's not
+    // a tool, just the CLI command's own name. Filter to actually-registered
+    // tools to avoid false positives without hiding genuine drift.
+    const candidates = [...used].filter((n) => getTool(n));
+    expect(candidates.length).toBeGreaterThan(0); // sanity: we found at least one
+
+    const internal: string[] = [];
+    const missing: string[] = [];
+    for (const name of candidates) {
+      const tool = getTool(name);
+      if (!tool) {
+        missing.push(name);
+        continue;
+      }
+      if (tool.internal) internal.push(name);
+    }
+    expect(missing).toEqual([]);
+    // CLI hits these via MCP RPC; flipping any to `internal: true` silently
+    // breaks `owletto browser-auth`. Pin the invariant.
+    expect(internal).toEqual([]);
   });
 });

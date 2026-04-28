@@ -130,14 +130,22 @@ async function ensureMcpSession(options?: {
   token?: string;
   env?: Partial<Env>;
   agentId?: string;
+  orgSlug?: string;
+  cookie?: string;
 }): Promise<string> {
-  const cacheKey = `${options?.token ?? '__anonymous__'}:${options?.agentId ?? '__no_agent__'}`;
+  const cookieKey = options?.cookie ? options.cookie.slice(0, 24) : '__no_cookie__';
+  const cacheKey = `${options?.token ?? '__anonymous__'}:${options?.agentId ?? '__no_agent__'}:${options?.orgSlug ?? '__unscoped__'}:${cookieKey}`;
 
   const existing = mcpSessions.get(cacheKey);
   if (existing) return existing;
 
+  // The unscoped `/mcp` endpoint never derives org context from an OAuth
+  // token alone; pin to `/mcp/{orgSlug}` so the auth middleware sets
+  // `c.var.organizationId`, matching what production MCP clients do.
+  const mcpPath = options?.orgSlug ? `/mcp/${options.orgSlug}` : '/mcp';
+
   // 1. Send initialize
-  const initResponse = await post('/mcp', {
+  const initResponse = await post(mcpPath, {
     body: {
       jsonrpc: '2.0',
       id: '__test_init__',
@@ -153,6 +161,7 @@ async function ensureMcpSession(options?: {
       },
     },
     token: options?.token,
+    cookie: options?.cookie,
     env: options?.env,
   });
 
@@ -165,13 +174,14 @@ async function ensureMcpSession(options?: {
   }
 
   // 2. Send notifications/initialized
-  await post('/mcp', {
+  await post(mcpPath, {
     body: {
       jsonrpc: '2.0',
       method: 'notifications/initialized',
     },
     headers: { 'mcp-session-id': sessionId },
     token: options?.token,
+    cookie: options?.cookie,
     env: options?.env,
   });
 
@@ -203,11 +213,18 @@ interface MCPResponse<T = any> {
 export async function mcpRequest<T = any>(
   method: string,
   params?: any,
-  options?: { token?: string; env?: Partial<Env>; agentId?: string }
+  options?: {
+    token?: string;
+    env?: Partial<Env>;
+    agentId?: string;
+    orgSlug?: string;
+    cookie?: string;
+  }
 ): Promise<MCPResponse<T>> {
   const sessionId = await ensureMcpSession(options);
+  const mcpPath = options?.orgSlug ? `/mcp/${options.orgSlug}` : '/mcp';
 
-  const response = await post('/mcp', {
+  const response = await post(mcpPath, {
     body: {
       jsonrpc: '2.0',
       id: 1,
@@ -216,6 +233,7 @@ export async function mcpRequest<T = any>(
     },
     headers: { 'mcp-session-id': sessionId },
     token: options?.token,
+    cookie: options?.cookie,
     env: options?.env,
   });
 
@@ -234,11 +252,12 @@ export async function mcpRequest<T = any>(
 export async function mcpToolsCall<T = any>(
   toolName: string,
   args: any,
-  options?: { token?: string; env?: Partial<Env>; agentId?: string }
+  options?: { token?: string; env?: Partial<Env>; agentId?: string; orgSlug?: string }
 ): Promise<T> {
   const sessionId = await ensureMcpSession(options);
+  const mcpPath = options?.orgSlug ? `/mcp/${options.orgSlug}` : '/mcp';
 
-  const response = await post('/mcp', {
+  const response = await post(mcpPath, {
     body: {
       jsonrpc: '2.0',
       id: 1,
@@ -283,6 +302,8 @@ export async function mcpListTools(options?: {
   token?: string;
   env?: Partial<Env>;
   agentId?: string;
+  orgSlug?: string;
+  cookie?: string;
 }): Promise<{ tools: Array<{ name: string; description: string }> }> {
   const response = await mcpRequest('tools/list', {}, options);
 

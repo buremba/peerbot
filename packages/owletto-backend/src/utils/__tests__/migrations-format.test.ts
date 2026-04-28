@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-const MIGRATIONS_DIR = path.resolve(__dirname, '../../../db/migrations');
+// Migrations live at the repo root, not in any one package.
+const MIGRATIONS_DIR = path.resolve(__dirname, '../../../../../db/migrations');
 
 describe('migration files (dbmate format)', () => {
   const files = fs

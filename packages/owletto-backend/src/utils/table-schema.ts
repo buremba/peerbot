@@ -33,6 +33,7 @@ export const QUERYABLE_SCHEMA = {
       columns: cols(
         'id',
         'entity_type',
+        'entity_type_id',
         'parent_id',
         'name',
         'slug',
@@ -102,7 +103,12 @@ export const QUERYABLE_SCHEMA = {
         'error_message',
         'created_by',
         'created_at',
-        'updated_at'
+        'updated_at',
+        'auth_profile_id',
+        'app_auth_profile_id',
+        'visibility',
+        'deleted_at',
+        'agent_id'
       ),
     },
     // watchers
@@ -112,6 +118,7 @@ export const QUERYABLE_SCHEMA = {
         'id',
         'name',
         'slug',
+        'description',
         'version',
         'current_version_id',
         'schedule',
@@ -128,7 +135,10 @@ export const QUERYABLE_SCHEMA = {
         'created_by',
         'organization_id',
         'reaction_script',
-        'reaction_script_compiled'
+        'reaction_script_compiled',
+        'connection_id',
+        'source_watcher_id',
+        'watcher_group_id'
       ),
     },
     // event_classifications
@@ -173,7 +183,10 @@ export const QUERYABLE_SCHEMA = {
         'reactions_guidance',
         'change_notes',
         'created_by',
-        'created_at'
+        'created_at',
+        'required_source_types',
+        'recommended_source_types',
+        'version_sources'
       ),
     },
     // watcher_windows
@@ -196,7 +209,8 @@ export const QUERYABLE_SCHEMA = {
         'source_window_ids',
         'created_at',
         'version_id',
-        'depth'
+        'depth',
+        'run_id'
       ),
     },
     // oauth_clients (excludes: client_secret, client_secret_expires_at)
@@ -267,10 +281,18 @@ export const QUERYABLE_SCHEMA = {
         'items_collected',
         'created_at',
         'updated_at',
-        'pinned_version'
+        'pinned_version',
+        'display_name',
+        'deleted_at',
+        'repair_agent_id',
+        'repair_thread_id',
+        'repair_attempt_count',
+        'last_repair_at',
+        'first_failure_at',
+        'last_repair_post_hash'
       ),
     },
-    // connector_definitions
+    // connector_definitions (excludes: large *_config JSONB blobs)
     {
       name: 'connector_definitions',
       columns: cols(
@@ -287,7 +309,10 @@ export const QUERYABLE_SCHEMA = {
         'status',
         'created_at',
         'updated_at',
-        'login_enabled'
+        'login_enabled',
+        'api_type',
+        'favicon_domain',
+        'default_repair_agent_id'
       ),
     },
   ],

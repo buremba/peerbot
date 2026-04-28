@@ -112,6 +112,15 @@ describe.skipIf(!hasDb)('QUERYABLE_SCHEMA vs database (drift detection)', () => 
     entities: new Set(['embedding', 'content_tsv', 'content_hash']),
     events: new Set([]),
     connections: new Set(['credentials']),
+    // Large per-connector JSONB blobs — too big and structure-dependent to expose
+    // via raw SQL. Callers should hit the typed connector handler instead.
+    connector_definitions: new Set([
+      'mcp_config',
+      'api_config',
+      'openapi_config',
+      'default_connection_config',
+      'entity_link_overrides',
+    ]),
     oauth_clients: new Set(['client_secret', 'client_secret_expires_at']),
     oauth_tokens: new Set(['token_hash']),
     feeds: new Set(['checkpoint']),

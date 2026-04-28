@@ -14,8 +14,12 @@ describe('connector-catalog helpers', () => {
 
     expect(uris).toHaveLength(1);
     expect(uris[0].startsWith('file://')).toBe(true);
-    expect(fileURLToPath(uris[0]).endsWith('/connectors')).toBe(true);
-    expect(existsSync(fileURLToPath(uris[0]))).toBe(true);
+    const dir = fileURLToPath(uris[0]);
+    expect(existsSync(dir)).toBe(true);
+    // Path may be packages/owletto-connectors/src or any other repo-local
+    // candidate; just assert it resolves to a real directory containing
+    // connector definitions.
+    expect(existsSync(`${dir}/google_gmail.ts`)).toBe(true);
   });
 
   it('normalizes both bare paths and file URIs', () => {

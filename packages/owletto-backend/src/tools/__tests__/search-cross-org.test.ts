@@ -5,7 +5,7 @@
  * the include_public_catalogs flag is on (default).
  */
 
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { cleanupTestDatabase } from '../../__tests__/setup/test-db';
 import {
   addUserToOrganization,
@@ -13,9 +13,14 @@ import {
   createTestOrganization,
   createTestUser,
 } from '../../__tests__/setup/test-fixtures';
+import { initWorkspaceProvider } from '../../workspace';
 import { search } from '../search';
 
 describe('search cross-org public catalog discovery', () => {
+  beforeAll(async () => {
+    // search() walks workspace metadata to attach org slugs.
+    await initWorkspaceProvider();
+  });
   beforeEach(async () => {
     await cleanupTestDatabase();
   });
@@ -46,7 +51,7 @@ describe('search cross-org public catalog discovery', () => {
       { organizationId: tenant.id, userId: user.id } as Parameters<typeof search>[2]
     );
 
-    const ids = result.entities.map((e: { id: number }) => e.id);
+    const ids = result.matches.map((e: { id: number }) => e.id);
     expect(ids).toContain(tenantEntity.id);
     expect(ids).toContain(publicEntity.id);
   });
@@ -82,7 +87,7 @@ describe('search cross-org public catalog discovery', () => {
       { organizationId: tenant.id, userId: user.id } as Parameters<typeof search>[2]
     );
 
-    const ids = result.entities.map((e: { id: number }) => e.id);
+    const ids = result.matches.map((e: { id: number }) => e.id);
     expect(ids).not.toContain(publicEntity.id);
   });
 
@@ -107,7 +112,7 @@ describe('search cross-org public catalog discovery', () => {
       { organizationId: tenant.id, userId: user.id } as Parameters<typeof search>[2]
     );
 
-    const ids = result.entities.map((e: { id: number }) => e.id);
+    const ids = result.matches.map((e: { id: number }) => e.id);
     expect(ids).not.toContain(privateEntity.id);
   });
 });

@@ -8,9 +8,13 @@ on:
     types: [opened, synchronize, reopened]
 
 jobs:
-  test:
+  # Fast unit tests — no Postgres, no submodule needed for most.
+  # Splits from `integration` so a unit failure surfaces in <2 min instead of
+  # waiting behind DB setup. Worker tests run under bun (full suite, not the
+  # cherry-picked subset that used to live here).
+  unit:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -22,47 +26,40 @@ jobs:
         with:
           bun-version: 1.3.5
 
-      # Pin Node so the Sandbox runtime test below can load isolated-vm —
-      # it ships abi127 (Node 22) and abi137 (Node 24) prebuilds; runner
-      # default may be a non-matching major.
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-
       - name: Install dependencies
         run: bun install
 
-      - name: Build core package first
-        run: cd packages/core && bun run build
-
-      - name: Build owletto SDK for backend tests
-        run: cd packages/owletto-sdk && bun run build
-
-      - name: Run tests with coverage
+      - name: Build core + sdk + owletto-worker for downstream type-resolution
+        # owletto-worker integration tests import from its compiled `dist/`
+        # (subprocess-mode tests spawn the built executor); build it here
+        # so those run.
         run: |
-          # Run core, gateway, and cli tests fully
-          bun test packages/core packages/gateway packages/cli --coverage
-          # Owletto backend sandbox/auth coverage for MCP execute/search changes
-          bun test packages/owletto-backend/src/__tests__/unit/sandbox
-          bun test packages/owletto-backend/src/auth/__tests__/tool-access.test.ts
-          # Worker tests that don't transitively load pi-coding-agent runtime (WASM unavailable on CI)
-          bun test packages/worker/src/__tests__/embedded-tools.test.ts packages/worker/src/__tests__/model-resolver.test.ts packages/worker/src/__tests__/tool-policy.test.ts packages/worker/src/__tests__/processor.test.ts packages/worker/src/__tests__/audio-provider-suggestions.test.ts packages/worker/src/__tests__/generated-media.test.ts packages/worker/src/__tests__/tool-implementations.test.ts packages/worker/src/__tests__/instructions.test.ts packages/worker/src/__tests__/custom-tools.test.ts
+          cd packages/core && bun run build && cd ../..
+          cd packages/owletto-sdk && bun run build && cd ../..
+          cd packages/owletto-worker && bun run build && cd ../..
 
-      # The execute MCP tool runs scripts in isolated-vm — a V8 native addon.
-      # Bun (JavaScriptCore) cannot link the V8 ABI, so this test must run
-      # under Node, the production runtime. Invoking vitest via `node` (not
-      # `bun run`) guarantees the runtime even though the binary's shebang
-      # already points at node. SKIP_TEST_DB_SETUP=1 keeps this fast — the
-      # test uses a stub SDK and doesn't need Postgres.
-      #
-      # The broader vitest suite (~38 integration files) is not yet wired
-      # into CI; many are stale after the manage_* → execute/search MCP
-      # consolidation in #348. Tracked separately.
-      - name: Sandbox runtime test (Node + isolated-vm)
-        working-directory: packages/owletto-backend
-        env:
-          SKIP_TEST_DB_SETUP: '1'
-        run: node ../../node_modules/.bin/vitest run src/__tests__/integration/sandbox/run-script-runtime.test.ts
+      - name: core / gateway / cli (bun:test)
+        run: bun test packages/core packages/gateway packages/cli --coverage
+
+      - name: worker (bun:test, full suite)
+        # The previous CI cherry-picked 8 of 18 files because pi-coding-agent
+        # was thought to fail under bun on Linux. Locally the full suite
+        # passes; if Linux turns out different we'll narrow this back down,
+        # but we own the WASM concern via run-script-runtime.test.ts under
+        # Node + isolated-vm in the integration job below.
+        run: bun test packages/worker
+
+      - name: owletto-backend (bun:test units)
+        run: |
+          bun test packages/owletto-backend/src/__tests__/unit
+          bun test packages/owletto-backend/src/auth/__tests__/tool-access.test.ts
+
+      - name: owletto-cli + owletto-worker (bun:test)
+        # owletto-openclaw e2e tests need a live backend (docker compose) and
+        # belong in the smoke-example workflow, not the unit job.
+        run: |
+          bun test packages/owletto-cli
+          bun test packages/owletto-worker
 
       - name: Upload coverage
         if: always()
@@ -70,6 +67,101 @@ jobs:
         with:
           files: coverage/lcov.info
           fail_ci_if_error: false
+
+  # Frontend tests run under jsdom via vitest. owletto-web is a submodule;
+  # forks without the deploy key get a stub package and skip these.
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: submodule
+        uses: ./.github/actions/setup-submodule
+        with:
+          deploy-key: ${{ secrets.OWLETTO_WEB_DEPLOY_KEY }}
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.5
+
+      - name: Install dependencies
+        if: steps.submodule.outputs.stubbed != 'true'
+        run: bun install
+
+      - name: Build owletto-sdk (owletto-web imports its compiled dist)
+        if: steps.submodule.outputs.stubbed != 'true'
+        run: cd packages/owletto-sdk && bun run build
+
+      - name: owletto-web tests (vitest)
+        # owletto-web doesn't define a `test` script in its package.json yet
+        # (that change ships as a separate submodule PR). Invoke vitest
+        # directly via the workspace-installed binary so this works on
+        # whatever submodule SHA the parent repo points at.
+        if: steps.submodule.outputs.stubbed != 'true'
+        run: cd packages/owletto-web && ../../node_modules/.bin/vitest run
+
+  # Backend integration tests need a real Postgres + pgvector. We run them
+  # under Node (not bun) for two reasons: (1) the vitest suite uses Node-only
+  # APIs in places, and (2) the sandbox runtime requires isolated-vm which
+  # is a V8 native addon that bun cannot load.
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: owletto_test
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5433/owletto_test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup-submodule
+        with:
+          deploy-key: ${{ secrets.OWLETTO_WEB_DEPLOY_KEY }}
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.5
+
+      # Pin Node 22 so isolated-vm's abi127 prebuild loads. Without this the
+      # sandbox runtime test segfaults on the runner's default Node major.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Build packages owletto-backend depends on
+        run: |
+          cd packages/core && bun run build && cd ../..
+          cd packages/owletto-sdk && bun run build && cd ../..
+          cd packages/gateway && bun run build && cd ../..
+
+      - name: Verify Postgres health (fail fast if pgvector setup is broken)
+        run: |
+          for i in {1..20}; do
+            if pg_isready -h 127.0.0.1 -p 5433 -U postgres; then break; fi
+            sleep 1
+          done
+          PGPASSWORD=postgres psql -h 127.0.0.1 -p 5433 -U postgres -d owletto_test \
+            -c "CREATE EXTENSION IF NOT EXISTS vector"
+
+      - name: owletto-backend integration suite (vitest under Node)
+        working-directory: packages/owletto-backend
+        run: node ../../node_modules/.bin/vitest run --reporter=default
 
   format-lint:
     runs-on: ubuntu-latest
@@ -176,4 +268,3 @@ jobs:
             echo "::error::$pending migrations still pending after dbmate up"
             exit 1
           fi
-

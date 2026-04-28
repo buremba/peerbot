@@ -269,7 +269,9 @@ function buildPersistedSession(
   return {
     sessionId,
     userId: authCtx.userId,
-    clientId: authCtx.clientId,
+    // `mcp_sessions.client_id` references oauth_clients(id). PAT sessions are
+    // authenticated, but their synthetic `pat_<id>` client id has no oauth row.
+    clientId: authCtx.tokenType === 'oauth' ? authCtx.clientId : null,
     organizationId: authCtx.organizationId,
     memberRole: authCtx.memberRole,
     requestedAgentId: authCtx.requestedAgentId,
@@ -369,7 +371,7 @@ async function recordMcpClientActivity(
     capabilities: Record<string, unknown> | null;
   } | null
 ): Promise<void> {
-  if (!authCtx.clientId) return;
+  if (!authCtx.clientId || authCtx.tokenType !== 'oauth') return;
 
   const sql = createDbClientFromEnv(env);
   const clientsStore = new OAuthClientsStore(sql);

@@ -6,7 +6,10 @@ import {
   renderSkillMemorySection,
 } from '../../../../owletto-openclaw/src/owletto-guidance';
 
-const skillPath = resolve(process.cwd(), 'skills/owletto/SKILL.md');
+// Skill lives at <repo-root>/skills/owletto/SKILL.md. Resolve relative to this
+// file so the test works regardless of `process.cwd()` (worktrees, vitest's
+// per-package cwd, IDE runners).
+const skillPath = resolve(__dirname, '../../../../../skills/owletto/SKILL.md');
 const START_MARKER = '<!-- owletto-memory-guidance:start -->';
 const END_MARKER = '<!-- owletto-memory-guidance:end -->';
 

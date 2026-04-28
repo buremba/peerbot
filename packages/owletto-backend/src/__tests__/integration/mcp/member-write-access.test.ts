@@ -117,7 +117,11 @@ describe('MCP member write access', () => {
     const toolNames = body.result.tools.map((tool: any) => tool.name);
 
     expect(toolNames).not.toContain('save_knowledge');
-    expect(toolNames).toContain('manage_entity');
+    // manage_entity moved to the internal REST/CLI surface in #432; it's no
+    // longer registered as an external MCP tool. Verify that read-only
+    // discovery surfaces (search_knowledge / search) are still visible.
+    expect(toolNames).toContain('search_knowledge');
+    expect(toolNames).toContain('search');
   });
 
   it('returns an upgrade-path message for public-org non-member write attempts', async () => {

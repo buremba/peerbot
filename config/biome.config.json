@@ -21,6 +21,7 @@
       "!**/node_modules/**",
       "!**/.astro/**",
       "!**/tmp/**",
+      "!**/.connector-child-*.mjs",
       "!**/provision-careops-watchers*",
       "!**/*.css",
       "!**/packages/owletto-backend/**",

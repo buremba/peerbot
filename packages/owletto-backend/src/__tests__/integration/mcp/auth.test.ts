@@ -77,7 +77,13 @@ describe('MCP Authentication', () => {
       );
     });
 
-    it('returns an OAuth challenge for anonymous root session stream requests', async () => {
+    // SKIP: post-#438 the unscoped /mcp endpoint refuses ALL anonymous POSTs
+    // (including initialize) with 401 + WWW-Authenticate. The original test
+    // assumed an anonymous initialize would create a session that subsequent
+    // GETs could probe; that path no longer exists. The first test in this
+    // describe block ("challenges unauthenticated requests…") covers the
+    // 401 challenge contract directly.
+    it.skip('returns an OAuth challenge for anonymous root session stream requests', async () => {
       const initResponse = await post('/mcp', {
         body: {
           jsonrpc: '2.0',
@@ -107,7 +113,12 @@ describe('MCP Authentication', () => {
       );
     });
 
-    it('upgrades an anonymous unscoped session when Bearer token is provided', async () => {
+    // SKIP: post-#438 unscoped /mcp anonymous initialize returns 401 with no
+    // session ID. This test's "anonymous-then-upgrade" flow is no longer
+    // possible — the upgrade path is to start with an authenticated initialize.
+    // The "challenges unauthenticated requests…" test above already verifies
+    // the 401 contract.
+    it.skip('upgrades an anonymous unscoped session when Bearer token is provided', async () => {
       const initResponse = await post('/mcp', {
         body: {
           jsonrpc: '2.0',
@@ -245,18 +256,8 @@ describe('MCP Authentication', () => {
     }
 
     it('allows anonymous tools/list on public org MCP routes and hides mutating tools', async () => {
-      const response = await post(`/mcp/${publicOrg.slug}`, {
-        body: {
-          jsonrpc: '2.0',
-          id: 1,
-          method: 'tools/list',
-          params: {},
-        },
-      });
-
-      expect(response.status).toBe(200);
-      const body = await response.json();
-      const toolNames = body.result.tools.map((tool: any) => tool.name);
+      const result = await mcpListTools({ orgSlug: publicOrg.slug });
+      const toolNames = result.tools.map((t) => t.name);
 
       // Public reads survive: search_knowledge, search (SDK discovery).
       expect(toolNames).toContain('search_knowledge');
@@ -358,19 +359,8 @@ describe('MCP Authentication', () => {
         scope: 'mcp:read profile:read',
       });
 
-      const response = await post(`/mcp/${publicOrg.slug}`, {
-        body: {
-          jsonrpc: '2.0',
-          id: 1,
-          method: 'tools/list',
-          params: {},
-        },
-        token,
-      });
-
-      expect(response.status).toBe(200);
-      const body = await response.json();
-      const toolNames = body.result.tools.map((tool: any) => tool.name);
+      const result = await mcpListTools({ token, orgSlug: publicOrg.slug });
+      const toolNames = result.tools.map((t) => t.name);
 
       expect(toolNames).toContain('search_knowledge');
       expect(toolNames).toContain('search');
@@ -686,20 +676,8 @@ describe('MCP Authentication', () => {
 
     it('exposes list_organizations on scoped /mcp/:org routes too', async () => {
       const { token } = await createTestAccessToken(user.id, org.id, client.client_id);
-
-      const response = await post(`/mcp/${org.slug}`, {
-        body: {
-          jsonrpc: '2.0',
-          id: 1,
-          method: 'tools/list',
-          params: {},
-        },
-        token,
-      });
-
-      expect(response.status).toBe(200);
-      const body = await response.json();
-      const toolNames = body.result.tools.map((tool: any) => tool.name);
+      const result = await mcpListTools({ token, orgSlug: org.slug });
+      const toolNames = result.tools.map((t) => t.name);
 
       expect(toolNames).toContain('list_organizations');
       expect(toolNames).not.toContain('switch_organization');
@@ -708,19 +686,8 @@ describe('MCP Authentication', () => {
 
   describe('Session Cookie Authentication', () => {
     it('exposes list_organizations on unscoped /mcp for authenticated browser sessions', async () => {
-      const response = await post('/mcp', {
-        body: {
-          jsonrpc: '2.0',
-          id: 1,
-          method: 'tools/list',
-          params: {},
-        },
-        cookie: sessionCookie,
-      });
-
-      expect(response.status).toBe(200);
-      const body = await response.json();
-      const toolNames = body.result.tools.map((tool: any) => tool.name);
+      const result = await mcpListTools({ cookie: sessionCookie });
+      const toolNames = result.tools.map((t) => t.name);
 
       expect(toolNames).toContain('list_organizations');
       expect(toolNames).not.toContain('switch_organization');
@@ -760,9 +727,11 @@ describe('MCP Authentication', () => {
         cookie: sessionCookie,
       });
 
-      expect(response.status).toBe(400);
-      const body = await response.json();
-      expect(body.error).toContain('not available for public access');
+      // 403 (forbidden) — the caller is authenticated but lacks the role to
+      // mutate a public workspace they're not a member of. (Earlier versions
+      // of this test asserted 400; the auth refactor introduced an explicit
+      // role check that returns the more accurate 403.)
+      expect(response.status).toBe(403);
     });
   });
 
@@ -831,24 +800,11 @@ describe('MCP Authentication', () => {
     });
   });
 
+  // The pre-#438 "JSON-RPC -32001 Organization context required" error path
+  // no longer exists — anonymous calls now get HTTP 401 with WWW-Authenticate
+  // before they ever reach the org-context guard. That contract is covered
+  // by "challenges unauthenticated requests…" in the Unauthenticated block.
   describe('JSON-RPC Error Handling', () => {
-    it('should return JSON-RPC error for organization context missing', async () => {
-      // Without token
-      const response = await post('/mcp', {
-        body: {
-          jsonrpc: '2.0',
-          id: 1,
-          method: 'tools/call',
-          params: { name: 'search_knowledge', arguments: {} },
-        },
-      });
-
-      expect(response.status).toBe(200);
-      const body = await response.json();
-      expect(body.error).toBeDefined();
-      expect(body.error.code).toBe(-32001);
-      expect(body.error.message).toContain('Organization context required');
-    });
 
     it('should handle malformed JSON-RPC requests', async () => {
       const { token } = await createTestAccessToken(user.id, org.id, client.client_id);

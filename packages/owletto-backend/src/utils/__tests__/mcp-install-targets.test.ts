@@ -31,7 +31,7 @@ describe('getMcpInstallTargets', () => {
 
     expect(openclaw?.actions).toContainEqual({
       type: 'command',
-      label: 'Log in to Owletto',
+      label: 'Log in to Lobu memory',
       value: `owletto login --mcpUrl ${mcpUrl}`,
     });
     expect(openclaw?.actions).toContainEqual({

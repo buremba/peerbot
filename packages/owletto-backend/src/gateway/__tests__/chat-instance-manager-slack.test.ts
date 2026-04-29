@@ -1,5 +1,8 @@
-import { describe, expect, mock, test } from "bun:test";
-import { MockRedisClient } from "@lobu/core/testing";
+import { beforeAll, describe, expect, mock, test } from "bun:test";
+import {
+  ensurePgliteForGatewayTests,
+  resetTestDatabase,
+} from "./helpers/db-setup.js";
 
 mock.module("@aws-sdk/client-secrets-manager", () => ({
   GetSecretValueCommand: class GetSecretValueCommand {},
@@ -12,6 +15,10 @@ mock.module("@aws-sdk/client-secrets-manager", () => ({
 
 const TEST_ENCRYPTION_KEY =
   "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+beforeAll(async () => {
+  await ensurePgliteForGatewayTests();
+});
 
 async function loadChatInstanceManager() {
   const mod = await import("../connections/chat-instance-manager.js");
@@ -72,8 +79,12 @@ describe("ChatInstanceManager Slack marketplace support", () => {
     const originalKey = process.env.ENCRYPTION_KEY;
     process.env.ENCRYPTION_KEY = TEST_ENCRYPTION_KEY;
     try {
+      await resetTestDatabase();
       const ChatInstanceManager = await loadChatInstanceManager();
       const { SecretStoreRegistry } = await import("../secrets/index.js");
+      const { ChatConnectionStore } = await import(
+        "../connections/chat-connection-store.js"
+      );
 
       // Empty in-memory secret store: any secret-ref lookup returns null,
       // forcing resolveConfigForRuntime to throw.
@@ -95,37 +106,34 @@ describe("ChatInstanceManager Slack marketplace support", () => {
         secret: backingStore,
       });
 
-      const redis = new MockRedisClient();
       const services = {
-        getQueue: () => ({ getRedisClient: () => redis }),
+        getQueue: () => ({}),
         getPublicGatewayUrl: () => "",
         getSecretStore: () => secretStore,
       } as any;
 
       const manager = new ChatInstanceManager() as any;
       manager.services = services;
-      manager.redis = redis;
       manager.publicGatewayUrl = "";
 
       // Seed a connection whose `botToken` is a secret ref that doesn't
       // exist in the store — resolveConfigForRuntime will throw.
       const connectionId = "conn-broken";
-      const connection = {
+      const store = new ChatConnectionStore();
+      await store.upsert({
         id: connectionId,
         platform: "telegram",
         templateAgentId: "agent-1",
         config: {
           platform: "telegram",
           botToken: "secret://connections%2Fconn-broken%2FbotToken",
-        },
+        } as any,
         settings: { allowGroups: true },
         metadata: {},
         status: "active",
         createdAt: 1,
         updatedAt: 1,
-      };
-      await redis.set(`connection:${connectionId}`, JSON.stringify(connection));
-      await redis.sadd("connections:all", connectionId);
+      });
 
       await expect(manager.restartConnection(connectionId)).rejects.toThrow(
         /Failed to resolve secret ref/

@@ -6,7 +6,6 @@
 import { randomUUID } from "node:crypto";
 import type { Readable } from "node:stream";
 import { createLogger, isSecretRef } from "@lobu/core";
-import type { Redis } from "ioredis";
 import type { CoreServices, PlatformAdapter } from "../platform.js";
 import type { IFileHandler } from "../platform/file-handler.js";
 import {
@@ -18,6 +17,7 @@ import {
   hasConfiguredProvider,
   resolveAgentOptions,
 } from "../services/platform-helpers.js";
+import { ChatConnectionStore } from "./chat-connection-store.js";
 import {
   ConversationStateStore,
   type HistoryEntry,
@@ -80,43 +80,23 @@ interface ManagedInstance {
 
 export class ChatInstanceManager {
   private instances = new Map<string, ManagedInstance>();
-  private redis!: Redis;
   private services!: CoreServices;
   private publicGatewayUrl = "";
   private slackCoordinator!: SlackConnectionCoordinator;
+  private connectionStore: ChatConnectionStore = new ChatConnectionStore();
 
   async initialize(services: CoreServices): Promise<void> {
     this.services = services;
-    this.redis = services.getQueue().getRedisClient();
     this.publicGatewayUrl = services.getPublicGatewayUrl();
     this.slackCoordinator = this.buildSlackCoordinator();
 
-    // Load all connections from Redis and start active ones
-    const connectionIds = await this.redis.smembers("connections:all");
+    const connections = await this.connectionStore.listAll();
     logger.debug(
-      { count: connectionIds.length },
-      "Loading connections from Redis"
+      { count: connections.length },
+      "Loading chat connections from Postgres"
     );
 
-    for (const id of connectionIds) {
-      const raw = await this.redis.get(`connection:${id}`);
-      if (!raw) {
-        await this.redis.srem("connections:all", id);
-        continue;
-      }
-
-      let connection: PlatformConnection;
-      try {
-        connection = JSON.parse(raw) as PlatformConnection;
-      } catch (error) {
-        logger.warn(
-          { id, error: String(error) },
-          "Removing connection with malformed JSON"
-        );
-        await this.deleteConnectionRecord(id);
-        continue;
-      }
-
+    for (const connection of connections) {
       try {
         connection.config = await this.resolveConfigForRuntime(
           connection.id,
@@ -124,7 +104,7 @@ export class ChatInstanceManager {
         );
       } catch (error) {
         logger.warn(
-          { id, platform: connection.platform, error: String(error) },
+          { id: connection.id, platform: connection.platform, error: String(error) },
           "Removing connection with unresolved secret refs — reseed from lobu.toml"
         );
         await this.deleteConnectionRecord(connection.id, connection);
@@ -136,23 +116,16 @@ export class ChatInstanceManager {
           await this.startInstance(connection);
         }
       } catch (error) {
-        logger.error({ id, error: String(error) }, "Failed to load connection");
+        logger.error({ id: connection.id, error: String(error) }, "Failed to load connection");
       }
     }
   }
 
   private async deleteConnectionRecord(
     id: string,
-    connection?: PlatformConnection
+    _connection?: PlatformConnection
   ): Promise<void> {
-    await this.redis.del(`connection:${id}`);
-    await this.redis.srem("connections:all", id);
-    if (connection?.templateAgentId) {
-      await this.redis.srem(
-        `connections:agent:${connection.templateAgentId}`,
-        id
-      );
-    }
+    await this.connectionStore.delete(id);
     // Also clear any secrets owned by the torn-down record so a replay
     // of `initialize()` does not inherit stale credential material.
     try {
@@ -247,16 +220,8 @@ export class ChatInstanceManager {
       instance?.conversationState ??
       new ConversationStateStore(await this.createStateAdapter());
 
-    // Clean up Redis
-    const raw = await this.redis.get(`connection:${id}`);
-    if (raw) {
-      const conn = JSON.parse(raw) as PlatformConnection;
-      if (conn.templateAgentId) {
-        await this.redis.srem(`connections:agent:${conn.templateAgentId}`, id);
-      }
-    }
-    await this.redis.del(`connection:${id}`);
-    await this.redis.srem("connections:all", id);
+    // Drop the row from the chat_connections table.
+    await this.connectionStore.delete(id);
 
     // Cascade-delete per-channel chat history through the conversation-state
     // abstraction instead of coupling to the Chat SDK adapter's raw Redis keys.
@@ -281,10 +246,8 @@ export class ChatInstanceManager {
       this.instances.delete(id);
     }
 
-    const raw = await this.redis.get(`connection:${id}`);
-    if (!raw) throw new Error(`Connection ${id} not found`);
-
-    const connection = JSON.parse(raw) as PlatformConnection;
+    const connection = await this.connectionStore.get(id);
+    if (!connection) throw new Error(`Connection ${id} not found`);
 
     // Resolve the (possibly-ref'd) config before we attempt to boot. If
     // this fails — e.g. a secret ref was wiped between restarts — we
@@ -334,10 +297,8 @@ export class ChatInstanceManager {
       this.instances.delete(id);
     }
 
-    const raw = await this.redis.get(`connection:${id}`);
-    if (!raw) throw new Error(`Connection ${id} not found`);
-
-    const connection = JSON.parse(raw) as PlatformConnection;
+    const connection = await this.connectionStore.get(id);
+    if (!connection) throw new Error(`Connection ${id} not found`);
     connection.config = await this.resolveConfigForRuntime(
       connection.id,
       connection.config
@@ -358,10 +319,8 @@ export class ChatInstanceManager {
       metadata?: Record<string, any>;
     }
   ): Promise<PlatformConnection> {
-    const raw = await this.redis.get(`connection:${id}`);
-    if (!raw) throw new Error(`Connection ${id} not found`);
-
-    const connection = JSON.parse(raw) as PlatformConnection;
+    const connection = await this.connectionStore.get(id);
+    if (!connection) throw new Error(`Connection ${id} not found`);
     connection.config = await this.resolveConfigForRuntime(
       connection.id,
       connection.config
@@ -388,19 +347,10 @@ export class ChatInstanceManager {
       nextConfig !== undefined && !configsEqual(nextConfig, previousConfig);
 
     if (updates.templateAgentId !== undefined) {
-      // Update agent index — remove old, add new
-      if (connection.templateAgentId) {
-        await this.redis.srem(
-          `connections:agent:${connection.templateAgentId}`,
-          id
-        );
-      }
+      // template_agent_id is a column on chat_connections; the persistConnection
+      // call below rewrites the row, so just update the in-memory field here.
       if (updates.templateAgentId) {
         connection.templateAgentId = updates.templateAgentId;
-        await this.redis.sadd(
-          `connections:agent:${connection.templateAgentId}`,
-          id
-        );
       } else {
         delete connection.templateAgentId;
       }
@@ -442,30 +392,20 @@ export class ChatInstanceManager {
     platform?: string;
     templateAgentId?: string;
   }): Promise<PlatformConnection[]> {
-    let ids: string[];
-    if (filter?.templateAgentId) {
-      ids = await this.redis.smembers(
-        `connections:agent:${filter.templateAgentId}`
-      );
-    } else {
-      ids = await this.redis.smembers("connections:all");
-    }
-
-    const connections: PlatformConnection[] = [];
-    for (const id of ids) {
-      const raw = await this.redis.get(`connection:${id}`);
-      if (!raw) continue;
-      const conn = JSON.parse(raw) as PlatformConnection;
+    const all = filter?.templateAgentId
+      ? await this.connectionStore.listByAgent(filter.templateAgentId)
+      : await this.connectionStore.listAll();
+    const out: PlatformConnection[] = [];
+    for (const conn of all) {
       if (filter?.platform && conn.platform !== filter.platform) continue;
-      connections.push(this.sanitizeConnection(conn));
+      out.push(this.sanitizeConnection(conn));
     }
-    return connections;
+    return out;
   }
 
   async getConnection(id: string): Promise<PlatformConnection | null> {
-    const raw = await this.redis.get(`connection:${id}`);
-    if (!raw) return null;
-    return this.sanitizeConnection(JSON.parse(raw));
+    const conn = await this.connectionStore.get(id);
+    return conn ? this.sanitizeConnection(conn) : null;
   }
 
   has(id: string): boolean {
@@ -809,13 +749,10 @@ export class ChatInstanceManager {
     }
 
     // Don't auto-restart intentionally stopped connections
-    const raw = await this.redis.get(`connection:${id}`);
-    if (raw) {
-      const connection = JSON.parse(raw) as PlatformConnection;
-      if (connection.status === "stopped") {
-        logger.info({ id }, "Connection is stopped, not auto-restarting");
-        return false;
-      }
+    const connection = await this.connectionStore.get(id);
+    if (connection?.status === "stopped") {
+      logger.info({ id }, "Connection is stopped, not auto-restarting");
+      return false;
     }
 
     try {
@@ -837,21 +774,7 @@ export class ChatInstanceManager {
       connection.id,
       connection.config
     );
-    const json = JSON.stringify({ ...connection, config: persistedConfig });
-
-    const pipeline = this.redis
-      .pipeline()
-      .set(`connection:${connection.id}`, json)
-      .sadd("connections:all", connection.id);
-
-    if (connection.templateAgentId) {
-      pipeline.sadd(
-        `connections:agent:${connection.templateAgentId}`,
-        connection.id
-      );
-    }
-
-    await pipeline.exec();
+    await this.connectionStore.upsert({ ...connection, config: persistedConfig });
   }
 
   private async normalizeConfigForStorage(

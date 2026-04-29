@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, mock, test } from "bun:test";
 import {
   ensurePgliteForGatewayTests,
   resetTestDatabase,
+  seedAgentRow,
 } from "./helpers/db-setup.js";
 
 mock.module("@aws-sdk/client-secrets-manager", () => ({
@@ -80,6 +81,8 @@ describe("ChatInstanceManager Slack marketplace support", () => {
     process.env.ENCRYPTION_KEY = TEST_ENCRYPTION_KEY;
     try {
       await resetTestDatabase();
+      // chat_connections.template_agent_id has an FK on agents(id).
+      await seedAgentRow("agent-1");
       const ChatInstanceManager = await loadChatInstanceManager();
       const { SecretStoreRegistry } = await import("../secrets/index.js");
       const { ChatConnectionStore } = await import(

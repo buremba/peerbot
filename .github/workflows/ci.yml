@@ -26,6 +26,26 @@ jobs:
         with:
           bun-version: 1.3.5
 
+      - name: Install bubblewrap (for embedded exec-sandbox tests)
+        # The worker exec-sandbox uses bwrap on Linux; without it, the live
+        # bwrap escape-matrix tests in `packages/worker/src/__tests__/exec-sandbox.test.ts`
+        # auto-skip and we lose the only Linux verification path.
+        # Ubuntu 24.04 (ubuntu-latest) blocks unprivileged user namespaces via
+        # AppArmor by default; bwrap needs them, so flip the sysctl. See
+        # https://ubuntu.com/blog/ubuntu-23-10-restricted-unprivileged-user-namespaces
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap coreutils
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          bwrap --version
+          ls -la /usr/bin/true /bin/true 2>&1 || true
+          # Probe with multiple bind mounts. /bin and /usr/bin are sometimes the
+          # same symlinked tree, sometimes not, depending on distro layout.
+          bwrap --unshare-user --unshare-pid \
+            --ro-bind / / \
+            --proc /proc --dev /dev \
+            -- /usr/bin/true && echo "bwrap userns OK"
+
       - name: Install dependencies
         run: bun install
 

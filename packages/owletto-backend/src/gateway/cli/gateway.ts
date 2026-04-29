@@ -1192,7 +1192,6 @@ export async function startGateway(config: GatewayConfig): Promise<void> {
   }
 
   await orchestrator.injectCoreServices(
-    coreServices.getQueue().getRedisClient(),
     coreServices.getSecretStore(),
     coreServices.getProviderCatalogService(),
     coreServices.getGrantStore() ?? undefined,

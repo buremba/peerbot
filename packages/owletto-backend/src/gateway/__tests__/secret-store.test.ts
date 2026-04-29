@@ -6,11 +6,9 @@ import {
   expect,
   test,
 } from "bun:test";
-import { MockRedisClient } from "@lobu/core/testing";
 import type { SecretRef } from "@lobu/core";
 import {
   deleteSecretsByPrefix,
-  RedisSecretStore,
   SecretStoreRegistry,
   type SecretListEntry,
   type SecretPutOptions,
@@ -21,204 +19,46 @@ import {
 const TEST_ENCRYPTION_KEY =
   "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
-describe("RedisSecretStore", () => {
-  let originalEncryptionKey: string | undefined;
-  let redis: MockRedisClient;
-  let store: RedisSecretStore;
-
-  beforeAll(() => {
-    originalEncryptionKey = process.env.ENCRYPTION_KEY;
-    process.env.ENCRYPTION_KEY = TEST_ENCRYPTION_KEY;
-  });
-
-  afterAll(() => {
-    if (originalEncryptionKey !== undefined) {
-      process.env.ENCRYPTION_KEY = originalEncryptionKey;
-    } else {
-      delete process.env.ENCRYPTION_KEY;
-    }
-  });
-
-  beforeEach(() => {
-    redis = new MockRedisClient();
-    store = new RedisSecretStore(redis as any, "lobu:test:secrets:");
-  });
-
-  test("round-trips encrypted values", async () => {
-    const ref = await store.put("agents/a/openai", "sk-test-secret");
-    expect(ref).toBe("secret://agents%2Fa%2Fopenai");
-    expect(await store.get(ref)).toBe("sk-test-secret");
-  });
-
-  test("stores ciphertext under the configured prefix", async () => {
-    await store.put("agents/a/openai", "sk-test-secret");
-    const [, keys] = await redis.scan("0", "MATCH", "lobu:test:secrets:*");
-    expect(keys).toHaveLength(1);
-    expect(keys[0]!.startsWith("lobu:test:secrets:")).toBe(true);
-
-    const raw = await redis.get(keys[0]!);
-    expect(raw).not.toBeNull();
-    expect(raw).not.toContain("sk-test-secret");
-  });
-
-  test("lists refs by logical prefix", async () => {
-    await store.put("system-env/OPENAI_API_KEY", "value-1");
-    await store.put("agents/a/openai", "value-2");
-
-    const entries = await store.list("system-env/");
-    expect(entries).toHaveLength(1);
-    expect(entries[0]?.name).toBe("system-env/OPENAI_API_KEY");
-    expect(entries[0]?.backend).toBe("redis");
-  });
-
-  test("requires ENCRYPTION_KEY", async () => {
-    delete process.env.ENCRYPTION_KEY;
-    try {
-      await expect(
-        store.put("agents/a/openai", "sk-test-secret")
-      ).rejects.toThrow("ENCRYPTION_KEY");
-    } finally {
-      process.env.ENCRYPTION_KEY = TEST_ENCRYPTION_KEY;
-    }
-  });
-});
-
-describe("deleteSecretsByPrefix", () => {
-  let originalEncryptionKey: string | undefined;
-  let redis: MockRedisClient;
-  let store: RedisSecretStore;
-
-  beforeAll(() => {
-    originalEncryptionKey = process.env.ENCRYPTION_KEY;
-    process.env.ENCRYPTION_KEY = TEST_ENCRYPTION_KEY;
-  });
-
-  afterAll(() => {
-    if (originalEncryptionKey !== undefined) {
-      process.env.ENCRYPTION_KEY = originalEncryptionKey;
-    } else {
-      delete process.env.ENCRYPTION_KEY;
-    }
-  });
-
-  beforeEach(() => {
-    redis = new MockRedisClient();
-    store = new RedisSecretStore(redis as any, "lobu:test:secrets:");
-  });
-
-  test("deletes every secret whose name matches the prefix", async () => {
-    await store.put("agents/a/auth-profiles/p1/credential", "c1");
-    await store.put("agents/a/auth-profiles/p1/refresh-token", "r1");
-    await store.put("agents/b/auth-profiles/p2/credential", "c2");
-
-    const removed = await deleteSecretsByPrefix(store, "agents/a/");
-
-    expect(removed).toBe(2);
-    expect(await store.list("agents/a/")).toHaveLength(0);
-    expect(await store.list("agents/b/")).toHaveLength(1);
-  });
-});
-
-describe("SecretStoreRegistry caching", () => {
-  let originalEncryptionKey: string | undefined;
-  let redis: MockRedisClient;
-  let backing: RedisSecretStore;
-  let registry: SecretStoreRegistry;
-
-  beforeAll(() => {
-    originalEncryptionKey = process.env.ENCRYPTION_KEY;
-    process.env.ENCRYPTION_KEY = TEST_ENCRYPTION_KEY;
-  });
-
-  afterAll(() => {
-    if (originalEncryptionKey !== undefined) {
-      process.env.ENCRYPTION_KEY = originalEncryptionKey;
-    } else {
-      delete process.env.ENCRYPTION_KEY;
-    }
-  });
-
-  beforeEach(() => {
-    redis = new MockRedisClient();
-    backing = new RedisSecretStore(redis as any, "lobu:test:secrets:");
-    registry = new SecretStoreRegistry(backing, { secret: backing });
-  });
-
-  test("serves repeated reads from cache without hitting the backing store", async () => {
-    const ref = await registry.put("agents/a/key", "hello");
-
-    // First read populates the cache.
-    expect(await registry.get(ref)).toBe("hello");
-
-    // Drop the row directly in Redis to prove the next read comes from cache.
-    const [, keys] = await redis.scan("0", "MATCH", "lobu:test:secrets:*");
-    for (const key of keys) {
-      await redis.del(key);
-    }
-    expect(await registry.get(ref)).toBe("hello");
-  });
-
-  test("put invalidates the cached entry for the same ref", async () => {
-    const ref = await registry.put("agents/a/key", "hello");
-    expect(await registry.get(ref)).toBe("hello");
-
-    await registry.put("agents/a/key", "world");
-    expect(await registry.get(ref)).toBe("world");
-  });
-
-  test("delete invalidates the cached entry", async () => {
-    const ref = await registry.put("agents/a/key", "hello");
-    expect(await registry.get(ref)).toBe("hello");
-
-    await registry.delete(ref);
-    expect(await registry.get(ref)).toBeNull();
-  });
-
-  test("delete(name) invalidates cache entries keyed by ref", async () => {
-    // A caller that cached under the ref form should see the value
-    // disappear even when the deletion is issued with the plain name.
-    const name = "agents/a/key";
-    const ref = await registry.put(name, "hello");
-
-    // Warm the cache via the ref form.
-    expect(await registry.get(ref)).toBe("hello");
-    expect(await registry.get(ref)).toBe("hello");
-
-    // Delete by name — the cached ref entry must be dropped, not served
-    // stale until TTL.
-    await registry.delete(name);
-    expect(await registry.get(ref)).toBeNull();
-  });
-});
-
 /**
- * In-memory writable store for multi-backend routing tests. Issues refs
- * under an arbitrary custom scheme so the registry has to route by
- * scheme rather than defaulting everything to the Redis backend.
+ * In-memory writable secret store. Replaces the deleted RedisSecretStore in
+ * tests — the production substrate is now PostgresSecretStore (covered by
+ * its own test file).
  */
 class InMemoryWritableStore implements WritableSecretStore {
   private readonly entries = new Map<
     string,
-    { value: string; updatedAt: number }
+    { value: string; updatedAt: number; expiresAt?: number }
   >();
 
   constructor(
-    private readonly scheme: string,
-    private readonly backendLabel: string
+    private readonly scheme: string = "secret",
+    private readonly backendLabel: string = "memory"
   ) {}
 
   async get(ref: SecretRef): Promise<string | null> {
     if (!ref.startsWith(`${this.scheme}://`)) return null;
     const name = decodeURIComponent(ref.slice(`${this.scheme}://`.length));
-    return this.entries.get(name)?.value ?? null;
+    const entry = this.entries.get(name);
+    if (!entry) return null;
+    if (entry.expiresAt && entry.expiresAt <= Date.now()) {
+      this.entries.delete(name);
+      return null;
+    }
+    return entry.value;
   }
 
   async put(
     name: string,
     value: string,
-    _options?: SecretPutOptions
+    options?: SecretPutOptions
   ): Promise<SecretRef> {
-    this.entries.set(name, { value, updatedAt: Date.now() });
+    this.entries.set(name, {
+      value,
+      updatedAt: Date.now(),
+      expiresAt: options?.ttlSeconds
+        ? Date.now() + options.ttlSeconds * 1000
+        : undefined,
+    });
     return `${this.scheme}://${encodeURIComponent(name)}` as SecretRef;
   }
 
@@ -255,9 +95,9 @@ class ReadOnlyAwsStub implements SecretStore {
   }
 }
 
-describe("SecretStoreRegistry multi-backend routing", () => {
+describe("InMemoryWritableStore (test substrate parity check)", () => {
   let originalEncryptionKey: string | undefined;
-  let redis: MockRedisClient;
+  let store: InMemoryWritableStore;
 
   beforeAll(() => {
     originalEncryptionKey = process.env.ENCRYPTION_KEY;
@@ -273,14 +113,96 @@ describe("SecretStoreRegistry multi-backend routing", () => {
   });
 
   beforeEach(() => {
-    redis = new MockRedisClient();
+    store = new InMemoryWritableStore();
   });
 
+  test("round-trips values", async () => {
+    const ref = await store.put("agents/a/openai", "sk-test-secret");
+    expect(ref).toBe("secret://agents%2Fa%2Fopenai");
+    expect(await store.get(ref)).toBe("sk-test-secret");
+  });
+
+  test("lists refs by logical prefix", async () => {
+    await store.put("system-env/OPENAI_API_KEY", "value-1");
+    await store.put("agents/a/openai", "value-2");
+
+    const entries = await store.list("system-env/");
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.name).toBe("system-env/OPENAI_API_KEY");
+  });
+});
+
+describe("deleteSecretsByPrefix", () => {
+  let store: InMemoryWritableStore;
+
+  beforeEach(() => {
+    store = new InMemoryWritableStore();
+  });
+
+  test("deletes every secret whose name matches the prefix", async () => {
+    await store.put("agents/a/auth-profiles/p1/credential", "c1");
+    await store.put("agents/a/auth-profiles/p1/refresh-token", "r1");
+    await store.put("agents/b/auth-profiles/p2/credential", "c2");
+
+    const removed = await deleteSecretsByPrefix(store, "agents/a/");
+
+    expect(removed).toBe(2);
+    expect(await store.list("agents/a/")).toHaveLength(0);
+    expect(await store.list("agents/b/")).toHaveLength(1);
+  });
+});
+
+describe("SecretStoreRegistry caching", () => {
+  let backing: InMemoryWritableStore;
+  let registry: SecretStoreRegistry;
+
+  beforeEach(() => {
+    backing = new InMemoryWritableStore();
+    registry = new SecretStoreRegistry(backing, { secret: backing });
+  });
+
+  test("serves repeated reads from cache without hitting the backing store", async () => {
+    const ref = await registry.put("agents/a/key", "hello");
+
+    // First read populates the cache.
+    expect(await registry.get(ref)).toBe("hello");
+
+    // Drop the underlying entry to prove the next read comes from cache.
+    (backing as unknown as { entries: Map<string, unknown> }).entries.clear();
+    expect(await registry.get(ref)).toBe("hello");
+  });
+
+  test("put invalidates the cached entry for the same ref", async () => {
+    const ref = await registry.put("agents/a/key", "hello");
+    expect(await registry.get(ref)).toBe("hello");
+
+    await registry.put("agents/a/key", "world");
+    expect(await registry.get(ref)).toBe("world");
+  });
+
+  test("delete invalidates the cached entry", async () => {
+    const ref = await registry.put("agents/a/key", "hello");
+    expect(await registry.get(ref)).toBe("hello");
+
+    await registry.delete(ref);
+    expect(await registry.get(ref)).toBeNull();
+  });
+
+  test("delete(name) invalidates cache entries keyed by ref", async () => {
+    const name = "agents/a/key";
+    const ref = await registry.put(name, "hello");
+
+    expect(await registry.get(ref)).toBe("hello");
+    expect(await registry.get(ref)).toBe("hello");
+
+    await registry.delete(name);
+    expect(await registry.get(ref)).toBeNull();
+  });
+});
+
+describe("SecretStoreRegistry multi-backend routing", () => {
   test("deleteSecretsByPrefix cascades across every writable backend", async () => {
-    const defaultStore = new RedisSecretStore(
-      redis as any,
-      "lobu:test:secrets:"
-    );
+    const defaultStore = new InMemoryWritableStore();
     const customStore = new InMemoryWritableStore("custom", "in-memory");
 
     const registry = new SecretStoreRegistry(defaultStore, {
@@ -288,15 +210,12 @@ describe("SecretStoreRegistry multi-backend routing", () => {
       custom: customStore,
     });
 
-    // Seed entries in both backends under a shared logical prefix.
     await registry.put("agents/a/openai", "sk-default");
     await customStore.put("agents/a/alt", "sk-custom");
 
     const listed = await registry.list("agents/a/");
-    // Both backends should contribute to the merged list.
-    expect(listed.map((e) => e.backend).sort()).toEqual(["in-memory", "redis"]);
+    expect(listed).toHaveLength(2);
 
-    // Cascade delete — should hit both backends via per-scheme routing.
     const removed = await deleteSecretsByPrefix(registry, "agents/a/");
     expect(removed).toBe(2);
     expect(await registry.list("agents/a/")).toHaveLength(0);
@@ -304,19 +223,14 @@ describe("SecretStoreRegistry multi-backend routing", () => {
   });
 
   test("delete() is a no-op (warns) for read-only backends", async () => {
-    const defaultStore = new RedisSecretStore(
-      redis as any,
-      "lobu:test:secrets:"
-    );
+    const defaultStore = new InMemoryWritableStore();
     const registry = new SecretStoreRegistry(
       defaultStore,
       { secret: defaultStore },
       { readOnlyStores: { "aws-sm": new ReadOnlyAwsStub() } }
     );
 
-    // Must not throw even though aws-sm has no `delete`.
     await registry.delete("aws-sm://foo");
-    // And the writable backend must still be usable afterwards.
     const ref = await registry.put("agents/a/key", "hello");
     expect(await registry.get(ref)).toBe("hello");
   });

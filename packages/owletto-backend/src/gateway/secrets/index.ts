@@ -6,23 +6,13 @@ import {
 import {
   createBuiltinSecretRef,
   createLogger,
-  decrypt,
-  encrypt,
   isSecretRef,
   parseSecretRef,
   type SecretRef,
   safeJsonParse,
 } from "@lobu/core";
-import type { Redis } from "ioredis";
 
 const logger = createLogger("secret-store");
-
-interface StoredRedisSecret {
-  name: string;
-  ciphertext: string;
-  createdAt: number;
-  updatedAt: number;
-}
 
 export interface SecretListEntry {
   ref: SecretRef;
@@ -47,14 +37,6 @@ export interface WritableSecretStore extends SecretStore {
   ): Promise<SecretRef>;
   delete(nameOrRef: string): Promise<void>;
   list(prefix?: string): Promise<SecretListEntry[]>;
-}
-
-function encodeName(name: string): string {
-  return Buffer.from(name, "utf8").toString("base64url");
-}
-
-function decodeName(encoded: string): string {
-  return Buffer.from(encoded, "base64url").toString("utf8");
 }
 
 function safeDecodeURIComponent(value: string): string | null {
@@ -86,129 +68,6 @@ function canonicalSecretIdentity(
   // Not a ref — treat as a bare name under the default (`secret://`)
   // backend.
   return { scheme: "secret", name: nameOrRef };
-}
-
-export class RedisSecretStore implements WritableSecretStore {
-  constructor(
-    private readonly redis: Redis,
-    private readonly keyPrefix: string
-  ) {}
-
-  private buildKey(name: string): string {
-    return `${this.keyPrefix}${encodeName(name)}`;
-  }
-
-  private parseName(nameOrRef: string): string {
-    const parsed = parseSecretRef(nameOrRef);
-    if (!parsed) return nameOrRef;
-    if (parsed.scheme !== "secret") {
-      throw new Error(`Unsupported writable secret backend: ${parsed.scheme}`);
-    }
-    const decoded = safeDecodeURIComponent(parsed.path);
-    if (decoded === null) {
-      throw new Error(`Invalid secret ref path encoding: ${parsed.path}`);
-    }
-    return decoded;
-  }
-
-  async get(ref: SecretRef): Promise<string | null> {
-    const parsed = parseSecretRef(ref);
-    if (!parsed || parsed.scheme !== "secret") return null;
-
-    const name = safeDecodeURIComponent(parsed.path);
-    if (name === null) {
-      logger.warn({ ref }, "Invalid secret ref path encoding");
-      return null;
-    }
-
-    const raw = await this.redis.get(this.buildKey(name));
-    if (!raw) return null;
-
-    const stored = safeJsonParse<StoredRedisSecret>(raw);
-    if (!stored?.ciphertext) return null;
-
-    try {
-      return decrypt(stored.ciphertext);
-    } catch (error) {
-      logger.warn(
-        {
-          ref,
-          error: error instanceof Error ? error.message : String(error),
-        },
-        "Failed to decrypt stored secret"
-      );
-      return null;
-    }
-  }
-
-  async put(
-    name: string,
-    value: string,
-    options?: SecretPutOptions
-  ): Promise<SecretRef> {
-    const now = Date.now();
-    const key = this.buildKey(name);
-    const existingRaw = await this.redis.get(key);
-    const existing = existingRaw
-      ? safeJsonParse<StoredRedisSecret>(existingRaw)
-      : null;
-    const record: StoredRedisSecret = {
-      name,
-      ciphertext: encrypt(value),
-      createdAt: existing?.createdAt ?? now,
-      updatedAt: now,
-    };
-
-    const serialized = JSON.stringify(record);
-    if (options?.ttlSeconds) {
-      await this.redis.set(key, serialized, "EX", options.ttlSeconds);
-    } else {
-      await this.redis.set(key, serialized);
-    }
-
-    return createBuiltinSecretRef(encodeURIComponent(name));
-  }
-
-  async delete(nameOrRef: string): Promise<void> {
-    await this.redis.del(this.buildKey(this.parseName(nameOrRef)));
-  }
-
-  async list(prefix?: string): Promise<SecretListEntry[]> {
-    const results: SecretListEntry[] = [];
-    let cursor = "0";
-
-    do {
-      const [nextCursor, keys] = await this.redis.scan(
-        cursor,
-        "MATCH",
-        `${this.keyPrefix}*`,
-        "COUNT",
-        100
-      );
-      cursor = nextCursor;
-
-      for (const key of keys) {
-        const encodedName = key.slice(this.keyPrefix.length);
-        const name = decodeName(encodedName);
-        if (prefix && !name.startsWith(prefix)) continue;
-
-        const raw = await this.redis.get(key);
-        if (!raw) continue;
-        const stored = safeJsonParse<StoredRedisSecret>(raw);
-        if (!stored) continue;
-
-        results.push({
-          ref: createBuiltinSecretRef(encodeURIComponent(name)),
-          backend: "redis",
-          name,
-          updatedAt: stored.updatedAt,
-        });
-      }
-    } while (cursor !== "0");
-
-    results.sort((a, b) => a.name.localeCompare(b.name));
-    return results;
-  }
 }
 
 export class AwsSecretsManagerSecretStore implements SecretStore {

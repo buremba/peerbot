@@ -187,7 +187,6 @@ export async function initLobuGateway(): Promise<Hono | null> {
 
     coreServices = gateway.getCoreServices();
     await orchestrator.injectCoreServices(
-      coreServices.getQueue().getRedisClient(),
       coreServices.getSecretStore(),
       coreServices.getProviderCatalogService(),
       coreServices.getGrantStore() ?? undefined,

@@ -6,7 +6,6 @@ import {
   generateWorkerToken,
   OrchestratorError,
 } from "@lobu/core";
-import type { Redis } from "ioredis";
 import type { ProviderCredentialContext } from "../embedded.js";
 import type { MessagePayload } from "../infrastructure/queue/queue-producer.js";
 import type { ModelProviderModule } from "../modules/module-system.js";
@@ -175,7 +174,6 @@ export abstract class BaseDeploymentManager {
   protected moduleEnvVarsBuilder?: ModuleEnvVarsBuilder;
   protected providerModules: ModelProviderModule[];
   protected providerCatalogService?: import("../auth/provider-catalog.js").ProviderCatalogService;
-  protected redisClient?: Redis;
   /**
    * Set by `setSecretStore` during `Orchestrator.injectCoreServices`.
    * `generateEnvironmentVariables` asserts this is present before use.
@@ -209,14 +207,6 @@ export abstract class BaseDeploymentManager {
     this.config = config;
     this.moduleEnvVarsBuilder = moduleEnvVarsBuilder;
     this.providerModules = providerModules;
-  }
-
-  /**
-   * Inject Redis client for secret placeholder generation.
-   * Called after core services are initialized.
-   */
-  setRedisClient(redis: Redis): void {
-    this.redisClient = redis;
   }
 
   setSecretStore(secretStore: WritableSecretStore): void {
@@ -716,7 +706,6 @@ export abstract class BaseDeploymentManager {
     deploymentName: string,
     context?: ProviderCredentialContext
   ): Promise<Record<string, string>> {
-    if (!this.redisClient) return envVars;
     if (!this.secretStore) {
       throw new Error(
         "BaseDeploymentManager.secretStore not initialized - call setSecretStore before deploying workers"
@@ -770,8 +759,7 @@ export abstract class BaseDeploymentManager {
             { ttlSeconds: SECRET_PLACEHOLDER_TTL_SECONDS }
           );
           if (!secretRef) continue;
-          const placeholder = await generatePlaceholder(
-            this.redisClient,
+          const placeholder = generatePlaceholder(
             agentId,
             key,
             secretRef,
@@ -1006,9 +994,7 @@ export abstract class BaseDeploymentManager {
   async deleteWorkerDeployment(deploymentName: string): Promise<void> {
     try {
       // Clean up secret placeholder mappings
-      if (this.redisClient) {
-        await deleteSecretMappings(this.redisClient, deploymentName);
-      }
+      deleteSecretMappings(deploymentName);
 
       // Cascade-delete the underlying non-provider secrets written by
       // `injectSecretPlaceholders` under `deployments/{deploymentName}/`.

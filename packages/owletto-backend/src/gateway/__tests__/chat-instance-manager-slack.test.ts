@@ -73,19 +73,29 @@ describe("ChatInstanceManager Slack marketplace support", () => {
     process.env.ENCRYPTION_KEY = TEST_ENCRYPTION_KEY;
     try {
       const ChatInstanceManager = await loadChatInstanceManager();
-      const { RedisSecretStore, SecretStoreRegistry } = await import(
-        "../secrets/index.js"
-      );
+      const { SecretStoreRegistry } = await import("../secrets/index.js");
 
-      const redis = new MockRedisClient();
-      const backingStore = new RedisSecretStore(
-        redis as any,
-        "lobu:test:secrets:"
-      );
+      // Empty in-memory secret store: any secret-ref lookup returns null,
+      // forcing resolveConfigForRuntime to throw.
+      const backingStore: any = {
+        async get() {
+          return null;
+        },
+        async put(_n: string, _v: string) {
+          return "secret://noop";
+        },
+        async delete() {
+          /* noop */
+        },
+        async list() {
+          return [];
+        },
+      };
       const secretStore = new SecretStoreRegistry(backingStore, {
         secret: backingStore,
       });
 
+      const redis = new MockRedisClient();
       const services = {
         getQueue: () => ({ getRedisClient: () => redis }),
         getPublicGatewayUrl: () => "",

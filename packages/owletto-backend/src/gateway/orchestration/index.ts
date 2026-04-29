@@ -3,7 +3,6 @@ export * from "./deployment-utils.js";
 export * from "./impl/index.js";
 
 import { createLogger, moduleRegistry } from "@lobu/core";
-import type { Redis } from "ioredis";
 import type { ProviderCatalogService } from "../auth/provider-catalog.js";
 import {
   getModelProviderModules,
@@ -46,17 +45,17 @@ export class Orchestrator {
 
   /**
    * Inject core services into the orchestrator after gateway initialization.
-   * Provider modules in the registry carry their own credential stores,
-   * so only the Redis client is needed for secret placeholder generation.
+   * Provider modules in the registry carry their own credential stores;
+   * the deployment manager wires its secret store + grant/policy stores from
+   * here. Phase 8: dropped Redis client — placeholder mappings live in
+   * process memory now (see secret-proxy.ts).
    */
   async injectCoreServices(
-    redisClient: Redis,
     secretStore: WritableSecretStore,
     providerCatalogService?: ProviderCatalogService,
     grantStore?: GrantStore,
     policyStore?: PolicyStore
   ): Promise<void> {
-    this.deploymentManager.setRedisClient(redisClient);
     this.deploymentManager.setSecretStore(secretStore);
 
     if (grantStore) {

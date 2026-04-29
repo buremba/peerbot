@@ -44,7 +44,6 @@ export {
 export { InMemoryAgentStore } from "./stores/in-memory-agent-store.js";
 export {
   AwsSecretsManagerSecretStore,
-  RedisSecretStore,
   SecretStoreRegistry,
   type SecretStore,
   type SecretStoreRegistryOptions,

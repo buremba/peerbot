@@ -64,9 +64,9 @@ import { GrantStore } from "../permissions/grant-store.js";
 import { PolicyStore } from "../permissions/policy-store.js";
 import { SecretProxy } from "../proxy/secret-proxy.js";
 import { TokenRefreshJob } from "../proxy/token-refresh-job.js";
+import { PostgresSecretStore } from "../../lobu/stores/postgres-secret-store.js";
 import {
   AwsSecretsManagerSecretStore,
-  RedisSecretStore,
   SecretStoreRegistry,
 } from "../secrets/index.js";
 import { InMemoryAgentStore } from "../stores/in-memory-agent-store.js";
@@ -403,15 +403,12 @@ export class CoreServices {
     this.policyStore = new PolicyStore();
     logger.debug("Policy store initialized");
 
-    const redisSecretStore = new RedisSecretStore(
-      redisClient,
-      this.config.secrets.redis.prefix
-    );
+    const defaultSecretStore = new PostgresSecretStore();
     this.secretStore =
       this.options?.secretStore ??
       new SecretStoreRegistry(
-        redisSecretStore,
-        { secret: redisSecretStore },
+        defaultSecretStore,
+        { secret: defaultSecretStore },
         {
           readOnlyStores: {
             "aws-sm": new AwsSecretsManagerSecretStore(
@@ -519,8 +516,6 @@ export class CoreServices {
       throw new Error("Queue must be initialized before auth services");
     }
 
-    const redisClient = this.queue.getRedisClient();
-
     if (!this.agentSettingsStore) {
       throw new Error(
         "Agent settings store must be initialized before auth services"
@@ -598,7 +593,6 @@ export class CoreServices {
       },
       this.secretStore
     );
-    this.secretProxy.initialize(redisClient);
     logger.debug(
       `Secret proxy initialized (upstream: ${this.config.anthropicProxy.anthropicBaseUrl || "https://api.anthropic.com"})`
     );

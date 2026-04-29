@@ -6,18 +6,50 @@ import {
   expect,
   test,
 } from "bun:test";
-import { generateWorkerToken } from "@lobu/core";
+import { generateWorkerToken, type SecretRef } from "@lobu/core";
 import { MockMessageQueue } from "@lobu/core/testing";
 import { McpProxy } from "../auth/mcp/proxy.js";
 import { McpToolCache } from "../auth/mcp/tool-cache.js";
 import { GrantStore } from "../permissions/grant-store.js";
-import { RedisSecretStore } from "../secrets/index.js";
+import {
+  type SecretListEntry,
+  type WritableSecretStore,
+} from "../secrets/index.js";
 
-function createTestSecretStore(queue: MockMessageQueue): RedisSecretStore {
-  return new RedisSecretStore(
-    queue.getRedisClient() as any,
-    "lobu:test:secrets:"
-  );
+class InMemoryWritableStore implements WritableSecretStore {
+  private readonly entries = new Map<string, { value: string; updatedAt: number }>();
+  async get(ref: SecretRef): Promise<string | null> {
+    if (!ref.startsWith("secret://")) return null;
+    const name = decodeURIComponent(ref.slice("secret://".length));
+    return this.entries.get(name)?.value ?? null;
+  }
+  async put(name: string, value: string): Promise<SecretRef> {
+    this.entries.set(name, { value, updatedAt: Date.now() });
+    return `secret://${encodeURIComponent(name)}` as SecretRef;
+  }
+  async delete(nameOrRef: string): Promise<void> {
+    const name = nameOrRef.startsWith("secret://")
+      ? decodeURIComponent(nameOrRef.slice("secret://".length))
+      : nameOrRef;
+    this.entries.delete(name);
+  }
+  async list(prefix?: string): Promise<SecretListEntry[]> {
+    const out: SecretListEntry[] = [];
+    for (const [name, e] of this.entries) {
+      if (prefix && !name.startsWith(prefix)) continue;
+      out.push({
+        ref: `secret://${encodeURIComponent(name)}` as SecretRef,
+        backend: "memory",
+        name,
+        updatedAt: e.updatedAt,
+      });
+    }
+    return out;
+  }
+}
+
+function createTestSecretStore(_queue: MockMessageQueue): InMemoryWritableStore {
+  return new InMemoryWritableStore();
 }
 
 const TEST_ENCRYPTION_KEY =

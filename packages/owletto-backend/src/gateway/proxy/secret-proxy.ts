@@ -1,7 +1,6 @@
 import { createLogger, type SecretRef } from "@lobu/core";
 import type { Context } from "hono";
 import { Hono } from "hono";
-import type { Redis } from "ioredis";
 import type { AuthProfilesManager } from "../auth/settings/auth-profiles-manager.js";
 import type { ProviderCredentialContext } from "../embedded.js";
 import type { ProviderUpstreamConfig } from "../modules/module-system.js";
@@ -10,7 +9,75 @@ import type { SecretStore } from "../secrets/index.js";
 const logger = createLogger("secret-proxy");
 
 const PLACEHOLDER_PREFIX = "lobu_secret_";
-const REDIS_KEY_PREFIX = "lobu:secret:";
+
+/**
+ * In-memory placeholder→SecretMapping cache. Per-process — multi-replica
+ * gateways need every replica to call `storeSecretMapping` on deployment
+ * creation, which only the local replica does. This matches the Phase 8
+ * design intent: gateway runs single-replica in production today, embedded
+ * mode is single-process by definition.
+ */
+interface CacheEntry {
+  mapping: SecretMapping;
+  expiresAt: number;
+}
+
+class PlaceholderCache {
+  private readonly entries = new Map<string, CacheEntry>();
+  /** Last full sweep (ms). Lazy GC: sweep on writes when stale enough. */
+  private lastSweepMs = 0;
+  private static readonly SWEEP_INTERVAL_MS = 60_000;
+
+  get(uuid: string): SecretMapping | null {
+    const entry = this.entries.get(uuid);
+    if (!entry) return null;
+    if (entry.expiresAt <= Date.now()) {
+      this.entries.delete(uuid);
+      return null;
+    }
+    return entry.mapping;
+  }
+
+  set(uuid: string, mapping: SecretMapping, ttlSeconds: number): void {
+    this.entries.set(uuid, {
+      mapping,
+      expiresAt: Date.now() + ttlSeconds * 1000,
+    });
+    this.maybeSweep();
+  }
+
+  delete(uuid: string): void {
+    this.entries.delete(uuid);
+  }
+
+  /** Drop every mapping pinned to a deployment (cascade on teardown). */
+  deleteByDeployment(deploymentName: string): number {
+    let removed = 0;
+    for (const [uuid, entry] of this.entries) {
+      if (entry.mapping.deploymentName === deploymentName) {
+        this.entries.delete(uuid);
+        removed += 1;
+      }
+    }
+    return removed;
+  }
+
+  size(): number {
+    return this.entries.size;
+  }
+
+  private maybeSweep(): void {
+    const now = Date.now();
+    if (now - this.lastSweepMs < PlaceholderCache.SWEEP_INTERVAL_MS) return;
+    this.lastSweepMs = now;
+    for (const [uuid, entry] of this.entries) {
+      if (entry.expiresAt <= now) this.entries.delete(uuid);
+    }
+  }
+}
+
+/** Module-level singleton: gateway has one secret proxy and one mapping cache. */
+const placeholderCache = new PlaceholderCache();
 
 function safeDecodePathSegment(value: string | undefined): string | undefined {
   if (!value) return undefined;
@@ -45,7 +112,6 @@ interface SecretProxyConfig {
  */
 export class SecretProxy {
   private app: Hono;
-  private redis!: Redis;
   private config: SecretProxyConfig;
   private slugMap: Map<string, string>;
   private slugToProviderId: Map<string, string> = new Map();
@@ -65,10 +131,6 @@ export class SecretProxy {
     }
     this.app = new Hono();
     this.setupRoutes();
-  }
-
-  initialize(redis: Redis): void {
-    this.redis = redis;
   }
 
   setAuthProfilesManager(manager: AuthProfilesManager): void {
@@ -128,23 +190,14 @@ export class SecretProxy {
   }
 
   /**
-   * Resolve a placeholder token to its real value via Redis.
+   * Resolve a placeholder token to its real value via the in-memory cache.
    * Handles both plain (`lobu_secret_<uuid>`) and prefixed
    * (`sk-ant-oat01-lobu_secret_<uuid>`) placeholders.
    */
   private async resolveSecret(placeholder: string): Promise<string | null> {
-    const prefixIdx = placeholder.indexOf(PLACEHOLDER_PREFIX);
-    if (prefixIdx === -1) return null;
-    const uuid = placeholder.slice(prefixIdx + PLACEHOLDER_PREFIX.length);
-    const key = `${REDIS_KEY_PREFIX}${uuid}`;
-    const raw = await this.redis.get(key);
-    if (!raw) return null;
-    try {
-      const mapping: SecretMapping = JSON.parse(raw);
-      return await this.secretStore.get(mapping.secretRef);
-    } catch {
-      return null;
-    }
+    const mapping = this.lookupPlaceholderMapping(placeholder);
+    if (!mapping) return null;
+    return this.secretStore.get(mapping.secretRef);
   }
 
   /**
@@ -152,19 +205,11 @@ export class SecretProxy {
    * for a placeholder. Used to verify the calling worker's bound agentId
    * matches the agentId in the request URL.
    */
-  private async lookupPlaceholderMapping(
-    placeholder: string
-  ): Promise<SecretMapping | null> {
+  private lookupPlaceholderMapping(placeholder: string): SecretMapping | null {
     const prefixIdx = placeholder.indexOf(PLACEHOLDER_PREFIX);
     if (prefixIdx === -1) return null;
     const uuid = placeholder.slice(prefixIdx + PLACEHOLDER_PREFIX.length);
-    const raw = await this.redis.get(`${REDIS_KEY_PREFIX}${uuid}`);
-    if (!raw) return null;
-    try {
-      return JSON.parse(raw) as SecretMapping;
-    } catch {
-      return null;
-    }
+    return placeholderCache.get(uuid);
   }
 
   /**
@@ -259,7 +304,7 @@ export class SecretProxy {
     if (urlAgentId) {
       const callerToken = this.extractCallerToken(c);
       if (callerToken?.includes(PLACEHOLDER_PREFIX)) {
-        const mapping = await this.lookupPlaceholderMapping(callerToken);
+        const mapping = this.lookupPlaceholderMapping(callerToken);
         if (!mapping) {
           logger.warn(
             { urlAgentId },
@@ -432,77 +477,60 @@ export class SecretProxy {
 }
 
 // ============================================================================
-// Utility: store / delete placeholder mappings in Redis
+// Utility: store / delete placeholder mappings (in-memory, per-process)
 // ============================================================================
 
 /**
- * Store a secret placeholder mapping in Redis.
+ * Store a secret placeholder mapping in the in-process cache.
  * Called by the deployment manager when generating env vars.
  */
-export async function storeSecretMapping(
-  redis: Redis,
+export function storeSecretMapping(
   uuid: string,
   mapping: SecretMapping,
   ttlSeconds: number = 7 * 24 * 60 * 60 // 7 days default
-): Promise<void> {
-  const key = `${REDIS_KEY_PREFIX}${uuid}`;
-  await redis.set(key, JSON.stringify(mapping), "EX", ttlSeconds);
+): void {
+  placeholderCache.set(uuid, mapping, ttlSeconds);
 }
 
 /**
  * Delete all secret placeholder mappings for a given deployment.
  * Called during deployment teardown.
  */
-export async function deleteSecretMappings(
-  redis: Redis,
-  deploymentName: string
-): Promise<void> {
-  const pattern = `${REDIS_KEY_PREFIX}*`;
-  let cursor = "0";
-  do {
-    const [next, keys] = await redis.scan(
-      cursor,
-      "MATCH",
-      pattern,
-      "COUNT",
-      100
-    );
-    cursor = next;
-    for (const key of keys) {
-      try {
-        const raw = await redis.get(key);
-        if (raw) {
-          const mapping: SecretMapping = JSON.parse(raw);
-          if (mapping.deploymentName === deploymentName) {
-            await redis.del(key);
-          }
-        }
-      } catch {
-        // Skip malformed entries
-      }
-    }
-  } while (cursor !== "0");
+export function deleteSecretMappings(deploymentName: string): number {
+  return placeholderCache.deleteByDeployment(deploymentName);
 }
 
 /**
- * Generate a UUID placeholder token and store its mapping in Redis.
+ * Generate a UUID placeholder token and store its mapping.
  * Returns the placeholder string to pass to the worker.
  * Used for non-provider secrets (custom env vars with _KEY/_TOKEN/_SECRET patterns).
  */
-export async function generatePlaceholder(
-  redis: Redis,
+export function generatePlaceholder(
   agentId: string,
   envVarName: string,
   secretRef: SecretRef,
   deploymentName: string,
   ttlSeconds?: number
-): Promise<string> {
+): string {
   const uuid = crypto.randomUUID();
-  await storeSecretMapping(
-    redis,
+  storeSecretMapping(
     uuid,
     { agentId, envVarName, secretRef, deploymentName },
     ttlSeconds
   );
   return `${PLACEHOLDER_PREFIX}${uuid}`;
+}
+
+/** Test-only: drop every placeholder. Not exported for production use. */
+export function __resetPlaceholderCacheForTests(): void {
+  // Clears all entries.
+  while (placeholderCache.size() > 0) {
+    // size > 0 means at least one key; iterate snapshot
+    for (const _ of (placeholderCache as unknown as { entries: Map<string, unknown> }).entries) {
+      // not used
+    }
+    break;
+  }
+  // Easier: direct access via cast
+  (placeholderCache as unknown as { entries: Map<string, unknown> }).entries.clear();
 }

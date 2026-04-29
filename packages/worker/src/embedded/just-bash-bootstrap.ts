@@ -16,6 +16,11 @@ import { stripEnv } from "@lobu/core";
 import type { BashOperations } from "@mariozechner/pi-coding-agent";
 import { SENSITIVE_WORKER_ENV_KEYS } from "../shared/worker-env-keys";
 import type { GatewayParams } from "../shared/tool-implementations";
+import {
+  type SandboxStrategy,
+  probeSandboxStrategy,
+  wrapInvocation,
+} from "./exec-sandbox";
 import type { McpCliCommand, McpRuntimeRef } from "./mcp-cli-commands";
 import { buildMcpCliCommands } from "./mcp-cli-commands";
 
@@ -25,21 +30,38 @@ const EMBEDDED_BASH_LIMITS = {
   maxCallDepth: 50,
 } as const;
 
+export interface SandboxContext {
+  strategy: SandboxStrategy;
+  workspaceDir: string;
+  /** Whether the spawned binary may open sockets. just-bash's domain allowlist
+   * still gates the interpreter; this controls the OS network namespace. */
+  allowNet?: boolean;
+}
+
 export function buildBinaryInvocation(
   binaryPath: string,
-  args: string[]
+  args: string[],
+  sandbox?: SandboxContext
 ): { command: string; args: string[] } {
+  let inner: { command: string; args: string[] } = {
+    command: binaryPath,
+    args,
+  };
   try {
     const firstLine =
       fs.readFileSync(binaryPath, "utf8").split("\n", 1)[0] || "";
     if (firstLine === "#!/usr/bin/env node" || firstLine.endsWith("/node")) {
-      return { command: "node", args: [binaryPath, ...args] };
+      inner = { command: "node", args: [binaryPath, ...args] };
     }
   } catch {
     // Fall back to executing the binary directly.
   }
 
-  return { command: binaryPath, args };
+  if (!sandbox) return inner;
+  return wrapInvocation(sandbox.strategy, inner, {
+    workspaceDir: sandbox.workspaceDir,
+    allowNet: sandbox.allowNet ?? true,
+  });
 }
 
 /**
@@ -87,11 +109,50 @@ function discoverBinaries(): Map<string, string> {
 }
 
 /**
+ * Resolve a just-bash virtual cwd to a real on-disk path. just-bash's
+ * `CommandContext.cwd` is rooted at the `ReadWriteFs` root, but `child_process`
+ * needs a host path. We realpath both sides and verify the resolved cwd stays
+ * inside the workspace — defense in depth against a symlink that slipped past
+ * `ReadWriteFs` (e.g. if `allowSymlinks` is ever enabled upstream).
+ */
+function resolveHostCwd(workspaceDir: string, virtualCwd: string): string {
+  const trimmed = virtualCwd.startsWith("/") ? virtualCwd.slice(1) : virtualCwd;
+  const candidate = trimmed ? path.join(workspaceDir, trimmed) : workspaceDir;
+  let realCwd: string;
+  let realWs: string;
+  try {
+    realCwd = fs.realpathSync(candidate);
+    realWs = fs.realpathSync(workspaceDir);
+  } catch {
+    return workspaceDir;
+  }
+  if (realCwd !== realWs && !realCwd.startsWith(realWs + path.sep)) {
+    throw new Error(
+      `[embedded] cwd ${JSON.stringify(virtualCwd)} resolves outside workspace`
+    );
+  }
+  return realCwd;
+}
+
+function ensureSandboxDir(workspaceDir: string, name: string): string {
+  const dir = path.join(workspaceDir, name);
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+  } catch {
+    // best-effort; sandbox profile will surface real errors if it can't create
+  }
+  return dir;
+}
+
+/**
  * Create just-bash customCommands from a map of binary name → full path.
- * Each custom command delegates to the real binary via child_process.execFile.
+ * Each custom command delegates to the real binary via child_process.execFile,
+ * wrapped in the active per-exec sandbox so spawned binaries cannot read
+ * outside the workspace or write outside it.
  */
 async function buildCustomCommands(
-  binaries: Map<string, string>
+  binaries: Map<string, string>,
+  sandbox: SandboxContext
 ): Promise<ReturnType<typeof import("just-bash").defineCommand>[]> {
   const { defineCommand } = await import("just-bash");
   const commands = [];
@@ -99,9 +160,8 @@ async function buildCustomCommands(
   for (const [name, binaryPath] of binaries) {
     commands.push(
       defineCommand(name, async (args: string[], ctx) => {
-        const invocation = buildBinaryInvocation(binaryPath, args);
+        const invocation = buildBinaryInvocation(binaryPath, args, sandbox);
 
-        // Convert ctx.env (Map-like) to a plain Record for child_process
         const envRecord = stripEnv(process.env, SENSITIVE_WORKER_ENV_KEYS);
         if (ctx.env && typeof ctx.env.forEach === "function") {
           ctx.env.forEach((v: string, k: string) => {
@@ -109,6 +169,49 @@ async function buildCustomCommands(
           });
         } else if (ctx.env && typeof ctx.env === "object") {
           Object.assign(envRecord, ctx.env);
+        }
+
+        // Pin HOME / TMPDIR to dedicated subdirs so tool dotfiles (~/.gitconfig,
+        // ~/.cache, ~/.config) and temp files don't collide with workspace
+        // contents. Sandbox profiles already deny outside-workspace writes;
+        // these keep agent-visible files clean.
+        //
+        // bwrap binds the host workspace at `/workspace` inside the namespace,
+        // so the in-namespace HOME/TMPDIR must use the bound path. sandbox-exec
+        // doesn't remap paths, so HOME/TMPDIR stay as host paths.
+        ensureSandboxDir(sandbox.workspaceDir, ".sandbox-home");
+        ensureSandboxDir(sandbox.workspaceDir, ".sandbox-tmp");
+        if (sandbox.strategy.kind === "bwrap") {
+          envRecord.HOME = "/workspace/.sandbox-home";
+          envRecord.TMPDIR = "/workspace/.sandbox-tmp";
+        } else {
+          envRecord.HOME = path.join(sandbox.workspaceDir, ".sandbox-home");
+          envRecord.TMPDIR = path.join(sandbox.workspaceDir, ".sandbox-tmp");
+        }
+
+        // Force gateway proxy env so a malicious agent can't override it via
+        // `export HTTP_PROXY=` to bypass the egress allowlist. NO_PROXY is
+        // stripped for the same reason.
+        if (process.env.HTTP_PROXY)
+          envRecord.HTTP_PROXY = process.env.HTTP_PROXY;
+        if (process.env.HTTPS_PROXY)
+          envRecord.HTTPS_PROXY = process.env.HTTPS_PROXY;
+        if (process.env.http_proxy)
+          envRecord.http_proxy = process.env.http_proxy;
+        if (process.env.https_proxy)
+          envRecord.https_proxy = process.env.https_proxy;
+        delete envRecord.NO_PROXY;
+        delete envRecord.no_proxy;
+
+        let hostCwd: string;
+        try {
+          hostCwd = resolveHostCwd(sandbox.workspaceDir, ctx.cwd ?? "/");
+        } catch (e) {
+          return {
+            stdout: "",
+            stderr: e instanceof Error ? e.message : String(e),
+            exitCode: 1,
+          };
         }
 
         return new Promise<{
@@ -120,7 +223,7 @@ async function buildCustomCommands(
             invocation.command,
             invocation.args,
             {
-              cwd: ctx.cwd,
+              cwd: hostCwd,
               env: envRecord,
               maxBuffer: 10 * 1024 * 1024,
             },
@@ -179,8 +282,19 @@ export async function createEmbeddedBashOps(
 ): Promise<BashOperations> {
   const { Bash, ReadWriteFs } = await import("just-bash");
 
-  const workspaceDir =
+  const rawWorkspaceDir =
     options.workspaceDir || process.env.WORKSPACE_DIR || "/workspace";
+  // Canonicalize so the sandbox profile, ReadWriteFs root, bind mounts, and
+  // realpath checks all see the same resolved path. macOS TMPDIR routes through
+  // /var → /private/var symlinks; without realpath, the SBPL allow rule and
+  // execFile cwd disagree.
+  let workspaceDir = rawWorkspaceDir;
+  try {
+    fs.mkdirSync(rawWorkspaceDir, { recursive: true });
+    workspaceDir = fs.realpathSync(rawWorkspaceDir);
+  } catch {
+    // Fall through with the raw value; downstream calls surface real errors.
+  }
   const bashFs = new ReadWriteFs({ root: workspaceDir });
 
   // Parse allowed domains from env var (set by gateway)
@@ -228,8 +342,21 @@ export async function createEmbeddedBashOps(
   for (const name of mcpCliNames) {
     binaries.delete(name);
   }
+  const sandboxStrategy = probeSandboxStrategy();
+  const sandboxCtx: SandboxContext = {
+    strategy: sandboxStrategy,
+    workspaceDir,
+    // Spawned binaries reach the network through HTTP_PROXY → gateway, which
+    // already enforces the per-agent domain allowlist. Letting the OS network
+    // namespace stay open lets curl/git/gh respect HTTP_PROXY normally.
+    allowNet: true,
+  };
   const binaryCommands =
-    binaries.size > 0 ? await buildCustomCommands(binaries) : [];
+    binaries.size > 0 ? await buildCustomCommands(binaries, sandboxCtx) : [];
+
+  if (sandboxStrategy.kind !== "none") {
+    console.log(`[embedded] exec sandbox active: kind=${sandboxStrategy.kind}`);
+  }
 
   const mcpCommandEntries = await Promise.all(
     mcpCliCommands.map((c) => adaptMcpCliCommand(c))

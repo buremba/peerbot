@@ -36,4 +36,28 @@ describe("buildBinaryInvocation", () => {
       args: ["hello"],
     });
   });
+
+  test("wraps via sandbox when context provided", () => {
+    const ws = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), "lobu-sandbox-"))
+    );
+    tempDirs.push(ws);
+    const r = buildBinaryInvocation("/bin/echo", ["hi"], {
+      strategy: { kind: "sandbox-exec", path: "/usr/bin/sandbox-exec" },
+      workspaceDir: ws,
+      allowNet: false,
+    });
+    expect(r.command).toBe("/usr/bin/sandbox-exec");
+    expect(r.args[0]).toBe("-p");
+    expect(r.args).toContain("/bin/echo");
+    expect(r.args).toContain("hi");
+  });
+
+  test("sandbox=none falls through to inner invocation", () => {
+    const r = buildBinaryInvocation("/bin/echo", ["hi"], {
+      strategy: { kind: "none" },
+      workspaceDir: "/tmp",
+    });
+    expect(r).toEqual({ command: "/bin/echo", args: ["hi"] });
+  });
 });

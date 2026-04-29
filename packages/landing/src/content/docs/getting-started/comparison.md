@@ -67,7 +67,7 @@ Uses [just-bash](https://github.com/nicholasgasior/just-bash) (virtual bash) + *
 - **Egress through gateway proxy** — workers run with `HTTP_PROXY=http://localhost:8118`; allowlist/blocklist + LLM egress judge enforced at the proxy.
 - **Linux production hardening** — when `systemd-run` is available, the worker spawn becomes a transient unit with `MemoryMax`, `CPUQuota`, `IPAddressDeny=any` (kernel-level egress), capability drops, and `NoNewPrivileges`. macOS dev hosts fall back to plain spawn.
 
-Mount Lobu inside Next.js, Express, Hono, Fastify, or Bun — no Docker or Kubernetes needed. See [Embed in Your App](/deployment/embedding/).
+Mount Lobu inside Next.js, Express, Hono, Fastify, or Bun — no separate orchestrator needed. See [Embed in Your App](/deployment/embedding/).
 
 ### Comparison to other sandboxing approaches
 
@@ -101,7 +101,7 @@ Hosted platforms (DeepAgents Deploy, Claude Managed Agents) require sending your
 Lobu runs entirely on your infrastructure:
 - **Data stays in your network** — Redis, workspaces, and memory are all self-hosted
 - **No external dependencies** — the gateway, workers, and MCP proxy run on your machines
-- **Network-level isolation** — workers on an internal network with gateway-mediated egress
+- **Network-level isolation** — workers use gateway-mediated egress, with kernel-level loopback-only enforcement on Linux production hosts
 - **Credential separation** — secrets never leave the gateway process
 - **Audit everything** — gateway logs all LLM calls, MCP tool invocations, and network requests
 - **Air-gapped compatible** — with local LLM providers (Ollama, vLLM), Lobu can run fully disconnected
@@ -181,10 +181,10 @@ Claude Managed Agents is Anthropic's hosted agent platform.
 
 What "we'll build it ourselves" entails:
 
-- **Sandboxing**: per-user container orchestration with workspace persistence
+- **Sandboxing**: per-user worker lifecycle with workspace persistence
 - **Platform adapters**: Slack Events API, Telegram long-polling, WhatsApp webhooks, each with their own auth flows
 - **Credential isolation**: proxy layer that injects secrets without exposing them to agent code
-- **Network policy**: domain-filtered egress on an internal network
+- **Network policy**: domain-filtered egress through a gateway proxy
 - **MCP proxy**: secret injection, OAuth token refresh, and routing for MCP servers
 - **Scale-to-zero**: idle detection, teardown, and wake-on-message
 - **Eval framework**: automated quality testing across models

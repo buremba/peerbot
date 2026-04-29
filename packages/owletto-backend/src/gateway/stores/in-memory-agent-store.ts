@@ -239,8 +239,10 @@ export class InMemoryAgentStore extends BaseAgentStore {
         this.grants.delete(key);
         continue;
       }
+      const pattern = key.substring(prefix.length);
       grants.push({
-        pattern: key.substring(prefix.length),
+        pattern,
+        kind: inferGrantKind(pattern),
         expiresAt: entry.expiresAt,
         grantedAt: entry.grantedAt,
         ...(entry.denied && { denied: true }),

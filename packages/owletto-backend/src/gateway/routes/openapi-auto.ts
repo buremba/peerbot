@@ -25,8 +25,8 @@ const EXCLUDED_ROUTES = [
 ];
 
 const EXCLUDED_PREFIXES = [
-  "/health", // K8s liveness probe
-  "/ready", // K8s readiness probe
+  "/health", // liveness probe
+  "/ready", // readiness probe
   "/metrics", // Prometheus scraping
   "/api/telegram", // Telegram webhook
   "/api/v1/webhooks", // Chat SDK connection webhooks

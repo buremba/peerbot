@@ -9,7 +9,9 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { createRequire } from 'node:module';
 import { startDaemon } from './daemon/index.js';
+import { assertExternalDepsResolvable } from './runtime-deps.js';
 import type { Env } from './types.js';
 
 function printUsage(): void {
@@ -104,6 +106,10 @@ async function main(): Promise<void> {
 
   switch (command) {
     case 'daemon': {
+      // Crash loud at boot if the runtime image is missing any connector
+      // external dep, instead of letting every feed silently fail with
+      // "Missing npm dependency: X" hours later.
+      assertExternalDepsResolvable(createRequire(import.meta.url).resolve);
       console.error(`[cli] Starting worker daemon (ID: ${workerId}, API: ${apiUrl})`);
       const env = buildEnv();
       const maxConcurrentJobs = process.env.WORKER_MAX_CONCURRENT_JOBS

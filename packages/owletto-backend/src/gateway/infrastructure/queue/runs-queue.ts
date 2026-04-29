@@ -392,7 +392,7 @@ export class RunsQueue implements IMessageQueue {
       );
 
       if (result.length === 0 && idempotencyKey) {
-        const existing = await tx<{ id: number | string }[]>`
+        const existing = await tx<{ id: number | string }>`
           SELECT id FROM public.runs
           WHERE idempotency_key = ${idempotencyKey}
             AND status IN ('pending', 'claimed', 'running')
@@ -539,14 +539,12 @@ export class RunsQueue implements IMessageQueue {
 
   async getQueueStats(queueName: string): Promise<QueueStats> {
     const sql = getDb();
-    const rows = await sql<
-      {
-        waiting: number;
-        active: number;
-        completed: number;
-        failed: number;
-      }[]
-    >`
+    const rows = await sql<{
+      waiting: number;
+      active: number;
+      completed: number;
+      failed: number;
+    }>`
       SELECT
         COALESCE(SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END), 0)::int AS waiting,
         COALESCE(SUM(CASE WHEN status IN ('claimed','running') THEN 1 ELSE 0 END), 0)::int AS active,
@@ -581,15 +579,13 @@ export class RunsQueue implements IMessageQueue {
   } | null> {
     const sql = getDb();
     const claimedBy = `gateway-${process.pid}`;
-    const rows = await sql<
-      {
-        id: number | string;
-        action_input: unknown;
-        attempts: number | string;
-        max_attempts: number | string;
-        retry_delay_seconds: number | string | null;
-      }[]
-    >`
+    const rows = await sql<{
+      id: number | string;
+      action_input: unknown;
+      attempts: number | string;
+      max_attempts: number | string;
+      retry_delay_seconds: number | string | null;
+    }>`
       WITH next_run AS (
         SELECT id FROM public.runs
         WHERE status = 'pending'

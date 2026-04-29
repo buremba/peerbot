@@ -5,6 +5,7 @@
  * and metadata extraction (finds ConnectorRuntime subclass with sync()+execute()).
  */
 
+import { EXTERNAL_RUNTIME_DEPS } from '../../../owletto-worker/src/runtime-deps';
 import { type CompileResult, compileSource, extractMetadata } from './compiler-core';
 
 export interface ConnectorMetadata {
@@ -99,7 +100,10 @@ export async function compileConnectorSource(sourceCode: string): Promise<Compil
       banner: {
         js: `import { createRequire as __createRequire } from 'module'; const require = __createRequire(import.meta.url);`,
       },
-      external: ['pino', 'playwright', 'sharp', 'jimp', 'link-preview-js'],
+      // Only externalize deps that genuinely can't be bundled (native binaries,
+      // runtime install steps). Bundle everything else so connector artifacts
+      // stay self-contained and survive runtime image drift.
+      external: [...EXTERNAL_RUNTIME_DEPS],
     },
   });
 }

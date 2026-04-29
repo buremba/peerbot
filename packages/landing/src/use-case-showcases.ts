@@ -472,7 +472,7 @@ const memoryStepPanels: Record<
           {
             time: "9:05",
             source: "Priya",
-            text: "still blocked on k8s cluster admin creds — can someone grant?",
+            text: "still blocked on checkout cluster admin creds — can someone grant?",
           },
           {
             time: "9:11",
@@ -499,7 +499,7 @@ const memoryStepPanels: Record<
           },
           {
             emoji: "🚧",
-            text: "Priya blocked on k8s cluster admin creds",
+            text: "Priya blocked on checkout cluster admin creds",
           },
           {
             emoji: "⏳",
@@ -533,7 +533,7 @@ const memoryStepPanels: Record<
             "Alerts and incident state",
           ],
           [
-            "AWS / GCP / Kubernetes",
+            "AWS / GCP / internal APIs",
             "Org admin",
             "Service account",
             "Infra and deploy metadata",
@@ -1125,7 +1125,7 @@ const runtimeContent: Record<LandingUseCaseId, RuntimeJourney> = {
       {
         source: "Priya",
         time: "9:05",
-        text: "still blocked on k8s cluster admin creds — can someone grant?",
+        text: "still blocked on checkout cluster admin creds — can someone grant?",
       },
       {
         source: "Jay",
@@ -1171,7 +1171,7 @@ const runtimeContent: Record<LandingUseCaseId, RuntimeJourney> = {
     ],
     outcomeChannel: "#eng-standup",
     response:
-      "Morning team. Dan is rolling back checkout-v43 (INC-4421). Priya is blocked on k8s admin creds — pairing her with Dan since they both need checkout cluster access. Jay's caching PR is ready for review by EOD; Nina, can you take it once the INC-4378 postmortem draft is out? Sam is OOO today.",
+      "Morning team. Dan is rolling back checkout-v43 (INC-4421). Priya is blocked on checkout admin creds — pairing her with Dan since they both need checkout cluster access. Jay's caching PR is ready for review by EOD; Nina, can you take it once the INC-4378 postmortem draft is out? Sam is OOO today.",
     outcome: [
       "Who's working on what, visible before the standup call",
       "Blockers paired with teammates who can unblock them",

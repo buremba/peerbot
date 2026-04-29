@@ -297,10 +297,9 @@ describe("BaseDeploymentManager.syncNetworkConfigGrants", () => {
 });
 
 /**
- * In-flight coalescing for `ensureDeployment` lives in the base class so all
- * orchestrators share one implementation. Subclass-specific concerns (Docker
- * 409, K8s AlreadyExists, embedded `workers.has` short-circuit) are tested
- * separately in their own files.
+ * In-flight coalescing for `ensureDeployment` lives in the base class so the
+ * runtime-specific manager gets one shared implementation. Embedded
+ * idempotency (`workers.has` short-circuit) is tested separately.
  */
 describe("BaseDeploymentManager.ensureDeployment in-flight coalescing", () => {
   class CountingManager extends BaseDeploymentManager {
@@ -424,22 +423,3 @@ describe("BaseDeploymentManager.ensureDeployment in-flight coalescing", () => {
     expect(manager.attempts).toBe(2);
   });
 });
-
-// ---------------------------------------------------------------------------
-// Known coverage gap: K8sDeploymentManager
-// ---------------------------------------------------------------------------
-//
-// There is currently NO test file for `orchestration/impl/k8s/deployment.ts`.
-// As a result, the following recently-added behavior is unverified by tests:
-//
-//   1. The `409 AlreadyExists` short-circuit added in `spawnDeployment`
-//      (treats concurrent multi-replica creates as benign success and returns
-//      without touching the PVC).
-//   2. The PVC creation / cleanup paths in general.
-//   3. The deployment env / pod-spec construction.
-//
-// In production this path is covered only by manual smoke tests via
-// `make deploy` against a real cluster. Adding a `@kubernetes/client-node`
-// mock layer is non-trivial (the SDK uses class-based watchers and dynamic
-// API discovery), so coverage here was deferred. Track this gap before any
-// further changes to k8s/deployment.ts.

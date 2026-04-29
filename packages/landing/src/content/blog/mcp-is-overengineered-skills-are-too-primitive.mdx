@@ -23,7 +23,7 @@ I want to be clear about this: MCP over HTTP/SSE is a great protocol. It's basic
 
 One URL gives you auth discovery, a list of available tools, and execution endpoints. The agent doesn't need to know how GitHub's OAuth flow works or how to refresh a token. The MCP server handles that. The agent calls `SearchRepositories` and gets results.
 
-This matters a lot for sandboxing. In [Lobu](https://github.com/lobu-ai/lobu), workers run in containers with no direct internet access. They can't curl external APIs. They never see OAuth tokens. MCP servers sit behind the gateway proxy, which injects the right credentials per-user. The worker has no idea this is happening.
+This matters a lot for sandboxing. In [Lobu](https://github.com/lobu-ai/lobu), workers route outbound traffic through the gateway proxy and never see OAuth tokens. MCP servers sit behind that proxy, which injects the right credentials per-user. The worker has no idea this is happening.
 
 For third-party APIs like GitHub, Google, Linear, Slack: MCP HTTP/SSE is the right abstraction. It keeps secrets out of the sandbox and gives agents a clean interface to external services.
 
@@ -58,7 +58,7 @@ nixPackages: [git, gh]
 # Agent just runs: gh pr list --repo owner/repo
 ```
 
-Over 100,000 packages on [Nixpkgs](https://search.nixos.org/packages). Every CLI tool you can think of. Installed declaratively, cached across container restarts, no Docker rebuild.
+Over 100,000 packages on [Nixpkgs](https://search.nixos.org/packages). Every CLI tool you can think of. Installed declaratively and cached across worker restarts.
 
 ---
 
@@ -125,7 +125,7 @@ Same SKILL.md. Same environment. Every time.
 
 #### Nix persistence
 
-First boot pays the install cost. After that packages are cached on the workspace volume (Docker) or PVC (Kubernetes), so they survive container restarts and scale-to-zero.
+First boot pays the install cost. After that packages are cached in the persistent workspace, so they survive worker restarts and scale-to-zero.
 
 #### Starter skills
 

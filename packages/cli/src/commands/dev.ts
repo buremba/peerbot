@@ -132,10 +132,10 @@ export async function devCommand(
   // Forward Ctrl+C to the child so it can clean up its own subprocess workers
   // before the parent exits. SIGKILL after a timeout in case it wedges.
   const forwardSignal = (signal: NodeJS.Signals) => {
-    if (child.exitCode !== null || child.killed) return;
+    if (child.exitCode !== null || child.signalCode !== null) return;
     child.kill(signal);
     setTimeout(() => {
-      if (child.exitCode === null && !child.killed) {
+      if (child.exitCode === null && child.signalCode === null) {
         child.kill("SIGKILL");
       }
     }, 10_000).unref();

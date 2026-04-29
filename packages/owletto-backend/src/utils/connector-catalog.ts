@@ -191,7 +191,13 @@ export async function compileConnectorFromFile(filePath: string): Promise<string
         js: `import { createRequire as __createRequire } from 'module'; const require = __createRequire(import.meta.url);`,
       },
       plugins: [npmSpecifierPlugin],
-      external: ['pino', 'playwright', 'sharp', 'jimp', 'link-preview-js'],
+      // Must mirror EXTERNAL_RUNTIME_DEPS in packages/owletto-worker/src/runtime-deps.ts.
+      // Only natives / runtime-installed deps (playwright ships browsers via
+      // `npx playwright install`) belong here. Pure JS deps (pino, link-preview-js)
+      // must be bundled — externalising them previously caused every connector
+      // run to fail with "Cannot find package 'pino'" because the worker image
+      // didn't ship them.
+      external: ['playwright', 'sharp', 'jimp'],
       write: true,
       minify: false,
       sourcemap: false,

@@ -1,8 +1,8 @@
 /**
  * Minimal type shim for `isolated-vm` so TypeScript compiles even when the
  * native module is missing locally (it's an optionalDependency — fails to
- * build on Node versions without a prebuild). Production Docker installs the
- * real module which ships its own types; this shim is only consulted when
+ * build on Node versions without a prebuild). Production installs that can
+ * load the native module get its own types; this shim is only consulted when
  * the package isn't on disk.
  *
  * Surface kept narrow on purpose — only the bits `src/sandbox/run-script.ts`

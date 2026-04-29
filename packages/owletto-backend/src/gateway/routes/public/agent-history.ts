@@ -1,6 +1,6 @@
 /**
  * Agent history routes — proxy session data from worker HTTP server,
- * with direct session-file fallback for embedded/Docker dev mode.
+ * with direct session-file fallback for embedded dev mode.
  * Auth: settings session cookie (verifySettingsSession).
  */
 

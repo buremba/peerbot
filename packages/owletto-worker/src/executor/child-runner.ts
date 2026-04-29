@@ -337,7 +337,11 @@ async function main() {
       if (error.code === 'ERR_MODULE_NOT_FOUND') {
         const pkgMatch = error.message.match(/Cannot find package '([^']+)'/);
         const pkg = pkgMatch?.[1] ?? 'unknown';
-        error.message = `Missing npm dependency: ${pkg}. Install with: npm install ${pkg}`;
+        error.message =
+          `Connector requires '${pkg}' but it's not installed in the runtime image. ` +
+          `'${pkg}' is declared as an external dependency in EXTERNAL_RUNTIME_DEPS ` +
+          `(packages/owletto-worker/src/runtime-deps.ts). ` +
+          `Add it to packages/owletto-worker/package.json and rebuild the runtime image.`;
       }
       await sendIPC({
         type: 'error',

@@ -643,12 +643,28 @@ function registerWatcherRunHandle(params: {
     organizationId: params.organizationId,
     onResolve: async (result: { ok: true } | { ok: false; error: string }) => {
       const db = getDb();
-      if (result.ok) {
-        const windowId = await findWindowIdForRun(db, params.runId);
-        await markWatcherRunCompleted(db, params.runId, windowId);
-      } else {
+      if (!result.ok) {
         await markWatcherRunFailedIdempotent(db, params.runId, result.error);
+        return;
       }
+      // Fail closed when the agent's reply finished but no window was
+      // produced. Without this guard a no-op agent (no Owletto MCP, missing
+      // tools, or a chatty reply that skipped read_knowledge / complete_window)
+      // would silently mark the run "completed" — which is what masked the
+      // Reddit watcher being broken for a week. complete_window is the only
+      // signal that real work happened; absence of it is a failure, not a pass.
+      const windowId = await findWindowIdForRun(db, params.runId);
+      if (windowId === null) {
+        await markWatcherRunFailedIdempotent(
+          db,
+          params.runId,
+          'Agent reply finished without calling manage_watchers(action="complete_window"). ' +
+            'Check that the assigned agent has the Owletto MCP attached and that read_knowledge / ' +
+            'manage_watchers tools are approved for it.'
+        );
+        return;
+      }
+      await markWatcherRunCompleted(db, params.runId, windowId);
     },
   });
 }

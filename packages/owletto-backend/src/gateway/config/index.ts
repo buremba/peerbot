@@ -302,13 +302,48 @@ function buildEmbeddedWorkerPaths(projectRoot: string): {
   // paths — workers are spawned with cwd=workspaceDir, so relative entries
   // would resolve against the workspace and fail.
   const root = path.resolve(projectRoot);
-  return {
-    entryPoint: path.join(root, "packages/worker/src/index.ts"),
-    binPathEntries: [
-      path.join(root, "node_modules/.bin"),
-      path.join(root, "packages/worker/node_modules/.bin"),
-    ],
-  };
+  const explicitEntryPoint = process.env.LOBU_WORKER_ENTRYPOINT;
+  const explicitBinPathEntries = process.env.LOBU_WORKER_BIN_PATHS?.split(
+    path.delimiter
+  ).filter(Boolean);
+  const monorepoEntryPoint = path.join(root, "packages/worker/src/index.ts");
+  const monorepoBinPathEntries = [
+    path.join(root, "node_modules/.bin"),
+    path.join(root, "packages/worker/node_modules/.bin"),
+  ];
+
+  if (explicitEntryPoint) {
+    return {
+      entryPoint: path.resolve(explicitEntryPoint),
+      binPathEntries: explicitBinPathEntries ?? monorepoBinPathEntries,
+    };
+  }
+
+  if (existsSync(monorepoEntryPoint)) {
+    return {
+      entryPoint: monorepoEntryPoint,
+      binPathEntries: monorepoBinPathEntries,
+    };
+  }
+
+  try {
+    const workerPackageJson = createRequire(__filename).resolve(
+      "@lobu/worker/package.json"
+    );
+    const workerPackageRoot = path.dirname(workerPackageJson);
+    return {
+      entryPoint: path.join(workerPackageRoot, "dist/index.js"),
+      binPathEntries: [
+        path.join(workerPackageRoot, "node_modules/.bin"),
+        path.resolve(workerPackageRoot, "..", "..", ".bin"),
+      ],
+    };
+  } catch {
+    return {
+      entryPoint: monorepoEntryPoint,
+      binPathEntries: monorepoBinPathEntries,
+    };
+  }
 }
 
 /**
@@ -430,7 +465,8 @@ export function buildGatewayConfig(
         ),
         // Embedded-mode paths. Resolved from the monorepo root pointed at by
         // LOBU_DEV_PROJECT_PATH (defaults to cwd so CLI invocations from the
-        // repo root still work).
+        // repo root still work). Published CLIs fall back to the installed
+        // @lobu/worker package.
         ...buildEmbeddedWorkerPaths(
           process.env.LOBU_DEV_PROJECT_PATH || process.cwd()
         ),

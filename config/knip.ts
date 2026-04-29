@@ -7,10 +7,6 @@ const config: KnipConfig = {
     // Bundled into owletto-cli at build time; not a separate workspace.
     "packages/owletto-cli/runtime/**",
   ],
-  ignoreBinaries: [
-    // Used in Makefile / k8s scripts but not declared as a workspace dep.
-    "helm",
-  ],
   // Bun-style "npm:foo@x" import specifiers used by connectors.
   ignoreUnresolved: ["^npm:"],
   workspaces: {

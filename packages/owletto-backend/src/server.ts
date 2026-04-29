@@ -17,15 +17,22 @@ dotenv.config();
 
 import { existsSync } from 'node:fs';
 import http from 'node:http';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getRequestListener } from '@hono/node-server';
 import { Hono } from 'hono';
 import type { Env } from './index';
 import { app as mainApp, setViteDev } from './index';
+import { assertExternalDepsResolvable } from '../../owletto-worker/src/runtime-deps';
 import { getEnvFromProcess } from './utils/env';
 import logger from './utils/logger';
 import { initWorkspaceProvider } from './workspace';
+
+// Crash loud at boot if the runtime image is missing any connector external
+// dep, instead of letting every feed silently fail with "Missing npm
+// dependency: X" hours later.
+assertExternalDepsResolvable(createRequire(import.meta.url).resolve);
 
 // Create a wrapper app that injects environment into each request
 const app = new Hono<{ Bindings: Env }>();

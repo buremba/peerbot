@@ -39,7 +39,7 @@ Memory is pluggable. In file-first projects, the gateway first checks `[memory.o
 
 | Effective config | Plugin used |
 |---|---|
-| `[memory.owletto]` disabled or unresolved, and no `MEMORY_URL` override | `@openclaw/native-memory` — files under `/workspace` (per-thread PVC in K8s, `./workspaces/{threadId}/` in Docker). Not shared across threads. |
+| `[memory.owletto]` disabled or unresolved, and no `MEMORY_URL` override | `@openclaw/native-memory` — files under the worker workspace. Not shared across threads. |
 | `[memory.owletto]` enabled | `@lobu/owletto-openclaw` — the OpenClaw memory plugin for Owletto. It translates OpenClaw memory calls into Owletto MCP requests via the gateway's `/mcp/owletto` proxy. Cross-session, shareable across agents. |
 | `MEMORY_URL` set | Used as the base Owletto MCP endpoint before Lobu scopes it to the org from `[memory.owletto]` in `lobu.toml`. Useful for local or custom Owletto deployments. |
 

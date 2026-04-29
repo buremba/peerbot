@@ -23,7 +23,7 @@ function createGatewayConfig(
     sessionTimeoutMinutes: 5,
     logLevel: "INFO",
     queues: {
-      connectionString: "redis://test",
+      connectionString: "postgres://test",
       directMessage: "direct_message",
       messageQueue: "message_queue",
       retryLimit: 3,
@@ -35,7 +35,7 @@ function createGatewayConfig(
     },
     orchestration: {
       queues: {
-        connectionString: "redis://test",
+        connectionString: "postgres://test",
         retryLimit: 3,
         retryDelay: 1,
         expireInSeconds: 3600,
@@ -60,7 +60,6 @@ function createGatewayConfig(
       protectActiveWorkers: true,
     },
     secrets: {
-      redis: { prefix: "lobu:test:secret-store:" },
       aws: {},
     },
     ...overrides,

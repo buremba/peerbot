@@ -331,14 +331,13 @@ export class CoreServices {
   // ============================================================================
 
   private async initializeQueue(): Promise<void> {
-    // Phase 5+8: queue substrate is `public.runs` over Postgres. The Redis
-    // client is no longer used by application code (every non-queue consumer
-    // moved to PG in Phase 8); it remains plumbed only to satisfy the
-    // IMessageQueue compat shim until Phase 11 deletes the shim.
-    const redisUrl =
-      this.config.queues?.connectionString ?? process.env.REDIS_URL;
-
-    this.queue = new RunsQueue({ redisUrl });
+    // Queue substrate is `public.runs` over Postgres (SKIP LOCKED + LISTEN/
+    // NOTIFY). All non-queue consumers (secret-store, grant-store,
+    // scheduled-wakeup, cli-auth, Slack OAuth state) moved to PG; ioredis is
+    // gone from application code.
+    this.queue = new RunsQueue({
+      connectionString: this.config.queues?.connectionString,
+    });
     await this.queue.start();
     logger.debug("Queue connection established (runs-table substrate)");
   }

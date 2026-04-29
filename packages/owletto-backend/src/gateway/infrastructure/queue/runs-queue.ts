@@ -1,25 +1,18 @@
 /**
  * Postgres `runs`-table-backed message queue.
  *
- * Phase 5 of the Redis -> Postgres migration: replaces BullMQ with a SKIP-
- * LOCKED claim loop on `public.runs`. The connector worker (run_type IN
+ * SKIP-LOCKED claim loop on `public.runs`. The connector worker (run_type IN
  * 'sync', 'action', 'embed_backfill', 'watcher', 'auth') keeps its existing
  * HTTP-poll claim path; this queue strictly handles the lobu-queue lanes
  * ('chat_message', 'schedule', 'agent_run', 'internal').
  *
- * Wakeup is `pg_notify('runs_lobu_pending', '<run_type>')` on every send;
+ * Wakeup is `pg_notify('runs_lobu:<queue_name>', '<run_type>')` on every send;
  * subscribers LISTEN on a dedicated long-lived `pg.Client` so the poll cadence
  * can stay slow (200ms) without sacrificing latency.
- *
- * The IMessageQueue interface still exposes `getRedisClient()` because many
- * non-queue consumers (secret-store, grant-store, scheduled-wakeup, cli-auth,
- * Slack OAuth state) read/write Redis directly. Phase 11 removes ioredis
- * entirely; until then this class still owns a Redis client for them.
  */
 
 import { createLogger } from "@lobu/core";
 import * as Sentry from "@sentry/node";
-import { Redis } from "ioredis";
 import { Client, Pool, type PoolConfig } from "pg";
 import { getDb } from "../../../db/client.js";
 import type {
@@ -130,12 +123,9 @@ type LobuRunType = (typeof LOBU_RUN_TYPES)[number];
 export interface RunsQueueConfig {
   /** Postgres connection string. Defaults to `process.env.DATABASE_URL`. */
   connectionString?: string;
-  /** Optional Redis URL for backward-compat consumers (secret-store etc.).
-   *  When omitted, falls back to `process.env.REDIS_URL`. */
-  redisUrl?: string;
   /** Pool size for queue operations. */
   poolMax?: number;
-  /** Per-queue concurrency. Default 1 — matches BullMQ's per-worker default. */
+  /** Per-queue concurrency. Default 1. */
   defaultConcurrency?: number;
 }
 
@@ -191,7 +181,6 @@ export class RunsQueue implements IMessageQueue {
   private listenerReconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private listenerStopped = false;
   private staleSweepTimer: ReturnType<typeof setInterval> | null = null;
-  private redisClient: Redis | null = null;
   private isConnected = false;
   /** Phase 10: set true on stop(); send/work check this and refuse new work. */
   private shuttingDown = false;
@@ -215,7 +204,6 @@ export class RunsQueue implements IMessageQueue {
   private readonly poolMax: number;
   private readonly defaultConcurrency: number;
   private readonly connectionString: string;
-  private readonly redisUrl: string | undefined;
 
   constructor(config: RunsQueueConfig = {}) {
     const cs = config.connectionString ?? process.env.DATABASE_URL;
@@ -223,7 +211,6 @@ export class RunsQueue implements IMessageQueue {
       throw new Error("RunsQueue: DATABASE_URL is required");
     }
     this.connectionString = cs;
-    this.redisUrl = config.redisUrl ?? process.env.REDIS_URL;
     this.poolMax = config.poolMax ?? 5;
     this.defaultConcurrency = config.defaultConcurrency ?? 1;
   }
@@ -245,22 +232,6 @@ export class RunsQueue implements IMessageQueue {
     this.pool.on("error", (err) => {
       logger.warn(`Pool idle client error: ${err.message}`);
     });
-
-    // Backwards-compat Redis client for consumers that still call
-    // `getRedisClient()`. Phase 11 removes this.
-    if (this.redisUrl) {
-      this.redisClient = new Redis(this.redisUrl, {
-        maxRetriesPerRequest: null,
-      });
-      // Prevent unhandled errors from crashing the process.
-      this.redisClient.on("error", (err) => {
-        logger.warn(`Redis client error: ${err.message}`);
-      });
-    } else {
-      logger.warn(
-        "REDIS_URL not configured; RunsQueue.getRedisClient() will throw"
-      );
-    }
 
     this.isConnected = true;
     this.listenerStopped = false;
@@ -379,14 +350,6 @@ export class RunsQueue implements IMessageQueue {
       }
       this.listener = null;
     }
-    if (this.redisClient) {
-      try {
-        await this.redisClient.quit();
-      } catch {
-        // ignore
-      }
-      this.redisClient = null;
-    }
     if (this.pool) {
       try {
         await this.pool.end();
@@ -400,21 +363,6 @@ export class RunsQueue implements IMessageQueue {
 
   isHealthy(): boolean {
     return this.isConnected && this.pool !== null;
-  }
-
-  /**
-   * Returns a Redis client for backward-compat consumers (secret-store,
-   * grant-store, scheduled-wakeup, cli-auth, Slack OAuth state). This is NOT
-   * used by the queue itself — pure ioredis for non-queue code paths until
-   * Phase 11.
-   */
-  getRedisClient(): unknown {
-    if (!this.redisClient) {
-      throw new Error(
-        "Redis client not configured. Set REDIS_URL on the RunsQueue config."
-      );
-    }
-    return this.redisClient;
   }
 
   // ── Producer ────────────────────────────────────────────────────────────
@@ -562,7 +510,7 @@ export class RunsQueue implements IMessageQueue {
       throw new Error("RunsQueue is shutting down; refusing new work");
     }
 
-    // Replace any existing worker for this queue (matches RedisQueue behavior).
+    // Replace any existing worker for this queue.
     const existing = this.workers.get(queueName);
     if (existing) {
       existing.stopped = true;

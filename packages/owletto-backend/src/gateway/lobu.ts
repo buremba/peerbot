@@ -51,7 +51,7 @@ export interface LobuAgentConfig {
 }
 
 export interface LobuConfig {
-  redis: string;
+  database: string;
   memory?: string;
   agents?: LobuAgentConfig[];
   port?: number;
@@ -103,7 +103,7 @@ export class Lobu {
     // and DeclaredAgentRegistry seeding; avoids a parallel SDK seeding path.
     this.gatewayConfig = buildGatewayConfig({
       agents: this.agentConfigs.map(toAgentConfig),
-      queues: { connectionString: config.redis },
+      queues: { connectionString: config.database },
       mcp: {
         publicGatewayUrl: config.publicUrl ?? defaultPublicUrl,
       },

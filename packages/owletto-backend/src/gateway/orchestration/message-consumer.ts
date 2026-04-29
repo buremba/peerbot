@@ -45,7 +45,7 @@ export class MessageConsumer {
     this.config = config;
     this.deploymentManager = deploymentManager;
     this.queue = new RunsQueue({
-      redisUrl: config.queues.connectionString,
+      connectionString: config.queues.connectionString,
     });
   }
 

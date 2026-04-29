@@ -15,8 +15,8 @@ import { parseEnvContent } from "../internal/index.js";
  * Spawns the bundled @lobu/owletto-backend Node server, which hosts the
  * gateway, embedded workers, embeddings, and the Owletto memory backend
  * in-process. Workers are spawned as child subprocesses by the gateway's
- * EmbeddedDeploymentManager. Postgres and Redis must be reachable via
- * DATABASE_URL and REDIS_URL in .env.
+ * EmbeddedDeploymentManager. Postgres must be reachable via DATABASE_URL
+ * in .env.
  */
 export async function devCommand(
   cwd: string,
@@ -51,26 +51,18 @@ export async function devCommand(
   }
 
   const envVars = parseEnvContent(envContent);
-  const missing: string[] = [];
-  if (!envVars.DATABASE_URL) missing.push("DATABASE_URL");
-  if (!envVars.REDIS_URL) missing.push("REDIS_URL");
-
-  if (missing.length > 0) {
-    spinner.fail("Required environment variables missing");
-    console.error(
-      chalk.red(`\n  Set the following in .env:\n`)
-    );
-    for (const key of missing) {
-      console.error(chalk.dim(`    ${key}=`));
-    }
+  if (!envVars.DATABASE_URL) {
+    spinner.fail("DATABASE_URL is missing");
+    console.error(chalk.red(`\n  Set the following in .env:\n`));
+    console.error(chalk.dim(`    DATABASE_URL=`));
     console.error(
       chalk.dim(
-        "\n  Lobu connects to a user-provided Postgres + Redis. Run them yourself"
+        "\n  Lobu connects to a user-provided Postgres. Run one yourself"
       )
     );
     console.error(
       chalk.dim(
-        "  (managed instances or local: e.g. `brew services start postgresql redis`).\n"
+        "  (managed instance or local: e.g. `brew services start postgresql`).\n"
       )
     );
     process.exit(1);
@@ -94,15 +86,9 @@ export async function devCommand(
         "  seeing this from a published @lobu/cli, please file an issue."
       )
     );
+    console.error(chalk.dim("  In the monorepo, build it via:"));
     console.error(
-      chalk.dim(
-        "  In the monorepo, build it via:"
-      )
-    );
-    console.error(
-      chalk.dim(
-        "    bun run --filter '@lobu/owletto-backend' build:server\n"
-      )
+      chalk.dim("    bun run --filter '@lobu/owletto-backend' build:server\n")
     );
     process.exit(1);
   }
@@ -115,8 +101,9 @@ export async function devCommand(
 
   console.log(chalk.cyan(`\n  Starting Lobu...\n`));
   console.log(chalk.dim(`  bundle:        ${bundlePath}`));
-  console.log(chalk.dim(`  database:      ${redactUrl(envVars.DATABASE_URL!)}`));
-  console.log(chalk.dim(`  redis:         ${redactUrl(envVars.REDIS_URL!)}`));
+  console.log(
+    chalk.dim(`  database:      ${redactUrl(envVars.DATABASE_URL!)}`)
+  );
   console.log(chalk.dim(`  api docs:      ${gatewayUrl}/api/docs`));
   console.log();
 

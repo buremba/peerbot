@@ -3,12 +3,9 @@
  * Replaces MockMessageQueue from gateway setup.ts.
  */
 
-import { MockRedisClient } from "./mock-redis";
-
 export class MockMessageQueue {
   private queues = new Map<string, any[]>();
   private workers = new Map<string, (job: any) => Promise<void>>();
-  private redisClient = new MockRedisClient();
 
   async createQueue(queueName: string): Promise<void> {
     if (!this.queues.has(queueName)) {
@@ -31,10 +28,6 @@ export class MockMessageQueue {
 
     const handler = this.workers.get(queueName);
     if (handler) await handler(job);
-  }
-
-  getRedisClient(): MockRedisClient {
-    return this.redisClient;
   }
 
   // --- Test helpers ---

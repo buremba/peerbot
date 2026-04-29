@@ -1,6 +1,6 @@
 /**
  * Message queue interface and payload types for lobu
- * Supports multiple queue backends (currently Redis via BullMQ)
+ * Implemented by RunsQueue over the Postgres `public.runs` substrate.
  */
 
 // ============================================================================
@@ -33,8 +33,8 @@ export interface QueueStats {
 export type JobHandler<T = any> = (job: QueueJob<T>) => Promise<void>;
 
 /**
- * Abstract message queue interface
- * Implementations: RedisQueue (BullMQ)
+ * Abstract message queue interface.
+ * Implementations: RunsQueue (Postgres `public.runs` + SKIP LOCKED).
  */
 export interface IMessageQueue {
   /**
@@ -86,12 +86,6 @@ export interface IMessageQueue {
    * Check if queue is healthy/connected
    */
   isHealthy(): boolean;
-
-  /**
-   * Get underlying Redis client for general-purpose Redis operations
-   * Used for application state storage (sessions, cache, etc.)
-   */
-  getRedisClient(): any;
 }
 
 // ============================================================================

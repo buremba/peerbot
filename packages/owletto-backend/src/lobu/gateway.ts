@@ -69,7 +69,7 @@ function ensureEmbeddedGatewaySecrets(): void {
       );
     } else {
       throw new Error(
-        'ENCRYPTION_KEY is required when REDIS_URL enables the embedded Lobu gateway. Set ENCRYPTION_KEY explicitly or opt into ephemeral local keys with OWLETTO_ALLOW_EPHEMERAL_ENCRYPTION_KEY=1.'
+        'ENCRYPTION_KEY is required for the embedded Lobu gateway. Set ENCRYPTION_KEY explicitly or opt into ephemeral local keys with OWLETTO_ALLOW_EPHEMERAL_ENCRYPTION_KEY=1.'
       );
     }
   }
@@ -136,12 +136,12 @@ async function startSlackSocketMode(manager: any): Promise<void> {
 
 /**
  * Initialize the embedded Lobu gateway.
- * Returns the Hono app to mount, or null if Redis is not configured.
+ * Returns the Hono app to mount, or null if DATABASE_URL is not configured.
  */
 export async function initLobuGateway(): Promise<Hono | null> {
-  const redisUrl = process.env.REDIS_URL;
-  if (!redisUrl) {
-    logger.info('[Lobu] REDIS_URL not set — embedded gateway disabled');
+  const databaseUrl = process.env.DATABASE_URL;
+  if (!databaseUrl) {
+    logger.info('[Lobu] DATABASE_URL not set — embedded gateway disabled');
     return null;
   }
 
@@ -154,7 +154,7 @@ export async function initLobuGateway(): Promise<Hono | null> {
     const env = process.env as unknown as Env;
 
     const gatewayConfig = buildGatewayConfig({
-      queues: { connectionString: redisUrl },
+      queues: { connectionString: databaseUrl },
       mcp: { publicGatewayUrl: publicUrl },
     });
 

@@ -93,7 +93,7 @@ async function main() {
   // Initialize workspace provider
   await initWorkspaceProvider();
 
-  // Initialize embedded Lobu gateway (requires REDIS_URL)
+  // Initialize embedded Lobu gateway (requires DATABASE_URL)
   const { initLobuGateway } = await import('./lobu/gateway');
   const lobuApp = await initLobuGateway();
   if (lobuApp) {

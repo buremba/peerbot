@@ -23,7 +23,7 @@ describe("Lobu", () => {
     delete process.env.MEMORY_URL;
 
     new Lobu({
-      redis: "redis://localhost:6379",
+      database: "postgres://localhost:5432/lobu",
       memory: "https://memory.example.com",
     });
 

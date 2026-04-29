@@ -62,7 +62,7 @@ const TEST_ENCRYPTION_KEY =
 
 const TEST_CONFIG: OrchestratorConfig = {
   queues: {
-    connectionString: "redis://localhost:6379",
+    connectionString: "postgres://localhost:5432/lobu",
     retryLimit: 3,
     retryDelay: 5,
     expireInSeconds: 300,

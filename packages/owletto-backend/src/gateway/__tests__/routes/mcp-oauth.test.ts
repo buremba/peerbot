@@ -4,7 +4,6 @@ import { createMcpOAuthRoutes } from "../../routes/public/mcp-oauth.js";
 describe("mcp oauth callback route", () => {
   test("escapes reflected error and error_description to prevent XSS", async () => {
     const router = createMcpOAuthRoutes({
-      redis: {} as any,
       secretStore: {} as any,
       publicGatewayUrl: "https://gateway.example.com",
     });

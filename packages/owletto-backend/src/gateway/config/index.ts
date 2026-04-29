@@ -119,10 +119,6 @@ export interface GatewayConfig {
     publicGatewayUrl: string;
   };
   secrets: {
-    /** Redis-backed writable secret store (encrypts via ENCRYPTION_KEY). */
-    redis: {
-      prefix: string;
-    };
     /** Read-only AWS Secrets Manager backend for `aws-sm://` refs. */
     aws: {
       region?: string;
@@ -328,7 +324,7 @@ export function buildGatewayConfig(
   logger.debug("Building gateway configuration from environment variables");
 
   const connectionString =
-    overrides?.queues?.connectionString || getRequiredEnv("QUEUE_URL");
+    overrides?.queues?.connectionString || getRequiredEnv("DATABASE_URL");
 
   const defaultMemoryFlushEnabled = getOptionalBoolean(
     "AGENT_DEFAULT_MEMORY_FLUSH_ENABLED",
@@ -458,12 +454,6 @@ export function buildGatewayConfig(
       publicGatewayUrl,
     },
     secrets: {
-      redis: {
-        prefix: getOptionalEnv(
-          "SECRET_STORE_REDIS_PREFIX",
-          "lobu:secret-store:"
-        ),
-      },
       aws: {
         region: process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION,
       },

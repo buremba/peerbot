@@ -32,9 +32,6 @@ class FakeQueue implements IMessageQueue {
   isHealthy(): boolean {
     return true;
   }
-  getRedisClient(): unknown {
-    throw new Error("Redis is not available in this test");
-  }
 }
 
 function buildSchedule(over: Partial<DeclaredSchedule> = {}): DeclaredSchedule {

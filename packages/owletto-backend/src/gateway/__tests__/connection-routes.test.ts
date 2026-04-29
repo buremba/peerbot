@@ -97,11 +97,7 @@ describe("connection routes", () => {
         getServices() {
           return {
             getQueue() {
-              return {
-                getRedisClient() {
-                  return null;
-                },
-              };
+              return {};
             },
           };
         },

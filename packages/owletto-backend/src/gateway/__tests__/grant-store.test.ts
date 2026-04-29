@@ -3,6 +3,7 @@ import { GrantStore } from "../permissions/grant-store.js";
 import {
   ensurePgliteForGatewayTests,
   resetTestDatabase,
+  seedAgentRow,
 } from "./helpers/db-setup.js";
 
 describe("GrantStore (PG-backed)", () => {
@@ -14,6 +15,9 @@ describe("GrantStore (PG-backed)", () => {
 
   beforeEach(async () => {
     await resetTestDatabase();
+    // grants.agent_id has an FK on agents(id); seed the row used by every
+    // test in this file so the inserts below succeed.
+    await seedAgentRow("agent-1");
     store = new GrantStore();
   });
 

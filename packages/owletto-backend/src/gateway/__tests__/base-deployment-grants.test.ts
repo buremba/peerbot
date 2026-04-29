@@ -10,6 +10,7 @@ import { PolicyStore } from "../permissions/policy-store.js";
 import {
   ensurePgliteForGatewayTests,
   resetTestDatabase,
+  seedAgentRow,
 } from "./helpers/db-setup.js";
 
 /** Minimal concrete subclass — only exists so we can test grant syncing. */
@@ -79,6 +80,8 @@ describe("BaseDeploymentManager.syncNetworkConfigGrants", () => {
 
   beforeEach(async () => {
     await resetTestDatabase();
+    // grants.agent_id has an FK on agents(id); seed the row used below.
+    await seedAgentRow("agent-1");
     grantStore = new GrantStore();
     policyStore = new PolicyStore();
     manager = new TestDeploymentManager(TEST_CONFIG);

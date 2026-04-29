@@ -13,7 +13,7 @@
 
 ### Repository Layout
 - Monorepo managed by Bun workspaces under `packages/*`.
-- Top-level: `Makefile`, `scripts/`, `charts/lobu` (Helm), `config/`, `docker/`, `docs/` (RELEASING, SECURITY), `.env*`.
+- Top-level: `Makefile`, `scripts/`, `config/`, `docs/` (RELEASING, SECURITY), `.env*`.
 - TypeScript sources in `packages/*/src`, tests in `packages/*/src/__tests__`.
 - Always prefer `bun` over `npm`.
 - When fixing unused-parameter errors, delete the parameter rather than prefixing with `_`.
@@ -30,8 +30,9 @@ When editing UI under `packages/owletto-web`, follow the design rules in @packag
 All chat platforms (Telegram, Slack, Discord, WhatsApp, Teams) run through Chat SDK adapters in `packages/gateway/src/connections/`. Connections are created via the `/agents` admin UI or the connections CRUD API — no per-platform env vars. Each connection has a typed config schema (bot token for Telegram, signing secret + bot token for Slack, etc.). Gateway also exposes a public endpoint that triggers an agent run. Settings-page provider order is drag-sortable, with per-provider model selection inline.
 
 #### Orchestration
-- Deployment modes: Kubernetes (production), Docker Compose (development).
-- Workers are sandboxed and **never see real credentials**. The gateway proxy resolves provider credentials from the agentId in the URL path (`/api/proxy/{slug}/a/{agentId}/...`); workers get opaque placeholders in env.
+- **Embedded-only deployment.** Gateway, workers, embeddings, and the Owletto memory backend run in a single Node process (`lobu run`, or `bun run dev` in the monorepo). Workers spawn as `child_process.spawn` subprocesses on the same host; on Linux the spawn path uses `systemd-run --user --scope` for cgroup limits + IPAddressDeny + capability drops. There is no Docker or Kubernetes deployment manager.
+- Postgres + Redis are user-provided externals (managed instances or local). The Node process connects out via `DATABASE_URL` and `REDIS_URL`.
+- Workers are sandboxed and **never see real credentials**. The gateway's `secret-proxy` swaps `lobu_secret_<uuid>` placeholders for real keys at egress; workers receive only the placeholders.
 
 #### MCP
 - Bundled LLM providers come from `config/providers.json`; MCP servers come from per-agent settings or local `SKILL.md` files.
@@ -48,15 +49,14 @@ All chat platforms (Telegram, Slack, Discord, WhatsApp, Teams) run through Chat 
 - Built-in: `createNoopGuardrail(stage, name?)` for tests and as a template. Real guardrails (prompt-injection classifier, secret/PII scanner) live in downstream packages that call `registry.register(...)` during gateway boot.
 
 #### Network
-- Workers run on the internal-only `lobu-internal` network; the gateway sits on both `lobu-public` and `lobu-internal` and is the single egress.
-- Gateway runs a Node HTTP proxy on :8118; workers get `HTTP_PROXY=http://gateway:8118` for all outbound (curl/wget/npm/git).
+- Gateway runs a Node HTTP proxy on `127.0.0.1:8118`; worker subprocesses get `HTTP_PROXY=http://localhost:8118` for all outbound (curl/wget/npm/git). The proxy enforces domain allowlist/blocklist + LLM egress judge.
 - Access is controlled by `WORKER_ALLOWED_DOMAINS`:
   - Empty/unset → no internet (default).
   - `"github.com"` → allowlist only.
   - `"*"` → allow all (not for production).
   - `"*"` + `WORKER_DISALLOWED_DOMAINS="malicious.com,spam.org"` → blocklist mode.
 - Domain format: exact (`api.example.com`) or wildcard (`.example.com`).
-- Docker's `internal: true` enforces isolation at the infra layer; the proxy adds selective egress on top.
+- In embedded mode `HTTP_PROXY` is advisory at the language layer — a worker can `connect()` directly bypassing it. On Linux production hosts, the systemd-run worker spawn adds `IPAddressDeny=any` + `IPAddressAllow=127.0.0.1` so kernel-level routing forces traffic through the proxy.
 - `WORKER_ENV_*` gateway vars are forwarded to workers with the prefix stripped (`WORKER_ENV_FOO=bar` → `FOO=bar`). Use only for worker runtime env, not the default Owletto memory plugin config.
 
 #### Egress judge
@@ -86,11 +86,11 @@ Skills and agents can route risky domains through an LLM judge instead of a flat
 
 ## TypeScript Build System
 
-TypeScript packages must be compiled from `src/` → `dist/`. If you modify any package source code, run `make build-packages`. `make dev` (docker compose watch) automatically builds and syncs changes.
+TypeScript packages must be compiled from `src/` → `dist/`. If you modify any package source code, run `make build-packages`. `make dev` (`scripts/dev-native.sh`) does not auto-rebuild workspace packages — it loads them from disk via the `bun` resolution condition.
 
 ## Versioning and releasing
 
-Releases are driven by [release-please](https://github.com/googleapis/release-please): land conventional commits on `main`, merge the generated release PR, and CI publishes to npm (OIDC) and builds Docker images. See [`docs/RELEASING.md`](docs/RELEASING.md) for the full flow, recovery playbook, and local-publish fallback.
+Releases are driven by [release-please](https://github.com/googleapis/release-please): land conventional commits on `main`, merge the generated release PR, and CI publishes to npm (OIDC). See [`docs/RELEASING.md`](docs/RELEASING.md) for the full flow, recovery playbook, and local-publish fallback.
 
 Rules for agents:
 - Inter-package deps MUST be `"@lobu/<name>": "workspace:*"` — never a hardcoded version. `scripts/publish-packages.mjs` rewrites them at publish time.
@@ -123,14 +123,12 @@ When the user pivots mid-session, the default failure mode is piling unrelated w
 
 ## Development
 
-Prerequisites: Bun, Docker Desktop.
+Prerequisites: Bun, local Redis (`brew services start redis` or equivalent), and a reachable Postgres via `DATABASE_URL`.
 
 ```bash
-./scripts/setup-dev.sh   # first-time setup
-make dev                  # docker compose watch (auto-syncs source)
-make clean-workers        # after worker/* changes
-make deploy               # Kubernetes (production)
-docker compose -f docker/docker-compose.yml logs -f gateway
+./scripts/setup-dev.sh   # first-time setup (builds packages, checks bun + redis)
+make dev                  # boots embedded gateway + workers + Vite HMR on :8787
+make clean-workers        # kill orphaned worker subprocesses if a crash leaves any
 ```
 
 ### Validation after code changes
@@ -156,8 +154,8 @@ If the change affects bot behavior, run the test bot:
 If replies look stale, clear Redis chat history:
 
 ```bash
-docker compose -f docker/docker-compose.yml exec redis redis-cli KEYS 'chat:history:*'
-docker compose -f docker/docker-compose.yml exec redis redis-cli DEL 'chat:history:<key>'
+redis-cli KEYS 'chat:history:*'
+redis-cli DEL 'chat:history:<key>'
 ```
 
 For prompt / behavior changes, run evals (definitions in `<example>/agents/<name>/evals/*.yaml`):
@@ -173,12 +171,9 @@ Local dev Telegram bot: `@clawdotfreebot`. Production: `@lobuaibot`.
 
 ## Environment & Runtime
 
-`.env` is the single source of truth for secrets. Gateway reads it on startup; restart with `make dev` after changes. In Kubernetes, a checksum annotation triggers pod restart when secrets change via `helm upgrade`.
+`.env` is the single source of truth for secrets. The gateway reads it on startup; restart `make dev` after changes.
 
-Workers get persistent storage for session continuity across scale-to-zero:
-
-- **K8s**: each worker deployment has its own PVC mounted at `/workspace` (1 thread = 1 PVC). Sessions live in `/workspace/` (`HOME=/workspace`). PVCs are deleted when the deployment is cleaned up after thread inactivity; on scale-up, existing sessions auto-resume.
-- **Docker**: equivalent host mount at `./workspaces/{threadId}/`.
+Worker sessions persist across restarts via host-mounted workspaces under `./workspaces/{agentId}/`. Workers spawn from `EmbeddedDeploymentManager` as `child_process.spawn` subprocesses with that directory as their `cwd` and `WORKSPACE_DIR` env. On Linux production hosts, the manager wraps the spawn in `systemd-run --user --scope` to add MemoryMax/CPUQuota/IPAddressDeny + capability drops; on macOS the plain spawn path runs.
 
 ### Integration authentication
 

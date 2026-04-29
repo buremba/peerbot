@@ -15,7 +15,6 @@ import {
 import { renderTemplate } from "../utils/template.js";
 
 const DEFAULT_OWLETTO_MCP_URL = "https://lobu.ai/mcp";
-const LOCAL_OWLETTO_MCP_URL = "http://owletto:8787/mcp";
 
 export async function initCommand(
   cwd: string = process.cwd(),
@@ -65,22 +64,6 @@ export async function initCommand(
       chalk.dim(`\nCreating project in: ${chalk.cyan(projectDir)}\n`)
     );
   }
-
-  // Deployment mode selection
-  const deploymentMode = await select<"embedded" | "docker">({
-    message: "How should workers run?",
-    choices: [
-      {
-        name: "Embedded — virtual bash & filesystem, no package installs, lower resource usage",
-        value: "embedded",
-      },
-      {
-        name: "Docker — isolated containers per user, full OS access, heavier but more capable",
-        value: "docker",
-      },
-    ],
-    default: "embedded",
-  });
 
   // Gateway port selection
   const gatewayPort = await input({
@@ -188,41 +171,24 @@ export async function initCommand(
     : { connectionConfig: {}, connectionSecrets: [] };
 
   // Memory
-  const memoryChoice = await select<
-    "none" | "owletto-cloud" | "owletto-local" | "owletto-custom"
-  >({
-    message: "Memory:",
-    choices: [
-      { name: "None (filesystem memory)", value: "none" },
-      { name: "Lobu Cloud (app.lobu.ai)", value: "owletto-cloud" },
-      {
-        name: "Lobu memory Local (runs alongside gateway)",
-        value: "owletto-local",
-      },
-      { name: "Custom Lobu memory URL", value: "owletto-custom" },
-    ],
-    default: "none",
-  });
+  const memoryChoice = await select<"none" | "owletto-cloud" | "owletto-custom">(
+    {
+      message: "Memory:",
+      choices: [
+        { name: "None (filesystem memory)", value: "none" },
+        { name: "Lobu Cloud (app.lobu.ai)", value: "owletto-cloud" },
+        { name: "Custom Lobu memory URL", value: "owletto-custom" },
+      ],
+      default: "none",
+    }
+  );
 
   const envSecrets: Array<{ envVar: string; value: string }> = [];
   const includeOwlettoMemory = memoryChoice !== "none";
-  let includeOwlettoLocal = false;
   let owlettoUrl = "";
 
   if (memoryChoice === "owletto-cloud") {
     owlettoUrl = DEFAULT_OWLETTO_MCP_URL;
-  } else if (memoryChoice === "owletto-local") {
-    includeOwlettoLocal = true;
-    owlettoUrl = LOCAL_OWLETTO_MCP_URL;
-    envSecrets.push({ envVar: "MEMORY_URL", value: owlettoUrl });
-    envSecrets.push({
-      envVar: "OWLETTO_AUTH_SECRET",
-      value: randomBytes(32).toString("hex"),
-    });
-    envSecrets.push({
-      envVar: "OWLETTO_DB_PASSWORD",
-      value: randomBytes(16).toString("hex"),
-    });
   } else if (memoryChoice === "owletto-custom") {
     owlettoUrl = await input({
       message: "Lobu memory MCP URL:",
@@ -288,14 +254,10 @@ export async function initCommand(
   const encryptionKey = randomBytes(32).toString("hex");
 
   const answers = {
-    deploymentMode: deploymentMode as "embedded" | "docker",
     encryptionKey,
     allowedDomains,
     disallowedDomains,
   };
-
-  // docker-compose.yml will be created in new directory, no need to check
-  const composeFilename = "docker-compose.yml";
 
   const spinner = ora("Creating Lobu project...").start();
 
@@ -335,7 +297,6 @@ export async function initCommand(
     const variables = {
       PROJECT_NAME: projectName,
       CLI_VERSION: cliVersion,
-      DEPLOYMENT_MODE: answers.deploymentMode,
       ADMIN_PASSWORD: adminPassword,
       ENCRYPTION_KEY: answers.encryptionKey,
       GATEWAY_PORT: gatewayPort,
@@ -446,25 +407,6 @@ turns:
       join(projectDir, "TESTING.md")
     );
 
-    if (answers.deploymentMode === "docker") {
-      // Create Dockerfile.worker for docker mode
-      await renderTemplate(
-        "Dockerfile.worker.tmpl",
-        variables,
-        join(projectDir, "Dockerfile.worker")
-      );
-    }
-
-    // Always generate docker-compose.yml (Redis is needed for all modes)
-    const composeContent = generateDockerCompose({
-      projectName,
-      gatewayPort,
-      dockerfilePath: "./Dockerfile.worker",
-      deploymentMode: answers.deploymentMode,
-      includeOwlettoLocal,
-    });
-    await writeFile(join(projectDir, composeFilename), composeContent);
-
     spinner.succeed("Project created successfully!");
 
     // Print next steps
@@ -497,49 +439,39 @@ turns:
       );
     }
     console.log(chalk.dim("     - .env                         (secrets)"));
-    console.log(chalk.dim(`     - ${composeFilename}`));
-    if (answers.deploymentMode === "docker") {
-      console.log(chalk.dim("     - Dockerfile.worker"));
-    }
     console.log();
 
     const gatewayUrl = `http://localhost:${gatewayPort}`;
-    if (owlettoUrl) {
-      const displayUrl = includeOwlettoLocal
-        ? "http://localhost:8787"
-        : owlettoUrl;
-      console.log(chalk.cyan("  Lobu memory:"));
-      console.log(chalk.dim(`     ${displayUrl}\n`));
-    }
-    console.log(chalk.cyan("  3. Start the services:"));
-    console.log(chalk.dim("     npx @lobu/cli@latest run -d\n"));
-    if (includeOwlettoLocal) {
-      console.log(chalk.cyan("  4. Set up Lobu memory (first run):"));
-      console.log(
-        chalk.dim("     Visit http://localhost:8787 to create your account\n")
-      );
-    }
     console.log(
-      chalk.cyan(`  ${includeOwlettoLocal ? "5" : "4"}. Open the API docs:`)
+      chalk.cyan("  3. Set DATABASE_URL and REDIS_URL in .env:")
     );
-    console.log(chalk.dim(`     ${gatewayUrl}/api/docs\n`));
     console.log(
-      chalk.cyan(
-        `  ${includeOwlettoLocal ? "6" : "5"}. Build with a coding agent:`
+      chalk.dim(
+        "     Lobu connects to a user-provided Postgres + Redis. Run them yourself"
       )
     );
+    console.log(
+      chalk.dim(
+        "     (managed instances or local: e.g. `brew services start postgresql redis`)\n"
+      )
+    );
+    if (owlettoUrl) {
+      console.log(chalk.cyan("  Lobu memory:"));
+      console.log(chalk.dim(`     ${owlettoUrl}\n`));
+    }
+    console.log(chalk.cyan("  4. Start the services:"));
+    console.log(chalk.dim("     npx @lobu/cli@latest run\n"));
+    console.log(chalk.cyan("  5. Open the API docs:"));
+    console.log(chalk.dim(`     ${gatewayUrl}/api/docs\n`));
+    console.log(chalk.cyan("  6. Build with a coding agent:"));
     console.log(
       chalk.dim(
         "     Ask Codex or Claude Code to read AGENTS.md, lobu.toml, and agents/*/{IDENTITY,SOUL,USER}.md"
       )
     );
     console.log(chalk.dim("     Optional external skill: lobu-builder\n"));
-    console.log(chalk.cyan(`  ${includeOwlettoLocal ? "7" : "6"}. View logs:`));
-    console.log(chalk.dim("     docker compose logs -f\n"));
-    console.log(
-      chalk.cyan(`  ${includeOwlettoLocal ? "8" : "7"}. Stop the services:`)
-    );
-    console.log(chalk.dim("     docker compose down\n"));
+    console.log(chalk.cyan("  7. Stop the services:"));
+    console.log(chalk.dim("     Ctrl+C in the terminal running `lobu run`\n"));
   } catch (error) {
     spinner.fail("Failed to create project");
     throw error;
@@ -679,162 +611,3 @@ async function getCliVersion(): Promise<string> {
   return pkg.version || "0.1.0";
 }
 
-export function generateDockerCompose(options: {
-  projectName: string;
-  gatewayPort: string;
-  dockerfilePath: string;
-  deploymentMode: "embedded" | "docker";
-  includeOwlettoLocal?: boolean;
-}): string {
-  const { projectName, gatewayPort, deploymentMode, includeOwlettoLocal } =
-    options;
-  const gatewayImage = `ghcr.io/lobu-ai/lobu-gateway:latest`;
-  const workerImage = `ghcr.io/lobu-ai/lobu-worker-base:latest`;
-
-  const dockerSocketMount =
-    deploymentMode === "docker"
-      ? `
-      - /var/run/docker.sock:/var/run/docker.sock`
-      : "";
-
-  const workerImageEnv =
-    deploymentMode === "docker"
-      ? `
-      WORKER_IMAGE: ${workerImage}`
-      : "";
-
-  const proxyPort =
-    deploymentMode === "docker"
-      ? `
-      - "127.0.0.1:8118:8118" # HTTP proxy for workers`
-      : "";
-
-  const owlettoServices = includeOwlettoLocal
-    ? `
-  owletto-postgres:
-    image: pgvector/pgvector:pg17
-    environment:
-      POSTGRES_USER: owletto
-      POSTGRES_PASSWORD: \${OWLETTO_DB_PASSWORD}
-      POSTGRES_DB: owletto
-    volumes:
-      - owletto-pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U owletto -d owletto"]
-      interval: 10s
-      timeout: 3s
-      retries: 5
-    networks:
-      - lobu-internal
-    restart: unless-stopped
-
-  owletto:
-    image: ghcr.io/lobu-ai/owletto-app:latest
-    pull_policy: always
-    ports:
-      - "127.0.0.1:8787:8787"
-    environment:
-      DATABASE_URL: postgresql://owletto:\${OWLETTO_DB_PASSWORD}@owletto-postgres:5432/owletto
-      BETTER_AUTH_SECRET: \${OWLETTO_AUTH_SECRET}
-      PORT: "8787"
-      HOST: 0.0.0.0
-    networks:
-      - lobu-internal
-    depends_on:
-      owletto-postgres:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "curl -f http://127.0.0.1:8787/health || exit 1"]
-      interval: 10s
-      timeout: 10s
-      retries: 10
-      start_period: 20s
-    restart: unless-stopped
-`
-    : "";
-
-  const owlettoDependsOn = includeOwlettoLocal
-    ? `
-      owletto:
-        condition: service_healthy`
-    : "";
-
-  const owlettoVolumes = includeOwlettoLocal
-    ? `
-volumes:
-  owletto-pgdata:
-`
-    : "";
-
-  return `# Generated by @lobu/cli
-# Deployment mode: ${deploymentMode}
-
-name: ${projectName}
-
-services:
-  redis:
-    image: redis:7-alpine
-    command: redis-server --maxmemory 256mb --maxmemory-policy noeviction --save 60 1 --dir /data
-    working_dir: /tmp
-    volumes:
-      - ./data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 3s
-      retries: 3
-    networks:
-      - lobu-internal
-    restart: unless-stopped
-${owlettoServices}
-  gateway:
-    image: ${gatewayImage}
-    pull_policy: always
-    ports:
-      - "127.0.0.1:\${GATEWAY_PORT:-${gatewayPort}}:8080"${proxyPort}
-    environment:
-      DEPLOYMENT_MODE: ${deploymentMode}${workerImageEnv}
-      QUEUE_URL: redis://redis:6379/0
-      PUBLIC_GATEWAY_URL: \${PUBLIC_GATEWAY_URL:-}
-      GATEWAY_PORT: \${GATEWAY_PORT:-${gatewayPort}}
-      NODE_ENV: production
-      COMPOSE_PROJECT_NAME: ${projectName}
-      ADMIN_PASSWORD: \${ADMIN_PASSWORD}
-      ENCRYPTION_KEY: \${ENCRYPTION_KEY}
-      WORKER_ALLOWED_DOMAINS: \${WORKER_ALLOWED_DOMAINS:-}
-      WORKER_DISALLOWED_DOMAINS: \${WORKER_DISALLOWED_DOMAINS:-}
-      # Optional Lobu memory base MCP URL override. File-first projects derive scoped
-      # memory from [memory.owletto] in lobu.toml.
-      MEMORY_URL: \${MEMORY_URL:-}
-      LOBU_WORKSPACE_ROOT: /workspace/project
-      # Provider API keys — passthrough any that are set in the host env so
-      # agents can reference them as \`$VAR\` in lobu.toml. Unset vars expand
-      # to empty strings and are ignored by the agent runtime.
-      ANTHROPIC_API_KEY: \${ANTHROPIC_API_KEY:-}
-      GEMINI_API_KEY: \${GEMINI_API_KEY:-}
-      OPENAI_API_KEY: \${OPENAI_API_KEY:-}
-      OPENROUTER_API_KEY: \${OPENROUTER_API_KEY:-}
-      Z_AI_API_KEY: \${Z_AI_API_KEY:-}
-      # Platform credentials — same pattern: set only the ones your agents use.
-      SLACK_BOT_TOKEN: \${SLACK_BOT_TOKEN:-}
-      SLACK_SIGNING_SECRET: \${SLACK_SIGNING_SECRET:-}
-      TELEGRAM_BOT_TOKEN: \${TELEGRAM_BOT_TOKEN:-}
-    volumes:${dockerSocketMount}
-      - .:/workspace/project:ro
-    networks:
-      - lobu-public
-      - lobu-internal
-    depends_on:
-      redis:
-        condition: service_healthy${owlettoDependsOn}
-    restart: unless-stopped
-
-networks:
-  lobu-public:
-    driver: bridge
-  lobu-internal:
-    internal: true
-    driver: bridge
-${owlettoVolumes}
-`;
-}

@@ -22,7 +22,7 @@ lobu <command>
 
 ### `init [name]`
 
-Scaffold a new agent project with `lobu.toml`, Docker Compose, and environment config.
+Scaffold a new agent project with `lobu.toml`, `.env`, and an agent directory.
 
 ```bash
 npx @lobu/cli@latest init my-agent
@@ -31,14 +31,12 @@ npx @lobu/cli@latest init my-agent
 Generates:
 
 - `lobu.toml` — agent configuration (skills, providers, connections, network)
-- `docker-compose.yml` — service definitions (gateway, Redis, optional Owletto)
-- `.env` — credentials and environment variables
+- `.env` — credentials and environment variables (set `DATABASE_URL` and `REDIS_URL` after init)
 - `agents/{name}/` — agent directory with `IDENTITY.md`, `SOUL.md`, `USER.md`, and `skills/`
 - `skills/` — shared skills directory (available to all agents)
 - `AGENTS.md`, `TESTING.md`, `README.md`, `.gitignore`
-- `Dockerfile.worker` — worker image customization (Docker mode only)
 
-Interactive prompts guide you through deployment mode, provider, skills, platform, network access policy, gateway port, public URL, admin password, and memory configuration.
+Interactive prompts guide you through provider, skills, platform, network access policy, gateway port, public URL, admin password, and memory configuration. Postgres + Redis are user-provided externals — Lobu does not bundle them.
 
 ---
 
@@ -94,15 +92,13 @@ npx @lobu/cli@latest eval --ci --output results.json  # CI mode with JSON output
 
 ### `run`
 
-Run the agent stack. Validates `lobu.toml`, prepares environment variables, then starts `docker compose up`. Extra flags are forwarded to Docker Compose.
-
-Without `-d`, the CLI starts containers then tails gateway logs. With `-d`, it starts detached and exits.
+Run the embedded Lobu stack. Validates `lobu.toml`, checks that `DATABASE_URL` and `REDIS_URL` are set in `.env`, then spawns the bundled Node server (`@lobu/owletto-backend/dist/server.bundle.mjs`) as a child process and forwards stdio. Ctrl+C cleanly stops the server and any worker subprocesses.
 
 ```bash
-npx @lobu/cli@latest run              # start and tail logs
-npx @lobu/cli@latest run -d           # detached mode
-npx @lobu/cli@latest run -d --build   # rebuild containers
+npx @lobu/cli@latest run              # boot the gateway + workers + memory backend
 ```
+
+Extra arguments are forwarded to the Node entry point.
 
 ---
 

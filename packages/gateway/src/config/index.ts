@@ -183,16 +183,23 @@ export function loadEnvFile(envPath?: string): void {
 
 /**
  * Derive the internal gateway URL for worker→gateway communication.
- * In K8s, uses DISPATCHER_SERVICE_NAME + namespace. In Docker, defaults to "gateway".
+ * Embedded mode runs the worker as a subprocess on the same host, so
+ * `localhost` is the default. `DISPATCHER_URL` is honoured if set so a
+ * caller can override (e.g. an external network namespace). The legacy
+ * service-DNS path (`DISPATCHER_SERVICE_NAME` + `KUBERNETES_NAMESPACE`)
+ * remains for backward compatibility with existing test fixtures.
  */
 export function getInternalGatewayUrl(): string {
+  if (process.env.DISPATCHER_URL) {
+    return process.env.DISPATCHER_URL;
+  }
   const dispatcherService = process.env.DISPATCHER_SERVICE_NAME;
   if (dispatcherService) {
     const namespace = process.env.KUBERNETES_NAMESPACE || "lobu";
     return `http://${dispatcherService}.${namespace}.svc.cluster.local:8080`;
   }
   const port = process.env.GATEWAY_PORT || "8080";
-  return `http://gateway:${port}`;
+  return `http://localhost:${port}`;
 }
 
 /**
@@ -423,11 +430,6 @@ export function buildGatewayConfig(
         process.env.SECRET_PROXY_UPSTREAM_URL || process.env.ANTHROPIC_BASE_URL,
     },
     orchestration: {
-      deploymentMode: process.env.DEPLOYMENT_MODE as
-        | "embedded"
-        | "docker"
-        | "kubernetes"
-        | undefined,
       queues: {
         connectionString,
         retryLimit: getOptionalNumber(
@@ -458,44 +460,10 @@ export function buildGatewayConfig(
             DEFAULTS.WORKER_IMAGE_PULL_POLICY
           ),
         },
-        imagePullSecrets: getOptionalEnv(
-          "WORKER_IMAGE_PULL_SECRETS",
-          DEFAULTS.WORKER_IMAGE_PULL_SECRETS
-        )
-          .split(",")
-          .map((secret) => secret.trim())
-          .filter(Boolean),
-        serviceAccountName: getOptionalEnv(
-          "WORKER_SERVICE_ACCOUNT_NAME",
-          DEFAULTS.WORKER_SERVICE_ACCOUNT_NAME
-        ),
-        runtimeClassName: getOptionalEnv(
-          "WORKER_RUNTIME_CLASS_NAME",
-          DEFAULTS.WORKER_RUNTIME_CLASS_NAME
-        ),
         startupTimeoutSeconds: getOptionalNumber(
           "WORKER_STARTUP_TIMEOUT_SECONDS",
           DEFAULTS.WORKER_STARTUP_TIMEOUT_SECONDS
         ),
-        resources: {
-          requests: {
-            cpu: getOptionalEnv(
-              "WORKER_CPU_REQUEST",
-              DEFAULTS.WORKER_CPU_REQUEST
-            ),
-            memory: getOptionalEnv(
-              "WORKER_MEMORY_REQUEST",
-              DEFAULTS.WORKER_MEMORY_REQUEST
-            ),
-          },
-          limits: {
-            cpu: getOptionalEnv("WORKER_CPU_LIMIT", DEFAULTS.WORKER_CPU_LIMIT),
-            memory: getOptionalEnv(
-              "WORKER_MEMORY_LIMIT",
-              DEFAULTS.WORKER_MEMORY_LIMIT
-            ),
-          },
-        },
         idleCleanupMinutes: getOptionalNumber(
           "WORKER_IDLE_CLEANUP_MINUTES",
           DEFAULTS.WORKER_IDLE_CLEANUP_MINUTES
@@ -506,16 +474,9 @@ export function buildGatewayConfig(
         ),
         // Embedded-mode paths. Resolved from the monorepo root pointed at by
         // LOBU_DEV_PROJECT_PATH (defaults to cwd so CLI invocations from the
-        // repo root still work). Docker/K8s modes ignore these — the worker
-        // image bakes the entrypoint in.
+        // repo root still work).
         ...buildEmbeddedWorkerPaths(
           process.env.LOBU_DEV_PROJECT_PATH || process.cwd()
-        ),
-      },
-      kubernetes: {
-        namespace: getOptionalEnv(
-          "KUBERNETES_NAMESPACE",
-          DEFAULTS.KUBERNETES_NAMESPACE
         ),
       },
       cleanup: {

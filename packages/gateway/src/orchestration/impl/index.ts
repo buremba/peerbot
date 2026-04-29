@@ -1,8 +1,10 @@
 /**
- * Deployment manager implementations
- * Add new deployment targets here (e.g., CloudflareDeploymentManager, LambdaDeploymentManager)
+ * Deployment manager implementations.
+ *
+ * Embedded is the only supported deployment mode; the gateway spawns
+ * workers as subprocesses on the same host (or systemd-run scopes on
+ * Linux). Docker and Kubernetes deployment managers were removed when we
+ * consolidated on embedded mode.
  */
 
-export { DockerDeploymentManager } from "./docker-deployment.js";
 export { EmbeddedDeploymentManager } from "./embedded-deployment.js";
-export { K8sDeploymentManager } from "./k8s/index.js";

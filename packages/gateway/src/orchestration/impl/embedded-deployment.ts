@@ -1,4 +1,4 @@
-import { type ChildProcess, spawn } from "node:child_process";
+import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { createLogger, ErrorCode, OrchestratorError } from "@lobu/core";
@@ -19,6 +19,91 @@ const logger = createLogger("orchestrator");
 
 /** Timeout (ms) to wait for graceful shutdown before SIGKILL. */
 const KILL_TIMEOUT_MS = 5_000;
+
+/**
+ * Detect once whether `systemd-run --user` is available. On Linux production
+ * hosts this lets us spawn each worker as a transient systemd unit with
+ * cgroup limits + IPAddressDeny + capability drops. macOS dev hosts and
+ * Linux hosts without user systemd fall back to plain `child_process.spawn`.
+ */
+let cachedSystemdRun: string | null | undefined;
+function locateSystemdRun(): string | null {
+  if (cachedSystemdRun !== undefined) return cachedSystemdRun;
+  if (process.platform !== "linux") {
+    cachedSystemdRun = null;
+    return cachedSystemdRun;
+  }
+  if (process.env.LOBU_DISABLE_SYSTEMD_RUN === "1") {
+    cachedSystemdRun = null;
+    return cachedSystemdRun;
+  }
+  try {
+    // `systemd-run --user --version` succeeds only when a user manager is
+    // reachable; bare `which systemd-run` is not enough (some sandboxes ship
+    // the binary without an active user bus).
+    execFileSync("systemd-run", ["--user", "--version"], { stdio: "ignore" });
+    cachedSystemdRun = "systemd-run";
+  } catch {
+    cachedSystemdRun = null;
+  }
+  return cachedSystemdRun;
+}
+
+/**
+ * Build the systemd-run argv prefix for a hardened transient scope. Defaults
+ * are tuned for a single Lobu worker; operators can override via
+ * LOBU_WORKER_MEMORY_MAX / LOBU_WORKER_CPU_QUOTA / LOBU_WORKER_TASKS_MAX.
+ */
+function buildSystemdRunArgs(opts: {
+  unitName: string;
+  workspaceDir: string;
+}): string[] {
+  const memMax = process.env.LOBU_WORKER_MEMORY_MAX || "512M";
+  const cpuQuota = process.env.LOBU_WORKER_CPU_QUOTA || "200%";
+  const tasksMax = process.env.LOBU_WORKER_TASKS_MAX || "64";
+  const fileMax = process.env.LOBU_WORKER_LIMIT_NOFILE || "1024";
+  return [
+    "--user",
+    "--scope",
+    "--quiet",
+    `--unit=${opts.unitName}`,
+    "-p",
+    "NoNewPrivileges=yes",
+    "-p",
+    "PrivateTmp=yes",
+    "-p",
+    "ProtectSystem=strict",
+    "-p",
+    "ProtectHome=yes",
+    "-p",
+    `ReadWritePaths=${opts.workspaceDir}`,
+    "-p",
+    `MemoryMax=${memMax}`,
+    "-p",
+    `CPUQuota=${cpuQuota}`,
+    "-p",
+    `TasksMax=${tasksMax}`,
+    "-p",
+    `LimitNOFILE=${fileMax}`,
+    "-p",
+    "IPAddressDeny=any",
+    "-p",
+    "IPAddressAllow=127.0.0.1",
+    "-p",
+    "CapabilityBoundingSet=",
+    "-p",
+    "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6",
+  ];
+}
+
+function makeUnitName(deploymentName: string): string {
+  // systemd unit names allow only [A-Za-z0-9:_.\\-]; sanitize and add a
+  // short random tag so concurrent workers don't collide if a prior unit
+  // is still being torn down.
+  const safe = deploymentName.replace(/[^A-Za-z0-9_-]/g, "-").slice(0, 64);
+  const tag = Math.random().toString(36).slice(2, 8);
+  return `lobu-worker-${safe}-${tag}`;
+}
 
 interface EmbeddedWorkerEntry {
   process: ChildProcess;
@@ -158,6 +243,26 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
     } else {
       command = bunExecutable;
       spawnArgs = ["run", workerEntryPoint];
+    }
+
+    // On Linux production hosts, wrap the worker in a transient systemd
+    // user scope: cgroup limits + IPAddressDeny + capability drops. Falls
+    // back transparently on macOS / containers without user systemd.
+    const systemdRun = locateSystemdRun();
+    if (systemdRun) {
+      const unitName = makeUnitName(deploymentName);
+      const innerCommand = command;
+      const innerArgs = spawnArgs;
+      command = systemdRun;
+      spawnArgs = [
+        ...buildSystemdRunArgs({ unitName, workspaceDir }),
+        "--",
+        innerCommand,
+        ...innerArgs,
+      ];
+      logger.info(
+        `Spawning embedded worker ${deploymentName} under systemd-run scope ${unitName}`
+      );
     }
 
     const child = spawn(command, spawnArgs, {

@@ -55,7 +55,6 @@ export interface LobuConfig {
   memory?: string;
   agents?: LobuAgentConfig[];
   port?: number;
-  deploymentMode?: "embedded" | "docker";
   /** Public URL of the gateway (used for OAuth callbacks). Defaults to http://localhost:{port}. */
   publicUrl?: string;
   /** Admin password for API auth. Auto-generated if not provided. */
@@ -105,9 +104,6 @@ export class Lobu {
     this.gatewayConfig = buildGatewayConfig({
       agents: this.agentConfigs.map(toAgentConfig),
       queues: { connectionString: config.redis },
-      orchestration: {
-        deploymentMode: config.deploymentMode ?? "embedded",
-      },
       mcp: {
         publicGatewayUrl: config.publicUrl ?? defaultPublicUrl,
       },

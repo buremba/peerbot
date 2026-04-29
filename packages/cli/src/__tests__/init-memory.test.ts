@@ -8,7 +8,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { generateDockerCompose, generateLobuToml } from "../commands/init";
+import { generateLobuToml } from "../commands/init";
 
 describe("init memory scaffolding", () => {
   let projectDir: string;
@@ -55,20 +55,5 @@ describe("init memory scaffolding", () => {
 
     expect(content).toContain('org = "support"');
     expect(content).toContain('name = "Support"');
-  });
-
-  test("generateDockerCompose keeps MEMORY_URL as an optional base override", () => {
-    const content = generateDockerCompose({
-      projectName: "support",
-      gatewayPort: "8080",
-      dockerfilePath: "./Dockerfile.worker",
-      deploymentMode: "embedded",
-      includeOwlettoLocal: true,
-    });
-
-    expect(content).toContain("Optional Lobu memory base MCP URL override");
-    expect(content).toContain("MEMORY_URL: ${MEMORY_URL:-}");
-    expect(content).toContain("owletto:");
-    expect(content).toContain("owletto-postgres:");
   });
 });

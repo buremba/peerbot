@@ -3,54 +3,60 @@ title: Troubleshooting
 description: Common issues and how to fix them.
 ---
 
+Lobu boots as a single Node process (`lobu run` / `node packages/owletto-backend/dist/server.bundle.mjs`). Postgres and Redis are user-provided externals reached via `DATABASE_URL` and `REDIS_URL`. Worker subprocesses are spawned by the gateway's `EmbeddedDeploymentManager`.
+
 ## Worker won't start
 
 ```bash
-# Check gateway logs first (it launches worker containers on demand)
-docker compose -f docker/docker-compose.yml logs -f gateway
+# Gateway logs are the Lobu process's stdout/stderr.
+# If you ran `lobu run` directly, scroll up. If under systemd:
+journalctl -u lobu -f
 
-# List spawned worker containers
-# (the compose `worker` service only builds the image; it does not stay running)
-docker ps --format '{{.Names}}' | grep lobu-worker || true
+# List spawned worker subprocesses
+ps -ef | grep '@lobu/worker' | grep -v grep
+
+# Kill orphaned workers (if a crashed gateway left subprocesses behind)
+make clean-workers   # in the monorepo
+# or: pkill -f '@lobu/worker'
 
 # Common causes:
-# - Port 8080 already in use → Change GATEWAY_PORT in .env
-# - Docker network conflict → docker compose down -v && docker compose up -d
+# - Port 8787 already in use → Change GATEWAY_PORT or PORT in .env
+# - DATABASE_URL/REDIS_URL not reachable → see "Agent not responding" below
 # - Invalid lobu.toml → npx @lobu/cli@latest validate
 ```
 
 ## Agent not responding
 
 ```bash
-# Check if gateway is running
-curl http://localhost:8080/health
+# Check if Lobu is running
+curl http://localhost:8787/health
 
 # Check Redis connection
-docker compose -f docker/docker-compose.yml exec redis redis-cli ping
+redis-cli -u "$REDIS_URL" ping
 
 # Clear stale chat history (for stuck conversations)
-docker compose -f docker/docker-compose.yml exec redis redis-cli KEYS 'chat:history:*'
-docker compose -f docker/docker-compose.yml exec redis redis-cli DEL 'chat:history:{key}'
+redis-cli -u "$REDIS_URL" KEYS 'chat:history:*'
+redis-cli -u "$REDIS_URL" DEL 'chat:history:{key}'
 
-# Recreate gateway after .env changes
-# (`restart` does not reload env-file values)
-docker compose -f docker/docker-compose.yml up -d --force-recreate gateway
+# Restart Lobu after .env changes (the process reads .env at boot)
+# Ctrl+C the running process, then `lobu run` (or `make dev`) again.
 ```
 
 ## MCP tools failing
 
 ```bash
 # Check MCP status at /api/docs on your gateway
-# Verify worker can reach gateway
-docker compose -f docker/docker-compose.yml exec worker curl -v http://gateway:8080/health
 
-# For OAuth flows: check browser console and gateway logs
+# Verify the in-process HTTP proxy is reachable from the host
+curl -v http://localhost:8118
+
+# For OAuth flows: check browser console and Lobu logs
 # For static headers: verify ${env:VAR} syntax in mcpServers config
 ```
 
 ## Platform connection issues
 
-Platform connections are usually configured from the **Connections** UI or the `/api/v1/connections` API, not by editing per-platform env vars in `docker-compose.yml`.
+Platform connections are usually configured from the **Connections** UI or the `/api/v1/connections` API.
 
 **Slack**: Reconnect or reinstall the workspace after adding scopes. If you use Slack OAuth install flows on a self-hosted gateway, also verify `SLACK_CLIENT_ID` and `SLACK_CLIENT_SECRET` on the gateway.
 
@@ -68,7 +74,7 @@ echo $WORKER_ALLOWED_DOMAINS
 
 # Temporarily allow all (for testing only)
 export WORKER_ALLOWED_DOMAINS="*"
-docker compose -f docker/docker-compose.yml restart gateway
+# Restart Lobu (Ctrl+C and re-run `lobu run` / `make dev`)
 
 # Proper format: exact domain or .wildcard
 # api.example.com  - only this domain
@@ -77,40 +83,41 @@ docker compose -f docker/docker-compose.yml restart gateway
 
 ## Worker can't reach the internet
 
-By design, workers have no direct internet access. All traffic routes through the gateway proxy.
+By default, worker subprocesses run with `HTTP_PROXY=http://localhost:8118` so all outbound HTTP/HTTPS traverses the gateway proxy.
 
 ```bash
-# Verify proxy is reachable
-docker compose -f docker/docker-compose.yml exec worker curl -v http://gateway:8118
+# Verify the proxy is reachable from the host
+curl -v http://localhost:8118
 
-# Check if domain is in allowlist
-# See "Network policy blocking requests" above
+# On Linux production hosts, the systemd-run wrapper enforces
+# IPAddressDeny=any + IPAddressAllow=127.0.0.1 — so a worker that
+# tries to bypass HTTP_PROXY is dropped at the kernel. On macOS dev,
+# HTTP_PROXY is advisory; if a worker is bypassing it, audit the
+# tool that issued the request.
+
+# Check if the domain is in the allowlist (see "Network policy blocking requests")
 ```
 
 ## Out of memory / disk space
 
 ```bash
-# Check worker stats
-docker stats
+# Check Node process memory
+ps -o pid,rss,command -p "$(pgrep -f 'owletto-backend/dist/server.bundle.mjs')"
 
-# Clean up old workspaces (Docker)
-docker compose -f docker/docker-compose.yml down -v
+# Workspaces accumulate per agent under ./workspaces/
+# Clear stale ones if disk is filling up:
 rm -rf workspaces/*
-
-# For K8s: check PVC usage
-kubectl get pvc -n lobu
-kubectl describe pvc <pvc-name> -n lobu
 ```
 
 ## Owletto connection issues
 
 ```bash
-# Verify local Owletto is running (if you're using owletto-local)
+# Owletto runs in-process with the gateway. /health covers both.
 curl http://localhost:8787/health
 
 # Check file-first memory config
 # - lobu.toml should contain [memory.owletto] with enabled = true and an org
-# - MEMORY_URL is optional; use it mainly for local/custom Owletto base URLs
+# - MEMORY_URL is optional; use it mainly for custom external Owletto URLs
 
 # Test connection
 npx owletto@latest health
@@ -128,31 +135,19 @@ npx owletto@latest health
 # - Large prompt context → Clear chat history or increase context window
 ```
 
-## Docker-specific issues
+## Postgres / Redis not reachable
 
 ```bash
-# Clean restart
-docker compose -f docker/docker-compose.yml down -v
-docker system prune -f
-docker compose -f docker/docker-compose.yml up -d
+# Verify DATABASE_URL and REDIS_URL in .env
+grep -E '^(DATABASE_URL|REDIS_URL)=' .env
 
-# Rebuild worker image after code changes
-make clean-workers  # or: docker compose -f docker/docker-compose.yml build --no-cache worker
-```
+# Test connectivity
+psql "$DATABASE_URL" -c 'select 1'
+redis-cli -u "$REDIS_URL" ping
 
-## Kubernetes-specific issues
-
-```bash
-# Check pod status
-kubectl get pods -n lobu
-kubectl describe pod <pod-name> -n lobu
-
-# Worker not scaling?
-# Check if HPA is hitting min/max replicas
-kubectl get hpa -n lobu
-
-# PVC stuck in Terminating?
-kubectl patch pvc <pvc-name> -n lobu -p '{"metadata":{"finalizers":null}}'
+# If using local services on macOS:
+brew services list
+brew services start postgresql redis
 ```
 
 ## Still stuck?

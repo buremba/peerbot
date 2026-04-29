@@ -123,9 +123,7 @@ export function createGatewayApp(
   );
 
   app.get("/health", (c) => {
-    const mode =
-      process.env.LOBU_MODE ||
-      (process.env.DEPLOYMENT_MODE === "docker" ? "local" : "cloud");
+    const mode = process.env.LOBU_MODE || "cloud";
 
     return c.json({
       status: "ok",
@@ -1162,7 +1160,7 @@ export async function startGateway(config: GatewayConfig): Promise<void> {
   const { Orchestrator } = await import("../orchestration/index.js");
   const { Gateway } = await import("../gateway-main.js");
 
-  logger.debug("Creating orchestrator", { mode: process.env.DEPLOYMENT_MODE });
+  logger.debug("Creating orchestrator");
   const orchestrator = new Orchestrator(config.orchestration);
   await orchestrator.start();
   logger.debug("Orchestrator started");

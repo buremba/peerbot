@@ -6,4 +6,4 @@
 
 ## Owletto
 
-The live Owletto MCP server, ClientSDK, sandbox, and tool registry are in `packages/owletto-backend/` of this repo. The prod `summaries-app-owletto-app` image is built from there (`docker/app/Dockerfile`). Any question about Owletto behavior — MCP tools, instructions, sandbox, SDK, auth — is answered from that path.
+The live Owletto MCP server, ClientSDK, sandbox, and tool registry are in `packages/owletto-backend/` of this repo. Prod runs the bundled Node entry (`packages/owletto-backend/dist/server.bundle.mjs`, built via `bun run build:server`) — same artifact that `lobu run` invokes. Any question about Owletto behavior — MCP tools, instructions, sandbox, SDK, auth — is answered from that path.

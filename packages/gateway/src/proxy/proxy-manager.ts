@@ -1,4 +1,3 @@
-import { existsSync } from "node:fs";
 import type { Server } from "node:http";
 import { createLogger } from "@lobu/core";
 import { startHttpProxy, stopHttpProxy } from "./http-proxy.js";
@@ -8,30 +7,9 @@ const logger = createLogger("proxy-manager");
 let proxyServer: Server | null = null;
 
 /**
- * Determine the bind host for the proxy.
- * DEPLOYMENT_MODE=docker is expected to run inside a container. Fail fast if not,
- * then bind to all interfaces so workers on lobu-internal can connect.
- */
-function getProxyBindHost(): string {
-  const deploymentMode = process.env.DEPLOYMENT_MODE;
-
-  if (deploymentMode === "docker") {
-    const runningInContainer =
-      existsSync("/.dockerenv") || existsSync("/run/.containerenv");
-    if (!runningInContainer) {
-      throw new Error(
-        "DEPLOYMENT_MODE=docker requires gateway to run inside a container"
-      );
-    }
-  }
-
-  // Docker Compose / K8s: bind to all interfaces
-  return "::";
-}
-
-/**
- * Start filtering HTTP proxy for worker network isolation
- * Workers can only access internet via this proxy, which enforces domain allowlist/blocklist
+ * Start filtering HTTP proxy for worker network isolation. Workers can
+ * only reach the internet through this proxy, which enforces domain
+ * allowlist/blocklist + LLM egress judge.
  *
  * Behavior based on environment configuration:
  * - Empty/unset: Deny all (complete isolation)
@@ -46,7 +24,9 @@ export async function startFilteringProxy(): Promise<void> {
     10
   );
   const port = Number.isFinite(parsedPort) ? parsedPort : 8118;
-  const host = getProxyBindHost();
+  // Bind to localhost only — workers run as subprocesses on the same host
+  // and connect via 127.0.0.1.
+  const host = "127.0.0.1";
 
   try {
     proxyServer = await startHttpProxy(port, host);

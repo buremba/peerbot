@@ -100,43 +100,9 @@ metrics_generator:
 
 Then add `OTEL_EXPORTER_OTLP_ENDPOINT=http://tempo:4317` to your `.env` and restart.
 
-### Kubernetes setup
-
-Enable Tempo in your Helm values:
-
-```yaml
-tempo:
-  enabled: true
-  tempo:
-    storage:
-      trace:
-        backend: local
-        local:
-          path: /var/tempo/traces
-    receivers:
-      otlp:
-        protocols:
-          grpc:
-            endpoint: "0.0.0.0:4317"
-          http:
-            endpoint: "0.0.0.0:4318"
-  persistence:
-    enabled: true
-    size: 10Gi
-
-grafana:
-  enabled: true
-  namespace: "monitoring"
-  lokiUrl: "http://loki:3100"
-```
-
-The Helm chart automatically:
-- Configures Tempo and Loki datasources in Grafana with cross-linking (logs ↔ traces)
-- Deploys the "Lobu Message Traces" dashboard
-
 ### Grafana dashboard
 
-The built-in dashboard (`charts/lobu/grafana-dashboard.json`) provides:
+A reference Grafana dashboard JSON is published with each release. It provides:
 
 - **Messages processed per minute** — throughput time series
 - **Recent stage completions** — table of recent traces with stage and duration
@@ -172,12 +138,17 @@ Lobu uses a console logger by default (unbuffered, 12-factor compliant). Logs ar
 
 ### Viewing logs
 
-```bash
-# Docker
-docker compose -f docker/docker-compose.yml logs -f gateway
+Logs come from the single Lobu Node process's stdout/stderr. View them however you supervise the process:
 
-# Kubernetes
-kubectl logs -f deployment/lobu-gateway -n lobu
+```bash
+# Foreground
+lobu run
+
+# systemd
+journalctl -u lobu -f
+
+# pm2
+pm2 logs lobu
 ```
 
 ## Error monitoring (Sentry)

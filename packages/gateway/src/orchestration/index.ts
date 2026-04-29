@@ -2,10 +2,6 @@ export * from "./base-deployment-manager.js";
 export * from "./deployment-utils.js";
 export * from "./impl/index.js";
 
-import { execSync } from "node:child_process";
-import { existsSync, statSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { createLogger, moduleRegistry } from "@lobu/core";
 import type { Redis } from "ioredis";
 import type { ProviderCatalogService } from "../auth/provider-catalog.js";
@@ -21,11 +17,7 @@ import type {
   OrchestratorConfig,
 } from "./base-deployment-manager.js";
 import { buildModuleEnvVars } from "./deployment-utils.js";
-import {
-  DockerDeploymentManager,
-  EmbeddedDeploymentManager,
-  K8sDeploymentManager,
-} from "./impl/index.js";
+import { EmbeddedDeploymentManager } from "./impl/index.js";
 import { MessageConsumer } from "./message-consumer.js";
 
 const logger = createLogger("orchestrator");
@@ -43,7 +35,12 @@ export class Orchestrator {
 
   constructor(config: OrchestratorConfig) {
     this.config = config;
-    this.deploymentManager = this.createDeploymentManager(config);
+    const providerModules: ModelProviderModule[] = getModelProviderModules();
+    this.deploymentManager = new EmbeddedDeploymentManager(
+      config,
+      buildModuleEnvVars,
+      providerModules
+    );
     this.queueConsumer = new MessageConsumer(config, this.deploymentManager);
   }
 
@@ -62,22 +59,18 @@ export class Orchestrator {
     this.deploymentManager.setRedisClient(redisClient);
     this.deploymentManager.setSecretStore(secretStore);
 
-    // Inject grant store for auto-adding domain grants at deployment time
     if (grantStore) {
       this.deploymentManager.setGrantStore(grantStore);
     }
 
-    // Inject policy store for syncing per-agent egress judge rules at deployment time
     if (policyStore) {
       this.deploymentManager.setPolicyStore(policyStore);
     }
 
-    // Inject provider catalog service for per-agent provider resolution
     if (providerCatalogService) {
       this.deploymentManager.setProviderCatalogService(providerCatalogService);
     }
 
-    // Refresh provider modules after gateway/core services have registered them.
     const providerModules = getModelProviderModules();
     this.deploymentManager.setProviderModules(providerModules);
     logger.debug(
@@ -85,137 +78,16 @@ export class Orchestrator {
     );
   }
 
-  private createDeploymentManager(
-    config: OrchestratorConfig
-  ): BaseDeploymentManager {
-    const deploymentMode = config.deploymentMode || process.env.DEPLOYMENT_MODE;
-    const providerModules: ModelProviderModule[] = getModelProviderModules();
-
-    if (deploymentMode === "docker") {
-      if (!this.isDockerAvailable()) {
-        logger.error("DEPLOYMENT_MODE=docker but Docker is not available");
-        throw new Error("DEPLOYMENT_MODE=docker but Docker is not available");
-      }
-      return new DockerDeploymentManager(
-        config,
-        buildModuleEnvVars,
-        providerModules
-      );
-    }
-
-    if (deploymentMode === "kubernetes" || deploymentMode === "k8s") {
-      if (!this.isKubernetesAvailable()) {
-        logger.error(
-          "DEPLOYMENT_MODE=kubernetes but Kubernetes is not available"
-        );
-        throw new Error(
-          "DEPLOYMENT_MODE=kubernetes but Kubernetes is not available"
-        );
-      }
-      return new K8sDeploymentManager(
-        config,
-        buildModuleEnvVars,
-        providerModules
-      );
-    }
-
-    if (deploymentMode === "embedded") {
-      logger.debug("Using embedded deployment mode (in-process workers)");
-      return new EmbeddedDeploymentManager(
-        config,
-        buildModuleEnvVars,
-        providerModules
-      );
-    }
-
-    // Auto-detect deployment mode
-    if (this.isKubernetesAvailable()) {
-      logger.info("🎯 Auto-detected Kubernetes, using K8s deployment mode");
-      return new K8sDeploymentManager(
-        config,
-        buildModuleEnvVars,
-        providerModules
-      );
-    }
-
-    if (this.isDockerAvailable()) {
-      logger.info("🐳 Auto-detected Docker, using Docker deployment mode");
-      return new DockerDeploymentManager(
-        config,
-        buildModuleEnvVars,
-        providerModules
-      );
-    }
-
-    // Fall back to docker but it will likely fail in validateWorkerImage
-    logger.info(
-      "🐳 No container runtime detected, falling back to Docker deployment mode"
-    );
-    return new DockerDeploymentManager(
-      config,
-      buildModuleEnvVars,
-      providerModules
-    );
-  }
-
-  private isKubernetesAvailable(): boolean {
-    try {
-      if (process.env.KUBERNETES_SERVICE_HOST) {
-        return true;
-      }
-
-      const kubeconfigPaths = [
-        process.env.KUBECONFIG,
-        join(homedir(), ".kube", "config"),
-      ].filter((p): p is string => Boolean(p));
-
-      return kubeconfigPaths.some((configPath) => {
-        try {
-          return existsSync(configPath) && statSync(configPath).isFile();
-        } catch {
-          return false;
-        }
-      });
-    } catch {
-      return false;
-    }
-  }
-
-  private isDockerAvailable(): boolean {
-    try {
-      execSync("docker version", {
-        stdio: "ignore",
-        timeout: 5000,
-        env: { PATH: process.env.PATH, DOCKER_HOST: process.env.DOCKER_HOST },
-      });
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
   async start(): Promise<void> {
     try {
-      // Initialize modules
       await moduleRegistry.initAll();
-      // Module registration can happen during initAll(); refresh providers
-      // so deployment/message processing uses the latest auth modules.
       const providerModules = getModelProviderModules();
       this.deploymentManager.setProviderModules(providerModules);
 
-      // Validate configured worker runtime/image before consuming messages.
       await this.deploymentManager.validateWorkerImage();
 
-      // Start K8s informer for watch-based reconciliation and reconcile stale worker templates
-      if (this.deploymentManager instanceof K8sDeploymentManager) {
-        await this.deploymentManager.startInformer();
-        await this.deploymentManager.reconcileWorkerDeploymentImages();
-      }
-
-      // Start queue consumer
       await this.queueConsumer.start();
 
-      // Setup periodic cleanup (reduced interval when informer is active)
       this.setupIdleCleanup();
 
       this.isRunning = true;
@@ -233,7 +105,6 @@ export class Orchestrator {
     this.shuttingDown = true;
 
     try {
-      // Stop scheduling new reconciliation cycles
       if (this.cleanupInterval) {
         clearInterval(this.cleanupInterval);
         this.cleanupInterval = undefined;
@@ -243,7 +114,6 @@ export class Orchestrator {
         this.initialReconcileTimer = undefined;
       }
 
-      // Wait for in-flight reconciliation to finish (with 10s timeout)
       if (this.activeReconciliation) {
         logger.info("Waiting for in-flight reconciliation to complete...");
         const safeReconciliation = this.activeReconciliation.catch((error) => {
@@ -260,11 +130,6 @@ export class Orchestrator {
       }
 
       await this.queueConsumer.stop();
-
-      // Stop K8s informer
-      if (this.deploymentManager instanceof K8sDeploymentManager) {
-        await this.deploymentManager.stopInformer();
-      }
 
       logger.info("✅ Orchestrator stopped");
     } catch (error) {
@@ -284,20 +149,6 @@ export class Orchestrator {
         if (this.activeReconciliation === p) this.activeReconciliation = null;
       });
     }, this.config.cleanup.initialDelayMs);
-
-    // When informer is active, reduce polling to 5min safety-net interval
-    const hasInformer =
-      this.deploymentManager instanceof K8sDeploymentManager &&
-      this.deploymentManager.isInformerActive();
-    const intervalMs = hasInformer
-      ? Math.max(this.config.cleanup.intervalMs, 5 * 60 * 1000)
-      : this.config.cleanup.intervalMs;
-
-    if (hasInformer) {
-      logger.info(
-        `Informer active, reconciliation interval set to ${intervalMs / 1000}s (safety net)`
-      );
-    }
 
     this.cleanupInterval = setInterval(async () => {
       if (this.shuttingDown) return;
@@ -321,16 +172,13 @@ export class Orchestrator {
         this.activeReconciliation = null;
         this.isReconciling = false;
       }
-    }, intervalMs);
+    }, this.config.cleanup.intervalMs);
   }
 
   getStatus() {
     return {
       isRunning: this.isRunning,
       config: {
-        kubernetes: {
-          namespace: this.config.kubernetes.namespace,
-        },
         queues: {
           retryLimit: this.config.queues.retryLimit,
           expireInSeconds: this.config.queues.expireInSeconds,

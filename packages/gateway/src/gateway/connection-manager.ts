@@ -36,8 +36,9 @@ export class WorkerConnectionManager {
   private useLocalhost: boolean;
 
   constructor() {
-    const mode = process.env.DEPLOYMENT_MODE || "";
-    this.useLocalhost = mode !== "kubernetes" && mode !== "k8s";
+    // Embedded mode runs gateway + workers in the same Node process,
+    // so worker connections always come from the loopback interface.
+    this.useLocalhost = true;
     // Send heartbeat pings every 30 seconds
     this.heartbeatInterval = setInterval(() => this.sendHeartbeats(), 30000);
 

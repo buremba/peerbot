@@ -1,12 +1,12 @@
 # Releasing
 
-Seven packages ship to npm as a synchronized release: `@lobu/core`, `@lobu/gateway`, `@lobu/worker`, `@lobu/cli`, `@lobu/owletto-sdk`, `@lobu/owletto-openclaw`, `owletto` (unscoped; source at `packages/owletto-cli`). `charts/lobu/Chart.yaml` bumps in lockstep. [release-please](https://github.com/googleapis/release-please) reads conventional commits on `main` and drives versioning; publishing uses npm OIDC trusted publishing (no `NPM_TOKEN`, no OTP).
+Seven packages ship to npm as a synchronized release: `@lobu/core`, `@lobu/gateway`, `@lobu/worker`, `@lobu/cli`, `@lobu/owletto-sdk`, `@lobu/owletto-openclaw`, `owletto` (unscoped; source at `packages/owletto-cli`). [release-please](https://github.com/googleapis/release-please) reads conventional commits on `main` and drives versioning; publishing uses npm OIDC trusted publishing (no `NPM_TOKEN`, no OTP).
 
 ## Flow
 
 1. Merge feature PRs into `main` with conventional commit messages.
-2. release-please opens a `chore(release): <version>` PR with bumped `package.json`s, `Chart.yaml`, and a generated `CHANGELOG.md`.
-3. Merge the release PR (squash). This creates the `v<version>` tag + GitHub release, publishes to npm via `publish-packages.yml`, and dispatches the Docker image build.
+2. release-please opens a `chore(release): <version>` PR with bumped `package.json`s and a generated `CHANGELOG.md`.
+3. Merge the release PR (squash). This creates the `v<version>` tag + GitHub release and publishes to npm via `publish-packages.yml`.
 
 Edit the release PR title if you want a specific version (e.g. `3.2.0-beta.1`) — release-please honors it.
 

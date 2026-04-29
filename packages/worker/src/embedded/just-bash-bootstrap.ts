@@ -43,18 +43,83 @@ export function buildBinaryInvocation(
 }
 
 /**
+ * Binaries that are full code-execution capabilities. If they land on the
+ * just-bash allowlist, the depth/loop caps are moot — the agent can run
+ * arbitrary code through them. They are excluded by default; an agent that
+ * genuinely needs them must opt in via
+ * `LOBU_ALLOW_UNSANDBOXED_EXEC=1` (set per-agent in lobu.toml).
+ */
+const UNSANDBOXED_INTERPRETERS = new Set<string>([
+  "node",
+  "nodejs",
+  "bun",
+  "deno",
+  "python",
+  "python3",
+  "ruby",
+  "perl",
+  "lua",
+  "bash",
+  "sh",
+  "zsh",
+  "fish",
+  "ash",
+  "dash",
+  "ksh",
+  "tcsh",
+  "csh",
+  "curl",
+  "wget",
+  "git",
+  "ssh",
+  "scp",
+  "rsync",
+  "nc",
+  "ncat",
+  "socat",
+  "telnet",
+  "nix",
+  "nix-build",
+  "nix-shell",
+  "nix-env",
+  "npm",
+  "npx",
+  "pnpm",
+  "yarn",
+  "pip",
+  "pip3",
+  "pipx",
+  "uv",
+  "poetry",
+  "gem",
+  "cargo",
+  "go",
+]);
+
+/**
  * Discover binaries to register as custom commands:
  * 1. All executables from /nix/store/ PATH directories
  * 2. Known CLI tools (owletto) from anywhere on PATH
+ *
+ * UNSANDBOXED_INTERPRETERS are filtered out unless the spawned worker has
+ * LOBU_ALLOW_UNSANDBOXED_EXEC=1 in its env (set explicitly per-agent for
+ * cases that genuinely need a full interpreter).
  */
 function discoverBinaries(): Map<string, string> {
   const binaries = new Map<string, string>();
   const pathDirs = (process.env.PATH || "").split(":");
+  const allowUnsandboxed =
+    process.env.LOBU_ALLOW_UNSANDBOXED_EXEC === "1" ||
+    process.env.LOBU_ALLOW_UNSANDBOXED_EXEC === "true";
+
+  const isAllowed = (name: string): boolean =>
+    allowUnsandboxed || !UNSANDBOXED_INTERPRETERS.has(name);
 
   for (const dir of pathDirs) {
     if (!dir.includes("/nix/store/")) continue;
     try {
       for (const entry of fs.readdirSync(dir)) {
+        if (!isAllowed(entry)) continue;
         const fullPath = path.join(dir, entry);
         try {
           fs.accessSync(fullPath, fs.constants.X_OK);
@@ -71,6 +136,7 @@ function discoverBinaries(): Map<string, string> {
   // Discover known CLI tools from full PATH
   for (const name of ["owletto"]) {
     if (binaries.has(name)) continue;
+    if (!isAllowed(name)) continue;
     for (const dir of pathDirs) {
       const fullPath = path.join(dir, name);
       try {

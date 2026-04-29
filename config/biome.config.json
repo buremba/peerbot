@@ -10,7 +10,6 @@
     "includes": [
       "**",
       "!**/test/fixtures/",
-      "!**/charts/lobu/templates/",
       "!**/packages/**/*/workspaces/**",
       "!**/workspaces/**",
       "!**/.claude/debug/**",

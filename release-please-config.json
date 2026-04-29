@@ -50,16 +50,6 @@
           "type": "json",
           "path": "packages/owletto-cli/package.json",
           "jsonpath": "$.version"
-        },
-        {
-          "type": "yaml",
-          "path": "charts/lobu/Chart.yaml",
-          "jsonpath": "$.version"
-        },
-        {
-          "type": "yaml",
-          "path": "charts/lobu/Chart.yaml",
-          "jsonpath": "$.appVersion"
         }
       ]
     }

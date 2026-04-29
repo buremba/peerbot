@@ -21,11 +21,13 @@ https://github.com/user-attachments/assets/d72a9286-0325-4b8b-afc0-c1efe9c96f4e
 
 ## Quick Start
 
-Scaffold and run via the CLI:
+Scaffold and run via the CLI. Lobu boots as a single Node process; you bring your own Postgres + Redis (managed instances or local — `brew services start postgresql redis`).
 
 ```bash
 npx @lobu/cli@latest init my-bot
-cd my-bot && npx @lobu/cli@latest run -d
+cd my-bot
+# edit .env to set DATABASE_URL and REDIS_URL
+npx @lobu/cli@latest run
 ```
 
 ## Starter Skills
@@ -43,15 +45,12 @@ npx owletto@latest skills add owletto
 npx owletto@latest init
 ```
 
-### Deployment modes
+### Deployment
 
-- **Docker Compose** — `docker compose up` (single-machine production).
-- **Kubernetes** — OCI Helm chart, no clone needed:
-  ```bash
-  helm install lobu oci://ghcr.io/lobu-ai/charts/lobu \
-    --namespace lobu --create-namespace
-  ```
-- **Local dev** (contributing to Lobu itself): clone, `make setup`, `make dev` (Docker Compose Watch + hot reload).
+Single-process Node app. Run it however you run Node — `node`, `pm2`, `systemd`, a container of your choosing. The app needs `DATABASE_URL` (Postgres + pgvector) and `REDIS_URL` reachable from its environment; no orchestrator is required and there is no Helm chart to install.
+
+- **Local dev** (contributing to Lobu itself): clone, `make setup`, `make dev` (boots embedded gateway + workers + Vite HMR on `:8787`).
+- **Production**: `bun run --cwd packages/owletto-backend build:server`, then `node packages/owletto-backend/dist/server.bundle.mjs` under your process supervisor of choice.
 
 ## Architecture
 
@@ -119,13 +118,13 @@ Lobu is the **infrastructure layer** for autonomous agents. Frameworks like Lang
 | Onboarding | Config page with per-provider OAuth | CLI setup |
 | MCP access | Proxied through gateway, secrets isolated | Direct from agent |
 | Network | Sandboxed, domain-filtered egress | No built-in isolation |
-| Deployment | K8s, Docker | Single node |
+| Deployment | Single Node process (BYO Postgres + Redis) | Single node |
 
 ## Security and Privacy
 
-- [**No direct worker egress**](docs/SECURITY.md#network-egress) — all traffic routes through the gateway proxy.
-- [**Secrets stay in gateway**](docs/SECURITY.md#credentials) — provider credentials and `${env:}` substitution; OAuth lives in Owletto.
-- [**Defense in depth on K8s**](docs/SECURITY.md#kubernetes) — NetworkPolicies, RBAC, optional gVisor / Kata.
+- [**Worker egress through the gateway proxy**](docs/SECURITY.md#network-egress) — `HTTP_PROXY=http://localhost:8118` with allowlist/blocklist + LLM egress judge. On Linux production hosts the worker spawn uses `systemd-run --user --scope` with `IPAddressDeny=any` to enforce egress at the kernel level; in dev (macOS) the proxy is best-effort.
+- [**Secrets stay in gateway**](docs/SECURITY.md#credentials) — provider credentials and `${env:}` substitution; OAuth lives in Owletto. Workers never see real keys.
+- [**Threat model: single-tenant local isolation**](docs/SECURITY.md) — `just-bash` and `isolated-vm` are policy + best-effort sandboxes, not security boundaries for hostile code. See `docs/SECURITY.md` before exposing Lobu to untrusted users.
 - [**Nix system packages**](docs/SECURITY.md#skills-and-policy) — per-agent reproducible tooling and skill policy.
 
 ## Support & Consultancy
@@ -135,7 +134,7 @@ Lobu is open source, but deploying production-grade agents usually means tuning 
 - **Employee AI assistants** — persistent sandboxed agents on Slack wired into internal tools and docs.
 - **Automated customer support** — multi-step ticket handling with human-in-the-loop.
 - **Autonomous workflows** — long-running, scheduled background jobs with persistent state.
-- **Managed infrastructure** — private Lobu deployments on your Kubernetes cluster with updates and scaling.
+- **Managed infrastructure** — private Lobu deployments with updates and scaling.
 - **Custom tooling & skills** — bespoke MCP servers, Nix runtimes, and OpenClaw skills.
 
 I'm a second-time technical founder. Previously founded [rakam.io](https://rakam.io) (enterprise analytics PaaS), acquired by [LiveRamp](https://liveramp.com) (NYSE: RAMP).

@@ -163,10 +163,10 @@ If the agent gives stale or incorrect responses, clear the chat history in Redis
 
 ```bash
 # Find chat history keys
-docker compose -f docker/docker-compose.yml exec redis redis-cli KEYS 'chat:history:*'
+redis-cli -u "$REDIS_URL" KEYS 'chat:history:*'
 
 # Delete a specific conversation
-docker compose -f docker/docker-compose.yml exec redis redis-cli DEL 'chat:history:{key}'
+redis-cli -u "$REDIS_URL" DEL 'chat:history:{key}'
 ```
 
 ## Agent evaluations

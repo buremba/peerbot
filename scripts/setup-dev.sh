@@ -3,18 +3,15 @@ set -euo pipefail
 
 # Check dependencies
 command -v bun >/dev/null || { echo "Install bun: curl -fsSL https://bun.sh/install | bash"; exit 1; }
-command -v docker >/dev/null || { echo "Install Docker Desktop"; exit 1; }
-if ! command -v yq >/dev/null; then
+command -v redis-cli >/dev/null || {
   case "$(uname -s)" in
-    Darwin) echo "Install yq: brew install yq" ;;
-    Linux)  echo "Install yq: sudo apt-get install -y yq  (or see https://github.com/mikefarah/yq#install)" ;;
-    *)      echo "Install yq: https://github.com/mikefarah/yq#install" ;;
+    Darwin) echo "Install redis: brew install redis" ;;
+    Linux)  echo "Install redis: sudo apt-get install -y redis-server" ;;
+    *)      echo "Install redis: https://redis.io/docs/getting-started/" ;;
   esac
   exit 1
-fi
+}
 
-# Build worker + packages
-docker build -t lobu-worker:latest -f docker/Dockerfile.worker --build-arg NODE_ENV=development .
 make build-packages
 
 echo "Setup complete!"
@@ -23,6 +20,5 @@ echo "If you haven't configured .env yet, run:"
 echo "  npx @lobu/cli@latest"
 echo ""
 echo "To start development:"
-echo "  redis-server &"
-echo "  make watch-packages"
-echo "  cd packages/gateway && bun run dev"
+echo "  redis-server &       # local redis on :6379"
+echo "  make dev             # boots embedded gateway + workers + Vite HMR"

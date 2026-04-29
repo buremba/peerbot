@@ -112,7 +112,6 @@ export type ModuleEnvVarsBuilder = (
 
 // Orchestrator configuration
 export interface OrchestratorConfig {
-  deploymentMode?: "embedded" | "docker" | "kubernetes";
   queues: {
     connectionString: string;
     retryLimit: number;
@@ -127,36 +126,21 @@ export interface OrchestratorConfig {
       pullPolicy: string;
     };
     /**
-     * Absolute path to the worker TypeScript entrypoint. Required for the
-     * embedded deployment manager; ignored for docker/kubernetes (the image
-     * already bakes the entry in). Callers compute this once at boot — the
-     * gateway never probes cwd or reads env at deployment time.
+     * Absolute path to the worker TypeScript entrypoint. Callers compute
+     * this once at boot — the gateway never probes cwd or reads env at
+     * deployment time.
      */
     entryPoint?: string;
     /**
-     * Extra PATH entries prepended when spawning embedded worker processes
-     * (e.g. workspace-local `.bin` directories for `tsx`, `bun`). Callers
-     * supply absolute paths; the manager uses them verbatim.
+     * Extra PATH entries prepended when spawning worker processes (e.g.
+     * workspace-local `.bin` directories for `tsx`, `bun`). Callers supply
+     * absolute paths; the manager uses them verbatim.
      */
     binPathEntries?: string[];
-    serviceAccountName?: string;
-    imagePullSecrets?: string[];
-    runtimeClassName?: string; // Optional - if not set or unavailable, uses default container runtime
     startupTimeoutSeconds?: number;
-    resources: {
-      requests: { cpu: string; memory: string };
-      limits: { cpu: string; memory: string };
-    };
     idleCleanupMinutes: number;
     maxDeployments: number;
     env?: Record<string, string | number | boolean>;
-    persistence?: {
-      size?: string;
-      storageClass?: string;
-    };
-  };
-  kubernetes: {
-    namespace: string;
   };
   cleanup: {
     initialDelayMs: number;

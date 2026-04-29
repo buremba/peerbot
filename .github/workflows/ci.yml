@@ -60,8 +60,8 @@ jobs:
           bun test packages/owletto-backend/src/auth/__tests__/tool-access.test.ts
 
       - name: owletto-cli + owletto-worker (bun:test)
-        # owletto-openclaw e2e tests need a live backend (docker compose) and
-        # belong in the smoke-example workflow, not the unit job.
+        # owletto-openclaw e2e tests need a live backend and belong in the
+        # smoke-example workflow, not the unit job.
         run: |
           bun test packages/owletto-cli
           bun test packages/owletto-worker
@@ -217,10 +217,10 @@ jobs:
       - name: Type check packages excluded from root tsconfig
         # Root tsconfig excludes these packages, so `bun run typecheck`
         # above never sees them. Run each package's own tsc here so a
-        # type error can't reach main and break docker builds at deploy
-        # time. owletto-connectors and landing are intentionally left
-        # out — they need preconditions (DOM lib, `astro sync`) that
-        # belong to their own build pipelines.
+        # type error can't reach main and break the npm publish at
+        # release time. owletto-connectors and landing are intentionally
+        # left out — they need preconditions (DOM lib, `astro sync`)
+        # that belong to their own build pipelines.
         run: |
           set -euo pipefail
           for pkg in owletto-backend owletto-cli owletto-worker owletto-sdk owletto-openclaw owletto-embeddings owletto-extension cli; do

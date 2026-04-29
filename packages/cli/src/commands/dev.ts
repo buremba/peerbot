@@ -1,15 +1,22 @@
 import { spawn } from "node:child_process";
-import { readFile, writeFile } from "node:fs/promises";
-import { basename, join } from "node:path";
-import { parseEnvContent } from "../internal/index.js";
+import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import chalk from "chalk";
 import ora from "ora";
 import { isLoadError, loadConfig } from "../config/loader.js";
+import { parseEnvContent } from "../internal/index.js";
 
 /**
- * `lobu run` — smart wrapper around `docker compose up`.
- * Validates lobu.toml, seeds .env, then starts docker compose.
- * The gateway reads lobu.toml directly from the mounted workspace.
+ * `lobu run` — start the embedded Lobu stack.
+ *
+ * Spawns the bundled @lobu/owletto-backend Node server, which hosts the
+ * gateway, embedded workers, embeddings, and the Owletto memory backend
+ * in-process. Workers are spawned as child subprocesses by the gateway's
+ * EmbeddedDeploymentManager. Postgres and Redis must be reachable via
+ * DATABASE_URL and REDIS_URL in .env.
  */
 export async function devCommand(
   cwd: string,
@@ -29,158 +36,162 @@ export async function devCommand(
   }
 
   const { config } = result;
-  const spinner = ora("Preparing local dev environment...").start();
+  const spinner = ora("Validating environment...").start();
 
+  const envPath = join(cwd, ".env");
+  let envContent = "";
   try {
-    // Parse .env to merge derived vars
-    const envPath = join(cwd, ".env");
-    let existingEnv = "";
-    try {
-      existingEnv = await readFile(envPath, "utf-8");
-    } catch {
-      // No existing .env, start fresh
-    }
-    const dotenvVars = parseEnvContent(existingEnv);
-
-    const agentCount = Object.keys(config.agents).length;
-
-    // Derive env vars (compose project name from first agent or directory name)
-    const firstAgent = Object.values(config.agents)[0];
-    const envVars: Record<string, string> = {
-      COMPOSE_PROJECT_NAME: firstAgent?.name
-        ? firstAgent.name.toLowerCase().replace(/\s+/g, "-")
-        : basename(cwd),
-    };
-
-    // Merge derived vars into existing .env (preserves comments and formatting)
-    await mergeEnvFile(envPath, existingEnv, envVars);
-
-    spinner.succeed("Environment prepared from lobu.toml");
-
-    // Check for docker-compose.yml
-    try {
-      await readFile(join(cwd, "docker-compose.yml"), "utf-8");
-    } catch {
-      console.log(
-        chalk.yellow(
-          "\n  No docker-compose.yml found. Run `lobu init` to generate one.\n"
-        )
-      );
-      process.exit(1);
-    }
-
-    const fallbackPort = dotenvVars.GATEWAY_PORT || "8080";
-
-    console.log(chalk.cyan(`\n  Starting ${agentCount} agent(s)...\n`));
-
-    const explicitDetach =
-      passthroughArgs.includes("-d") || passthroughArgs.includes("--detach");
-
-    // Always start detached so we can print the banner before logs
-    const upArgs = explicitDetach
-      ? ["compose", "up", ...passthroughArgs]
-      : ["compose", "up", "-d", ...passthroughArgs];
-
-    const up = spawn("docker", upArgs, { cwd, stdio: "inherit" });
-
-    up.on("error", (err) => {
-      console.error(
-        chalk.red(`\n  Failed to start docker compose: ${err.message}`)
-      );
-      console.log(chalk.dim("  Make sure Docker Desktop is running.\n"));
-      process.exit(1);
-    });
-
-    up.on("exit", (code) => {
-      if (code !== 0) {
-        process.exit(code ?? 1);
-      }
-
-      // Detect actual host port from the running container
-      const portProbe = spawn(
-        "docker",
-        ["compose", "port", "gateway", "8080"],
-        { cwd, stdio: ["ignore", "pipe", "ignore"] }
-      );
-
-      let portOutput = "";
-      portProbe.stdout.on("data", (data: Buffer) => {
-        portOutput += data.toString();
-      });
-
-      portProbe.on("exit", () => {
-        const match = portOutput.trim().match(/:(\d+)$/);
-        const port = match ? match[1] : fallbackPort;
-        const gatewayUrl = `http://localhost:${port}`;
-
-        console.log(chalk.green("\n  Lobu is running!\n"));
-        console.log(chalk.cyan(`  API docs:      ${gatewayUrl}/api/docs`));
-        console.log(chalk.dim(`\n  Stop:          docker compose down`));
-
-        if (explicitDetach) {
-          console.log(
-            chalk.dim(`  View logs:     docker compose logs -f gateway\n`)
-          );
-          process.exit(0);
-        }
-
-        console.log(
-          chalk.dim(`  Ctrl+C stops log tail, containers keep running.\n`)
-        );
-
-        // Tail only gateway logs (skip redis noise)
-        const logs = spawn("docker", ["compose", "logs", "-f", "gateway"], {
-          cwd,
-          stdio: "inherit",
-        });
-
-        logs.on("exit", (logCode) => {
-          process.exit(logCode ?? 0);
-        });
-      });
-    });
-  } catch (err) {
-    spinner.fail("Failed to prepare environment");
+    envContent = await readFile(envPath, "utf-8");
+  } catch {
+    spinner.fail(".env not found");
     console.error(
-      chalk.red(`  ${err instanceof Error ? err.message : String(err)}`)
+      chalk.red(`\n  No .env file at ${envPath}. Run \`lobu init\` first.\n`)
     );
     process.exit(1);
   }
-}
 
-/**
- * Merge derived env vars into an existing .env file.
- * Updates existing keys in-place and appends new ones at the end.
- * Preserves comments, blank lines, and formatting.
- */
-async function mergeEnvFile(
-  envPath: string,
-  existingContent: string,
-  newVars: Record<string, string>
-): Promise<void> {
-  const remaining = { ...newVars };
-  const lines = existingContent.split("\n");
+  const envVars = parseEnvContent(envContent);
+  const missing: string[] = [];
+  if (!envVars.DATABASE_URL) missing.push("DATABASE_URL");
+  if (!envVars.REDIS_URL) missing.push("REDIS_URL");
 
-  const updated = lines.map((line) => {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) return line;
-    const eqIdx = trimmed.indexOf("=");
-    if (eqIdx === -1) return line;
-    const key = trimmed.slice(0, eqIdx);
-    if (key in remaining) {
-      const val = remaining[key]!;
-      delete remaining[key];
-      return `${key}=${val}`;
+  if (missing.length > 0) {
+    spinner.fail("Required environment variables missing");
+    console.error(
+      chalk.red(`\n  Set the following in .env:\n`)
+    );
+    for (const key of missing) {
+      console.error(chalk.dim(`    ${key}=`));
     }
-    return line;
-  });
-
-  // Append any new vars that weren't already in the file
-  for (const [key, value] of Object.entries(remaining)) {
-    updated.push(`${key}=${value}`);
+    console.error(
+      chalk.dim(
+        "\n  Lobu connects to a user-provided Postgres + Redis. Run them yourself"
+      )
+    );
+    console.error(
+      chalk.dim(
+        "  (managed instances or local: e.g. `brew services start postgresql redis`).\n"
+      )
+    );
+    process.exit(1);
   }
 
-  // Ensure trailing newline
-  const content = `${updated.join("\n").trimEnd()}\n`;
-  await writeFile(envPath, content);
+  const bundlePath = resolveBackendBundle();
+  if (!bundlePath) {
+    spinner.fail("@lobu/owletto-backend bundle not found");
+    console.error(
+      chalk.red(
+        "\n  Could not resolve @lobu/owletto-backend/dist/server.bundle.mjs.\n"
+      )
+    );
+    console.error(
+      chalk.dim(
+        "  Either run from the monorepo (with packages built via `make build-packages`)"
+      )
+    );
+    console.error(
+      chalk.dim(
+        "  or install @lobu/owletto-backend in the project: `bun add @lobu/owletto-backend`.\n"
+      )
+    );
+    process.exit(1);
+  }
+
+  const agentCount = Object.keys(config.agents).length;
+  spinner.succeed(`Loaded ${agentCount} agent(s) from lobu.toml`);
+
+  const port = envVars.GATEWAY_PORT || envVars.PORT || "8787";
+  const gatewayUrl = `http://localhost:${port}`;
+
+  console.log(chalk.cyan(`\n  Starting Lobu...\n`));
+  console.log(chalk.dim(`  bundle:        ${bundlePath}`));
+  console.log(chalk.dim(`  database:      ${redactUrl(envVars.DATABASE_URL!)}`));
+  console.log(chalk.dim(`  redis:         ${redactUrl(envVars.REDIS_URL!)}`));
+  console.log(chalk.dim(`  api docs:      ${gatewayUrl}/api/docs`));
+  console.log();
+
+  // Pass-through env: process.env wins so users can override per-invocation,
+  // .env values fill in the rest. LOBU_DEV_PROJECT_PATH points the gateway at
+  // this project so it loads lobu.toml and agent files.
+  const childEnv: Record<string, string> = {
+    ...envVars,
+    ...(process.env as Record<string, string>),
+    LOBU_DEV_PROJECT_PATH:
+      process.env.LOBU_DEV_PROJECT_PATH || envVars.LOBU_DEV_PROJECT_PATH || cwd,
+    PORT: port,
+  };
+
+  const child = spawn("node", [bundlePath, ...passthroughArgs], {
+    cwd,
+    env: childEnv,
+    stdio: "inherit",
+  });
+
+  child.on("error", (err) => {
+    console.error(chalk.red(`\n  Failed to start Lobu: ${err.message}\n`));
+    process.exit(1);
+  });
+
+  // Forward Ctrl+C to the child so it can clean up its own subprocess workers
+  // before the parent exits. SIGKILL after a timeout in case it wedges.
+  const forwardSignal = (signal: NodeJS.Signals) => {
+    if (child.exitCode !== null || child.killed) return;
+    child.kill(signal);
+    setTimeout(() => {
+      if (child.exitCode === null && !child.killed) {
+        child.kill("SIGKILL");
+      }
+    }, 10_000).unref();
+  };
+
+  process.on("SIGINT", () => forwardSignal("SIGINT"));
+  process.on("SIGTERM", () => forwardSignal("SIGTERM"));
+
+  child.on("exit", (code, signal) => {
+    if (signal) {
+      console.log(chalk.dim(`\n  Lobu exited (${signal}).\n`));
+      process.exit(0);
+    }
+    process.exit(code ?? 0);
+  });
+}
+
+function resolveBackendBundle(): string | null {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const require_ = createRequire(import.meta.url);
+
+  // Try resolving via the CLI's node_modules (works for installed users).
+  try {
+    return require_.resolve(
+      "@lobu/owletto-backend/dist/server.bundle.mjs"
+    );
+  } catch {
+    // Not installed as a dep — fall back to monorepo-relative lookup.
+  }
+
+  // Walk up from the CLI source/dist to find the workspace root.
+  let cur = here;
+  for (let i = 0; i < 6; i++) {
+    const candidate = join(
+      cur,
+      "packages/owletto-backend/dist/server.bundle.mjs"
+    );
+    if (existsSync(candidate)) return candidate;
+    const parent = dirname(cur);
+    if (parent === cur) break;
+    cur = parent;
+  }
+
+  return null;
+}
+
+function redactUrl(url: string): string {
+  try {
+    const u = new URL(url);
+    if (u.password) u.password = "***";
+    if (u.username) u.username = "***";
+    return u.toString();
+  } catch {
+    return url;
+  }
 }

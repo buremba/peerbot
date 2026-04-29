@@ -99,12 +99,26 @@ export class ChannelBindingService {
     _options?: { configuredBy?: string; wasAdmin?: boolean }
   ): Promise<void> {
     const sql = getDb();
-    await sql`
-      INSERT INTO agent_channel_bindings (agent_id, platform, channel_id, team_id, created_at)
-      VALUES (${agentId}, ${platform}, ${channelId}, ${teamId ?? null}, now())
-      ON CONFLICT (platform, channel_id, team_id) DO UPDATE SET
-        agent_id = EXCLUDED.agent_id
-    `;
+    if (teamId) {
+      // The (platform, channel_id, team_id) UNIQUE covers the team-id-set case.
+      await sql`
+        INSERT INTO agent_channel_bindings (agent_id, platform, channel_id, team_id, created_at)
+        VALUES (${agentId}, ${platform}, ${channelId}, ${teamId}, now())
+        ON CONFLICT (platform, channel_id, team_id) DO UPDATE SET
+          agent_id = EXCLUDED.agent_id
+      `;
+    } else {
+      // For team_id IS NULL the unique constraint above doesn't fire (PG
+      // treats NULL as distinct). The companion partial unique index
+      // (agent_channel_bindings_no_team_unique) is what we conflict on.
+      await sql`
+        INSERT INTO agent_channel_bindings (agent_id, platform, channel_id, team_id, created_at)
+        VALUES (${agentId}, ${platform}, ${channelId}, NULL, now())
+        ON CONFLICT (platform, channel_id)
+          WHERE team_id IS NULL
+          DO UPDATE SET agent_id = EXCLUDED.agent_id
+      `;
+    }
     this.cache.invalidate({ platform, channelId, teamId });
     logger.info(`Created binding: ${platform}/${channelId} → ${agentId}`);
   }
@@ -154,11 +168,23 @@ export class ChannelBindingService {
 
   async deleteAllBindings(agentId: string): Promise<number> {
     const sql = getDb();
+    // RETURNING the key columns lets us invalidate every cached entry for
+    // this agent immediately. Per-key NOTIFY also fires from the trigger,
+    // but NOTIFY is async — we MUST drop the local cache synchronously to
+    // avoid the same process serving a deleted binding right after the
+    // delete returns.
     const rows = await sql`
-      DELETE FROM agent_channel_bindings WHERE agent_id = ${agentId} RETURNING 1
+      DELETE FROM agent_channel_bindings
+      WHERE agent_id = ${agentId}
+      RETURNING platform, channel_id, team_id
     `;
-    // Per-key NOTIFY fires for each deleted row, so the cache catches up
-    // without a sledgehammer invalidate-all here.
+    for (const row of rows as Array<Record<string, any>>) {
+      this.cache.invalidate({
+        platform: row.platform as string,
+        channelId: row.channel_id as string,
+        teamId: (row.team_id as string | null) ?? undefined,
+      });
+    }
     logger.info(`Deleted ${rows.length} bindings for agent ${agentId}`);
     return rows.length;
   }

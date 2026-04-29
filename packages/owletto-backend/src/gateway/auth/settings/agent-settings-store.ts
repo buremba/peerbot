@@ -439,6 +439,17 @@ export class AgentSettingsStore {
     return settings !== null;
   }
 
+  /**
+   * Drop the local cache entry for an agent. Use this when a parallel
+   * Postgres write path (e.g. the host-supplied AgentConfigStore) updates
+   * `public.agents` outside this store; the trigger NOTIFY will catch up
+   * eventually but is async. Same-process callers that need
+   * read-your-writes should call invalidate immediately after the write.
+   */
+  invalidate(agentId: string): void {
+    this.cache.invalidate(agentId);
+  }
+
   async close(): Promise<void> {
     await this.cache.close();
   }

@@ -369,18 +369,27 @@ CREATE FUNCTION public.notify_agent_users_changed() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 DECLARE
-  rec record;
+  new_payload text;
+  old_payload text;
 BEGIN
   IF TG_OP = 'DELETE' THEN
-    rec := OLD;
-  ELSE
-    rec := NEW;
+    PERFORM pg_notify(
+      'agent_users_changed', format('%s:%s', OLD.platform, OLD.user_id)
+    );
+    RETURN OLD;
   END IF;
-  PERFORM pg_notify(
-    'agent_users_changed',
-    format('%s:%s', rec.platform, rec.user_id)
-  );
-  RETURN COALESCE(NEW, OLD);
+
+  new_payload := format('%s:%s', NEW.platform, NEW.user_id);
+  PERFORM pg_notify('agent_users_changed', new_payload);
+
+  IF TG_OP = 'UPDATE' THEN
+    old_payload := format('%s:%s', OLD.platform, OLD.user_id);
+    IF old_payload <> new_payload THEN
+      PERFORM pg_notify('agent_users_changed', old_payload);
+    END IF;
+  END IF;
+
+  RETURN NEW;
 END;
 $$;
 
@@ -393,22 +402,32 @@ CREATE FUNCTION public.notify_channel_binding_changed() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 DECLARE
-  rec record;
-  payload text;
+  new_payload text;
+  old_payload text;
 BEGIN
   IF TG_OP = 'DELETE' THEN
-    rec := OLD;
-  ELSE
-    rec := NEW;
+    PERFORM pg_notify(
+      'channel_binding_changed',
+      format('%s:%s:%s', OLD.platform, COALESCE(OLD.team_id, '-'), OLD.channel_id)
+    );
+    RETURN OLD;
   END IF;
-  payload := format(
-    '%s:%s:%s',
-    rec.platform,
-    COALESCE(rec.team_id, '-'),
-    rec.channel_id
+
+  new_payload := format(
+    '%s:%s:%s', NEW.platform, COALESCE(NEW.team_id, '-'), NEW.channel_id
   );
-  PERFORM pg_notify('channel_binding_changed', payload);
-  RETURN COALESCE(NEW, OLD);
+  PERFORM pg_notify('channel_binding_changed', new_payload);
+
+  IF TG_OP = 'UPDATE' THEN
+    old_payload := format(
+      '%s:%s:%s', OLD.platform, COALESCE(OLD.team_id, '-'), OLD.channel_id
+    );
+    IF old_payload <> new_payload THEN
+      PERFORM pg_notify('channel_binding_changed', old_payload);
+    END IF;
+  END IF;
+
+  RETURN NEW;
 END;
 $$;
 
@@ -3409,6 +3428,13 @@ CREATE INDEX "account_userId_idx" ON public.account USING btree ("userId");
 --
 
 CREATE INDEX agent_channel_bindings_agent_id_idx ON public.agent_channel_bindings USING btree (agent_id);
+
+
+--
+-- Name: agent_channel_bindings_no_team_unique; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX agent_channel_bindings_no_team_unique ON public.agent_channel_bindings USING btree (platform, channel_id) WHERE (team_id IS NULL);
 
 
 --

@@ -1,7 +1,7 @@
 /**
  * BaseAgentStore — shared scaffolding for AgentStore implementations.
  *
- * Concrete stores (InMemoryAgentStore, RedisAgentStore) provide raw CRUD
+ * Concrete stores (InMemoryAgentStore, host-provided Postgres stores) provide raw CRUD
  * primitives for each resource; the base class exposes the public AgentStore
  * interface on top of those primitives, centralizing the get→merge→save
  * update pattern and the listConnections platform filter.

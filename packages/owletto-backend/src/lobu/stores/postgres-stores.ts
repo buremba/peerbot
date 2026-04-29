@@ -710,12 +710,25 @@ export function createPostgresAgentConnectionStore(): AgentConnectionStore {
     },
     async createChannelBinding(binding) {
       const sql = getDb();
-      await sql`
-        INSERT INTO agent_channel_bindings (agent_id, platform, channel_id, team_id, created_at)
-        VALUES (${binding.agentId}, ${binding.platform}, ${binding.channelId}, ${binding.teamId ?? null}, now())
-        ON CONFLICT (platform, channel_id, team_id) DO UPDATE SET
-          agent_id = EXCLUDED.agent_id
-      `;
+      if (binding.teamId) {
+        await sql`
+          INSERT INTO agent_channel_bindings (agent_id, platform, channel_id, team_id, created_at)
+          VALUES (${binding.agentId}, ${binding.platform}, ${binding.channelId}, ${binding.teamId}, now())
+          ON CONFLICT (platform, channel_id, team_id) DO UPDATE SET
+            agent_id = EXCLUDED.agent_id
+        `;
+      } else {
+        // PG treats NULL as distinct under the (platform, channel_id, team_id)
+        // UNIQUE; the team_id IS NULL branch upserts via the partial unique
+        // index agent_channel_bindings_no_team_unique.
+        await sql`
+          INSERT INTO agent_channel_bindings (agent_id, platform, channel_id, team_id, created_at)
+          VALUES (${binding.agentId}, ${binding.platform}, ${binding.channelId}, NULL, now())
+          ON CONFLICT (platform, channel_id)
+            WHERE team_id IS NULL
+            DO UPDATE SET agent_id = EXCLUDED.agent_id
+        `;
+      }
     },
     async deleteChannelBinding(platform, channelId, teamId) {
       const sql = getDb();

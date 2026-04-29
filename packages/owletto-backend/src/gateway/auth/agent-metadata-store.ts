@@ -276,6 +276,16 @@ export class AgentMetadataStore {
     return rows.map(rowToMetadata);
   }
 
+  /**
+   * Drop the local cache entry for an agent. Use this when a parallel
+   * Postgres write path (e.g. the host-supplied AgentConfigStore) updates
+   * `public.agents` outside this store; the trigger NOTIFY will catch up
+   * eventually but is async.
+   */
+  invalidate(agentId: string): void {
+    this.cache.invalidate(agentId);
+  }
+
   async close(): Promise<void> {
     await this.cache.close();
   }

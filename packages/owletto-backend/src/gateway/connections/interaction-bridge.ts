@@ -1,5 +1,8 @@
 import { createLogger } from "@lobu/core";
-import type { Redis } from "ioredis";
+import {
+  takePendingTool,
+  type PendingToolInvocation,
+} from "../auth/mcp/pending-tool-store.js";
 import type {
   InteractionService,
   PostedLinkButton,
@@ -12,8 +15,6 @@ import type { ChatInstanceManager } from "./chat-instance-manager.js";
 import type { PlatformConnection } from "./types.js";
 
 const logger = createLogger("chat-interaction-bridge");
-
-const PENDING_TOOL_KEY_PREFIX = "pending-tool:";
 
 /** Signature for the direct tool execution function injected from the MCP proxy. */
 type ExecuteToolDirectFn = (
@@ -69,31 +70,14 @@ function resolveGrantExpiresAt(duration: string): number | null {
 }
 
 /**
- * Atomically fetch and delete the pending invocation. Using GETDEL prevents
- * duplicate execution when Slack retries the block_actions webhook (the first
- * click claims the payload; subsequent retries see null and no-op).
+ * Atomically fetch and delete the pending invocation. The PG-backed
+ * `pending-tool` row uses DELETE ... RETURNING so the first click claims
+ * the payload and subsequent webhook retries see null and no-op.
  */
 async function takePendingToolInvocation(
-  redis: Redis,
   requestId: string
-): Promise<{
-  mcpId: string;
-  toolName: string;
-  args: Record<string, unknown>;
-  agentId: string;
-  userId: string;
-  channelId?: string;
-  conversationId?: string;
-  teamId?: string;
-  connectionId?: string;
-} | null> {
-  const raw = await redis.getdel(`${PENDING_TOOL_KEY_PREFIX}${requestId}`);
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
+): Promise<PendingToolInvocation | null> {
+  return takePendingTool(requestId);
 }
 
 function describeDecision(decision: string): string {
@@ -281,8 +265,6 @@ export function registerInteractionBridge(
     }
   };
 
-  const redis = manager.getServices().getQueue().getRedisClient();
-
   const onToolApprovalNeeded = async (event: PostedToolApproval) => {
     try {
       if (!shouldHandle(event, platform, connectionId, manager)) return;
@@ -437,7 +419,6 @@ export function registerInteractionBridge(
   registerActionHandlers(
     chat,
     connection,
-    redis,
     grantStore,
     executeToolDirect,
     claimApprovalCard,
@@ -599,7 +580,6 @@ type OnQuestionClickFn = (
 export function registerActionHandlers(
   chat: any,
   connection: PlatformConnection,
-  redis: Redis,
   grantStore: GrantStore | undefined,
   executeToolDirect?: ExecuteToolDirectFn,
   claimApprovalCard?: (requestId: string) => SentMessage | undefined,
@@ -631,7 +611,7 @@ export function registerActionHandlers(
       // tracked — this is a real first click landing on an expired/missing
       // pending key, and we MUST surface that to the user. Otherwise the
       // click looks like it did nothing.
-      const pending = await takePendingToolInvocation(redis, requestId).catch(
+      const pending = await takePendingToolInvocation(requestId).catch(
         () => null
       );
       if (!pending) {

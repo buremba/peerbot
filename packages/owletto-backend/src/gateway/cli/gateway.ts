@@ -11,6 +11,7 @@ import { cors } from "hono/cors";
 import { secureHeaders } from "hono/secure-headers";
 import type { AgentMetadata } from "../auth/agent-metadata-store.js";
 import { CliTokenService } from "../auth/cli/token-service.js";
+import { takePendingTool } from "../auth/mcp/pending-tool-store.js";
 import { setEnvResolver } from "../auth/mcp/string-substitution.js";
 import { OAuthClient } from "../auth/oauth/client.js";
 import { CLAUDE_PROVIDER } from "../auth/oauth/providers.js";
@@ -283,7 +284,6 @@ export function createGatewayApp(
     const publicUrl = coreServices.getPublicGatewayUrl();
 
     if (queueProducer && sessionMgr && interactionSvc) {
-      const approveRedis = coreServices.getQueue().getRedisClient();
       const approveGrantStore = coreServices.getGrantStore();
       const approveMcpProxy = coreServices.getMcpProxy();
 
@@ -301,15 +301,14 @@ export function createGatewayApp(
         agentMetadataStore: coreServices.getAgentMetadataStore(),
         platformRegistry,
         approveToolCall: async (requestId: string, decision: string) => {
-          // GETDEL atomically claims the pending invocation so a retry of
-          // POST /api/v1/agents/approve (CLI re-tries, double-clicks, Slack
-          // webhook retries that ultimately reach the same key, etc.) cannot
-          // double-execute the tool. The Slack/Telegram interaction-bridge
-          // path has the same guard — both consumers MUST use GETDEL.
-          const raw = await approveRedis.getdel(`pending-tool:${requestId}`);
-          if (!raw)
+          // DELETE ... RETURNING atomically claims the pending invocation
+          // so a retry of POST /api/v1/agents/approve (CLI re-tries,
+          // double-clicks, Slack webhook retries) cannot double-execute the
+          // tool. The Slack/Telegram interaction-bridge path uses the same
+          // helper.
+          const pending = await takePendingTool(requestId);
+          if (!pending)
             return { success: false, error: "Request not found or expired" };
-          const pending = JSON.parse(raw);
           const pattern = `/mcp/${pending.mcpId}/tools/${pending.toolName}`;
           const expiresMap: Record<string, number | null> = {
             "1h": Date.now() + 3_600_000,

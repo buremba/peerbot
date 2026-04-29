@@ -476,6 +476,22 @@ export class ChatInstanceManager {
     return this.instances.get(id);
   }
 
+  /**
+   * Surface the channels with stored history for a given connection. Used
+   * by the local-test-default-target route; falls back to constructing a
+   * fresh state-store when the connection isn't currently active.
+   */
+  async listHistoryChannels(connectionId: string): Promise<string[]> {
+    const instance = this.instances.get(connectionId);
+    if (instance) {
+      return instance.conversationState.listHistoryChannels(connectionId);
+    }
+    const conversationState = new ConversationStateStore(
+      await this.createStateAdapter()
+    );
+    return conversationState.listHistoryChannels(connectionId);
+  }
+
   /** Get a resolved secret value from a running connection's config. */
   getConnectionConfigSecret(
     connectionId: string,

@@ -4,6 +4,7 @@ import { createLogger, verifyWorkerToken } from "@lobu/core";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import type { IMessageQueue } from "../../infrastructure/queue/index.js";
+import { storePendingTool } from "./pending-tool-store.js";
 import { requiresToolApproval } from "../../permissions/approval-policy.js";
 import type { GrantStore } from "../../permissions/grant-store.js";
 import {
@@ -159,7 +160,7 @@ export class McpProxy {
   // actually clicks (Slack notifications, async review, etc.). The pending
   // invocation key holds the args needed to execute the tool after approval;
   // 24h gives users a realistic window to respond. Anything shorter silently
-  // drops late clicks (the GETDEL returns null and the click no-ops).
+  // drops late clicks (the take-on-claim returns null and the click no-ops).
   private readonly PENDING_TOOL_TTL = 24 * 60 * 60; // 24 hours
   private readonly redisClient: any;
   private app: Hono;
@@ -670,29 +671,26 @@ export class McpProxy {
 
           if (this.onToolBlocked) {
             const requestId = `ta_${randomUUID()}`;
-            await this.redisClient
-              .set(
-                `pending-tool:${requestId}`,
-                JSON.stringify({
-                  mcpId,
-                  toolName,
-                  args: toolArguments,
-                  agentId,
-                  userId: requesterUserId,
-                  channelId: auth.tokenData.channelId || "",
-                  conversationId: auth.tokenData.conversationId || "",
-                  teamId: auth.tokenData.teamId,
-                  connectionId: auth.tokenData.connectionId,
-                }),
-                "EX",
-                this.PENDING_TOOL_TTL
+            await storePendingTool(
+              requestId,
+              {
+                mcpId,
+                toolName,
+                args: toolArguments,
+                agentId,
+                userId: requesterUserId,
+                channelId: auth.tokenData.channelId || "",
+                conversationId: auth.tokenData.conversationId || "",
+                teamId: auth.tokenData.teamId,
+                connectionId: auth.tokenData.connectionId,
+              },
+              this.PENDING_TOOL_TTL
+            ).catch((err: unknown) =>
+              logger.error(
+                { requestId, error: String(err) },
+                "Failed to store pending tool invocation"
               )
-              .catch((err: unknown) =>
-                logger.error(
-                  { requestId, error: String(err) },
-                  "Failed to store pending tool invocation"
-                )
-              );
+            );
 
             await this.onToolBlocked(
               requestId,
@@ -1092,29 +1090,26 @@ export class McpProxy {
 
                 if (this.onToolBlocked) {
                   const requestId = `ta_${randomUUID()}`;
-                  await this.redisClient
-                    .set(
-                      `pending-tool:${requestId}`,
-                      JSON.stringify({
-                        mcpId,
-                        toolName,
-                        args: toolArgs,
-                        agentId,
-                        userId: tokenData.userId,
-                        channelId: tokenData.channelId || "",
-                        conversationId: tokenData.conversationId || "",
-                        teamId: tokenData.teamId,
-                        connectionId: tokenData.connectionId,
-                      }),
-                      "EX",
-                      this.PENDING_TOOL_TTL
+                  await storePendingTool(
+                    requestId,
+                    {
+                      mcpId: mcpId!,
+                      toolName,
+                      args: toolArgs,
+                      agentId,
+                      userId: tokenData.userId,
+                      channelId: tokenData.channelId || "",
+                      conversationId: tokenData.conversationId || "",
+                      teamId: tokenData.teamId,
+                      connectionId: tokenData.connectionId,
+                    },
+                    this.PENDING_TOOL_TTL
+                  ).catch((err: unknown) =>
+                    logger.error(
+                      { requestId, error: String(err) },
+                      "Failed to store pending tool invocation"
                     )
-                    .catch((err: unknown) =>
-                      logger.error(
-                        { requestId, error: String(err) },
-                        "Failed to store pending tool invocation"
-                      )
-                    );
+                  );
 
                   await this.onToolBlocked(
                     requestId,

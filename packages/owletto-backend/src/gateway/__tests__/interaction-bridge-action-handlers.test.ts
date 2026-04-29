@@ -1,14 +1,13 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import { storePendingTool, type PendingToolInvocation } from "../auth/mcp/pending-tool-store.js";
 import { registerActionHandlers } from "../connections/interaction-bridge.js";
 import type { PlatformConnection } from "../connections/types.js";
+import { ensurePgliteForGatewayTests, resetTestDatabase } from "./helpers/db-setup.js";
 
 type ActionHandler = (event: any) => Promise<void>;
 
 interface Harness {
   handler: ActionHandler;
-  redis: {
-    getdel: ReturnType<typeof mock>;
-  };
   grantStore: {
     grant: ReturnType<typeof mock>;
   };
@@ -20,7 +19,6 @@ interface Harness {
 
 function setup(
   options: {
-    pending?: Record<string, unknown> | null;
     executeToolResult?:
       | { content: Array<{ type: string; text: string }>; isError: boolean }
       | Error;
@@ -29,7 +27,6 @@ function setup(
   } = {}
 ): Harness {
   const {
-    pending = null,
     executeToolResult,
     withExecute = true,
     withGrantStore = true,
@@ -40,9 +37,6 @@ function setup(
     onAction: mock((h: ActionHandler) => {
       captured = h;
     }),
-  };
-  const redis = {
-    getdel: mock(async () => (pending ? JSON.stringify(pending) : null)),
   };
   const grantStore = {
     grant: mock(async () => undefined),
@@ -65,7 +59,6 @@ function setup(
   registerActionHandlers(
     chat as any,
     { id: "conn-1", platform: "slack" } as PlatformConnection,
-    redis as any,
     withGrantStore ? (grantStore as any) : undefined,
     withExecute ? (executeToolDirect as any) : undefined,
     claimApprovalCard as any
@@ -74,7 +67,6 @@ function setup(
   if (!captured) throw new Error("onAction handler not registered");
   return {
     handler: captured,
-    redis,
     grantStore,
     executeToolDirect,
     post,
@@ -83,7 +75,7 @@ function setup(
   };
 }
 
-const PENDING = {
+const PENDING: PendingToolInvocation = {
   mcpId: "github",
   toolName: "create_issue",
   args: { title: "hi" },
@@ -91,10 +83,22 @@ const PENDING = {
   userId: "user-1",
 };
 
+async function seedPending(requestId: string): Promise<void> {
+  await storePendingTool(requestId, PENDING, 24 * 60 * 60);
+}
+
 describe("registerActionHandlers — tool approval", () => {
+  beforeAll(async () => {
+    await ensurePgliteForGatewayTests();
+  });
+
+  beforeEach(async () => {
+    await resetTestDatabase();
+  });
+
   test("approve with pending + executeToolDirect stores grant, runs tool, posts result, deletes pending", async () => {
+    await seedPending("req-1");
     const h = setup({
-      pending: PENDING,
       executeToolResult: {
         content: [{ type: "text", text: "issue #42" }],
         isError: false,
@@ -126,11 +130,11 @@ describe("registerActionHandlers — tool approval", () => {
     ]);
 
     expect(h.post).toHaveBeenCalledWith("issue #42");
-    expect(h.redis.getdel).toHaveBeenCalledWith("pending-tool:req-1");
   });
 
   test("approve maps duration 'always' to null expiry", async () => {
-    const h = setup({ pending: PENDING });
+    await seedPending("req-3");
+    const h = setup();
     await h.handler({
       actionId: "tool:req-3:always",
       value: "always",
@@ -141,7 +145,8 @@ describe("registerActionHandlers — tool approval", () => {
   });
 
   test("approve edits the approval card to strip buttons and show decision summary", async () => {
-    const h = setup({ pending: PENDING });
+    await seedPending("req-edit");
+    const h = setup();
     await h.handler({
       actionId: "tool:req-edit:1h",
       value: "1h",
@@ -154,7 +159,7 @@ describe("registerActionHandlers — tool approval", () => {
   });
 
   test("approve with no pending but tracked card (late first click) edits card and posts an expired notice — no grant, no execute", async () => {
-    const h = setup({ pending: null });
+    const h = setup();
     await h.handler({
       actionId: "tool:req-x:1h",
       value: "1h",
@@ -170,8 +175,8 @@ describe("registerActionHandlers — tool approval", () => {
   });
 
   test("approve but tool execution throws posts failure message and still stores grant", async () => {
+    await seedPending("req-4");
     const h = setup({
-      pending: PENDING,
       executeToolResult: new Error("boom"),
     });
     await h.handler({
@@ -181,12 +186,11 @@ describe("registerActionHandlers — tool approval", () => {
     });
     expect(h.grantStore.grant).toHaveBeenCalledTimes(1);
     expect(h.post).toHaveBeenCalledWith("Failed to execute tool: Error: boom");
-    expect(h.redis.getdel).toHaveBeenCalledWith("pending-tool:req-4");
   });
 
   test("approve with isError=true result posts 'Tool error: ...'", async () => {
+    await seedPending("req-5");
     const h = setup({
-      pending: PENDING,
       executeToolResult: {
         content: [{ type: "text", text: "permission denied" }],
         isError: true,
@@ -201,7 +205,8 @@ describe("registerActionHandlers — tool approval", () => {
   });
 
   test("deny stores denial grant, takes pending, posts apology", async () => {
-    const h = setup({ pending: PENDING });
+    await seedPending("req-6");
+    const h = setup();
     await h.handler({
       actionId: "tool:req-6:deny",
       value: "deny",
@@ -215,12 +220,11 @@ describe("registerActionHandlers — tool approval", () => {
     expect(expiresAt).toBeNull();
     expect(denial).toBe(true);
     expect(h.executeToolDirect).not.toHaveBeenCalled();
-    expect(h.redis.getdel).toHaveBeenCalledWith("pending-tool:req-6");
     expect(h.post.mock.calls[0]?.[0]).toMatch(/denied/i);
   });
 
   test("deny with no pending but tracked card (late first click) edits card and posts an expired notice — no grant", async () => {
-    const h = setup({ pending: null });
+    const h = setup();
     await h.handler({
       actionId: "tool:req-7:deny",
       value: "deny",
@@ -234,7 +238,8 @@ describe("registerActionHandlers — tool approval", () => {
   });
 
   test("deny edits the approval card to show denial summary", async () => {
-    const h = setup({ pending: PENDING });
+    await seedPending("req-editdeny");
+    const h = setup();
     await h.handler({
       actionId: "tool:req-editdeny:deny",
       value: "deny",
@@ -246,6 +251,14 @@ describe("registerActionHandlers — tool approval", () => {
 });
 
 describe("registerActionHandlers — question (no callback)", () => {
+  beforeAll(async () => {
+    await ensurePgliteForGatewayTests();
+  });
+
+  beforeEach(async () => {
+    await resetTestDatabase();
+  });
+
   test("question with value posts the value (legacy fallback path)", async () => {
     const h = setup();
     await h.handler({
@@ -268,6 +281,14 @@ describe("registerActionHandlers — question (no callback)", () => {
 });
 
 describe("registerActionHandlers — question (with onQuestionClick)", () => {
+  beforeAll(async () => {
+    await ensurePgliteForGatewayTests();
+  });
+
+  beforeEach(async () => {
+    await resetTestDatabase();
+  });
+
   function setupWithCallback(): {
     handler: ActionHandler;
     onQuestionClick: ReturnType<typeof mock>;
@@ -279,14 +300,12 @@ describe("registerActionHandlers — question (with onQuestionClick)", () => {
         captured = h;
       }),
     };
-    const redis = { getdel: mock(async () => null) };
     const onQuestionClick = mock(async () => undefined);
     const thread = { post: mock(async () => undefined) };
 
     registerActionHandlers(
       chat as any,
       { id: "conn-1", platform: "slack" } as PlatformConnection,
-      redis as any,
       undefined,
       undefined,
       undefined,
@@ -345,8 +364,13 @@ describe("registerActionHandlers — question (with onQuestionClick)", () => {
 });
 
 describe("registerActionHandlers — guards", () => {
+  beforeAll(async () => {
+    await ensurePgliteForGatewayTests();
+  });
+
   let h: Harness;
-  beforeEach(() => {
+  beforeEach(async () => {
+    await resetTestDatabase();
     h = setup();
   });
 

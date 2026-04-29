@@ -30,17 +30,20 @@ export class MessageConsumer {
   private deploymentManager: BaseDeploymentManager;
   private config: OrchestratorConfig;
   private isRunning = false;
+  /**
+   * Per-process deployment-creation lock. The embedded-only owletto-backend
+   * has a single MessageConsumer instance per process, so an in-memory Map
+   * is sufficient for the "two consecutive messages for the same thread
+   * race to create the deployment" guard. The Phase-9 gateway no longer
+   * has cross-process workers.
+   */
+  private deploymentLocks = new Map<string, Promise<unknown>>();
   constructor(
     config: OrchestratorConfig,
     deploymentManager: BaseDeploymentManager,
   ) {
     this.config = config;
     this.deploymentManager = deploymentManager;
-    // Phase 5: queue is the Postgres `runs` table. The legacy
-    // `queues.connectionString` (a redis:// URL) is still threaded through so
-    // the IMessageQueue.getRedisClient() backwards-compat consumers
-    // (deployment lock, failed-deployment tracking) still find a Redis
-    // client. Phase 11 deletes those.
     this.queue = new RunsQueue({
       redisUrl: config.queues.connectionString,
     });
@@ -298,23 +301,22 @@ export class MessageConsumer {
   }
 
   /**
-   * Acquire a Redis-based lock for deployment creation.
-   * Prevents concurrent duplicate deployment creation for the same thread.
+   * Acquire a per-process lock for deployment creation. Prevents two
+   * concurrent message handlers from racing to create the same deployment.
+   * In embedded mode the gateway is single-process; an in-memory Map is
+   * the right primitive here (TTL is not needed because the lock is held
+   * for the duration of the awaited create call and released in finally).
    */
-  private async acquireDeploymentLock(
-    deploymentName: string
-  ): Promise<boolean> {
-    const lockKey = `deployment:lock:${deploymentName}`;
-    const redisClient = this.queue.getRedisClient();
-    // SET NX with 60s TTL - standard Redis distributed lock
-    const result = await redisClient.set(lockKey, "1", "EX", 60, "NX");
-    return result === "OK";
+  private acquireDeploymentLock(deploymentName: string): boolean {
+    if (this.deploymentLocks.has(deploymentName)) return false;
+    // We store a placeholder; the caller wraps the create in a try/finally
+    // and `releaseDeploymentLock` removes the entry once done.
+    this.deploymentLocks.set(deploymentName, Promise.resolve());
+    return true;
   }
 
-  private async releaseDeploymentLock(deploymentName: string): Promise<void> {
-    const lockKey = `deployment:lock:${deploymentName}`;
-    const redisClient = this.queue.getRedisClient();
-    await redisClient.del(lockKey);
+  private releaseDeploymentLock(deploymentName: string): void {
+    this.deploymentLocks.delete(deploymentName);
   }
 
   /**
@@ -348,22 +350,19 @@ export class MessageConsumer {
         );
 
         if (isNewThread) {
-          // Acquire lock to prevent concurrent deployment creation
-          const acquired = await this.acquireDeploymentLock(deploymentName);
+          const acquired = this.acquireDeploymentLock(deploymentName);
           if (!acquired) {
             logger.info(
               { traceId, deploymentName },
-              "Another process is creating this deployment, waiting"
+              "Another handler is creating this deployment, waiting"
             );
-            // Wait briefly and re-check - the other process should finish soon
             await new Promise((r) => setTimeout(r, 3000));
-            // Verify it was created
             const rechecked = await this.deploymentManager.listDeployments();
             if (rechecked.some((d) => d.deploymentName === deploymentName)) {
               await this.deploymentManager.scaleDeployment(deploymentName, 1);
               logger.info(
                 { traceId, deploymentName },
-                "Deployment created by other process, scaled up"
+                "Deployment created by other handler, scaled up"
               );
               await this.deploymentManager.updateDeploymentActivity(
                 deploymentName
@@ -374,8 +373,9 @@ export class MessageConsumer {
           }
 
           try {
-            // Re-check after acquiring lock - another process may have created
-            // the deployment between our initial check and lock acquisition
+            // Re-check after acquiring lock — another handler in this process
+            // may have completed creation between our initial check and the
+            // lock acquisition.
             const recheckAfterLock =
               await this.deploymentManager.listDeployments();
             if (
@@ -383,7 +383,7 @@ export class MessageConsumer {
             ) {
               logger.info(
                 { traceId, deploymentName },
-                "Deployment already created by another process after lock acquired"
+                "Deployment already created by another handler after lock acquired"
               );
               await this.deploymentManager.scaleDeployment(deploymentName, 1);
               await this.deploymentManager.updateDeploymentActivity(
@@ -404,40 +404,7 @@ export class MessageConsumer {
             );
             logger.info({ traceId, deploymentName }, "Created deployment");
           } finally {
-            try {
-              await this.releaseDeploymentLock(deploymentName);
-            } catch (releaseError) {
-              logger.error(
-                {
-                  deploymentName,
-                  error:
-                    releaseError instanceof Error
-                      ? releaseError.message
-                      : String(releaseError),
-                },
-                "CRITICAL: Failed to release deployment lock, attempting emergency Redis key deletion"
-              );
-              try {
-                const lockKey = `deployment:lock:${deploymentName}`;
-                const redisClient = this.queue.getRedisClient();
-                await redisClient.del(lockKey);
-                logger.info(
-                  { deploymentName },
-                  "Emergency lock cleanup succeeded"
-                );
-              } catch (emergencyError) {
-                logger.error(
-                  {
-                    deploymentName,
-                    error:
-                      emergencyError instanceof Error
-                        ? emergencyError.message
-                        : String(emergencyError),
-                  },
-                  "CRITICAL: Emergency lock cleanup also failed, lock will expire via TTL"
-                );
-              }
-            }
+            this.releaseDeploymentLock(deploymentName);
           }
         } else {
           logger.info(
@@ -487,8 +454,10 @@ export class MessageConsumer {
   }
 
   /**
-   * Track failed deployment creation for monitoring and potential recovery.
-   * Also sends an error response to the user via the thread_response queue.
+   * Track failed deployment creation. Phase 8: the prior Redis-backed
+   * 24h log entry is gone — there's no monitoring dashboard reading it,
+   * and structured error logs already cover ops visibility.
+   * Still sends the error response to the user via the thread_response queue.
    */
   private async trackFailedDeployment(
     deploymentName: string,
@@ -496,28 +465,16 @@ export class MessageConsumer {
     error: unknown
   ): Promise<void> {
     try {
-      const failureKey = `deployment:failed:${deploymentName}`;
-      const failureData = {
-        deploymentName,
-        userId: data.userId,
-        conversationId: data.conversationId,
-        error: error instanceof Error ? error.message : String(error),
-        stack: error instanceof Error ? error.stack : undefined,
-        timestamp: new Date().toISOString(),
-        queueName: `thread_message_${deploymentName}`,
-      };
-
-      // Store in Redis with 24h TTL for monitoring dashboards
-      // This allows ops to detect stuck queues and manually intervene
-      const redisClient = this.queue.getRedisClient();
-      await redisClient.setex(
-        failureKey,
-        86400, // 24 hours
-        JSON.stringify(failureData)
-      );
-
-      logger.info(
-        `Tracked deployment failure in Redis: ${failureKey} (TTL: 24h)`
+      logger.error(
+        {
+          deploymentName,
+          userId: data.userId,
+          conversationId: data.conversationId,
+          error: error instanceof Error ? error.message : String(error),
+          stack: error instanceof Error ? error.stack : undefined,
+          queueName: `thread_message_${deploymentName}`,
+        },
+        "Deployment creation failed"
       );
 
       const userMessage =

@@ -1,8 +1,11 @@
-import { describe, expect, mock, test } from "bun:test";
+import { beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
 import { Chat } from "chat";
 import { createSlackAdapter } from "@chat-adapter/slack";
+import { getDb } from "../../db/client.js";
+import { storePendingTool, type PendingToolInvocation } from "../auth/mcp/pending-tool-store.js";
 import { registerActionHandlers } from "../connections/interaction-bridge.js";
 import type { PlatformConnection } from "../connections/types.js";
+import { ensurePgliteForGatewayTests, resetTestDatabase } from "./helpers/db-setup.js";
 import { InMemoryStateAdapter } from "./fixtures/in-memory-state-adapter.js";
 import {
   blockActionsPayload,
@@ -14,13 +17,12 @@ const BOT_TOKEN = "xoxb-test-token";
 const BOT_USER_ID = "U_BOT";
 
 function createHarness(options: {
-  pending?: Record<string, unknown> | null;
   executeToolResult?: {
     content: Array<{ type: string; text: string }>;
     isError: boolean;
   };
 }) {
-  const { pending = null, executeToolResult } = options;
+  const { executeToolResult } = options;
 
   const adapter = createSlackAdapter({
     signingSecret: SIGNING_SECRET,
@@ -39,9 +41,6 @@ function createHarness(options: {
     state,
   });
 
-  const redis = {
-    getdel: mock(async () => (pending ? JSON.stringify(pending) : null)),
-  };
   const grantStore = { grant: mock(async () => undefined) };
   const executeToolDirect = mock(
     async () =>
@@ -54,7 +53,6 @@ function createHarness(options: {
   registerActionHandlers(
     chat as any,
     { id: "conn-1", platform: "slack" } as PlatformConnection,
-    redis as any,
     grantStore as any,
     executeToolDirect as any
   );
@@ -63,7 +61,6 @@ function createHarness(options: {
     adapter,
     chat,
     state,
-    redis,
     grantStore,
     executeToolDirect,
     postMessage,
@@ -90,15 +87,25 @@ async function waitFor(
 }
 
 describe("Slack block_actions → registerActionHandlers (Tier B integration)", () => {
+  beforeAll(async () => {
+    await ensurePgliteForGatewayTests();
+  });
+
+  beforeEach(async () => {
+    await resetTestDatabase();
+  });
+
   test("signed tool-approval button triggers grant, executes tool, deletes pending", async () => {
+    const pending: PendingToolInvocation = {
+      mcpId: "github",
+      toolName: "create_issue",
+      args: { title: "from slack" },
+      agentId: "agent-1",
+      userId: "user-1",
+    };
+    await storePendingTool("req-slack-1", pending, 24 * 60 * 60);
+
     const h = createHarness({
-      pending: {
-        mcpId: "github",
-        toolName: "create_issue",
-        args: { title: "from slack" },
-        agentId: "agent-1",
-        userId: "user-1",
-      },
       executeToolResult: {
         content: [{ type: "text", text: "issue created: #7" }],
         isError: false,
@@ -121,10 +128,16 @@ describe("Slack block_actions → registerActionHandlers (Tier B integration)", 
     expect(response.status).toBe(200);
 
     // Wait on the tail of the handler (executeToolDirect) so earlier steps
-    // (getdel, grant) have all completed by the time we assert on them.
+    // (claim, grant) have all completed by the time we assert on them.
     await waitFor(() => expect(h.executeToolDirect).toHaveBeenCalled());
 
-    expect(h.redis.getdel).toHaveBeenCalledWith("pending-tool:req-slack-1");
+    // The pending row was deleted by the take-on-claim path.
+    const sql = getDb();
+    const remaining = await sql`
+      SELECT 1 FROM oauth_states WHERE id = 'req-slack-1' AND scope = 'pending-tool'
+    `;
+    expect(remaining.length).toBe(0);
+
     expect(h.grantStore.grant).toHaveBeenCalledTimes(1);
     const [agentId, pattern] = h.grantStore.grant.mock.calls[0];
     expect(agentId).toBe("agent-1");
@@ -165,15 +178,16 @@ describe("Slack block_actions → registerActionHandlers (Tier B integration)", 
   });
 
   test("tampered signature is rejected before handler runs", async () => {
-    const h = createHarness({
-      pending: {
-        mcpId: "github",
-        toolName: "create_issue",
-        args: {},
-        agentId: "a",
-        userId: "u",
-      },
-    });
+    const pending: PendingToolInvocation = {
+      mcpId: "github",
+      toolName: "create_issue",
+      args: {},
+      agentId: "a",
+      userId: "u",
+    };
+    await storePendingTool("req-bad", pending, 24 * 60 * 60);
+
+    const h = createHarness({});
 
     const payload = blockActionsPayload({
       teamId: "T123",
@@ -199,7 +213,14 @@ describe("Slack block_actions → registerActionHandlers (Tier B integration)", 
     expect(response.status).not.toBe(200);
     // Give any stray async work a tick — nothing downstream should have run.
     await new Promise((r) => setTimeout(r, 20));
-    expect(h.redis.getdel).not.toHaveBeenCalled();
+
+    // Pending row still present because no claim happened.
+    const sql = getDb();
+    const remaining = await sql`
+      SELECT 1 FROM oauth_states WHERE id = 'req-bad' AND scope = 'pending-tool'
+    `;
+    expect(remaining.length).toBe(1);
+
     expect(h.grantStore.grant).not.toHaveBeenCalled();
     expect(h.executeToolDirect).not.toHaveBeenCalled();
     expect(h.postMessage).not.toHaveBeenCalled();

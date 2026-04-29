@@ -1,5 +1,4 @@
-import { beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { MockRedisClient } from "@lobu/core/testing";
+import { beforeAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import type { MessagePayload } from "../infrastructure/queue/queue-producer.js";
 import {
   BaseDeploymentManager,
@@ -8,6 +7,10 @@ import {
 } from "../orchestration/base-deployment-manager.js";
 import { GrantStore } from "../permissions/grant-store.js";
 import { PolicyStore } from "../permissions/policy-store.js";
+import {
+  ensurePgliteForGatewayTests,
+  resetTestDatabase,
+} from "./helpers/db-setup.js";
 
 /** Minimal concrete subclass — only exists so we can test grant syncing. */
 class TestDeploymentManager extends BaseDeploymentManager {
@@ -66,14 +69,17 @@ function buildPayload(overrides: Partial<MessagePayload>): MessagePayload {
 }
 
 describe("BaseDeploymentManager.syncNetworkConfigGrants", () => {
-  let redis: MockRedisClient;
   let grantStore: GrantStore;
   let policyStore: PolicyStore;
   let manager: TestDeploymentManager;
 
-  beforeEach(() => {
-    redis = new MockRedisClient();
-    grantStore = new GrantStore(redis);
+  beforeAll(async () => {
+    await ensurePgliteForGatewayTests();
+  });
+
+  beforeEach(async () => {
+    await resetTestDatabase();
+    grantStore = new GrantStore();
     policyStore = new PolicyStore();
     manager = new TestDeploymentManager(TEST_CONFIG);
     manager.setGrantStore(grantStore);

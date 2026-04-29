@@ -394,8 +394,8 @@ export class CoreServices {
     this.watcherRunTracker = new WatcherRunTracker();
     logger.debug("Watcher run tracker initialized");
 
-    // Initialize grant store for unified permissions
-    this.grantStore = new GrantStore(redisClient);
+    // Initialize grant store for unified permissions (PG-backed)
+    this.grantStore = new GrantStore();
     logger.debug("Grant store initialized");
 
     // Policy store for egress judge (per-agent judged-domain rules + named

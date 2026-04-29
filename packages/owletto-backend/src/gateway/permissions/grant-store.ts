@@ -1,11 +1,5 @@
-import {
-  createLogger,
-  getJsonValue,
-  mgetJsonValues,
-  normalizeDomainPattern,
-  scanKeysByPattern,
-  setJsonValue,
-} from "@lobu/core";
+import { createLogger, normalizeDomainPattern } from "@lobu/core";
+import { getDb, pgTextArray } from "../../db/client.js";
 
 const logger = createLogger("grant-store");
 
@@ -16,13 +10,13 @@ interface Grant {
   denied?: boolean; // true = explicitly deny this pattern
 }
 
-const KEY_PREFIX = "grant:";
-
-type StoredGrant = {
-  expiresAt: number | null;
-  grantedAt: number;
-  denied?: boolean;
-};
+/**
+ * Grant kind. Domain grants and MCP-tool grants share the same table but
+ * a callsite-specific kind tag keeps them separable when listing/auditing.
+ * The MCP path is detected by the leading slash in the pattern (matches
+ * the legacy Redis behavior); we infer kind on insert.
+ */
+type GrantKind = "domain" | "mcp_tool";
 
 function getDomainGrantCandidates(pattern: string): string[] {
   const normalized = normalizeDomainPattern(pattern);
@@ -38,6 +32,17 @@ function getDomainGrantCandidates(pattern: string): string[] {
   return [...candidates];
 }
 
+function inferKind(pattern: string): GrantKind {
+  return pattern.startsWith("/") ? "mcp_tool" : "domain";
+}
+
+interface GrantRow {
+  pattern: string;
+  granted_at: Date;
+  expires_at: Date | null;
+  denied: boolean;
+}
+
 /**
  * Unified grant store for URL-pattern permissions.
  *
@@ -46,14 +51,15 @@ function getDomainGrantCandidates(pattern: string): string[] {
  *   - MCP tool: "/mcp/gmail/tools/send_email"
  *   - MCP wildcard: "/mcp/gmail/tools/*"
  *
- * Grants are stored in Redis with TTL matching expiresAt for automatic cleanup.
+ * Phase 8 of Redis -> Postgres migration: backed by `public.grants` with
+ * per-(agent_id, kind, pattern) rows. Wildcard expansion happens at
+ * read time in `hasGrant`. Expired rows are filtered by `expires_at`
+ * and swept by the periodic cleanup task.
  */
 export class GrantStore {
-  constructor(private readonly redis: any) {}
-
   /**
    * Grant access to a pattern for an agent.
-   * If expiresAt is null, the grant never expires (no Redis TTL).
+   * If expiresAt is null, the grant never expires.
    * If denied is true, the grant explicitly denies access.
    */
   async grant(
@@ -63,112 +69,98 @@ export class GrantStore {
     denied?: boolean
   ): Promise<void> {
     pattern = normalizeDomainPattern(pattern);
-    const key = this.buildKey(agentId, pattern);
-    const value: StoredGrant = {
-      expiresAt,
-      grantedAt: Date.now(),
-      ...(denied && { denied: true }),
-    };
+    const kind = inferKind(pattern);
+    const expiresAtTs = expiresAt === null ? null : new Date(expiresAt);
 
-    if (expiresAt === null) {
-      await setJsonValue(this.redis, key, value);
-    } else {
-      const ttlSeconds = Math.max(
-        1,
-        Math.ceil((expiresAt - Date.now()) / 1000)
-      );
-      await setJsonValue(this.redis, key, value, ttlSeconds);
-    }
+    const sql = getDb();
+    await sql`
+      INSERT INTO grants (agent_id, kind, pattern, expires_at, granted_at, denied)
+      VALUES (${agentId}, ${kind}, ${pattern}, ${expiresAtTs}, now(), ${denied ?? false})
+      ON CONFLICT (agent_id, kind, pattern) DO UPDATE SET
+        expires_at = EXCLUDED.expires_at,
+        granted_at = EXCLUDED.granted_at,
+        denied = EXCLUDED.denied
+    `;
     logger.info("Granted access", { agentId, pattern, expiresAt });
-  }
-
-  private async getStoredGrant(key: string): Promise<StoredGrant | null> {
-    return getJsonValue<StoredGrant>(this.redis, key);
   }
 
   /**
    * Check if an agent has a grant for a pattern.
    * Checks exact match first, then wildcard parents.
-   * Returns false if the grant has `denied: true`.
+   * Returns false if the matched grant has `denied: true`.
    */
   async hasGrant(agentId: string, pattern: string): Promise<boolean> {
     pattern = normalizeDomainPattern(pattern);
-    // Exact match
-    try {
-      for (const candidate of getDomainGrantCandidates(pattern)) {
-        const exactKey = this.buildKey(agentId, candidate);
-        const parsed = await this.getStoredGrant(exactKey);
-        if (parsed) return !parsed.denied;
+    const kind = inferKind(pattern);
+
+    // Build the candidate pattern set (exact + wildcards) and look them
+    // up in a single query.
+    const candidates: string[] = getDomainGrantCandidates(pattern);
+
+    // MCP wildcard: "/mcp/gmail/tools/send_email" is covered by
+    // "/mcp/gmail/tools/*".
+    if (kind === "mcp_tool") {
+      const lastSlash = pattern.lastIndexOf("/");
+      if (lastSlash > 0) {
+        candidates.push(`${pattern.substring(0, lastSlash)}/*`);
       }
+    }
+
+    // Domain wildcard: "sub.example.com" is covered by "*.example.com" or
+    // ".example.com".
+    if (kind === "domain") {
+      const parts = pattern.split(".");
+      if (parts.length > 2) {
+        const tail = parts.slice(1).join(".");
+        candidates.push(normalizeDomainPattern(`.${tail}`));
+        candidates.push(normalizeDomainPattern(`*.${tail}`));
+      }
+    }
+
+    const sql = getDb();
+    try {
+      const rows = await sql<GrantRow>`
+        SELECT pattern, granted_at, expires_at, denied
+        FROM grants
+        WHERE agent_id = ${agentId}
+          AND kind = ${kind}
+          AND pattern = ANY(${pgTextArray(candidates)}::text[])
+          AND (expires_at IS NULL OR expires_at > now())
+      `;
+
+      if (rows.length === 0) return false;
+
+      // Prefer exact-match if one exists; otherwise the first row decides.
+      const exact = rows.find((r) => r.pattern === pattern);
+      const winning = exact ?? rows[0];
+      return !winning?.denied;
     } catch (error) {
       logger.error("Failed to check grant", { agentId, pattern, error });
       return false;
     }
-
-    // Wildcard check for MCP tool patterns:
-    // "/mcp/gmail/tools/send_email" is covered by "/mcp/gmail/tools/*"
-    if (pattern.startsWith("/mcp/")) {
-      const lastSlash = pattern.lastIndexOf("/");
-      if (lastSlash > 0) {
-        const wildcardPattern = `${pattern.substring(0, lastSlash)}/*`;
-        const wildcardKey = this.buildKey(agentId, wildcardPattern);
-        try {
-          const parsed = await this.getStoredGrant(wildcardKey);
-          if (parsed) return !parsed.denied;
-        } catch (error) {
-          logger.error("Failed to check wildcard grant", {
-            agentId,
-            pattern: wildcardPattern,
-            error,
-          });
-        }
-      }
-    }
-
-    // Wildcard check for domain patterns:
-    // "sub.example.com" is covered by "*.example.com"
-    if (!pattern.startsWith("/")) {
-      const parts = pattern.split(".");
-      if (parts.length > 2) {
-        const wildcardDomains = [
-          `.${parts.slice(1).join(".")}`,
-          `*.${parts.slice(1).join(".")}`,
-        ];
-        try {
-          for (const wildcardDomain of wildcardDomains) {
-            const wildcardKey = this.buildKey(
-              agentId,
-              normalizeDomainPattern(wildcardDomain)
-            );
-            const parsed = await this.getStoredGrant(wildcardKey);
-            if (parsed) return !parsed.denied;
-          }
-        } catch (error) {
-          logger.error("Failed to check wildcard domain grant", {
-            agentId,
-            pattern,
-            error,
-          });
-        }
-      }
-    }
-
-    return false;
   }
 
   /**
    * Check if a pattern is explicitly denied for an agent.
    */
   async isDenied(agentId: string, pattern: string): Promise<boolean> {
+    pattern = normalizeDomainPattern(pattern);
+    const kind = inferKind(pattern);
+    const candidates = getDomainGrantCandidates(pattern);
+
+    const sql = getDb();
     try {
-      for (const candidate of getDomainGrantCandidates(pattern)) {
-        const key = this.buildKey(agentId, candidate);
-        const parsed = await this.getStoredGrant(key);
-        if (parsed?.denied === true) {
-          return true;
-        }
-      }
-      return false;
+      const rows = await sql<{ denied: boolean }>`
+        SELECT denied
+        FROM grants
+        WHERE agent_id = ${agentId}
+          AND kind = ${kind}
+          AND pattern = ANY(${pgTextArray(candidates)}::text[])
+          AND (expires_at IS NULL OR expires_at > now())
+          AND denied = true
+        LIMIT 1
+      `;
+      return rows.length > 0;
     } catch (error) {
       logger.error("Failed to check denied grant", {
         agentId,
@@ -181,33 +173,28 @@ export class GrantStore {
 
   /**
    * List all active grants for an agent.
-   * Uses Redis SCAN to find matching keys.
    */
   async listGrants(agentId: string): Promise<Grant[]> {
-    const prefix = `${KEY_PREFIX}${agentId}:`;
-    const grants: Grant[] = [];
-
+    const sql = getDb();
     try {
-      const keys = await scanKeysByPattern(this.redis, `${prefix}*`);
-      const values = await mgetJsonValues<StoredGrant>(this.redis, keys);
+      const rows = await sql<GrantRow>`
+        SELECT pattern, granted_at, expires_at, denied
+        FROM grants
+        WHERE agent_id = ${agentId}
+          AND (expires_at IS NULL OR expires_at > now())
+        ORDER BY granted_at DESC
+      `;
 
-      for (let i = 0; i < keys.length; i++) {
-        const parsed = values[i];
-        if (!parsed) continue;
-
-        const pattern = (keys[i] as string).substring(prefix.length);
-        grants.push({
-          pattern,
-          expiresAt: parsed.expiresAt ?? null,
-          grantedAt: parsed.grantedAt,
-          ...(parsed.denied && { denied: true }),
-        });
-      }
+      return rows.map((row) => ({
+        pattern: row.pattern,
+        expiresAt: row.expires_at ? row.expires_at.getTime() : null,
+        grantedAt: row.granted_at.getTime(),
+        ...(row.denied && { denied: true }),
+      }));
     } catch (error) {
       logger.error("Failed to list grants", { agentId, error });
+      return [];
     }
-
-    return grants;
   }
 
   /**
@@ -215,13 +202,29 @@ export class GrantStore {
    */
   async revoke(agentId: string, pattern: string): Promise<void> {
     const candidates = getDomainGrantCandidates(pattern);
-    await this.redis.del(
-      ...candidates.map((candidate) => this.buildKey(agentId, candidate))
-    );
+    const kind = inferKind(pattern);
+    const sql = getDb();
+    await sql`
+      DELETE FROM grants
+      WHERE agent_id = ${agentId}
+        AND kind = ${kind}
+        AND pattern = ANY(${pgTextArray(candidates)}::text[])
+    `;
     logger.info("Revoked grant", { agentId, pattern });
   }
+}
 
-  private buildKey(agentId: string, pattern: string): string {
-    return `${KEY_PREFIX}${agentId}:${pattern}`;
-  }
+/**
+ * Sweep expired grants. Cheap because of the partial expires_at index;
+ * safe to call from a periodic background timer.
+ */
+export async function sweepExpiredGrants(): Promise<number> {
+  const sql = getDb();
+  const rows = await sql`
+    WITH deleted AS (
+      DELETE FROM grants WHERE expires_at IS NOT NULL AND expires_at <= now() RETURNING agent_id
+    )
+    SELECT count(*)::int AS count FROM deleted
+  `;
+  return Number((rows[0] as { count?: number } | undefined)?.count ?? 0);
 }

@@ -100,7 +100,13 @@ let originalEnv: string | undefined;
 let validToken: string;
 let originalFetch: typeof fetch;
 
-beforeAll(() => {
+beforeAll(async () => {
+  // GrantStore is now PG-backed; bring up an ephemeral PGlite for the
+  // tool-approval tests below.
+  const { ensurePgliteForGatewayTests } = await import(
+    "./helpers/db-setup.js"
+  );
+  await ensurePgliteForGatewayTests();
   originalEnv = process.env.ENCRYPTION_KEY;
   process.env.ENCRYPTION_KEY = TEST_ENCRYPTION_KEY;
   validToken = generateWorkerToken("user1", "conv1", "deploy1", {
@@ -487,7 +493,7 @@ describe("McpProxy", () => {
     ) {
       const configSource = createMockConfigSource(servers);
       const toolCache = new McpToolCache();
-      const grantStore = new GrantStore(queue.getRedisClient());
+      const grantStore = new GrantStore();
       const proxy = new McpProxy(configSource, queue as any, {
         secretStore: createTestSecretStore(queue),
         toolCache,

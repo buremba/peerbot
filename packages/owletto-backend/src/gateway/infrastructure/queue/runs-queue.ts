@@ -20,7 +20,7 @@
 
 import { createLogger } from "@lobu/core";
 import * as Sentry from "@sentry/node";
-import { getDb, getRawDb, type DbClient } from "../../../db/client.js";
+import { getDb, getDbListener, type DbClient } from "../../../db/client.js";
 import type {
   IMessageQueue,
   JobHandler,
@@ -121,21 +121,9 @@ const LOBU_RUN_TYPES = [
 
 type LobuRunType = (typeof LOBU_RUN_TYPES)[number];
 
-export interface RunsQueueConfig {
-  /** Per-queue concurrency. Default 1. */
-  defaultConcurrency?: number;
-}
-
-/** Postgres-js raw client surface this class uses for LISTEN. Kept here as a
- *  narrow type so callers don't have to leak the postgres-js Sql type into
- *  every consumer's signature. */
-type ListenCapableSql = {
-  listen(
-    channel: string,
-    onnotify: (x: unknown) => void,
-    onlisten?: () => void,
-  ): Promise<{ state: unknown; unlisten: () => Promise<unknown> }>;
-};
+/** Per-queue concurrency for handler invocations. Hardcoded today; lift to a
+ *  config knob if/when a queue legitimately needs >1. */
+const DEFAULT_WORKER_CONCURRENCY = 1;
 
 interface QueueWorker {
   queueName: string;
@@ -182,13 +170,10 @@ export class RunsQueue implements IMessageQueue {
   /** Active LISTEN subscriptions, keyed by channel. */
   private listenSubs = new Map<string, { unlisten: () => Promise<unknown> }>();
 
-  private readonly defaultConcurrency: number;
-
-  constructor(config: RunsQueueConfig = {}) {
+  constructor() {
     if (!process.env.DATABASE_URL) {
       throw new Error("RunsQueue: DATABASE_URL is required");
     }
-    this.defaultConcurrency = config.defaultConcurrency ?? 1;
   }
 
   // ── Lifecycle ───────────────────────────────────────────────────────────
@@ -452,7 +437,7 @@ export class RunsQueue implements IMessageQueue {
       queueName,
       runType,
       handler: handler as JobHandler<unknown>,
-      concurrency: this.defaultConcurrency,
+      concurrency: DEFAULT_WORKER_CONCURRENCY,
       paused: options?.startPaused ?? false,
       stopped: false,
       active: 0,
@@ -760,9 +745,8 @@ export class RunsQueue implements IMessageQueue {
    */
   private async ensureChannelListened(channel: string): Promise<void> {
     if (this.listenSubs.has(channel)) return;
-    const raw = getRawDb() as unknown as ListenCapableSql;
     try {
-      const sub = await raw.listen(channel, () => {
+      const sub = await getDbListener().listen(channel, () => {
         const set = this.subscribersByChannel.get(channel);
         if (!set) return;
         for (const w of set) w.wakeup();

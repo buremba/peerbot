@@ -1,23 +1,13 @@
-import { createLogger, normalizeDomainPattern } from "@lobu/core";
+import {
+  createLogger,
+  inferGrantKind,
+  normalizeDomainPattern,
+  type Grant,
+  type GrantKind,
+} from "@lobu/core";
 import { getDb, pgTextArray } from "../../db/client.js";
 
 const logger = createLogger("grant-store");
-
-/**
- * Grant kind. Domain grants and MCP-tool grants share the same table but
- * a kind tag keeps them separable when listing/auditing. The MCP path is
- * detected by the leading slash in the pattern (matches the legacy Redis
- * behavior); we infer kind on insert.
- */
-type GrantKind = "domain" | "mcp_tool";
-
-interface Grant {
-  pattern: string;
-  kind: GrantKind;
-  expiresAt: number | null; // Absolute timestamp (ms). null = never expires.
-  grantedAt: number;
-  denied?: boolean; // true = explicitly deny this pattern
-}
 
 function getDomainGrantCandidates(pattern: string): string[] {
   const normalized = normalizeDomainPattern(pattern);
@@ -31,10 +21,6 @@ function getDomainGrantCandidates(pattern: string): string[] {
   }
 
   return [...candidates];
-}
-
-function inferKind(pattern: string): GrantKind {
-  return pattern.startsWith("/") ? "mcp_tool" : "domain";
 }
 
 interface GrantRow {
@@ -71,7 +57,7 @@ export class GrantStore {
     denied?: boolean
   ): Promise<void> {
     pattern = normalizeDomainPattern(pattern);
-    const kind = inferKind(pattern);
+    const kind = inferGrantKind(pattern);
     const expiresAtTs = expiresAt === null ? null : new Date(expiresAt);
 
     const sql = getDb();
@@ -93,7 +79,7 @@ export class GrantStore {
    */
   async hasGrant(agentId: string, pattern: string): Promise<boolean> {
     pattern = normalizeDomainPattern(pattern);
-    const kind = inferKind(pattern);
+    const kind = inferGrantKind(pattern);
 
     // Build the candidate pattern set (exact + wildcards) and look them
     // up in a single query.
@@ -154,7 +140,7 @@ export class GrantStore {
    */
   async isDenied(agentId: string, pattern: string): Promise<boolean> {
     pattern = normalizeDomainPattern(pattern);
-    const kind = inferKind(pattern);
+    const kind = inferGrantKind(pattern);
     const candidates = getDomainGrantCandidates(pattern);
 
     const sql = getDb();
@@ -212,7 +198,7 @@ export class GrantStore {
    */
   async revoke(agentId: string, pattern: string): Promise<void> {
     const candidates = getDomainGrantCandidates(pattern);
-    const kind = inferKind(pattern);
+    const kind = inferGrantKind(pattern);
     const sql = getDb();
     await sql`
       DELETE FROM grants

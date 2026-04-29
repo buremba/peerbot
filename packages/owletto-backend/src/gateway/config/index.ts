@@ -103,7 +103,6 @@ export interface GatewayConfig {
   sessionTimeoutMinutes: number;
   logLevel: LogLevel;
   queues: {
-    connectionString: string;
     directMessage: string;
     messageQueue: string;
     retryLimit: number;
@@ -358,8 +357,10 @@ export function buildGatewayConfig(
 ): GatewayConfig {
   logger.debug("Building gateway configuration from environment variables");
 
-  const connectionString =
-    overrides?.queues?.connectionString || getRequiredEnv("DATABASE_URL");
+  // DATABASE_URL is required; the queue / cache / probe paths read it directly
+  // from process.env, so we just assert it's present here and let the rest of
+  // the runtime trust the env.
+  getRequiredEnv("DATABASE_URL");
 
   const defaultMemoryFlushEnabled = getOptionalBoolean(
     "AGENT_DEFAULT_MEMORY_FLUSH_ENABLED",
@@ -408,7 +409,6 @@ export function buildGatewayConfig(
     ),
     logLevel: (process.env.LOG_LEVEL as LogLevel) || DEFAULTS.LOG_LEVEL,
     queues: {
-      connectionString,
       directMessage: getOptionalEnv(
         "QUEUE_DIRECT_MESSAGE",
         DEFAULTS.QUEUE_DIRECT_MESSAGE
@@ -437,7 +437,6 @@ export function buildGatewayConfig(
     },
     orchestration: {
       queues: {
-        connectionString,
         retryLimit: getOptionalNumber(
           "QUEUE_RETRY_LIMIT",
           DEFAULTS.QUEUE_RETRY_LIMIT
@@ -530,9 +529,6 @@ export function displayGatewayConfig(config: GatewayConfig): void {
   console.log(separator);
 
   console.log("\nQueues:");
-  console.log(
-    `  Connection: ${config.queues.connectionString.substring(0, 30)}...`
-  );
   console.log(`  Retry Limit: ${config.queues.retryLimit}`);
   console.log(`  Retry Delay: ${config.queues.retryDelay}s`);
 

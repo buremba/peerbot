@@ -139,8 +139,7 @@ async function startSlackSocketMode(manager: any): Promise<void> {
  * Returns the Hono app to mount, or null if DATABASE_URL is not configured.
  */
 export async function initLobuGateway(): Promise<Hono | null> {
-  const databaseUrl = process.env.DATABASE_URL;
-  if (!databaseUrl) {
+  if (!process.env.DATABASE_URL) {
     logger.info('[Lobu] DATABASE_URL not set — embedded gateway disabled');
     return null;
   }
@@ -165,7 +164,6 @@ export async function initLobuGateway(): Promise<Hono | null> {
     }
 
     const gatewayConfig = buildGatewayConfig({
-      queues: { connectionString: databaseUrl },
       mcp: { publicGatewayUrl: publicUrl },
     });
 

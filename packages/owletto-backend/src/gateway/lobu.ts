@@ -51,7 +51,7 @@ export interface LobuAgentConfig {
 }
 
 export interface LobuConfig {
-  database: string;
+  /** Owletto memory MCP base URL. Optional — defaults to the local origin. */
   memory?: string;
   agents?: LobuAgentConfig[];
   port?: number;
@@ -101,9 +101,11 @@ export class Lobu {
     // Convert LobuConfig -> GatewayConfig via buildGatewayConfig overrides.
     // Passing `agents` lets core-services own InMemoryAgentStore population
     // and DeclaredAgentRegistry seeding; avoids a parallel SDK seeding path.
+    // DATABASE_URL must be set by the caller's env (LobuConfig is no longer
+    // a vehicle for it — buildGatewayConfig + every downstream PG client
+    // reads process.env.DATABASE_URL directly).
     this.gatewayConfig = buildGatewayConfig({
       agents: this.agentConfigs.map(toAgentConfig),
-      queues: { connectionString: config.database },
       mcp: {
         publicGatewayUrl: config.publicUrl ?? defaultPublicUrl,
       },

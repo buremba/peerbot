@@ -113,7 +113,6 @@ export type ModuleEnvVarsBuilder = (
 // Orchestrator configuration
 export interface OrchestratorConfig {
   queues: {
-    connectionString: string;
     retryLimit: number;
     retryDelay: number;
     expireInSeconds: number;

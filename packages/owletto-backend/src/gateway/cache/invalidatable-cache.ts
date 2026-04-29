@@ -36,7 +36,7 @@
  */
 
 import { createLogger, type Logger } from "@lobu/core";
-import { getRawDb } from "../../db/client.js";
+import { getDbListener } from "../../db/client.js";
 
 interface Entry<V> {
   value: V;
@@ -336,20 +336,11 @@ const defaultListenSubscriber: ListenSubscriber = async (
   onNotify,
   onListen,
 ) => {
-  const sql = getRawDb();
   // postgres-js's listen(channel, onnotify, onlisten?) returns
   // { state, unlisten }. onlisten fires on first subscribe + every reconnect
   // (see node_modules/postgres/src/index.js — onclose handler re-invokes
   // listen() for every channel).
-  const result = await (
-    sql as unknown as {
-      listen(
-        channel: string,
-        onnotify: (x: unknown) => void,
-        onlisten?: () => void,
-      ): Promise<{ state: unknown; unlisten: () => Promise<unknown> }>;
-    }
-  ).listen(
+  const result = await getDbListener().listen(
     channel,
     (x) => onNotify(typeof x === "string" ? x : ""),
     () => onListen(),

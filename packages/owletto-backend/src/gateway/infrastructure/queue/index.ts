@@ -6,7 +6,7 @@
  */
 
 export { QueueProducer } from "./queue-producer.js";
-export { RunsQueue, type RunsQueueConfig } from "./runs-queue.js";
+export { RunsQueue } from "./runs-queue.js";
 export type {
   IMessageQueue,
   QueueJob,

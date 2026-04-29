@@ -250,6 +250,28 @@ export function getRawDb(): Sql {
 }
 
 /**
+ * Typed view of postgres-js's `sql.listen()` surface. Use this instead of
+ * `getRawDb()` when you only need LISTEN/NOTIFY — keeps the broader Sql
+ * type out of caller signatures and centralises the cast that postgres-js's
+ * own typings sometimes need.
+ *
+ * `onListen` fires once on initial subscribe and again on every reconnect
+ * (postgres-js's internal `onclose` re-issues LISTEN automatically); use
+ * it to drop any cached state that may have crossed a missed-NOTIFY gap.
+ */
+export interface DbListener {
+  listen(
+    channel: string,
+    onNotify: (payload: unknown) => void,
+    onListen?: () => void
+  ): Promise<{ unlisten: () => Promise<unknown> }>;
+}
+
+export function getDbListener(): DbListener {
+  return getRawDb() as unknown as DbListener;
+}
+
+/**
  * Verify that LISTEN/NOTIFY round-trips through the configured DATABASE_URL.
  *
  * Why this exists: pgbouncer in transaction-mode silently drops `LISTEN` (the
@@ -265,6 +287,7 @@ export function getRawDb(): Sql {
  */
 export async function probeListenNotify(timeoutMs = 1500): Promise<void> {
   const sql = getRawDb();
+  const listener = getDbListener();
   const channel = `lobu_probe_${process.pid}_${Date.now().toString(36)}`;
 
   let received = false;
@@ -273,16 +296,7 @@ export async function probeListenNotify(timeoutMs = 1500): Promise<void> {
     resolveReceived = res;
   });
 
-  // Cast through unknown — postgres-js's listen() typings vary by version.
-  const result = await (
-    sql as unknown as {
-      listen(
-        channel: string,
-        onnotify: (x: unknown) => void,
-        onlisten?: () => void,
-      ): Promise<{ unlisten: () => Promise<unknown> }>;
-    }
-  ).listen(channel, () => {
+  const result = await listener.listen(channel, () => {
     received = true;
     resolveReceived?.();
   });

@@ -17,11 +17,10 @@ Each incoming message creates a root span that propagates through the full reque
 
 1. **message_received** — gateway ingests message from API or platform (Slack, Telegram, etc.)
 2. **queue_processing** — message consumer picks up the job
-3. **worker_creation** — gateway creates worker container/pod
-4. **pvc_setup** — persistent volume setup (Kubernetes only)
-5. **job_received** — worker receives the job
-6. **exec_execution** — sandbox command execution (if applicable)
-7. **agent_execution** — agent runs the prompt
+3. **worker_creation** — gateway spawns the worker subprocess
+4. **job_received** — worker receives the job
+5. **exec_execution** — sandbox command execution (if applicable)
+6. **agent_execution** — agent runs the prompt
 
 **Response path (worker → platform):**
 

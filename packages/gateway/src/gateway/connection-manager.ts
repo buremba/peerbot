@@ -60,8 +60,8 @@ export class WorkerConnectionManager {
     writer: SSEWriter,
     httpPort?: number
   ): void {
-    // In embedded/Docker mode workers run in-process, so use localhost.
-    // In Kubernetes mode each worker is a separate pod addressable by name.
+    // Workers run as subprocesses on the same host, so the gateway always
+    // reaches them on the loopback interface.
     const httpHost = this.useLocalhost ? "127.0.0.1" : deploymentName;
     const httpUrl = httpPort ? `http://${httpHost}:${httpPort}` : undefined;
 

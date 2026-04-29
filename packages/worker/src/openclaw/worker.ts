@@ -746,14 +746,7 @@ export class OpenClawWorker implements WorkerExecutor {
       configuredMcpExposure === "cli" || envMcpExposure === "cli"
         ? "cli"
         : "tools";
-    const isEmbedded = process.env.DEPLOYMENT_MODE === "embedded";
-    if (requestedMcpExposure === "cli" && !isEmbedded) {
-      logger.warn(
-        "mcpExposure='cli' requested but DEPLOYMENT_MODE is not 'embedded' — falling back to 'tools'."
-      );
-    }
-    const mcpExposure: "tools" | "cli" =
-      requestedMcpExposure === "cli" && isEmbedded ? "cli" : "tools";
+    const mcpExposure: "tools" | "cli" = requestedMcpExposure;
 
     // Fetch session context BEFORE model resolution so AGENT_DEFAULT_PROVIDER
     // is available when resolveModelRef() needs a fallback provider. Pass
@@ -1044,20 +1037,16 @@ export class OpenClawWorker implements WorkerExecutor {
       workspaceDir,
     };
 
-    let embeddedBashOps:
-      | import("@mariozechner/pi-coding-agent").BashOperations
-      | undefined;
-    if (isEmbedded) {
-      const { createEmbeddedBashOps } = await import(
-        "../embedded/just-bash-bootstrap"
-      );
-      embeddedBashOps = await createEmbeddedBashOps({
+    const { createEmbeddedBashOps } = await import(
+      "../embedded/just-bash-bootstrap"
+    );
+    const embeddedBashOps: import("@mariozechner/pi-coding-agent").BashOperations =
+      await createEmbeddedBashOps({
         workspaceDir,
         mcpRuntimeRef,
         gw: gwParams,
         mcpExposure,
       });
-    }
     let tools = createOpenClawTools(workspaceDir, {
       bashOperations: embeddedBashOps,
     }).filter((tool) => isToolAllowedByPolicy(tool.name, toolsPolicy));

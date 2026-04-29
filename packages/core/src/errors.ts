@@ -122,7 +122,6 @@ export class SessionError extends BaseError {
 // ErrorCode enum for orchestration operations
 export enum ErrorCode {
   DATABASE_CONNECTION_FAILED = "DATABASE_CONNECTION_FAILED",
-  KUBERNETES_API_ERROR = "KUBERNETES_API_ERROR",
   DEPLOYMENT_SCALE_FAILED = "DEPLOYMENT_SCALE_FAILED",
   DEPLOYMENT_CREATE_FAILED = "DEPLOYMENT_CREATE_FAILED",
   DEPLOYMENT_DELETE_FAILED = "DEPLOYMENT_DELETE_FAILED",
@@ -150,16 +149,6 @@ export class OrchestratorError extends BaseError {
       ErrorCode.DATABASE_CONNECTION_FAILED,
       `Database error: ${error instanceof Error ? error.message : String(error)}`,
       { code: error.code, detail: error.detail },
-      true,
-      error
-    );
-  }
-
-  static fromKubernetesError(error: any): OrchestratorError {
-    return new OrchestratorError(
-      ErrorCode.KUBERNETES_API_ERROR,
-      `Kubernetes operation failed: ${error.message}`,
-      error,
       true,
       error
     );

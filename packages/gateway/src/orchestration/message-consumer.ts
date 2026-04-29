@@ -532,13 +532,8 @@ export class MessageConsumer {
         `Tracked deployment failure in Redis: ${failureKey} (TTL: 24h)`
       );
 
-      const failureReason =
-        error instanceof Error ? error.message : String(error);
-      const isImagePullFailure =
-        /ImagePullBackOff|ErrImagePull|image pull/i.test(failureReason);
-      const userMessage = isImagePullFailure
-        ? "Worker startup failed due to a Kubernetes image pull error. Please retry after the deployment image/registry configuration is fixed."
-        : "Worker startup failed and your request could not be processed. Please retry in a moment.";
+      const userMessage =
+        "Worker startup failed and your request could not be processed. Please retry in a moment.";
 
       // Notify user that their message could not be processed
       try {

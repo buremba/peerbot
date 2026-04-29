@@ -167,7 +167,6 @@ The `LobuConfig` object accepted by `new Lobu()`:
 | `redis` | `string` | **required** | Redis connection URL |
 | `agents` | `LobuAgentConfig[]` | `[]` | Agent definitions |
 | `port` | `number` | `8080` | HTTP port (only used with `lobu.start()`) |
-| `deploymentMode` | `"embedded" \| "docker"` | `"embedded"` | How workers are spawned |
 | `publicUrl` | `string` | `http://localhost:{port}` | Public URL for OAuth callbacks |
 | `adminPassword` | `string` | auto-generated | API authentication password |
 | `memory` | `string` | — | Memory plugin URL |

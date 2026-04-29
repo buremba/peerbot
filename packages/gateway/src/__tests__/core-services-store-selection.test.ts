@@ -29,7 +29,6 @@ function createGatewayConfig(
       enabled: true,
     },
     orchestration: {
-      deploymentMode: "docker",
       queues: {
         connectionString: "redis://test",
         retryLimit: 3,

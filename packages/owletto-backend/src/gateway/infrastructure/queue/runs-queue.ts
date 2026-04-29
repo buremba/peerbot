@@ -105,9 +105,16 @@ function queueBreadcrumb(
   }
 }
 /** Rows in `claimed` for longer than this without a heartbeat are reset to
- *  pending so a fresh claim can pick them up. Matches typical max agent-turn
- *  duration with a generous buffer. */
+ *  pending so a fresh claim can pick them up. The active handler heartbeats
+ *  every CLAIM_HEARTBEAT_INTERVAL_MS (well under this timeout), so a live
+ *  worker keeps its claim indefinitely; only crashed/wedged workers fall
+ *  past the timeout. */
 const CLAIM_VISIBILITY_TIMEOUT_MS = 5 * 60 * 1000;
+
+/** How often an in-flight handler refreshes `claimed_at` to prove it's still
+ *  alive. Must be << CLAIM_VISIBILITY_TIMEOUT_MS so the sweeper doesn't race
+ *  a healthy handler. */
+const CLAIM_HEARTBEAT_INTERVAL_MS = 60 * 1000;
 
 /** Lobu-queue run types. Inserts/claims are restricted to these so connector
  *  lanes (sync, action, embed_backfill, watcher, auth) are never disturbed. */
@@ -706,6 +713,10 @@ export class RunsQueue implements IMessageQueue {
       data: claimed.payload,
       name: worker.queueName,
     };
+    const heartbeat = setInterval(() => {
+      void this.heartbeatClaim(claimed.runId);
+    }, CLAIM_HEARTBEAT_INTERVAL_MS);
+    if (typeof heartbeat.unref === "function") heartbeat.unref();
     try {
       await worker.handler(job);
       await this.markCompleted(claimed.runId);
@@ -720,6 +731,26 @@ export class RunsQueue implements IMessageQueue {
           claimed.retryDelaySeconds,
         );
       }
+    } finally {
+      clearInterval(heartbeat);
+    }
+  }
+
+  /** Refresh `claimed_at` so the stale-claim sweeper does not reclaim a row
+   *  whose handler is still running. Filters on `status = 'claimed'` so a
+   *  completed/failed/retried row is left alone. */
+  private async heartbeatClaim(runId: number): Promise<void> {
+    if (!this.pool) return;
+    try {
+      await this.pool.query(
+        `UPDATE public.runs
+         SET claimed_at = now()
+         WHERE id = $1
+           AND status = 'claimed'`,
+        [runId],
+      );
+    } catch (err) {
+      logger.warn({ runId, err }, "runs-queue heartbeat failed");
     }
   }
 

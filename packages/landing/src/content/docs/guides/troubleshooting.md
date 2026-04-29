@@ -3,7 +3,7 @@ title: Troubleshooting
 description: Common issues and how to fix them.
 ---
 
-Lobu boots as a single Node process (`lobu run` / `node packages/owletto-backend/dist/server.bundle.mjs`). Postgres and Redis are user-provided externals reached via `DATABASE_URL` and `REDIS_URL`. Worker subprocesses are spawned by the gateway's `EmbeddedDeploymentManager`.
+Lobu boots as a single Node process (`lobu run` / `node packages/owletto-backend/dist/server.bundle.mjs`). Postgres (with pgvector) is the only user-provided external, reached via `DATABASE_URL`. Worker subprocesses are spawned by the gateway's `EmbeddedDeploymentManager`.
 
 ## Worker won't start
 
@@ -21,7 +21,7 @@ make clean-workers   # in the monorepo
 
 # Common causes:
 # - Port 8787 already in use → Change GATEWAY_PORT or PORT in .env
-# - DATABASE_URL/REDIS_URL not reachable → see "Agent not responding" below
+# - DATABASE_URL not reachable → see "Agent not responding" below
 # - Invalid lobu.toml → npx @lobu/cli@latest validate
 ```
 
@@ -31,12 +31,12 @@ make clean-workers   # in the monorepo
 # Check if Lobu is running
 curl http://localhost:8787/health
 
-# Check Redis connection
-redis-cli -u "$REDIS_URL" ping
+# Check Postgres connection
+psql "$DATABASE_URL" -c 'select 1'
 
-# Clear stale chat history (for stuck conversations)
-redis-cli -u "$REDIS_URL" KEYS 'chat:history:*'
-redis-cli -u "$REDIS_URL" DEL 'chat:history:{key}'
+# Clear stale chat history (for stuck conversations).
+# History rows live in chat_state_lists keyed by `history:<connectionId>:<channelId>`.
+psql "$DATABASE_URL" -c "DELETE FROM chat_state_lists WHERE key LIKE 'history:%';"
 
 # Restart Lobu after .env changes (the process reads .env at boot)
 # Ctrl+C the running process, then `lobu run` (or `make dev`) again.
@@ -135,19 +135,18 @@ npx owletto@latest health
 # - Large prompt context → Clear chat history or increase context window
 ```
 
-## Postgres / Redis not reachable
+## Postgres not reachable
 
 ```bash
-# Verify DATABASE_URL and REDIS_URL in .env
-grep -E '^(DATABASE_URL|REDIS_URL)=' .env
+# Verify DATABASE_URL in .env
+grep -E '^DATABASE_URL=' .env
 
 # Test connectivity
 psql "$DATABASE_URL" -c 'select 1'
-redis-cli -u "$REDIS_URL" ping
 
-# If using local services on macOS:
+# If using local Postgres on macOS:
 brew services list
-brew services start postgresql redis
+brew services start postgresql
 ```
 
 ## Still stuck?

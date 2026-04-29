@@ -31,7 +31,7 @@ All chat platforms (Telegram, Slack, Discord, WhatsApp, Teams) run through Chat 
 
 #### Orchestration
 - **Embedded-only deployment.** Gateway, workers, embeddings, and the Owletto memory backend run in a single Node process (`lobu run`, or `bun run dev` in the monorepo). Workers spawn as `child_process.spawn` subprocesses on the same host; on Linux the spawn path uses `systemd-run --user --scope` for cgroup limits + IPAddressDeny + capability drops. There is no Docker or Kubernetes deployment manager.
-- Postgres + Redis are user-provided externals (managed instances or local). The Node process connects out via `DATABASE_URL` and `REDIS_URL`.
+- Postgres (with pgvector) is the only user-provided external. The Node process connects out via `DATABASE_URL`. Runtime state that previously lived in Redis (queues, chat connection rows, grant cache, MCP proxy sessions) is now in dedicated Postgres tables.
 - Workers are sandboxed and **never see real credentials**. The gateway's `secret-proxy` swaps `lobu_secret_<uuid>` placeholders for real keys at egress; workers receive only the placeholders.
 
 #### MCP
@@ -123,10 +123,10 @@ When the user pivots mid-session, the default failure mode is piling unrelated w
 
 ## Development
 
-Prerequisites: Bun, local Redis (`brew services start redis` or equivalent), and a reachable Postgres via `DATABASE_URL`.
+Prerequisites: Bun and a reachable Postgres (with pgvector) via `DATABASE_URL`.
 
 ```bash
-./scripts/setup-dev.sh   # first-time setup (builds packages, checks bun + redis)
+./scripts/setup-dev.sh   # first-time setup (builds packages, checks bun)
 make dev                  # boots embedded gateway + workers + Vite HMR on :8787
 make clean-workers        # kill orphaned worker subprocesses if a crash leaves any
 ```
@@ -151,11 +151,10 @@ If the change affects bot behavior, run the test bot:
 # Telegram: TEST_PLATFORM=telegram TEST_CHANNEL=@clawdotfreebot ./scripts/test-bot.sh "…"
 ```
 
-If replies look stale, clear Redis chat history:
+If replies look stale, clear chat history rows directly in Postgres. Chat history lives in the Chat SDK state-adapter tables under the `history:<connectionId>:<channelId>` key:
 
 ```bash
-redis-cli KEYS 'chat:history:*'
-redis-cli DEL 'chat:history:<key>'
+psql "$DATABASE_URL" -c "DELETE FROM chat_state_lists WHERE key LIKE 'history:<connectionId>:%';"
 ```
 
 For prompt / behavior changes, run evals (definitions in `<example>/agents/<name>/evals/*.yaml`):

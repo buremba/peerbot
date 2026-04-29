@@ -31,12 +31,12 @@ npx @lobu/cli@latest init my-agent
 Generates:
 
 - `lobu.toml` — agent configuration (skills, providers, connections, network)
-- `.env` — credentials and environment variables (set `DATABASE_URL` and `REDIS_URL` after init)
+- `.env` — credentials and environment variables (set `DATABASE_URL` after init)
 - `agents/{name}/` — agent directory with `IDENTITY.md`, `SOUL.md`, `USER.md`, and `skills/`
 - `skills/` — shared skills directory (available to all agents)
 - `AGENTS.md`, `TESTING.md`, `README.md`, `.gitignore`
 
-Interactive prompts guide you through provider, skills, platform, network access policy, gateway port, public URL, admin password, and memory configuration. Postgres + Redis are user-provided externals — Lobu does not bundle them.
+Interactive prompts guide you through provider, skills, platform, network access policy, gateway port, public URL, admin password, and memory configuration. Postgres (with pgvector) is the only user-provided external — Lobu does not bundle it.
 
 ---
 
@@ -92,7 +92,7 @@ npx @lobu/cli@latest eval --ci --output results.json  # CI mode with JSON output
 
 ### `run`
 
-Run the embedded Lobu stack. Validates `lobu.toml`, checks that `DATABASE_URL` and `REDIS_URL` are set in `.env`, then spawns the bundled Node server (`@lobu/owletto-backend/dist/server.bundle.mjs`) as a child process and forwards stdio. Ctrl+C cleanly stops the server and any worker subprocesses.
+Run the embedded Lobu stack. Validates `lobu.toml`, checks that `DATABASE_URL` is set in `.env`, then spawns the bundled Node server (`@lobu/owletto-backend/dist/server.bundle.mjs`) as a child process and forwards stdio. Ctrl+C cleanly stops the server and any worker subprocesses.
 
 ```bash
 npx @lobu/cli@latest run              # boot the gateway + workers + memory backend

@@ -159,14 +159,16 @@ npx @lobu/cli@latest chat "Hello" -c staging
 
 ## Resetting conversation state
 
-If the agent gives stale or incorrect responses, clear the chat history in Redis:
+If the agent gives stale or incorrect responses, clear the chat history rows. Sliding-window history lives in `chat_state_lists` keyed by `history:<connectionId>:<channelId>`:
 
 ```bash
-# Find chat history keys
-redis-cli -u "$REDIS_URL" KEYS 'chat:history:*'
+# List history keys for one connection
+psql "$DATABASE_URL" -c \
+  "SELECT DISTINCT key FROM chat_state_lists WHERE key LIKE 'history:<connectionId>:%';"
 
 # Delete a specific conversation
-redis-cli -u "$REDIS_URL" DEL 'chat:history:{key}'
+psql "$DATABASE_URL" -c \
+  "DELETE FROM chat_state_lists WHERE key = 'history:<connectionId>:<channelId>';"
 ```
 
 ## Agent evaluations

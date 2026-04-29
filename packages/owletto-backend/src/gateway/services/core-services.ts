@@ -28,6 +28,8 @@ import {
 } from "../auth/oauth/state-store.js";
 import { sweepExpiredCliSessions } from "../auth/cli/token-service.js";
 import { sweepExpiredRateLimits } from "../utils/rate-limiter.js";
+import { sweepExpiredGrants } from "../permissions/grant-store.js";
+import { sweepCompletedRuns } from "../infrastructure/queue/runs-queue.js";
 import { ProviderCatalogService } from "../auth/provider-catalog.js";
 import {
   AgentSettingsStore,
@@ -291,14 +293,16 @@ export class CoreServices {
 
   private async sweepEphemeralTables(): Promise<void> {
     try {
-      const [oauth, cli, rate] = await Promise.all([
+      const [oauth, cli, rate, grants, completedRuns] = await Promise.all([
         sweepExpiredOAuthStates(),
         sweepExpiredCliSessions(),
         sweepExpiredRateLimits(),
+        sweepExpiredGrants(),
+        sweepCompletedRuns(),
       ]);
-      if (oauth + cli + rate > 0) {
+      if (oauth + cli + rate + grants + completedRuns > 0) {
         logger.debug(
-          { oauth, cli, rate },
+          { oauth, cli, rate, grants, completedRuns },
           "Ephemeral table sweeper deleted expired rows"
         );
       }

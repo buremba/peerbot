@@ -18,8 +18,10 @@
  */
 
 import { createLogger } from "@lobu/core";
+import * as Sentry from "@sentry/node";
 import { Redis } from "ioredis";
 import { Client, Pool, type PoolConfig } from "pg";
+import { getDb } from "../../../db/client.js";
 import type {
   IMessageQueue,
   JobHandler,
@@ -30,13 +32,71 @@ import type {
 
 const logger = createLogger("runs-queue");
 
-const NOTIFY_CHANNEL = "runs_lobu_pending";
+/**
+ * Per-queue_name NOTIFY channels. Phase 10: previously every queue's wakeup
+ * fanned out to every worker via a single channel + run_type filter, which
+ * made every chat_message worker wake on every chat_message insert
+ * (thundering herd at scale). Channels are now keyed by queue_name, e.g.
+ * `runs_lobu:chat_message:thread_response`, so the listener forwards a
+ * NOTIFY only to the workers that actually want it.
+ *
+ * The base prefix is constant so the LISTEN side knows which channels to
+ * subscribe to (one per worker registered).
+ */
+const NOTIFY_CHANNEL_PREFIX = "runs_lobu:";
+function notifyChannelFor(queueName: string): string {
+  // pg_notify channel names must be plain identifiers (or quoted). We pass
+  // the channel name as a parameter to pg_notify so postgres will accept the
+  // colon and slash characters; the LISTEN side quotes the identifier.
+  return `${NOTIFY_CHANNEL_PREFIX}${queueName}`;
+}
 const POLL_INTERVAL_MS = 200;
 const RECONNECT_DELAY_MS = 1000;
 /** Backoff cap (seconds) when retrying a failed run. */
 const MAX_BACKOFF_SECONDS = 300;
 /** How often the stale-claim sweeper runs. */
 const STALE_SWEEP_INTERVAL_MS = 30_000;
+/** Phase 10: max time to wait for in-flight handlers during graceful stop. */
+const SHUTDOWN_DRAIN_MS = 30_000;
+
+/**
+ * Phase 10: Sentry alert dedupe. Repeated heartbeat-failure / DLQ alerts
+ * for the same runs.id within DEDUPE_WINDOW_MS collapse to a single
+ * captureMessage call so a single bad row doesn't spam Sentry.
+ */
+const SENTRY_DEDUPE_WINDOW_MS = 5 * 60 * 1000;
+const sentryAlertedRuns = new Map<number, number>();
+
+function shouldEmitSentryAlert(runId: number): boolean {
+  const now = Date.now();
+  const last = sentryAlertedRuns.get(runId);
+  if (last && now - last < SENTRY_DEDUPE_WINDOW_MS) return false;
+  sentryAlertedRuns.set(runId, now);
+  // Keep the map bounded — drop old entries opportunistically on writes.
+  if (sentryAlertedRuns.size > 1000) {
+    for (const [id, ts] of sentryAlertedRuns) {
+      if (now - ts > SENTRY_DEDUPE_WINDOW_MS) sentryAlertedRuns.delete(id);
+    }
+  }
+  return true;
+}
+
+function queueBreadcrumb(
+  category: string,
+  message: string,
+  data: Record<string, unknown>,
+): void {
+  try {
+    Sentry.addBreadcrumb({
+      category: `runs-queue.${category}`,
+      level: "info",
+      message,
+      data,
+    });
+  } catch {
+    // Sentry init may not be present in tests; ignore.
+  }
+}
 /** Rows in `claimed` for longer than this without a heartbeat are reset to
  *  pending so a fresh claim can pick them up. Matches typical max agent-turn
  *  duration with a generous buffer. */
@@ -119,12 +179,24 @@ export class RunsQueue implements IMessageQueue {
   private staleSweepTimer: ReturnType<typeof setInterval> | null = null;
   private redisClient: Redis | null = null;
   private isConnected = false;
+  /** Phase 10: set true on stop(); send/work check this and refuse new work. */
+  private shuttingDown = false;
+
+  /** Whether send() / work() should refuse new work because we're stopping. */
+  isShuttingDown(): boolean {
+    return this.shuttingDown;
+  }
 
   /** Workers keyed by queue name. */
   private workers = new Map<string, QueueWorker>();
-  /** Per-run_type subscribers: each LISTEN payload `<run_type>` wakes every
-   *  worker registered against that type. */
-  private subscribersByType = new Map<LobuRunType, Set<QueueWorker>>();
+  /**
+   * Per-channel subscribers. Phase 10: previously was per run_type; now keyed
+   * by full per-queue_name channel so every NOTIFY only wakes the worker(s)
+   * actually subscribed to that queue.
+   */
+  private subscribersByChannel = new Map<string, Set<QueueWorker>>();
+  /** Channels we've already issued LISTEN on. */
+  private listenedChannels = new Set<string>();
 
   private readonly poolMax: number;
   private readonly defaultConcurrency: number;
@@ -179,21 +251,103 @@ export class RunsQueue implements IMessageQueue {
     this.isConnected = true;
     this.listenerStopped = false;
     await this.connectListener();
+
+    // Phase 10: startup recovery scan. Reset any rows orphaned by a hard
+    // crash before SIGTERM ran (claimed/running, no recent heartbeat).
+    await this.recoverStaleClaimedRowsOnStartup();
+
     this.startStaleSweep();
     logger.debug("Runs queue started");
   }
 
+  /**
+   * Phase 10: at startup, find rows in `claimed` or `running` state that
+   * have no fresh claimed_at (older than 2× visibility timeout) and reset
+   * them to pending. Catches rows orphaned by a hard crash before SIGTERM
+   * ran (graceful shutdown's "release claimed rows" never executed).
+   */
+  private async recoverStaleClaimedRowsOnStartup(): Promise<void> {
+    if (!this.pool) return;
+    try {
+      const result = await this.pool.query(
+        `UPDATE public.runs
+         SET status = 'pending',
+             claimed_at = NULL,
+             claimed_by = NULL,
+             run_at = now()
+         WHERE status IN ('claimed', 'running')
+           AND run_type IN ('chat_message', 'schedule', 'agent_run', 'internal')
+           AND (claimed_at IS NULL
+                OR claimed_at < now() - ($1::int * interval '1 millisecond'))
+         RETURNING id`,
+        [CLAIM_VISIBILITY_TIMEOUT_MS * 2],
+      );
+      if (result.rowCount && result.rowCount > 0) {
+        logger.warn(
+          `Startup recovery: reclaimed ${result.rowCount} stale runs orphaned by crash`,
+        );
+      }
+    } catch (err) {
+      logger.warn(
+        `Startup recovery scan failed: ${(err as Error).message}`,
+      );
+    }
+  }
+
   async stop(): Promise<void> {
     this.isConnected = false;
+    this.shuttingDown = true;
     this.listenerStopped = true;
 
-    // Stop all workers; let in-flight handlers finish.
+    // Phase 10: graceful shutdown. Stop accepting new claims, wait for
+    // in-flight handlers to finish (with a timeout), then release any
+    // rows still in `claimed` state by this consumer back to `pending`.
     for (const w of this.workers.values()) {
       w.stopped = true;
       w.wakeup();
     }
+
+    // Wait for in-flight handler runs to finish, up to SHUTDOWN_DRAIN_MS.
+    const drainStart = Date.now();
+    while (Date.now() - drainStart < SHUTDOWN_DRAIN_MS) {
+      const inFlight = Array.from(this.workers.values()).reduce(
+        (sum, w) => sum + w.active,
+        0,
+      );
+      if (inFlight === 0) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+
+    // Release any rows still claimed by this process so a fresh gateway
+    // can pick them up immediately rather than waiting for the stale
+    // sweeper.
+    if (this.pool) {
+      try {
+        const claimedBy = `gateway-${process.pid}`;
+        const result = await this.pool.query(
+          `UPDATE public.runs
+           SET status = 'pending',
+               claimed_at = NULL,
+               claimed_by = NULL
+           WHERE claimed_by = $1
+             AND status = 'claimed'`,
+          [claimedBy],
+        );
+        if (result.rowCount && result.rowCount > 0) {
+          logger.info(
+            `Released ${result.rowCount} claimed run(s) on shutdown`,
+          );
+        }
+      } catch (err) {
+        logger.warn(
+          `Failed to release claimed rows on shutdown: ${(err as Error).message}`,
+        );
+      }
+    }
+
     this.workers.clear();
-    this.subscribersByType.clear();
+    this.subscribersByChannel.clear();
+    this.listenedChannels.clear();
 
     if (this.staleSweepTimer) {
       clearInterval(this.staleSweepTimer);
@@ -271,9 +425,15 @@ export class RunsQueue implements IMessageQueue {
     const idempotencyKey = options?.singletonKey ?? null;
     const maxAttempts = options?.retryLimit ?? 3;
     const delayMs = options?.delayMs ?? 0;
+    const priority = options?.priority ?? 0;
+    const retryDelaySeconds = options?.retryDelay ?? null;
+    const expireInSeconds = options?.expireInSeconds;
     const runAtSql = delayMs > 0
       ? `now() + ${Number(delayMs) / 1000}::float * interval '1 second'`
       : "now()";
+    const expiresAtSql = expireInSeconds && expireInSeconds > 0
+      ? `now() + ${Number(expireInSeconds)}::int * interval '1 second'`
+      : "NULL";
 
     // Use a single round-trip: INSERT ... RETURNING id, and do the NOTIFY
     // *after* COMMIT (otherwise listeners may wake before the row is
@@ -297,9 +457,12 @@ export class RunsQueue implements IMessageQueue {
           max_attempts,
           attempts,
           status,
-          run_at
+          run_at,
+          priority,
+          expires_at,
+          retry_delay_seconds
         ) VALUES (
-          $1, $2, $3::jsonb, $4, $5, 0, 'pending', ${runAtSql}
+          $1, $2, $3::jsonb, $4, $5, 0, 'pending', ${runAtSql}, $6, ${expiresAtSql}, $7
         )
         ON CONFLICT (idempotency_key)
           WHERE idempotency_key IS NOT NULL
@@ -313,6 +476,8 @@ export class RunsQueue implements IMessageQueue {
         JSON.stringify(data ?? {}),
         idempotencyKey,
         maxAttempts,
+        priority,
+        retryDelaySeconds,
       ]);
       await client.query("COMMIT");
 
@@ -334,17 +499,26 @@ export class RunsQueue implements IMessageQueue {
       }
 
       // Wake listeners. Failure here is non-fatal — pollers will catch it on
-      // the next tick.
+      // the next tick. Phase 10: NOTIFY on the per-queue_name channel so
+      // we don't fan out to every worker subscribed to this run_type.
       try {
         await client.query("SELECT pg_notify($1, $2)", [
-          NOTIFY_CHANNEL,
-          runType,
+          notifyChannelFor(queueName),
+          queueName,
         ]);
       } catch (err) {
         logger.warn(
-          `pg_notify failed for ${runType}: ${(err as Error).message}`,
+          `pg_notify failed for ${queueName}: ${(err as Error).message}`,
         );
       }
+
+      queueBreadcrumb("enqueue", `Enqueued run ${id}`, {
+        runId: id,
+        queueName,
+        runType,
+        priority,
+        idempotencyKey,
+      });
 
       return id;
     } catch (err) {
@@ -372,7 +546,7 @@ export class RunsQueue implements IMessageQueue {
     const existing = this.workers.get(queueName);
     if (existing) {
       existing.stopped = true;
-      this.removeFromTypeIndex(existing);
+      this.removeFromChannelIndex(existing);
       existing.wakeup();
       this.workers.delete(queueName);
     }
@@ -398,12 +572,17 @@ export class RunsQueue implements IMessageQueue {
       },
     };
     this.workers.set(queueName, worker);
-    let typeSet = this.subscribersByType.get(runType);
-    if (!typeSet) {
-      typeSet = new Set();
-      this.subscribersByType.set(runType, typeSet);
+
+    // Register the worker against its per-queue_name channel and ensure the
+    // listener has issued LISTEN for it.
+    const channel = notifyChannelFor(queueName);
+    let channelSet = this.subscribersByChannel.get(channel);
+    if (!channelSet) {
+      channelSet = new Set();
+      this.subscribersByChannel.set(channel, channelSet);
     }
-    typeSet.add(worker);
+    channelSet.add(worker);
+    await this.ensureChannelListened(channel);
 
     // Self-driving poll loop. Sleeps POLL_INTERVAL_MS between empty claims;
     // a NOTIFY for `runType` cuts the sleep short.
@@ -500,6 +679,7 @@ export class RunsQueue implements IMessageQueue {
     payload: unknown;
     attempts: number;
     maxAttempts: number;
+    retryDelaySeconds: number | null;
   } | null> {
     if (!this.pool) return null;
     const claimedBy = `gateway-${process.pid}`;
@@ -510,7 +690,8 @@ export class RunsQueue implements IMessageQueue {
            AND run_type = $1
            AND queue_name = $2
            AND run_at <= now()
-         ORDER BY run_at ASC, id ASC
+           AND (expires_at IS NULL OR expires_at > now())
+         ORDER BY priority DESC, run_at ASC, id ASC
          FOR UPDATE SKIP LOCKED
          LIMIT 1
        )
@@ -520,16 +701,25 @@ export class RunsQueue implements IMessageQueue {
            claimed_by = $3
        FROM next_run nr
        WHERE r.id = nr.id
-       RETURNING r.id, r.action_input, r.attempts, r.max_attempts`,
+       RETURNING r.id, r.action_input, r.attempts, r.max_attempts, r.retry_delay_seconds`,
       [worker.runType, worker.queueName, claimedBy],
     );
     const row = result.rows[0];
     if (!row) return null;
+    queueBreadcrumb("claim", `Claimed run ${row.id}`, {
+      runId: Number(row.id),
+      queueName: worker.queueName,
+      attempts: Number(row.attempts ?? 0),
+    });
     return {
       runId: Number(row.id),
       payload: row.action_input,
       attempts: Number(row.attempts ?? 0),
       maxAttempts: Number(row.max_attempts ?? 3),
+      retryDelaySeconds:
+        row.retry_delay_seconds === null
+          ? null
+          : Number(row.retry_delay_seconds),
     };
   }
 
@@ -540,6 +730,7 @@ export class RunsQueue implements IMessageQueue {
       payload: unknown;
       attempts: number;
       maxAttempts: number;
+      retryDelaySeconds: number | null;
     },
   ): Promise<void> {
     const job: QueueJob<unknown> = {
@@ -555,7 +746,11 @@ export class RunsQueue implements IMessageQueue {
       if (nextAttempt >= claimed.maxAttempts) {
         await this.markFailed(claimed.runId, err);
       } else {
-        await this.scheduleRetry(claimed.runId, nextAttempt);
+        await this.scheduleRetry(
+          claimed.runId,
+          nextAttempt,
+          claimed.retryDelaySeconds,
+        );
       }
     }
   }
@@ -570,6 +765,7 @@ export class RunsQueue implements IMessageQueue {
          AND status = 'claimed'`,
       [runId],
     );
+    queueBreadcrumb("complete", `Completed run ${runId}`, { runId });
   }
 
   private async markFailed(runId: number, err: unknown): Promise<void> {
@@ -588,11 +784,32 @@ export class RunsQueue implements IMessageQueue {
     logger.warn(
       `Run ${runId} failed after retries: ${message}`,
     );
+    // Phase 10: surface DLQ inserts as a Sentry warning. Debounced so a
+    // hot-loop failure on one row doesn't spam Sentry.
+    if (shouldEmitSentryAlert(runId)) {
+      try {
+        Sentry.captureMessage(`Queue run failed after retries: ${runId}`, {
+          level: "warning",
+          extra: { runId, message },
+        });
+      } catch {
+        // ignore
+      }
+    }
   }
 
-  private async scheduleRetry(runId: number, attempt: number): Promise<void> {
+  private async scheduleRetry(
+    runId: number,
+    attempt: number,
+    retryDelaySeconds: number | null,
+  ): Promise<void> {
     if (!this.pool) return;
-    const delay = backoffSeconds(attempt);
+    // Phase 10: when the caller specified a fixed retryDelay, use it
+    // verbatim (constant backoff). Otherwise fall back to the existing
+    // exponential cap-300s curve.
+    const delay = retryDelaySeconds !== null
+      ? Math.max(0, retryDelaySeconds)
+      : backoffSeconds(attempt);
     await this.pool.query(
       `UPDATE public.runs
        SET status = 'pending',
@@ -604,13 +821,38 @@ export class RunsQueue implements IMessageQueue {
          AND status = 'claimed'`,
       [runId, attempt, delay],
     );
+    queueBreadcrumb("retry", `Scheduled retry for run ${runId}`, {
+      runId,
+      attempt,
+      delaySeconds: delay,
+    });
   }
 
-  private removeFromTypeIndex(worker: QueueWorker): void {
-    const set = this.subscribersByType.get(worker.runType);
+  private removeFromChannelIndex(worker: QueueWorker): void {
+    const channel = notifyChannelFor(worker.queueName);
+    const set = this.subscribersByChannel.get(channel);
     if (!set) return;
     set.delete(worker);
-    if (set.size === 0) this.subscribersByType.delete(worker.runType);
+    if (set.size === 0) this.subscribersByChannel.delete(channel);
+  }
+
+  /**
+   * Issue LISTEN on the given channel if we haven't already. Phase 10:
+   * each per-queue_name channel is dynamically subscribed when its first
+   * worker registers.
+   */
+  private async ensureChannelListened(channel: string): Promise<void> {
+    if (this.listenedChannels.has(channel)) return;
+    this.listenedChannels.add(channel);
+    if (!this.listener) return; // Will be picked up by reconnect.
+    try {
+      await this.listener.query(`LISTEN ${quoteIdent(channel)}`);
+      logger.debug(`LISTEN ${channel}`);
+    } catch (err) {
+      logger.warn(
+        `LISTEN ${channel} failed: ${(err as Error).message}`,
+      );
+    }
   }
 
   /**
@@ -676,6 +918,14 @@ export class RunsQueue implements IMessageQueue {
               CLAIM_VISIBILITY_TIMEOUT_MS / 1000
             }s ago)`,
           );
+          try {
+            Sentry.captureMessage(
+              `Stale-claim sweeper reclaimed ${result.rowCount} run(s)`,
+              { level: "warning", extra: { count: result.rowCount } },
+            );
+          } catch {
+            // ignore
+          }
         }
       } catch (err) {
         logger.warn(
@@ -705,14 +955,9 @@ export class RunsQueue implements IMessageQueue {
 
     let connectFailed = false;
     client.on("notification", (msg) => {
-      if (msg.channel !== NOTIFY_CHANNEL) return;
-      const runType = (msg.payload ?? "").trim();
-      if (!runType) {
-        // Empty payload: wake every worker.
-        for (const w of this.workers.values()) w.wakeup();
-        return;
-      }
-      const set = this.subscribersByType.get(runType as LobuRunType);
+      // Phase 10: NOTIFY arrives on a per-queue_name channel
+      // (`runs_lobu:<queueName>`); the payload is the queue name (informational).
+      const set = this.subscribersByChannel.get(msg.channel);
       if (!set) return;
       for (const w of set) w.wakeup();
     });
@@ -736,7 +981,12 @@ export class RunsQueue implements IMessageQueue {
       if (connectFailed) {
         throw new Error("listener failed before LISTEN");
       }
-      await client.query(`LISTEN ${quoteIdent(NOTIFY_CHANNEL)}`);
+      // Phase 10: subscribe to every per-queue channel any registered
+      // worker cares about. New workers added later trigger
+      // `ensureChannelListened` which issues LISTEN against this same client.
+      for (const channel of this.listenedChannels) {
+        await client.query(`LISTEN ${quoteIdent(channel)}`);
+      }
       if (this.listenerStopped) {
         await client.end().catch(() => {});
         return;
@@ -789,8 +1039,57 @@ function pgSslOpt() {
 }
 
 function quoteIdent(name: string): string {
-  if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name)) {
+  // Allow letters/digits/underscore plus colon, slash, and hyphen so per-queue
+  // channel names like `runs_lobu:chat_message` survive identifier quoting.
+  if (!/^[a-zA-Z_][a-zA-Z0-9_:/\-]*$/.test(name)) {
     throw new Error(`Channel name must be a plain identifier: ${name}`);
   }
   return `"${name}"`;
+}
+
+/**
+ * Phase 10: delete expired runs rows (caller-supplied `expires_at` window
+ * crossed) AND completed/failed lobu-queue runs older than the configured
+ * retention window. Called from the periodic ephemeral-table sweep.
+ *
+ * RUNS_RETENTION_DAYS env override (defaults to 30) so operators can tune
+ * the window without a redeploy.
+ */
+export async function sweepCompletedRuns(): Promise<number> {
+  const sql = getDb();
+  const retentionDays = (() => {
+    const raw = Number(process.env.RUNS_RETENTION_DAYS);
+    return Number.isFinite(raw) && raw > 0 ? raw : 30;
+  })();
+
+  let total = 0;
+
+  // Drop rows that ran past their TTL while still pending/running.
+  const expired = await sql`
+    WITH d AS (
+      DELETE FROM runs
+      WHERE expires_at IS NOT NULL
+        AND expires_at <= now()
+        AND run_type IN ('chat_message', 'schedule', 'agent_run', 'internal')
+      RETURNING id
+    )
+    SELECT count(*)::int AS count FROM d
+  `;
+  total += Number((expired[0] as { count?: number } | undefined)?.count ?? 0);
+
+  // Drop terminated runs older than the retention window.
+  const aged = await sql`
+    WITH d AS (
+      DELETE FROM runs
+      WHERE status IN ('completed', 'failed', 'cancelled', 'timed_out')
+        AND run_type IN ('chat_message', 'schedule', 'agent_run', 'internal')
+        AND completed_at IS NOT NULL
+        AND completed_at < now() - (${retentionDays}::int * interval '1 day')
+      RETURNING id
+    )
+    SELECT count(*)::int AS count FROM d
+  `;
+  total += Number((aged[0] as { count?: number } | undefined)?.count ?? 0);
+
+  return total;
 }

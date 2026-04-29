@@ -188,7 +188,6 @@ export function createGatewayApp(
   // otherwise the proxy's `/:mcpId/*` route swallows /mcp/oauth/callback.
   if (coreServices) {
     const mcpOAuthRouter = createMcpOAuthRoutes({
-      redis: coreServices.getQueue().getRedisClient(),
       secretStore: coreServices.getSecretStore(),
       publicGatewayUrl: coreServices.getPublicGatewayUrl(),
       coreServices,
@@ -233,11 +232,9 @@ export function createGatewayApp(
   }
 
   if (coreServices) {
-    const redisClient = coreServices.getQueue().getRedisClient();
     const mcpConfigService = coreServices.getMcpConfigService();
     if (mcpConfigService) {
       const deviceAuthRouter = createDeviceAuthRoutes({
-        redis: redisClient,
         mcpConfigService,
         secretStore: coreServices.getSecretStore(),
       });

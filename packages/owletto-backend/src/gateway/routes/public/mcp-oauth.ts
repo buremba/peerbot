@@ -9,7 +9,6 @@
 
 import { createLogger } from "@lobu/core";
 import { Hono } from "hono";
-import type { Redis } from "ioredis";
 import { completeAuthCodeFlow } from "../../auth/mcp/oauth-flow.js";
 import { postOAuthCompletionPrompt } from "../../auth/mcp/resume-after-oauth.js";
 import { escapeHtml } from "../../auth/oauth-templates.js";
@@ -20,7 +19,6 @@ import type { WritableSecretStore } from "../../secrets/index.js";
 const logger = createLogger("mcp-oauth-callback");
 
 interface McpOAuthRoutesConfig {
-  redis: Redis;
   secretStore: WritableSecretStore;
   /** Absolute URL mounted on the gateway — used as redirect_uri verbatim. */
   publicGatewayUrl: string;
@@ -70,7 +68,6 @@ function renderResultPage(opts: {
 
 export function createMcpOAuthRoutes(config: McpOAuthRoutesConfig): Hono {
   const {
-    redis,
     secretStore,
     publicGatewayUrl,
     coreServices,
@@ -119,7 +116,6 @@ export function createMcpOAuthRoutes(config: McpOAuthRoutesConfig): Hono {
 
     try {
       const result = await completeAuthCodeFlow({
-        redis,
         secretStore,
         state,
         code,

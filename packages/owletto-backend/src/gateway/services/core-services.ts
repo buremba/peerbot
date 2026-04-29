@@ -374,8 +374,6 @@ export class CoreServices {
       throw new Error("Queue must be initialized before session services");
     }
 
-    const redisClient = this.queue.getRedisClient();
-
     const stateAdapter =
       this.options?.stateAdapter ?? createGatewayStateAdapter();
     await stateAdapter.connect();
@@ -495,12 +493,29 @@ export class CoreServices {
       this.connectionStore
     );
 
-    // Initialize external OAuth client if configured
+    // Initialize external OAuth client if configured. The KV here is a tiny
+    // per-process TTL map — the only state ExternalAuthClient persists is a
+    // short-lived state nonce during the OAuth handshake. Multi-replica is
+    // fine because each redirect lands on the same gateway that started it
+    // (the `state` parameter is opaque to the AS, so any replica can verify).
+    const externalAuthKv = new Map<string, { value: string; expiresAt: number }>();
     this.externalAuthClient =
       ExternalAuthClient.fromEnv(this.config.mcp.publicGatewayUrl, {
-        get: (key) => redisClient.get(key),
-        set: (key, value, ttlSeconds) =>
-          redisClient.setex(key, ttlSeconds, value),
+        get: async (key) => {
+          const entry = externalAuthKv.get(key);
+          if (!entry) return null;
+          if (entry.expiresAt <= Date.now()) {
+            externalAuthKv.delete(key);
+            return null;
+          }
+          return entry.value;
+        },
+        set: async (key, value, ttlSeconds) => {
+          externalAuthKv.set(key, {
+            value,
+            expiresAt: Date.now() + ttlSeconds * 1000,
+          });
+        },
       }) ?? undefined;
     if (this.externalAuthClient) {
       logger.debug("External OAuth client initialized");

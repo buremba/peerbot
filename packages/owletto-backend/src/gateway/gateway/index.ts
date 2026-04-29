@@ -133,7 +133,6 @@ export class WorkerGateway {
       }));
     }
 
-    const redis = this.queue.getRedisClient();
     return Promise.all(
       mcpStatus.map(async (mcp) => {
         if (!mcp.requiresAuth) {
@@ -147,7 +146,6 @@ export class WorkerGateway {
         let credential: Awaited<ReturnType<typeof getStoredCredential>> = null;
         try {
           credential = await getStoredCredential(
-            redis as any,
             secretStore,
             agentId,
             userId,

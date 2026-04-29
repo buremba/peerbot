@@ -1,6 +1,5 @@
 import { createLogger, type McpOAuthConfig } from "@lobu/core";
 import { Hono } from "hono";
-import type { Redis } from "ioredis";
 import { GenericDeviceCodeClient } from "../../auth/external/device-code-client.js";
 import type { McpConfigService } from "../../auth/mcp/config-service.js";
 import type { WritableSecretStore } from "../../secrets/index.js";
@@ -59,13 +58,8 @@ interface StoredClient {
 }
 
 interface DeviceAuthConfig {
-  redis: Redis;
   mcpConfigService: McpConfigService;
   secretStore: WritableSecretStore;
-}
-
-interface SecretPointer {
-  secretRef: string;
 }
 
 interface ResolvedOAuthEndpoints {
@@ -79,47 +73,26 @@ interface ResolvedOAuthEndpoints {
   resource?: string;
 }
 
-async function getSecretBackedJson<T>(
-  redis: Redis,
+/**
+ * Read a JSON payload directly from the secret store. Phase 8: pointer
+ * indirection through Redis is gone — the secret store IS the persistence
+ * layer.
+ */
+async function getSecretJson<T>(
   secretStore: WritableSecretStore,
-  key: string,
+  name: string,
   context: Record<string, unknown>
 ): Promise<T | null> {
-  const raw = await redis.get(key);
-  if (!raw) return null;
-
-  let pointer: SecretPointer;
-  try {
-    pointer = JSON.parse(raw) as SecretPointer;
-  } catch (error) {
-    logger.warn("Corrupted secret pointer in Redis", {
-      key,
-      ...context,
-      error: error instanceof Error ? error.message : String(error),
-    });
-    return null;
-  }
-
-  if (typeof pointer.secretRef !== "string") {
-    logger.warn("Secret pointer missing secretRef", { key, ...context });
-    return null;
-  }
-
-  const value = await secretStore.get(pointer.secretRef);
-  if (!value) {
-    logger.warn("Unresolved secret ref", {
-      key,
-      ...context,
-      secretRef: pointer.secretRef,
-    });
-    return null;
-  }
-
+  // The secret store's `get` accepts a SecretRef; we always store under the
+  // default `secret://` scheme so the ref form is mechanical.
+  const ref = `secret://${encodeURIComponent(name)}` as const;
+  const value = await secretStore.get(ref as any);
+  if (!value) return null;
   try {
     return JSON.parse(value) as T;
   } catch (error) {
-    logger.warn("Failed to parse secret-backed JSON payload", {
-      key,
+    logger.warn("Failed to parse JSON payload from secret store", {
+      name,
       ...context,
       error: error instanceof Error ? error.message : String(error),
     });
@@ -127,101 +100,76 @@ async function getSecretBackedJson<T>(
   }
 }
 
-async function putSecretBackedJson<T>(
-  redis: Redis,
+async function putSecretJson<T>(
   secretStore: WritableSecretStore,
-  key: string,
-  secretName: string,
+  name: string,
   value: T,
   ttlSeconds?: number
 ): Promise<void> {
-  const secretRef = await secretStore.put(secretName, JSON.stringify(value), {
-    ttlSeconds,
-  });
-
-  try {
-    if (ttlSeconds) {
-      await redis.set(key, JSON.stringify({ secretRef }), "EX", ttlSeconds);
-    } else {
-      await redis.set(key, JSON.stringify({ secretRef }));
-    }
-  } catch (error) {
-    // Redis write failed — clean up the orphaned secret we just wrote so the
-    // store doesn't accumulate unreachable credentials.
-    try {
-      await secretStore.delete(secretRef);
-    } catch (cleanupError) {
-      logger.warn("Failed to clean up orphaned secret after Redis write", {
-        key,
-        secretRef,
-        error:
-          cleanupError instanceof Error
-            ? cleanupError.message
-            : String(cleanupError),
-      });
-    }
-    throw error;
-  }
+  await secretStore.put(name, JSON.stringify(value), { ttlSeconds });
 }
 
-async function deleteSecretBackedJson(
-  redis: Redis,
+async function deleteSecretJson(
   secretStore: WritableSecretStore,
-  key: string,
-  context: Record<string, unknown>
+  name: string,
+  _context: Record<string, unknown>
 ): Promise<boolean> {
-  const raw = await redis.get(key);
-  if (!raw) return false;
-
-  let secretRef: string | null = null;
+  // delete() is idempotent for the underlying store; we don't know if a row
+  // existed before, but for cleanup that doesn't matter.
   try {
-    const pointer = JSON.parse(raw) as SecretPointer;
-    if (typeof pointer.secretRef === "string") {
-      secretRef = pointer.secretRef;
-    }
-  } catch (error) {
-    logger.warn("Failed to parse secret pointer while deleting", {
-      key,
-      ...context,
-      error: error instanceof Error ? error.message : String(error),
-    });
+    await secretStore.delete(name);
+    return true;
+  } catch {
+    return false;
   }
-
-  if (secretRef) {
-    try {
-      await secretStore.delete(secretRef);
-    } catch (error) {
-      logger.warn("Failed to delete secret while cleaning up pointer", {
-        key,
-        ...context,
-        secretRef,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
-
-  await redis.del(key);
-  return true;
 }
 
-function credentialKey(agentId: string, userId: string, mcpId: string): string {
-  return `auth:credential:${agentId}:${userId}:${mcpId}`;
-}
-
-function deviceAuthKey(agentId: string, userId: string, mcpId: string): string {
-  return `device-auth:${agentId}:${userId}:${mcpId}`;
-}
-
-function clientCacheKey(mcpId: string): string {
-  return `device-auth:client:${mcpId}`;
-}
-
-function refreshLockKey(
+function credentialName(
   agentId: string,
   userId: string,
   mcpId: string
 ): string {
-  return `auth:refresh-lock:${agentId}:${userId}:${mcpId}`;
+  return `mcp-auth/${agentId}/${userId}/${mcpId}/credential`;
+}
+
+function deviceAuthName(
+  agentId: string,
+  userId: string,
+  mcpId: string
+): string {
+  return `mcp-auth/${agentId}/${userId}/${mcpId}/device-auth`;
+}
+
+function clientCacheName(mcpId: string): string {
+  return `mcp-auth/clients/${mcpId}/registration`;
+}
+
+/**
+ * Per-process refresh lock. Replaces the previous Redis SET NX EX lock —
+ * single-process gateway means an in-memory mutex is sufficient. Lock entries
+ * expire after 30s as a safety net for handlers that throw without releasing.
+ */
+const refreshLocks = new Map<string, number>();
+const REFRESH_LOCK_TTL_MS = 30_000;
+
+function tryAcquireRefreshLock(
+  agentId: string,
+  userId: string,
+  mcpId: string
+): boolean {
+  const key = `${agentId}:${userId}:${mcpId}`;
+  const expiresAt = refreshLocks.get(key);
+  if (expiresAt && expiresAt > Date.now()) return false;
+  refreshLocks.set(key, Date.now() + REFRESH_LOCK_TTL_MS);
+  return true;
+}
+
+function releaseRefreshLock(
+  agentId: string,
+  userId: string,
+  mcpId: string
+): void {
+  refreshLocks.delete(`${agentId}:${userId}:${mcpId}`);
 }
 
 function deriveOAuthBaseUrl(upstreamUrl: string): string {
@@ -255,33 +203,28 @@ function resolveOAuthEndpoints(
 }
 
 export async function getStoredCredential(
-  redis: Redis,
   secretStore: WritableSecretStore,
   agentId: string,
   userId: string,
   mcpId: string
 ): Promise<StoredCredential | null> {
-  return getSecretBackedJson<StoredCredential>(
-    redis,
+  return getSecretJson<StoredCredential>(
     secretStore,
-    credentialKey(agentId, userId, mcpId),
+    credentialName(agentId, userId, mcpId),
     { agentId, userId, mcpId }
   );
 }
 
 async function storeCredential(
-  redis: Redis,
   secretStore: WritableSecretStore,
   agentId: string,
   userId: string,
   mcpId: string,
   credential: StoredCredential
 ): Promise<void> {
-  await putSecretBackedJson(
-    redis,
+  await putSecretJson(
     secretStore,
-    credentialKey(agentId, userId, mcpId),
-    `mcp-auth/${agentId}/${userId}/${mcpId}/credential`,
+    credentialName(agentId, userId, mcpId),
     credential,
     90 * 24 * 60 * 60
   );
@@ -294,47 +237,34 @@ async function storeCredential(
  * internal helpers.
  */
 export async function storeCredentialForScope(
-  redis: Redis,
   secretStore: WritableSecretStore,
   agentId: string,
   scopeKey: string,
   mcpId: string,
   credential: StoredCredential
 ): Promise<void> {
-  await storeCredential(
-    redis,
-    secretStore,
-    agentId,
-    scopeKey,
-    mcpId,
-    credential
-  );
+  await storeCredential(secretStore, agentId, scopeKey, mcpId, credential);
 }
 
 /**
- * Delete a stored MCP device-auth credential (logout).
- * Removes both the Redis pointer and the secret value from the store so no
- * orphaned tokens linger for the remainder of the 90-day TTL.
+ * Delete a stored MCP device-auth credential (logout). Removes the secret
+ * row directly so no orphaned tokens linger for the remainder of the 90-day
+ * TTL.
  */
 async function deleteCredential(
-  redis: Redis,
   secretStore: WritableSecretStore,
   agentId: string,
   userId: string,
   mcpId: string
 ): Promise<boolean> {
-  const pointerKey = credentialKey(agentId, userId, mcpId);
-  const deleted = await deleteSecretBackedJson(redis, secretStore, pointerKey, {
-    agentId,
-    userId,
-    mcpId,
-  });
-  // Also clean up any pending device-auth flow state so a subsequent
-  // start() kicks off fresh.
-  await deleteSecretBackedJson(
-    redis,
+  const deleted = await deleteSecretJson(
     secretStore,
-    deviceAuthKey(agentId, userId, mcpId),
+    credentialName(agentId, userId, mcpId),
+    { agentId, userId, mcpId }
+  );
+  await deleteSecretJson(
+    secretStore,
+    deviceAuthName(agentId, userId, mcpId),
     { agentId, userId, mcpId, scope: "device-auth" }
   );
   logger.info("Deleted MCP credential", { agentId, userId, mcpId });
@@ -342,7 +272,6 @@ async function deleteCredential(
 }
 
 export async function refreshCredential(
-  redis: Redis,
   secretStore: WritableSecretStore,
   agentId: string,
   userId: string,
@@ -351,13 +280,12 @@ export async function refreshCredential(
 ): Promise<StoredCredential | null> {
   if (!credential.refreshToken) return null;
 
-  const lockKey = refreshLockKey(agentId, userId, mcpId);
-  const acquired = await redis.set(lockKey, "1", "EX", 30, "NX");
+  const acquired = tryAcquireRefreshLock(agentId, userId, mcpId);
 
   if (!acquired) {
     // Another request is refreshing — wait briefly and re-read
     await new Promise((r) => setTimeout(r, 150));
-    return getStoredCredential(redis, secretStore, agentId, userId, mcpId);
+    return getStoredCredential(secretStore, agentId, userId, mcpId);
   }
 
   try {
@@ -433,21 +361,14 @@ export async function refreshCredential(
       tokenEndpointAuthMethod: credential.tokenEndpointAuthMethod,
     };
 
-    await storeCredential(
-      redis,
-      secretStore,
-      agentId,
-      userId,
-      mcpId,
-      refreshed
-    );
+    await storeCredential(secretStore, agentId, userId, mcpId, refreshed);
     logger.info("Token refreshed", { agentId, userId, mcpId });
     return refreshed;
   } catch (error) {
     logger.error("Token refresh error", { error, agentId, userId, mcpId });
     return null;
   } finally {
-    await redis.del(lockKey).catch(() => undefined);
+    releaseRefreshLock(agentId, userId, mcpId);
   }
 }
 
@@ -458,25 +379,22 @@ export async function refreshCredential(
  * Returns the access token on success, null if pending or no flow in progress.
  */
 export async function tryCompletePendingDeviceAuth(
-  redis: Redis,
   secretStore: WritableSecretStore,
   agentId: string,
   userId: string,
   mcpId: string
 ): Promise<string | null> {
-  const deviceState = await getSecretBackedJson<StoredDeviceAuth>(
-    redis,
+  const deviceState = await getSecretJson<StoredDeviceAuth>(
     secretStore,
-    deviceAuthKey(agentId, userId, mcpId),
+    deviceAuthName(agentId, userId, mcpId),
     { agentId, userId, mcpId, scope: "device-auth" }
   );
   if (!deviceState) return null;
 
   if (Date.now() > deviceState.expiresAt) {
-    await deleteSecretBackedJson(
-      redis,
+    await deleteSecretJson(
       secretStore,
-      deviceAuthKey(agentId, userId, mcpId),
+      deviceAuthName(agentId, userId, mcpId),
       { agentId, userId, mcpId, scope: "device-auth" }
     );
     return null;
@@ -507,10 +425,9 @@ export async function tryCompletePendingDeviceAuth(
     }
 
     if (pollResult.status === "error") {
-      await deleteSecretBackedJson(
-        redis,
+      await deleteSecretJson(
         secretStore,
-        deviceAuthKey(agentId, userId, mcpId),
+        deviceAuthName(agentId, userId, mcpId),
         { agentId, userId, mcpId, scope: "device-auth" }
       );
       return null;
@@ -528,18 +445,10 @@ export async function tryCompletePendingDeviceAuth(
       resource: deviceState.resource,
     };
 
-    await storeCredential(
-      redis,
+    await storeCredential(secretStore, agentId, userId, mcpId, storedCred);
+    await deleteSecretJson(
       secretStore,
-      agentId,
-      userId,
-      mcpId,
-      storedCred
-    );
-    await deleteSecretBackedJson(
-      redis,
-      secretStore,
-      deviceAuthKey(agentId, userId, mcpId),
+      deviceAuthName(agentId, userId, mcpId),
       { agentId, userId, mcpId, scope: "device-auth" }
     );
 
@@ -566,7 +475,6 @@ export async function tryCompletePendingDeviceAuth(
  * registration is skipped entirely.
  */
 export async function startDeviceAuth(
-  redis: Redis,
   secretStore: WritableSecretStore,
   mcpConfigService: {
     getHttpServer: (
@@ -584,10 +492,9 @@ export async function startDeviceAuth(
   expiresIn: number;
 } | null> {
   // Reuse existing pending device auth flow if not expired
-  const existing = await getSecretBackedJson<StoredDeviceAuth>(
-    redis,
+  const existing = await getSecretJson<StoredDeviceAuth>(
     secretStore,
-    deviceAuthKey(agentId, userId, mcpId),
+    deviceAuthName(agentId, userId, mcpId),
     { agentId, userId, mcpId, scope: "device-auth" }
   );
   if (existing?.expiresAt && existing.expiresAt > Date.now()) {
@@ -641,10 +548,9 @@ export async function startDeviceAuth(
     });
   } else {
     // Check cached client registration
-    client = await getSecretBackedJson<StoredClient>(
-      redis,
+    client = await getSecretJson<StoredClient>(
       secretStore,
-      clientCacheKey(mcpId),
+      clientCacheName(mcpId),
       { mcpId, scope: "device-client" }
     );
 
@@ -673,13 +579,7 @@ export async function startDeviceAuth(
         clientSecret: registration.client_secret,
       };
 
-      await putSecretBackedJson(
-        redis,
-        secretStore,
-        clientCacheKey(mcpId),
-        `mcp-auth/clients/${mcpId}/registration`,
-        client
-      );
+      await putSecretJson(secretStore, clientCacheName(mcpId), client);
     }
   }
 
@@ -711,11 +611,9 @@ export async function startDeviceAuth(
     scope: endpoints.scope,
   };
 
-  await putSecretBackedJson(
-    redis,
+  await putSecretJson(
     secretStore,
-    deviceAuthKey(agentId, userId, mcpId),
-    `mcp-auth/${agentId}/${userId}/${mcpId}/device-auth`,
+    deviceAuthName(agentId, userId, mcpId),
     deviceState,
     started.expiresIn
   );
@@ -733,7 +631,7 @@ export async function startDeviceAuth(
 export function createDeviceAuthRoutes(
   config: DeviceAuthConfig
 ): Hono<WorkerContext> {
-  const { redis, mcpConfigService } = config;
+  const { mcpConfigService } = config;
   const router = new Hono<WorkerContext>();
 
   // POST /internal/device-auth/start
@@ -750,7 +648,6 @@ export function createDeviceAuthRoutes(
 
     try {
       const result = await startDeviceAuth(
-        redis,
         config.secretStore,
         mcpConfigService,
         mcpId,
@@ -789,10 +686,9 @@ export function createDeviceAuthRoutes(
     const agentId = worker.agentId || worker.userId;
     const userId = worker.userId;
 
-    const deviceState = await getSecretBackedJson<StoredDeviceAuth>(
-      redis,
+    const deviceState = await getSecretJson<StoredDeviceAuth>(
       config.secretStore,
-      deviceAuthKey(agentId, userId, mcpId),
+      deviceAuthName(agentId, userId, mcpId),
       { agentId, userId, mcpId, scope: "device-auth" }
     );
     if (!deviceState) {
@@ -806,10 +702,9 @@ export function createDeviceAuthRoutes(
     }
 
     if (Date.now() > deviceState.expiresAt) {
-      await deleteSecretBackedJson(
-        redis,
+      await deleteSecretJson(
         config.secretStore,
-        deviceAuthKey(agentId, userId, mcpId),
+        deviceAuthName(agentId, userId, mcpId),
         { agentId, userId, mcpId, scope: "device-auth" }
       );
       return c.json(
@@ -849,11 +744,9 @@ export function createDeviceAuthRoutes(
             Math.floor((deviceState.expiresAt - Date.now()) / 1000),
             10
           );
-          await putSecretBackedJson(
-            redis,
+          await putSecretJson(
             config.secretStore,
-            deviceAuthKey(agentId, userId, mcpId),
-            `mcp-auth/${agentId}/${userId}/${mcpId}/device-auth`,
+            deviceAuthName(agentId, userId, mcpId),
             deviceState,
             ttl
           );
@@ -862,10 +755,9 @@ export function createDeviceAuthRoutes(
       }
 
       if (pollResult.status === "error") {
-        await deleteSecretBackedJson(
-          redis,
+        await deleteSecretJson(
           config.secretStore,
-          deviceAuthKey(agentId, userId, mcpId),
+          deviceAuthName(agentId, userId, mcpId),
           { agentId, userId, mcpId, scope: "device-auth" }
         );
         return c.json({ status: "error", message: pollResult.error });
@@ -884,17 +776,15 @@ export function createDeviceAuthRoutes(
       };
 
       await storeCredential(
-        redis,
         config.secretStore,
         agentId,
         userId,
         mcpId,
         storedCred
       );
-      await deleteSecretBackedJson(
-        redis,
+      await deleteSecretJson(
         config.secretStore,
-        deviceAuthKey(agentId, userId, mcpId),
+        deviceAuthName(agentId, userId, mcpId),
         { agentId, userId, mcpId, scope: "device-auth" }
       );
 
@@ -921,7 +811,6 @@ export function createDeviceAuthRoutes(
     const userId = worker.userId;
 
     const credential = await getStoredCredential(
-      redis,
       config.secretStore,
       agentId,
       userId,
@@ -946,7 +835,6 @@ export function createDeviceAuthRoutes(
       const userId = worker.userId;
 
       const deleted = await deleteCredential(
-        redis,
         config.secretStore,
         agentId,
         userId,

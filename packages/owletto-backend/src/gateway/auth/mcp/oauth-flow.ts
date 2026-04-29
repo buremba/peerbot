@@ -12,7 +12,6 @@
 
 import { createHash, randomBytes } from "node:crypto";
 import { createLogger, type McpOAuthConfig } from "@lobu/core";
-import type { Redis } from "ioredis";
 import {
   OAuthStateStore,
   type ProviderOAuthStateData,
@@ -71,7 +70,6 @@ function generateCodeChallenge(verifier: string): string {
 }
 
 interface StartFlowOptions {
-  redis: Redis;
   secretStore: WritableSecretStore;
   mcpId: string;
   upstreamUrl: string;
@@ -103,7 +101,6 @@ export async function startAuthCodeFlow(
   options: StartFlowOptions
 ): Promise<StartFlowResult> {
   const {
-    redis,
     secretStore,
     mcpId,
     upstreamUrl,
@@ -126,7 +123,6 @@ export async function startAuthCodeFlow(
     upstreamUrl,
     wwwAuthenticate,
     redirectUri,
-    redis,
     secretStore,
     staticClientId: staticOauth?.clientId,
     staticClientSecret: staticOauth?.clientSecret,
@@ -195,7 +191,6 @@ export async function startAuthCodeFlow(
 }
 
 interface CompleteFlowOptions {
-  redis: Redis;
   secretStore: WritableSecretStore;
   state: string;
   code: string;
@@ -224,7 +219,7 @@ interface CompleteFlowResult {
 export async function completeAuthCodeFlow(
   options: CompleteFlowOptions
 ): Promise<CompleteFlowResult> {
-  const { redis, secretStore, state, code, redirectUri } = options;
+  const { secretStore, state, code, redirectUri } = options;
 
   const stateStore = getStateStore();
   const stateData = await stateStore.consume(state);
@@ -311,7 +306,7 @@ export async function completeAuthCodeFlow(
       ? Date.now() + tokenData.expires_in * 1000
       : Date.now() + 3_600_000; // default 1h if not reported
 
-  await storeCredentialForScope(redis, secretStore, agentId, scopeKey, mcpId, {
+  await storeCredentialForScope(secretStore, agentId, scopeKey, mcpId, {
     accessToken: tokenData.access_token,
     refreshToken: tokenData.refresh_token,
     expiresAt,

@@ -7,7 +7,6 @@ import {
   test,
 } from "bun:test";
 import type { McpOAuthConfig, SecretPutOptions, SecretRef } from "@lobu/core";
-import { MockRedisClient } from "@lobu/core/testing";
 import {
   getStoredCredential,
   startDeviceAuth,
@@ -93,12 +92,12 @@ afterAll(() => {
 });
 
 describe("device auth secret storage", () => {
-  let redis: MockRedisClient;
   let secretStore: InMemoryWritableStore;
 
   beforeEach(() => {
-    redis = new MockRedisClient();
-    secretStore = new InMemoryWritableStore();
+    // Override scheme so the host store accepts the default `secret://` refs
+    // produced by the helpers in device-auth.ts.
+    secretStore = new InMemoryWritableStore("secret");
 
     globalThis.fetch = async (input, init) => {
       const url = typeof input === "string" ? input : input.url;
@@ -160,7 +159,7 @@ describe("device auth secret storage", () => {
     };
   });
 
-  test("keeps pending device state and issued credentials out of Redis", async () => {
+  test("device-auth state and credentials persist directly in the secret store", async () => {
     const configService = {
       getHttpServer: async () =>
         ({
@@ -169,7 +168,6 @@ describe("device auth secret storage", () => {
     };
 
     const started = await startDeviceAuth(
-      redis as any,
       secretStore,
       configService,
       "github",
@@ -179,24 +177,15 @@ describe("device auth secret storage", () => {
 
     expect(started?.userCode).toBe("user-code-123");
 
-    const pendingRaw = await redis.get("device-auth:agent-1:user-1:github");
-    expect(pendingRaw).toBeTruthy();
-    expect(pendingRaw).toContain("secretRef");
-    expect(pendingRaw).not.toContain("device-code-abc");
-    expect(pendingRaw).not.toContain("client-secret-xyz");
-
-    const pendingPointer = JSON.parse(pendingRaw!) as { secretRef: SecretRef };
-    const pendingState = JSON.parse(
-      (await secretStore.get(pendingPointer.secretRef))!
-    ) as {
-      deviceCode: string;
-      clientSecret?: string;
-    };
-    expect(pendingState.deviceCode).toBe("device-code-abc");
-    expect(pendingState.clientSecret).toBe("client-secret-xyz");
+    // Pending device-auth state is now stored directly under the secret name
+    // (no Redis pointer). The blob still encrypts via PostgresSecretStore in
+    // production; the in-memory test store keeps the JSON plaintext.
+    const pendingEntries = await secretStore.list(
+      "mcp-auth/agent-1/user-1/github/device-auth"
+    );
+    expect(pendingEntries).toHaveLength(1);
 
     const accessToken = await tryCompletePendingDeviceAuth(
-      redis as any,
       secretStore,
       "agent-1",
       "user-1",
@@ -204,18 +193,13 @@ describe("device auth secret storage", () => {
     );
 
     expect(accessToken).toBe("access-token-123");
-    expect(await redis.get("device-auth:agent-1:user-1:github")).toBeNull();
 
-    const credentialRaw = await redis.get(
-      "auth:credential:agent-1:user-1:github"
-    );
-    expect(credentialRaw).toBeTruthy();
-    expect(credentialRaw).toContain("secretRef");
-    expect(credentialRaw).not.toContain("access-token-123");
-    expect(credentialRaw).not.toContain("refresh-token-456");
+    // Pending state cleaned up after completion.
+    expect(
+      await secretStore.list("mcp-auth/agent-1/user-1/github/device-auth")
+    ).toHaveLength(0);
 
     const credential = await getStoredCredential(
-      redis as any,
       secretStore,
       "agent-1",
       "user-1",
@@ -224,10 +208,13 @@ describe("device auth secret storage", () => {
     expect(credential?.accessToken).toBe("access-token-123");
     expect(credential?.refreshToken).toBe("refresh-token-456");
 
-    const [, redisKeys] = await redis.scan("0", "MATCH", "*");
-    expect(redisKeys.sort()).toEqual([
-      "auth:credential:agent-1:user-1:github",
-      "device-auth:client:github",
+    // Sanity: the only entries left are the issued credential and the cached
+    // dynamic-client registration.
+    const allEntries = await secretStore.list();
+    const names = allEntries.map((e) => e.name).sort();
+    expect(names).toEqual([
+      "mcp-auth/agent-1/user-1/github/credential",
+      "mcp-auth/clients/github/registration",
     ]);
   });
 });

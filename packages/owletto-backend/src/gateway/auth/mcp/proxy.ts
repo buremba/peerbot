@@ -170,7 +170,6 @@ export class McpProxy {
    * session — no cross-replica coherence needed.
    */
   private readonly sessions = new Map<string, { sessionId: string; expiresAt: number }>();
-  private readonly redisClient: any;
   private app: Hono;
   private readonly toolCache?: McpToolCache;
   private readonly secretStore: WritableSecretStore;
@@ -220,7 +219,7 @@ export class McpProxy {
 
   constructor(
     private readonly configService: McpConfigSource,
-    queue: IMessageQueue,
+    _queue: IMessageQueue,
     options: {
       secretStore: WritableSecretStore;
       toolCache?: McpToolCache;
@@ -229,7 +228,6 @@ export class McpProxy {
       publicGatewayUrl?: string;
     }
   ) {
-    this.redisClient = queue.getRedisClient();
     this.secretStore = options.secretStore;
     this.toolCache = options.toolCache;
     this.grantStore = options.grantStore;
@@ -1261,7 +1259,6 @@ export class McpProxy {
     mcpId: string
   ): Promise<string | null> {
     const credential = await getStoredCredential(
-      this.redisClient,
       this.secretStore,
       agentId,
       userId,
@@ -1270,7 +1267,6 @@ export class McpProxy {
     if (!credential) {
       // No stored credential — check if there's a pending device-auth to complete
       return tryCompletePendingDeviceAuth(
-        this.redisClient,
         this.secretStore,
         agentId,
         userId,
@@ -1285,7 +1281,6 @@ export class McpProxy {
 
     // Token expired or expiring soon — refresh
     const refreshed = await refreshCredential(
-      this.redisClient,
       this.secretStore,
       agentId,
       userId,
@@ -1737,7 +1732,6 @@ export class McpProxy {
     try {
       const redirectUri = `${this.publicGatewayUrl.replace(/\/+$/, "")}/mcp/oauth/callback`;
       const { authorizationUrl } = await startAuthCodeFlow({
-        redis: this.redisClient,
         secretStore: this.secretStore,
         mcpId: params.mcpId,
         upstreamUrl: params.httpServer.upstreamUrl,
@@ -1788,20 +1782,10 @@ export class McpProxy {
         "../../routes/internal/device-auth.js"
       );
 
-      // Check if a device auth flow is already pending (avoid duplicate starts)
-      const pendingKey = `device-auth:${agentId}:${userId}:${mcpId}`;
-      const pending = await this.redisClient.get(pendingKey);
-      if (pending) {
-        // Return the existing pending flow's info instead of starting a new one
-        return {
-          status: "pending",
-          message:
-            "Authentication is required. A login flow is already in progress. STOP calling tools and tell the user to complete login in their browser. Do NOT retry this tool call.",
-        };
-      }
-
+      // Existing-flow detection now happens inside startDeviceAuth — it
+      // reuses any non-expired pending flow already persisted in the secret
+      // store and returns it instead of restarting.
       const result = await startDeviceAuth(
-        this.redisClient,
         this.secretStore,
         this.configService as any,
         mcpId,

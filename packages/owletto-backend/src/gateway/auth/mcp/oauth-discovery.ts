@@ -14,7 +14,6 @@
 import { createHash } from "node:crypto";
 import dns from "node:dns/promises";
 import { createLogger } from "@lobu/core";
-import type { Redis } from "ioredis";
 import type { WritableSecretStore } from "../../secrets/index.js";
 
 const logger = createLogger("mcp-oauth-discovery");
@@ -255,20 +254,20 @@ function scopeTag(agentId: string, upstreamUrl: string): string {
   return hash;
 }
 
-function discoveryCacheKey(
+function discoveryCacheName(
   mcpId: string,
   agentId: string,
   upstreamUrl: string
 ): string {
-  return `mcp-oauth:discovery:${mcpId}:${scopeTag(agentId, upstreamUrl)}`;
+  return `mcp-oauth/${mcpId}/${scopeTag(agentId, upstreamUrl)}/discovery`;
 }
 
-function clientCacheKey(
+function clientCacheName(
   mcpId: string,
   agentId: string,
   upstreamUrl: string
 ): string {
-  return `mcp-oauth:client:${mcpId}:${scopeTag(agentId, upstreamUrl)}`;
+  return `mcp-oauth/clients/${mcpId}/${scopeTag(agentId, upstreamUrl)}/registration`;
 }
 
 /**
@@ -286,22 +285,14 @@ function pickStaticAuthMethod(
   return "client_secret_basic";
 }
 
-interface SecretPointer {
-  secretRef: string;
-}
-
 async function readSecretJson<T>(
-  redis: Redis,
   secretStore: WritableSecretStore,
-  key: string
+  name: string
 ): Promise<T | null> {
-  const raw = await redis.get(key);
-  if (!raw) return null;
+  const ref = `secret://${encodeURIComponent(name)}` as const;
+  const value = await secretStore.get(ref as any);
+  if (!value) return null;
   try {
-    const pointer = JSON.parse(raw) as SecretPointer;
-    if (typeof pointer.secretRef !== "string") return null;
-    const value = await secretStore.get(pointer.secretRef);
-    if (!value) return null;
     return JSON.parse(value) as T;
   } catch {
     return null;
@@ -309,21 +300,12 @@ async function readSecretJson<T>(
 }
 
 async function writeSecretJson<T>(
-  redis: Redis,
   secretStore: WritableSecretStore,
-  key: string,
-  secretName: string,
+  name: string,
   value: T,
   ttlSeconds?: number
 ): Promise<void> {
-  const secretRef = await secretStore.put(secretName, JSON.stringify(value), {
-    ttlSeconds,
-  });
-  if (ttlSeconds) {
-    await redis.set(key, JSON.stringify({ secretRef }), "EX", ttlSeconds);
-  } else {
-    await redis.set(key, JSON.stringify({ secretRef }));
-  }
+  await secretStore.put(name, JSON.stringify(value), { ttlSeconds });
 }
 
 interface DiscoverOptions {
@@ -333,7 +315,6 @@ interface DiscoverOptions {
   upstreamUrl: string;
   wwwAuthenticate: string | null;
   redirectUri: string;
-  redis: Redis;
   secretStore: WritableSecretStore;
   /**
    * Pre-registered static client from lobu.toml. Short-circuits dynamic
@@ -360,19 +341,14 @@ export async function discoverOAuth(
     upstreamUrl,
     wwwAuthenticate,
     redirectUri,
-    redis,
     secretStore,
     staticClientId,
     staticClientSecret,
     requestedScopes,
   } = options;
 
-  const cacheKey = discoveryCacheKey(mcpId, agentId, upstreamUrl);
-  const cached = await readSecretJson<DiscoveryResult>(
-    redis,
-    secretStore,
-    cacheKey
-  );
+  const cacheName = discoveryCacheName(mcpId, agentId, upstreamUrl);
+  const cached = await readSecretJson<DiscoveryResult>(secretStore, cacheName);
   if (cached) {
     logger.debug("Using cached OAuth discovery", { mcpId, agentId });
     // Override the client if the operator has set an explicit one.
@@ -445,9 +421,8 @@ export async function discoverOAuth(
     };
   } else {
     const cachedClient = await readSecretJson<DiscoveredClient>(
-      redis,
       secretStore,
-      clientCacheKey(mcpId, agentId, upstreamUrl)
+      clientCacheName(mcpId, agentId, upstreamUrl)
     );
     if (cachedClient) {
       client = cachedClient;
@@ -464,10 +439,8 @@ export async function discoverOAuth(
         scopes?.join(" ")
       );
       await writeSecretJson(
-        redis,
         secretStore,
-        clientCacheKey(mcpId, agentId, upstreamUrl),
-        `mcp-oauth/clients/${mcpId}/${scopeTag(agentId, upstreamUrl)}/registration`,
+        clientCacheName(mcpId, agentId, upstreamUrl),
         client
       );
       logger.info("Registered new OAuth client via DCR", {
@@ -479,14 +452,7 @@ export async function discoverOAuth(
   }
 
   const result: DiscoveryResult = { endpoints, client };
-  await writeSecretJson(
-    redis,
-    secretStore,
-    cacheKey,
-    `mcp-oauth/${mcpId}/${scopeTag(agentId, upstreamUrl)}/discovery`,
-    result,
-    DISCOVERY_CACHE_TTL
-  );
+  await writeSecretJson(secretStore, cacheName, result, DISCOVERY_CACHE_TTL);
 
   logger.info("OAuth discovery complete", {
     mcpId,

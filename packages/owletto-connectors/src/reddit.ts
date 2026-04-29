@@ -84,7 +84,7 @@ export default class RedditConnector extends ConnectorRuntime {
         {
           type: 'oauth',
           provider: 'reddit',
-          requiredScopes: ['read', 'history'],
+          requiredScopes: ['identity', 'read', 'history'],
           setupInstructions:
             'Create a Reddit app at https://www.reddit.com/prefs/apps — choose "web app" as the type. Set the redirect URI to {{redirect_uri}}, then copy the client ID and secret below.',
         },

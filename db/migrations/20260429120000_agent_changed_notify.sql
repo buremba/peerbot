@@ -1,3 +1,5 @@
+-- migrate:up
+
 -- Phase 6: NOTIFY trigger for invalidatableCache invalidation.
 --
 -- The agent-related runtime caches (formerly Redis-backed) read agents,
@@ -82,3 +84,14 @@ DROP TRIGGER IF EXISTS agent_users_changed_notify ON public.agent_users;
 CREATE TRIGGER agent_users_changed_notify
   AFTER INSERT OR UPDATE OR DELETE ON public.agent_users
   FOR EACH ROW EXECUTE FUNCTION public.notify_agent_users_changed();
+
+-- migrate:down
+
+DROP TRIGGER IF EXISTS agent_users_changed_notify ON public.agent_users;
+DROP FUNCTION IF EXISTS public.notify_agent_users_changed();
+
+DROP TRIGGER IF EXISTS agent_channel_bindings_changed_notify ON public.agent_channel_bindings;
+DROP FUNCTION IF EXISTS public.notify_channel_binding_changed();
+
+DROP TRIGGER IF EXISTS agents_changed_notify ON public.agents;
+DROP FUNCTION IF EXISTS public.notify_agent_changed();

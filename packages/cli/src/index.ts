@@ -29,7 +29,7 @@ export async function runCli(
   // ─── init ───────────────────────────────────────────────────────────
   program
     .command("init [name]")
-    .description("Scaffold a new agent project (lobu.toml + docker-compose)")
+    .description("Scaffold a new agent project (lobu.toml + agent files + .env)")
     .action(async (name?: string) => {
       try {
         const { initCommand } = await import("./commands/init.js");
@@ -118,11 +118,11 @@ export async function runCli(
     });
 
   // ─── run ────────────────────────────────────────────────────────────
-  // Passthrough to docker compose up — all extra args forwarded directly.
-  //   lobu run -d --build  →  docker compose up -d --build
+  // Boots the embedded Lobu stack (gateway + workers + memory backend) as
+  // a single Node process. Extra args are forwarded to the bundle entry.
   program
     .command("run")
-    .description("Run agent stack (reads lobu.toml, then docker compose up)")
+    .description("Run the embedded Lobu stack (gateway + workers in one Node process)")
     .allowUnknownOption(true)
     .helpOption(false)
     .action(async (_opts: unknown, cmd: Command) => {

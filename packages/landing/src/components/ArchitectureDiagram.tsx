@@ -216,7 +216,7 @@ const gatewayBadges = [
   },
   {
     label: "Sandboxing",
-    href: "/deployment/kubernetes/",
+    href: "/guides/security/",
     icon: (
       <svg
         width={10}

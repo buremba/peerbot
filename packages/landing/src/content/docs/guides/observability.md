@@ -44,34 +44,20 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4317
 
 Both gateway and worker initialize tracing on startup when this is set. The gateway passes the endpoint to workers automatically. You can also set this during `lobu init`.
 
-### Docker setup
+### Local Tempo + Grafana
 
-Add a Tempo service to your `docker-compose.yml`:
+Lobu doesn't bundle observability infrastructure. Run Tempo and Grafana however you prefer — managed (Grafana Cloud), a separate compose file, or directly via `docker run` / `podman run`. Then point Lobu at the OTLP endpoint via `OTEL_EXPORTER_OTLP_ENDPOINT`.
 
-```yaml
-tempo:
-  image: grafana/tempo:latest
-  command: ["-config.file=/etc/tempo.yaml"]
-  volumes:
-    - ./tempo.yaml:/etc/tempo.yaml
-    - tempo-data:/var/tempo
-  ports:
-    - "4318:4318"   # OTLP HTTP
-    - "3200:3200"   # Tempo query API
+For a minimal local stack:
 
-grafana:
-  image: grafana/grafana:latest
-  ports:
-    - "3001:3000"
-  environment:
-    - GF_AUTH_ANONYMOUS_ENABLED=true
-    - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
-  volumes:
-    - grafana-data:/var/lib/grafana
+```bash
+docker run -d --name tempo -p 4318:4318 -p 3200:3200 \
+  -v "$PWD/tempo.yaml:/etc/tempo.yaml" -v tempo-data:/var/tempo \
+  grafana/tempo:latest -config.file=/etc/tempo.yaml
 
-volumes:
-  tempo-data:
-  grafana-data:
+docker run -d --name grafana -p 3001:3000 \
+  -e GF_AUTH_ANONYMOUS_ENABLED=true -e GF_AUTH_ANONYMOUS_ORG_ROLE=Admin \
+  -v grafana-data:/var/lib/grafana grafana/grafana:latest
 ```
 
 Minimal `tempo.yaml`:

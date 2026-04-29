@@ -7,15 +7,20 @@ Deploy sandboxed, persistent AI agents to your infrastructure — one isolated a
 
 ## Quick start
 
-```bash
-# 1. Scaffold and run
-npx @lobu/cli@latest init my-agent
-cd my-agent && npx @lobu/cli@latest run -d
+Lobu boots as a single Node process. Bring your own Postgres + Redis (managed instances or local — `brew services start postgresql redis` works for dev).
 
-# 2. Chat with your agent
+```bash
+# 1. Scaffold
+npx @lobu/cli@latest init my-agent
+cd my-agent
+
+# 2. Set DATABASE_URL and REDIS_URL in .env, then boot
+npx @lobu/cli@latest run
+
+# 3. Chat with your agent (in another terminal)
 npx @lobu/cli@latest chat "Hello, what can you do?"
 
-# 3. Run evals to measure quality
+# 4. Run evals to measure quality
 npx @lobu/cli@latest eval
 ```
 
@@ -24,8 +29,7 @@ npx @lobu/cli@latest eval
 ```
 my-agent/
 ├── lobu.toml                  # agents, providers, skills, network
-├── .env                       # secrets (API keys, OAuth tokens)
-├── docker-compose.yml         # Redis + gateway + optional Owletto
+├── .env                       # secrets (API keys, DATABASE_URL, REDIS_URL)
 ├── AGENTS.md                  # briefing for coding agents
 ├── README.md
 ├── TESTING.md
@@ -48,7 +52,7 @@ my-agent/
 | `agents/*/skills/`, `skills/` | [SKILL.md reference](/reference/skill-md/), [Skills](/getting-started/skills/) |
 | `agents/*/evals/` | [Evaluations](/guides/evals/) |
 | `models/`, `data/` | [Memory](/getting-started/memory/) |
-| `docker-compose.yml`, `Dockerfile.worker` | [Deployment](/deployment/docker/) |
+| `.env` | [CLI reference](/reference/cli/) |
 
 ## Develop your agent
 
@@ -62,7 +66,7 @@ Please:
 2. Help me shape the agent behavior by editing those files directly.
 3. Use Lobu skills when they make sense: https://lobu.ai/getting-started/skills/
 4. Suggest any provider, skill, or connection changes needed in lobu.toml.
-5. Keep the project runnable with `npx @lobu/cli@latest run -d`.
+5. Keep the project runnable with `npx @lobu/cli@latest run`.
 
 Explain what you change and why.
 ```
@@ -111,7 +115,7 @@ npx @lobu/cli@latest secrets list
 
 # Validate and run
 npx @lobu/cli@latest validate
-npx @lobu/cli@latest run -d
+npx @lobu/cli@latest run
 ```
 
 See the [CLI Reference](/reference/cli/) for all available commands.

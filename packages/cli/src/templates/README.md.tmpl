@@ -4,84 +4,52 @@ Lobu instance created with `@lobu/cli` v{{CLI_VERSION}}
 
 ## Quick Start
 
-Make sure you have Docker CLI installed.
+Lobu boots as a single Node process. Bring your own Postgres + Redis (managed instances or local — `brew services start postgresql redis` works for dev) and point `.env` at them.
 
 ```bash
-# Start the services
-npx @lobu/cli@latest run -d
+# 1. Edit .env and set DATABASE_URL + REDIS_URL
 
-# View logs
-docker compose logs -f
+# 2. Boot Lobu (gateway + workers + memory backend in one Node process)
+npx @lobu/cli@latest run
 
-# Stop the services
-docker compose down
+# 3. Stop with Ctrl+C
 ```
+
+Logs go to stdout — pipe to your supervisor of choice (`pm2`, `systemd`, etc.) for production.
 
 ## Upgrading to Latest Version
 
-### Update Gateway and Pre-built Images
-Pull the latest images and restart services:
+Pull the latest CLI to pick up gateway + worker improvements:
+
 ```bash
-docker compose pull
-docker compose up -d
+# The CLI ships the embedded backend it boots, so updating the CLI
+# updates Lobu itself. No image pull, no compose restart.
+npx @lobu/cli@latest run
 ```
 
-### Rebuild Worker (when Dockerfile.worker changes)
-If you modified your `Dockerfile.worker` or want to use the latest base image:
-```bash
-docker compose build worker
-docker compose restart gateway
-```
-
-### Update Environment Variables
-Check for new environment variables in release notes or the [Lobu documentation](https://github.com/lobu-ai/lobu):
-1. Compare your `.env` with the latest `.env.example` from the repository
-2. Add any new required variables
-3. Restart services: `docker compose restart`
-
-**Tip**: Always use `latest` tags to ensure gateway and worker versions stay in sync.
+Compare your `.env` with the latest `.env.example` in the [Lobu repo](https://github.com/lobu-ai/lobu) when upgrading and add any new required variables.
 
 ## Configuration
 
 ### Environment Variables
 
 Edit `.env` to configure:
-- `PUBLIC_GATEWAY_URL` - Public URL for OAuth callbacks
-- `WORKER_ALLOWED_DOMAINS` - Allowed domains for worker network access
+
+- `DATABASE_URL` — Postgres connection string (with pgvector)
+- `REDIS_URL` — Redis connection string
+- `PUBLIC_GATEWAY_URL` — Public URL for OAuth callbacks
+- `WORKER_ALLOWED_DOMAINS` — Allowed domains for worker network access
 
 ### Platform Connections
 
-Platforms (Slack, Telegram, Discord, WhatsApp, Teams) are configured through the gateway APIs. No platform-specific env vars are required in `docker-compose.yml`; manage connections against `{PUBLIC_GATEWAY_URL}/api/v1/connections` and related auth/config endpoints.
+Platforms (Slack, Telegram, Discord, WhatsApp, Teams) are configured through the gateway APIs — no per-platform env vars are required in `.env`. Manage connections against `{PUBLIC_GATEWAY_URL}/api/v1/connections` and related auth/config endpoints.
 
 ### Worker Customization
 
-Edit `Dockerfile.worker` to add custom tools and dependencies.
+Worker behavior is controlled by:
 
-Example customizations:
-```dockerfile
-# Add system packages
-RUN apt-get update && apt-get install -y postgresql-client
-
-# Add Python packages
-RUN pip install pandas matplotlib
-
-# Add Node.js packages
-RUN bun add @octokit/rest
-```
-
-When you modify `Dockerfile.worker` or context files, rebuild the worker image:
-```bash
-docker compose build worker
-```
-
-The gateway will automatically pick up the latest worker image.
-
-## Services
-
-The docker-compose.yml defines these services:
-- **redis** - Redis cache and queue
-- **gateway** - Platform connections and worker orchestration
-- **worker** - Agent worker (build-only, spawned dynamically)
+- `[agents.<id>.skills]` blocks in `lobu.toml` — declare MCP servers, OAuth, and tool policy.
+- `nixPackages` per agent — pulls binaries onto the worker's `PATH` via `nix-shell`. The worker uses [just-bash](https://github.com/nicholasgasior/just-bash) to wrap shell commands; interpreters and package managers are excluded from the allowlist by default. Set `LOBU_ALLOW_UNSANDBOXED_EXEC=1` per-agent to opt back in if you genuinely need them.
 
 ## Learn More
 

@@ -7,8 +7,11 @@ CLI tool for initializing and managing Lobu projects.
 ```bash
 npx @lobu/cli@latest init my-bot
 cd my-bot
-docker compose up -d
+# edit .env to set DATABASE_URL and REDIS_URL
+npx @lobu/cli@latest run
 ```
+
+Lobu boots as a single Node process. Postgres + Redis are user-provided externals (managed instances or local — `brew services start postgresql redis`).
 
 ## Starter Skills
 
@@ -32,16 +35,15 @@ npx owletto@latest init
 
 Scaffold a new Lobu project with interactive prompts:
 
-- **Project name** and **deployment mode** (embedded/Docker workers)
+- **Project name**
 - **Gateway port** and optional **public URL** (for OAuth callbacks)
 - **Admin password**
 - **Worker network access** (isolated, allowlist, or unrestricted)
 - **AI provider** selection from the bundled provider registry + API key
-- **Providers** to enable (from `config/providers.json`)
-- **Messaging platform** (Telegram, Slack, Discord, or none)
-- **Memory** selection (filesystem, Lobu Cloud, Owletto Local, or custom Owletto URL)
+- **Messaging platform** (Telegram, Slack, Discord, WhatsApp, Teams, Google Chat, or none)
+- **Memory** selection (filesystem, Lobu Cloud, or custom Owletto URL)
 
-**Generates:** `docker-compose.yml`, `.env`, `Dockerfile.worker`, `lobu.toml`, `IDENTITY.md`, `.gitignore`, `README.md`
+**Generates:** `lobu.toml`, `.env` (with `DATABASE_URL` / `REDIS_URL` placeholders), `agents/<name>/` (`IDENTITY.md`, `SOUL.md`, `USER.md`, `skills/`, `evals/`), `skills/`, `AGENTS.md`, `TESTING.md`, `README.md`, `.gitignore`.
 
 When Owletto-backed memory is enabled, `lobu init` also scaffolds the file-first memory layout:
 
@@ -49,11 +51,11 @@ When Owletto-backed memory is enabled, `lobu init` also scaffolds the file-first
 - `models/`
 - `data/`
 
-For Owletto Local or a custom Owletto deployment, `.env` keeps `MEMORY_URL` as the optional base MCP URL override.
+For a custom Owletto deployment, `.env` keeps `MEMORY_URL` as the optional base MCP URL override.
 
-## Worker Customization
+### `lobu run`
 
-Extend the generated `Dockerfile.worker` to add system packages, Python packages, or custom scripts on top of `ghcr.io/lobu-ai/lobu-worker-base`. See [custom base image docs](../worker/docs/custom-base-image.md).
+Boot the embedded Lobu stack — gateway + workers + embeddings + Owletto memory backend in a single Node process. Validates `lobu.toml` and that `DATABASE_URL` and `REDIS_URL` are set in `.env`, then spawns the bundled `@lobu/owletto-backend/dist/server.bundle.mjs`. Ctrl+C stops the process and any spawned worker subprocesses cleanly.
 
 ## License
 

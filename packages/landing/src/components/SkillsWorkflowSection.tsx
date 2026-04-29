@@ -65,13 +65,9 @@ function getInitLinesForUseCase(useCase: LandingUseCaseShowcase): TermLine[] {
     { text: "🤖 Welcome to Lobu!", color: "#facc15" },
     { text: "", color: "" },
     {
-      text: "? Deployment type?",
+      text: "? Gateway port?",
       color: "#c9cdd4",
-      links: [
-        { label: "Embedded", href: "/deployment/embedding/", selected: true },
-        { label: "Docker", href: "/deployment/docker/" },
-        { label: "Kubernetes", href: "/deployment/kubernetes/" },
-      ],
+      links: [{ label: "8080 (default)", href: "/getting-started/", selected: true }],
     },
     {
       text: "? Worker network access?",
@@ -190,11 +186,11 @@ const testEvalLines: TermLine[] = [
 
 const selfHostSnippet = [
   "$ cd landing-demo-agent",
-  "$ npx @lobu/cli@latest run -d",
-  "# iterate locally",
+  "$ npx @lobu/cli@latest run",
+  "# Lobu boots as a single Node process",
   "",
-  "$ docker compose up -d",
-  "# or deploy the same stack on Kubernetes",
+  "# Production: bun run build:server,",
+  "# then `node dist/server.bundle.mjs` under systemd / pm2",
 ].join("\n");
 
 function WindowChrome({ label }: { label: string }) {
@@ -473,7 +469,7 @@ export function SkillsWorkflowSection({
                 <SectionIntro
                   step="01"
                   title="Initialize the project"
-                  body="Start with the CLI and make the key choices once: runtime, network policy, provider, messaging channel, and memory. Embedded is the default local path, but the same project can move to Docker or Kubernetes later."
+                  body="Start with the CLI and make the key choices once: gateway port, network policy, provider, messaging channel, and memory. The same project boots locally with `lobu run` and ships to production as a single Node process."
                 />
               </div>
               <TerminalWindow
@@ -563,9 +559,9 @@ export function SkillsWorkflowSection({
                 />
                 <ShipCard
                   title="Run it on your infra"
-                  description="Use the same project and run the stack on Docker or Kubernetes when Lobu should ship as its own app or service."
+                  description="Boot the same project as a single Node process under systemd, pm2, or any supervisor. Bring your own Postgres + Redis (managed or local)."
                   code={selfHostSnippet}
-                  href="/deployment/docker/"
+                  href="/getting-started/"
                 />
               </div>
             </div>

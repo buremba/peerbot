@@ -1,6 +1,6 @@
 # Lobu
 
-> Open-source platform for deploying persistent, sandboxed AI agents on Slack, Telegram, WhatsApp, Discord, Microsoft Teams, Google Chat, and REST API. Self-hosted on Docker or Kubernetes with per-agent MCP tools, skills, and memory.
+> Open-source platform for deploying persistent, sandboxed AI agents on Slack, Telegram, WhatsApp, Discord, Microsoft Teams, Google Chat, and REST API. Self-hosted as a single Node process (bring your own Postgres + Redis) with per-agent MCP tools, skills, and memory.
 
 ## What Lobu does
 
@@ -27,10 +27,8 @@ The orgless MCP endpoint at [https://lobu.ai/mcp](https://lobu.ai/mcp) exposes `
 
 ## Deployment
 
-- [Docker](https://lobu.ai/deployment/docker/)
-- [Kubernetes](https://lobu.ai/deployment/kubernetes/)
-- [AWS](https://lobu.ai/deployment/aws/)
-- [Embedding](https://lobu.ai/deployment/embedding/): Embed Lobu in your own Node process
+- [Getting started](https://lobu.ai/getting-started/): Boot Lobu as a single Node process (`lobu run`)
+- [Embedding](https://lobu.ai/deployment/embedding/): Mount Lobu inside an existing Node app
 
 ## Messaging platforms
 

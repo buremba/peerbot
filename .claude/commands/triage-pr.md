@@ -60,7 +60,7 @@ Skip silently when:
 Classify as `needs-human` and exit when:
 
 - Any changed file path is under `packages/owletto-web/` — submodule two-PR rule (AGENTS.md). The agent must never push a parent commit referencing an unmerged submodule SHA.
-- Any changed file path is under `charts/lobu/`, `docker/`, `.github/workflows/`, or is `scripts/setup-dev.sh` — infra blast radius.
+- Any changed file path is under `.github/workflows/` or is `scripts/setup-dev.sh` — infra blast radius.
 - Any changed file path is `.github/triage-config.yml` or `.claude/commands/triage-pr.md` — these define triage policy itself. A PR modifying them must not be evaluated by the (potentially-modified) policy on its own branch; the agent escalates so a human can review the change against `main`.
 - Any review comment contains case-insensitive: `security`, `credential`, `token`, `secret`, `auth bypass`, `P0`, or `P1`.
 

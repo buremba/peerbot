@@ -163,12 +163,9 @@ export function loadEnvFile(envPath?: string): void {
     : path.resolve(process.cwd(), ".env");
 
   if (existsSync(resolvedPath)) {
-    // Match the .env-as-single-source-of-truth contract used by
-    // docker-compose (see PR #209: compose no longer re-exports
-    // `DEPLOYMENT_MODE` from the shell). `override: true` means values in
-    // the file win over stale shell exports inherited from the user's
-    // environment, so `lobu gateway --env .env` and `docker compose up`
-    // behave consistently. Production (`NODE_ENV=production`) skips this
+    // .env is the single source of truth for dev. `override: true` so
+    // values in the file win over stale shell exports inherited from the
+    // user's environment. Production (`NODE_ENV=production`) skips this
     // path entirely, so real deployments are unaffected.
     dotenvConfig({ path: resolvedPath, override: true });
     logger.debug(`Loaded environment variables from ${resolvedPath}`);

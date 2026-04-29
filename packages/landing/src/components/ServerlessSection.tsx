@@ -61,8 +61,7 @@ const docsLinks = [
   { label: "Getting Started", href: "/getting-started" },
   { label: "Architecture", href: "/guides/architecture" },
   { label: "Security", href: "/guides/security" },
-  { label: "Kubernetes Deploy", href: "/deployment/kubernetes" },
-  { label: "Docker Deploy", href: "/deployment/docker" },
+  { label: "Embed in Your App", href: "/deployment/embedding" },
   { label: "MCP Proxy", href: "/guides/mcp-proxy/" },
 ];
 

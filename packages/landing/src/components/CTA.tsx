@@ -66,7 +66,7 @@ export function CTA(props: {
           </a>
           <span style={{ opacity: 0.3 }}>|</span>
           <a
-            href="/deployment/docker/"
+            href="/getting-started/"
             class="hover:underline underline-offset-2"
             style={{ color: "var(--color-tg-accent)" }}
           >

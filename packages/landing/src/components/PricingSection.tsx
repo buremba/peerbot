@@ -37,7 +37,7 @@ const plans: PricingPlan[] = [
     features: [
       "Unlimited agents and users",
       `All delivery surfaces (${deliverySurfacesLabel})`,
-      "Deploy with Docker Compose or Kubernetes",
+      "Single Node process — bring your own Postgres + Redis",
       "Embed in Node.js apps",
       "MCP proxy with credential isolation",
       "Built-in evals",
@@ -76,7 +76,7 @@ const plans: PricingPlan[] = [
     features: [
       "Architecture and rollout plan",
       "Custom skills and MCP servers",
-      "Secure Kubernetes setup",
+      "Hardened single-node deployment",
       "Prompt and agent design",
       "Slack, Teams, and custom integrations",
       "Ongoing maintenance with SLA",

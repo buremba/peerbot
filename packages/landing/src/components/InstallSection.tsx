@@ -1,16 +1,16 @@
 const localDev = {
   id: "dev",
   label: "Local Dev",
-  badges: ["CLI scaffold", "Full stack", "Fastest setup"],
-  docsHref: "/deployment/docker/",
+  badges: ["CLI scaffold", "Single Node process", "Fastest setup"],
+  docsHref: "/getting-started/",
   steps: [
     {
       label: "Scaffold a new agent",
       code: "npx @lobu/cli@latest init my-agent",
     },
     {
-      label: "Run the stack",
-      code: "cd my-agent && npx @lobu/cli@latest run -d",
+      label: "Set DATABASE_URL and REDIS_URL in .env, then boot",
+      code: "cd my-agent && npx @lobu/cli@latest run",
     },
     { label: "Open the docs", code: "open http://localhost:8080/api/docs" },
   ],

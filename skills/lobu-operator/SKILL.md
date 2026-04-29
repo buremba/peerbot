@@ -18,23 +18,23 @@ Do not assume the repo layout. Inspect it.
 ## Dev Workflow
 
 ```bash
-pnpm dev:all   # docker compose up + watch
+make dev   # boots the embedded Lobu stack (gateway + workers + Vite HMR)
 ```
 
-Do not start services individually unless debugging.
+Requires local Redis on `:6379` and `DATABASE_URL` reachable in `.env`.
 
 ## Validation Order
 
-1. `pnpm typecheck`
-2. `pnpm lint`
-3. `SKIP_TEST_DB_SETUP=1 pnpm vitest run`
-4. `docker compose -f docker-compose.dev.yml build app` (if Dockerfile/deps changed)
+1. `bun run typecheck`
+2. `bun run check`
+3. `bun test packages/<changed-package>/src`
+4. `make build-packages` if `packages/{core,gateway,worker,cli}/*` changed
 
-Package manager: **pnpm** (not npm, yarn, or bun). Ignore `dist/` directories — work from source.
+Package manager: **bun** (not npm, yarn, or pnpm). Ignore `dist/` directories — work from source.
 
 ## Constraints
 
-- All rules in `CLAUDE.md` apply.
+- All rules in `CLAUDE.md` and `AGENTS.md` apply.
 - No backwards compatibility required.
 - Do not create documentation files unless explicitly requested.
 - Zero hardcoding: all behavior is data-driven.

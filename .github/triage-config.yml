@@ -17,12 +17,11 @@ assignee: buremba
 # slash command or this config must NOT be classified by the
 # (potentially-modified) policy on its own branch.
 infra_paths:
-  - charts/lobu/
-  - docker/
   - .github/workflows/
   - .github/triage-config.yml
   - .claude/commands/triage-pr.md
   - scripts/setup-dev.sh
+  - scripts/dev-native.sh
 
 # Submodule two-PR rule. Any change under these is needs-human.
 two_pr_paths:

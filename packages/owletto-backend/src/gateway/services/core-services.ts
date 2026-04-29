@@ -389,10 +389,10 @@ export class CoreServices {
       );
     logger.debug("Secret store initialized");
 
-    // Agent configuration stores read directly from Postgres (`getDb()`),
-    // with InvalidatableCache primitives keyed off pg_notify channels for
-    // cross-process invalidation. No Redis backing — these stores predate
-    // PG and used to mirror it via hydratePersistedAgentSettings.
+    // Agent configuration stores read directly from Postgres (`getDb()`).
+    // No process-local cache — at current scale (~7 SELECTs per chat
+    // dispatch) PG handles the load comfortably and we get strong
+    // read-after-write across pods for free.
     this.agentSettingsStore = new AgentSettingsStore();
     this.channelBindingService = new ChannelBindingService();
     this.userAgentsStore = new UserAgentsStore();

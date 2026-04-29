@@ -1,6 +1,5 @@
 import { createLogger } from "@lobu/core";
 import { getDb } from "../../db/client.js";
-import { InvalidatableCache } from "../cache/invalidatable-cache.js";
 
 const logger = createLogger("channel-binding-service");
 
@@ -9,10 +8,7 @@ const logger = createLogger("channel-binding-service");
  *
  * Backed by `public.agent_channel_bindings`; only the columns that exist on
  * that table are persisted today (`platform`, `channel_id`, `team_id`,
- * `agent_id`, `created_at`). The `configuredBy` / `configuredAt` / `wasAdmin`
- * columns from the legacy Redis layout are no longer carried — the prior
- * Postgres-backed AgentConnectionStore in `lobu/stores/postgres-stores.ts`
- * already dropped them, and no caller reads them.
+ * `agent_id`, `created_at`).
  */
 export interface ChannelBinding {
   platform: string;
@@ -20,16 +16,6 @@ export interface ChannelBinding {
   agentId: string;
   teamId?: string;
   createdAt: number;
-}
-
-interface BindingKey {
-  platform: string;
-  channelId: string;
-  teamId?: string;
-}
-
-function bindingCacheKey(key: BindingKey): string {
-  return `${key.platform}:${key.teamId ?? "-"}:${key.channelId}`;
 }
 
 function rowToBinding(row: Record<string, any>): ChannelBinding {
@@ -45,50 +31,32 @@ function rowToBinding(row: Record<string, any>): ChannelBinding {
   };
 }
 
-async function loadBinding(key: BindingKey): Promise<ChannelBinding | null> {
-  const sql = getDb();
-  const rows = key.teamId
-    ? await sql`
-        SELECT * FROM agent_channel_bindings
-        WHERE platform = ${key.platform}
-          AND channel_id = ${key.channelId}
-          AND team_id = ${key.teamId}
-      `
-    : await sql`
-        SELECT * FROM agent_channel_bindings
-        WHERE platform = ${key.platform}
-          AND channel_id = ${key.channelId}
-          AND team_id IS NULL
-      `;
-  if (rows.length === 0) return null;
-  return rowToBinding(rows[0]);
-}
-
 /**
  * Service for managing channel-to-agent bindings, backed by Postgres.
- *
- * Reads are cached in-process and invalidated via `channel_binding_changed`
- * NOTIFY events whose payload matches `<platform>:<teamId|->:<channelId>`.
+ * Read-through to PG.
  */
 export class ChannelBindingService {
-  private readonly cache: InvalidatableCache<BindingKey, ChannelBinding | null>;
-
-  constructor() {
-    this.cache = new InvalidatableCache<BindingKey, ChannelBinding | null>({
-      channel: "channel_binding_changed",
-      ttlMs: 30_000,
-      maxEntries: 2000,
-      keyToString: bindingCacheKey,
-      loader: loadBinding,
-    });
-  }
-
   async getBinding(
     platform: string,
     channelId: string,
     teamId?: string
   ): Promise<ChannelBinding | null> {
-    return this.cache.get({ platform, channelId, teamId });
+    const sql = getDb();
+    const rows = teamId
+      ? await sql`
+          SELECT * FROM agent_channel_bindings
+          WHERE platform = ${platform}
+            AND channel_id = ${channelId}
+            AND team_id = ${teamId}
+        `
+      : await sql`
+          SELECT * FROM agent_channel_bindings
+          WHERE platform = ${platform}
+            AND channel_id = ${channelId}
+            AND team_id IS NULL
+        `;
+    if (rows.length === 0) return null;
+    return rowToBinding(rows[0]);
   }
 
   async createBinding(
@@ -119,7 +87,6 @@ export class ChannelBindingService {
           DO UPDATE SET agent_id = EXCLUDED.agent_id
       `;
     }
-    this.cache.invalidate({ platform, channelId, teamId });
     logger.info(`Created binding: ${platform}/${channelId} → ${agentId}`);
   }
 
@@ -130,7 +97,7 @@ export class ChannelBindingService {
     teamId?: string
   ): Promise<boolean> {
     const sql = getDb();
-    const existing = await loadBinding({ platform, channelId, teamId });
+    const existing = await this.getBinding(platform, channelId, teamId);
     if (!existing) {
       logger.warn(`No binding found for ${platform}/${channelId}`);
       return false;
@@ -153,7 +120,6 @@ export class ChannelBindingService {
         WHERE platform = ${platform} AND channel_id = ${channelId} AND team_id IS NULL
       `;
     }
-    this.cache.invalidate({ platform, channelId, teamId });
     logger.info(`Deleted binding: ${platform}/${channelId} from ${agentId}`);
     return true;
   }
@@ -168,28 +134,12 @@ export class ChannelBindingService {
 
   async deleteAllBindings(agentId: string): Promise<number> {
     const sql = getDb();
-    // RETURNING the key columns lets us invalidate every cached entry for
-    // this agent immediately. Per-key NOTIFY also fires from the trigger,
-    // but NOTIFY is async — we MUST drop the local cache synchronously to
-    // avoid the same process serving a deleted binding right after the
-    // delete returns.
     const rows = await sql`
       DELETE FROM agent_channel_bindings
       WHERE agent_id = ${agentId}
       RETURNING platform, channel_id, team_id
     `;
-    for (const row of rows as Array<Record<string, any>>) {
-      this.cache.invalidate({
-        platform: row.platform as string,
-        channelId: row.channel_id as string,
-        teamId: (row.team_id as string | null) ?? undefined,
-      });
-    }
     logger.info(`Deleted ${rows.length} bindings for agent ${agentId}`);
     return rows.length;
-  }
-
-  async close(): Promise<void> {
-    await this.cache.close();
   }
 }

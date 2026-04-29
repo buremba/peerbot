@@ -1,45 +1,13 @@
 import { createLogger } from "@lobu/core";
 import { getDb } from "../../db/client.js";
-import { InvalidatableCache } from "../cache/invalidatable-cache.js";
 
 const logger = createLogger("user-agents-store");
 
-interface UserKey {
-  platform: string;
-  userId: string;
-}
-
-function userCacheKey(key: UserKey): string {
-  return `${key.platform}:${key.userId}`;
-}
-
-async function loadUserAgents(key: UserKey): Promise<string[]> {
-  const sql = getDb();
-  const rows = await sql`
-    SELECT agent_id
-    FROM agent_users
-    WHERE platform = ${key.platform} AND user_id = ${key.userId}
-  `;
-  return rows.map((r: any) => r.agent_id as string);
-}
-
 /**
- * Track which agents belong to which users. Backed by the `public.agent_users`
- * table; reads are cached in-process and invalidated via `agent_users_changed`.
+ * Track which agents belong to which users. Read-through to
+ * `public.agent_users`.
  */
 export class UserAgentsStore {
-  private readonly cache: InvalidatableCache<UserKey, string[]>;
-
-  constructor() {
-    this.cache = new InvalidatableCache<UserKey, string[]>({
-      channel: "agent_users_changed",
-      ttlMs: 30_000,
-      maxEntries: 1000,
-      keyToString: userCacheKey,
-      loader: loadUserAgents,
-    });
-  }
-
   async addAgent(
     platform: string,
     userId: string,
@@ -51,7 +19,6 @@ export class UserAgentsStore {
       VALUES (${agentId}, ${platform}, ${userId}, now())
       ON CONFLICT (agent_id, platform, user_id) DO NOTHING
     `;
-    this.cache.invalidate({ platform, userId });
     logger.info(`Added agent ${agentId} to user ${platform}/${userId}`);
   }
 
@@ -65,12 +32,17 @@ export class UserAgentsStore {
       DELETE FROM agent_users
       WHERE agent_id = ${agentId} AND platform = ${platform} AND user_id = ${userId}
     `;
-    this.cache.invalidate({ platform, userId });
     logger.info(`Removed agent ${agentId} from user ${platform}/${userId}`);
   }
 
   async listAgents(platform: string, userId: string): Promise<string[]> {
-    return this.cache.get({ platform, userId });
+    const sql = getDb();
+    const rows = await sql`
+      SELECT agent_id
+      FROM agent_users
+      WHERE platform = ${platform} AND user_id = ${userId}
+    `;
+    return rows.map((r: any) => r.agent_id as string);
   }
 
   async ownsAgent(
@@ -80,9 +52,5 @@ export class UserAgentsStore {
   ): Promise<boolean> {
     const agents = await this.listAgents(platform, userId);
     return agents.includes(agentId);
-  }
-
-  async close(): Promise<void> {
-    await this.cache.close();
   }
 }

@@ -1,7 +1,6 @@
 import { type AgentSettings, type AuthProfile, createLogger } from "@lobu/core";
 import { getDb } from "../../../db/client.js";
 import { tryGetOrgId } from "../../../lobu/stores/org-context.js";
-import { InvalidatableCache } from "../../cache/invalidatable-cache.js";
 import type { DeclaredAgentRegistry } from "../../services/declared-agent-registry.js";
 
 // Re-export so existing imports from this module keep working.
@@ -159,24 +158,10 @@ async function loadSettingsFromPg(agentId: string): Promise<AgentSettings | null
  * paths. Declared agents (lobu.toml / SDK config) live in
  * `DeclaredAgentRegistry` and never touch Postgres for settings reads. Auth
  * profiles are owned by `UserAuthProfileStore` keyed by `(userId, agentId)`.
- *
- * Reads go through an InvalidatableCache backed by the `agent_changed`
- * NOTIFY channel, so cache entries drop within milliseconds of any write
- * (from this process or any other gateway instance).
  */
 export class AgentSettingsStore {
   private readonly ephemeralAuthProfiles = new EphemeralAuthProfileRegistry();
   private declaredAgents?: DeclaredAgentRegistry;
-  private readonly cache: InvalidatableCache<string, AgentSettings | null>;
-
-  constructor() {
-    this.cache = new InvalidatableCache<string, AgentSettings | null>({
-      channel: "agent_changed",
-      ttlMs: 30_000,
-      maxEntries: 500,
-      loader: (agentId) => loadSettingsFromPg(agentId),
-    });
-  }
 
   getEphemeralAuthProfiles(): EphemeralAuthProfileRegistry {
     return this.ephemeralAuthProfiles;
@@ -198,7 +183,7 @@ export class AgentSettingsStore {
    * (e.g., via AuthProfilesManager.listProfiles).
    */
   async getSettings(agentId: string): Promise<AgentSettings | null> {
-    return this.cache.get(agentId);
+    return loadSettingsFromPg(agentId);
   }
 
   /**
@@ -363,9 +348,6 @@ export class AgentSettingsStore {
       `;
     }
 
-    // Drop the local cache entry immediately. Other gateway instances see
-    // the update through the agents_changed_notify trigger.
-    this.cache.invalidate(agentId);
     logger.info(`Saved settings for agent ${agentId}`);
   }
 
@@ -413,7 +395,6 @@ export class AgentSettingsStore {
       `;
     }
 
-    this.cache.invalidate(agentId);
     logger.info(`Deleted settings for agent ${agentId}`);
   }
 
@@ -439,18 +420,4 @@ export class AgentSettingsStore {
     return settings !== null;
   }
 
-  /**
-   * Drop the local cache entry for an agent. Use this when a parallel
-   * Postgres write path (e.g. the host-supplied AgentConfigStore) updates
-   * `public.agents` outside this store; the trigger NOTIFY will catch up
-   * eventually but is async. Same-process callers that need
-   * read-your-writes should call invalidate immediately after the write.
-   */
-  invalidate(agentId: string): void {
-    this.cache.invalidate(agentId);
-  }
-
-  async close(): Promise<void> {
-    await this.cache.close();
-  }
 }

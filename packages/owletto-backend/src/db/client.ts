@@ -277,9 +277,9 @@ export function getDbListener(): DbListener {
  * Why this exists: pgbouncer in transaction-mode silently drops `LISTEN` (the
  * subscription is bound to the backend, but transaction-mode pooling returns
  * a different backend on the next checkout). RDS Proxy and other transaction-
- * mode poolers behave the same. The `InvalidatableCache` and `RunsQueue` both
- * depend on LISTEN being delivered; without the probe, a misconfiguration
- * surfaces as 30s-stale caches and 200ms-poll queue latency, with no error.
+ * mode poolers behave the same. `RunsQueue` depends on LISTEN being delivered
+ * for sub-200ms dispatch wakeup; without the probe, a misconfiguration surfaces
+ * as 200ms-poll queue latency with no error.
  *
  * Resolves with `void` on success. Rejects with a clear message after the
  * `timeoutMs` window if no notification arrives — the caller (server boot)

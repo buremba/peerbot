@@ -62,7 +62,6 @@ jobs:
         run: |
           bun test packages/owletto-backend/src/__tests__/unit
           bun test packages/owletto-backend/src/auth/__tests__/tool-access.test.ts
-          bun test packages/owletto-backend/src/gateway/cache
           bun test packages/owletto-backend/src/gateway/infrastructure/queue
 
       - name: owletto-cli + owletto-worker (bun:test)

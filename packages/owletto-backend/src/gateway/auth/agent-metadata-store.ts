@@ -1,7 +1,6 @@
 import { createLogger } from "@lobu/core";
 import { getDb } from "../../db/client.js";
 import { tryGetOrgId } from "../../lobu/stores/org-context.js";
-import { InvalidatableCache } from "../cache/invalidatable-cache.js";
 
 const logger = createLogger("agent-metadata-store");
 
@@ -73,22 +72,10 @@ async function loadMetadataFromPg(agentId: string): Promise<AgentMetadata | null
 }
 
 /**
- * Store agent metadata directly in `public.agents`.
- *
- * Reads go through an InvalidatableCache backed by `agent_changed`.
+ * Store agent metadata directly in `public.agents`. Read-through to PG —
+ * agents reads sit at ~7 SELECTs per chat dispatch, well within PG capacity.
  */
 export class AgentMetadataStore {
-  private readonly cache: InvalidatableCache<string, AgentMetadata | null>;
-
-  constructor() {
-    this.cache = new InvalidatableCache<string, AgentMetadata | null>({
-      channel: "agent_changed",
-      ttlMs: 30_000,
-      maxEntries: 500,
-      loader: (agentId) => loadMetadataFromPg(agentId),
-    });
-  }
-
   /**
    * Create a new agent with metadata. Inserts into `public.agents`. If the
    * agent already exists, updates the listed columns (matching the prior
@@ -139,7 +126,6 @@ export class AgentMetadataStore {
       throw new Error(`Agent '${agentId}' already exists in another organization.`);
     }
 
-    this.cache.invalidate(agentId);
     logger.info(`Created agent metadata for ${agentId}: "${name}"`);
 
     return {
@@ -155,7 +141,7 @@ export class AgentMetadataStore {
   }
 
   async getMetadata(agentId: string): Promise<AgentMetadata | null> {
-    return this.cache.get(agentId);
+    return loadMetadataFromPg(agentId);
   }
 
   /**
@@ -199,7 +185,6 @@ export class AgentMetadataStore {
       `;
     }
 
-    this.cache.invalidate(agentId);
     logger.info(`Updated metadata for agent ${agentId}`);
   }
 
@@ -217,7 +202,6 @@ export class AgentMetadataStore {
     } else {
       await sql`DELETE FROM agents WHERE id = ${agentId}`;
     }
-    this.cache.invalidate(agentId);
     logger.info(`Deleted metadata for agent ${agentId}`);
   }
 
@@ -276,17 +260,4 @@ export class AgentMetadataStore {
     return rows.map(rowToMetadata);
   }
 
-  /**
-   * Drop the local cache entry for an agent. Use this when a parallel
-   * Postgres write path (e.g. the host-supplied AgentConfigStore) updates
-   * `public.agents` outside this store; the trigger NOTIFY will catch up
-   * eventually but is async.
-   */
-  invalidate(agentId: string): void {
-    this.cache.invalidate(agentId);
-  }
-
-  async close(): Promise<void> {
-    await this.cache.close();
-  }
 }

@@ -70,10 +70,6 @@ describe("AgentSettingsStore", () => {
 
     test("hasSettings tracks row existence", async () => {
       await withOrg(async () => {
-        // Seed the row first so we don't cache a stale `null`. The cache
-        // does invalidate on NOTIFY in production; the test backend's NOTIFY
-        // delivery is async and racy across PGlite's socket boundary, so
-        // this assertion picks the deterministic ordering.
         await seedAgentRow("agent-1", { organizationId: ORG_ID });
         expect(await store.hasSettings("agent-1")).toBe(true);
       });

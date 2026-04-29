@@ -43,8 +43,8 @@ jobs:
           cd packages/owletto-sdk && bun run build && cd ../..
           cd packages/owletto-worker && bun run build && cd ../..
 
-      - name: core / gateway / cli (bun:test)
-        run: bun test packages/core packages/gateway packages/cli --coverage
+      - name: core / cli (bun:test)
+        run: bun test packages/core packages/cli --coverage
 
       - name: worker (bun:test, full suite)
         # The previous CI cherry-picked 8 of 18 files because pi-coding-agent
@@ -55,9 +55,15 @@ jobs:
         run: bun test packages/worker
 
       - name: owletto-backend (bun:test units)
+        # The gateway code that used to live in packages/gateway is now under
+        # src/gateway/. Its DB-backed bun:test suite needs Postgres and runs
+        # in the integration job below; here we only run the pure-unit
+        # subdirectories that don't touch Postgres.
         run: |
           bun test packages/owletto-backend/src/__tests__/unit
           bun test packages/owletto-backend/src/auth/__tests__/tool-access.test.ts
+          bun test packages/owletto-backend/src/gateway/cache
+          bun test packages/owletto-backend/src/gateway/infrastructure/queue
 
       - name: owletto-cli + owletto-worker (bun:test)
         # owletto-openclaw e2e tests need a live backend and belong in the
@@ -153,7 +159,6 @@ jobs:
         run: |
           cd packages/core && bun run build && cd ../..
           cd packages/owletto-sdk && bun run build && cd ../..
-          cd packages/gateway && bun run build && cd ../..
 
       - name: Verify Postgres health (fail fast if pgvector setup is broken)
         run: |
@@ -167,6 +172,14 @@ jobs:
       - name: owletto-backend integration suite (vitest under Node)
         working-directory: packages/owletto-backend
         run: node ../../node_modules/.bin/vitest run --reporter=default
+
+      - name: owletto-backend gateway suite (bun:test, needs Postgres)
+        # The gateway code that used to live in packages/gateway is now under
+        # src/gateway/__tests__/. These bun:test files are excluded from
+        # vitest (see vitest.config.ts) and need a real Postgres, so they run
+        # here in the integration job.
+        working-directory: packages/owletto-backend
+        run: bun test src/gateway/__tests__
 
   format-lint:
     runs-on: ubuntu-latest

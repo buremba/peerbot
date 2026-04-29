@@ -59,6 +59,7 @@ import { EmbeddedDeploymentManager } from "../orchestration/impl/embedded-deploy
 // ---------------------------------------------------------------------------
 const TEST_ENCRYPTION_KEY =
   "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+const originalDisableSystemdRun = process.env.LOBU_DISABLE_SYSTEMD_RUN;
 
 const TEST_CONFIG: OrchestratorConfig = {
   queues: {
@@ -108,6 +109,7 @@ describe("EmbeddedDeploymentManager", () => {
 
   beforeEach(() => {
     process.env.ENCRYPTION_KEY = TEST_ENCRYPTION_KEY;
+    process.env.LOBU_DISABLE_SYSTEMD_RUN = "1";
     manager = new EmbeddedDeploymentManager(TEST_CONFIG);
     mockChildProcesses.length = 0;
     mockSpawn.mockClear();
@@ -116,6 +118,11 @@ describe("EmbeddedDeploymentManager", () => {
 
   afterEach(() => {
     mkdirSyncSpy.mockRestore();
+    if (originalDisableSystemdRun === undefined) {
+      delete process.env.LOBU_DISABLE_SYSTEMD_RUN;
+    } else {
+      process.env.LOBU_DISABLE_SYSTEMD_RUN = originalDisableSystemdRun;
+    }
   });
 
   // =========================================================================

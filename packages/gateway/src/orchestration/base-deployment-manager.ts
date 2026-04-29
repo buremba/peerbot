@@ -71,7 +71,8 @@ function sanitizeNameHint(value: string | undefined, fallback: string): string {
 /**
  * Generate a consistent worker runtime ID from canonical conversation identity.
  * Overload preserved for compatibility with older callers.
- * K8s names must be lowercase alphanumeric with hyphens only.
+ * Runtime IDs stay lowercase alphanumeric with hyphens for filesystem and
+ * process-manager compatibility.
  */
 export function generateDeploymentName(
   userId: string,
@@ -260,12 +261,10 @@ export abstract class BaseDeploymentManager {
   // Abstract methods that must be implemented by concrete classes
   abstract listDeployments(): Promise<DeploymentInfo[]>;
   /**
-   * Orchestrator-specific deployment spawn. Subclasses must implement the
-   * actual create call (process spawn / docker createContainer / k8s
-   * createNamespacedDeployment) and treat the orchestrator's AlreadyExists
-   * error as benign success — that is the cross-process serialization
-   * mechanism. Always invoked through `ensureDeployment` which provides
-   * in-process coalescing.
+   * Runtime-specific deployment spawn. Subclasses must implement the
+   * actual create call and treat an already-running worker as benign success.
+   * Always invoked through `ensureDeployment` which provides in-process
+   * coalescing.
    */
   protected abstract spawnDeployment(
     deploymentName: string,
@@ -646,8 +645,8 @@ export abstract class BaseDeploymentManager {
       HTTPS_PROXY: proxyUrl,
       NO_PROXY: `${dispatcherHost},gateway,redis,localhost,127.0.0.1`,
       // Pin HOME inside the persistent workspace so per-tool caches
-      // (~/.npm, ~/.cache, ~/.config, ~/.local/share) survive scale-to-zero
-      // restarts and don't blow up the worker container's root layer.
+      // (~/.npm, ~/.cache, ~/.config, ~/.local/share) survive worker restarts
+      // without leaking into the gateway host home directory.
       HOME: "/workspace",
       // Route temporary files and cache to persistent workspace storage.
       TMPDIR: "/workspace/.tmp",
@@ -869,7 +868,7 @@ export abstract class BaseDeploymentManager {
       dispatcherHost
     );
 
-    // Include secrets from process.env for Docker deployments
+    // Include host-provided secret references when requested.
     if (includeSecrets && this.moduleEnvVarsBuilder) {
       try {
         envVars = await this.moduleEnvVarsBuilder(
@@ -960,8 +959,8 @@ export abstract class BaseDeploymentManager {
       }
 
       // CREDENTIAL_ENV_VAR_NAME and AGENT_DEFAULT_PROVIDER are now
-      // delivered dynamically via session context endpoint. No longer
-      // set as static container env vars.
+      // delivered dynamically via the session context endpoint instead of
+      // static process environment.
     }
 
     // Build full provider base URL mappings for all installed providers

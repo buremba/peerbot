@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the embedded Lobu stack natively (no Docker Compose).
+# Run the embedded Lobu stack natively.
 #
 # What runs:
 #   - owletto-backend (Hono + tsx watch) on :8787
@@ -11,7 +11,7 @@
 #   - redis-server on localhost:6379 (e.g. `brew services start redis`)
 #   - remote Postgres reachable via DATABASE_URL in .env
 #
-# Skipped vs `make dev`: embeddings service (cloud backfill), openclaw, docker worker image.
+# Skipped vs production: external managed services and cloud backfill workers.
 
 set -euo pipefail
 

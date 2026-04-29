@@ -1,7 +1,7 @@
 /**
  * Trace ID utilities for end-to-end message lifecycle observability.
  * Trace IDs propagate through the entire pipeline:
- * [WhatsApp Message] -> [Queue] -> [Worker Creation] -> [PVC Setup] -> [Agent Runtime] -> [Response]
+ * [WhatsApp Message] -> [Queue] -> [Worker Creation] -> [Worker Startup] -> [Agent Runtime] -> [Response]
  *
  * When OpenTelemetry is initialized, spans are sent to Tempo for waterfall visualization.
  * Use createSpan/createChildSpan from ./otel.ts for actual span creation.

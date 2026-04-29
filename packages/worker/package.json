@@ -1,7 +1,7 @@
 {
   "name": "@lobu/worker",
   "version": "5.0.0",
-  "description": "Lobu worker runtime - run in your own Docker image or use our base image",
+  "description": "Lobu worker runtime for embedded subprocess execution",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {

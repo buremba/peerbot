@@ -95,4 +95,4 @@ Reuses the grep pattern `grep -rn "from.*lobu/gateway" packages/owletto-backend/
 
 - Flattening the `owletto-*` prefix across all packages. The prefix signals "absorbed subsystem" — useful provenance. Only worth removing if the brand goes too.
 - Porting owletto's `.github/workflows/benchmark-memory.yml` and `e2e-openclaw.yml`. Revisit after PR-1 lands and we actually want those in CI.
-- Porting owletto's `docs/` (12 files). Most are deployment docs for owletto-only infra (pnpm, specific k8s setup). Any connector/memory-plugin docs worth keeping can be pulled in piecemeal.
+- Porting owletto's `docs/` (12 files). Most are historical deployment docs for owletto-only infra. Any connector/memory-plugin docs worth keeping can be pulled in piecemeal.

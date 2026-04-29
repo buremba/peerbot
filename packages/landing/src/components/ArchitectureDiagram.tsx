@@ -17,9 +17,9 @@ const runtimeLayer = {
   sublabel: "per-user isolation",
   features: [
     "One sandbox per user and channel",
-    "Kata Containers / Firecracker microVMs / gVisor on GCP",
-    "virtualized bash for scaling beyond 1000 users",
-    "No direct internet access (internal network)",
+    "Subprocess isolation with just-bash virtual filesystems",
+    "systemd-run hardening on Linux production hosts",
+    "No direct internet access (gateway proxy only)",
     "Nix reproducible environments",
     "OpenTelemetry for observability",
   ],

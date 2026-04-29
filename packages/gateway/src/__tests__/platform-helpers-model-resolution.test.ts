@@ -1,26 +1,9 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import {
   hasConfiguredProvider,
   resolveAgentId,
   resolveAgentOptions,
 } from "../services/platform-helpers.js";
-
-const originalDispatcherServiceName = process.env.DISPATCHER_SERVICE_NAME;
-const originalKubernetesNamespace = process.env.KUBERNETES_NAMESPACE;
-
-afterEach(() => {
-  if (originalDispatcherServiceName === undefined) {
-    delete process.env.DISPATCHER_SERVICE_NAME;
-  } else {
-    process.env.DISPATCHER_SERVICE_NAME = originalDispatcherServiceName;
-  }
-
-  if (originalKubernetesNamespace === undefined) {
-    delete process.env.KUBERNETES_NAMESPACE;
-  } else {
-    process.env.KUBERNETES_NAMESPACE = originalKubernetesNamespace;
-  }
-});
 
 describe("resolveAgentOptions model resolution", () => {
   test("uses pinned model when pinned provider is installed", async () => {

@@ -281,14 +281,6 @@ function getTraceTile(row: TraceRow): TraceTile {
         border: "rgba(245, 158, 11, 0.4)",
       };
     }
-    if (call.startsWith("k8s") || call.startsWith("helm")) {
-      return {
-        text: "K8",
-        fg: "#60a5fa",
-        bg: "rgba(96, 165, 250, 0.14)",
-        border: "rgba(96, 165, 250, 0.4)",
-      };
-    }
     if (call.startsWith("approval")) {
       return {
         text: "OK",

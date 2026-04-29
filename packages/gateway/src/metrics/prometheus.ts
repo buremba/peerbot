@@ -49,21 +49,6 @@ function initializeMetrics() {
   );
   registerMetric("lobu_queue_length", "Current message queue length", "gauge");
   registerMetric(
-    "lobu_pvc_created_total",
-    "Total number of PVCs created",
-    "counter"
-  );
-  registerMetric(
-    "lobu_pvc_deleted_total",
-    "Total number of PVCs deleted",
-    "counter"
-  );
-  registerMetric(
-    "lobu_pvc_cleanup_failed_total",
-    "Total number of failed PVC cleanup operations",
-    "counter"
-  );
-  registerMetric(
     "lobu_redis_connection_errors_total",
     "Total number of Redis connection errors",
     "counter"

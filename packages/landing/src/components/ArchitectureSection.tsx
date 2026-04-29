@@ -17,8 +17,8 @@ export function ArchitectureSection(props: {
           class="text-center text-sm mb-12 max-w-xl mx-auto"
           style={{ color: "var(--color-page-text-muted)" }}
         >
-          Every agent runs in a sandboxed container with no outbound network by
-          default — on your infrastructure, not ours.
+          Every agent runs in an isolated embedded worker with gateway-mediated
+          network access — on your infrastructure, not ours.
         </p>
 
         <div class="max-w-3xl mx-auto xl:max-w-none">

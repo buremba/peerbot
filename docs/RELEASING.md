@@ -28,15 +28,6 @@ BREAKING CHANGE: RuntimeProviderCredentialResolver now returns
 `{ credential?, credentialRef?, authType }` instead of a bare string.
 ```
 
-## Chart.yaml `appVersion` — bump manually
-
-release-please bumps `version:` but not `appVersion:` (the YAML updater strips quotes, and Helm convention wants it quoted). Edit the release PR before merging:
-
-```yaml
-version: 3.1.0
-appVersion: "3.1.0"
-```
-
 ## Adding a new published package
 
 1. `release-please-config.json` — add to `extra-files[]`:

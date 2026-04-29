@@ -21,22 +21,10 @@
             execute: () => nav("/getting-started/"),
           },
           {
-            name: "lobu_open_install_guide",
-            description:
-              "Open a specific Lobu deployment install guide (docker, kubernetes, aws, or embedding).",
-            inputSchema: {
-              type: "object",
-              properties: {
-                target: {
-                  type: "string",
-                  enum: ["docker", "kubernetes", "aws", "embedding"],
-                  description: "Deployment target to open.",
-                },
-              },
-              required: ["target"],
-              additionalProperties: false,
-            },
-            execute: ({ target }) => nav(`/deployment/${target}/`),
+            name: "lobu_open_deployment_guide",
+            description: "Open the Lobu embedded deployment guide.",
+            inputSchema: { type: "object", properties: {}, additionalProperties: false },
+            execute: () => nav("/deployment/embedding/"),
           },
           {
             name: "lobu_open_platform_guide",

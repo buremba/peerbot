@@ -39,8 +39,8 @@ function locateSystemdRun(): string | null {
   }
   try {
     // Probe by dispatching a real transient unit: `--version` only prints the
-    // package version and does not exercise dbus. Some Linux containers ship
-    // the binary with no user manager attached; we have to exercise the
+    // package version and does not exercise dbus. Some Linux hosts ship the
+    // binary with no user manager attached; we have to exercise the
     // user-bus path that the worker spawn will later use, or workers fail
     // at first request instead of falling back to plain spawn here.
     //
@@ -165,9 +165,9 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
   /**
    * Embedded gateway is served by `@lobu/owletto-backend` at the `/lobu`
    * mount on the configured PORT (default 8787). Without overriding here,
-   * `BaseDeploymentManager` would hand workers `http://127.0.0.1:8080`
-   * (the legacy K8s service port with no mount prefix), so the worker
-   * would 404 on every dispatch and provider-proxy call.
+   * `BaseDeploymentManager` would hand workers the standalone gateway default
+   * port with no mount prefix, so the worker would 404 on every dispatch and
+   * provider-proxy call.
    */
   protected getDispatcherUrl(): string {
     const port = process.env.PORT || process.env.GATEWAY_PORT || "8787";
@@ -272,7 +272,7 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
 
     // On Linux production hosts, wrap the worker in a transient systemd
     // user scope: cgroup limits + IPAddressDeny + capability drops. Falls
-    // back transparently on macOS / containers without user systemd.
+    // back transparently on macOS / Linux hosts without user systemd.
     const systemdRun = locateSystemdRun();
     if (systemdRun) {
       const unitName = makeUnitName(deploymentName);

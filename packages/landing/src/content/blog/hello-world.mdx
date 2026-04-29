@@ -26,9 +26,9 @@ OpenClaw is a great agent runtime. But running it for a team exposes real proble
 
 **Credential isolation.** OpenClaw needs API keys to talk to LLM providers. In a multi-tenant setup, you can't just set environment variables — every user has their own keys, and a compromised agent shouldn't be able to read them. Workers don't receive real API keys, ever. The gateway generates placeholder tokens (`lobu_secret_<uuid>`) and passes those instead. The real credentials stay in Redis. All outbound traffic flows through the gateway's HTTP proxy, which swaps placeholders for real keys at request time. A compromised worker literally doesn't have the secrets.
 
-**Network isolation.** Workers sit on an internal-only Docker network with no direct internet access. Outbound connections are denied by default — you control what domains workers can reach through allowlists. Even if an agent tries to call home, there's no route out.
+**Network isolation.** Workers route outbound traffic through the gateway HTTP proxy. Outbound connections are denied by default — you control what domains workers can reach through allowlists. On Linux production hosts, `systemd-run` adds kernel-level egress blocking so workers can only reach loopback.
 
-**Stability.** OpenClaw agents can brick their own environment — install a bad package, corrupt the shell config, fill the disk. In a multi-tenant system that's unacceptable. Each Lobu worker runs in an isolated container (Kata Containers, Firecracker microVMs, or gVisor) with resource limits or with just-bash for scaling beyond 1000 users. If an agent trashes its environment, it only affects that one user's sandbox. The next session starts fresh from a clean image, or resumes from the last good persistent volume snapshot.
+**Stability.** OpenClaw agents can brick their own environment — install a bad package, corrupt the shell config, fill the disk. In a multi-tenant system that's unacceptable. Each Lobu worker runs as its own subprocess with a persistent workspace, just-bash virtual filesystem isolation, and host-enforced resource limits where available. If an agent trashes its environment, it only affects that one user's sandbox.
 
 **MCP proxy.** OpenClaw supports MCP servers, but in a multi-tenant setup you need per-user authentication. Lobu's gateway proxies MCP calls so each user authenticates once via OAuth, and the gateway injects their credentials transparently. Workers don't manage MCP tokens — they just call the MCP endpoint and the gateway handles auth.
 
@@ -38,7 +38,7 @@ Every agent is configurable through a settings page — providers, skills, MCP s
 
 **Skills** are modular bundles of instructions, MCP servers, system packages, and network requirements. A skill declares what it needs: integrations, Nix packages, and domains to allowlist. Tool visibility and approval policy live separately in `lobu.toml`, which keeps the capability manifest distinct from security controls. Lobu and Owletto now ship separate starter skills you can install with `npx @lobu/cli@latest skills add lobu` and `npx owletto@latest skills add owletto`. Teams can still create project-owned local skills, and agents can request skill installation mid-conversation — the user gets a prefilled settings link, approves, and the agent resumes.
 
-**Nix** is how we handle reproducible environments. Instead of baking every possible tool into the worker image, users install what they need from the settings page — `ffmpeg`, `python`, `curl`, whatever. Nix gives us deterministic, conflict-free package management across sandboxes. It's the same approach [Replit uses](https://blog.replit.com/nix) for their development environments, and for the same reason: when you have thousands of isolated environments, you need package management that's reproducible and doesn't break between runs. The worker image ships with Nix tooling; packages are resolved and available at container startup.
+**Nix** is how we handle reproducible environments. Instead of baking every possible tool into a runtime image, users install what they need from the settings page — `ffmpeg`, `python`, `curl`, whatever. Nix gives us deterministic, conflict-free package management across sandboxes. It's the same approach [Replit uses](https://blog.replit.com/nix) for their development environments, and for the same reason: when you have many isolated environments, you need package management that's reproducible and doesn't break between runs.
 
 ## One bot, everything in-app
 
@@ -54,7 +54,7 @@ Pricing has evolved since launch. Today you can self-host the open-source stack 
 
 ## Where this is going
 
-The gateway is being rewritten with multi-tenancy as a first-class concern — usage tracking, audit logs, and a control plane so teams can manage agents without touching Kubernetes. The end state: push your agent config and Lobu handles the rest.
+The gateway is being rewritten with multi-tenancy as a first-class concern — usage tracking, audit logs, and a control plane so teams can manage agents without maintaining separate infrastructure per user. The end state: push your agent config and Lobu handles the rest.
 
 ## Try it
 

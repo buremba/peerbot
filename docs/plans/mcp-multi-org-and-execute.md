@@ -252,7 +252,7 @@ Scope:
 - `src/sandbox/{run-script, client-sdk, method-metadata, typebox-to-signature}.ts`
 - Per-namespace delegations (most thin wrappers; `organizations` and `watchers` have real logic).
 - `client.org()` accessor with membership check + LRU cache.
-- Add `isolated-vm` dep; verify Docker build on Debian base image.
+- Add `isolated-vm` dep; verify the Node runtime can load its native addon on the target host.
 
 Validation:
 - Unit tests: `client-sdk.test.ts` covers `org()` accessor (slug, UUID, non-member throw, public-workspace read-only, revocation mid-script).
@@ -308,7 +308,7 @@ Validation:
 
 ## Risks and gotchas
 
-- **`isolated-vm` native build.** Debian-based Docker image, Node version pin, `python3` + `build-essential`. Half-day risk if the current image is Alpine; verify before deep work.
+- **`isolated-vm` native build.** Node version pin, `python3` + `build-essential` when a prebuild is unavailable. Half-day risk on hosts without a matching prebuild; verify before deep work.
 - **Existing reaction scripts in DB.** Stored scripts target the legacy `ReactionSDK` shape (`actions.execute`, `content.save`, `notify`, `query(sql, params)`, `react(ctx, sdk)` export). The new `ClientSDK` is a different surface — namespace renames (`content.save` → `knowledge.save`, `actions.execute` → `operations.execute`), object-shaped args instead of positional, no `notify` primitive, and the entry point is `default async (ctx, client, params?)`. Old scripts will not transparently keep working — they must be rewritten and recompiled. Migration ran in PR #348 against `watchers.reaction_script` / `reaction_script_compiled`; backup table `_reactions_backup_2026_04_25` holds originals for rollback. Audit query: `SELECT COUNT(*) FROM watchers WHERE reaction_script ~ 'export\s+async\s+function\s+react\s*\(' OR reaction_script ~ 'sdk\.(notify|content|actions)';` returns 0 post-migration.
 - **Dry-run write classification misses a handler.** If a new method is added without metadata, dry-run might treat it as a read and mutate prod. Ship-blocking test: `method-metadata.ts` must cover every public SDK path; CI fails if not.
 - **Async SDK bridge leaks.** `isolated-vm` `Reference.apply` patterns have known footguns (un-disposed references, leaked promises). Budget unit-test time here up front.

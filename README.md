@@ -47,7 +47,7 @@ npx owletto@latest init
 
 ### Deployment
 
-Single-process Node app. Run it however you run Node — `node`, `pm2`, `systemd`, a container of your choosing. The app needs `DATABASE_URL` (Postgres + pgvector) and `REDIS_URL` reachable from its environment; no orchestrator is required and there is no Helm chart to install.
+Single-process Node app. Run it however you run Node — `node`, `pm2`, `systemd`, or another process supervisor. The app needs `DATABASE_URL` (Postgres + pgvector) and `REDIS_URL` reachable from its environment; no orchestrator is required.
 
 - **Local dev** (contributing to Lobu itself): clone, `make setup`, `make dev` (boots embedded gateway + workers + Vite HMR on `:8787`).
 - **Production**: `bun run --cwd packages/owletto-backend build:server`, then `node packages/owletto-backend/dist/server.bundle.mjs` under your process supervisor of choice.

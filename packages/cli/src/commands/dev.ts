@@ -57,9 +57,7 @@ export async function devCommand(
 
   if (missing.length > 0) {
     spinner.fail("Required environment variables missing");
-    console.error(
-      chalk.red(`\n  Set the following in .env:\n`)
-    );
+    console.error(chalk.red(`\n  Set the following in .env:\n`));
     for (const key of missing) {
       console.error(chalk.dim(`    ${key}=`));
     }
@@ -94,15 +92,9 @@ export async function devCommand(
         "  seeing this from a published @lobu/cli, please file an issue."
       )
     );
+    console.error(chalk.dim("  In the monorepo, build it via:"));
     console.error(
-      chalk.dim(
-        "  In the monorepo, build it via:"
-      )
-    );
-    console.error(
-      chalk.dim(
-        "    bun run --filter '@lobu/owletto-backend' build:server\n"
-      )
+      chalk.dim("    bun run --filter '@lobu/owletto-backend' build:server\n")
     );
     process.exit(1);
   }
@@ -115,7 +107,9 @@ export async function devCommand(
 
   console.log(chalk.cyan(`\n  Starting Lobu...\n`));
   console.log(chalk.dim(`  bundle:        ${bundlePath}`));
-  console.log(chalk.dim(`  database:      ${redactUrl(envVars.DATABASE_URL!)}`));
+  console.log(
+    chalk.dim(`  database:      ${redactUrl(envVars.DATABASE_URL!)}`)
+  );
   console.log(chalk.dim(`  redis:         ${redactUrl(envVars.REDIS_URL!)}`));
   console.log(chalk.dim(`  api docs:      ${gatewayUrl}/api/docs`));
   console.log();
@@ -145,10 +139,10 @@ export async function devCommand(
   // Forward Ctrl+C to the child so it can clean up its own subprocess workers
   // before the parent exits. SIGKILL after a timeout in case it wedges.
   const forwardSignal = (signal: NodeJS.Signals) => {
-    if (child.exitCode !== null || child.killed) return;
+    if (child.exitCode !== null || child.signalCode !== null) return;
     child.kill(signal);
     setTimeout(() => {
-      if (child.exitCode === null && !child.killed) {
+      if (child.exitCode === null && child.signalCode === null) {
         child.kill("SIGKILL");
       }
     }, 10_000).unref();

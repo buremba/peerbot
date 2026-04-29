@@ -2,26 +2,12 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { buildMemoryPlugins } from "../config/index.js";
 
 const originalMemoryUrl = process.env.MEMORY_URL;
-const originalDispatcherServiceName = process.env.DISPATCHER_SERVICE_NAME;
-const originalKubernetesNamespace = process.env.KUBERNETES_NAMESPACE;
 
 afterEach(() => {
   if (originalMemoryUrl === undefined) {
     delete process.env.MEMORY_URL;
   } else {
     process.env.MEMORY_URL = originalMemoryUrl;
-  }
-
-  if (originalDispatcherServiceName === undefined) {
-    delete process.env.DISPATCHER_SERVICE_NAME;
-  } else {
-    process.env.DISPATCHER_SERVICE_NAME = originalDispatcherServiceName;
-  }
-
-  if (originalKubernetesNamespace === undefined) {
-    delete process.env.KUBERNETES_NAMESPACE;
-  } else {
-    process.env.KUBERNETES_NAMESPACE = originalKubernetesNamespace;
   }
 });
 

@@ -14,11 +14,25 @@ export { Lobu, type LobuAgentConfig, type LobuConfig } from "./lobu.js";
 // ── Advanced (for custom setups) ────────────────────────────────────────────
 
 export { createGatewayApp, startGatewayServer } from "./cli/gateway.js";
+export { OAuthClient } from "./auth/oauth/client.js";
+export { CLAUDE_PROVIDER } from "./auth/oauth/providers.js";
+export { createAuthProfileLabel } from "./auth/settings/auth-profiles-manager.js";
+export { ApiPlatform, type ApiPlatformConfig } from "./api/index.js";
+export {
+  ChatInstanceManager,
+  ChatResponseBridge,
+} from "./connections/index.js";
+export type {
+  ConnectionSettings,
+  PlatformAdapterConfig,
+  PlatformConnection,
+} from "./connections/index.js";
 export {
   type AgentConfig,
   buildGatewayConfig,
   type GatewayConfig,
 } from "./config/index.js";
+export { Orchestrator } from "./orchestration/index.js";
 export type {
   EmbeddedAuthProvider,
   ProviderCredentialContext,

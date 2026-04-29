@@ -183,34 +183,7 @@ function normalizeRuntimeProvider(provider: any, models: ProviderModelOption[]):
 }
 
 async function getClaudeOAuthRuntime() {
-  const entryUrl = import.meta.resolve('@lobu/gateway');
-  const distRoot = entryUrl.replace(/dist\/index\.js$/, 'dist');
-  const { OAuthClient } = (await import(`${distRoot}/auth/oauth/client.js`)) as {
-    OAuthClient: new (
-      config: unknown
-    ) => {
-      generateCodeVerifier: () => string;
-      buildAuthUrl: (state: string, codeVerifier: string, customRedirectUri?: string) => string;
-      exchangeCodeForToken: (
-        code: string,
-        codeVerifier: string,
-        customRedirectUri?: string,
-        state?: string
-      ) => Promise<{
-        accessToken: string;
-        refreshToken?: string;
-        expiresAt?: number;
-      }>;
-    };
-  };
-  const { CLAUDE_PROVIDER } = (await import(`${distRoot}/auth/oauth/providers.js`)) as {
-    CLAUDE_PROVIDER: unknown;
-  };
-  const { createAuthProfileLabel } = (await import(
-    `${distRoot}/auth/settings/auth-profiles-manager.js`
-  )) as {
-    createAuthProfileLabel: (providerName: string, credential: string) => string;
-  };
+  const { CLAUDE_PROVIDER, OAuthClient, createAuthProfileLabel } = await import('@lobu/gateway');
 
   return {
     oauthClient: new OAuthClient(CLAUDE_PROVIDER),

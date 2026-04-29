@@ -67,7 +67,9 @@ function getInitLinesForUseCase(useCase: LandingUseCaseShowcase): TermLine[] {
     {
       text: "? Gateway port?",
       color: "#c9cdd4",
-      links: [{ label: "8080 (default)", href: "/getting-started/", selected: true }],
+      links: [
+        { label: "8080 (default)", href: "/getting-started/", selected: true },
+      ],
     },
     {
       text: "? Worker network access?",

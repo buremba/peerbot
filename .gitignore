@@ -9,12 +9,6 @@ node_modules
 .env.*
 .tmp/*
 tmp/
-charts/lobu/values-local.yaml
-
-# Helm dependency files
-charts/lobu/charts/
-charts/lobu/Chart.lock
-
 # Build output - compiled artifacts should not be committed
 dist/
 **/dist/

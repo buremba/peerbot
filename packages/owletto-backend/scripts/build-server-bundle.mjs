@@ -13,10 +13,10 @@
  * instead of their CJS dist. esbuild compiles the TS inline.
  *
  * External: bare specifiers stay external (loaded from node_modules at
- * runtime). The Docker build uses `bun install --linker=hoisted` so Node's
- * resolver finds them at top-level node_modules. Native addons (isolated-vm)
- * and packages with require-in-the-middle hooks (Sentry, OpenTelemetry,
- * pino) MUST stay external to keep their runtime hooks working.
+ * runtime). Published `@lobu/cli` declares those runtime dependencies
+ * directly so Node's resolver finds them from the CLI install. Native addons
+ * (isolated-vm) and packages with require-in-the-middle hooks (Sentry,
+ * OpenTelemetry, pino) MUST stay external to keep their runtime hooks working.
  */
 
 import esbuild from 'esbuild';
@@ -63,8 +63,10 @@ const result = await esbuild.build({
   logLevel: 'info',
 });
 
-const outPath = join(pkgDir, 'dist/server.bundle.mjs');
-const bytes = result.metafile.outputs[outPath]?.bytes ?? 0;
+const output = Object.entries(result.metafile.outputs).find(([file]) =>
+  file.endsWith('dist/server.bundle.mjs'),
+)?.[1];
+const bytes = output?.bytes ?? 0;
 console.log(
   `\n=== bundle ready: dist/server.bundle.mjs (${(bytes / 1024 / 1024).toFixed(2)} MB)`,
 );

@@ -171,17 +171,17 @@ export async function initCommand(
     : { connectionConfig: {}, connectionSecrets: [] };
 
   // Memory
-  const memoryChoice = await select<"none" | "owletto-cloud" | "owletto-custom">(
-    {
-      message: "Memory:",
-      choices: [
-        { name: "None (filesystem memory)", value: "none" },
-        { name: "Lobu Cloud (app.lobu.ai)", value: "owletto-cloud" },
-        { name: "Custom Lobu memory URL", value: "owletto-custom" },
-      ],
-      default: "none",
-    }
-  );
+  const memoryChoice = await select<
+    "none" | "owletto-cloud" | "owletto-custom"
+  >({
+    message: "Memory:",
+    choices: [
+      { name: "None (filesystem memory)", value: "none" },
+      { name: "Lobu Cloud (app.lobu.ai)", value: "owletto-cloud" },
+      { name: "Custom Lobu memory URL", value: "owletto-custom" },
+    ],
+    default: "none",
+  });
 
   const envSecrets: Array<{ envVar: string; value: string }> = [];
   const includeOwlettoMemory = memoryChoice !== "none";
@@ -442,9 +442,7 @@ turns:
     console.log();
 
     const gatewayUrl = `http://localhost:${gatewayPort}`;
-    console.log(
-      chalk.cyan("  3. Set DATABASE_URL and REDIS_URL in .env:")
-    );
+    console.log(chalk.cyan("  3. Set DATABASE_URL and REDIS_URL in .env:"));
     console.log(
       chalk.dim(
         "     Lobu connects to a user-provided Postgres + Redis. Run them yourself"
@@ -610,4 +608,3 @@ async function getCliVersion(): Promise<string> {
   const pkg = JSON.parse(pkgContent);
   return pkg.version || "0.1.0";
 }
-

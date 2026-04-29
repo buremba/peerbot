@@ -36,24 +36,10 @@ function createGatewayConfig(
         expireInSeconds: 3600,
       },
       worker: {
-        image: {
-          repository: "lobu-worker",
-          tag: "latest",
-          digest: "",
-          pullPolicy: "Always",
-        },
-        imagePullSecrets: [],
-        serviceAccountName: "lobu-worker",
-        runtimeClassName: "",
         startupTimeoutSeconds: 90,
-        resources: {
-          requests: { cpu: "100m", memory: "256Mi" },
-          limits: { cpu: "1000m", memory: "2Gi" },
-        },
         idleCleanupMinutes: 60,
         maxDeployments: 100,
       },
-      kubernetes: { namespace: "lobu" },
       cleanup: {
         initialDelayMs: 1000,
         intervalMs: 60000,
@@ -62,7 +48,6 @@ function createGatewayConfig(
     },
     mcp: {
       publicGatewayUrl: "http://localhost:8080",
-      internalGatewayUrl: "http://gateway:8080",
     },
     health: {
       checkIntervalMs: 1000,

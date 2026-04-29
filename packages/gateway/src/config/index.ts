@@ -32,22 +32,10 @@ const GATEWAY_DEFAULTS = {
   PUBLIC_GATEWAY_URL: "",
   QUEUE_DIRECT_MESSAGE: "direct_message",
   QUEUE_MESSAGE_QUEUE: "message_queue",
-  WORKER_IMAGE_REPOSITORY: "lobu-worker",
-  WORKER_IMAGE_TAG: "latest",
-  WORKER_IMAGE_DIGEST: "",
-  WORKER_IMAGE_PULL_POLICY: "Always",
-  WORKER_IMAGE_PULL_SECRETS: "",
-  WORKER_SERVICE_ACCOUNT_NAME: "lobu-worker",
-  WORKER_RUNTIME_CLASS_NAME: "kata",
   WORKER_STARTUP_TIMEOUT_SECONDS: 90,
-  WORKER_CPU_REQUEST: "100m",
-  WORKER_MEMORY_REQUEST: "256Mi",
-  WORKER_CPU_LIMIT: "1000m",
-  WORKER_MEMORY_LIMIT: "2Gi",
   WORKER_IDLE_CLEANUP_MINUTES: 60,
   MAX_WORKER_DEPLOYMENTS: 100,
   WORKER_STALE_TIMEOUT_MINUTES: 10,
-  KUBERNETES_NAMESPACE: "lobu",
   CLEANUP_INITIAL_DELAY_MS: TIME.FIVE_SECONDS_MS,
   CLEANUP_INTERVAL_MS: 60000,
   CLEANUP_VERY_OLD_DAYS: 7,
@@ -55,10 +43,7 @@ const GATEWAY_DEFAULTS = {
   SOCKET_STALE_THRESHOLD_MS: 15 * TIME.MINUTE_MS,
   SOCKET_PROTECT_ACTIVE_WORKERS: true,
   LOBU_DEV_PROJECT_PATH: "/app",
-  COMPOSE_PROJECT_NAME: "lobu",
-  DISPATCHER_SERVICE_NAME: "lobu-dispatcher",
   LOG_LEVEL: "INFO" as const,
-  KUBECONFIG: "~/.kube/config",
   EMBEDDED_MAX_CONCURRENT_SESSIONS: 100,
   EMBEDDED_MAX_MEMORY_PER_SESSION_MB: 256,
   EMBEDDED_BASH_MAX_COMMAND_COUNT: 50_000,
@@ -132,7 +117,6 @@ export interface GatewayConfig {
   orchestration: OrchestratorConfig;
   mcp: {
     publicGatewayUrl: string;
-    internalGatewayUrl: string;
   };
   secrets: {
     /** Redis-backed writable secret store (encrypts via ENCRYPTION_KEY). */
@@ -180,23 +164,17 @@ export function loadEnvFile(envPath?: string): void {
 
 /**
  * Derive the internal gateway URL for worker→gateway communication.
- * Embedded mode runs the worker as a subprocess on the same host, so
- * `localhost` is the default. `DISPATCHER_URL` is honoured if set so a
- * caller can override (e.g. an external network namespace). The legacy
- * service-DNS path (`DISPATCHER_SERVICE_NAME` + `KUBERNETES_NAMESPACE`)
- * remains for backward compatibility with existing test fixtures.
+ * Embedded workers are subprocesses on the same host; the gateway is
+ * served by `@lobu/owletto-backend` on `PORT` under the `/lobu` mount.
+ * `DISPATCHER_URL` is honoured if set so a caller can override (e.g. a
+ * separate network namespace).
  */
 export function getInternalGatewayUrl(): string {
   if (process.env.DISPATCHER_URL) {
     return process.env.DISPATCHER_URL;
   }
-  const dispatcherService = process.env.DISPATCHER_SERVICE_NAME;
-  if (dispatcherService) {
-    const namespace = process.env.KUBERNETES_NAMESPACE || "lobu";
-    return `http://${dispatcherService}.${namespace}.svc.cluster.local:8080`;
-  }
-  const port = process.env.GATEWAY_PORT || "8080";
-  return `http://localhost:${port}`;
+  const port = process.env.PORT || process.env.GATEWAY_PORT || "8787";
+  return `http://127.0.0.1:${port}/lobu`;
 }
 
 /**
@@ -442,21 +420,6 @@ export function buildGatewayConfig(
           TIME.HOUR_SECONDS,
       },
       worker: {
-        image: {
-          repository: getOptionalEnv(
-            "WORKER_IMAGE_REPOSITORY",
-            DEFAULTS.WORKER_IMAGE_REPOSITORY
-          ),
-          tag: getOptionalEnv("WORKER_IMAGE_TAG", DEFAULTS.WORKER_IMAGE_TAG),
-          digest: getOptionalEnv(
-            "WORKER_IMAGE_DIGEST",
-            DEFAULTS.WORKER_IMAGE_DIGEST
-          ),
-          pullPolicy: getOptionalEnv(
-            "WORKER_IMAGE_PULL_POLICY",
-            DEFAULTS.WORKER_IMAGE_PULL_POLICY
-          ),
-        },
         startupTimeoutSeconds: getOptionalNumber(
           "WORKER_STARTUP_TIMEOUT_SECONDS",
           DEFAULTS.WORKER_STARTUP_TIMEOUT_SECONDS
@@ -493,7 +456,6 @@ export function buildGatewayConfig(
     },
     mcp: {
       publicGatewayUrl,
-      internalGatewayUrl: getInternalGatewayUrl(),
     },
     secrets: {
       redis: {
@@ -554,13 +516,6 @@ export function displayGatewayConfig(config: GatewayConfig): void {
   );
 
   console.log("\nOrchestration:");
-  console.log(
-    `  Worker Image: ${config.orchestration.worker.image.repository}`
-  );
-  console.log(`  Worker Tag: ${config.orchestration.worker.image.tag}`);
-  if (config.orchestration.worker.image.digest) {
-    console.log(`  Worker Digest: ${config.orchestration.worker.image.digest}`);
-  }
   console.log(
     `  Max Deployments: ${config.orchestration.worker.maxDeployments}`
   );

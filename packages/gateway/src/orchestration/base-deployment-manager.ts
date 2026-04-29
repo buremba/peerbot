@@ -119,12 +119,6 @@ export interface OrchestratorConfig {
     expireInSeconds: number;
   };
   worker: {
-    image: {
-      repository: string;
-      tag: string;
-      digest?: string;
-      pullPolicy: string;
-    };
     /**
      * Absolute path to the worker TypeScript entrypoint. Callers compute
      * this once at boot — the gateway never probes cwd or reads env at
@@ -320,24 +314,6 @@ export abstract class BaseDeploymentManager {
     });
     this.inFlightCreates.set(deploymentName, promise);
     return promise;
-  }
-
-  /**
-   * Resolve worker image reference.
-   * If digest is configured, prefer immutable digest reference (repo@sha256:...).
-   */
-  protected getWorkerImageReference(): string {
-    const { repository, tag, digest } = this.config.worker.image;
-    const normalizedDigest = digest?.trim();
-
-    if (normalizedDigest) {
-      const digestWithAlgo = normalizedDigest.startsWith("sha256:")
-        ? normalizedDigest
-        : `sha256:${normalizedDigest}`;
-      return `${repository}@${digestWithAlgo}`;
-    }
-
-    return `${repository}:${tag}`;
   }
 
   /**

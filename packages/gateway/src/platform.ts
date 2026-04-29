@@ -116,21 +116,6 @@ export interface PlatformAdapter {
   getInstructionProvider?(): InstructionProvider | null;
 
   /**
-   * Build platform-specific deployment metadata
-   * This metadata is used for deployment annotations (e.g., thread URLs, team IDs)
-   *
-   * @param conversationId - The conversation identifier
-   * @param channelId - The channel identifier
-   * @param platformMetadata - Platform-specific metadata from the queue payload
-   * @returns Record of metadata key-value pairs for deployment annotations
-   */
-  buildDeploymentMetadata(
-    conversationId: string,
-    channelId: string,
-    platformMetadata: Record<string, any>
-  ): Record<string, string>;
-
-  /**
    * Render non-blocking suggestions
    * Platform should display this as suggested prompts/quick replies
    *

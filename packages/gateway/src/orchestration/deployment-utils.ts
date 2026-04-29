@@ -1,20 +1,9 @@
 import type { ProviderCredentialContext } from "../embedded.js";
 import { getOrchestratorModules } from "../modules/module-system.js";
-import { platformRegistry } from "../platform.js";
 import type {
   DeploymentInfo,
-  MessagePayload,
   OrchestratorConfig,
 } from "./base-deployment-manager.js";
-
-/**
- * Shared types and utilities for deployment managers
- * Reduces code duplication between Docker and K8s implementations
- */
-
-// ============================================================================
-// Utility Functions
-// ============================================================================
 
 /**
  * Build environment variables by integrating all registered modules
@@ -34,36 +23,6 @@ export async function buildModuleEnvVars(
   }
 
   return envVars;
-}
-
-export const BASE_WORKER_LABELS = {
-  "app.kubernetes.io/name": "lobu",
-  "app.kubernetes.io/component": "worker",
-  "lobu/managed-by": "orchestrator",
-} as const;
-
-export function resolvePlatformDeploymentMetadata(
-  messageData?: MessagePayload
-): Record<string, string> {
-  if (
-    !messageData?.platform ||
-    !messageData.channelId ||
-    !messageData.conversationId ||
-    !messageData.platformMetadata
-  ) {
-    return {};
-  }
-
-  const platform = platformRegistry.get(messageData.platform);
-  if (!platform) {
-    return {};
-  }
-
-  return platform.buildDeploymentMetadata(
-    messageData.conversationId,
-    messageData.channelId,
-    messageData.platformMetadata
-  );
 }
 
 export function getVeryOldThresholdDays(config: OrchestratorConfig): number {

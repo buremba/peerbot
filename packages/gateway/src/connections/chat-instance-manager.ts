@@ -927,18 +927,6 @@ export class ChatInstanceManager {
         /* no-op: lifecycle managed by ChatInstanceManager */
       },
       isHealthy: () => true,
-      buildDeploymentMetadata: (
-        conversationId: string,
-        channelId: string,
-        platformMetadata: Record<string, any>
-      ) => ({
-        platform: name,
-        channelId,
-        conversationId,
-        ...(typeof platformMetadata.connectionId === "string"
-          ? { connectionId: platformMetadata.connectionId }
-          : {}),
-      }),
       extractRoutingInfo: (body: Record<string, unknown>) =>
         this.extractPlatformRoutingInfo(name, body),
       sendMessage: (

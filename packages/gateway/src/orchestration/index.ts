@@ -131,6 +131,21 @@ export class Orchestrator {
 
       await this.queueConsumer.stop();
 
+      // Drain active worker subprocesses so SIGINT to `lobu run` doesn't
+      // leave orphaned workers behind. The base manager's deleteDeployment
+      // is the right exit path — embedded sends SIGTERM/SIGKILL and awaits
+      // exit; other impls would no-op locally and that's fine.
+      try {
+        const active = await this.deploymentManager.listDeployments();
+        await Promise.allSettled(
+          active.map((d) =>
+            this.deploymentManager.deleteDeployment(d.deploymentName)
+          )
+        );
+      } catch (error) {
+        logger.error("Error draining workers during shutdown:", error);
+      }
+
       logger.info("✅ Orchestrator stopped");
     } catch (error) {
       logger.error("❌ Error stopping orchestrator:", error);

@@ -137,22 +137,6 @@ export class ApiPlatform implements PlatformAdapter {
   }
 
   /**
-   * Build deployment metadata
-   * For API sessions, we include session ID and source
-   */
-  buildDeploymentMetadata(
-    conversationId: string,
-    channelId: string,
-    platformMetadata: Record<string, any>
-  ): Record<string, string> {
-    return {
-      sessionId: platformMetadata.sessionId || conversationId,
-      source: "direct-api",
-      channelId,
-    };
-  }
-
-  /**
    * Get the response renderer for routing worker responses
    */
   getResponseRenderer(): ResponseRenderer | undefined {

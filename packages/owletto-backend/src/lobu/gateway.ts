@@ -205,8 +205,10 @@ export async function initLobuGateway(): Promise<Hono | null> {
         stop: () => Promise<void>;
         injectCoreServices: (
           redisClient: unknown,
-          providerCatalogService: unknown,
-          grantStore?: unknown
+          secretStore: unknown,
+          providerCatalogService?: unknown,
+          grantStore?: unknown,
+          policyStore?: unknown
         ) => Promise<void>;
       };
     };
@@ -267,8 +269,10 @@ export async function initLobuGateway(): Promise<Hono | null> {
     await hydratePersistedAgentSettings(coreServices.getAgentSettingsStore());
     await orchestrator.injectCoreServices(
       coreServices.getQueue().getRedisClient(),
+      coreServices.getSecretStore(),
       coreServices.getProviderCatalogService(),
-      coreServices.getGrantStore()
+      coreServices.getGrantStore() ?? undefined,
+      coreServices.getPolicyStore() ?? undefined
     );
     logger.info('[Lobu] Embedded orchestrator injected core services');
 

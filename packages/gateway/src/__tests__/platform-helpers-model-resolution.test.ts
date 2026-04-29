@@ -120,9 +120,8 @@ describe("resolveAgentOptions model resolution", () => {
     expect(resolved.model).toBeUndefined();
   });
 
-  test("normalizes legacy Owletto gateway URLs to the runtime K8s service", async () => {
-    process.env.DISPATCHER_SERVICE_NAME = "lobu-gateway";
-    process.env.KUBERNETES_NAMESPACE = "lobu";
+  test("normalizes legacy Owletto gateway URLs to the embedded gateway", async () => {
+    process.env.PORT = "8787";
 
     const settingsStore = {
       getEffectiveSettings: async () =>
@@ -156,9 +155,8 @@ describe("resolveAgentOptions model resolution", () => {
           slot: "memory",
           enabled: true,
           config: {
-            mcpUrl:
-              "http://lobu-gateway.lobu.svc.cluster.local:8080/mcp/owletto",
-            gatewayAuthUrl: "http://lobu-gateway.lobu.svc.cluster.local:8080",
+            mcpUrl: "http://127.0.0.1:8787/lobu/mcp/owletto",
+            gatewayAuthUrl: "http://127.0.0.1:8787/lobu",
           },
         },
       ],
@@ -166,8 +164,7 @@ describe("resolveAgentOptions model resolution", () => {
   });
 
   test("preserves custom Owletto endpoints", async () => {
-    process.env.DISPATCHER_SERVICE_NAME = "lobu-gateway";
-    process.env.KUBERNETES_NAMESPACE = "lobu";
+    process.env.PORT = "8787";
 
     const settingsStore = {
       getEffectiveSettings: async () =>
@@ -210,8 +207,7 @@ describe("resolveAgentOptions model resolution", () => {
   });
 
   test("injects Owletto mcpUrl/gatewayAuthUrl when override omits config", async () => {
-    process.env.DISPATCHER_SERVICE_NAME = "lobu-gateway";
-    process.env.KUBERNETES_NAMESPACE = "lobu";
+    process.env.PORT = "8787";
 
     const settingsStore = {
       getEffectiveSettings: async () =>
@@ -241,9 +237,8 @@ describe("resolveAgentOptions model resolution", () => {
           slot: "memory",
           enabled: true,
           config: {
-            mcpUrl:
-              "http://lobu-gateway.lobu.svc.cluster.local:8080/mcp/owletto",
-            gatewayAuthUrl: "http://lobu-gateway.lobu.svc.cluster.local:8080",
+            mcpUrl: "http://127.0.0.1:8787/lobu/mcp/owletto",
+            gatewayAuthUrl: "http://127.0.0.1:8787/lobu",
           },
         },
       ],

@@ -74,8 +74,7 @@ describe("buildMemoryPlugins", () => {
 
   test("uses Owletto plugin when installed and MEMORY_URL is set", () => {
     process.env.MEMORY_URL = "https://memory.example.com";
-    process.env.DISPATCHER_SERVICE_NAME = "lobu-gateway";
-    process.env.KUBERNETES_NAMESPACE = "lobu";
+    process.env.PORT = "8787";
 
     expect(buildMemoryPlugins({ hasOwlettoPlugin: true })).toEqual([
       {
@@ -83,8 +82,8 @@ describe("buildMemoryPlugins", () => {
         slot: "memory",
         enabled: true,
         config: {
-          mcpUrl: "http://lobu-gateway.lobu.svc.cluster.local:8080/mcp/owletto",
-          gatewayAuthUrl: "http://lobu-gateway.lobu.svc.cluster.local:8080",
+          mcpUrl: "http://127.0.0.1:8787/lobu/mcp/owletto",
+          gatewayAuthUrl: "http://127.0.0.1:8787/lobu",
         },
       },
     ]);

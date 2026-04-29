@@ -157,7 +157,21 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
   }
 
   protected getDispatcherHost(): string {
-    return "localhost";
+    // Match the systemd-run scope's IPAddressAllow=127.0.0.1 — IPv6 ::1
+    // resolution would be blocked under the hardened scope.
+    return "127.0.0.1";
+  }
+
+  /**
+   * Embedded gateway is served by `@lobu/owletto-backend` at the `/lobu`
+   * mount on the configured PORT (default 8787). Without overriding here,
+   * `BaseDeploymentManager` would hand workers `http://127.0.0.1:8080`
+   * (the legacy K8s service port with no mount prefix), so the worker
+   * would 404 on every dispatch and provider-proxy call.
+   */
+  protected getDispatcherUrl(): string {
+    const port = process.env.PORT || process.env.GATEWAY_PORT || "8787";
+    return `http://${this.getDispatcherHost()}:${port}/lobu`;
   }
 
   private getWorkerEntryPoint(): string {
@@ -217,7 +231,6 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
     );
 
     commonEnvVars.WORKSPACE_DIR = workspaceDir;
-    commonEnvVars.DEPLOYMENT_MODE = "embedded";
     const embeddedPath = buildEmbeddedWorkerPath(
       this.config.worker.binPathEntries,
       commonEnvVars.PATH || process.env.PATH
@@ -283,7 +296,17 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
       stdio: ["ignore", "pipe", "pipe"],
     });
 
-    // Pipe child stdout/stderr to gateway logger
+    // Spawn errors (binary missing, EACCES, fork failure) fire on the child
+    // *after* spawn() returns, so without an "error" listener Node would
+    // throw an unhandled exception and crash the gateway. Drop the entry
+    // and log so the next ensureDeployment can retry cleanly.
+    child.once("error", (err) => {
+      logger.error(
+        `Embedded worker ${deploymentName} spawn error: ${err.message}`
+      );
+      this.workers.delete(deploymentName);
+    });
+
     child.stdout?.on("data", (data: Buffer) => {
       for (const line of data.toString().trimEnd().split("\n")) {
         logger.info({ worker: deploymentName }, line);
@@ -295,22 +318,21 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
       }
     });
 
-    // Handle child exit (use once to prevent duplicate handler invocations)
     child.once("exit", (code, signal) => {
       const entry = this.workers.get(deploymentName);
       if (entry) {
         this.workers.delete(deploymentName);
-        if (signal) {
-          logger.info(
-            `Embedded worker ${deploymentName} exited with signal ${signal}`
-          );
-        } else if (code !== 0) {
-          logger.error(
-            `Embedded worker ${deploymentName} exited with code ${code}`
-          );
-        } else {
-          logger.info(`Embedded worker ${deploymentName} exited cleanly`);
-        }
+      }
+      if (signal) {
+        logger.info(
+          `Embedded worker ${deploymentName} exited with signal ${signal}`
+        );
+      } else if (code !== 0) {
+        logger.error(
+          `Embedded worker ${deploymentName} exited with code ${code}`
+        );
+      } else {
+        logger.info(`Embedded worker ${deploymentName} exited cleanly`);
       }
     });
 
@@ -333,7 +355,7 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
     const entry = this.workers.get(deploymentName);
 
     if (replicas === 0 && entry) {
-      this.killWorker(entry, deploymentName);
+      await this.killWorker(entry, deploymentName);
       logger.info(`Stopped embedded worker ${deploymentName}`);
     } else if (replicas === 1 && !entry) {
       logger.warn(
@@ -345,7 +367,7 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
   async deleteDeployment(deploymentName: string): Promise<void> {
     const entry = this.workers.get(deploymentName);
     if (entry) {
-      this.killWorker(entry, deploymentName);
+      await this.killWorker(entry, deploymentName);
       logger.info(`Stopped embedded worker: ${deploymentName}`);
     }
   }
@@ -378,20 +400,30 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
     }
   }
 
-  /** Send SIGTERM, then SIGKILL after timeout. */
-  private killWorker(entry: EmbeddedWorkerEntry, deploymentName: string): void {
+  /** Send SIGTERM, then SIGKILL after timeout. Resolves on child exit. */
+  private async killWorker(
+    entry: EmbeddedWorkerEntry,
+    deploymentName: string
+  ): Promise<void> {
     const child = entry.process;
 
-    // Delete from map first to prevent race with exit handler
+    // Delete from map first to prevent race with the exit handler.
     this.workers.delete(deploymentName);
 
-    // Check if already exited after map deletion
-    if (child.exitCode !== null || child.killed) return;
+    // Already exited — `exitCode`/`signalCode` are the only reliable
+    // indicators here. `child.killed` is set the moment we *send* a signal,
+    // so checking it would mis-treat "we just sent SIGTERM" as "already
+    // exited" and skip the SIGKILL escalation below.
+    if (child.exitCode !== null || child.signalCode !== null) return;
+
+    const exited = new Promise<void>((resolve) => {
+      child.once("exit", () => resolve());
+    });
 
     child.kill("SIGTERM");
 
     const killTimer = setTimeout(() => {
-      if (child.exitCode === null && !child.killed) {
+      if (child.exitCode === null && child.signalCode === null) {
         logger.warn(
           `Embedded worker ${deploymentName} did not exit after SIGTERM, sending SIGKILL`
         );
@@ -399,6 +431,10 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
       }
     }, KILL_TIMEOUT_MS);
 
-    child.once("exit", () => clearTimeout(killTimer));
+    try {
+      await exited;
+    } finally {
+      clearTimeout(killTimer);
+    }
   }
 }

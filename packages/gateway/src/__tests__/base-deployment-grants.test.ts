@@ -42,19 +42,9 @@ const TEST_CONFIG: OrchestratorConfig = {
     expireInSeconds: 300,
   },
   worker: {
-    image: {
-      repository: "lobu-worker",
-      tag: "latest",
-      pullPolicy: "IfNotPresent",
-    },
-    resources: {
-      requests: { cpu: "100m", memory: "128Mi" },
-      limits: { cpu: "500m", memory: "512Mi" },
-    },
     idleCleanupMinutes: 30,
     maxDeployments: 10,
   },
-  kubernetes: { namespace: "default" },
   cleanup: { initialDelayMs: 5000, intervalMs: 60000, veryOldDays: 7 },
 };
 

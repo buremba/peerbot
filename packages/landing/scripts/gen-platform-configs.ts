@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const connectionsFile = resolve(
   __dirname,
-  "../../gateway/src/routes/public/connections.ts"
+  "../../owletto-backend/src/gateway/routes/public/connections.ts"
 );
 
 const source = readFileSync(connectionsFile, "utf-8");

@@ -7,14 +7,14 @@ Deploy sandboxed, persistent AI agents to your infrastructure — one isolated a
 
 ## Quick start
 
-Lobu boots as a single Node process. Bring your own Postgres + Redis (managed instances or local — `brew services start postgresql redis` works for dev).
+Lobu boots as a single Node process. Bring your own Postgres with pgvector (managed instance or local — `brew services start postgresql` works for dev).
 
 ```bash
 # 1. Scaffold
 npx @lobu/cli@latest init my-agent
 cd my-agent
 
-# 2. Set DATABASE_URL and REDIS_URL in .env, then boot
+# 2. Set DATABASE_URL in .env, then boot
 npx @lobu/cli@latest run
 
 # 3. Chat with your agent (in another terminal)
@@ -29,7 +29,7 @@ npx @lobu/cli@latest eval
 ```
 my-agent/
 ├── lobu.toml                  # agents, providers, skills, network
-├── .env                       # secrets (API keys, DATABASE_URL, REDIS_URL)
+├── .env                       # secrets (API keys, DATABASE_URL)
 ├── AGENTS.md                  # briefing for coding agents
 ├── README.md
 ├── TESTING.md
@@ -120,24 +120,4 @@ npx @lobu/cli@latest run
 
 See the [CLI Reference](/reference/cli/) for all available commands.
 
-### Embedded (library)
-
-When using `@lobu/gateway` as a library, configure agents in code:
-
-```typescript
-import { Lobu } from "@lobu/gateway";
-
-const lobu = new Lobu({
-  redis: process.env.REDIS_URL!,
-  agents: [{
-    id: "support",
-    providers: [{ id: "openai", key: process.env.OPENAI_API_KEY! }],
-    skills: ["github"],
-  }],
-});
-await lobu.start();
-```
-
-See [Embed in Your App](/deployment/embedding/) for framework-specific examples.
-
-Both modes expose an admin page at `/agents` and a REST API at `/api/docs` for runtime management — adding providers, connections, and viewing agent status.
+The CLI exposes an admin page at `/agents` and a REST API at `/api/docs` for runtime management — adding providers, connections, and viewing agent status.

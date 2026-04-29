@@ -27,7 +27,6 @@ const UserConfigScopeSchema = z.enum([
   "view-model",
   "system-prompt",
   "skills",
-  "schedules",
   "permissions",
   "packages",
 ]);

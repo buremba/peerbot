@@ -148,24 +148,6 @@ const agentPrompt = [
   "Explain what you change and why.",
 ].join("\n");
 
-const embedSnippet = [
-  "// app/api/lobu/[...path]/route.ts",
-  'import { Lobu } from "@lobu/gateway";',
-  "",
-  "const lobu = new Lobu({",
-  "  redis: process.env.REDIS_URL!,",
-  '  agents: [{ id: "support" }],',
-  "});",
-  "const ready = lobu.initialize();",
-  "",
-  "async function handler(req: Request) {",
-  "  await ready;",
-  "  return lobu.getApp().fetch(req);",
-  "}",
-  "export const GET = handler;",
-  "export const POST = handler;",
-].join("\n");
-
 const testEvalLines: TermLine[] = [
   {
     text: '$ npx @lobu/cli@latest chat "Hello, what can you do?"',
@@ -552,20 +534,12 @@ export function SkillsWorkflowSection({
                   <DeliverySurfacePill key={surface.label} surface={surface} />
                 ))}
               </div>
-              <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <ShipCard
-                  title="Embed in your app"
-                  description="Mount Lobu inside Next.js, Express, Hono, Fastify, or any Node.js framework. Works anywhere that speaks Web Standard Request/Response."
-                  code={embedSnippet}
-                  href="/deployment/embedding/"
-                />
-                <ShipCard
-                  title="Run it on your infra"
-                  description="Boot the same project as a single Node process under systemd, pm2, or any supervisor. Bring your own Postgres + Redis (managed or local)."
-                  code={selfHostSnippet}
-                  href="/getting-started/"
-                />
-              </div>
+              <ShipCard
+                title="Run it on your infra"
+                description="Boot the project as a single Node process under systemd, pm2, or any supervisor. Bring your own Postgres (with pgvector)."
+                code={selfHostSnippet}
+                href="/getting-started/"
+              />
             </div>
           </div>
         </ContentRail>

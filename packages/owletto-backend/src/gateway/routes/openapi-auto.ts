@@ -80,8 +80,7 @@ function deriveTag(path: string): string {
     path.startsWith("/api/v1/agents") &&
     !path.includes("/config") &&
     !path.includes("/channels") &&
-    !path.includes("/history") &&
-    !path.includes("/schedules")
+    !path.includes("/history")
   ) {
     return "Agents";
   }
@@ -94,11 +93,6 @@ function deriveTag(path: string): string {
   // Channels — platform bindings
   if (path.includes("/channels")) {
     return "Channels";
-  }
-
-  // Schedules — wakeups and reminders
-  if (path.includes("/schedules")) {
-    return "Schedules";
   }
 
   // History — session messages and stats

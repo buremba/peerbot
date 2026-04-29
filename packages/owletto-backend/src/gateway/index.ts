@@ -7,12 +7,6 @@
  * gateway as its own process.
  */
 
-// ── Primary API ─────────────────────────────────────────────────────────────
-
-export { Lobu, type LobuAgentConfig, type LobuConfig } from "./lobu.js";
-
-// ── Advanced (for custom setups) ────────────────────────────────────────────
-
 export { createGatewayApp, startGatewayServer } from "./cli/gateway.js";
 export { OAuthClient } from "./auth/oauth/client.js";
 export { CLAUDE_PROVIDER } from "./auth/oauth/providers.js";

@@ -9,45 +9,16 @@ const localDev = {
       code: "npx @lobu/cli@latest init my-agent",
     },
     {
-      label: "Set DATABASE_URL and REDIS_URL in .env, then boot",
+      label: "Set DATABASE_URL in .env, then boot",
       code: "cd my-agent && npx @lobu/cli@latest run",
     },
     { label: "Open the docs", code: "open http://localhost:8080/api/docs" },
   ],
 };
 
-const embedWithTypescript = {
-  id: "embed",
-  label: "Embed in your app",
-  badges: ["Next.js", "Express", "Hono", "Fastify", "Bun", "Deno"],
-  docsHref: "/deployment/embedding/",
-  steps: [
-    {
-      label: "Mount in Next.js App Router (or any framework)",
-      code: [
-        "// app/api/lobu/[...path]/route.ts",
-        'import { Lobu } from "@lobu/gateway";',
-        "",
-        "const lobu = new Lobu({",
-        "  redis: process.env.REDIS_URL!,",
-        '  agents: [{ id: "support" }],',
-        "});",
-        "const ready = lobu.initialize();",
-        "",
-        "async function handler(req: Request) {",
-        "  await ready;",
-        "  return lobu.getApp().fetch(req);",
-        "}",
-        "export const GET = handler;",
-        "export const POST = handler;",
-      ].join("\n"),
-    },
-  ],
-};
-
 type Mode = typeof localDev;
 
-export const modes = [localDev, embedWithTypescript];
+export const modes = [localDev];
 
 export function ModeCard({ mode }: { mode: Mode }) {
   return (

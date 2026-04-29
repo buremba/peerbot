@@ -58,7 +58,7 @@ See the [memory benchmarks methodology](/guides/memory-benchmarks/) for fairness
 
 Lobu runs as a single Node process. Each user/channel gets its own worker subprocess that the gateway spawns on demand.
 
-### Embedded (single-process, BYO Postgres + Redis)
+### Single-process (BYO Postgres)
 
 Uses [just-bash](https://github.com/nicholasgasior/just-bash) (virtual bash) + **Nix** for reproducible packages. Each user gets an isolated virtual filesystem and bash session at ~50MB memory footprint. Tested at **300 concurrent instances on a single machine**.
 
@@ -66,8 +66,6 @@ Uses [just-bash](https://github.com/nicholasgasior/just-bash) (virtual bash) + *
 - **Workspace persistence** — `./workspaces/{agentId}/` survives gateway restarts.
 - **Egress through gateway proxy** — workers run with `HTTP_PROXY=http://localhost:8118`; allowlist/blocklist + LLM egress judge enforced at the proxy.
 - **Linux production hardening** — when `systemd-run` is available, the worker spawn becomes a transient unit with `MemoryMax`, `CPUQuota`, `IPAddressDeny=any` (kernel-level egress), capability drops, and `NoNewPrivileges`. macOS dev hosts fall back to plain spawn.
-
-Mount Lobu inside Next.js, Express, Hono, Fastify, or Bun — no separate orchestrator needed. See [Embed in Your App](/deployment/embedding/).
 
 ### Comparison to other sandboxing approaches
 

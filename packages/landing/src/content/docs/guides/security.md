@@ -72,10 +72,9 @@ Workers never receive raw provider credentials or OAuth tokens. The gateway reso
 | Redis role | Redis may be the built-in encrypted secret store, or it may hold only metadata and `secretRef` pointers when secrets live elsewhere. | Redis-backed secret store or metadata only |
 
 - **AWS Secrets Manager refs are read-only**. `aws-sm://...` works well for durable provider secret references, but refreshed user tokens still need a writable secret store.
-- **User-scoped provider credentials are supported in embedded mode**. A host app can resolve credentials at runtime from request context such as `userId` without persisting plaintext keys in Lobu state.
 - **Workers never touch third-party OAuth tokens directly**. They call integrations through Owletto MCP tools and the gateway proxy.
 
-For concrete config examples, see [Embedding](/deployment/embedding/), the [`lobu.toml` reference](/reference/lobu-toml/), and the [CLI reference](/reference/cli/).
+For concrete config examples, see the [`lobu.toml` reference](/reference/lobu-toml/) and the [CLI reference](/reference/cli/).
 
 ## MCP Proxy
 

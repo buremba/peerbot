@@ -18,6 +18,7 @@
  * postgres.js's `onlisten` callback fires post-reconnect.
  */
 
+import { randomUUID } from "node:crypto";
 import { createLogger } from "@lobu/core";
 import * as Sentry from "@sentry/node";
 import { getDb, getDbListener, type DbClient } from "../../../db/client.js";
@@ -170,10 +171,23 @@ export class RunsQueue implements IMessageQueue {
   /** Active LISTEN subscriptions, keyed by channel. */
   private listenSubs = new Map<string, { unlisten: () => Promise<unknown> }>();
 
+  /**
+   * Per-process claim identity. UUID instead of `process.pid` because pids
+   * collide across Kubernetes pods — two replicas can each have pid 42, and
+   * filtering ownership by pid would let one pod's heartbeat / completion
+   * silently mutate another pod's claim. Generated once at construction and
+   * stamped into `claimed_by` on every claim; every subsequent ownership
+   * mutation (heartbeat / mark-completed / mark-failed / schedule-retry /
+   * shutdown release) MUST include `AND claimed_by = ${this.claimedBy}` to
+   * prevent cross-pod ownership corruption.
+   */
+  private readonly claimedBy: string;
+
   constructor() {
     if (!process.env.DATABASE_URL) {
       throw new Error("RunsQueue: DATABASE_URL is required");
     }
+    this.claimedBy = `gateway-${randomUUID()}`;
   }
 
   // ── Lifecycle ───────────────────────────────────────────────────────────
@@ -245,16 +259,16 @@ export class RunsQueue implements IMessageQueue {
 
     // Release any rows still claimed by this process so a fresh gateway
     // can pick them up immediately rather than waiting for the stale
-    // sweeper.
+    // sweeper. Filter by our per-process claim identity so a sibling pod's
+    // in-flight claims aren't released out from under it.
     try {
       const sql = getDb();
-      const claimedBy = `gateway-${process.pid}`;
       const result = await sql`
         UPDATE public.runs
         SET status = 'pending',
             claimed_at = NULL,
             claimed_by = NULL
-        WHERE claimed_by = ${claimedBy}
+        WHERE claimed_by = ${this.claimedBy}
           AND status = 'claimed'
       `;
       if (result.count > 0) {
@@ -563,7 +577,7 @@ export class RunsQueue implements IMessageQueue {
     retryDelaySeconds: number | null;
   } | null> {
     const sql = getDb();
-    const claimedBy = `gateway-${process.pid}`;
+    const claimedBy = this.claimedBy;
     const rows = await sql<{
       id: number | string;
       action_input: unknown;
@@ -648,8 +662,10 @@ export class RunsQueue implements IMessageQueue {
   }
 
   /** Refresh `claimed_at` so the stale-claim sweeper does not reclaim a row
-   *  whose handler is still running. Filters on `status = 'claimed'` so a
-   *  completed/failed/retried row is left alone. */
+   *  whose handler is still running. Filters on `claimed_by = ${this.claimedBy}`
+   *  so a sibling pod that has since reclaimed this row (after a heartbeat
+   *  gap → sweep → re-claim cycle) doesn't have its claim silently extended
+   *  by ours. */
   private async heartbeatClaim(runId: number): Promise<void> {
     try {
       const sql = getDb();
@@ -658,6 +674,7 @@ export class RunsQueue implements IMessageQueue {
         SET claimed_at = now()
         WHERE id = ${runId}
           AND status = 'claimed'
+          AND claimed_by = ${this.claimedBy}
       `;
     } catch (err) {
       logger.warn({ runId, err }, "runs-queue heartbeat failed");
@@ -672,6 +689,7 @@ export class RunsQueue implements IMessageQueue {
           completed_at = now()
       WHERE id = ${runId}
         AND status = 'claimed'
+        AND claimed_by = ${this.claimedBy}
     `;
     queueBreadcrumb("complete", `Completed run ${runId}`, { runId });
   }
@@ -687,6 +705,7 @@ export class RunsQueue implements IMessageQueue {
           attempts = attempts + 1
       WHERE id = ${runId}
         AND status = 'claimed'
+        AND claimed_by = ${this.claimedBy}
     `;
     logger.warn(
       `Run ${runId} failed after retries: ${message}`,
@@ -721,6 +740,7 @@ export class RunsQueue implements IMessageQueue {
           claimed_by = NULL
       WHERE id = ${runId}
         AND status = 'claimed'
+        AND claimed_by = ${this.claimedBy}
     `;
     queueBreadcrumb("retry", `Scheduled retry for run ${runId}`, {
       runId,

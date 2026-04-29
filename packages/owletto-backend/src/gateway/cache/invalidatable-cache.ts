@@ -178,7 +178,12 @@ export class InvalidatableCache<K, V> {
       }
       return value;
     })().finally(() => {
-      this.inflight.delete(k);
+      // Only clear our own inflight entry. handleNotification may have
+      // already deleted it (and a fresh load may have replaced it) — in
+      // that case leave the new entry alone.
+      if (this.inflight.get(k) === promise) {
+        this.inflight.delete(k);
+      }
     });
 
     this.inflight.set(k, promise);
@@ -303,10 +308,19 @@ export class InvalidatableCache<K, V> {
     if (payload === "" || payload === "*") {
       this.entries.clear();
       this.globalEpoch += 1;
+      // Drop every in-flight loader so any caller that joined before the
+      // NOTIFY can't be served the pre-NOTIFY value coalesced from a stale
+      // load. Already-running loaders complete normally (we cannot revoke
+      // the Promise) but the eventual put() epoch check refuses to cache.
+      this.inflight.clear();
       return;
     }
     this.entries.delete(payload);
     this.keyEpochs.set(payload, (this.keyEpochs.get(payload) ?? 0) + 1);
+    // Same reasoning as the global branch: drop the per-key in-flight so a
+    // late-arriving caller for `payload` triggers a fresh load instead of
+    // joining a loader that started before the invalidation.
+    this.inflight.delete(payload);
   }
 
   /**

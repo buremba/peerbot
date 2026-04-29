@@ -16,6 +16,7 @@
 
 import { getDb, pgTextArray } from '../db/client';
 import type { Env } from '../index';
+import { executeClassificationQuery } from '../utils/classification-query';
 import { entityLinkMatchSql } from '../utils/content-search';
 import logger from '../utils/logger';
 
@@ -62,12 +63,43 @@ export async function runClassificationReconciliation(_env: Env): Promise<{
   const sql = getDb();
 
   try {
-    // Candidate entities: have embedded content to classify.
+    // Candidate entities: have at least one recent embedded event missing a
+    // classification for one of their own enabled classifiers. The 7d window
+    // bounds the scan — fresh inserts are handled inline; this safety net
+    // only catches drift (worker crash, restore from backup). Entities that
+    // inherit classifiers (enabled_classifiers IS NULL) are skipped here on
+    // purpose: the inline path covers them, and a query that walked
+    // inheritance would defeat the GIN partial index on enabled_classifiers.
     const entities = await sql<EntityRow>`
-      SELECT DISTINCT e.id as entity_id
-      FROM entities e
-      JOIN current_event_records ev ON e.id = ANY(ev.entity_ids)
-      WHERE ev.embedding IS NOT NULL
+      SELECT DISTINCT ent.id AS entity_id
+      FROM entities ent
+      WHERE ent.enabled_classifiers IS NOT NULL
+        AND cardinality(ent.enabled_classifiers) > 0
+        AND EXISTS (
+          SELECT 1
+          FROM events e
+          JOIN event_embeddings emb ON emb.event_id = e.id
+          WHERE e.entity_ids @> ARRAY[ent.id]
+            AND e.created_at > now() - interval '7 days'
+            AND NOT EXISTS (
+              SELECT 1 FROM events newer WHERE newer.supersedes_event_id = e.id
+            )
+            AND EXISTS (
+              SELECT 1
+              FROM event_classifiers fc
+              JOIN event_classifier_versions fcv
+                ON fcv.classifier_id = fc.id AND fcv.is_current = true
+              WHERE fc.organization_id = ent.organization_id
+                AND fc.status = 'active'
+                AND fc.watcher_id IS NULL
+                AND fc.slug = ANY(ent.enabled_classifiers)
+                AND NOT EXISTS (
+                  SELECT 1 FROM event_classifications ec
+                  WHERE ec.event_id = e.id
+                    AND ec.classifier_version_id = fcv.id
+                )
+            )
+        )
       LIMIT ${MAX_ENTITIES_PER_RUN}
     `;
 
@@ -81,8 +113,6 @@ export async function runClassificationReconciliation(_env: Env): Promise<{
     logger.info(
       `[ClassificationReconciliation] Found ${entities.length} entities needing classification`
     );
-
-    const { executeClassificationQuery } = await import('../utils/classification-query');
 
     let totalClassified = 0;
 

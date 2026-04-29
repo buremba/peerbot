@@ -29,7 +29,9 @@ export async function runCli(
   // ─── init ───────────────────────────────────────────────────────────
   program
     .command("init [name]")
-    .description("Scaffold a new agent project (lobu.toml + agent files + .env)")
+    .description(
+      "Scaffold a new agent project (lobu.toml + agent files + .env)"
+    )
     .action(async (name?: string) => {
       try {
         const { initCommand } = await import("./commands/init.js");
@@ -122,7 +124,9 @@ export async function runCli(
   // a single Node process. Extra args are forwarded to the bundle entry.
   program
     .command("run")
-    .description("Run the embedded Lobu stack (gateway + workers in one Node process)")
+    .description(
+      "Run the embedded Lobu stack (gateway + workers in one Node process)"
+    )
     .allowUnknownOption(true)
     .helpOption(false)
     .action(async (_opts: unknown, cmd: Command) => {

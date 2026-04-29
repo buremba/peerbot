@@ -1,5 +1,7 @@
-import { BaseRedisStore, createLogger } from "@lobu/core";
-import type { Redis } from "ioredis";
+import { createLogger } from "@lobu/core";
+import { getDb } from "../../db/client.js";
+import { tryGetOrgId } from "../../lobu/stores/org-context.js";
+import { InvalidatableCache } from "../cache/invalidatable-cache.js";
 
 const logger = createLogger("agent-metadata-store");
 
@@ -25,21 +27,72 @@ export interface AgentMetadata {
   lastUsedAt?: number;
 }
 
+function rowToMetadata(row: Record<string, any>): AgentMetadata {
+  return {
+    agentId: row.id,
+    name: row.name,
+    description: row.description ?? undefined,
+    owner: {
+      platform: row.owner_platform ?? "owletto",
+      userId: row.owner_user_id ?? "",
+    },
+    isWorkspaceAgent: row.is_workspace_agent ?? undefined,
+    workspaceId: row.workspace_id ?? undefined,
+    parentConnectionId: row.parent_connection_id ?? undefined,
+    createdAt:
+      row.created_at instanceof Date
+        ? row.created_at.getTime()
+        : (row.created_at ?? Date.now()),
+    lastUsedAt:
+      row.last_used_at instanceof Date
+        ? row.last_used_at.getTime()
+        : (row.last_used_at ?? undefined),
+  };
+}
+
+async function loadMetadataFromPg(agentId: string): Promise<AgentMetadata | null> {
+  const sql = getDb();
+  const orgId = tryGetOrgId();
+  const rows = orgId
+    ? await sql`
+        SELECT id, name, description, owner_platform, owner_user_id,
+               is_workspace_agent, workspace_id, parent_connection_id,
+               created_at, last_used_at
+        FROM agents
+        WHERE id = ${agentId} AND organization_id = ${orgId}
+      `
+    : await sql`
+        SELECT id, name, description, owner_platform, owner_user_id,
+               is_workspace_agent, workspace_id, parent_connection_id,
+               created_at, last_used_at
+        FROM agents
+        WHERE id = ${agentId}
+      `;
+  if (rows.length === 0) return null;
+  return rowToMetadata(rows[0]);
+}
+
 /**
- * Store agent metadata in Redis.
- * Pattern: agent_metadata:{agentId}
+ * Store agent metadata directly in `public.agents`.
+ *
+ * Reads go through an InvalidatableCache backed by `agent_changed`.
  */
-export class AgentMetadataStore extends BaseRedisStore<AgentMetadata> {
-  constructor(redis: Redis) {
-    super({
-      redis,
-      keyPrefix: "agent_metadata",
-      loggerName: "agent-metadata-store",
+export class AgentMetadataStore {
+  private readonly cache: InvalidatableCache<string, AgentMetadata | null>;
+
+  constructor() {
+    this.cache = new InvalidatableCache<string, AgentMetadata | null>({
+      channel: "agent_changed",
+      ttlMs: 30_000,
+      maxEntries: 500,
+      loader: (agentId) => loadMetadataFromPg(agentId),
     });
   }
 
   /**
-   * Create a new agent with metadata
+   * Create a new agent with metadata. Inserts into `public.agents`. If the
+   * agent already exists, updates the listed columns (matching the prior
+   * Redis behavior of overwriting on `set`).
    */
   async createAgent(
     agentId: string,
@@ -53,116 +106,177 @@ export class AgentMetadataStore extends BaseRedisStore<AgentMetadata> {
       parentConnectionId?: string;
     }
   ): Promise<AgentMetadata> {
-    const metadata: AgentMetadata = {
+    const sql = getDb();
+    const orgId = tryGetOrgId();
+    if (!orgId) {
+      throw new Error(
+        "AgentMetadataStore.createAgent requires an org context (use withOrgContext)"
+      );
+    }
+    const now = new Date();
+    const rows = await sql`
+      INSERT INTO agents (id, organization_id, name, description, owner_platform, owner_user_id,
+                          is_workspace_agent, workspace_id, parent_connection_id, created_at)
+      VALUES (
+        ${agentId}, ${orgId}, ${name}, ${options?.description ?? null},
+        ${platform}, ${userId},
+        ${options?.isWorkspaceAgent ?? false}, ${options?.workspaceId ?? null},
+        ${options?.parentConnectionId ?? null}, ${now}
+      )
+      ON CONFLICT (id) DO UPDATE SET
+        name = EXCLUDED.name,
+        description = EXCLUDED.description,
+        owner_platform = EXCLUDED.owner_platform,
+        owner_user_id = EXCLUDED.owner_user_id,
+        is_workspace_agent = EXCLUDED.is_workspace_agent,
+        workspace_id = EXCLUDED.workspace_id,
+        parent_connection_id = EXCLUDED.parent_connection_id,
+        updated_at = ${now}
+      WHERE agents.organization_id = EXCLUDED.organization_id
+      RETURNING organization_id
+    `;
+    if (rows.length === 0) {
+      throw new Error(`Agent '${agentId}' already exists in another organization.`);
+    }
+
+    this.cache.invalidate(agentId);
+    logger.info(`Created agent metadata for ${agentId}: "${name}"`);
+
+    return {
       agentId,
       name,
+      description: options?.description,
       owner: { platform, userId },
       isWorkspaceAgent: options?.isWorkspaceAgent,
       workspaceId: options?.workspaceId,
       parentConnectionId: options?.parentConnectionId,
-      createdAt: Date.now(),
+      createdAt: now.getTime(),
     };
-
-    if (options?.description) {
-      metadata.description = options.description;
-    }
-
-    const key = this.buildKey(agentId);
-    await this.set(key, metadata);
-
-    // Index sandbox under its parent connection
-    if (options?.parentConnectionId) {
-      await this.redis.sadd(
-        `sandboxes:connection:${options.parentConnectionId}`,
-        agentId
-      );
-    }
-
-    logger.info(`Created agent metadata for ${agentId}: "${name}"`);
-    return metadata;
   }
 
-  /**
-   * Get metadata for an agent
-   */
   async getMetadata(agentId: string): Promise<AgentMetadata | null> {
-    const key = this.buildKey(agentId);
-    return this.get(key);
+    return this.cache.get(agentId);
   }
 
   /**
-   * Update agent metadata (partial update)
+   * Update agent metadata (partial update). Only `name`, `description`, and
+   * `lastUsedAt` are accepted (matching the prior Redis-backed surface).
    */
   async updateMetadata(
     agentId: string,
     updates: Partial<Pick<AgentMetadata, "name" | "description" | "lastUsedAt">>
   ): Promise<void> {
-    const existing = await this.getMetadata(agentId);
+    const existing = await loadMetadataFromPg(agentId);
     if (!existing) {
       logger.warn(`Cannot update metadata: agent ${agentId} not found`);
       return;
     }
 
-    const updated: AgentMetadata = { ...existing, ...updates };
-    const key = this.buildKey(agentId);
-    await this.set(key, updated);
+    const sql = getDb();
+    const orgId = tryGetOrgId();
+    const merged = { ...existing, ...updates };
+    const lastUsedAt =
+      merged.lastUsedAt !== undefined ? new Date(merged.lastUsedAt) : null;
+    const now = new Date();
+
+    if (orgId) {
+      await sql`
+        UPDATE agents SET
+          name = ${merged.name},
+          description = ${merged.description ?? null},
+          last_used_at = ${lastUsedAt},
+          updated_at = ${now}
+        WHERE id = ${agentId} AND organization_id = ${orgId}
+      `;
+    } else {
+      await sql`
+        UPDATE agents SET
+          name = ${merged.name},
+          description = ${merged.description ?? null},
+          last_used_at = ${lastUsedAt},
+          updated_at = ${now}
+        WHERE id = ${agentId}
+      `;
+    }
+
+    this.cache.invalidate(agentId);
     logger.info(`Updated metadata for agent ${agentId}`);
   }
 
   /**
-   * Delete agent metadata
+   * Delete agent metadata. Removes the row from `public.agents`; cascading
+   * FK constraints clean up dependent rows (channel bindings, grants, etc.).
    */
   async deleteAgent(agentId: string): Promise<void> {
-    // Clean up sandbox index if this agent has a parent connection
-    const metadata = await this.getMetadata(agentId);
-    if (metadata?.parentConnectionId) {
-      await this.redis.srem(
-        `sandboxes:connection:${metadata.parentConnectionId}`,
-        agentId
-      );
+    const sql = getDb();
+    const orgId = tryGetOrgId();
+    if (orgId) {
+      await sql`
+        DELETE FROM agents WHERE id = ${agentId} AND organization_id = ${orgId}
+      `;
+    } else {
+      await sql`DELETE FROM agents WHERE id = ${agentId}`;
     }
-
-    const key = this.buildKey(agentId);
-    await this.delete(key);
+    this.cache.invalidate(agentId);
     logger.info(`Deleted metadata for agent ${agentId}`);
   }
 
-  /**
-   * Check if agent exists
-   */
   async hasAgent(agentId: string): Promise<boolean> {
-    const key = this.buildKey(agentId);
-    return this.exists(key);
+    const metadata = await this.getMetadata(agentId);
+    return metadata !== null;
   }
 
   /**
-   * List sandbox agents belonging to a connection
+   * List sandbox agents belonging to a connection.
+   * Resolves the connection's parent_agent_id and returns sandboxes that
+   * reference it as their `parent_connection_id`.
    */
   async listSandboxes(connectionId: string): Promise<AgentMetadata[]> {
-    const agentIds = await this.redis.smembers(
-      `sandboxes:connection:${connectionId}`
-    );
-    const sandboxes: AgentMetadata[] = [];
-    for (const agentId of agentIds) {
-      const data = await this.getMetadata(agentId);
-      if (data) sandboxes.push(data);
-    }
-    sandboxes.sort((a, b) => (b.lastUsedAt ?? 0) - (a.lastUsedAt ?? 0));
-    return sandboxes;
+    const sql = getDb();
+    const orgId = tryGetOrgId();
+    const rows = orgId
+      ? await sql`
+          SELECT id, name, description, owner_platform, owner_user_id,
+                 is_workspace_agent, workspace_id, parent_connection_id,
+                 created_at, last_used_at
+          FROM agents
+          WHERE organization_id = ${orgId} AND parent_connection_id = ${connectionId}
+          ORDER BY last_used_at DESC NULLS LAST, created_at DESC
+        `
+      : await sql`
+          SELECT id, name, description, owner_platform, owner_user_id,
+                 is_workspace_agent, workspace_id, parent_connection_id,
+                 created_at, last_used_at
+          FROM agents
+          WHERE parent_connection_id = ${connectionId}
+          ORDER BY last_used_at DESC NULLS LAST, created_at DESC
+        `;
+    return rows.map(rowToMetadata);
   }
 
-  /**
-   * List all agents in the system, sorted by lastUsedAt descending
-   */
   async listAllAgents(): Promise<AgentMetadata[]> {
-    const prefix = `${this.keyPrefix}:`;
-    const keys = await this.scanByPrefix(prefix);
-    const agents: AgentMetadata[] = [];
-    for (const key of keys) {
-      const data = await this.get(key);
-      if (data) agents.push(data);
-    }
-    agents.sort((a, b) => (b.lastUsedAt ?? 0) - (a.lastUsedAt ?? 0));
-    return agents;
+    const sql = getDb();
+    const orgId = tryGetOrgId();
+    const rows = orgId
+      ? await sql`
+          SELECT id, name, description, owner_platform, owner_user_id,
+                 is_workspace_agent, workspace_id, parent_connection_id,
+                 created_at, last_used_at
+          FROM agents
+          WHERE organization_id = ${orgId}
+          ORDER BY last_used_at DESC NULLS LAST, created_at DESC
+        `
+      : await sql`
+          SELECT id, name, description, owner_platform, owner_user_id,
+                 is_workspace_agent, workspace_id, parent_connection_id,
+                 created_at, last_used_at
+          FROM agents
+          ORDER BY last_used_at DESC NULLS LAST, created_at DESC
+        `;
+    return rows.map(rowToMetadata);
+  }
+
+  async close(): Promise<void> {
+    await this.cache.close();
   }
 }

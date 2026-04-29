@@ -1,143 +1,126 @@
-import { BaseRedisStore, createLogger } from "@lobu/core";
-import type { Redis } from "ioredis";
+import { createLogger } from "@lobu/core";
+import { getDb } from "../../db/client.js";
+import { InvalidatableCache } from "../cache/invalidatable-cache.js";
 
 const logger = createLogger("channel-binding-service");
 
 /**
- * Channel binding - links a platform channel to a specific agent
+ * Channel binding - links a platform channel to a specific agent.
+ *
+ * Backed by `public.agent_channel_bindings`; only the columns that exist on
+ * that table are persisted today (`platform`, `channel_id`, `team_id`,
+ * `agent_id`, `created_at`). The `configuredBy` / `configuredAt` / `wasAdmin`
+ * columns from the legacy Redis layout are no longer carried — the prior
+ * Postgres-backed AgentConnectionStore in `lobu/stores/postgres-stores.ts`
+ * already dropped them, and no caller reads them.
  */
-interface ChannelBinding {
-  platform: string; // Platform identifier
+export interface ChannelBinding {
+  platform: string;
   channelId: string;
   agentId: string;
-  teamId?: string; // Optional workspace/team ID for multi-tenant platforms
-  configuredBy?: string; // userId of who configured this binding
-  configuredAt?: number; // When the binding was configured
-  wasAdmin?: boolean; // Whether the configurer was an admin at time of configuration
+  teamId?: string;
   createdAt: number;
 }
 
-/**
- * Service for managing channel-to-agent bindings
- *
- * Storage patterns:
- * - Forward lookup: channel_binding:{platform}:{channelId} → binding data
- * - Forward lookup (Slack): channel_binding:{platform}:{teamId}:{channelId} → binding data
- * - Reverse index: channel_binding_index:{agentId} → Set of binding keys
- */
-export class ChannelBindingService extends BaseRedisStore<ChannelBinding> {
-  private readonly INDEX_PREFIX = "channel_binding_index";
+interface BindingKey {
+  platform: string;
+  channelId: string;
+  teamId?: string;
+}
 
-  constructor(redis: Redis) {
-    super({
-      redis,
-      keyPrefix: "channel_binding",
-      loggerName: "channel-binding-service",
+function bindingCacheKey(key: BindingKey): string {
+  return `${key.platform}:${key.teamId ?? "-"}:${key.channelId}`;
+}
+
+function rowToBinding(row: Record<string, any>): ChannelBinding {
+  return {
+    platform: row.platform,
+    channelId: row.channel_id,
+    teamId: row.team_id ?? undefined,
+    agentId: row.agent_id,
+    createdAt:
+      row.created_at instanceof Date
+        ? row.created_at.getTime()
+        : (row.created_at ?? Date.now()),
+  };
+}
+
+async function loadBinding(key: BindingKey): Promise<ChannelBinding | null> {
+  const sql = getDb();
+  const rows = key.teamId
+    ? await sql`
+        SELECT * FROM agent_channel_bindings
+        WHERE platform = ${key.platform}
+          AND channel_id = ${key.channelId}
+          AND team_id = ${key.teamId}
+      `
+    : await sql`
+        SELECT * FROM agent_channel_bindings
+        WHERE platform = ${key.platform}
+          AND channel_id = ${key.channelId}
+          AND team_id IS NULL
+      `;
+  if (rows.length === 0) return null;
+  return rowToBinding(rows[0]);
+}
+
+/**
+ * Service for managing channel-to-agent bindings, backed by Postgres.
+ *
+ * Reads are cached in-process and invalidated via `channel_binding_changed`
+ * NOTIFY events whose payload matches `<platform>:<teamId|->:<channelId>`.
+ */
+export class ChannelBindingService {
+  private readonly cache: InvalidatableCache<BindingKey, ChannelBinding | null>;
+
+  constructor() {
+    this.cache = new InvalidatableCache<BindingKey, ChannelBinding | null>({
+      channel: "channel_binding_changed",
+      ttlMs: 30_000,
+      maxEntries: 2000,
+      keyToString: bindingCacheKey,
+      loader: loadBinding,
     });
   }
 
-  /**
-   * Build the binding key for a channel
-   * Includes teamId for multi-tenant platforms (e.g., Slack workspaces)
-   */
-  private buildBindingKey(
-    platform: string,
-    channelId: string,
-    teamId?: string
-  ): string {
-    if (teamId) {
-      return this.buildKey(platform, teamId, channelId);
-    }
-    return this.buildKey(platform, channelId);
-  }
-
-  /**
-   * Build the index key for an agent's bindings
-   */
-  private buildIndexKey(agentId: string): string {
-    return `${this.INDEX_PREFIX}:${agentId}`;
-  }
-
-  /**
-   * Get binding for a channel
-   * Returns null if channel is not bound to any agent
-   */
   async getBinding(
     platform: string,
     channelId: string,
     teamId?: string
   ): Promise<ChannelBinding | null> {
-    const key = this.buildBindingKey(platform, channelId, teamId);
-    const binding = await this.get(key);
-    if (binding) {
-      logger.debug(
-        `Found binding for ${platform}/${channelId}: ${binding.agentId}`
-      );
-    }
-    return binding;
+    return this.cache.get({ platform, channelId, teamId });
   }
 
-  /**
-   * Create a binding from a channel to an agent
-   * If the channel was already bound, the old binding is removed
-   */
   async createBinding(
     agentId: string,
     platform: string,
     channelId: string,
     teamId?: string,
-    options?: { configuredBy?: string; wasAdmin?: boolean }
+    _options?: { configuredBy?: string; wasAdmin?: boolean }
   ): Promise<void> {
-    const key = this.buildBindingKey(platform, channelId, teamId);
-
-    // Check if already bound to a different agent
-    const existing = await this.get(key);
-    if (existing && existing.agentId !== agentId) {
-      // Remove from old agent's index
-      const oldIndexKey = this.buildIndexKey(existing.agentId);
-      await this.redis.srem(oldIndexKey, key);
-      logger.info(
-        `Removed binding from agent ${existing.agentId} for ${platform}/${channelId}`
-      );
-    }
-
-    // Create the binding
-    const binding: ChannelBinding = {
-      platform,
-      channelId,
-      agentId,
-      teamId,
-      configuredBy: options?.configuredBy,
-      configuredAt: Date.now(),
-      wasAdmin: options?.wasAdmin,
-      createdAt: Date.now(),
-    };
-    await this.set(key, binding);
-
-    // Add to agent's index
-    const indexKey = this.buildIndexKey(agentId);
-    await this.redis.sadd(indexKey, key);
-
+    const sql = getDb();
+    await sql`
+      INSERT INTO agent_channel_bindings (agent_id, platform, channel_id, team_id, created_at)
+      VALUES (${agentId}, ${platform}, ${channelId}, ${teamId ?? null}, now())
+      ON CONFLICT (platform, channel_id, team_id) DO UPDATE SET
+        agent_id = EXCLUDED.agent_id
+    `;
+    this.cache.invalidate({ platform, channelId, teamId });
     logger.info(`Created binding: ${platform}/${channelId} → ${agentId}`);
   }
 
-  /**
-   * Delete a binding for a channel
-   */
   async deleteBinding(
     agentId: string,
     platform: string,
     channelId: string,
     teamId?: string
   ): Promise<boolean> {
-    const key = this.buildBindingKey(platform, channelId, teamId);
-    const existing = await this.get(key);
-
+    const sql = getDb();
+    const existing = await loadBinding({ platform, channelId, teamId });
     if (!existing) {
       logger.warn(`No binding found for ${platform}/${channelId}`);
       return false;
     }
-
     if (existing.agentId !== agentId) {
       logger.warn(
         `Binding for ${platform}/${channelId} belongs to ${existing.agentId}, not ${agentId}`
@@ -145,63 +128,42 @@ export class ChannelBindingService extends BaseRedisStore<ChannelBinding> {
       return false;
     }
 
-    // Delete the binding
-    await this.delete(key);
-
-    // Remove from agent's index
-    const indexKey = this.buildIndexKey(agentId);
-    await this.redis.srem(indexKey, key);
-
+    if (teamId) {
+      await sql`
+        DELETE FROM agent_channel_bindings
+        WHERE platform = ${platform} AND channel_id = ${channelId} AND team_id = ${teamId}
+      `;
+    } else {
+      await sql`
+        DELETE FROM agent_channel_bindings
+        WHERE platform = ${platform} AND channel_id = ${channelId} AND team_id IS NULL
+      `;
+    }
+    this.cache.invalidate({ platform, channelId, teamId });
     logger.info(`Deleted binding: ${platform}/${channelId} from ${agentId}`);
     return true;
   }
 
-  /**
-   * List all bindings for an agent
-   */
   async listBindings(agentId: string): Promise<ChannelBinding[]> {
-    const indexKey = this.buildIndexKey(agentId);
-    const bindingKeys = await this.redis.smembers(indexKey);
-
-    if (bindingKeys.length === 0) {
-      return [];
-    }
-
-    const bindings: ChannelBinding[] = [];
-    for (const key of bindingKeys) {
-      const binding = await this.get(key);
-      if (binding) {
-        bindings.push(binding);
-      } else {
-        // Clean up stale index entry
-        await this.redis.srem(indexKey, key);
-      }
-    }
-
-    return bindings;
+    const sql = getDb();
+    const rows = await sql`
+      SELECT * FROM agent_channel_bindings WHERE agent_id = ${agentId}
+    `;
+    return rows.map(rowToBinding);
   }
 
-  /**
-   * Delete all bindings for an agent
-   * Used when deleting an agent
-   */
   async deleteAllBindings(agentId: string): Promise<number> {
-    const bindings = await this.listBindings(agentId);
+    const sql = getDb();
+    const rows = await sql`
+      DELETE FROM agent_channel_bindings WHERE agent_id = ${agentId} RETURNING 1
+    `;
+    // Per-key NOTIFY fires for each deleted row, so the cache catches up
+    // without a sledgehammer invalidate-all here.
+    logger.info(`Deleted ${rows.length} bindings for agent ${agentId}`);
+    return rows.length;
+  }
 
-    for (const binding of bindings) {
-      const key = this.buildBindingKey(
-        binding.platform,
-        binding.channelId,
-        binding.teamId
-      );
-      await this.delete(key);
-    }
-
-    // Delete the index
-    const indexKey = this.buildIndexKey(agentId);
-    await this.redis.del(indexKey);
-
-    logger.info(`Deleted ${bindings.length} bindings for agent ${agentId}`);
-    return bindings.length;
+  async close(): Promise<void> {
+    await this.cache.close();
   }
 }

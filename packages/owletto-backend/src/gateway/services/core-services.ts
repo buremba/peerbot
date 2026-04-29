@@ -67,7 +67,6 @@ import {
   SecretStoreRegistry,
 } from "../secrets/index.js";
 import { InMemoryAgentStore } from "../stores/in-memory-agent-store.js";
-import { RedisAgentStore } from "../stores/redis-agent-store.js";
 import { BedrockModelCatalog } from "./bedrock-model-catalog.js";
 import { BedrockOpenAIService } from "./bedrock-openai-service.js";
 import {
@@ -386,11 +385,14 @@ export class CoreServices {
       );
     logger.debug("Secret store initialized");
 
-    // Initialize agent configuration stores
-    this.agentSettingsStore = new AgentSettingsStore(redisClient);
-    this.channelBindingService = new ChannelBindingService(redisClient);
-    this.userAgentsStore = new UserAgentsStore(redisClient);
-    this.agentMetadataStore = new AgentMetadataStore(redisClient);
+    // Agent configuration stores read directly from Postgres (`getDb()`),
+    // with InvalidatableCache primitives keyed off pg_notify channels for
+    // cross-process invalidation. No Redis backing — these stores predate
+    // PG and used to mirror it via hydratePersistedAgentSettings.
+    this.agentSettingsStore = new AgentSettingsStore();
+    this.channelBindingService = new ChannelBindingService();
+    this.userAgentsStore = new UserAgentsStore();
+    this.agentMetadataStore = new AgentMetadataStore();
     logger.debug(
       "Agent settings, channel binding, user agents & metadata stores initialized"
     );
@@ -444,18 +446,9 @@ export class CoreServices {
             `Agent sub-stores initialized (in-memory, ${this.fileLoadedAgents.length} agent(s) from files)`
           );
         } else {
-          const redisStore = new RedisAgentStore(
-            redisClient,
-            this.agentSettingsStore,
-            this.agentMetadataStore,
-            this.grantStore,
-            this.userAgentsStore,
-            this.channelBindingService
+          throw new Error(
+            "No agent sub-stores configured: provide configStore/connectionStore/accessStore via CoreServices options, or place a lobu.toml in the workspace, or pass agents via GatewayConfig.agents. The Redis-backed fall-through is gone."
           );
-          if (!this.configStore) this.configStore = redisStore;
-          if (!this.connectionStore) this.connectionStore = redisStore;
-          if (!this.accessStore) this.accessStore = redisStore;
-          logger.debug("Agent sub-stores initialized (Redis-backed defaults)");
         }
       }
     } else {
@@ -515,26 +508,9 @@ export class CoreServices {
     this.agentSettingsStore.setDeclaredAgents(this.declaredAgentRegistry);
 
     // User-scoped auth profile store: durable per-(userId, agentId)
-    // OAuth/BYOK state. Replaces the authProfiles field that used to
-    // live on AgentSettingsStore.
-    this.userAuthProfileStore = new UserAuthProfileStore(
-      redisClient,
-      this.secretStore
-    );
-
-    // One-shot cleanup: declared agents must not have stale Redis settings
-    // hanging around. Deleting the key keeps `agent:settings:*` reserved
-    // for runtime-created agents only.
-    for (const agentId of this.declaredAgentRegistry.agentIds()) {
-      try {
-        await this.agentSettingsStore.deleteSettings(agentId);
-      } catch (error) {
-        logger.warn("Failed to clear stale settings for declared agent", {
-          agentId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
+    // OAuth/BYOK state. Persists to `public.user_auth_profiles`; sensitive
+    // values live in the secret store with refs in the JSON column.
+    this.userAuthProfileStore = new UserAuthProfileStore(this.secretStore);
 
     this.authProfilesManager = new AuthProfilesManager({
       ephemeralProfiles: this.agentSettingsStore.getEphemeralAuthProfiles(),
@@ -550,7 +526,7 @@ export class CoreServices {
       this.authProfilesManager
     );
     this.artifactStore = new ArtifactStore();
-    this.modelPreferenceStore = new ModelPreferenceStore(redisClient, "claude");
+    this.modelPreferenceStore = new ModelPreferenceStore("claude");
 
     // Embedded SDK mode: per-agent in-memory credentials supplied via
     // `provider.key` are exposed as ephemeral profiles. Credentials with

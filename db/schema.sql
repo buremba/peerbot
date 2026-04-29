@@ -347,6 +347,72 @@ END;
 $$;
 
 
+--
+-- Name: notify_agent_changed(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.notify_agent_changed() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  PERFORM pg_notify('agent_changed', COALESCE(NEW.id, OLD.id));
+  RETURN COALESCE(NEW, OLD);
+END;
+$$;
+
+
+--
+-- Name: notify_agent_users_changed(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.notify_agent_users_changed() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  rec record;
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    rec := OLD;
+  ELSE
+    rec := NEW;
+  END IF;
+  PERFORM pg_notify(
+    'agent_users_changed',
+    format('%s:%s', rec.platform, rec.user_id)
+  );
+  RETURN COALESCE(NEW, OLD);
+END;
+$$;
+
+
+--
+-- Name: notify_channel_binding_changed(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.notify_channel_binding_changed() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  rec record;
+  payload text;
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    rec := OLD;
+  ELSE
+    rec := NEW;
+  END IF;
+  payload := format(
+    '%s:%s:%s',
+    rec.platform,
+    COALESCE(rec.team_id, '-'),
+    rec.channel_id
+  );
+  PERFORM pg_notify('channel_binding_changed', payload);
+  RETURN COALESCE(NEW, OLD);
+END;
+$$;
+
+
 SET default_tablespace = '';
 
 SET default_table_access_method = heap;
@@ -646,6 +712,30 @@ CREATE TABLE public.agent_users (
     platform text NOT NULL,
     user_id text NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: user_auth_profiles; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.user_auth_profiles (
+    user_id text NOT NULL,
+    agent_id text NOT NULL,
+    profiles jsonb DEFAULT '[]'::jsonb NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: user_model_preferences; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.user_model_preferences (
+    user_id text NOT NULL,
+    provider_id text NOT NULL,
+    model text NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
 
@@ -2743,6 +2833,22 @@ ALTER TABLE ONLY public.agent_users
 
 
 --
+-- Name: user_auth_profiles user_auth_profiles_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_auth_profiles
+    ADD CONSTRAINT user_auth_profiles_pkey PRIMARY KEY (user_id, agent_id);
+
+
+--
+-- Name: user_model_preferences user_model_preferences_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_model_preferences
+    ADD CONSTRAINT user_model_preferences_pkey PRIMARY KEY (user_id, provider_id);
+
+
+--
 -- Name: agents agents_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3303,6 +3409,13 @@ CREATE INDEX "account_userId_idx" ON public.account USING btree ("userId");
 --
 
 CREATE INDEX agent_channel_bindings_agent_id_idx ON public.agent_channel_bindings USING btree (agent_id);
+
+
+--
+-- Name: user_auth_profiles_agent_id_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX user_auth_profiles_agent_id_idx ON public.user_auth_profiles USING btree (agent_id);
 
 
 --
@@ -4598,6 +4711,27 @@ ALTER INDEX pgboss.job_pkey ATTACH PARTITION pgboss.job_common_pkey;
 --
 
 CREATE TRIGGER check_entity_cycles BEFORE INSERT OR UPDATE ON public.entities FOR EACH ROW EXECUTE FUNCTION public.prevent_entity_cycles();
+
+
+--
+-- Name: agents agents_changed_notify; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER agents_changed_notify AFTER INSERT OR UPDATE OR DELETE ON public.agents FOR EACH ROW EXECUTE FUNCTION public.notify_agent_changed();
+
+
+--
+-- Name: agent_channel_bindings agent_channel_bindings_changed_notify; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER agent_channel_bindings_changed_notify AFTER INSERT OR UPDATE OR DELETE ON public.agent_channel_bindings FOR EACH ROW EXECUTE FUNCTION public.notify_channel_binding_changed();
+
+
+--
+-- Name: agent_users agent_users_changed_notify; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER agent_users_changed_notify AFTER INSERT OR UPDATE OR DELETE ON public.agent_users FOR EACH ROW EXECUTE FUNCTION public.notify_agent_users_changed();
 
 
 --

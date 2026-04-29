@@ -105,7 +105,6 @@ export type {
   ProviderConfigEntry,
 } from "./provider-config-types";
 // Redis & worker helpers
-export * from "./redis/base-store";
 export * from "./redis/json-helpers";
 export * from "./secret-refs";
 // Observability

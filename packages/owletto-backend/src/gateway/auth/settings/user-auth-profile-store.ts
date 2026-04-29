@@ -1,22 +1,11 @@
-import {
-  type AuthProfile,
-  createLogger,
-  safeJsonParse,
-  safeJsonStringify,
-} from "@lobu/core";
-import type { Redis } from "ioredis";
+import { type AuthProfile, createLogger } from "@lobu/core";
+import { getDb } from "../../../db/client.js";
 import {
   deleteSecretsByPrefix,
   type WritableSecretStore,
 } from "../../secrets/index.js";
 
 const logger = createLogger("user-auth-profile-store");
-
-const KEY_PREFIX = "user:auth-profiles";
-
-function buildKey(userId: string, agentId: string): string {
-  return `${KEY_PREFIX}:${userId}:${agentId}`;
-}
 
 function buildSecretName(
   userId: string,
@@ -51,23 +40,25 @@ interface UserAgentRef {
  * BYOK credentials owned by a specific user for a specific agent.
  *
  * Sensitive values (credential / refresh token) are persisted to the
- * secret store and replaced inline with their refs, mirroring the policy
- * previously implemented inside `AgentSettingsStore`.
+ * secret store and replaced inline with their refs before the profile
+ * list is written to `public.user_auth_profiles`.
  */
 export class UserAuthProfileStore {
-  constructor(
-    private readonly redis: Redis,
-    private readonly secretStore: WritableSecretStore
-  ) {}
+  constructor(private readonly secretStore: WritableSecretStore) {}
 
   async list(userId: string, agentId: string): Promise<AuthProfile[]> {
     if (!userId || !agentId) return [];
+    const sql = getDb();
     try {
-      const raw = await this.redis.get(buildKey(userId, agentId));
-      if (!raw) return [];
-      const parsed = safeJsonParse<AuthProfile[]>(raw);
-      if (!Array.isArray(parsed)) return [];
-      return parsed;
+      const rows = await sql`
+        SELECT profiles
+        FROM user_auth_profiles
+        WHERE user_id = ${userId} AND agent_id = ${agentId}
+      `;
+      if (rows.length === 0) return [];
+      const profiles = rows[0].profiles as unknown;
+      if (!Array.isArray(profiles)) return [];
+      return profiles as AuthProfile[];
     } catch (error) {
       logger.warn("Failed to read user auth profiles", {
         userId,
@@ -129,7 +120,14 @@ export class UserAuthProfileStore {
         ? [...sameProvider, next, ...others]
         : [next, ...sameProvider, ...others];
 
-    await this.redis.set(buildKey(userId, agentId), this.serialize(ordered));
+    const sql = getDb();
+    await sql`
+      INSERT INTO user_auth_profiles (user_id, agent_id, profiles, updated_at)
+      VALUES (${userId}, ${agentId}, ${sql.json(ordered)}, now())
+      ON CONFLICT (user_id, agent_id) DO UPDATE SET
+        profiles = EXCLUDED.profiles,
+        updated_at = now()
+    `;
     return next;
   }
 
@@ -150,13 +148,20 @@ export class UserAuthProfileStore {
     });
     const remaining = current.filter((profile) => !removed.includes(profile));
 
+    const sql = getDb();
     if (remaining.length > 0) {
-      await this.redis.set(
-        buildKey(userId, agentId),
-        this.serialize(remaining)
-      );
+      await sql`
+        INSERT INTO user_auth_profiles (user_id, agent_id, profiles, updated_at)
+        VALUES (${userId}, ${agentId}, ${sql.json(remaining)}, now())
+        ON CONFLICT (user_id, agent_id) DO UPDATE SET
+          profiles = EXCLUDED.profiles,
+          updated_at = now()
+      `;
     } else {
-      await this.redis.del(buildKey(userId, agentId));
+      await sql`
+        DELETE FROM user_auth_profiles
+        WHERE user_id = ${userId} AND agent_id = ${agentId}
+      `;
     }
 
     let secretsDeleted = 0;
@@ -175,7 +180,11 @@ export class UserAuthProfileStore {
    * Used when an agent is deleted entirely.
    */
   async dropAgent(userId: string, agentId: string): Promise<void> {
-    await this.redis.del(buildKey(userId, agentId));
+    const sql = getDb();
+    await sql`
+      DELETE FROM user_auth_profiles
+      WHERE user_id = ${userId} AND agent_id = ${agentId}
+    `;
     await deleteSecretsByPrefix(
       this.secretStore,
       buildAgentSecretPrefix(userId, agentId)
@@ -187,30 +196,13 @@ export class UserAuthProfileStore {
    * Used by `TokenRefreshJob` to scan refreshable tokens.
    */
   async *scanAllOAuth(): AsyncIterable<UserAgentRef> {
-    const pattern = `${KEY_PREFIX}:*`;
-    let cursor = "0";
-    do {
-      const [next, keys] = await this.redis.scan(
-        cursor,
-        "MATCH",
-        pattern,
-        "COUNT",
-        100
-      );
-      cursor = next;
-      for (const key of keys) {
-        const ref = parseKey(key);
-        if (ref) yield ref;
-      }
-    } while (cursor !== "0");
-  }
-
-  private serialize(profiles: AuthProfile[]): string {
-    const json = safeJsonStringify(profiles);
-    if (json === null) {
-      throw new Error("Failed to serialize user auth profiles");
+    const sql = getDb();
+    const rows = await sql`
+      SELECT user_id, agent_id FROM user_auth_profiles
+    `;
+    for (const row of rows as Array<Record<string, any>>) {
+      yield { userId: row.user_id as string, agentId: row.agent_id as string };
     }
-    return json;
   }
 
   private async persistSecrets(
@@ -242,14 +234,4 @@ export class UserAuthProfileStore {
 
     return next;
   }
-}
-
-function parseKey(key: string): UserAgentRef | null {
-  const rest = key.startsWith(`${KEY_PREFIX}:`)
-    ? key.slice(KEY_PREFIX.length + 1)
-    : null;
-  if (!rest) return null;
-  const sep = rest.indexOf(":");
-  if (sep <= 0 || sep === rest.length - 1) return null;
-  return { userId: rest.slice(0, sep), agentId: rest.slice(sep + 1) };
 }

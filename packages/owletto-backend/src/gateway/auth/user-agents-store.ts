@@ -1,68 +1,88 @@
 import { createLogger } from "@lobu/core";
-import type { Redis } from "ioredis";
+import { getDb } from "../../db/client.js";
+import { InvalidatableCache } from "../cache/invalidatable-cache.js";
 
 const logger = createLogger("user-agents-store");
 
+interface UserKey {
+  platform: string;
+  userId: string;
+}
+
+function userCacheKey(key: UserKey): string {
+  return `${key.platform}:${key.userId}`;
+}
+
+async function loadUserAgents(key: UserKey): Promise<string[]> {
+  const sql = getDb();
+  const rows = await sql`
+    SELECT agent_id
+    FROM agent_users
+    WHERE platform = ${key.platform} AND user_id = ${key.userId}
+  `;
+  return rows.map((r: any) => r.agent_id as string);
+}
+
 /**
- * Track which agents belong to which users.
- * Uses Redis sets for fast membership checks and listing.
- *
- * Storage pattern:
- * - user_agents:{platform}:{userId} -> Set of agentIds
+ * Track which agents belong to which users. Backed by the `public.agent_users`
+ * table; reads are cached in-process and invalidated via `agent_users_changed`.
  */
 export class UserAgentsStore {
-  private readonly KEY_PREFIX = "user_agents";
+  private readonly cache: InvalidatableCache<UserKey, string[]>;
 
-  constructor(private redis: Redis) {}
-
-  private buildKey(platform: string, userId: string): string {
-    return `${this.KEY_PREFIX}:${platform}:${userId}`;
+  constructor() {
+    this.cache = new InvalidatableCache<UserKey, string[]>({
+      channel: "agent_users_changed",
+      ttlMs: 30_000,
+      maxEntries: 1000,
+      keyToString: userCacheKey,
+      loader: loadUserAgents,
+    });
   }
 
-  /**
-   * Add an agent to a user's list
-   */
   async addAgent(
     platform: string,
     userId: string,
     agentId: string
   ): Promise<void> {
-    const key = this.buildKey(platform, userId);
-    await this.redis.sadd(key, agentId);
+    const sql = getDb();
+    await sql`
+      INSERT INTO agent_users (agent_id, platform, user_id, created_at)
+      VALUES (${agentId}, ${platform}, ${userId}, now())
+      ON CONFLICT (agent_id, platform, user_id) DO NOTHING
+    `;
+    this.cache.invalidate({ platform, userId });
     logger.info(`Added agent ${agentId} to user ${platform}/${userId}`);
   }
 
-  /**
-   * Remove an agent from a user's list
-   */
   async removeAgent(
     platform: string,
     userId: string,
     agentId: string
   ): Promise<void> {
-    const key = this.buildKey(platform, userId);
-    await this.redis.srem(key, agentId);
+    const sql = getDb();
+    await sql`
+      DELETE FROM agent_users
+      WHERE agent_id = ${agentId} AND platform = ${platform} AND user_id = ${userId}
+    `;
+    this.cache.invalidate({ platform, userId });
     logger.info(`Removed agent ${agentId} from user ${platform}/${userId}`);
   }
 
-  /**
-   * List all agents owned by a user
-   */
   async listAgents(platform: string, userId: string): Promise<string[]> {
-    const key = this.buildKey(platform, userId);
-    return this.redis.smembers(key);
+    return this.cache.get({ platform, userId });
   }
 
-  /**
-   * Check if a user owns a specific agent
-   */
   async ownsAgent(
     platform: string,
     userId: string,
     agentId: string
   ): Promise<boolean> {
-    const key = this.buildKey(platform, userId);
-    const result = await this.redis.sismember(key, agentId);
-    return result === 1;
+    const agents = await this.listAgents(platform, userId);
+    return agents.includes(agentId);
+  }
+
+  async close(): Promise<void> {
+    await this.cache.close();
   }
 }

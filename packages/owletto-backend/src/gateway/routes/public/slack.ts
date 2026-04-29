@@ -89,8 +89,7 @@ export function createSlackRoutes(manager: ChatInstanceManager): Hono {
       );
     }
 
-    const redis = manager.getServices().getQueue().getRedisClient();
-    const stateStore = createSlackInstallStateStore(redis);
+    const stateStore = createSlackInstallStateStore();
     const redirectUri = resolvePublicUrl("/slack/oauth_callback", {
       configuredUrl: manager.getServices().getPublicGatewayUrl?.(),
       requestUrl: c.req.url,
@@ -120,8 +119,7 @@ export function createSlackRoutes(manager: ChatInstanceManager): Hono {
       );
     }
 
-    const redis = manager.getServices().getQueue().getRedisClient();
-    const stateStore = createSlackInstallStateStore(redis);
+    const stateStore = createSlackInstallStateStore();
     const oauthState = await stateStore.consume(state);
 
     if (!oauthState) {

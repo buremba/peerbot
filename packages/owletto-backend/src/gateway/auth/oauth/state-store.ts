@@ -1,23 +1,24 @@
 import { randomBytes } from "node:crypto";
-import {
-  createLogger,
-  getdelJsonValue,
-  setJsonValue,
-  type Logger,
-} from "@lobu/core";
-import type { Redis } from "ioredis";
+import { createLogger, type Logger } from "@lobu/core";
+import { getDb } from "../../../db/client.js";
 
 /**
- * Generic OAuth state store for CSRF protection
- * Pattern: {keyPrefix}:{state}
- * TTL: 5 minutes
+ * Generic OAuth state store for CSRF protection.
+ *
+ * Backed by `public.oauth_states`. Each scope (e.g. `claude:oauth_state`,
+ * `slack:oauth:state`, `mcp-oauth:state`) is stamped on the row so a single
+ * table can hold every flow's nonces; the unique 32-byte token is the row id.
+ *
+ * Tokens have a 5-minute TTL. Reads are lazy: an expired row is filtered by
+ * `expires_at > now()` and best-effort deleted on the same SELECT. A periodic
+ * sweeper (run from CoreServices via `setInterval`) deletes any leftover rows
+ * older than the window.
  */
 export class OAuthStateStore<T extends object> {
   private static readonly TTL_SECONDS = 5 * 60; // 5 minutes
   protected logger: Logger;
 
   constructor(
-    private redis: Redis,
     private keyPrefix: string,
     loggerName: string
   ) {
@@ -25,19 +26,25 @@ export class OAuthStateStore<T extends object> {
   }
 
   /**
-   * Create a new OAuth state with data
-   * Returns the state string to use in OAuth flow
+   * Create a new OAuth state with data. Returns the state token.
    */
   async create(data: T): Promise<string> {
     const state = this.generateState();
-    const key = this.getKey(state);
-
     const stateData = {
       ...data,
       createdAt: Date.now(),
     };
+    const sql = getDb();
+    const expiresAt = new Date(
+      Date.now() + OAuthStateStore.TTL_SECONDS * 1000
+    );
 
-    await setJsonValue(this.redis, key, stateData, OAuthStateStore.TTL_SECONDS);
+    await sql`
+      INSERT INTO oauth_states (id, scope, payload, expires_at)
+      VALUES (
+        ${state}, ${this.keyPrefix}, ${sql.json(stateData)}, ${expiresAt}
+      )
+    `;
 
     const userId =
       typeof (data as { userId?: unknown }).userId === "string"
@@ -51,24 +58,27 @@ export class OAuthStateStore<T extends object> {
   }
 
   /**
-   * Validate and consume an OAuth state
-   * Returns the state data if valid, null if invalid or expired
-   * Deletes the state after retrieval (one-time use)
+   * Validate and consume an OAuth state. Returns the data if valid, null
+   * if invalid or expired. The row is deleted as part of the consume so a
+   * replay of the same state hits the empty-row branch.
    */
   async consume(state: string): Promise<(T & { createdAt: number }) | null> {
-    const key = this.getKey(state);
+    const sql = getDb();
+    const rows = await sql`
+      DELETE FROM oauth_states
+      WHERE id = ${state}
+        AND scope = ${this.keyPrefix}
+        AND expires_at > now()
+      RETURNING payload
+    `;
 
-    // Get and delete in one operation
-    const stateData = await getdelJsonValue<T & { createdAt: number }>(
-      this.redis,
-      key
-    );
-
-    if (!stateData) {
+    if (rows.length === 0) {
       this.logger.warn(`Invalid or expired OAuth state: ${state}`);
       return null;
     }
 
+    const stateData = (rows[0] as { payload: T & { createdAt: number } })
+      .payload;
     const stateDataWithUser = stateData as unknown as { userId?: unknown };
     const userId =
       typeof stateDataWithUser.userId === "string"
@@ -84,14 +94,10 @@ export class OAuthStateStore<T extends object> {
   }
 
   /**
-   * Generate a cryptographically secure random state string
+   * Generate a cryptographically secure random state string.
    */
   private generateState(): string {
     return randomBytes(32).toString("base64url");
-  }
-
-  private getKey(state: string): string {
-    return `${this.keyPrefix}:${state}`;
   }
 }
 
@@ -116,14 +122,12 @@ export interface ProviderOAuthStateData {
 }
 
 /**
- * Create a provider OAuth state store for PKCE flow
+ * Create a provider OAuth state store for PKCE flow.
  */
 export function createOAuthStateStore(
-  providerId: string,
-  redis: Redis
+  providerId: string
 ): OAuthStateStore<ProviderOAuthStateData> {
   return new OAuthStateStore(
-    redis,
     `${providerId}:oauth_state`,
     `${providerId}-oauth-state`
   );
@@ -133,10 +137,23 @@ interface SlackInstallStateData {
   redirectUri: string;
 }
 
-export function createSlackInstallStateStore(
-  redis: Redis
-): OAuthStateStore<SlackInstallStateData> {
-  return new OAuthStateStore(redis, "slack:oauth:state", "slack-install-state");
+export function createSlackInstallStateStore(): OAuthStateStore<SlackInstallStateData> {
+  return new OAuthStateStore("slack:oauth:state", "slack-install-state");
 }
 
 export type ProviderOAuthStateStore = OAuthStateStore<ProviderOAuthStateData>;
+
+/**
+ * Sweep expired oauth_states rows. Cheap because it uses the partial
+ * expires_at index; safe to call from a periodic background timer.
+ */
+export async function sweepExpiredOAuthStates(): Promise<number> {
+  const sql = getDb();
+  const rows = await sql`
+    WITH deleted AS (
+      DELETE FROM oauth_states WHERE expires_at <= now() RETURNING id
+    )
+    SELECT count(*)::int AS count FROM deleted
+  `;
+  return Number((rows[0] as { count?: number } | undefined)?.count ?? 0);
+}

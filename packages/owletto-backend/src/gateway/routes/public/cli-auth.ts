@@ -3,11 +3,11 @@ import { createLogger } from "@lobu/core";
 import { type Context, Hono } from "hono";
 import { CliTokenService } from "../../auth/cli/token-service.js";
 import type { ExternalAuthClient } from "../../auth/external/client.js";
-import type { IMessageQueue } from "../../infrastructure/queue/index.js";
+import { getDb } from "../../../db/client.js";
 import { resolvePublicUrl } from "../../utils/public-url.js";
 import {
+  FixedWindowRateLimiter,
   getClientIp,
-  RedisFixedWindowRateLimiter,
 } from "../../utils/rate-limiter.js";
 import {
   setSettingsSessionCookie,
@@ -60,7 +60,6 @@ interface ConnectOauthState {
 }
 
 interface CliAuthRoutesConfig {
-  queue: IMessageQueue;
   externalAuthClient?: ExternalAuthClient;
   allowAdminPasswordLogin?: boolean;
   adminPassword?: string;
@@ -145,61 +144,72 @@ function renderPage(title: string, message: string, tone: "success" | "error") {
 </html>`;
 }
 
+const SCOPE_BROWSER = "cli:auth:request";
+const SCOPE_DEVICE = "cli:auth:device";
+const SCOPE_CONNECT = "cli:auth:connect";
+
+async function loadOauthState<T>(
+  scope: string,
+  id: string
+): Promise<T | null> {
+  const sql = getDb();
+  const rows = await sql`
+    SELECT payload FROM oauth_states
+    WHERE id = ${id} AND scope = ${scope} AND expires_at > now()
+  `;
+  return ((rows[0] as { payload: T } | undefined)?.payload ?? null) as T | null;
+}
+
+async function saveOauthState<T>(
+  scope: string,
+  id: string,
+  value: T,
+  ttlSeconds: number
+): Promise<void> {
+  const sql = getDb();
+  const expiresAt = new Date(Date.now() + ttlSeconds * 1000);
+  await sql`
+    INSERT INTO oauth_states (id, scope, payload, expires_at)
+    VALUES (${id}, ${scope}, ${sql.json(value as object)}, ${expiresAt})
+    ON CONFLICT (id) DO UPDATE SET
+      scope = EXCLUDED.scope,
+      payload = EXCLUDED.payload,
+      expires_at = EXCLUDED.expires_at
+  `;
+}
+
+async function deleteOauthState(scope: string, id: string): Promise<void> {
+  const sql = getDb();
+  await sql`DELETE FROM oauth_states WHERE id = ${id} AND scope = ${scope}`;
+}
+
 export function createCliAuthRoutes(config: CliAuthRoutesConfig): Hono {
   const router = new Hono();
-  const redis = config.queue.getRedisClient();
-  const tokenService = new CliTokenService(redis);
-  const rateLimiter = new RedisFixedWindowRateLimiter(redis);
+  const tokenService = new CliTokenService();
+  const rateLimiter = new FixedWindowRateLimiter();
 
   async function loadBrowserRequest(
     requestId: string
   ): Promise<CliBrowserAuthState | null> {
-    const raw = await redis.get(getRequestKey(requestId));
-    if (!raw) {
-      return null;
-    }
-
-    try {
-      return JSON.parse(raw) as CliBrowserAuthState;
-    } catch (error) {
-      logger.error("Failed to parse CLI browser auth request", {
-        requestId,
-        error,
-      });
-      await redis.del(getRequestKey(requestId));
-      return null;
-    }
+    return loadOauthState<CliBrowserAuthState>(SCOPE_BROWSER, requestId);
   }
 
   async function saveBrowserRequest(
     requestId: string,
     value: CliBrowserAuthState
   ): Promise<void> {
-    await redis.setex(
-      getRequestKey(requestId),
-      AUTH_REQUEST_TTL_SECONDS,
-      JSON.stringify(value)
+    await saveOauthState(
+      SCOPE_BROWSER,
+      requestId,
+      value,
+      AUTH_REQUEST_TTL_SECONDS
     );
   }
 
   async function loadDeviceRequest(
     deviceAuthId: string
   ): Promise<CliDeviceAuthState | null> {
-    const raw = await redis.get(getDeviceRequestKey(deviceAuthId));
-    if (!raw) {
-      return null;
-    }
-
-    try {
-      return JSON.parse(raw) as CliDeviceAuthState;
-    } catch (error) {
-      logger.error("Failed to parse CLI device auth request", {
-        deviceAuthId,
-        error,
-      });
-      await redis.del(getDeviceRequestKey(deviceAuthId));
-      return null;
-    }
+    return loadOauthState<CliDeviceAuthState>(SCOPE_DEVICE, deviceAuthId);
   }
 
   async function saveDeviceRequest(
@@ -210,11 +220,7 @@ export function createCliAuthRoutes(config: CliAuthRoutesConfig): Hono {
       60,
       Math.ceil((value.expiresAt - Date.now()) / 1000)
     );
-    await redis.setex(
-      getDeviceRequestKey(deviceAuthId),
-      ttlSeconds,
-      JSON.stringify(value)
-    );
+    await saveOauthState(SCOPE_DEVICE, deviceAuthId, value, ttlSeconds);
   }
 
   async function mintCliTokens(user: {
@@ -271,7 +277,7 @@ export function createCliAuthRoutes(config: CliAuthRoutesConfig): Hono {
     }
 
     if (authRequest.status === "error") {
-      await redis.del(getRequestKey(requestId));
+      await deleteOauthState(SCOPE_BROWSER, requestId);
       return c.json(
         {
           status: "error",
@@ -281,7 +287,7 @@ export function createCliAuthRoutes(config: CliAuthRoutesConfig): Hono {
       );
     }
 
-    await redis.del(getRequestKey(requestId));
+    await deleteOauthState(SCOPE_BROWSER, requestId);
     return c.json({
       status: "complete",
       ...authRequest.result,
@@ -309,7 +315,7 @@ export function createCliAuthRoutes(config: CliAuthRoutesConfig): Hono {
     }
 
     if (authRequest.status === "complete") {
-      await redis.del(getDeviceRequestKey(deviceAuthId));
+      await deleteOauthState(SCOPE_DEVICE, deviceAuthId);
       return c.json({
         status: "complete",
         ...authRequest.result,
@@ -317,7 +323,7 @@ export function createCliAuthRoutes(config: CliAuthRoutesConfig): Hono {
     }
 
     if (authRequest.status === "error") {
-      await redis.del(getDeviceRequestKey(deviceAuthId));
+      await deleteOauthState(SCOPE_DEVICE, deviceAuthId);
       return c.json(
         {
           status: "error",
@@ -343,7 +349,7 @@ export function createCliAuthRoutes(config: CliAuthRoutesConfig): Hono {
       }
 
       if (pollResult.status === "error") {
-        await redis.del(getDeviceRequestKey(deviceAuthId));
+        await deleteOauthState(SCOPE_DEVICE, deviceAuthId);
         return c.json(
           {
             status: "error",
@@ -355,7 +361,7 @@ export function createCliAuthRoutes(config: CliAuthRoutesConfig): Hono {
 
       const user = pollResult.user;
       if (!user?.sub) {
-        await redis.del(getDeviceRequestKey(deviceAuthId));
+        await deleteOauthState(SCOPE_DEVICE, deviceAuthId);
         return c.json(
           {
             status: "error",
@@ -371,7 +377,7 @@ export function createCliAuthRoutes(config: CliAuthRoutesConfig): Hono {
         email: user.email,
         name: user.name,
       });
-      await redis.del(getDeviceRequestKey(deviceAuthId));
+      await deleteOauthState(SCOPE_DEVICE, deviceAuthId);
       return c.json({
         status: "complete",
         ...issued,
@@ -381,7 +387,7 @@ export function createCliAuthRoutes(config: CliAuthRoutesConfig): Hono {
         deviceAuthId,
         error,
       });
-      await redis.del(getDeviceRequestKey(deviceAuthId));
+      await deleteOauthState(SCOPE_DEVICE, deviceAuthId);
       return c.json(
         {
           status: "error",
@@ -694,20 +700,11 @@ export function createCliAuthRoutes(config: CliAuthRoutesConfig): Hono {
 
 export function createConnectAuthRoutes(config: CliAuthRoutesConfig): Hono {
   const router = new Hono();
-  const redis = config.queue.getRedisClient();
 
   async function loadConnectState(
     state: string
   ): Promise<ConnectOauthState | null> {
-    const raw = await redis.get(getConnectStateKey(state));
-    if (!raw) return null;
-
-    try {
-      return JSON.parse(raw) as ConnectOauthState;
-    } catch {
-      await redis.del(getConnectStateKey(state));
-      return null;
-    }
+    return loadOauthState<ConnectOauthState>(SCOPE_CONNECT, state);
   }
 
   router.get("/connect/oauth/login", async (c) => {
@@ -742,10 +739,11 @@ export function createConnectAuthRoutes(config: CliAuthRoutesConfig): Hono {
     try {
       const state = randomBytes(24).toString("base64url");
       const codeVerifier = config.externalAuthClient.generateCodeVerifier();
-      await redis.setex(
-        getConnectStateKey(state),
-        CONNECT_OAUTH_TTL_SECONDS,
-        JSON.stringify({ returnUrl, codeVerifier } satisfies ConnectOauthState)
+      await saveOauthState<ConnectOauthState>(
+        SCOPE_CONNECT,
+        state,
+        { returnUrl, codeVerifier },
+        CONNECT_OAUTH_TTL_SECONDS
       );
 
       const redirectUri = resolvePublicUrl("/connect/oauth/callback", {
@@ -832,7 +830,7 @@ export function createConnectAuthRoutes(config: CliAuthRoutesConfig): Hono {
     }
 
     const connectState = await loadConnectState(state);
-    await redis.del(getConnectStateKey(state));
+    await deleteOauthState(SCOPE_CONNECT, state);
     if (!connectState) {
       return c.html(
         renderPage(
@@ -881,16 +879,4 @@ export function createConnectAuthRoutes(config: CliAuthRoutesConfig): Hono {
   });
 
   return router;
-}
-
-function getRequestKey(requestId: string): string {
-  return `cli:auth:request:${requestId}`;
-}
-
-function getDeviceRequestKey(deviceAuthId: string): string {
-  return `cli:auth:device:${deviceAuthId}`;
-}
-
-function getConnectStateKey(state: string): string {
-  return `cli:auth:connect:${state}`;
 }

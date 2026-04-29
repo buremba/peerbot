@@ -1,14 +1,25 @@
-import { describe, expect, test } from "bun:test";
-import { MockRedisClient } from "../../../../../core/src/__tests__/fixtures/mock-redis.js";
+import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { getDb } from "../../../db/client.js";
 import {
+  FixedWindowRateLimiter,
   getClientIp,
-  RedisFixedWindowRateLimiter,
 } from "../../utils/rate-limiter.js";
+import {
+  ensurePgliteForGatewayTests,
+  resetTestDatabase,
+} from "../helpers/db-setup.js";
 
-describe("RedisFixedWindowRateLimiter", () => {
+describe("FixedWindowRateLimiter", () => {
+  beforeAll(async () => {
+    await ensurePgliteForGatewayTests();
+  });
+
+  beforeEach(async () => {
+    await resetTestDatabase();
+  });
+
   test("allows requests within the window and blocks after the limit", async () => {
-    const redis = new MockRedisClient();
-    const limiter = new RedisFixedWindowRateLimiter(redis);
+    const limiter = new FixedWindowRateLimiter();
 
     const first = await limiter.consume({
       key: "rate:test:1",
@@ -35,8 +46,7 @@ describe("RedisFixedWindowRateLimiter", () => {
   });
 
   test("resets after the time window", async () => {
-    const redis = new MockRedisClient();
-    const limiter = new RedisFixedWindowRateLimiter(redis);
+    const limiter = new FixedWindowRateLimiter();
 
     await limiter.consume({
       key: "rate:test:2",
@@ -50,7 +60,10 @@ describe("RedisFixedWindowRateLimiter", () => {
     });
     expect(blocked.allowed).toBe(false);
 
-    redis.advanceTime(61_000);
+    // Force the existing window to be in the past so the next consume()
+    // resets the counter via the CASE branch — no clock-shim needed.
+    const sql = getDb();
+    await sql`UPDATE rate_limits SET expires_at = now() - interval '1 second' WHERE key = 'rate:test:2'`;
 
     const reset = await limiter.consume({
       key: "rate:test:2",
@@ -62,8 +75,7 @@ describe("RedisFixedWindowRateLimiter", () => {
   });
 
   test("reset clears the tracked key", async () => {
-    const redis = new MockRedisClient();
-    const limiter = new RedisFixedWindowRateLimiter(redis);
+    const limiter = new FixedWindowRateLimiter();
 
     await limiter.consume({
       key: "rate:test:3",

@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { createLogger, decrypt, encrypt } from "@lobu/core";
-import type { Redis } from "ioredis";
+import { getDb } from "../../../db/client.js";
 
 const logger = createLogger("cli-token-service");
 
@@ -53,9 +53,20 @@ interface CliAccessTokenIdentity extends CliTokenIdentity {
   expiresAt: number;
 }
 
+/**
+ * CLI token service backed by `public.cli_sessions`.
+ *
+ * Session rows are 30-day refresh-token anchors. Access tokens are
+ * encrypted JWT-shaped blobs that carry `sessionId`; verifyAccessToken
+ * re-checks the row exists so a `revokeSessionByRefreshToken` invalidates
+ * outstanding access tokens within the verify window.
+ *
+ * The previous Redis-backed implementation used a single `setex` per
+ * session and relied on TTL for cleanup; here we read `expires_at` on
+ * every load and lazily delete expired rows. A periodic sweeper deletes
+ * leftover rows in bulk.
+ */
 export class CliTokenService {
-  constructor(private readonly redis: Redis) {}
-
   async issueTokens(identity: CliTokenIdentity): Promise<CliIssuedTokens> {
     const session = this.createSessionRecord(identity);
     await this.saveSession(session);
@@ -181,36 +192,71 @@ export class CliTokenService {
   }
 
   private async saveSession(session: CliSessionRecord): Promise<void> {
-    const ttlSeconds = Math.max(
-      1,
-      Math.ceil((session.expiresAt - Date.now()) / 1000)
-    );
-    await this.redis.setex(
-      this.getSessionKey(session.sessionId),
-      ttlSeconds,
-      JSON.stringify(session)
-    );
+    const sql = getDb();
+    const expiresAt = new Date(session.expiresAt);
+    await sql`
+      INSERT INTO cli_sessions (
+        session_id, user_id, email, name, refresh_token_id, expires_at
+      ) VALUES (
+        ${session.sessionId},
+        ${session.userId},
+        ${session.email ?? null},
+        ${session.name ?? null},
+        ${session.refreshTokenId},
+        ${expiresAt}
+      )
+      ON CONFLICT (session_id) DO UPDATE SET
+        user_id = EXCLUDED.user_id,
+        email = EXCLUDED.email,
+        name = EXCLUDED.name,
+        refresh_token_id = EXCLUDED.refresh_token_id,
+        expires_at = EXCLUDED.expires_at
+    `;
   }
 
   private async getSession(
     sessionId: string
   ): Promise<CliSessionRecord | null> {
-    const raw = await this.redis.get(this.getSessionKey(sessionId));
-    if (!raw) {
+    const sql = getDb();
+    const rows = await sql`
+      SELECT session_id, user_id, email, name, refresh_token_id,
+             expires_at, created_at
+      FROM cli_sessions
+      WHERE session_id = ${sessionId}
+        AND expires_at > now()
+    `;
+    if (rows.length === 0) {
       return null;
     }
-
-    try {
-      return JSON.parse(raw) as CliSessionRecord;
-    } catch (error) {
-      logger.error("Failed to parse CLI session", { sessionId, error });
-      await this.deleteSession(sessionId);
-      return null;
-    }
+    const row = rows[0] as {
+      session_id: string;
+      user_id: string;
+      email: string | null;
+      name: string | null;
+      refresh_token_id: string;
+      expires_at: Date | string;
+      created_at: Date | string;
+    };
+    return {
+      sessionId: row.session_id,
+      userId: row.user_id,
+      email: row.email ?? undefined,
+      name: row.name ?? undefined,
+      refreshTokenId: row.refresh_token_id,
+      createdAt:
+        row.created_at instanceof Date
+          ? row.created_at.getTime()
+          : Date.parse(String(row.created_at)),
+      expiresAt:
+        row.expires_at instanceof Date
+          ? row.expires_at.getTime()
+          : Date.parse(String(row.expires_at)),
+    };
   }
 
   private async deleteSession(sessionId: string): Promise<void> {
-    await this.redis.del(this.getSessionKey(sessionId));
+    const sql = getDb();
+    await sql`DELETE FROM cli_sessions WHERE session_id = ${sessionId}`;
   }
 
   private parseAccessToken(token: string): CliAccessTokenPayload | null {
@@ -239,11 +285,21 @@ export class CliTokenService {
     }
   }
 
-  private getSessionKey(sessionId: string): string {
-    return `cli:auth:session:${sessionId}`;
-  }
-
   private generateId(): string {
     return randomBytes(24).toString("base64url");
   }
+}
+
+/**
+ * Sweep expired cli_sessions rows. Safe to call from a periodic timer.
+ */
+export async function sweepExpiredCliSessions(): Promise<number> {
+  const sql = getDb();
+  const rows = await sql`
+    WITH deleted AS (
+      DELETE FROM cli_sessions WHERE expires_at <= now() RETURNING session_id
+    )
+    SELECT count(*)::int AS count FROM deleted
+  `;
+  return Number((rows[0] as { count?: number } | undefined)?.count ?? 0);
 }

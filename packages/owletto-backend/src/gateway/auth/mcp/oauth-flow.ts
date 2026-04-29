@@ -54,9 +54,8 @@ interface McpOAuthStateData extends ProviderOAuthStateData {
   connectionId?: string;
 }
 
-function getStateStore(redis: Redis): OAuthStateStore<McpOAuthStateData> {
+function getStateStore(): OAuthStateStore<McpOAuthStateData> {
   return new OAuthStateStore<McpOAuthStateData>(
-    redis,
     STATE_KEY_PREFIX,
     "mcp-oauth-state"
   );
@@ -149,7 +148,7 @@ export async function startAuthCodeFlow(
   const codeVerifier = generateCodeVerifier();
   const codeChallenge = generateCodeChallenge(codeVerifier);
 
-  const stateStore = getStateStore(redis);
+  const stateStore = getStateStore();
   const state = await stateStore.create({
     userId,
     agentId,
@@ -227,7 +226,7 @@ export async function completeAuthCodeFlow(
 ): Promise<CompleteFlowResult> {
   const { redis, secretStore, state, code, redirectUri } = options;
 
-  const stateStore = getStateStore(redis);
+  const stateStore = getStateStore();
   const stateData = await stateStore.consume(state);
   if (!stateData) {
     throw new Error("Invalid or expired OAuth state");

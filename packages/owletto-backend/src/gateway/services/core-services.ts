@@ -24,7 +24,10 @@ import { CLAUDE_PROVIDER } from "../auth/oauth/providers.js";
 import {
   createOAuthStateStore,
   type ProviderOAuthStateStore,
+  sweepExpiredOAuthStates,
 } from "../auth/oauth/state-store.js";
+import { sweepExpiredCliSessions } from "../auth/cli/token-service.js";
+import { sweepExpiredRateLimits } from "../utils/rate-limiter.js";
 import { ProviderCatalogService } from "../auth/provider-catalog.js";
 import {
   AgentSettingsStore,
@@ -173,6 +176,11 @@ export class CoreServices {
   private scheduleService?: ScheduleService;
 
   // ============================================================================
+  // Ephemeral-table sweeper (oauth_states, cli_sessions, rate_limits)
+  // ============================================================================
+  private ephemeralSweepHandle?: ReturnType<typeof setInterval>;
+
+  // ============================================================================
   // Agent Sub-Stores (injectable — host can provide its own implementations)
   // ============================================================================
   private configStore?: AgentConfigStore;
@@ -270,7 +278,36 @@ export class CoreServices {
     this.initializeCommandRegistry();
     logger.debug("Command registry initialized");
 
+    // 8. Periodic sweeper for the Phase-7 ephemeral PG tables. The lazy
+    // `expires_at > now()` filter on read makes the sweeper a hygiene
+    // task, not a correctness one — running every 5 minutes is plenty.
+    this.ephemeralSweepHandle = setInterval(() => {
+      void this.sweepEphemeralTables();
+    }, 5 * 60 * 1000);
+    logger.debug("Ephemeral PG-table sweeper started (5 min interval)");
+
     logger.info("Core services initialized successfully");
+  }
+
+  private async sweepEphemeralTables(): Promise<void> {
+    try {
+      const [oauth, cli, rate] = await Promise.all([
+        sweepExpiredOAuthStates(),
+        sweepExpiredCliSessions(),
+        sweepExpiredRateLimits(),
+      ]);
+      if (oauth + cli + rate > 0) {
+        logger.debug(
+          { oauth, cli, rate },
+          "Ephemeral table sweeper deleted expired rows"
+        );
+      }
+    } catch (error) {
+      logger.warn(
+        { error: error instanceof Error ? error.message : String(error) },
+        "Ephemeral table sweeper failed"
+      );
+    }
   }
 
   // ============================================================================
@@ -579,7 +616,7 @@ export class CoreServices {
     logger.debug("Token refresh job started");
 
     // Register Claude OAuth module
-    this.oauthStateStore = createOAuthStateStore("claude", redisClient);
+    this.oauthStateStore = createOAuthStateStore("claude");
     const claudeOAuthModule = new ClaudeOAuthModule(
       this.authProfilesManager,
       this.modelPreferenceStore
@@ -1048,6 +1085,11 @@ export class CoreServices {
 
   async shutdown(): Promise<void> {
     logger.info("Shutting down core services...");
+
+    if (this.ephemeralSweepHandle) {
+      clearInterval(this.ephemeralSweepHandle);
+      this.ephemeralSweepHandle = undefined;
+    }
 
     if (this.tokenRefreshJob) {
       this.tokenRefreshJob.stop();

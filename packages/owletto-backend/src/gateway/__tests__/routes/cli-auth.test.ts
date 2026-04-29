@@ -1,25 +1,28 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
 import { decrypt } from "@lobu/core";
-import { MockRedisClient } from "../../../../../core/src/__tests__/fixtures/mock-redis.js";
+import { getDb } from "../../../db/client.js";
 import {
   createCliAuthRoutes,
   createConnectAuthRoutes,
 } from "../../routes/public/cli-auth.js";
+import {
+  ensurePgliteForGatewayTests,
+  resetTestDatabase,
+} from "../helpers/db-setup.js";
 
 describe("cli auth routes", () => {
   let originalKey: string | undefined;
-  let redis: MockRedisClient;
-  let queue: { getRedisClient(): MockRedisClient };
 
-  beforeEach(() => {
+  beforeAll(async () => {
+    await ensurePgliteForGatewayTests();
+  });
+
+  beforeEach(async () => {
     mock.restore();
     originalKey = process.env.ENCRYPTION_KEY;
     process.env.ENCRYPTION_KEY =
       "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-    redis = new MockRedisClient();
-    queue = {
-      getRedisClient: () => redis,
-    };
+    await resetTestDatabase();
   });
 
   afterEach(() => {
@@ -30,9 +33,22 @@ describe("cli auth routes", () => {
     }
   });
 
+  async function seedOauthState(
+    scope: string,
+    id: string,
+    payload: object,
+    ttlSeconds: number
+  ): Promise<void> {
+    const sql = getDb();
+    const expiresAt = new Date(Date.now() + ttlSeconds * 1000);
+    await sql`
+      INSERT INTO oauth_states (id, scope, payload, expires_at)
+      VALUES (${id}, ${scope}, ${sql.json(payload)}, ${expiresAt})
+    `;
+  }
+
   test("POST /cli/start returns device mode when the external provider supports device auth", async () => {
     const router = createCliAuthRoutes({
-      queue: queue as any,
       externalAuthClient: {
         getCapabilities: mock(async () => ({ browser: true, device: true })),
         startDeviceAuthorization: mock(async () => ({
@@ -61,7 +77,6 @@ describe("cli auth routes", () => {
 
   test("POST /cli/start falls back to browser mode when device auth is unavailable", async () => {
     const router = createCliAuthRoutes({
-      queue: queue as any,
       externalAuthClient: {
         getCapabilities: mock(async () => ({ browser: true, device: false })),
       } as any,
@@ -81,7 +96,6 @@ describe("cli auth routes", () => {
 
   test("GET /connect/oauth/login redirects into external browser auth", async () => {
     const router = createConnectAuthRoutes({
-      queue: queue as any,
       externalAuthClient: {
         generateCodeVerifier: () => "code-verifier",
         buildAuthUrl: mock(async (state: string, codeVerifier: string) => {
@@ -103,17 +117,17 @@ describe("cli auth routes", () => {
   });
 
   test("GET /connect/oauth/callback sets a settings session and redirects back", async () => {
-    await redis.setex(
-      "cli:auth:connect:state-123",
-      600,
-      JSON.stringify({
+    await seedOauthState(
+      "cli:auth:connect",
+      "state-123",
+      {
         returnUrl: "/done",
         codeVerifier: "code-verifier",
-      })
+      },
+      600
     );
 
     const router = createConnectAuthRoutes({
-      queue: queue as any,
       externalAuthClient: {
         exchangeCodeForToken: mock(async () => ({
           accessToken: "provider-access-token",
@@ -153,21 +167,21 @@ describe("cli auth routes", () => {
   });
 
   test("POST /cli/poll mints Lobu tokens after device auth completes", async () => {
-    await redis.setex(
-      "cli:auth:device:device-123",
-      600,
-      JSON.stringify({
+    await seedOauthState(
+      "cli:auth:device",
+      "device-123",
+      {
         status: "pending",
         createdAt: Date.now(),
         expiresAt: Date.now() + 600_000,
         interval: 5,
         userCode: "ABCD-EFGH",
         verificationUri: "https://issuer.example.com/device",
-      })
+      },
+      600
     );
 
     const router = createCliAuthRoutes({
-      queue: queue as any,
       externalAuthClient: {
         pollDeviceAuthorization: mock(async () => ({
           status: "complete",
@@ -203,10 +217,10 @@ describe("cli auth routes", () => {
   });
 
   test("POST /cli/poll returns a completed browser result from stored request state", async () => {
-    await redis.setex(
-      "cli:auth:request:req-123",
-      600,
-      JSON.stringify({
+    await seedOauthState(
+      "cli:auth:request",
+      "req-123",
+      {
         status: "complete",
         createdAt: Date.now(),
         result: {
@@ -219,11 +233,11 @@ describe("cli auth routes", () => {
             name: "Example User",
           },
         },
-      })
+      },
+      600
     );
 
     const router = createCliAuthRoutes({
-      queue: queue as any,
       externalAuthClient: {} as any,
     });
 
@@ -241,7 +255,6 @@ describe("cli auth routes", () => {
 
   test("POST /cli/admin-login mints tokens when development fallback is enabled", async () => {
     const router = createCliAuthRoutes({
-      queue: queue as any,
       allowAdminPasswordLogin: true,
       adminPassword: "dev-secret",
     });
@@ -264,7 +277,6 @@ describe("cli auth routes", () => {
 
   test("POST /cli/admin-login is rejected when disabled or password is wrong", async () => {
     const disabledRouter = createCliAuthRoutes({
-      queue: queue as any,
       allowAdminPasswordLogin: false,
       adminPassword: "dev-secret",
     });
@@ -277,7 +289,6 @@ describe("cli auth routes", () => {
     expect(disabled.status).toBe(403);
 
     const enabledRouter = createCliAuthRoutes({
-      queue: queue as any,
       allowAdminPasswordLogin: true,
       adminPassword: "dev-secret",
     });
@@ -295,7 +306,6 @@ describe("cli auth routes", () => {
 
   test("POST /cli/admin-login is rate limited per client IP", async () => {
     const router = createCliAuthRoutes({
-      queue: queue as any,
       allowAdminPasswordLogin: true,
       adminPassword: "dev-secret",
     });

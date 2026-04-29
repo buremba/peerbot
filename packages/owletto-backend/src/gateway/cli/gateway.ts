@@ -273,8 +273,7 @@ export function createGatewayApp(
 
   let cliTokenService: any;
   if (coreServices) {
-    const redisClient = coreServices.getQueue().getRedisClient();
-    cliTokenService = new CliTokenService(redisClient);
+    cliTokenService = new CliTokenService();
   }
 
   if (coreServices) {
@@ -357,13 +356,11 @@ export function createGatewayApp(
 
     {
       const cliAuthRouter = createCliAuthRoutes({
-        queue: coreServices.getQueue(),
         externalAuthClient: coreServices.getExternalAuthClient(),
         allowAdminPasswordLogin: process.env.NODE_ENV !== "production",
         adminPassword,
       });
       const connectAuthRouter = createConnectAuthRoutes({
-        queue: coreServices.getQueue(),
         externalAuthClient: coreServices.getExternalAuthClient(),
         allowAdminPasswordLogin: process.env.NODE_ENV !== "production",
         adminPassword,

@@ -2,6 +2,7 @@ import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { PostgresSecretStore } from "../../lobu/stores/postgres-secret-store.js";
 import { UserAuthProfileStore } from "../auth/settings/user-auth-profile-store.js";
 import {
+  ensureEncryptionKey,
   ensurePgliteForGatewayTests,
   resetTestDatabase,
 } from "./helpers/db-setup.js";
@@ -14,6 +15,7 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
+  ensureEncryptionKey();
   await resetTestDatabase();
   secretStore = new PostgresSecretStore();
   store = new UserAuthProfileStore(secretStore);

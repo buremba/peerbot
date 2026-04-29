@@ -6,7 +6,9 @@ import {
   expect,
   test,
 } from "bun:test";
-import { MockRedisClient } from "@lobu/core/testing";
+import { getDb } from "../../db/client.js";
+import { orgContext } from "../../lobu/stores/org-context.js";
+import { PostgresSecretStore } from "../../lobu/stores/postgres-secret-store.js";
 import {
   ProviderCatalogService,
   resolveInstalledProviders,
@@ -22,41 +24,64 @@ import {
   resolveSettingsView,
 } from "../auth/settings/resolved-settings-view.js";
 import { UserAuthProfileStore } from "../auth/settings/user-auth-profile-store.js";
-import { RedisSecretStore } from "../secrets/index.js";
 import { DeclaredAgentRegistry } from "../services/declared-agent-registry.js";
 import { hasConfiguredProvider } from "../services/platform-helpers.js";
+import {
+  ensureEncryptionKey,
+  ensurePgliteForGatewayTests,
+  resetTestDatabase,
+  seedAgentRow,
+} from "./helpers/db-setup.js";
 
 const TEST_ENCRYPTION_KEY =
   "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
-let originalEncryptionKey: string | undefined;
+const ORG_ID = "test-org-prov-inheritance";
 
-beforeAll(() => {
-  originalEncryptionKey = process.env.ENCRYPTION_KEY;
-  process.env.ENCRYPTION_KEY = TEST_ENCRYPTION_KEY;
-});
-
-afterAll(() => {
-  if (originalEncryptionKey !== undefined) {
-    process.env.ENCRYPTION_KEY = originalEncryptionKey;
-  } else {
-    delete process.env.ENCRYPTION_KEY;
+beforeAll(async () => {
+  // ensurePgliteForGatewayTests already populates ENCRYPTION_KEY; we set our
+  // own value first so encrypt()/decrypt() round-trip in this file even when
+  // the suite is run in isolation. Keep the key set on teardown — other
+  // bun:test files in the gateway directory rely on it being available.
+  if (!process.env.ENCRYPTION_KEY) {
+    process.env.ENCRYPTION_KEY = TEST_ENCRYPTION_KEY;
   }
+  await ensurePgliteForGatewayTests();
 });
+
+// Intentionally no afterAll teardown of ENCRYPTION_KEY — the variable is
+// shared across the bun:test gateway suite.
+afterAll(() => {});
+
+async function seedConnection(
+  connectionId: string,
+  templateAgentId: string
+): Promise<void> {
+  const sql = getDb();
+  await sql`
+    INSERT INTO agent_connections (id, agent_id, platform, config, settings, metadata, status)
+    VALUES (${connectionId}, ${templateAgentId}, 'telegram', '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, 'active')
+    ON CONFLICT (id) DO NOTHING
+  `;
+}
+
+function withOrg<T>(fn: () => Promise<T>): Promise<T> {
+  return orgContext.run({ organizationId: ORG_ID }, fn);
+}
 
 describe("sandbox provider inheritance", () => {
-  let redis: MockRedisClient;
   let store: AgentSettingsStore;
-  let secretStore: RedisSecretStore;
+  let secretStore: PostgresSecretStore;
   let userAuthProfiles: UserAuthProfileStore;
   let declaredAgents: DeclaredAgentRegistry;
   let authProfilesManager: AuthProfilesManager;
 
-  beforeEach(() => {
-    redis = new MockRedisClient();
-    secretStore = new RedisSecretStore(redis as any, "lobu:test:secrets:");
-    store = new AgentSettingsStore(redis as any);
-    userAuthProfiles = new UserAuthProfileStore(redis as any, secretStore);
+  beforeEach(async () => {
+    ensureEncryptionKey();
+    await resetTestDatabase();
+    secretStore = new PostgresSecretStore();
+    store = new AgentSettingsStore();
+    userAuthProfiles = new UserAuthProfileStore(secretStore);
     declaredAgents = new DeclaredAgentRegistry();
     authProfilesManager = new AuthProfilesManager({
       ephemeralProfiles: new EphemeralAuthProfileRegistry(),
@@ -67,24 +92,24 @@ describe("sandbox provider inheritance", () => {
   });
 
   test("inherits installed providers through metadata and connection template fallback", async () => {
-    await store.saveSettings("template-agent", {
-      installedProviders: [{ providerId: "z-ai", installedAt: 1 }],
+    await withOrg(async () => {
+      await seedAgentRow("template-agent", { organizationId: ORG_ID });
+      await seedAgentRow("telegram-6570514069", {
+        organizationId: ORG_ID,
+        parentConnectionId: "conn-1",
+      });
+      await seedConnection("conn-1", "template-agent");
+
+      await store.saveSettings("template-agent", {
+        installedProviders: [{ providerId: "z-ai", installedAt: 1 }],
+      });
+
+      const providers = await resolveInstalledProviders(
+        store,
+        "telegram-6570514069"
+      );
+      expect(providers).toEqual([{ providerId: "z-ai", installedAt: 1 }]);
     });
-    await redis.set(
-      "agent_metadata:telegram-6570514069",
-      JSON.stringify({ parentConnectionId: "conn-1" })
-    );
-    await redis.set(
-      "connection:conn-1",
-      JSON.stringify({ templateAgentId: "template-agent" })
-    );
-
-    const providers = await resolveInstalledProviders(
-      store,
-      "telegram-6570514069"
-    );
-
-    expect(providers).toEqual([{ providerId: "z-ai", installedAt: 1 }]);
   });
 
   test("declared credentials surface as synthesized profiles", async () => {
@@ -232,81 +257,83 @@ describe("sandbox provider inheritance", () => {
   });
 
   test("exposes inherited provider state with read-only model visibility", async () => {
-    await store.saveSettings("template-agent", {
-      installedProviders: [{ providerId: "z-ai", installedAt: 1 }],
-    });
-    await redis.set(
-      "agent_metadata:telegram-6570514069",
-      JSON.stringify({ parentConnectionId: "conn-1" })
-    );
-    await redis.set(
-      "connection:conn-1",
-      JSON.stringify({ templateAgentId: "template-agent" })
-    );
+    await withOrg(async () => {
+      await seedAgentRow("template-agent", { organizationId: ORG_ID });
+      await seedAgentRow("telegram-6570514069", {
+        organizationId: ORG_ID,
+        parentConnectionId: "conn-1",
+      });
+      await seedConnection("conn-1", "template-agent");
 
-    const settingsView = await resolveSettingsView({
-      agentId: "telegram-6570514069",
-      agentSettingsStore: store,
-      viewer: {
-        settingsMode: "user",
-        allowedScopes: ["view-model"],
-        isAdmin: false,
-      },
-    });
+      await store.saveSettings("template-agent", {
+        installedProviders: [{ providerId: "z-ai", installedAt: 1 }],
+      });
 
-    expect(
-      canViewSettingsSection("model", {
-        settingsMode: "user",
-        allowedScopes: ["view-model"],
-        isAdmin: false,
-      })
-    ).toBe(true);
-    expect(
-      canEditSettingsSection("model", {
-        settingsMode: "user",
-        allowedScopes: ["view-model"],
-        isAdmin: false,
-      })
-    ).toBe(false);
-    expect(settingsView.scope).toBe("sandbox");
-    expect(settingsView.sections.model.source).toBe("inherited");
-    expect(settingsView.sections.model.editable).toBe(false);
-    expect(settingsView.providerSources["z-ai"]?.source).toBe("inherited");
-    expect(settingsView.providerSources["z-ai"]?.canEdit).toBe(false);
+      const settingsView = await resolveSettingsView({
+        agentId: "telegram-6570514069",
+        agentSettingsStore: store,
+        viewer: {
+          settingsMode: "user",
+          allowedScopes: ["view-model"],
+          isAdmin: false,
+        },
+      });
+
+      expect(
+        canViewSettingsSection("model", {
+          settingsMode: "user",
+          allowedScopes: ["view-model"],
+          isAdmin: false,
+        })
+      ).toBe(true);
+      expect(
+        canEditSettingsSection("model", {
+          settingsMode: "user",
+          allowedScopes: ["view-model"],
+          isAdmin: false,
+        })
+      ).toBe(false);
+      expect(settingsView.scope).toBe("sandbox");
+      expect(settingsView.sections.model.source).toBe("inherited");
+      expect(settingsView.sections.model.editable).toBe(false);
+      expect(settingsView.providerSources["z-ai"]?.source).toBe("inherited");
+      expect(settingsView.providerSources["z-ai"]?.canEdit).toBe(false);
+    });
   });
 
   test("uninstalling an inherited sandbox provider writes a local override list", async () => {
-    await store.saveSettings("template-agent", {
-      installedProviders: [
-        { providerId: "z-ai", installedAt: 1 },
+    await withOrg(async () => {
+      await seedAgentRow("template-agent", { organizationId: ORG_ID });
+      await seedAgentRow("telegram-6570514069", {
+        organizationId: ORG_ID,
+        parentConnectionId: "conn-1",
+      });
+      await seedConnection("conn-1", "template-agent");
+
+      await store.saveSettings("template-agent", {
+        installedProviders: [
+          { providerId: "z-ai", installedAt: 1 },
+          { providerId: "openai", installedAt: 2 },
+        ],
+      });
+
+      const catalog = new ProviderCatalogService(
+        store,
+        authProfilesManager,
+        declaredAgents
+      );
+      await catalog.uninstallProvider("telegram-6570514069", "z-ai");
+
+      const local = await store.getSettings("telegram-6570514069");
+      const effective = await store.getEffectiveSettings("telegram-6570514069");
+
+      expect(local?.installedProviders).toEqual([
         { providerId: "openai", installedAt: 2 },
-      ],
+      ]);
+      expect(effective?.installedProviders).toEqual([
+        { providerId: "openai", installedAt: 2 },
+      ]);
     });
-    await redis.set(
-      "agent_metadata:telegram-6570514069",
-      JSON.stringify({ parentConnectionId: "conn-1" })
-    );
-    await redis.set(
-      "connection:conn-1",
-      JSON.stringify({ templateAgentId: "template-agent" })
-    );
-
-    const catalog = new ProviderCatalogService(
-      store,
-      authProfilesManager,
-      declaredAgents
-    );
-    await catalog.uninstallProvider("telegram-6570514069", "z-ai");
-
-    const local = await store.getSettings("telegram-6570514069");
-    const effective = await store.getEffectiveSettings("telegram-6570514069");
-
-    expect(local?.installedProviders).toEqual([
-      { providerId: "openai", installedAt: 2 },
-    ]);
-    expect(effective?.installedProviders).toEqual([
-      { providerId: "openai", installedAt: 2 },
-    ]);
   });
 
   test("blocks provider mutations on declared agents", async () => {

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 import type { SecretPutOptions, SecretRef } from "@lobu/core";
 import type { GatewayConfig } from "../config/index.js";
 import { CoreServices } from "../services/core-services.js";
@@ -7,8 +7,12 @@ import {
   SecretStoreRegistry,
   type WritableSecretStore,
 } from "../secrets/index.js";
-import { RedisAgentStore } from "../stores/redis-agent-store.js";
 import { InMemoryStateAdapter } from "./fixtures/in-memory-state-adapter.js";
+import {
+  ensureEncryptionKey,
+  ensurePgliteForGatewayTests,
+  resetTestDatabase,
+} from "./helpers/db-setup.js";
 import { MockMessageQueue } from "./setup.js";
 
 function createGatewayConfig(
@@ -114,25 +118,34 @@ class InMemoryWritableStore implements WritableSecretStore {
   }
 }
 
+beforeAll(async () => {
+  await ensurePgliteForGatewayTests();
+});
+
 afterEach(() => {
   delete process.env.LOBU_WORKSPACE_ROOT;
 });
 
 describe("CoreServices store selection", () => {
-  test("uses Redis-backed stores by default when no file-first config is present", async () => {
+  test("fails fast when no host-provided stores or file-first config is present", async () => {
+    ensureEncryptionKey();
+    await resetTestDatabase();
     const coreServices = new CoreServices(createGatewayConfig(), {
       stateAdapter: new InMemoryStateAdapter(),
     });
     (coreServices as any).queue = new MockMessageQueue();
 
-    await (coreServices as any).initializeSessionServices();
-
-    expect(coreServices.getConfigStore()).toBeInstanceOf(RedisAgentStore);
-    expect(coreServices.getConnectionStore()).toBeInstanceOf(RedisAgentStore);
-    expect(coreServices.getAccessStore()).toBeInstanceOf(RedisAgentStore);
+    // After Phase 6 the Redis-backed default sub-store is gone; if the host
+    // doesn't provide config/connection/access stores AND no lobu.toml is
+    // present, initializeSessionServices throws.
+    await expect(
+      (coreServices as any).initializeSessionServices()
+    ).rejects.toThrow(/No agent sub-stores configured/);
   });
 
   test("uses the host-provided secret store for persisted auth profiles", async () => {
+    ensureEncryptionKey();
+    await resetTestDatabase();
     const hostStore = new InMemoryWritableStore();
     const hostRegistry = new SecretStoreRegistry(hostStore, {
       host: hostStore,
@@ -140,6 +153,44 @@ describe("CoreServices store selection", () => {
     const coreServices = new CoreServices(createGatewayConfig(), {
       secretStore: hostRegistry,
       stateAdapter: new InMemoryStateAdapter(),
+      configStore: {
+        // Minimal stub — sessionServices only checks for presence.
+        getSettings: async () => null,
+        saveSettings: async () => {},
+        updateSettings: async () => {},
+        deleteSettings: async () => {},
+        hasSettings: async () => false,
+        getMetadata: async () => null,
+        saveMetadata: async () => {},
+        updateMetadata: async () => {},
+        deleteMetadata: async () => {},
+        hasAgent: async () => false,
+        listAgents: async () => [],
+        listSandboxes: async () => [],
+      } as any,
+      connectionStore: {
+        getConnection: async () => null,
+        listConnections: async () => [],
+        saveConnection: async () => {},
+        updateConnection: async () => {},
+        deleteConnection: async () => {},
+        getChannelBinding: async () => null,
+        createChannelBinding: async () => {},
+        deleteChannelBinding: async () => {},
+        listChannelBindings: async () => [],
+        deleteAllChannelBindings: async () => 0,
+      } as any,
+      accessStore: {
+        grant: async () => {},
+        hasGrant: async () => true,
+        isDenied: async () => false,
+        listGrants: async () => [],
+        revokeGrant: async () => {},
+        addUserAgent: async () => {},
+        removeUserAgent: async () => {},
+        listUserAgents: async () => [],
+        ownsAgent: async () => true,
+      } as any,
     });
     (coreServices as any).queue = new MockMessageQueue();
 
@@ -156,17 +207,6 @@ describe("CoreServices store selection", () => {
       label: "host-backed",
       authType: "api-key",
     });
-
-    const redis = (coreServices as any).queue.getRedisClient();
-    const rawProfiles = await redis.get("user:auth-profiles:user-1:agent-1");
-    expect(rawProfiles).toContain("host://");
-
-    const [, redisSecretKeys] = await redis.scan(
-      "0",
-      "MATCH",
-      "lobu:test:secret-store:*"
-    );
-    expect(redisSecretKeys).toHaveLength(0);
 
     const hostEntries = await hostStore.list(
       "users/user-1/agents/agent-1/auth-profiles/"

@@ -54,6 +54,20 @@ export function ensurePgliteForGatewayTests(): Promise<void> {
   return initPromise;
 }
 
+/**
+ * Idempotent ENCRYPTION_KEY guard. Some bun:test files in this directory
+ * `delete process.env.ENCRYPTION_KEY` in their afterAll, which breaks any
+ * subsequent file that lazily reads it. Call this at the start of beforeEach
+ * (or beforeAll) in any file that uses encrypt()/decrypt() or stores that
+ * route through the secret store.
+ */
+export function ensureEncryptionKey(): void {
+  if (!process.env.ENCRYPTION_KEY) {
+    process.env.ENCRYPTION_KEY =
+      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+  }
+}
+
 /** Truncate every test-known table without dropping the schema. */
 export async function resetTestDatabase(): Promise<void> {
   await cleanupTestDatabase();

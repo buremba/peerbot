@@ -182,6 +182,56 @@ export default class RedditConnector extends ConnectorRuntime {
           },
         },
       },
+      user_activity: {
+        key: 'user_activity',
+        name: 'User activity',
+        description:
+          "Fetch a Reddit user's posts and comments interleaved. Defaults to the connected user.",
+        displayNameTemplate: 'u/{username} activity',
+        configSchema: {
+          type: 'object',
+          properties: {
+            username: {
+              type: 'string',
+              description:
+                "Reddit username without u/ prefix. Leave empty to use the connected account's identity.",
+            },
+            lookback_days: {
+              type: 'integer',
+              minimum: 1,
+              maximum: 730,
+              default: 365,
+              description: 'Number of days to look back for historical activity.',
+            },
+          },
+        },
+        eventKinds: {
+          post: {
+            description: 'A Reddit post authored by the user',
+            metadataSchema: {
+              type: 'object',
+              properties: {
+                subreddit: { type: 'string' },
+                score: { type: 'number', description: 'Reddit score (upvotes - downvotes)' },
+                num_comments: { type: 'number' },
+                upvote_ratio: { type: 'number' },
+                is_self: { type: 'boolean' },
+                domain: { type: 'string' },
+              },
+            },
+          },
+          comment: {
+            description: 'A Reddit comment authored by the user',
+            metadataSchema: {
+              type: 'object',
+              properties: {
+                subreddit: { type: 'string' },
+                score: { type: 'number', description: 'Reddit score (upvotes - downvotes)' },
+              },
+            },
+          },
+        },
+      },
     },
     optionsSchema: {
       type: 'object',
@@ -216,15 +266,27 @@ export default class RedditConnector extends ConnectorRuntime {
   async sync(ctx: SyncContext): Promise<SyncResult> {
     const subreddit = ctx.config.subreddit as string | undefined;
     const searchTerms = ctx.config.search_terms as string | undefined;
-    const contentType = ctx.feedKey === 'comments' ? 'comment' : 'post';
+    const isUserFeed = ctx.feedKey === 'user_activity';
+    const contentType = isUserFeed ? 'overview' : ctx.feedKey === 'comments' ? 'comment' : 'post';
     const lookbackDays = (ctx.config.lookback_days as number) ?? 365;
 
     // Resolve access token: user OAuth > app-only OAuth > unauthenticated
-    let accessToken = ctx.credentials?.accessToken;
+    const userAccessToken = ctx.credentials?.accessToken ?? null;
+    let accessToken: string | undefined = userAccessToken ?? undefined;
     if (!accessToken) {
       accessToken = await this.getAppOnlyToken(ctx);
     }
     const baseUrl = accessToken ? 'https://oauth.reddit.com' : 'https://www.reddit.com';
+
+    let username: string | undefined;
+    if (isUserFeed) {
+      if (!userAccessToken) {
+        throw new Error(
+          'user_activity feed requires user OAuth. Connect Reddit with read+history scopes.'
+        );
+      }
+      username = await this.resolveUsername(ctx, userAccessToken);
+    }
 
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - lookbackDays);
@@ -239,6 +301,7 @@ export default class RedditConnector extends ConnectorRuntime {
         baseUrl,
         subreddit,
         searchTerms,
+        username,
         contentType,
         after,
         isOAuth: !!accessToken,
@@ -377,6 +440,33 @@ export default class RedditConnector extends ConnectorRuntime {
   }
 
   // -------------------------------------------------------------------------
+  // Username resolution
+  // -------------------------------------------------------------------------
+
+  private async resolveUsername(ctx: SyncContext, userAccessToken: string): Promise<string> {
+    const configured = (ctx.config.username as string | undefined)?.trim();
+    if (configured) return configured.replace(/^u\//, '');
+
+    const response = await fetch('https://oauth.reddit.com/api/v1/me', {
+      headers: {
+        Authorization: `Bearer ${userAccessToken}`,
+        'User-Agent': this.USER_AGENT,
+      },
+    });
+    if (!response.ok) {
+      throw new Error(
+        `Failed to resolve Reddit username via /api/v1/me (${response.status}). ` +
+          'Set "username" in feed config or re-authenticate.'
+      );
+    }
+    const data = (await response.json()) as { name?: string };
+    if (!data.name) {
+      throw new Error('Reddit /api/v1/me returned no username.');
+    }
+    return data.name;
+  }
+
+  // -------------------------------------------------------------------------
   // URL building
   // -------------------------------------------------------------------------
 
@@ -384,13 +474,21 @@ export default class RedditConnector extends ConnectorRuntime {
     baseUrl: string;
     subreddit?: string;
     searchTerms?: string;
+    username?: string;
     contentType: string;
     after: string | null;
     isOAuth: boolean;
   }): string {
-    const { baseUrl, subreddit, searchTerms, contentType, after, isOAuth } = params;
+    const { baseUrl, subreddit, searchTerms, username, contentType, after, isOAuth } = params;
     const jsonSuffix = isOAuth ? '' : '.json';
     const afterParam = after ? `&after=${after}` : '';
+
+    if (contentType === 'overview') {
+      if (!username) {
+        throw new Error('user_activity feed requires a resolved username.');
+      }
+      return `${baseUrl}/user/${encodeURIComponent(username)}/overview${jsonSuffix}?limit=100&sort=new${afterParam}`;
+    }
 
     if (contentType === 'comment') {
       // Comments from a subreddit

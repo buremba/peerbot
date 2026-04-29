@@ -11,11 +11,11 @@ const logger = createLogger("secret-proxy");
 const PLACEHOLDER_PREFIX = "lobu_secret_";
 
 /**
- * In-memory placeholder→SecretMapping cache. Per-process — multi-replica
- * gateways need every replica to call `storeSecretMapping` on deployment
- * creation, which only the local replica does. This matches the Phase 8
- * design intent: gateway runs single-replica in production today, embedded
- * mode is single-process by definition.
+ * In-memory placeholder→SecretMapping cache. Per-pod by design: workers are
+ * spawned as child processes of their owner pod and always proxy through
+ * `HTTP_PROXY=127.0.0.1:8118` (set by the deployment manager). They cannot
+ * reach a sibling pod's secret-proxy, so cross-pod resolution is never
+ * required — every pod self-serves its own workers' placeholders.
  */
 interface CacheEntry {
   mapping: SecretMapping;

@@ -775,41 +775,8 @@ export class CoreServices {
       conversationId,
       teamId,
       connectionId,
-      platform,
-      approver
+      platform
     ) => {
-      // Scheduled fires: prefer the schedule's `approver` target if set,
-      // so destructive tool calls can still be approved out-of-band even
-      // when delivery is headless. Fail closed only when no approver is
-      // configured.
-      const isHeadlessScheduler =
-        userId === "system:scheduler" &&
-        (!connectionId || channelId.startsWith("scheduled:"));
-
-      if (isHeadlessScheduler) {
-        if (approver?.connectionId && approver.channelId) {
-          await this.interactionService?.postToolApproval(
-            requestId,
-            agentId,
-            userId,
-            approver.conversationId || approver.channelId,
-            approver.channelId,
-            approver.teamId,
-            approver.connectionId,
-            approver.platform || platform || "unknown",
-            mcpId,
-            toolName,
-            args,
-            grantPattern
-          );
-          return;
-        }
-        logger.info(
-          { requestId, agentId, mcpId, toolName, grantPattern },
-          "tool call blocked for headless scheduled fire — no approver configured"
-        );
-        return;
-      }
       await this.interactionService?.postToolApproval(
         requestId,
         agentId,

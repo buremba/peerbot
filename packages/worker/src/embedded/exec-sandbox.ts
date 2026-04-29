@@ -43,6 +43,8 @@ export interface SandboxWrapOptions {
    * the egress path (binaries respect HTTP_PROXY).
    */
   allowNet?: boolean;
+  /** Absolute cwd inside the bwrap namespace. Must be /workspace or below. */
+  bwrapCwd?: string;
 }
 
 /** Workspace path is interpolated into SBPL/argv unescaped. Reject anything
@@ -219,6 +221,20 @@ function assertSafeWorkspacePath(workspaceDir: string): void {
   }
 }
 
+function assertSafeBwrapCwd(bwrapCwd: string): void {
+  if (bwrapCwd !== "/workspace" && !bwrapCwd.startsWith("/workspace/")) {
+    throw new Error(
+      `[exec-sandbox] bwrap cwd ${JSON.stringify(bwrapCwd)} must be ` +
+        `/workspace or below.`
+    );
+  }
+  if (bwrapCwd.includes("\0") || bwrapCwd.split("/").includes("..")) {
+    throw new Error(
+      `[exec-sandbox] bwrap cwd ${JSON.stringify(bwrapCwd)} is unsafe.`
+    );
+  }
+}
+
 /**
  * SBPL profile for macOS. Allow-default with targeted denies for personal-data
  * paths and a write-island scoped to the workspace. Last-match-wins lets the
@@ -268,6 +284,8 @@ function buildBwrapArgs(
   opts: SandboxWrapOptions
 ): string[] {
   assertSafeWorkspacePath(workspaceDir);
+  const bwrapCwd = opts.bwrapCwd ?? "/workspace";
+  assertSafeBwrapCwd(bwrapCwd);
   return [
     "--die-with-parent",
     "--new-session",
@@ -281,7 +299,7 @@ function buildBwrapArgs(
     workspaceDir,
     "/workspace",
     "--chdir",
-    "/workspace",
+    bwrapCwd,
     "--ro-bind",
     "/usr",
     "/usr",

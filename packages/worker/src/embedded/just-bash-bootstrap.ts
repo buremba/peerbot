@@ -36,6 +36,8 @@ export interface SandboxContext {
   /** Whether the spawned binary may open sockets. just-bash's domain allowlist
    * still gates the interpreter; this controls the OS network namespace. */
   allowNet?: boolean;
+  /** Per-invocation cwd inside bwrap's /workspace namespace. */
+  bwrapCwd?: string;
 }
 
 export function buildBinaryInvocation(
@@ -61,6 +63,7 @@ export function buildBinaryInvocation(
   return wrapInvocation(sandbox.strategy, inner, {
     workspaceDir: sandbox.workspaceDir,
     allowNet: sandbox.allowNet ?? true,
+    bwrapCwd: sandbox.bwrapCwd,
   });
 }
 
@@ -144,6 +147,17 @@ function ensureSandboxDir(workspaceDir: string, name: string): string {
   return dir;
 }
 
+function bwrapCwdForHostCwd(workspaceDir: string, hostCwd: string): string {
+  const rel = path.relative(workspaceDir, hostCwd);
+  if (!rel) return "/workspace";
+  if (rel.startsWith("..") || path.isAbsolute(rel)) {
+    throw new Error(
+      `[embedded] cwd ${JSON.stringify(hostCwd)} resolves outside workspace`
+    );
+  }
+  return path.posix.join("/workspace", ...rel.split(path.sep));
+}
+
 /**
  * Create just-bash customCommands from a map of binary name → full path.
  * Each custom command delegates to the real binary via child_process.execFile,
@@ -160,8 +174,6 @@ async function buildCustomCommands(
   for (const [name, binaryPath] of binaries) {
     commands.push(
       defineCommand(name, async (args: string[], ctx) => {
-        const invocation = buildBinaryInvocation(binaryPath, args, sandbox);
-
         const envRecord = stripEnv(process.env, SENSITIVE_WORKER_ENV_KEYS);
         if (ctx.env && typeof ctx.env.forEach === "function") {
           ctx.env.forEach((v: string, k: string) => {
@@ -204,8 +216,13 @@ async function buildCustomCommands(
         delete envRecord.no_proxy;
 
         let hostCwd: string;
+        let bwrapCwd: string | undefined;
         try {
           hostCwd = resolveHostCwd(sandbox.workspaceDir, ctx.cwd ?? "/");
+          bwrapCwd =
+            sandbox.strategy.kind === "bwrap"
+              ? bwrapCwdForHostCwd(sandbox.workspaceDir, hostCwd)
+              : undefined;
         } catch (e) {
           return {
             stdout: "",
@@ -213,6 +230,11 @@ async function buildCustomCommands(
             exitCode: 1,
           };
         }
+
+        const invocation = buildBinaryInvocation(binaryPath, args, {
+          ...sandbox,
+          bwrapCwd,
+        });
 
         return new Promise<{
           stdout: string;
@@ -336,13 +358,22 @@ export async function createEmbeddedBashOps(
   }
   const mcpCliNames = new Set(mcpCliCommands.map((c) => c.name));
 
+  const sandboxStrategy = probeSandboxStrategy();
+  const allowUnsandboxedExec =
+    process.env.LOBU_ALLOW_UNSANDBOXED_EXEC === "1" ||
+    process.env.LOBU_ALLOW_UNSANDBOXED_EXEC === "true";
+
+  const registerSpawnedBinaries =
+    sandboxStrategy.kind !== "none" || allowUnsandboxedExec;
+
   // Discover nix binaries and known CLI tools, register as custom commands.
   // Strip names claimed by MCP CLIs so the MCP-backed handler takes precedence.
-  const binaries = discoverBinaries();
+  const binaries = registerSpawnedBinaries
+    ? discoverBinaries()
+    : new Map<string, string>();
   for (const name of mcpCliNames) {
     binaries.delete(name);
   }
-  const sandboxStrategy = probeSandboxStrategy();
   const sandboxCtx: SandboxContext = {
     strategy: sandboxStrategy,
     workspaceDir,
@@ -356,6 +387,12 @@ export async function createEmbeddedBashOps(
 
   if (sandboxStrategy.kind !== "none") {
     console.log(`[embedded] exec sandbox active: kind=${sandboxStrategy.kind}`);
+  } else if (!allowUnsandboxedExec) {
+    console.warn(
+      `[embedded] Exec sandbox unavailable; not registering spawned binary ` +
+        `commands. Set LOBU_ALLOW_UNSANDBOXED_EXEC=1 to allow host-privileged ` +
+        `spawned binaries.`
+    );
   }
 
   const mcpCommandEntries = await Promise.all(

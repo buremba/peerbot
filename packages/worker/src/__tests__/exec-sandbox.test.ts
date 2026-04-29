@@ -185,6 +185,8 @@ describe("wrapInvocation", () => {
     expect(r.args).toContain("--bind");
     expect(r.args).toContain(ws);
     expect(r.args).toContain("/workspace");
+    const chdir = r.args.indexOf("--chdir");
+    expect(r.args[chdir + 1]).toBe("/workspace");
     expect(r.args).toContain("--unshare-net");
     expect(r.args).toContain("--unshare-user");
     expect(r.args).toContain("--new-session");
@@ -192,6 +194,30 @@ describe("wrapInvocation", () => {
     expect(r.args).toContain("--");
     const sep = r.args.indexOf("--");
     expect(r.args.slice(sep + 1)).toEqual(["/bin/cat", "foo"]);
+  });
+
+  test("bwrap honors requested namespace cwd", () => {
+    const ws = tmpWorkspace();
+    cleanups.push(() => fs.rmSync(ws, { recursive: true, force: true }));
+    const r = wrapInvocation(
+      { kind: "bwrap", path: "/usr/bin/bwrap" },
+      { command: "/bin/pwd", args: [] },
+      { workspaceDir: ws, bwrapCwd: "/workspace/subdir" }
+    );
+    const chdir = r.args.indexOf("--chdir");
+    expect(r.args[chdir + 1]).toBe("/workspace/subdir");
+  });
+
+  test("bwrap rejects namespace cwd outside /workspace", () => {
+    const ws = tmpWorkspace();
+    cleanups.push(() => fs.rmSync(ws, { recursive: true, force: true }));
+    expect(() =>
+      wrapInvocation(
+        { kind: "bwrap", path: "/usr/bin/bwrap" },
+        { command: "/bin/pwd", args: [] },
+        { workspaceDir: ws, bwrapCwd: "/usr" }
+      )
+    ).toThrow(/must be \/workspace or below/);
   });
 
   test("sandbox-exec profile denies var/run unix sockets", () => {
@@ -236,6 +262,7 @@ describeDarwin("sandbox-exec escape matrix", () => {
       }
     );
     try {
+      // codeql[js/shell-command-injection-from-environment]: this test intentionally executes the sandbox wrapper via execFile (no shell) to validate isolation.
       const { stdout } = await execFile(r.command, r.args, {
         cwd: workspace,
         timeout: 5000,
@@ -380,7 +407,12 @@ describeBwrap("bwrap escape matrix", () => {
     cleanups.push(() => fs.rmSync(workspace, { recursive: true, force: true }));
   });
 
-  async function runIn(cmd: string, args: string[], allowNet = false) {
+  async function runIn(
+    cmd: string,
+    args: string[],
+    allowNet = false,
+    bwrapCwd = "/workspace"
+  ) {
     if (!strategy || strategy.kind !== "bwrap") {
       return { ok: false, stdout: "", stderr: "skipped", code: -1 };
     }
@@ -390,9 +422,11 @@ describeBwrap("bwrap escape matrix", () => {
       {
         workspaceDir: workspace,
         allowNet,
+        bwrapCwd,
       }
     );
     try {
+      // codeql[js/shell-command-injection-from-environment]: this test intentionally executes the sandbox wrapper via execFile (no shell) to validate isolation.
       const { stdout } = await execFile(r.command, r.args, {
         timeout: 5000,
         env: { PATH: "/usr/bin:/bin", HOME: "/workspace/.sandbox-home" },
@@ -464,6 +498,22 @@ describeBwrap("bwrap escape matrix", () => {
     const r = await runIn("/bin/cat", ["/workspace/hello.txt"]);
     expect(r.ok).toBe(true);
     expect(r.stdout).toContain("hi from workspace");
+  });
+
+  test("runs relative commands from requested bwrap cwd", async () => {
+    fs.mkdirSync(path.join(workspace, "subdir"));
+    fs.writeFileSync(
+      path.join(workspace, "subdir", "local.txt"),
+      "from subdir\n"
+    );
+    const r = await runIn(
+      "/bin/cat",
+      ["local.txt"],
+      false,
+      "/workspace/subdir"
+    );
+    expect(r.ok).toBe(true);
+    expect(r.stdout).toContain("from subdir");
   });
 
   test("allows writing inside /workspace", async () => {

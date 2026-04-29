@@ -231,3 +231,88 @@ export function getAuthDialect(): PostgresJSDialect {
   }
   return new PostgresJSDialect({ postgres: rawDbSingleton });
 }
+
+/**
+ * Raw postgres.js Sql client. Exposes the full postgres-js surface (most
+ * notably `listen()` / `notify()`) which the `DbClient` wrapper does not.
+ *
+ * postgres-js's `sql.listen(channel, fn)` lazily constructs ONE dedicated
+ * listener connection (max:1, idle_timeout:null) and multiplexes every
+ * subscriber across the whole gateway onto that single connection. So all
+ * caches + the runs queue all share one LISTEN socket via this entry point.
+ */
+export function getRawDb(): Sql {
+  ensureSingleton();
+  if (!rawDbSingleton) {
+    throw new Error('rawDbSingleton was not initialized');
+  }
+  return rawDbSingleton;
+}
+
+/**
+ * Verify that LISTEN/NOTIFY round-trips through the configured DATABASE_URL.
+ *
+ * Why this exists: pgbouncer in transaction-mode silently drops `LISTEN` (the
+ * subscription is bound to the backend, but transaction-mode pooling returns
+ * a different backend on the next checkout). RDS Proxy and other transaction-
+ * mode poolers behave the same. The `InvalidatableCache` and `RunsQueue` both
+ * depend on LISTEN being delivered; without the probe, a misconfiguration
+ * surfaces as 30s-stale caches and 200ms-poll queue latency, with no error.
+ *
+ * Resolves with `void` on success. Rejects with a clear message after the
+ * `timeoutMs` window if no notification arrives — the caller (server boot)
+ * is expected to fail-fast.
+ */
+export async function probeListenNotify(timeoutMs = 1500): Promise<void> {
+  const sql = getRawDb();
+  const channel = `lobu_probe_${process.pid}_${Date.now().toString(36)}`;
+
+  let received = false;
+  let resolveReceived: (() => void) | null = null;
+  const receivedPromise = new Promise<void>((res) => {
+    resolveReceived = res;
+  });
+
+  // Cast through unknown — postgres-js's listen() typings vary by version.
+  const result = await (
+    sql as unknown as {
+      listen(
+        channel: string,
+        onnotify: (x: unknown) => void,
+        onlisten?: () => void,
+      ): Promise<{ unlisten: () => Promise<unknown> }>;
+    }
+  ).listen(channel, () => {
+    received = true;
+    resolveReceived?.();
+  });
+
+  try {
+    await sql`SELECT pg_notify(${channel}, 'probe')`;
+
+    const timeout = new Promise<void>((_, reject) => {
+      const t = setTimeout(() => {
+        if (received) return;
+        reject(
+          new Error(
+            `LISTEN/NOTIFY probe timed out after ${timeoutMs}ms — DATABASE_URL ` +
+              'appears to point at a transaction-mode connection pooler ' +
+              '(pgbouncer transaction-mode, RDS Proxy, etc.) which silently ' +
+              'drops LISTEN. The cache invalidation and runs-queue wakeup ' +
+              'paths require a session-mode pool. Set DATABASE_URL to a ' +
+              'session-mode endpoint (or session-mode pooler) and retry.'
+          )
+        );
+      }, timeoutMs);
+      t.unref?.();
+    });
+
+    await Promise.race([receivedPromise, timeout]);
+  } finally {
+    try {
+      await result.unlisten();
+    } catch {
+      // ignore
+    }
+  }
+}

@@ -1,64 +1,78 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
   InvalidatableCache,
-  type MinimalListenClient,
+  type ListenSubscriber,
 } from "../invalidatable-cache.js";
 
-/** A fake `pg.Client` we can drive deterministically from the tests. */
-class FakeListenClient implements MinimalListenClient {
-  private notificationListeners: Array<
-    (msg: { channel: string; payload?: string }) => void
-  > = [];
-  private errorListeners: Array<(err: Error) => void> = [];
-  private endListeners: Array<() => void> = [];
-  public connected = false;
-  public ended = false;
-  public listenedChannel: string | null = null;
-  public connectError: Error | null = null;
+/**
+ * Test fake for the postgres-js `sql.listen()` seam. Lets each test drive
+ * notifications, simulate reconnects (via repeated `onListen` calls), and
+ * inspect subscription state.
+ *
+ * One `FakeListener` per channel is created on first subscribe; subsequent
+ * subscribes to the same channel reuse it (matching postgres-js semantics).
+ */
+class FakeListener {
+  readonly channel: string;
+  notifyHandlers: Array<(payload: string) => void> = [];
+  listenHandlers: Array<() => void> = [];
+  unlistened = false;
 
-  on(event: string, listener: any): this {
-    if (event === "notification") this.notificationListeners.push(listener);
-    else if (event === "error") this.errorListeners.push(listener);
-    else if (event === "end") this.endListeners.push(listener);
-    return this;
+  constructor(channel: string) {
+    this.channel = channel;
   }
 
-  async connect(): Promise<void> {
-    if (this.connectError) throw this.connectError;
-    this.connected = true;
+  notify(payload: string): void {
+    if (this.unlistened) return;
+    for (const fn of this.notifyHandlers) fn(payload);
   }
 
-  async query(sql: string): Promise<unknown> {
-    const m = /^LISTEN\s+"([^"]+)"$/.exec(sql);
-    if (m) this.listenedChannel = m[1] ?? null;
-    return { rows: [] };
-  }
-
-  async end(): Promise<void> {
-    this.ended = true;
-  }
-
-  // Test helpers
-  emitNotification(channel: string, payload: string): void {
-    for (const l of this.notificationListeners) l({ channel, payload });
-  }
-
-  emitError(err: Error): void {
-    for (const l of this.errorListeners) l(err);
+  /** Simulate a reconnect: postgres-js calls `onListen` again after the
+   *  internal listener socket re-LISTENs. */
+  simulateReListen(): void {
+    if (this.unlistened) return;
+    for (const fn of this.listenHandlers) fn();
   }
 }
 
-let clients: FakeListenClient[] = [];
-function makeClientFactory() {
-  return () => {
-    const c = new FakeListenClient();
-    clients.push(c);
-    return c;
+let listeners: Map<string, FakeListener>;
+let subscribeAttempts: number;
+let subscribeFailFirstN: number;
+
+function makeSubscriber(): ListenSubscriber {
+  return async (channel, onNotify, onListen) => {
+    subscribeAttempts += 1;
+    if (subscribeAttempts <= subscribeFailFirstN) {
+      throw new Error("could not connect");
+    }
+    let listener = listeners.get(channel);
+    if (!listener) {
+      listener = new FakeListener(channel);
+      listeners.set(channel, listener);
+    }
+    listener.notifyHandlers.push(onNotify);
+    listener.listenHandlers.push(onListen);
+    // Fire onListen once on subscribe — matches postgres-js's behavior of
+    // calling the onlisten callback after the LISTEN statement completes.
+    queueMicrotask(() => onListen());
+    return {
+      unlisten: async () => {
+        listener!.unlistened = true;
+        listener!.notifyHandlers = listener!.notifyHandlers.filter(
+          (fn) => fn !== onNotify,
+        );
+        listener!.listenHandlers = listener!.listenHandlers.filter(
+          (fn) => fn !== onListen,
+        );
+      },
+    };
   };
 }
 
 beforeEach(() => {
-  clients = [];
+  listeners = new Map();
+  subscribeAttempts = 0;
+  subscribeFailFirstN = 0;
 });
 
 afterEach(async () => {
@@ -71,8 +85,7 @@ describe("InvalidatableCache", () => {
     const cache = new InvalidatableCache<string, number>({
       channel: "test_channel",
       ttlMs: 60_000,
-      connectionString: "postgres://fake",
-      clientFactory: makeClientFactory(),
+      listenSubscriber: makeSubscriber(),
       loader: async (k) => {
         calls += 1;
         return k.length;
@@ -83,8 +96,8 @@ describe("InvalidatableCache", () => {
     expect(await cache.get("hello")).toBe(5);
     expect(await cache.get("hello")).toBe(5);
     expect(calls).toBe(1);
-    expect(clients.length).toBe(1);
-    expect(clients[0]?.listenedChannel).toBe("test_channel");
+    expect(subscribeAttempts).toBe(1);
+    expect(listeners.get("test_channel")).toBeDefined();
     await cache.close();
   });
 
@@ -98,8 +111,7 @@ describe("InvalidatableCache", () => {
     const cache = new InvalidatableCache<string, number>({
       channel: "concurrent_test",
       ttlMs: 60_000,
-      connectionString: "postgres://fake",
-      clientFactory: makeClientFactory(),
+      listenSubscriber: makeSubscriber(),
       loader: async () => {
         calls += 1;
         return loaderPromise;
@@ -123,8 +135,7 @@ describe("InvalidatableCache", () => {
     const cache = new InvalidatableCache<string, number>({
       channel: "ttl_test",
       ttlMs: 1, // 1ms TTL
-      connectionString: "postgres://fake",
-      clientFactory: makeClientFactory(),
+      listenSubscriber: makeSubscriber(),
       loader: async () => {
         calls += 1;
         return calls;
@@ -143,8 +154,7 @@ describe("InvalidatableCache", () => {
     const cache = new InvalidatableCache<string, number>({
       channel: "notify_key",
       ttlMs: 60_000,
-      connectionString: "postgres://fake",
-      clientFactory: makeClientFactory(),
+      listenSubscriber: makeSubscriber(),
       loader: async () => ++calls,
     });
 
@@ -153,7 +163,7 @@ describe("InvalidatableCache", () => {
     expect(cache.size()).toBe(2);
     expect(calls).toBe(2);
 
-    cache._notifyForTest("a");
+    listeners.get("notify_key")?.notify("a");
     expect(cache.size()).toBe(1);
 
     await cache.get("a");
@@ -167,8 +177,7 @@ describe("InvalidatableCache", () => {
     const cache = new InvalidatableCache<string, number>({
       channel: "notify_all",
       ttlMs: 60_000,
-      connectionString: "postgres://fake",
-      clientFactory: makeClientFactory(),
+      listenSubscriber: makeSubscriber(),
       loader: async () => 1,
     });
 
@@ -177,10 +186,10 @@ describe("InvalidatableCache", () => {
     await cache.get("c");
     expect(cache.size()).toBe(3);
 
-    cache._notifyForTest("");
+    listeners.get("notify_all")?.notify("");
     expect(cache.size()).toBe(0);
 
-    cache._notifyForTest("a"); // no-op on empty cache
+    listeners.get("notify_all")?.notify("a"); // no-op on empty cache
     expect(cache.size()).toBe(0);
     await cache.close();
   });
@@ -189,15 +198,14 @@ describe("InvalidatableCache", () => {
     const cache = new InvalidatableCache<string, number>({
       channel: "notify_star",
       ttlMs: 60_000,
-      connectionString: "postgres://fake",
-      clientFactory: makeClientFactory(),
+      listenSubscriber: makeSubscriber(),
       loader: async () => 1,
     });
 
     await cache.get("a");
     await cache.get("b");
     expect(cache.size()).toBe(2);
-    cache._notifyForTest("*");
+    listeners.get("notify_star")?.notify("*");
     expect(cache.size()).toBe(0);
     await cache.close();
   });
@@ -207,8 +215,7 @@ describe("InvalidatableCache", () => {
     const cache = new InvalidatableCache<string, number>({
       channel: "invalidate_one",
       ttlMs: 60_000,
-      connectionString: "postgres://fake",
-      clientFactory: makeClientFactory(),
+      listenSubscriber: makeSubscriber(),
       loader: async () => ++calls,
     });
 
@@ -223,8 +230,7 @@ describe("InvalidatableCache", () => {
     const cache = new InvalidatableCache<string, number>({
       channel: "invalidate_all",
       ttlMs: 60_000,
-      connectionString: "postgres://fake",
-      clientFactory: makeClientFactory(),
+      listenSubscriber: makeSubscriber(),
       loader: async () => 1,
     });
 
@@ -242,8 +248,7 @@ describe("InvalidatableCache", () => {
       channel: "lru_test",
       ttlMs: 60_000,
       maxEntries: 2,
-      connectionString: "postgres://fake",
-      clientFactory: makeClientFactory(),
+      listenSubscriber: makeSubscriber(),
       loader: async () => ++counter,
     });
 
@@ -265,34 +270,28 @@ describe("InvalidatableCache", () => {
     await cache.close();
   });
 
-  test("reconnect bumps generation and clears the cache", async () => {
+  test("re-listen (postgres-js reconnect) bumps generation and clears the cache", async () => {
     const cache = new InvalidatableCache<string, number>({
       channel: "reconnect_test",
       ttlMs: 60_000,
-      reconnectDelayMs: 5,
-      connectionString: "postgres://fake",
-      clientFactory: makeClientFactory(),
+      listenSubscriber: makeSubscriber(),
       loader: async (k) => k.length,
     });
 
     await cache.get("hi");
+    // Drain the queueMicrotask onlisten so the "first listen" flag is set.
+    await Promise.resolve();
     expect(cache.size()).toBe(1);
     expect(cache.getGeneration()).toBe(0);
 
-    const firstClient = clients[0];
-    expect(firstClient).toBeDefined();
-    firstClient?.emitError(new Error("boom"));
+    // Postgres-js fires onListen again after a reconnect. The cache must
+    // treat that as "we may have missed NOTIFYs" and invalidate.
+    listeners.get("reconnect_test")?.simulateReListen();
 
-    // Sync state immediately after the error: cache cleared, gen bumped.
     expect(cache.size()).toBe(0);
     expect(cache.getGeneration()).toBe(1);
 
-    // Allow the reconnect timer to fire.
-    await new Promise((r) => setTimeout(r, 30));
-    expect(clients.length).toBeGreaterThanOrEqual(2);
-    expect(clients[clients.length - 1]?.listenedChannel).toBe("reconnect_test");
-
-    // After reconnect, get() should reload.
+    // After re-listen, get() should reload.
     await cache.get("hi");
     expect(cache.size()).toBe(1);
     await cache.close();
@@ -302,8 +301,7 @@ describe("InvalidatableCache", () => {
     const cache = new InvalidatableCache<string, number>({
       channel: "close_test",
       ttlMs: 60_000,
-      connectionString: "postgres://fake",
-      clientFactory: makeClientFactory(),
+      listenSubscriber: makeSubscriber(),
       loader: async () => 1,
     });
 
@@ -319,7 +317,7 @@ describe("InvalidatableCache", () => {
           channel: "has-dashes",
           ttlMs: 1,
           loader: async () => 1,
-        })
+        }),
     ).toThrow(/match/);
 
     expect(
@@ -328,7 +326,7 @@ describe("InvalidatableCache", () => {
           channel: 'has"quote',
           ttlMs: 1,
           loader: async () => 1,
-        })
+        }),
     ).toThrow(/match/);
 
     expect(
@@ -337,30 +335,8 @@ describe("InvalidatableCache", () => {
           channel: "",
           ttlMs: 1,
           loader: async () => 1,
-        })
+        }),
     ).toThrow(/empty/);
-  });
-
-  test("notifications on other channels are ignored", async () => {
-    let calls = 0;
-    const cache = new InvalidatableCache<string, number>({
-      channel: "right_channel",
-      ttlMs: 60_000,
-      connectionString: "postgres://fake",
-      clientFactory: makeClientFactory(),
-      loader: async () => ++calls,
-    });
-
-    await cache.get("a");
-    expect(cache.size()).toBe(1);
-
-    // Pretend pg sent us a notification for an unrelated channel.
-    clients[0]?.emitNotification("other_channel", "a");
-    expect(cache.size()).toBe(1); // untouched
-
-    clients[0]?.emitNotification("right_channel", "a");
-    expect(cache.size()).toBe(0);
-    await cache.close();
   });
 
   test("loader rejection does not poison the cache", async () => {
@@ -368,8 +344,7 @@ describe("InvalidatableCache", () => {
     const cache = new InvalidatableCache<string, number>({
       channel: "loader_reject",
       ttlMs: 60_000,
-      connectionString: "postgres://fake",
-      clientFactory: makeClientFactory(),
+      listenSubscriber: makeSubscriber(),
       loader: async () => {
         calls += 1;
         if (calls === 1) throw new Error("boom");
@@ -390,8 +365,7 @@ describe("InvalidatableCache", () => {
     const cache = new InvalidatableCache<string, number>({
       channel: "race_key",
       ttlMs: 60_000,
-      connectionString: "postgres://fake",
-      clientFactory: makeClientFactory(),
+      listenSubscriber: makeSubscriber(),
       loader: async () => {
         calls += 1;
         if (calls === 1) {
@@ -425,8 +399,7 @@ describe("InvalidatableCache", () => {
     const cache = new InvalidatableCache<string, number>({
       channel: "race_global",
       ttlMs: 60_000,
-      connectionString: "postgres://fake",
-      clientFactory: makeClientFactory(),
+      listenSubscriber: makeSubscriber(),
       loader: async () => {
         calls += 1;
         if (calls === 1) {
@@ -449,99 +422,50 @@ describe("InvalidatableCache", () => {
     await cache.close();
   });
 
-  test("get() during reconnect backoff does not produce two listeners", async () => {
-    const cache = new InvalidatableCache<string, number>({
-      channel: "no_double_listener",
-      ttlMs: 60_000,
-      reconnectDelayMs: 50,
-      connectionString: "postgres://fake",
-      clientFactory: makeClientFactory(),
-      loader: async () => 1,
-    });
-
-    await cache.get("a");
-    expect(clients.length).toBe(1);
-
-    clients[0]?.emitError(new Error("disconnect"));
-    // Reconnect timer is armed (50ms). Trigger an immediate reconnect via
-    // get() during the backoff window.
-    const racingGet = cache.get("a");
-    await racingGet;
-    // After the get path's reconnect, the timer fires — it must short-circuit.
-    await new Promise((r) => setTimeout(r, 80));
-
-    // Exactly one new client (the get-path reconnect), not two.
-    expect(clients.length).toBe(2);
-    await cache.close();
-  });
-
-  test("close() during reconnect backoff cancels the timer", async () => {
-    const cache = new InvalidatableCache<string, number>({
-      channel: "close_during_backoff",
-      ttlMs: 60_000,
-      reconnectDelayMs: 50,
-      connectionString: "postgres://fake",
-      clientFactory: makeClientFactory(),
-      loader: async () => 1,
-    });
-
-    await cache.get("a");
-    clients[0]?.emitError(new Error("disconnect"));
-    await cache.close();
-    // Wait past the original backoff: no new client should have spawned.
-    await new Promise((r) => setTimeout(r, 80));
-    expect(clients.length).toBe(1);
-  });
-
-  test("connect failure cleans up without leaving a half-attached client", async () => {
-    let attempts = 0;
-    const factory = (): MinimalListenClient => {
-      attempts += 1;
-      const c = new FakeListenClient();
-      if (attempts === 1) {
-        c.connectError = new Error("could not connect");
-      }
-      clients.push(c);
-      return c;
-    };
-
-    const cache = new InvalidatableCache<string, number>({
-      channel: "connect_fails_first",
-      ttlMs: 60_000,
-      reconnectDelayMs: 5,
-      connectionString: "postgres://fake",
-      clientFactory: factory,
-      loader: async () => 7,
-    });
-
-    await expect(cache.get("a")).rejects.toThrow(/could not connect/);
-    expect(clients[0]?.ended).toBe(true);
-    // Second attempt succeeds.
-    expect(await cache.get("a")).toBe(7);
-    expect(clients.length).toBe(2);
-    await cache.close();
-  });
-
-  test("repeated error events on the same client only count once", async () => {
+  test("subscribe failure rejects the get() and allows retry", async () => {
+    subscribeFailFirstN = 1;
     let calls = 0;
     const cache = new InvalidatableCache<string, number>({
-      channel: "double_error",
+      channel: "subscribe_fails_first",
       ttlMs: 60_000,
-      reconnectDelayMs: 50,
-      connectionString: "postgres://fake",
-      clientFactory: makeClientFactory(),
+      listenSubscriber: makeSubscriber(),
       loader: async () => ++calls,
     });
 
-    await cache.get("a");
-    const c = clients[0];
-    c?.emitError(new Error("once"));
-    // 'end' is fired right after some pg errors. We must not bump generation
-    // twice nor schedule two reconnects.
-    const genAfterFirst = cache.getGeneration();
-    c?.emitError(new Error("twice"));
-    expect(cache.getGeneration()).toBe(genAfterFirst);
+    await expect(cache.get("a")).rejects.toThrow(/could not connect/);
+    // Second attempt succeeds.
+    expect(await cache.get("a")).toBe(1);
+    expect(subscribeAttempts).toBe(2);
     await cache.close();
+  });
+
+  test("close() before subscribe completes leaves no dangling subscription", async () => {
+    let resolveSubscribe: (() => void) | null = null;
+    const slowSubscriber: ListenSubscriber = async (
+      _channel,
+      _onNotify,
+      _onListen,
+    ) => {
+      await new Promise<void>((res) => {
+        resolveSubscribe = res;
+      });
+      return { unlisten: async () => {} };
+    };
+
+    const cache = new InvalidatableCache<string, number>({
+      channel: "close_before_subscribe",
+      ttlMs: 60_000,
+      listenSubscriber: slowSubscriber,
+      loader: async () => 1,
+    });
+
+    const pending = cache.get("a");
+    // Allow ensureListening to enter the subscriber.
+    await new Promise((r) => setTimeout(r, 1));
+    await cache.close();
+    resolveSubscribe?.();
+    await expect(pending).resolves.toBe(1);
+    // close() is idempotent and didn't throw.
   });
 
   test("keyToString controls the cache key", async () => {
@@ -549,8 +473,7 @@ describe("InvalidatableCache", () => {
     const cache = new InvalidatableCache<{ id: string }, number>({
       channel: "key_to_string",
       ttlMs: 60_000,
-      connectionString: "postgres://fake",
-      clientFactory: makeClientFactory(),
+      listenSubscriber: makeSubscriber(),
       keyToString: (k) => k.id,
       loader: async () => ++calls,
     });

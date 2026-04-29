@@ -3,20 +3,21 @@ import { getDb, pgTextArray } from "../../db/client.js";
 
 const logger = createLogger("grant-store");
 
+/**
+ * Grant kind. Domain grants and MCP-tool grants share the same table but
+ * a kind tag keeps them separable when listing/auditing. The MCP path is
+ * detected by the leading slash in the pattern (matches the legacy Redis
+ * behavior); we infer kind on insert.
+ */
+type GrantKind = "domain" | "mcp_tool";
+
 interface Grant {
   pattern: string;
+  kind: GrantKind;
   expiresAt: number | null; // Absolute timestamp (ms). null = never expires.
   grantedAt: number;
   denied?: boolean; // true = explicitly deny this pattern
 }
-
-/**
- * Grant kind. Domain grants and MCP-tool grants share the same table but
- * a callsite-specific kind tag keeps them separable when listing/auditing.
- * The MCP path is detected by the leading slash in the pattern (matches
- * the legacy Redis behavior); we infer kind on insert.
- */
-type GrantKind = "domain" | "mcp_tool";
 
 function getDomainGrantCandidates(pattern: string): string[] {
   const normalized = normalizeDomainPattern(pattern);
@@ -38,6 +39,7 @@ function inferKind(pattern: string): GrantKind {
 
 interface GrantRow {
   pattern: string;
+  kind: GrantKind;
   granted_at: Date;
   expires_at: Date | null;
   denied: boolean;
@@ -185,7 +187,7 @@ export class GrantStore {
     const sql = getDb();
     try {
       const rows = await sql<GrantRow>`
-        SELECT pattern, granted_at, expires_at, denied
+        SELECT pattern, kind, granted_at, expires_at, denied
         FROM grants
         WHERE agent_id = ${agentId}
           AND (expires_at IS NULL OR expires_at > now())
@@ -194,6 +196,7 @@ export class GrantStore {
 
       return rows.map((row) => ({
         pattern: row.pattern,
+        kind: row.kind,
         expiresAt: row.expires_at ? row.expires_at.getTime() : null,
         grantedAt: row.granted_at.getTime(),
         ...(row.denied && { denied: true }),

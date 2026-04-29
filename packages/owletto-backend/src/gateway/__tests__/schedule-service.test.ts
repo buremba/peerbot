@@ -1,6 +1,5 @@
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import type { DeclaredSchedule } from "@lobu/core";
-import { getDb } from "../../db/client.js";
 import type { IMessageQueue } from "../infrastructure/queue/index.js";
 import { ScheduleService } from "../orchestration/scheduled-wakeup.js";
 import {
@@ -100,38 +99,35 @@ describe("ScheduleService (Postgres advisory-lock dispatch)", () => {
     expect(queue.sent).toHaveLength(0);
   });
 
-  test("a second ScheduleService racing the same fire bucket gets blocked by advisory lock", async () => {
+  test("two ScheduleService instances racing the same fire bucket emit one effective enqueue via singletonKey", async () => {
     // Two ScheduleService instances simulate two gateway processes both
-    // ticking the same schedule in the same minute. The advisory lock or
-    // the runs-table idempotency_key (or both) must prevent the second
-    // gateway from inserting a duplicate runs row. queue.send() on this
-    // FakeQueue won't actually hit the runs table — but the advisory lock
-    // alone is enough to gate one of the two callers.
+    // ticking the same schedule in the same minute. Duplicate-fire
+    // protection rests entirely on the runs-table `idempotency_key` partial
+    // UNIQUE — both processes call queue.send() with the same singletonKey
+    // and the second insert silently no-ops via ON CONFLICT DO NOTHING.
+    // (An earlier version layered a `pg_try_advisory_xact_lock` on top, but
+    // it auto-released on the implicit auto-commit before the INSERT, so
+    // it was decorative — see scheduled-wakeup.ts comment for history.)
+    const queueA = new FakeQueue();
+    const queueB = new FakeQueue();
+    const a = new ScheduleService(queueA);
+    const b = new ScheduleService(queueB);
+    await a.upsert(buildSchedule({ id: "toml:race" }));
+    await b.upsert(buildSchedule({ id: "toml:race" }));
 
-    const sql = getDb();
+    const past = new Date(Date.now() - 60_000);
+    (a as any).state.set("toml:race", { nextFire: past });
+    (b as any).state.set("toml:race", { nextFire: past });
+    await Promise.all([(a as any).tick(), (b as any).tick()]);
 
-    // Run a transactional section that grabs the same advisory lock the
-    // service would attempt for `schedule:toml:a:bucket-X`. In a different
-    // session (the service's own getDb() call), `pg_try_advisory_xact_lock`
-    // should return false until we COMMIT.
-    const lockKey = "schedule:toml:a:bucket-fixed";
-
-    // First, simulate a parallel session holding the lock until we commit.
-    // postgres.js auto-commits each top-level call, so emulate by issuing
-    // the lock in a `begin` block and attempting from outside.
-    const beforeRows = await sql`
-      SELECT pg_try_advisory_xact_lock(hashtext(${lockKey})) AS got
-    `;
-    expect(((beforeRows[0] as any) ?? {}).got).toBe(true);
-    // The xact-scoped lock auto-released after that statement's implicit
-    // transaction. So a follow-up call gets it again — that's the expected
-    // behavior. The advisory lock is not a long-lived guard; it's a
-    // single-decision token. In real cross-process scheduling, the second
-    // gateway's send() would hit the idempotency_key uniqueness instead.
-    const afterRows = await sql`
-      SELECT pg_try_advisory_xact_lock(hashtext(${lockKey})) AS got
-    `;
-    expect(((afterRows[0] as any) ?? {}).got).toBe(true);
+    // Both FakeQueues see the call (this is in-process, no real DB conflict
+    // resolution happens here), but the singletonKey is identical so a real
+    // RunsQueue would resolve the second to ON CONFLICT DO NOTHING.
+    expect(queueA.sent.length + queueB.sent.length).toBeGreaterThanOrEqual(1);
+    const allKeys = [...queueA.sent, ...queueB.sent].map(
+      (e: any) => e.options?.singletonKey,
+    );
+    expect(new Set(allKeys).size).toBe(1); // same singletonKey on both
   });
 
   test("singletonKey on the queue.send call is stable per (scheduleId, fireBucket)", async () => {

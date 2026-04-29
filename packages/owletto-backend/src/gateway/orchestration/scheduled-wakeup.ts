@@ -29,7 +29,6 @@
 import { createLogger } from "@lobu/core";
 import type { DeclaredSchedule, ScheduleConcurrency } from "@lobu/core";
 import { CronExpressionParser } from "cron-parser";
-import { getDb } from "../../db/client.js";
 import type { IMessageQueue } from "../infrastructure/queue/index.js";
 
 const logger = createLogger("schedule-service");
@@ -291,53 +290,20 @@ export class ScheduleService {
   }
 
   /**
-   * Acquire a per-(scheduleId, fireId) advisory lock and enqueue exactly
-   * one runs row. Returns true if this process successfully acquired the
-   * lock and enqueued (or coalesced into an existing pending row); false if
-   * another gateway has already taken the lock for this fire.
+   * Enqueue exactly one runs row for this fire bucket. The
+   * `runs_idempotency_key_uniq` partial UNIQUE index on the runs row is the
+   * sole duplicate-fire guard: two gateways racing the same `(scheduleId,
+   * fireId)` will produce one INSERT and one ON-CONFLICT-DO-NOTHING.
    *
-   * The lock is xact-scoped (`pg_try_advisory_xact_lock`) so it auto-releases
-   * at COMMIT/ROLLBACK — no manual cleanup required. The idempotency_key
-   * unique index on the runs row gives a second-layer guarantee when the
-   * advisory lock is racy across replication boundaries.
+   * (An earlier version wrapped this in `pg_try_advisory_xact_lock`, but the
+   * lock auto-released on the implicit auto-commit of the SELECT before the
+   * INSERT ran, so it was decorative — the idempotency key was already
+   * doing all the work. Removed in favor of the simpler one-system story.)
    */
   private async tryFireOnceInDb(
     def: DeclaredSchedule,
     fireId: string
   ): Promise<boolean> {
-    const sql = getDb();
-    const lockKey = `schedule:${def.id}:${fireId}`;
-
-    let acquired = false;
-    try {
-      const rows = await sql`
-        SELECT pg_try_advisory_xact_lock(hashtext(${lockKey})) AS got
-      `;
-      acquired = Boolean((rows[0] as { got: boolean } | undefined)?.got);
-    } catch (err) {
-      logger.error(
-        { scheduleId: def.id, fireId, err },
-        "advisory lock check failed; relying on idempotency key alone"
-      );
-      acquired = true;
-    }
-
-    if (!acquired) {
-      logger.debug(
-        { scheduleId: def.id, fireId },
-        "advisory lock contended — another gateway is firing this schedule"
-      );
-      return false;
-    }
-
-    // Lock held for this transaction. Build the payload + send it. The
-    // queue.send() goes through its own pool connection, so the advisory
-    // lock above releases on the SELECT statement's implicit commit. That's
-    // intentional — we don't need to hold the lock for the entire send;
-    // we just need to be the single process that decides to send. The
-    // idempotency key on the runs row is what suppresses any racing send
-    // that happens between releasing the advisory lock and the INSERT.
-
     await this.enqueueFire(def, fireId);
     return true;
   }

@@ -44,9 +44,7 @@ export class MessageConsumer {
   ) {
     this.config = config;
     this.deploymentManager = deploymentManager;
-    this.queue = new RunsQueue({
-      connectionString: config.queues.connectionString,
-    });
+    this.queue = new RunsQueue();
   }
 
   async start(): Promise<void> {

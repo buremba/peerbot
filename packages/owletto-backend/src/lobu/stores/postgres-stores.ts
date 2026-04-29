@@ -1,12 +1,13 @@
-import type {
-  AgentAccessStore,
-  AgentConfigStore,
-  AgentConnectionStore,
-  AgentMetadata,
-  AgentSettings,
-  ChannelBinding,
-  Grant,
-  StoredConnection,
+import {
+  inferGrantKind,
+  type AgentAccessStore,
+  type AgentConfigStore,
+  type AgentConnectionStore,
+  type AgentMetadata,
+  type AgentSettings,
+  type ChannelBinding,
+  type Grant,
+  type StoredConnection,
 } from '@lobu/core';
 import { getDb } from '../../db/client';
 import { getOrgId, tryGetOrgId } from './org-context';
@@ -230,6 +231,7 @@ function rowToChannelBinding(row: Record<string, any>): ChannelBinding {
 function rowToGrant(row: Record<string, any>): Grant {
   return {
     pattern: row.pattern,
+    kind: inferGrantKind(row.pattern),
     expiresAt: row.expires_at instanceof Date ? row.expires_at.getTime() : (row.expires_at ?? null),
     grantedAt:
       row.granted_at instanceof Date ? row.granted_at.getTime() : (row.granted_at ?? Date.now()),

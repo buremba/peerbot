@@ -128,11 +128,21 @@ export interface StoredConnection {
 
 // ── Grants ──────────────────────────────────────────────────────────────────
 
+/** Grant kind. Domain grants and MCP-tool grants share the same store but
+ *  callers (UI, audit) often want to filter to one. The MCP path is detected
+ *  by the leading slash in the pattern. */
+export type GrantKind = "domain" | "mcp_tool";
+
 export interface Grant {
   pattern: string;
+  kind: GrantKind;
   expiresAt: number | null;
   grantedAt: number;
   denied?: boolean;
+}
+
+export function inferGrantKind(pattern: string): GrantKind {
+  return pattern.startsWith("/") ? "mcp_tool" : "domain";
 }
 
 // ── Channel Bindings ────────────────────────────────────────────────────────

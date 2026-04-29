@@ -24,10 +24,19 @@
  *   will share the same loader Promise.
  * - Loads that race a NOTIFY for the same key are NOT cached, so a stale
  *   row never silently lands in the cache after the writer's invalidation.
+ *
+ * Connection ownership:
+ * - This class does NOT open its own pg connection. It calls
+ *   `getRawDb().listen(channel, fn)` (postgres-js), which lazily constructs
+ *   one shared LISTEN connection per process and multiplexes every channel
+ *   subscription across all cache instances onto that single socket.
+ * - Reconnect/backoff is handled inside postgres-js. We bump our generation
+ *   counter via the `onlisten` callback so any cached entries from before
+ *   the reconnect are treated as stale.
  */
 
-import { Client } from "pg";
 import { createLogger, type Logger } from "@lobu/core";
+import { getRawDb } from "../../db/client.js";
 
 interface Entry<V> {
   value: V;
@@ -43,6 +52,20 @@ interface Entry<V> {
   keyEpoch: number;
 }
 
+/** Test seam for the LISTEN subscription. Production passes `getRawDb().listen`
+ *  via the default. Tests inject a deterministic stub.
+ *
+ *  - `onNotify` is called for each notification payload (string).
+ *  - `onListen` is called once per successful LISTEN — first time on initial
+ *    connect, again after every reconnect. The cache uses this to bump its
+ *    generation and drop any state that may have crossed a missed-NOTIFY gap.
+ *  - The returned `unlisten()` is awaited on `close()`. */
+export type ListenSubscriber = (
+  channel: string,
+  onNotify: (payload: string) => void,
+  onListen: () => void,
+) => Promise<{ unlisten: () => Promise<unknown> }>;
+
 export interface InvalidatableCacheOptions<K, V> {
   /** PostgreSQL NOTIFY channel name. Must be a plain SQL identifier
    *  (`/^[a-zA-Z_][a-zA-Z0-9_]*$/`). */
@@ -57,26 +80,11 @@ export interface InvalidatableCacheOptions<K, V> {
   /** Map keys to a string for use in the cache map and matching against the
    *  NOTIFY payload. Default: `String(k)`. */
   keyToString?: (key: K) => string;
-  /** Connection string. Defaults to `process.env.DATABASE_URL`. */
-  connectionString?: string;
   /** Logger. Defaults to `createLogger("invalidatable-cache:<channel>")`. */
   logger?: Logger;
-  /** Reconnect backoff in ms. Default 1000. */
-  reconnectDelayMs?: number;
-  /** Test seam: override the `pg.Client` factory. Production uses the default
-   *  (a real `pg.Client` from `process.env.DATABASE_URL`). */
-  clientFactory?: (connectionString: string) => MinimalListenClient;
-}
-
-/** The slice of `pg.Client` that this primitive depends on. Exposed so tests
- *  can stub the listener without standing up a real Postgres. */
-export interface MinimalListenClient {
-  on(event: "notification", listener: (msg: { channel: string; payload?: string }) => void): unknown;
-  on(event: "error", listener: (err: Error) => void): unknown;
-  on(event: "end", listener: () => void): unknown;
-  connect(): Promise<void>;
-  query(sql: string): Promise<unknown>;
-  end(): Promise<void>;
+  /** Test seam: override how the cache subscribes to NOTIFY. Production
+   *  defaults to `getRawDb().listen`. */
+  listenSubscriber?: ListenSubscriber;
 }
 
 export class InvalidatableCache<K, V> {
@@ -92,19 +100,17 @@ export class InvalidatableCache<K, V> {
   /** Per-key counter, bumped on every per-key NOTIFY. Loads that started
    *  before the bump must not be cached. */
   private keyEpochs = new Map<string, number>();
-  private client: MinimalListenClient | null = null;
-  /** Set during `connectAndListen` so we can detect double connect attempts
-   *  and tear down the in-flight client on close/disconnect. */
-  private connectingClient: MinimalListenClient | null = null;
-  /** Set when a reconnect timer is armed; lets us short-circuit overlapping
-   *  reconnects in the timer body. */
-  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  private closed = false;
+  /** Active subscription handle. Set after the initial LISTEN succeeds. */
+  private subscription: { unlisten: () => Promise<unknown> } | null = null;
+  /** Tracks whether we've ever successfully listened. Used to distinguish
+   *  the first `onListen` (initial subscribe) from subsequent ones (reconnect). */
+  private hasListenedAtLeastOnce = false;
   private connectPromise: Promise<void> | null = null;
+  private closed = false;
   private readonly logger: Logger;
   private readonly maxEntries: number;
   private readonly keyToString: (key: K) => string;
-  private readonly reconnectDelayMs: number;
+  private readonly subscribe: ListenSubscriber;
 
   constructor(private readonly opts: InvalidatableCacheOptions<K, V>) {
     quoteIdent(opts.channel); // validate channel name early
@@ -112,7 +118,7 @@ export class InvalidatableCache<K, V> {
       opts.logger ?? createLogger(`invalidatable-cache:${opts.channel}`);
     this.maxEntries = opts.maxEntries ?? 1000;
     this.keyToString = opts.keyToString ?? ((k) => String(k));
-    this.reconnectDelayMs = opts.reconnectDelayMs ?? 1000;
+    this.subscribe = opts.listenSubscriber ?? defaultListenSubscriber;
   }
 
   /**
@@ -210,29 +216,20 @@ export class InvalidatableCache<K, V> {
     this.entries.clear();
     this.inflight.clear();
     this.keyEpochs.clear();
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
-    const client = this.client;
-    this.client = null;
-    const connecting = this.connectingClient;
-    this.connectingClient = null;
-    for (const c of [client, connecting]) {
-      if (!c) continue;
+    const sub = this.subscription;
+    this.subscription = null;
+    if (sub) {
       try {
-        await c.end();
+        await sub.unlisten();
       } catch {
         // best effort
       }
     }
   }
 
-  /** Test-only: drive the listener to fail and reconnect. */
-  async _forceReconnectForTest(): Promise<void> {
-    const client = this.client;
-    if (!client) return;
-    this.handleDisconnect(new Error("forced reconnect for test"));
+  /** Test-only: simulate a reconnect (drop everything, bump generation). */
+  _forceReconnectForTest(): void {
+    this.handleReListen();
   }
 
   /** Test-only: synchronously deliver a NOTIFY payload. */
@@ -247,7 +244,7 @@ export class InvalidatableCache<K, V> {
     value: V,
     generation: number,
     globalEpoch: number,
-    keyEpoch: number
+    keyEpoch: number,
   ): void {
     if (this.entries.has(key)) {
       this.entries.delete(key);
@@ -264,9 +261,9 @@ export class InvalidatableCache<K, V> {
     });
   }
 
-  /** Lazily start the LISTEN connection on first `get()`. */
+  /** Lazily start the LISTEN subscription on first `get()`. */
   private async ensureListening(): Promise<void> {
-    if (this.client || this.closed) return;
+    if (this.subscription || this.closed) return;
     if (this.connectPromise) {
       await this.connectPromise;
       return;
@@ -279,73 +276,27 @@ export class InvalidatableCache<K, V> {
 
   private async connectAndListen(): Promise<void> {
     if (this.closed) return;
-    if (this.client) return; // already connected
-    if (this.connectingClient) return; // another connect in flight
+    if (this.subscription) return;
 
-    const connectionString =
-      this.opts.connectionString ?? process.env.DATABASE_URL;
-    if (!connectionString) {
-      throw new Error(
-        `InvalidatableCache(${this.opts.channel}): DATABASE_URL is not set`
-      );
-    }
+    const sub = await this.subscribe(
+      this.opts.channel,
+      (payload) => this.handleNotification(payload),
+      () => this.handleReListen(),
+    );
 
-    const client = this.opts.clientFactory
-      ? this.opts.clientFactory(connectionString)
-      : defaultClientFactory(connectionString, this.opts.channel);
-    this.connectingClient = client;
-
-    let connectFailed = false;
-
-    client.on("notification", (msg) => {
-      if (msg.channel !== this.opts.channel) return;
-      this.handleNotification(msg.payload ?? "");
-    });
-
-    // `error` MUST have a listener or it propagates as an uncaught exception
-    // and crashes the process. Treat any error as a disconnect signal.
-    client.on("error", (err: Error) => {
-      // If we error before assignment, mark and let the catch below handle.
-      if (this.connectingClient === client && this.client !== client) {
-        connectFailed = true;
-        return;
-      }
-      this.handleDisconnect(err);
-    });
-    client.on("end", () => {
-      if (this.connectingClient === client && this.client !== client) {
-        connectFailed = true;
-        return;
-      }
-      this.handleDisconnect(new Error("connection ended"));
-    });
-
-    try {
-      await client.connect();
-      if (connectFailed) {
-        throw new Error("connection failed before LISTEN");
-      }
-      await client.query(`LISTEN ${quoteIdent(this.opts.channel)}`);
-      if (this.closed) {
-        await client.end().catch(() => {});
-        return;
-      }
-      this.client = client;
-      this.connectingClient = null;
-      this.logger.debug(
-        { channel: this.opts.channel },
-        "InvalidatableCache: listening"
-      );
-    } catch (err) {
-      this.connectingClient = null;
-      // best-effort cleanup; the client may already be dead.
+    if (this.closed) {
       try {
-        await client.end();
+        await sub.unlisten();
       } catch {
         // ignore
       }
-      throw err;
+      return;
     }
+    this.subscription = sub;
+    this.logger.debug(
+      { channel: this.opts.channel },
+      "InvalidatableCache: listening",
+    );
   }
 
   private handleNotification(payload: string): void {
@@ -359,83 +310,58 @@ export class InvalidatableCache<K, V> {
   }
 
   /**
-   * On disconnect, bump the generation (so any in-flight loader's eventual
-   * `put` is rejected) and schedule a reconnect. Cache is cleared because
-   * we may have missed NOTIFYs during the gap.
-   *
-   * Idempotent: a single disconnect can cause both `error` and `end` to
-   * fire; we only act on the first.
+   * Called on every successful LISTEN: once on initial subscribe, then on
+   * every reconnect. The first call is a no-op (we just started up); every
+   * subsequent call means the underlying socket dropped and re-established,
+   * during which we may have missed NOTIFYs — invalidate everything.
    */
-  private handleDisconnect(error: Error): void {
+  private handleReListen(): void {
     if (this.closed) return;
-    if (!this.client && !this.connectingClient) {
-      // Already in the middle of a reconnect.
+    if (!this.hasListenedAtLeastOnce) {
+      this.hasListenedAtLeastOnce = true;
       return;
     }
     this.logger.warn(
-      { channel: this.opts.channel, error: error.message },
-      "InvalidatableCache: listener disconnected, will reconnect"
+      { channel: this.opts.channel },
+      "InvalidatableCache: re-listened after reconnect, dropping cached entries",
     );
-    const oldClient = this.client ?? this.connectingClient;
-    this.client = null;
-    this.connectingClient = null;
     this.generation += 1;
     this.globalEpoch += 1;
     this.entries.clear();
-    // Best-effort cleanup of the dead client.
-    try {
-      if (oldClient) {
-        void oldClient.end().catch(() => {});
-      }
-    } catch {
-      // ignore
-    }
-    if (this.closed) return;
-
-    if (this.reconnectTimer) {
-      // Already armed.
-      return;
-    }
-    this.reconnectTimer = setTimeout(() => {
-      this.reconnectTimer = null;
-      if (this.closed) return;
-      // If a `get()` raced us and already reconnected, do nothing.
-      if (this.client || this.connectingClient) return;
-      this.connectAndListen().catch((err) => {
-        this.logger.warn(
-          { channel: this.opts.channel, error: String(err) },
-          "InvalidatableCache: reconnect failed, will retry"
-        );
-        this.handleDisconnect(
-          err instanceof Error ? err : new Error(String(err))
-        );
-      });
-    }, this.reconnectDelayMs);
-    this.reconnectTimer.unref?.();
   }
 }
 
-function defaultClientFactory(
-  connectionString: string,
-  channel: string
-): MinimalListenClient {
-  const ssl =
-    process.env.PGSSLMODE === "require" ||
-    process.env.PGSSLMODE === "prefer"
-      ? { rejectUnauthorized: false }
-      : undefined;
-
-  return new Client({
-    connectionString,
-    ssl,
-    application_name: `owletto-cache-${channel}`,
-  }) as unknown as MinimalListenClient;
-}
+const defaultListenSubscriber: ListenSubscriber = async (
+  channel,
+  onNotify,
+  onListen,
+) => {
+  const sql = getRawDb();
+  // postgres-js's listen(channel, onnotify, onlisten?) returns
+  // { state, unlisten }. onlisten fires on first subscribe + every reconnect
+  // (see node_modules/postgres/src/index.js — onclose handler re-invokes
+  // listen() for every channel).
+  const result = await (
+    sql as unknown as {
+      listen(
+        channel: string,
+        onnotify: (x: unknown) => void,
+        onlisten?: () => void,
+      ): Promise<{ state: unknown; unlisten: () => Promise<unknown> }>;
+    }
+  ).listen(
+    channel,
+    (x) => onNotify(typeof x === "string" ? x : ""),
+    () => onListen(),
+  );
+  return { unlisten: result.unlisten };
+};
 
 /**
  * Quote a Postgres identifier for use in `LISTEN`. Refuses anything that
  * isn't a plain SQL identifier so the operator never has to think about
- * quoting, escaping, or injection.
+ * quoting, escaping, or injection. Kept exported (via the constructor's
+ * up-front call) so misconfigured channel names fail at construction.
  */
 function quoteIdent(name: string): string {
   if (name.length === 0) {
@@ -443,7 +369,7 @@ function quoteIdent(name: string): string {
   }
   if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name)) {
     throw new Error(
-      `Channel name must match /^[a-zA-Z_][a-zA-Z0-9_]*$/ (got: ${name})`
+      `Channel name must match /^[a-zA-Z_][a-zA-Z0-9_]*$/ (got: ${name})`,
     );
   }
   return `"${name}"`;

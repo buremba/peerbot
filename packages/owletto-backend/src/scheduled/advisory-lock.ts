@@ -1,37 +1,36 @@
-import { Client } from 'pg';
+import { getRawDb } from '../db/client';
 import logger from '../utils/logger';
 
-function getPgSsl() {
-  return process.env.PGSSLMODE === 'require' || process.env.PGSSLMODE === 'prefer'
-    ? { rejectUnauthorized: false }
-    : undefined;
-}
-
+/**
+ * Run `fn` while holding a session-scoped Postgres advisory lock identified
+ * by `lockKey`. Returns `{ acquired: false }` immediately if the lock is
+ * already held by another session.
+ *
+ * Implementation: reserves a single connection from the postgres-js pool for
+ * the duration of the call (via `sql.reserve()`) so the advisory lock and
+ * the wrapped work both run on the same backend — required because PG
+ * advisory locks are bound to a session, not a transaction. On `release()`,
+ * any unlock that didn't run is a no-op (the connection returns to the pool
+ * and the lock auto-releases when the session ends).
+ */
 export async function withAdvisoryLock<T>(
   lockKey: number,
   jobName: string,
   fn: () => Promise<T>
 ): Promise<{ acquired: boolean; result?: T }> {
-  const connectionString = process.env.DATABASE_URL?.trim();
-  if (!connectionString) {
+  if (!process.env.DATABASE_URL?.trim()) {
     throw new Error('DATABASE_URL is required for scheduler locks');
   }
 
-  const client = new Client({
-    connectionString,
-    ssl: getPgSsl(),
-    application_name: `owletto-scheduler-${jobName}`,
-  });
-
-  await client.connect();
+  const sql = getRawDb();
+  const reserved = await sql.reserve();
 
   try {
-    const lockResult = await client.query<{ acquired: boolean }>(
-      'SELECT pg_try_advisory_lock($1) AS acquired',
-      [lockKey]
-    );
+    const lockRows = await reserved<
+      { acquired: boolean }[]
+    >`SELECT pg_try_advisory_lock(${lockKey}) AS acquired`;
 
-    if (!lockResult.rows[0]?.acquired) {
+    if (!lockRows[0]?.acquired) {
       return { acquired: false };
     }
 
@@ -40,12 +39,15 @@ export async function withAdvisoryLock<T>(
       return { acquired: true, result };
     } finally {
       try {
-        await client.query('SELECT pg_advisory_unlock($1)', [lockKey]);
+        await reserved`SELECT pg_advisory_unlock(${lockKey})`;
       } catch (error) {
-        logger.warn({ error, jobName }, '[scheduler] Failed to release advisory lock');
+        logger.warn(
+          { error, jobName },
+          '[scheduler] Failed to release advisory lock'
+        );
       }
     }
   } finally {
-    await client.end();
+    reserved.release();
   }
 }

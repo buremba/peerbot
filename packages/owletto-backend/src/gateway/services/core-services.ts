@@ -335,9 +335,7 @@ export class CoreServices {
     // NOTIFY). All non-queue consumers (secret-store, grant-store,
     // scheduled-wakeup, cli-auth, Slack OAuth state) moved to PG; ioredis is
     // gone from application code.
-    this.queue = new RunsQueue({
-      connectionString: this.config.queues?.connectionString,
-    });
+    this.queue = new RunsQueue();
     await this.queue.start();
     logger.debug("Queue connection established (runs-table substrate)");
   }

@@ -1,11 +1,14 @@
 /**
- * `pg.Pool` singleton for callers that need node-postgres specifically
- * (e.g. `@chat-adapter/state-pg`, anything doing raw `LISTEN`).
+ * `pg.Pool` singleton, retained only because `@chat-adapter/state-pg`'s API
+ * accepts a `pg.Pool` directly. Everything else in this codebase (queries,
+ * caches, queue, LISTEN) goes through the postgres-js pool in `db/client.ts`.
  *
- * The application's primary client is the `postgres.js` pool exposed by
- * `db/client.ts` — this exists alongside it because `pg` and `postgres.js`
- * use different on-the-wire protocols and can't share a connection. Most
- * code should NOT touch this; reach for `getDb()` first.
+ * Pool size is intentionally small — state-pg's chat-state UPSERT/SELECT
+ * traffic is light and finishes quickly, so 4 concurrent connections is
+ * more than enough; raise via `PG_POOL_MAX` if the chat workload grows.
+ *
+ * Reach for `getDb()` first. This module is the escape hatch for the one
+ * upstream library that demands node-postgres.
  */
 
 import { Pool, type PoolConfig } from 'pg';
@@ -19,13 +22,7 @@ function getPgSsl() {
     : undefined;
 }
 
-/**
- * Get the singleton `pg.Pool`. Lazily constructed on first call.
- *
- * Pool size is intentionally smaller than the postgres.js pool because the
- * pg.Pool serves a narrow set of clients (state-pg, LISTEN connections) and
- * isn't on the hot path.
- */
+/** Get the singleton `pg.Pool`. Lazily constructed on first call. */
 export function getPgPool(): Pool {
   if (pgPoolSingleton) return pgPoolSingleton;
 
@@ -37,8 +34,8 @@ export function getPgPool(): Pool {
   const config: PoolConfig = {
     connectionString,
     ssl: getPgSsl(),
-    application_name: 'owletto-backend-pg',
-    max: parseInt(process.env.PG_POOL_MAX || '10', 10),
+    application_name: 'owletto-backend-state-pg',
+    max: parseInt(process.env.PG_POOL_MAX || '4', 10),
     idleTimeoutMillis: 30_000,
   };
 

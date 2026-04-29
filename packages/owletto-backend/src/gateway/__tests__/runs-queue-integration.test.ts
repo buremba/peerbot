@@ -37,9 +37,7 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   await resetTestDatabase();
-  queue = new RunsQueue({
-    connectionString: process.env.DATABASE_URL,
-  });
+  queue = new RunsQueue();
   await queue.start();
 });
 
@@ -232,9 +230,7 @@ describe("RunsQueue — startup recovery scan", () => {
     `;
 
     // New RunsQueue instance — startup scan should reset the row.
-    const fresh = new RunsQueue({
-      connectionString: process.env.DATABASE_URL,
-    });
+    const fresh = new RunsQueue();
     await fresh.start();
     queue = fresh;
 

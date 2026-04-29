@@ -90,6 +90,22 @@ async function main() {
   }
   process.env.DATABASE_URL = databaseUrl;
 
+  // Verify LISTEN/NOTIFY actually delivers before any cache or queue wires up
+  // — otherwise misconfigured transaction-mode poolers (Supabase pooler,
+  // RDS Proxy, etc.) would silently degrade caches to TTL-only and queue
+  // wakeups to the slow poll. Skip in tests where the subprocess Postgres
+  // isn't always reachable in the way prod would be.
+  if (process.env.SKIP_LISTEN_NOTIFY_PROBE !== '1') {
+    const { probeListenNotify } = await import('./db/client');
+    try {
+      await probeListenNotify();
+      logger.info('[DB] LISTEN/NOTIFY probe ok');
+    } catch (err) {
+      logger.error({ err }, '[DB] LISTEN/NOTIFY probe failed');
+      throw err;
+    }
+  }
+
   // Initialize workspace provider
   await initWorkspaceProvider();
 

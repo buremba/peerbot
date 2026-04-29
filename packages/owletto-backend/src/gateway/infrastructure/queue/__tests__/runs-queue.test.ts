@@ -56,7 +56,7 @@ describe("backoffSeconds", () => {
 });
 
 describe("RunsQueue construction", () => {
-  test("requires DATABASE_URL when no connection string is given", () => {
+  test("requires DATABASE_URL", () => {
     const prev = process.env.DATABASE_URL;
     delete process.env.DATABASE_URL;
     try {
@@ -67,12 +67,14 @@ describe("RunsQueue construction", () => {
       if (prev) process.env.DATABASE_URL = prev;
     }
   });
-  test("accepts an explicit connection string", () => {
-    expect(
-      () =>
-        new RunsQueue({
-          connectionString: "postgres://test:test@localhost:5432/test",
-        }),
-    ).not.toThrow();
+  test("constructs when DATABASE_URL is set (no per-instance config required)", () => {
+    const prev = process.env.DATABASE_URL;
+    process.env.DATABASE_URL = "postgres://test:test@localhost:5432/test";
+    try {
+      expect(() => new RunsQueue()).not.toThrow();
+    } finally {
+      if (prev !== undefined) process.env.DATABASE_URL = prev;
+      else delete process.env.DATABASE_URL;
+    }
   });
 });

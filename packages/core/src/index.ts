@@ -14,9 +14,10 @@ export type {
   ChannelBinding,
   ConnectionSettings,
   Grant,
+  GrantKind,
   StoredConnection,
 } from "./agent-store";
-export { findTemplateAgentId } from "./agent-store";
+export { findTemplateAgentId, inferGrantKind } from "./agent-store";
 // Agent Settings API response types (for UI consumers)
 export type {
   AgentConfigResponse,

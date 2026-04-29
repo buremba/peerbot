@@ -7,6 +7,7 @@
  */
 
 import {
+  inferGrantKind,
   normalizeDomainPattern,
   type AgentMetadata,
   type AgentSettings,

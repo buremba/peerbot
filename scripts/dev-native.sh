@@ -3,13 +3,12 @@
 #
 # What runs:
 #   - owletto-backend (Hono + tsx watch) on :8787
-#   - embedded @lobu/gateway (in-process) with HTTP egress proxy on :8118
+#   - embedded gateway (in-process) with HTTP egress proxy on :8118
 #   - embedded workers (spawned as Bun subprocesses on demand)
 #   - Vite dev middleware for owletto-web on the same :8787 (HMR via WS)
 #
 # Requires, managed outside this script:
-#   - redis-server on localhost:6379 (e.g. `brew services start redis`)
-#   - remote Postgres reachable via DATABASE_URL in .env
+#   - Postgres reachable via DATABASE_URL in .env
 #
 # Skipped vs `make dev`: embeddings service (cloud backfill), openclaw, docker worker image.
 
@@ -28,18 +27,10 @@ if [ ! -f .env ]; then
   exit 1
 fi
 
-if [ ! -d packages/core/dist ] || [ ! -d packages/owletto-sdk/dist ] || [ ! -d packages/gateway/dist ]; then
+if [ ! -d packages/core/dist ] || [ ! -d packages/owletto-sdk/dist ] || [ ! -d packages/worker/dist ]; then
   echo "📦 Building workspace packages (one-time)…"
   make build-packages
 fi
-
-if ! (exec 3<>/dev/tcp/127.0.0.1/6379) 2>/dev/null; then
-  echo "❌ redis not reachable on localhost:6379"
-  echo "   Start it with: brew services start redis"
-  exit 1
-fi
-exec 3<&- 2>/dev/null || true
-exec 3>&- 2>/dev/null || true
 
 # --- Env -------------------------------------------------------------------
 
@@ -53,7 +44,6 @@ export ENVIRONMENT="${ENVIRONMENT:-development}"
 export HOST="${HOST:-127.0.0.1}"
 export PORT="${PORT:-8787}"
 export PUBLIC_WEB_URL="${PUBLIC_WEB_URL:-http://localhost:${PORT}}"
-export REDIS_URL="${REDIS_URL:-redis://localhost:6379}"
 export PGSSLMODE="${PGSSLMODE:-require}"
 export LOBU_PROVIDER_REGISTRY_PATH="${LOBU_PROVIDER_REGISTRY_PATH:-$REPO_ROOT/config/providers.json}"
 export LOBU_DEV_PROJECT_PATH="${LOBU_DEV_PROJECT_PATH:-$REPO_ROOT}"

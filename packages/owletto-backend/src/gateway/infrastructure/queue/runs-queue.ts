@@ -1062,7 +1062,7 @@ export async function sweepCompletedRuns(): Promise<number> {
   const aged = await sql`
     WITH d AS (
       DELETE FROM runs
-      WHERE status IN ('completed', 'failed', 'cancelled', 'timed_out')
+      WHERE status IN ('completed', 'failed', 'cancelled', 'timeout')
         AND run_type IN ('chat_message', 'schedule', 'agent_run', 'internal')
         AND completed_at IS NOT NULL
         AND completed_at < now() - (${retentionDays}::int * interval '1 day')

@@ -1116,6 +1116,10 @@ export class CoreServices {
       this.tokenRefreshJob.stop();
     }
 
+    if (this.scheduleService) {
+      await this.scheduleService.stop();
+    }
+
     if (this.queueProducer) {
       await this.queueProducer.stop();
     }

@@ -26,7 +26,7 @@ const WORKER_PACKAGE_JSON_CANDIDATES = [
   "/app/packages/worker/package.json",
 ] as const;
 
-// Gateway-specific constants; core ones (TIME, REDIS_KEYS, DEFAULTS) come from @lobu/core.
+// Gateway-specific constants; core ones (TIME, DEFAULTS) come from @lobu/core.
 const GATEWAY_DEFAULTS = {
   HTTP_PORT: 3000,
   PUBLIC_GATEWAY_URL: "",

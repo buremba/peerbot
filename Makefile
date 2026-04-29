@@ -6,7 +6,7 @@
 help:
 	@echo "Available commands:"
 	@echo "  make setup                                 - Setup development environment (run once)"
-	@echo "  make dev                                   - Start the embedded Lobu stack (host redis, remote Postgres, Vite HMR)"
+	@echo "  make dev                                   - Start the embedded Lobu stack (Postgres via DATABASE_URL, Vite HMR)"
 	@echo "  make build-packages                        - Build all TypeScript packages"
 	@echo "  make test                                  - Run test bot"
 	@echo "  make eval                                  - Run agent evals"
@@ -15,7 +15,7 @@ help:
 # Build all TypeScript packages in dependency order
 build-packages:
 	@echo "📦 Building all TypeScript packages..."
-	@for pkg in core owletto-sdk gateway worker; do \
+	@for pkg in core owletto-sdk worker; do \
 		echo "   📦 Building packages/$$pkg..."; \
 		( cd packages/$$pkg && bun run build ) || exit $$?; \
 	done
@@ -35,7 +35,7 @@ ensure-submodule:
 	esac
 
 # Start the embedded Lobu stack: owletto-backend + embedded gateway + workers,
-# all in-process. Requires host redis on :6379 and remote Postgres via DATABASE_URL.
+# all in-process. Requires Postgres via DATABASE_URL.
 dev: ensure-submodule
 	@./scripts/dev-native.sh
 

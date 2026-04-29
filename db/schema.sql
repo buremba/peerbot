@@ -1,6 +1,6 @@
-\restrict 3NagdAXNcah1uiOQHB7wqm5esCsJ1nPiemW2Tdsn9R3snsCP7U4R8pIPZ8dGkFm
+\restrict M2CVBCWaQpZ2IaSZ0tLvIsiZcxaeHAXCvAhTje2jQXnlRxfcYhzgFruwfb40Hgl
 
--- Dumped from database version 18.3 (Debian 18.3-1.pgdg12+1)
+-- Dumped from database version 18.1 (Debian 18.1-1.pgdg13+2)
 -- Dumped by pg_dump version 18.1 (Homebrew)
 
 SET statement_timeout = 0;
@@ -16,10 +16,10 @@ SET client_min_messages = warning;
 SET row_security = off;
 
 --
--- Name: pgboss; Type: SCHEMA; Schema: -; Owner: -
+-- Name: public; Type: SCHEMA; Schema: -; Owner: -
 --
 
-CREATE SCHEMA pgboss;
+-- *not* creating schema, since initdb creates it
 
 
 --
@@ -41,6 +41,20 @@ CREATE EXTENSION IF NOT EXISTS dblink WITH SCHEMA public;
 --
 
 COMMENT ON EXTENSION dblink IS 'connect to other PostgreSQL databases from within a database';
+
+
+--
+-- Name: pg_stat_statements; Type: EXTENSION; Schema: -; Owner: -
+--
+
+CREATE EXTENSION IF NOT EXISTS pg_stat_statements WITH SCHEMA public;
+
+
+--
+-- Name: EXTENSION pg_stat_statements; Type: COMMENT; Schema: -; Owner: -
+--
+
+COMMENT ON EXTENSION pg_stat_statements IS 'track planning and execution statistics of all SQL statements executed';
 
 
 --
@@ -86,226 +100,6 @@ COMMENT ON EXTENSION vector IS 'vector data type and ivfflat and hnsw access met
 
 
 --
--- Name: job_state; Type: TYPE; Schema: pgboss; Owner: -
---
-
-CREATE TYPE pgboss.job_state AS ENUM (
-    'created',
-    'retry',
-    'active',
-    'completed',
-    'cancelled',
-    'failed'
-);
-
-
---
--- Name: create_queue(text, jsonb); Type: FUNCTION; Schema: pgboss; Owner: -
---
-
-CREATE FUNCTION pgboss.create_queue(queue_name text, options jsonb) RETURNS void
-    LANGUAGE plpgsql
-    AS $_$
-    DECLARE
-      tablename varchar := CASE WHEN options->>'partition' = 'true'
-                            THEN 'j' || encode(sha224(queue_name::bytea), 'hex')
-                            ELSE 'job_common'
-                            END;
-      queue_created_on timestamptz;
-    BEGIN
-
-      WITH q as (
-        INSERT INTO pgboss.queue (
-          name,
-          policy,
-          retry_limit,
-          retry_delay,
-          retry_backoff,
-          retry_delay_max,
-          expire_seconds,
-          retention_seconds,
-          deletion_seconds,
-          warning_queued,
-          dead_letter,
-          partition,
-          table_name,
-          heartbeat_seconds
-        )
-        VALUES (
-          queue_name,
-          options->>'policy',
-          COALESCE((options->>'retryLimit')::int, 2),
-          COALESCE((options->>'retryDelay')::int, 0),
-          COALESCE((options->>'retryBackoff')::bool, false),
-          (options->>'retryDelayMax')::int,
-          COALESCE((options->>'expireInSeconds')::int, 900),
-          COALESCE((options->>'retentionSeconds')::int, 1209600),
-          COALESCE((options->>'deleteAfterSeconds')::int, 604800),
-          COALESCE((options->>'warningQueueSize')::int, 0),
-          options->>'deadLetter',
-          COALESCE((options->>'partition')::bool, false),
-          tablename,
-          (options->>'heartbeatSeconds')::int
-        )
-        ON CONFLICT DO NOTHING
-        RETURNING created_on
-      )
-      SELECT created_on into queue_created_on from q;
-
-      IF queue_created_on IS NULL OR options->>'partition' IS DISTINCT FROM 'true' THEN
-        RETURN;
-      END IF;
-
-      EXECUTE format('CREATE TABLE pgboss.%I (LIKE pgboss.job INCLUDING DEFAULTS)', tablename);
-
-      EXECUTE pgboss.job_table_format($cmd$ALTER TABLE pgboss.job ADD PRIMARY KEY (name, id)$cmd$, tablename);
-      EXECUTE pgboss.job_table_format($cmd$ALTER TABLE pgboss.job ADD CONSTRAINT q_fkey FOREIGN KEY (name) REFERENCES pgboss.queue (name) ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED$cmd$, tablename);
-      EXECUTE pgboss.job_table_format($cmd$ALTER TABLE pgboss.job ADD CONSTRAINT dlq_fkey FOREIGN KEY (dead_letter) REFERENCES pgboss.queue (name) ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED$cmd$, tablename);
-
-      EXECUTE pgboss.job_table_format($cmd$CREATE INDEX job_i5 ON pgboss.job (name, start_after) INCLUDE (priority, created_on, id) WHERE state < 'active'$cmd$, tablename);
-      EXECUTE pgboss.job_table_format($cmd$CREATE UNIQUE INDEX job_i4 ON pgboss.job (name, singleton_on, COALESCE(singleton_key, '')) WHERE state <> 'cancelled' AND singleton_on IS NOT NULL$cmd$, tablename);
-      EXECUTE pgboss.job_table_format($cmd$CREATE INDEX job_i7 ON pgboss.job (name, group_id) WHERE state = 'active' AND group_id IS NOT NULL$cmd$, tablename);
-
-      IF options->>'policy' = 'short' THEN
-        EXECUTE pgboss.job_table_format($cmd$CREATE UNIQUE INDEX job_i1 ON pgboss.job (name, COALESCE(singleton_key, '')) WHERE state = 'created' AND policy = 'short'$cmd$, tablename);
-      ELSIF options->>'policy' = 'singleton' THEN
-        EXECUTE pgboss.job_table_format($cmd$CREATE UNIQUE INDEX job_i2 ON pgboss.job (name, COALESCE(singleton_key, '')) WHERE state = 'active' AND policy = 'singleton'$cmd$, tablename);
-      ELSIF options->>'policy' = 'stately' THEN
-        EXECUTE pgboss.job_table_format($cmd$CREATE UNIQUE INDEX job_i3 ON pgboss.job (name, state, COALESCE(singleton_key, '')) WHERE state <= 'active' AND policy = 'stately'$cmd$, tablename);
-      ELSIF options->>'policy' = 'exclusive' THEN
-        EXECUTE pgboss.job_table_format($cmd$CREATE UNIQUE INDEX job_i6 ON pgboss.job (name, COALESCE(singleton_key, '')) WHERE state <= 'active' AND policy = 'exclusive'$cmd$, tablename);
-      ELSIF options->>'policy' = 'key_strict_fifo' THEN
-        EXECUTE pgboss.job_table_format($cmd$CREATE UNIQUE INDEX job_i8 ON pgboss.job (name, singleton_key) WHERE state IN ('active', 'retry', 'failed') AND policy = 'key_strict_fifo'$cmd$, tablename);
-        EXECUTE pgboss.job_table_format($cmd$ALTER TABLE pgboss.job ADD CONSTRAINT job_key_strict_fifo_singleton_key_check CHECK (NOT (policy = 'key_strict_fifo' AND singleton_key IS NULL))$cmd$, tablename);
-      END IF;
-
-      EXECUTE format('ALTER TABLE pgboss.%I ADD CONSTRAINT cjc CHECK (name=%L)', tablename, queue_name);
-      EXECUTE format('ALTER TABLE pgboss.job ATTACH PARTITION pgboss.%I FOR VALUES IN (%L)', tablename, queue_name);
-    END;
-    $_$;
-
-
---
--- Name: delete_queue(text); Type: FUNCTION; Schema: pgboss; Owner: -
---
-
-CREATE FUNCTION pgboss.delete_queue(queue_name text) RETURNS void
-    LANGUAGE plpgsql
-    AS $$
-    DECLARE
-      v_table varchar;
-      v_partition bool;
-    BEGIN
-      SELECT table_name, partition
-      FROM pgboss.queue
-      WHERE name = queue_name
-      INTO v_table, v_partition;
-
-      IF v_partition THEN
-        EXECUTE format('DROP TABLE IF EXISTS pgboss.%I', v_table);
-      ELSE
-        EXECUTE format('DELETE FROM pgboss.%I WHERE name = %L', v_table, queue_name);
-      END IF;
-
-      DELETE FROM pgboss.queue WHERE name = queue_name;
-    END;
-    $$;
-
-
---
--- Name: job_table_format(text, text); Type: FUNCTION; Schema: pgboss; Owner: -
---
-
-CREATE FUNCTION pgboss.job_table_format(command text, table_name text) RETURNS text
-    LANGUAGE sql IMMUTABLE
-    AS $_$
-      SELECT format(
-        replace(
-          replace(command, '.job', '.%1$I'),
-          'job_i', '%1$s_i'
-        ),
-        table_name
-      );
-    $_$;
-
-
---
--- Name: job_table_run(text, text, text); Type: FUNCTION; Schema: pgboss; Owner: -
---
-
-CREATE FUNCTION pgboss.job_table_run(command text, tbl_name text DEFAULT NULL::text, queue_name text DEFAULT NULL::text) RETURNS void
-    LANGUAGE plpgsql
-    AS $$
-    DECLARE
-      tbl RECORD;
-    BEGIN
-      IF queue_name IS NOT NULL THEN
-        SELECT table_name INTO tbl_name FROM pgboss.queue WHERE name = queue_name;
-      END IF;
-
-      IF tbl_name IS NOT NULL THEN
-        EXECUTE pgboss.job_table_format(command, tbl_name);
-        RETURN;
-      END IF;
-
-      EXECUTE pgboss.job_table_format(command, 'job_common');
-
-      FOR tbl IN SELECT table_name FROM pgboss.queue WHERE partition = true
-      LOOP
-        EXECUTE pgboss.job_table_format(command, tbl.table_name);
-      END LOOP;
-    END;
-    $$;
-
-
---
--- Name: job_table_run_async(text, integer, text, text, text); Type: FUNCTION; Schema: pgboss; Owner: -
---
-
-CREATE FUNCTION pgboss.job_table_run_async(command_name text, version integer, command text, tbl_name text DEFAULT NULL::text, queue_name text DEFAULT NULL::text) RETURNS void
-    LANGUAGE plpgsql
-    AS $$
-    BEGIN
-      IF queue_name IS NOT NULL THEN
-        SELECT table_name INTO tbl_name FROM pgboss.queue WHERE name = queue_name;
-      END IF;
-
-      IF tbl_name IS NOT NULL THEN
-        INSERT INTO pgboss.bam (name, version, status, queue, table_name, command)
-        VALUES (
-          command_name,
-          version,
-          'pending',
-          queue_name,
-          tbl_name,
-          pgboss.job_table_format(command, tbl_name)
-        );
-        RETURN;
-      END IF;
-
-      INSERT INTO pgboss.bam (name, version, status, queue, table_name, command)
-      SELECT
-        command_name,
-        version,
-        'pending',
-        NULL,
-        'job_common',
-        pgboss.job_table_format(command, 'job_common')
-      UNION ALL
-      SELECT
-        command_name,
-        version,
-        'pending',
-        queue.name,
-        queue.table_name,
-        pgboss.job_table_format(command, queue.table_name)
-      FROM pgboss.queue
-      WHERE partition = true;
-    END;
-    $$;
-
-
---
 -- Name: prevent_entity_cycles(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -347,279 +141,9 @@ END;
 $$;
 
 
---
--- Name: notify_agent_changed(); Type: FUNCTION; Schema: public; Owner: -
---
-
-CREATE FUNCTION public.notify_agent_changed() RETURNS trigger
-    LANGUAGE plpgsql
-    AS $$
-BEGIN
-  PERFORM pg_notify('agent_changed', COALESCE(NEW.id, OLD.id));
-  RETURN COALESCE(NEW, OLD);
-END;
-$$;
-
-
---
--- Name: notify_agent_users_changed(); Type: FUNCTION; Schema: public; Owner: -
---
-
-CREATE FUNCTION public.notify_agent_users_changed() RETURNS trigger
-    LANGUAGE plpgsql
-    AS $$
-DECLARE
-  new_payload text;
-  old_payload text;
-BEGIN
-  IF TG_OP = 'DELETE' THEN
-    PERFORM pg_notify(
-      'agent_users_changed', format('%s:%s', OLD.platform, OLD.user_id)
-    );
-    RETURN OLD;
-  END IF;
-
-  new_payload := format('%s:%s', NEW.platform, NEW.user_id);
-  PERFORM pg_notify('agent_users_changed', new_payload);
-
-  IF TG_OP = 'UPDATE' THEN
-    old_payload := format('%s:%s', OLD.platform, OLD.user_id);
-    IF old_payload <> new_payload THEN
-      PERFORM pg_notify('agent_users_changed', old_payload);
-    END IF;
-  END IF;
-
-  RETURN NEW;
-END;
-$$;
-
-
---
--- Name: notify_channel_binding_changed(); Type: FUNCTION; Schema: public; Owner: -
---
-
-CREATE FUNCTION public.notify_channel_binding_changed() RETURNS trigger
-    LANGUAGE plpgsql
-    AS $$
-DECLARE
-  new_payload text;
-  old_payload text;
-BEGIN
-  IF TG_OP = 'DELETE' THEN
-    PERFORM pg_notify(
-      'channel_binding_changed',
-      format('%s:%s:%s', OLD.platform, COALESCE(OLD.team_id, '-'), OLD.channel_id)
-    );
-    RETURN OLD;
-  END IF;
-
-  new_payload := format(
-    '%s:%s:%s', NEW.platform, COALESCE(NEW.team_id, '-'), NEW.channel_id
-  );
-  PERFORM pg_notify('channel_binding_changed', new_payload);
-
-  IF TG_OP = 'UPDATE' THEN
-    old_payload := format(
-      '%s:%s:%s', OLD.platform, COALESCE(OLD.team_id, '-'), OLD.channel_id
-    );
-    IF old_payload <> new_payload THEN
-      PERFORM pg_notify('channel_binding_changed', old_payload);
-    END IF;
-  END IF;
-
-  RETURN NEW;
-END;
-$$;
-
-
 SET default_tablespace = '';
 
 SET default_table_access_method = heap;
-
---
--- Name: bam; Type: TABLE; Schema: pgboss; Owner: -
---
-
-CREATE TABLE pgboss.bam (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    name text NOT NULL,
-    version integer NOT NULL,
-    status text DEFAULT 'pending'::text NOT NULL,
-    queue text,
-    table_name text NOT NULL,
-    command text NOT NULL,
-    error text,
-    created_on timestamp with time zone DEFAULT now() NOT NULL,
-    started_on timestamp with time zone,
-    completed_on timestamp with time zone
-);
-
-
---
--- Name: job; Type: TABLE; Schema: pgboss; Owner: -
---
-
-CREATE TABLE pgboss.job (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    name text NOT NULL,
-    priority integer DEFAULT 0 NOT NULL,
-    data jsonb,
-    state pgboss.job_state DEFAULT 'created'::pgboss.job_state NOT NULL,
-    retry_limit integer DEFAULT 2 NOT NULL,
-    retry_count integer DEFAULT 0 NOT NULL,
-    retry_delay integer DEFAULT 0 NOT NULL,
-    retry_backoff boolean DEFAULT false NOT NULL,
-    retry_delay_max integer,
-    expire_seconds integer DEFAULT 900 NOT NULL,
-    deletion_seconds integer DEFAULT 604800 NOT NULL,
-    singleton_key text,
-    singleton_on timestamp without time zone,
-    group_id text,
-    group_tier text,
-    start_after timestamp with time zone DEFAULT now() NOT NULL,
-    created_on timestamp with time zone DEFAULT now() NOT NULL,
-    started_on timestamp with time zone,
-    completed_on timestamp with time zone,
-    keep_until timestamp with time zone DEFAULT (now() + '336:00:00'::interval) NOT NULL,
-    output jsonb,
-    dead_letter text,
-    policy text,
-    heartbeat_on timestamp with time zone,
-    heartbeat_seconds integer
-)
-PARTITION BY LIST (name);
-
-
---
--- Name: job_common; Type: TABLE; Schema: pgboss; Owner: -
---
-
-CREATE TABLE pgboss.job_common (
-    id uuid DEFAULT gen_random_uuid() CONSTRAINT job_id_not_null NOT NULL,
-    name text CONSTRAINT job_name_not_null NOT NULL,
-    priority integer DEFAULT 0 CONSTRAINT job_priority_not_null NOT NULL,
-    data jsonb,
-    state pgboss.job_state DEFAULT 'created'::pgboss.job_state CONSTRAINT job_state_not_null NOT NULL,
-    retry_limit integer DEFAULT 2 CONSTRAINT job_retry_limit_not_null NOT NULL,
-    retry_count integer DEFAULT 0 CONSTRAINT job_retry_count_not_null NOT NULL,
-    retry_delay integer DEFAULT 0 CONSTRAINT job_retry_delay_not_null NOT NULL,
-    retry_backoff boolean DEFAULT false CONSTRAINT job_retry_backoff_not_null NOT NULL,
-    retry_delay_max integer,
-    expire_seconds integer DEFAULT 900 CONSTRAINT job_expire_seconds_not_null NOT NULL,
-    deletion_seconds integer DEFAULT 604800 CONSTRAINT job_deletion_seconds_not_null NOT NULL,
-    singleton_key text,
-    singleton_on timestamp without time zone,
-    group_id text,
-    group_tier text,
-    start_after timestamp with time zone DEFAULT now() CONSTRAINT job_start_after_not_null NOT NULL,
-    created_on timestamp with time zone DEFAULT now() CONSTRAINT job_created_on_not_null NOT NULL,
-    started_on timestamp with time zone,
-    completed_on timestamp with time zone,
-    keep_until timestamp with time zone DEFAULT (now() + '336:00:00'::interval) CONSTRAINT job_keep_until_not_null NOT NULL,
-    output jsonb,
-    dead_letter text,
-    policy text,
-    heartbeat_on timestamp with time zone,
-    heartbeat_seconds integer,
-    CONSTRAINT job_key_strict_fifo_singleton_key_check CHECK ((NOT ((policy = 'key_strict_fifo'::text) AND (singleton_key IS NULL))))
-);
-
-
---
--- Name: queue; Type: TABLE; Schema: pgboss; Owner: -
---
-
-CREATE TABLE pgboss.queue (
-    name text NOT NULL,
-    policy text NOT NULL,
-    retry_limit integer NOT NULL,
-    retry_delay integer NOT NULL,
-    retry_backoff boolean NOT NULL,
-    retry_delay_max integer,
-    expire_seconds integer NOT NULL,
-    retention_seconds integer NOT NULL,
-    deletion_seconds integer NOT NULL,
-    dead_letter text,
-    partition boolean NOT NULL,
-    table_name text NOT NULL,
-    deferred_count integer DEFAULT 0 NOT NULL,
-    queued_count integer DEFAULT 0 NOT NULL,
-    warning_queued integer DEFAULT 0 NOT NULL,
-    active_count integer DEFAULT 0 NOT NULL,
-    total_count integer DEFAULT 0 NOT NULL,
-    heartbeat_seconds integer,
-    singletons_active text[],
-    monitor_on timestamp with time zone,
-    maintain_on timestamp with time zone,
-    created_on timestamp with time zone DEFAULT now() NOT NULL,
-    updated_on timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT queue_check CHECK ((dead_letter IS DISTINCT FROM name))
-);
-
-
---
--- Name: schedule; Type: TABLE; Schema: pgboss; Owner: -
---
-
-CREATE TABLE pgboss.schedule (
-    name text NOT NULL,
-    key text DEFAULT ''::text NOT NULL,
-    cron text NOT NULL,
-    timezone text,
-    data jsonb,
-    options jsonb,
-    created_on timestamp with time zone DEFAULT now() NOT NULL,
-    updated_on timestamp with time zone DEFAULT now() NOT NULL
-);
-
-
---
--- Name: subscription; Type: TABLE; Schema: pgboss; Owner: -
---
-
-CREATE TABLE pgboss.subscription (
-    event text NOT NULL,
-    name text NOT NULL,
-    created_on timestamp with time zone DEFAULT now() NOT NULL,
-    updated_on timestamp with time zone DEFAULT now() NOT NULL
-);
-
-
---
--- Name: version; Type: TABLE; Schema: pgboss; Owner: -
---
-
-CREATE TABLE pgboss.version (
-    version integer NOT NULL,
-    cron_on timestamp with time zone,
-    bam_on timestamp with time zone
-);
-
-
---
--- Name: warning; Type: TABLE; Schema: pgboss; Owner: -
---
-
-CREATE TABLE pgboss.warning (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    type text NOT NULL,
-    message text NOT NULL,
-    data jsonb,
-    created_on timestamp with time zone DEFAULT now() NOT NULL
-);
-
-
---
--- Name: _reactions_backup_2026_04_25; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public._reactions_backup_2026_04_25 (
-    id text NOT NULL,
-    reaction_script text,
-    reaction_script_compiled text,
-    backed_up_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
 
 --
 -- Name: account; Type: TABLE; Schema: public; Owner: -
@@ -735,30 +259,6 @@ CREATE TABLE public.agent_users (
 
 
 --
--- Name: user_auth_profiles; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.user_auth_profiles (
-    user_id text NOT NULL,
-    agent_id text NOT NULL,
-    profiles jsonb DEFAULT '[]'::jsonb NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
-
---
--- Name: user_model_preferences; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.user_model_preferences (
-    user_id text NOT NULL,
-    provider_id text NOT NULL,
-    model text NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
-
---
 -- Name: agents; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -833,6 +333,140 @@ ALTER TABLE public.auth_profiles ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDE
     NO MINVALUE
     NO MAXVALUE
     CACHE 1
+);
+
+
+--
+-- Name: chat_connections; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.chat_connections (
+    id text NOT NULL,
+    platform text NOT NULL,
+    template_agent_id text,
+    config jsonb NOT NULL,
+    settings jsonb DEFAULT '{}'::jsonb NOT NULL,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    status text DEFAULT 'active'::text NOT NULL,
+    error_message text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: chat_state_cache; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.chat_state_cache (
+    key_prefix text NOT NULL,
+    cache_key text NOT NULL,
+    value text NOT NULL,
+    expires_at timestamp with time zone,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: chat_state_lists; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.chat_state_lists (
+    key_prefix text NOT NULL,
+    list_key text NOT NULL,
+    seq bigint NOT NULL,
+    value text NOT NULL,
+    expires_at timestamp with time zone
+);
+
+
+--
+-- Name: chat_state_lists_seq_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.chat_state_lists_seq_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: chat_state_lists_seq_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.chat_state_lists_seq_seq OWNED BY public.chat_state_lists.seq;
+
+
+--
+-- Name: chat_state_locks; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.chat_state_locks (
+    key_prefix text NOT NULL,
+    thread_id text NOT NULL,
+    token text NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: chat_state_queues; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.chat_state_queues (
+    key_prefix text NOT NULL,
+    thread_id text NOT NULL,
+    seq bigint NOT NULL,
+    value text NOT NULL,
+    expires_at timestamp with time zone NOT NULL
+);
+
+
+--
+-- Name: chat_state_queues_seq_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.chat_state_queues_seq_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: chat_state_queues_seq_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.chat_state_queues_seq_seq OWNED BY public.chat_state_queues.seq;
+
+
+--
+-- Name: chat_state_subscriptions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.chat_state_subscriptions (
+    key_prefix text NOT NULL,
+    thread_id text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: cli_sessions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.cli_sessions (
+    session_id text NOT NULL,
+    user_id text NOT NULL,
+    email text,
+    name text,
+    refresh_token_id text NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
 
@@ -949,6 +583,7 @@ CREATE TABLE public.connector_definitions (
     openapi_config jsonb,
     default_connection_config jsonb,
     entity_link_overrides jsonb,
+    default_repair_agent_id text,
     CONSTRAINT connector_definitions_status_check CHECK ((status = ANY (ARRAY['active'::text, 'archived'::text, 'draft'::text])))
 );
 
@@ -1269,6 +904,25 @@ ALTER SEQUENCE public.entity_identities_id_seq OWNED BY public.entity_identities
 
 
 --
+-- Name: entity_read_grant; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.entity_read_grant (
+    id text NOT NULL,
+    grantor_org_id text NOT NULL,
+    entity_id bigint NOT NULL,
+    grantee_user_id text NOT NULL,
+    scope text DEFAULT 'read-once'::text NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    single_use boolean DEFAULT true NOT NULL,
+    consumed_at timestamp with time zone,
+    triggering_relationship_id bigint,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT entity_read_grant_scope_check CHECK ((scope = ANY (ARRAY['read-once'::text, 'read-n'::text, 'read-window'::text])))
+);
+
+
+--
 -- Name: entity_relationship_type_rules; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1321,6 +975,7 @@ CREATE TABLE public.entity_relationship_types (
     deleted_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now(),
     updated_at timestamp with time zone DEFAULT now(),
+    metadata jsonb,
     CONSTRAINT entity_relationship_types_status_check CHECK ((status = ANY (ARRAY['active'::text, 'archived'::text])))
 );
 
@@ -1622,6 +1277,12 @@ CREATE TABLE public.feeds (
     schedule text,
     next_run_at timestamp with time zone,
     display_name text,
+    repair_agent_id text,
+    repair_thread_id text,
+    repair_attempt_count integer DEFAULT 0 NOT NULL,
+    last_repair_at timestamp with time zone,
+    first_failure_at timestamp with time zone,
+    last_repair_post_hash text,
     CONSTRAINT feeds_status_check CHECK ((status = ANY (ARRAY['active'::text, 'paused'::text, 'error'::text])))
 );
 
@@ -1643,6 +1304,20 @@ CREATE SEQUENCE public.feeds_id_seq
 --
 
 ALTER SEQUENCE public.feeds_id_seq OWNED BY public.feeds.id;
+
+
+--
+-- Name: grants; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.grants (
+    agent_id text NOT NULL,
+    kind text NOT NULL,
+    pattern text NOT NULL,
+    expires_at timestamp with time zone,
+    granted_at timestamp with time zone DEFAULT now() NOT NULL,
+    denied boolean DEFAULT false NOT NULL
+);
 
 
 --
@@ -1678,6 +1353,18 @@ CREATE TABLE public.latest_event_classifications (
     is_manual boolean DEFAULT false NOT NULL,
     reasoning text,
     created_at timestamp with time zone NOT NULL
+);
+
+
+--
+-- Name: mcp_proxy_sessions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.mcp_proxy_sessions (
+    session_key text NOT NULL,
+    upstream_session_id text NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
 
@@ -1863,6 +1550,19 @@ COMMENT ON TABLE public.oauth_device_codes IS 'Device codes for OAuth Device Aut
 
 
 --
+-- Name: oauth_states; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.oauth_states (
+    id text NOT NULL,
+    scope text NOT NULL,
+    payload jsonb NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
 -- Name: oauth_tokens; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1903,6 +1603,7 @@ CREATE TABLE public.organization (
     metadata text,
     visibility text DEFAULT 'private'::text NOT NULL,
     description text,
+    repair_agents_enabled boolean DEFAULT true NOT NULL,
     CONSTRAINT org_slug_not_reserved CHECK ((slug <> ALL (ARRAY['settings'::text, 'auth'::text, 'api'::text, 'templates'::text, 'help'::text, 'account'::text, 'admin'::text, 'health'::text, 'login'::text, 'logout'::text, 'signup'::text, 'register'::text, 'www'::text, 'mcp'::text, 'static'::text, 'assets'::text, 'cdn'::text, 'docs'::text, 'mail'::text])))
 );
 
@@ -1968,6 +1669,19 @@ ALTER SEQUENCE public.personal_access_tokens_id_seq OWNED BY public.personal_acc
 
 
 --
+-- Name: rate_limits; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.rate_limits (
+    key text NOT NULL,
+    count integer DEFAULT 0 NOT NULL,
+    window_started_at timestamp with time zone NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
 -- Name: runs; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1999,13 +1713,20 @@ CREATE TABLE public.runs (
     auth_signal jsonb,
     created_by_user_id text,
     dispatched_message_id text,
+    output_tail text,
+    exit_code integer,
+    exit_signal text,
+    exit_reason text,
     queue_name text,
     idempotency_key text,
     attempts integer DEFAULT 0 NOT NULL,
     max_attempts integer DEFAULT 3 NOT NULL,
     run_at timestamp with time zone DEFAULT now() NOT NULL,
+    priority integer DEFAULT 0 NOT NULL,
+    expires_at timestamp with time zone,
+    retry_delay_seconds integer,
     CONSTRAINT runs_approval_status_check CHECK ((approval_status = ANY (ARRAY['pending'::text, 'approved'::text, 'rejected'::text, 'auto'::text]))),
-    CONSTRAINT runs_legacy_org_required CHECK ((run_type <> ALL (ARRAY['sync'::text, 'action'::text, 'embed_backfill'::text, 'watcher'::text, 'auth'::text])) OR (organization_id IS NOT NULL)),
+    CONSTRAINT runs_legacy_org_required CHECK (((run_type <> ALL (ARRAY['sync'::text, 'action'::text, 'embed_backfill'::text, 'watcher'::text, 'auth'::text])) OR (organization_id IS NOT NULL))),
     CONSTRAINT runs_run_type_check CHECK ((run_type = ANY (ARRAY['sync'::text, 'action'::text, 'embed_backfill'::text, 'watcher'::text, 'auth'::text, 'chat_message'::text, 'schedule'::text, 'agent_run'::text, 'internal'::text]))),
     CONSTRAINT runs_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'claimed'::text, 'running'::text, 'completed'::text, 'failed'::text, 'cancelled'::text, 'timeout'::text])))
 );
@@ -2072,6 +1793,30 @@ CREATE TABLE public."user" (
     "phoneNumberVerified" boolean DEFAULT false,
     username text,
     CONSTRAINT username_not_reserved CHECK ((username <> ALL (ARRAY['settings'::text, 'auth'::text, 'api'::text, 'templates'::text, 'help'::text, 'account'::text, 'admin'::text, 'health'::text, 'login'::text, 'logout'::text, 'signup'::text, 'register'::text])))
+);
+
+
+--
+-- Name: user_auth_profiles; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.user_auth_profiles (
+    user_id text NOT NULL,
+    agent_id text NOT NULL,
+    profiles jsonb DEFAULT '[]'::jsonb NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: user_model_preferences; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.user_model_preferences (
+    user_id text NOT NULL,
+    provider_id text NOT NULL,
+    model text NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
 
@@ -2528,10 +2273,17 @@ ALTER SEQUENCE public.watchers_id_seq OWNED BY public.watchers.id;
 
 
 --
--- Name: job_common; Type: TABLE ATTACH; Schema: pgboss; Owner: -
+-- Name: chat_state_lists seq; Type: DEFAULT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY pgboss.job ATTACH PARTITION pgboss.job_common DEFAULT;
+ALTER TABLE ONLY public.chat_state_lists ALTER COLUMN seq SET DEFAULT nextval('public.chat_state_lists_seq_seq'::regclass);
+
+
+--
+-- Name: chat_state_queues seq; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.chat_state_queues ALTER COLUMN seq SET DEFAULT nextval('public.chat_state_queues_seq_seq'::regclass);
 
 
 --
@@ -2724,78 +2476,6 @@ ALTER TABLE ONLY public.watchers ALTER COLUMN id SET DEFAULT nextval('public.wat
 
 
 --
--- Name: bam bam_pkey; Type: CONSTRAINT; Schema: pgboss; Owner: -
---
-
-ALTER TABLE ONLY pgboss.bam
-    ADD CONSTRAINT bam_pkey PRIMARY KEY (id);
-
-
---
--- Name: job job_pkey; Type: CONSTRAINT; Schema: pgboss; Owner: -
---
-
-ALTER TABLE ONLY pgboss.job
-    ADD CONSTRAINT job_pkey PRIMARY KEY (name, id);
-
-
---
--- Name: job_common job_common_pkey; Type: CONSTRAINT; Schema: pgboss; Owner: -
---
-
-ALTER TABLE ONLY pgboss.job_common
-    ADD CONSTRAINT job_common_pkey PRIMARY KEY (name, id);
-
-
---
--- Name: queue queue_pkey; Type: CONSTRAINT; Schema: pgboss; Owner: -
---
-
-ALTER TABLE ONLY pgboss.queue
-    ADD CONSTRAINT queue_pkey PRIMARY KEY (name);
-
-
---
--- Name: schedule schedule_pkey; Type: CONSTRAINT; Schema: pgboss; Owner: -
---
-
-ALTER TABLE ONLY pgboss.schedule
-    ADD CONSTRAINT schedule_pkey PRIMARY KEY (name, key);
-
-
---
--- Name: subscription subscription_pkey; Type: CONSTRAINT; Schema: pgboss; Owner: -
---
-
-ALTER TABLE ONLY pgboss.subscription
-    ADD CONSTRAINT subscription_pkey PRIMARY KEY (event, name);
-
-
---
--- Name: version version_pkey; Type: CONSTRAINT; Schema: pgboss; Owner: -
---
-
-ALTER TABLE ONLY pgboss.version
-    ADD CONSTRAINT version_pkey PRIMARY KEY (version);
-
-
---
--- Name: warning warning_pkey; Type: CONSTRAINT; Schema: pgboss; Owner: -
---
-
-ALTER TABLE ONLY pgboss.warning
-    ADD CONSTRAINT warning_pkey PRIMARY KEY (id);
-
-
---
--- Name: _reactions_backup_2026_04_25 _reactions_backup_2026_04_25_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public._reactions_backup_2026_04_25
-    ADD CONSTRAINT _reactions_backup_2026_04_25_pkey PRIMARY KEY (id, backed_up_at);
-
-
---
 -- Name: account account_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2852,22 +2532,6 @@ ALTER TABLE ONLY public.agent_users
 
 
 --
--- Name: user_auth_profiles user_auth_profiles_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.user_auth_profiles
-    ADD CONSTRAINT user_auth_profiles_pkey PRIMARY KEY (user_id, agent_id);
-
-
---
--- Name: user_model_preferences user_model_preferences_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.user_model_preferences
-    ADD CONSTRAINT user_model_preferences_pkey PRIMARY KEY (user_id, provider_id);
-
-
---
 -- Name: agents agents_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2876,11 +2540,75 @@ ALTER TABLE ONLY public.agents
 
 
 --
+-- Name: auth_profiles auth_profiles_org_id_unique; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.auth_profiles
+    ADD CONSTRAINT auth_profiles_org_id_unique UNIQUE (organization_id, id);
+
+
+--
 -- Name: auth_profiles auth_profiles_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.auth_profiles
     ADD CONSTRAINT auth_profiles_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: chat_connections chat_connections_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.chat_connections
+    ADD CONSTRAINT chat_connections_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: chat_state_cache chat_state_cache_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.chat_state_cache
+    ADD CONSTRAINT chat_state_cache_pkey PRIMARY KEY (key_prefix, cache_key);
+
+
+--
+-- Name: chat_state_lists chat_state_lists_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.chat_state_lists
+    ADD CONSTRAINT chat_state_lists_pkey PRIMARY KEY (key_prefix, list_key, seq);
+
+
+--
+-- Name: chat_state_locks chat_state_locks_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.chat_state_locks
+    ADD CONSTRAINT chat_state_locks_pkey PRIMARY KEY (key_prefix, thread_id);
+
+
+--
+-- Name: chat_state_queues chat_state_queues_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.chat_state_queues
+    ADD CONSTRAINT chat_state_queues_pkey PRIMARY KEY (key_prefix, thread_id, seq);
+
+
+--
+-- Name: chat_state_subscriptions chat_state_subscriptions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.chat_state_subscriptions
+    ADD CONSTRAINT chat_state_subscriptions_pkey PRIMARY KEY (key_prefix, thread_id);
+
+
+--
+-- Name: cli_sessions cli_sessions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cli_sessions
+    ADD CONSTRAINT cli_sessions_pkey PRIMARY KEY (session_id);
 
 
 --
@@ -2937,6 +2665,14 @@ ALTER TABLE ONLY public.entities
 
 ALTER TABLE ONLY public.entity_identities
     ADD CONSTRAINT entity_identities_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: entity_read_grant entity_read_grant_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.entity_read_grant
+    ADD CONSTRAINT entity_read_grant_pkey PRIMARY KEY (id);
 
 
 --
@@ -3044,6 +2780,14 @@ ALTER TABLE ONLY public.feeds
 
 
 --
+-- Name: grants grants_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.grants
+    ADD CONSTRAINT grants_pkey PRIMARY KEY (agent_id, kind, pattern);
+
+
+--
 -- Name: watcher_versions insight_template_versions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3105,6 +2849,14 @@ ALTER TABLE ONLY public.invitation
 
 ALTER TABLE ONLY public.latest_event_classifications
     ADD CONSTRAINT latest_event_classifications_pkey PRIMARY KEY (event_id, classifier_id);
+
+
+--
+-- Name: mcp_proxy_sessions mcp_proxy_sessions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mcp_proxy_sessions
+    ADD CONSTRAINT mcp_proxy_sessions_pkey PRIMARY KEY (session_key);
 
 
 --
@@ -3172,6 +2924,14 @@ ALTER TABLE ONLY public.oauth_device_codes
 
 
 --
+-- Name: oauth_states oauth_states_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.oauth_states
+    ADD CONSTRAINT oauth_states_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: oauth_tokens oauth_tokens_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3228,6 +2988,14 @@ ALTER TABLE ONLY public.personal_access_tokens
 
 
 --
+-- Name: rate_limits rate_limits_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.rate_limits
+    ADD CONSTRAINT rate_limits_pkey PRIMARY KEY (key);
+
+
+--
 -- Name: runs runs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3260,11 +3028,27 @@ ALTER TABLE ONLY public.session
 
 
 --
+-- Name: user_auth_profiles user_auth_profiles_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_auth_profiles
+    ADD CONSTRAINT user_auth_profiles_pkey PRIMARY KEY (user_id, agent_id);
+
+
+--
 -- Name: user user_email_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public."user"
     ADD CONSTRAINT user_email_key UNIQUE (email);
+
+
+--
+-- Name: user_model_preferences user_model_preferences_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_model_preferences
+    ADD CONSTRAINT user_model_preferences_pkey PRIMARY KEY (user_id, provider_id);
 
 
 --
@@ -3340,69 +3124,6 @@ ALTER TABLE ONLY public.watcher_window_field_feedback
 
 
 --
--- Name: job_common_i1; Type: INDEX; Schema: pgboss; Owner: -
---
-
-CREATE UNIQUE INDEX job_common_i1 ON pgboss.job_common USING btree (name, COALESCE(singleton_key, ''::text)) WHERE ((state = 'created'::pgboss.job_state) AND (policy = 'short'::text));
-
-
---
--- Name: job_common_i2; Type: INDEX; Schema: pgboss; Owner: -
---
-
-CREATE UNIQUE INDEX job_common_i2 ON pgboss.job_common USING btree (name, COALESCE(singleton_key, ''::text)) WHERE ((state = 'active'::pgboss.job_state) AND (policy = 'singleton'::text));
-
-
---
--- Name: job_common_i3; Type: INDEX; Schema: pgboss; Owner: -
---
-
-CREATE UNIQUE INDEX job_common_i3 ON pgboss.job_common USING btree (name, state, COALESCE(singleton_key, ''::text)) WHERE ((state <= 'active'::pgboss.job_state) AND (policy = 'stately'::text));
-
-
---
--- Name: job_common_i4; Type: INDEX; Schema: pgboss; Owner: -
---
-
-CREATE UNIQUE INDEX job_common_i4 ON pgboss.job_common USING btree (name, singleton_on, COALESCE(singleton_key, ''::text)) WHERE ((state <> 'cancelled'::pgboss.job_state) AND (singleton_on IS NOT NULL));
-
-
---
--- Name: job_common_i5; Type: INDEX; Schema: pgboss; Owner: -
---
-
-CREATE INDEX job_common_i5 ON pgboss.job_common USING btree (name, start_after) INCLUDE (priority, created_on, id) WHERE (state < 'active'::pgboss.job_state);
-
-
---
--- Name: job_common_i6; Type: INDEX; Schema: pgboss; Owner: -
---
-
-CREATE UNIQUE INDEX job_common_i6 ON pgboss.job_common USING btree (name, COALESCE(singleton_key, ''::text)) WHERE ((state <= 'active'::pgboss.job_state) AND (policy = 'exclusive'::text));
-
-
---
--- Name: job_common_i7; Type: INDEX; Schema: pgboss; Owner: -
---
-
-CREATE INDEX job_common_i7 ON pgboss.job_common USING btree (name, group_id) WHERE ((state = 'active'::pgboss.job_state) AND (group_id IS NOT NULL));
-
-
---
--- Name: job_common_i8; Type: INDEX; Schema: pgboss; Owner: -
---
-
-CREATE UNIQUE INDEX job_common_i8 ON pgboss.job_common USING btree (name, singleton_key) WHERE ((state = ANY (ARRAY['active'::pgboss.job_state, 'retry'::pgboss.job_state, 'failed'::pgboss.job_state])) AND (policy = 'key_strict_fifo'::text));
-
-
---
--- Name: warning_i1; Type: INDEX; Schema: pgboss; Owner: -
---
-
-CREATE INDEX warning_i1 ON pgboss.warning USING btree (created_on DESC);
-
-
---
 -- Name: account_providerId_accountId_uidx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3435,13 +3156,6 @@ CREATE INDEX agent_channel_bindings_agent_id_idx ON public.agent_channel_binding
 --
 
 CREATE UNIQUE INDEX agent_channel_bindings_no_team_unique ON public.agent_channel_bindings USING btree (platform, channel_id) WHERE (team_id IS NULL);
-
-
---
--- Name: user_auth_profiles_agent_id_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX user_auth_profiles_agent_id_idx ON public.user_auth_profiles USING btree (agent_id);
 
 
 --
@@ -3522,6 +3236,62 @@ CREATE UNIQUE INDEX auth_profiles_pending_unique ON public.auth_profiles USING b
 
 
 --
+-- Name: chat_connections_platform_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX chat_connections_platform_idx ON public.chat_connections USING btree (platform);
+
+
+--
+-- Name: chat_connections_template_agent_id_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX chat_connections_template_agent_id_idx ON public.chat_connections USING btree (template_agent_id) WHERE (template_agent_id IS NOT NULL);
+
+
+--
+-- Name: chat_state_cache_expires_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX chat_state_cache_expires_idx ON public.chat_state_cache USING btree (expires_at);
+
+
+--
+-- Name: chat_state_lists_expires_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX chat_state_lists_expires_idx ON public.chat_state_lists USING btree (expires_at);
+
+
+--
+-- Name: chat_state_locks_expires_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX chat_state_locks_expires_idx ON public.chat_state_locks USING btree (expires_at);
+
+
+--
+-- Name: chat_state_queues_expires_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX chat_state_queues_expires_idx ON public.chat_state_queues USING btree (expires_at);
+
+
+--
+-- Name: cli_sessions_expires_at_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX cli_sessions_expires_at_idx ON public.cli_sessions USING btree (expires_at);
+
+
+--
+-- Name: cli_sessions_user_id_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX cli_sessions_user_id_idx ON public.cli_sessions USING btree (user_id);
+
+
+--
 -- Name: entities_slug_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3533,6 +3303,27 @@ CREATE INDEX entities_slug_idx ON public.entities USING btree (slug);
 --
 
 CREATE UNIQUE INDEX entities_slug_parent_unique ON public.entities USING btree (organization_id, COALESCE(parent_id, (0)::bigint), slug);
+
+
+--
+-- Name: feeds_open_repair_thread_uniq; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX feeds_open_repair_thread_uniq ON public.feeds USING btree (id) WHERE (repair_thread_id IS NOT NULL);
+
+
+--
+-- Name: grants_agent_id_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX grants_agent_id_idx ON public.grants USING btree (agent_id);
+
+
+--
+-- Name: grants_expires_at_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX grants_expires_at_idx ON public.grants USING btree (expires_at) WHERE (expires_at IS NOT NULL);
 
 
 --
@@ -3753,6 +3544,34 @@ CREATE UNIQUE INDEX idx_entities_metadata_domain ON public.entities USING btree 
 
 
 --
+-- Name: idx_entities_metadata_email; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_entities_metadata_email ON public.entities USING btree (((metadata ->> 'email'::text)), organization_id) WHERE (((metadata ->> 'email'::text) IS NOT NULL) AND (deleted_at IS NULL));
+
+
+--
+-- Name: idx_entities_metadata_github_handle; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_entities_metadata_github_handle ON public.entities USING btree (((metadata ->> 'github_handle'::text)), organization_id) WHERE (((metadata ->> 'github_handle'::text) IS NOT NULL) AND (deleted_at IS NULL));
+
+
+--
+-- Name: idx_entities_metadata_linkedin_url; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_entities_metadata_linkedin_url ON public.entities USING btree (((metadata ->> 'linkedin_url'::text)), organization_id) WHERE (((metadata ->> 'linkedin_url'::text) IS NOT NULL) AND (deleted_at IS NULL));
+
+
+--
+-- Name: idx_entities_metadata_twitter_handle; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_entities_metadata_twitter_handle ON public.entities USING btree (((metadata ->> 'twitter_handle'::text)), organization_id) WHERE (((metadata ->> 'twitter_handle'::text) IS NOT NULL) AND (deleted_at IS NULL));
+
+
+--
 -- Name: idx_entities_name; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3788,6 +3607,27 @@ CREATE INDEX idx_entity_identities_lookup ON public.entity_identities USING btre
 
 
 --
+-- Name: idx_entity_read_grant_entity_active; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_entity_read_grant_entity_active ON public.entity_read_grant USING btree (entity_id, expires_at) WHERE (consumed_at IS NULL);
+
+
+--
+-- Name: idx_entity_read_grant_grantee_entity_active; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_entity_read_grant_grantee_entity_active ON public.entity_read_grant USING btree (grantee_user_id, entity_id, expires_at) WHERE (consumed_at IS NULL);
+
+
+--
+-- Name: idx_entity_read_grant_idempotency; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_entity_read_grant_idempotency ON public.entity_read_grant USING btree (grantor_org_id, entity_id, grantee_user_id, triggering_relationship_id) WHERE (consumed_at IS NULL);
+
+
+--
 -- Name: idx_entity_rel_type_rules_type; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3802,10 +3642,38 @@ CREATE UNIQUE INDEX idx_entity_rel_types_org_slug ON public.entity_relationship_
 
 
 --
+-- Name: idx_entity_relationship_types_has_auto_create; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_entity_relationship_types_has_auto_create ON public.entity_relationship_types USING btree (((metadata -> 'autoCreateWhen'::text))) WHERE ((metadata ? 'autoCreateWhen'::text) AND (deleted_at IS NULL));
+
+
+--
+-- Name: idx_entity_relationships_derived_from_event; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_entity_relationships_derived_from_event ON public.entity_relationships USING btree ((((metadata -> 'derivedFrom'::text) ->> 'sourceEventId'::text))) WHERE (metadata ? 'derivedFrom'::text);
+
+
+--
+-- Name: idx_entity_relationships_derived_from_rule; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_entity_relationships_derived_from_rule ON public.entity_relationships USING btree ((((metadata -> 'derivedFrom'::text) ->> 'relationshipTypeId'::text)), (((metadata -> 'derivedFrom'::text) ->> 'ruleVersion'::text))) WHERE (metadata ? 'derivedFrom'::text);
+
+
+--
 -- Name: idx_entity_relationships_from; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_entity_relationships_from ON public.entity_relationships USING btree (from_entity_id);
+
+
+--
+-- Name: idx_entity_relationships_live_triple; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_entity_relationships_live_triple ON public.entity_relationships USING btree (from_entity_id, to_entity_id, relationship_type_id) WHERE (deleted_at IS NULL);
 
 
 --
@@ -4009,6 +3877,20 @@ CREATE INDEX idx_events_feed_id ON public.events USING btree (feed_id);
 --
 
 CREATE INDEX idx_events_fulltext ON public.events USING gin (to_tsvector('english'::regconfig, COALESCE(payload_text, ''::text)));
+
+
+--
+-- Name: idx_events_identity_fact_account; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_events_identity_fact_account ON public.events USING btree (connector_key, ((metadata ->> 'providerStableId'::text)), ((metadata ->> 'namespace'::text))) WHERE (semantic_type = 'identity_fact'::text);
+
+
+--
+-- Name: idx_events_identity_fact_lookup; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_events_identity_fact_lookup ON public.events USING btree (organization_id, ((metadata ->> 'namespace'::text)), ((metadata ->> 'normalizedValue'::text))) WHERE (semantic_type = 'identity_fact'::text);
 
 
 --
@@ -4313,20 +4195,6 @@ CREATE INDEX idx_runs_watcher_id ON public.runs USING btree (watcher_id) WHERE (
 
 
 --
--- Name: runs_idempotency_key_uniq; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX runs_idempotency_key_uniq ON public.runs USING btree (idempotency_key) WHERE ((idempotency_key IS NOT NULL) AND (status = ANY (ARRAY['pending'::text, 'claimed'::text, 'running'::text])));
-
-
---
--- Name: runs_lobu_claim_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX runs_lobu_claim_idx ON public.runs USING btree (run_type, queue_name, run_at) WHERE ((status = 'pending'::text) AND (run_type = ANY (ARRAY['chat_message'::text, 'schedule'::text, 'agent_run'::text, 'internal'::text])));
-
-
---
 -- Name: idx_view_template_versions_resource; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -4509,6 +4377,13 @@ CREATE INDEX "invitation_organizationId_idx" ON public.invitation USING btree ("
 
 
 --
+-- Name: mcp_proxy_sessions_expires_at_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX mcp_proxy_sessions_expires_at_idx ON public.mcp_proxy_sessions USING btree (expires_at);
+
+
+--
 -- Name: mcp_sessions_client_id_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -4614,6 +4489,20 @@ CREATE UNIQUE INDEX oauth_device_codes_user_code_idx ON public.oauth_device_code
 
 
 --
+-- Name: oauth_states_expires_at_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX oauth_states_expires_at_idx ON public.oauth_states USING btree (expires_at);
+
+
+--
+-- Name: oauth_states_scope_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX oauth_states_scope_idx ON public.oauth_states USING btree (scope);
+
+
+--
 -- Name: oauth_tokens_active_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -4684,6 +4573,34 @@ CREATE INDEX personal_access_tokens_user_id_idx ON public.personal_access_tokens
 
 
 --
+-- Name: rate_limits_expires_at_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX rate_limits_expires_at_idx ON public.rate_limits USING btree (expires_at);
+
+
+--
+-- Name: runs_expires_at_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX runs_expires_at_idx ON public.runs USING btree (expires_at) WHERE (expires_at IS NOT NULL);
+
+
+--
+-- Name: runs_idempotency_key_uniq; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX runs_idempotency_key_uniq ON public.runs USING btree (idempotency_key) WHERE ((idempotency_key IS NOT NULL) AND (status = ANY (ARRAY['pending'::text, 'claimed'::text, 'running'::text])));
+
+
+--
+-- Name: runs_lobu_claim_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX runs_lobu_claim_idx ON public.runs USING btree (run_type, queue_name, priority DESC, run_at, id) WHERE ((status = 'pending'::text) AND (run_type = ANY (ARRAY['chat_message'::text, 'schedule'::text, 'agent_run'::text, 'internal'::text])));
+
+
+--
 -- Name: session_expiresAt_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -4702,6 +4619,13 @@ CREATE INDEX session_token_idx ON public.session USING btree (token);
 --
 
 CREATE INDEX "session_userId_idx" ON public.session USING btree ("userId");
+
+
+--
+-- Name: user_auth_profiles_agent_id_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX user_auth_profiles_agent_id_idx ON public.user_auth_profiles USING btree (agent_id);
 
 
 --
@@ -4726,78 +4650,10 @@ CREATE INDEX verification_identifier_idx ON public.verification USING btree (ide
 
 
 --
--- Name: job_common_pkey; Type: INDEX ATTACH; Schema: pgboss; Owner: -
---
-
-ALTER INDEX pgboss.job_pkey ATTACH PARTITION pgboss.job_common_pkey;
-
-
---
 -- Name: entities check_entity_cycles; Type: TRIGGER; Schema: public; Owner: -
 --
 
 CREATE TRIGGER check_entity_cycles BEFORE INSERT OR UPDATE ON public.entities FOR EACH ROW EXECUTE FUNCTION public.prevent_entity_cycles();
-
-
---
--- Name: agents agents_changed_notify; Type: TRIGGER; Schema: public; Owner: -
---
-
-CREATE TRIGGER agents_changed_notify AFTER INSERT OR UPDATE OR DELETE ON public.agents FOR EACH ROW EXECUTE FUNCTION public.notify_agent_changed();
-
-
---
--- Name: agent_channel_bindings agent_channel_bindings_changed_notify; Type: TRIGGER; Schema: public; Owner: -
---
-
-CREATE TRIGGER agent_channel_bindings_changed_notify AFTER INSERT OR UPDATE OR DELETE ON public.agent_channel_bindings FOR EACH ROW EXECUTE FUNCTION public.notify_channel_binding_changed();
-
-
---
--- Name: agent_users agent_users_changed_notify; Type: TRIGGER; Schema: public; Owner: -
---
-
-CREATE TRIGGER agent_users_changed_notify AFTER INSERT OR UPDATE OR DELETE ON public.agent_users FOR EACH ROW EXECUTE FUNCTION public.notify_agent_users_changed();
-
-
---
--- Name: job_common dlq_fkey; Type: FK CONSTRAINT; Schema: pgboss; Owner: -
---
-
-ALTER TABLE ONLY pgboss.job_common
-    ADD CONSTRAINT dlq_fkey FOREIGN KEY (dead_letter) REFERENCES pgboss.queue(name) ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED;
-
-
---
--- Name: job_common q_fkey; Type: FK CONSTRAINT; Schema: pgboss; Owner: -
---
-
-ALTER TABLE ONLY pgboss.job_common
-    ADD CONSTRAINT q_fkey FOREIGN KEY (name) REFERENCES pgboss.queue(name) ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED;
-
-
---
--- Name: queue queue_dead_letter_fkey; Type: FK CONSTRAINT; Schema: pgboss; Owner: -
---
-
-ALTER TABLE ONLY pgboss.queue
-    ADD CONSTRAINT queue_dead_letter_fkey FOREIGN KEY (dead_letter) REFERENCES pgboss.queue(name);
-
-
---
--- Name: schedule schedule_name_fkey; Type: FK CONSTRAINT; Schema: pgboss; Owner: -
---
-
-ALTER TABLE ONLY pgboss.schedule
-    ADD CONSTRAINT schedule_name_fkey FOREIGN KEY (name) REFERENCES pgboss.queue(name) ON DELETE CASCADE;
-
-
---
--- Name: subscription subscription_name_fkey; Type: FK CONSTRAINT; Schema: pgboss; Owner: -
---
-
-ALTER TABLE ONLY pgboss.subscription
-    ADD CONSTRAINT subscription_name_fkey FOREIGN KEY (name) REFERENCES pgboss.queue(name) ON DELETE CASCADE;
 
 
 --
@@ -4873,6 +4729,14 @@ ALTER TABLE ONLY public.auth_profiles
 
 
 --
+-- Name: chat_connections chat_connections_template_agent_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.chat_connections
+    ADD CONSTRAINT chat_connections_template_agent_id_fkey FOREIGN KEY (template_agent_id) REFERENCES public.agents(id) ON DELETE CASCADE;
+
+
+--
 -- Name: connect_tokens connect_tokens_auth_profile_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -4901,7 +4765,7 @@ ALTER TABLE ONLY public.connections
 --
 
 ALTER TABLE ONLY public.connections
-    ADD CONSTRAINT connections_app_auth_profile_id_fkey FOREIGN KEY (app_auth_profile_id) REFERENCES public.auth_profiles(id) ON DELETE SET NULL;
+    ADD CONSTRAINT connections_app_auth_profile_id_fkey FOREIGN KEY (organization_id, app_auth_profile_id) REFERENCES public.auth_profiles(organization_id, id) ON DELETE SET NULL;
 
 
 --
@@ -4909,7 +4773,7 @@ ALTER TABLE ONLY public.connections
 --
 
 ALTER TABLE ONLY public.connections
-    ADD CONSTRAINT connections_auth_profile_id_fkey FOREIGN KEY (auth_profile_id) REFERENCES public.auth_profiles(id) ON DELETE SET NULL;
+    ADD CONSTRAINT connections_auth_profile_id_fkey FOREIGN KEY (organization_id, auth_profile_id) REFERENCES public.auth_profiles(organization_id, id) ON DELETE SET NULL;
 
 
 --
@@ -4990,6 +4854,30 @@ ALTER TABLE ONLY public.entity_identities
 
 ALTER TABLE ONLY public.entity_identities
     ADD CONSTRAINT entity_identities_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organization(id) ON DELETE CASCADE;
+
+
+--
+-- Name: entity_read_grant entity_read_grant_entity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.entity_read_grant
+    ADD CONSTRAINT entity_read_grant_entity_id_fkey FOREIGN KEY (entity_id) REFERENCES public.entities(id) ON DELETE CASCADE;
+
+
+--
+-- Name: entity_read_grant entity_read_grant_grantee_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.entity_read_grant
+    ADD CONSTRAINT entity_read_grant_grantee_user_id_fkey FOREIGN KEY (grantee_user_id) REFERENCES public."user"(id) ON DELETE CASCADE;
+
+
+--
+-- Name: entity_read_grant entity_read_grant_grantor_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.entity_read_grant
+    ADD CONSTRAINT entity_read_grant_grantor_org_id_fkey FOREIGN KEY (grantor_org_id) REFERENCES public.organization(id) ON DELETE CASCADE;
 
 
 --
@@ -5241,6 +5129,14 @@ ALTER TABLE ONLY public.events
 
 
 --
+-- Name: events events_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.events
+    ADD CONSTRAINT events_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organization(id) ON DELETE CASCADE;
+
+
+--
 -- Name: events events_run_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -5286,6 +5182,14 @@ ALTER TABLE ONLY public.event_classifiers
 
 ALTER TABLE ONLY public.event_classifiers
     ADD CONSTRAINT fk_event_classifiers_insight FOREIGN KEY (watcher_id) REFERENCES public.watchers(id) ON DELETE SET NULL;
+
+
+--
+-- Name: grants grants_agent_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.grants
+    ADD CONSTRAINT grants_agent_id_fkey FOREIGN KEY (agent_id) REFERENCES public.agents(id) ON DELETE CASCADE;
 
 
 --
@@ -5665,10 +5569,18 @@ ALTER TABLE ONLY public.watchers
 
 
 --
+-- Name: watchers watchers_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.watchers
+    ADD CONSTRAINT watchers_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organization(id) ON DELETE CASCADE;
+
+
+--
 -- PostgreSQL database dump complete
 --
 
-\unrestrict 3NagdAXNcah1uiOQHB7wqm5esCsJ1nPiemW2Tdsn9R3snsCP7U4R8pIPZ8dGkFm
+\unrestrict M2CVBCWaQpZ2IaSZ0tLvIsiZcxaeHAXCvAhTje2jQXnlRxfcYhzgFruwfb40Hgl
 
 
 --
@@ -5702,4 +5614,24 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20260424030000'),
     ('20260424130000'),
     ('20260425100000'),
-    ('20260426120000');
+    ('20260425120000'),
+    ('20260425130000'),
+    ('20260426120000'),
+    ('20260426130000'),
+    ('20260426130001'),
+    ('20260427133000'),
+    ('20260427140000'),
+    ('20260427150000'),
+    ('20260427160000'),
+    ('20260427170000'),
+    ('20260428040000'),
+    ('20260428050000'),
+    ('20260429010000'),
+    ('20260429060000'),
+    ('20260429120000'),
+    ('20260429120100'),
+    ('20260429120200'),
+    ('20260429130000'),
+    ('20260429140000'),
+    ('20260429140100'),
+    ('20260429180000');

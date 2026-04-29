@@ -22,7 +22,7 @@
 -- ============================================================================
 
 CREATE TABLE IF NOT EXISTS public.grants (
-    agent_id text NOT NULL,
+    agent_id text NOT NULL REFERENCES public.agents(id) ON DELETE CASCADE,
     kind text NOT NULL,
     pattern text NOT NULL,
     expires_at timestamptz,
@@ -45,7 +45,7 @@ CREATE INDEX IF NOT EXISTS grants_expires_at_idx
 CREATE TABLE IF NOT EXISTS public.chat_connections (
     id text PRIMARY KEY,
     platform text NOT NULL,
-    template_agent_id text,
+    template_agent_id text REFERENCES public.agents(id) ON DELETE CASCADE,
     config jsonb NOT NULL,
     settings jsonb NOT NULL DEFAULT '{}'::jsonb,
     metadata jsonb NOT NULL DEFAULT '{}'::jsonb,

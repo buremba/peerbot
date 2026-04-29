@@ -1,5 +1,3 @@
-import { createRequire } from 'node:module';
-import { dirname } from 'node:path';
 import type {
   AgentAccessStore,
   AgentConfigStore,
@@ -111,100 +109,12 @@ function rowToMetadata(row: Record<string, any>): AgentMetadata {
   };
 }
 
-let runtimeRedisClient: any | undefined;
-const runtimeRequire = createRequire(import.meta.url);
-
-function loadRedisModule(): any | null {
-  try {
-    return runtimeRequire('ioredis');
-  } catch {}
-
-  const packageHints = ['@lobu/core', '@lobu/owletto-backend', '@chat-adapter/state-ioredis'];
-
-  for (const hint of packageHints) {
-    try {
-      const entryPath = runtimeRequire.resolve(hint);
-      const redisPath = runtimeRequire.resolve('ioredis', { paths: [dirname(entryPath)] });
-      return runtimeRequire(redisPath);
-    } catch {
-      // Try next known package root.
-    }
-  }
-
-  return null;
-}
-
-function getRuntimeRedisClient(): any | null {
-  if (runtimeRedisClient !== undefined) return runtimeRedisClient;
-
-  const redisUrl = process.env.REDIS_URL;
-  if (!redisUrl) {
-    runtimeRedisClient = null;
-    return runtimeRedisClient;
-  }
-
-  try {
-    const Redis = loadRedisModule();
-    if (!Redis) {
-      runtimeRedisClient = null;
-      return runtimeRedisClient;
-    }
-    runtimeRedisClient = new Redis(redisUrl, {
-      lazyConnect: true,
-      maxRetriesPerRequest: 1,
-      enableOfflineQueue: false,
-    });
-  } catch {
-    runtimeRedisClient = null;
-  }
-
-  return runtimeRedisClient;
-}
-
-async function getRuntimeJson(key: string): Promise<Record<string, any> | null> {
-  const redis = getRuntimeRedisClient();
-  if (!redis) return null;
-
-  try {
-    if (typeof redis.status === 'string' && redis.status === 'wait') {
-      await redis.connect();
-    }
-    const raw = await redis.get(key);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === 'object' ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-async function setRuntimeJson(key: string, value: Record<string, any>): Promise<void> {
-  const redis = getRuntimeRedisClient();
-  if (!redis) return;
-
-  try {
-    if (typeof redis.status === 'string' && redis.status === 'wait') {
-      await redis.connect();
-    }
-    await redis.set(key, JSON.stringify(value));
-  } catch {
-    // Best-effort mirror into Lobu runtime state.
-  }
-}
-
-async function deleteRuntimeKey(key: string): Promise<void> {
-  const redis = getRuntimeRedisClient();
-  if (!redis) return;
-
-  try {
-    if (typeof redis.status === 'string' && redis.status === 'wait') {
-      await redis.connect();
-    }
-    await redis.del(key);
-  } catch {
-    // Best-effort mirror into Lobu runtime state.
-  }
-}
+// Phase 8 of Redis -> Postgres migration: the runtime Redis fallback
+// (getRuntimeJson / setRuntimeJson / deleteRuntimeKey) was a bridge for
+// connection metadata that previously lived only in Redis. Both
+// agent_metadata and chat_connections are now Postgres-canonical, so
+// callers fall back to nothing — the Redis dynamic-require lookup is
+// gone with no replacement.
 
 function withDefinedValues<T extends Record<string, any>>(value: T): T {
   return Object.fromEntries(Object.entries(value).filter(([, field]) => field !== undefined)) as T;
@@ -225,15 +135,9 @@ async function resolveTemplateAgentId(
     WHERE id = ${agentId} AND organization_id = ${orgId}
   `;
 
-  let parentConnectionId = metadataRows[0]?.parent_connection_id as string | undefined;
-
-  if (!parentConnectionId) {
-    const runtimeMetadata = await getRuntimeJson(`agent_metadata:${agentId}`);
-    parentConnectionId =
-      typeof runtimeMetadata?.parentConnectionId === 'string'
-        ? runtimeMetadata.parentConnectionId
-        : undefined;
-  }
+  const parentConnectionId = metadataRows[0]?.parent_connection_id as
+    | string
+    | undefined;
 
   if (!parentConnectionId) return undefined;
 
@@ -248,10 +152,7 @@ async function resolveTemplateAgentId(
     return connectionRows[0].agent_id;
   }
 
-  const runtimeConnection = await getRuntimeJson(`connection:${parentConnectionId}`);
-  return typeof runtimeConnection?.templateAgentId === 'string'
-    ? runtimeConnection.templateAgentId
-    : undefined;
+  return undefined;
 }
 
 const SECRET_PATTERN = /(?:credential|secret|token|password|api(?:_|-)?key|authorization)/i;
@@ -392,11 +293,6 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
           updated_at = ${now}
         WHERE id = ${agentId} AND organization_id = ${orgId}
       `;
-
-      await setRuntimeJson(`agent:settings:${agentId}`, {
-        ...withDefinedValues(settings as Record<string, any>),
-        updatedAt: now.getTime(),
-      });
     },
     async updateSettings(agentId, updates) {
       const existing = await store.getSettings(agentId);
@@ -416,8 +312,6 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
           template_agent_id = NULL, updated_at = now()
         WHERE id = ${agentId} AND organization_id = ${orgId}
       `;
-
-      await deleteRuntimeKey(`agent:settings:${agentId}`);
     },
     async hasSettings(agentId) {
       return store.hasAgent(agentId);

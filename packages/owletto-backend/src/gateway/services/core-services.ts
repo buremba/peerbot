@@ -284,12 +284,24 @@ export class CoreServices {
     // `expires_at > now()` filter on read makes the sweeper a hygiene
     // task, not a correctness one — running every 5 minutes is plenty.
     this.ephemeralSweepHandle = setInterval(() => {
-      void this.sweepEphemeralTables();
+      // In-progress guard: skip the next tick if the previous sweep is still
+      // running. With the multi-table fanout below, a slow PG (or a freshly
+      // restored snapshot with millions of rows to delete) could overlap.
+      if (this.ephemeralSweepInFlight) {
+        logger.debug("Ephemeral sweeper still in progress; skipping tick");
+        return;
+      }
+      this.ephemeralSweepInFlight = true;
+      void this.sweepEphemeralTables().finally(() => {
+        this.ephemeralSweepInFlight = false;
+      });
     }, 5 * 60 * 1000);
     logger.debug("Ephemeral PG-table sweeper started (5 min interval)");
 
     logger.info("Core services initialized successfully");
   }
+
+  private ephemeralSweepInFlight = false;
 
   private async sweepEphemeralTables(): Promise<void> {
     try {

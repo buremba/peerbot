@@ -198,11 +198,22 @@ export class ChatInstanceManager {
       updatedAt: now,
     };
 
-    // Start the Chat SDK instance
-    await this.startInstance(connection);
-
-    // Persist (sensitive fields are moved into the secret store as refs)
+    // Persist first (sensitive fields are moved into the secret store as
+    // refs) so a startInstance failure can't leave a running instance with
+    // no row, and a persist failure can't leave an unbroadcast row.
     await this.persistConnection(connection);
+
+    try {
+      await this.startInstance(connection);
+    } catch (error) {
+      // Roll back the row so a retry doesn't see a half-baked entry.
+      try {
+        await this.connectionStore.delete(connection.id);
+      } catch {
+        // best-effort
+      }
+      throw error;
+    }
 
     logger.info({ id, platform, templateAgentId }, "Connection added");
     return connection;
@@ -220,20 +231,15 @@ export class ChatInstanceManager {
       instance?.conversationState ??
       new ConversationStateStore(await this.createStateAdapter());
 
-    // Drop the row from the chat_connections table.
-    await this.connectionStore.delete(id);
-
-    // Cascade-delete per-channel chat history through the conversation-state
-    // abstraction instead of coupling to the Chat SDK adapter's raw Redis keys.
+    // Cascade cleanups first, then drop the row last so a cleanup failure
+    // leaves the row in place for an operator-driven retry rather than
+    // orphaning history/secrets with no anchoring chat_connection record.
     const historyDeleted = await conversationState.clearAllHistory(id);
-
-    // Cascade-delete secrets owned by this connection (botToken, signing
-    // secrets, etc). Uses the same `connections/{id}/` prefix that
-    // `normalizeConfigForStorage` writes under.
     const secretsDeleted = await deleteSecretsByPrefix(
       this.services.getSecretStore(),
       `connections/${id}/`
     );
+    await this.connectionStore.delete(id);
 
     logger.info({ id, secretsDeleted, historyDeleted }, "Connection removed");
   }

@@ -81,6 +81,20 @@ function shouldEmitSentryAlert(runId: number): boolean {
   return true;
 }
 
+/**
+ * Per-tag Sentry dedupe for non-runId alerts (e.g. stale-claim sweeper).
+ * Shared 5-minute window so a hot reclaim loop doesn't spam every 30s.
+ */
+const sentryAlertedTags = new Map<string, number>();
+
+function shouldEmitSentryAlertByTag(tag: string): boolean {
+  const now = Date.now();
+  const last = sentryAlertedTags.get(tag);
+  if (last && now - last < SENTRY_DEDUPE_WINDOW_MS) return false;
+  sentryAlertedTags.set(tag, now);
+  return true;
+}
+
 function queueBreadcrumb(
   category: string,
   message: string,
@@ -421,6 +435,9 @@ export class RunsQueue implements IMessageQueue {
     options?: QueueOptions,
   ): Promise<string> {
     if (!this.pool) throw new Error("RunsQueue not started");
+    if (this.shuttingDown) {
+      throw new Error("RunsQueue is shutting down; refusing new work");
+    }
     const runType = classifyQueue(queueName);
     const idempotencyKey = options?.singletonKey ?? null;
     const maxAttempts = options?.retryLimit ?? 3;
@@ -541,6 +558,9 @@ export class RunsQueue implements IMessageQueue {
     options?: { startPaused?: boolean },
   ): Promise<void> {
     if (!this.pool) throw new Error("RunsQueue not started");
+    if (this.shuttingDown) {
+      throw new Error("RunsQueue is shutting down; refusing new work");
+    }
 
     // Replace any existing worker for this queue (matches RedisQueue behavior).
     const existing = this.workers.get(queueName);
@@ -895,10 +915,14 @@ export class RunsQueue implements IMessageQueue {
    * worker can pick them up. This is the safety net for crashed gateway
    * processes.
    */
+  private staleSweepInFlight = false;
+
   private startStaleSweep(): void {
     if (this.staleSweepTimer) return;
     const tick = async () => {
       if (!this.pool) return;
+      if (this.staleSweepInFlight) return; // overlap guard
+      this.staleSweepInFlight = true;
       try {
         const result = await this.pool.query(
           `UPDATE public.runs
@@ -918,19 +942,23 @@ export class RunsQueue implements IMessageQueue {
               CLAIM_VISIBILITY_TIMEOUT_MS / 1000
             }s ago)`,
           );
-          try {
-            Sentry.captureMessage(
-              `Stale-claim sweeper reclaimed ${result.rowCount} run(s)`,
-              { level: "warning", extra: { count: result.rowCount } },
-            );
-          } catch {
-            // ignore
+          if (shouldEmitSentryAlertByTag("stale-claim-sweeper")) {
+            try {
+              Sentry.captureMessage(
+                `Stale-claim sweeper reclaimed ${result.rowCount} run(s)`,
+                { level: "warning", extra: { count: result.rowCount } },
+              );
+            } catch {
+              // ignore
+            }
           }
         }
       } catch (err) {
         logger.warn(
           `Stale-claim sweep failed: ${(err as Error).message}`,
         );
+      } finally {
+        this.staleSweepInFlight = false;
       }
     };
     // Kick off immediately so a fresh restart reclaims old rows without
@@ -1064,12 +1092,17 @@ export async function sweepCompletedRuns(): Promise<number> {
 
   let total = 0;
 
-  // Drop rows that ran past their TTL while still pending/running.
+  // Drop pending rows that ran past their TTL. Only `pending` — claimed/running
+  // rows are in flight by a worker that owns retry/terminal accounting; the
+  // claim filter already excludes them so the worker simply finishes its
+  // current handler call. Killing a running row would orphan its in-memory
+  // handler.
   const expired = await sql`
     WITH d AS (
       DELETE FROM runs
       WHERE expires_at IS NOT NULL
         AND expires_at <= now()
+        AND status = 'pending'
         AND run_type IN ('chat_message', 'schedule', 'agent_run', 'internal')
       RETURNING id
     )

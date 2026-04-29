@@ -130,10 +130,17 @@ export class GrantStore {
 
       if (rows.length === 0) return false;
 
-      // Prefer exact-match if one exists; otherwise the first row decides.
+      // Prefer exact-match (highest specificity); if none, prefer rows in
+      // candidate order — i.e. earlier candidates beat later ones. This makes
+      // the wildcard precedence deterministic regardless of row insertion
+      // order.
       const exact = rows.find((r) => r.pattern === pattern);
-      const winning = exact ?? rows[0];
-      return !winning?.denied;
+      if (exact) return !exact.denied;
+      for (const candidate of candidates) {
+        const match = rows.find((r) => r.pattern === candidate);
+        if (match) return !match.denied;
+      }
+      return !rows[0]?.denied;
     } catch (error) {
       logger.error("Failed to check grant", { agentId, pattern, error });
       return false;

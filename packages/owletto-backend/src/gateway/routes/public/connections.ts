@@ -52,10 +52,6 @@ async function getLocalTestDefaultTarget(
   manager: ChatInstanceManager,
   connectionId: string
 ): Promise<string | undefined> {
-  // Surface the first known history channel for this connection. Phase 8
-  // replaced the prior Redis SCAN over `chat:history:<id>:*` with a call
-  // through the conversation-state abstraction, which proxies to the
-  // gateway's StateAdapter (Postgres-backed via OwlettoStateAdapter).
   const channels = await manager.listHistoryChannels(connectionId);
   return channels[0];
 }

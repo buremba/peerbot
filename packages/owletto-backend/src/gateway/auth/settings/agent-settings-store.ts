@@ -297,9 +297,9 @@ export class AgentSettingsStore {
     const orgId = tryGetOrgId();
     const now = new Date();
 
-    // Saving settings against an agent that doesn't yet exist is a no-op
-    // (the metadata insert in AgentMetadataStore.createAgent must precede
-    // settings writes, just like the prior Redis behavior).
+    // Saving settings against an agent that doesn't yet exist is a no-op:
+    // the metadata insert in AgentMetadataStore.createAgent must precede
+    // settings writes.
     if (orgId) {
       await sql`
         UPDATE agents SET
@@ -357,9 +357,7 @@ export class AgentSettingsStore {
   ): Promise<void> {
     const existing = await loadSettingsFromPg(agentId);
     if (!existing) {
-      // Caller expected the row to exist (matches the prior Redis behavior
-      // where the Redis SET would create-or-overwrite and saveSettings is
-      // used for the create case).
+      // No row yet — fall through to saveSettings, which create-or-overwrites.
       await this.saveSettings(agentId, updates as Omit<AgentSettings, "updatedAt">);
       return;
     }

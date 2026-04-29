@@ -163,11 +163,10 @@ export class McpProxy {
   // drops late clicks (the take-on-claim returns null and the click no-ops).
   private readonly PENDING_TOOL_TTL = 24 * 60 * 60; // 24 hours
   /**
-   * Per-process MCP upstream session-id cache. Phase 8 of Redis -> Postgres
-   * migration: previously held in Redis with TTL. The session id is opaque
-   * to the gateway and only valid for the upstream MCP server, so on a
-   * gateway restart the worker simply re-runs `initialize` and gets a new
-   * session — no cross-replica coherence needed.
+   * Per-process MCP upstream session-id cache. The session id is opaque to
+   * the gateway and only valid for the upstream MCP server, so on a gateway
+   * restart the worker simply re-runs `initialize` and gets a new session —
+   * no cross-replica coherence needed.
    */
   private readonly sessions = new Map<string, { sessionId: string; expiresAt: number }>();
   private app: Hono;

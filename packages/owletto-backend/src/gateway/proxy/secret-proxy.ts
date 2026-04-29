@@ -521,16 +521,7 @@ export function generatePlaceholder(
   return `${PLACEHOLDER_PREFIX}${uuid}`;
 }
 
-/** Test-only: drop every placeholder. Not exported for production use. */
+/** Test-only: drop every placeholder. */
 export function __resetPlaceholderCacheForTests(): void {
-  // Clears all entries.
-  while (placeholderCache.size() > 0) {
-    // size > 0 means at least one key; iterate snapshot
-    for (const _ of (placeholderCache as unknown as { entries: Map<string, unknown> }).entries) {
-      // not used
-    }
-    break;
-  }
-  // Easier: direct access via cast
   (placeholderCache as unknown as { entries: Map<string, unknown> }).entries.clear();
 }

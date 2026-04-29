@@ -65,10 +65,10 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         SELECT r.id
         FROM runs r
         WHERE r.status = 'pending'
-          -- Connector worker only ever claims its own lanes. Phase 5 added
-          -- lobu-queue run types (chat_message, schedule, agent_run,
-          -- internal) which are claimed in-process by the gateway's
-          -- RunsQueue; an explicit allow-list keeps the lanes separated.
+          -- Connector worker only ever claims its own lanes. The lobu-queue
+          -- run types (chat_message, schedule, agent_run, internal) are
+          -- claimed in-process by the gateway's RunsQueue; an explicit
+          -- allow-list keeps the lanes separated.
           AND r.run_type IN ('sync', 'action', 'embed_backfill', 'auth')
           AND (r.approval_status = 'auto' OR r.approval_status = 'approved')
           AND (${hasBrowser} OR COALESCE((SELECT cd.api_type FROM connector_definitions cd WHERE cd.key = r.connector_key LIMIT 1), 'api') = 'api')

@@ -1,11 +1,8 @@
 /**
- * Postgres-backed `pending-tool:<requestId>` store.
- *
- * Replaces the prior Redis SETEX + GETDEL pattern. Backed by the
+ * Postgres-backed `pending-tool:<requestId>` store. Backed by the
  * `oauth_states` table with a `pending-tool` scope so the MCP proxy
- * (writer) and the interaction bridge / CLI gateway (reader) can hand
- * off blocked-tool invocations through a single primitive without
- * needing a Redis client.
+ * (writer) and the interaction bridge / CLI gateway (reader) can hand off
+ * blocked-tool invocations through a single primitive.
  */
 
 import { getDb } from "../../../db/client.js";

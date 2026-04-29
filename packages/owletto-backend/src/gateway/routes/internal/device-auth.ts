@@ -73,11 +73,7 @@ interface ResolvedOAuthEndpoints {
   resource?: string;
 }
 
-/**
- * Read a JSON payload directly from the secret store. Phase 8: pointer
- * indirection through Redis is gone — the secret store IS the persistence
- * layer.
- */
+/** Read a JSON payload directly from the secret store. */
 async function getSecretJson<T>(
   secretStore: WritableSecretStore,
   name: string,

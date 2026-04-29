@@ -47,8 +47,7 @@ export class Orchestrator {
    * Inject core services into the orchestrator after gateway initialization.
    * Provider modules in the registry carry their own credential stores;
    * the deployment manager wires its secret store + grant/policy stores from
-   * here. Phase 8: dropped Redis client — placeholder mappings live in
-   * process memory now (see secret-proxy.ts).
+   * here.
    */
   async injectCoreServices(
     secretStore: WritableSecretStore,

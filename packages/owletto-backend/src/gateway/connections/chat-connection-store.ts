@@ -1,12 +1,8 @@
 /**
  * ChatConnectionStore — durable storage for chat-platform connection rows
- * (Telegram, Slack, Discord, WhatsApp, Teams, Google Chat).
- *
- * Phase 8 of Redis -> Postgres migration: replaces the
- * `connection:<id>` / `connections:all` / `connections:agent:<id>` Redis
- * keys that ChatInstanceManager used. Backed by `public.chat_connections`,
- * which is distinct from `public.connections` (the Owletto product
- * connector table).
+ * (Telegram, Slack, Discord, WhatsApp, Teams, Google Chat). Backed by
+ * `public.chat_connections`, which is distinct from `public.connections`
+ * (the Owletto product connector table).
  */
 
 import { createLogger } from "@lobu/core";

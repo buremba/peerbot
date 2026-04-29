@@ -23,11 +23,8 @@ export interface CachedMcpServer {
  * In-memory MCP tool cache. Per-gateway-process; a miss recomputes by hitting
  * the MCP server's `tools/list` endpoint. The 5-minute TTL is short enough
  * that a gateway restart (or a multi-replica fan-out) doesn't serve stale
- * tool metadata.
- *
- * Phase 8 of Redis -> Postgres migration: previously stored in Redis with
- * TTL. The new cache is local — no cross-replica coherence problem since
- * every replica probes upstream itself on miss.
+ * tool metadata. No cross-replica coherence problem since every replica
+ * probes upstream itself on miss.
  */
 const CACHE_TTL_MS = 5 * 60 * 1000;
 

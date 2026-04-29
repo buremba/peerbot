@@ -39,10 +39,9 @@ interface GrantRow {
  *   - MCP tool: "/mcp/gmail/tools/send_email"
  *   - MCP wildcard: "/mcp/gmail/tools/*"
  *
- * Phase 8 of Redis -> Postgres migration: backed by `public.grants` with
- * per-(agent_id, kind, pattern) rows. Wildcard expansion happens at
- * read time in `hasGrant`. Expired rows are filtered by `expires_at`
- * and swept by the periodic cleanup task.
+ * Backed by `public.grants` with per-(agent_id, kind, pattern) rows.
+ * Wildcard expansion happens at read time in `hasGrant`. Expired rows are
+ * filtered by `expires_at` and swept by the periodic cleanup task.
  */
 export class GrantStore {
   /**

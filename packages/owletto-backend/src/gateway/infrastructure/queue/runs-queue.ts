@@ -33,12 +33,9 @@ import type {
 const logger = createLogger("runs-queue");
 
 /**
- * Per-queue_name NOTIFY channels. Phase 10: previously every queue's wakeup
- * fanned out to every worker via a single channel + run_type filter, which
- * made every chat_message worker wake on every chat_message insert
- * (thundering herd at scale). Channels are now keyed by queue_name, e.g.
- * `runs_lobu:chat_message:thread_response`, so the listener forwards a
- * NOTIFY only to the workers that actually want it.
+ * Per-queue_name NOTIFY channels keyed `runs_lobu:<queue_name>`. Avoids the
+ * thundering herd that a single shared channel would cause: every worker
+ * would wake on every insert regardless of which queue it owns.
  */
 const NOTIFY_CHANNEL_PREFIX = "runs_lobu:";
 function notifyChannelFor(queueName: string): string {
@@ -49,13 +46,13 @@ const POLL_INTERVAL_MS = 200;
 const MAX_BACKOFF_SECONDS = 300;
 /** How often the stale-claim sweeper runs. */
 const STALE_SWEEP_INTERVAL_MS = 30_000;
-/** Phase 10: max time to wait for in-flight handlers during graceful stop. */
+/** Max time to wait for in-flight handlers during graceful stop. */
 const SHUTDOWN_DRAIN_MS = 30_000;
 
 /**
- * Phase 10: Sentry alert dedupe. Repeated heartbeat-failure / DLQ alerts
- * for the same runs.id within DEDUPE_WINDOW_MS collapse to a single
- * captureMessage call so a single bad row doesn't spam Sentry.
+ * Sentry alert dedupe. Repeated heartbeat-failure / DLQ alerts for the same
+ * runs.id within DEDUPE_WINDOW_MS collapse to a single captureMessage call
+ * so a single bad row doesn't spam Sentry.
  */
 const SENTRY_DEDUPE_WINDOW_MS = 5 * 60 * 1000;
 const sentryAlertedRuns = new Map<number, number>();
@@ -157,7 +154,7 @@ export function backoffSeconds(attempt: number): number {
 export class RunsQueue implements IMessageQueue {
   private staleSweepTimer: ReturnType<typeof setInterval> | null = null;
   private isConnected = false;
-  /** Phase 10: set true on stop(); send/work check this and refuse new work. */
+  /** Set true on stop(); send/work check this and refuse new work. */
   private shuttingDown = false;
 
   isShuttingDown(): boolean {
@@ -198,15 +195,15 @@ export class RunsQueue implements IMessageQueue {
     this.isConnected = true;
     this.shuttingDown = false;
 
-    // Phase 10: startup recovery scan. Reset any rows orphaned by a hard
-    // crash before SIGTERM ran (claimed/running, no recent heartbeat).
+    // Reset any rows orphaned by a hard crash before SIGTERM ran
+    // (claimed/running with no recent heartbeat).
     await this.recoverStaleClaimedRowsOnStartup();
 
     this.startStaleSweep();
     logger.debug("Runs queue started");
   }
 
-  /** Phase 10: at startup, reset rows orphaned by a hard crash. */
+  /** At startup, reset rows orphaned by a hard crash. */
   private async recoverStaleClaimedRowsOnStartup(): Promise<void> {
     const sql = getDb();
     try {
@@ -239,9 +236,9 @@ export class RunsQueue implements IMessageQueue {
     this.isConnected = false;
     this.shuttingDown = true;
 
-    // Phase 10: graceful shutdown. Stop accepting new claims, wait for
-    // in-flight handlers to finish (with a timeout), then release any
-    // rows still in `claimed` state by this consumer back to `pending`.
+    // Graceful shutdown: stop accepting new claims, wait for in-flight
+    // handlers to finish (with a timeout), then release any rows still in
+    // `claimed` state by this consumer back to `pending`.
     for (const w of this.workers.values()) {
       w.stopped = true;
       w.wakeup();
@@ -868,11 +865,9 @@ export class RunsQueue implements IMessageQueue {
 }
 
 /**
- * Phase 10: delete expired runs rows AND completed/failed lobu-queue runs
- * older than the configured retention window. Called from the periodic
- * ephemeral-table sweep.
- *
- * RUNS_RETENTION_DAYS env override (defaults to 30).
+ * Delete expired runs rows AND completed/failed lobu-queue runs older than
+ * the configured retention window. Called from the periodic ephemeral-table
+ * sweep. RUNS_RETENTION_DAYS env override (defaults to 30).
  */
 export async function sweepCompletedRuns(): Promise<number> {
   const sql = getDb();

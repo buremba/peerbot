@@ -452,10 +452,8 @@ export class MessageConsumer {
   }
 
   /**
-   * Track failed deployment creation. Phase 8: the prior Redis-backed
-   * 24h log entry is gone — there's no monitoring dashboard reading it,
-   * and structured error logs already cover ops visibility.
-   * Still sends the error response to the user via the thread_response queue.
+   * Track failed deployment creation. Sends the error response to the user
+   * via the thread_response queue; structured logs cover ops visibility.
    */
   private async trackFailedDeployment(
     deploymentName: string,

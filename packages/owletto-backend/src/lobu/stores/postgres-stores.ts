@@ -110,13 +110,6 @@ function rowToMetadata(row: Record<string, any>): AgentMetadata {
   };
 }
 
-// Phase 8 of Redis -> Postgres migration: the runtime Redis fallback
-// (getRuntimeJson / setRuntimeJson / deleteRuntimeKey) was a bridge for
-// connection metadata that previously lived only in Redis. Both
-// agent_metadata and chat_connections are now Postgres-canonical, so
-// callers fall back to nothing — the Redis dynamic-require lookup is
-// gone with no replacement.
-
 function withDefinedValues<T extends Record<string, any>>(value: T): T {
   return Object.fromEntries(Object.entries(value).filter(([, field]) => field !== undefined)) as T;
 }

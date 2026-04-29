@@ -78,8 +78,7 @@ async function loadMetadataFromPg(agentId: string): Promise<AgentMetadata | null
 export class AgentMetadataStore {
   /**
    * Create a new agent with metadata. Inserts into `public.agents`. If the
-   * agent already exists, updates the listed columns (matching the prior
-   * Redis behavior of overwriting on `set`).
+   * agent already exists, the listed columns are overwritten.
    */
   async createAgent(
     agentId: string,
@@ -146,7 +145,7 @@ export class AgentMetadataStore {
 
   /**
    * Update agent metadata (partial update). Only `name`, `description`, and
-   * `lastUsedAt` are accepted (matching the prior Redis-backed surface).
+   * `lastUsedAt` are accepted.
    */
   async updateMetadata(
     agentId: string,

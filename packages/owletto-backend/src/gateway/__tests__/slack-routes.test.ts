@@ -1,48 +1,25 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import { getDb } from "../../db/client.js";
 import { createSlackRoutes } from "../routes/public/slack.js";
-
-class RouteRedisMock {
-  private store = new Map<string, string>();
-
-  async setex(key: string, _ttlSeconds: number, value: string): Promise<void> {
-    this.store.set(key, value);
-  }
-
-  async get(key: string): Promise<string | null> {
-    return this.store.get(key) ?? null;
-  }
-
-  async getdel(key: string): Promise<string | null> {
-    const value = this.store.get(key) ?? null;
-    this.store.delete(key);
-    return value;
-  }
-
-  async del(...keys: string[]): Promise<number> {
-    let removed = 0;
-    for (const key of keys) {
-      if (this.store.delete(key)) {
-        removed++;
-      }
-    }
-    return removed;
-  }
-}
+import { ensurePgliteForGatewayTests, resetTestDatabase } from "./helpers/db-setup.js";
 
 describe("slack routes", () => {
   const originalClientId = process.env.SLACK_CLIENT_ID;
   const originalScopes = process.env.SLACK_OAUTH_SCOPES;
 
-  let redis: RouteRedisMock;
   let completeSlackOAuthInstall: ReturnType<typeof mock>;
   let handleSlackAppWebhook: ReturnType<typeof mock>;
   let router: ReturnType<typeof createSlackRoutes>;
 
-  beforeEach(() => {
+  beforeAll(async () => {
+    await ensurePgliteForGatewayTests();
+  });
+
+  beforeEach(async () => {
+    await resetTestDatabase();
     process.env.SLACK_CLIENT_ID = "client-123";
     process.env.SLACK_OAUTH_SCOPES = "chat:write,commands";
 
-    redis = new RouteRedisMock();
     completeSlackOAuthInstall = mock(async () => ({
       teamId: "T123",
       teamName: "Acme",
@@ -55,9 +32,6 @@ describe("slack routes", () => {
 
     router = createSlackRoutes({
       getServices: () => ({
-        getQueue: () => ({
-          getRedisClient: () => redis,
-        }),
         getPublicGatewayUrl: () => "https://gateway.example.com",
       }),
       completeSlackOAuthInstall,
@@ -99,12 +73,17 @@ describe("slack routes", () => {
     const state = redirectUrl.searchParams.get("state");
     expect(state).toBeTruthy();
 
-    const rawState = await redis.get(`slack:oauth:state:${state}`);
-    expect(rawState).toBeTruthy();
-    expect(JSON.parse(rawState!)).toEqual({
-      createdAt: expect.any(Number),
-      redirectUri: "https://gateway.example.com/slack/oauth_callback",
-    });
+    const sql = getDb();
+    const rows = await sql`
+      SELECT payload FROM oauth_states
+      WHERE id = ${state} AND scope = 'slack:oauth:state' AND expires_at > now()
+    `;
+    expect(rows.length).toBe(1);
+    const payload = (rows[0] as any).payload;
+    expect(payload.redirectUri).toBe(
+      "https://gateway.example.com/slack/oauth_callback"
+    );
+    expect(typeof payload.createdAt).toBe("number");
   });
 
   test("GET /slack/oauth_callback rejects invalid state", async () => {
@@ -120,14 +99,20 @@ describe("slack routes", () => {
   });
 
   test("GET /slack/oauth_callback completes install and clears state", async () => {
-    await redis.setex(
-      "slack:oauth:state:test-state",
-      600,
-      JSON.stringify({
-        createdAt: Date.now(),
-        redirectUri: "https://gateway.example.com/slack/oauth_callback",
-      })
-    );
+    const sql = getDb();
+    const expiresAt = new Date(Date.now() + 600_000);
+    await sql`
+      INSERT INTO oauth_states (id, scope, payload, expires_at)
+      VALUES (
+        'test-state',
+        'slack:oauth:state',
+        ${sql.json({
+          createdAt: Date.now(),
+          redirectUri: "https://gateway.example.com/slack/oauth_callback",
+        })},
+        ${expiresAt}
+      )
+    `;
 
     const response = await router.request(
       "/slack/oauth_callback?code=test-code&state=test-state"
@@ -142,7 +127,10 @@ describe("slack routes", () => {
     expect(completeSlackOAuthInstall.mock.calls[0]?.[1]).toBe(
       "https://gateway.example.com/slack/oauth_callback"
     );
-    expect(await redis.get("slack:oauth:state:test-state")).toBeNull();
+    const remaining = await sql`
+      SELECT 1 FROM oauth_states WHERE id = 'test-state'
+    `;
+    expect(remaining.length).toBe(0);
   });
 
   test("POST /slack/events forwards requests to the chat manager", async () => {

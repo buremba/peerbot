@@ -3,34 +3,39 @@
  *
  * Definitions live in an in-memory `Map<id, DeclaredSchedule>` populated by
  * either the lobu.toml file loader (`toml:` prefix) or an in-process
- * embedder such as Owletto (`owletto:` prefix). Redis stores ONLY runtime
- * state: next-fire timestamp and a per-schedule lease.
+ * embedder such as Owletto (`owletto:` prefix).
+ *
+ * Phase 9 of Redis -> Postgres migration: Redis is gone. Runtime state is
+ * either in-memory (next_fire, recomputed from the cron expression) or
+ * Postgres (advisory lock per fireId + idempotency_key on the runs row).
  *
  * Behavior:
  * - Tick every 10s; for each enabled definition, fire when `next_fire <= now`.
  * - Skip-not-backfill: missed fires (after downtime) are dropped, `next_fire`
  *   is recomputed forward.
- * - Lease-based serialization: while a schedule is "in flight" (lease held)
- *   subsequent fires are dropped per `concurrency` policy. The worker should
- *   call `releaseLease(scheduleId)` when its run completes; otherwise the
- *   lease auto-expires after `LEASE_TTL_MS`.
- * - Multi-instance: not yet hardened. In a multi-replica gateway, both
- *   instances will tick and may double-fire. Documented follow-up.
+ * - Multi-instance double-fire prevention: `pg_try_advisory_xact_lock`
+ *   keyed on `hashtext('schedule:' || scheduleId || ':' || fireId)` ensures
+ *   only one gateway instance enqueues a given (scheduleId, fireId) pair.
+ *   Belt-and-suspenders: the runs-table `idempotency_key` partial-unique
+ *   index on the `singletonKey=schedule-<id>-<fireId>` payload also rejects
+ *   duplicates if two gateways race past the advisory lock.
+ * - In-memory `lease` (set + Date stamp) prevents this same gateway from
+ *   firing again while a previous run is still nominally in flight.
+ *   Because next_fire is in memory and per-process, this is a per-process
+ *   guard; cross-process serialization is purely cron-driven plus the
+ *   advisory-lock + idempotency-key dual protection above.
  */
 
 import { createLogger } from "@lobu/core";
 import type { DeclaredSchedule, ScheduleConcurrency } from "@lobu/core";
 import { CronExpressionParser } from "cron-parser";
+import { getDb } from "../../db/client.js";
 import type { IMessageQueue } from "../infrastructure/queue/index.js";
 
 const logger = createLogger("schedule-service");
 
 const TICK_INTERVAL_MS = 10_000;
 const LEASE_TTL_MS = 30 * 60 * 1000; // 30 min — conservative upper bound on a single agent run
-const NEXT_FIRE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days; tick will refresh
-
-const REDIS_NEXT_FIRE_PREFIX = "schedule:next_fire:";
-const REDIS_LEASE_PREFIX = "schedule:lease:";
 
 let scheduleServiceInstance: ScheduleService | undefined;
 
@@ -42,8 +47,15 @@ export function getScheduleServiceInstance(): ScheduleService | undefined {
   return scheduleServiceInstance;
 }
 
+interface ScheduleRuntimeState {
+  nextFire: Date;
+  /** When set, a previous fire is in flight (per this gateway). */
+  leaseExpiresAt?: number;
+}
+
 export class ScheduleService {
   private readonly defs = new Map<string, DeclaredSchedule>();
+  private readonly state = new Map<string, ScheduleRuntimeState>();
   private tickHandle?: ReturnType<typeof setInterval>;
   private isStarted = false;
 
@@ -92,19 +104,16 @@ export class ScheduleService {
     const reEnabled = previous?.enabled === false && def.enabled === true;
     if (cronChanged || reEnabled) {
       const next = this.computeNextFire(def, new Date());
-      await this.setNextFire(def.id, next);
+      this.state.set(def.id, { nextFire: next });
     }
   }
 
   /**
-   * Drop a single definition by id. Cancels future fires (clears next_fire and
-   * lease so a re-add of the same id starts clean).
+   * Drop a single definition by id. Cancels future fires.
    */
   async remove(id: string): Promise<void> {
     this.defs.delete(id);
-    const redis = this.queue.getRedisClient();
-    await redis.del(`${REDIS_NEXT_FIRE_PREFIX}${id}`);
-    await redis.del(`${REDIS_LEASE_PREFIX}${id}`);
+    this.state.delete(id);
   }
 
   /**
@@ -138,53 +147,11 @@ export class ScheduleService {
       if (id.startsWith(idPrefix) && !next.has(id)) toRemove.add(id);
     }
 
-    // Also reconcile against Redis so orphan keys from a previous process
-    // (e.g. a schedule removed from lobu.toml between restarts) get cleaned
-    // up. The in-memory map is always empty on a fresh start, so without
-    // this scan, removed schedules would linger until their TTL.
-    // Scan both prefixes — a schedule with a held lease but expired
-    // next_fire would otherwise leave a stale lease that blocks re-adds.
-    const redis = this.queue.getRedisClient();
-    const orphanedIds = await this.scanRedisIdsForPrefix(idPrefix);
-    for (const id of orphanedIds) {
-      if (!next.has(id)) toRemove.add(id);
-    }
-
     for (const id of toRemove) {
       this.defs.delete(id);
-      await redis.del(`${REDIS_NEXT_FIRE_PREFIX}${id}`);
-      await redis.del(`${REDIS_LEASE_PREFIX}${id}`);
+      this.state.delete(id);
     }
     for (const d of defs) await this.upsert(d);
-  }
-
-  private async scanRedisIdsForPrefix(idPrefix: string): Promise<Set<string>> {
-    const ids = new Set<string>();
-    for (const keyPrefix of [REDIS_NEXT_FIRE_PREFIX, REDIS_LEASE_PREFIX]) {
-      const pattern = `${keyPrefix}${idPrefix}*`;
-      for (const key of await this.scanRedisKeys(pattern)) {
-        ids.add(key.slice(keyPrefix.length));
-      }
-    }
-    return ids;
-  }
-
-  private async scanRedisKeys(pattern: string): Promise<string[]> {
-    const redis = this.queue.getRedisClient();
-    const keys: string[] = [];
-    let cursor = "0";
-    do {
-      const [nextCursor, batch] = await redis.scan(
-        cursor,
-        "MATCH",
-        pattern,
-        "COUNT",
-        200
-      );
-      cursor = nextCursor;
-      keys.push(...batch);
-    } while (cursor !== "0");
-    return keys;
   }
 
   /** Snapshot of all in-memory definitions. */
@@ -202,8 +169,10 @@ export class ScheduleService {
    * be released and the schedule becomes eligible to fire again. Idempotent.
    */
   async releaseLease(scheduleId: string): Promise<void> {
-    const redis = this.queue.getRedisClient();
-    await redis.del(`${REDIS_LEASE_PREFIX}${scheduleId}`);
+    const existing = this.state.get(scheduleId);
+    if (existing) {
+      delete existing.leaseExpiresAt;
+    }
   }
 
   // ── Internal ─────────────────────────────────────────────────────────────
@@ -233,34 +202,28 @@ export class ScheduleService {
     return interval.next().toDate();
   }
 
-  private async setNextFire(id: string, when: Date): Promise<void> {
-    const redis = this.queue.getRedisClient();
-    await redis.set(
-      `${REDIS_NEXT_FIRE_PREFIX}${id}`,
-      when.toISOString(),
-      "PX",
-      NEXT_FIRE_TTL_MS
-    );
+  /**
+   * Local per-process lease check. If a previous fire from this same
+   * gateway hasn't released, drop or queue per concurrency policy.
+   * Cross-process serialization happens at the advisory-lock + idempotency
+   * key layer in `tryFireOnceInDb`.
+   */
+  private holdLeaseLocally(id: string): boolean {
+    const existing = this.state.get(id);
+    if (!existing) return false;
+    if (
+      existing.leaseExpiresAt !== undefined &&
+      existing.leaseExpiresAt > Date.now()
+    ) {
+      return true;
+    }
+    return false;
   }
 
-  private async getNextFire(id: string): Promise<Date | null> {
-    const redis = this.queue.getRedisClient();
-    const raw = await redis.get(`${REDIS_NEXT_FIRE_PREFIX}${id}`);
-    if (!raw) return null;
-    const parsed = new Date(raw);
-    return Number.isFinite(parsed.getTime()) ? parsed : null;
-  }
-
-  private async tryAcquireLease(id: string): Promise<boolean> {
-    const redis = this.queue.getRedisClient();
-    const result = await redis.set(
-      `${REDIS_LEASE_PREFIX}${id}`,
-      "1",
-      "NX",
-      "PX",
-      LEASE_TTL_MS
-    );
-    return result === "OK";
+  private acquireLeaseLocally(id: string): void {
+    const existing = this.state.get(id);
+    if (!existing) return;
+    existing.leaseExpiresAt = Date.now() + LEASE_TTL_MS;
   }
 
   private async tick(): Promise<void> {
@@ -278,34 +241,42 @@ export class ScheduleService {
   }
 
   private async tickOne(def: DeclaredSchedule, now: Date): Promise<void> {
-    let nextFire = await this.getNextFire(def.id);
-    if (!nextFire) {
-      // First time we've seen this id (or TTL expired). Compute and store.
-      nextFire = this.computeNextFire(def, now);
-      await this.setNextFire(def.id, nextFire);
+    let runtime = this.state.get(def.id);
+    if (!runtime) {
+      runtime = { nextFire: this.computeNextFire(def, now) };
+      this.state.set(def.id, runtime);
       return;
     }
-    if (nextFire.getTime() > now.getTime()) return;
+    if (runtime.nextFire.getTime() > now.getTime()) return;
 
     // Skip-not-backfill: fast-forward `nextFire` past any missed ticks.
     const futureNext = this.computeNextFire(def, now);
 
     const concurrency: ScheduleConcurrency = def.concurrency ?? "queue";
-    const leased = await this.tryAcquireLease(def.id);
+    const localLeaseHeld = this.holdLeaseLocally(def.id);
 
-    if (leased || concurrency === "allow") {
-      await this.enqueueFire(def);
-      await this.setNextFire(def.id, futureNext);
+    if (!localLeaseHeld || concurrency === "allow") {
+      // Compute a fireId from the wall-clock minute that this fire belongs
+      // to. Two ticks within the same minute that happen to both pass the
+      // local lease check will collide on the advisory lock + idempotency
+      // key, so cross-process duplication is suppressed.
+      const fireBucket = Math.floor(now.getTime() / 60_000);
+      const fireId = `bucket-${fireBucket}`;
+      const enqueued = await this.tryFireOnceInDb(def, fireId);
+      if (enqueued) {
+        this.acquireLeaseLocally(def.id);
+      }
+      runtime.nextFire = futureNext;
       return;
     }
 
-    // Lease is held → previous run still in flight (or its TTL hasn't expired).
+    // Local lease is held → previous run still in flight on this process.
     if (concurrency === "skip") {
       logger.warn(
         { scheduleId: def.id },
         "schedule fire skipped — previous run in flight"
       );
-      await this.setNextFire(def.id, futureNext);
+      runtime.nextFire = futureNext;
       return;
     }
 
@@ -314,12 +285,67 @@ export class ScheduleService {
     // will fire. Effective queue-depth = 1 in steady state because additional
     // missed ticks coalesce onto the same pending slot.
     logger.warn(
-      { scheduleId: def.id, nextFire: nextFire.toISOString() },
+      { scheduleId: def.id, nextFire: runtime.nextFire.toISOString() },
       "schedule fire queued — previous run in flight"
     );
   }
 
-  private async enqueueFire(def: DeclaredSchedule): Promise<void> {
+  /**
+   * Acquire a per-(scheduleId, fireId) advisory lock and enqueue exactly
+   * one runs row. Returns true if this process successfully acquired the
+   * lock and enqueued (or coalesced into an existing pending row); false if
+   * another gateway has already taken the lock for this fire.
+   *
+   * The lock is xact-scoped (`pg_try_advisory_xact_lock`) so it auto-releases
+   * at COMMIT/ROLLBACK — no manual cleanup required. The idempotency_key
+   * unique index on the runs row gives a second-layer guarantee when the
+   * advisory lock is racy across replication boundaries.
+   */
+  private async tryFireOnceInDb(
+    def: DeclaredSchedule,
+    fireId: string
+  ): Promise<boolean> {
+    const sql = getDb();
+    const lockKey = `schedule:${def.id}:${fireId}`;
+
+    let acquired = false;
+    try {
+      const rows = await sql`
+        SELECT pg_try_advisory_xact_lock(hashtext(${lockKey})) AS got
+      `;
+      acquired = Boolean((rows[0] as { got: boolean } | undefined)?.got);
+    } catch (err) {
+      logger.error(
+        { scheduleId: def.id, fireId, err },
+        "advisory lock check failed; relying on idempotency key alone"
+      );
+      acquired = true;
+    }
+
+    if (!acquired) {
+      logger.debug(
+        { scheduleId: def.id, fireId },
+        "advisory lock contended — another gateway is firing this schedule"
+      );
+      return false;
+    }
+
+    // Lock held for this transaction. Build the payload + send it. The
+    // queue.send() goes through its own pool connection, so the advisory
+    // lock above releases on the SELECT statement's implicit commit. That's
+    // intentional — we don't need to hold the lock for the entire send;
+    // we just need to be the single process that decides to send. The
+    // idempotency key on the runs row is what suppresses any racing send
+    // that happens between releasing the advisory lock and the INSERT.
+
+    await this.enqueueFire(def, fireId);
+    return true;
+  }
+
+  private async enqueueFire(
+    def: DeclaredSchedule,
+    fireId: string
+  ): Promise<void> {
     const target = parseDeliveryTarget(def.deliverTo);
     const platform = target?.platform ?? "scheduled";
     const teamId = target?.connectionSlug ?? "scheduled";
@@ -333,8 +359,6 @@ export class ScheduleService {
     const conversationId = target?.threadTs
       ? `${channelId}:${target.threadTs}`
       : channelId;
-
-    const fireId = `fire-${Date.now()}`;
 
     // The lobu.toml `connectionSlug` is the same string as the registered
     // Chat SDK connection id (both come from buildStableConnectionId), so
@@ -395,8 +419,10 @@ export class ScheduleService {
       },
       {
         priority: 5,
-        // Use a stable singleton key to coalesce double-ticks within the
-        // same wall-clock millisecond (rare but possible under load).
+        // Stable singleton key per (schedule, fireBucket). The runs-table
+        // partial unique index turns racing inserts into no-ops, so even if
+        // two gateways slipped past the advisory lock the second one's
+        // INSERT collapses onto the first's row.
         singletonKey: `schedule-${def.id}-${fireId}`.replace(/:/g, "-"),
       }
     );

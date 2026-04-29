@@ -160,16 +160,22 @@ export async function devCommand(
   });
 }
 
-function resolveBackendBundle(): string | null {
-  const here = dirname(fileURLToPath(import.meta.url));
+export function resolveBackendBundle(
+  startDir = dirname(fileURLToPath(import.meta.url))
+): string | null {
+  const here = startDir;
   const require_ = createRequire(import.meta.url);
 
-  // 1. Bundled inside the CLI tarball at `dist/server.bundle.mjs`. This is
-  //    the path that works for `npx @lobu/cli` users — `@lobu/owletto-backend`
-  //    is private and not on npm, so they can't resolve it any other way.
-  //    `packages/cli/scripts/build.cjs` copies the bundle here at build time.
-  const bundled = join(here, "server.bundle.mjs");
-  if (existsSync(bundled)) return bundled;
+  // 1. Bundled inside the CLI tarball at `dist/server.bundle.mjs`. The
+  //    compiled command module lives under `dist/commands/`, so check both
+  //    the module directory (legacy/local builds) and the dist root where
+  //    `packages/cli/scripts/build.cjs` copies the bundle.
+  for (const bundled of [
+    join(here, "server.bundle.mjs"),
+    join(here, "..", "server.bundle.mjs"),
+  ]) {
+    if (existsSync(bundled)) return bundled;
+  }
 
   // 2. Resolved via node_modules — covers a workspace consumer that has
   //    `@lobu/owletto-backend` linked locally (e.g. internal monorepo).

@@ -9,6 +9,7 @@ import {
 } from "bun:test";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
+import path from "node:path";
 import { ErrorCode, OrchestratorError } from "@lobu/core";
 import type {
   MessagePayload,
@@ -172,6 +173,27 @@ describe("EmbeddedDeploymentManager", () => {
       expect(mockChildProcesses).toHaveLength(1);
       expect(mockChildProcesses[0]).toBeDefined();
       expect(mockSpawn.mock.calls.at(-1)?.[0]).toBe(process.execPath);
+    });
+
+    test("compiled worker entry points run with Node", async () => {
+      const jsManager = new EmbeddedDeploymentManager({
+        ...TEST_CONFIG,
+        worker: {
+          ...TEST_CONFIG.worker,
+          entryPoint: "/test/packages/worker/dist/index.js",
+        },
+      });
+      const msg = createTestMessagePayload();
+
+      await jsManager.ensureDeployment("worker-1", "user-1", "user-1", msg);
+
+      const expectedNode = path.basename(process.execPath).startsWith("node")
+        ? process.execPath
+        : "node";
+      expect(mockSpawn.mock.calls.at(-1)?.[0]).toBe(expectedNode);
+      expect(mockSpawn.mock.calls.at(-1)?.[1]).toEqual([
+        "/test/packages/worker/dist/index.js",
+      ]);
     });
 
     test("ensureDeployment with different names returns multiple entries", async () => {

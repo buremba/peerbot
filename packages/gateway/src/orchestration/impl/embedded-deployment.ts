@@ -145,6 +145,33 @@ function getBunExecutable(): string {
     : "bun";
 }
 
+function getNodeExecutable(): string {
+  return path.basename(process.execPath).startsWith("node")
+    ? process.execPath
+    : "node";
+}
+
+function shellQuote(value: string): string {
+  if (/^[A-Za-z0-9_/:=.,+@%-]+$/.test(value)) return value;
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function buildWorkerInvocation(entryPoint: string): {
+  command: string;
+  args: string[];
+} {
+  const ext = path.extname(entryPoint);
+  if (ext === ".js" || ext === ".cjs" || ext === ".mjs") {
+    return { command: getNodeExecutable(), args: [entryPoint] };
+  }
+
+  return { command: getBunExecutable(), args: ["run", entryPoint] };
+}
+
+function buildShellCommand(command: string, args: string[]): string {
+  return [command, ...args].map(shellQuote).join(" ");
+}
+
 export class EmbeddedDeploymentManager extends BaseDeploymentManager {
   private workers: Map<string, EmbeddedWorkerEntry> = new Map();
 
@@ -245,29 +272,31 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
       commonEnvVars.JUST_BASH_ALLOWED_DOMAINS = JSON.stringify(allowedDomains);
     }
 
-    // Determine spawn command based on nix packages
+    // Determine spawn command based on nix packages. Monorepo development
+    // runs the TypeScript worker via Bun; published CLI installs resolve the
+    // compiled @lobu/worker dist entry and can run it with Node.
     const nixPackages = messageData?.nixConfig?.packages ?? [];
     const workerEntryPoint = this.getWorkerEntryPoint();
-    const bunExecutable = getBunExecutable();
+    const workerInvocation = buildWorkerInvocation(workerEntryPoint);
 
     let command: string;
     let spawnArgs: string[];
 
     if (nixPackages.length > 0) {
-      // Wrap in nix-shell so nix binaries are on PATH
+      // Wrap in nix-shell so nix binaries are on PATH.
       command = "nix-shell";
       spawnArgs = [
         "-p",
         ...nixPackages,
         "--run",
-        `${bunExecutable} run ${workerEntryPoint}`,
+        buildShellCommand(workerInvocation.command, workerInvocation.args),
       ];
       logger.info(
         `Spawning embedded worker ${deploymentName} with nix packages: ${nixPackages.join(", ")}`
       );
     } else {
-      command = bunExecutable;
-      spawnArgs = ["run", workerEntryPoint];
+      command = workerInvocation.command;
+      spawnArgs = workerInvocation.args;
     }
 
     // On Linux production hosts, wrap the worker in a transient systemd

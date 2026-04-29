@@ -582,7 +582,6 @@ export function createGatewayApp(
 
     const agentSettingsStore = coreServices.getAgentSettingsStore();
     const claudeOAuthStateStore = coreServices.getOAuthStateStore();
-    const scheduleService = coreServices.getScheduleService();
 
     const providerStores: Record<
       string,
@@ -653,7 +652,6 @@ export function createGatewayApp(
           .getWorkerGateway()
           ?.getConnectionManager(),
         grantStore: coreServices.getGrantStore(),
-        scheduleService,
       });
       app.route("/api/v1/agents/:agentId/config", agentConfigRouter);
       logger.debug(

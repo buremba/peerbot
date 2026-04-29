@@ -11,7 +11,6 @@ import type {
   QueueJob,
   ThreadResponsePayload,
 } from "../infrastructure/queue/index.js";
-import { getScheduleServiceInstance } from "../orchestration/scheduled-wakeup.js";
 import type { PlatformRegistry } from "../platform.js";
 import type { SseManager } from "../services/sse-manager.js";
 import type { ResponseRenderer } from "./response-renderer.js";
@@ -91,25 +90,6 @@ export class UnifiedThreadResponseConsumer {
     });
 
     try {
-      // Release scheduler lease on terminal events (success or error) so the
-      // next cron tick can fire. This runs before any platform routing
-      // because headless schedules drop the response below — without this,
-      // the lease would block the schedule for LEASE_TTL_MS (30 min).
-      const scheduleId = data.platformMetadata?.scheduleId;
-      const isTerminal =
-        !!data.error || (data.processedMessageIds?.length ?? 0) > 0;
-      if (typeof scheduleId === "string" && isTerminal) {
-        const scheduleService = getScheduleServiceInstance();
-        if (scheduleService) {
-          await scheduleService.releaseLease(scheduleId).catch((err) => {
-            logger.warn(
-              `Failed to release schedule lease for ${scheduleId}:`,
-              err
-            );
-          });
-        }
-      }
-
       // Check if this response belongs to a Chat SDK connection — handle before legacy routing
       if (this.chatResponseBridge?.canHandle(data)) {
         const sessionKey = `${data.userId}:${data.originalMessageId || data.messageId}`;

@@ -11,7 +11,6 @@ export const SETTINGS_SECTION_KEYS = [
   "skills",
   "packages",
   "permissions",
-  "schedules",
   "logging",
 ] as const;
 
@@ -60,7 +59,7 @@ interface ResolvedSettingsViewInput {
 }
 
 const SECTION_SETTING_KEYS: Record<
-  Exclude<SettingsSectionKey, "permissions" | "schedules">,
+  Exclude<SettingsSectionKey, "permissions">,
   Array<keyof AgentSettings>
 > = {
   model: [
@@ -86,7 +85,7 @@ function sectionHasSetting(
   section: SettingsSectionKey,
   settings: AgentSettings | null | undefined
 ): boolean {
-  if (section === "permissions" || section === "schedules") {
+  if (section === "permissions") {
     return false;
   }
   return SECTION_SETTING_KEYS[section].some((key) =>

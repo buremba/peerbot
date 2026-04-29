@@ -92,7 +92,7 @@ const SETTINGS_LINK_SCENARIO: UseCase = {
   tabLabel: "Settings",
   title: "Open settings",
   description:
-    "Agents expose a settings link for model, system prompt, schedules, and permissions.",
+    "Agents expose a settings link for model, system prompt, and permissions.",
   settingsLabel: "Pick provider, model, and memory",
   chatLabel: "Agent opens settings page",
   botName: "Assistant",

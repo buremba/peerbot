@@ -107,21 +107,6 @@ describe("agent config routes", () => {
 
   function buildApp() {
     const app = new OpenAPIHono();
-    const scheduleService = {
-      listByAgent(agentId: string) {
-        if (agentId !== "telegram-1") return [];
-        return [
-          {
-            id: "toml:telegram-1:check-provider",
-            agentId: "telegram-1",
-            cron: "0 18 * * *",
-            task: "Check provider state",
-            enabled: true,
-            timezone: "UTC",
-          },
-        ];
-      },
-    };
 
     app.route(
       "/api/v1/agents/:agentId/config",
@@ -134,7 +119,6 @@ describe("agent config routes", () => {
             agentMetadataStore.getMetadata(agentId),
         },
         grantStore,
-        scheduleService: scheduleService as any,
       })
     );
 
@@ -152,12 +136,7 @@ describe("agent config routes", () => {
       platform: "telegram",
       exp: Date.now() + 60_000,
       settingsMode: "user",
-      allowedScopes: [
-        "view-model",
-        "system-prompt",
-        "permissions",
-        "schedules",
-      ],
+      allowedScopes: ["view-model", "system-prompt", "permissions"],
     }));
 
     const app = buildApp();
@@ -179,9 +158,6 @@ describe("agent config routes", () => {
     expect(data.providerViews.chatgpt.source).toBe("inherited");
     expect(data.providerViews.chatgpt.canEdit).toBe(false);
     expect(data.tools.permissions).toHaveLength(1);
-    expect(data.tools.schedules).toHaveLength(1);
-    expect(data.tools.schedules[0]?.id).toBe("toml:telegram-1:check-provider");
-    expect(data.tools.schedules[0]?.source).toBe("toml");
   });
 
   test("GET /config accepts direct query token auth", async () => {

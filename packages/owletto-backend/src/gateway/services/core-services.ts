@@ -58,10 +58,6 @@ import {
 } from "../infrastructure/queue/index.js";
 import { InteractionService } from "../interactions.js";
 import { getModelProviderModules } from "../modules/module-system.js";
-import {
-  ScheduleService,
-  setScheduleServiceInstance,
-} from "../orchestration/scheduled-wakeup.js";
 import { GrantStore } from "../permissions/grant-store.js";
 import { PolicyStore } from "../permissions/policy-store.js";
 import { SecretProxy } from "../proxy/secret-proxy.js";
@@ -173,11 +169,6 @@ export class CoreServices {
   private commandRegistry?: CommandRegistry;
 
   // ============================================================================
-  // Schedule Service
-  // ============================================================================
-  private scheduleService?: ScheduleService;
-
-  // ============================================================================
   // Ephemeral-table sweeper (oauth_states, cli_sessions, rate_limits)
   // ============================================================================
   private ephemeralSweepHandle?: ReturnType<typeof setInterval>;
@@ -272,11 +263,7 @@ export class CoreServices {
     await this.initializeQueueProducer();
     logger.debug("Queue producer initialized");
 
-    // 6. Schedule service (depends on queue)
-    await this.initializeScheduleService();
-    logger.debug("Schedule service initialized");
-
-    // 7. Command registry (depends on agent settings store)
+    // 6. Command registry (depends on agent settings store)
     this.initializeCommandRegistry();
     logger.debug("Command registry initialized");
 
@@ -333,8 +320,8 @@ export class CoreServices {
   private async initializeQueue(): Promise<void> {
     // Queue substrate is `public.runs` over Postgres (SKIP LOCKED + LISTEN/
     // NOTIFY). All non-queue consumers (secret-store, grant-store,
-    // scheduled-wakeup, cli-auth, Slack OAuth state) moved to PG; ioredis is
-    // gone from application code.
+    // cli-auth, Slack OAuth state) moved to PG; ioredis is gone from
+    // application code.
     this.queue = new RunsQueue();
     await this.queue.start();
     logger.debug("Queue connection established (runs-table substrate)");
@@ -348,33 +335,6 @@ export class CoreServices {
     this.queueProducer = new QueueProducer(this.queue);
     await this.queueProducer.start();
     logger.debug("Queue producer initialized");
-  }
-
-  // ============================================================================
-  // Schedule Service Initialization
-  // ============================================================================
-
-  private async initializeScheduleService(): Promise<void> {
-    if (!this.queue) {
-      throw new Error("Queue must be initialized before schedule service");
-    }
-
-    this.scheduleService = new ScheduleService(this.queue);
-    await this.scheduleService.start();
-    setScheduleServiceInstance(this.scheduleService);
-    await this.syncDeclaredSchedulesFromFiles();
-    logger.debug("Schedule service initialized");
-  }
-
-  /**
-   * Push the `toml:` namespaced schedules from currently-loaded files into
-   * ScheduleService. Called at startup and on every `reloadFromFiles` so the
-   * file is the single source of truth for declared schedules.
-   */
-  private async syncDeclaredSchedulesFromFiles(): Promise<void> {
-    if (!this.scheduleService) return;
-    const defs = this.fileLoadedAgents.flatMap((a) => a.schedules);
-    await this.scheduleService.replaceByPrefix("toml:", defs);
   }
 
   // ============================================================================
@@ -1049,10 +1009,6 @@ export class CoreServices {
       );
     }
 
-    // Push the new schedules into ScheduleService. `replaceByPrefix("toml:")`
-    // drops any in-memory toml: defs that disappeared from the file.
-    await this.syncDeclaredSchedulesFromFiles();
-
     const agentIds = this.fileLoadedAgents.map((a) => a.agentId);
 
     // Notify listeners (e.g. the orchestrator's BaseDeploymentManager)
@@ -1112,10 +1068,6 @@ export class CoreServices {
 
     if (this.tokenRefreshJob) {
       this.tokenRefreshJob.stop();
-    }
-
-    if (this.scheduleService) {
-      await this.scheduleService.stop();
     }
 
     if (this.queueProducer) {
@@ -1223,10 +1175,6 @@ export class CoreServices {
     if (!this.channelBindingService)
       throw new Error("Channel binding service not initialized");
     return this.channelBindingService;
-  }
-
-  getScheduleService(): ScheduleService | undefined {
-    return this.scheduleService;
   }
 
   getTranscriptionService(): TranscriptionService | undefined {

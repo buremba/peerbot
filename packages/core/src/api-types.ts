@@ -48,7 +48,6 @@ type SettingsSectionKey =
   | "skills"
   | "packages"
   | "permissions"
-  | "schedules"
   | "logging";
 
 interface SectionView {
@@ -98,26 +97,6 @@ export interface McpConfig {
   args?: string[];
   type?: string;
   description?: string;
-}
-
-/**
- * Read-only view of a declared schedule for the admin UI. The full
- * definition lives in `lobu.toml` (or is pushed by an embedder such as
- * Owletto); this shape is what the agent-config endpoint returns.
- */
-export interface Schedule {
-  /** Globally namespaced id, e.g. "toml:careops:morning-standup". */
-  id: string;
-  agentId: string;
-  cron: string;
-  task: string;
-  enabled: boolean;
-  timezone?: string;
-  deliverTo?: string;
-  approver?: string;
-  concurrency?: "queue" | "skip" | "allow";
-  /** Origin of the definition: "toml", "owletto", or another embedder slug. */
-  source: string;
 }
 
 export interface PrefillSkill {
@@ -246,7 +225,6 @@ export interface AgentConfigResponse {
   tools: {
     nixPackages: string[];
     permissions: PermissionGrant[];
-    schedules: Schedule[];
     registries: RegistryEntry[];
     globalRegistries: RegistryEntry[];
   };

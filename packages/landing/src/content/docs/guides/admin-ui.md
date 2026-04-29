@@ -65,7 +65,7 @@ This returns everything about the agent:
 | `instructions` | Identity, soul, and user prompts (the IDENTITY.md / SOUL.md / USER.md content) |
 | `skills` | Enabled skills with metadata, MCP server status |
 | `mcpServers` | Custom MCP server configurations |
-| `tools` | Nix packages, domain grants, active schedules |
+| `tools` | Nix packages, domain grants |
 | `settings` | Verbose logging, memory enabled |
 
 Each section includes `source` (`local`, `inherited`, or `mixed`) and `editable` flags so the UI knows what can be changed.
@@ -124,32 +124,6 @@ curl http://localhost:8080/api/v1/agents/support/config/providers/catalog \
 ```
 
 Returns providers that are not yet installed for this agent.
-
-## Schedule management
-
-List, create, and cancel agent schedules:
-
-```bash
-# List schedules
-curl http://localhost:8080/api/v1/agents/support/schedules \
-  -H "Authorization: Bearer $ADMIN_PASSWORD"
-
-# Create a recurring schedule (cron)
-curl -X POST http://localhost:8080/api/v1/agents/support/schedules \
-  -H "Authorization: Bearer $ADMIN_PASSWORD" \
-  -H "Content-Type: application/json" \
-  -d '{ "task": "Check for open support tickets", "cron": "0 9 * * 1-5" }'
-
-# Create a one-time delay
-curl -X POST http://localhost:8080/api/v1/agents/support/schedules \
-  -H "Authorization: Bearer $ADMIN_PASSWORD" \
-  -H "Content-Type: application/json" \
-  -d '{ "task": "Follow up on ticket #123", "delayMinutes": 60 }'
-
-# Cancel a schedule
-curl -X DELETE http://localhost:8080/api/v1/agents/support/schedules/sched_abc \
-  -H "Authorization: Bearer $ADMIN_PASSWORD"
-```
 
 ## Session history
 

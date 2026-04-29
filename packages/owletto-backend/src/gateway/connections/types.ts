@@ -56,7 +56,6 @@ export type UserConfigScope =
   | "view-model"
   | "system-prompt"
   | "skills"
-  | "schedules"
   | "permissions"
   | "packages";
 

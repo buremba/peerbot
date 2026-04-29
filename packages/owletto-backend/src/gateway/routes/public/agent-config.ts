@@ -31,7 +31,6 @@ import {
   type ModelOption,
   type ModelProviderModule,
 } from "../../modules/module-system.js";
-import type { ScheduleService } from "../../orchestration/scheduled-wakeup.js";
 import type { GrantStore } from "../../permissions/grant-store.js";
 import { errorResponse } from "../shared/helpers.js";
 import { createTokenVerifier } from "../shared/token-verifier.js";
@@ -90,7 +89,6 @@ interface AgentConfigRoutesConfig {
   queue?: IMessageQueue;
   connectionManager?: WorkerConnectionManager;
   grantStore?: GrantStore;
-  scheduleService?: ScheduleService;
 }
 
 function getViewer(payload: SettingsTokenPayload | null | undefined): {
@@ -134,7 +132,7 @@ function hasOwnSetting(
 }
 
 const SECTION_SETTING_KEYS: Record<
-  Exclude<SettingsSectionKey, "permissions" | "schedules">,
+  Exclude<SettingsSectionKey, "permissions">,
   Array<keyof AgentSettings>
 > = {
   model: [
@@ -153,7 +151,7 @@ function sectionHasLocalOverride(
   section: SettingsSectionKey,
   localSettings: AgentSettings | null | undefined
 ): boolean {
-  if (section === "permissions" || section === "schedules") {
+  if (section === "permissions") {
     return false;
   }
   return SECTION_SETTING_KEYS[section].some((key) =>
@@ -165,7 +163,7 @@ function sectionHasTemplateValue(
   section: SettingsSectionKey,
   templateSettings: AgentSettings | null | undefined
 ): boolean {
-  if (section === "permissions" || section === "schedules") {
+  if (section === "permissions") {
     return false;
   }
   return SECTION_SETTING_KEYS[section].some((key) =>
@@ -310,7 +308,6 @@ async function buildResolvedConfigResponse(
     resolveSettingsView(config, agentId, payload),
     config.grantStore?.listGrants(agentId) ?? Promise.resolve([]),
   ]);
-  const schedules = config.scheduleService?.listByAgent(agentId) ?? [];
   const settings = settingsView.effectiveSettings;
 
   const providers: Record<
@@ -441,18 +438,6 @@ async function buildResolvedConfigResponse(
     tools: {
       nixPackages: sanitized.nixConfig?.packages || [],
       permissions: grants,
-      schedules: schedules.map((schedule) => ({
-        id: schedule.id,
-        agentId: schedule.agentId,
-        cron: schedule.cron,
-        task: schedule.task,
-        enabled: schedule.enabled,
-        timezone: schedule.timezone,
-        deliverTo: schedule.deliverTo,
-        approver: schedule.approver,
-        concurrency: schedule.concurrency,
-        source: schedule.id.split(":")[0] ?? "unknown",
-      })),
       registries: [],
       globalRegistries: [],
     },

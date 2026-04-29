@@ -7,11 +7,11 @@ CLI tool for initializing and managing Lobu projects.
 ```bash
 npx @lobu/cli@latest init my-bot
 cd my-bot
-# edit .env to set DATABASE_URL and REDIS_URL
+# edit .env to set DATABASE_URL
 npx @lobu/cli@latest run
 ```
 
-Lobu boots as a single Node process. Postgres + Redis are user-provided externals (managed instances or local — `brew services start postgresql redis`).
+Lobu boots as a single Node process. Postgres is a user-provided external (managed instance or local — `brew services start postgresql`).
 
 ## Starter Skills
 
@@ -43,7 +43,7 @@ Scaffold a new Lobu project with interactive prompts:
 - **Messaging platform** (Telegram, Slack, Discord, WhatsApp, Teams, Google Chat, or none)
 - **Memory** selection (filesystem, Lobu Cloud, or custom Owletto URL)
 
-**Generates:** `lobu.toml`, `.env` (with `DATABASE_URL` / `REDIS_URL` placeholders), `agents/<name>/` (`IDENTITY.md`, `SOUL.md`, `USER.md`, `skills/`, `evals/`), `skills/`, `AGENTS.md`, `TESTING.md`, `README.md`, `.gitignore`.
+**Generates:** `lobu.toml`, `.env` (with `DATABASE_URL` placeholder), `agents/<name>/` (`IDENTITY.md`, `SOUL.md`, `USER.md`, `skills/`, `evals/`), `skills/`, `AGENTS.md`, `TESTING.md`, `README.md`, `.gitignore`.
 
 When Owletto-backed memory is enabled, `lobu init` also scaffolds the file-first memory layout:
 
@@ -55,7 +55,7 @@ For a custom Owletto deployment, `.env` keeps `MEMORY_URL` as the optional base 
 
 ### `lobu run`
 
-Boot the embedded Lobu stack — gateway + workers + embeddings + Owletto memory backend in a single Node process. Validates `lobu.toml` and that `DATABASE_URL` and `REDIS_URL` are set in `.env`, then spawns the bundled `@lobu/owletto-backend/dist/server.bundle.mjs`. Ctrl+C stops the process and any spawned worker subprocesses cleanly.
+Boot the embedded Lobu stack — gateway + workers + embeddings + Owletto memory backend in a single Node process. Validates `lobu.toml` and that `DATABASE_URL` is set in `.env`, then spawns the bundled `@lobu/owletto-backend/dist/server.bundle.mjs`. Ctrl+C stops the process and any spawned worker subprocesses cleanly.
 
 ## License
 

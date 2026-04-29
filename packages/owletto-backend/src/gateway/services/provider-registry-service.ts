@@ -13,6 +13,10 @@ const ENV_SUBSTITUTION_BLOCKLIST = new Set([
   "ADMIN_PASSWORD",
   "DATABASE_PASSWORD",
   "DATABASE_URL",
+  // Kept defense-in-depth: even though the runtime no longer uses Redis, an
+  // operator may still set REDIS_PASSWORD in their environment for unrelated
+  // tooling and we don't want it surfacing through provider-config substitution.
+  "REDIS_PASSWORD",
   "SLACK_CLIENT_SECRET",
   "SLACK_SIGNING_SECRET",
   "GH_TOKEN",

@@ -4,10 +4,10 @@ Lobu instance created with `@lobu/cli` v{{CLI_VERSION}}
 
 ## Quick Start
 
-Lobu boots as a single Node process. Bring your own Postgres + Redis (managed instances or local — `brew services start postgresql redis` works for dev) and point `.env` at them.
+Lobu boots as a single Node process. Bring your own Postgres (managed instance or local — `brew services start postgresql` works for dev) and point `.env` at it.
 
 ```bash
-# 1. Edit .env and set DATABASE_URL + REDIS_URL
+# 1. Edit .env and set DATABASE_URL
 
 # 2. Boot Lobu (gateway + workers + memory backend in one Node process)
 npx @lobu/cli@latest run
@@ -36,7 +36,6 @@ Compare your `.env` with the latest `.env.example` in the [Lobu repo](https://gi
 Edit `.env` to configure:
 
 - `DATABASE_URL` — Postgres connection string (with pgvector)
-- `REDIS_URL` — Redis connection string
 - `PUBLIC_GATEWAY_URL` — Public URL for OAuth callbacks
 - `WORKER_ALLOWED_DOMAINS` — Allowed domains for worker network access
 

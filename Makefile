@@ -60,6 +60,6 @@ eval:
 # safety net for orphaned bun processes spawned by EmbeddedDeploymentManager.
 clean-workers:
 	@echo "🧹 Stopping embedded worker subprocesses..."
-	@pkill -f 'packages/owletto-worker/src/index.ts' 2>/dev/null || true
+	@pkill -f 'packages/worker/src/index.ts' 2>/dev/null || true
 	@pkill -f '@lobu/worker' 2>/dev/null || true
 	@echo "✅ Worker subprocesses stopped"

@@ -38,10 +38,22 @@ function locateSystemdRun(): string | null {
     return cachedSystemdRun;
   }
   try {
-    // `systemd-run --user --version` succeeds only when a user manager is
-    // reachable; bare `which systemd-run` is not enough (some sandboxes ship
-    // the binary without an active user bus).
-    execFileSync("systemd-run", ["--user", "--version"], { stdio: "ignore" });
+    // Probe by dispatching a real transient unit: `--version` only prints the
+    // package version and does not exercise dbus. Some Linux containers ship
+    // the binary with no user manager attached; we have to exercise the
+    // user-bus path that the worker spawn will later use, or workers fail
+    // at first request instead of falling back to plain spawn here.
+    //
+    //   --no-block  → return as soon as the request is queued (no waiting on
+    //                 the dispatched command); still requires a reachable bus
+    //   --collect   → auto-remove the transient unit when it exits, so the
+    //                 probe leaves no residue in the user manager
+    //   timeout     → guard against a hung dbus connection (rare, but cheap)
+    execFileSync(
+      "systemd-run",
+      ["--user", "--quiet", "--collect", "--no-block", "/bin/true"],
+      { stdio: "ignore", timeout: 3_000 }
+    );
     cachedSystemdRun = "systemd-run";
   } catch {
     cachedSystemdRun = null;

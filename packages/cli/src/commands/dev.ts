@@ -78,20 +78,30 @@ export async function devCommand(
 
   const bundlePath = resolveBackendBundle();
   if (!bundlePath) {
-    spinner.fail("@lobu/owletto-backend bundle not found");
+    spinner.fail("server bundle not found");
     console.error(
       chalk.red(
-        "\n  Could not resolve @lobu/owletto-backend/dist/server.bundle.mjs.\n"
+        "\n  Could not locate the embedded server bundle (server.bundle.mjs).\n"
       )
     );
     console.error(
       chalk.dim(
-        "  Either run from the monorepo (with packages built via `make build-packages`)"
+        "  Installed CLIs ship the bundle inside their own dist/. If you're"
       )
     );
     console.error(
       chalk.dim(
-        "  or install @lobu/owletto-backend in the project: `bun add @lobu/owletto-backend`.\n"
+        "  seeing this from a published @lobu/cli, please file an issue."
+      )
+    );
+    console.error(
+      chalk.dim(
+        "  In the monorepo, build it via:"
+      )
+    );
+    console.error(
+      chalk.dim(
+        "    bun run --filter '@lobu/owletto-backend' build:server\n"
       )
     );
     process.exit(1);
@@ -160,16 +170,23 @@ function resolveBackendBundle(): string | null {
   const here = dirname(fileURLToPath(import.meta.url));
   const require_ = createRequire(import.meta.url);
 
-  // Try resolving via the CLI's node_modules (works for installed users).
+  // 1. Bundled inside the CLI tarball at `dist/server.bundle.mjs`. This is
+  //    the path that works for `npx @lobu/cli` users — `@lobu/owletto-backend`
+  //    is private and not on npm, so they can't resolve it any other way.
+  //    `packages/cli/scripts/build.cjs` copies the bundle here at build time.
+  const bundled = join(here, "server.bundle.mjs");
+  if (existsSync(bundled)) return bundled;
+
+  // 2. Resolved via node_modules — covers a workspace consumer that has
+  //    `@lobu/owletto-backend` linked locally (e.g. internal monorepo).
   try {
-    return require_.resolve(
-      "@lobu/owletto-backend/dist/server.bundle.mjs"
-    );
+    return require_.resolve("@lobu/owletto-backend/dist/server.bundle.mjs");
   } catch {
-    // Not installed as a dep — fall back to monorepo-relative lookup.
+    // not installed as a dep
   }
 
-  // Walk up from the CLI source/dist to find the workspace root.
+  // 3. Monorepo-relative lookup — covers `bun run packages/cli/...` from a
+  //    fresh clone before the CLI itself has been published.
   let cur = here;
   for (let i = 0; i < 6; i++) {
     const candidate = join(

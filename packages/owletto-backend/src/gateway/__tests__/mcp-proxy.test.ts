@@ -278,7 +278,7 @@ describe("McpProxy", () => {
       const configSource = createMockConfigSource({
         "test-mcp": TEST_SERVER,
       });
-      const toolCache = new McpToolCache(queue.getRedisClient());
+      const toolCache = new McpToolCache();
       const proxy = new McpProxy(configSource, queue as any, {
         secretStore: createTestSecretStore(queue),
         toolCache,
@@ -486,7 +486,7 @@ describe("McpProxy", () => {
       servers: Record<string, HttpMcpServerConfig>
     ) {
       const configSource = createMockConfigSource(servers);
-      const toolCache = new McpToolCache(queue.getRedisClient());
+      const toolCache = new McpToolCache();
       const grantStore = new GrantStore(queue.getRedisClient());
       const proxy = new McpProxy(configSource, queue as any, {
         secretStore: createTestSecretStore(queue),

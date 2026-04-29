@@ -750,8 +750,6 @@ export class CoreServices {
       throw new Error("Queue must be initialized before MCP services");
     }
 
-    const redisClient = this.queue.getRedisClient();
-
     // Initialize simplified MCP config service (no OAuth discovery)
     this.mcpConfigService = new McpConfigService({
       agentSettingsStore: this.agentSettingsStore,
@@ -771,7 +769,7 @@ export class CoreServices {
     if (!this.secretStore) {
       throw new Error("Secret store must be initialized before MCP proxy");
     }
-    const mcpToolCache = new McpToolCache(redisClient);
+    const mcpToolCache = new McpToolCache();
     this.mcpProxy = new McpProxy(this.mcpConfigService, this.queue, {
       secretStore: this.secretStore,
       toolCache: mcpToolCache,

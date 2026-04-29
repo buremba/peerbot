@@ -1,4 +1,4 @@
-import { createLogger, getJsonValue, setJsonValue } from "@lobu/core";
+import { createLogger } from "@lobu/core";
 
 const logger = createLogger("mcp-tool-cache");
 
@@ -19,10 +19,25 @@ export interface CachedMcpServer {
   instructions?: string;
 }
 
-const CACHE_TTL_SECONDS = 300; // 5 minutes
+/**
+ * In-memory MCP tool cache. Per-gateway-process; a miss recomputes by hitting
+ * the MCP server's `tools/list` endpoint. The 5-minute TTL is short enough
+ * that a gateway restart (or a multi-replica fan-out) doesn't serve stale
+ * tool metadata.
+ *
+ * Phase 8 of Redis -> Postgres migration: previously stored in Redis with
+ * TTL. The new cache is local — no cross-replica coherence problem since
+ * every replica probes upstream itself on miss.
+ */
+const CACHE_TTL_MS = 5 * 60 * 1000;
+
+interface CacheEntry {
+  info: CachedMcpServer;
+  expiresAt: number;
+}
 
 export class McpToolCache {
-  constructor(private readonly redisClient: any) {}
+  private readonly entries = new Map<string, CacheEntry>();
 
   async get(mcpId: string, agentId?: string): Promise<McpTool[] | null> {
     const info = await this.getServerInfo(mcpId, agentId);
@@ -38,16 +53,13 @@ export class McpToolCache {
     agentId?: string
   ): Promise<CachedMcpServer | null> {
     const key = this.buildKey(mcpId, agentId);
-    try {
-      const parsed = await getJsonValue<CachedMcpServer>(this.redisClient, key);
-      if (!parsed) {
-        return null;
-      }
-      return parsed;
-    } catch (error) {
-      logger.error("Failed to read tool cache", { key, error });
+    const entry = this.entries.get(key);
+    if (!entry) return null;
+    if (entry.expiresAt <= Date.now()) {
+      this.entries.delete(key);
       return null;
     }
+    return entry.info;
   }
 
   async setServerInfo(
@@ -57,7 +69,10 @@ export class McpToolCache {
   ): Promise<void> {
     const key = this.buildKey(mcpId, agentId);
     try {
-      await setJsonValue(this.redisClient, key, info, CACHE_TTL_SECONDS);
+      this.entries.set(key, {
+        info,
+        expiresAt: Date.now() + CACHE_TTL_MS,
+      });
     } catch (error) {
       logger.error("Failed to write tool cache", { key, error });
     }

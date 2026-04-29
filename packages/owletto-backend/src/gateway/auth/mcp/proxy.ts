@@ -162,6 +162,14 @@ export class McpProxy {
   // 24h gives users a realistic window to respond. Anything shorter silently
   // drops late clicks (the take-on-claim returns null and the click no-ops).
   private readonly PENDING_TOOL_TTL = 24 * 60 * 60; // 24 hours
+  /**
+   * Per-process MCP upstream session-id cache. Phase 8 of Redis -> Postgres
+   * migration: previously held in Redis with TTL. The session id is opaque
+   * to the gateway and only valid for the upstream MCP server, so on a
+   * gateway restart the worker simply re-runs `initialize` and gets a new
+   * session — no cross-replica coherence needed.
+   */
+  private readonly sessions = new Map<string, { sessionId: string; expiresAt: number }>();
   private readonly redisClient: any;
   private app: Hono;
   private readonly toolCache?: McpToolCache;
@@ -349,9 +357,7 @@ export class McpProxy {
     try {
       // Clear any stale session before fresh tool discovery
       const sessionKey = this.buildSessionKey(agentId, mcpId, scopeKey);
-      await this.redisClient.del(sessionKey).catch(() => {
-        /* noop */
-      });
+      await this.deleteSession(sessionKey);
 
       // Step 1: Send initialize to capture server instructions
       let instructions: string | undefined;
@@ -1570,9 +1576,7 @@ export class McpProxy {
   ): Promise<void> {
     // Clear stale session
     const sessionKey = this.buildSessionKey(agentId, mcpId, scopeKey);
-    await this.redisClient.del(sessionKey).catch(() => {
-      /* noop */
-    });
+    await this.deleteSession(sessionKey);
 
     // Send initialize
     const initBody = JSON.stringify({
@@ -1824,29 +1828,26 @@ export class McpProxy {
   }
 
   private async getSession(key: string): Promise<string | null> {
-    try {
-      const sessionId = await this.redisClient.get(key);
-      if (sessionId) {
-        await this.redisClient.expire(key, this.SESSION_TTL_SECONDS);
-      }
-      return sessionId;
-    } catch (error) {
-      logger.error("Failed to get MCP session from Redis", { key, error });
+    const entry = this.sessions.get(key);
+    if (!entry) return null;
+    if (entry.expiresAt <= Date.now()) {
+      this.sessions.delete(key);
       return null;
     }
+    // Refresh TTL on read (matches Redis EXPIRE semantics).
+    entry.expiresAt = Date.now() + this.SESSION_TTL_SECONDS * 1000;
+    return entry.sessionId;
   }
 
   private async setSession(key: string, sessionId: string): Promise<void> {
-    try {
-      await this.redisClient.set(
-        key,
-        sessionId,
-        "EX",
-        this.SESSION_TTL_SECONDS
-      );
-    } catch (error) {
-      logger.error("Failed to store MCP session in Redis", { key, error });
-    }
+    this.sessions.set(key, {
+      sessionId,
+      expiresAt: Date.now() + this.SESSION_TTL_SECONDS * 1000,
+    });
+  }
+
+  private async deleteSession(key: string): Promise<void> {
+    this.sessions.delete(key);
   }
 
   private sendJsonRpcError(

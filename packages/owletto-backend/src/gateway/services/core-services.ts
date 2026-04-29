@@ -331,11 +331,10 @@ export class CoreServices {
   // ============================================================================
 
   private async initializeQueue(): Promise<void> {
-    // Phase 5: queue substrate is `public.runs` over Postgres. The legacy
-    // `queues.connectionString` (a redis:// URL) is now ignored for queue
-    // dispatch; it survives only to feed the still-required Redis client
-    // exposed by `IMessageQueue.getRedisClient()` for non-queue consumers
-    // (secret-store, grant-store, scheduled-wakeup, etc.).
+    // Phase 5+8: queue substrate is `public.runs` over Postgres. The Redis
+    // client is no longer used by application code (every non-queue consumer
+    // moved to PG in Phase 8); it remains plumbed only to satisfy the
+    // IMessageQueue compat shim until Phase 11 deletes the shim.
     const redisUrl =
       this.config.queues?.connectionString ?? process.env.REDIS_URL;
 

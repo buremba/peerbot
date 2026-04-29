@@ -1,49 +1,26 @@
-import {
-  afterAll,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  test,
-} from "bun:test";
-import { MockRedisClient } from "@lobu/core/testing";
-import { RedisSecretStore } from "../secrets/index.js";
+import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { PostgresSecretStore } from "../../lobu/stores/postgres-secret-store.js";
 import { UserAuthProfileStore } from "../auth/settings/user-auth-profile-store.js";
+import {
+  ensurePgliteForGatewayTests,
+  resetTestDatabase,
+} from "./helpers/db-setup.js";
 
-const TEST_ENCRYPTION_KEY =
-  "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+let secretStore: PostgresSecretStore;
+let store: UserAuthProfileStore;
 
-let originalEncryptionKey: string | undefined;
-
-beforeAll(() => {
-  originalEncryptionKey = process.env.ENCRYPTION_KEY;
-  process.env.ENCRYPTION_KEY = TEST_ENCRYPTION_KEY;
+beforeAll(async () => {
+  await ensurePgliteForGatewayTests();
 });
 
-afterAll(() => {
-  if (originalEncryptionKey !== undefined) {
-    process.env.ENCRYPTION_KEY = originalEncryptionKey;
-  } else {
-    delete process.env.ENCRYPTION_KEY;
-  }
+beforeEach(async () => {
+  await resetTestDatabase();
+  secretStore = new PostgresSecretStore();
+  store = new UserAuthProfileStore(secretStore);
 });
-
-function createStore() {
-  const redis = new MockRedisClient();
-  const secretStore = new RedisSecretStore(redis as any, "lobu:test:secrets:");
-  const store = new UserAuthProfileStore(redis as any, secretStore);
-  return { store, redis, secretStore };
-}
 
 describe("UserAuthProfileStore", () => {
-  let setup: ReturnType<typeof createStore>;
-
-  beforeEach(() => {
-    setup = createStore();
-  });
-
   test("upsert stores profile under (userId, agentId) and replaces credential with ref", async () => {
-    const { store, redis, secretStore } = setup;
     const stored = await store.upsert("u1", "agent-1", {
       id: "p1",
       provider: "openai",
@@ -58,17 +35,14 @@ describe("UserAuthProfileStore", () => {
     expect(stored.credentialRef).toBeDefined();
     expect(await secretStore.get(stored.credentialRef!)).toBe("sk-secret");
 
-    const raw = await redis.get("user:auth-profiles:u1:agent-1");
-    expect(raw).toBeDefined();
-    expect(raw).not.toContain("sk-secret");
-
     const list = await store.list("u1", "agent-1");
     expect(list).toHaveLength(1);
     expect(list[0]?.id).toBe("p1");
+    expect(list[0]?.credentialRef).toBeDefined();
+    expect(list[0]?.credential).toBeUndefined();
   });
 
   test("upsert persists refresh token through secret store", async () => {
-    const { store, secretStore } = setup;
     const stored = await store.upsert("u1", "agent-1", {
       id: "oauth-1",
       provider: "claude",
@@ -91,7 +65,6 @@ describe("UserAuthProfileStore", () => {
   });
 
   test("upsert with same (provider, model) replaces existing entry", async () => {
-    const { store } = setup;
     await store.upsert("u1", "agent-1", {
       id: "p1",
       provider: "openai",
@@ -117,7 +90,6 @@ describe("UserAuthProfileStore", () => {
   });
 
   test("isolates profiles per user", async () => {
-    const { store } = setup;
     await store.upsert("u1", "agent-1", {
       id: "p1",
       provider: "openai",
@@ -143,7 +115,6 @@ describe("UserAuthProfileStore", () => {
   });
 
   test("remove drops profile and its secrets", async () => {
-    const { store, secretStore } = setup;
     const stored = await store.upsert("u1", "agent-1", {
       id: "p1",
       provider: "openai",
@@ -162,7 +133,6 @@ describe("UserAuthProfileStore", () => {
   });
 
   test("dropAgent cascades through all secrets", async () => {
-    const { store, redis, secretStore } = setup;
     const stored = await store.upsert("u1", "agent-1", {
       id: "p1",
       provider: "openai",
@@ -174,12 +144,11 @@ describe("UserAuthProfileStore", () => {
     });
     await store.dropAgent("u1", "agent-1");
 
-    expect(await redis.get("user:auth-profiles:u1:agent-1")).toBeNull();
+    expect(await store.list("u1", "agent-1")).toEqual([]);
     expect(await secretStore.get(stored.credentialRef!)).toBeNull();
   });
 
   test("scanAllOAuth yields every (userId, agentId) pair", async () => {
-    const { store } = setup;
     await store.upsert("u1", "agent-1", {
       id: "p1",
       provider: "claude",

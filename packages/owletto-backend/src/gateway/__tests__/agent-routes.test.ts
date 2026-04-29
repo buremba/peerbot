@@ -1,30 +1,42 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { MockRedisClient } from "@lobu/core/testing";
+import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { orgContext } from "../../lobu/stores/org-context.js";
 import { AgentMetadataStore } from "../auth/agent-metadata-store.js";
 import { AgentSettingsStore } from "../auth/settings/agent-settings-store.js";
 import { UserAgentsStore } from "../auth/user-agents-store.js";
 import { createAgentRoutes } from "../routes/public/agents.js";
 import { setAuthProvider } from "../routes/public/settings-auth.js";
+import {
+  ensurePgliteForGatewayTests,
+  resetTestDatabase,
+  seedAgentRow,
+} from "./helpers/db-setup.js";
+
+const ORG_ID = "test-org-agent-routes";
 
 describe("agent routes", () => {
-  let redis: MockRedisClient;
   let agentMetadataStore: AgentMetadataStore;
   let agentSettingsStore: AgentSettingsStore;
   let userAgentsStore: UserAgentsStore;
 
-  beforeEach(async () => {
-    redis = new MockRedisClient();
-    agentMetadataStore = new AgentMetadataStore(redis as any);
-    agentSettingsStore = new AgentSettingsStore(redis as any);
-    userAgentsStore = new UserAgentsStore(redis as any);
+  beforeAll(async () => {
+    await ensurePgliteForGatewayTests();
+  });
 
-    await agentMetadataStore.createAgent(
-      "agent-1",
-      "Agent 1",
-      "telegram",
-      "u1"
-    );
-    await userAgentsStore.addAgent("telegram", "u1", "agent-1");
+  beforeEach(async () => {
+    await resetTestDatabase();
+    agentMetadataStore = new AgentMetadataStore();
+    agentSettingsStore = new AgentSettingsStore();
+    userAgentsStore = new UserAgentsStore();
+
+    await orgContext.run({ organizationId: ORG_ID }, async () => {
+      await seedAgentRow("agent-1", {
+        organizationId: ORG_ID,
+        name: "Agent 1",
+        ownerPlatform: "telegram",
+        ownerUserId: "u1",
+      });
+      await userAgentsStore.addAgent("telegram", "u1", "agent-1");
+    });
   });
 
   afterEach(() => {
@@ -59,7 +71,10 @@ describe("agent routes", () => {
       } as any,
     });
 
-    const response = await app.request("/");
+    const response = await orgContext.run(
+      { organizationId: ORG_ID },
+      () => app.request("/")
+    );
     expect(response.status).toBe(200);
     const data = (await response.json()) as any;
     expect(data.agents).toHaveLength(1);

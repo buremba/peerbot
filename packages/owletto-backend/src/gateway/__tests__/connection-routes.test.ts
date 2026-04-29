@@ -1,36 +1,53 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { MockRedisClient } from "@lobu/core/testing";
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from "bun:test";
+import { orgContext } from "../../lobu/stores/org-context.js";
 import { AgentMetadataStore } from "../auth/agent-metadata-store.js";
 import { UserAgentsStore } from "../auth/user-agents-store.js";
 import { createConnectionCrudRoutes } from "../routes/public/connections.js";
 import { setAuthProvider } from "../routes/public/settings-auth.js";
+import {
+  ensurePgliteForGatewayTests,
+  resetTestDatabase,
+  seedAgentRow,
+} from "./helpers/db-setup.js";
+
+const ORG_ID = "test-org-conn-routes";
 
 describe("connection routes", () => {
-  let redis: MockRedisClient;
   let agentMetadataStore: AgentMetadataStore;
   let userAgentsStore: UserAgentsStore;
 
-  beforeEach(async () => {
-    redis = new MockRedisClient();
-    agentMetadataStore = new AgentMetadataStore(redis as any);
-    userAgentsStore = new UserAgentsStore(redis as any);
+  beforeAll(async () => {
+    await ensurePgliteForGatewayTests();
+  });
 
-    await agentMetadataStore.createAgent(
-      "agent-1",
-      "Agent 1",
-      "telegram",
-      "u1"
-    );
-    await agentMetadataStore.createAgent(
-      "sandbox-1",
-      "Sandbox 1",
-      "telegram",
-      "u1",
-      {
+  beforeEach(async () => {
+    await resetTestDatabase();
+    agentMetadataStore = new AgentMetadataStore();
+    userAgentsStore = new UserAgentsStore();
+
+    await orgContext.run({ organizationId: ORG_ID }, async () => {
+      await seedAgentRow("agent-1", {
+        organizationId: ORG_ID,
+        name: "Agent 1",
+        ownerPlatform: "telegram",
+        ownerUserId: "u1",
+      });
+      await seedAgentRow("sandbox-1", {
+        organizationId: ORG_ID,
+        name: "Sandbox 1",
+        ownerPlatform: "telegram",
+        ownerUserId: "u1",
         parentConnectionId: "conn-1",
-      }
-    );
-    await userAgentsStore.addAgent("telegram", "u1", "agent-1");
+      });
+      await userAgentsStore.addAgent("telegram", "u1", "agent-1");
+    });
   });
 
   afterEach(() => {
@@ -82,7 +99,7 @@ describe("connection routes", () => {
             getQueue() {
               return {
                 getRedisClient() {
-                  return redis;
+                  return null;
                 },
               };
             },
@@ -108,7 +125,9 @@ describe("connection routes", () => {
       exp: Date.now() + 60_000,
     }));
 
-    const response = await buildApp().request("/api/v1/connections");
+    const response = await orgContext.run({ organizationId: ORG_ID }, () =>
+      buildApp().request("/api/v1/connections")
+    );
     expect(response.status).toBe(403);
   });
 
@@ -120,8 +139,8 @@ describe("connection routes", () => {
       exp: Date.now() + 60_000,
     }));
 
-    const response = await buildApp().request(
-      "/api/v1/connections?templateAgentId=agent-1"
+    const response = await orgContext.run({ organizationId: ORG_ID }, () =>
+      buildApp().request("/api/v1/connections?templateAgentId=agent-1")
     );
     expect(response.status).toBe(200);
     const data = (await response.json()) as any;
@@ -136,8 +155,8 @@ describe("connection routes", () => {
       exp: Date.now() + 60_000,
     }));
 
-    const response = await buildApp().request(
-      "/api/v1/connections/conn-1/sandboxes"
+    const response = await orgContext.run({ organizationId: ORG_ID }, () =>
+      buildApp().request("/api/v1/connections/conn-1/sandboxes")
     );
     expect(response.status).toBe(403);
   });

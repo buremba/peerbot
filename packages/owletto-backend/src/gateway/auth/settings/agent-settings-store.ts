@@ -40,30 +40,83 @@ export class EphemeralAuthProfileRegistry {
   }
 }
 
+/** Treat falsy/empty defaults as "not set" so template fallback in
+ *  `getSettingsContext` can fill them in from the parent agent. The
+ *  `agents` table has DEFAULT '' for the markdown columns and DEFAULT '{}'
+ *  for the jsonb settings columns, so a row that was inserted but never had
+ *  these fields written would otherwise read as the empty string / object
+ *  and shadow the template's value during a merge. */
+function nonEmptyString(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.length === 0) return undefined;
+  return value;
+}
+function nonEmptyObject<T extends Record<string, unknown>>(
+  value: T | null | undefined
+): T | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  if (Array.isArray(value)) {
+    return value.length > 0 ? value : undefined;
+  }
+  return Object.keys(value).length > 0 ? value : undefined;
+}
+
+/** Build an AgentSettings object that *omits* keys whose stored value is the
+ *  empty default. The downstream `resolved-settings-view` uses
+ *  `Object.hasOwn(settings, key)` to decide whether the local agent has a
+ *  local override vs. inheriting from the template, so we must omit absent
+ *  keys rather than including them as undefined. The schema has DEFAULT ''
+ *  for markdown columns and DEFAULT '{}'/'[]' for JSONB columns; that's
+ *  treated as "not set" here. */
 function rowToSettings(row: Record<string, any>): AgentSettings {
-  return {
-    model: row.model ?? undefined,
-    modelSelection: row.model_selection ?? undefined,
-    providerModelPreferences: row.provider_model_preferences ?? undefined,
-    networkConfig: row.network_config ?? undefined,
-    nixConfig: row.nix_config ?? undefined,
-    mcpServers: row.mcp_servers ?? undefined,
-    mcpInstallNotified: row.mcp_install_notified ?? undefined,
-    soulMd: row.soul_md ?? undefined,
-    userMd: row.user_md ?? undefined,
-    identityMd: row.identity_md ?? undefined,
-    skillsConfig: row.skills_config ?? undefined,
-    toolsConfig: row.tools_config ?? undefined,
-    pluginsConfig: row.plugins_config ?? undefined,
-    authProfiles: row.auth_profiles ?? undefined,
-    installedProviders: row.installed_providers ?? undefined,
-    verboseLogging: row.verbose_logging ?? undefined,
-    templateAgentId: row.template_agent_id ?? undefined,
+  const out: AgentSettings = {
     updatedAt:
       row.updated_at instanceof Date
         ? row.updated_at.getTime()
         : (row.updated_at ?? Date.now()),
   };
+  if (row.model != null) out.model = row.model;
+  const modelSelection = nonEmptyObject(row.model_selection);
+  if (modelSelection !== undefined) out.modelSelection = modelSelection as any;
+  const providerModelPreferences = nonEmptyObject(row.provider_model_preferences);
+  if (providerModelPreferences !== undefined)
+    out.providerModelPreferences = providerModelPreferences as any;
+  const networkConfig = nonEmptyObject(row.network_config);
+  if (networkConfig !== undefined) out.networkConfig = networkConfig as any;
+  const nixConfig = nonEmptyObject(row.nix_config);
+  if (nixConfig !== undefined) out.nixConfig = nixConfig as any;
+  const mcpServers = nonEmptyObject(row.mcp_servers);
+  if (mcpServers !== undefined) out.mcpServers = mcpServers as any;
+  const mcpInstallNotified = nonEmptyObject(row.mcp_install_notified);
+  if (mcpInstallNotified !== undefined)
+    out.mcpInstallNotified = mcpInstallNotified as any;
+  const soulMd = nonEmptyString(row.soul_md);
+  if (soulMd !== undefined) out.soulMd = soulMd;
+  const userMd = nonEmptyString(row.user_md);
+  if (userMd !== undefined) out.userMd = userMd;
+  const identityMd = nonEmptyString(row.identity_md);
+  if (identityMd !== undefined) out.identityMd = identityMd;
+  // skillsConfig has the shape `{ skills: [] }` by default; treat the empty
+  // skills array as "not set" so the template's skillsConfig wins.
+  const skillsConfig = row.skills_config;
+  if (
+    skillsConfig &&
+    Array.isArray(skillsConfig.skills) &&
+    skillsConfig.skills.length > 0
+  ) {
+    out.skillsConfig = skillsConfig;
+  }
+  const toolsConfig = nonEmptyObject(row.tools_config);
+  if (toolsConfig !== undefined) out.toolsConfig = toolsConfig as any;
+  const pluginsConfig = nonEmptyObject(row.plugins_config);
+  if (pluginsConfig !== undefined) out.pluginsConfig = pluginsConfig as any;
+  const authProfiles = nonEmptyObject(row.auth_profiles);
+  if (authProfiles !== undefined) out.authProfiles = authProfiles as any;
+  const installedProviders = nonEmptyObject(row.installed_providers);
+  if (installedProviders !== undefined)
+    out.installedProviders = installedProviders as any;
+  if (row.verbose_logging) out.verboseLogging = true;
+  if (row.template_agent_id) out.templateAgentId = row.template_agent_id;
+  return out;
 }
 
 /**

@@ -1,58 +1,99 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from "bun:test";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { encrypt } from "@lobu/core";
-import { MockRedisClient } from "@lobu/core/testing";
+import { getDb } from "../../db/client.js";
+import { orgContext } from "../../lobu/stores/org-context.js";
 import { AgentMetadataStore } from "../auth/agent-metadata-store.js";
 import { AgentSettingsStore } from "../auth/settings/agent-settings-store.js";
 import { GrantStore } from "../permissions/grant-store.js";
 import { createAgentConfigRoutes } from "../routes/public/agent-config.js";
 import { setAuthProvider } from "../routes/public/settings-auth.js";
+import {
+  ensurePgliteForGatewayTests,
+  resetTestDatabase,
+  seedAgentRow,
+} from "./helpers/db-setup.js";
+
+const ORG_ID = "test-org-agent-config";
 
 describe("agent config routes", () => {
   let originalEncryptionKey: string | undefined;
-  let redis: MockRedisClient;
   let agentSettingsStore: AgentSettingsStore;
   let agentMetadataStore: AgentMetadataStore;
   let grantStore: GrantStore;
+
+  beforeAll(async () => {
+    await ensurePgliteForGatewayTests();
+  });
 
   beforeEach(async () => {
     originalEncryptionKey = process.env.ENCRYPTION_KEY;
     process.env.ENCRYPTION_KEY =
       "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-    redis = new MockRedisClient();
-    agentSettingsStore = new AgentSettingsStore(redis as any);
-    agentMetadataStore = new AgentMetadataStore(redis as any);
-    grantStore = new GrantStore(redis as any);
 
-    await agentMetadataStore.createAgent(
-      "template-agent",
-      "Template Agent",
-      "telegram",
-      "u1"
-    );
-    await agentMetadataStore.createAgent(
-      "telegram-1",
-      "Telegram Sandbox",
-      "telegram",
-      "u1",
-      { parentConnectionId: "conn-1" }
-    );
-    await redis.set(
-      "connection:conn-1",
-      JSON.stringify({ templateAgentId: "template-agent" })
-    );
+    await resetTestDatabase();
 
-    await agentSettingsStore.saveSettings("template-agent", {
-      identityMd: "Template identity",
-      soulMd: "Template soul",
-      userMd: "Template user",
-      installedProviders: [{ providerId: "chatgpt", installedAt: 1 }],
-      verboseLogging: true,
+    agentSettingsStore = new AgentSettingsStore();
+    agentMetadataStore = new AgentMetadataStore();
+    // GrantStore still uses Redis-backed JSON helpers — out of scope for
+    // Phase 6. Tests that exercise grants run the route layer; they don't
+    // assert on grant persistence semantics here.
+    grantStore = {
+      grant: async () => {},
+      hasGrant: async () => true,
+      isDenied: async () => false,
+      listGrants: async () => [
+        {
+          pattern: "api.openai.com",
+          expiresAt: null,
+          grantedAt: Date.now(),
+        },
+      ],
+      revoke: async () => {},
+    } as unknown as GrantStore;
+
+    await orgContext.run({ organizationId: ORG_ID }, async () => {
+      await seedAgentRow("template-agent", {
+        organizationId: ORG_ID,
+        name: "Template Agent",
+        ownerPlatform: "telegram",
+        ownerUserId: "u1",
+      });
+      await seedAgentRow("telegram-1", {
+        organizationId: ORG_ID,
+        name: "Telegram Sandbox",
+        ownerPlatform: "telegram",
+        ownerUserId: "u1",
+        parentConnectionId: "conn-1",
+      });
+
+      // Connection rows live in `agent_connections` keyed by id, with the
+      // template agent in `agent_id` (FK → public.agents).
+      const sql = getDb();
+      await sql`
+        INSERT INTO agent_connections (id, agent_id, platform, config, settings, metadata, status)
+        VALUES ('conn-1', 'template-agent', 'telegram', '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, 'active')
+        ON CONFLICT (id) DO NOTHING
+      `;
+
+      await agentSettingsStore.saveSettings("template-agent", {
+        identityMd: "Template identity",
+        soulMd: "Template soul",
+        userMd: "Template user",
+        installedProviders: [{ providerId: "chatgpt", installedAt: 1 }],
+        verboseLogging: true,
+      });
+      await agentSettingsStore.saveSettings("telegram-1", {
+        identityMd: "Local identity",
+      });
     });
-    await agentSettingsStore.saveSettings("telegram-1", {
-      identityMd: "Local identity",
-    });
-    await grantStore.grant("telegram-1", "api.openai.com", null);
   });
 
   afterEach(() => {
@@ -100,6 +141,10 @@ describe("agent config routes", () => {
     return app;
   }
 
+  function runWithOrg<T>(fn: () => Promise<T>): Promise<T> {
+    return orgContext.run({ organizationId: ORG_ID }, fn);
+  }
+
   test("GET /config returns effective sandbox settings with provenance", async () => {
     setAuthProvider(() => ({
       agentId: "telegram-1",
@@ -116,7 +161,9 @@ describe("agent config routes", () => {
     }));
 
     const app = buildApp();
-    const response = await app.request("/api/v1/agents/telegram-1/config");
+    const response = await runWithOrg(() =>
+      app.request("/api/v1/agents/telegram-1/config")
+    );
     expect(response.status).toBe(200);
 
     const data = (await response.json()) as any;
@@ -150,8 +197,10 @@ describe("agent config routes", () => {
       })
     );
 
-    const response = await app.request(
-      `/api/v1/agents/telegram-1/config?token=${encodeURIComponent(token)}`
+    const response = await runWithOrg(() =>
+      app.request(
+        `/api/v1/agents/telegram-1/config?token=${encodeURIComponent(token)}`
+      )
     );
 
     expect(response.status).toBe(200);
@@ -171,8 +220,10 @@ describe("agent config routes", () => {
       })
     );
 
-    const response = await app.request(
-      `/api/v1/agents/telegram-1/config?token=${encodeURIComponent(token)}`
+    const response = await runWithOrg(() =>
+      app.request(
+        `/api/v1/agents/telegram-1/config?token=${encodeURIComponent(token)}`
+      )
     );
 
     expect(response.status).toBe(200);
@@ -193,8 +244,10 @@ describe("agent config routes", () => {
       })
     );
 
-    const response = await app.request(
-      `/api/v1/agents/telegram-1/config?token=${encodeURIComponent(token)}`
+    const response = await runWithOrg(() =>
+      app.request(
+        `/api/v1/agents/telegram-1/config?token=${encodeURIComponent(token)}`
+      )
     );
 
     expect(response.status).toBe(401);
@@ -223,7 +276,9 @@ describe("agent config routes", () => {
       })
     );
 
-    const response = await app.request("/api/v1/agents/telegram-1/config");
+    const response = await runWithOrg(() =>
+      app.request("/api/v1/agents/telegram-1/config")
+    );
 
     expect(response.status).toBe(200);
     const data = (await response.json()) as any;
@@ -241,7 +296,9 @@ describe("agent config routes", () => {
     }));
 
     const app = buildApp();
-    const response = await app.request("/api/v1/agents/telegram-1/config");
+    const response = await runWithOrg(() =>
+      app.request("/api/v1/agents/telegram-1/config")
+    );
 
     expect(response.status).toBe(200);
     const data = (await response.json()) as any;

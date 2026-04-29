@@ -1,28 +1,47 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from "bun:test";
 import { Hono } from "hono";
-import { MockRedisClient } from "@lobu/core/testing";
+import { orgContext } from "../../lobu/stores/org-context.js";
 import { AgentMetadataStore } from "../auth/agent-metadata-store.js";
 import { UserAgentsStore } from "../auth/user-agents-store.js";
 import { createAgentHistoryRoutes } from "../routes/public/agent-history.js";
 import { setAuthProvider } from "../routes/public/settings-auth.js";
+import {
+  ensurePgliteForGatewayTests,
+  resetTestDatabase,
+  seedAgentRow,
+} from "./helpers/db-setup.js";
+
+const ORG_ID = "test-org-agent-history";
 
 describe("agent history routes", () => {
-  let redis: MockRedisClient;
   let agentMetadataStore: AgentMetadataStore;
   let userAgentsStore: UserAgentsStore;
 
-  beforeEach(async () => {
-    redis = new MockRedisClient();
-    agentMetadataStore = new AgentMetadataStore(redis as any);
-    userAgentsStore = new UserAgentsStore(redis as any);
+  beforeAll(async () => {
+    await ensurePgliteForGatewayTests();
+  });
 
-    await agentMetadataStore.createAgent(
-      "agent-1",
-      "Agent 1",
-      "external",
-      "u1"
-    );
-    await userAgentsStore.addAgent("external", "u1", "agent-1");
+  beforeEach(async () => {
+    await resetTestDatabase();
+    agentMetadataStore = new AgentMetadataStore();
+    userAgentsStore = new UserAgentsStore();
+
+    await orgContext.run({ organizationId: ORG_ID }, async () => {
+      await seedAgentRow("agent-1", {
+        organizationId: ORG_ID,
+        name: "Agent 1",
+        ownerPlatform: "external",
+        ownerUserId: "u1",
+      });
+      await userAgentsStore.addAgent("external", "u1", "agent-1");
+    });
   });
 
   afterEach(() => {
@@ -57,14 +76,13 @@ describe("agent history routes", () => {
       })
     );
 
-    const response = await app.request(
-      "/api/v1/agents/agent-1/history/status",
-      {
+    const response = await orgContext.run({ organizationId: ORG_ID }, () =>
+      app.request("/api/v1/agents/agent-1/history/status", {
         headers: {
           host: "localhost",
         },
         method: "GET",
-      }
+      })
     );
 
     expect(response.status).toBe(401);

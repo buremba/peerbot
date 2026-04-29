@@ -23,7 +23,7 @@ export const TIME = {
   THIRTY_SECONDS: 30,
   /** Three hours in milliseconds (for interaction timeout) */
   THREE_HOURS_MS: 3 * 60 * 60 * 1000,
-  /** Three hours in seconds (for Redis TTL) */
+  /** Three hours in seconds (for TTLs that expect seconds) */
   THREE_HOURS_SECONDS: 3 * 60 * 60,
 } as const;
 

@@ -77,7 +77,7 @@ export interface CoreServices {
  * 1. Receives CoreServices during initialization
  * 2. Sets up platform-specific event handlers
  * 3. Manages its own platform client/connection
- * 4. Uses core services (MCP, Anthropic, Redis) provided by Gateway
+ * 4. Uses core services (MCP, Anthropic, queue, etc.) provided by Gateway
  */
 export interface PlatformAdapter {
   /**

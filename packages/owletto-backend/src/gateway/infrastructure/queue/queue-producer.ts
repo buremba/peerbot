@@ -72,8 +72,8 @@ export interface MessagePayload {
 }
 
 /**
- * Queue producer for dispatching messages to Redis queues
- * Handles both direct_message and thread_message queues with bot isolation
+ * Queue producer for dispatching messages to the runs queue.
+ * Handles both direct_message and thread_message queues with bot isolation.
  */
 export class QueueProducer {
   private queue: IMessageQueue;

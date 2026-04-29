@@ -151,7 +151,6 @@ SENTRY_DSN=https://your-dsn@sentry.io/your-project
 
 When set, errors and warnings from both gateway and worker are automatically sent to Sentry with:
 - Console log integration (captures `log`, `warn`, `error`)
-- Redis integration for queue-related errors
 - 100% trace sample rate for full visibility
 
 To disable, remove `SENTRY_DSN` from your `.env`.

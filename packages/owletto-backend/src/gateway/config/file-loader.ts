@@ -50,8 +50,8 @@ function slugifyForConnectionId(input: string): string {
 
 /**
  * Build the stable connection ID: `{agent}-{type}` or `{agent}-{type}-{name}`.
- * Used to make webhook URLs (e.g. `/api/v1/webhooks/<id>`) survive Redis
- * flushes and fresh-clone setups — the ID is a pure function of lobu.toml.
+ * Used to make webhook URLs (e.g. `/api/v1/webhooks/<id>`) survive
+ * fresh-clone setups — the ID is a pure function of lobu.toml.
  */
 export function buildStableConnectionId(
   agentId: string,

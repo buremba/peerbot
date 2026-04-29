@@ -192,7 +192,7 @@ export class ChatResponseBridge implements ResponseRenderer {
     const conversationState =
       this.manager.getInstance(connectionId)?.conversationState;
 
-    // Gap 1: Store outgoing response in history. Wrap so that a Redis
+    // Gap 1: Store outgoing response in history. Wrap so that a state-store
     // outage doesn't fail the whole response delivery — the user has
     // already seen the message; missing history is recoverable, a 500
     // here is not.

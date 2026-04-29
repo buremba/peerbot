@@ -106,7 +106,7 @@ User (chat)          Worker              Gateway              MCP Server (OAuth)
     |                   |                   |    refresh_token }    |
     |                   |                   |<---------------------|
     |                   |                   |                       |
-    |                   |                   |  (store in Redis)     |
+    |                   |                   |  (store credential)   |
     |                   |                   |                       |
     |                   |                   |  tools/call X + token |
     |                   |                   |---------------------->|
@@ -135,15 +135,15 @@ User (chat)          Worker              Gateway              MCP Server (OAuth)
 
 5. **Gateway polls for completion** — On the next tool call from the worker, the gateway polls the token endpoint with the `device_code`. If the user has completed auth, it receives `access_token` + `refresh_token`.
 
-6. **Credentials stored** — Encrypted in Redis, keyed by `(agentId, userId, mcpId)`, with 90-day TTL.
+6. **Credentials stored** — Encrypted in Postgres, keyed by `(agentId, userId, mcpId)`, with 90-day TTL.
 
 7. **Future calls are transparent** — Gateway injects `Authorization: Bearer <token>` on every proxied request. No more user interaction needed.
 
 #### Token lifecycle
 
-- **Storage**: Encrypted at rest in Redis with 90-day TTL
+- **Storage**: Encrypted at rest in Postgres with 90-day TTL
 - **Auto-refresh**: When a token is within 5 minutes of expiry, the gateway refreshes it using the `refresh_token` before proxying the request
-- **Refresh locking**: A Redis lock prevents concurrent refresh races across gateway instances
+- **Refresh locking**: A per-process mutex prevents concurrent refresh races within a single gateway instance
 - **Expiry fallback**: If refresh fails (no refresh token, revoked, etc.), the next tool call triggers a new device-code flow
 
 #### Configuration
@@ -203,7 +203,7 @@ The proxy resolves upstream URLs and blocks requests to reserved/internal IP ran
 
 ## Session management
 
-MCP sessions (via `Mcp-Session-Id` header) are tracked in Redis with 30-minute TTL. If an upstream returns "Server not initialized" (stale session), the gateway automatically re-initializes with the MCP handshake (`initialize` + `notifications/initialized`) before retrying.
+MCP sessions (via `Mcp-Session-Id` header) are tracked in Postgres (`mcp_proxy_sessions`) with 30-minute TTL. If an upstream returns "Server not initialized" (stale session), the gateway automatically re-initializes with the MCP handshake (`initialize` + `notifications/initialized`) before retrying.
 
 ## Tool approval
 

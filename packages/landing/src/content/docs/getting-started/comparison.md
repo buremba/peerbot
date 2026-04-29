@@ -15,7 +15,7 @@ This page compares Lobu against alternatives for deploying agents to production.
 | **Multi-tenant** | Per-user/channel isolation | Single user | Per-thread sandbox | Per-conversation |
 | **Platforms** | Slack, Telegram, WhatsApp, Discord, Teams, Google Chat, REST API | CLI and API | API endpoints (MCP, A2A, Agent Protocol) | API |
 | **Embeddable** | Mount inside Next.js, Express, Hono, Fastify | No | No | No |
-| **Self-hosted** | Single Node process (BYO Postgres + Redis) | Single process | LangSmith hosted (self-host option) | Cloud only |
+| **Self-hosted** | Single Node process (BYO Postgres) | Single process | LangSmith hosted (self-host option) | Cloud only |
 | **Model support** | Any provider via config | Any provider | Any LangChain-compatible provider | Anthropic only |
 | **Runtime** | OpenClaw | OpenClaw | LangGraph | Claude |
 | **Network isolation** | Gateway-mediated egress, domain filtering | Host network | Sandbox-level | Platform-managed |
@@ -97,7 +97,7 @@ For compliance-bound deployments, agent code never touches API keys or OAuth tok
 Hosted platforms (DeepAgents Deploy, Claude Managed Agents) require sending your data, prompts, and agent memory to a third party. For regulated industries (finance, healthcare, government) or organizations with data residency requirements, this is a non-starter.
 
 Lobu runs entirely on your infrastructure:
-- **Data stays in your network** — Redis, workspaces, and memory are all self-hosted
+- **Data stays in your network** — Postgres, workspaces, and memory are all self-hosted
 - **No external dependencies** — the gateway, workers, and MCP proxy run on your machines
 - **Network-level isolation** — workers use gateway-mediated egress, with kernel-level loopback-only enforcement on Linux production hosts
 - **Credential separation** — secrets never leave the gateway process
@@ -129,7 +129,7 @@ OpenClaw (~800k LOC) was designed as a **single-tenant, single-user system**. Pr
 | Secret handling | Gateway proxy injects credentials | Direct env vars |
 | Egress control | Domain allowlists via HTTP proxy | Host network |
 | Scale-to-zero | Built-in idle timeout and wake | Always running |
-| Deployment | Single Node process (BYO Postgres + Redis) | Single process |
+| Deployment | Single Node process (BYO Postgres) | Single process |
 
 Inside each Lobu worker, the full OpenClaw runtime runs untouched. Lobu rewrites only the gateway layer (~40k LOC) to be multi-tenant.
 

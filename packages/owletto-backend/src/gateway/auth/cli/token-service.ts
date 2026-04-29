@@ -61,10 +61,8 @@ interface CliAccessTokenIdentity extends CliTokenIdentity {
  * re-checks the row exists so a `revokeSessionByRefreshToken` invalidates
  * outstanding access tokens within the verify window.
  *
- * The previous Redis-backed implementation used a single `setex` per
- * session and relied on TTL for cleanup; here we read `expires_at` on
- * every load and lazily delete expired rows. A periodic sweeper deletes
- * leftover rows in bulk.
+ * Cleanup model: read `expires_at` on every load and lazily delete expired
+ * rows; a periodic sweeper deletes leftover rows in bulk.
  */
 export class CliTokenService {
   async issueTokens(identity: CliTokenIdentity): Promise<CliIssuedTokens> {

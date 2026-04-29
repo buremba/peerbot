@@ -1,6 +1,7 @@
 /**
- * ChatInstanceManager — manages Chat SDK instances for API-driven platform connections.
- * Owns Redis persistence, Chat lifecycle, and webhook dispatch.
+ * ChatInstanceManager — manages Chat SDK instances for API-driven platform
+ * connections. Owns persistence (chat_connections), Chat lifecycle, and
+ * webhook dispatch.
  */
 
 import { randomUUID } from "node:crypto";
@@ -181,8 +182,8 @@ export class ChatInstanceManager {
     }
 
     // Use the caller-supplied stable ID when provided (file-loader path, so
-    // webhook URLs survive Redis flushes). Fall back to a random ID for
-    // API-created connections.
+    // webhook URLs survive fresh-clone setups). Fall back to a random ID
+    // for API-created connections.
     const id = stableId ?? randomUUID().replace(/-/g, "").slice(0, 16);
     const now = Date.now();
 

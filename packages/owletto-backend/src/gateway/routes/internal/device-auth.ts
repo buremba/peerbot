@@ -141,9 +141,9 @@ function clientCacheName(mcpId: string): string {
 }
 
 /**
- * Per-process refresh lock. Replaces the previous Redis SET NX EX lock —
- * single-process gateway means an in-memory mutex is sufficient. Lock entries
- * expire after 30s as a safety net for handlers that throw without releasing.
+ * Per-process refresh lock. Single-process gateway, so an in-memory mutex
+ * is sufficient. Lock entries expire after 30s as a safety net for handlers
+ * that throw without releasing.
  */
 const refreshLocks = new Map<string, number>();
 const REFRESH_LOCK_TTL_MS = 30_000;

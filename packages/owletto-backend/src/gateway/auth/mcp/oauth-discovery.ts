@@ -329,8 +329,8 @@ interface DiscoverOptions {
 /**
  * Resolve OAuth endpoints + client for an MCP server.
  *
- * Uses in-memory + Redis caches so we don't re-run the discovery chain on
- * every 401. The cache is invalidated by deleting the credential (logout).
+ * Uses an in-memory cache so we don't re-run the discovery chain on every
+ * 401. The cache is invalidated by deleting the credential (logout).
  */
 export async function discoverOAuth(
   options: DiscoverOptions

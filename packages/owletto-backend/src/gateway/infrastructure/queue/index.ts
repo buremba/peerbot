@@ -2,7 +2,7 @@
  * Queue infrastructure.
  *
  * `RunsQueue` (Postgres `runs` table + SKIP LOCKED) is the only queue
- * substrate. The legacy BullMQ/Redis path is gone.
+ * substrate.
  */
 
 export { QueueProducer } from "./queue-producer.js";

@@ -81,7 +81,7 @@ export interface PostedStatusMessage extends BaseMessage {
 
 /**
  * Platform-agnostic interaction service (fire-and-forget).
- * Posts questions with buttons; no Redis, no blocking, no state machine.
+ * Posts questions with buttons; no blocking, no state machine.
  * User clicks → platform converts to regular message → normal queue.
  */
 export class InteractionService extends EventEmitter {
@@ -142,9 +142,9 @@ export class InteractionService extends EventEmitter {
    * Post a tool approval request with duration buttons (non-blocking, fire-and-forget).
    * Emits "tool:approval-needed" for platform renderers.
    *
-   * `requestId` MUST be the same value the MCP proxy used as the `pending-tool:*`
-   * Redis key. It's embedded into the button `actionId` so the interaction
-   * bridge can look up the pending invocation on click.
+   * `requestId` MUST be the same value the MCP proxy used as the
+   * `PendingToolStore` key. It's embedded into the button `actionId` so the
+   * interaction bridge can look up the pending invocation on click.
    */
   async postToolApproval(
     requestId: string,

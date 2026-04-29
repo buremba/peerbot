@@ -129,10 +129,10 @@ export class AwsSecretsManagerSecretStore implements SecretStore {
 
 /**
  * Short-TTL in-memory cache for secret resolution. Dramatically cuts load on
- * the Redis secret store and the AWS Secrets Manager API for hot paths
- * (proxy forwards, env-var injection, auth profile listing). Invalidated on
- * `put`/`delete` of the same name and LRU-capped to prevent unbounded
- * growth under a burst of unique refs within the TTL window.
+ * the underlying secret store (Postgres) and the AWS Secrets Manager API
+ * for hot paths (proxy forwards, env-var injection, auth profile listing).
+ * Invalidated on `put`/`delete` of the same name and LRU-capped to prevent
+ * unbounded growth under a burst of unique refs within the TTL window.
  */
 interface CacheEntry {
   value: string | null;
@@ -158,7 +158,7 @@ export class SecretStoreRegistry implements WritableSecretStore {
 
   /**
    * @param defaultStore writable backend for the default scheme (usually
-   *   `secret://` backed by Redis). New `put`/`delete(name)` calls land
+   *   `secret://` backed by Postgres). New `put`/`delete(name)` calls land
    *   here. Writes via a ref explicitly routed to another writable store
    *   land in that store.
    * @param writableStores every writable backend keyed by ref scheme,

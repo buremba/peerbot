@@ -271,7 +271,7 @@ export async function reconcileWatcherRuns(db?: DbClient): Promise<ReconcileWatc
  * The primary lifecycle is driven by WatcherRunTracker (in-process completion
  * events) plus startup reconciliation on gateway boot. This sweeper only
  * catches truly stuck runs — the tracker entry was lost without a crash
- * (graceful shutdown mid-turn, redis message silently dropped, etc). TTL is
+ * (graceful shutdown mid-turn, queue message silently dropped, etc). TTL is
  * intentionally generous so long LLM turns are not killed.
  */
 const WATCHER_RUN_STALE_INTERVAL = '2 hours';

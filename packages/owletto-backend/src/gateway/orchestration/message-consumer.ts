@@ -169,7 +169,7 @@ export class MessageConsumer {
       // to the user via the response bridge. Lookup of settings.guardrails
       // requires threading an AgentConfigStore into MessageConsumer; deferred
       // to the PR that registers the first real input guardrail (#251).
-      // 1) Send to thread queue immediately (Redis persists; worker will drain on attach)
+      // 1) Send to thread queue immediately (queue persists; worker will drain on attach)
       await Sentry.startSpan(
         {
           name: "orchestrator.send_to_worker_queue",
@@ -243,7 +243,7 @@ export class MessageConsumer {
       Sentry.captureException(error);
       logger.error({ traceId, jobId, error }, "Message job failed");
 
-      // Re-throw for Redis retry handling
+      // Re-throw for queue retry handling
       throw new OrchestratorError(
         ErrorCode.QUEUE_JOB_PROCESSING_FAILED,
         `Failed to process message job: ${error instanceof Error ? error.message : String(error)}`,
@@ -320,7 +320,7 @@ export class MessageConsumer {
   /**
    * Ensure worker deployment exists for a thread
    * Uses shared retry utility with linear backoff + jitter
-   * Uses Redis lock to prevent concurrent duplicate deployment creation
+   * Uses an advisory lock to prevent concurrent duplicate deployment creation
    */
   private async ensureWorkerExists(
     deploymentName: string,

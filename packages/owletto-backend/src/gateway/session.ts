@@ -50,7 +50,7 @@ export interface ThreadSession {
 }
 
 /**
- * Compute session key for Redis storage
+ * Compute session key for the session store.
  * For API platform: just conversationId (which equals agentId)
  * For Slack/WhatsApp: channelId:conversationId
  */
@@ -82,7 +82,7 @@ export interface SessionStore {
     channelId: string,
     threadTs: string
   ): Promise<ThreadSession | null>;
-  /** Optional cleanup - not needed for Redis TTL-based stores */
+  /** Optional cleanup; only needed for stores without intrinsic TTL. */
   cleanup?(ttl: number): Promise<number>;
 }
 

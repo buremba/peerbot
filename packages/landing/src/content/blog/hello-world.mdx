@@ -24,7 +24,7 @@ OpenClaw is a great agent runtime. But running it for a team exposes real proble
 
 **Serverless execution.** Stock OpenClaw runs as a long-lived process — you start it, it stays on, waiting for input. That's fine on your laptop but it doesn't work for multi-tenant infrastructure. You'd need one always-on process per user, burning compute 24/7. Lobu runs OpenClaw as [serverless workers](/serverless-openclaw/) that scale to zero when idle and wake on the next message. Persistent volumes keep session state across restarts, so the agent picks up right where it left off.
 
-**Credential isolation.** OpenClaw needs API keys to talk to LLM providers. In a multi-tenant setup, you can't just set environment variables — every user has their own keys, and a compromised agent shouldn't be able to read them. Workers don't receive real API keys, ever. The gateway generates placeholder tokens (`lobu_secret_<uuid>`) and passes those instead. The real credentials stay in Redis. All outbound traffic flows through the gateway's HTTP proxy, which swaps placeholders for real keys at request time. A compromised worker literally doesn't have the secrets.
+**Credential isolation.** OpenClaw needs API keys to talk to LLM providers. In a multi-tenant setup, you can't just set environment variables — every user has their own keys, and a compromised agent shouldn't be able to read them. Workers don't receive real API keys, ever. The gateway generates placeholder tokens (`lobu_secret_<uuid>`) and passes those instead. The real credentials stay encrypted in Postgres. All outbound traffic flows through the gateway's HTTP proxy, which swaps placeholders for real keys at request time. A compromised worker literally doesn't have the secrets.
 
 **Network isolation.** Workers route outbound traffic through the gateway HTTP proxy. Outbound connections are denied by default — you control what domains workers can reach through allowlists. On Linux production hosts, `systemd-run` adds kernel-level egress blocking so workers can only reach loopback.
 
@@ -59,4 +59,4 @@ The gateway is being rewritten with multi-tenancy as a first-class concern — u
 ## Try it
 
 {/* Telegram bot handle intentionally hidden */}
-[Add to Slack](https://app.lobu.ai/slack/install) — free, BYO keys, nothing to deploy. For self-hosting: see the [getting started guide](/getting-started/) — Lobu boots as a single Node process; bring your own Postgres + Redis.
+[Add to Slack](https://app.lobu.ai/slack/install) — free, BYO keys, nothing to deploy. For self-hosting: see the [getting started guide](/getting-started/) — Lobu boots as a single Node process; bring your own Postgres.

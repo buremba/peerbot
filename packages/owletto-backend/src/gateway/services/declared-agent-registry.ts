@@ -15,7 +15,7 @@ interface DeclaredAgentEntry {
  * `GatewayConfig.agents` (SDK embedded mode).
  *
  * Declared agents own their settings and credentials at runtime — there is
- * no Redis copy to drift. The registry is rebuilt wholesale by callers
+ * no second copy to drift. The registry is rebuilt wholesale by callers
  * (e.g. `reloadFromFiles`) so removing a provider from `lobu.toml` removes
  * it from the registry on next reload.
  */

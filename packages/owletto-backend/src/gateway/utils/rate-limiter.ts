@@ -25,8 +25,7 @@ interface FixedWindowRateLimitResult {
  *   - resets the row when the existing window has already expired,
  *   - bumps `count` when the window is still live.
  *
- * Mirrors the Redis INCR + EXPIRE semantics one-to-one so callers don't
- * have to change their key format.
+ * Same fixed-window-counter semantics as a typical INCR + EXPIRE loop.
  */
 export class FixedWindowRateLimiter {
   async consume(

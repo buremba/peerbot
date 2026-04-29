@@ -37,8 +37,7 @@ const plans: PricingPlan[] = [
     features: [
       "Unlimited agents and users",
       `All delivery surfaces (${deliverySurfacesLabel})`,
-      "Single Node process — bring your own Postgres + Redis",
-      "Embed in Node.js apps",
+      "Single Node process — bring your own Postgres",
       "MCP proxy with credential isolation",
       "Built-in evals",
       "Community support on GitHub",

@@ -504,9 +504,9 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
 
   // Accept either an AgentMetadataStore or an AgentConfigStore exposing
   // getMetadata for ownership resolution. When both are provided, try the
-  // metadata store first (Redis cache) and fall through to the config store
-  // (Postgres, authoritative) — needed in embedded mode where agent rows live
-  // in Postgres but the Redis cache is never hydrated.
+  // metadata store first (in-memory layer) and fall through to the config
+  // store (Postgres, authoritative) — needed in embedded mode where agent
+  // rows live in Postgres but the in-memory layer is not hydrated.
   const ownershipMetadataStore:
     | { getMetadata: AgentMetadataStore["getMetadata"] }
     | undefined =

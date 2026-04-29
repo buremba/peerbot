@@ -13,8 +13,8 @@ const logger = createLogger("session-manager");
 
 /**
  * Session storage backed by the shared conversation state layer.
- * Thread sessions and chat history now share the same StateAdapter-backed
- * storage abstraction instead of talking to Redis separately.
+ * Thread sessions and chat history share the same StateAdapter-backed
+ * storage abstraction.
  */
 export class StateAdapterSessionStore implements SessionStore {
   constructor(private readonly conversations: ConversationStateStore) {}

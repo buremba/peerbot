@@ -7,9 +7,9 @@
  * update pattern and the listConnections platform filter.
  *
  * Grants, user-agent associations and channel bindings vary too much between
- * in-memory (self-contained Maps) and Redis (delegating to GrantStore /
- * UserAgentsStore / ChannelBindingService) to share concrete logic; subclasses
- * implement those groups directly.
+ * the in-memory (self-contained Maps) and the Postgres-backed paths
+ * (delegating to GrantStore / UserAgentsStore / ChannelBindingService) to
+ * share concrete logic; subclasses implement those groups directly.
  */
 
 import type {
@@ -58,12 +58,12 @@ export abstract class BaseAgentStore implements AgentStore {
 
   // ── Metadata primitives ────────────────────────────────────────────
   //
-  // `saveMetadata` / `updateMetadata` are abstract rather than expressed as a
-  // shared read→merge→write pattern because the Redis backend delegates to
-  // `AgentMetadataStore.createAgent` for saves (which stamps a fresh
-  // `createdAt`) and to `AgentMetadataStore.updateMetadata` for updates
-  // (which preserves `createdAt` and accepts only a narrow subset of
-  // fields). Routing updates through a shared `writeMetadata` primitive
+  // `saveMetadata` / `updateMetadata` are abstract rather than expressed as
+  // a shared read→merge→write pattern because the Postgres-backed path
+  // delegates to `AgentMetadataStore.createAgent` for saves (which stamps a
+  // fresh `createdAt`) and to `AgentMetadataStore.updateMetadata` for
+  // updates (which preserves `createdAt` and accepts only a narrow subset
+  // of fields). Routing updates through a shared `writeMetadata` primitive
   // would corrupt `createdAt` on every update call.
 
   protected abstract readMetadata(

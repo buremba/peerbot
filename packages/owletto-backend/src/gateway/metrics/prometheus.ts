@@ -49,11 +49,6 @@ function initializeMetrics() {
   );
   registerMetric("lobu_queue_length", "Current message queue length", "gauge");
   registerMetric(
-    "lobu_redis_connection_errors_total",
-    "Total number of Redis connection errors",
-    "counter"
-  );
-  registerMetric(
     "lobu_proxy_requests_total",
     "Total number of HTTP proxy requests",
     "counter"

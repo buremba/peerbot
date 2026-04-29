@@ -318,10 +318,8 @@ export class CoreServices {
   // ============================================================================
 
   private async initializeQueue(): Promise<void> {
-    // Queue substrate is `public.runs` over Postgres (SKIP LOCKED + LISTEN/
-    // NOTIFY). All non-queue consumers (secret-store, grant-store,
-    // cli-auth, Slack OAuth state) moved to PG; ioredis is gone from
-    // application code.
+    // Queue substrate is `public.runs` over Postgres (SKIP LOCKED +
+    // LISTEN/NOTIFY).
     this.queue = new RunsQueue();
     await this.queue.start();
     logger.debug("Queue connection established (runs-table substrate)");
@@ -451,7 +449,7 @@ export class CoreServices {
           );
         } else {
           throw new Error(
-            "No agent sub-stores configured: provide configStore/connectionStore/accessStore via CoreServices options, or place a lobu.toml in the workspace, or pass agents via GatewayConfig.agents. The Redis-backed fall-through is gone."
+            "No agent sub-stores configured: provide configStore/connectionStore/accessStore via CoreServices options, or place a lobu.toml in the workspace, or pass agents via GatewayConfig.agents."
           );
         }
       }
@@ -515,14 +513,14 @@ export class CoreServices {
     }
 
     // Declared registry: read-only snapshot of file/SDK-declared agents.
-    // No Redis copy is kept — declared settings live in memory and are
+    // No second copy is kept — declared settings live in memory and are
     // rebuilt wholesale on hot-reload.
     this.declaredAgentRegistry = new DeclaredAgentRegistry();
     this.declaredAgentRegistry.replaceAll(
       buildRegistryMap(this.fileLoadedAgents, this.configAgents)
     );
     // Plumb registry into the settings store so getEffectiveSettings
-    // returns declared settings for declared agents (no Redis copy exists
+    // returns declared settings for declared agents (no second copy exists
     // by design — see one-shot cleanup below).
     this.agentSettingsStore.setDeclaredAgents(this.declaredAgentRegistry);
 
@@ -968,8 +966,8 @@ export class CoreServices {
     }
 
     // Repopulate the declared registry so subsequent credential lookups
-    // see the new file-declared providers/keys. No Redis sync, no
-    // additive seeding — the registry IS the source of truth.
+    // see the new file-declared providers/keys. No additive seeding — the
+    // registry IS the source of truth.
     if (this.declaredAgentRegistry) {
       this.declaredAgentRegistry.replaceAll(
         buildRegistryMap(this.fileLoadedAgents, this.configAgents)

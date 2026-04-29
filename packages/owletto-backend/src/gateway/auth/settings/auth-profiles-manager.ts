@@ -14,7 +14,7 @@ const ANY_MODEL_SCOPE = "*";
 
 interface UpsertAuthProfileInput {
   agentId: string;
-  /** Owning user. Required for persistent (Redis-backed) writes. */
+  /** Owning user. Required for persistent writes. */
   userId?: string;
   provider: string;
   credential?: string;
@@ -193,7 +193,7 @@ export class AuthProfilesManager {
   }
 
   /**
-   * Insert or update a persistent (Redis-backed) profile.
+   * Insert or update a persistent profile.
    *
    * Requires `userId` — declared agents cannot be mutated through this
    * path. Runtime UI/sandbox agents that aren't owned by a single user

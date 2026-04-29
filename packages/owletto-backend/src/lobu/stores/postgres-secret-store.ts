@@ -1,12 +1,11 @@
 /**
- * PostgresSecretStore — WritableSecretStore backed by the agent_secrets
+ * PostgresSecretStore — WritableSecretStore backed by the `agent_secrets`
  * table. Stores AES-256-GCM ciphertext produced by @lobu/core's encrypt(),
- * keyed by logical name, and returns `secret://<encoded-name>` refs matching
- * the gateway's RedisSecretStore contract.
+ * keyed by logical name, and returns `secret://<encoded-name>` refs.
  *
  * Paired with SecretStoreRegistry and passed as the `secretStore` option to
- * Gateway from src/lobu/gateway.ts so lobu's ChatInstanceManager can persist
- * connection secrets in Postgres instead of Redis.
+ * Gateway from `src/lobu/gateway.ts` so lobu's ChatInstanceManager can
+ * persist connection secrets durably.
  */
 
 import {

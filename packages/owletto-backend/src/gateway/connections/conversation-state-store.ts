@@ -46,8 +46,8 @@ export function threadIndexKey(channelId: string, threadTs: string): string {
 
 /**
  * Unified conversation-scoped state backed by the Chat SDK StateAdapter.
- * Owns both sliding-window history and thread session metadata so chat state
- * lives behind a single abstraction even when Redis is the underlying store.
+ * Owns both sliding-window history and thread session metadata so chat
+ * state lives behind a single abstraction over the underlying store.
  */
 export class ConversationStateStore {
   constructor(private readonly state: StateAdapter) {}
@@ -221,9 +221,9 @@ export class ConversationStateStore {
   ): Promise<void> {
     const lockId = `lock:${historyIndexKey(connectionId)}`;
     // Retry briefly if the lock is contended; only fall through to an
-    // unlocked write if Redis itself is unavailable. Silently dropping
-    // to an unlocked path on transient contention is what allowed two
-    // concurrent appends to clobber each other's index updates.
+    // unlocked write if the state adapter itself is unavailable. Silently
+    // dropping to an unlocked path on transient contention is what allowed
+    // two concurrent appends to clobber each other's index updates.
     let lock: Awaited<ReturnType<typeof this.state.acquireLock>> = null;
     let lockError: unknown = null;
     for (let attempt = 0; attempt < 3 && !lock; attempt++) {
@@ -240,7 +240,7 @@ export class ConversationStateStore {
     if (!lock) {
       logger.warn(
         { connectionId, error: lockError ? String(lockError) : "contended" },
-        "Updating history index without lock — another writer holds it or Redis is unavailable"
+        "Updating history index without lock — another writer holds it or the state adapter is unavailable"
       );
     }
 

@@ -186,7 +186,7 @@ export abstract class BaseDeploymentManager {
    * (a) skip redundant `grantStore.grant()` writes when the set is
    * unchanged and (b) compute the revoke-diff so patterns dropped from
    * `networkConfig.allowedDomains` / `preApprovedTools` are removed from
-   * Redis instead of lingering forever.
+   * the grant store instead of lingering forever.
    */
   private grantSyncCache = new Map<string, Set<string>>();
   /**
@@ -514,7 +514,7 @@ export abstract class BaseDeploymentManager {
    *   - patterns in the previous set but not the new are `revoke()`-d
    * This means clearing `networkConfig.allowedDomains` or
    * `preApprovedTools` in lobu.toml actually drops access, instead of
-   * leaving stale grants in Redis.
+   * leaving stale grants in the store.
    */
   async syncNetworkConfigGrants(messageData: MessagePayload): Promise<void> {
     const agentId = messageData.agentId;
@@ -534,7 +534,7 @@ export abstract class BaseDeploymentManager {
 
     const previous = this.grantSyncCache.get(agentId) ?? new Set<string>();
 
-    // Unchanged set → skip Redis roundtrip entirely.
+    // Unchanged set → skip the round-trip entirely.
     if (
       nextPatterns.size === previous.size &&
       [...nextPatterns].every((p) => previous.has(p))
@@ -632,7 +632,7 @@ export abstract class BaseDeploymentManager {
       DEBUG: "1",
       HTTP_PROXY: proxyUrl,
       HTTPS_PROXY: proxyUrl,
-      NO_PROXY: `${dispatcherHost},gateway,redis,localhost,127.0.0.1`,
+      NO_PROXY: `${dispatcherHost},gateway,localhost,127.0.0.1`,
       // Pin HOME inside the persistent workspace so per-tool caches
       // (~/.npm, ~/.cache, ~/.config, ~/.local/share) survive worker restarts
       // without leaking into the gateway host home directory.
@@ -696,7 +696,7 @@ export abstract class BaseDeploymentManager {
    * the real credential at request time using agentId from the URL path
    * (`/a/{agentId}`) and the provider slug.
    *
-   * Non-provider secrets use UUID placeholders stored in Redis.
+   * Non-provider secrets use UUID placeholders stored in the secret-proxy.
    */
   private async injectSecretPlaceholders(
     envVars: Record<string, string>,

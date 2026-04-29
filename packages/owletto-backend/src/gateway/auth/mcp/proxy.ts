@@ -858,7 +858,7 @@ export class McpProxy {
       //
       // Primary signal: MCP streamable-HTTP transport mandates HTTP 404 when
       // the `Mcp-Session-Id` header names a session the server no longer
-      // knows (e.g. upstream restarted while we cached the id in Redis).
+      // knows (e.g. upstream restarted while we held the id cached).
       //
       // Fallback signal: some MCP servers return 200 with a JSON-RPC error
       // whose message is "Server not initialized" or "Session not found…".
@@ -1663,10 +1663,10 @@ export class McpProxy {
   }
 
   /**
-   * Build a Redis key for the upstream Mcp-Session-Id associated with a
-   * specific (agent, mcp, scope) triple. Scoping by scopeKey prevents two
-   * users (or user-vs-channel credentials) from sharing a single upstream
-   * session, which would leak context across scopes.
+   * Build a session-store key for the upstream Mcp-Session-Id associated
+   * with a specific (agent, mcp, scope) triple. Scoping by scopeKey prevents
+   * two users (or user-vs-channel credentials) from sharing a single
+   * upstream session, which would leak context across scopes.
    */
   private buildSessionKey(
     agentId: string,
@@ -1796,7 +1796,7 @@ export class McpProxy {
       this.sessions.delete(key);
       return null;
     }
-    // Refresh TTL on read (matches Redis EXPIRE semantics).
+    // Refresh TTL on read.
     entry.expiresAt = Date.now() + this.SESSION_TTL_SECONDS * 1000;
     return entry.sessionId;
   }

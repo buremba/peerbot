@@ -20,7 +20,7 @@ const logger = createLogger("gateway");
  * Main Gateway class that orchestrates all platform adapters
  *
  * Architecture:
- * - CoreServices: Platform-agnostic services (Redis, MCP, Anthropic)
+ * - CoreServices: Platform-agnostic services (queue, MCP, Anthropic)
  * - PlatformAdapters: Platform-specific integrations (Slack, Discord, etc.)
  *
  * Lifecycle:
@@ -106,7 +106,7 @@ export class Gateway {
   async start(): Promise<void> {
     logger.debug("Starting gateway...");
 
-    // 1. Initialize core services (Redis, MCP, Anthropic, etc.)
+    // 1. Initialize core services (queue, MCP, Anthropic, etc.)
     await this.coreServices.initialize();
 
     // 2. Initialize each platform with core services

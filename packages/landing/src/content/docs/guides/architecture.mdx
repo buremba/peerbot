@@ -21,7 +21,7 @@ Lobu runs as a gateway + worker architecture.
 
 - **Gateway**: orchestration, OAuth, secrets, domain policy, routing.
 - **Worker**: model execution, tools, workspace state.
-- **Redis**: queue/state backing for job flow.
+- **Postgres**: queue (`runs` table), agent metadata, settings, grants, secrets, chat connection rows, sliding-window history, OAuth state, rate limits, MCP proxy sessions.
 
 ## Persistent Memory
 

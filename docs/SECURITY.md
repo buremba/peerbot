@@ -1,6 +1,6 @@
 # Security
 
-Lobu runs as a single Node process — gateway, embedded workers, embeddings, and the Owletto memory backend in-process; Postgres + Redis are user-provided externals. There is no Docker or Kubernetes deployment manager. This page documents what's isolated, what's policy, and what isn't a security boundary at all.
+Lobu runs as a single Node process — gateway, embedded workers, embeddings, and the Owletto memory backend in-process; Postgres is the only user-provided external. There is no Docker or Kubernetes deployment manager. This page documents what's isolated, what's policy, and what isn't a security boundary at all.
 
 ## Threat model
 

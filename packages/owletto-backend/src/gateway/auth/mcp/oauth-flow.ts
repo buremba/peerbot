@@ -6,8 +6,8 @@
  *   - `OAuthStateStore` for CSRF-protected, one-time PKCE state,
  *   - `storeCredentialForScope` from `device-auth.ts` for credential persistence.
  *
- * The state entry lives in Redis with a 5-minute TTL (from OAuthStateStore).
- * The consume() is atomic (GETDEL), so replay of the same `state` fails.
+ * The state entry has a 5-minute TTL (enforced by OAuthStateStore). The
+ * consume() is atomic, so replay of the same `state` fails.
  */
 
 import { createHash, randomBytes } from "node:crypto";

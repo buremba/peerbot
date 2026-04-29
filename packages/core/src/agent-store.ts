@@ -25,8 +25,8 @@ import type {
 /**
  * Agent settings — configurable per agentId.
  *
- * Canonical shape. Both the in-memory store and the gateway Redis store use
- * this interface; the gateway re-exports it from `auth/settings/index.ts` for
+ * Canonical shape. Every agent store implementation conforms to this
+ * interface; the gateway re-exports it from `auth/settings/index.ts` for
  * legacy import paths.
  */
 export interface AgentSettings {

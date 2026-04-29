@@ -161,9 +161,9 @@ export function registerInteractionBridge(
   }
 
   // Tracks posted tool-approval cards so we can edit them on click to strip
-  // the buttons. Keyed by requestId (== PostedToolApproval.id == Redis key).
-  // Auto-expire window matches the Redis pending-tool TTL (24h) so a late
-  // click can still find the card to strip.
+  // the buttons. Keyed by requestId (== PostedToolApproval.id == pending-tool
+  // store key). Auto-expire window matches the pending-tool TTL (24h) so a
+  // late click can still find the card to strip.
   const APPROVAL_CARD_TTL_MS = 24 * 60 * 60 * 1000;
   const pendingApprovalCards = new Map<string, SentMessage>();
   const pendingApprovalTimers = new Map<string, NodeJS.Timeout>();

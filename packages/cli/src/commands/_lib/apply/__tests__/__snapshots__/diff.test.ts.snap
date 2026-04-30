@@ -1,0 +1,111 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`apply diff — agents create from empty remote 1`] = `
+"
+Plan:
+
+  agents:
+  + agent triage
+
+  settingss:
+  + settings triage
+
+Summary: 2 create, 0 update, 0 noop, 0 drift"
+`;
+
+exports[`apply diff — agents noop when remote matches desired 1`] = `
+"
+Plan:
+
+  agents:
+  = agent triage
+
+  settingss:
+  = settings triage
+
+Summary: 0 create, 0 update, 2 noop, 0 drift"
+`;
+
+exports[`apply diff — agents update when name differs 1`] = `
+"
+Plan:
+
+  agents:
+  ~ agent triage (name)
+
+  settingss:
+  = settings triage
+
+Summary: 0 create, 1 update, 1 noop, 0 drift"
+`;
+
+exports[`apply diff — agents drift when remote has agent not in desired 1`] = `
+"
+Plan:
+
+  agents:
+  ? agent stale (drift — ignored in v1, not deleted)
+
+Summary: 0 create, 0 update, 0 noop, 1 drift"
+`;
+
+exports[`apply diff — settings update on networkConfig change 1`] = `
+"
+Plan:
+
+  agents:
+  = agent triage
+
+  settingss:
+  ~ settings triage (networkConfig)
+
+Summary: 0 create, 1 update, 1 noop, 0 drift"
+`;
+
+exports[`apply diff — connections create on empty remote 1`] = `
+"
+Plan:
+
+  agents:
+  + agent triage
+
+  settingss:
+  + settings triage
+
+  connections:
+  + connection triage/triage-telegram
+
+Summary: 3 create, 0 update, 0 noop, 0 drift"
+`;
+
+exports[`apply diff — connections update with willRestart when config changes 1`] = `
+"
+Plan:
+
+  agents:
+  = agent triage
+
+  settingss:
+  = settings triage
+
+  connections:
+  ~ connection triage/triage-telegram (config)
+      ⚠ will restart connection — in-flight messages may drop
+
+Summary: 0 create, 1 update, 2 noop, 0 drift"
+`;
+
+exports[`apply diff — memory schema creates entity + relationship types 1`] = `
+"
+Plan:
+
+  entity-types:
+  + entity-type company
+
+  relationship-types:
+  + relationship-type works_at
+
+Summary: 2 create, 0 update, 0 noop, 0 drift"
+`;
+
+exports[`renderSummary renders zero-row plan 1`] = `"Summary: 0 create, 0 update, 0 noop, 0 drift"`;

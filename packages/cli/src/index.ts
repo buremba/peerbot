@@ -132,6 +132,53 @@ export async function runCli(
       if (!valid) process.exit(1);
     });
 
+  // ─── apply ──────────────────────────────────────────────────────────
+  // One-way `lobu.toml` → cloud org converger. GETs current state, renders
+  // a diff, prompts to confirm, then loops over the existing CRUD endpoints
+  // in dependency order. Re-running converges on partial failure.
+  program
+    .command("apply")
+    .description(
+      "Sync lobu.toml + agent dirs to your Lobu Cloud org (idempotent)"
+    )
+    .option("--dry-run", "Show the plan and exit without mutating")
+    .option("--yes", "Skip the confirmation prompt (CI mode)")
+    .option(
+      "--only <kind>",
+      "Restrict to one resource family: 'agents' | 'memory'"
+    )
+    .option("--org <slug>", "Org slug override (defaults to active session)")
+    .option("--url <url>", "Server URL override")
+    .action(
+      async (options: {
+        dryRun?: boolean;
+        yes?: boolean;
+        only?: string;
+        org?: string;
+        url?: string;
+      }) => {
+        if (
+          options.only !== undefined &&
+          options.only !== "agents" &&
+          options.only !== "memory"
+        ) {
+          console.error(
+            chalk.red("\n  Error:"),
+            `--only must be 'agents' or 'memory' (got: ${options.only})`
+          );
+          process.exit(2);
+        }
+        const { lobuApplyCommand } = await import("./commands/apply.js");
+        await lobuApplyCommand({
+          dryRun: options.dryRun,
+          yes: options.yes,
+          only: options.only as "agents" | "memory" | undefined,
+          org: options.org,
+          url: options.url,
+        });
+      }
+    );
+
   // ─── run ────────────────────────────────────────────────────────────
   // Boots the embedded Lobu stack (gateway + workers + memory backend) as
   // a single Node process. Extra args are forwarded to the bundle entry.

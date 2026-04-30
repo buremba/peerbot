@@ -34,6 +34,18 @@ declare module 'hono' {
     mcpAuthInfo: AuthInfo | null;
     mcpIsAuthenticated: boolean;
     subdomainOrg: string | null;
+    /**
+     * How the current request authenticated. Set by `mcpAuth` /
+     * `MultiTenantProvider.resolveAuth`. Admin-tier routes that previously
+     * implicitly assumed web-session auth use this to refuse weak PATs.
+     *
+     * - `session`     — better-auth session cookie (web app)
+     * - `pat`         — `owl_pat_*` bearer (Personal Access Token)
+     * - `oauth`       — OAuth 2.1 access token bearer
+     * - `cli-token`   — `lobu login` CLI token bearer
+     * - `null`        — anonymous / unauthenticated request
+     */
+    authSource: 'session' | 'pat' | 'oauth' | 'cli-token' | null;
   }
 }
 

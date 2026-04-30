@@ -135,6 +135,7 @@ export class MultiTenantProvider implements WorkspaceProvider {
     c.set('memberRole', null);
     c.set('user', null);
     c.set('session', null);
+    c.set('authSource', null);
 
     let requestedOrgId: string | null = null;
     let requestedOrgVisibility: string | null = null;
@@ -221,6 +222,7 @@ export class MultiTenantProvider implements WorkspaceProvider {
         memberRole: string | null;
         user: unknown;
         session: unknown;
+        authSource: 'session' | 'pat' | 'oauth' | 'cli-token' | null;
       }>
     ) {
       if (overrides.mcpAuthInfo !== undefined) c.set('mcpAuthInfo', overrides.mcpAuthInfo);
@@ -230,6 +232,7 @@ export class MultiTenantProvider implements WorkspaceProvider {
       if (overrides.memberRole !== undefined) c.set('memberRole', overrides.memberRole);
       if (overrides.user !== undefined) c.set('user', overrides.user as any);
       if (overrides.session !== undefined) c.set('session', overrides.session as any);
+      if (overrides.authSource !== undefined) c.set('authSource', overrides.authSource);
       return next();
     }
 
@@ -264,6 +267,7 @@ export class MultiTenantProvider implements WorkspaceProvider {
                   token,
                   expiresAt: new Date(cliIdentity.expiresAt),
                 },
+                authSource: 'cli-token',
               });
               return undefined;
             }
@@ -309,6 +313,7 @@ export class MultiTenantProvider implements WorkspaceProvider {
               expiresAt: new Date(cliIdentity.expiresAt),
               activeOrganizationId: effectiveOrgId,
             },
+            authSource: 'cli-token',
           });
           return undefined;
         }
@@ -357,6 +362,7 @@ export class MultiTenantProvider implements WorkspaceProvider {
             mcpIsAuthenticated: true,
             organizationId: null,
             memberRole: null,
+            authSource: isPat ? 'pat' : 'oauth',
           });
           return undefined;
         }
@@ -428,6 +434,7 @@ export class MultiTenantProvider implements WorkspaceProvider {
         organizationId: effectiveOrgId,
         memberRole: role,
         user: bearerUser,
+        authSource: isPat ? 'pat' : 'oauth',
       });
       return undefined;
     }
@@ -467,6 +474,7 @@ export class MultiTenantProvider implements WorkspaceProvider {
               memberRole: null,
               user: session.user,
               session: session.session,
+              authSource: 'session',
             });
             return undefined;
           }
@@ -484,6 +492,7 @@ export class MultiTenantProvider implements WorkspaceProvider {
             memberRole: role,
             user: session.user,
             session: session.session,
+            authSource: 'session',
           });
           return undefined;
         }
@@ -504,6 +513,7 @@ export class MultiTenantProvider implements WorkspaceProvider {
           memberRole: null,
           user: session.user,
           session: session.session,
+          authSource: 'session',
         });
         return undefined;
       }

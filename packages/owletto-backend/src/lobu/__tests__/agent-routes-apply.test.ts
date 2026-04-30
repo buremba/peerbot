@@ -24,15 +24,24 @@ import {
 const authStash: {
   user: { id: string; name: string; email: string; emailVerified: boolean } | null;
   organizationId: string | null;
+  // `authSource` mirrors the real middleware contract so admin-tier routes
+  // gated by `requireSessionOrAdminPat` see a non-null value. Default to
+  // 'session' — the existing apply tests simulate a web user.
+  authSource: 'session' | 'pat' | 'oauth' | 'cli-token' | null;
+  mcpAuthInfo: { scopes: string[] } | null;
 } = {
   user: { id: 'u1', name: 'Test', email: 'u1@test', emailVerified: true },
   organizationId: 'org-a',
+  authSource: 'session',
+  mcpAuthInfo: null,
 };
 
 mock.module('../../auth/middleware', () => ({
   mcpAuth: async (c: any, next: any) => {
     c.set('user', authStash.user);
     c.set('organizationId', authStash.organizationId);
+    c.set('authSource', authStash.authSource);
+    c.set('mcpAuthInfo', authStash.mcpAuthInfo);
     return next();
   },
   // requireAuth is referenced elsewhere in the module — provide a passthrough
@@ -94,6 +103,8 @@ describe('POST /agents — idempotent same-org create', () => {
     await seedOrg(ORG_B);
     authStash.user = { id: 'u1', name: 'Test', email: 'u1@test', emailVerified: true };
     authStash.organizationId = ORG_A;
+    authStash.authSource = 'session';
+    authStash.mcpAuthInfo = null;
   });
 
   test('first POST creates 201, second returns 200 with existing payload', async () => {
@@ -201,6 +212,8 @@ describe('PUT /agents/:agentId/platforms/by-stable-id/:stableId', () => {
     await seedAgent(ORG_A, 'host-agent');
     authStash.user = { id: 'u1', name: 'Test', email: 'u1@test', emailVerified: true };
     authStash.organizationId = ORG_A;
+    authStash.authSource = 'session';
+    authStash.mcpAuthInfo = null;
   });
 
   test('new stable ID creates a platform with that exact ID', async () => {
@@ -382,6 +395,8 @@ describe('concurrent-apply race fixes', () => {
     await seedOrg(ORG_A);
     authStash.user = { id: 'u1', name: 'Test', email: 'u1@test', emailVerified: true };
     authStash.organizationId = ORG_A;
+    authStash.authSource = 'session';
+    authStash.mcpAuthInfo = null;
   });
 
   test('POST /agents — two concurrent creates resolve to one 201 + one 200, single row', async () => {
@@ -517,5 +532,158 @@ describe('concurrent-apply race fixes', () => {
     expect(rows.length).toBe(1);
     expect(rows[0].agent_id).toBe('race-host');
     expect(rows[0].platform).toBe('telegram');
+  });
+});
+
+describe('admin-tier auth admission (requireSessionOrAdminPat)', () => {
+  // Pi-flagged in #468: PAT/OAuth bearers now hydrate `c.var.user`, so admin
+  // routes that previously implicitly required a web session were exposed to
+  // any PAT. The helper requires either an auth source the user explicitly
+  // opted into (session, cli-token), or a PAT/OAuth token with mcp:admin
+  // scope.
+
+  beforeEach(async () => {
+    await resetTestDatabase();
+    await seedOrg(ORG_A);
+    authStash.user = { id: 'u1', name: 'Test', email: 'u1@test', emailVerified: true };
+    authStash.organizationId = ORG_A;
+    authStash.authSource = 'session';
+    authStash.mcpAuthInfo = null;
+  });
+
+  test('POST /agents accepts a session caller', async () => {
+    const app = await importAgentRoutes();
+    authStash.authSource = 'session';
+    const response = await app.request('/', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ agentId: 'session-agent', name: 'Session' }),
+    });
+    expect(response.status).toBe(201);
+  });
+
+  test('POST /agents accepts a cli-token caller', async () => {
+    const app = await importAgentRoutes();
+    authStash.authSource = 'cli-token';
+    const response = await app.request('/', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ agentId: 'cli-agent', name: 'CLI' }),
+    });
+    expect(response.status).toBe(201);
+  });
+
+  test('POST /agents accepts a PAT with mcp:admin scope', async () => {
+    const app = await importAgentRoutes();
+    authStash.authSource = 'pat';
+    authStash.mcpAuthInfo = { scopes: ['mcp:read', 'mcp:write', 'mcp:admin'] };
+    const response = await app.request('/', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ agentId: 'admin-pat-agent', name: 'Admin PAT' }),
+    });
+    expect(response.status).toBe(201);
+  });
+
+  test('POST /agents rejects a PAT that lacks mcp:admin scope', async () => {
+    const app = await importAgentRoutes();
+    authStash.authSource = 'pat';
+    authStash.mcpAuthInfo = { scopes: ['mcp:read'] };
+    const response = await app.request('/', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ agentId: 'weak-pat-agent', name: 'Weak PAT' }),
+    });
+    expect(response.status).toBe(403);
+    const body = (await response.json()) as any;
+    expect(body.error).toBe('forbidden');
+    expect(body.error_description).toContain('mcp:admin');
+
+    // No row should have been created.
+    const { getDb } = await import('../../db/client.js');
+    const sql = getDb();
+    const rows = await sql`SELECT id FROM agents WHERE id = 'weak-pat-agent'`;
+    expect(rows.length).toBe(0);
+  });
+
+  test('POST /agents rejects a write-scoped PAT (no mcp:admin)', async () => {
+    const app = await importAgentRoutes();
+    authStash.authSource = 'pat';
+    authStash.mcpAuthInfo = { scopes: ['mcp:read', 'mcp:write'] };
+    const response = await app.request('/', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ agentId: 'write-pat-agent', name: 'Write PAT' }),
+    });
+    expect(response.status).toBe(403);
+  });
+
+  test('POST /agents rejects an OAuth bearer that lacks mcp:admin scope', async () => {
+    const app = await importAgentRoutes();
+    authStash.authSource = 'oauth';
+    authStash.mcpAuthInfo = { scopes: ['mcp:read', 'mcp:write'] };
+    const response = await app.request('/', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ agentId: 'weak-oauth-agent', name: 'Weak OAuth' }),
+    });
+    expect(response.status).toBe(403);
+  });
+
+  test('POST /agents rejects an anonymous caller (authSource null)', async () => {
+    const app = await importAgentRoutes();
+    authStash.authSource = null;
+    authStash.mcpAuthInfo = null;
+    const response = await app.request('/', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ agentId: 'anon-agent', name: 'Anon' }),
+    });
+    expect(response.status).toBe(401);
+  });
+
+  test('PATCH /:agentId rejects a read-only PAT', async () => {
+    const app = await importAgentRoutes();
+    await seedAgent(ORG_A, 'patch-target');
+    authStash.authSource = 'pat';
+    authStash.mcpAuthInfo = { scopes: ['mcp:read'] };
+    const response = await app.request('/patch-target', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Should Not Change' }),
+    });
+    expect(response.status).toBe(403);
+  });
+
+  test('DELETE /:agentId rejects a read-only PAT', async () => {
+    const app = await importAgentRoutes();
+    await seedAgent(ORG_A, 'delete-target');
+    authStash.authSource = 'pat';
+    authStash.mcpAuthInfo = { scopes: ['mcp:read'] };
+    const response = await app.request('/delete-target', {
+      method: 'DELETE',
+    });
+    expect(response.status).toBe(403);
+
+    const { getDb } = await import('../../db/client.js');
+    const sql = getDb();
+    const rows = await sql`SELECT id FROM agents WHERE id = 'delete-target'`;
+    expect(rows.length).toBe(1);
+  });
+
+  test('PUT /:agentId/connections/by-stable-id rejects a write-only PAT', async () => {
+    const app = await importAgentRoutes();
+    await seedAgent(ORG_A, 'conn-host');
+    authStash.authSource = 'pat';
+    authStash.mcpAuthInfo = { scopes: ['mcp:read', 'mcp:write'] };
+    const response = await app.request(
+      '/conn-host/connections/by-stable-id/conn-host-tg',
+      {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ platform: 'telegram', config: { chatId: '1' } }),
+      }
+    );
+    expect(response.status).toBe(403);
   });
 });

@@ -216,6 +216,58 @@ function withOrg(c: any, fn: () => Promise<Response>): Promise<Response> {
   return orgContext.run({ organizationId: orgId }, fn);
 }
 
+/**
+ * Admin-tier auth gate.
+ *
+ * Before #468, agent CRUD + connection mutation routes implicitly required a
+ * web session — `c.get('user')` was null for PAT bearers, so the create-agent
+ * handler short-circuited with a 401. #468 hydrated `c.var.user` for PAT and
+ * OAuth bearers (matching the cli-token branch) so `lobu apply` could call
+ * these endpoints with a PAT. That fix removed the implicit gate.
+ *
+ * This helper restores the gate explicitly: admin-tier routes accept
+ *   - a better-auth session (`authSource === 'session'`),
+ *   - a `lobu login` CLI token (`authSource === 'cli-token'` — already
+ *     anchored to a real user/session pair), OR
+ *   - a PAT/OAuth bearer that carries the `mcp:admin` scope.
+ *
+ * Read-only routes (list, get) keep using `mcpAuth` alone — a `mcp:read` PAT
+ * is fine for those.
+ *
+ * Returns a Response when the request must be rejected; returns null when the
+ * caller should proceed.
+ */
+function requireSessionOrAdminPat(c: any): Response | null {
+  const authSource = c.get('authSource') as
+    | 'session'
+    | 'pat'
+    | 'oauth'
+    | 'cli-token'
+    | null;
+
+  if (authSource === 'session' || authSource === 'cli-token') {
+    return null;
+  }
+
+  if (authSource === 'pat' || authSource === 'oauth') {
+    const authInfo = c.get('mcpAuthInfo');
+    const scopes: string[] = Array.isArray(authInfo?.scopes) ? authInfo.scopes : [];
+    if (scopes.includes('mcp:admin')) {
+      return null;
+    }
+    return c.json(
+      {
+        error: 'forbidden',
+        error_description:
+          'This route requires a web session or a token with mcp:admin scope.',
+      },
+      403
+    );
+  }
+
+  return c.json({ error: 'Authentication required' }, 401);
+}
+
 // ── List agents ──────────────────────────────────────────────────────────────
 
 routes.get('/', mcpAuth, async (c) => {
@@ -291,6 +343,8 @@ routes.get('/', mcpAuth, async (c) => {
 // ── Create agent ─────────────────────────────────────────────────────────────
 
 routes.post('/', mcpAuth, async (c) => {
+  const denied = requireSessionOrAdminPat(c);
+  if (denied) return denied;
   return withOrg(c, async () => {
     const body = await c.req.json<{
       agentId: string;
@@ -420,6 +474,8 @@ routes.get('/:agentId', mcpAuth, async (c) => {
 // ── Update agent metadata ────────────────────────────────────────────────────
 
 routes.patch('/:agentId', mcpAuth, async (c) => {
+  const denied = requireSessionOrAdminPat(c);
+  if (denied) return denied;
   return withOrg(c, async () => {
     const { agentId } = c.req.param();
     const body = await c.req.json<{ name?: string; description?: string }>();
@@ -436,6 +492,8 @@ routes.patch('/:agentId', mcpAuth, async (c) => {
 // ── Delete agent ─────────────────────────────────────────────────────────────
 
 routes.delete('/:agentId', mcpAuth, async (c) => {
+  const denied = requireSessionOrAdminPat(c);
+  if (denied) return denied;
   return withOrg(c, async () => {
     const { agentId } = c.req.param();
 
@@ -537,6 +595,8 @@ routes.get('/:agentId/config/skills/catalog', mcpAuth, async (c) => {
 // ── Start provider OAuth login ───────────────────────────────────────────────
 
 routes.get('/:agentId/providers/:providerId/oauth/start', mcpAuth, async (c) => {
+  const denied = requireSessionOrAdminPat(c);
+  if (denied) return denied;
   return withOrg(c, async () => {
     const { agentId, providerId } = c.req.param();
     const user = c.get('user');
@@ -572,6 +632,8 @@ routes.get('/:agentId/providers/:providerId/oauth/start', mcpAuth, async (c) => 
 // ── Complete provider OAuth login ────────────────────────────────────────────
 
 routes.post('/:agentId/providers/:providerId/oauth/code', mcpAuth, async (c) => {
+  const denied = requireSessionOrAdminPat(c);
+  if (denied) return denied;
   return withOrg(c, async () => {
     const { agentId, providerId } = c.req.param();
     const user = c.get('user');
@@ -647,6 +709,8 @@ routes.post('/:agentId/providers/:providerId/oauth/code', mcpAuth, async (c) => 
 // ── Update agent config (settings) ───────────────────────────────────────────
 
 routes.patch('/:agentId/config', mcpAuth, async (c) => {
+  const denied = requireSessionOrAdminPat(c);
+  if (denied) return denied;
   return withOrg(c, async () => {
     const { agentId } = c.req.param();
     const updates = await c.req.json();
@@ -706,6 +770,8 @@ routes.get('/:agentId/platforms', mcpAuth, async (c) => {
 // ── Create platform ──────────────────────────────────────────────────────────
 
 routes.post('/:agentId/platforms', mcpAuth, async (c) => {
+  const denied = requireSessionOrAdminPat(c);
+  if (denied) return denied;
   return withOrg(c, async () => {
     const { agentId } = c.req.param();
     if (!(await configStore.hasAgent(agentId))) {
@@ -763,6 +829,8 @@ routes.post('/:agentId/platforms', mcpAuth, async (c) => {
 // computed by the CLI from the same lobu.toml that produced the body.
 
 routes.put('/:agentId/platforms/by-stable-id/:stableId', mcpAuth, async (c) => {
+  const denied = requireSessionOrAdminPat(c);
+  if (denied) return denied;
   return withOrg(c, async () => {
     const { agentId, stableId } = c.req.param();
     if (!(await configStore.hasAgent(agentId))) {
@@ -992,6 +1060,8 @@ routes.get('/:agentId/platforms/:platformId', mcpAuth, async (c) => {
 // ── Delete platform ──────────────────────────────────────────────────────────
 
 routes.delete('/:agentId/platforms/:platformId', mcpAuth, async (c) => {
+  const denied = requireSessionOrAdminPat(c);
+  if (denied) return denied;
   return withOrg(c, async () => {
     const { platformId } = c.req.param();
     const platform = await connectionStore.getConnection(platformId);

@@ -457,12 +457,18 @@ async function ensureBootstrapPat(dbUrl: string): Promise<void> {
     writeFileSync(patFilePath, `${token}\n`, { mode: 0o600 });
 
     const url = `http://localhost:${PORT}`;
+    // PAT printed once for dev bootstrap; do not redirect this log line through
+    // any remote sink (Sentry, OTEL exporter, etc.). The bootstrap PAT carries
+    // full mcp:admin scope — treat it like a password.
     process.stdout.write(`[bootstrap PAT] ${token}\n`);
     process.stdout.write(`[bootstrap PAT] org=${BOOTSTRAP_ORG_SLUG} url=${url}\n`);
     process.stdout.write(`[bootstrap PAT] saved to ${patFilePath}\n`);
+    process.stdout.write(
+      `[bootstrap PAT] WARNING: this PAT has full mcp:admin scope. Treat it like a password.\n`
+    );
     logger.info(
       { path: patFilePath, org: BOOTSTRAP_ORG_SLUG, url },
-      'Bootstrap PAT minted (printed once)'
+      'Bootstrap PAT minted (printed once, mcp:admin scope)'
     );
   } finally {
     await sql.end();

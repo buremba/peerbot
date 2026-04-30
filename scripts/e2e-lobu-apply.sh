@@ -192,10 +192,7 @@ mkdir -p "${HOME}/.config/lobu"
 ${LOBU} context add e2e --api-url "${API_URL}" >/dev/null
 ${LOBU} context use e2e >/dev/null
 
-# `lobu login --token <PAT> --context e2e` validates against /auth/whoami;
-# our local server only mounts that path under /api/v1/auth, so the validate
-# step gets a 404 → "unverified" → token is saved with a warning. That's the
-# expected dev-loop shape.
+# `lobu login --token <PAT>` saves the PAT verbatim (no OAuth round-trip).
 LOGIN_OUT="$(${LOBU} login --token "${PAT}" --context e2e --force 2>&1 || true)"
 echo "${LOGIN_OUT}" | sed 's/^/    /'
 

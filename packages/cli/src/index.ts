@@ -199,21 +199,16 @@ export async function runCli(
     .command("login")
     .description("Authenticate with Lobu Cloud")
     .option("--token <token>", "Use API token directly (CI/CD)")
-    .option(
-      "--admin-password",
-      "Use the development-only admin password fallback"
-    )
     .option("-c, --context <name>", "Use a named context")
     .option("-f, --force", "Re-authenticate (revokes existing session)")
     .action(
       async (options: {
         token?: string;
-        adminPassword?: boolean;
         context?: string;
         force?: boolean;
       }) => {
         const { loginCommand } = await import("./commands/login.js");
-        await loginCommand(options);
+        await loginCommand({ ...options, cliVersion: version });
       }
     );
 

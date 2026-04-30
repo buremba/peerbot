@@ -4,11 +4,10 @@
  * `c.var.authSource` lets admin-tier routes (see
  * `requireSessionOrAdminPat` in `lobu/agent-routes.ts`) distinguish how a
  * caller authenticated. The full middleware exercises better-auth, the OAuth
- * provider, the PAT service, and the CLI token service — all of which need
- * a live DB. To avoid duplicating the test-workspace bootstrap, this file
- * pins the contract via the source: every code path that calls
- * `setContextAndContinue` MUST pass an `authSource` literal that matches the
- * branch's auth flavor.
+ * provider, and the PAT service — all of which need a live DB. To avoid
+ * duplicating the test-workspace bootstrap, this file pins the contract via
+ * the source: every code path that calls `setContextAndContinue` MUST pass
+ * an `authSource` literal that matches the branch's auth flavor.
  *
  * If the source is restructured so this regex match no longer makes sense
  * (e.g. the context plumbing moves into a different file), update both this
@@ -24,13 +23,6 @@ const SOURCE = readFileSync(
 );
 
 describe('multi-tenant resolveAuth: authSource per branch', () => {
-  it('cli-token branch sets authSource: cli-token', () => {
-    // Two cli-token paths: unscoped /mcp and scoped. Both must label the
-    // source as 'cli-token'.
-    const matches = SOURCE.match(/authSource:\s*'cli-token'/g) ?? [];
-    expect(matches.length).toBeGreaterThanOrEqual(2);
-  });
-
   it('PAT/OAuth branch picks pat or oauth via isPat ternary', () => {
     // The PAT and OAuth bearers share a code path; the branch picks the
     // label off the same `isPat` boolean it already used to dispatch
@@ -53,7 +45,7 @@ describe('multi-tenant resolveAuth: authSource per branch', () => {
     // Defensive — if someone refactors the helper signature, the per-branch
     // sets above won't actually be applied. Assert the helper accepts and
     // applies the override.
-    expect(SOURCE).toContain("authSource: 'session' | 'pat' | 'oauth' | 'cli-token' | null;");
+    expect(SOURCE).toContain("authSource: 'session' | 'pat' | 'oauth' | null;");
     expect(SOURCE).toContain(
       "if (overrides.authSource !== undefined) c.set('authSource', overrides.authSource);"
     );

@@ -85,7 +85,7 @@ afterEach(() => {
 
 describe("chatCommand example integration", () => {
   test("uses the hr example agent and completes approval plus login interaction flow", async () => {
-    process.env.LOBU_API_TOKEN = "cli-token";
+    process.env.LOBU_API_TOKEN = "test-token";
 
     const stdout: string[] = [];
     const stderr: string[] = [];
@@ -212,7 +212,7 @@ describe("chatCommand example integration", () => {
   });
 
   test("prints structured file-uploaded events in platform mode", async () => {
-    process.env.LOBU_API_TOKEN = "cli-token";
+    process.env.LOBU_API_TOKEN = "test-token";
 
     const stdout: string[] = [];
     const stderr: string[] = [];
@@ -276,7 +276,7 @@ describe("chatCommand example integration", () => {
   });
 
   test("warns when a sandbox link is streamed without a file-uploaded event", async () => {
-    process.env.LOBU_API_TOKEN = "cli-token";
+    process.env.LOBU_API_TOKEN = "test-token";
 
     const stdout: string[] = [];
     const stderr: string[] = [];
@@ -328,7 +328,7 @@ describe("chatCommand example integration", () => {
   });
 
   test("streams raw output chunks without corrupting fragmented markdown", async () => {
-    process.env.LOBU_API_TOKEN = "cli-token";
+    process.env.LOBU_API_TOKEN = "test-token";
 
     const stdout: string[] = [];
     const stderr: string[] = [];
@@ -375,7 +375,7 @@ describe("chatCommand example integration", () => {
   });
 
   test("streams platform-mode output for image and voice requests from the example agent", async () => {
-    process.env.LOBU_API_TOKEN = "cli-token";
+    process.env.LOBU_API_TOKEN = "test-token";
 
     const stdout: string[] = [];
     const stderr: string[] = [];

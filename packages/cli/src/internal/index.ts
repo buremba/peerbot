@@ -6,6 +6,8 @@ export {
   setCurrentContext,
 } from "./context.js";
 export {
+  type Credentials,
+  type OAuthClientInfo,
   clearCredentials,
   getToken,
   loadCredentials,

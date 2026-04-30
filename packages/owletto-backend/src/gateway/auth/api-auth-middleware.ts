@@ -2,18 +2,16 @@ import { timingSafeEqual } from "node:crypto";
 import { verifyWorkerToken } from "@lobu/core";
 import type { Context, Next } from "hono";
 import { verifySettingsSession } from "../routes/public/settings-auth.js";
-import type { CliTokenService } from "./cli/token-service.js";
 import type { ExternalAuthClient } from "./external/client.js";
 
 export const TOKEN_EXPIRATION_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Creates a Hono middleware that enforces the standard auth check:
- *   1. Settings session cookie  2. CLI JWT  3. External OAuth  4. Admin password  5. Worker token
+ *   1. Settings session cookie  2. External OAuth  3. Admin password  4. Worker token
  */
 export function createApiAuthMiddleware(opts: {
   adminPassword?: string;
-  cliTokenService?: CliTokenService;
   externalAuthClient?: ExternalAuthClient;
   allowWorkerToken?: boolean;
   allowSettingsSession?: boolean;
@@ -28,13 +26,7 @@ export function createApiAuthMiddleware(opts: {
     }
     const token = authHeader.substring(7);
 
-    // 2. Try CLI JWT
-    if (opts.cliTokenService) {
-      const identity = await opts.cliTokenService.verifyAccessToken(token);
-      if (identity) return next();
-    }
-
-    // 3. Try external OAuth token (validated against MEMORY_URL userinfo)
+    // 2. Try external OAuth token (validated against MEMORY_URL userinfo)
     if (opts.externalAuthClient) {
       try {
         const userInfo = await opts.externalAuthClient.fetchUserInfo(token);
@@ -44,7 +36,7 @@ export function createApiAuthMiddleware(opts: {
       }
     }
 
-    // 4. Try admin password
+    // 3. Try admin password
     if (opts.adminPassword) {
       const a = Buffer.from(token);
       const b = Buffer.from(opts.adminPassword);
@@ -53,7 +45,7 @@ export function createApiAuthMiddleware(opts: {
       }
     }
 
-    // 5. Try worker token when explicitly allowed for the route
+    // 4. Try worker token when explicitly allowed for the route
     if (opts.allowWorkerToken !== false) {
       const workerData = verifyWorkerToken(token);
       if (workerData) {

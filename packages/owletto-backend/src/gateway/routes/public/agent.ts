@@ -20,7 +20,6 @@ import {
   createApiAuthMiddleware,
   TOKEN_EXPIRATION_MS,
 } from "../../auth/api-auth-middleware.js";
-import type { CliTokenService } from "../../auth/cli/token-service.js";
 import type { ExternalAuthClient } from "../../auth/external/client.js";
 import type { AgentSettingsStore } from "../../auth/settings/agent-settings-store.js";
 import type { SettingsTokenPayload } from "../../auth/settings/token-service.js";
@@ -454,7 +453,6 @@ export interface AgentApiConfig {
   sseManager: SseManager;
   publicGatewayUrl: string;
   adminPassword?: string;
-  cliTokenService?: CliTokenService;
   externalAuthClient?: ExternalAuthClient;
   agentSettingsStore?: AgentSettingsStore;
   agentConfigStore?: Pick<
@@ -474,7 +472,6 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
   const {
     queueProducer,
     adminPassword,
-    cliTokenService,
     externalAuthClient,
     agentSettingsStore,
     agentConfigStore,
@@ -492,7 +489,6 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
     "/api/v1/agents/*",
     createApiAuthMiddleware({
       adminPassword,
-      cliTokenService,
       externalAuthClient,
       allowSettingsSession: true,
     })
@@ -543,16 +539,16 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
   /**
    * Verify that the caller is authorized to act on `resolvedAgentId`.
    *
-   * The agent API middleware accepts five auth methods (admin password,
-   * worker token, CLI JWT, external OAuth, settings session). Each needs
-   * its own ownership rule:
+   * The agent API middleware accepts four auth methods (admin password,
+   * worker token, external OAuth, settings session). Each needs its own
+   * ownership rule:
    *
    *   - admin password       → full access
    *   - worker token         → scoped to its own agentId
    *   - settings session     → verifyOwnedAgentAccess (handles admin bypass,
    *                            agent-scoped sessions, and UserAgentsStore
    *                            / AgentMetadataStore lookups)
-   *   - CLI JWT / external   → treated as an external-platform identity and
+   *   - external OAuth       → treated as an external-platform identity and
    *                            run through verifyOwnedAgentAccess
    *
    * Returns a Response when the caller is not authorized (the handler
@@ -592,28 +588,7 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
       return workerAgentId && workerAgentId === resolvedAgentId ? null : deny();
     }
 
-    // 4. CLI JWT — synthesize an external-platform settings payload.
-    if (cliTokenService) {
-      const identity = await cliTokenService.verifyAccessToken(bearer);
-      if (identity) {
-        const synthesized: SettingsTokenPayload = {
-          userId: identity.userId,
-          platform: "external",
-          oauthUserId: identity.userId,
-          email: identity.email,
-          name: identity.name,
-          exp: identity.expiresAt,
-        };
-        const access = await verifyOwnedAgentAccess(
-          synthesized,
-          resolvedAgentId,
-          ownershipAccessConfig
-        );
-        return access.authorized ? null : deny();
-      }
-    }
-
-    // 5. External OAuth (Owletto / memory-url userinfo).
+    // 4. External OAuth (Owletto / memory-url userinfo).
     if (externalAuthClient) {
       try {
         const userInfo = (await externalAuthClient.fetchUserInfo(bearer)) as {

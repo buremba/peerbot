@@ -459,21 +459,6 @@ CREATE TABLE public.chat_state_subscriptions (
 
 
 --
--- Name: cli_sessions; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.cli_sessions (
-    session_id text NOT NULL,
-    user_id text NOT NULL,
-    email text,
-    name text,
-    refresh_token_id text NOT NULL,
-    expires_at timestamp with time zone NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
-
---
 -- Name: connect_tokens; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2607,14 +2592,6 @@ ALTER TABLE ONLY public.chat_state_subscriptions
 
 
 --
--- Name: cli_sessions cli_sessions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.cli_sessions
-    ADD CONSTRAINT cli_sessions_pkey PRIMARY KEY (session_id);
-
-
---
 -- Name: connect_tokens connect_tokens_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3278,20 +3255,6 @@ CREATE INDEX chat_state_locks_expires_idx ON public.chat_state_locks USING btree
 --
 
 CREATE INDEX chat_state_queues_expires_idx ON public.chat_state_queues USING btree (expires_at);
-
-
---
--- Name: cli_sessions_expires_at_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX cli_sessions_expires_at_idx ON public.cli_sessions USING btree (expires_at);
-
-
---
--- Name: cli_sessions_user_id_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX cli_sessions_user_id_idx ON public.cli_sessions USING btree (user_id);
 
 
 --
@@ -5638,4 +5601,5 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20260429140000'),
     ('20260429140100'),
     ('20260429180000'),
-    ('20260430151215');
+    ('20260430151215'),
+    ('20260501000000');

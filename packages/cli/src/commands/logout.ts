@@ -4,6 +4,7 @@ import {
   loadCredentials,
   resolveContext,
 } from "../internal/index.js";
+import { revokeToken } from "../internal/oauth.js";
 
 export async function logoutCommand(options?: {
   context?: string;
@@ -11,17 +12,28 @@ export async function logoutCommand(options?: {
   const target = await resolveContext(options?.context);
   const creds = await loadCredentials(target.name);
 
-  // Revoke session server-side if we have a refresh token
-  if (creds?.refreshToken) {
-    try {
-      await fetch(`${target.apiUrl}/auth/logout`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ refreshToken: creds.refreshToken }),
-      });
-    } catch {
-      // Best-effort — clear local creds regardless
+  // Best-effort RFC 7009 revocation. Local state is cleared either way so a
+  // failed remote revoke (network down, issuer offline) doesn't strand the
+  // user logged in locally.
+  if (creds?.oauth?.revocationEndpoint && creds.oauth.clientId) {
+    const client = {
+      clientId: creds.oauth.clientId,
+      clientSecret: creds.oauth.clientSecret,
+    };
+    if (creds.refreshToken) {
+      await revokeToken(
+        creds.oauth.revocationEndpoint,
+        client,
+        creds.refreshToken,
+        "refresh_token"
+      );
     }
+    await revokeToken(
+      creds.oauth.revocationEndpoint,
+      client,
+      creds.accessToken,
+      "access_token"
+    );
   }
 
   await clearCredentials(target.name);

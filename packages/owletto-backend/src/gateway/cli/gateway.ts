@@ -10,7 +10,6 @@ import { apiReference } from "@scalar/hono-api-reference";
 import { cors } from "hono/cors";
 import { secureHeaders } from "hono/secure-headers";
 import type { AgentMetadata } from "../auth/agent-metadata-store.js";
-import { CliTokenService } from "../auth/cli/token-service.js";
 import { takePendingTool } from "../auth/mcp/pending-tool-store.js";
 import { setEnvResolver } from "../auth/mcp/string-substitution.js";
 import { OAuthClient } from "../auth/oauth/client.js";
@@ -31,10 +30,7 @@ import { createAgentConfigRoutes } from "../routes/public/agent-config.js";
 import { createAgentHistoryRoutes } from "../routes/public/agent-history.js";
 import { createAgentRoutes } from "../routes/public/agents.js";
 import { createChannelBindingRoutes } from "../routes/public/channels.js";
-import {
-  createCliAuthRoutes,
-  createConnectAuthRoutes,
-} from "../routes/public/cli-auth.js";
+import { createConnectAuthRoutes } from "../routes/public/connect-auth.js";
 import {
   createConnectionCrudRoutes,
   createConnectionWebhookRoutes,
@@ -269,11 +265,6 @@ export function createGatewayApp(
     logger.debug("Internal interaction routes enabled");
   }
 
-  let cliTokenService: any;
-  if (coreServices) {
-    cliTokenService = new CliTokenService();
-  }
-
   if (coreServices) {
     const queueProducer = coreServices.getQueueProducer();
     const sessionMgr = coreServices.getSessionManager();
@@ -290,7 +281,6 @@ export function createGatewayApp(
         sseManager: coreServices.getSseManager(),
         publicGatewayUrl: publicUrl,
         adminPassword,
-        cliTokenService,
         externalAuthClient: coreServices.getExternalAuthClient(),
         agentSettingsStore: coreServices.getAgentSettingsStore(),
         agentConfigStore: coreServices.getConfigStore(),
@@ -351,19 +341,10 @@ export function createGatewayApp(
     const registeredProviders: string[] = [];
 
     {
-      const cliAuthRouter = createCliAuthRoutes({
-        externalAuthClient: coreServices.getExternalAuthClient(),
-        allowAdminPasswordLogin: process.env.NODE_ENV !== "production",
-        adminPassword,
-      });
       const connectAuthRouter = createConnectAuthRoutes({
         externalAuthClient: coreServices.getExternalAuthClient(),
-        allowAdminPasswordLogin: process.env.NODE_ENV !== "production",
-        adminPassword,
       });
-      authRouter.route("", cliAuthRouter);
       app.route("", connectAuthRouter);
-      registeredProviders.push("cli-auth");
     }
 
     const providerModules = getModelProviderModules();

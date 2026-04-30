@@ -26,7 +26,6 @@ import {
   type ProviderOAuthStateStore,
   sweepExpiredOAuthStates,
 } from "../auth/oauth/state-store.js";
-import { sweepExpiredCliSessions } from "../auth/cli/token-service.js";
 import { sweepExpiredRateLimits } from "../utils/rate-limiter.js";
 import { sweepExpiredGrants } from "../permissions/grant-store.js";
 import { sweepCompletedRuns } from "../infrastructure/queue/runs-queue.js";
@@ -276,21 +275,20 @@ export class CoreServices {
   }
 
   /** Public entry point for the scheduler-registered ephemeral-table sweep.
-   *  Deletes expired rows from oauth_states, cli_sessions, rate_limits,
-   *  grants, and archives completed runs. Lazy `expires_at > now()` filters
-   *  on read make this a hygiene task — running ~5 minutes apart is plenty. */
+   *  Deletes expired rows from oauth_states, rate_limits, grants, and
+   *  archives completed runs. Lazy `expires_at > now()` filters on read
+   *  make this a hygiene task — running ~5 minutes apart is plenty. */
   async sweepEphemeralTables(): Promise<void> {
     try {
-      const [oauth, cli, rate, grants, completedRuns] = await Promise.all([
+      const [oauthStates, rate, grants, completedRuns] = await Promise.all([
         sweepExpiredOAuthStates(),
-        sweepExpiredCliSessions(),
         sweepExpiredRateLimits(),
         sweepExpiredGrants(),
         sweepCompletedRuns(),
       ]);
-      if (oauth + cli + rate + grants + completedRuns > 0) {
+      if (oauthStates + rate + grants + completedRuns > 0) {
         logger.debug(
-          { oauth, cli, rate, grants, completedRuns },
+          { oauthStates, rate, grants, completedRuns },
           "Ephemeral table sweeper deleted expired rows"
         );
       }

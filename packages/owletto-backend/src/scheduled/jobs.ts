@@ -98,8 +98,8 @@ function registerMaintenanceTasks(
     { cron: '*/10 * * * *' },
   );
 
-  // Hygiene sweep — drops expired rows from oauth_states, cli_sessions,
-  // rate_limits, grants, and archives completed runs.
+  // Hygiene sweep — drops expired rows from oauth_states, rate_limits,
+  // grants, and archives completed runs.
   scheduler.register(
     'sweep-ephemeral-tables',
     () => coreServices.sweepEphemeralTables(),

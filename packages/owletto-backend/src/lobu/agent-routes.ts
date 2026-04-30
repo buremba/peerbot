@@ -219,16 +219,9 @@ function withOrg(c: any, fn: () => Promise<Response>): Promise<Response> {
 /**
  * Admin-tier auth gate.
  *
- * Before #468, agent CRUD + connection mutation routes implicitly required a
- * web session — `c.get('user')` was null for PAT bearers, so the create-agent
- * handler short-circuited with a 401. #468 hydrated `c.var.user` for PAT and
- * OAuth bearers (matching the cli-token branch) so `lobu apply` could call
- * these endpoints with a PAT. That fix removed the implicit gate.
- *
- * This helper restores the gate explicitly: admin-tier routes accept
- *   - a better-auth session (`authSource === 'session'`),
- *   - a `lobu login` CLI token (`authSource === 'cli-token'` — already
- *     anchored to a real user/session pair), OR
+ * Admin-tier routes (agent CRUD, connection mutations, anything called by
+ * `lobu apply`) accept either:
+ *   - a better-auth session (`authSource === 'session'`), or
  *   - a PAT/OAuth bearer that carries the `mcp:admin` scope.
  *
  * Read-only routes (list, get) keep using `mcpAuth` alone — a `mcp:read` PAT
@@ -242,10 +235,9 @@ function requireSessionOrAdminPat(c: any): Response | null {
     | 'session'
     | 'pat'
     | 'oauth'
-    | 'cli-token'
     | null;
 
-  if (authSource === 'session' || authSource === 'cli-token') {
+  if (authSource === 'session') {
     return null;
   }
 

@@ -27,7 +27,7 @@ const authStash: {
   // `authSource` mirrors the real middleware contract so admin-tier routes
   // gated by `requireSessionOrAdminPat` see a non-null value. Default to
   // 'session' — the existing apply tests simulate a web user.
-  authSource: 'session' | 'pat' | 'oauth' | 'cli-token' | null;
+  authSource: 'session' | 'pat' | 'oauth' | null;
   mcpAuthInfo: { scopes: string[] } | null;
 } = {
   user: { id: 'u1', name: 'Test', email: 'u1@test', emailVerified: true },
@@ -591,9 +591,8 @@ describe('concurrent-apply race fixes', () => {
 describe('admin-tier auth admission (requireSessionOrAdminPat)', () => {
   // Pi-flagged in #468: PAT/OAuth bearers now hydrate `c.var.user`, so admin
   // routes that previously implicitly required a web session were exposed to
-  // any PAT. The helper requires either an auth source the user explicitly
-  // opted into (session, cli-token), or a PAT/OAuth token with mcp:admin
-  // scope.
+  // any PAT. The helper requires either a better-auth session, or a PAT/OAuth
+  // token with mcp:admin scope.
 
   beforeEach(async () => {
     await resetTestDatabase();
@@ -611,17 +610,6 @@ describe('admin-tier auth admission (requireSessionOrAdminPat)', () => {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ agentId: 'session-agent', name: 'Session' }),
-    });
-    expect(response.status).toBe(201);
-  });
-
-  test('POST /agents accepts a cli-token caller', async () => {
-    const app = await importAgentRoutes();
-    authStash.authSource = 'cli-token';
-    const response = await app.request('/', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ agentId: 'cli-agent', name: 'CLI' }),
     });
     expect(response.status).toBe(201);
   });

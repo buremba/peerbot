@@ -41,11 +41,10 @@ declare module 'hono' {
      *
      * - `session`     — better-auth session cookie (web app)
      * - `pat`         — `owl_pat_*` bearer (Personal Access Token)
-     * - `oauth`       — OAuth 2.1 access token bearer
-     * - `cli-token`   — `lobu login` CLI token bearer
+     * - `oauth`       — OAuth 2.1 access token bearer (incl. `lobu login`)
      * - `null`        — anonymous / unauthenticated request
      */
-    authSource: 'session' | 'pat' | 'oauth' | 'cli-token' | null;
+    authSource: 'session' | 'pat' | 'oauth' | null;
   }
 }
 

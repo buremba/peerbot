@@ -138,12 +138,13 @@ Environment overrides: set `LOBU_CONTEXT` to select a context by name, or `LOBU_
 
 ### `login`
 
-Authenticate with Lobu Cloud. Opens a browser for OAuth by default.
+Authenticate with Lobu Cloud via the OAuth 2.0 device-code flow. Prints a
+verification URL and opens it in the browser; you approve there and the CLI
+receives the token.
 
 ```bash
 npx @lobu/cli@latest login
 npx @lobu/cli@latest login --token <api-token>      # CI/CD
-npx @lobu/cli@latest login --admin-password          # local dev fallback
 npx @lobu/cli@latest login -c staging               # login to a named context
 npx @lobu/cli@latest login --force                  # re-authenticate (revokes existing session)
 ```
@@ -151,7 +152,6 @@ npx @lobu/cli@latest login --force                  # re-authenticate (revokes e
 | Flag | Description |
 |------|-------------|
 | `--token <token>` | Use an API token directly (for CI/CD pipelines) |
-| `--admin-password` | Use the development-only admin password fallback |
 | `-c, --context <name>` | Authenticate against a named context |
 | `-f, --force` | Re-authenticate, revoking the existing session first |
 

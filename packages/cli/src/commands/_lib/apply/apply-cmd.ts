@@ -143,7 +143,7 @@ async function executePlan(ctx: ApplyContext): Promise<void> {
       row.agentId,
       desired.stableId,
       {
-        type: desired.type,
+        platform: desired.type,
         ...(desired.name ? { name: desired.name } : {}),
         config: desired.config,
       }

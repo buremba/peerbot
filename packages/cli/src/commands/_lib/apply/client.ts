@@ -295,7 +295,7 @@ export class ApplyClient {
    *
    * Server contract:
    *   PUT /:agentId/connections/by-stable-id/:stableId
-   *   body: { type, name?, config }
+   *   body: { platform, name?, config }
    *   response when unchanged: { noop: true, connection }
    *   response when changed:   { updated: true, willRestart: true, connection }
    *   response on first write: { created: true, connection }
@@ -303,7 +303,7 @@ export class ApplyClient {
   async upsertConnection(
     agentId: string,
     stableId: string,
-    payload: { type: string; name?: string; config: Record<string, string> }
+    payload: { platform: string; name?: string; config: Record<string, string> }
   ): Promise<UpsertConnectionResult> {
     const { body } = await this.request<UpsertConnectionResult>(
       "PUT",

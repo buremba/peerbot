@@ -295,9 +295,28 @@ async function readMarkdown(
   return result;
 }
 
+function resolveConfigValue(
+  agentId: string,
+  connType: string,
+  key: string,
+  value: string,
+  env: NodeJS.ProcessEnv
+): string {
+  const ref = asEnvRef(value);
+  if (!ref) return value;
+  const resolved = env[ref];
+  if (resolved === undefined || resolved === "") {
+    throw new ValidationError(
+      `agent "${agentId}" connection "${connType}" config key "${key}" references $${ref}, but it is unset or empty in the apply environment`
+    );
+  }
+  return resolved;
+}
+
 function buildConnections(
   agentId: string,
-  agentConfig: TomlAgentEntry
+  agentConfig: TomlAgentEntry,
+  env: NodeJS.ProcessEnv
 ): DesiredConnection[] {
   // Reject duplicate (type, name) pairs — same rule the file-loader enforces
   // so stable IDs stay collision-free.
@@ -313,10 +332,14 @@ function buildConnections(
       );
     }
     seen.add(key);
+    const resolvedConfig: Record<string, string> = {};
+    for (const [k, v] of Object.entries(conn.config)) {
+      resolvedConfig[k] = resolveConfigValue(agentId, conn.type, k, v, env);
+    }
     const desired: DesiredConnection = {
       stableId: buildStableConnectionId(agentId, conn.type, conn.name),
       type: conn.type,
-      config: { ...conn.config },
+      config: resolvedConfig,
     };
     if (conn.name) desired.name = conn.name;
     out.push(desired);
@@ -482,6 +505,8 @@ async function rejectUnsupportedAgentShapes(cwd: string): Promise<void> {
 export interface LoadDesiredStateOptions {
   /** Project root (directory containing `lobu.toml`). */
   cwd: string;
+  /** Env to resolve `$VAR` refs against; defaults to `process.env`. */
+  env?: NodeJS.ProcessEnv;
 }
 
 export async function loadDesiredState(
@@ -498,6 +523,7 @@ export async function loadDesiredState(
   const { config, path: configPath } = result;
   await rejectUnsupportedAgentShapes(opts.cwd);
 
+  const env = opts.env ?? process.env;
   const requiredSecrets = new Set<string>();
   collectEnvRefs(config, requiredSecrets);
 
@@ -506,7 +532,7 @@ export async function loadDesiredState(
     const agentDir = resolve(opts.cwd, agentConfig.dir);
     const markdown = await readMarkdown(agentDir);
     const settings = buildAgentSettings(agentConfig, markdown);
-    const connections = buildConnections(agentId, agentConfig);
+    const connections = buildConnections(agentId, agentConfig, env);
     const metadata: DesiredAgentMetadata = {
       agentId,
       name: agentConfig.name,

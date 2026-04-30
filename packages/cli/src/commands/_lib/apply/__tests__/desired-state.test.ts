@@ -57,7 +57,13 @@ botToken = "$TELEGRAM_BOT_TOKEN"
 `
     );
     // Provide an empty agent dir so markdown read returns nothing.
-    const { state } = await loadDesiredState({ cwd: dir });
+    const { state } = await loadDesiredState({
+      cwd: dir,
+      env: {
+        ANTHROPIC_API_KEY: "sk-anth-fake",
+        TELEGRAM_BOT_TOKEN: "tg-fake-token",
+      },
+    });
     expect(state.requiredSecrets).toEqual([
       "ANTHROPIC_API_KEY",
       "TELEGRAM_BOT_TOKEN",
@@ -66,6 +72,26 @@ botToken = "$TELEGRAM_BOT_TOKEN"
     expect(state.agents[0]!.metadata.agentId).toBe("triage");
     expect(state.agents[0]!.connections).toHaveLength(1);
     expect(state.agents[0]!.connections[0]!.stableId).toBe("triage-telegram");
+    expect(state.agents[0]!.connections[0]!.config.botToken).toBe(
+      "tg-fake-token"
+    );
+  });
+
+  test("throws when a connection $VAR ref is unset in the apply env", async () => {
+    const dir = mkProject(
+      `[agents.triage]
+name = "Triage"
+dir = "./agents/triage"
+
+[[agents.triage.connections]]
+type = "telegram"
+[agents.triage.connections.config]
+botToken = "$TELEGRAM_BOT_TOKEN"
+`
+    );
+    await expect(loadDesiredState({ cwd: dir, env: {} })).rejects.toThrow(
+      /\$TELEGRAM_BOT_TOKEN/
+    );
   });
 
   test("rejects duplicate (type, name) connection pairs", async () => {

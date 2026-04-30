@@ -71,6 +71,7 @@ function rowToSettings(row: Record<string, any>): AgentSettings {
     modelSelection: row.model_selection ?? undefined,
     providerModelPreferences: row.provider_model_preferences ?? undefined,
     networkConfig: row.network_config ?? undefined,
+    egressConfig: row.egress_config ?? undefined,
     nixConfig: row.nix_config ?? undefined,
     mcpServers: row.mcp_servers ?? undefined,
     mcpInstallNotified: row.mcp_install_notified ?? undefined,
@@ -84,6 +85,8 @@ function rowToSettings(row: Record<string, any>): AgentSettings {
     installedProviders: row.installed_providers ?? undefined,
     verboseLogging: row.verbose_logging ?? undefined,
     templateAgentId: row.template_agent_id ?? undefined,
+    preApprovedTools: row.pre_approved_tools ?? undefined,
+    guardrails: row.guardrails ?? undefined,
     updatedAt:
       row.updated_at instanceof Date ? row.updated_at.getTime() : (row.updated_at ?? Date.now()),
   };
@@ -243,19 +246,21 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
       const rows = orgId
         ? await sql`
             SELECT model, model_selection, provider_model_preferences,
-                   network_config, nix_config, mcp_servers, mcp_install_notified,
-                   soul_md, user_md, identity_md, skills_config, tools_config,
-                   plugins_config, auth_profiles, installed_providers,
-                   verbose_logging, template_agent_id, updated_at
+                   network_config, egress_config, nix_config, mcp_servers,
+                   mcp_install_notified, soul_md, user_md, identity_md,
+                   skills_config, tools_config, plugins_config, auth_profiles,
+                   installed_providers, verbose_logging, template_agent_id,
+                   pre_approved_tools, guardrails, updated_at
             FROM agents
             WHERE id = ${agentId} AND organization_id = ${orgId}
           `
         : await sql`
             SELECT model, model_selection, provider_model_preferences,
-                   network_config, nix_config, mcp_servers, mcp_install_notified,
-                   soul_md, user_md, identity_md, skills_config, tools_config,
-                   plugins_config, auth_profiles, installed_providers,
-                   verbose_logging, template_agent_id, updated_at
+                   network_config, egress_config, nix_config, mcp_servers,
+                   mcp_install_notified, soul_md, user_md, identity_md,
+                   skills_config, tools_config, plugins_config, auth_profiles,
+                   installed_providers, verbose_logging, template_agent_id,
+                   pre_approved_tools, guardrails, updated_at
             FROM agents
             WHERE id = ${agentId}
           `;
@@ -272,6 +277,7 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
           model_selection = ${sql.json(settings.modelSelection ?? {})},
           provider_model_preferences = ${sql.json(settings.providerModelPreferences ?? {})},
           network_config = ${sql.json(settings.networkConfig ?? {})},
+          egress_config = ${sql.json(settings.egressConfig ?? {})},
           nix_config = ${sql.json(settings.nixConfig ?? {})},
           mcp_servers = ${sql.json(settings.mcpServers ?? {})},
           mcp_install_notified = ${sql.json(settings.mcpInstallNotified ?? {})},
@@ -285,6 +291,8 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
           installed_providers = ${sql.json(settings.installedProviders ?? [])},
           verbose_logging = ${settings.verboseLogging ?? false},
           template_agent_id = ${settings.templateAgentId ?? null},
+          pre_approved_tools = ${sql.json(settings.preApprovedTools ?? [])},
+          guardrails = ${sql.json(settings.guardrails ?? [])},
           updated_at = ${now}
         WHERE id = ${agentId} AND organization_id = ${orgId}
       `;
@@ -300,11 +308,13 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
       await sql`
         UPDATE agents SET
           model = NULL, model_selection = '{}', provider_model_preferences = '{}',
-          network_config = '{}', nix_config = '{}', mcp_servers = '{}',
-          mcp_install_notified = '{}', soul_md = '', user_md = '', identity_md = '',
+          network_config = '{}', egress_config = '{}', nix_config = '{}',
+          mcp_servers = '{}', mcp_install_notified = '{}',
+          soul_md = '', user_md = '', identity_md = '',
           skills_config = '{"skills": []}', tools_config = '{}', plugins_config = '{}',
           auth_profiles = '[]', installed_providers = '[]', verbose_logging = false,
-          template_agent_id = NULL, updated_at = now()
+          template_agent_id = NULL, pre_approved_tools = '[]', guardrails = '[]',
+          updated_at = now()
         WHERE id = ${agentId} AND organization_id = ${orgId}
       `;
     },

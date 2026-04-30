@@ -292,6 +292,9 @@ CREATE TABLE public.agents (
     installed_providers jsonb DEFAULT '[]'::jsonb,
     skill_registries jsonb DEFAULT '[]'::jsonb,
     verbose_logging boolean DEFAULT false,
+    egress_config jsonb DEFAULT '{}'::jsonb,
+    pre_approved_tools jsonb DEFAULT '[]'::jsonb,
+    guardrails jsonb DEFAULT '[]'::jsonb,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     last_used_at timestamp with time zone

@@ -317,7 +317,22 @@ routes.post('/', mcpAuth, async (c) => {
     const orgId = c.get('organizationId') as string;
     const existingOrgId = await getAgentOrganizationId(agentId);
     if (existingOrgId === orgId) {
-      return c.json({ error: 'Agent already exists' }, 409);
+      // Idempotent path: agent already exists in this org. Return the
+      // existing payload without re-running the Owletto MCP auto-injection
+      // below — `lobu apply` re-runs this on every converge cycle and
+      // we don't want to overwrite operator-configured `mcpServers`.
+      const existing = await configStore.getMetadata(agentId);
+      if (!existing) {
+        return c.json({ error: 'Agent metadata missing' }, 500);
+      }
+      return c.json(
+        {
+          agentId,
+          name: existing.name,
+          description: existing.description,
+        },
+        200
+      );
     }
     if (existingOrgId) {
       return c.json({ error: 'Agent ID already exists in another organization' }, 409);
@@ -721,6 +736,149 @@ routes.post('/:agentId/connections', mcpAuth, async (c) => {
     return c.json({ connection: { id, platform, status: 'stopped' } }, 201);
   });
 });
+
+// ── Upsert connection by stable ID ───────────────────────────────────────────
+//
+// `lobu apply` derives a deterministic ID from `(agentId, type, name)` via
+// buildStableConnectionId() and PUTs to this endpoint so re-runs converge:
+// matching config → noop; changed config → update + restart; missing → create
+// with the supplied ID (not random). The route trusts the stable ID — it's
+// computed by the CLI from the same lobu.toml that produced the body.
+
+routes.put('/:agentId/connections/by-stable-id/:stableId', mcpAuth, async (c) => {
+  return withOrg(c, async () => {
+    const { agentId, stableId } = c.req.param();
+    if (!(await configStore.hasAgent(agentId))) {
+      return c.json({ error: 'Agent not found' }, 404);
+    }
+
+    const body = await c.req.json<{
+      platform: string;
+      config?: Record<string, unknown>;
+      settings?: { allowFrom?: string[]; allowGroups?: boolean };
+    }>();
+    const { platform, config = {}, settings = {} } = body;
+    if (!platform) return c.json({ error: 'platform is required' }, 400);
+
+    const existing = await connectionStore.getConnection(stableId);
+    if (existing && existing.templateAgentId && existing.templateAgentId !== agentId) {
+      return c.json(
+        { error: 'Stable ID already used by a different agent' },
+        409
+      );
+    }
+
+    const chatManager = getChatInstanceManager();
+
+    if (existing) {
+      // Compute the merged config the way ChatInstanceManager.updateConnection
+      // does: skip `***...` placeholders so a sanitized round-trip from the
+      // GET endpoint doesn't trigger a spurious "changed" classification.
+      const previousConfig = (existing.config ?? {}) as Record<string, unknown>;
+      const submittedConfig = { platform, ...config } as Record<string, unknown>;
+      const merged: Record<string, unknown> = { ...previousConfig };
+      for (const [key, value] of Object.entries(submittedConfig)) {
+        if (typeof value === 'string' && value.startsWith('***')) continue;
+        merged[key] = value;
+      }
+      merged.platform = platform;
+
+      const configChanged = !configsShallowEqual(merged, previousConfig);
+
+      if (!configChanged) {
+        return c.json({ noop: true, connection: existing }, 200);
+      }
+
+      if (chatManager) {
+        try {
+          const updated = await chatManager.updateConnection(stableId, {
+            config: { platform, ...config },
+            settings: { allowGroups: true, ...settings },
+          });
+          await persistConnectionSnapshot(updated);
+          return c.json(
+            { updated: true, willRestart: true, connection: updated },
+            200
+          );
+        } catch (error: any) {
+          return c.json({ error: error.message || 'Failed to update connection' }, 400);
+        }
+      }
+
+      // Fallback when ChatInstanceManager is not available (e.g. boot races,
+      // tests). Persist the merged config directly.
+      await connectionStore.saveConnection({
+        id: stableId,
+        platform,
+        templateAgentId: agentId,
+        config: merged as Record<string, any>,
+        settings: { ...(existing.settings ?? {}), ...settings } as any,
+        metadata: existing.metadata ?? {},
+        status: existing.status ?? 'stopped',
+        createdAt: existing.createdAt ?? Date.now(),
+        updatedAt: Date.now(),
+      });
+      const refreshed = await connectionStore.getConnection(stableId);
+      return c.json(
+        { updated: true, willRestart: true, connection: refreshed },
+        200
+      );
+    }
+
+    // No existing row — create with the caller-supplied stable ID.
+    if (chatManager) {
+      try {
+        const created = await chatManager.addConnection(
+          platform,
+          agentId,
+          { platform, ...config },
+          { allowGroups: true, ...settings },
+          {},
+          stableId
+        );
+        await persistConnectionSnapshot(created);
+        return c.json({ connection: created }, 201);
+      } catch (error: any) {
+        return c.json({ error: error.message || 'Failed to create connection' }, 400);
+      }
+    }
+
+    // Fallback path mirrors the POST handler's no-manager branch but uses
+    // the supplied stable ID instead of a synthesized one. Platform is kept
+    // in config (matching the manager path) so subsequent idempotent PUTs
+    // see a stable previousConfig.
+    const now = Date.now();
+    await connectionStore.saveConnection({
+      id: stableId,
+      platform,
+      templateAgentId: agentId,
+      config: { platform, ...config } as Record<string, any>,
+      settings: settings as any,
+      metadata: {},
+      status: 'stopped',
+      createdAt: now,
+      updatedAt: now,
+    });
+    return c.json(
+      { connection: { id: stableId, platform, status: 'stopped' } },
+      201
+    );
+  });
+});
+
+// Shallow equality check matching ChatInstanceManager.configsEqual semantics.
+function configsShallowEqual(
+  a: Record<string, unknown>,
+  b: Record<string, unknown>
+): boolean {
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+  if (aKeys.length !== bKeys.length) return false;
+  for (const key of aKeys) {
+    if (a[key] !== b[key]) return false;
+  }
+  return true;
+}
 
 // ── Get connection ───────────────────────────────────────────────────────────
 

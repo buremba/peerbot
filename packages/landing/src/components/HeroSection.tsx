@@ -62,6 +62,7 @@ export function HeroSection(props: {
   autoAdvance?: boolean;
   onStopAutoAdvance?: () => void;
   heroCopy?: SurfaceHeroCopy;
+  startUrl: string;
 }) {
   const activeUseCase = getLandingUseCaseShowcase(props.activeUseCaseId);
   const activeStage = props.activeStage ?? "model";
@@ -127,9 +128,7 @@ export function HeroSection(props: {
 
         <div class="hero-rise hero-rise-4 relative z-20 flex flex-wrap gap-3 justify-center items-center">
           <a
-            href={GITHUB_URL}
-            target="_blank"
-            rel="noopener noreferrer"
+            href={props.startUrl}
             class="inline-flex items-center text-[14px] font-medium px-5 h-10 rounded-lg transition-opacity hover:opacity-90"
             style={{
               background: "#0b0b0d",

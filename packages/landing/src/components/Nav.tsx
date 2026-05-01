@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from "preact/hooks";
+import type { LandingUseCaseId } from "../use-case-definitions";
 import {
+  getOwlettoBaseUrl,
   getOwlettoLoginUrl,
+  getOwlettoUrl,
   landingUseCaseGroupedOptions,
 } from "../use-case-showcases";
 
@@ -292,12 +295,19 @@ function MegaMenuTrigger({
 
 type NavProps = {
   currentPath?: string;
+  startUseCaseId?: LandingUseCaseId;
 };
 
-export function Nav({ currentPath: _currentPath = "/" }: NavProps) {
+export function Nav({
+  currentPath: _currentPath = "/",
+  startUseCaseId,
+}: NavProps) {
   const [openId, setOpenId] = useState<string | null>(null);
   const solutions = buildSolutionsMenu();
   const loginUrl = getOwlettoLoginUrl();
+  const startUrl = startUseCaseId
+    ? getOwlettoUrl(startUseCaseId)
+    : getOwlettoBaseUrl();
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -376,9 +386,7 @@ export function Nav({ currentPath: _currentPath = "/" }: NavProps) {
               Sign in
             </a>
             <a
-              href={GITHUB_URL}
-              target="_blank"
-              rel="noopener noreferrer"
+              href={startUrl}
               class="inline-flex items-center text-[14px] font-medium px-4 h-9 rounded-full transition-opacity hover:opacity-90"
               style={{ background: "#0b0b0d", color: "#ffffff" }}
             >

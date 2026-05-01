@@ -1,4 +1,4 @@
-const GITHUB_URL = "https://github.com/lobu-ai/lobu";
+import { getOwlettoBaseUrl } from "../use-case-showcases";
 
 function HexCluster() {
   return (
@@ -36,7 +36,7 @@ function HexCluster() {
   );
 }
 
-export function CTA() {
+export function CTA({ startUrl = getOwlettoBaseUrl() }: { startUrl?: string }) {
   return (
     <section class="px-4 sm:px-6 py-20">
       <div
@@ -57,9 +57,7 @@ export function CTA() {
           </h2>
           <div class="flex flex-wrap gap-3">
             <a
-              href={GITHUB_URL}
-              target="_blank"
-              rel="noopener noreferrer"
+              href={startUrl}
               class="inline-flex items-center text-[14px] font-medium px-5 h-10 rounded-lg transition-opacity hover:opacity-90"
               style={{ background: "#0b0b0d", color: "#ffffff" }}
             >

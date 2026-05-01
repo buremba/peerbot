@@ -2,6 +2,8 @@ import { useState } from "preact/hooks";
 import type { LandingUseCaseId } from "../use-case-definitions";
 import {
   DEFAULT_LANDING_USE_CASE_ID,
+  getOwlettoBaseUrl,
+  getOwlettoUrl,
   type SurfaceHeroCopy,
 } from "../use-case-showcases";
 import { ArchitectureSection } from "./ArchitectureSection";
@@ -32,6 +34,9 @@ export function LandingPage(props: {
   );
   const [activeStage, setActiveStage] = useState<HeroStageId>("model");
   const [autoAdvance, setAutoAdvance] = useState(true);
+  const startUrl = props.defaultUseCaseId
+    ? getOwlettoUrl(activeUseCaseId)
+    : getOwlettoBaseUrl();
 
   const handleStageChange = (id: HeroStageId) => {
     setAutoAdvance(false);
@@ -47,6 +52,7 @@ export function LandingPage(props: {
         autoAdvance={autoAdvance}
         onStopAutoAdvance={() => setAutoAdvance(false)}
         heroCopy={props.heroCopy}
+        startUrl={startUrl}
       />
 
       <section class="px-4 sm:px-6 pt-2 pb-12">
@@ -147,7 +153,7 @@ export function LandingPage(props: {
         <DataModelSection />
       </div>
 
-      <CTA />
+      <CTA startUrl={startUrl} />
 
       {props.latestPosts?.length ? (
         <LatestBlogPosts posts={props.latestPosts} />

@@ -40,7 +40,7 @@
     "@hono/zod-openapi": "^1.2.1",
     "@inquirer/prompts": "^7.10.1",
     "@lobu/core": "workspace:*",
-    "@lobu/owletto-sdk": "workspace:*",
+    "@lobu/connector-sdk": "workspace:*",
     "@lobu/worker": "workspace:*",
     "@mariozechner/pi-ai": "^0.51.6",
     "@modelcontextprotocol/sdk": "^1.27.1",

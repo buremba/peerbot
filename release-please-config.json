@@ -23,7 +23,7 @@
         },
         {
           "type": "json",
-          "path": "packages/worker/package.json",
+          "path": "packages/agent-worker/package.json",
           "jsonpath": "$.version"
         },
         {
@@ -33,7 +33,47 @@
         },
         {
           "type": "json",
+          "path": "packages/connector-sdk/package.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "packages/openclaw-plugin/package.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "packages/connectors/package.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "packages/connector-worker/package.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "packages/embeddings/package.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
           "path": "packages/owletto-sdk/package.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "packages/owletto-connectors/package.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "packages/owletto-worker/package.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "packages/owletto-embeddings/package.json",
           "jsonpath": "$.version"
         },
         {

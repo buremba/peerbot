@@ -862,7 +862,7 @@ COMMENT ON COLUMN public.entity_identities.namespace IS 'Identifier kind. Standa
 -- Name: COLUMN entity_identities.identifier; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.entity_identities.identifier IS 'Normalized identifier value (E.164 digits for phone, lowercase for email, etc.). Normalizers in @lobu/owletto-sdk own the canonical form.';
+COMMENT ON COLUMN public.entity_identities.identifier IS 'Normalized identifier value (E.164 digits for phone, lowercase for email, etc.). Normalizers in @lobu/connector-sdk own the canonical form.';
 
 
 --

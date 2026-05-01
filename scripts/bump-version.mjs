@@ -5,9 +5,17 @@ import path from "node:path";
 
 const PACKAGES = [
   "packages/core",
-  "packages/worker",
+  "packages/agent-worker",
   "packages/cli",
+  "packages/connector-sdk",
+  "packages/openclaw-plugin",
+  "packages/connectors",
+  "packages/connector-worker",
+  "packages/embeddings",
   "packages/owletto-sdk",
+  "packages/owletto-connectors",
+  "packages/owletto-worker",
+  "packages/owletto-embeddings",
   "packages/owletto-openclaw",
 ];
 

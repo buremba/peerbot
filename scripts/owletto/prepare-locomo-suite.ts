@@ -1,4 +1,4 @@
-import { prepareLoCoMoSuite } from '../../packages/owletto-backend/src/benchmarks/memory/public-datasets/locomo.ts';
+import { prepareLoCoMoSuite } from '../../packages/server/src/benchmarks/memory/public-datasets/locomo.ts';
 
 function readFlag(name: string): string | null {
   const index = process.argv.indexOf(name);

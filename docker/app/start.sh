@@ -52,4 +52,4 @@ fi
 # #430. External npm deps are resolved by Node from node_modules, which
 # is hoisted (see Dockerfile `bun install --linker=hoisted`) so the flat
 # layout matches what Node expects.
-exec node /app/packages/owletto-backend/dist/server.bundle.mjs
+exec node /app/packages/server/dist/server.bundle.mjs

@@ -133,11 +133,7 @@ export const INSTALL_TARGETS: InstallTarget[] = [
     mode: "auto",
     async configure(mcpUrl) {
       try {
-        runCommand("openclaw", [
-          "plugins",
-          "install",
-          "owletto-openclaw-plugin",
-        ]);
+        runCommand("openclaw", ["plugins", "install", "@lobu/openclaw-plugin"]);
       } catch (e) {
         return {
           status: "failed",

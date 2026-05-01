@@ -49,15 +49,15 @@ Provide a one-way Lobu Cloud org → `lobu.toml` converger. Mental model: `terra
 
 - **GETs**: `packages/cli/src/commands/_lib/apply/client.ts:230,285,318,359` — `listAgents`, `listConnections(agentId)`, `listEntityTypes`, `listRelationshipTypes`. No new server endpoints needed for v2.0.
 - **Loader**: `packages/cli/src/config/loader.ts:loadConfig` parses local `lobu.toml` + walks agent dirs. Pull reuses this to detect what's already on disk.
-- **Stable connection IDs**: `packages/owletto-backend/src/gateway/config/file-loader.ts:56:buildStableConnectionId(agentId, type, name)` — deterministic. As long as pull writes `[type, name]` pairs, applying again re-derives the same stable IDs.
+- **Stable connection IDs**: `packages/server/src/gateway/config/file-loader.ts:56:buildStableConnectionId(agentId, type, name)` — deterministic. As long as pull writes `[type, name]` pairs, applying again re-derives the same stable IDs.
 - **TOML writer**: `packages/cli/src/commands/init.ts:492:generateLobuToml` is the closest precedent — string-concatenation TOML emitter. v2.0 ships a more general version of the same function in `_lib/pull/render-toml.ts`.
-- **Frontmatter parser**: `packages/owletto-backend/src/gateway/config/file-loader.ts:657` parses `SKILL.md` into `{ frontmatter, body }`. Pull inverts it: serialize frontmatter back, write body, append.
+- **Frontmatter parser**: `packages/server/src/gateway/config/file-loader.ts:657` parses `SKILL.md` into `{ frontmatter, body }`. Pull inverts it: serialize frontmatter back, write body, append.
 - **Schemas**: `packages/core/src/lobu-toml-schema.ts` Zod schemas validate the TOML pull writes — running validate on the output before commit is the v2.0 self-check.
 
 ## Locked decisions
 
 1. **Verb is `lobu pull`.** One-way, cloud → files. Mirrors `terraform import` more than `apply`. No bidirectional `sync`.
-2. **Default is non-destructive.** If any local file would be overwritten and its content differs from what pull would write, pull lists the conflicting paths and exits non-zero. `--force` overrides. Rationale: a user with hand-edited prompt files who runs `lobu pull` to grab one new connection should not silently lose their edits. The diff/refuse step is the safety net (the inline-confirm pattern from owletto-web's design guidelines, applied to CLI).
+2. **Default is non-destructive.** If any local file would be overwritten and its content differs from what pull would write, pull lists the conflicting paths and exits non-zero. `--force` overrides. Rationale: a user with hand-edited prompt files who runs `lobu pull` to grab one new connection should not silently lose their edits. The diff/refuse step is the safety net (the inline-confirm pattern from the web design guidelines, applied to CLI).
 3. **Pull-all-by-default with `--exclude`, plus `--include` for surgical use.** Default pulls agents + connections + memory schema. `--exclude=connections` skips one resource type. `--include=agents` restricts to one. Rationale: drift recovery is the dominant use case and "missed a resource" is the worst failure mode. `--include` is the escape hatch for the surgical case ("just sync the new entity type"). Mirrors `--only` from `lobu apply`.
 4. **Skill bodies**:
    - If cloud has a raw `skills_config[].body` (v2.1+ — see phasing), write `agents/<id>/skills/<name>/SKILL.md` with the frontmatter serialized + body appended.

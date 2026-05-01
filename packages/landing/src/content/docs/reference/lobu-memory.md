@@ -47,10 +47,10 @@ The wizard detects supported clients and auto-configures them when possible. Bro
 
 ### `lobu memory configure`
 
-Writes OpenClaw plugin config for `@lobu/owletto-openclaw`. The generated plugin config uses `lobu token --raw`, so it reuses top-level `lobu login` authentication.
+Writes OpenClaw plugin config for `@lobu/openclaw-plugin`. The generated plugin config uses `lobu token --raw`, so it reuses top-level `lobu login` authentication.
 
 ```bash
-openclaw plugins install owletto-openclaw-plugin
+openclaw plugins install @lobu/openclaw-plugin
 lobu login
 lobu memory configure --url https://lobu.ai/mcp --org my-org
 lobu memory health --url https://lobu.ai/mcp --org my-org

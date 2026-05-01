@@ -1,7 +1,7 @@
 import {
   type LongMemEvalVariant,
   prepareLongMemEvalSuite,
-} from '../../packages/owletto-backend/src/benchmarks/memory/public-datasets/longmemeval.ts';
+} from '../../packages/server/src/benchmarks/memory/public-datasets/longmemeval.ts';
 
 function readFlag(name: string): string | null {
   const index = process.argv.indexOf(name);

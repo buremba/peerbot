@@ -1,0 +1,45 @@
+{
+  "name": "@lobu/openclaw-plugin",
+  "version": "5.0.0",
+  "description": "Lobu memory plugin for OpenClaw",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "openclaw.plugin.json"
+  ],
+  "scripts": {
+    "build": "tsc && cp ./openclaw.plugin.json ./dist/openclaw.plugin.json",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist",
+    "test:e2e": "vitest run --config test/e2e/vitest.config.ts"
+  },
+  "openclaw": {
+    "extensions": [
+      "./dist/index.js"
+    ]
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "postgres": "^3.4.7",
+    "typescript": "^5.3.3",
+    "vitest": "^2.1.8"
+  },
+  "license": "BUSL-1.1",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lobu-ai/lobu.git",
+    "directory": "packages/openclaw-plugin"
+  }
+}

@@ -1,0 +1,55 @@
+{
+  "id": "openclaw-owletto",
+  "kind": "memory",
+  "description": "Lobu memory over MCP. Set mcpUrl to enable. Authentication via token, tokenCommand, or interactive device login.",
+  "entry": "./dist/index.js",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "mcpUrl": {
+        "type": "string",
+        "description": "Full MCP endpoint URL (for example, https://lobu.ai/mcp/acme). Required."
+      },
+      "webUrl": {
+        "type": "string",
+        "description": "Public web URL for the Lobu memory instance (for example, https://app.lobu.ai). Used to generate links for the agent."
+      },
+      "token": {
+        "type": "string",
+        "description": "Bearer token for MCP requests. Optional — if not set, the plugin offers interactive device login."
+      },
+      "tokenCommand": {
+        "type": "string",
+        "description": "Shell command that prints a bearer token to stdout. Optional — used when token is not set."
+      },
+      "headers": {
+        "type": "object",
+        "description": "Optional extra HTTP headers for MCP requests.",
+        "additionalProperties": {
+          "type": "string"
+        }
+      },
+      "autoRecall": {
+        "type": "boolean",
+        "default": true,
+        "description": "When true, searches Lobu memory for relevant memories before each prompt."
+      },
+      "recallLimit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 50,
+        "default": 6,
+        "description": "Maximum recalled memory records per request."
+      },
+      "autoCapture": {
+        "type": "boolean",
+        "default": true,
+        "description": "When true, captures conversation observations as long-term memories after each agent session."
+      }
+    }
+  },
+  "uiHints": {
+    "sensitive": ["token"]
+  }
+}

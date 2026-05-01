@@ -47,7 +47,7 @@ Local `lobu.toml` projects are still useful for `lobu validate` and `lobu apply`
 Single-process Node app. Run it however you run Node — `node`, `pm2`, `systemd`, or another process supervisor. The app needs `DATABASE_URL` (Postgres + pgvector) reachable from its environment; no orchestrator is required and there is no Helm chart to install.
 
 - **Local dev** (contributing to Lobu itself): clone, `make setup`, `make dev` (boots embedded gateway + workers + Vite HMR on `:8787`).
-- **Production**: `bun run --cwd packages/owletto-backend build:server`, then `node packages/owletto-backend/dist/server.bundle.mjs` under your process supervisor of choice.
+- **Production**: `bun run --cwd packages/server build:server`, then `node packages/server/dist/server.bundle.mjs` under your process supervisor of choice.
 
 ## Architecture
 

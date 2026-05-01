@@ -11,7 +11,7 @@ import { parseEnvContent } from "../internal/index.js";
 /**
  * `lobu run` — start the embedded Lobu stack.
  *
- * Spawns the bundled @lobu/owletto-backend Node server, which hosts the
+ * Spawns the bundled @lobu/server Node server, which hosts the
  * gateway, embedded workers, embeddings, and the Owletto memory backend
  * in-process. Workers are spawned as child subprocesses by the gateway's
  * EmbeddedDeploymentManager. Postgres must be reachable via DATABASE_URL
@@ -71,7 +71,7 @@ export async function devCommand(
     );
     console.error(chalk.dim("  In the monorepo, build it via:"));
     console.error(
-      chalk.dim("    bun run --filter '@lobu/owletto-backend' build:server\n")
+      chalk.dim("    bun run --filter '@lobu/server' build:server\n")
     );
     process.exit(1);
   }
@@ -152,9 +152,9 @@ export function resolveBackendBundle(
   }
 
   // 2. Resolved via node_modules — covers a workspace consumer that has
-  //    `@lobu/owletto-backend` linked locally (e.g. internal monorepo).
+  //    `@lobu/server` linked locally (e.g. internal monorepo).
   try {
-    return require_.resolve("@lobu/owletto-backend/dist/server.bundle.mjs");
+    return require_.resolve("@lobu/server/dist/server.bundle.mjs");
   } catch {
     // not installed as a dep
   }
@@ -163,10 +163,7 @@ export function resolveBackendBundle(
   //    fresh clone before the CLI itself has been published.
   let cur = here;
   for (let i = 0; i < 6; i++) {
-    const candidate = join(
-      cur,
-      "packages/owletto-backend/dist/server.bundle.mjs"
-    );
+    const candidate = join(cur, "packages/server/dist/server.bundle.mjs");
     if (existsSync(candidate)) return candidate;
     const parent = dirname(cur);
     if (parent === cur) break;

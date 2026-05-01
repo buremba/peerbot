@@ -3,7 +3,7 @@ title: Troubleshooting
 description: Common issues and how to fix them.
 ---
 
-Lobu boots as a single Node process (`lobu run` / `node packages/owletto-backend/dist/server.bundle.mjs`). Postgres (with pgvector) is the only user-provided external, reached via `DATABASE_URL`. Worker subprocesses are spawned by the gateway's `EmbeddedDeploymentManager`.
+Lobu boots as a single Node process (`lobu run` / `node packages/server/dist/server.bundle.mjs`). Postgres (with pgvector) is the only user-provided external, reached via `DATABASE_URL`. Worker subprocesses are spawned by the gateway's `EmbeddedDeploymentManager`.
 
 ## Worker won't start
 
@@ -102,7 +102,7 @@ curl -v http://localhost:8118
 
 ```bash
 # Check Node process memory
-ps -o pid,rss,command -p "$(pgrep -f 'owletto-backend/dist/server.bundle.mjs')"
+ps -o pid,rss,command -p "$(pgrep -f 'server/dist/server.bundle.mjs')"
 
 # Workspaces accumulate per agent under ./workspaces/
 # Clear stale ones if disk is filling up:

@@ -1,3 +1,3 @@
-[submodule "packages/owletto-web"]
-	path = packages/owletto-web
+[submodule "packages/web"]
+	path = packages/web
 	url = https://github.com/lobu-ai/owletto-web.git

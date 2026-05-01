@@ -48,7 +48,7 @@ Run the embedded Lobu stack. `lobu.toml` is not required; set `DATABASE_URL` in 
 npx @lobu/cli@latest run
 ```
 
-The command spawns the bundled Node server (`@lobu/owletto-backend/dist/server.bundle.mjs`) and forwards stdio. Ctrl+C cleanly stops the server and worker subprocesses. Extra arguments are forwarded to the Node entry point.
+The command spawns the bundled Node server (`@lobu/server/dist/server.bundle.mjs`) and forwards stdio. Ctrl+C cleanly stops the server and worker subprocesses. Extra arguments are forwarded to the Node entry point.
 
 ---
 

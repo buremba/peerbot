@@ -48,14 +48,14 @@ data/
 dump.rdb
 
 # Auto-generated page CSS
-packages/owletto-backend/src/gateway/routes/public/page-styles.ts
+packages/server/src/gateway/routes/public/page-styles.ts
 packages/owletto-cli/runtime/
 
 # Auto-generated history page JS bundle
-packages/owletto-backend/src/gateway/routes/public/history-page-bundle.ts
-packages/owletto-backend/src/gateway/routes/public/agent-page-bundle.ts
-packages/owletto-backend/src/gateway/routes/public/agents-page-bundle.ts
-packages/owletto-backend/src/gateway/routes/public/agents-page-bundle.raw.js
+packages/server/src/gateway/routes/public/history-page-bundle.ts
+packages/server/src/gateway/routes/public/agent-page-bundle.ts
+packages/server/src/gateway/routes/public/agents-page-bundle.ts
+packages/server/src/gateway/routes/public/agents-page-bundle.raw.js
 
 # Astro build artifacts
 packages/landing/.astro/

@@ -1,67 +1,29 @@
 {
   "name": "@lobu/owletto-worker",
   "version": "1.6.0",
-  "private": true,
-  "description": "Self-hosted worker for Lobu memory — connectors and embedding generation",
+  "description": "Deprecated compatibility package. Use @lobu/connector-worker instead.",
   "type": "module",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
-  "bin": {
-    "owletto-worker": "./dist/bin.js"
-  },
-  "exports": {
-    ".": {
-      "import": "./dist/index.js",
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
-    },
-    "./daemon": {
-      "import": "./dist/daemon/index.js",
-      "types": "./dist/daemon/index.d.ts"
-    },
-    "./embeddings": {
-      "import": "./dist/embeddings.js",
-      "types": "./dist/embeddings.d.ts"
-    }
-  },
-  "files": [
-    "dist",
-    "README.md"
-  ],
-  "scripts": {
-    "build": "tsc",
-    "dev": "tsx watch --tsconfig tsconfig.json src/bin.ts",
-    "start": "node dist/bin.js",
-    "daemon": "tsx --tsconfig tsconfig.json src/bin.ts daemon",
-    "typecheck": "tsc --noEmit",
-    "clean": "rm -rf dist"
-  },
-  "dependencies": {
-    "@lobu/owletto-sdk": "workspace:*",
-    "@lobu/worker": "workspace:*",
-    "@xenova/transformers": "^2.17.2",
-    "jimp": "^1.6.0",
-    "playwright": "npm:patchright@^1.57.0",
-    "sharp": "^0.34.4"
-  },
-  "devDependencies": {
-    "@types/node": "^20.10.0",
-    "tsx": "^4.7.0",
-    "typescript": "^5.3.3"
-  },
-  "engines": {
-    "node": ">=18"
-  },
-  "keywords": [
-    "worker",
-    "connector",
-    "embedding",
-    "content",
-    "user-research"
-  ],
   "license": "BUSL-1.1",
+  "deprecated": "This package has been renamed to @lobu/connector-worker. Please install @lobu/connector-worker instead.",
+  "dependencies": {
+    "@lobu/connector-worker": "workspace:*"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "repository": {
     "type": "git",
-    "url": "https://github.com/lobu-ai/owletto.git"
-  }
+    "url": "git+https://github.com/lobu-ai/lobu.git",
+    "directory": "packages/owletto-worker"
+  },
+  "main": "index.js",
+  "types": "index.d.ts",
+  "bin": {
+    "owletto-worker": "./bin/owletto-worker.js"
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "bin"
+  ]
 }

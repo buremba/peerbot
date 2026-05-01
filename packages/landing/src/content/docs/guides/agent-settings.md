@@ -40,7 +40,7 @@ Memory is pluggable. In file-first projects, the gateway first checks `[memory.o
 | Effective config | Plugin used |
 |---|---|
 | `[memory.owletto]` disabled or unresolved, and no `MEMORY_URL` override | `@openclaw/native-memory` — files under the worker workspace. Not shared across threads. |
-| `[memory.owletto]` enabled | `@lobu/owletto-openclaw` — the OpenClaw memory plugin for Owletto. It translates OpenClaw memory calls into Owletto MCP requests via the gateway's `/mcp/owletto` proxy. Cross-session, shareable across agents. |
+| `[memory.owletto]` enabled | `@lobu/openclaw-plugin` — the OpenClaw memory plugin for Owletto. It translates OpenClaw memory calls into Owletto MCP requests via the gateway's `/mcp/owletto` proxy. Cross-session, shareable across agents. |
 | `MEMORY_URL` set | Used as the base Owletto MCP endpoint before Lobu scopes it to the org from `[memory.owletto]` in `lobu.toml`. Useful for local or custom Owletto deployments. |
 
 `lobu init` now scaffolds the file-first Owletto memory layout for memory-enabled projects:
@@ -63,7 +63,7 @@ Switch one agent to Owletto:
 {
   "pluginsConfig": {
     "plugins": [
-      { "source": "@lobu/owletto-openclaw", "slot": "memory", "enabled": true }
+      { "source": "@lobu/openclaw-plugin", "slot": "memory", "enabled": true }
     ]
   }
 }
@@ -71,7 +71,7 @@ Switch one agent to Owletto:
 
 The gateway injects the internal `mcpUrl` and `gatewayAuthUrl` automatically — you don't need to hand-write them.
 
-That means the plugin source is the only part you normally set yourself. OpenClaw loads `@lobu/owletto-openclaw` as the agent's `slot: "memory"` plugin, and Lobu fills in the proxy/auth details needed to reach Owletto safely.
+That means the plugin source is the only part you normally set yourself. OpenClaw loads `@lobu/openclaw-plugin` as the agent's `slot: "memory"` plugin, and Lobu fills in the proxy/auth details needed to reach Owletto safely.
 
 Switch to native memory:
 

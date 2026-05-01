@@ -1,6 +1,6 @@
 name: "Set up private submodule"
 description: >
-  Checks out packages/owletto-web via deploy key when available. For forks and
+  Checks out packages/web via deploy key when available. For forks and
   runs without the secret, writes a stub package.json so bun workspaces still
   resolve (the web assets just won't build).
 
@@ -30,7 +30,7 @@ runs:
       run: |
         set -euo pipefail
         git config --global url."git@github.com:lobu-ai/owletto-web.git".insteadOf "https://github.com/lobu-ai/owletto-web.git"
-        git submodule update --init --recursive packages/owletto-web
+        git submodule update --init --recursive packages/web
 
     - name: Write stub package.json when submodule is unavailable
       id: stub
@@ -38,8 +38,8 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        echo "No deploy key — writing stub package.json for packages/owletto-web"
-        mkdir -p packages/owletto-web
+        echo "No deploy key — writing stub package.json for packages/web"
+        mkdir -p packages/web
         # The stub omits the real submodule's deps, which means
         # `bun install --frozen-lockfile` will fail against bun.lock.
         # Callers should branch on the `stubbed` output to relax checks
@@ -52,5 +52,5 @@ runs:
           '  "version": "1.6.0",' \
           '  "description": "Stub — private submodule not initialized"' \
           '}' \
-          > packages/owletto-web/package.json
+          > packages/web/package.json
         echo "stubbed=true" >> "$GITHUB_OUTPUT"

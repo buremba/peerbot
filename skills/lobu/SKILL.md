@@ -97,7 +97,7 @@ For ChatGPT, Claude Desktop, Cursor, and other browser-managed clients, paste th
 For OpenClaw, install the plugin and let the Lobu CLI write plugin config:
 
 ```bash
-openclaw plugins install owletto-openclaw-plugin
+openclaw plugins install @lobu/openclaw-plugin
 lobu login
 lobu memory configure --url <mcp-url> --org <org-slug>
 lobu memory health --url <mcp-url> --org <org-slug>

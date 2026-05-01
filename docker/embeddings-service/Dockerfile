@@ -1,5 +1,5 @@
 # ===========================================
-# Embeddings Service (owletto-embeddings)
+# Embeddings Service (embeddings)
 # ===========================================
 
 FROM node:22-slim AS builder
@@ -16,24 +16,25 @@ ENV PATH="/usr/local/bin:${PATH}"
 
 COPY bun.lock package.json tsconfig.json ./
 COPY patches/ ./patches/
-COPY packages/owletto-embeddings/package.json packages/owletto-embeddings/
+COPY packages/embeddings/package.json packages/embeddings/
 
 # Stub workspaces not needed at build time
-RUN mkdir -p packages/cli packages/core packages/gateway packages/landing \
-               packages/owletto-backend packages/owletto-cli packages/owletto-connectors \
-               packages/owletto-extension packages/owletto-openclaw packages/owletto-sdk \
-               packages/owletto-web packages/owletto-worker packages/worker packages/mcpsandbox \
-    && for p in cli core gateway landing owletto-backend owletto-connectors \
-                owletto-extension owletto-openclaw owletto-sdk owletto-web owletto-worker worker mcpsandbox; do \
+RUN mkdir -p packages/cli packages/core packages/landing \
+               packages/server packages/owletto-cli packages/connectors \
+               packages/browser-extension packages/openclaw-plugin packages/connector-sdk \
+               packages/web packages/connector-worker packages/agent-worker packages/mcpsandbox \
+    && for p in cli core landing server connectors \
+                browser-extension openclaw-plugin connector-sdk web connector-worker agent-worker mcpsandbox; do \
         echo "{\"name\":\"@lobu/$p\",\"version\":\"0.0.0\",\"private\":true}" > "packages/$p/package.json"; \
       done \
+    && echo '{"name":"@lobu/worker","version":"0.0.0","private":true}' > packages/agent-worker/package.json \
     && echo '{"name":"owletto","version":"0.0.0","private":true}' > packages/owletto-cli/package.json
 
 RUN --mount=type=cache,target=/root/.bun/install/cache bun install
 
-COPY packages/owletto-embeddings/ packages/owletto-embeddings/
+COPY packages/embeddings/ packages/embeddings/
 
-RUN cd packages/owletto-embeddings && bunx tsc --noEmit
+RUN cd packages/embeddings && bunx tsc --noEmit
 
 # ===========================================
 # Runtime
@@ -56,7 +57,7 @@ RUN useradd -m -s /bin/bash embeddings && \
 
 COPY --from=builder --chown=embeddings:embeddings /app/node_modules ./node_modules
 COPY --from=builder --chown=embeddings:embeddings /app/package.json ./
-COPY --from=builder --chown=embeddings:embeddings /app/packages/owletto-embeddings ./packages/owletto-embeddings
+COPY --from=builder --chown=embeddings:embeddings /app/packages/embeddings ./packages/embeddings
 
 ENV NODE_ENV=production
 ENV TRANSFORMERS_CACHE=/app/.cache/transformers
@@ -67,6 +68,6 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
   CMD node -e "fetch('http://localhost:8790/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
 USER embeddings
-WORKDIR /app/packages/owletto-embeddings
+WORKDIR /app/packages/embeddings
 
 CMD ["bun", "src/server.ts"]

@@ -205,7 +205,7 @@ public orgs alongside member orgs.
 
 The "Your Organizations" / "Public Organizations" split with a separator
 already exists in
-`packages/owletto-web/src/components/sidebar/organization-dropdown.tsx`
+`packages/web/src/components/sidebar/organization-dropdown.tsx`
 (grouped via `CommandGroup` headings + `CommandSeparator`, gated on
 `is_member` / `visibility`). No further work.
 

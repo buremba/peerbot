@@ -6,7 +6,7 @@ Status: **planning** · Owner: @buremba · v3 follow-up to `lobu apply` (see `do
 
 Push named secret **values** from a CLI-side source (`.env`, file, or stdin) into Lobu Cloud's per-org secret-proxy. The CLI never displays values, the server never returns them, and every write is audited. `lobu apply` continues to read `$VAR` references from `lobu.toml`, verifies the names exist in cloud, and **never uploads values**. `secrets push` is the only sanctioned write path for cloud secret values.
 
-**Reuse-first**: `WritableSecretStore` (`packages/owletto-backend/src/gateway/secrets/index.ts`) already has `put/list/delete` and is wired through `SecretStoreRegistry` to the Postgres-backed `agent_secrets` table. The proxy already swaps `lobu_secret_<uuid>` placeholders at egress. The gap is one HTTP surface — `POST /api/:orgSlug/secrets/manage` — plus org-scoping for `agent_secrets`, plus a dedicated audit table. Total v3.0: 2 PRs, ~700 LOC.
+**Reuse-first**: `WritableSecretStore` (`packages/server/src/gateway/secrets/index.ts`) already has `put/list/delete` and is wired through `SecretStoreRegistry` to the Postgres-backed `agent_secrets` table. The proxy already swaps `lobu_secret_<uuid>` placeholders at egress. The gap is one HTTP surface — `POST /api/:orgSlug/secrets/manage` — plus org-scoping for `agent_secrets`, plus a dedicated audit table. Total v3.0: 2 PRs, ~700 LOC.
 
 ## Mental model
 
@@ -44,11 +44,11 @@ later, at runtime:
 
 ## Background — what already exists
 
-- **`WritableSecretStore` interface** (`packages/owletto-backend/src/gateway/secrets/index.ts:32-40`): `put(name, value, opts) → SecretRef`, `delete(nameOrRef)`, `list(prefix?)`. Default backend is `PostgresSecretStore` (`packages/owletto-backend/src/lobu/stores/postgres-secret-store.ts`), which AES-256-GCM-encrypts via `@lobu/core`'s `encrypt()` and returns `secret://<encoded-name>` refs.
+- **`WritableSecretStore` interface** (`packages/server/src/gateway/secrets/index.ts:32-40`): `put(name, value, opts) → SecretRef`, `delete(nameOrRef)`, `list(prefix?)`. Default backend is `PostgresSecretStore` (`packages/server/src/lobu/stores/postgres-secret-store.ts`), which AES-256-GCM-encrypts via `@lobu/core`'s `encrypt()` and returns `secret://<encoded-name>` refs.
 - **`agent_secrets` table** (`db/migrations/20260410120000_add_agent_secrets.sql`): `name text PRIMARY KEY`, `ciphertext text`, `expires_at`, timestamps. **No `org_id` column today** — names are namespaced by path-style prefixes (`connections/<id>/<field>`, `system/<key>`, etc.) chosen by callers. PR-1 must add `org_id`.
 - **Placeholder swap**: `secret-proxy.ts` (line 11, 194) intercepts `lobu_secret_<uuid>` tokens in worker requests and resolves them to the underlying `SecretRef` value at egress. Workers never see real values; the cache is per-pod. See `AGENTS.md` §"Orchestration".
 - **`secret://` refs**: `packages/core/src/secret-refs.ts` parses `<scheme>://<path>#<fragment>` URIs. `secret://` is the default writable scheme; `aws-sm://` is read-only. Anything stored via `secrets push` becomes `secret://<orgSlug>/user/<name>` (see Locked Decisions #6).
-- **Auth**: `mcpAuth` middleware (`packages/owletto-backend/src/auth/middleware.ts`, mounted in `src/index.ts:660+`) validates the bearer token, attaches `c.var.userId` and the resolved `orgSlug`. Org member roles are computed in `auth/oauth/scopes.ts` (`owner | admin | member`). Reuse both — no new auth surface.
+- **Auth**: `mcpAuth` middleware (`packages/server/src/auth/middleware.ts`, mounted in `src/index.ts:660+`) validates the bearer token, attaches `c.var.userId` and the resolved `orgSlug`. Org member roles are computed in `auth/oauth/scopes.ts` (`owner | admin | member`). Reuse both — no new auth surface.
 - **CLI today** (`packages/cli/src/commands/secrets.ts`): `secrets set/list/delete` operate **only on local `.env`**. The header comment promises "Cloud secrets will use the API when available." This plan delivers that API.
 - **CLI auth helpers**: `_lib/openclaw-auth.ts:getUsableToken` and `_lib/openclaw-cmd.ts:postJson` + `deriveApiBaseUrl` (introduced in PR #459). Reuse, don't duplicate.
 
@@ -100,10 +100,10 @@ Scope:
   - Re-create `agent_secrets_name_prefix_idx` as `(org_id, name text_pattern_ops)`.
   - New table `public.secret_audit` (mirrors `entity_type_audit` shape but **without** `before_payload`/`after_payload`). Columns: `id bigserial PK`, `org_id uuid NOT NULL`, `name text NOT NULL`, `fingerprint text NOT NULL CHECK (length(fingerprint) = 4)`, `action text CHECK (action IN ('create','rotate','delete'))`, `source text CHECK (source IN ('env','file','stdin','api','system'))`, `actor_user_id uuid`, `created_at timestamptz DEFAULT now()`. Index on `(org_id, name, created_at DESC)`.
   - Update `db/schema.sql` to match.
-- `PostgresSecretStore` updates (`packages/owletto-backend/src/lobu/stores/postgres-secret-store.ts`):
+- `PostgresSecretStore` updates (`packages/server/src/lobu/stores/postgres-secret-store.ts`):
   - Constructor accepts an `orgId: string` (or factory takes one). Every query gets `WHERE org_id = $1` added. The cross-cutting wiring is small because `SecretStoreRegistry` is constructed per-request in cloud paths that already know the org.
   - `put` writes `(org_id, name, ciphertext)` with `ON CONFLICT (org_id, name) DO UPDATE`.
-- New route mounted at `app.route('/api/:orgSlug/secrets', secretRoutes)` from a new `packages/owletto-backend/src/lobu/secret-routes.ts`. Endpoints:
+- New route mounted at `app.route('/api/:orgSlug/secrets', secretRoutes)` from a new `packages/server/src/lobu/secret-routes.ts`. Endpoints:
   - `POST /api/:orgSlug/secrets/manage` — body: `{ actions: Array<{op: 'create' | 'rotate' | 'delete', name: string, value?: string, source: 'env' | 'file' | 'stdin'}> }`. Server-side flow: `mcpAuth` → require role in `(owner, admin)` → for each action, transactionally `put`/`delete` + insert `secret_audit` row → respond with `{ results: Array<{name, fingerprint, action, ref, willRestart?: false}> }`. **Never echoes `value`.**
   - `GET /api/:orgSlug/secrets` — returns `[{ name, fingerprint, updatedAt, source }]`. Fingerprints come from re-decrypting + hashing on read (cheap with the existing 60s `SecretStoreRegistry` cache); alternative is to store `fingerprint` on write in `agent_secrets`. Pick the latter — write-time fingerprint, no decrypt needed for list. Add `fingerprint text` column to `agent_secrets` in the same migration.
 - Server-side fingerprint helper: `packages/core/src/secret-fingerprint.ts` — `function fingerprint(value: string): string` returning the first 4 hex chars of `crypto.createHash('sha256').update(value).digest('hex')`. Used by both server (for `secret_audit.fingerprint`) and CLI (for diff display).
@@ -116,7 +116,7 @@ Scope:
   - Empty-string value rejected with `400 invalid_value`.
   - Value starting with `lobu_secret_` rejected with `400 already_a_placeholder` (caller is confused).
 
-Validation: `bun test packages/owletto-backend/src/lobu`, `make build-packages`, `bun run typecheck`, `bun run check`.
+Validation: `bun test packages/server/src/lobu`, `make build-packages`, `bun run typecheck`, `bun run check`.
 
 ### PR-2 — CLI: `lobu secrets push` + `lobu secrets list`
 

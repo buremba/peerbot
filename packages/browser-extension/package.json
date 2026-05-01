@@ -1,0 +1,27 @@
+{
+  "name": "@lobu/browser-extension",
+  "version": "1.6.0",
+  "private": true,
+  "license": "BUSL-1.1",
+  "description": "Lobu memory Chrome Extension — connect and manage data sources from your browser.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite build --watch --mode development",
+    "build": "vite build",
+    "build:dev": "vite build --mode development",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.260",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.2.0",
+    "typescript": "^5.3.0",
+    "vite": "^6.4.2"
+  }
+}

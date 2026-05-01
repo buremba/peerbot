@@ -17,7 +17,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "..");
 
 const runtimeDepsSource = readFileSync(
-  join(repoRoot, "packages/owletto-worker/src/runtime-deps.ts"),
+  join(repoRoot, "packages/connector-worker/src/runtime-deps.ts"),
   "utf-8"
 );
 
@@ -26,7 +26,7 @@ const match = runtimeDepsSource.match(
 );
 if (!match) {
   console.error(
-    "Could not parse EXTERNAL_RUNTIME_DEPS from packages/owletto-worker/src/runtime-deps.ts"
+    "Could not parse EXTERNAL_RUNTIME_DEPS from packages/connector-worker/src/runtime-deps.ts"
   );
   process.exit(2);
 }
@@ -36,7 +36,10 @@ const declared = match[1]
   .filter(Boolean);
 
 const workerPkg = JSON.parse(
-  readFileSync(join(repoRoot, "packages/owletto-worker/package.json"), "utf-8")
+  readFileSync(
+    join(repoRoot, "packages/connector-worker/package.json"),
+    "utf-8"
+  )
 );
 const installedDeps = new Set(Object.keys(workerPkg.dependencies ?? {}));
 
@@ -44,10 +47,10 @@ const missing = declared.filter((dep) => !installedDeps.has(dep));
 
 if (missing.length > 0) {
   console.error(
-    `❌ EXTERNAL_RUNTIME_DEPS includes deps that are NOT in packages/owletto-worker/package.json:\n` +
+    `❌ EXTERNAL_RUNTIME_DEPS includes deps that are NOT in packages/connector-worker/package.json:\n` +
       missing.map((d) => `  - ${d}`).join("\n") +
       `\n\nEither add them as worker dependencies, or remove them from EXTERNAL_RUNTIME_DEPS\n` +
-      `(packages/owletto-worker/src/runtime-deps.ts) so they get bundled into the connector artifact.`
+      `(packages/connector-worker/src/runtime-deps.ts) so they get bundled into the connector artifact.`
   );
   process.exit(1);
 }

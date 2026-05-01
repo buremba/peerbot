@@ -28,7 +28,7 @@ jobs:
 
       - name: Install bubblewrap (for embedded exec-sandbox tests)
         # The worker exec-sandbox uses bwrap on Linux; without it, the live
-        # bwrap escape-matrix tests in `packages/worker/src/__tests__/exec-sandbox.test.ts`
+        # bwrap escape-matrix tests in `packages/agent-worker/src/__tests__/exec-sandbox.test.ts`
         # auto-skip and we lose the only Linux verification path.
         # Ubuntu 24.04 (ubuntu-latest) blocks unprivileged user namespaces via
         # AppArmor by default; bwrap needs them, so flip the sysctl. See
@@ -54,14 +54,14 @@ jobs:
         # install it in the worker runtime image" before it ships.
         run: node scripts/check-connector-runtime-deps.mjs
 
-      - name: Build core + sdk + owletto-worker for downstream type-resolution
-        # owletto-worker integration tests import from its compiled `dist/`
+      - name: Build core + sdk + connector-worker for downstream type-resolution
+        # connector-worker integration tests import from its compiled `dist/`
         # (subprocess-mode tests spawn the built executor); build it here
         # so those run.
         run: |
           cd packages/core && bun run build && cd ../..
-          cd packages/owletto-sdk && bun run build && cd ../..
-          cd packages/owletto-worker && bun run build && cd ../..
+          cd packages/connector-sdk && bun run build && cd ../..
+          cd packages/connector-worker && bun run build && cd ../..
 
       - name: core / cli (bun:test)
         run: bun test packages/core packages/cli --coverage
@@ -72,23 +72,23 @@ jobs:
         # passes; if Linux turns out different we'll narrow this back down,
         # but we own the WASM concern via run-script-runtime.test.ts under
         # Node + isolated-vm in the integration job below.
-        run: bun test packages/worker
+        run: bun test packages/agent-worker
 
-      - name: owletto-backend (bun:test units)
+      - name: server (bun:test units)
         # The gateway code that used to live in packages/gateway is now under
         # src/gateway/. Its DB-backed bun:test suite needs Postgres and runs
         # in the integration job below; here we only run the pure-unit
         # subdirectories that don't touch Postgres.
         run: |
-          bun test packages/owletto-backend/src/__tests__/unit
-          bun test packages/owletto-backend/src/auth/__tests__/tool-access.test.ts
-          bun test packages/owletto-backend/src/gateway/infrastructure/queue
+          bun test packages/server/src/__tests__/unit
+          bun test packages/server/src/auth/__tests__/tool-access.test.ts
+          bun test packages/server/src/gateway/infrastructure/queue
 
-      - name: owletto-worker (bun:test)
-        # owletto-openclaw e2e tests need a live backend and belong in the
+      - name: connector-worker (bun:test)
+        # openclaw-plugin e2e tests need a live backend and belong in the
         # smoke-example workflow, not the unit job.
         run: |
-          bun test packages/owletto-worker
+          bun test packages/connector-worker
 
       - name: Upload coverage
         if: always()
@@ -118,9 +118,9 @@ jobs:
         if: steps.submodule.outputs.stubbed != 'true'
         run: bun install
 
-      - name: Build owletto-sdk (owletto-web imports its compiled dist)
+      - name: Build connector-sdk (owletto-web imports its compiled dist)
         if: steps.submodule.outputs.stubbed != 'true'
-        run: cd packages/owletto-sdk && bun run build
+        run: cd packages/connector-sdk && bun run build
 
       - name: owletto-web tests (vitest)
         # owletto-web doesn't define a `test` script in its package.json yet
@@ -128,7 +128,7 @@ jobs:
         # directly via the workspace-installed binary so this works on
         # whatever submodule SHA the parent repo points at.
         if: steps.submodule.outputs.stubbed != 'true'
-        run: cd packages/owletto-web && ../../node_modules/.bin/vitest run
+        run: cd packages/web && ../../node_modules/.bin/vitest run
 
   # Backend integration tests need a real Postgres + pgvector. We run them
   # under Node (not bun) for two reasons: (1) the vitest suite uses Node-only
@@ -173,10 +173,10 @@ jobs:
       - name: Install dependencies
         run: bun install
 
-      - name: Build packages owletto-backend depends on
+      - name: Build packages server depends on
         run: |
           cd packages/core && bun run build && cd ../..
-          cd packages/owletto-sdk && bun run build && cd ../..
+          cd packages/connector-sdk && bun run build && cd ../..
 
       - name: Verify Postgres health (fail fast if pgvector setup is broken)
         run: |
@@ -187,22 +187,22 @@ jobs:
           PGPASSWORD=postgres psql -h 127.0.0.1 -p 5433 -U postgres -d owletto_test \
             -c "CREATE EXTENSION IF NOT EXISTS vector"
 
-      - name: owletto-backend integration suite (vitest under Node)
-        working-directory: packages/owletto-backend
+      - name: server integration suite (vitest under Node)
+        working-directory: packages/server
         run: node ../../node_modules/.bin/vitest run --reporter=default
 
-      - name: owletto-backend gateway suite (bun:test, needs Postgres)
+      - name: server gateway suite (bun:test, needs Postgres)
         # The gateway code that used to live in packages/gateway is now under
         # src/gateway/__tests__/. These bun:test files are excluded from
         # vitest (see vitest.config.ts) and need a real Postgres, so they run
         # here in the integration job.
-        working-directory: packages/owletto-backend
+        working-directory: packages/server
         run: bun test src/gateway/__tests__
 
-      - name: owletto-backend lobu route suite (bun:test, needs Postgres)
+      - name: server lobu route suite (bun:test, needs Postgres)
         # These bun:test files live outside src/gateway and are also excluded
         # from vitest because they import bun:test directly.
-        working-directory: packages/owletto-backend
+        working-directory: packages/server
         run: bun test src/lobu/__tests__ src/workspace/__tests__
 
   format-lint:
@@ -255,12 +255,12 @@ jobs:
         # Root tsconfig excludes these packages, so `bun run typecheck`
         # above never sees them. Run each package's own tsc here so a
         # type error can't reach main and break the npm publish at
-        # release time. owletto-connectors and landing are intentionally
+        # release time. connectors and landing are intentionally
         # left out — they need preconditions (DOM lib, `astro sync`)
         # that belong to their own build pipelines.
         run: |
           set -euo pipefail
-          for pkg in owletto-backend owletto-worker owletto-sdk owletto-openclaw owletto-embeddings owletto-extension cli; do
+          for pkg in server connector-worker connector-sdk openclaw-plugin embeddings browser-extension cli; do
             echo "::group::typecheck $pkg"
             (cd "packages/$pkg" && bunx tsc --noEmit)
             echo "::endgroup::"

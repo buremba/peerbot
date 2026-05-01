@@ -86,17 +86,17 @@ jobs:
       - name: Build packages
         run: bun run build
 
-      # Frontend (owletto-web) ships with the product but isn't covered by
+      # Frontend (web) ships with the product but isn't covered by
       # any other PR check: root `bun run build` skips it, and the root
-      # tsconfig excludes packages/owletto-web. Without this gate, a TS error
+      # tsconfig excludes packages/web. Without this gate, a TS error
       # in the submodule (or a stale submodule pointer) can silently regress
       # the deploy.
-      # Build owletto-sdk first because owletto-web imports its compiled dist.
-      - name: Build frontend (owletto-web)
+      # Build connector-sdk first because the web submodule imports its compiled dist.
+      - name: Build frontend (web)
         if: steps.submodule.outputs.stubbed != 'true'
         run: |
-          cd packages/owletto-sdk && bun run build && cd ../..
-          cd packages/owletto-web && bun run build
+          cd packages/connector-sdk && bun run build && cd ../..
+          cd packages/web && bun run build
 
       - name: Verify no uncommitted changes
         if: steps.submodule.outputs.stubbed != 'true'

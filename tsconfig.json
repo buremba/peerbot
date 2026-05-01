@@ -31,16 +31,16 @@
     "paths": {
       "@lobu/core": ["packages/core/src/index.ts"],
       "@lobu/core/*": ["packages/core/src/*"],
-      "@lobu/worker": ["packages/worker/src/index.ts"],
-      "@lobu/worker/*": ["packages/worker/src/*"],
-      "@lobu/owletto-sdk": ["packages/owletto-sdk/src/index.ts"],
-      "@lobu/owletto-sdk/*": ["packages/owletto-sdk/src/*"],
-      "@lobu/owletto-openclaw": ["packages/owletto-openclaw/src/index.ts"],
-      "@lobu/owletto-openclaw/*": ["packages/owletto-openclaw/src/*"],
-      "@lobu/owletto-worker": ["packages/owletto-worker/src/index.ts"],
-      "@lobu/owletto-worker/*": ["packages/owletto-worker/src/*"],
-      "@lobu/owletto-connectors": ["packages/owletto-connectors/src/index.ts"],
-      "@lobu/owletto-connectors/*": ["packages/owletto-connectors/src/*"]
+      "@lobu/worker": ["packages/agent-worker/src/index.ts"],
+      "@lobu/worker/*": ["packages/agent-worker/src/*"],
+      "@lobu/connector-sdk": ["packages/connector-sdk/src/index.ts"],
+      "@lobu/connector-sdk/*": ["packages/connector-sdk/src/*"],
+      "@lobu/openclaw-plugin": ["packages/openclaw-plugin/src/index.ts"],
+      "@lobu/openclaw-plugin/*": ["packages/openclaw-plugin/src/*"],
+      "@lobu/connector-worker": ["packages/connector-worker/src/index.ts"],
+      "@lobu/connector-worker/*": ["packages/connector-worker/src/*"],
+      "@lobu/connectors": ["packages/connectors/src/index.ts"],
+      "@lobu/connectors/*": ["packages/connectors/src/*"]
     }
   },
   "include": ["packages/*/src/**/*", "src/**/*", "test/**/*"],
@@ -49,13 +49,13 @@
     "packages/*/src/__tests__/**/*",
     "packages/cli/**/*",
     "packages/landing/**/*",
-    "packages/owletto-backend/**/*",
-    "packages/owletto-sdk/**/*",
-    "packages/owletto-openclaw/**/*",
-    "packages/owletto-worker/**/*",
-    "packages/owletto-connectors/**/*",
-    "packages/owletto-embeddings/**/*",
-    "packages/owletto-extension/**/*",
-    "packages/owletto-web/**/*"
+    "packages/server/**/*",
+    "packages/connector-sdk/**/*",
+    "packages/openclaw-plugin/**/*",
+    "packages/connector-worker/**/*",
+    "packages/connectors/**/*",
+    "packages/embeddings/**/*",
+    "packages/browser-extension/**/*",
+    "packages/web/**/*"
   ]
 }

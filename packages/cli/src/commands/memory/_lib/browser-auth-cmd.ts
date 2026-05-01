@@ -23,7 +23,7 @@ import {
   type CdpVersionInfo,
   fetchCdpVersionInfo,
   resolveCdpUrl,
-} from "@lobu/owletto-sdk";
+} from "@lobu/connector-sdk";
 import { printText } from "./output.js";
 
 /** Stub of the old getProfile() shim. resolveMcpEndpoint falls through to

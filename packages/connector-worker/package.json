@@ -1,0 +1,70 @@
+{
+  "name": "@lobu/connector-worker",
+  "version": "1.6.0",
+  "description": "Self-hosted worker for Lobu memory \u2014 connectors and embedding generation",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "connector-worker": "./dist/bin.js"
+  },
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./daemon": {
+      "import": "./dist/daemon/index.js",
+      "types": "./dist/daemon/index.d.ts"
+    },
+    "./embeddings": {
+      "import": "./dist/embeddings.js",
+      "types": "./dist/embeddings.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch --tsconfig tsconfig.json src/bin.ts",
+    "start": "node dist/bin.js",
+    "daemon": "tsx --tsconfig tsconfig.json src/bin.ts daemon",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@lobu/connector-sdk": "workspace:*",
+    "@lobu/worker": "workspace:*",
+    "@xenova/transformers": "^2.17.2",
+    "jimp": "^1.6.0",
+    "playwright": "npm:patchright@^1.57.0",
+    "sharp": "^0.34.4"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.3"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "worker",
+    "connector",
+    "embedding",
+    "content",
+    "user-research"
+  ],
+  "license": "BUSL-1.1",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lobu-ai/lobu.git",
+    "directory": "packages/connector-worker"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

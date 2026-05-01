@@ -1,59 +1,28 @@
 {
   "name": "@lobu/owletto-sdk",
   "version": "6.0.0",
-  "description": "Lobu memory SDK — build pluggable connectors for Lobu memory",
+  "description": "Deprecated compatibility package. Use @lobu/connector-sdk instead.",
   "type": "module",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
-  "exports": {
-    ".": {
-      "import": {
-        "types": "./dist/index.d.ts",
-        "default": "./dist/index.js"
-      },
-      "require": {
-        "types": "./dist/index.d.ts",
-        "default": "./dist/index.js"
-      }
-    }
-  },
-  "files": [
-    "dist"
-  ],
-  "scripts": {
-    "build": "tsc",
-    "typecheck": "tsc --noEmit",
-    "clean": "rm -rf dist"
-  },
-  "dependencies": {
-    "@sinclair/typebox": "^0.34.41",
-    "ky": "^1.14.0",
-    "p-retry": "^7.1.0",
-    "pino": "^10.1.0"
-  },
-  "peerDependencies": {
-    "playwright": "npm:patchright@^1.57.0"
-  },
-  "peerDependenciesMeta": {
-    "playwright": {
-      "optional": true
-    }
-  },
-  "devDependencies": {
-    "@types/node": "^20.10.0",
-    "typescript": "^5.3.3"
-  },
-  "engines": {
-    "node": ">=18"
-  },
   "license": "BUSL-1.1",
+  "deprecated": "This package has been renamed to @lobu/connector-sdk. Please install @lobu/connector-sdk instead.",
+  "dependencies": {
+    "@lobu/connector-sdk": "workspace:*"
+  },
   "publishConfig": {
     "access": "public"
   },
-  "homepage": "https://github.com/lobu-ai/owletto",
   "repository": {
     "type": "git",
-    "url": "https://github.com/lobu-ai/owletto.git",
-    "directory": "packages/sdk"
+    "url": "git+https://github.com/lobu-ai/lobu.git",
+    "directory": "packages/owletto-sdk"
+  },
+  "main": "index.js",
+  "types": "index.d.ts",
+  "files": [
+    "index.js",
+    "index.d.ts"
+  ],
+  "exports": {
+    ".": "./index.js"
   }
 }

@@ -1,0 +1,53 @@
+{
+  "name": "@lobu/embeddings",
+  "version": "1.6.0",
+  "license": "BUSL-1.1",
+  "type": "module",
+  "description": "Embeddings HTTP service for Lobu memory",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch --tsconfig tsconfig.json src/server.ts",
+    "start": "tsx --tsconfig tsconfig.json src/server.ts",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.13.7",
+    "@xenova/transformers": "^2.17.2",
+    "hono": "^4.10.4"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lobu-ai/lobu.git",
+    "directory": "packages/embeddings"
+  },
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    },
+    "./server": {
+      "import": {
+        "types": "./dist/server.d.ts",
+        "default": "./dist/server.js"
+      }
+    }
+  }
+}

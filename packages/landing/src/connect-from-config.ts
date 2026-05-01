@@ -118,19 +118,19 @@ const connectFromClientConfigs: Record<
     valueProp:
       "Layer structured, shareable Owletto memory on top of OpenClaw's built-in filesystem memory — the plugin extends OpenClaw's filesystem plugin and can optionally take over its memory slot, so different OpenClaw agents can talk to each other through the same Owletto graph.",
     installPrompt:
-      "Install Lobu memory in OpenClaw. Run:\n\n  openclaw plugins install owletto-openclaw-plugin\n  lobu login\n  lobu memory configure --url https://lobu.ai/mcp --org <org-slug>\n  lobu memory health --url https://lobu.ai/mcp --org <org-slug>\n\nThe plugin extends OpenClaw's filesystem plugin and can replace its memory slot. After install, point me at the Lobu memory workspace I should use as shared memory across my OpenClaw agents.",
+      "Install Lobu memory in OpenClaw. Run:\n\n  openclaw plugins install @lobu/openclaw-plugin\n  lobu login\n  lobu memory configure --url https://lobu.ai/mcp --org <org-slug>\n  lobu memory health --url https://lobu.ai/mcp --org <org-slug>\n\nThe plugin extends OpenClaw's filesystem plugin and can replace its memory slot. After install, point me at the Lobu memory workspace I should use as shared memory across my OpenClaw agents.",
     npmPackage: {
-      name: "@lobu/owletto-openclaw",
-      registryUrl: "https://www.npmjs.com/package/@lobu/owletto-openclaw",
+      name: "@lobu/openclaw-plugin",
+      registryUrl: "https://www.npmjs.com/package/@lobu/openclaw-plugin",
       sourceUrl:
         "https://github.com/lobu-ai/owletto/tree/main/packages/openclaw-plugin",
-      installCommand: "openclaw plugins install owletto-openclaw-plugin",
+      installCommand: "openclaw plugins install @lobu/openclaw-plugin",
     },
     describe: (showcase) =>
       `Install Owletto into OpenClaw and point it at the ${showcase.label.toLowerCase()} workspace so multiple OpenClaw agents share the same memory shown in this example.`,
     docsSetupTitle: "Install in OpenClaw",
     docsSetupSteps: [
-      "Install the plugin: `openclaw plugins install owletto-openclaw-plugin`.",
+      "Install the plugin: `openclaw plugins install @lobu/openclaw-plugin`.",
       "Log in to Lobu: `lobu login`.",
       "Wire it into OpenClaw: `lobu memory configure --url https://lobu.ai/mcp --org <org-slug>` (writes the plugin config and, if you opt in, takes over the filesystem memory slot).",
       "Verify: `lobu memory health --url https://lobu.ai/mcp --org <org-slug>`.",

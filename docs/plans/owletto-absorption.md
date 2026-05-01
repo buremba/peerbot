@@ -36,17 +36,17 @@ One file, one schema, one loader. Fits the user's consolidation ask.
 ## PR-1: Land missing owletto content
 
 Scope:
-- `skills/` → copy from `/Users/burakemre/Code/owletto/skills/` (3 dirs: `owletto/`, `owletto-openclaw/`, `lobu-operator/`)
+- `skills/` → copy from `/Users/burakemre/Code/owletto/skills/` (3 dirs: `owletto/`, `openclaw-plugin/`, `lobu-operator/`)
 - `benchmarks/memory/` → copy 34 files (JSON configs + suite data + Python adapters)
 - `scripts/owletto/` (new dir) — park everything owletto-flavored:
   - `sync-owletto-guidance.ts`
   - `run-memory-benchmark.ts`, `prepare-locomo-suite.ts`, `prepare-longmemeval-suite.ts`
   - `install-connectors.ts`, `dry-run-connector.ts`, `sync-local.ts`, `test-mcp-server.ts`
 - Update `package.json` script refs (e.g. `"bench:memory": "bun scripts/owletto/run-memory-benchmark.ts"`)
-- Fix `packages/owletto-backend/src/utils/__tests__/owletto-guidance-sync.test.ts:9` — it reads `skills/owletto/SKILL.md` via `process.cwd()`; confirm it resolves after the copy
+- Fix `packages/server/src/utils/__tests__/owletto-guidance-sync.test.ts:9` — it reads `skills/owletto/SKILL.md` via `process.cwd()`; confirm it resolves after the copy
 
 Validation:
-- `bun run test packages/owletto-backend/src/utils/__tests__/owletto-guidance-sync.test.ts` passes
+- `bun run test packages/server/src/utils/__tests__/owletto-guidance-sync.test.ts` passes
 - `bun scripts/owletto/run-memory-benchmark.ts --help` resolves
 - `make build-packages` clean
 
@@ -82,12 +82,12 @@ Validation: `bun run typecheck`, `bun run build`, CI lint.
 
 Scope — investigate only, convert findings into a follow-up PR if warranted:
 - `packages/gateway` is lobu-native (357 files)
-- `packages/owletto-backend/src/lobu/gateway.ts` is a thin adapter
-- Determine: is the adapter live (hit by owletto-backend routes) or dead code from the pre-merge era?
+- `packages/server/src/lobu/gateway.ts` is a thin adapter
+- Determine: is the adapter live (hit by server routes) or dead code from the pre-merge era?
 - If dead → delete in the same PR
 - If live → document the boundary in a 1-line header comment and close the audit
 
-Reuses the grep pattern `grep -rn "from.*lobu/gateway" packages/owletto-backend/src`.
+Reuses the grep pattern `grep -rn "from.*lobu/gateway" packages/server/src`.
 
 ---
 

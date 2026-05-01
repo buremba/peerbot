@@ -1,28 +1,28 @@
 {
   "name": "@lobu/owletto-embeddings",
   "version": "1.6.0",
-  "private": true,
-  "license": "BUSL-1.1",
+  "description": "Deprecated compatibility package. Use @lobu/embeddings instead.",
   "type": "module",
-  "description": "Embeddings HTTP service for Lobu memory",
-  "main": "dist/index.js",
-  "scripts": {
-    "dev": "tsx watch --tsconfig tsconfig.json src/server.ts",
-    "start": "tsx --tsconfig tsconfig.json src/server.ts",
-    "typecheck": "tsc --noEmit",
-    "build": "tsc"
-  },
+  "license": "BUSL-1.1",
+  "deprecated": "This package has been renamed to @lobu/embeddings. Please install @lobu/embeddings instead.",
   "dependencies": {
-    "@hono/node-server": "^1.13.7",
-    "@xenova/transformers": "^2.17.2",
-    "hono": "^4.10.4"
+    "@lobu/embeddings": "workspace:*"
   },
-  "devDependencies": {
-    "@types/node": "^22.10.2",
-    "tsx": "^4.19.2",
-    "typescript": "^5.7.2"
+  "publishConfig": {
+    "access": "public"
   },
-  "engines": {
-    "node": ">=20"
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lobu-ai/lobu.git",
+    "directory": "packages/owletto-embeddings"
+  },
+  "main": "index.js",
+  "types": "index.d.ts",
+  "files": [
+    "index.js",
+    "index.d.ts"
+  ],
+  "exports": {
+    ".": "./index.js"
   }
 }

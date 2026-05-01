@@ -77,7 +77,7 @@ env \
   PORT="${PORT}" \
   HOST=127.0.0.1 \
   PG_SOCKET_PORT=0 \
-  bun run "${REPO_ROOT}/packages/owletto-backend/src/start-local.ts" \
+  bun run "${REPO_ROOT}/packages/server/src/start-local.ts" \
     >"${SERVER_LOG}" 2>&1 &
 SERVER_PID=$!
 

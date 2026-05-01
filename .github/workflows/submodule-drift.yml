@@ -1,6 +1,6 @@
 name: Submodule Drift
 
-# Surfaces when packages/owletto-web (private) has merged commits past the
+# Surfaces when packages/web (private) has merged commits past the
 # parent's pinned SHA — i.e. the two-PR rule's parent bump is missing.
 # Bot tag-update commits (FluxCD image automation) are exempted only when both
 # the author and exact subject match — a sloppy human commit cannot slip past.
@@ -47,10 +47,10 @@ jobs:
           # actions/checkout@v4 with default fetch-depth=1 only has the merge
           # commit; pull the two endpoints by SHA so ls-tree can resolve them.
           git fetch --depth=1 origin "$BASE_SHA" "$HEAD_SHA"
-          base_pointer=$(git ls-tree "$BASE_SHA" packages/owletto-web | awk '{print $3}')
-          head_pointer=$(git ls-tree "$HEAD_SHA" packages/owletto-web | awk '{print $3}')
+          base_pointer=$(git ls-tree "$BASE_SHA" packages/web | awk '{print $3}')
+          head_pointer=$(git ls-tree "$HEAD_SHA" packages/web | awk '{print $3}')
           if [ "$base_pointer" != "$head_pointer" ]; then
-            echo "::error::Fork PRs cannot change the packages/owletto-web pointer."
+            echo "::error::Fork PRs cannot change the packages/web pointer."
             echo "  base: $base_pointer"
             echo "  head: $head_pointer"
             echo "Submodule bumps must come from a same-repo PR (deploy-key-authorized)."
@@ -72,16 +72,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          PINNED=$(git -C packages/owletto-web rev-parse HEAD)
-          git -C packages/owletto-web fetch --quiet origin main
-          REMOTE=$(git -C packages/owletto-web rev-parse origin/main)
+          PINNED=$(git -C packages/web rev-parse HEAD)
+          git -C packages/web fetch --quiet origin main
+          REMOTE=$(git -C packages/web rev-parse origin/main)
 
           echo "Pinned (parent):   $PINNED"
           echo "owletto-web/main:  $REMOTE"
 
           # Hard rule: parent must never pin a SHA that isn't on owletto-web/main.
           # FluxCD reads charts from owletto-web/main; an off-main pin breaks deploy.
-          if ! git -C packages/owletto-web merge-base --is-ancestor "$PINNED" origin/main; then
+          if ! git -C packages/web merge-base --is-ancestor "$PINNED" origin/main; then
             echo "::error::Pinned SHA $PINNED is not reachable from owletto-web/main."
             echo "This violates the rule against pinning unmerged submodule SHAs (see AGENTS.md)."
             exit 1
@@ -95,7 +95,7 @@ jobs:
           # Capture the log first so set -e propagates a git failure (process
           # substitution would swallow it). tformat: guarantees a trailing
           # newline so `read` doesn't drop the last commit.
-          LOG=$(git -C packages/owletto-web log \
+          LOG=$(git -C packages/web log \
             --pretty='tformat:%h|%ae|%s' "$PINNED..origin/main")
 
           # Walk each commit; exempt only those whose author email AND exact
@@ -106,7 +106,7 @@ jobs:
           while IFS='|' read -r sha email subject; do
             [ -z "$sha" ] && continue
             if [ "$email" = "$BOT_AUTHOR_EMAIL" ] && [ "$subject" = "$BOT_SUBJECT" ]; then
-              outside=$(git -C packages/owletto-web show --name-only \
+              outside=$(git -C packages/web show --name-only \
                 --pretty='format:' "$sha" \
                 | sed '/^$/d' \
                 | grep -v '^deploy/' || true)
@@ -132,8 +132,8 @@ jobs:
           printf '%s' "$DRIFT"
           echo ""
           echo "Fix (open as a separate PR):"
-          echo "  git -C packages/owletto-web fetch origin"
-          echo "  git -C packages/owletto-web checkout origin/main"
-          echo "  git add packages/owletto-web"
+          echo "  git -C packages/web fetch origin"
+          echo "  git -C packages/web checkout origin/main"
+          echo "  git add packages/web"
           echo "  git commit -m 'chore(submodule): bump owletto-web to current main'"
           exit 1

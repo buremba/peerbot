@@ -3,18 +3,18 @@ import type { KnipConfig } from "knip";
 const config: KnipConfig = {
   ignore: [
     // Submodule — cleaned up via its own repo / PR.
-    "packages/owletto-web/**",
+    "packages/web/**",
   ],
   // Bun-style "npm:foo@x" import specifiers used by connectors.
   ignoreUnresolved: ["^npm:"],
   workspaces: {
     // Connector source files are loaded by file path
     // (scripts/owletto/install-connectors.ts), not imported as modules.
-    "packages/owletto-connectors": {
+    "packages/connectors": {
       entry: ["src/*.ts"],
     },
     // Chrome MV3 extension — entries come from manifest.json + vite.config.ts.
-    "packages/owletto-extension": {
+    "packages/browser-extension": {
       entry: [
         "src/background/service-worker.ts",
         "src/content/index.ts",
@@ -24,14 +24,14 @@ const config: KnipConfig = {
         "src/callback/callback.ts",
       ],
     },
-    "packages/owletto-embeddings": {
+    "packages/embeddings": {
       // src/openai.ts and src/embedding-utils.ts are reached transitively from
       // server.ts (the package "main"); listing embedding-utils explicitly
       // because src/ contains stale compiled .js siblings that confuse knip's
       // resolver.
       entry: ["src/openai.ts", "src/embedding-utils.ts"],
     },
-    "packages/owletto-worker": {
+    "packages/connector-worker": {
       // child-runner is fork()ed by absolute path, not imported.
       entry: ["src/executor/child-runner.ts"],
       ignoreDependencies: [
@@ -39,7 +39,7 @@ const config: KnipConfig = {
         "@lobu/worker",
       ],
     },
-    "packages/owletto-backend": {
+    "packages/server": {
       entry: [
         // Embedded server boot path; previously also used by `owletto start`
         // before the CLI merge collapsed everything onto `lobu run`.

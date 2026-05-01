@@ -9,7 +9,7 @@
 
 import { readFileSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
-import { compileConnectorSource, extractConnectorMetadata } from '../../packages/owletto-backend/src/utils/connector-compiler';
+import { compileConnectorSource, extractConnectorMetadata } from '../../packages/server/src/utils/connector-compiler';
 
 async function main() {
   const [filePath, configJson] = process.argv.slice(2);

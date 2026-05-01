@@ -2,8 +2,8 @@
 
 ### Package Architecture
 - **`packages/core`**: Shared code between gateway and worker (interfaces, utils, types). Any code reused by both must live here.
-- **`packages/gateway`**: Platform-agnostic gateway. Platform connections managed via Chat SDK adapters in `src/connections/`. Orchestration under `src/orchestration/`.
-- **`packages/worker`**: Agent execution via OpenClaw runtime in `src/openclaw/`. Worker talks only to gateway and agent. No platform knowledge.
+- **`packages/server`**: Embedded server plus platform-agnostic gateway. Gateway platform connections live in `src/gateway/connections/`; orchestration lives under `src/gateway/orchestration/`.
+- **`packages/agent-worker`**: Agent execution via OpenClaw runtime in `src/openclaw/`. Worker talks only to gateway and agent. No platform knowledge.
 
 ### Module Boundaries
 - Gateway: Connections → `src/connections/`, orchestration → `src/orchestration/`, Slack OAuth routes → `src/routes/public/slack.ts`
@@ -19,15 +19,15 @@
 - When fixing unused-parameter errors, delete the parameter rather than prefixing with `_`.
 
 ### Submodules
-`packages/owletto-web` is a submodule of `lobu-ai/owletto-web`. Every change there ships as **two PRs**: (1) land the submodule PR; (2) open a parent PR that bumps the pointer. Never push a parent commit that references an unmerged submodule SHA — production resolves SHAs from the parent and will break. After the submodule PR merges: `git -C packages/owletto-web pull --ff-only origin main`, stage the submodule in the parent, open the bump PR.
+`packages/web` is a submodule of `lobu-ai/owletto-web`. Every change there ships as **two PRs**: (1) land the submodule PR; (2) open a parent PR that bumps the pointer. Never push a parent commit that references an unmerged submodule SHA — production resolves SHAs from the parent and will break. After the submodule PR merges: `git -C packages/web pull --ff-only origin main`, stage the submodule in the parent, open the bump PR.
 
-### Frontend (owletto-web)
-When editing UI under `packages/owletto-web`, follow the design rules in @packages/owletto-web/DESIGN_GUIDELINES.md — confirmations, surfaces, empty states, selection, forms, page copy, radius, Sheet vs Dialog. Match the existing components and exemplar files referenced there; do not introduce new primitives without updating the guideline in the same PR.
+### Frontend (web)
+When editing UI under `packages/web`, follow the design rules in @packages/web/DESIGN_GUIDELINES.md — confirmations, surfaces, empty states, selection, forms, page copy, radius, Sheet vs Dialog. Match the existing components and exemplar files referenced there; do not introduce new primitives without updating the guideline in the same PR.
 
 ### Architecture
 
 #### Platform
-All chat platforms (Telegram, Slack, Discord, WhatsApp, Teams) run through Chat SDK adapters in `packages/gateway/src/connections/`. Connections are created via the `/agents` admin UI or the connections CRUD API — no per-platform env vars. Each connection has a typed config schema (bot token for Telegram, signing secret + bot token for Slack, etc.). Gateway also exposes a public endpoint that triggers an agent run. Settings-page provider order is drag-sortable, with per-provider model selection inline.
+All chat platforms (Telegram, Slack, Discord, WhatsApp, Teams) run through Chat SDK adapters in `packages/server/src/gateway/connections/`. Connections are created via the `/agents` admin UI or the connections CRUD API — no per-platform env vars. Each connection has a typed config schema (bot token for Telegram, signing secret + bot token for Slack, etc.). Gateway also exposes a public endpoint that triggers an agent run. Settings-page provider order is drag-sortable, with per-provider model selection inline.
 
 #### Orchestration
 - **Embedded-only deployment.** Gateway, workers, embeddings, and the Owletto memory backend run in a single Node process (`lobu run`, or `bun run dev` in the monorepo). Workers spawn as `child_process.spawn` subprocesses on the same host; on Linux the spawn path uses `systemd-run --user --scope` for cgroup limits + IPAddressDeny + capability drops. There is no Docker or Kubernetes deployment manager.
@@ -60,7 +60,7 @@ All chat platforms (Telegram, Slack, Discord, WhatsApp, Teams) run through Chat 
 - `WORKER_ENV_*` gateway vars are forwarded to workers with the prefix stripped (`WORKER_ENV_FOO=bar` → `FOO=bar`). Use only for worker runtime env, not the default Owletto memory plugin config.
 
 #### Egress judge
-Skills and agents can route risky domains through an LLM judge instead of a flat allow/deny. Hooks into the same HTTP proxy at `packages/gateway/src/proxy/http-proxy.ts`; invoked only when a `judgedDomains` rule matches, so most traffic bypasses the judge.
+Skills and agents can route risky domains through an LLM judge instead of a flat allow/deny. Hooks into the same HTTP proxy at `packages/server/src/gateway/proxy/http-proxy.ts`; invoked only when a `judgedDomains` rule matches, so most traffic bypasses the judge.
 
 - Skill YAML declares judged domains + named policies:
   ```yaml
@@ -102,7 +102,7 @@ Rules for agents:
 - Don't create `*.md` files unless explicitly asked. Add memory to `CLAUDE.md` as a single sentence.
 - Delete any ephemeral files you create.
 - Ignore `/dist/` — compiled artifacts, not source.
-- After editing `packages/worker/*`, run `make clean-workers` so new workers pick up the change.
+- After editing `packages/agent-worker/*`, run `make clean-workers` so new workers pick up the change.
 - When the user pastes a Slack link (`slack.com/archives/…?thread_ts=`), call `./scripts/slack-thread-viewer.js "<link>"` first.
 - In planning mode, when unsure, ask: `codex exec "QUESTION" --config model_reasoning_effort="high"`.
 
@@ -138,7 +138,7 @@ Run the validation that matches what you touched:
 | Change | Command |
 | --- | --- |
 | `packages/landing/*` | `cd packages/landing && bun run build` |
-| `packages/{core,gateway,worker,cli}/*` | `make build-packages` |
+| `packages/{core,server,agent-worker,cli}/*` | `make build-packages` |
 | Broad TS check | `bun run typecheck` |
 
 For MCP work, verify tool calls against the gateway proxy or Owletto directly (e.g. via `bun -e`) before exercising the full agent loop.

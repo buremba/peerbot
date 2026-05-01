@@ -10,7 +10,7 @@
  */
 
 import { parseArgs } from 'node:util';
-import { fetchFeeds, runFeed } from '../../packages/owletto-backend/src/lib/feed-sync';
+import { fetchFeeds, runFeed } from '../../packages/server/src/lib/feed-sync';
 
 // Parse CLI arguments
 const { values } = parseArgs({

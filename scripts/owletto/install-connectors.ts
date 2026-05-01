@@ -13,11 +13,11 @@
 
 import { basename, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import { getDb } from '../../packages/owletto-backend/src/db/client';
-import { compileConnectorFromFile } from '../../packages/owletto-backend/src/utils/connector-catalog';
-import { extractConnectorMetadata } from '../../packages/owletto-backend/src/utils/connector-compiler';
-import { upsertConnectorDefinitionRecords } from '../../packages/owletto-backend/src/utils/connector-definition-install';
-import { applyEntityLinkOverrides } from '../../packages/owletto-backend/src/utils/entity-link-overrides';
+import { getDb } from '../../packages/server/src/db/client';
+import { compileConnectorFromFile } from '../../packages/server/src/utils/connector-catalog';
+import { extractConnectorMetadata } from '../../packages/server/src/utils/connector-compiler';
+import { upsertConnectorDefinitionRecords } from '../../packages/server/src/utils/connector-definition-install';
+import { applyEntityLinkOverrides } from '../../packages/server/src/utils/entity-link-overrides';
 
 const { values } = parseArgs({
   options: {

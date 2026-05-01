@@ -16,8 +16,8 @@ env:
   # tracking ghcr.io/lobu-ai/owletto-{app,worker,embeddings} after the
   # owletto -> lobu monorepo consolidation.
   IMAGE_NAME_APP: lobu-ai/owletto-app
-  IMAGE_NAME_WORKER: lobu-ai/owletto-worker
-  IMAGE_NAME_EMBEDDINGS: lobu-ai/owletto-embeddings
+  IMAGE_NAME_WORKER: lobu-ai/connector-worker
+  IMAGE_NAME_EMBEDDINGS: lobu-ai/embeddings
 
 jobs:
   generate-tag:
@@ -140,7 +140,7 @@ jobs:
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
-            https://api.github.com/user/packages/container/owletto-worker/visibility \
+            https://api.github.com/user/packages/container/connector-worker/visibility \
             -d '{"visibility":"public"}' || true
 
   build-embeddings-service:
@@ -190,5 +190,5 @@ jobs:
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
-            https://api.github.com/user/packages/container/owletto-embeddings/visibility \
+            https://api.github.com/user/packages/container/embeddings/visibility \
             -d '{"visibility":"public"}' || true

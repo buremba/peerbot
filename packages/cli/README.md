@@ -38,7 +38,7 @@ For a custom Owletto deployment, `.env` keeps `MEMORY_URL` as the optional base 
 
 ### `lobu run`
 
-Boot the embedded Lobu stack — gateway + workers + embeddings + Owletto memory backend in a single Node process. `lobu.toml` is not required; set `DATABASE_URL` in the environment or `.env`, then the command spawns the bundled `@lobu/owletto-backend/dist/server.bundle.mjs`. Ctrl+C stops the process and any spawned worker subprocesses cleanly.
+Boot the embedded Lobu stack — gateway + workers + embeddings + Owletto memory backend in a single Node process. `lobu.toml` is not required; set `DATABASE_URL` in the environment or `.env`, then the command spawns the bundled `@lobu/server/dist/server.bundle.mjs`. Ctrl+C stops the process and any spawned worker subprocesses cleanly.
 
 ## License
 

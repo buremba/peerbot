@@ -1,4 +1,4 @@
-import { printReport, runBenchmarkFromConfigPath } from '../../packages/owletto-backend/src/benchmarks/memory/runner.ts';
+import { printReport, runBenchmarkFromConfigPath } from '../../packages/server/src/benchmarks/memory/runner.ts';
 
 function readFlag(name: string): string | null {
   const index = process.argv.indexOf(name);

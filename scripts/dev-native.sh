@@ -2,10 +2,10 @@
 # Run the embedded Lobu stack natively.
 #
 # What runs:
-#   - owletto-backend (Hono + tsx watch) on :8787
+#   - server (Hono + tsx watch) on :8787
 #   - embedded gateway (in-process) with HTTP egress proxy on :8118
 #   - embedded workers (spawned as Bun subprocesses on demand)
-#   - Vite dev middleware for owletto-web on the same :8787 (HMR via WS)
+#   - Vite dev middleware for web on the same :8787 (HMR via WS)
 #
 # Requires, managed outside this script:
 #   - Postgres reachable via DATABASE_URL in .env
@@ -27,7 +27,7 @@ if [ ! -f .env ]; then
   exit 1
 fi
 
-if [ ! -d packages/core/dist ] || [ ! -d packages/owletto-sdk/dist ] || [ ! -d packages/worker/dist ]; then
+if [ ! -d packages/core/dist ] || [ ! -d packages/connector-sdk/dist ] || [ ! -d packages/agent-worker/dist ]; then
   echo "📦 Building workspace packages (one-time)…"
   make build-packages
 fi
@@ -58,9 +58,9 @@ fi
 
 # --- Run -------------------------------------------------------------------
 
-echo "→ owletto-backend on http://${HOST}:${PORT}"
+echo "→ server on http://${HOST}:${PORT}"
 echo "→ embedded gateway proxy on :8118"
 echo "→ Vite HMR in-process (same port)"
 echo ""
 
-exec bun run --filter '@lobu/owletto-backend' dev
+exec bun run --filter '@lobu/server' dev

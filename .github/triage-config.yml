@@ -25,7 +25,7 @@ infra_paths:
 
 # Submodule two-PR rule. Any change under these is needs-human.
 two_pr_paths:
-  - packages/owletto-web/
+  - packages/web/
 
 # Comment substring matches (case-insensitive) that escalate to needs-human.
 escalation_keywords:

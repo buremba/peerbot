@@ -40,7 +40,7 @@ COMMENT ON TABLE public.entity_identities IS
 COMMENT ON COLUMN public.entity_identities.namespace IS
     'Identifier kind. Standard values: phone, email, wa_jid, slack_user_id, github_login, auth_user_id, google_contact_id. Custom namespaces allowed but connectors sharing a namespace must agree on its format.';
 COMMENT ON COLUMN public.entity_identities.identifier IS
-    'Normalized identifier value (E.164 digits for phone, lowercase for email, etc.). Normalizers in @lobu/owletto-sdk own the canonical form.';
+    'Normalized identifier value (E.164 digits for phone, lowercase for email, etc.). Normalizers in @lobu/connector-sdk own the canonical form.';
 COMMENT ON COLUMN public.entity_identities.source_connector IS
     'Who claimed this identifier: "connector:whatsapp", "manual", or null when seeded by migration.';
 

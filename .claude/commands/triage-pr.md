@@ -59,7 +59,7 @@ Skip silently when:
 
 Classify as `needs-human` and exit when:
 
-- Any changed file path is under `packages/owletto-web/` — submodule two-PR rule (AGENTS.md). The agent must never push a parent commit referencing an unmerged submodule SHA.
+- Any changed file path is under `packages/web/` — submodule two-PR rule (AGENTS.md). The agent must never push a parent commit referencing an unmerged submodule SHA.
 - Any changed file path is under `.github/workflows/` or is `scripts/setup-dev.sh` — infra blast radius.
 - Any changed file path is `.github/triage-config.yml` or `.claude/commands/triage-pr.md` — these define triage policy itself. A PR modifying them must not be evaluated by the (potentially-modified) policy on its own branch; the agent escalates so a human can review the change against `main`.
 - Any review comment contains case-insensitive: `security`, `credential`, `token`, `secret`, `auth bypass`, `P0`, or `P1`.
@@ -208,6 +208,6 @@ The marker line at the top is parsed by future runs to short-circuit on matching
 - **Never split unnecessarily.** Do not propose splitting a PR whose title scope is consistent and whose size is under the 1000-line gate, even if it touches multiple files.
 - **`.js` import suffix in TS sources.** When fixing imports, add `.js` extensions to relative imports (NodeNext resolution).
 - **Typecheck drift.** Always run BOTH `make build-packages` (package-local tsc emit) and `bun run typecheck` (root tsc check) — they catch different things.
-- **Submodule two-PR rule.** Any change under `packages/owletto-web/` → `needs-human`, full stop.
+- **Submodule two-PR rule.** Any change under `packages/web/` → `needs-human`, full stop.
 - **Unused parameters.** Delete them; never prefix with `_`.
 - **Bun, not npm.** Hooks enforce this.

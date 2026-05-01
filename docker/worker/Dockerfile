@@ -1,5 +1,5 @@
 # ===========================================
-# Owletto Worker (owletto-worker daemon)
+# Owletto Worker (connector-worker daemon)
 # ===========================================
 # Self-hosted worker for Owletto connectors and embedding generation.
 
@@ -20,31 +20,32 @@ COPY bun.lock package.json tsconfig.json ./
 COPY patches/ ./patches/
 
 # Manifests for the worker and its workspace deps
-COPY packages/owletto-worker/package.json packages/owletto-worker/
-COPY packages/owletto-sdk/package.json packages/owletto-sdk/
-COPY packages/owletto-connectors/package.json packages/owletto-connectors/
-COPY packages/owletto-embeddings/package.json packages/owletto-embeddings/
+COPY packages/connector-worker/package.json packages/connector-worker/
+COPY packages/connector-sdk/package.json packages/connector-sdk/
+COPY packages/connectors/package.json packages/connectors/
+COPY packages/embeddings/package.json packages/embeddings/
 
 # Stub workspaces not needed at build time
-RUN mkdir -p packages/cli packages/core packages/gateway packages/landing \
-               packages/owletto-backend packages/owletto-cli packages/owletto-extension \
-               packages/owletto-openclaw packages/owletto-web packages/worker packages/mcpsandbox \
-    && for p in cli core gateway landing owletto-backend \
-                owletto-extension owletto-openclaw owletto-web worker mcpsandbox; do \
+RUN mkdir -p packages/cli packages/core packages/landing \
+               packages/server packages/owletto-cli packages/browser-extension \
+               packages/openclaw-plugin packages/web packages/agent-worker packages/mcpsandbox \
+    && for p in cli core landing server \
+                browser-extension openclaw-plugin web agent-worker mcpsandbox; do \
         echo "{\"name\":\"@lobu/$p\",\"version\":\"0.0.0\",\"private\":true}" > "packages/$p/package.json"; \
       done \
+    && echo '{"name":"@lobu/worker","version":"0.0.0","private":true}' > packages/agent-worker/package.json \
     && echo '{"name":"owletto","version":"0.0.0","private":true}' > packages/owletto-cli/package.json
 
 RUN --mount=type=cache,target=/root/.bun/install/cache bun install
 
 # Source code
-COPY packages/owletto-sdk/ packages/owletto-sdk/
-COPY packages/owletto-connectors/ packages/owletto-connectors/
-COPY packages/owletto-embeddings/ packages/owletto-embeddings/
-COPY packages/owletto-worker/ packages/owletto-worker/
+COPY packages/connector-sdk/ packages/connector-sdk/
+COPY packages/connectors/ packages/connectors/
+COPY packages/embeddings/ packages/embeddings/
+COPY packages/connector-worker/ packages/connector-worker/
 
 # Build SDK dist (worker imports compiled sdk)
-RUN cd packages/owletto-sdk && bunx tsc
+RUN cd packages/connector-sdk && bunx tsc
 
 # ===========================================
 # Runtime
@@ -73,21 +74,21 @@ RUN useradd -m -s /bin/bash worker && \
 COPY --from=builder --chown=worker:worker /app/node_modules ./node_modules
 COPY --from=builder --chown=worker:worker /app/package.json ./
 COPY --from=builder --chown=worker:worker /app/tsconfig.json ./
-COPY --from=builder --chown=worker:worker /app/packages/owletto-sdk ./packages/owletto-sdk
-COPY --from=builder --chown=worker:worker /app/packages/owletto-connectors ./packages/owletto-connectors
-COPY --from=builder --chown=worker:worker /app/packages/owletto-embeddings ./packages/owletto-embeddings
-COPY --from=builder --chown=worker:worker /app/packages/owletto-worker ./packages/owletto-worker
+COPY --from=builder --chown=worker:worker /app/packages/connector-sdk ./packages/connector-sdk
+COPY --from=builder --chown=worker:worker /app/packages/connectors ./packages/connectors
+COPY --from=builder --chown=worker:worker /app/packages/embeddings ./packages/embeddings
+COPY --from=builder --chown=worker:worker /app/packages/connector-worker ./packages/connector-worker
 
 # Install patchright's Chromium (declared as `playwright` alias in worker package.json).
 # Use bunx from the worker workspace so bun's resolver finds the alias.
 USER worker
-WORKDIR /app/packages/owletto-worker
+WORKDIR /app/packages/connector-worker
 RUN bunx --bun playwright install chromium
 WORKDIR /app
 
 ENV NODE_ENV=production
 ENV TRANSFORMERS_CACHE=/app/.cache/transformers
 
-WORKDIR /app/packages/owletto-worker
+WORKDIR /app/packages/connector-worker
 
 CMD ["bun", "src/bin.ts", "daemon"]

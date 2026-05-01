@@ -4,7 +4,7 @@ Sequel to `owletto-absorption.md`. That plan said flattening the `owletto-*` pre
 
 ## Why
 
-- `lobu run` already embeds the Owletto backend in-process (`packages/owletto-backend` boots inside `lobu run`). Two CLIs, one runtime is the worst of both worlds for lobu users.
+- `lobu run` already embeds the Owletto backend in-process (`packages/server` boots inside `lobu run`). Two CLIs, one runtime is the worst of both worlds for lobu users.
 - `owletto seed` already reads `[memory.owletto]` from `lobu.toml` — the cross-config coupling exists.
 - `owletto dev` (docker-compose) contradicts CLAUDE.md ("embedded-only, no Docker"). `docker-compose.dev.yml` does not exist at the repo root. The command is dead code (see PR-2).
 - Three near-duplicate health commands (`lobu status`, `owletto doctor`, `owletto health`) is one job.
@@ -18,7 +18,7 @@ Sequel to `owletto-absorption.md`. That plan said flattening the `owletto-*` pre
 ## Out of scope
 
 - Renaming `packages/owletto-*` directories or the `[memory.owletto]` config key. Provenance prefix stays for now — collapsing the bin is enough churn for one cycle.
-- Changing the `owletto-openclaw` MCP plugin name (still `@lobu/owletto-openclaw`). Only its `tokenCommand` doc changes.
+- Changing the `openclaw-plugin` MCP plugin name (still `@lobu/openclaw-plugin`). Only its `tokenCommand` doc changes.
 - Owletto memory product surface area, schemas, MCP tools.
 
 ## Locked decisions
@@ -82,7 +82,7 @@ Health surface:
 
 - `.github/workflows/ci.yml:87, 258` — drop `owletto-cli` from the publish job; keep test job pointing at the now-library package.
 - `config/knip.ts`, `config/biome.config.json`, `tsconfig.json` — adjust paths if needed after the rename.
-- `packages/owletto-openclaw/README.md` and `openclaw.plugin.json` description — reference `npx -y @lobu/cli token --raw` as the canonical `tokenCommand` example (auth is unified with top-level `lobu login`, no separate memory token).
+- `packages/openclaw-plugin/README.md` and `openclaw.plugin.json` description — reference `npx -y @lobu/cli token --raw` as the canonical `tokenCommand` example (auth is unified with top-level `lobu login`, no separate memory token).
 
 ### 7. Doc + skill sweep
 
@@ -90,7 +90,7 @@ Health surface:
 - `packages/landing/public/getting-started/skills.md:23,26`, `getting-started/memory.md`, `getting-started.md:109`
 - Rename `packages/landing/public/reference/owletto-cli.md` → `lobu-memory.md`; rewrite every example. Update Astro routes / sidebar config / `src/content/docs/reference/owletto-cli.md` mirror.
 - `packages/landing/public/blog/mcp-is-overengineered-skills-are-too-primitive.md:130`, `blog/hello-world.md:31`, `guides/troubleshooting.md:122`
-- `skills/owletto/SKILL.md`, `skills/owletto/references/cli-fallback.md`, `skills/owletto/references/client-install.md`, `skills/owletto-openclaw/SKILL.md`
+- `skills/owletto/SKILL.md`, `skills/owletto/references/cli-fallback.md`, `skills/owletto/references/client-install.md`, `skills/openclaw-plugin/SKILL.md`
 - `docs/RELEASING.md` — drop `owletto` from the published-packages list
 - The `owletto` Claude Code skill metadata in this repo
 

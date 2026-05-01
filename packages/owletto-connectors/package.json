@@ -1,15 +1,28 @@
 {
   "name": "@lobu/owletto-connectors",
   "version": "1.6.0",
-  "private": true,
-  "license": "BUSL-1.1",
+  "description": "Deprecated compatibility package. Use @lobu/connectors instead.",
   "type": "module",
-  "description": "Lobu memory connectors — third-party integration implementations built on @lobu/owletto-sdk",
-  "scripts": {
-    "typecheck": "tsc --noEmit"
-  },
+  "license": "BUSL-1.1",
+  "deprecated": "This package has been renamed to @lobu/connectors. Please install @lobu/connectors instead.",
   "dependencies": {
-    "@lobu/owletto-sdk": "workspace:*",
-    "playwright": "npm:patchright@^1.57.0"
+    "@lobu/connectors": "workspace:*"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lobu-ai/lobu.git",
+    "directory": "packages/owletto-connectors"
+  },
+  "main": "index.js",
+  "types": "index.d.ts",
+  "files": [
+    "index.js",
+    "index.d.ts"
+  ],
+  "exports": {
+    ".": "./index.js"
   }
 }

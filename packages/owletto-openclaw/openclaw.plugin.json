@@ -2,7 +2,7 @@
   "id": "openclaw-owletto",
   "kind": "memory",
   "description": "Lobu memory over MCP. Set mcpUrl to enable. Authentication via token, tokenCommand, or interactive device login.",
-  "entry": "./dist/index.js",
+  "entry": "./index.js",
   "configSchema": {
     "type": "object",
     "additionalProperties": false,

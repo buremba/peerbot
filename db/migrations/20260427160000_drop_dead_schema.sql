@@ -1,12 +1,12 @@
 -- migrate:up
 
 -- Drop schema objects that have no readers, writers, or references in the
--- TypeScript source tree (`packages/owletto-backend/src` is the source of
+-- TypeScript source tree (`packages/server/src` is the source of
 -- truth — `owletto-cli/runtime` is a generated mirror).
 --
 -- Verification:
---   * Strict SQL grep across packages/{owletto-backend,gateway,worker,
---     owletto-web,owletto-sdk}/src for FROM/JOIN/INSERT/UPDATE/REFERENCES.
+--   * Strict SQL grep across packages/{server,gateway,worker,
+--     web,connector-sdk}/src for FROM/JOIN/INSERT/UPDATE/REFERENCES.
 --   * `query_sql` allowlist (utils/table-schema.ts) does not list any of
 --     the dropped tables, columns, or the view.
 --   * better-auth `teams` is not enabled in src/auth/index.tsx, so the

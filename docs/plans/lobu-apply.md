@@ -79,7 +79,7 @@ Each PR is a draft branch off `feat/owletto-cli-merge` (PR #459). Subagents work
 
 **Branch**: `feat/agent-settings-persistence` · **Risk**: Low · **LOC**: ~50
 
-Today `packages/owletto-backend/src/lobu/stores/postgres-stores.ts` `rowToSettings()`, `saveSettings()`, and `deleteSettings()` do not persist `egressConfig`, `preApprovedTools`, or `guardrails`. The `agents` table doesn't have columns for them either. The file-loader (`packages/owletto-backend/src/gateway/config/file-loader.ts:432-447, 507-517`) produces all three from `lobu.toml`; cloud silently drops them.
+Today `packages/server/src/lobu/stores/postgres-stores.ts` `rowToSettings()`, `saveSettings()`, and `deleteSettings()` do not persist `egressConfig`, `preApprovedTools`, or `guardrails`. The `agents` table doesn't have columns for them either. The file-loader (`packages/server/src/gateway/config/file-loader.ts:432-447, 507-517`) produces all three from `lobu.toml`; cloud silently drops them.
 
 Scope:
 - New migration `db/migrations/<timestamp>_agents_apply_fields.sql` adding three columns to `public.agents`:
@@ -118,7 +118,7 @@ Scope:
   - Same stable ID PUT'd with changed config → `updated: true, willRestart: true`
   - Cross-org agent collision still returns 409 (regression check)
 
-Validation: `bun test packages/owletto-backend/src/lobu`, typecheck, biome, build.
+Validation: `bun test packages/server/src/lobu`, typecheck, biome, build.
 
 ### PR-3 — `lobu apply` CLI
 

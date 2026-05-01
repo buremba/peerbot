@@ -1,45 +1,29 @@
 {
   "name": "@lobu/owletto-openclaw",
   "version": "6.0.0",
-  "description": "Lobu memory plugin for OpenClaw",
+  "description": "Deprecated compatibility package. Use @lobu/openclaw-plugin instead.",
   "type": "module",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
-  "exports": {
-    ".": {
-      "import": "./dist/index.js",
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
-    }
-  },
-  "files": [
-    "dist",
-    "openclaw.plugin.json"
-  ],
-  "scripts": {
-    "build": "tsc && cp ./openclaw.plugin.json ./dist/openclaw.plugin.json",
-    "typecheck": "tsc --noEmit",
-    "clean": "rm -rf dist",
-    "test:e2e": "vitest run --config test/e2e/vitest.config.ts"
-  },
-  "openclaw": {
-    "extensions": [
-      "./dist/index.js"
-    ]
-  },
-  "devDependencies": {
-    "@types/node": "^20.10.0",
-    "postgres": "^3.4.7",
-    "typescript": "^5.3.3",
-    "vitest": "^2.1.8"
-  },
   "license": "BUSL-1.1",
+  "deprecated": "This package has been renamed to @lobu/openclaw-plugin. Please install @lobu/openclaw-plugin instead.",
+  "dependencies": {
+    "@lobu/openclaw-plugin": "workspace:*"
+  },
   "publishConfig": {
     "access": "public"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/lobu-ai/lobu.git",
+    "url": "git+https://github.com/lobu-ai/lobu.git",
     "directory": "packages/owletto-openclaw"
+  },
+  "main": "index.js",
+  "types": "index.d.ts",
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "openclaw.plugin.json"
+  ],
+  "exports": {
+    ".": "./index.js"
   }
 }

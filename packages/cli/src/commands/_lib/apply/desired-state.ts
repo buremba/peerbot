@@ -11,7 +11,7 @@ import {
 
 // ── Stable platform IDs (mirror of file-loader.ts) ─────────────────────────
 //
-// keep in sync with packages/owletto-backend/src/gateway/config/file-loader.ts
+// keep in sync with packages/server/src/gateway/config/file-loader.ts
 function slugifyForPlatformId(input: string): string {
   return input
     .toLowerCase()
@@ -19,7 +19,7 @@ function slugifyForPlatformId(input: string): string {
     .replace(/^-+|-+$/g, "");
 }
 
-// keep in sync with packages/owletto-backend/src/gateway/config/file-loader.ts
+// keep in sync with packages/server/src/gateway/config/file-loader.ts
 export function buildStablePlatformId(
   agentId: string,
   type: string,

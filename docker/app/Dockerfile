@@ -1,7 +1,7 @@
 # ===========================================
-# Owletto API + Frontend (owletto-backend)
+# Owletto API + Frontend (server)
 # ===========================================
-# Hono server that runs the gateway in-process and serves the owletto-web frontend.
+# Hono server that runs the gateway in-process and serves the web frontend.
 
 FROM node:22-slim AS builder
 
@@ -24,21 +24,26 @@ COPY patches/ ./patches/
 
 # Workspace package manifests needed to resolve the backend + its deps.
 COPY packages/core/package.json packages/core/
-COPY packages/worker/package.json packages/worker/
-COPY packages/owletto-backend/package.json packages/owletto-backend/
+COPY packages/agent-worker/package.json packages/agent-worker/
+COPY packages/server/package.json packages/server/
+COPY packages/connector-sdk/package.json packages/connector-sdk/
+COPY packages/openclaw-plugin/package.json packages/openclaw-plugin/
+COPY packages/connectors/package.json packages/connectors/
+COPY packages/embeddings/package.json packages/embeddings/
+COPY packages/connector-worker/package.json packages/connector-worker/
 COPY packages/owletto-sdk/package.json packages/owletto-sdk/
-COPY packages/owletto-openclaw/package.json packages/owletto-openclaw/
 COPY packages/owletto-connectors/package.json packages/owletto-connectors/
 COPY packages/owletto-embeddings/package.json packages/owletto-embeddings/
 COPY packages/owletto-worker/package.json packages/owletto-worker/
-# packages/owletto-web is a private git submodule. The glob lets the copy succeed
+COPY packages/owletto-openclaw/package.json packages/owletto-openclaw/
+# packages/web is a private git submodule. The glob lets the copy succeed
 # when the submodule is not initialized (external contributors / backend-only builds).
-COPY packages/owletto-web/package.jso[n] packages/owletto-web/
+COPY packages/web/package.jso[n] packages/web/
 
 # Stub out workspace packages we don't build in this image so bun install doesn't
 # error on missing manifests.
-RUN mkdir -p packages/cli packages/landing packages/owletto-cli packages/owletto-extension packages/mcpsandbox \
-    && for p in cli landing owletto-extension mcpsandbox; do \
+RUN mkdir -p packages/cli packages/landing packages/owletto-cli packages/browser-extension packages/mcpsandbox \
+    && for p in cli landing browser-extension mcpsandbox; do \
         echo "{\"name\":\"@lobu/$p\",\"version\":\"0.0.0\",\"private\":true}" > "packages/$p/package.json"; \
       done \
     && echo '{"name":"owletto","version":"0.0.0","private":true}' > packages/owletto-cli/package.json
@@ -58,41 +63,46 @@ RUN echo "Build: ${CACHEBUST}" && date > /tmp/.build-time
 # Source code
 COPY config/ config/
 COPY packages/core/ packages/core/
-COPY packages/worker/ packages/worker/
+COPY packages/agent-worker/ packages/agent-worker/
+COPY packages/connector-sdk/ packages/connector-sdk/
+COPY packages/openclaw-plugin/ packages/openclaw-plugin/
+COPY packages/connectors/ packages/connectors/
+COPY packages/embeddings/ packages/embeddings/
+COPY packages/connector-worker/ packages/connector-worker/
 COPY packages/owletto-sdk/ packages/owletto-sdk/
-COPY packages/owletto-openclaw/ packages/owletto-openclaw/
 COPY packages/owletto-connectors/ packages/owletto-connectors/
 COPY packages/owletto-embeddings/ packages/owletto-embeddings/
 COPY packages/owletto-worker/ packages/owletto-worker/
-COPY packages/owletto-backend/ packages/owletto-backend/
+COPY packages/owletto-openclaw/ packages/owletto-openclaw/
+COPY packages/server/ packages/server/
 # Copy the private frontend submodule when present.
-COPY packages/owletto-web packages/owletto-web
+COPY packages/web packages/web
 
 # Build dist for shared workspace packages whose `exports` map points at
-# dist subpaths. owletto-backend imports @lobu/core from its dist barrel,
-# and worker/openclaw plugin-loader resolves @lobu/owletto-openclaw by name
+# dist subpaths. server imports @lobu/core from its dist barrel,
+# and worker/openclaw plugin-loader resolves @lobu/openclaw-plugin by name
 # at runtime (ESM-only export, not bundled), so dist/ must exist on disk.
 RUN cd packages/core && bunx tsc \
-    && cd ../owletto-sdk && bunx tsc \
-    && cd ../owletto-worker && bunx tsc \
-    && cd ../owletto-openclaw && bun run build
+    && cd ../connector-sdk && bunx tsc \
+    && cd ../connector-worker && bunx tsc \
+    && cd ../openclaw-plugin && bun run build
 
 # Type check
-RUN cd packages/owletto-backend && bunx tsc --noEmit
+RUN cd packages/server && bunx tsc --noEmit
 
 # Bundle the backend so prod runs under Node (so isolated-vm loads). See
-# docker/app/start.sh and packages/owletto-backend/scripts/build-server-bundle.mjs
+# docker/app/start.sh and packages/server/scripts/build-server-bundle.mjs
 # for the full rationale.
-RUN cd packages/owletto-backend && bun run build:server
+RUN cd packages/server && bun run build:server
 
 # Build frontend static assets (production only)
 ARG VITE_API_URL=
 ENV VITE_API_URL=$VITE_API_URL
 ARG SKIP_WEB_BUILD=false
-RUN if [ "$SKIP_WEB_BUILD" = "false" ] && [ -f packages/owletto-web/package.json ]; then \
-      cd packages/owletto-web && bun run build; \
+RUN if [ "$SKIP_WEB_BUILD" = "false" ] && [ -f packages/web/package.json ]; then \
+      cd packages/web && bun run build; \
     else \
-      mkdir -p /app/packages/owletto-web/dist; \
+      mkdir -p /app/packages/web/dist; \
     fi
 
 # ===========================================
@@ -122,14 +132,19 @@ COPY --from=builder /app/package.json ./
 COPY --from=builder /app/tsconfig.json ./
 COPY --from=builder /app/config ./config
 COPY --from=builder /app/packages/core ./packages/core
-COPY --from=builder /app/packages/worker ./packages/worker
+COPY --from=builder /app/packages/agent-worker ./packages/agent-worker
+COPY --from=builder /app/packages/connector-sdk ./packages/connector-sdk
+COPY --from=builder /app/packages/openclaw-plugin ./packages/openclaw-plugin
+COPY --from=builder /app/packages/connectors ./packages/connectors
+COPY --from=builder /app/packages/embeddings ./packages/embeddings
+COPY --from=builder /app/packages/connector-worker ./packages/connector-worker
 COPY --from=builder /app/packages/owletto-sdk ./packages/owletto-sdk
-COPY --from=builder /app/packages/owletto-openclaw ./packages/owletto-openclaw
 COPY --from=builder /app/packages/owletto-connectors ./packages/owletto-connectors
 COPY --from=builder /app/packages/owletto-embeddings ./packages/owletto-embeddings
 COPY --from=builder /app/packages/owletto-worker ./packages/owletto-worker
-COPY --from=builder /app/packages/owletto-backend ./packages/owletto-backend
-COPY --from=builder /app/packages/owletto-web ./packages/owletto-web
+COPY --from=builder /app/packages/owletto-openclaw ./packages/owletto-openclaw
+COPY --from=builder /app/packages/server ./packages/server
+COPY --from=builder /app/packages/web ./packages/web
 
 # Database migrations
 COPY db/migrations ./db/migrations

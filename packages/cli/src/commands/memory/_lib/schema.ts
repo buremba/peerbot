@@ -11,7 +11,7 @@
  * Bump CURRENT_SCHEMA_VERSION when making breaking changes.
  */
 
-import { AutoCreateWhenRule } from "@lobu/owletto-sdk";
+import { AutoCreateWhenRule } from "@lobu/connector-sdk";
 import { TypeCompiler } from "@sinclair/typebox/compiler";
 
 export const CURRENT_SCHEMA_VERSION = 1;
@@ -158,7 +158,7 @@ function requireObject(
 }
 
 // Single source of truth for auto_create_when shape lives in
-// `@lobu/owletto-sdk`'s `AutoCreateWhenRule` schema. Compile once at module
+// `@lobu/connector-sdk`'s `AutoCreateWhenRule` schema. Compile once at module
 // load and surface every TypeBox error as a ValidationError.
 const compiledRule = TypeCompiler.Compile(AutoCreateWhenRule);
 

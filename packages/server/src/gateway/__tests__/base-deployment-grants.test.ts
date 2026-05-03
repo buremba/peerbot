@@ -251,10 +251,9 @@ describe("BaseDeploymentManager.syncNetworkConfigGrants", () => {
   });
 
   test("invalidateGrantSyncCache forces the next call to re-sync", async () => {
-    // Simulates the reload-from-files flow: an operator changes
-    // `networkConfig.allowedDomains` on disk, calls `reloadFromFiles`, and
-    // the next message should re-grant even if the cached hash says the
-    // set is unchanged.
+    // An operator changes `networkConfig.allowedDomains` for an agent (via
+    // `lobu apply` or the web UI) — the next message should re-grant even
+    // if the cached hash says the set is unchanged.
     const grantSpy = spyOn(grantStore, "grant");
 
     const payload = buildPayload({

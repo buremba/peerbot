@@ -3,7 +3,6 @@ import {
   buildRegistryMap,
   DeclaredAgentRegistry,
   entryFromAgentConfig,
-  entryFromFileLoadedAgent,
 } from "../services/declared-agent-registry.js";
 
 describe("DeclaredAgentRegistry", () => {
@@ -45,29 +44,6 @@ describe("DeclaredAgentRegistry", () => {
   });
 });
 
-describe("entryFromFileLoadedAgent", () => {
-  test("preserves settings and credentials from file loader", () => {
-    const entry = entryFromFileLoadedAgent({
-      agentId: "careops",
-      settings: {
-        installedProviders: [{ providerId: "gemini", installedAt: 5 }],
-      },
-      credentials: [
-        { provider: "gemini", key: "k1" },
-        { provider: "openai", secretRef: "vault://openai/key" },
-      ],
-    } as any);
-
-    expect(entry.settings.installedProviders).toEqual([
-      { providerId: "gemini", installedAt: 5 },
-    ]);
-    expect(entry.credentials).toEqual([
-      { provider: "gemini", key: "k1" },
-      { provider: "openai", secretRef: "vault://openai/key" },
-    ]);
-  });
-});
-
 describe("entryFromAgentConfig", () => {
   test("expands providers into installed list, credentials, and model preferences", () => {
     const entry = entryFromAgentConfig({
@@ -102,34 +78,26 @@ describe("entryFromAgentConfig", () => {
 });
 
 describe("buildRegistryMap", () => {
-  test("merges file and config sources, with config overriding on shared id", () => {
-    const map = buildRegistryMap(
-      [
-        {
-          agentId: "shared",
-          settings: {
-            installedProviders: [{ providerId: "z-ai", installedAt: 1 }],
-          },
-          credentials: [],
-        } as any,
-        {
-          agentId: "file-only",
-          settings: {},
-          credentials: [],
-        } as any,
-      ],
-      [
-        {
-          id: "shared",
-          name: "Shared",
-          providers: [{ id: "openai", key: "sk-2" }],
-        } as any,
-      ]
-    );
+  test("populates entries from SDK config agents", () => {
+    const map = buildRegistryMap([
+      {
+        id: "agent-a",
+        name: "Agent A",
+        providers: [{ id: "openai", key: "sk-1" }],
+      } as any,
+      {
+        id: "agent-b",
+        name: "Agent B",
+        providers: [{ id: "anthropic", key: "sk-2" }],
+      } as any,
+    ]);
 
-    expect(map.get("file-only")).toBeDefined();
-    const shared = map.get("shared");
-    expect(shared?.settings.installedProviders?.[0]?.providerId).toBe("openai");
-    expect(shared?.credentials).toEqual([{ provider: "openai", key: "sk-2" }]);
+    expect(map.size).toBe(2);
+    expect(map.get("agent-a")?.credentials).toEqual([
+      { provider: "openai", key: "sk-1" },
+    ]);
+    expect(map.get("agent-b")?.credentials).toEqual([
+      { provider: "anthropic", key: "sk-2" },
+    ]);
   });
 });

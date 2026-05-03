@@ -43,11 +43,6 @@ import { createGatewayStateAdapter } from "../connections/state-adapter.js";
 import { registerBuiltInCommands } from "../commands/built-in-commands.js";
 import type { AgentConfig, GatewayConfig } from "../config/index.js";
 import type { RuntimeProviderCredentialResolver } from "../embedded.js";
-import {
-  applyOwlettoMemoryEnvFromProject,
-  type FileLoadedAgent,
-  loadAgentConfigFromFiles,
-} from "../config/file-loader.js";
 import { ArtifactStore } from "../files/artifact-store.js";
 import { WorkerGateway } from "../gateway/index.js";
 import type { IMessageQueue } from "../infrastructure/queue/index.js";
@@ -181,15 +176,10 @@ export class CoreServices {
   private accessStore?: AgentAccessStore;
   private settingsResolver?: SettingsResolver;
 
-  // File-first architecture state
-  private fileLoadedAgents: FileLoadedAgent[] = [];
-  private projectPath: string | null = null;
+  // SDK-embedded agents (passed via `GatewayConfig.agents`). lobu.toml
+  // file-declared agents have been moved out of the gateway boot path —
+  // they enter Postgres via `lobu apply`.
   private configAgents: AgentConfig[] = [];
-
-  // Listeners notified when `reloadFromFiles` finishes so downstream
-  // caches (e.g. BaseDeploymentManager.grantSyncCache) can drop stale
-  // entries for the reloaded agents. Registered by `startGateway`.
-  private reloadListeners: Array<(agentIds: string[]) => void> = [];
 
   // Options stored for deferred initialization
   private options?: {
@@ -403,43 +393,9 @@ export class CoreServices {
           `Agent sub-stores initialized (in-memory, ${this.config.agents.length} agent(s) from config)`
         );
       } else {
-        // Check if lobu.toml exists (file-first dev mode)
-        const { existsSync } = await import("node:fs");
-        const { resolve } = await import("node:path");
-        const workspaceRoot = process.env.LOBU_WORKSPACE_ROOT?.trim();
-        const candidatePaths = [
-          ...(workspaceRoot ? [resolve(workspaceRoot, "lobu.toml")] : []),
-          resolve(process.cwd(), "lobu.toml"),
-          resolve("/app/lobu.toml"),
-        ];
-        const tomlPath = candidatePaths.find((p) => existsSync(p));
-
-        if (tomlPath) {
-          const inMemoryStore = new InMemoryAgentStore();
-          if (!this.configStore) this.configStore = inMemoryStore;
-          if (!this.connectionStore) this.connectionStore = inMemoryStore;
-          if (!this.accessStore) this.accessStore = inMemoryStore;
-
-          // File-first dev mode: use InMemoryAgentStore populated from files
-          this.projectPath = resolve(tomlPath, "..");
-          await applyOwlettoMemoryEnvFromProject(this.projectPath);
-
-          // Load agents from files and populate store
-          this.fileLoadedAgents = await loadAgentConfigFromFiles(
-            this.projectPath
-          );
-          await this.populateStoreFromFiles(
-            inMemoryStore,
-            this.fileLoadedAgents
-          );
-          logger.debug(
-            `Agent sub-stores initialized (in-memory, ${this.fileLoadedAgents.length} agent(s) from files)`
-          );
-        } else {
-          throw new Error(
-            "No agent sub-stores configured: provide configStore/connectionStore/accessStore via CoreServices options, or place a lobu.toml in the workspace, or pass agents via GatewayConfig.agents."
-          );
-        }
+        throw new Error(
+          "No agent sub-stores configured: provide configStore/connectionStore/accessStore via CoreServices options, or pass agents via GatewayConfig.agents. (lobu.toml is no longer read at gateway boot — push agents with `lobu apply`.)"
+        );
       }
     } else {
       logger.debug("Using host-provided agent sub-stores (embedded mode)");
@@ -504,12 +460,12 @@ export class CoreServices {
       throw new Error("Secret store must be initialized before auth services");
     }
 
-    // Declared registry: read-only snapshot of file/SDK-declared agents.
-    // No second copy is kept — declared settings live in memory and are
-    // rebuilt wholesale on hot-reload.
+    // Declared registry: read-only snapshot of SDK-declared agents (passed
+    // via `GatewayConfig.agents`). No second copy is kept — declared
+    // settings live in memory.
     this.declaredAgentRegistry = new DeclaredAgentRegistry();
     this.declaredAgentRegistry.replaceAll(
-      buildRegistryMap(this.fileLoadedAgents, this.configAgents)
+      buildRegistryMap(this.configAgents)
     );
     // Plumb registry into the settings store so getEffectiveSettings
     // returns declared settings for declared agents (no second copy exists
@@ -868,27 +824,8 @@ export class CoreServices {
   }
 
   // ============================================================================
-  // File-First Helpers
+  // SDK-Embedded Helpers
   // ============================================================================
-
-  private async populateStoreFromFiles(
-    store: InMemoryAgentStore,
-    agents: FileLoadedAgent[]
-  ): Promise<void> {
-    for (const agent of agents) {
-      await store.saveMetadata(agent.agentId, {
-        agentId: agent.agentId,
-        name: agent.name,
-        description: agent.description,
-        owner: { platform: "system", userId: "manifest" },
-        createdAt: Date.now(),
-      });
-      await store.saveSettings(agent.agentId, {
-        ...agent.settings,
-        updatedAt: Date.now(),
-      } as any);
-    }
-  }
 
   private async populateStoreFromAgentConfigs(
     store: InMemoryAgentStore,
@@ -912,90 +849,8 @@ export class CoreServices {
     this.configAgents = agents;
   }
 
-  /**
-   * Reload agent config from files (dev mode only).
-   * Re-reads lobu.toml + markdown, clears and re-populates the in-memory store.
-   */
-  async reloadFromFiles(): Promise<{ reloaded: boolean; agents: string[] }> {
-    if (!this.projectPath) {
-      return { reloaded: false, agents: [] };
-    }
-
-    await applyOwlettoMemoryEnvFromProject(this.projectPath);
-
-    // Re-load from disk
-    this.fileLoadedAgents = await loadAgentConfigFromFiles(this.projectPath);
-
-    // Re-populate the in-memory store (clear existing data first)
-    if (this.configStore instanceof InMemoryAgentStore) {
-      const store = this.configStore as InMemoryAgentStore;
-      // Clear existing agents by loading fresh
-      const existing = await store.listAgents();
-      for (const meta of existing) {
-        // Only clear file-managed agents (owner: system/manifest)
-        if (
-          meta.owner?.platform === "system" &&
-          meta.owner?.userId === "manifest"
-        ) {
-          await store.deleteSettings(meta.agentId);
-          await store.deleteMetadata(meta.agentId);
-        }
-      }
-      await this.populateStoreFromFiles(store, this.fileLoadedAgents);
-    }
-
-    // Repopulate the declared registry so subsequent credential lookups
-    // see the new file-declared providers/keys. No additive seeding — the
-    // registry IS the source of truth.
-    if (this.declaredAgentRegistry) {
-      this.declaredAgentRegistry.replaceAll(
-        buildRegistryMap(this.fileLoadedAgents, this.configAgents)
-      );
-    }
-
-    const agentIds = this.fileLoadedAgents.map((a) => a.agentId);
-
-    // Notify listeners (e.g. the orchestrator's BaseDeploymentManager)
-    // so they can drop caches keyed on per-agent config — without this,
-    // changes to `networkConfig.allowedDomains` or `preApprovedTools`
-    // would be masked by the grantSyncCache hash on the next message.
-    for (const listener of this.reloadListeners) {
-      try {
-        listener(agentIds);
-      } catch (error) {
-        logger.warn("Reload listener failed", {
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
-
-    logger.info(`Reloaded ${agentIds.length} agent(s) from files`);
-    return { reloaded: true, agents: agentIds };
-  }
-
-  /**
-   * Register a callback invoked after `reloadFromFiles` completes with the
-   * list of reloaded agent ids. Used by `startGateway` to wire the
-   * orchestrator's grant-sync cache invalidation into the reload path.
-   */
-  onReloadFromFiles(listener: (agentIds: string[]) => void): void {
-    this.reloadListeners.push(listener);
-  }
-
-  getFileLoadedAgents(): FileLoadedAgent[] {
-    return this.fileLoadedAgents;
-  }
-
   getConfigAgents(): AgentConfig[] {
     return this.configAgents;
-  }
-
-  getProjectPath(): string | null {
-    return this.projectPath;
-  }
-
-  isFileFirstMode(): boolean {
-    return this.projectPath !== null;
   }
 
   // ============================================================================

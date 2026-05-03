@@ -707,32 +707,6 @@ export function createGatewayApp(
     }
   }
 
-  app.post("/api/v1/reload", async (c) => {
-    if (process.env.NODE_ENV === "production") {
-      return c.json({ error: "Not found" }, 404);
-    }
-    if (!(await hasDevRouteAccess(c))) {
-      return c.json({ error: "Unauthorized" }, 401);
-    }
-
-    if (!coreServices?.isFileFirstMode()) {
-      return c.json(
-        { error: "Reload only available in file-first dev mode" },
-        400
-      );
-    }
-
-    try {
-      const result = await coreServices.reloadFromFiles();
-      return c.json(result);
-    } catch (err) {
-      logger.error("Reload failed", {
-        error: err instanceof Error ? err.message : String(err),
-      });
-      return c.json({ error: "Reload failed" }, 500);
-    }
-  });
-
   app.get("/internal/status", async (c) => {
     if (process.env.NODE_ENV === "production") {
       return c.json({ error: "Not found" }, 404);
@@ -1177,19 +1151,9 @@ export async function startGateway(config: GatewayConfig): Promise<void> {
   );
   logger.debug("Orchestrator configured with core services");
 
-  // Wire reload-from-files notifications to the deployment manager's
-  // grant-sync cache so that changes to `networkConfig.allowedDomains` or
-  // `preApprovedTools` in lobu.toml take effect on the next message —
-  // without this, the cached hash short-circuits both grants AND revokes.
-  const deploymentManager = orchestrator.getDeploymentManager();
-  coreServices.onReloadFromFiles((agentIds: string[]) => {
-    for (const agentId of agentIds) {
-      deploymentManager.invalidateGrantSyncCache(agentId);
-    }
-    logger.debug(
-      `Invalidated grant-sync cache for ${agentIds.length} reloaded agent(s)`
-    );
-  });
+  // Note: file-based reload + connection-seeding has been removed —
+  // lobu.toml is no longer read at gateway boot. Agents and connections
+  // enter Postgres via `lobu apply` (CLI) or the web UI.
 
   const { ChatInstanceManager, ChatResponseBridge } = await import(
     "../connections/index.js"
@@ -1202,41 +1166,6 @@ export async function startGateway(config: GatewayConfig): Promise<void> {
       gateway.registerPlatform(adapter);
     }
     logger.debug("ChatInstanceManager initialized");
-
-    const fileLoadedAgents = coreServices.getFileLoadedAgents();
-    if (fileLoadedAgents.length > 0) {
-      for (const agent of fileLoadedAgents) {
-        if (!agent.platforms?.length) continue;
-        // Look up by stable id — `(platform, templateAgentId)` alone collapses
-        // multi-platform agents (e.g. two Slack workspaces) into one seed.
-        const existingForAgent = await chatInstanceManager.listConnections({
-          platform: undefined,
-          templateAgentId: agent.agentId,
-        });
-        const existingIds = new Set(existingForAgent.map((c: any) => c.id));
-        for (const platform of agent.platforms) {
-          if (existingIds.has(platform.id)) continue;
-          try {
-            await chatInstanceManager.addConnection(
-              platform.type,
-              agent.agentId,
-              { platform: platform.type as any, ...platform.config },
-              { allowGroups: true },
-              {},
-              platform.id
-            );
-            logger.debug(
-              `Created ${platform.type} platform for agent "${agent.agentId}" as "${platform.id}"`
-            );
-          } catch (err) {
-            logger.error(
-              `Failed to create ${platform.type} platform for agent "${agent.agentId}"`,
-              { error: err instanceof Error ? err.message : String(err) }
-            );
-          }
-        }
-      }
-    }
 
     const unifiedConsumer = gateway.getUnifiedConsumer();
     if (unifiedConsumer) {

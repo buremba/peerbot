@@ -1,7 +1,6 @@
 import type { AgentSettings, DeclaredCredential } from "@lobu/core";
 import { createLogger } from "@lobu/core";
 import type { AgentConfig } from "../config/index.js";
-import type { FileLoadedAgent } from "../config/file-loader.js";
 
 const logger = createLogger("declared-agent-registry");
 
@@ -11,13 +10,14 @@ interface DeclaredAgentEntry {
 }
 
 /**
- * In-memory registry of agents declared by `lobu.toml` (file-loader) or
- * `GatewayConfig.agents` (SDK embedded mode).
+ * In-memory registry of agents declared by `GatewayConfig.agents` when the
+ * gateway is embedded as a library (SDK-mode).
+ *
+ * `lobu.toml` is no longer read at gateway boot — file-declared agents
+ * enter Postgres via `lobu apply` and are read through `AgentConfigStore`.
  *
  * Declared agents own their settings and credentials at runtime — there is
- * no second copy to drift. The registry is rebuilt wholesale by callers
- * (e.g. `reloadFromFiles`) so removing a provider from `lobu.toml` removes
- * it from the registry on next reload.
+ * no second copy to drift.
  */
 export class DeclaredAgentRegistry {
   private readonly entries = new Map<string, DeclaredAgentEntry>();
@@ -62,25 +62,8 @@ export class DeclaredAgentRegistry {
 }
 
 /**
- * Build a registry entry from a file-loaded agent (lobu.toml).
- */
-export function entryFromFileLoadedAgent(
-  agent: FileLoadedAgent
-): DeclaredAgentEntry {
-  return {
-    settings: agent.settings,
-    credentials: agent.credentials.map((cred) => ({
-      provider: cred.provider,
-      ...(cred.key ? { key: cred.key } : {}),
-      ...(cred.secretRef ? { secretRef: cred.secretRef } : {}),
-    })),
-  };
-}
-
-/**
  * Build a registry entry from an embedded SDK `AgentConfig`. The settings
- * shape mirrors `buildSettingsFromAgentConfig` in `core-services` so the
- * registry can be populated from either source consistently.
+ * shape mirrors `buildSettingsFromAgentConfig` in `core-services`.
  */
 export function entryFromAgentConfig(agent: AgentConfig): DeclaredAgentEntry {
   const settings: Partial<AgentSettings> = {};
@@ -131,18 +114,13 @@ export function entryFromAgentConfig(agent: AgentConfig): DeclaredAgentEntry {
 }
 
 /**
- * Convenience: build a fresh registry map from a list of file-loaded
- * agents and a list of SDK config agents. Used by `core-services` to
- * populate the registry on startup and on `reloadFromFiles`.
+ * Build a fresh registry map from a list of SDK config agents. Used by
+ * `core-services` on startup.
  */
 export function buildRegistryMap(
-  fileAgents: FileLoadedAgent[],
   configAgents: AgentConfig[]
 ): Map<string, DeclaredAgentEntry> {
   const result = new Map<string, DeclaredAgentEntry>();
-  for (const agent of fileAgents) {
-    result.set(agent.agentId, entryFromFileLoadedAgent(agent));
-  }
   for (const agent of configAgents) {
     result.set(agent.id, entryFromAgentConfig(agent));
   }

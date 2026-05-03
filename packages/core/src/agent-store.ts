@@ -2,8 +2,8 @@
  * AgentStore — unified interface for agent configuration storage.
  *
  * Implementations:
- *   - InMemoryAgentStore (default, populated from files or API)
- *   - Host-provided store (embedded mode, e.g. PostgresAgentStore in Owletto)
+ *   - InMemoryAgentStore (SDK-embedded mode, populated from `GatewayConfig.agents`)
+ *   - Host-provided store (embedded backend, e.g. PostgresAgentStore in Owletto)
  */
 
 import type { PluginsConfig } from "./plugin-types";

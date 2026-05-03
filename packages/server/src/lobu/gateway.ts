@@ -46,7 +46,6 @@ let lobuApp: any = null;
 let chatInstanceManager: any = null;
 let coreServices: any = null;
 let orchestrator: any = null;
-let socketModeClient: any = null;
 let filteringProxyStarted = false;
 
 function ensureEmbeddedWorkerLauncher(): void {
@@ -74,59 +73,6 @@ function ensureEmbeddedGatewaySecrets(): void {
         'ENCRYPTION_KEY is required for the embedded Lobu gateway. Set ENCRYPTION_KEY explicitly or opt into ephemeral local keys with OWLETTO_ALLOW_EPHEMERAL_ENCRYPTION_KEY=1.'
       );
     }
-  }
-}
-
-/**
- * Start a Slack Socket Mode client that bridges WebSocket events into the
- * ChatInstanceManager's webhook handler. This lets the bot receive events
- * without a publicly reachable URL.
- */
-async function startSlackSocketMode(manager: any): Promise<void> {
-  if (!manager) return;
-
-  const sql = getDb();
-  const rows = await sql`
-    SELECT id, config FROM agent_connections WHERE platform = 'slack' LIMIT 10
-  `;
-
-  for (const row of rows as Array<{ id: string; config: any }>) {
-    const cfg = typeof row.config === 'string' ? JSON.parse(row.config) : row.config;
-    if (!cfg?.appToken) continue;
-
-    const { SocketModeClient } = await import('@slack/socket-mode');
-    const signingSecret = cfg.signingSecret || process.env.SLACK_SIGNING_SECRET || '';
-
-    socketModeClient = new SocketModeClient({ appToken: cfg.appToken });
-
-    socketModeClient.on('slack_event', async ({ ack, body }: any) => {
-      if (ack) await ack();
-
-      const payload = JSON.stringify(body);
-      const timestamp = Math.floor(Date.now() / 1000).toString();
-      const sigBase = `v0:${timestamp}:${payload}`;
-      const signature = `v0=${crypto.createHmac('sha256', signingSecret).update(sigBase).digest('hex')}`;
-
-      const request = new Request('http://localhost/slack/events', {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'x-slack-request-timestamp': timestamp,
-          'x-slack-signature': signature,
-        },
-        body: payload,
-      });
-
-      try {
-        await manager.handleSlackAppWebhook(request);
-      } catch (err) {
-        logger.error({ error: String(err) }, '[Lobu] Socket Mode event handler error');
-      }
-    });
-
-    await socketModeClient.start();
-    logger.info({ connectionId: row.id }, '[Lobu] Slack Socket Mode client started');
-    break; // one socket mode client is enough
   }
 }
 
@@ -218,9 +164,6 @@ export async function initLobuGateway(): Promise<Hono | null> {
         '[Lobu] ChatInstanceManager init failed — connections disabled'
       );
     }
-
-    // Start Slack Socket Mode bridge if any connection has an appToken
-    await startSlackSocketMode(chatInstanceManager);
 
     // Auth bridge: translate Owletto's Better Auth session → Lobu's SettingsTokenPayload
     const authProvider = (c: any): EmbeddedSettingsSession | null => {
@@ -320,10 +263,6 @@ export async function initLobuGateway(): Promise<Hono | null> {
  */
 export async function stopLobuGateway(): Promise<void> {
   try {
-    if (socketModeClient) {
-      await socketModeClient.disconnect();
-      socketModeClient = null;
-    }
     if (chatInstanceManager) {
       await chatInstanceManager.shutdown();
     }

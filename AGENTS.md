@@ -29,6 +29,8 @@ When editing UI under `packages/web`, follow the design rules in @packages/web/D
 #### Platform
 All chat platforms (Telegram, Slack, Discord, WhatsApp, Teams) run through Chat SDK adapters in `packages/server/src/gateway/connections/`. Connections are created via the `/agents` admin UI or the connections CRUD API — no per-platform env vars. Each connection has a typed config schema (bot token for Telegram, signing secret + bot token for Slack, etc.). Gateway also exposes a public endpoint that triggers an agent run. Settings-page provider order is drag-sortable, with per-provider model selection inline.
 
+**One transport per platform: webhooks via the Chat SDK adapter.** Don't add per-platform alternative transports (Slack Socket Mode, Telegram long-polling, Discord Gateway WebSocket bridges, etc.) or extra runtime SDKs to support them. Local dev for webhook-only platforms uses a tunnel (cloudflared / ngrok / Tailscale Funnel); Lobu Cloud users get a public URL for free. Sticking to the Chat SDK keeps one delivery story, one set of retries, and zero extra dependencies.
+
 #### Orchestration
 - **Embedded-only deployment.** Gateway, workers, embeddings, and the Owletto memory backend run in a single Node process (`lobu run`, or `bun run dev` in the monorepo). Workers spawn as `child_process.spawn` subprocesses on the same host; on Linux the spawn path uses `systemd-run --user --scope` for cgroup limits + IPAddressDeny + capability drops. There is no Docker or Kubernetes deployment manager.
 - Postgres (with pgvector) is the only user-provided external. The Node process connects out via `DATABASE_URL`. Runtime state that previously lived in Redis (queues, chat connection rows, grant cache, MCP proxy sessions) is now in dedicated Postgres tables.

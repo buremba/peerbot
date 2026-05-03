@@ -160,6 +160,14 @@ function isVersionPublished(name, version) {
   return result.status === 0 && result.stdout.trim() === version;
 }
 
+function isPackagePublished(name) {
+  const result = spawnSync("npm", ["view", name, "name"], {
+    stdio: ["ignore", "pipe", "pipe"],
+    encoding: "utf8",
+  });
+  return result.status === 0 && result.stdout.trim() === name;
+}
+
 function publishArgs(otp) {
   const args = ["publish", "--access", "public"];
   if (otp) args.push(`--otp=${otp}`);
@@ -180,15 +188,17 @@ function packageVersion(dir) {
 }
 
 function deprecateRenamedPackages(otp) {
-  for (const [oldName, newName, dir] of RENAMED_PACKAGE_DEPRECATIONS) {
-    const version = packageVersion(dir);
-    if (!isVersionPublished(oldName, version)) {
-      console.log(`  → ${oldName}@${version} not on npm, skipping deprecation`);
+  for (const [oldName, newName] of RENAMED_PACKAGE_DEPRECATIONS) {
+    if (!isPackagePublished(oldName)) {
+      console.log(`  → ${oldName} not on npm, skipping deprecation`);
       continue;
     }
     const message = `Renamed to ${newName}. Please install ${newName} instead.`;
-    console.log(`  → deprecating ${oldName}@${version}`);
-    run("npm", deprecateArgs(`${oldName}@${version}`, message, otp));
+    // Deprecate every published version of the old name (npm accepts `@*` as
+    // "all versions"). Without this, anyone pinned to an older version never
+    // sees the rename notice — only freshly resolved installs do.
+    console.log(`  → deprecating ${oldName}@*`);
+    run("npm", deprecateArgs(`${oldName}@*`, message, otp));
   }
 }
 

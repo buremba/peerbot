@@ -2,9 +2,9 @@
 #
 # End-to-end harness for `lobu apply` v1.
 #
-# Boots `start-local.ts` with LOBU_LOCAL_BOOTSTRAP=true so we get an
-# out-of-band PAT, drives the CLI through create → noop → update → drift,
-# and asserts the round-trip against PGlite.
+# Boots `start-local.ts` (auto-bootstraps an admin PAT on empty data dir),
+# drives the CLI through create → noop → update → drift, and asserts the
+# round-trip against PGlite.
 #
 # Idempotent: cleans up its own server, data dir, and project dir on exit.
 
@@ -65,14 +65,13 @@ fi
 LOBU="node ${CLI_BIN}"
 
 # ─── 2. start server ───────────────────────────────────────────────────
-echo "==> step 2: start start-local.ts on :${PORT} (LOBU_LOCAL_BOOTSTRAP=true)"
+echo "==> step 2: start start-local.ts on :${PORT}"
 
 # Unset DATABASE_URL — start-local.ts boots PGlite and writes its own
 # socket URL into process.env. A pre-set DATABASE_URL would race with the
 # socket bind.
 env \
   -u DATABASE_URL \
-  LOBU_LOCAL_BOOTSTRAP=true \
   OWLETTO_DATA_DIR="${DATA_DIR}" \
   PORT="${PORT}" \
   HOST=127.0.0.1 \

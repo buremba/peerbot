@@ -172,16 +172,15 @@ async function main() {
     logger.info(`Data: ${DATA_DIR}`);
   });
 
-  // ─── Bootstrap PAT (dev-only) ────────────────────────────────
-  // Gated behind LOBU_LOCAL_BOOTSTRAP=true; production deployments never set
-  // this flag, so the path is dead in cloud. Used by `scripts/e2e-lobu-apply.sh`
-  // to obtain a CLI-usable bearer without OAuth or admin-password.
-  if (isTruthyEnv('LOBU_LOCAL_BOOTSTRAP')) {
-    try {
-      await ensureBootstrapPat(dbUrl);
-    } catch (err) {
-      logger.warn({ err }, 'Bootstrap PAT setup failed');
-    }
+  // ─── Bootstrap PAT ───────────────────────────────────────────
+  // Self-skips when the deployment already has users (production safety) or
+  // when a bootstrap PAT has already been minted under OWLETTO_DATA_DIR.
+  // Replaces the previous LOBU_LOCAL_BOOTSTRAP env-flag gate — operators no
+  // longer need to opt in for first-run local dev.
+  try {
+    await ensureBootstrapPat(dbUrl);
+  } catch (err) {
+    logger.warn({ err }, 'Bootstrap PAT setup failed');
   }
 }
 
@@ -356,12 +355,13 @@ async function applyEmbeddedSchemaPatches(sql: MigrationSqlClient) {
   }
 }
 
-// ─── Bootstrap PAT (dev-only — LOBU_LOCAL_BOOTSTRAP=true) ─────────
+// ─── Bootstrap PAT ────────────────────────────────────────────────
 //
 // Mints a default user, personal org (slug `dev`), member, and PAT scoped to
-// both. Idempotent: if `bootstrap-pat.txt` already exists under
-// OWLETTO_DATA_DIR the function is a no-op (log only). Production deployments
-// never set LOBU_LOCAL_BOOTSTRAP — main() guards the call.
+// both. Self-skips when (a) `bootstrap-pat.txt` already exists under
+// OWLETTO_DATA_DIR, or (b) the deployment already has users. The second guard
+// prevents auto-bootstrap from polluting a production deployment that already
+// has real users provisioned via the web UI.
 
 const BOOTSTRAP_USER_ID = 'bootstrap-user';
 const BOOTSTRAP_USER_EMAIL = 'dev@local';
@@ -378,7 +378,7 @@ async function ensureBootstrapPat(dbUrl: string): Promise<void> {
   if (existsSync(patFilePath)) {
     logger.info(
       { path: patFilePath, org: BOOTSTRAP_ORG_SLUG },
-      'Bootstrap PAT already provisioned (set LOBU_LOCAL_BOOTSTRAP=false to skip)'
+      'Bootstrap PAT already provisioned (delete the file to re-mint)'
     );
     return;
   }
@@ -389,6 +389,20 @@ async function ensureBootstrapPat(dbUrl: string): Promise<void> {
   const sql = pg.default(dbUrl, { max: 1 });
 
   try {
+    // Production safety: skip when users already exist. A deployment that has
+    // real users provisioned via the web UI must not get a "Local Developer"
+    // user grafted in alongside them.
+    const userCountRows = await sql<[{ count: number }]>`
+      SELECT count(*)::int AS count FROM "user"
+    `;
+    if ((userCountRows[0]?.count ?? 0) > 0) {
+      logger.debug(
+        { userCount: userCountRows[0]?.count },
+        'Skipping bootstrap PAT — deployment already has users'
+      );
+      return;
+    }
+
     // Idempotent user/org/member upsert. Re-runs of the embedded schema (e.g.
     // OWLETTO_DATA_DIR pre-existing without the PAT file) skip ON CONFLICT.
     await sql`
@@ -438,8 +452,9 @@ async function ensureBootstrapPat(dbUrl: string): Promise<void> {
     const tokenPrefix = getPATPrefix(token);
 
     // Owner-tier scopes so admin-only tools (manage_entity_schema, etc.) work.
-    // The bootstrap user is the org owner — no separate consent step here, the
-    // user explicitly opted in by setting LOBU_LOCAL_BOOTSTRAP=true.
+    // The bootstrap user is the org owner — no separate consent step. This
+    // path is only reached on a deployment with no users; first real signup
+    // via the web UI takes precedence on every subsequent boot.
     const bootstrapScope = 'mcp:read mcp:write mcp:admin';
     await sql`
       INSERT INTO personal_access_tokens (
@@ -451,7 +466,7 @@ async function ensureBootstrapPat(dbUrl: string): Promise<void> {
         ${BOOTSTRAP_USER_ID},
         ${BOOTSTRAP_ORG_ID},
         'bootstrap',
-        'LOBU_LOCAL_BOOTSTRAP — printed once on first boot',
+        'auto-minted on first boot of an empty deployment',
         ${bootstrapScope},
         NULL
       )

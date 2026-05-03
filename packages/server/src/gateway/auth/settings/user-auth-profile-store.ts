@@ -31,6 +31,7 @@ function buildProfileSecretPrefix(
 interface UserAgentRef {
   userId: string;
   agentId: string;
+  organizationId: string;
 }
 
 /**
@@ -192,16 +193,25 @@ export class UserAuthProfileStore {
   }
 
   /**
-   * Yield every `(userId, agentId)` pair for which OAuth profiles exist.
-   * Used by `TokenRefreshJob` to scan refreshable tokens.
+   * Yield every `(userId, agentId, organizationId)` triple for which OAuth
+   * profiles exist. Used by `TokenRefreshJob` to scan refreshable tokens —
+   * the org id is needed so the refresh path can establish org context
+   * before reading/writing org-scoped secrets via PostgresSecretStore.
+   * Profiles whose agent has been deleted are skipped (INNER JOIN).
    */
   async *scanAllOAuth(): AsyncIterable<UserAgentRef> {
     const sql = getDb();
     const rows = await sql`
-      SELECT user_id, agent_id FROM user_auth_profiles
+      SELECT uap.user_id, uap.agent_id, a.organization_id
+      FROM user_auth_profiles uap
+      INNER JOIN agents a ON a.id = uap.agent_id
     `;
     for (const row of rows as Array<Record<string, any>>) {
-      yield { userId: row.user_id as string, agentId: row.agent_id as string };
+      yield {
+        userId: row.user_id as string,
+        agentId: row.agent_id as string,
+        organizationId: row.organization_id as string,
+      };
     }
   }
 

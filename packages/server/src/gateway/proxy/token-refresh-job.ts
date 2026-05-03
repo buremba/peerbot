@@ -1,4 +1,6 @@
 import { createLogger } from "@lobu/core";
+import { getDb } from "../../db/client.js";
+import { orgContext } from "../../lobu/stores/org-context.js";
 import type { OAuthClient } from "../auth/oauth/client.js";
 import type { AuthProfilesManager } from "../auth/settings/auth-profiles-manager.js";
 
@@ -37,8 +39,14 @@ export class TokenRefreshJob {
    *  refresh handles everyone else. */
   async runOnce(): Promise<void> {
     const userAuthProfiles = this.authProfilesManager.getUserAuthProfileStore();
-    for await (const { userId, agentId } of userAuthProfiles.scanAllOAuth()) {
-      await this.maybeRefresh(userId, agentId);
+    for await (const {
+      userId,
+      agentId,
+      organizationId,
+    } of userAuthProfiles.scanAllOAuth()) {
+      await orgContext.run({ organizationId }, () =>
+        this.maybeRefresh(userId, agentId)
+      );
     }
   }
 
@@ -47,9 +55,34 @@ export class TokenRefreshJob {
    * `refresh-token-for-user-agent` task and AuthProfilesManager's at-use-time
    * lazy path can both call it. Per-pod `refreshLocks` dedup concurrent calls
    * for the same key in this process.
+   *
+   * Looks up the agent's org and establishes an `orgContext` scope before
+   * delegating, so `PostgresSecretStore` reads/writes resolve against the
+   * correct tenant bucket. Both call paths (scheduler-spawned task at
+   * `scheduled/jobs.ts:89` and direct invocation from
+   * `AuthProfilesManager.refreshNow`) lose the original request's
+   * AsyncLocalStorage scope by the time they land here.
    */
   async refreshForUserAgent(userId: string, agentId: string): Promise<void> {
-    return this.maybeRefresh(userId, agentId);
+    const organizationId = await this.lookupAgentOrg(agentId);
+    if (organizationId === null) {
+      logger.warn(
+        { userId, agentId },
+        "Skipping token refresh — agent has no org row (deleted?)"
+      );
+      return;
+    }
+    return orgContext.run({ organizationId }, () =>
+      this.maybeRefresh(userId, agentId)
+    );
+  }
+
+  private async lookupAgentOrg(agentId: string): Promise<string | null> {
+    const sql = getDb();
+    const rows = await sql<{ organization_id: string }>`
+      SELECT organization_id FROM agents WHERE id = ${agentId} LIMIT 1
+    `;
+    return rows[0]?.organization_id ?? null;
   }
 
   private async maybeRefresh(userId: string, agentId: string): Promise<void> {

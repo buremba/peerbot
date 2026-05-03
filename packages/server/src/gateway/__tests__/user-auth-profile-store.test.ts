@@ -5,6 +5,7 @@ import {
   ensureEncryptionKey,
   ensurePgliteForGatewayTests,
   resetTestDatabase,
+  seedAgentRow,
 } from "./helpers/db-setup.js";
 
 let secretStore: PostgresSecretStore;
@@ -150,7 +151,12 @@ describe("UserAuthProfileStore", () => {
     expect(await secretStore.get(stored.credentialRef!)).toBeNull();
   });
 
-  test("scanAllOAuth yields every (userId, agentId) pair", async () => {
+  test("scanAllOAuth yields every (userId, agentId, organizationId) triple", async () => {
+    // scanAllOAuth INNER JOINs agents to surface org id for org-context
+    // wrapping in TokenRefreshJob, so the test fixtures need real agent rows.
+    await seedAgentRow("agent-1", { organizationId: "org-a" });
+    await seedAgentRow("agent-2", { organizationId: "org-b" });
+
     await store.upsert("u1", "agent-1", {
       id: "p1",
       provider: "claude",
@@ -172,8 +178,29 @@ describe("UserAuthProfileStore", () => {
 
     const refs: string[] = [];
     for await (const ref of store.scanAllOAuth()) {
+      refs.push(`${ref.userId}:${ref.agentId}:${ref.organizationId}`);
+    }
+    expect(refs.sort()).toEqual(["u1:agent-1:org-a", "u2:agent-2:org-b"]);
+  });
+
+  test("scanAllOAuth skips profiles whose agent row is missing", async () => {
+    // No seedAgentRow — the INNER JOIN should drop the orphaned profile
+    // rather than yield it without an org. (Refresh job can't establish
+    // org context for a deleted agent anyway.)
+    await store.upsert("u1", "ghost-agent", {
+      id: "p1",
+      provider: "claude",
+      credential: "x",
+      authType: "oauth",
+      label: "x",
+      model: "*",
+      createdAt: 0,
+    });
+
+    const refs: string[] = [];
+    for await (const ref of store.scanAllOAuth()) {
       refs.push(`${ref.userId}:${ref.agentId}`);
     }
-    expect(refs.sort()).toEqual(["u1:agent-1", "u2:agent-2"]);
+    expect(refs).toEqual([]);
   });
 });

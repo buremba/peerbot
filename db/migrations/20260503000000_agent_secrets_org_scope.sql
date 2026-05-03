@@ -5,6 +5,14 @@
 -- each other. Scope rows by organization while keeping legacy rows
 -- addressable: empty-string organization_id means "global" (used by
 -- system env-store and any pre-existing rows from the global era).
+--
+-- ROLLOUT NOTE: this migration replaces the primary key on `(name)` with
+-- `(organization_id, name)` non-atomically. Lobu's deployment model is a
+-- single embedded Node process with atomic swap (see "Embedded-only
+-- deployment" in AGENTS.md), so old + new processes never run concurrently
+-- against the same database. If you're running Lobu under a rolling-deploy
+-- supervisor, stop traffic before applying this migration — old pods using
+-- `ON CONFLICT (name)` will fail writes against the new schema.
 
 ALTER TABLE public.agent_secrets
     ADD COLUMN IF NOT EXISTS organization_id text NOT NULL DEFAULT '';

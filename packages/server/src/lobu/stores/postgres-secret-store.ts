@@ -125,7 +125,19 @@ export class PostgresSecretStore implements WritableSecretStore {
   async put(name: string, value: string, options?: SecretPutOptions): Promise<SecretRef> {
     const ciphertext = encrypt(value);
     const expiresAt = options?.ttlSeconds ? new Date(Date.now() + options.ttlSeconds * 1000) : null;
-    const orgId = tryGetOrgId() ?? GLOBAL_ORG_ID;
+    const ctxOrgId = tryGetOrgId();
+    const orgId = ctxOrgId ?? GLOBAL_ORG_ID;
+    if (ctxOrgId === null) {
+      // System env-store and other deployment-wide writers reach here
+      // intentionally; tenant code paths reaching here is a bug —
+      // the rotated secret would land in the cross-tenant bucket and
+      // shadow every org's read of the same name. Logged loudly so
+      // the regression shows up in observability.
+      logger.warn(
+        { name },
+        '[secret-store] put() without org context — writing to GLOBAL bucket'
+      );
+    }
 
     const sql = getDb();
     await sql`
@@ -142,7 +154,14 @@ export class PostgresSecretStore implements WritableSecretStore {
 
   async delete(nameOrRef: string): Promise<void> {
     const name = resolveName(nameOrRef);
-    const orgId = tryGetOrgId() ?? GLOBAL_ORG_ID;
+    const ctxOrgId = tryGetOrgId();
+    const orgId = ctxOrgId ?? GLOBAL_ORG_ID;
+    if (ctxOrgId === null) {
+      logger.warn(
+        { name },
+        '[secret-store] delete() without org context — targeting GLOBAL bucket'
+      );
+    }
     const sql = getDb();
     await sql`
       DELETE FROM agent_secrets

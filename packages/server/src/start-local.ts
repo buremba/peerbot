@@ -397,7 +397,29 @@ const BOOTSTRAP_ORG_NAME = 'Local Dev';
 const BOOTSTRAP_MEMBER_ID = 'member-bootstrap-dev';
 const BOOTSTRAP_PAT_FILENAME = 'bootstrap-pat.txt';
 
+function isLoopbackPgUrl(dbUrl: string): boolean {
+  try {
+    const { hostname } = new URL(dbUrl);
+    return hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1';
+  } catch {
+    return false;
+  }
+}
+
 async function ensureBootstrapPat(dbUrl: string): Promise<void> {
+  // Defense-in-depth: this entrypoint spawns its own PGlite at 127.0.0.1
+  // (see line 120 above). If the dbUrl ever points elsewhere — someone
+  // refactors and reuses ensureBootstrapPat against a real DB — refuse
+  // to mint. The user-count guard below is the second layer; this catches
+  // the case where a fresh prod DB hasn't had its first signup yet.
+  if (!isLoopbackPgUrl(dbUrl)) {
+    logger.warn(
+      { dbUrl: dbUrl.replace(/:[^:@/]*@/, ':***@') },
+      'Skipping bootstrap PAT — dbUrl is not the local PGlite loopback'
+    );
+    return;
+  }
+
   const patFilePath = join(DATA_DIR, BOOTSTRAP_PAT_FILENAME);
   if (existsSync(patFilePath)) {
     logger.info(

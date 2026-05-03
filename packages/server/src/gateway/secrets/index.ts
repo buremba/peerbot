@@ -11,6 +11,7 @@ import {
   type SecretRef,
   safeJsonParse,
 } from "@lobu/core";
+import { tryGetOrgId } from "../../lobu/stores/org-context.js";
 
 const logger = createLogger("secret-store");
 
@@ -150,7 +151,10 @@ export interface SecretStoreRegistryOptions {
 }
 
 export class SecretStoreRegistry implements WritableSecretStore {
-  private readonly cache = new Map<SecretRef, CacheEntry>();
+  // Cache key is `${orgId}|${ref}` so two orgs resolving the same `secret://`
+  // ref through PostgresSecretStore (which scopes by AsyncLocalStorage org)
+  // never share a cached value. Empty-string orgId covers global/system reads.
+  private readonly cache = new Map<string, CacheEntry>();
   private readonly cacheTtlMs: number;
   private readonly cacheMax: number;
   private readonly writableStores: Record<string, WritableSecretStore>;
@@ -190,14 +194,16 @@ export class SecretStoreRegistry implements WritableSecretStore {
 
   async get(ref: SecretRef): Promise<string | null> {
     const now = Date.now();
-    const cached = this.cache.get(ref);
+    const orgId = tryGetOrgId() ?? "";
+    const key = cacheKey(ref, orgId);
+    const cached = this.cache.get(key);
     if (cached) {
       if (cached.expiresAt > now) {
         return cached.value;
       }
       // Expired — drop it so the Map doesn't grow unbounded with stale
       // entries, then fall through to the backing store.
-      this.cache.delete(ref);
+      this.cache.delete(key);
     }
 
     const parsed = parseSecretRef(ref);
@@ -211,7 +217,7 @@ export class SecretStoreRegistry implements WritableSecretStore {
     }
 
     const value = await store.get(ref);
-    this.rememberInCache(ref, value, now);
+    this.rememberInCache(key, value, now);
     return value;
   }
 
@@ -221,7 +227,10 @@ export class SecretStoreRegistry implements WritableSecretStore {
     options?: SecretPutOptions
   ): Promise<SecretRef> {
     const ref = await this.defaultStore.put(name, value, options);
-    this.cache.delete(ref);
+    // Drop every cached entry for this ref across all org scopes — the
+    // value just changed in the backing store, and any cached entry under
+    // a different org context would now be stale.
+    this.invalidateRefAcrossOrgs(ref);
     return ref;
   }
 
@@ -254,42 +263,48 @@ export class SecretStoreRegistry implements WritableSecretStore {
 
   /**
    * Drop every cache entry that logically refers to the same secret as
-   * `nameOrRef`, regardless of whether the caller passed a plain name, a
-   * percent-encoded ref, or any other equivalent form. We always do the
-   * cheap exact-match delete first (covers the hot path), then fall back
-   * to an O(cache_size) walk decoding each key's path and comparing
-   * against the canonical name.
+   * `nameOrRef`, across every org scope. Cache keys are `${orgId}|${ref}`,
+   * so we walk every entry, split off the ref portion, and compare
+   * canonically against the input.
    */
   private invalidateCacheFor(nameOrRef: string): void {
-    // Fast path: exact-match drop (covers the common case where the
-    // caller put/deleted with the same ref/name form).
-    this.cache.delete(nameOrRef);
-
-    // Also drop the straightforward "built-in ref equivalent" form
-    // without walking the cache, in case the caller used the other form.
-    if (isSecretRef(nameOrRef)) {
-      // If we got a ref, no built-in shortcut to try — fall through.
-    } else {
-      this.cache.delete(createBuiltinSecretRef(encodeURIComponent(nameOrRef)));
-    }
-
-    // Resolve the canonical decoded identity for the input. For a ref
-    // we parse + decode the path; for a name we use it directly. If
-    // we can't derive a canonical form, the above fast-path deletes
-    // are the best we can do.
     const canonical = canonicalSecretIdentity(nameOrRef);
-    if (canonical === null) return;
+    if (canonical === null) {
+      // If we can't derive a canonical form, fall back to dropping every
+      // exact `*|<nameOrRef>` and `*|<built-in ref>` key we can predict.
+      const builtinRef = isSecretRef(nameOrRef)
+        ? null
+        : createBuiltinSecretRef(encodeURIComponent(nameOrRef));
+      for (const key of Array.from(this.cache.keys())) {
+        const ref = parseCacheKey(key)?.ref;
+        if (ref === nameOrRef || (builtinRef && ref === builtinRef)) {
+          this.cache.delete(key);
+        }
+      }
+      return;
+    }
 
     // Walk every cache entry. LRU is capped at DEFAULT_SECRET_CACHE_MAX
     // (5000) and deletes are rare, so this is cheap in practice.
-    for (const cachedRef of Array.from(this.cache.keys())) {
-      const cachedCanonical = canonicalSecretIdentity(cachedRef);
+    for (const key of Array.from(this.cache.keys())) {
+      const parsed = parseCacheKey(key);
+      if (!parsed) continue;
+      const cachedCanonical = canonicalSecretIdentity(parsed.ref);
       if (cachedCanonical === null) continue;
       if (
         cachedCanonical.scheme === canonical.scheme &&
         cachedCanonical.name === canonical.name
       ) {
-        this.cache.delete(cachedRef);
+        this.cache.delete(key);
+      }
+    }
+  }
+
+  /** Drop every cache entry for the exact `ref`, across all org scopes. */
+  private invalidateRefAcrossOrgs(ref: SecretRef): void {
+    for (const key of Array.from(this.cache.keys())) {
+      if (parseCacheKey(key)?.ref === ref) {
+        this.cache.delete(key);
       }
     }
   }
@@ -338,13 +353,13 @@ export class SecretStoreRegistry implements WritableSecretStore {
   }
 
   private rememberInCache(
-    ref: SecretRef,
+    key: string,
     value: string | null,
     now: number
   ): void {
     // LRU touch: delete + re-insert so the new entry is the most recent.
-    this.cache.delete(ref);
-    this.cache.set(ref, { value, expiresAt: now + this.cacheTtlMs });
+    this.cache.delete(key);
+    this.cache.set(key, { value, expiresAt: now + this.cacheTtlMs });
 
     // Cap size by evicting the oldest entry (insertion-order Map).
     if (this.cache.size > this.cacheMax) {
@@ -354,6 +369,21 @@ export class SecretStoreRegistry implements WritableSecretStore {
       }
     }
   }
+}
+
+const CACHE_KEY_SEP = "|";
+
+function cacheKey(ref: SecretRef, orgId: string): string {
+  return `${orgId}${CACHE_KEY_SEP}${ref}`;
+}
+
+function parseCacheKey(key: string): { orgId: string; ref: SecretRef } | null {
+  const idx = key.indexOf(CACHE_KEY_SEP);
+  if (idx < 0) return null;
+  return {
+    orgId: key.slice(0, idx),
+    ref: key.slice(idx + 1) as SecretRef,
+  };
 }
 
 /**

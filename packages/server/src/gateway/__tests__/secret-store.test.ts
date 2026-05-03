@@ -15,6 +15,7 @@ import {
   type SecretStore,
   type WritableSecretStore,
 } from "../secrets/index.js";
+import { orgContext } from "../../lobu/stores/org-context.js";
 
 const TEST_ENCRYPTION_KEY =
   "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -197,6 +198,63 @@ describe("SecretStoreRegistry caching", () => {
 
     await registry.delete(name);
     expect(await registry.get(ref)).toBeNull();
+  });
+
+  test("cache is keyed per org so two tenants reading the same ref don't share values", async () => {
+    // Backing store that returns different values based on AsyncLocalStorage
+    // org context — mirrors PostgresSecretStore's per-org resolution.
+    class OrgAwareStore implements WritableSecretStore {
+      readonly entries = new Map<string, string>(); // `${orgId}|${name}` → value
+      async get(ref: SecretRef): Promise<string | null> {
+        if (!ref.startsWith("secret://")) return null;
+        const name = decodeURIComponent(ref.slice("secret://".length));
+        const orgId = orgContext.getStore()?.organizationId ?? "";
+        return this.entries.get(`${orgId}|${name}`) ?? null;
+      }
+      async put(name: string, value: string): Promise<SecretRef> {
+        const orgId = orgContext.getStore()?.organizationId ?? "";
+        this.entries.set(`${orgId}|${name}`, value);
+        return ("secret://" + encodeURIComponent(name)) as SecretRef;
+      }
+      async delete(_nameOrRef: string): Promise<void> {}
+      async list(_prefix?: string): Promise<SecretListEntry[]> {
+        return [];
+      }
+    }
+    const orgBacking = new OrgAwareStore();
+    const orgRegistry = new SecretStoreRegistry(orgBacking, {
+      secret: orgBacking,
+    });
+
+    // Seed the same logical ref under two different orgs with two
+    // different values.
+    const ref = await orgContext.run({ organizationId: "org-a" }, () =>
+      orgRegistry.put("api/key", "alpha")
+    );
+    await orgContext.run({ organizationId: "org-b" }, () =>
+      orgRegistry.put("api/key", "beta")
+    );
+
+    // Org A reads first to populate cache, then Org B must NOT see "alpha".
+    const readA = await orgContext.run({ organizationId: "org-a" }, () =>
+      orgRegistry.get(ref)
+    );
+    const readB = await orgContext.run({ organizationId: "org-b" }, () =>
+      orgRegistry.get(ref)
+    );
+    expect(readA).toBe("alpha");
+    expect(readB).toBe("beta");
+
+    // Confirm the cache actually fired (drop backing, repeat reads).
+    orgBacking.entries.clear();
+    const readACached = await orgContext.run({ organizationId: "org-a" }, () =>
+      orgRegistry.get(ref)
+    );
+    const readBCached = await orgContext.run({ organizationId: "org-b" }, () =>
+      orgRegistry.get(ref)
+    );
+    expect(readACached).toBe("alpha");
+    expect(readBCached).toBe("beta");
   });
 });
 

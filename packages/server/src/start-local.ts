@@ -346,6 +346,30 @@ const EMBEDDED_SCHEMA_PATCHES: EmbeddedSchemaPatch[] = [
       `);
     },
   },
+  {
+    id: 'agent-secrets-org-scope',
+    apply: async (sql) => {
+      // Mirror of db/migrations/20260503000000_agent_secrets_org_scope.sql
+      // for already-initialized PGlite installs that skip the migrations
+      // dir runner.
+      await sql.unsafe(`
+        ALTER TABLE public.agent_secrets
+        ADD COLUMN IF NOT EXISTS organization_id text NOT NULL DEFAULT ''
+      `);
+      await sql.unsafe(`
+        ALTER TABLE public.agent_secrets
+        DROP CONSTRAINT IF EXISTS agent_secrets_pkey
+      `);
+      await sql.unsafe(`
+        ALTER TABLE public.agent_secrets
+        ADD CONSTRAINT agent_secrets_pkey PRIMARY KEY (organization_id, name)
+      `);
+      await sql.unsafe(`
+        CREATE INDEX IF NOT EXISTS agent_secrets_org_id_idx
+        ON public.agent_secrets (organization_id)
+      `);
+    },
+  },
 ];
 
 async function applyEmbeddedSchemaPatches(sql: MigrationSqlClient) {

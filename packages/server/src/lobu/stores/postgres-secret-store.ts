@@ -1,7 +1,14 @@
 /**
  * PostgresSecretStore — WritableSecretStore backed by the `agent_secrets`
  * table. Stores AES-256-GCM ciphertext produced by @lobu/core's encrypt(),
- * keyed by logical name, and returns `secret://<encoded-name>` refs.
+ * keyed by `(organization_id, logical name)`, and returns
+ * `secret://<encoded-name>` refs.
+ *
+ * The org_id is threaded via AsyncLocalStorage (`tryGetOrgId()`) — the
+ * `secret://` URI scheme stays unchanged so callers don't have to embed
+ * org context in stored refs. Per-org rows take precedence over the
+ * empty-string "global" bucket used by deployment-wide system secrets
+ * and pre-org-scoping rows.
  *
  * Paired with SecretStoreRegistry and passed as the `secretStore` option to
  * Gateway from `src/lobu/gateway.ts` so lobu's ChatInstanceManager can
@@ -18,6 +25,9 @@ import {
 import { getDb } from '../../db/client';
 import type { WritableSecretStore } from '../../gateway/secrets/index';
 import logger from '../../utils/logger';
+import { tryGetOrgId } from './org-context';
+
+const GLOBAL_ORG_ID = '';
 
 // SecretListEntry and SecretPutOptions are defined inside the gateway's
 // secrets module but not re-exported from its public barrel. Derive them
@@ -73,14 +83,31 @@ export class PostgresSecretStore implements WritableSecretStore {
       return null;
     }
 
+    const orgId = tryGetOrgId();
     const sql = getDb();
-    const rows = await sql<{ ciphertext: string }>`
-      SELECT ciphertext
-      FROM agent_secrets
-      WHERE name = ${name}
-        AND (expires_at IS NULL OR expires_at > now())
-      LIMIT 1
-    `;
+
+    // Per-org row wins; fall through to the empty-string "global" bucket
+    // (system env secrets and pre-org-scoping rows). ORDER BY puts the
+    // per-org row first when both exist.
+    const rows = orgId
+      ? await sql<{ ciphertext: string }>`
+          SELECT ciphertext
+          FROM agent_secrets
+          WHERE name = ${name}
+            AND organization_id IN (${orgId}, ${GLOBAL_ORG_ID})
+            AND (expires_at IS NULL OR expires_at > now())
+          ORDER BY organization_id DESC
+          LIMIT 1
+        `
+      : await sql<{ ciphertext: string }>`
+          SELECT ciphertext
+          FROM agent_secrets
+          WHERE name = ${name}
+            AND organization_id = ${GLOBAL_ORG_ID}
+            AND (expires_at IS NULL OR expires_at > now())
+          LIMIT 1
+        `;
+
     const ciphertext = rows[0]?.ciphertext;
     if (!ciphertext) return null;
 
@@ -98,12 +125,13 @@ export class PostgresSecretStore implements WritableSecretStore {
   async put(name: string, value: string, options?: SecretPutOptions): Promise<SecretRef> {
     const ciphertext = encrypt(value);
     const expiresAt = options?.ttlSeconds ? new Date(Date.now() + options.ttlSeconds * 1000) : null;
+    const orgId = tryGetOrgId() ?? GLOBAL_ORG_ID;
 
     const sql = getDb();
     await sql`
-      INSERT INTO agent_secrets (name, ciphertext, expires_at, created_at, updated_at)
-      VALUES (${name}, ${ciphertext}, ${expiresAt}, now(), now())
-      ON CONFLICT (name) DO UPDATE SET
+      INSERT INTO agent_secrets (organization_id, name, ciphertext, expires_at, created_at, updated_at)
+      VALUES (${orgId}, ${name}, ${ciphertext}, ${expiresAt}, now(), now())
+      ON CONFLICT (organization_id, name) DO UPDATE SET
         ciphertext = EXCLUDED.ciphertext,
         expires_at = EXCLUDED.expires_at,
         updated_at = now()
@@ -114,24 +142,37 @@ export class PostgresSecretStore implements WritableSecretStore {
 
   async delete(nameOrRef: string): Promise<void> {
     const name = resolveName(nameOrRef);
+    const orgId = tryGetOrgId() ?? GLOBAL_ORG_ID;
     const sql = getDb();
-    await sql`DELETE FROM agent_secrets WHERE name = ${name}`;
+    await sql`
+      DELETE FROM agent_secrets
+      WHERE name = ${name} AND organization_id = ${orgId}
+    `;
   }
 
   async list(prefix?: string): Promise<SecretListEntry[]> {
+    const orgId = tryGetOrgId();
     const sql = getDb();
+
+    // Without org context, list only the global bucket. With org context,
+    // list per-org rows; global rows are deployment-level and not
+    // surfaced to org-scoped callers to keep tenancy boundaries clean.
+    const targetOrgId = orgId ?? GLOBAL_ORG_ID;
+
     const rows = prefix
       ? await sql<{ name: string; updated_at: Date }>`
           SELECT name, updated_at
           FROM agent_secrets
-          WHERE name LIKE ${escapeLikePrefix(prefix) + '%'} ESCAPE '\'
+          WHERE organization_id = ${targetOrgId}
+            AND name LIKE ${escapeLikePrefix(prefix) + '%'} ESCAPE '\'
             AND (expires_at IS NULL OR expires_at > now())
           ORDER BY name ASC
         `
       : await sql<{ name: string; updated_at: Date }>`
           SELECT name, updated_at
           FROM agent_secrets
-          WHERE expires_at IS NULL OR expires_at > now()
+          WHERE organization_id = ${targetOrgId}
+            AND (expires_at IS NULL OR expires_at > now())
           ORDER BY name ASC
         `;
 

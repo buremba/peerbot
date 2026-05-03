@@ -235,7 +235,8 @@ CREATE TABLE public.agent_secrets (
     ciphertext text NOT NULL,
     expires_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    organization_id text DEFAULT ''::text NOT NULL
 );
 
 
@@ -2508,7 +2509,7 @@ ALTER TABLE ONLY public.agent_grants
 --
 
 ALTER TABLE ONLY public.agent_secrets
-    ADD CONSTRAINT agent_secrets_pkey PRIMARY KEY (name);
+    ADD CONSTRAINT agent_secrets_pkey PRIMARY KEY (organization_id, name);
 
 
 --
@@ -3164,6 +3165,13 @@ CREATE INDEX agent_grants_agent_id_idx ON public.agent_grants USING btree (agent
 --
 
 CREATE INDEX agent_secrets_expires_at_idx ON public.agent_secrets USING btree (expires_at) WHERE (expires_at IS NOT NULL);
+
+
+--
+-- Name: agent_secrets_org_id_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX agent_secrets_org_id_idx ON public.agent_secrets USING btree (organization_id);
 
 
 --

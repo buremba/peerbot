@@ -75,15 +75,25 @@ function resolveOwlettoLayout(exampleDir: string): ExampleOwlettoLayout | null {
   return { org, modelsPath };
 }
 
-// ── Types — imported from Owletto schema ────────────────────────────
+// ── Types — minimal subset of the Owletto schema ─────────────────────
 
-// Re-use the canonical types from the sibling owletto repo.
-// If the owletto package is not available (e.g. CI), these minimal
-// aliases cover the fields we actually read.
-type EntityYaml =
-  import("../../owletto/packages/cli/src/lib/schema.ts").EntitySchema;
-type WatcherYaml =
-  import("../../owletto/packages/cli/src/lib/schema.ts").WatcherSchema;
+// We previously type-imported `EntitySchema`/`WatcherSchema` from a sibling
+// `../../owletto` checkout. That path doesn't exist on most machines (fresh
+// clones, CI), so the script wouldn't typecheck. Inline only the fields this
+// script actually reads — keeps the script self-contained without making the
+// whole monorepo depend on a sibling repo.
+interface EntityYaml {
+  type: "entity";
+  name: string;
+}
+
+interface WatcherYaml {
+  type: "watcher";
+  name: string;
+  schedule: string;
+  prompt: string;
+  extraction_schema?: unknown;
+}
 
 // ── TOML types ───────────────────────────────────────────────────────
 

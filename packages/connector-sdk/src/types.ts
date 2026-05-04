@@ -239,35 +239,6 @@ export interface FeedAuthSchema {
 }
 
 /**
- * Scoring configuration for cross-platform content ranking
- */
-export interface ScoringConfig {
-  /**
-   * Weight for engagement_score percentile (0-1)
-   * Higher value prioritizes items with more upvotes/reactions/engagement
-   */
-  engagement_weight: number;
-
-  /**
-   * Weight for inverse rating (100 - rating*20) (0-1)
-   * Higher value prioritizes lower-rated content
-   */
-  inverse_rating_weight: number;
-
-  /**
-   * Weight for content length percentile (0-1)
-   * Higher value prioritizes longer, more detailed content
-   */
-  content_length_weight: number;
-
-  /**
-   * Cross-platform multiplier (0-1)
-   * Used to de-prioritize or boost this feed relative to others
-   */
-  platform_weight: number;
-}
-
-/**
  * Main feed interface
  */
 export interface IFeed {
@@ -296,12 +267,6 @@ export interface IFeed {
    * TypeBox schema for validating feed options
    */
   readonly optionsSchema: TObject;
-
-  /**
-   * Default scoring configuration for this feed type
-   * @deprecated Use defaultScoringFormula instead
-   */
-  readonly defaultScoringConfig: ScoringConfig;
 
   /**
    * Default SQL formula to calculate normalized score (0-100)

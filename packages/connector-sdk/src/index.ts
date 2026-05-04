@@ -170,7 +170,6 @@ export type {
   FeedSyncResult,
   IFeed,
   ParentFeedDefinition,
-  ScoringConfig,
   SearchResult,
   SessionState,
 } from './types.js';

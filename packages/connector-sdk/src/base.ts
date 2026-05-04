@@ -10,7 +10,6 @@ import type {
   FeedSyncResult,
   IFeed,
   ParentFeedDefinition,
-  ScoringConfig,
   SessionState,
 } from './types.js';
 
@@ -34,7 +33,6 @@ export abstract class BaseFeed implements IFeed {
   abstract readonly apiType: 'api' | 'browser';
   abstract readonly feedMode: 'entity' | 'search';
   abstract readonly optionsSchema: TObject;
-  abstract readonly defaultScoringConfig: ScoringConfig;
   abstract readonly defaultScoringFormula: string;
 
   readonly authSchema: FeedAuthSchema = { methods: [{ type: 'none' }] };

@@ -167,10 +167,7 @@ export function createOpenClawTools(
     }) => ({
       command: params.command,
       cwd: params.cwd,
-      env: stripEnv(
-        params.env,
-        SENSITIVE_WORKER_ENV_KEYS
-      ) as NodeJS.ProcessEnv,
+      env: stripEnv(params.env, SENSITIVE_WORKER_ENV_KEYS) as NodeJS.ProcessEnv,
     }),
   };
   const bash = wrapBashWithProxyHint(createBashTool(cwd, bashToolOpts));

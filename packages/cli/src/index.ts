@@ -5,7 +5,6 @@ import { fileURLToPath } from "node:url";
 import chalk from "chalk";
 import { Command } from "commander";
 import { GATEWAY_DEFAULT_URL } from "./internal/index.js";
-import { maybePrintUpdateNotice } from "./internal/version-check.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -72,8 +71,6 @@ Memory:
   memory configure         Wire OpenClaw config
   memory seed [path]       Provision a memory workspace
   memory init              Wire agents to a memory MCP endpoint
-
-Disable update checks: LOBU_DISABLE_UPDATE_CHECK=1
 `
   );
 
@@ -327,24 +324,16 @@ Disable update checks: LOBU_DISABLE_UPDATE_CHECK=1
     .option("--port <port>", "Gateway port (overrides GATEWAY_PORT in .env)")
     .option("--quiet", "Suppress startup banner; raise log level to warn")
     .option("--verbose", "Lower log level to debug")
-    .option(
-      "--log-level <level>",
-      "Forwarded as LOG_LEVEL/LOBU_LOG_LEVEL to the bundle"
-    )
-    .allowUnknownOption(true)
-    .helpOption(false)
+    .option("--log-level <level>", "Forwarded as LOG_LEVEL to the bundle")
     .action(
-      async (
-        options: {
-          port?: string;
-          quiet?: boolean;
-          verbose?: boolean;
-          logLevel?: string;
-        },
-        cmd: Command
-      ) => {
+      async (options: {
+        port?: string;
+        quiet?: boolean;
+        verbose?: boolean;
+        logLevel?: string;
+      }) => {
         const { devCommand } = await import("./commands/dev.js");
-        await devCommand(process.cwd(), cmd.args, options);
+        await devCommand(process.cwd(), [], options);
       }
     );
 
@@ -924,10 +913,6 @@ Disable update checks: LOBU_DISABLE_UPDATE_CHECK=1
         await memoryBrowserAuthCommand(options);
       }
     );
-
-  // Background-fired update check. Don't await; we don't want to delay
-  // the command, and the result prints to stderr after the command exits.
-  void maybePrintUpdateNotice(version).catch(() => undefined);
 
   try {
     await program.parseAsync(argv);

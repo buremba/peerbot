@@ -68,37 +68,16 @@ async function loadProjectEnv(cwd: string): Promise<Record<string, string>> {
 
 async function checkDatabaseAndPgvector(databaseUrl: string): Promise<Check[]> {
   const results: Check[] = [];
-  let postgres: any;
-  try {
-    postgres = (await import("postgres")).default;
-  } catch (err) {
-    results.push({
-      name: "postgres-driver",
-      status: "fail",
-      detail: `postgres package missing: ${(err as Error).message}`,
-    });
-    return results;
-  }
-
-  let sql: any;
-  try {
-    sql = postgres(databaseUrl, {
-      connect_timeout: 5,
-      max: 1,
-      idle_timeout: 1,
-      onnotice: () => undefined,
-    });
-  } catch (err) {
-    results.push({
-      name: "database",
-      status: "fail",
-      detail: `cannot init driver: ${(err as Error).message}`,
-    });
-    return results;
-  }
+  const { default: postgres } = await import("postgres");
+  const sql = postgres(databaseUrl, {
+    connect_timeout: 5,
+    max: 1,
+    idle_timeout: 1,
+    onnotice: () => undefined,
+  });
 
   try {
-    const rows = await sql`SELECT version() AS version`;
+    const rows = await sql<{ version: string }[]>`SELECT version() AS version`;
     const version = String(rows[0]?.version ?? "").split(" on ")[0];
     results.push({
       name: "database",
@@ -111,17 +90,14 @@ async function checkDatabaseAndPgvector(databaseUrl: string): Promise<Check[]> {
       status: "fail",
       detail: `connect failed: ${(err as Error).message}`,
     });
-    try {
-      await sql.end({ timeout: 1 });
-    } catch {
-      // ignore
-    }
+    await sql.end({ timeout: 1 }).catch(() => undefined);
     return results;
   }
 
   try {
-    const rows =
-      await sql`SELECT extname, extversion FROM pg_extension WHERE extname = 'vector'`;
+    const rows = await sql<
+      { extname: string; extversion: string }[]
+    >`SELECT extname, extversion FROM pg_extension WHERE extname = 'vector'`;
     if (rows.length === 0) {
       results.push({
         name: "pgvector",
@@ -143,11 +119,7 @@ async function checkDatabaseAndPgvector(databaseUrl: string): Promise<Check[]> {
     });
   }
 
-  try {
-    await sql.end({ timeout: 5 });
-  } catch {
-    // ignore
-  }
+  await sql.end({ timeout: 5 }).catch(() => undefined);
   return results;
 }
 

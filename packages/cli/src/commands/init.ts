@@ -57,7 +57,18 @@ export async function initCommand(
   const cliVersion = await getCliVersion();
   const useDefaults = options.yes === true;
 
-  // ── Project name + target dir ────────────────────────────────────────
+  // Catch flag combos that can't satisfy a prompt before we mkdir anything.
+  if (
+    useDefaults &&
+    options.memory === "owletto-custom" &&
+    !options.memoryUrl
+  ) {
+    console.error(
+      chalk.red("\n✗ --memory owletto-custom requires --memory-url <url>.\n")
+    );
+    process.exit(1);
+  }
+
   const here = options.here || projectNameArg === ".";
   let projectName: string;
   let projectDir: string;
@@ -138,7 +149,6 @@ export async function initCommand(
     }
   }
 
-  // ── Gateway port + public URL ────────────────────────────────────────
   const gatewayPort = await promptOrDefault({
     flag: options.port,
     useDefaults,
@@ -175,7 +185,6 @@ export async function initCommand(
       }),
   });
 
-  // ── Network policy ───────────────────────────────────────────────────
   const networkPolicy = (await promptOrDefault({
     flag: options.network,
     useDefaults,
@@ -202,7 +211,6 @@ export async function initCommand(
       }),
   })) as NetworkChoice;
 
-  // ── Provider ─────────────────────────────────────────────────────────
   const providerSkills = loadProviderRegistry();
   const providerChoices = [
     { name: "Skip — I'll add a provider later", value: "" },
@@ -251,7 +259,6 @@ export async function initCommand(
     }
   }
 
-  // ── Platform ─────────────────────────────────────────────────────────
   const platformChoices = [
     { name: "Skip — I'll connect a platform later", value: "" },
     { name: "Telegram", value: "telegram" },
@@ -287,7 +294,6 @@ export async function initCommand(
         ? scaffoldPlatformConfigPlaceholders(platformType as PlatformChoice)
         : { platformConfig: {}, platformSecrets: [] };
 
-  // ── Memory ───────────────────────────────────────────────────────────
   const memoryChoice = (await promptOrDefault({
     flag: options.memory,
     useDefaults,
@@ -317,22 +323,13 @@ export async function initCommand(
   } else if (memoryChoice === "owletto-custom") {
     owlettoUrl =
       options.memoryUrl ??
-      (useDefaults
-        ? ""
-        : await input({
-            message: "Lobu memory MCP URL:",
-            validate: (v: string) => (v ? true : "URL is required"),
-          }));
-    if (!owlettoUrl) {
-      console.log(
-        chalk.red("\n✗ --memory owletto-custom requires --memory-url <url>.\n")
-      );
-      process.exit(1);
-    }
+      (await input({
+        message: "Lobu memory MCP URL:",
+        validate: (v: string) => (v ? true : "URL is required"),
+      }));
     envSecrets.push({ envVar: "MEMORY_URL", value: owlettoUrl });
   }
 
-  // ── Observability ────────────────────────────────────────────────────
   const otelEndpoint = await promptOrDefault({
     flag: options.otelEndpoint,
     useDefaults,
@@ -352,8 +349,6 @@ export async function initCommand(
     });
   }
 
-  // Sentry now defaults to OFF — opt-in only. Use --sentry to enable
-  // non-interactively, --no-sentry to suppress the prompt.
   let enableSentry = false;
   if (options.sentry === true) {
     enableSentry = true;
@@ -375,7 +370,6 @@ export async function initCommand(
     });
   }
 
-  // ── Compute network domains ──────────────────────────────────────────
   let allowedDomains: string;
   let disallowedDomains: string;
   if (networkPolicy === "open") {
@@ -518,95 +512,38 @@ export async function initCommand(
 
     spinner.succeed("Project created successfully!");
 
-    // ── Next steps ───────────────────────────────────────────────────
-    const cdHint = here ? "" : `cd ${projectName}\n     `;
     const gatewayUrl = `http://localhost:${gatewayPort}`;
-
     console.log(chalk.green("\n✓ Lobu initialized!\n"));
     console.log(chalk.bold("Next steps:\n"));
-
+    let n = 1;
     if (!here) {
-      console.log(chalk.cyan("  1. Navigate to your project:"));
-      console.log(chalk.dim(`     cd ${projectName}\n`));
+      console.log(chalk.cyan(`  ${n++}. cd ${projectName}`));
     }
-
-    const stepNum = (n: number) => (here ? n - 1 : n);
-    console.log(chalk.cyan(`  ${stepNum(2)}. Review your configuration:`));
+    console.log(
+      chalk.cyan(`  ${n++}. Set DATABASE_URL in .env (Postgres + pgvector):`)
+    );
     console.log(
       chalk.dim(
-        "     - lobu.toml                    (agents, providers, skills, network)"
+        "       docker run -d --name lobu-pg -p 5432:5432 -e POSTGRES_PASSWORD=lobu pgvector/pgvector:pg16"
       )
     );
     console.log(
       chalk.dim(
-        `     - agents/${projectName}/   (IDENTITY.md, SOUL.md, USER.md, skills/)`
+        "       DATABASE_URL=postgresql://postgres:lobu@localhost:5432/postgres"
       )
     );
-    console.log(
-      chalk.dim(
-        "     - skills/                      (shared skills — all agents)"
-      )
-    );
-    if (includeOwlettoMemory) {
-      console.log(
-        chalk.dim("     - models/                      (memory model files)")
-      );
-      console.log(
-        chalk.dim("     - data/                        (memory seed data)")
-      );
-    }
-    console.log(chalk.dim("     - .env                         (secrets)\n"));
-
-    console.log(chalk.cyan(`  ${stepNum(3)}. Set DATABASE_URL in .env:`));
-    console.log(
-      chalk.dim(
-        "     Lobu connects to a user-provided Postgres with pgvector. Pick one:"
-      )
-    );
-    console.log(
-      chalk.dim("       Docker:  docker run -d --name lobu-pg -p 5432:5432 \\")
-    );
-    console.log(
-      chalk.dim(
-        "                  -e POSTGRES_PASSWORD=lobu pgvector/pgvector:pg16"
-      )
-    );
-    console.log(
-      chalk.dim(
-        "                DATABASE_URL=postgresql://postgres:lobu@localhost:5432/postgres"
-      )
-    );
-    console.log(
-      chalk.dim(
-        "       macOS:   brew install postgresql && brew services start postgresql"
-      )
-    );
-    console.log(
-      chalk.dim(
-        "       Cloud:   any managed Postgres with the pgvector extension\n"
-      )
-    );
-
     if (owlettoUrl) {
-      console.log(chalk.cyan("  Lobu memory:"));
-      console.log(chalk.dim(`     ${owlettoUrl}`));
       console.log(
-        chalk.dim(
-          "     Run `lobu memory init` to configure local MCP clients.\n"
-        )
+        chalk.cyan(`  ${n++}. Wire memory clients: lobu memory init`)
       );
     }
-    console.log(chalk.cyan(`  ${stepNum(4)}. Start the services:`));
-    console.log(chalk.dim(`     ${cdHint}lobu run\n`));
-    console.log(chalk.cyan(`  ${stepNum(5)}. Open the API docs:`));
-    console.log(chalk.dim(`     ${gatewayUrl}/api/docs\n`));
-    console.log(chalk.cyan(`  ${stepNum(6)}. Build with a coding agent:`));
+    console.log(chalk.cyan(`  ${n++}. Start the stack: lobu run`));
+    console.log(chalk.cyan(`  ${n++}. API docs: ${gatewayUrl}/api/docs`));
     console.log(
       chalk.dim(
-        "     Ask Codex or Claude Code to read AGENTS.md, lobu.toml, and agents/*/{IDENTITY,SOUL,USER}.md"
+        "\n  See README.md for layout, AGENTS.md for the agent contract.\n"
       )
     );
-    console.log(chalk.dim("     Optional external skill: lobu-builder\n"));
   } catch (error) {
     spinner.fail("Failed to create project");
     throw error;

@@ -1,3 +1,5 @@
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { createInterface } from "node:readline";
 import chalk from "chalk";
 import {
@@ -7,9 +9,43 @@ import {
   resolveContext,
   resolveGatewayUrl,
 } from "../internal/index.js";
-import { getLastThread, setLastThread } from "../internal/threads.js";
+import { LOBU_CONFIG_DIR } from "../internal/context.js";
 import { isLoadError, loadConfig } from "../config/loader.js";
 import { renderMarkdown } from "../utils/markdown.js";
+
+const THREADS_FILE = join(LOBU_CONFIG_DIR, "threads.json");
+
+async function getLastThread(
+  context: string,
+  agent: string
+): Promise<string | undefined> {
+  try {
+    const raw = await readFile(THREADS_FILE, "utf-8");
+    const parsed = JSON.parse(raw) as Record<string, string>;
+    return parsed[`${context}|${agent}`];
+  } catch {
+    return undefined;
+  }
+}
+
+async function setLastThread(
+  context: string,
+  agent: string,
+  threadId: string
+): Promise<void> {
+  let store: Record<string, string> = {};
+  try {
+    const raw = await readFile(THREADS_FILE, "utf-8");
+    store = JSON.parse(raw) as Record<string, string>;
+  } catch {
+    // first-write or corrupt; reset
+  }
+  store[`${context}|${agent}`] = threadId;
+  await mkdir(LOBU_CONFIG_DIR, { recursive: true });
+  await writeFile(THREADS_FILE, JSON.stringify(store, null, 2), {
+    mode: 0o600,
+  });
+}
 
 export interface ChatOptions {
   agent?: string;
@@ -367,31 +403,6 @@ async function runRepl(
     const trimmed = line.trim();
     if (!trimmed) continue;
     if (trimmed === "/exit" || trimmed === "/quit") break;
-    if (trimmed === "/help") {
-      console.log(
-        chalk.dim(
-          "  /exit   Leave the REPL\n  /thread Show current thread id\n  /clear  Start a new thread\n"
-        )
-      );
-      continue;
-    }
-    if (trimmed === "/thread") {
-      console.log(chalk.dim(`  thread: ${session.threadId ?? "(none)"}\n`));
-      continue;
-    }
-    if (trimmed === "/clear") {
-      const fresh = await createSession(gatewayUrl, authToken, {
-        agentId: session.agentId,
-        forceNew: true,
-      });
-      session.token = fresh.token;
-      session.threadId = fresh.threadId;
-      if (opts.contextName && fresh.threadId) {
-        await setLastThread(opts.contextName, fresh.agentId, fresh.threadId);
-      }
-      console.log(chalk.dim("  new thread started.\n"));
-      continue;
-    }
 
     const sseController = new AbortController();
     const streaming = streamResponse(sseUrl, session.token, sseController, {

@@ -89,13 +89,10 @@ export async function devCommand(
 
   spinner.succeed("Environment ready");
 
-  // CLI flag wins, then env, then default
   const port =
     options.port ?? mergedEnv.GATEWAY_PORT ?? mergedEnv.PORT ?? "8787";
   const gatewayUrl = `http://localhost:${port}`;
 
-  // Pre-flight: is the port already in use? Catches the common
-  // "EADDRINUSE" foot-gun before the bundle boots and dumps a stack.
   const portFree = await isPortFree(Number(port));
   if (!portFree) {
     console.error(chalk.red(`\n  Port ${port} is already in use.`));
@@ -137,7 +134,7 @@ export async function devCommand(
       process.env.LOBU_DEV_PROJECT_PATH || envVars.LOBU_DEV_PROJECT_PATH || cwd,
     PORT: port,
     GATEWAY_PORT: port,
-    ...(logLevel ? { LOG_LEVEL: logLevel, LOBU_LOG_LEVEL: logLevel } : {}),
+    ...(logLevel ? { LOG_LEVEL: logLevel } : {}),
   };
 
   const child = spawn("node", [bundlePath, ...passthroughArgs], {

@@ -1,6 +1,6 @@
 export * from "./base-deployment-manager.js";
 export * from "./deployment-utils.js";
-export * from "./impl/index.js";
+export * from "./impl/embedded-deployment.js";
 
 import { createLogger, moduleRegistry } from "@lobu/core";
 import type { ProviderCatalogService } from "../auth/provider-catalog.js";
@@ -16,7 +16,7 @@ import type {
   OrchestratorConfig,
 } from "./base-deployment-manager.js";
 import { buildModuleEnvVars } from "./deployment-utils.js";
-import { EmbeddedDeploymentManager } from "./impl/index.js";
+import { EmbeddedDeploymentManager } from "./impl/embedded-deployment.js";
 import { MessageConsumer } from "./message-consumer.js";
 
 const logger = createLogger("orchestrator");

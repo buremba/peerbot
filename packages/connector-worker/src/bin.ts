@@ -10,9 +10,9 @@
 
 import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
+import type { Env } from '@lobu/connector-sdk';
 import { startDaemon } from './daemon/index.js';
 import { assertExternalDepsResolvable } from './runtime-deps.js';
-import type { Env } from './types.js';
 
 function printUsage(): void {
   console.log(`

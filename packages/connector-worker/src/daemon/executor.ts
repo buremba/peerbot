@@ -5,7 +5,7 @@
  * Generates embeddings and streams results.
  */
 
-import type { Checkpoint, Content } from '@lobu/connector-sdk';
+import type { Checkpoint, Content, Env } from '@lobu/connector-sdk';
 import { generateEmbedding } from '../embeddings.js';
 import {
   executeCompiledConnector,
@@ -13,7 +13,6 @@ import {
   normalizeEventEnvelope,
 } from '../executor/runtime.js';
 import { SubprocessExecutor } from '../executor/subprocess.js';
-import type { Env } from '../types.js';
 import type { ContentItem, ExecutorClient, PollResponse } from './client.js';
 
 export interface ExecutorConfig {

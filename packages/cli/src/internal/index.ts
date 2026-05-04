@@ -1,8 +1,6 @@
 export {
-  DEFAULT_MEMORY_URL,
   addContext,
   findContextByMemoryUrl,
-  findContextByUrl,
   getActiveOrg,
   getCurrentContextName,
   getMemoryUrl,
@@ -12,7 +10,6 @@ export {
   setCurrentContext,
   setMemoryUrl,
 } from "./context.js";
-export type { ResolvedContext } from "./context.js";
 export {
   type Credentials,
   type OAuthClientInfo,
@@ -24,9 +21,6 @@ export {
 } from "./credentials.js";
 export { parseEnvContent } from "./env-file.js";
 export {
-  type OrganizationInfo,
-  ApiClient,
-  ApiClientError,
   apiBaseFromContextUrl,
   listOrganizations,
   resolveApiClient,

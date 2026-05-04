@@ -1,0 +1,66 @@
+name: Sync Atlas agent
+
+# Dogfoods the "agent definitions live in git, sync via GitHub Actions"
+# pattern documented at docs/guides/sync-from-github.md.
+#
+# - PRs that touch examples/atlas/** run `lobu apply --dry-run` so reviewers
+#   see the planned diff inline.
+# - Pushes to main run `lobu apply --yes` to converge the cloud org.
+#
+# Skipped when LOBU_TOKEN is not configured (e.g. fork PRs); the job
+# logs a notice and exits 0 so it doesn't gate other checks.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "examples/atlas/**"
+      - ".github/workflows/lobu-apply-atlas.yml"
+  pull_request:
+    paths:
+      - "examples/atlas/**"
+      - ".github/workflows/lobu-apply-atlas.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lobu-apply-atlas-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Skip if no token
+        id: gate
+        env:
+          TOKEN: ${{ secrets.LOBU_TOKEN }}
+        run: |
+          if [ -z "${TOKEN:-}" ]; then
+            echo "LOBU_TOKEN not set — skipping (expected for fork PRs)."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: oven-sh/setup-bun@v2
+        if: steps.gate.outputs.skip != 'true'
+        with:
+          bun-version: 1.3.5
+
+      - name: Apply
+        if: steps.gate.outputs.skip != 'true'
+        working-directory: examples/atlas
+        env:
+          LOBU_TOKEN: ${{ secrets.LOBU_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.LOBU_DOGFOOD_ANTHROPIC_API_KEY }}
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            bunx --bun @lobu/cli apply --dry-run
+          else
+            bunx --bun @lobu/cli apply --yes
+          fi

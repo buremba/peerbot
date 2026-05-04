@@ -41,13 +41,13 @@ export interface DeviceAuthorization {
   interval: number;
 }
 
-export interface TokenResponse {
+interface TokenResponse {
   accessToken: string;
   refreshToken?: string;
   expiresIn?: number;
 }
 
-export interface UserInfo {
+interface UserInfo {
   sub: string;
   email?: string;
   name?: string;
@@ -161,7 +161,7 @@ export async function startDeviceAuthorization(
   };
 }
 
-export type DevicePollResult =
+type DevicePollResult =
   | { status: "pending"; bumpInterval: boolean }
   | { status: "complete"; tokens: TokenResponse }
   | { status: "error"; code: string; message: string };

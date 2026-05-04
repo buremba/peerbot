@@ -6,14 +6,14 @@ import {
 } from "./context.js";
 import { getToken, loadCredentials } from "./credentials.js";
 
-export interface ApiClientOptions {
+interface ApiClientOptions {
   context?: string;
   org?: string;
   apiUrl?: string;
   fetchImpl?: typeof fetch;
 }
 
-export interface ResolvedApiClient {
+interface ResolvedApiClient {
   client: ApiClient;
   contextName: string;
   apiBaseUrl: string;
@@ -21,12 +21,12 @@ export interface ResolvedApiClient {
   token: string;
 }
 
-export interface OrganizationInfo {
+interface OrganizationInfo {
   slug: string;
   name?: string;
 }
 
-export class ApiClientError extends Error {
+class ApiClientError extends Error {
   constructor(
     message: string,
     public readonly status?: number,

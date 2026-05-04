@@ -10,15 +10,6 @@ interface PlatformPromptResult {
   platformSecrets: Array<{ envVar: string; value: string }>;
 }
 
-export const PLATFORM_LABELS: Record<string, string> = {
-  telegram: "Telegram",
-  slack: "Slack",
-  discord: "Discord",
-  whatsapp: "WhatsApp",
-  teams: "Microsoft Teams",
-  gchat: "Google Chat",
-};
-
 export async function promptPlatformConfig(
   platform: string
 ): Promise<PlatformPromptResult> {

@@ -16,7 +16,7 @@
     },
     "packages/agent-worker": {
       "name": "@lobu/worker",
-      "version": "6.0.0",
+      "version": "6.0.1",
       "bin": {
         "lobu-worker": "./dist/index.js",
       },
@@ -59,7 +59,7 @@
     },
     "packages/cli": {
       "name": "@lobu/cli",
-      "version": "6.0.0",
+      "version": "6.0.1",
       "bin": {
         "lobu": "bin/lobu.js",
       },
@@ -93,7 +93,6 @@
         "@scalar/hono-api-reference": "^0.9.39",
         "@sentry/node": "^10.23.0",
         "@sinclair/typebox": "^0.34.41",
-        "@slack/socket-mode": "^2.0.6",
         "ajv": "^8.17.1",
         "ajv-formats": "^3.0.1",
         "better-auth": "^1.4.10",
@@ -137,7 +136,7 @@
     },
     "packages/connector-sdk": {
       "name": "@lobu/connector-sdk",
-      "version": "5.0.0",
+      "version": "6.0.1",
       "dependencies": {
         "@sinclair/typebox": "^0.34.41",
         "ky": "^1.14.0",
@@ -157,7 +156,7 @@
     },
     "packages/connector-worker": {
       "name": "@lobu/connector-worker",
-      "version": "1.6.0",
+      "version": "6.0.1",
       "bin": {
         "connector-worker": "./dist/bin.js",
       },
@@ -177,7 +176,7 @@
     },
     "packages/connectors": {
       "name": "@lobu/connectors",
-      "version": "1.6.0",
+      "version": "6.0.1",
       "dependencies": {
         "@lobu/connector-sdk": "workspace:*",
         "baileys": "7.0.0-rc.9",
@@ -190,7 +189,7 @@
     },
     "packages/core": {
       "name": "@lobu/core",
-      "version": "6.0.0",
+      "version": "6.0.1",
       "dependencies": {
         "@opentelemetry/api": "^1.9.0",
         "@opentelemetry/exporter-trace-otlp-grpc": "^0.57.0",
@@ -209,7 +208,7 @@
     },
     "packages/embeddings": {
       "name": "@lobu/embeddings",
-      "version": "1.6.0",
+      "version": "6.0.1",
       "dependencies": {
         "@hono/node-server": "^1.13.7",
         "@xenova/transformers": "^2.17.2",
@@ -240,7 +239,7 @@
     },
     "packages/openclaw-plugin": {
       "name": "@lobu/openclaw-plugin",
-      "version": "5.0.0",
+      "version": "6.0.1",
       "devDependencies": {
         "@types/node": "^20.10.0",
         "postgres": "^3.4.7",
@@ -250,35 +249,35 @@
     },
     "packages/owletto-connectors": {
       "name": "@lobu/owletto-connectors",
-      "version": "1.6.0",
+      "version": "6.0.1",
       "dependencies": {
         "@lobu/connectors": "workspace:*",
       },
     },
     "packages/owletto-embeddings": {
       "name": "@lobu/owletto-embeddings",
-      "version": "1.6.0",
+      "version": "6.0.1",
       "dependencies": {
         "@lobu/embeddings": "workspace:*",
       },
     },
     "packages/owletto-openclaw": {
       "name": "@lobu/owletto-openclaw",
-      "version": "6.0.0",
+      "version": "6.0.1",
       "dependencies": {
         "@lobu/openclaw-plugin": "workspace:*",
       },
     },
     "packages/owletto-sdk": {
       "name": "@lobu/owletto-sdk",
-      "version": "6.0.0",
+      "version": "6.0.1",
       "dependencies": {
         "@lobu/connector-sdk": "workspace:*",
       },
     },
     "packages/owletto-worker": {
       "name": "@lobu/owletto-worker",
-      "version": "1.6.0",
+      "version": "6.0.1",
       "bin": {
         "owletto-worker": "./bin/owletto-worker.js",
       },
@@ -311,7 +310,6 @@
         "@scalar/hono-api-reference": "^0.9.39",
         "@sentry/node": "^9.0.0",
         "@sinclair/typebox": "^0.34.41",
-        "@slack/socket-mode": "^2.0.6",
         "ajv": "^8.17.1",
         "ajv-formats": "^3.0.1",
         "better-auth": "^1.4.10",
@@ -1618,8 +1616,6 @@
     "@sindresorhus/is": ["@sindresorhus/is@4.6.0", "", {}, "sha512-t09vSN3MdfsyCHoFcTRCH/iUtG7OJ0CsjzB8cjAmKc/va/kIgeDI/TxsigdncE/4be734m0cvIYwNaV4i2XqAw=="],
 
     "@slack/logger": ["@slack/logger@4.0.1", "", { "dependencies": { "@types/node": ">=18" } }, "sha512-6cmdPrV/RYfd2U0mDGiMK8S7OJqpCTm7enMLRR3edccsPX8j7zXTLnaEF4fhxxJJTAIOil6+qZrnUPTuaLvwrQ=="],
-
-    "@slack/socket-mode": ["@slack/socket-mode@2.0.6", "", { "dependencies": { "@slack/logger": "^4.0.1", "@slack/web-api": "^7.15.0", "@types/node": ">=18", "@types/ws": "^8", "eventemitter3": "^5", "ws": "^8" } }, "sha512-Aj5RO3MoYVJ+b2tUjHUXuA3tiIaCUMOf1Ss5tPiz29XYVUi6qNac2A8ulcU1pUPERpXVHTmT1XW6HzQIO74daQ=="],
 
     "@slack/types": ["@slack/types@2.20.1", "", {}, "sha512-eWX2mdt1ktpn8+40iiMc404uGrih+2fxiky3zBcPjtXKj6HLRdYlmhrPkJi7JTJm8dpXR6BWVWEDBXtaWMKD6A=="],
 

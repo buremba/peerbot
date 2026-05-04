@@ -33,6 +33,11 @@ ALTER TABLE public.agent_secrets
 
 DROP INDEX IF EXISTS public.agent_secrets_org_id_idx;
 
+-- Down-step is destructive by design: collapses per-org rows back to the
+-- global namespace. The two DELETEs below pick a survivor non-deterministically
+-- when multiple orgs hold the same name (global wins first; otherwise the
+-- lexicographically-smaller org_id survives). Acceptable because rollback
+-- after multi-org writes is already lossy — there is no "right" winner.
 DELETE FROM public.agent_secrets a
 USING public.agent_secrets b
 WHERE a.name = b.name

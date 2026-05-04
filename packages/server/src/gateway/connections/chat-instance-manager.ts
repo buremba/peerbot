@@ -27,6 +27,8 @@ import {
   resolveSecretValue,
 } from "../secrets/index.js";
 import { resolveAgentOptions } from "../services/platform-helpers.js";
+import { orgContext, tryGetOrgId } from "../../lobu/stores/org-context.js";
+import { getAgentOrganizationId } from "../../lobu/stores/postgres-stores.js";
 import {
   ConversationStateStore,
   type HistoryEntry,
@@ -123,6 +125,10 @@ export class ChatInstanceManager {
 
       try {
         if (connection.status === "active") {
+          // Boot runs without an HTTP request, so AsyncLocalStorage has
+          // no orgId. startInstance() now self-binds the connection's
+          // agent org so PostgresSecretStore.get() resolves per-org
+          // refs correctly; see comment on startInstance().
           await this.startInstance(connection);
         }
       } catch (error) {
@@ -500,6 +506,31 @@ export class ChatInstanceManager {
   // --- Private ---
 
   private async startInstance(connection: PlatformConnection): Promise<void> {
+    // Multi-tenant secret resolution: PostgresSecretStore.get/put route
+    // by AsyncLocalStorage org context (see #516). Some callers reach
+    // here with org context already bound (HTTP routes via agent-routes
+    // middleware); others don't (boot-time initialize(), the public
+    // /slack/events webhook, anywhere ensureConnectionRunning() is
+    // triggered without an HTTP request). Self-binding the connection's
+    // owning org keeps per-org secret refs resolvable from every entry
+    // point — no caller has to remember.
+    const callerOrgId = tryGetOrgId();
+    if (!callerOrgId && connection.templateAgentId) {
+      const organizationId = await getAgentOrganizationId(
+        connection.templateAgentId
+      );
+      if (organizationId) {
+        return orgContext.run({ organizationId }, () =>
+          this.startInstanceUnscoped(connection)
+        );
+      }
+    }
+    return this.startInstanceUnscoped(connection);
+  }
+
+  private async startInstanceUnscoped(
+    connection: PlatformConnection
+  ): Promise<void> {
     try {
       // Resolve any `secret://` refs in the connection config to plaintext
       // values for the Chat SDK adapter. This is idempotent — addConnection

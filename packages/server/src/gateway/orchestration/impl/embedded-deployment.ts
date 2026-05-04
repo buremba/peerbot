@@ -102,6 +102,8 @@ function buildSystemdRunArgs(opts: {
     "-p",
     "IPAddressAllow=127.0.0.1",
     "-p",
+    "IPAddressAllow=::1",
+    "-p",
     "CapabilityBoundingSet=",
     "-p",
     "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6",
@@ -246,8 +248,17 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
         "Missing agentId in message payload"
       );
     }
+    // agentId is interpolated into a filesystem path and into the systemd
+    // unit name; reject anything that could escape the workspaces tree or
+    // smuggle shell metacharacters into nix-shell / systemd-run argv below.
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(agentId)) {
+      throw new OrchestratorError(
+        ErrorCode.DEPLOYMENT_CREATE_FAILED,
+        `Invalid agentId: must be 1-64 chars of [A-Za-z0-9_-]`
+      );
+    }
     const workspaceDir = path.resolve(`workspaces/${agentId}`);
-    fs.mkdirSync(workspaceDir, { recursive: true });
+    fs.mkdirSync(workspaceDir, { recursive: true, mode: 0o700 });
 
     const commonEnvVars = await this.generateEnvironmentVariables(
       username,
@@ -283,6 +294,18 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
     let spawnArgs: string[];
 
     if (nixPackages.length > 0) {
+      // Each entry is passed to `nix-shell -p`, which evaluates it as a Nix
+      // expression — `pkgs.foo; rm -rf /` would execute as a shell side
+      // effect. Restrict to bare attribute names; operators that need a
+      // richer expression should pre-build the shell.
+      for (const pkg of nixPackages) {
+        if (!/^[A-Za-z0-9._-]+$/.test(pkg)) {
+          throw new OrchestratorError(
+            ErrorCode.DEPLOYMENT_CREATE_FAILED,
+            `Invalid nix package name: ${pkg}`
+          );
+        }
+      }
       // Wrap in nix-shell so nix binaries are on PATH.
       command = "nix-shell";
       spawnArgs = [

@@ -151,12 +151,16 @@ export function registerInteractionBridge(
   // Per-connection state (avoids cross-contamination between connections)
   const handledEvents = new Set<string>();
   const activeTimers = new Set<NodeJS.Timeout>();
+  // Slack retries event_callback webhooks at ~1s/2s/5s/30s/60s/3min on
+  // missed acks; a 30s dedup window let late retries through and
+  // double-processed the event. 5min covers the full retry envelope.
+  const HANDLED_EVENT_TTL_MS = 5 * 60_000;
   function markHandled(id: string): void {
     handledEvents.add(id);
     const timer = setTimeout(() => {
       handledEvents.delete(id);
       activeTimers.delete(timer);
-    }, 30_000);
+    }, HANDLED_EVENT_TTL_MS);
     activeTimers.add(timer);
   }
 

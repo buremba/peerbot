@@ -136,10 +136,21 @@ export async function loginCommand(options: LoginOptions): Promise<void> {
     console.log();
   }
 
+  // Refuse to hand a non-https URL (e.g. javascript:, data:, file:) to the
+  // OS's `open` handler. A compromised/misconfigured discovery endpoint
+  // could otherwise redirect the user's browser into running attacker code.
+  let canOpen = false;
   try {
-    await open(verificationUrl);
+    canOpen = new URL(verificationUrl).protocol === "https:";
   } catch {
-    // The URL is printed above; opening is best-effort.
+    canOpen = false;
+  }
+  if (canOpen) {
+    try {
+      await open(verificationUrl);
+    } catch {
+      // The URL is printed above; opening is best-effort.
+    }
   }
 
   const spinner = ora("Waiting for authorization...").start();

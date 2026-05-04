@@ -236,8 +236,13 @@ export class SecretProxy {
     if (value.includes(PLACEHOLDER_PREFIX)) {
       const resolved = await this.resolveSecret(value);
       if (!resolved) {
+        // Fail closed: forwarding the literal placeholder upstream would
+        // surface it in the provider's error response (and thus in worker
+        // logs / user-facing messages), giving an attacker a stable handle
+        // to enumerate. An empty string fails the auth check upstream
+        // without exposing the ref.
         logger.warn("Failed to resolve secret placeholder");
-        return value;
+        return "";
       }
       return resolved;
     }

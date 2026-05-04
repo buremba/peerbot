@@ -813,7 +813,9 @@ function registerWatcherRunHandle(params: {
 
 function unregisterWatcherRunHandle(messageId: string): void {
   const coreServices = getLobuCoreServices();
-  coreServices?.getWatcherRunTracker().unregister(messageId);
+  const tracker = coreServices?.getWatcherRunTracker();
+  if (!tracker) return;
+  tracker.unregister(messageId);
 }
 
 export async function dispatchPendingWatcherRuns(

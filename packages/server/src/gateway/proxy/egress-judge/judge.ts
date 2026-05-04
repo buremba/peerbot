@@ -149,7 +149,7 @@ export class EgressJudge {
       return {
         verdict: "deny",
         reason: "Judge call failed; request denied",
-        source: "circuit-open",
+        source: "judge-error",
         latencyMs: Date.now() - started,
         policyHash: rule.policyHash,
         judgeName: rule.judgeName,

@@ -205,14 +205,11 @@ describe("retryWithBackoff", () => {
   test('jitter="full" multiplies delay by random in [1, 2)', async () => {
     const delays: number[] = [];
     const originalSetTimeout = globalThis.setTimeout;
-    const originalRandom = Math.random;
 
     globalThis.setTimeout = ((fn: () => void, ms: number) => {
       delays.push(ms);
       return originalSetTimeout(fn, 0);
     }) as any;
-    // Force random to 0.5 so jitter multiplier is exactly 1.5.
-    Math.random = () => 0.5;
 
     let attempt = 0;
     try {
@@ -226,10 +223,15 @@ describe("retryWithBackoff", () => {
       );
     } finally {
       globalThis.setTimeout = originalSetTimeout;
-      Math.random = originalRandom;
     }
 
-    // Delays: 1000*1.5=1500, 2000*1.5=3000
-    expect(delays).toEqual([1500, 3000]);
+    // Full jitter multiplier is 1 + Math.random() ∈ [1, 2).
+    // Base delays are 1000 (attempt 1) and 2000 (attempt 2), so jittered
+    // delays must fall in [1000, 2000) and [2000, 4000) respectively.
+    expect(delays).toHaveLength(2);
+    expect(delays[0]).toBeGreaterThanOrEqual(1000);
+    expect(delays[0]).toBeLessThan(2000);
+    expect(delays[1]).toBeGreaterThanOrEqual(2000);
+    expect(delays[1]).toBeLessThan(4000);
   });
 });

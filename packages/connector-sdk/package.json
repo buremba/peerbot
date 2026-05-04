@@ -28,8 +28,7 @@
   "dependencies": {
     "@lobu/core": "workspace:*",
     "@sinclair/typebox": "^0.34.41",
-    "ky": "^1.14.0",
-    "pino": "^10.1.0"
+    "ky": "^1.14.0"
   },
   "peerDependencies": {
     "playwright": "npm:patchright@^1.57.0"

@@ -57,10 +57,10 @@ jobs:
         working-directory: examples/atlas
         env:
           LOBU_TOKEN: ${{ secrets.LOBU_TOKEN }}
-          ANTHROPIC_API_KEY: ${{ secrets.LOBU_DOGFOOD_ANTHROPIC_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            bunx --bun @lobu/cli apply --dry-run
+            bunx --bun @lobu/cli apply --org atlas --dry-run
           else
-            bunx --bun @lobu/cli apply --yes
+            bunx --bun @lobu/cli apply --org atlas --yes
           fi

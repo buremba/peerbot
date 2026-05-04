@@ -11,7 +11,7 @@ import { createLogger } from "@lobu/core";
 import { Hono } from "hono";
 import type { AgentMetadataStore } from "../../auth/agent-metadata-store.js";
 import type { UserAgentsStore } from "../../auth/user-agents-store.js";
-import type { ChannelBindingService } from "../../channels/index.js";
+import type { ChannelBindingService } from "../../channels/binding-service.js";
 import { createTokenVerifier } from "../shared/token-verifier.js";
 import { verifySettingsSession } from "./settings-auth.js";
 

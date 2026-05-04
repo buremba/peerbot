@@ -1115,7 +1115,7 @@ export async function startGateway(config: GatewayConfig): Promise<void> {
 
   const gateway = new Gateway(config);
 
-  const { ApiPlatform } = await import("../api/index.js");
+  const { ApiPlatform } = await import("../api/platform.js");
   const apiPlatform = new ApiPlatform();
   gateway.registerPlatform(apiPlatform);
   logger.debug("API platform registered");

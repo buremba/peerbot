@@ -3,8 +3,8 @@ import {
   type CommandRegistry,
   createLogger,
 } from "@lobu/core";
-import type { ChannelBindingService } from "../channels/index.js";
-import { platformAgentId } from "../spaces/index.js";
+import type { ChannelBindingService } from "../channels/binding-service.js";
+import { platformAgentId } from "../spaces/space-resolver.js";
 
 const logger = createLogger("command-dispatcher");
 

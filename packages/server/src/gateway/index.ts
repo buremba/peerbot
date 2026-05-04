@@ -11,7 +11,7 @@ export { createGatewayApp, startGatewayServer } from "./cli/gateway.js";
 export { OAuthClient } from "./auth/oauth/client.js";
 export { CLAUDE_PROVIDER } from "./auth/oauth/providers.js";
 export { createAuthProfileLabel } from "./auth/settings/auth-profiles-manager.js";
-export { ApiPlatform, type ApiPlatformConfig } from "./api/index.js";
+export { ApiPlatform, type ApiPlatformConfig } from "./api/platform.js";
 export {
   ChatInstanceManager,
   ChatResponseBridge,

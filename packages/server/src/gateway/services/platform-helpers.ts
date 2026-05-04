@@ -10,10 +10,10 @@ import {
 } from "@lobu/core";
 import type { AgentSettingsStore } from "../auth/settings/agent-settings-store.js";
 import { resolveEffectiveModelRef } from "../auth/settings/model-selection.js";
-import type { ChannelBindingService } from "../channels/index.js";
+import type { ChannelBindingService } from "../channels/binding-service.js";
 import { buildMemoryPlugins, getInternalGatewayUrl } from "../config/index.js";
 import type { MessagePayload } from "../infrastructure/queue/queue-producer.js";
-import { platformAgentId } from "../spaces/index.js";
+import { platformAgentId } from "../spaces/space-resolver.js";
 
 const logger = createLogger("platform-helpers");
 const OWLETTO_PLUGIN_SOURCE = "@lobu/openclaw-plugin";

@@ -35,7 +35,7 @@ import { AuthProfilesManager } from "../auth/settings/auth-profiles-manager.js";
 import { ModelPreferenceStore } from "../auth/settings/model-preference-store.js";
 import { UserAuthProfileStore } from "../auth/settings/user-auth-profile-store.js";
 import { UserAgentsStore } from "../auth/user-agents-store.js";
-import { ChannelBindingService } from "../channels/index.js";
+import { ChannelBindingService } from "../channels/binding-service.js";
 import { ConversationStateStore } from "../connections/conversation-state-store.js";
 import { createGatewayStateAdapter } from "../connections/state-adapter.js";
 import { registerBuiltInCommands } from "../commands/built-in-commands.js";

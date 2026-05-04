@@ -12,7 +12,7 @@ import path from 'node:path';
 import type { Hono } from 'hono';
 import { Hono as HonoApp } from 'hono';
 import { createAuth } from '../auth';
-import { ApiPlatform } from '../gateway/api';
+import { ApiPlatform } from '../gateway/api/platform';
 import { createGatewayApp } from '../gateway/cli/gateway';
 import { ChatInstanceManager, ChatResponseBridge } from '../gateway/connections';
 import { buildGatewayConfig } from '../gateway/config/index';

@@ -8,7 +8,7 @@ import {
   type PluginConfig,
   type PluginsConfig,
 } from "@lobu/core";
-import type { AgentSettingsStore } from "../auth/settings/index.js";
+import type { AgentSettingsStore } from "../auth/settings/agent-settings-store.js";
 import { resolveEffectiveModelRef } from "../auth/settings/model-selection.js";
 import type { ChannelBindingService } from "../channels/index.js";
 import { buildMemoryPlugins, getInternalGatewayUrl } from "../config/index.js";

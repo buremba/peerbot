@@ -12,7 +12,7 @@ import { collectProviderModelOptions } from "../../auth/provider-model-options.j
 import type {
   AgentSettings,
   AgentSettingsStore,
-} from "../../auth/settings/index.js";
+} from "../../auth/settings/agent-settings-store.js";
 import type { AuthProfilesManager } from "../../auth/settings/auth-profiles-manager.js";
 import { getModelSelectionState } from "../../auth/settings/model-selection.js";
 import {

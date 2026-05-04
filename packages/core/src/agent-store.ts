@@ -26,8 +26,7 @@ import type {
  * Agent settings — configurable per agentId.
  *
  * Canonical shape. Every agent store implementation conforms to this
- * interface; the gateway re-exports it from `auth/settings/index.ts` for
- * legacy import paths.
+ * interface.
  */
 export interface AgentSettings {
   /** Display-only model reference (legacy; prefer modelSelection). */

@@ -12,10 +12,10 @@ import {
 import { AgentMetadataStore } from "../auth/agent-metadata-store.js";
 import { ApiKeyProviderModule } from "../auth/api-key-provider-module.js";
 import { BedrockProviderModule } from "../auth/bedrock/provider-module.js";
-import { ChatGPTOAuthModule } from "../auth/chatgpt/index.js";
+import { ChatGPTOAuthModule } from "../auth/chatgpt/chatgpt-oauth-module.js";
 import { ClaudeOAuthModule } from "../auth/claude/oauth-module.js";
 import { ExternalAuthClient } from "../auth/external/client.js";
-import { GeminiCliModule } from "../auth/gemini/index.js";
+import { GeminiCliModule } from "../auth/gemini/cli-module.js";
 import { McpConfigService } from "../auth/mcp/config-service.js";
 import { McpProxy } from "../auth/mcp/proxy.js";
 import { McpToolCache } from "../auth/mcp/tool-cache.js";
@@ -30,10 +30,8 @@ import { sweepExpiredRateLimits } from "../utils/rate-limiter.js";
 import { sweepExpiredGrants } from "../permissions/grant-store.js";
 import { sweepCompletedRuns } from "../infrastructure/queue/runs-queue.js";
 import { ProviderCatalogService } from "../auth/provider-catalog.js";
-import {
-  AgentSettingsStore,
-  AuthProfilesManager,
-} from "../auth/settings/index.js";
+import { AgentSettingsStore } from "../auth/settings/agent-settings-store.js";
+import { AuthProfilesManager } from "../auth/settings/auth-profiles-manager.js";
 import { ModelPreferenceStore } from "../auth/settings/model-preference-store.js";
 import { UserAuthProfileStore } from "../auth/settings/user-auth-profile-store.js";
 import { UserAgentsStore } from "../auth/user-agents-store.js";

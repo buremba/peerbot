@@ -1,4 +1,4 @@
-import type { AgentSettings } from "./index.js";
+import type { AgentSettings } from "./agent-settings-store.js";
 
 function cloneSettingValue<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;

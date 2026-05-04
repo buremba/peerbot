@@ -13,8 +13,8 @@ import {
 } from "../config/network-allowlist.js";
 import type { GrantStore } from "../permissions/grant-store.js";
 import type { PolicyStore } from "../permissions/policy-store.js";
-import { EgressJudge } from "./egress-judge/index.js";
-import type { JudgeDecision } from "./egress-judge/index.js";
+import { EgressJudge } from "./egress-judge/judge.js";
+import type { JudgeDecision } from "./egress-judge/types.js";
 
 const logger = createLogger("http-proxy");
 

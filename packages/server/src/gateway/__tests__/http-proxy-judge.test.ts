@@ -4,8 +4,8 @@ import type * as http from "node:http";
 import * as net from "node:net";
 import { generateWorkerToken } from "@lobu/core";
 import { PolicyStore } from "../permissions/policy-store.js";
-import { EgressJudge } from "../proxy/egress-judge/index.js";
-import type { JudgeClient, JudgeVerdict } from "../proxy/egress-judge/index.js";
+import { EgressJudge } from "../proxy/egress-judge/judge.js";
+import type { JudgeClient, JudgeVerdict } from "../proxy/egress-judge/types.js";
 import {
   __testOnly,
   setProxyEgressJudge,

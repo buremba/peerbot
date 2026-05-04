@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { ResolvedJudgeRule } from "../permissions/policy-store.js";
-import { EgressJudge } from "../proxy/egress-judge/index.js";
-import type { JudgeClient, JudgeVerdict } from "../proxy/egress-judge/index.js";
+import { EgressJudge } from "../proxy/egress-judge/judge.js";
+import type { JudgeClient, JudgeVerdict } from "../proxy/egress-judge/types.js";
 
 class StubClient implements JudgeClient {
   calls = 0;

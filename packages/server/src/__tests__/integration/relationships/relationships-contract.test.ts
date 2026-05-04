@@ -8,7 +8,7 @@
 
 import { beforeAll, describe, expect, it } from 'vitest';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
-import { TestWorkspace } from '../../setup/test-workspace';
+import { TestWorkspace } from '../../setup/test-mcp-client';
 
 type SeededGraph = {
   workspace: TestWorkspace;

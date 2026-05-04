@@ -8,7 +8,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import { createTestEvent } from '../../setup/test-fixtures';
-import { TestWorkspace } from '../../setup/test-workspace';
+import { TestWorkspace } from '../../setup/test-mcp-client';
 
 const stubEmbedding = Array.from({ length: 768 }, () => 0);
 

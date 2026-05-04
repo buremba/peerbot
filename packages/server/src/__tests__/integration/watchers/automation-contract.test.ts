@@ -19,8 +19,7 @@ import {
 } from '../../../watchers/automation';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import { createTestAgent, createTestEntity, createTestEvent } from '../../setup/test-fixtures';
-import { TestApiClient } from '../../setup/test-mcp-client';
-import { TestWorkspace } from '../../setup/test-workspace';
+import { TestApiClient, TestWorkspace } from '../../setup/test-mcp-client';
 
 async function createAutomatedWatcher() {
   const sql = getTestDb();

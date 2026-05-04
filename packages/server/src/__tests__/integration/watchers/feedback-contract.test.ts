@@ -12,7 +12,7 @@ import { manageWatchers } from '../../../tools/admin/manage_watchers';
 import type { ToolContext } from '../../../tools/registry';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import { createTestEntity } from '../../setup/test-fixtures';
-import { TestWorkspace } from '../../setup/test-workspace';
+import { TestWorkspace } from '../../setup/test-mcp-client';
 
 function ownerCtx(workspace: TestWorkspace): ToolContext {
   return {

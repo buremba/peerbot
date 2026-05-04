@@ -9,7 +9,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import { createTestEvent } from '../../setup/test-fixtures';
-import { TestWorkspace } from '../../setup/test-workspace';
+import { TestWorkspace } from '../../setup/test-mcp-client';
 
 async function waitForChangeEvent(entityId: number) {
   const sql = getTestDb();

@@ -23,7 +23,7 @@ import { createWatcherRun } from '../../../utils/queue-helpers';
 import { parseWatcherRunPayload } from '../../../watchers/automation';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import { createTestEntity } from '../../setup/test-fixtures';
-import { TestWorkspace } from '../../setup/test-workspace';
+import { TestWorkspace } from '../../setup/test-mcp-client';
 
 function ownerCtx(workspace: TestWorkspace): ToolContext {
   return {

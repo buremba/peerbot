@@ -52,8 +52,6 @@ export async function initCommand(
   projectNameArg?: string,
   options: InitOptions = {}
 ): Promise<void> {
-  console.log(chalk.bold.cyan("\n🤖 Welcome to Lobu!\n"));
-
   const cliVersion = await getCliVersion();
   const useDefaults = options.yes === true;
 

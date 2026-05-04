@@ -15,7 +15,7 @@ help:
 # Build all TypeScript packages in dependency order
 build-packages:
 	@echo "📦 Building all TypeScript packages..."
-	@for pkg in core connector-sdk agent-worker openclaw-plugin connector-worker embeddings; do \
+	@for pkg in core connector-sdk agent-worker openclaw-plugin embeddings connector-worker; do \
 		echo "   📦 Building packages/$$pkg..."; \
 		( cd packages/$$pkg && bun run build ) || exit $$?; \
 	done

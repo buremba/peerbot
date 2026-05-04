@@ -19,7 +19,7 @@
     "test:coverage": "bun test packages/core/src packages/agent-worker/src packages/landing/src --coverage",
     "typecheck": "tsc --noEmit",
     "dev": "./scripts/dev-native.sh",
-    "build:packages": "cd packages/core && bun run build && cd ../connector-sdk && bun run build && cd ../agent-worker && bun run build && cd ../openclaw-plugin && bun run build && cd ../connector-worker && bun run build && cd ../embeddings && bun run build && cd ../server && bun run build:server && cd ../cli && bun run build",
+    "build:packages": "cd packages/core && bun run build && cd ../connector-sdk && bun run build && cd ../agent-worker && bun run build && cd ../openclaw-plugin && bun run build && cd ../embeddings && bun run build && cd ../connector-worker && bun run build && cd ../server && bun run build:server && cd ../cli && bun run build",
     "build:owletto": "cd packages/embeddings && bun run build && cd ../..",
     "watch:packages": "tsc -b --watch packages/core packages/agent-worker",
     "test:packages": "cd packages/core && bun run test && cd ../agent-worker && bun run test",

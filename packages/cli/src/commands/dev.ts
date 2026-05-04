@@ -2,11 +2,19 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
+import { createServer } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import chalk from "chalk";
 import ora from "ora";
 import { parseEnvContent } from "../internal/index.js";
+
+export interface DevOptions {
+  port?: string;
+  quiet?: boolean;
+  verbose?: boolean;
+  logLevel?: string;
+}
 
 /**
  * `lobu run` — start the embedded Lobu stack.
@@ -19,7 +27,8 @@ import { parseEnvContent } from "../internal/index.js";
  */
 export async function devCommand(
   cwd: string,
-  passthroughArgs: string[]
+  passthroughArgs: string[],
+  options: DevOptions = {}
 ): Promise<void> {
   const spinner = ora("Validating environment...").start();
 
@@ -40,13 +49,21 @@ export async function devCommand(
     console.error(chalk.dim(`    DATABASE_URL=`));
     console.error(
       chalk.dim(
-        "\n  Lobu connects to a user-provided Postgres. Run one yourself"
+        "\n  Lobu connects to a user-provided Postgres with pgvector. Pick one:"
       )
     );
     console.error(
       chalk.dim(
-        "  (managed instance or local: e.g. `brew services start postgresql`).\n"
+        "    Docker: docker run -d --name lobu-pg -p 5432:5432 \\"
       )
+    );
+    console.error(
+      chalk.dim(
+        "              -e POSTGRES_PASSWORD=lobu pgvector/pgvector:pg16"
+      )
+    );
+    console.error(
+      chalk.dim("    macOS:  brew services start postgresql\n")
     );
     process.exit(1);
   }
@@ -70,24 +87,52 @@ export async function devCommand(
       )
     );
     console.error(chalk.dim("  In the monorepo, build it via:"));
-    console.error(
-      chalk.dim("    bun run --filter '@lobu/server' build:server\n")
-    );
+    console.error(chalk.dim("    make build-packages\n"));
     process.exit(1);
   }
 
   spinner.succeed("Environment ready");
 
-  const port = mergedEnv.GATEWAY_PORT || mergedEnv.PORT || "8787";
+  // CLI flag wins, then env, then default
+  const port =
+    options.port ?? mergedEnv.GATEWAY_PORT ?? mergedEnv.PORT ?? "8787";
   const gatewayUrl = `http://localhost:${port}`;
 
-  console.log(chalk.cyan(`\n  Starting Lobu...\n`));
-  console.log(chalk.dim(`  bundle:        ${bundlePath}`));
-  console.log(
-    chalk.dim(`  database:      ${redactUrl(mergedEnv.DATABASE_URL!)}`)
-  );
-  console.log(chalk.dim(`  api docs:      ${gatewayUrl}/api/docs`));
-  console.log();
+  // Pre-flight: is the port already in use? Catches the common
+  // "EADDRINUSE" foot-gun before the bundle boots and dumps a stack.
+  const portFree = await isPortFree(Number(port));
+  if (!portFree) {
+    console.error(
+      chalk.red(`\n  Port ${port} is already in use.`)
+    );
+    console.error(
+      chalk.dim(
+        "  Stop the other process, or pass `--port <n>` / set `GATEWAY_PORT` to a free port.\n"
+      )
+    );
+    console.error(
+      chalk.dim(
+        process.platform === "darwin" || process.platform === "linux"
+          ? `  Find what's holding it: lsof -iTCP:${port} -sTCP:LISTEN\n`
+          : `  Find what's holding it: netstat -ano | findstr :${port}\n`
+      )
+    );
+    process.exit(1);
+  }
+
+  if (!options.quiet) {
+    console.log(chalk.cyan(`\n  Starting Lobu...\n`));
+    console.log(chalk.dim(`  bundle:        ${bundlePath}`));
+    console.log(
+      chalk.dim(`  database:      ${redactUrl(mergedEnv.DATABASE_URL!)}`)
+    );
+    console.log(chalk.dim(`  api docs:      ${gatewayUrl}/api/docs`));
+    console.log();
+  }
+
+  const logLevel =
+    options.logLevel ??
+    (options.quiet ? "warn" : options.verbose ? "debug" : undefined);
 
   // Pass-through env: process.env wins so users can override per-invocation,
   // .env values fill in the rest. LOBU_DEV_PROJECT_PATH is optional and only
@@ -97,6 +142,8 @@ export async function devCommand(
     LOBU_DEV_PROJECT_PATH:
       process.env.LOBU_DEV_PROJECT_PATH || envVars.LOBU_DEV_PROJECT_PATH || cwd,
     PORT: port,
+    GATEWAY_PORT: port,
+    ...(logLevel ? { LOG_LEVEL: logLevel, LOBU_LOG_LEVEL: logLevel } : {}),
   };
 
   const child = spawn("node", [bundlePath, ...passthroughArgs], {
@@ -140,10 +187,6 @@ export function resolveBackendBundle(
   const here = startDir;
   const require_ = createRequire(import.meta.url);
 
-  // 1. Bundled inside the CLI tarball at `dist/server.bundle.mjs`. The
-  //    compiled command module lives under `dist/commands/`, so check both
-  //    the module directory (legacy/local builds) and the dist root where
-  //    `packages/cli/scripts/build.cjs` copies the bundle.
   for (const bundled of [
     join(here, "server.bundle.mjs"),
     join(here, "..", "server.bundle.mjs"),
@@ -151,16 +194,12 @@ export function resolveBackendBundle(
     if (existsSync(bundled)) return bundled;
   }
 
-  // 2. Resolved via node_modules — covers a workspace consumer that has
-  //    `@lobu/server` linked locally (e.g. internal monorepo).
   try {
     return require_.resolve("@lobu/server/dist/server.bundle.mjs");
   } catch {
     // not installed as a dep
   }
 
-  // 3. Monorepo-relative lookup — covers `bun run packages/cli/...` from a
-  //    fresh clone before the CLI itself has been published.
   let cur = here;
   for (let i = 0; i < 6; i++) {
     const candidate = join(cur, "packages/server/dist/server.bundle.mjs");
@@ -171,6 +210,23 @@ export function resolveBackendBundle(
   }
 
   return null;
+}
+
+export function isPortFree(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const server = createServer();
+    const settle = (free: boolean) => {
+      server.removeAllListeners();
+      server.close(() => resolve(free));
+    };
+    server.once("error", () => settle(false));
+    server.once("listening", () => settle(true));
+    try {
+      server.listen({ port, host: "127.0.0.1", exclusive: true });
+    } catch {
+      settle(false);
+    }
+  });
 }
 
 function redactUrl(url: string): string {

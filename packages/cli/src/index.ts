@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import chalk from "chalk";
 import { Command } from "commander";
 import { GATEWAY_DEFAULT_URL } from "./internal/index.js";
+import { maybePrintUpdateNotice } from "./internal/version-check.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -39,26 +40,123 @@ export async function runCli(
     .description("CLI for deploying and managing AI agents on Lobu")
     .version(version);
 
+  // Group commands in --help output. Commander v14 has no native grouping,
+  // so we override the help formatter via addHelpText to print our own
+  // categorized list. The flat command list is still available.
+  program.addHelpText(
+    "after",
+    `
+Local dev:
+  init [name]              Scaffold a new agent project
+  run | dev | start        Boot the embedded Lobu stack
+  chat [prompt]            Talk to an agent (REPL when no prompt)
+  eval [name]              Run agent evaluations
+  validate                 Validate lobu.toml
+  doctor                   Health checks (deps, DB, pgvector, ports, keys)
+  telemetry                Show / toggle anonymous error reporting
+
+Cloud:
+  login | logout           OAuth device-code login (or --token for CI)
+  whoami | status          Show user / agent state
+  context <subcmd>         Manage API contexts
+  org <subcmd>             Manage active org slug
+  link | unlink            Bind this directory to a (context, org)
+  apply | deploy           Sync lobu.toml to cloud (idempotent)
+  agent <subcmd>           CRUD agents via REST
+  token [create]           Print or mint personal access tokens
+
+Memory:
+  memory run [tool]        Invoke a memory MCP tool
+  memory exec <script>     Run a ClientSDK script
+  memory health            Validate login + MCP connectivity
+  memory configure         Wire OpenClaw config
+  memory seed [path]       Provision a memory workspace
+  memory init              Wire agents to a memory MCP endpoint
+
+Disable update checks: LOBU_DISABLE_UPDATE_CHECK=1
+`
+  );
+
   // ─── init ───────────────────────────────────────────────────────────
   program
     .command("init [name]")
     .description(
       "Scaffold a new agent project (lobu.toml + agent files + .env)"
     )
-    .action(async (name?: string) => {
-      try {
-        const { initCommand } = await import("./commands/init.js");
-        await initCommand(process.cwd(), name);
-      } catch (error) {
-        console.error(chalk.red("\n  Error:"), error);
-        process.exit(1);
+    .option("-y, --yes", "Skip prompts; use defaults / flag values")
+    .option("--here", "Scaffold into the current directory (alias for `init .`)")
+    .option("--port <port>", "Gateway port (default 8787)")
+    .option("--public-url <url>", "Public gateway URL (OAuth/webhooks)")
+    .option(
+      "--network <policy>",
+      "Worker network policy: restricted | open | isolated"
+    )
+    .option("--provider <id>", "Provider id from `config/providers.json`")
+    .option("--provider-key <key>", "Provider API key (else read from env)")
+    .option(
+      "--platform <type>",
+      "Chat platform: telegram | slack | discord | whatsapp | teams | gchat"
+    )
+    .option(
+      "--memory <choice>",
+      "Memory backend: none | owletto-cloud | owletto-custom"
+    )
+    .option("--memory-url <url>", "Custom memory MCP URL (with --memory owletto-custom)")
+    .option("--otel-endpoint <url>", "OpenTelemetry collector endpoint")
+    .option("--sentry", "Enable Sentry error reporting")
+    .option("--no-sentry", "Disable Sentry without prompting")
+    .action(
+      async (
+        name: string | undefined,
+        options: {
+          yes?: boolean;
+          here?: boolean;
+          port?: string;
+          publicUrl?: string;
+          network?: string;
+          provider?: string;
+          providerKey?: string;
+          platform?: string;
+          memory?: string;
+          memoryUrl?: string;
+          otelEndpoint?: string;
+          sentry?: boolean;
+        }
+      ) => {
+        try {
+          const { initCommand } = await import("./commands/init.js");
+          // Commander sets options.sentry === true for --sentry, false for
+          // --no-sentry. We preserve both signals so init can distinguish
+          // "not specified" from "explicitly off".
+          const sentryProvided = "sentry" in options;
+          await initCommand(process.cwd(), name, {
+            yes: options.yes,
+            here: options.here,
+            port: options.port,
+            publicUrl: options.publicUrl,
+            network: options.network,
+            provider: options.provider,
+            providerKey: options.providerKey,
+            platform: options.platform,
+            memory: options.memory,
+            memoryUrl: options.memoryUrl,
+            otelEndpoint: options.otelEndpoint,
+            sentry: sentryProvided && options.sentry === true,
+            noSentry: sentryProvided && options.sentry === false,
+          });
+        } catch (error) {
+          console.error(chalk.red("\n  Error:"), error);
+          process.exit(1);
+        }
       }
-    });
+    );
 
   // ─── chat ──────────────────────────────────────────────────────────
   program
-    .command("chat <prompt>")
-    .description("Send a prompt to an agent and stream the response")
+    .command("chat [prompt]")
+    .description(
+      "Talk to an agent. With no prompt, opens a REPL. With --user, routes through Telegram/Slack."
+    )
     .option("-a, --agent <id>", "Agent ID (defaults to first in lobu.toml)")
     .option("-u, --user <id>", "User ID to impersonate (e.g. telegram:12345)")
     .option("-t, --thread <id>", "Thread/conversation ID for multi-turn")
@@ -68,10 +166,19 @@ export async function runCli(
     )
     .option("--dry-run", "Process without persisting history")
     .option("--new", "Force new session (ignore existing)")
+    .option(
+      "-C, --continue",
+      "Resume the last thread for this (context, agent)"
+    )
+    .option(
+      "--auto-approve",
+      "Auto-approve every tool call (use only in trusted environments)"
+    )
+    .option("--json", "Emit raw SSE events as JSON lines instead of text")
     .option("-c, --context <name>", "Use a named context")
     .action(
       async (
-        prompt: string,
+        prompt: string | undefined,
         options: {
           agent?: string;
           gateway?: string;
@@ -79,7 +186,10 @@ export async function runCli(
           thread?: string;
           dryRun?: boolean;
           new?: boolean;
+          continue?: boolean;
           context?: string;
+          autoApprove?: boolean;
+          json?: boolean;
         }
       ) => {
         const { chatCommand } = await import("./commands/chat.js");
@@ -88,7 +198,7 @@ export async function runCli(
     );
 
   // ─── eval ──────────────────────────────────────────────────────────
-  program
+  const evalCmd = program
     .command("eval [name]")
     .description("Run agent evaluations")
     .option("-a, --agent <id>", "Agent ID (defaults to first in lobu.toml)")
@@ -124,6 +234,22 @@ export async function runCli(
       }
     );
 
+  evalCmd
+    .command("new <name>")
+    .description("Scaffold a new YAML eval into the agent's evals/ directory")
+    .option("-a, --agent <id>", "Agent ID (defaults to first in lobu.toml)")
+    .option("--description <text>", "Eval description")
+    .option("--trials <n>", "Trial count", parseInt)
+    .action(
+      async (
+        name: string,
+        options: { agent?: string; description?: string; trials?: number }
+      ) => {
+        const { evalNewCommand } = await import("./commands/eval.js");
+        await evalNewCommand(name, options);
+      }
+    );
+
   // ─── validate ───────────────────────────────────────────────────────
   program
     .command("validate")
@@ -134,12 +260,10 @@ export async function runCli(
       if (!valid) process.exit(1);
     });
 
-  // ─── apply ──────────────────────────────────────────────────────────
-  // One-way `lobu.toml` → cloud org converger. GETs current state, renders
-  // a diff, prompts to confirm, then loops over the existing CRUD endpoints
-  // in dependency order. Re-running converges on partial failure.
+  // ─── apply / deploy ─────────────────────────────────────────────────
   program
     .command("apply")
+    .alias("deploy")
     .description(
       "Sync lobu.toml + agent dirs to your Lobu Cloud org (idempotent)"
     )
@@ -151,6 +275,10 @@ export async function runCli(
     )
     .option("--org <slug>", "Org slug override (defaults to active session)")
     .option("--url <url>", "Server URL override")
+    .option(
+      "--force",
+      "Bypass the project-link guard if context/org don't match"
+    )
     .action(
       async (options: {
         dryRun?: boolean;
@@ -158,6 +286,7 @@ export async function runCli(
         only?: string;
         org?: string;
         url?: string;
+        force?: boolean;
       }) => {
         if (
           options.only !== undefined &&
@@ -177,24 +306,41 @@ export async function runCli(
           only: options.only as "agents" | "memory" | undefined,
           org: options.org,
           url: options.url,
+          force: options.force,
         });
       }
     );
 
-  // ─── run ────────────────────────────────────────────────────────────
-  // Boots the embedded Lobu stack (gateway + workers + memory backend) as
-  // a single Node process. Extra args are forwarded to the bundle entry.
+  // ─── run / dev / start ──────────────────────────────────────────────
   program
     .command("run")
+    .aliases(["dev", "start"])
     .description(
       "Run the embedded Lobu stack (gateway + workers in one Node process)"
     )
+    .option("--port <port>", "Gateway port (overrides GATEWAY_PORT in .env)")
+    .option("--quiet", "Suppress startup banner; raise log level to warn")
+    .option("--verbose", "Lower log level to debug")
+    .option(
+      "--log-level <level>",
+      "Forwarded as LOG_LEVEL/LOBU_LOG_LEVEL to the bundle"
+    )
     .allowUnknownOption(true)
     .helpOption(false)
-    .action(async (_opts: unknown, cmd: Command) => {
-      const { devCommand } = await import("./commands/dev.js");
-      await devCommand(process.cwd(), cmd.args);
-    });
+    .action(
+      async (
+        options: {
+          port?: string;
+          quiet?: boolean;
+          verbose?: boolean;
+          logLevel?: string;
+        },
+        cmd: Command
+      ) => {
+        const { devCommand } = await import("./commands/dev.js");
+        await devCommand(process.cwd(), cmd.args, options);
+      }
+    );
 
   // ─── login ──────────────────────────────────────────────────────────
   program
@@ -364,6 +510,27 @@ export async function runCli(
       await orgSetCommand(slug, options);
     });
 
+  // ─── link / unlink ──────────────────────────────────────────────────
+  program
+    .command("link")
+    .description(
+      "Bind the current directory to a (context, org). Stored at .lobu/project.json."
+    )
+    .option("-c, --context <name>", "Use a named context")
+    .option("--org <slug>", "Org slug to link (defaults to active)")
+    .action(async (options: { context?: string; org?: string }) => {
+      const { linkCommand } = await import("./commands/link.js");
+      await linkCommand(options);
+    });
+
+  program
+    .command("unlink")
+    .description("Remove the project link file")
+    .action(async () => {
+      const { unlinkCommand } = await import("./commands/link.js");
+      await unlinkCommand();
+    });
+
   // ─── agent ──────────────────────────────────────────────────────────
   const agent = program
     .command("agent")
@@ -415,6 +582,23 @@ export async function runCli(
       ) => {
         const { agentCreateCommand } = await import("./commands/agent.js");
         await agentCreateCommand(agentId, options);
+      }
+    );
+
+  agent
+    .command("scaffold <agentId>")
+    .description(
+      "Add a new local agent (agents/<id>/* + lobu.toml entry) without overwriting existing ones"
+    )
+    .option("--name <name>", "Display name")
+    .option("--description <text>", "Description")
+    .action(
+      async (
+        agentId: string,
+        options: { name?: string; description?: string }
+      ) => {
+        const { agentScaffoldCommand } = await import("./commands/agent.js");
+        await agentScaffoldCommand(agentId, options);
       }
     );
 
@@ -503,16 +687,43 @@ export async function runCli(
   // ─── doctor ─────────────────────────────────────────────────────────
   program
     .command("doctor")
-    .description("Health checks (system deps, memory MCP)")
+    .description("Health checks (deps, DB, pgvector, ports, provider keys)")
     .option("--memory-only", "Only check memory MCP connectivity + auth")
     .action(async (options: { memoryOnly?: boolean }) => {
       const { doctorCommand } = await import("./commands/doctor.js");
       await doctorCommand(options);
     });
 
+  // ─── telemetry ──────────────────────────────────────────────────────
+  const telemetry = program
+    .command("telemetry")
+    .description("Show or toggle anonymous error reporting (Sentry)");
+  telemetry
+    .command("status", { isDefault: true })
+    .description("Show whether telemetry is on or off")
+    .action(async () => {
+      const { telemetryStatusCommand } = await import(
+        "./commands/telemetry.js"
+      );
+      await telemetryStatusCommand();
+    });
+  telemetry
+    .command("on")
+    .description("Enable telemetry (writes SENTRY_DSN to .env)")
+    .option("--dsn <dsn>", "Custom Sentry DSN (defaults to Lobu's)")
+    .action(async (options: { dsn?: string }) => {
+      const { telemetryOnCommand } = await import("./commands/telemetry.js");
+      await telemetryOnCommand(options);
+    });
+  telemetry
+    .command("off")
+    .description("Disable telemetry (removes SENTRY_DSN from .env)")
+    .action(async () => {
+      const { telemetryOffCommand } = await import("./commands/telemetry.js");
+      await telemetryOffCommand();
+    });
+
   // ─── memory ─────────────────────────────────────────────────────────
-  // Memory operations live under the Lobu CLI. Auth is top-level (`lobu login`);
-  // memory subcommands only configure endpoints and call tools.
   const memory = program
     .command("memory")
     .description("Lobu memory MCP — tools, seeding, and client configuration");
@@ -707,6 +918,10 @@ export async function runCli(
         await memoryBrowserAuthCommand(options);
       }
     );
+
+  // Background-fired update check. Don't await; we don't want to delay
+  // the command, and the result prints to stderr after the command exits.
+  void maybePrintUpdateNotice(version).catch(() => undefined);
 
   try {
     await program.parseAsync(argv);

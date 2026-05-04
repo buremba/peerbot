@@ -10,7 +10,7 @@ Lobu boots as a single Node process. Bring your own Postgres (managed instance o
 # 1. Edit .env and set DATABASE_URL
 
 # 2. Boot Lobu (gateway + workers + memory backend in one Node process)
-npx @lobu/cli@latest run
+lobu run    # or: lobu dev / lobu start
 
 # 3. Stop with Ctrl+C
 ```
@@ -24,7 +24,7 @@ Pull the latest CLI to pick up gateway + worker improvements:
 ```bash
 # The CLI ships the embedded backend it boots, so updating the CLI
 # updates Lobu itself. No image pull, no compose restart.
-npx @lobu/cli@latest run
+npm i -g @lobu/cli@latest && lobu run
 ```
 
 Compare your `.env` with the latest `.env.example` in the [Lobu repo](https://github.com/lobu-ai/lobu) when upgrading and add any new required variables.

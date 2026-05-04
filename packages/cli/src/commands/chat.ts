@@ -2,34 +2,39 @@ import { createInterface } from "node:readline";
 import chalk from "chalk";
 import {
   apiBaseFromContextUrl,
+  getCurrentContextName,
   getToken,
   resolveContext,
   resolveGatewayUrl,
 } from "../internal/index.js";
+import { getLastThread, setLastThread } from "../internal/threads.js";
 import { isLoadError, loadConfig } from "../config/loader.js";
 import { renderMarkdown } from "../utils/markdown.js";
 
+export interface ChatOptions {
+  agent?: string;
+  gateway?: string;
+  user?: string;
+  thread?: string;
+  dryRun?: boolean;
+  new?: boolean;
+  continue?: boolean;
+  context?: string;
+  autoApprove?: boolean;
+  json?: boolean;
+}
+
 /**
- * `lobu chat "prompt"` — send a prompt to an agent and stream the response.
+ * `lobu chat [prompt]` — send a prompt to an agent and stream the response.
  *
- * Without --user: API mode — creates a session, sends message, streams to terminal.
- * With --user platform:id: Platform mode — sends through Telegram/Slack, response
- * appears on the platform. Terminal shows the streamed response too.
+ * No prompt → REPL. With --user platform:id, routes through Telegram/Slack.
+ * With --continue, resumes the last thread for (context, agent).
  */
 export async function chatCommand(
   cwd: string,
-  prompt: string,
-  options: {
-    agent?: string;
-    gateway?: string;
-    user?: string;
-    thread?: string;
-    dryRun?: boolean;
-    new?: boolean;
-    context?: string;
-  }
+  prompt: string | undefined,
+  options: ChatOptions
 ): Promise<void> {
-  // Resolve gateway URL: explicit flag > named context > .env fallback
   let gatewayUrl: string;
   if (options.gateway) {
     gatewayUrl = options.gateway;
@@ -45,34 +50,69 @@ export async function chatCommand(
   if (!authToken) {
     console.error(
       chalk.red(
-        "\n  Session expired or not logged in. Run `npx @lobu/cli@latest login`.\n"
+        "\n  Session expired or not logged in. Run `lobu login`.\n"
       )
     );
     process.exit(1);
   }
 
   const agentId = options.agent ?? (await resolveAgentId(cwd));
-
-  // Parse --user flag: "telegram:12345" → { platform: "telegram", userId: "12345" }
   const platformUser = options.user ? parsePlatformUser(options.user) : null;
+  const contextName = options.context ?? (await getCurrentContextName());
+
+  // Resolve thread: explicit --thread > --continue (last for this agent)
+  let threadId = options.thread;
+  if (!threadId && options.continue && agentId) {
+    threadId = await getLastThread(contextName, agentId);
+    if (!threadId) {
+      console.error(
+        chalk.dim(
+          `\n  No prior thread for ${agentId} in context ${contextName}; starting fresh.\n`
+        )
+      );
+    }
+  }
+
+  if (prompt === undefined) {
+    if (platformUser) {
+      console.error(
+        chalk.red(
+          "\n  REPL mode is not supported with --user. Pass a prompt or drop --user.\n"
+        )
+      );
+      process.exit(1);
+    }
+    await runRepl(gatewayUrl, authToken, {
+      agentId,
+      thread: threadId,
+      dryRun: options.dryRun,
+      forceNew: options.new && !threadId,
+      autoApprove: options.autoApprove,
+      json: options.json,
+      contextName,
+    });
+    return;
+  }
 
   if (platformUser) {
-    // Platform mode: route through Telegram/Slack
     await sendViaPlatform(gatewayUrl, authToken, {
       agentId,
       platform: platformUser.platform,
       userId: platformUser.userId,
       message: prompt,
-      thread: options.thread,
+      thread: threadId,
+      json: options.json,
     });
   } else {
-    // API mode: create session, send message, stream response
     await sendViaApi(gatewayUrl, authToken, {
       agentId,
       message: prompt,
-      thread: options.thread,
+      thread: threadId,
       dryRun: options.dryRun,
-      forceNew: options.new,
+      forceNew: options.new && !threadId,
+      autoApprove: options.autoApprove,
+      json: options.json,
+      contextName,
     });
   }
 }
@@ -81,20 +121,13 @@ function parsePlatformUser(
   user: string
 ): { platform: string; userId: string } | null {
   const colonIndex = user.indexOf(":");
-  if (colonIndex === -1) {
-    // No platform prefix — use as plain userId in API mode
-    return null;
-  }
+  if (colonIndex === -1) return null;
   return {
     platform: user.slice(0, colonIndex),
     userId: user.slice(colonIndex + 1),
   };
 }
 
-/**
- * Platform mode: send message through Telegram/Slack via /api/v1/agents/{agentId}/messages.
- * The response appears on the platform AND streams to terminal via eventsUrl.
- */
 async function sendViaPlatform(
   gatewayUrl: string,
   authToken: string,
@@ -104,6 +137,7 @@ async function sendViaPlatform(
     userId: string;
     message: string;
     thread?: string;
+    json?: boolean;
   }
 ): Promise<void> {
   const agentId = opts.agentId || `test-${opts.platform}`;
@@ -112,14 +146,10 @@ async function sendViaPlatform(
     content: opts.message,
   };
 
-  // Platform-specific routing
   if (opts.platform === "telegram") {
     body.telegram = { chatId: opts.userId };
   } else if (opts.platform === "slack") {
-    body.slack = {
-      channel: opts.userId,
-      thread: opts.thread,
-    };
+    body.slack = { channel: opts.userId, thread: opts.thread };
   } else if (opts.platform === "discord") {
     body.discord = { channelId: opts.userId };
   }
@@ -153,13 +183,15 @@ async function sendViaPlatform(
   };
 
   if (result.eventsUrl) {
-    // Stream the response from the agent
     const sseUrl = result.eventsUrl.startsWith("http")
       ? result.eventsUrl
       : `${gatewayUrl}${result.eventsUrl}`;
 
     const sseController = new AbortController();
-    await streamResponse(sseUrl, authToken, sseController, result.messageId);
+    await streamResponse(sseUrl, authToken, sseController, {
+      expectedMessageId: result.messageId,
+      json: opts.json,
+    });
   } else {
     console.log(
       chalk.dim(
@@ -169,20 +201,33 @@ async function sendViaPlatform(
   }
 }
 
-/**
- * API mode: create session, send message, stream response to terminal.
- */
-async function sendViaApi(
+interface ApiSendOptions {
+  agentId?: string;
+  message: string;
+  thread?: string;
+  dryRun?: boolean;
+  forceNew?: boolean;
+  autoApprove?: boolean;
+  json?: boolean;
+  contextName?: string;
+}
+
+interface ApiSession {
+  agentId: string;
+  token: string;
+  threadId?: string;
+}
+
+async function createSession(
   gatewayUrl: string,
   authToken: string,
   opts: {
     agentId?: string;
-    message: string;
     thread?: string;
     dryRun?: boolean;
     forceNew?: boolean;
   }
-): Promise<void> {
+): Promise<ApiSession> {
   const createBody: Record<string, any> = {};
   if (opts.agentId) createBody.agentId = opts.agentId;
   if (opts.thread) createBody.thread = opts.thread;
@@ -202,9 +247,7 @@ async function sendViaApi(
     const body = await createRes.text().catch(() => "");
     if (createRes.status === 401) {
       console.error(
-        chalk.red(
-          "\n  Authentication required. Run `npx @lobu/cli@latest login`.\n"
-        )
+        chalk.red("\n  Authentication required. Run `lobu login`.\n")
       );
       process.exit(1);
     }
@@ -217,14 +260,37 @@ async function sendViaApi(
   const session = (await createRes.json()) as {
     agentId: string;
     token: string;
+    threadId?: string;
+    thread?: string;
   };
+  return {
+    agentId: session.agentId,
+    token: session.token,
+    threadId: session.threadId ?? session.thread,
+  };
+}
+
+async function sendViaApi(
+  gatewayUrl: string,
+  authToken: string,
+  opts: ApiSendOptions
+): Promise<void> {
+  const session = await createSession(gatewayUrl, authToken, {
+    agentId: opts.agentId,
+    thread: opts.thread,
+    dryRun: opts.dryRun,
+    forceNew: opts.forceNew,
+  });
 
   const base = `${gatewayUrl}/api/v1/agents/${session.agentId}`;
   const sseUrl = `${base}/events`;
   const messagesUrl = `${base}/messages`;
 
   const sseController = new AbortController();
-  const streaming = streamResponse(sseUrl, session.token, sseController);
+  const streaming = streamResponse(sseUrl, session.token, sseController, {
+    autoApprove: opts.autoApprove,
+    json: opts.json,
+  });
 
   const msgRes = await fetch(messagesUrl, {
     method: "POST",
@@ -245,6 +311,118 @@ async function sendViaApi(
   }
 
   await streaming;
+
+  if (opts.contextName && session.threadId) {
+    await setLastThread(opts.contextName, session.agentId, session.threadId);
+  }
+}
+
+interface ReplOptions {
+  agentId?: string;
+  thread?: string;
+  dryRun?: boolean;
+  forceNew?: boolean;
+  autoApprove?: boolean;
+  json?: boolean;
+  contextName?: string;
+}
+
+async function runRepl(
+  gatewayUrl: string,
+  authToken: string,
+  opts: ReplOptions
+): Promise<void> {
+  const session = await createSession(gatewayUrl, authToken, {
+    agentId: opts.agentId,
+    thread: opts.thread,
+    dryRun: opts.dryRun,
+    forceNew: opts.forceNew,
+  });
+
+  const base = `${gatewayUrl}/api/v1/agents/${session.agentId}`;
+  const sseUrl = `${base}/events`;
+  const messagesUrl = `${base}/messages`;
+
+  if (!opts.json) {
+    console.log(
+      chalk.dim(
+        `\n  ${chalk.bold(session.agentId)} ${session.threadId ? `(thread: ${session.threadId.slice(0, 8)}…)` : ""}\n  Type your message. Ctrl+D or /exit to quit.\n`
+      )
+    );
+  }
+
+  if (opts.contextName && session.threadId) {
+    await setLastThread(opts.contextName, session.agentId, session.threadId);
+  }
+
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+
+  const ask = (prompt: string): Promise<string | null> =>
+    new Promise((resolve) => {
+      rl.question(prompt, (answer) => resolve(answer));
+      rl.once("close", () => resolve(null));
+    });
+
+  while (true) {
+    const line = await ask(chalk.cyan("\n> "));
+    if (line === null) break;
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    if (trimmed === "/exit" || trimmed === "/quit") break;
+    if (trimmed === "/help") {
+      console.log(
+        chalk.dim(
+          "  /exit   Leave the REPL\n  /thread Show current thread id\n  /clear  Start a new thread\n"
+        )
+      );
+      continue;
+    }
+    if (trimmed === "/thread") {
+      console.log(chalk.dim(`  thread: ${session.threadId ?? "(none)"}\n`));
+      continue;
+    }
+    if (trimmed === "/clear") {
+      const fresh = await createSession(gatewayUrl, authToken, {
+        agentId: session.agentId,
+        forceNew: true,
+      });
+      session.token = fresh.token;
+      session.threadId = fresh.threadId;
+      if (opts.contextName && fresh.threadId) {
+        await setLastThread(opts.contextName, fresh.agentId, fresh.threadId);
+      }
+      console.log(chalk.dim("  new thread started.\n"));
+      continue;
+    }
+
+    const sseController = new AbortController();
+    const streaming = streamResponse(sseUrl, session.token, sseController, {
+      autoApprove: opts.autoApprove,
+      json: opts.json,
+    });
+
+    const msgRes = await fetch(messagesUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${session.token}`,
+      },
+      body: JSON.stringify({ content: trimmed }),
+    });
+
+    if (!msgRes.ok) {
+      sseController.abort();
+      const body = await msgRes.text().catch(() => "");
+      console.error(
+        chalk.red(`\n  Failed to send (${msgRes.status}): ${body}\n`)
+      );
+      continue;
+    }
+
+    await streaming;
+  }
+
+  rl.close();
 }
 
 async function resolveAgentId(cwd: string): Promise<string | undefined> {
@@ -278,11 +456,17 @@ async function writeStderr(text: string): Promise<void> {
   });
 }
 
+interface StreamOptions {
+  expectedMessageId?: string;
+  autoApprove?: boolean;
+  json?: boolean;
+}
+
 async function streamResponse(
   sseUrl: string,
   token: string,
   controller: AbortController,
-  expectedMessageId?: string
+  options: StreamOptions = {}
 ): Promise<void> {
   const OVERALL_TIMEOUT_MS = 5 * 60 * 1000;
   const IDLE_TIMEOUT_MS = 60 * 1000;
@@ -329,12 +513,24 @@ async function streamResponse(
           const data = parseJSON(line.slice(6));
           if (!data) continue;
           if (
-            expectedMessageId &&
+            options.expectedMessageId &&
             currentEvent !== "connected" &&
             currentEvent !== "ping" &&
             typeof data.messageId === "string" &&
-            data.messageId !== expectedMessageId
+            data.messageId !== options.expectedMessageId
           ) {
+            currentEvent = "";
+            continue;
+          }
+
+          if (options.json) {
+            await writeStdout(
+              `${JSON.stringify({ event: currentEvent, ...data })}\n`
+            );
+            if (currentEvent === "complete" || currentEvent === "error") {
+              controller.abort();
+              return;
+            }
             currentEvent = "";
             continue;
           }
@@ -369,34 +565,43 @@ async function streamResponse(
                   `\n  Tool Approval Required\n  ${data.mcpId} → ${data.toolName}\n${argsText}\n`
                 )
               );
-              const options = ["1h", "24h", "always", "deny"];
-              const optionLabels: Record<string, string> = {
-                "1h": "1h",
-                "24h": "24h",
-                always: "always",
-                deny: "deny always",
-              };
-              await writeStderr(
-                `${options
-                  .map(
-                    (o, i) =>
-                      `  ${chalk.bold(`${i + 1}`)}. ${o === "deny" ? chalk.red(optionLabels[o]) : chalk.green(optionLabels[o])}`
-                  )
-                  .join("\n")}\n`
-              );
 
-              const rl = createInterface({
-                input: process.stdin,
-                output: process.stderr,
-              });
-              const answer = await new Promise<string>((resolve) =>
-                rl.question(chalk.dim("\n  Choice (1-4): "), (a) => {
-                  rl.close();
-                  resolve(a.trim());
-                })
-              );
-              const idx = Number.parseInt(answer, 10) - 1;
-              const decision = options[idx] || "deny";
+              let decision: string;
+              if (options.autoApprove) {
+                decision = "always";
+                await writeStderr(
+                  chalk.dim("\n  --auto-approve: approving (always).\n")
+                );
+              } else {
+                const choices = ["1h", "24h", "always", "deny"];
+                const labels: Record<string, string> = {
+                  "1h": "1h",
+                  "24h": "24h",
+                  always: "always",
+                  deny: "deny always",
+                };
+                await writeStderr(
+                  `${choices
+                    .map(
+                      (o, i) =>
+                        `  ${chalk.bold(`${i + 1}`)}. ${o === "deny" ? chalk.red(labels[o]) : chalk.green(labels[o])}`
+                    )
+                    .join("\n")}\n`
+                );
+
+                const rl = createInterface({
+                  input: process.stdin,
+                  output: process.stderr,
+                });
+                const answer = await new Promise<string>((resolve) =>
+                  rl.question(chalk.dim("\n  Choice (1-4): "), (a) => {
+                    rl.close();
+                    resolve(a.trim());
+                  })
+                );
+                const idx = Number.parseInt(answer, 10) - 1;
+                decision = choices[idx] || "deny";
+              }
 
               const approveUrl = sseUrl
                 .replace(/\/events$/, "")

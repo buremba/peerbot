@@ -61,7 +61,10 @@ export async function telemetryOffCommand(
     .split("\n")
     .filter((line) => !line.trim().startsWith("SENTRY_DSN="))
     .join("\n");
-  await writeFile(envPath, filtered.endsWith("\n") ? filtered : `${filtered}\n`);
+  await writeFile(
+    envPath,
+    filtered.endsWith("\n") ? filtered : `${filtered}\n`
+  );
   console.log(chalk.green("\n  Telemetry disabled."));
   console.log(chalk.dim(`  Removed SENTRY_DSN from ${envPath}\n`));
 }

@@ -66,9 +66,7 @@ async function loadProjectEnv(cwd: string): Promise<Record<string, string>> {
   }
 }
 
-async function checkDatabaseAndPgvector(
-  databaseUrl: string
-): Promise<Check[]> {
+async function checkDatabaseAndPgvector(databaseUrl: string): Promise<Check[]> {
   const results: Check[] = [];
   let postgres: any;
   try {

@@ -84,7 +84,10 @@ Disable update checks: LOBU_DISABLE_UPDATE_CHECK=1
       "Scaffold a new agent project (lobu.toml + agent files + .env)"
     )
     .option("-y, --yes", "Skip prompts; use defaults / flag values")
-    .option("--here", "Scaffold into the current directory (alias for `init .`)")
+    .option(
+      "--here",
+      "Scaffold into the current directory (alias for `init .`)"
+    )
     .option("--port <port>", "Gateway port (default 8787)")
     .option("--public-url <url>", "Public gateway URL (OAuth/webhooks)")
     .option(
@@ -101,7 +104,10 @@ Disable update checks: LOBU_DISABLE_UPDATE_CHECK=1
       "--memory <choice>",
       "Memory backend: none | owletto-cloud | owletto-custom"
     )
-    .option("--memory-url <url>", "Custom memory MCP URL (with --memory owletto-custom)")
+    .option(
+      "--memory-url <url>",
+      "Custom memory MCP URL (with --memory owletto-custom)"
+    )
     .option("--otel-endpoint <url>", "OpenTelemetry collector endpoint")
     .option("--sentry", "Enable Sentry error reporting")
     .option("--no-sentry", "Disable Sentry without prompting")

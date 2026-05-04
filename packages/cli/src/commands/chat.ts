@@ -49,9 +49,7 @@ export async function chatCommand(
   const authToken = await getToken(options.context);
   if (!authToken) {
     console.error(
-      chalk.red(
-        "\n  Session expired or not logged in. Run `lobu login`.\n"
-      )
+      chalk.red("\n  Session expired or not logged in. Run `lobu login`.\n")
     );
     process.exit(1);
   }

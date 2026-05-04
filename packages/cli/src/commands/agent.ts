@@ -1,4 +1,10 @@
-import { access, constants, mkdir, readFile, writeFile } from "node:fs/promises";
+import {
+  access,
+  constants,
+  mkdir,
+  readFile,
+  writeFile,
+} from "node:fs/promises";
 import { join } from "node:path";
 import chalk from "chalk";
 import { resolveApiClient } from "../internal/index.js";

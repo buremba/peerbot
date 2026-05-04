@@ -14,10 +14,7 @@ import { join } from "node:path";
 import { isPortFree } from "../commands/dev";
 import { agentScaffoldCommand } from "../commands/agent";
 import { evalNewCommand } from "../commands/eval";
-import {
-  loadProjectLink,
-  saveProjectLink,
-} from "../internal/project-link";
+import { loadProjectLink, saveProjectLink } from "../internal/project-link";
 import { initCommand } from "../commands/init";
 
 describe("isPortFree", () => {
@@ -139,12 +136,9 @@ describe("agent scaffold", () => {
   test("appends a new agent block to lobu.toml", async () => {
     writeFileSync(
       join(cwd, "lobu.toml"),
-      [
-        "[agents.first]",
-        'name = "first"',
-        'dir = "./agents/first"',
-        "",
-      ].join("\n")
+      ["[agents.first]", 'name = "first"', 'dir = "./agents/first"', ""].join(
+        "\n"
+      )
     );
     await agentScaffoldCommand("second", { cwd, name: "Second" });
     const toml = readFileSync(join(cwd, "lobu.toml"), "utf-8");

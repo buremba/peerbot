@@ -4,10 +4,7 @@ import {
   getCurrentContextName,
   resolveContext,
 } from "../internal/index.js";
-import {
-  loadProjectLink,
-  saveProjectLink,
-} from "../internal/project-link.js";
+import { loadProjectLink, saveProjectLink } from "../internal/project-link.js";
 
 interface LinkOptions {
   context?: string;
@@ -23,10 +20,7 @@ interface LinkOptions {
 export async function linkCommand(options: LinkOptions = {}): Promise<void> {
   const cwd = options.cwd ?? process.cwd();
   const target = await resolveContext(options.context);
-  const org =
-    options.org?.trim() ||
-    (await getActiveOrg(target.name)) ||
-    "";
+  const org = options.org?.trim() || (await getActiveOrg(target.name)) || "";
   if (!org) {
     console.error(
       chalk.red(
@@ -43,9 +37,9 @@ export async function linkCommand(options: LinkOptions = {}): Promise<void> {
   console.log(chalk.dim(`  Path:    ${cwd}/.lobu/project.json\n`));
 }
 
-export async function unlinkCommand(options: { cwd?: string } = {}): Promise<
-  void
-> {
+export async function unlinkCommand(
+  options: { cwd?: string } = {}
+): Promise<void> {
   const cwd = options.cwd ?? process.cwd();
   const existing = await loadProjectLink(cwd);
   if (!existing) {

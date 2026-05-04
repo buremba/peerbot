@@ -53,18 +53,14 @@ export async function devCommand(
       )
     );
     console.error(
-      chalk.dim(
-        "    Docker: docker run -d --name lobu-pg -p 5432:5432 \\"
-      )
+      chalk.dim("    Docker: docker run -d --name lobu-pg -p 5432:5432 \\")
     );
     console.error(
       chalk.dim(
         "              -e POSTGRES_PASSWORD=lobu pgvector/pgvector:pg16"
       )
     );
-    console.error(
-      chalk.dim("    macOS:  brew services start postgresql\n")
-    );
+    console.error(chalk.dim("    macOS:  brew services start postgresql\n"));
     process.exit(1);
   }
 
@@ -102,9 +98,7 @@ export async function devCommand(
   // "EADDRINUSE" foot-gun before the bundle boots and dumps a stack.
   const portFree = await isPortFree(Number(port));
   if (!portFree) {
-    console.error(
-      chalk.red(`\n  Port ${port} is already in use.`)
-    );
+    console.error(chalk.red(`\n  Port ${port} is already in use.`));
     console.error(
       chalk.dim(
         "  Stop the other process, or pass `--port <n>` / set `GATEWAY_PORT` to a free port.\n"

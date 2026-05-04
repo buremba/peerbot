@@ -95,7 +95,9 @@ export async function initCommand(
       process.exit(1);
     }
     console.log(
-      chalk.dim(`\nScaffolding into current directory: ${chalk.cyan(projectDir)}\n`)
+      chalk.dim(
+        `\nScaffolding into current directory: ${chalk.cyan(projectDir)}\n`
+      )
     );
   } else {
     if (projectNameArg && !PROJECT_NAME_PATTERN.test(projectNameArg)) {
@@ -191,7 +193,10 @@ export async function initCommand(
             value: "restricted",
           },
           { name: "Open — workers can access any domain", value: "open" },
-          { name: "Isolated — workers have no internet access", value: "isolated" },
+          {
+            name: "Isolated — workers have no internet access",
+            value: "isolated",
+          },
         ],
         default: "restricted",
       }),
@@ -320,9 +325,7 @@ export async function initCommand(
           }));
     if (!owlettoUrl) {
       console.log(
-        chalk.red(
-          "\n✗ --memory owletto-custom requires --memory-url <url>.\n"
-        )
+        chalk.red("\n✗ --memory owletto-custom requires --memory-url <url>.\n")
       );
       process.exit(1);
     }
@@ -561,9 +564,7 @@ export async function initCommand(
       )
     );
     console.log(
-      chalk.dim(
-        "       Docker:  docker run -d --name lobu-pg -p 5432:5432 \\"
-      )
+      chalk.dim("       Docker:  docker run -d --name lobu-pg -p 5432:5432 \\")
     );
     console.log(
       chalk.dim(
@@ -572,21 +573,27 @@ export async function initCommand(
     );
     console.log(
       chalk.dim(
-        '                DATABASE_URL=postgresql://postgres:lobu@localhost:5432/postgres'
+        "                DATABASE_URL=postgresql://postgres:lobu@localhost:5432/postgres"
       )
     );
     console.log(
-      chalk.dim("       macOS:   brew install postgresql && brew services start postgresql")
+      chalk.dim(
+        "       macOS:   brew install postgresql && brew services start postgresql"
+      )
     );
     console.log(
-      chalk.dim("       Cloud:   any managed Postgres with the pgvector extension\n")
+      chalk.dim(
+        "       Cloud:   any managed Postgres with the pgvector extension\n"
+      )
     );
 
     if (owlettoUrl) {
       console.log(chalk.cyan("  Lobu memory:"));
       console.log(chalk.dim(`     ${owlettoUrl}`));
       console.log(
-        chalk.dim("     Run `lobu memory init` to configure local MCP clients.\n")
+        chalk.dim(
+          "     Run `lobu memory init` to configure local MCP clients.\n"
+        )
       );
     }
     console.log(chalk.cyan(`  ${stepNum(4)}. Start the services:`));

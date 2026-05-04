@@ -25,6 +25,18 @@ packages/**/*.d.ts.map
 !packages/cli/bin/*.js
 # Hand-authored type shims for optional native modules (not build output)
 !packages/**/src/types/*.d.ts
+# Redirect packages publish a hand-written index.js + index.d.ts shim
+# (no build step — they re-export from the renamed package).
+!packages/owletto-sdk/index.js
+!packages/owletto-sdk/index.d.ts
+!packages/owletto-connectors/index.js
+!packages/owletto-connectors/index.d.ts
+!packages/owletto-worker/index.js
+!packages/owletto-worker/index.d.ts
+!packages/owletto-embeddings/index.js
+!packages/owletto-embeddings/index.d.ts
+!packages/owletto-openclaw/index.js
+!packages/owletto-openclaw/index.d.ts
 tsconfig.tsbuildinfo
 **/tsconfig.tsbuildinfo
 

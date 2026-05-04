@@ -41,6 +41,7 @@ jobs:
           # npm self-upgrade step (which has a known MODULE_NOT_FOUND bug
           # on hosted runners).
           node-version: 24
+          registry-url: "https://registry.npmjs.org"
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -51,10 +52,17 @@ jobs:
 
       - name: Publish packages
         env:
-          # Trusted publishing via OIDC: npm CLI automatically exchanges the
-          # GitHub Actions OIDC token for a short-lived publish token when
-          # id-token: write is granted and a trusted publisher is registered
-          # on npmjs.com. No NPM_TOKEN secret is used.
+          # Auth precedence (npm 11+):
+          #   1. OIDC trusted publishing (preferred) — npm CLI exchanges the
+          #      GitHub Actions OIDC token for a short-lived publish token
+          #      automatically when id-token: write is granted AND the package
+          #      is registered as a trusted publisher on npmjs.com.
+          #   2. NODE_AUTH_TOKEN fallback — used for new packages that haven't
+          #      been registered as trusted publishers yet (chicken-and-egg:
+          #      npmjs.com only lets you register packages that already exist).
+          # Once each new package has been registered on npmjs.com → Settings
+          # → Trusted Publishers, OIDC takes over automatically.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           # NPM_CONFIG_PROVENANCE enables provenance attestations when the
           # provenance input is true (requires trusted publisher on npmjs.com).
           NPM_CONFIG_PROVENANCE: "${{ inputs.provenance }}"

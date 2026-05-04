@@ -596,7 +596,6 @@ export function createGatewayApp(
       if (connectionManager) {
         const agentHistoryRouter = createAgentHistoryRoutes({
           connectionManager,
-          chatInstanceManager: chatInstanceManager ?? undefined,
           agentConfigStore: coreServices.getConfigStore(),
           userAgentsStore: coreServices.getUserAgentsStore(),
         });
@@ -720,19 +719,13 @@ export function createGatewayApp(
     const allAgents: AgentMetadata[] = agentConfigStore
       ? await agentConfigStore.listAgents()
       : [];
-    const templateAgents = allAgents.filter(
-      (a: AgentMetadata) => !a.parentConnectionId
-    );
-    const sandboxAgents = allAgents.filter(
-      (a: AgentMetadata) => !!a.parentConnectionId
-    );
 
     const connections = chatInstanceManager
       ? await chatInstanceManager.listConnections()
       : [];
 
     const agentDetails = [];
-    for (const a of templateAgents) {
+    for (const a of allAgents) {
       const settings = agentConfigStore
         ? await agentConfigStore.getSettings(a.agentId)
         : null;
@@ -757,7 +750,7 @@ export function createGatewayApp(
         (conn: {
           id: string;
           platform: string;
-          templateAgentId?: string;
+          agentId?: string;
           metadata?: Record<string, string>;
         }) => ({
           id: conn.id,
@@ -765,16 +758,10 @@ export function createGatewayApp(
           status: chatInstanceManager?.getInstance(conn.id)
             ? "connected"
             : "disconnected",
-          templateAgentId: conn.templateAgentId || null,
+          agentId: conn.agentId || null,
           botUsername: conn.metadata?.botUsername || null,
         })
       ),
-      sandboxes: sandboxAgents.map((s: AgentMetadata) => ({
-        agentId: s.agentId,
-        name: s.name,
-        parentConnectionId: s.parentConnectionId || null,
-        lastUsedAt: s.lastUsedAt ?? null,
-      })),
     });
   });
 

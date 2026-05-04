@@ -245,7 +245,7 @@ const SupportedPlatformSchema = z.enum(SUPPORTED_PLATFORMS);
 const PlatformConnectionSchema = z.object({
   id: z.string(),
   platform: SupportedPlatformSchema,
-  templateAgentId: z.string().optional(),
+  agentId: z.string().optional(),
   config: PlatformAdapterConfigSchema,
   settings: ConnectionSettingsSchema,
   metadata: FlexibleObjectSchema,
@@ -261,7 +261,7 @@ const ConnectionIdParamsSchema = z.object({
 
 const ListConnectionsQuerySchema = z.object({
   platform: SupportedPlatformSchema.optional(),
-  templateAgentId: z.string().optional(),
+  agentId: z.string().optional(),
 });
 
 const ListConnectionsRoute = createRoute({
@@ -389,7 +389,7 @@ export function createConnectionCrudRoutes(
   manager: ChatInstanceManager,
   accessConfig: {
     userAgentsStore: UserAgentsStore;
-    agentMetadataStore: Pick<AgentConfigStore, "getMetadata" | "listSandboxes">;
+    agentMetadataStore: Pick<AgentConfigStore, "getMetadata">;
   }
 ): OpenAPIHono {
   const app = new OpenAPIHono();
@@ -447,7 +447,7 @@ export function createConnectionCrudRoutes(
           ),
           // Expose the owning agent so test scripts can route to the
           // configured agent instead of a placeholder like `test-slack`.
-          agentId: connection.templateAgentId,
+          agentId: connection.agentId,
         });
       }
     }
@@ -460,10 +460,10 @@ export function createConnectionCrudRoutes(
 
   // Internal endpoint for server-to-server connection listing (no auth required)
   const listAllConnections = async (c: any) => {
-    const { platform, templateAgentId } = c.req.query();
+    const { platform, agentId } = c.req.query();
     const connections = await manager.listConnections({
       platform: platform || undefined,
-      templateAgentId: templateAgentId || undefined,
+      agentId: agentId || undefined,
     });
     return c.json({ connections });
   };
@@ -475,13 +475,13 @@ export function createConnectionCrudRoutes(
       return c.json({ error: "Unauthorized" }, 401);
     }
 
-    const { platform, templateAgentId } = c.req.valid("query");
+    const { platform, agentId } = c.req.valid("query");
     let connections;
 
-    if (templateAgentId) {
+    if (agentId) {
       const access = await verifyOwnedAgentAccess(
         session,
-        templateAgentId,
+        agentId,
         accessConfig
       );
       if (!access.authorized) {
@@ -490,7 +490,7 @@ export function createConnectionCrudRoutes(
 
       connections = await manager.listConnections({
         platform: platform || undefined,
-        templateAgentId,
+        agentId,
       });
     } else {
       if (!session.isAdmin && session.settingsMode !== "admin") {
@@ -515,10 +515,10 @@ export function createConnectionCrudRoutes(
     if (!connection) {
       return c.json({ error: "Connection not found" }, 404);
     }
-    if (connection.templateAgentId) {
+    if (connection.agentId) {
       const access = await verifyOwnedAgentAccess(
         session,
-        connection.templateAgentId,
+        connection.agentId,
         accessConfig
       );
       if (!access.authorized) {
@@ -527,49 +527,6 @@ export function createConnectionCrudRoutes(
     }
 
     return c.json(connection);
-  });
-
-  // GET /api/v1/connections/:id/sandboxes — list sandbox agents for a connection
-  app.get("/api/v1/connections/:id/sandboxes", async (c): Promise<any> => {
-    const session = verifySettingsSession(c);
-    if (!session) {
-      return c.json({ error: "Unauthorized" }, 401);
-    }
-
-    const id = c.req.param("id");
-    const connection = await manager.getConnection(id);
-    if (!connection) {
-      return c.json({ error: "Connection not found" }, 404);
-    }
-    if (connection.templateAgentId) {
-      const access = await verifyOwnedAgentAccess(
-        session,
-        connection.templateAgentId,
-        accessConfig
-      );
-      if (!access.authorized) {
-        return c.json({ error: "Forbidden" }, 403);
-      }
-    }
-    if (
-      !connection.templateAgentId &&
-      !session.isAdmin &&
-      session.settingsMode !== "admin"
-    ) {
-      return c.json({ error: "Forbidden" }, 403);
-    }
-
-    const sandboxes = await accessConfig.agentMetadataStore.listSandboxes(id);
-    return c.json({
-      sandboxes: sandboxes.map((s) => ({
-        agentId: s.agentId,
-        name: s.name,
-        description: s.description || "",
-        owner: s.owner,
-        createdAt: s.createdAt,
-        lastUsedAt: s.lastUsedAt ?? null,
-      })),
-    });
   });
 
   return app;

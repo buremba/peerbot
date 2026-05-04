@@ -46,19 +46,6 @@ export class DeclaredAgentRegistry {
     }
     logger.debug(`Registry now holds ${this.entries.size} declared agent(s)`);
   }
-
-  /**
-   * Find the first declared agent that has installed providers. Used to
-   * pick a template for ephemeral/sandbox agents.
-   */
-  findTemplateAgentId(): string | null {
-    for (const [agentId, entry] of this.entries) {
-      if (entry.settings.installedProviders?.length) {
-        return agentId;
-      }
-    }
-    return null;
-  }
 }
 
 /**

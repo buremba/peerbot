@@ -12,17 +12,6 @@ import {
 import { getDb } from '../../db/client';
 import { getOrgId, tryGetOrgId } from './org-context';
 
-type ExtendedAgentConfigStore = AgentConfigStore & {
-  getEffectiveSettings(agentId: string): Promise<AgentSettings | null>;
-  getSettingsContext(agentId: string): Promise<{
-    localSettings: AgentSettings | null;
-    effectiveSettings: AgentSettings | null;
-    templateAgentId?: string;
-  }>;
-  findSandboxAgentIds(templateAgentId: string): Promise<string[]>;
-  findTemplateAgentId(): Promise<string | null>;
-};
-
 export const AGENT_ID_PATTERN = /^[a-z][a-z0-9-]{2,59}$/;
 
 export function isValidAgentId(agentId: string): boolean {
@@ -74,17 +63,14 @@ function rowToSettings(row: Record<string, any>): AgentSettings {
     egressConfig: row.egress_config ?? undefined,
     nixConfig: row.nix_config ?? undefined,
     mcpServers: row.mcp_servers ?? undefined,
-    mcpInstallNotified: row.mcp_install_notified ?? undefined,
     soulMd: row.soul_md ?? undefined,
     userMd: row.user_md ?? undefined,
     identityMd: row.identity_md ?? undefined,
     skillsConfig: row.skills_config ?? undefined,
     toolsConfig: row.tools_config ?? undefined,
     pluginsConfig: row.plugins_config ?? undefined,
-    authProfiles: row.auth_profiles ?? undefined,
     installedProviders: row.installed_providers ?? undefined,
     verboseLogging: row.verbose_logging ?? undefined,
-    templateAgentId: row.template_agent_id ?? undefined,
     preApprovedTools: row.pre_approved_tools ?? undefined,
     guardrails: row.guardrails ?? undefined,
     updatedAt:
@@ -103,7 +89,6 @@ function rowToMetadata(row: Record<string, any>): AgentMetadata {
     },
     isWorkspaceAgent: row.is_workspace_agent ?? undefined,
     workspaceId: row.workspace_id ?? undefined,
-    parentConnectionId: row.parent_connection_id ?? undefined,
     createdAt:
       row.created_at instanceof Date ? row.created_at.getTime() : (row.created_at ?? Date.now()),
     lastUsedAt:
@@ -111,45 +96,6 @@ function rowToMetadata(row: Record<string, any>): AgentMetadata {
         ? row.last_used_at.getTime()
         : (row.last_used_at ?? undefined),
   };
-}
-
-function withDefinedValues<T extends Record<string, any>>(value: T): T {
-  return Object.fromEntries(Object.entries(value).filter(([, field]) => field !== undefined)) as T;
-}
-
-async function resolveTemplateAgentId(
-  agentId: string,
-  settings: AgentSettings | null
-): Promise<string | undefined> {
-  if (settings?.templateAgentId) return settings.templateAgentId;
-
-  const sql = getDb();
-  const orgId = getOrgId();
-
-  const metadataRows = await sql`
-    SELECT parent_connection_id
-    FROM agents
-    WHERE id = ${agentId} AND organization_id = ${orgId}
-  `;
-
-  const parentConnectionId = metadataRows[0]?.parent_connection_id as
-    | string
-    | undefined;
-
-  if (!parentConnectionId) return undefined;
-
-  const connectionRows = await sql`
-    SELECT c.agent_id
-    FROM agent_connections c
-    JOIN agents a ON a.id = c.agent_id
-    WHERE c.id = ${parentConnectionId} AND a.organization_id = ${orgId}
-  `;
-
-  if (typeof connectionRows[0]?.agent_id === 'string') {
-    return connectionRows[0].agent_id;
-  }
-
-  return undefined;
 }
 
 const SECRET_PATTERN = /(?:credential|secret|token|password|api(?:_|-)?key|authorization)/i;
@@ -198,7 +144,7 @@ function rowToConnection(row: Record<string, any>): StoredConnection {
   return {
     id: row.id,
     platform: row.platform,
-    templateAgentId: row.agent_id ?? undefined,
+    agentId: row.agent_id ?? undefined,
     config: decryptLegacyEncryptedConfig(row.config ?? {}),
     settings: row.settings ?? {},
     metadata: row.metadata ?? {},
@@ -234,7 +180,7 @@ function rowToGrant(row: Record<string, any>): Grant {
 }
 
 export function createPostgresAgentConfigStore(): AgentConfigStore {
-  const store: ExtendedAgentConfigStore = {
+  const store: AgentConfigStore = {
     async getSettings(agentId) {
       const sql = getDb();
       // Worker gateway calls this without orgContext — agent IDs are globally
@@ -245,9 +191,9 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
         ? await sql`
             SELECT model, model_selection, provider_model_preferences,
                    network_config, egress_config, nix_config, mcp_servers,
-                   mcp_install_notified, soul_md, user_md, identity_md,
-                   skills_config, tools_config, plugins_config, auth_profiles,
-                   installed_providers, verbose_logging, template_agent_id,
+                   soul_md, user_md, identity_md,
+                   skills_config, tools_config, plugins_config,
+                   installed_providers, verbose_logging,
                    pre_approved_tools, guardrails, updated_at
             FROM agents
             WHERE id = ${agentId} AND organization_id = ${orgId}
@@ -255,9 +201,9 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
         : await sql`
             SELECT model, model_selection, provider_model_preferences,
                    network_config, egress_config, nix_config, mcp_servers,
-                   mcp_install_notified, soul_md, user_md, identity_md,
-                   skills_config, tools_config, plugins_config, auth_profiles,
-                   installed_providers, verbose_logging, template_agent_id,
+                   soul_md, user_md, identity_md,
+                   skills_config, tools_config, plugins_config,
+                   installed_providers, verbose_logging,
                    pre_approved_tools, guardrails, updated_at
             FROM agents
             WHERE id = ${agentId}
@@ -278,17 +224,14 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
           egress_config = ${sql.json(settings.egressConfig ?? {})},
           nix_config = ${sql.json(settings.nixConfig ?? {})},
           mcp_servers = ${sql.json(settings.mcpServers ?? {})},
-          mcp_install_notified = ${sql.json(settings.mcpInstallNotified ?? {})},
           soul_md = ${settings.soulMd ?? ''},
           user_md = ${settings.userMd ?? ''},
           identity_md = ${settings.identityMd ?? ''},
           skills_config = ${sql.json(settings.skillsConfig ?? { skills: [] })},
           tools_config = ${sql.json(settings.toolsConfig ?? {})},
           plugins_config = ${sql.json(settings.pluginsConfig ?? {})},
-          auth_profiles = ${sql.json(settings.authProfiles ?? [])},
           installed_providers = ${sql.json(settings.installedProviders ?? [])},
           verbose_logging = ${settings.verboseLogging ?? false},
-          template_agent_id = ${settings.templateAgentId ?? null},
           pre_approved_tools = ${sql.json(settings.preApprovedTools ?? [])},
           guardrails = ${sql.json(settings.guardrails ?? [])},
           updated_at = ${now}
@@ -307,75 +250,17 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
         UPDATE agents SET
           model = NULL, model_selection = '{}', provider_model_preferences = '{}',
           network_config = '{}', egress_config = '{}', nix_config = '{}',
-          mcp_servers = '{}', mcp_install_notified = '{}',
+          mcp_servers = '{}',
           soul_md = '', user_md = '', identity_md = '',
           skills_config = '{"skills": []}', tools_config = '{}', plugins_config = '{}',
-          auth_profiles = '[]', installed_providers = '[]', verbose_logging = false,
-          template_agent_id = NULL, pre_approved_tools = '[]', guardrails = '[]',
+          installed_providers = '[]', verbose_logging = false,
+          pre_approved_tools = '[]', guardrails = '[]',
           updated_at = now()
         WHERE id = ${agentId} AND organization_id = ${orgId}
       `;
     },
     async hasSettings(agentId) {
       return store.hasAgent(agentId);
-    },
-    async getEffectiveSettings(agentId: string) {
-      const context = await store.getSettingsContext(agentId);
-      return context.effectiveSettings;
-    },
-    async getSettingsContext(agentId: string) {
-      const localSettings = await store.getSettings(agentId);
-      const templateAgentId = await resolveTemplateAgentId(agentId, localSettings);
-
-      if (!templateAgentId) {
-        return { localSettings, effectiveSettings: localSettings };
-      }
-
-      const templateSettings = await store.getSettings(templateAgentId);
-      if (!templateSettings) {
-        return { localSettings, effectiveSettings: localSettings, templateAgentId };
-      }
-
-      if (!localSettings) {
-        return {
-          localSettings,
-          effectiveSettings: { ...templateSettings, templateAgentId },
-          templateAgentId,
-        };
-      }
-
-      return {
-        localSettings,
-        effectiveSettings: {
-          ...templateSettings,
-          ...withDefinedValues(localSettings),
-          templateAgentId,
-        },
-        templateAgentId,
-      };
-    },
-    async findSandboxAgentIds(templateAgentId: string) {
-      const sql = getDb();
-      const orgId = getOrgId();
-      const rows = await sql`
-        SELECT id
-        FROM agents
-        WHERE organization_id = ${orgId} AND template_agent_id = ${templateAgentId}
-      `;
-      return rows.map((row) => row.id as string);
-    },
-    async findTemplateAgentId() {
-      const sql = getDb();
-      const orgId = getOrgId();
-      const rows = await sql`
-        SELECT id
-        FROM agents
-        WHERE organization_id = ${orgId}
-          AND jsonb_array_length(installed_providers) > 0
-        ORDER BY updated_at DESC NULLS LAST, created_at DESC
-        LIMIT 1
-      `;
-      return (rows[0]?.id as string | undefined) ?? null;
     },
     async getMetadata(agentId) {
       const sql = getDb();
@@ -384,14 +269,14 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
       const rows = orgId
         ? await sql`
             SELECT id, name, description, owner_platform, owner_user_id,
-                   is_workspace_agent, workspace_id, parent_connection_id,
+                   is_workspace_agent, workspace_id,
                    created_at, last_used_at
             FROM agents
             WHERE id = ${agentId} AND organization_id = ${orgId}
           `
         : await sql`
             SELECT id, name, description, owner_platform, owner_user_id,
-                   is_workspace_agent, workspace_id, parent_connection_id,
+                   is_workspace_agent, workspace_id,
                    created_at, last_used_at
             FROM agents
             WHERE id = ${agentId}
@@ -405,12 +290,12 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
       const now = new Date();
       const rows = await sql`
         INSERT INTO agents (id, organization_id, name, description, owner_platform, owner_user_id,
-                            is_workspace_agent, workspace_id, parent_connection_id, created_at)
+                            is_workspace_agent, workspace_id, created_at)
         VALUES (
           ${agentId}, ${orgId}, ${metadata.name}, ${metadata.description ?? null},
           ${metadata.owner.platform}, ${metadata.owner.userId},
           ${metadata.isWorkspaceAgent ?? false}, ${metadata.workspaceId ?? null},
-          ${metadata.parentConnectionId ?? null}, ${now}
+          ${now}
         )
         ON CONFLICT (id) DO UPDATE SET
           name = EXCLUDED.name,
@@ -419,7 +304,6 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
           owner_user_id = EXCLUDED.owner_user_id,
           is_workspace_agent = EXCLUDED.is_workspace_agent,
           workspace_id = EXCLUDED.workspace_id,
-          parent_connection_id = EXCLUDED.parent_connection_id,
           updated_at = ${now}
         WHERE agents.organization_id = EXCLUDED.organization_id
         RETURNING organization_id
@@ -451,23 +335,10 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
       const orgId = getOrgId();
       const rows = await sql`
         SELECT id, name, description, owner_platform, owner_user_id,
-               is_workspace_agent, workspace_id, parent_connection_id,
+               is_workspace_agent, workspace_id,
                created_at, last_used_at
         FROM agents
         WHERE organization_id = ${orgId}
-        ORDER BY created_at DESC
-      `;
-      return rows.map(rowToMetadata);
-    },
-    async listSandboxes(connectionId) {
-      const sql = getDb();
-      const orgId = getOrgId();
-      const rows = await sql`
-        SELECT id, name, description, owner_platform, owner_user_id,
-               is_workspace_agent, workspace_id, parent_connection_id,
-               created_at, last_used_at
-        FROM agents
-        WHERE organization_id = ${orgId} AND parent_connection_id = ${connectionId}
         ORDER BY created_at DESC
       `;
       return rows.map(rowToMetadata);
@@ -500,35 +371,35 @@ export function createPostgresAgentConnectionStore(): AgentConnectionStore {
       // Worker gateway / ChatInstanceManager calls this without orgContext.
       const orgId = tryGetOrgId();
 
-      if (filter?.templateAgentId && filter?.platform) {
+      if (filter?.agentId && filter?.platform) {
         const rows = orgId
           ? await sql`
               SELECT c.* FROM agent_connections c
               JOIN agents a ON a.id = c.agent_id
               WHERE a.organization_id = ${orgId}
-                AND c.agent_id = ${filter.templateAgentId}
+                AND c.agent_id = ${filter.agentId}
                 AND c.platform = ${filter.platform}
               ORDER BY c.created_at DESC
             `
           : await sql`
               SELECT c.* FROM agent_connections c
-              WHERE c.agent_id = ${filter.templateAgentId}
+              WHERE c.agent_id = ${filter.agentId}
                 AND c.platform = ${filter.platform}
               ORDER BY c.created_at DESC
             `;
         return rows.map(rowToConnection);
       }
-      if (filter?.templateAgentId) {
+      if (filter?.agentId) {
         const rows = orgId
           ? await sql`
               SELECT c.* FROM agent_connections c
               JOIN agents a ON a.id = c.agent_id
-              WHERE a.organization_id = ${orgId} AND c.agent_id = ${filter.templateAgentId}
+              WHERE a.organization_id = ${orgId} AND c.agent_id = ${filter.agentId}
               ORDER BY c.created_at DESC
             `
           : await sql`
               SELECT c.* FROM agent_connections c
-              WHERE c.agent_id = ${filter.templateAgentId}
+              WHERE c.agent_id = ${filter.agentId}
               ORDER BY c.created_at DESC
             `;
         return rows.map(rowToConnection);
@@ -596,7 +467,7 @@ export function createPostgresAgentConnectionStore(): AgentConnectionStore {
       await sql`
         INSERT INTO agent_connections (id, agent_id, platform, config, settings, metadata, status, error_message, created_at, updated_at)
         VALUES (
-          ${connection.id}, ${connection.templateAgentId ?? null}, ${connection.platform},
+          ${connection.id}, ${connection.agentId ?? null}, ${connection.platform},
           ${sql.json(configToPersist)}, ${sql.json(connection.settings)}, ${sql.json(connection.metadata)},
           ${connection.status}, ${connection.errorMessage ?? null}, ${now}, ${now}
         )

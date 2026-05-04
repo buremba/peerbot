@@ -72,9 +72,6 @@ export abstract class BaseAgentStore implements AgentStore {
   protected abstract deleteMetadataRaw(agentId: string): Promise<void>;
   protected abstract hasMetadataRaw(agentId: string): Promise<boolean>;
   protected abstract listAllMetadata(): Promise<AgentMetadata[]>;
-  protected abstract listSandboxMetadata(
-    connectionId: string
-  ): Promise<AgentMetadata[]>;
 
   abstract saveMetadata(
     agentId: string,
@@ -94,8 +91,8 @@ export abstract class BaseAgentStore implements AgentStore {
     connection: StoredConnection
   ): Promise<void>;
   protected abstract deleteConnectionRaw(connectionId: string): Promise<void>;
-  protected abstract listConnectionsByTemplate(
-    templateAgentId?: string
+  protected abstract listConnectionsByAgent(
+    agentId?: string
   ): Promise<StoredConnection[]>;
 
   // ── Grants (implemented per-backend) ──────────────────────────────
@@ -194,10 +191,6 @@ export abstract class BaseAgentStore implements AgentStore {
     return this.listAllMetadata();
   }
 
-  async listSandboxes(connectionId: string): Promise<AgentMetadata[]> {
-    return this.listSandboxMetadata(connectionId);
-  }
-
   // ── Connections (AgentConnectionStore) ────────────────────────────
 
   async getConnection(connectionId: string): Promise<StoredConnection | null> {
@@ -227,12 +220,10 @@ export abstract class BaseAgentStore implements AgentStore {
   }
 
   async listConnections(filter?: {
-    templateAgentId?: string;
+    agentId?: string;
     platform?: string;
   }): Promise<StoredConnection[]> {
-    const connections = await this.listConnectionsByTemplate(
-      filter?.templateAgentId
-    );
+    const connections = await this.listConnectionsByAgent(filter?.agentId);
     if (filter?.platform) {
       return connections.filter((c) => c.platform === filter.platform);
     }

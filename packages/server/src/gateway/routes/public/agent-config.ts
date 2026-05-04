@@ -124,178 +124,38 @@ function getProviderModelPreferencesFromSettings(
   return fallbackPreferences;
 }
 
-function hasOwnSetting(
-  settings: AgentSettings | null | undefined,
-  key: keyof AgentSettings
-): boolean {
-  return !!settings && Object.hasOwn(settings, key);
-}
-
-const SECTION_SETTING_KEYS: Record<
-  Exclude<SettingsSectionKey, "permissions">,
-  Array<keyof AgentSettings>
-> = {
-  model: [
-    "installedProviders",
-    "model",
-    "modelSelection",
-    "providerModelPreferences",
-  ],
-  "system-prompt": ["identityMd", "soulMd", "userMd"],
-  skills: ["skillsConfig", "mcpServers", "pluginsConfig"],
-  packages: ["nixConfig"],
-  logging: ["verboseLogging"],
-};
-
-function sectionHasLocalOverride(
-  section: SettingsSectionKey,
-  localSettings: AgentSettings | null | undefined
-): boolean {
-  if (section === "permissions") {
-    return false;
-  }
-  return SECTION_SETTING_KEYS[section].some((key) =>
-    hasOwnSetting(localSettings, key)
-  );
-}
-
-function sectionHasTemplateValue(
-  section: SettingsSectionKey,
-  templateSettings: AgentSettings | null | undefined
-): boolean {
-  if (section === "permissions") {
-    return false;
-  }
-  return SECTION_SETTING_KEYS[section].some((key) =>
-    hasOwnSetting(templateSettings, key)
-  );
-}
-
-function resolveSectionSource(
-  isSandbox: boolean,
-  hasLocalOverride: boolean,
-  hasTemplateValue: boolean
-): "local" | "inherited" | "mixed" {
-  if (!isSandbox) return "local";
-  if (!hasLocalOverride && hasTemplateValue) return "inherited";
-  if (hasLocalOverride && hasTemplateValue) return "mixed";
-  return "local";
-}
-
-function resolveProviderSources(
-  localSettings: AgentSettings | null,
-  effectiveSettings: AgentSettings | null,
-  templateSettings: AgentSettings | null,
-  isSandbox: boolean,
-  viewer: ReturnType<typeof getViewer>
-): Record<string, ResolvedProviderView> {
-  const effectiveProviderIds = (
-    effectiveSettings?.installedProviders || []
-  ).map((provider) => provider.providerId);
-  const localProviderIds = new Set(
-    (localSettings?.installedProviders || []).map(
-      (provider) => provider.providerId
-    )
-  );
-  const localPreferenceProviders = new Set(
-    Object.keys(localSettings?.providerModelPreferences || {})
-  );
-  const templateProviderIds = new Set(
-    (templateSettings?.installedProviders || []).map(
-      (provider) => provider.providerId
-    )
-  );
-
-  return Object.fromEntries(
-    effectiveProviderIds.map((providerId) => {
-      const hasLocalOverride =
-        localProviderIds.has(providerId) ||
-        localPreferenceProviders.has(providerId);
-
-      const source = resolveSectionSource(
-        isSandbox,
-        hasLocalOverride,
-        templateProviderIds.has(providerId)
-      );
-
-      return [
-        providerId,
-        {
-          id: providerId,
-          source,
-          canEdit: canEditSettingsSection("model", viewer),
-          canReset: isSandbox && hasLocalOverride,
-          hasLocalOverride,
-        } satisfies ResolvedProviderView,
-      ];
-    })
-  );
-}
-
 async function resolveSettingsView(
   config: AgentConfigRoutesConfig,
   agentId: string,
   payload: SettingsTokenPayload | null
 ): Promise<{
-  scope: "agent" | "sandbox";
-  templateAgentId?: string;
-  templateAgentName?: string;
   sections: Record<SettingsSectionKey, ResolvedSectionView>;
   providerSources: Record<string, ResolvedProviderView>;
-  effectiveSettings: AgentSettings | null;
+  settings: AgentSettings | null;
 }> {
   const viewer = getViewer(payload);
-  const localSettings = await config.agentSettingsStore.getSettings(agentId);
-  const effectiveSettings =
-    await config.agentSettingsStore.getEffectiveSettings(agentId);
-  const templateAgentId =
-    effectiveSettings?.templateAgentId || localSettings?.templateAgentId;
-  const templateSettings = templateAgentId
-    ? await config.agentSettingsStore.getSettings(templateAgentId)
-    : null;
-  const templateAgentName = templateAgentId
-    ? (await config.agentConfigStore.getMetadata(templateAgentId))?.name
-    : undefined;
-  const isSandbox = !!templateAgentId;
+  const settings = await config.agentSettingsStore.getSettings(agentId);
 
   const sections = Object.fromEntries(
-    SETTINGS_SECTION_KEYS.map((section) => {
-      const hasLocalOverride = sectionHasLocalOverride(section, localSettings);
-      const hasTemplateValue = sectionHasTemplateValue(
-        section,
-        templateSettings
-      );
-
-      return [
-        section,
-        {
-          source: resolveSectionSource(
-            isSandbox,
-            hasLocalOverride,
-            hasTemplateValue
-          ),
-          editable: canEditSettingsSection(section, viewer),
-          canReset: isSandbox && hasLocalOverride,
-          hasLocalOverride,
-        } satisfies ResolvedSectionView,
-      ];
-    })
+    SETTINGS_SECTION_KEYS.map((section) => [
+      section,
+      {
+        editable: canEditSettingsSection(section, viewer),
+      } satisfies ResolvedSectionView,
+    ])
   ) as Record<SettingsSectionKey, ResolvedSectionView>;
 
-  return {
-    scope: isSandbox ? "sandbox" : "agent",
-    templateAgentId,
-    templateAgentName,
-    sections,
-    providerSources: resolveProviderSources(
-      localSettings,
-      effectiveSettings,
-      templateSettings,
-      isSandbox,
-      viewer
-    ),
-    effectiveSettings,
-  };
+  const providerSources = Object.fromEntries(
+    (settings?.installedProviders || []).map((provider) => [
+      provider.providerId,
+      {
+        id: provider.providerId,
+        canEdit: canEditSettingsSection("model", viewer),
+      } satisfies ResolvedProviderView,
+    ])
+  );
+
+  return { sections, providerSources, settings };
 }
 
 async function buildResolvedConfigResponse(
@@ -308,7 +168,7 @@ async function buildResolvedConfigResponse(
     resolveSettingsView(config, agentId, payload),
     config.grantStore?.listGrants(agentId) ?? Promise.resolve([]),
   ]);
-  const settings = settingsView.effectiveSettings;
+  const settings = settingsView.settings;
 
   const providers: Record<
     string,
@@ -412,9 +272,6 @@ async function buildResolvedConfigResponse(
   const sanitized = sanitizeSettingsForResponse(settings);
   return {
     agentId,
-    scope: settingsView.scope,
-    templateAgentId: settingsView.templateAgentId,
-    templateAgentName: settingsView.templateAgentName,
     sections: settingsView.sections,
     providerViews: settingsView.providerSources,
     instructions: {
@@ -523,9 +380,9 @@ export function createAgentConfigRoutes(
     }
 
     const allProviders = config.providerCatalogService.listCatalogProviders();
-    const effectiveSettings =
-      await config.agentSettingsStore.getEffectiveSettings(agentId);
-    const installed = effectiveSettings?.installedProviders || [];
+    const settings =
+      await config.agentSettingsStore.getSettings(agentId);
+    const installed = settings?.installedProviders || [];
     const installedIds = new Set(installed.map((ip) => ip.providerId));
 
     const catalog = allProviders.map((p) => ({

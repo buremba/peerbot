@@ -79,7 +79,7 @@ function installDelegatingManagerStub(): void {
   chatManagerStash.manager = {
     async addConnection(
       platform: string,
-      templateAgentId: string,
+      agentId: string,
       config: Record<string, unknown>,
       settings: Record<string, unknown>,
       _metadata: Record<string, unknown> | undefined,
@@ -90,12 +90,12 @@ function installDelegatingManagerStub(): void {
       );
       const store = createPostgresAgentConnectionStore();
       const id =
-        stableId ?? `${platform}-${templateAgentId}-${Date.now()}`;
+        stableId ?? `${platform}-${agentId}-${Date.now()}`;
       const now = Date.now();
       const row = {
         id,
         platform,
-        templateAgentId,
+        agentId,
         config: config as Record<string, any>,
         settings: settings as any,
         metadata: {},
@@ -920,7 +920,7 @@ describe('residual-race fixes (PR-466 follow-up)', () => {
       chatManagerStash.manager = {
         async addConnection(
           platform: string,
-          templateAgentId: string,
+          agentId: string,
           config: Record<string, unknown>,
           settings: Record<string, unknown>,
           metadata: Record<string, unknown>,
@@ -935,7 +935,7 @@ describe('residual-race fixes (PR-466 follow-up)', () => {
           return {
             id: stableId,
             platform,
-            templateAgentId,
+            agentId,
             config,
             settings,
             metadata,
@@ -964,7 +964,7 @@ describe('residual-race fixes (PR-466 follow-up)', () => {
           return {
             id: stableId,
             platform: row.platform ?? 'telegram',
-            templateAgentId: row.agent_id ?? 'mgr-host',
+            agentId: row.agent_id ?? 'mgr-host',
             config: updatedConfig,
             settings: updatedSettings,
             metadata: row.metadata ?? {},

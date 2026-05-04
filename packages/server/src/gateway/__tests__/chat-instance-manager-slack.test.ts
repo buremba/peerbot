@@ -106,7 +106,7 @@ describe("ChatInstanceManager Slack marketplace support", () => {
           await connectionStore.saveConnection({
             id: "conn-restart-test",
             platform: "telegram",
-            templateAgentId: "agent-1",
+            agentId: "agent-1",
             config: {
               platform: "telegram",
               botToken: tokenRef,

@@ -248,8 +248,6 @@ function requireSessionOrAdminPat(c: any): Response | null {
 routes.get('/', mcpAuth, async (c) => {
   return withOrg(c, async () => {
     const agents = await configStore.listAgents();
-    // Filter out sandbox agents
-    const filtered = agents.filter((a) => !a.parentConnectionId);
 
     // Count connections per agent
     const sql = getDb();
@@ -273,26 +271,7 @@ routes.get('/', mcpAuth, async (c) => {
     `;
     const activeCountMap = new Map(activeConnCounts.map((r: any) => [r.agent_id, r.count]));
 
-    const persistedClientRows = await sql`
-      SELECT template_agent_id as agent_id, id
-      FROM agents
-      WHERE organization_id = ${orgId}
-        AND parent_connection_id IS NOT NULL
-        AND template_agent_id IS NOT NULL
-    `;
     const clientCountMap = new Map<string, Set<string>>();
-    for (const row of persistedClientRows as Array<{
-      agent_id: string;
-      id: string;
-    }>) {
-      let ids = clientCountMap.get(row.agent_id);
-      if (!ids) {
-        ids = new Set<string>();
-        clientCountMap.set(row.agent_id, ids);
-      }
-      ids.add(row.id);
-    }
-
     const runtimeClientCounts = await countRuntimeMessagingClientsByAgent(orgId);
     for (const [agentId, runtimeIds] of runtimeClientCounts.entries()) {
       let ids = clientCountMap.get(agentId);
@@ -304,7 +283,7 @@ routes.get('/', mcpAuth, async (c) => {
     }
 
     return c.json({
-      agents: filtered.map((a) => ({
+      agents: agents.map((a) => ({
         ...a,
         connectionCount: countMap.get(a.agentId) ?? 0,
         activeConnectionCount: activeCountMap.get(a.agentId) ?? 0,
@@ -421,14 +400,7 @@ routes.get('/:agentId', mcpAuth, async (c) => {
       FROM agent_connections
       WHERE agent_id = ${agentId}
     `;
-    const persistedClientRows = await sql`
-      SELECT id
-      FROM agents
-      WHERE organization_id = ${organizationId}
-        AND template_agent_id = ${agentId}
-        AND parent_connection_id IS NOT NULL
-    `;
-    const clientIds = new Set((persistedClientRows as Array<{ id: string }>).map((row) => row.id));
+    const clientIds = new Set<string>();
     const runtimeClientCounts = await countRuntimeMessagingClientsByAgent(organizationId);
     for (const runtimeClientId of runtimeClientCounts.get(agentId) ?? []) {
       clientIds.add(runtimeClientId);
@@ -716,13 +688,13 @@ routes.get('/:agentId/platforms', mcpAuth, async (c) => {
     }
     const chatManager = getChatInstanceManager();
     let platforms = await connectionStore.listConnections({
-      templateAgentId: agentId,
+      agentId,
     });
 
     if (chatManager) {
       try {
         const runtimePlatforms = await chatManager.listConnections({
-          templateAgentId: agentId,
+          agentId,
         });
         if (runtimePlatforms.length > 0) {
           platforms = runtimePlatforms;
@@ -907,7 +879,7 @@ routes.put('/:agentId/platforms/by-stable-id/:stableId', mcpAuth, async (c) => {
     // first one's manager-side work has fully committed.
     return await withStablePlatformLock(stableId, async () => {
       let existing = await connectionStore.getConnection(stableId);
-      if (existing && existing.templateAgentId && existing.templateAgentId !== agentId) {
+      if (existing && existing.agentId && existing.agentId !== agentId) {
         return c.json(
           { error: 'Stable ID already used by a different agent' },
           409
@@ -955,7 +927,7 @@ routes.put('/:agentId/platforms/by-stable-id/:stableId', mcpAuth, async (c) => {
               return c.json({ platform: created }, 201);
             } catch (error: any) {
               // Roll back the placeholder so a retry doesn't see a half-baked
-              // row that fails the `existing.templateAgentId` check inconsistently.
+              // row that fails the `existing.agentId` check inconsistently.
               try {
                 await connectionStore.deleteConnection(stableId);
               } catch {
@@ -982,7 +954,7 @@ routes.put('/:agentId/platforms/by-stable-id/:stableId', mcpAuth, async (c) => {
         if (!reread) {
           return c.json({ error: 'Platform vanished after conflict' }, 500);
         }
-        if (reread.templateAgentId && reread.templateAgentId !== agentId) {
+        if (reread.agentId && reread.agentId !== agentId) {
           return c.json(
             { error: 'Stable ID already used by a different agent' },
             409
@@ -1060,8 +1032,8 @@ function configsShallowEqual(
 
 // ── Get platform ─────────────────────────────────────────────────────────────
 
-function platformBelongsToAgent(platform: { templateAgentId?: string | null }, agentId: string) {
-  return platform.templateAgentId === agentId;
+function platformBelongsToAgent(platform: { agentId?: string | null }, agentId: string) {
+  return platform.agentId === agentId;
 }
 
 async function getStoredPlatformForAgent(agentId: string, platformId: string) {

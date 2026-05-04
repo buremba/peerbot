@@ -71,7 +71,6 @@ import {
 import { ImageGenerationService } from "./image-generation-service.js";
 import { InstructionService } from "./instruction-service.js";
 import { SessionManager, StateAdapterSessionStore } from "./session-manager.js";
-import { SettingsResolver } from "./settings-resolver.js";
 import { SseManager } from "./sse-manager.js";
 import { WatcherRunTracker } from "../watchers/run-tracker.js";
 import { ProviderConfigResolver } from "./provider-config-resolver.js";
@@ -172,7 +171,6 @@ export class CoreServices {
   private configStore?: AgentConfigStore;
   private connectionStore?: AgentConnectionStore;
   private accessStore?: AgentAccessStore;
-  private settingsResolver?: SettingsResolver;
 
   // SDK-embedded agents (passed via `GatewayConfig.agents`). lobu.toml
   // file-declared agents have been moved out of the gateway boot path —
@@ -219,10 +217,6 @@ export class CoreServices {
 
   getAccessStore(): AgentAccessStore | undefined {
     return this.accessStore;
-  }
-
-  getSettingsResolver(): SettingsResolver | undefined {
-    return this.settingsResolver;
   }
 
   /**
@@ -399,12 +393,6 @@ export class CoreServices {
       logger.debug("Using host-provided agent sub-stores (embedded mode)");
     }
 
-    // Create settings resolver (template fallback logic)
-    this.settingsResolver = new SettingsResolver(
-      this.configStore,
-      this.connectionStore
-    );
-
     // Initialize external OAuth client if configured. The KV here is a tiny
     // per-process TTL map — the only state ExternalAuthClient persists is a
     // short-lived state nonce during the OAuth handshake. Multi-replica is
@@ -465,7 +453,7 @@ export class CoreServices {
     this.declaredAgentRegistry.replaceAll(
       buildRegistryMap(this.configAgents)
     );
-    // Plumb registry into the settings store so getEffectiveSettings
+    // Plumb registry into the settings store so getSettings
     // returns declared settings for declared agents (no second copy exists
     // by design — see one-shot cleanup below).
     this.agentSettingsStore.setDeclaredAgents(this.declaredAgentRegistry);
@@ -793,7 +781,7 @@ export class CoreServices {
       this.instructionService,
       this.mcpProxy,
       this.providerCatalogService,
-      this.settingsResolver,
+      this.agentSettingsStore,
       this.secretStore
     );
     logger.debug("Worker gateway initialized");

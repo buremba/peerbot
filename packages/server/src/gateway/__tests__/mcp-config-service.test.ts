@@ -136,7 +136,7 @@ describe("McpConfigService", () => {
 
   test("getWorkerConfig - merges per-agent MCPs", async () => {
     const mockAgentSettingsStore = {
-      getEffectiveSettings: async (agentId: string) => {
+      getSettings: async (agentId: string) => {
         if (agentId === "agent1") {
           return {
             mcpServers: {
@@ -185,7 +185,7 @@ describe("McpConfigService", () => {
 
   test("getWorkerConfig - skips disabled MCPs", async () => {
     const mockAgentSettingsStore = {
-      getEffectiveSettings: async () => ({
+      getSettings: async () => ({
         mcpServers: {
           "disabled-mcp": {
             url: "https://disabled.example.com/mcp",
@@ -215,7 +215,7 @@ describe("McpConfigService", () => {
 
   test("getWorkerConfig - per-agent takes precedence over global", async () => {
     const mockAgentSettingsStore = {
-      getEffectiveSettings: async () => ({
+      getSettings: async () => ({
         mcpServers: {
           "shared-mcp": {
             url: "https://agent-version.example.com/mcp",
@@ -252,7 +252,7 @@ describe("McpConfigService", () => {
   test("getWorkerConfig - derives lobu-memory from agent organization", async () => {
     const service = new McpConfigService({
       agentSettingsStore: {
-        getEffectiveSettings: async () => ({ mcpServers: {} }),
+        getSettings: async () => ({ mcpServers: {} }),
       } as any,
       lobuMemory: {
         publicBaseUrl: "https://app.lobu.ai",
@@ -326,7 +326,7 @@ describe("McpConfigService", () => {
 
   test("getAllHttpServers - merges global + per-agent, excludes disabled and non-HTTP", async () => {
     const mockAgentSettingsStore = {
-      getEffectiveSettings: async () => ({
+      getSettings: async () => ({
         mcpServers: {
           "agent-http": {
             url: "https://agent-http.example.com/mcp",

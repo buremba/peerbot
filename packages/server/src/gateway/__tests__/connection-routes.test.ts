@@ -39,13 +39,6 @@ describe("connection routes", () => {
         ownerPlatform: "telegram",
         ownerUserId: "u1",
       });
-      await seedAgentRow("sandbox-1", {
-        organizationId: ORG_ID,
-        name: "Sandbox 1",
-        ownerPlatform: "telegram",
-        ownerUserId: "u1",
-        parentConnectionId: "conn-1",
-      });
       await userAgentsStore.addAgent("telegram", "u1", "agent-1");
     });
   });
@@ -61,7 +54,7 @@ describe("connection routes", () => {
           const connection = {
             id: "conn-1",
             platform: "telegram",
-            templateAgentId: "agent-1",
+            agentId: "agent-1",
             config: { platform: "telegram" },
             settings: {},
             metadata: {},
@@ -70,8 +63,8 @@ describe("connection routes", () => {
             updatedAt: 1,
           };
           if (
-            filters?.templateAgentId &&
-            filters.templateAgentId !== "agent-1"
+            filters?.agentId &&
+            filters.agentId !== "agent-1"
           ) {
             return [];
           }
@@ -82,7 +75,7 @@ describe("connection routes", () => {
           return {
             id: "conn-1",
             platform: "telegram",
-            templateAgentId: "agent-1",
+            agentId: "agent-1",
             config: { platform: "telegram" },
             settings: {},
             metadata: {},
@@ -107,8 +100,6 @@ describe("connection routes", () => {
         agentMetadataStore: {
           getMetadata: (agentId: string) =>
             agentMetadataStore.getMetadata(agentId),
-          listSandboxes: (connectionId: string) =>
-            agentMetadataStore.listSandboxes(connectionId),
         },
       }
     );
@@ -136,7 +127,7 @@ describe("connection routes", () => {
     }));
 
     const response = await orgContext.run({ organizationId: ORG_ID }, () =>
-      buildApp().request("/api/v1/connections?templateAgentId=agent-1")
+      buildApp().request("/api/v1/connections?agentId=agent-1")
     );
     expect(response.status).toBe(200);
     const data = (await response.json()) as any;
@@ -144,16 +135,4 @@ describe("connection routes", () => {
     expect(data.connections[0]?.id).toBe("conn-1");
   });
 
-  test("forbids sandbox listing when session cannot access the connection template agent", async () => {
-    setAuthProvider(() => ({
-      userId: "u2",
-      platform: "telegram",
-      exp: Date.now() + 60_000,
-    }));
-
-    const response = await orgContext.run({ organizationId: ORG_ID }, () =>
-      buildApp().request("/api/v1/connections/conn-1/sandboxes")
-    );
-    expect(response.status).toBe(403);
-  });
 });

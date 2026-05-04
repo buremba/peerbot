@@ -172,7 +172,7 @@ function buildConnection(): PlatformConnection {
   return {
     id: CONN_ID,
     platform: "slack",
-    templateAgentId: TEMPLATE_AGENT_ID,
+    agentId: TEMPLATE_AGENT_ID,
     config: { platform: "slack" } as any,
     settings: { allowGroups: true } as any,
     metadata: {

@@ -11,7 +11,6 @@ describe("DeclaredAgentRegistry", () => {
     expect(registry.agentIds()).toEqual([]);
     expect(registry.has("anything")).toBe(false);
     expect(registry.get("anything")).toBeUndefined();
-    expect(registry.findTemplateAgentId()).toBeNull();
   });
 
   test("replaceAll wipes prior entries", () => {
@@ -22,25 +21,6 @@ describe("DeclaredAgentRegistry", () => {
     registry.replaceAll(new Map([["b", { settings: {}, credentials: [] }]]));
     expect(registry.has("a")).toBe(false);
     expect(registry.has("b")).toBe(true);
-  });
-
-  test("findTemplateAgentId returns first agent with installed providers", () => {
-    const registry = new DeclaredAgentRegistry();
-    registry.replaceAll(
-      new Map([
-        ["bare", { settings: {}, credentials: [] }],
-        [
-          "with-providers",
-          {
-            settings: {
-              installedProviders: [{ providerId: "openai", installedAt: 1 }],
-            },
-            credentials: [],
-          },
-        ],
-      ])
-    );
-    expect(registry.findTemplateAgentId()).toBe("with-providers");
   });
 });
 

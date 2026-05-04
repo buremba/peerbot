@@ -41,7 +41,7 @@ export type PlatformAdapterConfig =
 export interface PlatformConnection {
   id: string;
   platform: string;
-  templateAgentId?: string;
+  agentId?: string;
   config: PlatformAdapterConfig;
   settings: ConnectionSettings;
   metadata: Record<string, any>;

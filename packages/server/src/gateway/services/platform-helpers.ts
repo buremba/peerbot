@@ -13,7 +13,6 @@ import { resolveEffectiveModelRef } from "../auth/settings/model-selection.js";
 import type { ChannelBindingService } from "../channels/binding-service.js";
 import { buildMemoryPlugins, getInternalGatewayUrl } from "../config/index.js";
 import type { MessagePayload } from "../infrastructure/queue/queue-producer.js";
-import { platformAgentId } from "../spaces/space-resolver.js";
 
 const logger = createLogger("platform-helpers");
 const OWLETTO_PLUGIN_SOURCE = "@lobu/openclaw-plugin";
@@ -122,7 +121,7 @@ export async function resolveAgentOptions(
     return { ...baseOptions };
   }
 
-  const settings = await agentSettingsStore.getEffectiveSettings(agentId);
+  const settings = await agentSettingsStore.getSettings(agentId);
   if (!settings) {
     return { ...baseOptions };
   }
@@ -231,35 +230,21 @@ export function buildMessagePayload(params: {
 }
 
 /**
- * Resolve agent ID with a deterministic 3-tier precedence:
- *   1. `binding`  — an existing `channel_binding:*` record wins.
- *   2. `template` — a connection-owned `templateAgentId` is used and the
- *      caller is expected to persist a binding so tier 1 hits next time.
- *   3. `shadow`   — `{platform}-g-{channelId}` / `{platform}-{userId}` fallback
- *      for admin-UI connections with no owning agent.
+ * Resolve agent ID for an inbound platform event:
+ *   1. existing `agent_channel_bindings` row wins;
+ *   2. otherwise fall back to the connection's owning `agentId`.
  *
- * Pure resolution: never writes a binding. The caller owns the auto-bind
- * side effect (see message-handler-bridge), so this function stays safe to
- * call from tests and from read-only code paths.
+ * Returns `null` when neither resolves — the caller should drop the message.
+ * Pure resolution: never writes a binding.
  */
 export async function resolveAgentId(params: {
   platform: string;
-  userId: string;
   channelId: string;
-  isGroup: boolean;
   teamId?: string;
-  templateAgentId?: string;
+  agentId?: string;
   channelBindingService?: ChannelBindingService;
-}): Promise<{ agentId: string; source: "binding" | "template" | "shadow" }> {
-  const {
-    platform,
-    userId,
-    channelId,
-    isGroup,
-    teamId,
-    templateAgentId,
-    channelBindingService,
-  } = params;
+}): Promise<{ agentId: string; source: "binding" | "connection" } | null> {
+  const { platform, channelId, teamId, agentId, channelBindingService } = params;
 
   if (channelBindingService) {
     const binding = await channelBindingService.getBinding(
@@ -276,18 +261,13 @@ export async function resolveAgentId(params: {
     }
   }
 
-  if (templateAgentId) {
+  if (agentId) {
     logger.info(
-      { agentId: templateAgentId, platform, channelId },
-      "Routing to connection template agent"
+      { agentId, platform, channelId },
+      "Routing to connection's owning agent"
     );
-    return { agentId: templateAgentId, source: "template" };
+    return { agentId, source: "connection" };
   }
 
-  const agentId = platformAgentId(platform, userId, channelId, isGroup);
-  logger.info(
-    { agentId, platform, channelId },
-    "Routing to shadow agent (no binding, no template)"
-  );
-  return { agentId, source: "shadow" };
+  return null;
 }

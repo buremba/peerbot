@@ -7,14 +7,6 @@ import {
 describe("resolveAgentOptions model resolution", () => {
   test("uses pinned model when pinned provider is installed", async () => {
     const settingsStore = {
-      getEffectiveSettings: async () =>
-        ({
-          modelSelection: {
-            mode: "pinned",
-            pinnedModel: "openai/gpt-5",
-          },
-          installedProviders: [{ providerId: "openai", installedAt: 1 }],
-        }) as any,
       getSettings: async () =>
         ({
           modelSelection: {
@@ -36,20 +28,6 @@ describe("resolveAgentOptions model resolution", () => {
 
   test("uses primary provider preference in auto mode", async () => {
     const settingsStore = {
-      getEffectiveSettings: async () =>
-        ({
-          modelSelection: {
-            mode: "auto",
-          },
-          installedProviders: [
-            { providerId: "chatgpt", installedAt: 1 },
-            { providerId: "claude", installedAt: 2 },
-          ],
-          providerModelPreferences: {
-            chatgpt: "chatgpt/gpt-5",
-            claude: "claude/sonnet",
-          },
-        }) as any,
       getSettings: async () =>
         ({
           modelSelection: {
@@ -77,13 +55,6 @@ describe("resolveAgentOptions model resolution", () => {
 
   test("clears model in auto mode when providers exist but no preference", async () => {
     const settingsStore = {
-      getEffectiveSettings: async () =>
-        ({
-          modelSelection: {
-            mode: "auto",
-          },
-          installedProviders: [{ providerId: "chatgpt", installedAt: 1 }],
-        }) as any,
       getSettings: async () =>
         ({
           modelSelection: {
@@ -106,7 +77,7 @@ describe("resolveAgentOptions model resolution", () => {
     process.env.PORT = "8787";
 
     const settingsStore = {
-      getEffectiveSettings: async () =>
+      getSettings: async () =>
         ({
           pluginsConfig: {
             plugins: [
@@ -149,7 +120,7 @@ describe("resolveAgentOptions model resolution", () => {
     process.env.PORT = "8787";
 
     const settingsStore = {
-      getEffectiveSettings: async () =>
+      getSettings: async () =>
         ({
           pluginsConfig: {
             plugins: [
@@ -192,7 +163,7 @@ describe("resolveAgentOptions model resolution", () => {
     process.env.PORT = "8787";
 
     const settingsStore = {
-      getEffectiveSettings: async () =>
+      getSettings: async () =>
         ({
           pluginsConfig: {
             plugins: [
@@ -231,7 +202,7 @@ describe("resolveAgentOptions model resolution", () => {
     process.env.PORT = "8787";
 
     const settingsStore = {
-      getEffectiveSettings: async () =>
+      getSettings: async () =>
         ({
           mcpServers: {
             "lobu-memory": {
@@ -258,21 +229,16 @@ describe("resolveAgentOptions model resolution", () => {
 });
 
 describe("resolveAgentId", () => {
-  test("uses deterministic shadow id when no binding and no template", async () => {
+  test("returns null when no binding and connection has no agent", async () => {
     const resolved = await resolveAgentId({
       platform: "telegram",
-      userId: "777",
       channelId: "12345",
-      isGroup: false,
     });
 
-    expect(resolved).toEqual({
-      agentId: "telegram-777",
-      source: "shadow",
-    });
+    expect(resolved).toBeNull();
   });
 
-  test("existing binding wins over template (tier 1)", async () => {
+  test("existing binding wins over connection agent", async () => {
     const bindingService = {
       getBinding: async (
         platform: string,
@@ -288,11 +254,9 @@ describe("resolveAgentId", () => {
 
     const resolved = await resolveAgentId({
       platform: "slack",
-      userId: "U1",
       channelId: "C1",
-      isGroup: true,
       teamId: "T1",
-      templateAgentId: "template-agent",
+      agentId: "connection-agent",
       channelBindingService: bindingService as any,
     });
 
@@ -302,48 +266,41 @@ describe("resolveAgentId", () => {
     });
   });
 
-  test("no binding + templateAgentId routes to template (tier 2)", async () => {
+  test("no binding + agentId routes to connection agent", async () => {
     const bindingService = {
       getBinding: async () => null,
     };
 
     const resolved = await resolveAgentId({
       platform: "slack",
-      userId: "U1",
       channelId: "C1",
-      isGroup: true,
       teamId: "T1",
-      templateAgentId: "template-agent",
+      agentId: "connection-agent",
       channelBindingService: bindingService as any,
     });
 
     expect(resolved).toEqual({
-      agentId: "template-agent",
-      source: "template",
+      agentId: "connection-agent",
+      source: "connection",
     });
   });
 
-  test("no binding + no template falls back to shadow (tier 3)", async () => {
+  test("no binding + no connection agent returns null", async () => {
     const bindingService = {
       getBinding: async () => null,
     };
 
     const resolved = await resolveAgentId({
       platform: "slack",
-      userId: "U1",
       channelId: "C1",
-      isGroup: true,
       teamId: "T1",
       channelBindingService: bindingService as any,
     });
 
-    expect(resolved).toEqual({
-      agentId: "slack-g-C1",
-      source: "shadow",
-    });
+    expect(resolved).toBeNull();
   });
 
-  test("template tier works on platforms without teamId (Telegram)", async () => {
+  test("connection agent works on platforms without teamId (Telegram)", async () => {
     const bindingService = {
       getBinding: async (_p: string, _c: string, teamId?: string) => {
         expect(teamId).toBeUndefined();
@@ -353,16 +310,14 @@ describe("resolveAgentId", () => {
 
     const resolved = await resolveAgentId({
       platform: "telegram",
-      userId: "777",
       channelId: "12345",
-      isGroup: false,
-      templateAgentId: "my-tg-agent",
+      agentId: "my-tg-agent",
       channelBindingService: bindingService as any,
     });
 
     expect(resolved).toEqual({
       agentId: "my-tg-agent",
-      source: "template",
+      source: "connection",
     });
   });
 
@@ -377,11 +332,9 @@ describe("resolveAgentId", () => {
 
     await resolveAgentId({
       platform: "slack",
-      userId: "U1",
       channelId: "C1",
-      isGroup: true,
       teamId: "T1",
-      templateAgentId: "template-agent",
+      agentId: "connection-agent",
       channelBindingService: bindingService as any,
     });
 

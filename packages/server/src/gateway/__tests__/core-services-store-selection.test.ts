@@ -167,7 +167,6 @@ describe("CoreServices store selection", () => {
         deleteMetadata: async () => {},
         hasAgent: async () => false,
         listAgents: async () => [],
-        listSandboxes: async () => [],
       } as any,
       connectionStore: {
         getConnection: async () => null,

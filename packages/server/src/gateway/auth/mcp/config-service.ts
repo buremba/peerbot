@@ -354,7 +354,7 @@ export class McpConfigService {
     if (this.agentSettingsStore) {
       try {
         const settings =
-          await this.agentSettingsStore.getEffectiveSettings(agentId);
+          await this.agentSettingsStore.getSettings(agentId);
         servers = { ...(settings?.mcpServers || {}) };
       } catch (error) {
         logger.warn(`Failed to load per-agent MCP settings for ${agentId}`, {

@@ -34,7 +34,6 @@ export class InMemoryAgentStore extends BaseAgentStore {
     { expiresAt: number | null; grantedAt: number; denied?: boolean }
   >();
   private userAgents = new Map<string, Set<string>>();
-  private sandboxes = new Map<string, Set<string>>();
 
   // ── Settings primitives ───────────────────────────────────────────
 
@@ -65,9 +64,6 @@ export class InMemoryAgentStore extends BaseAgentStore {
 
   async saveMetadata(agentId: string, metadata: AgentMetadata): Promise<void> {
     this.metadata.set(agentId, metadata);
-    if (metadata.parentConnectionId) {
-      getOrCreateSet(this.sandboxes, metadata.parentConnectionId).add(agentId);
-    }
   }
 
   async updateMetadata(
@@ -80,15 +76,7 @@ export class InMemoryAgentStore extends BaseAgentStore {
   }
 
   protected async deleteMetadataRaw(agentId: string): Promise<void> {
-    const existing = this.metadata.get(agentId);
     this.metadata.delete(agentId);
-    if (existing?.parentConnectionId) {
-      const set = this.sandboxes.get(existing.parentConnectionId);
-      if (set) {
-        set.delete(agentId);
-        if (set.size === 0) this.sandboxes.delete(existing.parentConnectionId);
-      }
-    }
   }
 
   protected async hasMetadataRaw(agentId: string): Promise<boolean> {
@@ -97,19 +85,6 @@ export class InMemoryAgentStore extends BaseAgentStore {
 
   protected async listAllMetadata(): Promise<AgentMetadata[]> {
     return Array.from(this.metadata.values());
-  }
-
-  protected async listSandboxMetadata(
-    connectionId: string
-  ): Promise<AgentMetadata[]> {
-    const ids = this.sandboxes.get(connectionId);
-    if (!ids) return [];
-    const results: AgentMetadata[] = [];
-    for (const id of ids) {
-      const m = this.metadata.get(id);
-      if (m) results.push(m);
-    }
-    return results;
   }
 
   // ── Connection primitives ─────────────────────────────────────────
@@ -123,8 +98,8 @@ export class InMemoryAgentStore extends BaseAgentStore {
   protected async writeConnection(connection: StoredConnection): Promise<void> {
     this.connections.set(connection.id, connection);
     this.connectionsAll.add(connection.id);
-    if (connection.templateAgentId) {
-      getOrCreateSet(this.connectionsByAgent, connection.templateAgentId).add(
+    if (connection.agentId) {
+      getOrCreateSet(this.connectionsByAgent, connection.agentId).add(
         connection.id
       );
     }
@@ -134,21 +109,21 @@ export class InMemoryAgentStore extends BaseAgentStore {
     const conn = this.connections.get(connectionId);
     this.connections.delete(connectionId);
     this.connectionsAll.delete(connectionId);
-    if (conn?.templateAgentId) {
-      const set = this.connectionsByAgent.get(conn.templateAgentId);
+    if (conn?.agentId) {
+      const set = this.connectionsByAgent.get(conn.agentId);
       if (set) {
         set.delete(connectionId);
         if (set.size === 0)
-          this.connectionsByAgent.delete(conn.templateAgentId);
+          this.connectionsByAgent.delete(conn.agentId);
       }
     }
   }
 
-  protected async listConnectionsByTemplate(
-    templateAgentId?: string
+  protected async listConnectionsByAgent(
+    agentId?: string
   ): Promise<StoredConnection[]> {
-    const ids: Iterable<string> = templateAgentId
-      ? (this.connectionsByAgent.get(templateAgentId) ?? [])
+    const ids: Iterable<string> = agentId
+      ? (this.connectionsByAgent.get(agentId) ?? [])
       : this.connectionsAll;
 
     const connections: StoredConnection[] = [];

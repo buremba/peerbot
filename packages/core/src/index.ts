@@ -17,7 +17,7 @@ export type {
   GrantKind,
   StoredConnection,
 } from "./agent-store";
-export { findTemplateAgentId, inferGrantKind } from "./agent-store";
+export { inferGrantKind } from "./agent-store";
 // Agent Settings API response types (for UI consumers)
 export type {
   AgentConfigResponse,

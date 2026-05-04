@@ -284,9 +284,9 @@ export class MessageHandlerBridge {
       }
     }
 
-    // Gap 2: Resolve agent ID (cross-platform) — see resolveAgentId's contract
-    // for the 3-tier precedence (binding → template → shadow). We own the
-    // auto-bind side effect here so resolveAgentId can stay pure.
+    // Resolve agent ID: channel binding wins, otherwise the connection's
+    // owning agent. No more shadow agent creation — if neither matches we
+    // drop the message.
     const channelBindingService = this.services.getChannelBindingService();
     const rawTeamId =
       (message.raw as Record<string, unknown> | undefined)?.team_id ??
@@ -295,64 +295,32 @@ export class MessageHandlerBridge {
 
     const resolved = await resolveAgentId({
       platform,
-      userId,
       channelId,
-      isGroup,
       teamId,
-      templateAgentId: this.connection.templateAgentId,
+      agentId: this.connection.agentId,
       channelBindingService,
     });
+    if (!resolved) {
+      logger.warn(
+        { platform, channelId, teamId, connectionId: this.connection.id },
+        "No channel binding and connection has no owning agent — dropping message"
+      );
+      return;
+    }
     const agentId = resolved.agentId;
 
-    // Tier 2 hit → persist a binding so subsequent events are O(1) tier-1
-    // hits and the binding is visible via the admin API.
-    if (resolved.source === "template" && channelBindingService) {
+    // Track first-time-seen user → agent association for visibility in the
+    // admin API. Idempotent — agent_users has a (agent_id, platform, user_id)
+    // unique constraint.
+    const userAgentsStore = this.services.getUserAgentsStore();
+    if (userAgentsStore) {
       try {
-        await channelBindingService.createBinding(
-          agentId,
-          platform,
-          channelId,
-          teamId,
-          { configuredBy: `connection:${this.connection.id}` }
-        );
-        logger.info(
-          { agentId, platform, channelId, teamId },
-          "Auto-bound channel to connection template agent"
-        );
+        await userAgentsStore.addAgent(platform, userId, agentId);
       } catch (error) {
         logger.warn(
-          { agentId, platform, channelId, error: String(error) },
-          "Failed to persist channel binding from connection template"
+          { agentId, userId, error: String(error) },
+          "Failed to record agent_users association"
         );
-      }
-    }
-
-    // Gap 2: Auto-create agent metadata for shadow agents only.
-    // When the resolved agent is the connection's owning template (either
-    // routed there by an existing binding or just auto-bound above), the
-    // agent metadata is already owned by the template's definition — do
-    // NOT overwrite it with a shadow owner/name, or we clobber the real
-    // agent's identity every time someone new DMs the bot.
-    const isTemplateAgent = agentId === this.connection.templateAgentId;
-    if (!isTemplateAgent) {
-      const agentMetadataStore = this.services.getAgentMetadataStore();
-      const userAgentsStore = this.services.getUserAgentsStore();
-      if (agentMetadataStore) {
-        const existing = await agentMetadataStore.getMetadata(agentId);
-        if (!existing) {
-          const agentName = isGroup
-            ? `${platform} Group ${channelId}`
-            : `${platform} ${message.author?.fullName || userId}`;
-          await agentMetadataStore.createAgent(
-            agentId,
-            agentName,
-            platform,
-            userId,
-            { parentConnectionId: this.connection.id }
-          );
-          await userAgentsStore?.addAgent(platform, userId, agentId);
-          logger.info({ agentId, userId }, "Auto-created shadow agent");
-        }
       }
     }
 
@@ -652,13 +620,18 @@ export class MessageHandlerBridge {
     const channelBindingService = this.services.getChannelBindingService();
     const resolved = await resolveAgentId({
       platform,
-      userId,
       channelId,
-      isGroup,
       teamId,
-      templateAgentId: this.connection.templateAgentId,
+      agentId: this.connection.agentId,
       channelBindingService,
     });
+    if (!resolved) {
+      logger.warn(
+        { platform, channelId, teamId, connectionId: this.connection.id },
+        "No channel binding and connection has no owning agent — dropping interaction"
+      );
+      return;
+    }
     const agentId = resolved.agentId;
 
     const conversationState = this.conversationState();

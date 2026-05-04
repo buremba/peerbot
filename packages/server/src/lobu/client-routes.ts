@@ -4,33 +4,10 @@ import { OAuthClientsStore } from '../auth/oauth/clients';
 import { getDb, pgTextArray } from '../db/client';
 import type { Env } from '../index';
 import { revokeInMemoryMcpSessionsForClient } from '../mcp-handler';
-import { getLobuCoreServices } from './gateway';
 import { orgContext } from './stores/org-context';
 
 const routes = new Hono<{ Bindings: Env }>();
 const platformSchemaRoutes = new Hono<{ Bindings: Env }>();
-
-type RuntimeAgentMetadata = {
-  agentId: string;
-  name: string;
-  description?: string;
-  owner?: {
-    platform?: string;
-    userId?: string;
-  };
-  parentConnectionId?: string;
-  createdAt?: number;
-  lastUsedAt?: number;
-};
-
-type RuntimeConnectionRow = {
-  connection_id: string;
-  agent_id: string;
-  agent_name: string;
-  connection_platform: string | null;
-  connection_status: string | null;
-  connection_metadata: unknown;
-};
 
 type MessagingClientRecord = {
   id: string;
@@ -277,109 +254,68 @@ function externalUrlForMessagingIdentity(
   return null;
 }
 
-async function listRuntimeSandboxMetadata(): Promise<RuntimeAgentMetadata[]> {
-  const coreServices = getLobuCoreServices();
-  if (!coreServices || typeof coreServices.getAgentMetadataStore !== 'function') {
-    return [];
-  }
-
-  let metadataStore: { listAllAgents: () => Promise<RuntimeAgentMetadata[]> } | null = null;
-  try {
-    metadataStore = coreServices.getAgentMetadataStore();
-  } catch {
-    return [];
-  }
-
-  if (!metadataStore || typeof metadataStore.listAllAgents !== 'function') {
-    return [];
-  }
-
-  const agents = await metadataStore.listAllAgents();
-  return agents.filter((agent) => !!agent?.parentConnectionId);
-}
-
-async function listRuntimeMessagingClients(options: {
+/**
+ * Messaging clients = rows in `agent_users` (one per platform user that has
+ * messaged an agent). Each `(agent_id, platform, user_id)` is a single
+ * messaging client visible to admins.
+ */
+async function listMessagingClients(options: {
   organizationId: string;
   agentId?: string | null;
 }): Promise<MessagingClientRecord[]> {
-  const sandboxAgents = await listRuntimeSandboxMetadata();
-  if (sandboxAgents.length === 0) return [];
-
-  const connectionIds = [
-    ...new Set(
-      sandboxAgents
-        .map((agent) => agent.parentConnectionId)
-        .filter((connectionId): connectionId is string => typeof connectionId === 'string')
-    ),
-  ];
-  if (connectionIds.length === 0) return [];
-
   const sql = getDb();
   const rows = (await sql`
     SELECT
-      c.id AS connection_id,
-      c.agent_id,
-      root.name AS agent_name,
-      c.platform AS connection_platform,
-      c.status AS connection_status,
-      c.metadata AS connection_metadata
-    FROM agent_connections c
-    JOIN agents root ON root.id = c.agent_id
-    WHERE c.id = ANY(${pgTextArray(connectionIds)}::text[])
-      AND root.organization_id = ${options.organizationId}
-      ${options.agentId ? sql`AND c.agent_id = ${options.agentId}` : sql``}
-  `) as RuntimeConnectionRow[];
+      au.agent_id,
+      au.platform,
+      au.user_id,
+      au.created_at,
+      a.name AS agent_name
+    FROM agent_users au
+    JOIN agents a ON a.id = au.agent_id
+    WHERE a.organization_id = ${options.organizationId}
+      ${options.agentId ? sql`AND au.agent_id = ${options.agentId}` : sql``}
+    ORDER BY au.created_at DESC
+  `) as Array<{
+    agent_id: string;
+    platform: string;
+    user_id: string;
+    created_at: unknown;
+    agent_name: string;
+  }>;
 
-  const connectionById = new Map(rows.map((row) => [row.connection_id, row]));
-
-  return sandboxAgents.flatMap((agent) => {
-    const parentConnectionId = agent.parentConnectionId;
-    if (!parentConnectionId) return [];
-
-    const connection = connectionById.get(parentConnectionId);
-    if (!connection) return [];
-
-    const platform =
-      (typeof connection.connection_platform === 'string' && connection.connection_platform) ||
-      (typeof agent.owner?.platform === 'string' && agent.owner.platform) ||
-      'messaging';
-    const identifier =
-      typeof agent.owner?.userId === 'string' && agent.owner.userId.length > 0
-        ? agent.owner.userId
-        : null;
-    const lastSeenAt = agent.lastUsedAt ?? agent.createdAt ?? Date.now();
-
-    return [
-      {
-        id: agent.agentId,
-        kind: 'messaging' as const,
-        title: identifier || agent.name || `${platform} user`,
-        identifier,
-        platform,
-        assignedAgentId: connection.agent_id,
-        assignedAgentName: connection.agent_name,
-        status: connection.connection_status || 'linked',
-        authState: connection.connection_status || 'linked',
-        lastSeenAt,
-        userAgent: null,
-        capabilities: null,
-        externalUrl: externalUrlForMessagingIdentity(platform, identifier),
-        linkedUserName: null,
-        linkedUserEmail: null,
-        details: {
-          connectionId: parentConnectionId,
-          description: agent.description ?? null,
-          connectionMetadata: asRecord(connection.connection_metadata),
-        },
+  return rows.map((row) => {
+    const lastSeenAt = asTimestamp(row.created_at) ?? Date.now();
+    const platform = row.platform || 'messaging';
+    return {
+      id: `${row.agent_id}:${row.platform}:${row.user_id}`,
+      kind: 'messaging' as const,
+      title: row.user_id || `${platform} user`,
+      identifier: row.user_id,
+      platform,
+      assignedAgentId: row.agent_id,
+      assignedAgentName: row.agent_name,
+      status: 'linked',
+      authState: 'linked',
+      lastSeenAt,
+      userAgent: null,
+      capabilities: null,
+      externalUrl: externalUrlForMessagingIdentity(platform, row.user_id),
+      linkedUserName: null,
+      linkedUserEmail: null,
+      details: {
+        connectionId: null,
+        description: null,
+        connectionMetadata: null,
       },
-    ];
+    };
   });
 }
 
 export async function countRuntimeMessagingClientsByAgent(
   organizationId: string
 ): Promise<Map<string, Set<string>>> {
-  const clients = await listRuntimeMessagingClients({ organizationId });
+  const clients = await listMessagingClients({ organizationId });
   const counts = new Map<string, Set<string>>();
 
   for (const client of clients) {
@@ -466,79 +402,9 @@ routes.get('/', mcpAuth, async (c) => {
       })
       .filter((client): client is NonNullable<typeof client> => client !== null);
 
-    const messagingRows = await sql`
-      SELECT
-        child.id,
-        child.name,
-        child.description,
-        child.owner_platform,
-        child.owner_user_id,
-        child.created_at,
-        child.last_used_at,
-        root.id AS agent_id,
-        root.name AS agent_name,
-        conn.id AS connection_id,
-        conn.platform AS connection_platform,
-        conn.status AS connection_status,
-        conn.metadata AS connection_metadata
-      FROM agents child
-      JOIN agents root ON root.id = child.template_agent_id
-      LEFT JOIN agent_connections conn ON conn.id = child.parent_connection_id
-      WHERE child.organization_id = ${organizationId}
-        AND child.parent_connection_id IS NOT NULL
-        ${agentId ? sql`AND child.template_agent_id = ${agentId}` : sql``}
-      ORDER BY COALESCE(child.last_used_at, child.created_at) DESC
-    `;
+    const messagingClients = await listMessagingClients({ organizationId, agentId });
 
-    const persistedMessagingClients = (messagingRows as Array<Record<string, unknown>>).map(
-      (row) => {
-        const platform =
-          (typeof row.connection_platform === 'string' && row.connection_platform) ||
-          (typeof row.owner_platform === 'string' && row.owner_platform) ||
-          'messaging';
-        const identifier =
-          typeof row.owner_user_id === 'string' && row.owner_user_id.length > 0
-            ? row.owner_user_id
-            : null;
-        const lastSeenAt =
-          asTimestamp(row.last_used_at) ?? asTimestamp(row.created_at) ?? Date.now();
-
-        return {
-          id: row.id as string,
-          kind: 'messaging' as const,
-          title: identifier || (row.name as string) || `${platform} user`,
-          identifier,
-          platform,
-          assignedAgentId: row.agent_id as string,
-          assignedAgentName: row.agent_name as string,
-          status: (typeof row.connection_status === 'string' && row.connection_status) || 'linked',
-          authState:
-            (typeof row.connection_status === 'string' && row.connection_status) || 'linked',
-          lastSeenAt,
-          userAgent: null,
-          capabilities: null,
-          externalUrl: externalUrlForMessagingIdentity(platform, identifier),
-          linkedUserName: null,
-          linkedUserEmail: null,
-          details: {
-            connectionId: typeof row.connection_id === 'string' ? row.connection_id : null,
-            description: typeof row.description === 'string' ? row.description : null,
-            connectionMetadata: asRecord(row.connection_metadata),
-          },
-        };
-      }
-    );
-
-    const runtimeMessagingClients = await listRuntimeMessagingClients({ organizationId, agentId });
-    const messagingClients = new Map<string, (typeof persistedMessagingClients)[number]>();
-    for (const client of persistedMessagingClients) {
-      messagingClients.set(client.id, client);
-    }
-    for (const client of runtimeMessagingClients) {
-      messagingClients.set(client.id, client);
-    }
-
-    const clients = [...mcpClients, ...messagingClients.values()].sort((a, b) => {
+    const clients = [...mcpClients, ...messagingClients].sort((a, b) => {
       const aSeen = a.lastSeenAt ?? 0;
       const bSeen = b.lastSeenAt ?? 0;
       return bSeen - aSeen;

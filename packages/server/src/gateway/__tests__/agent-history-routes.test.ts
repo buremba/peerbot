@@ -70,7 +70,6 @@ describe("agent history routes", () => {
         agentConfigStore: {
           getMetadata: (agentId: string) =>
             agentMetadataStore.getMetadata(agentId),
-          listSandboxes: async () => [],
         },
         userAgentsStore,
       })

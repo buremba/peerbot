@@ -15,7 +15,6 @@ import type {
   AgentSettings,
   AgentSettingsStore,
 } from "../../auth/settings/agent-settings-store.js";
-import { buildDefaultSettingsFromSource } from "../../auth/settings/template-utils.js";
 import type { SettingsTokenPayload } from "../../auth/settings/token-service.js";
 import type { UserAgentsStore } from "../../auth/user-agents-store.js";
 import type { ChannelBindingService } from "../../channels/binding-service.js";
@@ -129,29 +128,8 @@ export function createAgentRoutes(config: AgentRoutesConfig): Hono {
         { description: body.description }
       );
 
-      // Create default settings, seeded from the current workspace/channel agent when available.
-      let defaultSettings: Omit<AgentSettings, "updatedAt"> = {};
-      try {
-        let sourceAgentId = payload.agentId;
-        if (!sourceAgentId && body.channelId) {
-          const binding = await config.channelBindingService.getBinding(
-            payload.platform,
-            body.channelId,
-            payload.teamId
-          );
-          sourceAgentId = binding?.agentId;
-        }
-
-        if (sourceAgentId) {
-          const sourceSettings =
-            await config.agentSettingsStore.getSettings(sourceAgentId);
-          defaultSettings = buildDefaultSettingsFromSource(sourceSettings);
-        }
-      } catch (error) {
-        logger.warn("Failed to derive source defaults for new agent", {
-          error,
-        });
-      }
+      // Create empty settings row.
+      const defaultSettings: Omit<AgentSettings, "updatedAt"> = {};
       await config.agentSettingsStore.saveSettings(agentId, defaultSettings);
 
       // Associate with user
@@ -199,9 +177,6 @@ export function createAgentRoutes(config: AgentRoutesConfig): Hono {
       for (const agentId of agentIds) {
         const metadata = await config.agentMetadataStore.getMetadata(agentId);
         if (metadata) {
-          // Skip sandbox agents (auto-created under a connection)
-          if (metadata.parentConnectionId) continue;
-
           const bindings =
             await config.channelBindingService.listBindings(agentId);
           agents.push({

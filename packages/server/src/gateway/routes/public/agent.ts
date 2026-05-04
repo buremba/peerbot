@@ -4,7 +4,6 @@ import {
   type AgentConfigStore,
   createLogger,
   createRootSpan,
-  findTemplateAgentId,
   generateWorkerToken,
   type InstalledProvider,
   type McpServerConfig,
@@ -678,9 +677,10 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
       if (denial) return denial;
     }
 
-    // For ephemeral agents, auto-provision settings so the worker gets provider config
+    // For ephemeral agents, auto-provision settings from system-key
+    // providers (env-var-based API keys). No more template-agent fallback —
+    // there are no template/sandbox agents anymore.
     if (isEphemeral && agentSettingsStore) {
-      // Try system-key providers first (env var based API keys)
       const providerModules = getModelProviderModules();
       const systemProviders: InstalledProvider[] = providerModules
         .filter((m) => m.hasSystemKey())
@@ -690,38 +690,12 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
         }));
 
       if (systemProviders.length > 0) {
-        // Also inherit pluginsConfig from template agent if available
-        const templateId = agentConfigStore
-          ? await findTemplateAgentId(agentConfigStore)
-          : null;
-        const templateSettings = templateId
-          ? await (agentConfigStore?.getSettings(templateId) ??
-              agentSettingsStore.getSettings(templateId))
-          : null;
         await agentSettingsStore.saveSettings(agentId, {
           installedProviders: systemProviders,
-          pluginsConfig: templateSettings?.pluginsConfig,
         });
         logger.info(
           `Ephemeral agent ${agentId}: provisioned system providers [${systemProviders.map((p) => p.providerId).join(", ")}]`
         );
-      } else {
-        // Fall back to using an existing agent as template (inherits its providers)
-        const templateId = agentConfigStore
-          ? await findTemplateAgentId(agentConfigStore)
-          : null;
-        if (templateId) {
-          const templateSettings = await (agentConfigStore?.getSettings(
-            templateId
-          ) ?? agentSettingsStore.getSettings(templateId));
-          await agentSettingsStore.saveSettings(agentId, {
-            templateAgentId: templateId,
-            pluginsConfig: templateSettings?.pluginsConfig,
-          });
-          logger.info(
-            `Ephemeral agent ${agentId}: using template ${templateId}`
-          );
-        }
       }
     }
 

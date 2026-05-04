@@ -10,7 +10,7 @@ function createSlackConnection(
   return {
     id,
     platform: "slack",
-    templateAgentId: "template",
+    agentId: "template",
     config: {
       platform: "slack",
       signingSecret: "signing-secret",
@@ -32,13 +32,13 @@ describe("SlackConnectionCoordinator", () => {
     const addConnection = mock(
       async (
         _platform: string,
-        templateAgentId: string | undefined,
+        agentId: string | undefined,
         config: any,
         settings?: { allowGroups?: boolean },
         metadata?: Record<string, unknown>
       ) => {
         const connection = createSlackConnection("conn-1", metadata, config);
-        connection.templateAgentId = templateAgentId;
+        connection.agentId = agentId;
         connection.settings = settings || { allowGroups: true };
         connections.push(connection);
         return connection;

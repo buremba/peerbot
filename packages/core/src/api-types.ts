@@ -40,8 +40,6 @@ export interface ModelOption {
   value: string;
 }
 
-type SettingsScope = "agent" | "sandbox";
-type SettingsSource = "local" | "inherited" | "mixed";
 type SettingsSectionKey =
   | "model"
   | "system-prompt"
@@ -51,18 +49,12 @@ type SettingsSectionKey =
   | "logging";
 
 interface SectionView {
-  source: SettingsSource;
   editable: boolean;
-  canReset: boolean;
-  hasLocalOverride: boolean;
 }
 
 interface ProviderView {
   id: string;
-  source: SettingsSource;
   canEdit: boolean;
-  canReset: boolean;
-  hasLocalOverride: boolean;
 }
 
 export interface SkillMcpServerInfo {
@@ -171,7 +163,7 @@ export interface SettingsSnapshot {
 export interface Connection {
   id: string;
   platform: string;
-  templateAgentId?: string;
+  agentId?: string;
   config: Record<string, unknown>;
   settings: {
     allowFrom?: string[];
@@ -195,9 +187,6 @@ export interface ProviderStatus {
 
 export interface AgentConfigResponse {
   agentId: string;
-  scope: SettingsScope;
-  templateAgentId?: string;
-  templateAgentName?: string;
   sections: Record<SettingsSectionKey, SectionView>;
   providerViews: Record<string, ProviderView>;
 

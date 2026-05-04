@@ -11,14 +11,13 @@ import { reconcileModelSelectionForInstalledProviders } from "./settings/model-s
 const logger = createLogger("provider-catalog");
 
 /**
- * Resolve an agent's installed providers, falling back to the base agent's
- * providers for sandbox agents that have none of their own.
+ * Resolve an agent's installed providers.
  */
 export async function resolveInstalledProviders(
   agentSettingsStore: AgentSettingsStore,
   agentId: string
 ): Promise<InstalledProvider[]> {
-  const settings = await agentSettingsStore.getEffectiveSettings(agentId);
+  const settings = await agentSettingsStore.getSettings(agentId);
   return settings?.installedProviders || [];
 }
 
@@ -93,9 +92,8 @@ export class ProviderCatalogService {
       throw new Error(`Unknown provider: ${providerId}`);
     }
 
-    const { localSettings, effectiveSettings } =
-      await this.agentSettingsStore.getSettingsContext(agentId);
-    const installed = effectiveSettings?.installedProviders || [];
+    const settings = await this.agentSettingsStore.getSettings(agentId);
+    const installed = settings?.installedProviders || [];
 
     if (installed.some((ip) => ip.providerId === providerId)) {
       logger.info(
@@ -111,12 +109,9 @@ export class ProviderCatalogService {
     };
     const nextInstalledProviders = [...installed, entry];
     const reconciled = reconcileModelSelectionForInstalledProviders({
-      model: localSettings?.model ?? effectiveSettings?.model,
-      modelSelection:
-        localSettings?.modelSelection ?? effectiveSettings?.modelSelection,
-      providerModelPreferences:
-        localSettings?.providerModelPreferences ??
-        effectiveSettings?.providerModelPreferences,
+      model: settings?.model,
+      modelSelection: settings?.modelSelection,
+      providerModelPreferences: settings?.providerModelPreferences,
       installedProviders: nextInstalledProviders,
     });
 
@@ -133,9 +128,8 @@ export class ProviderCatalogService {
    */
   async uninstallProvider(agentId: string, providerId: string): Promise<void> {
     this.guardDeclared(agentId);
-    const { localSettings, effectiveSettings } =
-      await this.agentSettingsStore.getSettingsContext(agentId);
-    const installed = effectiveSettings?.installedProviders || [];
+    const settings = await this.agentSettingsStore.getSettings(agentId);
+    const installed = settings?.installedProviders || [];
 
     const filtered = installed.filter((ip) => ip.providerId !== providerId);
     if (filtered.length === installed.length) {
@@ -151,12 +145,9 @@ export class ProviderCatalogService {
     // remove their own credentials from the per-user UI.
     await this.authProfilesManager.deleteProviderProfiles(agentId, providerId);
     const reconciled = reconcileModelSelectionForInstalledProviders({
-      model: localSettings?.model ?? effectiveSettings?.model,
-      modelSelection:
-        localSettings?.modelSelection ?? effectiveSettings?.modelSelection,
-      providerModelPreferences:
-        localSettings?.providerModelPreferences ??
-        effectiveSettings?.providerModelPreferences,
+      model: settings?.model,
+      modelSelection: settings?.modelSelection,
+      providerModelPreferences: settings?.providerModelPreferences,
       installedProviders: filtered,
     });
 
@@ -192,9 +183,8 @@ export class ProviderCatalogService {
    */
   async reorderProviders(agentId: string, orderedIds: string[]): Promise<void> {
     this.guardDeclared(agentId);
-    const { localSettings, effectiveSettings } =
-      await this.agentSettingsStore.getSettingsContext(agentId);
-    const installed = effectiveSettings?.installedProviders || [];
+    const settings = await this.agentSettingsStore.getSettings(agentId);
+    const installed = settings?.installedProviders || [];
 
     const installedMap = new Map(installed.map((ip) => [ip.providerId, ip]));
 
@@ -216,12 +206,9 @@ export class ProviderCatalogService {
       }
     }
     const reconciled = reconcileModelSelectionForInstalledProviders({
-      model: localSettings?.model ?? effectiveSettings?.model,
-      modelSelection:
-        localSettings?.modelSelection ?? effectiveSettings?.modelSelection,
-      providerModelPreferences:
-        localSettings?.providerModelPreferences ??
-        effectiveSettings?.providerModelPreferences,
+      model: settings?.model,
+      modelSelection: settings?.modelSelection,
+      providerModelPreferences: settings?.providerModelPreferences,
       installedProviders: reordered,
     });
 

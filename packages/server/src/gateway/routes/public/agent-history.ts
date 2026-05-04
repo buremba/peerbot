@@ -11,7 +11,6 @@ import { createLogger } from "@lobu/core";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import type { UserAgentsStore } from "../../auth/user-agents-store.js";
-import type { ChatInstanceManager } from "../../connections/chat-instance-manager.js";
 import type { WorkerConnectionManager } from "../../gateway/connection-manager.js";
 import { errorResponse } from "../shared/helpers.js";
 import { createTokenVerifier } from "../shared/token-verifier.js";
@@ -262,12 +261,11 @@ async function readSessionStats(agentId: string) {
 
 export function createAgentHistoryRoutes(deps: {
   connectionManager: WorkerConnectionManager;
-  chatInstanceManager?: ChatInstanceManager;
-  agentConfigStore?: Pick<AgentConfigStore, "listSandboxes" | "getMetadata">;
+  agentConfigStore?: Pick<AgentConfigStore, "getMetadata">;
   userAgentsStore?: UserAgentsStore;
 }) {
   const app = new Hono();
-  const { connectionManager, chatInstanceManager, agentConfigStore } = deps;
+  const { connectionManager } = deps;
   const verifyToken = createTokenVerifier({
     userAgentsStore: deps.userAgentsStore,
     agentMetadataStore: deps.agentConfigStore,
@@ -283,9 +281,9 @@ export function createAgentHistoryRoutes(deps: {
   }
 
   /**
-   * Resolve the first active sandbox agentId that has a running deployment.
-   * When a template agent (e.g. "lobu") has no direct deployments,
-   * we look at its connections' sandbox agents for a running worker.
+   * Resolve whether a deployment for `agentId` is currently running.
+   * No more sandbox fallback — one agent row maps directly to its worker
+   * deployment (or no worker at all).
    */
   async function resolveActiveAgent(
     agentId: string
@@ -293,27 +291,6 @@ export function createAgentHistoryRoutes(deps: {
     if (connectionManager.getDeploymentsForAgent(agentId).length > 0) {
       return { connected: true, resolvedAgentId: agentId };
     }
-
-    if (chatInstanceManager && agentConfigStore) {
-      try {
-        const connections = await chatInstanceManager.listConnections({
-          templateAgentId: agentId,
-        });
-        for (const conn of connections) {
-          const sandboxes = await agentConfigStore.listSandboxes(conn.id);
-          for (const sb of sandboxes) {
-            if (
-              connectionManager.getDeploymentsForAgent(sb.agentId).length > 0
-            ) {
-              return { connected: true, resolvedAgentId: sb.agentId };
-            }
-          }
-        }
-      } catch (e) {
-        logger.debug("Failed to resolve sandbox agents", { error: e });
-      }
-    }
-
     return { connected: false, resolvedAgentId: agentId };
   }
 

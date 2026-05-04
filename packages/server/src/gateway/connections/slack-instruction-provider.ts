@@ -15,7 +15,7 @@ export class SlackInstructionProvider extends BaseInstructionProvider {
   ): Promise<string> {
     const connections = await this.manager.listConnections({
       platform: "slack",
-      templateAgentId: context.agentId,
+      agentId: context.agentId,
     });
     const connection = connections[0];
     if (!connection) return "";

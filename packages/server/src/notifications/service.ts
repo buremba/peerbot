@@ -62,7 +62,7 @@ async function deliverToBotConnections(params: CreateNotificationParams): Promis
       connections: Array<{
         id: string;
         platform: string;
-        templateAgentId: string;
+        agentId: string;
         status: string;
       }>;
     };
@@ -95,7 +95,7 @@ async function deliverToBotConnections(params: CreateNotificationParams): Promis
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
         body: JSON.stringify({
-          agentId: conn.templateAgentId,
+          agentId: conn.agentId,
           message: text,
           platform: conn.platform,
           ...routing,

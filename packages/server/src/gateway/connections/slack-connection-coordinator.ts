@@ -37,7 +37,7 @@ type SlackRuntimeConfig = {
 interface SlackConnectionCoordinatorDeps {
   addConnection(
     platform: string,
-    templateAgentId: string | undefined,
+    agentId: string | undefined,
     config: PlatformAdapterConfig,
     settings?: { allowGroups?: boolean },
     metadata?: Record<string, unknown>
@@ -103,7 +103,7 @@ export class SlackConnectionCoordinator {
     const existing = await this.findConnectionByTeamId(teamId);
     if (existing) {
       const updated = await this.deps.updateConnection(existing.id, {
-        templateAgentId: agentId,
+        agentId,
         config,
         metadata,
       });

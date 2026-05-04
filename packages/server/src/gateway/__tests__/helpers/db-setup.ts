@@ -87,8 +87,6 @@ export async function seedAgentRow(
     name?: string;
     ownerPlatform?: string;
     ownerUserId?: string;
-    parentConnectionId?: string;
-    templateAgentId?: string;
   } = {}
 ): Promise<string> {
   const sql = getDb();
@@ -102,13 +100,11 @@ export async function seedAgentRow(
 
   await sql`
     INSERT INTO agents (
-      id, organization_id, name, owner_platform, owner_user_id,
-      parent_connection_id, template_agent_id
+      id, organization_id, name, owner_platform, owner_user_id
     )
     VALUES (
       ${agentId}, ${orgId}, ${options.name ?? agentId},
-      ${options.ownerPlatform ?? null}, ${options.ownerUserId ?? null},
-      ${options.parentConnectionId ?? null}, ${options.templateAgentId ?? null}
+      ${options.ownerPlatform ?? null}, ${options.ownerUserId ?? null}
     )
     ON CONFLICT (id) DO NOTHING
   `;

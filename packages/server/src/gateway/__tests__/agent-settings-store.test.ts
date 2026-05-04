@@ -103,47 +103,4 @@ describe("AgentSettingsStore", () => {
     });
   });
 
-  describe("findSandboxAgentIds", () => {
-    test("returns agent IDs referencing template", async () => {
-      await withOrg(async () => {
-        const templateId = "template-agent";
-        await seedAgentRow(templateId, { organizationId: ORG_ID });
-        await store.saveSettings(templateId, {
-          model: "claude-opus-4",
-          installedProviders: [{ providerId: "anthropic", installedAt: 1 }],
-        });
-
-        await seedAgentRow("sandbox-1", {
-          organizationId: ORG_ID,
-          templateAgentId: templateId,
-        });
-        await store.saveSettings("sandbox-1", {
-          model: "claude-sonnet-4",
-          templateAgentId: templateId,
-        });
-
-        await seedAgentRow("sandbox-2", {
-          organizationId: ORG_ID,
-          templateAgentId: templateId,
-        });
-        await store.saveSettings("sandbox-2", {
-          model: "claude-sonnet-4",
-          templateAgentId: templateId,
-        });
-
-        await seedAgentRow("other-agent", { organizationId: ORG_ID });
-        await store.saveSettings("other-agent", { model: "claude-sonnet-4" });
-
-        const sandboxIds = await store.findSandboxAgentIds(templateId);
-        expect(sandboxIds.sort()).toEqual(["sandbox-1", "sandbox-2"]);
-      });
-    });
-
-    test("returns empty array when no sandboxes exist", async () => {
-      await withOrg(async () => {
-        const sandboxIds = await store.findSandboxAgentIds("non-existent");
-        expect(sandboxIds).toEqual([]);
-      });
-    });
-  });
 });

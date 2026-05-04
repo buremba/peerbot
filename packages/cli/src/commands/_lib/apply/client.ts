@@ -17,7 +17,7 @@ export interface RemoteAgentDetail extends RemoteAgent {
 export interface RemotePlatform {
   id: string;
   platform: string;
-  templateAgentId?: string;
+  agentId?: string;
   config?: Record<string, unknown>;
   status?: string;
 }

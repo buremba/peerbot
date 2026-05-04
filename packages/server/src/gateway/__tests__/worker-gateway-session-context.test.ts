@@ -41,7 +41,7 @@ describe("WorkerGateway session context", () => {
       undefined,
       undefined,
       {
-        getEffectiveSettings: async () => ({
+        getSettings: async () => ({
           skillsConfig: {
             skills: [
               {

@@ -21,9 +21,9 @@ import {
   fetchEntityIdentityScopes,
   searchContentByText,
 } from '../utils/content-search';
+import { parseJsonObject } from '@lobu/core';
 import { parseDateAlias, toEndOfDay } from '../utils/date-aliases';
 import { type DataSourceContext, executeDataSources } from '../utils/execute-data-sources';
-import { parseJsonObject } from '../utils/json';
 import logger from '../utils/logger';
 
 /**

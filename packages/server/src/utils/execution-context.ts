@@ -3,8 +3,8 @@ import { getBuiltinProviderConfig } from '../connect/oauth-providers';
 import { type DbClient, getDb } from '../db/client';
 import { getAuthProfileById, normalizeAuthValues } from './auth-profiles';
 import { getOAuthAuthMethods, normalizeConnectorAuthSchema } from './connector-auth';
+import { parseJsonObject } from '@lobu/core';
 import { errorMessage } from './errors';
-import { parseJsonObject } from './json';
 import logger from './logger';
 
 interface ExecutionOAuthCredentials {

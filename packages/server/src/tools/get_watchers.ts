@@ -32,7 +32,7 @@ import {
   inferGranularity,
   parseDateAlias,
 } from '../utils/date-aliases';
-import { parseJsonObject } from '../utils/json';
+import { parseJsonObject } from '@lobu/core';
 import logger from '../utils/logger';
 import { requireReadAccess } from '../utils/organization-access';
 

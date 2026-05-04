@@ -25,8 +25,8 @@ import { executeTool, extractAuthContext, toToolContext } from './tools/execute'
 import { getContent } from './tools/get_content';
 import { getWatcher } from './tools/get_watchers';
 import { getTool, type ToolContext } from './tools/registry';
+import { toJsonSafe } from '@lobu/core';
 import { ToolNotRegisteredError, ToolUserError, errorMessage } from './utils/errors';
-import { toJsonSafe } from './utils/json';
 import logger from './utils/logger';
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from './utils/run-statuses';
 import { getRuntimeInfo } from './utils/runtime-info';

@@ -131,4 +131,105 @@ describe("retryWithBackoff", () => {
     // Exponential: 100*2^0=100, 100*2^1=200, 100*2^2=400
     expect(delays).toEqual([100, 200, 400]);
   });
+
+  test("shouldRetry=false aborts immediately and rethrows", async () => {
+    const fn = mock(async () => {
+      throw new Error("permanent");
+    });
+
+    await expect(
+      retryWithBackoff(fn, {
+        maxRetries: 5,
+        baseDelay: 0,
+        shouldRetry: () => false,
+      })
+    ).rejects.toThrow("permanent");
+    // Only one call — no retries because shouldRetry returned false.
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  test("shouldRetry receives the error and continues retrying when true", async () => {
+    let attempt = 0;
+    const seen: string[] = [];
+    const fn = async () => {
+      attempt++;
+      if (attempt < 3) throw new Error(`transient-${attempt}`);
+      return "ok";
+    };
+
+    const result = await retryWithBackoff(fn, {
+      maxRetries: 5,
+      baseDelay: 0,
+      shouldRetry: (error) => {
+        seen.push(error.message);
+        return true;
+      },
+    });
+
+    expect(result).toBe("ok");
+    expect(seen).toEqual(["transient-1", "transient-2"]);
+  });
+
+  test("maxDelay caps the computed backoff", async () => {
+    const delays: number[] = [];
+    const originalSetTimeout = globalThis.setTimeout;
+
+    globalThis.setTimeout = ((fn: () => void, ms: number) => {
+      delays.push(ms);
+      return originalSetTimeout(fn, 0);
+    }) as any;
+
+    let attempt = 0;
+    try {
+      await retryWithBackoff(
+        async () => {
+          attempt++;
+          if (attempt <= 4) throw new Error("fail");
+          return "ok";
+        },
+        {
+          maxRetries: 4,
+          baseDelay: 100,
+          maxDelay: 250,
+          strategy: "exponential",
+        }
+      );
+    } finally {
+      globalThis.setTimeout = originalSetTimeout;
+    }
+
+    // 100, 200, 400→capped 250, 800→capped 250
+    expect(delays).toEqual([100, 200, 250, 250]);
+  });
+
+  test('jitter="full" multiplies delay by random in [1, 2)', async () => {
+    const delays: number[] = [];
+    const originalSetTimeout = globalThis.setTimeout;
+    const originalRandom = Math.random;
+
+    globalThis.setTimeout = ((fn: () => void, ms: number) => {
+      delays.push(ms);
+      return originalSetTimeout(fn, 0);
+    }) as any;
+    // Force random to 0.5 so jitter multiplier is exactly 1.5.
+    Math.random = () => 0.5;
+
+    let attempt = 0;
+    try {
+      await retryWithBackoff(
+        async () => {
+          attempt++;
+          if (attempt <= 2) throw new Error("fail");
+          return "ok";
+        },
+        { maxRetries: 2, baseDelay: 1000, jitter: "full" }
+      );
+    } finally {
+      globalThis.setTimeout = originalSetTimeout;
+      Math.random = originalRandom;
+    }
+
+    // Delays: 1000*1.5=1500, 2000*1.5=3000
+    expect(delays).toEqual([1500, 3000]);
+  });
 });

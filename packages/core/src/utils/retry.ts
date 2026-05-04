@@ -5,18 +5,33 @@ const logger = createLogger("retry");
 export interface RetryOptions {
   maxRetries?: number;
   baseDelay?: number;
+  /** Maximum delay between retries (caps the computed delay before jitter). */
+  maxDelay?: number;
   strategy?: "exponential" | "linear";
-  jitter?: boolean;
+  /**
+   * Jitter mode:
+   * - `false` (default): no jitter
+   * - `true`: add a uniform random 0-1000ms to each delay (additive jitter)
+   * - `"full"`: multiply the computed delay by a uniform random in [1, 2)
+   *   (equivalent to p-retry's `randomize: true`)
+   */
+  jitter?: boolean | "full";
+  /**
+   * Predicate to decide whether an error is retryable. If it returns `false`,
+   * the loop aborts immediately and rethrows the error. Defaults to retrying
+   * every error.
+   */
+  shouldRetry?: (error: Error, attempt: number) => boolean;
   onRetry?: (attempt: number, error: Error) => void;
 }
 
 /**
- * Retry a function with configurable backoff strategy
+ * Retry a function with configurable backoff strategy.
  *
  * @param fn - The async function to retry
  * @param options - Retry configuration
  * @returns The result of the function
- * @throws The last error if all retries fail
+ * @throws The last error if all retries fail or `shouldRetry` returns `false`.
  *
  * @example
  * ```typescript
@@ -26,19 +41,14 @@ export interface RetryOptions {
  *   { maxRetries: 3, baseDelay: 1000 }
  * );
  *
- * // Linear backoff with jitter
- * const result = await retryWithBackoff(
- *   () => createDeployment(),
- *   {
- *     maxRetries: 3,
- *     strategy: 'linear',
- *     jitter: true,
- *     baseDelay: 2000,
- *     onRetry: (attempt, error) => {
- *       logger.warn(`Attempt ${attempt} failed: ${error.message}`);
- *     }
- *   }
- * );
+ * // HTTP-style retry with full jitter, max delay cap, and a predicate
+ * const result = await retryWithBackoff(() => fetch(url), {
+ *   maxRetries: 5,
+ *   baseDelay: 1000,
+ *   maxDelay: 16000,
+ *   jitter: "full",
+ *   shouldRetry: (error) => !/(401|403|404)/.test(error.message),
+ * });
  * ```
  */
 export async function retryWithBackoff<T>(
@@ -48,8 +58,10 @@ export async function retryWithBackoff<T>(
   const {
     maxRetries = 3,
     baseDelay = 1000,
+    maxDelay,
     strategy = "exponential",
     jitter = false,
+    shouldRetry,
     onRetry,
   } = options;
 
@@ -61,16 +73,33 @@ export async function retryWithBackoff<T>(
     } catch (error) {
       lastError = error as Error;
 
+      // Allow caller to abort on non-retryable errors.
+      if (shouldRetry && !shouldRetry(lastError, attempt + 1)) {
+        throw lastError;
+      }
+
       if (attempt < maxRetries) {
-        // Calculate delay based on strategy
-        const delay =
+        // Calculate base delay based on strategy
+        let delay =
           strategy === "exponential"
             ? baseDelay * 2 ** attempt
             : baseDelay * (attempt + 1);
 
-        // Add jitter if requested (0-1000ms random)
-        const jitterMs = jitter ? Math.random() * 1000 : 0;
-        const finalDelay = delay + jitterMs;
+        if (maxDelay !== undefined) {
+          delay = Math.min(delay, maxDelay);
+        }
+
+        // Apply jitter
+        let finalDelay: number;
+        if (jitter === "full") {
+          // Multiplicative jitter: random in [1, 2) — matches p-retry randomize.
+          finalDelay = delay * (1 + Math.random());
+        } else if (jitter === true) {
+          // Additive jitter: 0–1000ms.
+          finalDelay = delay + Math.random() * 1000;
+        } else {
+          finalDelay = delay;
+        }
 
         // Notify caller of retry
         if (onRetry) {

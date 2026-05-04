@@ -138,9 +138,9 @@
       "name": "@lobu/connector-sdk",
       "version": "6.0.1",
       "dependencies": {
+        "@lobu/core": "workspace:*",
         "@sinclair/typebox": "^0.34.41",
         "ky": "^1.14.0",
-        "p-retry": "^7.1.0",
         "pino": "^10.1.0",
       },
       "devDependencies": {

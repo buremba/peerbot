@@ -1,10 +1,13 @@
 /**
- * Centralized retry utilities using p-retry
+ * HTTP retry helper for connector SDK.
  *
- * Provides retry strategies for HTTP operations (external APIs).
+ * Thin wrapper around `@lobu/core`'s generic `retryWithBackoff` that provides
+ * HTTP-aware retry semantics: exponential backoff with full jitter (5 retries,
+ * 1s → 16s), retry on transient network/rate-limit/server errors, abort on
+ * permanent client errors (401/403/404/etc.).
  */
 
-import pRetry, { AbortError } from 'p-retry';
+import { retryWithBackoff } from '@lobu/core';
 import { sdkLogger } from './logger.js';
 
 /**
@@ -119,50 +122,39 @@ interface RetryOptions {
  * HTTP retry strategy
  * Exponential backoff with jitter for external API calls
  * - 5 retries
- * - 1s, 2s, 4s, 8s, 16s delays (with jitter)
+ * - 1s, 2s, 4s, 8s, 16s base delays (with multiplicative jitter)
  */
 export async function withHttpRetry<T>(fn: () => Promise<T>, options?: RetryOptions): Promise<T> {
-  return pRetry(
-    async (_attemptNumber) => {
-      try {
-        return await fn();
-      } catch (error) {
-        // Abort on permanent errors (404, 401, 403, etc.)
-        if (isPermanentError(error)) {
-          throw new AbortError(error instanceof Error ? error : new Error(String(error)));
-        }
+  const operation = options?.operation || 'HTTP operation';
+  const totalRetries = 5;
 
-        // Retry on network, rate limit, or server errors
-        if (!isRetryableError(error)) {
-          throw new AbortError(error instanceof Error ? error : new Error(String(error)));
-        }
-
-        throw error;
-      }
+  return retryWithBackoff(fn, {
+    maxRetries: totalRetries,
+    baseDelay: 1000,
+    maxDelay: 16000,
+    strategy: 'exponential',
+    jitter: 'full',
+    shouldRetry: (error) => {
+      // Abort on permanent errors (404, 401, 403, etc.) or anything we don't
+      // recognise as transient.
+      if (isPermanentError(error)) return false;
+      return isRetryableError(error);
     },
-    {
-      retries: 5,
-      factor: 2,
-      minTimeout: 1000,
-      maxTimeout: 16000,
-      randomize: true,
-      onFailedAttempt: (error) => {
-        const underlyingError = error as any;
-        if (options?.onRetry) {
-          options.onRetry(underlyingError, error.attemptNumber);
-        }
+    onRetry: (attempt, error) => {
+      if (options?.onRetry) {
+        options.onRetry(error, attempt);
+      }
 
-        sdkLogger.debug(
-          {
-            operation: options?.operation || 'HTTP operation',
-            attempt: error.attemptNumber,
-            retriesLeft: error.retriesLeft,
-            error: underlyingError.message || String(underlyingError),
-            context: options?.context,
-          },
-          `[Retry:HTTP] Attempt ${error.attemptNumber} failed, ${error.retriesLeft} retries left`
-        );
-      },
-    }
-  );
+      sdkLogger.debug(
+        {
+          operation,
+          attempt,
+          retriesLeft: totalRetries - attempt,
+          error: error.message || String(error),
+          context: options?.context,
+        },
+        `[Retry:HTTP] Attempt ${attempt} failed, ${totalRetries - attempt} retries left`
+      );
+    },
+  });
 }

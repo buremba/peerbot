@@ -19,18 +19,21 @@ ENV PATH="/usr/local/bin:${PATH}"
 COPY bun.lock package.json tsconfig.json ./
 COPY patches/ ./patches/
 
-# Manifests for the worker and its workspace deps
+# Manifests for the worker and its workspace deps. core is a real
+# build-time dep (connector-sdk imports @lobu/core), so its package.json
+# must be the real one — not a stub.
 COPY packages/connector-worker/package.json packages/connector-worker/
 COPY packages/connector-sdk/package.json packages/connector-sdk/
 COPY packages/connectors/package.json packages/connectors/
 COPY packages/embeddings/package.json packages/embeddings/
+COPY packages/core/package.json packages/core/
 
 # Stub workspaces not needed at build time
-RUN mkdir -p packages/cli packages/core packages/landing \
-               packages/server packages/owletto-cli packages/browser-extension \
+RUN mkdir -p packages/cli packages/landing \
+               packages/server packages/owletto-cli \
                packages/openclaw-plugin packages/web packages/agent-worker packages/mcpsandbox \
-    && for p in cli core landing server \
-                browser-extension openclaw-plugin web agent-worker mcpsandbox; do \
+    && for p in cli landing server \
+                openclaw-plugin web agent-worker mcpsandbox; do \
         echo "{\"name\":\"@lobu/$p\",\"version\":\"0.0.0\",\"private\":true}" > "packages/$p/package.json"; \
       done \
     && echo '{"name":"@lobu/worker","version":"0.0.0","private":true}' > packages/agent-worker/package.json \
@@ -38,14 +41,16 @@ RUN mkdir -p packages/cli packages/core packages/landing \
 
 RUN --mount=type=cache,target=/root/.bun/install/cache bun install
 
-# Source code
+# Source code (core needed because connector-sdk imports @lobu/core)
+COPY packages/core/ packages/core/
 COPY packages/connector-sdk/ packages/connector-sdk/
 COPY packages/connectors/ packages/connectors/
 COPY packages/embeddings/ packages/embeddings/
 COPY packages/connector-worker/ packages/connector-worker/
 
-# Build SDK dist (worker imports compiled sdk)
-RUN cd packages/connector-sdk && bunx tsc
+# Build core dist before connector-sdk (connector-sdk imports @lobu/core)
+RUN cd packages/core && bunx tsc \
+    && cd ../connector-sdk && bunx tsc
 
 # ===========================================
 # Runtime

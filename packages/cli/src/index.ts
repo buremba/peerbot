@@ -48,7 +48,7 @@ export async function runCli(
 Local dev:
   init [name]              Scaffold a new agent project
   run | dev | start        Boot the embedded Lobu stack
-  chat [prompt]            Talk to an agent (REPL when no prompt)
+  chat <prompt>            Send a prompt to an agent and stream the response
   eval [name]              Run agent evaluations
   validate                 Validate lobu.toml
   doctor                   Health checks (deps, DB, pgvector, ports, keys)
@@ -154,9 +154,9 @@ Memory:
 
   // ─── chat ──────────────────────────────────────────────────────────
   program
-    .command("chat [prompt]")
+    .command("chat <prompt>")
     .description(
-      "Talk to an agent. With no prompt, opens a REPL. With --user, routes through Telegram/Slack."
+      "Send a prompt to an agent and stream the response. With --user, routes through Telegram/Slack."
     )
     .option("-a, --agent <id>", "Agent ID (defaults to first in lobu.toml)")
     .option("-u, --user <id>", "User ID to impersonate (e.g. telegram:12345)")
@@ -179,7 +179,7 @@ Memory:
     .option("-c, --context <name>", "Use a named context")
     .action(
       async (
-        prompt: string | undefined,
+        prompt: string,
         options: {
           agent?: string;
           gateway?: string;

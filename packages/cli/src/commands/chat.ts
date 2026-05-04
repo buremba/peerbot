@@ -61,14 +61,14 @@ export interface ChatOptions {
 }
 
 /**
- * `lobu chat [prompt]` — send a prompt to an agent and stream the response.
+ * `lobu chat <prompt>` — send a prompt to an agent and stream the response.
  *
- * No prompt → REPL. With --user platform:id, routes through Telegram/Slack.
+ * With --user platform:id, routes through Telegram/Slack.
  * With --continue, resumes the last thread for (context, agent).
  */
 export async function chatCommand(
   cwd: string,
-  prompt: string | undefined,
+  prompt: string,
   options: ChatOptions
 ): Promise<void> {
   let gatewayUrl: string;
@@ -105,27 +105,6 @@ export async function chatCommand(
         )
       );
     }
-  }
-
-  if (prompt === undefined) {
-    if (platformUser) {
-      console.error(
-        chalk.red(
-          "\n  REPL mode is not supported with --user. Pass a prompt or drop --user.\n"
-        )
-      );
-      process.exit(1);
-    }
-    await runRepl(gatewayUrl, authToken, {
-      agentId,
-      thread: threadId,
-      dryRun: options.dryRun,
-      forceNew: options.new && !threadId,
-      autoApprove: options.autoApprove,
-      json: options.json,
-      contextName,
-    });
-    return;
   }
 
   if (platformUser) {
@@ -349,89 +328,6 @@ async function sendViaApi(
   if (opts.contextName && session.threadId) {
     await setLastThread(opts.contextName, session.agentId, session.threadId);
   }
-}
-
-interface ReplOptions {
-  agentId?: string;
-  thread?: string;
-  dryRun?: boolean;
-  forceNew?: boolean;
-  autoApprove?: boolean;
-  json?: boolean;
-  contextName?: string;
-}
-
-async function runRepl(
-  gatewayUrl: string,
-  authToken: string,
-  opts: ReplOptions
-): Promise<void> {
-  const session = await createSession(gatewayUrl, authToken, {
-    agentId: opts.agentId,
-    thread: opts.thread,
-    dryRun: opts.dryRun,
-    forceNew: opts.forceNew,
-  });
-
-  const base = `${gatewayUrl}/api/v1/agents/${session.agentId}`;
-  const sseUrl = `${base}/events`;
-  const messagesUrl = `${base}/messages`;
-
-  if (!opts.json) {
-    console.log(
-      chalk.dim(
-        `\n  ${chalk.bold(session.agentId)} ${session.threadId ? `(thread: ${session.threadId.slice(0, 8)}…)` : ""}\n  Type your message. Ctrl+D or /exit to quit.\n`
-      )
-    );
-  }
-
-  if (opts.contextName && session.threadId) {
-    await setLastThread(opts.contextName, session.agentId, session.threadId);
-  }
-
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
-
-  const ask = (prompt: string): Promise<string | null> =>
-    new Promise((resolve) => {
-      rl.question(prompt, (answer) => resolve(answer));
-      rl.once("close", () => resolve(null));
-    });
-
-  while (true) {
-    const line = await ask(chalk.cyan("\n> "));
-    if (line === null) break;
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    if (trimmed === "/exit" || trimmed === "/quit") break;
-
-    const sseController = new AbortController();
-    const streaming = streamResponse(sseUrl, session.token, sseController, {
-      autoApprove: opts.autoApprove,
-      json: opts.json,
-    });
-
-    const msgRes = await fetch(messagesUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${session.token}`,
-      },
-      body: JSON.stringify({ content: trimmed }),
-    });
-
-    if (!msgRes.ok) {
-      sseController.abort();
-      const body = await msgRes.text().catch(() => "");
-      console.error(
-        chalk.red(`\n  Failed to send (${msgRes.status}): ${body}\n`)
-      );
-      continue;
-    }
-
-    await streaming;
-  }
-
-  rl.close();
 }
 
 async function resolveAgentId(cwd: string): Promise<string | undefined> {

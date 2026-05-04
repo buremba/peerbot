@@ -25,7 +25,7 @@ docker run -d --name lobu-pg -p 5432:5432 \
 
 - `lobu init [name]` — scaffold a project. Interactive by default; pass `--yes` (with any of `--port` / `--provider` / `--platform` / `--memory` / `--no-sentry` / etc.) for non-interactive / CI scaffolding. `lobu init .` or `--here` scaffolds into the current directory.
 - `lobu run` (aliases: `lobu dev`, `lobu start`) — boot the embedded stack. Pre-flights the gateway port and accepts `--port` / `--quiet` / `--verbose` / `--log-level`.
-- `lobu chat [prompt]` — one-shot with a prompt, REPL without one. `-C/--continue` resumes the last thread; `--auto-approve` skips tool prompts in trusted runs; `--json` emits raw SSE events.
+- `lobu chat <prompt>` — send one prompt and stream the response. `-C/--continue` resumes the last thread (per context+agent); `--auto-approve` skips tool prompts in trusted runs; `--json` emits raw SSE events for piping.
 - `lobu doctor` — Postgres connectivity, pgvector extension, port availability, provider API keys, workspace dir.
 - `lobu link` / `lobu unlink` — bind this directory to a (context, org) at `.lobu/project.json`. `lobu apply` refuses to push mismatched targets unless `--force` is set.
 - `lobu apply` (alias: `lobu deploy`) — idempotent sync of `lobu.toml` to Lobu Cloud.

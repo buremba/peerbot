@@ -1,7 +1,6 @@
 import type { AgentConfigStore } from "@lobu/core";
 import type { SettingsTokenPayload } from "../../auth/settings/token-service.js";
 import type { UserAgentsStore } from "../../auth/user-agents-store.js";
-import { getAuthMethod } from "../../connections/platform-auth-methods.js";
 
 interface AgentOwnershipConfig {
   userAgentsStore?: UserAgentsStore;
@@ -14,6 +13,13 @@ interface AgentOwnershipResult {
   ownerUserId?: string;
 }
 
+// Platforms whose user IDs come from an OAuth provider (so the session's
+// `oauthUserId` is the canonical lookup key). All other platforms hand us a
+// deterministic user ID directly (e.g. Telegram's claim-code flow), so
+// `session.userId` is authoritative. Add an entry here if you wire up a new
+// OAuth-based platform.
+const OAUTH_PLATFORMS: ReadonlySet<string> = new Set();
+
 export function resolveSettingsLookupUserId(
   session: SettingsTokenPayload
 ): string {
@@ -21,7 +27,7 @@ export function resolveSettingsLookupUserId(
     return session.oauthUserId || session.userId;
   }
 
-  const isDeterministic = getAuthMethod(session.platform).type !== "oauth";
+  const isDeterministic = !OAUTH_PLATFORMS.has(session.platform);
   return isDeterministic
     ? session.userId
     : session.oauthUserId || session.userId;

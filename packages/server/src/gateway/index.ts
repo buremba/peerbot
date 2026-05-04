@@ -12,15 +12,13 @@ export { OAuthClient } from "./auth/oauth/client.js";
 export { CLAUDE_PROVIDER } from "./auth/oauth/providers.js";
 export { createAuthProfileLabel } from "./auth/settings/auth-profiles-manager.js";
 export { ApiPlatform, type ApiPlatformConfig } from "./api/platform.js";
-export {
-  ChatInstanceManager,
-  ChatResponseBridge,
-} from "./connections/index.js";
+export { ChatInstanceManager } from "./connections/chat-instance-manager.js";
+export { ChatResponseBridge } from "./connections/chat-response-bridge.js";
 export type {
   ConnectionSettings,
   PlatformAdapterConfig,
   PlatformConnection,
-} from "./connections/index.js";
+} from "./connections/types.js";
 export {
   type AgentConfig,
   buildGatewayConfig,

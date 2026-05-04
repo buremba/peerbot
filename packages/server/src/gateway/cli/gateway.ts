@@ -59,7 +59,7 @@ interface CreateGatewayAppOptions {
   platformRegistry?: any;
   coreServices?: any;
   chatInstanceManager?:
-    | import("../connections/index.js").ChatInstanceManager
+    | import("../connections/chat-instance-manager.js").ChatInstanceManager
     | null;
   /** Custom auth provider for embedded mode. When set, gateway delegates auth to this function instead of using cookie-based sessions. */
   authProvider?: import("../routes/public/settings-auth.js").AuthProvider;
@@ -1155,8 +1155,11 @@ export async function startGateway(config: GatewayConfig): Promise<void> {
   // lobu.toml is no longer read at gateway boot. Agents and connections
   // enter Postgres via `lobu apply` (CLI) or the web UI.
 
-  const { ChatInstanceManager, ChatResponseBridge } = await import(
-    "../connections/index.js"
+  const { ChatInstanceManager } = await import(
+    "../connections/chat-instance-manager.js"
+  );
+  const { ChatResponseBridge } = await import(
+    "../connections/chat-response-bridge.js"
   );
   const chatInstanceManager = new ChatInstanceManager();
   try {

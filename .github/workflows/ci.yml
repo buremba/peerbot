@@ -121,9 +121,13 @@ jobs:
         if: steps.submodule.outputs.stubbed != 'true'
         run: bun install
 
-      - name: Build connector-sdk (owletto-web imports its compiled dist)
+      - name: Build core + connector-sdk (owletto-web imports their compiled dist)
+        # connector-sdk imports @lobu/core; resolving the type-only barrel
+        # import needs core/dist on disk first.
         if: steps.submodule.outputs.stubbed != 'true'
-        run: cd packages/connector-sdk && bun run build
+        run: |
+          cd packages/core && bun run build && cd ../..
+          cd packages/connector-sdk && bun run build && cd ../..
 
       - name: owletto-web tests (vitest)
         # owletto-web doesn't define a `test` script in its package.json yet

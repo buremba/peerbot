@@ -13,17 +13,6 @@ const config: KnipConfig = {
     "packages/connectors": {
       entry: ["src/*.ts"],
     },
-    // Chrome MV3 extension — entries come from manifest.json + vite.config.ts.
-    "packages/browser-extension": {
-      entry: [
-        "src/background/service-worker.ts",
-        "src/content/index.ts",
-        "src/sidebar/main.tsx",
-        "src/popup/main.tsx",
-        "src/offscreen/worker.ts",
-        "src/callback/callback.ts",
-      ],
-    },
     "packages/embeddings": {
       // src/openai.ts and src/embedding-utils.ts are reached transitively from
       // server.ts (the package "main"); listing embedding-utils explicitly

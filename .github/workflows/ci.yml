@@ -267,7 +267,7 @@ jobs:
         # that belong to their own build pipelines.
         run: |
           set -euo pipefail
-          for pkg in server connector-worker connector-sdk openclaw-plugin embeddings browser-extension cli; do
+          for pkg in server connector-worker connector-sdk openclaw-plugin embeddings cli; do
             echo "::group::typecheck $pkg"
             (cd "packages/$pkg" && bunx tsc --noEmit)
             echo "::endgroup::"

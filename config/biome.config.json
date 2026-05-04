@@ -28,7 +28,6 @@
       "!**/packages/connector-worker/**",
       "!**/packages/connectors/**",
       "!**/packages/embeddings/**",
-      "!**/packages/browser-extension/**",
       "!**/packages/web/**",
       "!**/scripts/owletto/**",
       "!**/benchmarks/**",

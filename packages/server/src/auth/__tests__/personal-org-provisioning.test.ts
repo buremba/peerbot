@@ -103,10 +103,12 @@ describe('personalOrgLockKey', () => {
 });
 
 describe('RESERVED_SLUGS', () => {
-  it('mirrors the DB org_slug_not_reserved CHECK set', () => {
-    // If this diverges from the DB constraint the hook will hit a
-    // constraint violation at runtime rather than producing a clean suffix.
-    const expected = [
+  it('is a superset of the DB org_slug_not_reserved CHECK set', () => {
+    // The application set is unified with RESERVED_PATHS (route-collision
+    // guard) and is intentionally broader than the DB CHECK constraint —
+    // extras are defense-in-depth. Every DB-reserved slug must still be
+    // present here, otherwise the hook would emit a slug the DB rejects.
+    const dbReserved = [
       'settings',
       'auth',
       'api',
@@ -127,9 +129,9 @@ describe('RESERVED_SLUGS', () => {
       'docs',
       'mail',
     ];
-    for (const slug of expected) {
+    for (const slug of dbReserved) {
       expect(RESERVED_SLUGS.has(slug)).toBe(true);
     }
-    expect(RESERVED_SLUGS.size).toBe(expected.length);
+    expect(RESERVED_SLUGS.size).toBeGreaterThanOrEqual(dbReserved.length);
   });
 });

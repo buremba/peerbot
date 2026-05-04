@@ -8,6 +8,7 @@
  */
 
 import { getDb } from '../db/client';
+import { RESERVED_PATHS_SET } from '../utils/reserved';
 import { generateSecureToken } from './oauth/utils';
 import { provisionMemberAndCoreIdentities } from './subject-identities';
 
@@ -18,31 +19,13 @@ interface UserLike {
   username?: string | null;
 }
 
-// Mirrors the org_slug_not_reserved CHECK constraint added in
-// 20260420120000_extend_reserved_org_slugs.sql. Inserts that hit a reserved
+// Reserved owner-slug names. Re-exports the canonical set from utils/reserved
+// (which is a superset of the DB `org_slug_not_reserved` CHECK constraint in
+// 20260420120000_extend_reserved_org_slugs.sql). Inserts that hit a DB-reserved
 // slug raise a constraint violation, so the candidate-derivation layer must
-// avoid them up front.
-export const RESERVED_SLUGS = new Set([
-  'settings',
-  'auth',
-  'api',
-  'templates',
-  'help',
-  'account',
-  'admin',
-  'health',
-  'login',
-  'logout',
-  'signup',
-  'register',
-  'www',
-  'mcp',
-  'static',
-  'assets',
-  'cdn',
-  'docs',
-  'mail',
-]);
+// avoid them up front; extra app-level entries are defense-in-depth against
+// route-collision squatting.
+export const RESERVED_SLUGS = RESERVED_PATHS_SET;
 
 const MAX_SLUG_LENGTH = 48;
 const MAX_COLLISION_ATTEMPTS = 100;

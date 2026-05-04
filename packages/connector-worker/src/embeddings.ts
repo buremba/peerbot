@@ -5,23 +5,12 @@
  * Otherwise, uses @xenova/transformers locally.
  */
 
+import { validateEmbeddingDimensions } from '@lobu/embeddings';
 import {
   type FeatureExtractionPipeline,
   pipeline,
   env as transformersEnv,
 } from '@xenova/transformers';
-
-function validateEmbeddingDimensions(
-  embedding: number[],
-  expectedDimensions: number,
-  context: string
-): void {
-  if (embedding.length !== expectedDimensions) {
-    throw new Error(
-      `${context}: unexpected embedding dimensions ${embedding.length} (expected ${expectedDimensions})`
-    );
-  }
-}
 
 const DEFAULT_MODEL_NAME = 'Xenova/bge-base-en-v1.5';
 const DEFAULT_DIMENSIONS = 768;

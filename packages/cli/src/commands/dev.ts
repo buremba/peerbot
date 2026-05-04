@@ -92,7 +92,9 @@ export async function devCommand(
     options.port ?? mergedEnv.GATEWAY_PORT ?? mergedEnv.PORT ?? "8787";
   const portNum = Number(portRaw);
   if (!Number.isInteger(portNum) || portNum < 1 || portNum > 65535) {
-    console.error(chalk.red(`\n  Invalid port — must be an integer in 1-65535.\n`));
+    console.error(
+      chalk.red(`\n  Invalid port — must be an integer in 1-65535.\n`)
+    );
     process.exit(1);
   }
   const gatewayUrl = `http://localhost:${portNum}`;

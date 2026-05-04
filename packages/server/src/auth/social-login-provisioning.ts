@@ -10,7 +10,7 @@ import {
 import { getOAuthAuthMethods, normalizeConnectorAuthSchema } from '../utils/connector-auth';
 import logger from '../utils/logger';
 import { syncOAuthConnectionsForAuthProfile } from '../utils/oauth-connection-state';
-import { mergeOAuthScopeAuthData, normalizeScopeList } from '../utils/oauth-scopes';
+import { mergeOAuthScopeAuthData, normalizeScopeList } from './oauth/scopes';
 import { createProvisionedConnection } from '../utils/provisioned-connection';
 import { resolveRequestOrganizationId } from './config';
 

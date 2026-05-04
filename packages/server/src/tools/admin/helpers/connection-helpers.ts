@@ -23,7 +23,7 @@ import { DEFAULT_SCHEDULE } from '../../../utils/cron';
 import {
   readGrantedScopesFromAuthData,
   readRequestedScopesFromAuthData,
-} from '../../../utils/oauth-scopes';
+} from '../../../auth/oauth/scopes';
 import { getWorkspaceRole } from '../../../utils/organization-access';
 import {
   buildConnectionsUrl,

@@ -1,7 +1,11 @@
 import { getDb } from '../db/client';
 import { getAuthProfileById, updateAuthProfile } from './auth-profiles';
 import { getOAuthAuthMethods, normalizeConnectorAuthSchema } from './connector-auth';
-import { getFeedRequiredScopes, hasAllScopes, normalizeScopeList } from './oauth-scopes';
+import {
+  getFeedRequiredScopes,
+  hasAllScopes,
+  normalizeScopeList,
+} from '../auth/oauth/scopes';
 
 export async function syncOAuthConnectionsForAuthProfile(
   organizationId: string,

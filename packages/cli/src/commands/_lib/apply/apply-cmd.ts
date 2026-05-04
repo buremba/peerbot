@@ -1,4 +1,6 @@
 import chalk from "chalk";
+import { resolveContext } from "../../../internal/context.js";
+import { loadProjectLink } from "../../../internal/project-link.js";
 import { ApiError, ValidationError } from "../../memory/_lib/errors.js";
 import { printError, printText } from "../../memory/_lib/output.js";
 import {
@@ -24,6 +26,8 @@ export interface ApplyOptions {
   only?: "agents" | "memory";
   org?: string;
   url?: string;
+  /** Bypass the project-link guard. */
+  force?: boolean;
   /** Test seam — inject a stubbed fetch. */
   fetchImpl?: typeof fetch;
 }
@@ -204,6 +208,36 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
     fetchImpl: opts.fetchImpl,
   });
   printText(chalk.dim(`Org: ${orgSlug}`));
+
+  // Refuse if .lobu/project.json points at a different (context, org).
+  const link = await loadProjectLink(cwd);
+  if (link && !opts.force) {
+    const activeContext = await resolveContext().catch(() => null);
+    const contextMismatch =
+      activeContext !== null && activeContext.name !== link.context;
+    const orgMismatch = orgSlug !== link.org;
+    if (contextMismatch || orgMismatch) {
+      const detail: string[] = [];
+      if (contextMismatch) {
+        detail.push(
+          `  context: linked=${link.context}, active=${activeContext.name}`
+        );
+      }
+      if (orgMismatch) {
+        detail.push(`  org:     linked=${link.org}, applying=${orgSlug}`);
+      }
+      printError(
+        [
+          "",
+          "Project link mismatch — refusing to apply.",
+          ...detail,
+          "",
+          "Run `lobu link --org <slug>` to update the link, or pass `--force` to override.",
+        ].join("\n")
+      );
+      throw new ValidationError("project-link mismatch");
+    }
+  }
 
   const remote = await fetchRemoteSnapshot(client, state, opts.only);
   const plan = computeDiff(state, remote, { only: opts.only });

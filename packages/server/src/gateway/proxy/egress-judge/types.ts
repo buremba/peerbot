@@ -27,7 +27,7 @@ export interface JudgeVerdict {
  * emit accurate audit events.
  */
 export interface JudgeDecision extends JudgeVerdict {
-  source: "judge" | "cache" | "circuit-open";
+  source: "judge" | "cache" | "circuit-open" | "judge-error";
   latencyMs: number;
   policyHash: string;
   judgeName: string;

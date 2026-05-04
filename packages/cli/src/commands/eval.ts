@@ -1,4 +1,10 @@
-import { readFile } from "node:fs/promises";
+import {
+  access,
+  constants,
+  mkdir,
+  readFile,
+  writeFile,
+} from "node:fs/promises";
 import { basename, join } from "node:path";
 import chalk from "chalk";
 import { parse as parseYaml } from "yaml";
@@ -224,6 +230,82 @@ export async function evalCommand(
   if (options.ci && report.summary.failed > 0) {
     process.exit(1);
   }
+}
+
+const EVAL_NAME_PATTERN = /^[a-z0-9][a-z0-9_-]*$/;
+
+export interface EvalNewOptions {
+  cwd?: string;
+  agent?: string;
+  description?: string;
+  trials?: number;
+}
+
+/** Scaffold a YAML eval into agents/<id>/evals/. */
+export async function evalNewCommand(
+  name: string,
+  options: EvalNewOptions = {}
+): Promise<void> {
+  if (!EVAL_NAME_PATTERN.test(name)) {
+    console.error(
+      chalk.red(
+        `\n  Invalid eval name "${name}". Use lowercase alphanumeric, dashes, or underscores.\n`
+      )
+    );
+    process.exit(1);
+  }
+
+  const cwd = options.cwd ?? process.cwd();
+  const result = await loadConfig(cwd);
+  if (isLoadError(result)) {
+    console.error(chalk.red(`\n  ${result.error}\n`));
+    process.exit(1);
+  }
+
+  const agentIds = Object.keys(result.config.agents);
+  const agentId = options.agent ?? agentIds[0];
+  if (!agentId) {
+    console.error(chalk.red("\n  No agents found in lobu.toml\n"));
+    process.exit(1);
+  }
+  const agent = result.config.agents[agentId];
+  if (!agent) {
+    console.error(chalk.red(`\n  Agent "${agentId}" not found in lobu.toml\n`));
+    process.exit(1);
+  }
+
+  const evalsDir = join(cwd, agent.dir, "evals");
+  await mkdir(evalsDir, { recursive: true });
+  const file = join(evalsDir, `${name}.yaml`);
+  try {
+    await access(file, constants.F_OK);
+    console.error(chalk.red(`\n  ${file} already exists.\n`));
+    process.exit(1);
+  } catch {
+    // expected
+  }
+
+  const description =
+    options.description ?? `Eval for ${name} (edit me to assert real behavior)`;
+  const trials = options.trials ?? 3;
+  const yaml = `version: 1
+name: ${name}
+description: ${JSON.stringify(description)}
+trials: ${trials}
+timeout: 30
+tags: []
+
+turns:
+  - content: "Replace this with the user message you want to test."
+    assert:
+      - type: llm-rubric
+        value: "Response is correct, helpful, and on-topic."
+        weight: 1.0
+`;
+
+  await writeFile(file, yaml);
+  console.log(chalk.green(`\n  Created ${file}\n`));
+  console.log(chalk.dim(`  Run it with: lobu eval ${name}\n`));
 }
 
 async function discoverEvals(

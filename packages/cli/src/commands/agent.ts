@@ -1,4 +1,11 @@
-import { readFile, writeFile } from "node:fs/promises";
+import {
+  access,
+  constants,
+  mkdir,
+  readFile,
+  writeFile,
+} from "node:fs/promises";
+import { join } from "node:path";
 import chalk from "chalk";
 import { resolveApiClient } from "../internal/index.js";
 
@@ -180,4 +187,104 @@ export async function agentConfigPatchCommand(
 
 function printJson(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
+}
+
+export interface AgentScaffoldOptions {
+  cwd?: string;
+  name?: string;
+  description?: string;
+}
+
+const AGENT_ID_PATTERN = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/;
+
+/** Add a new local agent + a `[agents.<id>]` block to an existing lobu.toml. */
+export async function agentScaffoldCommand(
+  agentId: string,
+  options: AgentScaffoldOptions = {}
+): Promise<void> {
+  if (!AGENT_ID_PATTERN.test(agentId)) {
+    console.error(
+      chalk.red(
+        `\n  Invalid agent id "${agentId}". Use lowercase alphanumeric + hyphens.\n`
+      )
+    );
+    process.exit(1);
+  }
+
+  const cwd = options.cwd ?? process.cwd();
+  const lobuTomlPath = join(cwd, "lobu.toml");
+  let tomlExists = false;
+  try {
+    await access(lobuTomlPath, constants.F_OK);
+    tomlExists = true;
+  } catch {
+    tomlExists = false;
+  }
+
+  if (!tomlExists) {
+    console.error(
+      chalk.red(
+        "\n  No lobu.toml in the current directory. Run `lobu init` first or `cd` into a Lobu project.\n"
+      )
+    );
+    process.exit(1);
+  }
+
+  const agentDir = join(cwd, "agents", agentId);
+  try {
+    await access(agentDir, constants.F_OK);
+    console.error(
+      chalk.red(
+        `\n  Directory ${agentDir} already exists. Pick a different agent id.\n`
+      )
+    );
+    process.exit(1);
+  } catch {
+    // not present — what we want
+  }
+
+  const displayName = options.name ?? agentId;
+  await mkdir(agentDir, { recursive: true });
+  await writeFile(
+    join(agentDir, "IDENTITY.md"),
+    `# Identity\n\nYou are ${displayName}, a helpful AI assistant.\n`
+  );
+  await writeFile(
+    join(agentDir, "SOUL.md"),
+    `# Instructions\n\nBe concise and helpful. Ask clarifying questions when the request is ambiguous.\n`
+  );
+  await writeFile(
+    join(agentDir, "USER.md"),
+    `# User Context\n\n<!-- Add user-specific preferences, timezone, environment details here -->\n`
+  );
+  await mkdir(join(agentDir, "skills"), { recursive: true });
+  await writeFile(join(agentDir, "skills", ".gitkeep"), "");
+  await mkdir(join(agentDir, "evals"), { recursive: true });
+
+  const description = options.description ?? "";
+  const tomlBlock = [
+    "",
+    `[agents.${agentId}]`,
+    `name = ${JSON.stringify(displayName)}`,
+    `description = ${JSON.stringify(description)}`,
+    `dir = "./agents/${agentId}"`,
+    "",
+    `[agents.${agentId}.skills]`,
+    "",
+    `[agents.${agentId}.network]`,
+    "allowed = []",
+    "",
+  ].join("\n");
+
+  const existing = await readFile(lobuTomlPath, "utf-8");
+  const sep = existing.endsWith("\n") ? "" : "\n";
+  await writeFile(lobuTomlPath, `${existing}${sep}${tomlBlock}`);
+
+  console.log(chalk.green(`\n  Scaffolded agent "${agentId}".`));
+  console.log(chalk.dim(`  - agents/${agentId}/IDENTITY.md`));
+  console.log(chalk.dim(`  - agents/${agentId}/SOUL.md`));
+  console.log(chalk.dim(`  - agents/${agentId}/USER.md`));
+  console.log(chalk.dim(`  - agents/${agentId}/skills/`));
+  console.log(chalk.dim(`  - agents/${agentId}/evals/`));
+  console.log(chalk.dim(`  - lobu.toml: appended [agents.${agentId}]\n`));
 }

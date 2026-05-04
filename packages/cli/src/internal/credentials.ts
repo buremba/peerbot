@@ -1,4 +1,4 @@
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   DEFAULT_CONTEXT_NAME,
@@ -83,6 +83,10 @@ export async function saveCredentials(
   await writeFile(CREDENTIALS_FILE, JSON.stringify(store, null, 2), {
     mode: 0o600,
   });
+  // writeFile's `mode` only applies on file creation; if the file existed
+  // with looser perms (e.g. from an older CLI release), the mode would
+  // silently stay 0o644. chmod after write makes the perms unconditional.
+  await chmod(CREDENTIALS_FILE, 0o600).catch(() => undefined);
   credentialsCache.set(target.name, creds);
 }
 
@@ -104,6 +108,7 @@ export async function clearCredentials(contextName?: string): Promise<void> {
   await writeFile(CREDENTIALS_FILE, JSON.stringify(store, null, 2), {
     mode: 0o600,
   });
+  await chmod(CREDENTIALS_FILE, 0o600).catch(() => undefined);
 }
 
 /**

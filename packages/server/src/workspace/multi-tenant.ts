@@ -459,8 +459,14 @@ export class MultiTenantProvider implements WorkspaceProvider {
       if (!cacheHit) {
         const auth = await createAuth(c.env);
         session = await auth.api.getSession({ headers: c.req.raw.headers });
-        if (sessionCacheKey) {
-          sessionCache.set(sessionCacheKey, session ?? null);
+        // Only cache valid sessions. Caching `null` would let an explicitly
+        // revoked or expired session continue to resolve to "no auth" for
+        // the cache TTL (30s) instead of returning the upstream's fresh
+        // verdict — fine on its own, but it also masks the inverse case
+        // where the user just logged in: the prior `null` answer keeps
+        // them logged out until the entry expires.
+        if (sessionCacheKey && session?.user && session.session) {
+          sessionCache.set(sessionCacheKey, session);
         }
       }
 

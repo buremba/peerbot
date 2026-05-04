@@ -1,6 +1,6 @@
 # @lobu/cli
 
-CLI tool for running Lobu locally and managing Lobu agents through the same REST API as the web app.
+CLI for running Lobu locally and managing Lobu agents through the same REST API as the web app.
 
 ## Quick Start
 
@@ -8,37 +8,30 @@ CLI tool for running Lobu locally and managing Lobu agents through the same REST
 npx @lobu/cli@latest init my-bot
 cd my-bot
 # edit .env to set DATABASE_URL
-npx @lobu/cli@latest run
+lobu run
 ```
 
-Lobu boots as a single Node process. Postgres is a user-provided external (managed instance or local — `brew services start postgresql`).
+Lobu boots as a single Node process. Postgres (with pgvector) is a user-provided external. `lobu doctor` reports what's missing.
+
+```bash
+docker run -d --name lobu-pg -p 5432:5432 \
+  -e POSTGRES_PASSWORD=lobu pgvector/pgvector:pg16
+# DATABASE_URL=postgresql://postgres:lobu@localhost:5432/postgres
+```
 
 ## Commands
 
-### `lobu init [name]`
+`lobu --help` shows the full grouped command list, and `lobu <cmd> --help` lists the per-command flags. The highlights:
 
-Scaffold a new Lobu project with interactive prompts:
-
-- **Project name**
-- **Gateway port** and optional **public URL** (for OAuth callbacks)
-- **Worker network access** (isolated, allowlist, or unrestricted)
-- **AI provider** selection from the bundled provider registry + API key
-- **Messaging platform** (Telegram, Slack, Discord, WhatsApp, Teams, Google Chat, or none)
-- **Memory** selection (filesystem, Lobu Cloud, or custom Owletto URL)
-
-**Generates:** `lobu.toml`, `.env` (with `DATABASE_URL` placeholder), `agents/<name>/` (`IDENTITY.md`, `SOUL.md`, `USER.md`, `skills/`, `evals/`), `skills/`, `AGENTS.md`, `TESTING.md`, `README.md`, `.gitignore`.
-
-When Owletto-backed memory is enabled, `lobu init` also scaffolds the file-first memory layout:
-
-- `[memory.owletto]` in `lobu.toml` (org, name, description, models, data)
-- `models/`
-- `data/`
-
-For a custom Owletto deployment, `.env` keeps `MEMORY_URL` as the optional base MCP URL override.
-
-### `lobu run`
-
-Boot the embedded Lobu stack — gateway + workers + embeddings + Owletto memory backend in a single Node process. `lobu.toml` is not required; set `DATABASE_URL` in the environment or `.env`, then the command spawns the bundled `@lobu/server/dist/server.bundle.mjs`. Ctrl+C stops the process and any spawned worker subprocesses cleanly.
+- `lobu init [name]` — scaffold a project. Interactive by default; pass `--yes` (with any of `--port` / `--provider` / `--platform` / `--memory` / `--no-sentry` / etc.) for non-interactive / CI scaffolding. `lobu init .` or `--here` scaffolds into the current directory.
+- `lobu run` (aliases: `lobu dev`, `lobu start`) — boot the embedded stack. Pre-flights the gateway port and accepts `--port` / `--quiet` / `--verbose` / `--log-level`.
+- `lobu chat <prompt>` — send one prompt and stream the response. `-C/--continue` resumes the last thread (per context+agent); `--auto-approve` skips tool prompts in trusted runs; `--json` emits raw SSE events for piping.
+- `lobu doctor` — Postgres connectivity, pgvector extension, port availability, provider API keys, workspace dir.
+- `lobu link` / `lobu unlink` — bind this directory to a (context, org) at `.lobu/project.json`. `lobu apply` refuses to push mismatched targets unless `--force` is set.
+- `lobu apply` (alias: `lobu deploy`) — idempotent sync of `lobu.toml` to Lobu Cloud.
+- `lobu agent scaffold <id>` — add a second/third agent to an existing project.
+- `lobu eval new <name>` — scaffold a YAML eval into the current agent.
+- `lobu telemetry {status,on,off}` — Sentry is off by default; toggle here.
 
 ## License
 

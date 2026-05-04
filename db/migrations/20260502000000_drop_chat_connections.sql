@@ -15,16 +15,24 @@
 -- agent_connections.agent_id is NOT NULL, but chat_connections.template_agent_id
 -- was nullable. Skip orphaned rows (no parent agent) — they could not start
 -- in the current model anyway.
-INSERT INTO public.agent_connections (
-    id, agent_id, platform, config, settings, metadata,
-    status, error_message, created_at, updated_at
-)
-SELECT
-    id, template_agent_id, platform, config, settings, metadata,
-    status, error_message, created_at, updated_at
-FROM public.chat_connections
-WHERE template_agent_id IS NOT NULL
-ON CONFLICT (id) DO NOTHING;
+-- Guarded by to_regclass: deployments that never had chat_connections
+-- (table created with IF NOT EXISTS in 20260429140000 and never used) skip
+-- the copy entirely instead of erroring on the missing relation.
+DO $$
+BEGIN
+    IF to_regclass('public.chat_connections') IS NOT NULL THEN
+        INSERT INTO public.agent_connections (
+            id, agent_id, platform, config, settings, metadata,
+            status, error_message, created_at, updated_at
+        )
+        SELECT
+            id, template_agent_id, platform, config, settings, metadata,
+            status, error_message, created_at, updated_at
+        FROM public.chat_connections
+        WHERE template_agent_id IS NOT NULL
+        ON CONFLICT (id) DO NOTHING;
+    END IF;
+END $$;
 
 DROP TABLE IF EXISTS public.chat_connections;
 

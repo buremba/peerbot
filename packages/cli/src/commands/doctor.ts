@@ -1,7 +1,13 @@
 import { execFileSync } from "node:child_process";
+import { access, constants, readFile, stat } from "node:fs/promises";
+import { join } from "node:path";
 import chalk from "chalk";
 import { checkMemoryHealth } from "./memory/_lib/openclaw-cmd.js";
 import { resolveServerUrl } from "./memory/_lib/openclaw-auth.js";
+import { isPortFree } from "./dev.js";
+import { parseEnvContent } from "../internal/env-file.js";
+import { loadProviderRegistry } from "./providers/registry.js";
+import { isLoadError, loadConfig } from "../config/loader.js";
 
 interface Check {
   name: string;
@@ -51,8 +57,127 @@ async function checkServerReachable(url: string): Promise<Check> {
   }
 }
 
+async function loadProjectEnv(cwd: string): Promise<Record<string, string>> {
+  try {
+    const raw = await readFile(join(cwd, ".env"), "utf-8");
+    return parseEnvContent(raw);
+  } catch {
+    return {};
+  }
+}
+
+async function checkDatabaseAndPgvector(databaseUrl: string): Promise<Check[]> {
+  const results: Check[] = [];
+  const { default: postgres } = await import("postgres");
+  const sql = postgres(databaseUrl, {
+    connect_timeout: 5,
+    max: 1,
+    idle_timeout: 1,
+    onnotice: () => undefined,
+  });
+
+  try {
+    const rows = await sql<{ version: string }[]>`SELECT version() AS version`;
+    const version = String(rows[0]?.version ?? "").split(" on ")[0];
+    results.push({
+      name: "database",
+      status: "ok",
+      detail: version || "connected",
+    });
+  } catch (err) {
+    results.push({
+      name: "database",
+      status: "fail",
+      detail: `connect failed: ${(err as Error).message}`,
+    });
+    await sql.end({ timeout: 1 }).catch(() => undefined);
+    return results;
+  }
+
+  try {
+    const rows = await sql<
+      { extname: string; extversion: string }[]
+    >`SELECT extname, extversion FROM pg_extension WHERE extname = 'vector'`;
+    if (rows.length === 0) {
+      results.push({
+        name: "pgvector",
+        status: "fail",
+        detail: "extension not installed (CREATE EXTENSION vector)",
+      });
+    } else {
+      results.push({
+        name: "pgvector",
+        status: "ok",
+        detail: `v${rows[0]?.extversion}`,
+      });
+    }
+  } catch (err) {
+    results.push({
+      name: "pgvector",
+      status: "warn",
+      detail: `check failed: ${(err as Error).message}`,
+    });
+  }
+
+  await sql.end({ timeout: 5 }).catch(() => undefined);
+  return results;
+}
+
+async function checkPortAvailability(port: number): Promise<Check> {
+  const free = await isPortFree(port);
+  return {
+    name: `port:${port}`,
+    status: free ? "ok" : "fail",
+    detail: free ? "available" : "in use",
+  };
+}
+
+async function checkProviderKeys(
+  cwd: string,
+  env: Record<string, string>
+): Promise<Check[]> {
+  const result = await loadConfig(cwd);
+  if (isLoadError(result)) return [];
+
+  const registry = loadProviderRegistry();
+  const checks: Check[] = [];
+  const seen = new Set<string>();
+
+  for (const agent of Object.values(result.config.agents)) {
+    for (const provider of agent.providers ?? []) {
+      const reg = registry.find((r) => r.id === provider.id);
+      const envVar = reg?.providers?.[0]?.envVarName;
+      if (!envVar || seen.has(envVar)) continue;
+      seen.add(envVar);
+
+      const value = env[envVar] ?? process.env[envVar];
+      checks.push({
+        name: `provider:${provider.id}`,
+        status: value ? "ok" : "fail",
+        detail: value ? `${envVar} set` : `${envVar} missing`,
+      });
+    }
+  }
+  return checks;
+}
+
+async function checkWorkspaceDir(cwd: string): Promise<Check | null> {
+  const dir = join(cwd, "workspaces");
+  try {
+    await access(dir, constants.F_OK);
+    const info = await stat(dir);
+    return info.isDirectory()
+      ? { name: "workspaces", status: "ok", detail: dir }
+      : { name: "workspaces", status: "warn", detail: "not a directory" };
+  } catch {
+    // Missing is fine — gateway creates it on first run.
+    return null;
+  }
+}
+
 interface DoctorOptions {
   memoryOnly?: boolean;
+  cwd?: string;
 }
 
 export async function doctorCommand(
@@ -63,10 +188,33 @@ export async function doctorCommand(
     return;
   }
 
+  const cwd = options.cwd ?? process.cwd();
+  const env = await loadProjectEnv(cwd);
   const checks: Check[] = [];
 
   checks.push(checkNodeVersion());
   checks.push(checkBinaryExists("git"));
+
+  const databaseUrl = env.DATABASE_URL ?? process.env.DATABASE_URL;
+  if (databaseUrl) {
+    checks.push(...(await checkDatabaseAndPgvector(databaseUrl)));
+  } else {
+    checks.push({
+      name: "database",
+      status: "warn",
+      detail: "DATABASE_URL not set (set in .env or environment)",
+    });
+  }
+
+  const port = Number(env.GATEWAY_PORT ?? env.PORT ?? "8787");
+  if (Number.isInteger(port) && port > 0) {
+    checks.push(await checkPortAvailability(port));
+  }
+
+  checks.push(...(await checkProviderKeys(cwd, env)));
+
+  const ws = await checkWorkspaceDir(cwd);
+  if (ws) checks.push(ws);
 
   const serverUrl = await resolveServerUrl();
   if (serverUrl) checks.push(await checkServerReachable(serverUrl));

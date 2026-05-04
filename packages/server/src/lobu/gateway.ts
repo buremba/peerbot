@@ -24,12 +24,12 @@ import { SecretStoreRegistry } from '../gateway/secrets/index';
 import type { Env } from '../index';
 import logger from '../utils/logger';
 import { getConfiguredPublicOrigin } from '../utils/public-origin';
+import { PostgresSecretStore } from './stores/postgres-secret-store';
 import {
   createPostgresAgentAccessStore,
   createPostgresAgentConfigStore,
   createPostgresAgentConnectionStore,
-  PostgresSecretStore,
-} from './stores';
+} from './stores/postgres-stores';
 
 type EmbeddedSettingsSession = {
   userId: string;

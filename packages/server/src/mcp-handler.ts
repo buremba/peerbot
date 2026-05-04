@@ -20,7 +20,7 @@ import { OAuthClientsStore } from './auth/oauth/clients';
 import { isPublicReadable } from './auth/tool-access';
 import { createDbClientFromEnv } from './db/client';
 import type { Env } from './index';
-import { agentExistsInOrganization, isValidAgentId, touchAgentLastUsed } from './lobu/stores';
+import { agentExistsInOrganization, isValidAgentId, touchAgentLastUsed } from './lobu/stores/postgres-stores';
 import { McpSessionStore, type PersistedMcpSession } from './mcp-session-store';
 import { type AuthContext, executeTool, extractAuthContext } from './tools/execute';
 import { getAllTools } from './tools/registry';

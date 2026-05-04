@@ -22,7 +22,7 @@ import {
   createPostgresAgentConfigStore,
   createPostgresAgentConnectionStore,
   getAgentOrganizationId,
-} from './stores';
+} from './stores/postgres-stores';
 import { orgContext } from './stores/org-context';
 
 const routes = new Hono<{ Bindings: Env }>();

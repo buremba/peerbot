@@ -570,7 +570,7 @@ function cloneConfig(config: any) {
   return JSON.parse(JSON.stringify(config));
 }
 
-export function buildLobuMemoryScopedMcpUrl(baseUrl: string, orgSlug: string): string {
+function buildLobuMemoryScopedMcpUrl(baseUrl: string, orgSlug: string): string {
   const url = new URL(baseUrl);
   url.pathname = `/mcp/${orgSlug}`;
   url.hash = "";

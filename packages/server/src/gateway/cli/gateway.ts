@@ -892,7 +892,7 @@ Agents can be configured with custom MCP (Model Context Protocol) servers:
  * Start an HTTP server for the gateway Hono app.
  * Used in standalone mode. In embedded mode, the host creates its own server.
  */
-export function startGatewayServer(app: OpenAPIHono, port = 8080): Server {
+function startGatewayServer(app: OpenAPIHono, port = 8080): Server {
   const honoListener = getRequestListener(app.fetch);
   const server = createServer(honoListener);
   server.listen(port);

@@ -241,7 +241,7 @@ export function getAuthDialect(): PostgresJSDialect {
  * subscriber across the whole gateway onto that single connection. So all
  * caches + the runs queue all share one LISTEN socket via this entry point.
  */
-export function getRawDb(): Sql {
+function getRawDb(): Sql {
   ensureSingleton();
   if (!rawDbSingleton) {
     throw new Error('rawDbSingleton was not initialized');

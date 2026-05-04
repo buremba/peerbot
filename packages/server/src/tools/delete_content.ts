@@ -25,7 +25,7 @@ import { insertEvent } from '../utils/insert-event';
 import logger from '../utils/logger';
 import type { ToolContext } from './registry';
 
-export const DeleteContentSchema = Type.Object({
+const DeleteContentSchema = Type.Object({
   event_id: Type.Optional(
     Type.Number({
       description: 'Single event id to delete. Provide either this or `event_ids`.',

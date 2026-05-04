@@ -42,7 +42,7 @@ export interface RepairAgentConfig {
   cooldownMs: number;
 }
 
-export function loadRepairConfigFromEnv(): RepairAgentConfig {
+function loadRepairConfigFromEnv(): RepairAgentConfig {
   return {
     threshold: envInt('CONNECTOR_REPAIR_THRESHOLD', DEFAULT_THRESHOLD),
     minFailingDurationMs: envInt('CONNECTOR_REPAIR_MIN_FAILING_MS', DEFAULT_MIN_FAILING_MS),

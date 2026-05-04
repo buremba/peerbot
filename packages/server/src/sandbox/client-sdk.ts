@@ -60,7 +60,7 @@ export interface ClientSDK {
   log(message: string, data?: Record<string, unknown>): void;
 }
 
-export class SdkError extends Error {
+class SdkError extends Error {
   readonly code: string;
   constructor(code: string, message: string) {
     super(message);

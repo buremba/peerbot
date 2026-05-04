@@ -27,31 +27,6 @@ const PACKAGES = [
   { dir: "packages/connectors", transform: rewriteWorkspaceRefs },
   { dir: "packages/connector-worker", transform: rewriteWorkspaceRefs },
   { dir: "packages/embeddings", transform: rewriteWorkspaceRefs },
-  { dir: "packages/owletto-sdk", transform: rewriteWorkspaceRefs },
-  { dir: "packages/owletto-connectors", transform: rewriteWorkspaceRefs },
-  { dir: "packages/owletto-worker", transform: rewriteWorkspaceRefs },
-  { dir: "packages/owletto-embeddings", transform: rewriteWorkspaceRefs },
-  { dir: "packages/owletto-openclaw", transform: rewriteWorkspaceRefs },
-];
-
-const RENAMED_PACKAGE_DEPRECATIONS = [
-  ["@lobu/owletto-sdk", "@lobu/connector-sdk", "packages/owletto-sdk"],
-  [
-    "@lobu/owletto-connectors",
-    "@lobu/connectors",
-    "packages/owletto-connectors",
-  ],
-  ["@lobu/owletto-worker", "@lobu/connector-worker", "packages/owletto-worker"],
-  [
-    "@lobu/owletto-embeddings",
-    "@lobu/embeddings",
-    "packages/owletto-embeddings",
-  ],
-  [
-    "@lobu/owletto-openclaw",
-    "@lobu/openclaw-plugin",
-    "packages/owletto-openclaw",
-  ],
 ];
 
 // Published package names that don't use the @lobu/ scope. The unscoped
@@ -160,46 +135,10 @@ function isVersionPublished(name, version) {
   return result.status === 0 && result.stdout.trim() === version;
 }
 
-function isPackagePublished(name) {
-  const result = spawnSync("npm", ["view", name, "name"], {
-    stdio: ["ignore", "pipe", "pipe"],
-    encoding: "utf8",
-  });
-  return result.status === 0 && result.stdout.trim() === name;
-}
-
 function publishArgs(otp) {
   const args = ["publish", "--access", "public"];
   if (otp) args.push(`--otp=${otp}`);
   return args;
-}
-
-function deprecateArgs(packageSpec, message, otp) {
-  const args = ["deprecate", packageSpec, message];
-  if (otp) args.push(`--otp=${otp}`);
-  return args;
-}
-
-function packageVersion(dir) {
-  const pkg = JSON.parse(
-    readFileSync(path.join(REPO_ROOT, dir, "package.json"), "utf8")
-  );
-  return pkg.version;
-}
-
-function deprecateRenamedPackages(otp) {
-  for (const [oldName, newName] of RENAMED_PACKAGE_DEPRECATIONS) {
-    if (!isPackagePublished(oldName)) {
-      console.log(`  → ${oldName} not on npm, skipping deprecation`);
-      continue;
-    }
-    const message = `Renamed to ${newName}. Please install ${newName} instead.`;
-    // Deprecate every published version of the old name (npm accepts `@*` as
-    // "all versions"). Without this, anyone pinned to an older version never
-    // sees the rename notice — only freshly resolved installs do.
-    console.log(`  → deprecating ${oldName}@*`);
-    run("npm", deprecateArgs(`${oldName}@*`, message, otp));
-  }
 }
 
 async function publishPackage({ dir, transform }, otp) {
@@ -257,30 +196,27 @@ async function main() {
   const { bump, otp, skipBuild, skipBump } = parseArgs(process.argv.slice(2));
 
   if (skipBump) {
-    console.log("\n[1/4] Skipping version bump (--skip-bump)");
+    console.log("\n[1/3] Skipping version bump (--skip-bump)");
   } else {
-    console.log(`\n[1/4] Bumping version (${bump})`);
+    console.log(`\n[1/3] Bumping version (${bump})`);
     run("node", ["scripts/bump-version.mjs", bump]);
   }
 
   if (skipBuild) {
-    console.log("\n[2/4] Skipping build (--skip-build)");
+    console.log("\n[2/3] Skipping build (--skip-build)");
   } else {
-    console.log("\n[2/4] Building packages");
+    console.log("\n[2/3] Building packages");
     run("bun", ["run", "build:packages"]);
     run("bun", ["run", "build:owletto"]);
   }
 
-  console.log("\n[3/4] Publishing to npm");
+  console.log("\n[3/3] Publishing to npm");
   if (otp) {
     console.log("  (using --otp from command line or $NPM_OTP)");
   }
   for (const pkg of PACKAGES) {
     await publishPackage(pkg, otp);
   }
-
-  console.log("\n[4/4] Deprecating renamed compatibility packages");
-  deprecateRenamedPackages(otp);
 
   console.log("\nDone.");
 }

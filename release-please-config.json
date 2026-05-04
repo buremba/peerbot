@@ -55,31 +55,6 @@
           "type": "json",
           "path": "packages/embeddings/package.json",
           "jsonpath": "$.version"
-        },
-        {
-          "type": "json",
-          "path": "packages/owletto-sdk/package.json",
-          "jsonpath": "$.version"
-        },
-        {
-          "type": "json",
-          "path": "packages/owletto-connectors/package.json",
-          "jsonpath": "$.version"
-        },
-        {
-          "type": "json",
-          "path": "packages/owletto-worker/package.json",
-          "jsonpath": "$.version"
-        },
-        {
-          "type": "json",
-          "path": "packages/owletto-embeddings/package.json",
-          "jsonpath": "$.version"
-        },
-        {
-          "type": "json",
-          "path": "packages/owletto-openclaw/package.json",
-          "jsonpath": "$.version"
         }
       ]
     }

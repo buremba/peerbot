@@ -12,11 +12,6 @@ const PACKAGES = [
   "packages/connectors",
   "packages/connector-worker",
   "packages/embeddings",
-  "packages/owletto-sdk",
-  "packages/owletto-connectors",
-  "packages/owletto-worker",
-  "packages/owletto-embeddings",
-  "packages/owletto-openclaw",
 ];
 
 async function main() {

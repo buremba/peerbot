@@ -7,7 +7,7 @@
       "devDependencies": {
         "@biomejs/biome": "^2.2.2",
         "@types/bun": "1.2.11",
-        "@types/node": "^20.0.0",
+        "@types/node": "20.19.9",
         "husky": "^9.1.7",
         "jscpd": "^4.0.5",
         "knip": "^5.66.3",
@@ -64,7 +64,7 @@
         "lobu": "bin/lobu.js",
       },
       "dependencies": {
-        "@anthropic-ai/sdk": "^0.90.0",
+        "@anthropic-ai/sdk": "^0.92.0",
         "@aws-sdk/client-bedrock": "^3.1028.0",
         "@aws-sdk/client-secrets-manager": "^3.1028.0",
         "@chat-adapter/discord": "4.26.0",
@@ -215,7 +215,7 @@
         "hono": "^4.10.4",
       },
       "devDependencies": {
-        "@types/node": "^22.10.2",
+        "@types/node": "20.19.9",
         "tsx": "^4.19.2",
         "typescript": "^5.7.2",
       },
@@ -416,9 +416,6 @@
         "vitest": "^2.1.8",
       },
     },
-  },
-  "overrides": {
-    "@types/node": "20.19.9",
   },
   "packages": {
     "@adobe/css-tools": ["@adobe/css-tools@4.4.4", "", {}, "sha512-Elp+iwUx5rN5+Y8xLt5/GRoG20WGoDCQ/1Fb+1LiGtvwbDavuSk0jhD/eZdckHAuzcDzccnkv+rEjyWfRx18gg=="],

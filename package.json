@@ -47,7 +47,7 @@
   "devDependencies": {
     "@biomejs/biome": "^2.2.2",
     "@types/bun": "1.2.11",
-    "@types/node": "^20.0.0",
+    "@types/node": "20.19.9",
     "husky": "^9.1.7",
     "jscpd": "^4.0.5",
     "knip": "^5.66.3",
@@ -58,8 +58,5 @@
   },
   "patchedDependencies": {
     "@chat-adapter/telegram@4.20.0": "patches/@chat-adapter%2Ftelegram@4.20.0.patch"
-  },
-  "overrides": {
-    "@types/node": "20.19.9"
   }
 }

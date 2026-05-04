@@ -9,7 +9,12 @@
   },
   "dependencies": {
     "@lobu/connector-sdk": "workspace:*",
-    "playwright": "npm:patchright@^1.57.0"
+    "baileys": "7.0.0-rc.9",
+    "playwright": "npm:patchright@^1.57.0",
+    "turndown": "7.2.2"
+  },
+  "devDependencies": {
+    "@types/turndown": "^5.0.5"
   },
   "publishConfig": {
     "access": "public"

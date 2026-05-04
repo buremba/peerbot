@@ -8,7 +8,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import TurndownService from 'npm:turndown@7.2.2';
+import TurndownService from 'turndown';
 import {
   type ActionContext,
   type ActionResult,

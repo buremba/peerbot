@@ -474,7 +474,7 @@ Connector code runs in a worker subprocess with a restricted environment. Key th
 You can import npm packages inline using the `npm:` protocol:
 
 ```typescript
-import TurndownService from 'npm:turndown@7.2.2';
+import TurndownService from 'turndown';
 ```
 
 Always pin the version to avoid unexpected breakage.

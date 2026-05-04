@@ -43,7 +43,7 @@ import {
   type WAMessage,
   type WAMessageContent,
   type WAMessageKey,
-} from 'npm:baileys@7.0.0-rc.9';
+} from 'baileys';
 
 // ---------------------------------------------------------------------------
 // Types

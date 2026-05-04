@@ -58,8 +58,5 @@
   },
   "patchedDependencies": {
     "@chat-adapter/telegram@4.20.0": "patches/@chat-adapter%2Ftelegram@4.20.0.patch"
-  },
-  "overrides": {
-    "@types/node": "20.19.9"
   }
 }

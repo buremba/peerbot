@@ -149,7 +149,7 @@
     {
       "id": "deepseek",
       "name": "DeepSeek",
-      "description": "DeepSeek reasoning and coding models",
+      "description": "DeepSeek V4 models — fast and reasoning variants",
       "providers": [
         {
           "displayName": "DeepSeek",
@@ -159,7 +159,7 @@
           "apiKeyInstructions": "Get your API key from <a href=\"https://platform.deepseek.com/api_keys\" target=\"_blank\" class=\"text-blue-600 hover:underline\">DeepSeek Platform</a>",
           "apiKeyPlaceholder": "sk-...",
           "sdkCompat": "openai",
-          "defaultModel": "deepseek-chat",
+          "defaultModel": "deepseek-v4-flash",
           "modelsEndpoint": "/v1/models"
         }
       ]

@@ -42,7 +42,7 @@ Scope:
   - `sync-owletto-guidance.ts`
   - `run-memory-benchmark.ts`, `prepare-locomo-suite.ts`, `prepare-longmemeval-suite.ts`
   - `install-connectors.ts`, `dry-run-connector.ts`, `sync-local.ts`, `test-mcp-server.ts`
-- Update `package.json` script refs (e.g. `"bench:memory": "bun scripts/owletto/run-memory-benchmark.ts"`)
+- Update `package.json` script refs (e.g. `"bench:memory": "bun scripts/owletto/run-memory-benchmark.ts"`) — DONE: each `scripts/owletto/*.ts` is now wired as `owletto:*` in root `package.json`
 - Fix `packages/server/src/utils/__tests__/owletto-guidance-sync.test.ts:9` — it reads `skills/owletto/SKILL.md` via `process.cwd()`; confirm it resolves after the copy
 
 Validation:
@@ -77,17 +77,6 @@ Scope:
 - Check for hardcoded `packages/cli/` string refs
 
 Validation: `bun run typecheck`, `bun run build`, CI lint.
-
-## PR-4: Gateway de-duplication audit
-
-Scope — investigate only, convert findings into a follow-up PR if warranted:
-- `packages/gateway` is lobu-native (357 files)
-- `packages/server/src/lobu/gateway.ts` is a thin adapter
-- Determine: is the adapter live (hit by server routes) or dead code from the pre-merge era?
-- If dead → delete in the same PR
-- If live → document the boundary in a 1-line header comment and close the audit
-
-Reuses the grep pattern `grep -rn "from.*lobu/gateway" packages/server/src`.
 
 ---
 

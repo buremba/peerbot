@@ -28,7 +28,13 @@
     "slack:manifest:print": "bun run scripts/slack-manifest.ts print",
     "slack:manifest:validate": "bun run scripts/slack-manifest.ts validate",
     "slack:manifest:update": "bun run scripts/slack-manifest.ts update",
-    "owletto:feeds:sync": "bun run scripts/owletto/sync-local.ts"
+    "owletto:feeds:sync": "bun run scripts/owletto/sync-local.ts",
+    "owletto:guidance:sync": "bun run scripts/owletto/sync-owletto-guidance.ts",
+    "owletto:bench:memory": "bun run scripts/owletto/run-memory-benchmark.ts",
+    "owletto:bench:locomo:prepare": "bun run scripts/owletto/prepare-locomo-suite.ts",
+    "owletto:bench:longmemeval:prepare": "bun run scripts/owletto/prepare-longmemeval-suite.ts",
+    "owletto:connectors:install": "bun run scripts/owletto/install-connectors.ts",
+    "owletto:connectors:dry-run": "bun run scripts/owletto/dry-run-connector.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.2.2",

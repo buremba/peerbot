@@ -5,7 +5,7 @@ import { HOSTED_UI_FALLBACK_ORIGIN } from '../public-origin';
 /**
  * Behavior contract for `getPublicWebUrl`:
  *   1. Explicit `baseUrl` argument wins.
- *   2. `PUBLIC_WEB_URL` (preferred) or `LOBU_URL` env wins next.
+ *   2. `PUBLIC_WEB_URL` env wins next.
  *   3. With no local frontend bundled, fall back to the hosted-UI origin
  *      (`HOSTED_UI_FALLBACK_ORIGIN`) so backend-only self-hosters still emit
  *      usable links. The `requestUrl` is only consulted when a local frontend
@@ -14,11 +14,9 @@ import { HOSTED_UI_FALLBACK_ORIGIN } from '../public-origin';
  */
 describe('getPublicWebUrl', () => {
   const originalWebUrl = process.env.PUBLIC_WEB_URL;
-  const originalLobuUrl = process.env.LOBU_URL;
 
   beforeEach(() => {
     delete process.env.PUBLIC_WEB_URL;
-    delete process.env.LOBU_URL;
   });
 
   afterEach(() => {
@@ -26,12 +24,6 @@ describe('getPublicWebUrl', () => {
       process.env.PUBLIC_WEB_URL = originalWebUrl;
     } else {
       delete process.env.PUBLIC_WEB_URL;
-    }
-
-    if (originalLobuUrl !== undefined) {
-      process.env.LOBU_URL = originalLobuUrl;
-    } else {
-      delete process.env.LOBU_URL;
     }
   });
 
@@ -56,11 +48,6 @@ describe('getPublicWebUrl', () => {
   it('prefers PUBLIC_WEB_URL env var when no explicit baseUrl', () => {
     process.env.PUBLIC_WEB_URL = 'https://env.owletto.com';
     expect(getPublicWebUrl('https://request.owletto.com/mcp')).toBe('https://env.owletto.com');
-  });
-
-  it('falls back to LOBU_URL when PUBLIC_WEB_URL is not set', () => {
-    process.env.LOBU_URL = 'https://community.lobu.ai';
-    expect(getPublicWebUrl('https://request.owletto.com/mcp')).toBe('https://community.lobu.ai');
   });
 
   it('falls back to HOSTED_UI_FALLBACK_ORIGIN when no env, no baseUrl, no local frontend', () => {

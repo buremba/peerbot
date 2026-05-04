@@ -1,8 +1,8 @@
 /**
  * Shared base URL resolution for auth module.
  *
- * Uses PUBLIC_WEB_URL as the canonical public origin, with LOBU_URL,
- * forwarded-header, and request-URL fallbacks for environments where it isn't set.
+ * Uses PUBLIC_WEB_URL as the canonical public origin, with forwarded-header
+ * and request-URL fallbacks for environments where it isn't set.
  */
 
 import { getConfiguredPublicOrigin } from '../utils/public-origin';
@@ -35,7 +35,7 @@ interface ResolveBaseUrlOptions {
   url?: string;
   /** Fallback when nothing else resolves. Defaults to `http://localhost:8787`. */
   fallback?: string;
-  /** Skip PUBLIC_WEB_URL / LOBU_URL env override — use the actual serving domain. */
+  /** Skip PUBLIC_WEB_URL env override — use the actual serving domain. */
   skipEnvOverride?: boolean;
 }
 
@@ -44,10 +44,9 @@ interface ResolveBaseUrlOptions {
  *
  * Resolution order:
  * 1. `PUBLIC_WEB_URL` environment variable
- * 2. `LOBU_URL` environment variable
- * 3. `x-forwarded-proto` + (`x-forwarded-host` || `host`) headers
- * 4. The request/URL origin
- * 5. The provided fallback (default: `http://localhost:8787`)
+ * 2. `x-forwarded-proto` + (`x-forwarded-host` || `host`) headers
+ * 3. The request/URL origin
+ * 4. The provided fallback (default: `http://localhost:8787`)
  */
 export function resolveBaseUrl(options: ResolveBaseUrlOptions = {}): string {
   const { request, fallback = 'http://localhost:8787' } = options;
@@ -58,7 +57,7 @@ export function resolveBaseUrl(options: ResolveBaseUrlOptions = {}): string {
     return request?.headers.get(name) ?? undefined;
   };
 
-  // 1. PUBLIC_WEB_URL / LOBU_URL from environment
+  // 1. PUBLIC_WEB_URL from environment
   if (!options.skipEnvOverride) {
     const fromEnv = getConfiguredPublicOrigin();
     if (fromEnv) return fromEnv;

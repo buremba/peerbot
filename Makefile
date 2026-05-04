@@ -47,10 +47,6 @@ dev: ensure-submodule
 setup:
 	@./scripts/setup-dev.sh
 
-# Catch-all target to prevent errors when passing arguments
-%:
-	@:
-
 # Run test bot
 test:
 	@./scripts/test-bot.sh "@me test from make command"

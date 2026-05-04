@@ -1,9 +1,5 @@
 /**
- * Canonical public origin resolution.
- *
- * PUBLIC_WEB_URL remains the explicit override.
- * LOBU_URL is the next fallback so hosted Owletto instances can surface under
- * the Lobu community URL without hardcoding a domain in application code.
+ * Canonical public origin resolution. PUBLIC_WEB_URL is the explicit override.
  */
 
 import fs from 'node:fs';
@@ -22,7 +18,7 @@ function toOrigin(value?: string | null): string | undefined {
 }
 
 export function getConfiguredPublicOrigin(): string | undefined {
-  return toOrigin(process.env.PUBLIC_WEB_URL) ?? toOrigin(process.env.LOBU_URL);
+  return toOrigin(process.env.PUBLIC_WEB_URL);
 }
 
 const APP_ROOT = path.resolve(fileURLToPath(new URL('.', import.meta.url)), '../..');
@@ -31,8 +27,8 @@ let localFrontendCache: boolean | undefined;
 
 /**
  * Sync check for a locally available frontend. Used by MCP URL builders to
- * decide whether to return the hosted UI fallback when neither PUBLIC_WEB_URL
- * nor LOBU_URL is configured.
+ * decide whether to return the hosted UI fallback when PUBLIC_WEB_URL is not
+ * configured.
  *
  * Always matches a built bundle (`packages/web/dist/index.html`). In
  * development it additionally matches a source checkout

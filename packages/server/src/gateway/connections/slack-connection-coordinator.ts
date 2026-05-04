@@ -237,17 +237,14 @@ export class SlackConnectionCoordinator {
     requireOAuth?: boolean;
   }): PlatformAdapterConfig {
     const currentConfig = this.deps.getCurrentSlackConfig();
-    const signingSecret =
-      process.env.SLACK_SIGNING_SECRET || currentConfig.signingSecret;
-    const clientId = process.env.SLACK_CLIENT_ID || currentConfig.clientId;
-    const clientSecret =
-      process.env.SLACK_CLIENT_SECRET || currentConfig.clientSecret;
-    const encryptionKey =
-      process.env.SLACK_ENCRYPTION_KEY || currentConfig.encryptionKey;
-    const installationKeyPrefix =
-      process.env.SLACK_INSTALLATION_KEY_PREFIX ||
-      currentConfig.installationKeyPrefix;
-    const userName = process.env.SLACK_BOT_USERNAME || currentConfig.userName;
+    const {
+      signingSecret,
+      clientId,
+      clientSecret,
+      encryptionKey,
+      installationKeyPrefix,
+      userName,
+    } = currentConfig;
 
     if (!signingSecret) {
       throw new Error("Slack signing secret is not configured");
@@ -256,7 +253,7 @@ export class SlackConnectionCoordinator {
     if (options?.requireOAuth) {
       if (!clientId || !clientSecret) {
         throw new Error(
-          "Slack OAuth is not configured. Set SLACK_CLIENT_ID and SLACK_CLIENT_SECRET."
+          "Slack OAuth is not configured. Set client ID and secret on the connection."
         );
       }
 
@@ -271,10 +268,10 @@ export class SlackConnectionCoordinator {
       };
     }
 
-    const botToken = process.env.SLACK_BOT_TOKEN || currentConfig.botToken;
+    const botToken = currentConfig.botToken;
     if (!botToken && (!clientId || !clientSecret)) {
       throw new Error(
-        "Slack adapter is not configured. Provide SLACK_BOT_TOKEN or Slack OAuth credentials."
+        "Slack adapter is not configured. Provide a bot token or OAuth credentials on the connection."
       );
     }
 

@@ -322,9 +322,17 @@ export class McpConfigService {
     const servers = await this.getAgentMcpServers(agentId);
     const derived = await this.deriveLobuMemoryServer(agentId);
     if (!derived) {
-      const withoutLobuMemory = { ...servers };
-      delete withoutLobuMemory["lobu-memory"];
-      return withoutLobuMemory;
+      // Only drop the entry when it was derived (internal). A manually
+      // configured `lobu-memory` server in agent settings should survive a
+      // transient derive failure (DB blip, slug not yet resolvable, etc.) —
+      // otherwise a recoverable error silently disables memory tools.
+      const existing = servers["lobu-memory"];
+      if (existing && typeof existing === "object" && existing.internal === true) {
+        const withoutLobuMemory = { ...servers };
+        delete withoutLobuMemory["lobu-memory"];
+        return withoutLobuMemory;
+      }
+      return servers;
     }
 
     const existing = servers["lobu-memory"];

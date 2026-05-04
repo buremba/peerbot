@@ -157,8 +157,13 @@ export class TaskScheduler {
       } catch (err) {
         logger.error(
           { err, taskName: reg.name, cron: reg.cron },
-          '[task-scheduler] Failed to seed cron row at boot',
+          '[task-scheduler] Failed to seed cron row at boot; will retry in background',
         );
+        // Periodic tasks self-seed via line ~216 once they dispatch, but a
+        // task with no prior cron row stays idle until a successful seed.
+        // Retry in the background so a transient DB hiccup at boot doesn't
+        // disable the task until the next pod restart.
+        this.retrySeedInBackground(reg);
       }
     }
 
@@ -169,6 +174,31 @@ export class TaskScheduler {
       { total: this.handlers.size, periodic },
       '[task-scheduler] Started',
     );
+  }
+
+  private retrySeedInBackground(reg: TaskRegistration): void {
+    const delays = [5_000, 15_000, 60_000];
+    const attempt = (i: number): void => {
+      if (!this.started || i >= delays.length) return;
+      setTimeout(() => {
+        if (!this.started) return;
+        this.seedNextCronTick(reg)
+          .then(() =>
+            logger.info(
+              { taskName: reg.name, cron: reg.cron, attempt: i + 1 },
+              '[task-scheduler] Recovered cron seed in background',
+            ),
+          )
+          .catch((err) => {
+            logger.error(
+              { err, taskName: reg.name, cron: reg.cron, attempt: i + 1 },
+              '[task-scheduler] Background cron seed retry failed',
+            );
+            attempt(i + 1);
+          });
+      }, delays[i]).unref();
+    };
+    attempt(0);
   }
 
   /** Stop dispatching. The underlying queue handles in-flight drain on its

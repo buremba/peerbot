@@ -659,7 +659,8 @@ export class McpProxy {
         mcpId,
         toolName,
         agentId,
-        auth.tokenData
+        auth.tokenData,
+        auth.token
       );
       if (found && requiresToolApproval(annotations)) {
         const pattern = `/mcp/${mcpId}/tools/${toolName}`;
@@ -1074,7 +1075,8 @@ export class McpProxy {
               mcpId!,
               toolName,
               agentId,
-              tokenData
+              tokenData,
+              sessionToken
             );
             if (found && requiresToolApproval(annotations)) {
               const pattern = `/mcp/${mcpId}/tools/${toolName}`;
@@ -1191,7 +1193,8 @@ export class McpProxy {
     mcpId: string,
     toolName: string,
     agentId: string,
-    tokenData: any
+    tokenData: any,
+    workerToken?: string
   ): Promise<{ found: boolean; annotations?: McpTool["annotations"] }> {
     let tools: McpTool[] | null = null;
     if (this.toolCache) {
@@ -1199,7 +1202,16 @@ export class McpProxy {
     }
 
     if (!tools) {
-      const result = await this.fetchToolsForMcp(mcpId, agentId, tokenData);
+      // Forward the worker JWT so internal MCPs (lobu-memory) can enumerate
+      // tools — without it the discovery call goes unauthenticated and
+      // returns an empty list, which would silently bypass the approval gate
+      // (`found=false` means "no approval needed" at call sites).
+      const result = await this.fetchToolsForMcp(
+        mcpId,
+        agentId,
+        tokenData,
+        workerToken
+      );
       tools = result.tools;
     }
 

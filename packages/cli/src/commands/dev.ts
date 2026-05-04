@@ -88,18 +88,18 @@ export async function devCommand(
 
   spinner.succeed("Environment ready");
 
-  const port =
+  const portRaw =
     options.port ?? mergedEnv.GATEWAY_PORT ?? mergedEnv.PORT ?? "8787";
-  const portNum = Number(port);
+  const portNum = Number(portRaw);
   if (!Number.isInteger(portNum) || portNum < 1 || portNum > 65535) {
-    console.error(chalk.red(`\n  Invalid port "${port}" — must be 1-65535.\n`));
+    console.error(chalk.red(`\n  Invalid port — must be an integer in 1-65535.\n`));
     process.exit(1);
   }
-  const gatewayUrl = `http://localhost:${port}`;
+  const gatewayUrl = `http://localhost:${portNum}`;
 
   const portFree = await isPortFree(portNum);
   if (!portFree) {
-    console.error(chalk.red(`\n  Port ${port} is already in use.`));
+    console.error(chalk.red(`\n  Port ${portNum} is already in use.`));
     console.error(
       chalk.dim(
         "  Stop the other process, or pass `--port <n>` / set `GATEWAY_PORT` to a free port.\n"
@@ -108,8 +108,8 @@ export async function devCommand(
     console.error(
       chalk.dim(
         process.platform === "darwin" || process.platform === "linux"
-          ? `  Find what's holding it: lsof -iTCP:${port} -sTCP:LISTEN\n`
-          : `  Find what's holding it: netstat -ano | findstr :${port}\n`
+          ? `  Find what's holding it: lsof -iTCP:${portNum} -sTCP:LISTEN\n`
+          : `  Find what's holding it: netstat -ano | findstr :${portNum}\n`
       )
     );
     process.exit(1);
@@ -136,8 +136,8 @@ export async function devCommand(
     ...mergedEnv,
     LOBU_DEV_PROJECT_PATH:
       process.env.LOBU_DEV_PROJECT_PATH || envVars.LOBU_DEV_PROJECT_PATH || cwd,
-    PORT: port,
-    GATEWAY_PORT: port,
+    PORT: String(portNum),
+    GATEWAY_PORT: String(portNum),
     ...(logLevel ? { LOG_LEVEL: logLevel } : {}),
   };
 

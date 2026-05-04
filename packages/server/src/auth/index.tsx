@@ -37,9 +37,16 @@ import {
 	resolveRequestOrganizationId,
 } from "./config";
 import { connectorCapabilityRegistry } from "../identity/capability-registry";
-// Side-effect import: each connector self-registers on load, so the
-// registry is fully populated before any auth hook can fire.
-import "../identity/connectors";
+// Side-effect imports: each connector self-registers on load, so the
+// registry is fully populated before any auth hook can fire. Add a new
+// import here when adding a connector under `../identity/connectors/`.
+import "../identity/connectors/google";
+
+if (connectorCapabilityRegistry.size() === 0) {
+	throw new Error(
+		"identity connector registry is empty — check side-effect imports in auth/index.tsx",
+	);
+}
 import {
 	scheduleIdentityIngest,
 	scheduleIdentityTombstoneOnAccountDelete,

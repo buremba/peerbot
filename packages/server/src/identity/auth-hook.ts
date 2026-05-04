@@ -14,8 +14,9 @@
 import { getDb } from "../db/client";
 import logger from "../utils/logger";
 import { connectorCapabilityRegistry } from "./capability-registry";
-// Side-effect import: each connector module self-registers on load.
-import "./connectors";
+// Side-effect import: each connector self-registers on load. Add a new
+// import here when adding a connector under `./connectors/`.
+import "./connectors/google";
 import { ingestFacts } from "./engine";
 
 const log = logger.child({ module: "identity-auth-hook" });

@@ -1,6 +1,6 @@
 {
   "name": "@lobu/owletto-openclaw",
-  "version": "6.0.0",
+  "version": "6.0.1",
   "description": "Deprecated compatibility package. Use @lobu/openclaw-plugin instead.",
   "type": "module",
   "license": "BUSL-1.1",

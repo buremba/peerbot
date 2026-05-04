@@ -1,5 +1,14 @@
 # Changelog
 
+## [6.0.1](https://github.com/lobu-ai/lobu/compare/lobu-v6.0.0...lobu-v6.0.1) (2026-05-04)
+
+
+### Bug Fixes
+
+* **ci:** restore owletto-* image names so prod can pull them ([#512](https://github.com/lobu-ai/lobu/issues/512)) ([f4f841c](https://github.com/lobu-ai/lobu/commit/f4f841c34c95be9068173a8efee026cc9ac886ca))
+* **connectors:** replace Deno-style 'npm:' specifiers with real deps ([#513](https://github.com/lobu-ai/lobu/issues/513)) ([ecdeb7c](https://github.com/lobu-ai/lobu/commit/ecdeb7ce4269d4be3d500cdc111278b9f0b2fff8))
+* **publish:** add re-export shims to deprecated redirect packages ([#510](https://github.com/lobu-ai/lobu/issues/510)) ([cb499fc](https://github.com/lobu-ai/lobu/commit/cb499fcac01ae7cb20ae09c1c44496655bb77155))
+
 ## [6.0.0](https://github.com/lobu-ai/lobu/compare/lobu-v5.0.0...lobu-v6.0.0) (2026-05-01)
 
 

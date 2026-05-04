@@ -1,6 +1,6 @@
 {
   "name": "@lobu/owletto-embeddings",
-  "version": "1.6.0",
+  "version": "6.0.1",
   "description": "Deprecated compatibility package. Use @lobu/embeddings instead.",
   "type": "module",
   "license": "BUSL-1.1",

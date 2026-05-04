@@ -1,7 +1,7 @@
 {
   "name": "@lobu/connector-worker",
-  "version": "1.6.0",
-  "description": "Self-hosted worker for Lobu memory \u2014 connectors and embedding generation",
+  "version": "6.0.1",
+  "description": "Self-hosted worker for Lobu memory — connectors and embedding generation",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

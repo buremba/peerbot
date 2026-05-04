@@ -72,10 +72,9 @@ export async function telemetryOffCommand(
 function redactDsn(dsn: string): string {
   try {
     const url = new URL(dsn);
+    // The Sentry public key (URL username) is genuinely public. Only
+    // a deprecated DSN format includes a secret in the URL password.
     if (url.password) url.password = "***";
-    if (url.username) {
-      url.username = `${url.username.slice(0, 4)}…`;
-    }
     return url.toString();
   } catch {
     return "***";

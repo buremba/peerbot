@@ -241,10 +241,7 @@ export interface EvalNewOptions {
   trials?: number;
 }
 
-/**
- * `lobu eval new <name>` — scaffold a YAML eval into agents/<id>/evals/.
- * Picks the first agent from lobu.toml unless --agent is given.
- */
+/** Scaffold a YAML eval into agents/<id>/evals/. */
 export async function evalNewCommand(
   name: string,
   options: EvalNewOptions = {}

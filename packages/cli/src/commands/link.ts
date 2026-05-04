@@ -1,8 +1,10 @@
-import { rm } from "node:fs/promises";
-import { join } from "node:path";
 import chalk from "chalk";
 import { getActiveOrg, resolveContext } from "../internal/index.js";
-import { loadProjectLink, saveProjectLink } from "../internal/project-link.js";
+import {
+  loadProjectLink,
+  removeProjectLink,
+  saveProjectLink,
+} from "../internal/project-link.js";
 
 interface LinkOptions {
   context?: string;
@@ -39,6 +41,6 @@ export async function unlinkCommand(
     console.log(chalk.dim("\n  No project link found.\n"));
     return;
   }
-  await rm(join(cwd, ".lobu", "project.json"), { force: true });
+  await removeProjectLink(cwd);
   console.log(chalk.green("\n  Project unlinked.\n"));
 }

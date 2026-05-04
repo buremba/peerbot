@@ -98,7 +98,6 @@ describe("lobu init --yes", () => {
       true
     );
     const env = readFileSync(join(proj, ".env"), "utf-8");
-    // Sentry now defaults to off in --yes mode.
     expect(env.includes("SENTRY_DSN=")).toBe(false);
   });
 
@@ -148,6 +147,16 @@ describe("agent scaffold", () => {
     expect(existsSync(join(cwd, "agents", "second", "IDENTITY.md"))).toBe(true);
     expect(existsSync(join(cwd, "agents", "second", "SOUL.md"))).toBe(true);
     expect(existsSync(join(cwd, "agents", "second", "USER.md"))).toBe(true);
+  });
+
+  test("escapes quotes in --name so the TOML stays parseable", async () => {
+    writeFileSync(join(cwd, "lobu.toml"), "");
+    await agentScaffoldCommand("quoty", {
+      cwd,
+      name: 'Sales "Bot" v2',
+    });
+    const toml = readFileSync(join(cwd, "lobu.toml"), "utf-8");
+    expect(toml).toContain('name = "Sales \\"Bot\\" v2"');
   });
 });
 

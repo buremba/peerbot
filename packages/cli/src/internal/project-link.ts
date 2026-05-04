@@ -1,26 +1,25 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-export const PROJECT_LINK_DIR = ".lobu";
-export const PROJECT_LINK_FILE = "project.json";
+const LINK_DIR = ".lobu";
+const LINK_FILE = "project.json";
 
 export interface ProjectLink {
-  /** Named context the project is bound to (matches `lobu context list`). */
   context: string;
-  /** Active org slug at link time. */
   org: string;
   /** ISO timestamp the link was written. */
   linkedAt: string;
+}
+
+function linkPath(cwd: string): string {
+  return join(cwd, LINK_DIR, LINK_FILE);
 }
 
 export async function loadProjectLink(
   cwd: string
 ): Promise<ProjectLink | null> {
   try {
-    const raw = await readFile(
-      join(cwd, PROJECT_LINK_DIR, PROJECT_LINK_FILE),
-      "utf-8"
-    );
+    const raw = await readFile(linkPath(cwd), "utf-8");
     const parsed = JSON.parse(raw) as Partial<ProjectLink>;
     if (
       typeof parsed.context !== "string" ||
@@ -43,19 +42,11 @@ export async function saveProjectLink(
   cwd: string,
   link: Omit<ProjectLink, "linkedAt">
 ): Promise<ProjectLink> {
-  const dir = join(cwd, PROJECT_LINK_DIR);
-  await mkdir(dir, { recursive: true });
-  const full: ProjectLink = {
-    ...link,
-    linkedAt: new Date().toISOString(),
-  };
-  await writeFile(
-    join(dir, PROJECT_LINK_FILE),
-    `${JSON.stringify(full, null, 2)}\n`
-  );
+  await mkdir(join(cwd, LINK_DIR), { recursive: true });
+  const full: ProjectLink = { ...link, linkedAt: new Date().toISOString() };
+  await writeFile(linkPath(cwd), `${JSON.stringify(full, null, 2)}\n`);
 
-  // Add .lobu/ to .gitignore so the link file (and any future per-project
-  // CLI state) stays out of version control by default.
+  // Keep the link file out of version control by default.
   const gitignorePath = join(cwd, ".gitignore");
   try {
     const existing = await readFile(gitignorePath, "utf-8");
@@ -64,8 +55,12 @@ export async function saveProjectLink(
       await writeFile(gitignorePath, `${existing}${sep}.lobu/\n`);
     }
   } catch {
-    // No .gitignore — don't create one here; init writes it during scaffolding.
+    // No .gitignore — init writes one during scaffolding.
   }
 
   return full;
+}
+
+export async function removeProjectLink(cwd: string): Promise<void> {
+  await rm(linkPath(cwd), { force: true });
 }

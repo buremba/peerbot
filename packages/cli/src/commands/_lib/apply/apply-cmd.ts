@@ -209,10 +209,7 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
   });
   printText(chalk.dim(`Org: ${orgSlug}`));
 
-  // Project-link guard: refuse to apply against an org/context that
-  // doesn't match the link file unless --force is set. Prevents the
-  // `cd ~/projects/customer-A && lobu apply` foot-gun where the global
-  // context still points at customer-B.
+  // Refuse if .lobu/project.json points at a different (context, org).
   const link = await loadProjectLink(cwd);
   if (link && !opts.force) {
     const activeContext = await resolveContext().catch(() => null);

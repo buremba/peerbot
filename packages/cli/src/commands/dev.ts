@@ -27,7 +27,6 @@ export interface DevOptions {
  */
 export async function devCommand(
   cwd: string,
-  passthroughArgs: string[],
   options: DevOptions = {}
 ): Promise<void> {
   const spinner = ora("Validating environment...").start();
@@ -91,9 +90,14 @@ export async function devCommand(
 
   const port =
     options.port ?? mergedEnv.GATEWAY_PORT ?? mergedEnv.PORT ?? "8787";
+  const portNum = Number(port);
+  if (!Number.isInteger(portNum) || portNum < 1 || portNum > 65535) {
+    console.error(chalk.red(`\n  Invalid port "${port}" — must be 1-65535.\n`));
+    process.exit(1);
+  }
   const gatewayUrl = `http://localhost:${port}`;
 
-  const portFree = await isPortFree(Number(port));
+  const portFree = await isPortFree(portNum);
   if (!portFree) {
     console.error(chalk.red(`\n  Port ${port} is already in use.`));
     console.error(
@@ -137,7 +141,7 @@ export async function devCommand(
     ...(logLevel ? { LOG_LEVEL: logLevel } : {}),
   };
 
-  const child = spawn("node", [bundlePath, ...passthroughArgs], {
+  const child = spawn("node", [bundlePath], {
     cwd,
     env: childEnv,
     stdio: "inherit",

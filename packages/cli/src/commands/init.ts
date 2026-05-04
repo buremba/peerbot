@@ -285,14 +285,18 @@ export async function initCommand(
       }),
   });
 
-  // Platform secrets only flow through interactive prompts. With --yes,
-  // the user wires them up by editing .env after init.
-  const { platformConfig, platformSecrets } =
-    platformType && !useDefaults
-      ? await promptPlatformConfig(platformType)
-      : platformType
-        ? scaffoldPlatformConfigPlaceholders(platformType as PlatformChoice)
-        : { platformConfig: {}, platformSecrets: [] };
+  // Interactive: prompt for real secrets. --yes: write placeholder env-var
+  // refs into lobu.toml; the user fills .env afterwards.
+  let platformConfig: Record<string, string> = {};
+  let platformSecrets: Array<{ envVar: string; value: string }> = [];
+  if (platformType) {
+    if (useDefaults) {
+      platformConfig = PLATFORM_PLACEHOLDERS[platformType as PlatformChoice];
+    } else {
+      ({ platformConfig, platformSecrets } =
+        await promptPlatformConfig(platformType));
+    }
+  }
 
   const memoryChoice = (await promptOrDefault({
     flag: options.memory,
@@ -608,38 +612,21 @@ async function promptOrDefault<T extends string>(
   return opts.prompt();
 }
 
-function scaffoldPlatformConfigPlaceholders(platform: PlatformChoice): {
-  platformConfig: Record<string, string>;
-  platformSecrets: Array<{ envVar: string; value: string }>;
-} {
-  // Non-interactive scaffolding — write placeholder env-var refs into
-  // lobu.toml, leave .env values empty for the user to fill in.
-  const config: Record<string, string> = {};
-  switch (platform) {
-    case "telegram":
-      config.botToken = "$TELEGRAM_BOT_TOKEN";
-      break;
-    case "slack":
-      config.botToken = "$SLACK_BOT_TOKEN";
-      config.signingSecret = "$SLACK_SIGNING_SECRET";
-      break;
-    case "discord":
-      config.botToken = "$DISCORD_BOT_TOKEN";
-      break;
-    case "whatsapp":
-      config.accessToken = "$WHATSAPP_ACCESS_TOKEN";
-      config.phoneNumberId = "$WHATSAPP_PHONE_NUMBER_ID";
-      break;
-    case "teams":
-      config.appId = "$TEAMS_APP_ID";
-      config.appPassword = "$TEAMS_APP_PASSWORD";
-      break;
-    case "gchat":
-      config.credentials = "$GOOGLE_CHAT_CREDENTIALS";
-      break;
-  }
-  return { platformConfig: config, platformSecrets: [] };
-}
+// Placeholder env-var refs for `--yes` mode; the user fills the values into .env.
+const PLATFORM_PLACEHOLDERS: Record<PlatformChoice, Record<string, string>> = {
+  telegram: { botToken: "$TELEGRAM_BOT_TOKEN" },
+  slack: {
+    botToken: "$SLACK_BOT_TOKEN",
+    signingSecret: "$SLACK_SIGNING_SECRET",
+  },
+  discord: { botToken: "$DISCORD_BOT_TOKEN" },
+  whatsapp: {
+    accessToken: "$WHATSAPP_ACCESS_TOKEN",
+    phoneNumberId: "$WHATSAPP_PHONE_NUMBER_ID",
+  },
+  teams: { appId: "$TEAMS_APP_ID", appPassword: "$TEAMS_APP_PASSWORD" },
+  gchat: { credentials: "$GOOGLE_CHAT_CREDENTIALS" },
+};
 
 function humanizeSlug(slug: string): string {
   return slug

@@ -197,12 +197,7 @@ export interface AgentScaffoldOptions {
 
 const AGENT_ID_PATTERN = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/;
 
-/**
- * `lobu agent scaffold <agentId>` — create agents/<id>/{IDENTITY,SOUL,USER}.md
- * + skills/ + evals/ in the local project, and append a `[agents.<id>]` block
- * to lobu.toml. Used to add a second (or third…) agent to an existing project
- * without hand-copying the init template.
- */
+/** Add a new local agent + a `[agents.<id>]` block to an existing lobu.toml. */
 export async function agentScaffoldCommand(
   agentId: string,
   options: AgentScaffoldOptions = {}
@@ -245,7 +240,7 @@ export async function agentScaffoldCommand(
     );
     process.exit(1);
   } catch {
-    // expected
+    // not present — what we want
   }
 
   const displayName = options.name ?? agentId;
@@ -270,7 +265,7 @@ export async function agentScaffoldCommand(
   const tomlBlock = [
     "",
     `[agents.${agentId}]`,
-    `name = "${displayName}"`,
+    `name = ${JSON.stringify(displayName)}`,
     `description = ${JSON.stringify(description)}`,
     `dir = "./agents/${agentId}"`,
     "",

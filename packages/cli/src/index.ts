@@ -128,10 +128,8 @@ Memory:
       ) => {
         try {
           const { initCommand } = await import("./commands/init.js");
-          // Commander sets options.sentry === true for --sentry, false for
-          // --no-sentry. We preserve both signals so init can distinguish
-          // "not specified" from "explicitly off".
-          const sentryProvided = "sentry" in options;
+          // Commander gives a tristate: true for --sentry, false for
+          // --no-sentry, undefined for neither.
           await initCommand(process.cwd(), name, {
             yes: options.yes,
             here: options.here,
@@ -144,8 +142,8 @@ Memory:
             memory: options.memory,
             memoryUrl: options.memoryUrl,
             otelEndpoint: options.otelEndpoint,
-            sentry: sentryProvided && options.sentry === true,
-            noSentry: sentryProvided && options.sentry === false,
+            sentry: options.sentry === true,
+            noSentry: options.sentry === false,
           });
         } catch (error) {
           console.error(chalk.red("\n  Error:"), error);
@@ -333,7 +331,7 @@ Memory:
         logLevel?: string;
       }) => {
         const { devCommand } = await import("./commands/dev.js");
-        await devCommand(process.cwd(), [], options);
+        await devCommand(process.cwd(), options);
       }
     );
 

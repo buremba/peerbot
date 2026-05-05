@@ -1,4 +1,5 @@
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { createPostgresAgentConfigStore } from "../../lobu/stores/postgres-stores.js";
 import { orgContext } from "../../lobu/stores/org-context.js";
 import { AgentSettingsStore } from "../auth/settings/agent-settings-store.js";
 import {
@@ -18,7 +19,7 @@ describe("AgentSettingsStore", () => {
 
   beforeEach(async () => {
     await resetTestDatabase();
-    store = new AgentSettingsStore();
+    store = new AgentSettingsStore(createPostgresAgentConfigStore());
   });
 
   function withOrg<T>(fn: () => Promise<T>): Promise<T> {

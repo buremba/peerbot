@@ -179,32 +179,36 @@ function rowToGrant(row: Record<string, any>): Grant {
   };
 }
 
-/**
- * Optional `AND organization_id = …` fragment.
- *
- * Workers/gateway-internal callers run without org context — agent IDs are
- * globally unique and the worker token already proves authenticity, so
- * falling back to id-only lookup is safe. HTTP request paths always have an
- * org context (set by middleware), so they get the row scoped to that org.
- */
-function orgFilter(sql: ReturnType<typeof getDb>, orgId: string | undefined) {
-  return orgId ? sql`AND organization_id = ${orgId}` : sql``;
-}
-
 export function createPostgresAgentConfigStore(): AgentConfigStore {
   const store: AgentConfigStore = {
     async getSettings(agentId) {
       const sql = getDb();
-      const rows = await sql`
-        SELECT model, model_selection, provider_model_preferences,
-               network_config, egress_config, nix_config, mcp_servers,
-               soul_md, user_md, identity_md,
-               skills_config, tools_config, plugins_config,
-               installed_providers, verbose_logging,
-               pre_approved_tools, guardrails, updated_at
-        FROM agents
-        WHERE id = ${agentId} ${orgFilter(sql, tryGetOrgId())}
-      `;
+      // Workers/gateway-internal callers run without org context — agent IDs
+      // are globally unique and the worker token already proves authenticity,
+      // so falling back to id-only lookup is safe. HTTP request paths always
+      // have an org context (set by middleware) and get the row scoped to it.
+      const orgId = tryGetOrgId();
+      const rows = orgId
+        ? await sql`
+            SELECT model, model_selection, provider_model_preferences,
+                   network_config, egress_config, nix_config, mcp_servers,
+                   soul_md, user_md, identity_md,
+                   skills_config, tools_config, plugins_config,
+                   installed_providers, verbose_logging,
+                   pre_approved_tools, guardrails, updated_at
+            FROM agents
+            WHERE id = ${agentId} AND organization_id = ${orgId}
+          `
+        : await sql`
+            SELECT model, model_selection, provider_model_preferences,
+                   network_config, egress_config, nix_config, mcp_servers,
+                   soul_md, user_md, identity_md,
+                   skills_config, tools_config, plugins_config,
+                   installed_providers, verbose_logging,
+                   pre_approved_tools, guardrails, updated_at
+            FROM agents
+            WHERE id = ${agentId}
+          `;
       if (rows.length === 0) return null;
       return rowToSettings(rows[0]);
     },
@@ -261,13 +265,22 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
     },
     async getMetadata(agentId) {
       const sql = getDb();
-      const rows = await sql`
-        SELECT id, name, description, owner_platform, owner_user_id,
-               is_workspace_agent, workspace_id,
-               created_at, last_used_at
-        FROM agents
-        WHERE id = ${agentId} ${orgFilter(sql, tryGetOrgId())}
-      `;
+      const orgId = tryGetOrgId();
+      const rows = orgId
+        ? await sql`
+            SELECT id, name, description, owner_platform, owner_user_id,
+                   is_workspace_agent, workspace_id,
+                   created_at, last_used_at
+            FROM agents
+            WHERE id = ${agentId} AND organization_id = ${orgId}
+          `
+        : await sql`
+            SELECT id, name, description, owner_platform, owner_user_id,
+                   is_workspace_agent, workspace_id,
+                   created_at, last_used_at
+            FROM agents
+            WHERE id = ${agentId}
+          `;
       if (rows.length === 0) return null;
       return rowToMetadata(rows[0]);
     },
@@ -340,34 +353,83 @@ export function createPostgresAgentConnectionStore(): AgentConnectionStore {
     async getConnection(connectionId) {
       const sql = getDb();
       const orgId = tryGetOrgId();
-      const join = orgId
-        ? sql`JOIN agents a ON a.id = c.agent_id WHERE c.id = ${connectionId} AND a.organization_id = ${orgId}`
-        : sql`WHERE c.id = ${connectionId}`;
-      const rows = await sql`SELECT c.* FROM agent_connections c ${join}`;
+      const rows = orgId
+        ? await sql`
+            SELECT c.* FROM agent_connections c
+            JOIN agents a ON a.id = c.agent_id
+            WHERE c.id = ${connectionId} AND a.organization_id = ${orgId}
+          `
+        : await sql`
+            SELECT c.* FROM agent_connections c
+            WHERE c.id = ${connectionId}
+          `;
       if (rows.length === 0) return null;
       return rowToConnection(rows[0]);
     },
     async listConnections(filter) {
       const sql = getDb();
       const orgId = tryGetOrgId();
-      const join = orgId
-        ? sql`JOIN agents a ON a.id = c.agent_id`
-        : sql``;
-      const orgClause = orgId
-        ? sql`AND a.organization_id = ${orgId}`
-        : sql``;
-      const agentClause = filter?.agentId
-        ? sql`AND c.agent_id = ${filter.agentId}`
-        : sql``;
-      const platformClause = filter?.platform
-        ? sql`AND c.platform = ${filter.platform}`
-        : sql``;
-      const rows = await sql`
-        SELECT c.* FROM agent_connections c
-        ${join}
-        WHERE 1 = 1 ${orgClause} ${agentClause} ${platformClause}
-        ORDER BY c.created_at DESC
-      `;
+
+      if (filter?.agentId && filter?.platform) {
+        const rows = orgId
+          ? await sql`
+              SELECT c.* FROM agent_connections c
+              JOIN agents a ON a.id = c.agent_id
+              WHERE a.organization_id = ${orgId}
+                AND c.agent_id = ${filter.agentId}
+                AND c.platform = ${filter.platform}
+              ORDER BY c.created_at DESC
+            `
+          : await sql`
+              SELECT c.* FROM agent_connections c
+              WHERE c.agent_id = ${filter.agentId}
+                AND c.platform = ${filter.platform}
+              ORDER BY c.created_at DESC
+            `;
+        return rows.map(rowToConnection);
+      }
+      if (filter?.agentId) {
+        const rows = orgId
+          ? await sql`
+              SELECT c.* FROM agent_connections c
+              JOIN agents a ON a.id = c.agent_id
+              WHERE a.organization_id = ${orgId} AND c.agent_id = ${filter.agentId}
+              ORDER BY c.created_at DESC
+            `
+          : await sql`
+              SELECT c.* FROM agent_connections c
+              WHERE c.agent_id = ${filter.agentId}
+              ORDER BY c.created_at DESC
+            `;
+        return rows.map(rowToConnection);
+      }
+      if (filter?.platform) {
+        const rows = orgId
+          ? await sql`
+              SELECT c.* FROM agent_connections c
+              JOIN agents a ON a.id = c.agent_id
+              WHERE a.organization_id = ${orgId} AND c.platform = ${filter.platform}
+              ORDER BY c.created_at DESC
+            `
+          : await sql`
+              SELECT c.* FROM agent_connections c
+              WHERE c.platform = ${filter.platform}
+              ORDER BY c.created_at DESC
+            `;
+        return rows.map(rowToConnection);
+      }
+
+      const rows = orgId
+        ? await sql`
+            SELECT c.* FROM agent_connections c
+            JOIN agents a ON a.id = c.agent_id
+            WHERE a.organization_id = ${orgId}
+            ORDER BY c.created_at DESC
+          `
+        : await sql`
+            SELECT c.* FROM agent_connections c
+            ORDER BY c.created_at DESC
+          `;
       return rows.map(rowToConnection);
     },
     async saveConnection(connection) {

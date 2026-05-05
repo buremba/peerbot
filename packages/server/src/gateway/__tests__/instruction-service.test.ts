@@ -1,4 +1,5 @@
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { createPostgresAgentConfigStore } from "../../lobu/stores/postgres-stores.js";
 import { AgentSettingsStore } from "../auth/settings/agent-settings-store.js";
 import { InstructionService } from "../services/instruction-service.js";
 import {
@@ -16,7 +17,7 @@ describe("InstructionService", () => {
 
   beforeEach(async () => {
     await resetTestDatabase();
-    store = new AgentSettingsStore();
+    store = new AgentSettingsStore(createPostgresAgentConfigStore());
     service = new InstructionService(undefined, store);
   });
 

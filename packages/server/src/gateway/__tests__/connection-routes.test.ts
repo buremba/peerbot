@@ -6,6 +6,7 @@ import {
   expect,
   test,
 } from "bun:test";
+import { createPostgresAgentConfigStore } from "../../lobu/stores/postgres-stores.js";
 import { orgContext } from "../../lobu/stores/org-context.js";
 import { AgentMetadataStore } from "../auth/agent-metadata-store.js";
 import { UserAgentsStore } from "../auth/user-agents-store.js";
@@ -29,7 +30,7 @@ describe("connection routes", () => {
 
   beforeEach(async () => {
     await resetTestDatabase();
-    agentMetadataStore = new AgentMetadataStore();
+    agentMetadataStore = new AgentMetadataStore(createPostgresAgentConfigStore());
     userAgentsStore = new UserAgentsStore();
 
     await orgContext.run({ organizationId: ORG_ID }, async () => {

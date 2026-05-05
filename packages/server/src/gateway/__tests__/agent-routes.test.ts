@@ -1,4 +1,5 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { createPostgresAgentConfigStore } from "../../lobu/stores/postgres-stores.js";
 import { orgContext } from "../../lobu/stores/org-context.js";
 import { AgentMetadataStore } from "../auth/agent-metadata-store.js";
 import { AgentSettingsStore } from "../auth/settings/agent-settings-store.js";
@@ -24,8 +25,9 @@ describe("agent routes", () => {
 
   beforeEach(async () => {
     await resetTestDatabase();
-    agentMetadataStore = new AgentMetadataStore();
-    agentSettingsStore = new AgentSettingsStore();
+    const configStore = createPostgresAgentConfigStore();
+    agentMetadataStore = new AgentMetadataStore(configStore);
+    agentSettingsStore = new AgentSettingsStore(configStore);
     userAgentsStore = new UserAgentsStore();
 
     await orgContext.run({ organizationId: ORG_ID }, async () => {

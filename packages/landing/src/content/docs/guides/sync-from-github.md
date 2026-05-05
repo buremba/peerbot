@@ -42,7 +42,8 @@ jobs:
           bun-version: 1.3.5
       - name: Apply
         env:
-          LOBU_TOKEN: ${{ secrets.LOBU_TOKEN }}
+          # CLI reads LOBU_API_TOKEN as the env-var override for stored credentials.
+          LOBU_API_TOKEN: ${{ secrets.LOBU_TOKEN }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
@@ -92,13 +93,13 @@ For `staging` and `prod` orgs, run two jobs (or two workflows) with different `-
 ```yaml
 - name: Apply to staging
   env:
-    LOBU_TOKEN: ${{ secrets.LOBU_TOKEN_STAGING }}
+    LOBU_API_TOKEN: ${{ secrets.LOBU_TOKEN_STAGING }}
   run: bunx --bun @lobu/cli apply --org my-org-staging --yes
 
 - name: Apply to prod
   if: github.event_name == 'push' && github.ref == 'refs/heads/main'
   env:
-    LOBU_TOKEN: ${{ secrets.LOBU_TOKEN_PROD }}
+    LOBU_API_TOKEN: ${{ secrets.LOBU_TOKEN_PROD }}
   run: bunx --bun @lobu/cli apply --org my-org-prod --yes
 ```
 

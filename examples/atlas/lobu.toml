@@ -11,13 +11,13 @@ description = "Curate Atlas reference data — countries, cities, regions, indus
 dir = "./agents/atlas-curator"
 
 [[agents.atlas-curator.providers]]
-id = "anthropic"
-model = "claude/sonnet-4-5"
-key = "$ANTHROPIC_API_KEY"
+id = "z-ai"
+model = "z-ai/glm-4.7"
+key = "$Z_AI_API_KEY"
 
 
 [agents.atlas-curator.network]
-allowed = ["github.com", ".github.com", ".githubusercontent.com"]
+allowed = ["github.com", ".github.com", ".githubusercontent.com", "api.z.ai", ".z.ai"]
 
 [memory.owletto]
 enabled = true

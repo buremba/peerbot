@@ -39,13 +39,13 @@ jobs:
         id: gate
         env:
           TOKEN: ${{ secrets.LOBU_TOKEN }}
-          ANTHROPIC: ${{ secrets.ANTHROPIC_API_KEY }}
+          ZAI: ${{ secrets.Z_AI_API_KEY }}
         run: |
           if [ -z "${TOKEN:-}" ]; then
             echo "LOBU_TOKEN not set — skipping (expected for fork PRs)."
             echo "skip=true" >> "$GITHUB_OUTPUT"
-          elif [ -z "${ANTHROPIC:-}" ]; then
-            echo "ANTHROPIC_API_KEY not set — skipping until repo secret is configured."
+          elif [ -z "${ZAI:-}" ]; then
+            echo "Z_AI_API_KEY not set — skipping until repo secret is configured."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
@@ -61,7 +61,7 @@ jobs:
         working-directory: examples/atlas
         env:
           LOBU_TOKEN: ${{ secrets.LOBU_TOKEN }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          Z_AI_API_KEY: ${{ secrets.Z_AI_API_KEY }}
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             bunx --bun @lobu/cli apply --org atlas --dry-run

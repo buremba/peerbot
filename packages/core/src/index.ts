@@ -39,6 +39,8 @@ export type {
 export type { CommandContext, CommandDefinition } from "./command-registry";
 // Command registry
 export { CommandRegistry } from "./command-registry";
+// Shared base for InstructionProvider implementations (server + worker)
+export { BaseInstructionProvider } from "./instruction-provider";
 export * from "./constants";
 // Guardrail primitive (type + registry + parallel runner + no-op builtin)
 export * from "./guardrails";

@@ -5,6 +5,7 @@ import {
   type AuthProfilesManager,
   createAuthProfileLabel,
 } from "../settings/auth-profiles-manager.js";
+import { fetchModelOptions } from "../utils/fetch-model-options.js";
 import { ChatGPTDeviceCodeClient } from "./device-code-client.js";
 
 const logger = createLogger("chatgpt-oauth-module");
@@ -83,34 +84,18 @@ export class ChatGPTOAuthModule extends BaseProviderModule {
     const token = await this.getCredential(agentId);
     if (!token) return [];
 
-    const response = await fetch("https://chatgpt.com/backend-api/models", {
-      headers: {
-        Accept: "application/json",
-        Authorization: `Bearer ${token}`,
-      },
-    }).catch(() => null);
-
-    if (!response?.ok) {
-      return [];
-    }
-
-    const payload = (await response.json().catch(() => ({}))) as {
-      models?: Array<{
-        slug?: string;
-        title?: string;
-      }>;
-    };
-
-    return (payload.models || [])
-      .map((model) => {
-        const slug = model.slug?.trim();
-        if (!slug) return null;
-        return {
-          value: `openai-codex/${slug}`,
-          label: model.title?.trim() || slug,
-        } satisfies ModelOption;
-      })
-      .filter((item): item is ModelOption => Boolean(item));
+    return fetchModelOptions<{
+      models?: Array<{ slug?: string; title?: string }>;
+    }>({
+      url: "https://chatgpt.com/backend-api/models",
+      headers: { Authorization: `Bearer ${token}` },
+      prefix: "openai-codex",
+      pick: (payload) =>
+        (payload.models || []).map((m) => {
+          const id = m.slug?.trim();
+          return id ? { id, label: m.title?.trim() || id } : null;
+        }),
+    });
   }
 
   async startDeviceCode(agentId: string): Promise<{

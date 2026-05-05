@@ -5,9 +5,9 @@ import {
 } from "../openclaw/instructions";
 
 describe("OpenClawCoreInstructionProvider", () => {
-  test("includes baseline policy and always-on tool rules", () => {
+  test("includes baseline policy and always-on tool rules", async () => {
     const provider = new OpenClawCoreInstructionProvider();
-    const instructions = provider.getInstructions({
+    const instructions = await provider.getInstructions({
       userId: "user-1",
       workingDirectory: "/workspace/thread-1",
     } as any);
@@ -18,9 +18,9 @@ describe("OpenClawCoreInstructionProvider", () => {
     expect(instructions).toContain("UploadUserFile");
   });
 
-  test("includes grounding and internal detail guardrails", () => {
+  test("includes grounding and internal detail guardrails", async () => {
     const provider = new OpenClawCoreInstructionProvider();
-    const instructions = provider.getInstructions({
+    const instructions = await provider.getInstructions({
       userId: "user-1",
       workingDirectory: "/workspace/thread-1",
     } as any);
@@ -32,9 +32,9 @@ describe("OpenClawCoreInstructionProvider", () => {
 });
 
 describe("OpenClawPromptIntentInstructionProvider", () => {
-  test("injects file delivery guidance for prompts that ask to send a file", () => {
+  test("injects file delivery guidance for prompts that ask to send a file", async () => {
     const provider = new OpenClawPromptIntentInstructionProvider();
-    const instructions = provider.getInstructions({
+    const instructions = await provider.getInstructions({
       userPrompt:
         "Create a CSV report and send the file to me as an attachment",
     } as any);
@@ -49,9 +49,9 @@ describe("OpenClawPromptIntentInstructionProvider", () => {
     );
   });
 
-  test("returns empty string when no intent-specific guidance matches", () => {
+  test("returns empty string when no intent-specific guidance matches", async () => {
     const provider = new OpenClawPromptIntentInstructionProvider();
-    const instructions = provider.getInstructions({
+    const instructions = await provider.getInstructions({
       userPrompt: "hello there",
     } as any);
 

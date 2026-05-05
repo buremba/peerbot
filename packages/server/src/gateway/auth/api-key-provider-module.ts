@@ -2,6 +2,7 @@ import type { ConfigProviderMeta } from "@lobu/core";
 import type { ModelOption } from "../modules/module-system.js";
 import { BaseProviderModule } from "./base-provider-module.js";
 import type { AuthProfilesManager } from "./settings/auth-profiles-manager.js";
+import { fetchModelOptions } from "./utils/fetch-model-options.js";
 
 interface ApiKeyProviderConfig {
   providerId: string;
@@ -144,45 +145,28 @@ export class ApiKeyProviderModule extends BaseProviderModule {
     baseUrl: string,
     endpoint: string
   ): Promise<ModelOption[]> {
-    const url = `${baseUrl.replace(/\/$/, "")}${endpoint}`;
-    const response = await fetch(url, {
-      headers: {
-        Accept: "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-    }).catch(() => null);
-    if (!response?.ok) return [];
-
-    const payload = (await response.json().catch(() => ({}))) as {
+    return fetchModelOptions<{
       data?: Array<{ id?: string }>;
       models?: Array<{ name?: string; model?: string }>;
-    };
-
-    const prefix = this.providerId;
-
-    // OpenAI format: { data: [{ id: "model-name" }] }
-    if (payload.data && Array.isArray(payload.data)) {
-      return payload.data
-        .map((model) => {
-          const id = model.id?.trim();
-          if (!id) return null;
-          return { value: `${prefix}/${id}`, label: id } satisfies ModelOption;
-        })
-        .filter((item): item is ModelOption => Boolean(item));
-    }
-
-    // Ollama format: { models: [{ name: "model-name", model: "model-name" }] }
-    if (payload.models && Array.isArray(payload.models)) {
-      return payload.models
-        .map((model) => {
-          const id = (model.model || model.name)?.trim();
-          if (!id) return null;
-          return { value: `${prefix}/${id}`, label: id } satisfies ModelOption;
-        })
-        .filter((item): item is ModelOption => Boolean(item));
-    }
-
-    return [];
+    }>({
+      url: `${baseUrl.replace(/\/$/, "")}${endpoint}`,
+      headers: { Authorization: `Bearer ${apiKey}` },
+      prefix: this.providerId,
+      pick: (payload) => {
+        if (payload.data) {
+          return payload.data.map((m) =>
+            m.id?.trim() ? { id: m.id.trim() } : null
+          );
+        }
+        if (payload.models) {
+          return payload.models.map((m) => {
+            const id = (m.model || m.name)?.trim();
+            return id ? { id } : null;
+          });
+        }
+        return [];
+      },
+    });
   }
 
   private async fetchGeminiModels(apiKey: string): Promise<ModelOption[]> {
@@ -190,25 +174,16 @@ export class ApiKeyProviderModule extends BaseProviderModule {
       "https://generativelanguage.googleapis.com/v1beta/models"
     );
     url.searchParams.set("key", apiKey);
-
-    const response = await fetch(url.toString(), {
-      headers: { Accept: "application/json" },
-    }).catch(() => null);
-    if (!response?.ok) return [];
-
-    const payload = (await response.json().catch(() => ({}))) as {
+    return fetchModelOptions<{
       models?: Array<{ name?: string; displayName?: string }>;
-    };
-
-    return (payload.models || [])
-      .map((model) => {
-        const raw = model.name?.replace(/^models\//, "").trim();
-        if (!raw) return null;
-        return {
-          value: `gemini/${raw}`,
-          label: model.displayName || raw,
-        } satisfies ModelOption;
-      })
-      .filter((item): item is ModelOption => Boolean(item));
+    }>({
+      url: url.toString(),
+      prefix: "gemini",
+      pick: (payload) =>
+        (payload.models || []).map((m) => {
+          const id = m.name?.replace(/^models\//, "").trim();
+          return id ? { id, label: m.displayName || id } : null;
+        }),
+    });
   }
 }

@@ -1,6 +1,6 @@
 import {
+  BaseInstructionProvider,
   type InstructionContext,
-  type InstructionProvider,
   renderAlwaysOnToolPolicyRules,
   renderBaselineAgentPolicy,
   renderDetectedToolIntentRules,
@@ -9,11 +9,11 @@ import {
 /**
  * OpenClaw core instructions
  */
-export class OpenClawCoreInstructionProvider implements InstructionProvider {
-  name = "core";
-  priority = 10;
+export class OpenClawCoreInstructionProvider extends BaseInstructionProvider {
+  readonly name = "core";
+  readonly priority = 10;
 
-  getInstructions(context: InstructionContext): string {
+  protected buildInstructions(context: InstructionContext): string {
     return [
       `You are a Lobu agent for user ${context.userId}.`,
       `Working directory: ${context.workingDirectory}`,
@@ -26,13 +26,11 @@ If the user asks to analyze an uploaded image, use the image content already att
   }
 }
 
-export class OpenClawPromptIntentInstructionProvider
-  implements InstructionProvider
-{
-  name = "prompt-intent";
-  priority = 15;
+export class OpenClawPromptIntentInstructionProvider extends BaseInstructionProvider {
+  readonly name = "prompt-intent";
+  readonly priority = 15;
 
-  getInstructions(context: InstructionContext): string {
+  protected buildInstructions(context: InstructionContext): string {
     return renderDetectedToolIntentRules(context.userPrompt || "");
   }
 }

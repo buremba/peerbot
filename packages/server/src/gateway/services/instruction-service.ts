@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
 import {
+  BaseInstructionProvider,
   buildUnconfiguredAgentNotice,
   createLogger,
   type InstructionContext,
@@ -10,6 +11,10 @@ import type { McpConfigService } from "../auth/mcp/config-service.js";
 import type { AgentSettingsStore } from "../auth/settings/agent-settings-store.js";
 
 const logger = createLogger("instruction-service");
+
+// Re-export so existing `import { BaseInstructionProvider } from
+// "../services/instruction-service"` paths keep working.
+export { BaseInstructionProvider };
 
 interface McpStatus {
   id: string;
@@ -24,33 +29,6 @@ interface SessionContextData {
   networkInstructions: string;
   skillsInstructions: string;
   mcpStatus: McpStatus[];
-}
-
-/**
- * Shared base class for InstructionProviders.
- *
- * Subclasses implement `buildInstructions(context)` with their domain logic.
- * The base wraps every call in a try-catch + structured logging, so unexpected
- * errors yield an empty string instead of crashing the session context
- * assembly. This removes the identical boilerplate each subclass used to
- * declare.
- */
-export abstract class BaseInstructionProvider implements InstructionProvider {
-  abstract readonly name: string;
-  abstract readonly priority: number;
-
-  async getInstructions(context: InstructionContext): Promise<string> {
-    try {
-      return await this.buildInstructions(context);
-    } catch (error) {
-      logger.error(`Failed to build ${this.name} instructions`, { error });
-      return "";
-    }
-  }
-
-  protected abstract buildInstructions(
-    context: InstructionContext
-  ): Promise<string> | string;
 }
 
 /**

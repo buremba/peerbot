@@ -1,6 +1,9 @@
-import { type AgentSettings, type AuthProfile, createLogger } from "@lobu/core";
-import { getDb } from "../../../db/client.js";
-import { tryGetOrgId } from "../../../lobu/stores/org-context.js";
+import {
+  type AgentConfigStore,
+  type AgentSettings,
+  type AuthProfile,
+  createLogger,
+} from "@lobu/core";
 import type { DeclaredAgentRegistry } from "../../services/declared-agent-registry.js";
 
 // Re-export so existing imports from this module keep working.
@@ -33,75 +36,24 @@ export class EphemeralAuthProfileRegistry {
   }
 }
 
-/** Read row directly. Empty/default JSONB columns are passed through as-is —
- *  there is no overlay anymore, so nothing depends on "absent vs default". */
-function rowToSettings(row: Record<string, any>): AgentSettings {
-  return {
-    model: row.model ?? undefined,
-    modelSelection: row.model_selection ?? undefined,
-    providerModelPreferences: row.provider_model_preferences ?? undefined,
-    networkConfig: row.network_config ?? undefined,
-    nixConfig: row.nix_config ?? undefined,
-    mcpServers: row.mcp_servers ?? undefined,
-    soulMd: row.soul_md ?? "",
-    userMd: row.user_md ?? "",
-    identityMd: row.identity_md ?? "",
-    skillsConfig: row.skills_config ?? undefined,
-    toolsConfig: row.tools_config ?? undefined,
-    pluginsConfig: row.plugins_config ?? undefined,
-    installedProviders: row.installed_providers ?? undefined,
-    verboseLogging: row.verbose_logging ?? undefined,
-    updatedAt:
-      row.updated_at instanceof Date
-        ? row.updated_at.getTime()
-        : (row.updated_at ?? Date.now()),
-  };
-}
-
 /**
- * Read agent settings directly from `public.agents`.
+ * Per-agent settings reader/writer.
  *
- * Worker gateway calls this without orgContext (agent IDs are globally unique
- * and the worker token already proves authenticity), so we fall back to
- * id-only lookup when `tryGetOrgId()` returns null.
- */
-async function loadSettingsFromPg(agentId: string): Promise<AgentSettings | null> {
-  const sql = getDb();
-  const orgId = tryGetOrgId();
-  const rows = orgId
-    ? await sql`
-        SELECT model, model_selection, provider_model_preferences,
-               network_config, nix_config, mcp_servers,
-               soul_md, user_md, identity_md, skills_config, tools_config,
-               plugins_config, installed_providers,
-               verbose_logging, updated_at
-        FROM agents
-        WHERE id = ${agentId} AND organization_id = ${orgId}
-      `
-    : await sql`
-        SELECT model, model_selection, provider_model_preferences,
-               network_config, nix_config, mcp_servers,
-               soul_md, user_md, identity_md, skills_config, tools_config,
-               plugins_config, installed_providers,
-               verbose_logging, updated_at
-        FROM agents
-        WHERE id = ${agentId}
-      `;
-  if (rows.length === 0) return null;
-  return rowToSettings(rows[0]);
-}
-
-/**
- * Per-agent settings reader/writer over `public.agents`.
+ * Thin overlay over the host's `AgentConfigStore` — the latter owns all
+ * Postgres I/O. This class adds two pieces of behaviour the storage layer
+ * doesn't need to know about:
  *
- * Holds runtime-mutable settings for agents created via the UI. Declared
- * agents (lobu.toml / SDK config) live in `DeclaredAgentRegistry` and never
- * touch Postgres for settings reads. Auth profiles are owned by
- * `UserAuthProfileStore` keyed by `(userId, agentId)`.
+ *   1. Declared (SDK-embedded) agents bypass storage entirely; their settings
+ *      live in `DeclaredAgentRegistry` and are never persisted.
+ *   2. Ephemeral auth profiles (seeded in-memory via `provider.key`) are
+ *      tracked here so every `AuthProfilesManager` agrees on which agents
+ *      have credentials.
  */
 export class AgentSettingsStore {
   private readonly ephemeralAuthProfiles = new EphemeralAuthProfileRegistry();
   private declaredAgents?: DeclaredAgentRegistry;
+
+  constructor(private readonly configStore: AgentConfigStore) {}
 
   getEphemeralAuthProfiles(): EphemeralAuthProfileRegistry {
     return this.ephemeralAuthProfiles;
@@ -116,72 +68,22 @@ export class AgentSettingsStore {
     this.declaredAgents = registry;
   }
 
-  /**
-   * Get raw settings for an agent. Sensitive values are returned as refs;
-   * callers that need plaintext must resolve them through the secret store
-   * (e.g., via AuthProfilesManager.listProfiles).
-   */
   async getSettings(agentId: string): Promise<AgentSettings | null> {
     const declared = this.declaredAgents?.get(agentId);
     if (declared) {
       return declared.settings as AgentSettings;
     }
-    return loadSettingsFromPg(agentId);
+    return this.configStore.getSettings(agentId);
   }
 
   async saveSettings(
     agentId: string,
     settings: Omit<AgentSettings, "updatedAt">
   ): Promise<void> {
-    const sql = getDb();
-    const orgId = tryGetOrgId();
-    const now = new Date();
-
-    // Saving settings against an agent that doesn't yet exist is a no-op:
-    // the metadata insert in AgentMetadataStore.createAgent must precede
-    // settings writes.
-    if (orgId) {
-      await sql`
-        UPDATE agents SET
-          model = ${settings.model ?? null},
-          model_selection = ${sql.json(settings.modelSelection ?? {})},
-          provider_model_preferences = ${sql.json(settings.providerModelPreferences ?? {})},
-          network_config = ${sql.json(settings.networkConfig ?? {})},
-          nix_config = ${sql.json(settings.nixConfig ?? {})},
-          mcp_servers = ${sql.json(settings.mcpServers ?? {})},
-          soul_md = ${settings.soulMd ?? ""},
-          user_md = ${settings.userMd ?? ""},
-          identity_md = ${settings.identityMd ?? ""},
-          skills_config = ${sql.json(settings.skillsConfig ?? { skills: [] })},
-          tools_config = ${sql.json(settings.toolsConfig ?? {})},
-          plugins_config = ${sql.json(settings.pluginsConfig ?? {})},
-          installed_providers = ${sql.json(settings.installedProviders ?? [])},
-          verbose_logging = ${settings.verboseLogging ?? false},
-          updated_at = ${now}
-        WHERE id = ${agentId} AND organization_id = ${orgId}
-      `;
-    } else {
-      await sql`
-        UPDATE agents SET
-          model = ${settings.model ?? null},
-          model_selection = ${sql.json(settings.modelSelection ?? {})},
-          provider_model_preferences = ${sql.json(settings.providerModelPreferences ?? {})},
-          network_config = ${sql.json(settings.networkConfig ?? {})},
-          nix_config = ${sql.json(settings.nixConfig ?? {})},
-          mcp_servers = ${sql.json(settings.mcpServers ?? {})},
-          soul_md = ${settings.soulMd ?? ""},
-          user_md = ${settings.userMd ?? ""},
-          identity_md = ${settings.identityMd ?? ""},
-          skills_config = ${sql.json(settings.skillsConfig ?? { skills: [] })},
-          tools_config = ${sql.json(settings.toolsConfig ?? {})},
-          plugins_config = ${sql.json(settings.pluginsConfig ?? {})},
-          installed_providers = ${sql.json(settings.installedProviders ?? [])},
-          verbose_logging = ${settings.verboseLogging ?? false},
-          updated_at = ${now}
-        WHERE id = ${agentId}
-      `;
-    }
-
+    await this.configStore.saveSettings(agentId, {
+      ...settings,
+      updatedAt: Date.now(),
+    });
     logger.info(`Saved settings for agent ${agentId}`);
   }
 
@@ -189,44 +91,12 @@ export class AgentSettingsStore {
     agentId: string,
     updates: Partial<Omit<AgentSettings, "updatedAt">>
   ): Promise<void> {
-    const existing = await loadSettingsFromPg(agentId);
-    if (!existing) {
-      // No row yet — fall through to saveSettings, which create-or-overwrites.
-      await this.saveSettings(agentId, updates as Omit<AgentSettings, "updatedAt">);
-      return;
-    }
-    await this.saveSettings(agentId, { ...existing, ...updates });
+    await this.configStore.updateSettings(agentId, updates);
   }
 
   async deleteSettings(agentId: string): Promise<void> {
-    const sql = getDb();
-    const orgId = tryGetOrgId();
     this.ephemeralAuthProfiles.delete(agentId);
-
-    if (orgId) {
-      await sql`
-        UPDATE agents SET
-          model = NULL, model_selection = '{}', provider_model_preferences = '{}',
-          network_config = '{}', nix_config = '{}', mcp_servers = '{}',
-          soul_md = '', user_md = '', identity_md = '',
-          skills_config = '{"skills": []}', tools_config = '{}', plugins_config = '{}',
-          installed_providers = '[]', verbose_logging = false,
-          updated_at = now()
-        WHERE id = ${agentId} AND organization_id = ${orgId}
-      `;
-    } else {
-      await sql`
-        UPDATE agents SET
-          model = NULL, model_selection = '{}', provider_model_preferences = '{}',
-          network_config = '{}', nix_config = '{}', mcp_servers = '{}',
-          soul_md = '', user_md = '', identity_md = '',
-          skills_config = '{"skills": []}', tools_config = '{}', plugins_config = '{}',
-          installed_providers = '[]', verbose_logging = false,
-          updated_at = now()
-        WHERE id = ${agentId}
-      `;
-    }
-
+    await this.configStore.deleteSettings(agentId);
     logger.info(`Deleted settings for agent ${agentId}`);
   }
 
@@ -234,5 +104,4 @@ export class AgentSettingsStore {
     const settings = await this.getSettings(agentId);
     return settings !== null;
   }
-
 }

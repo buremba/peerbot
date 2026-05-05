@@ -10,29 +10,23 @@ const logger = createLogger("instruction-generator");
  * Generate custom instructions using modular providers.
  * Only generates worker-local instructions (core, projects) — platform and
  * MCP instructions are provided by the gateway.
+ *
+ * Per-provider error handling lives on `BaseInstructionProvider` (a thrown
+ * provider returns `""`). The fallback below covers the unlikely case of a
+ * provider that bypasses the base class throwing during the loop itself.
  */
 export async function generateCustomInstructions(
   providers: InstructionProvider[],
   context: InstructionContext
 ): Promise<string> {
   try {
-    // Sort by priority (lower priority = earlier in output)
-    const sortedProviders = [...providers].sort(
-      (a, b) => a.priority - b.priority
-    );
-
     const sections: string[] = [];
-    for (const provider of sortedProviders) {
-      try {
-        const instructions = await provider.getInstructions(context);
-        if (instructions?.trim()) {
-          sections.push(instructions.trim());
-        }
-      } catch (error) {
-        logger.error(
-          `Failed to get instructions from provider ${provider.name}:`,
-          error
-        );
+    for (const provider of [...providers].sort(
+      (a, b) => a.priority - b.priority
+    )) {
+      const instructions = await provider.getInstructions(context);
+      if (instructions?.trim()) {
+        sections.push(instructions.trim());
       }
     }
 

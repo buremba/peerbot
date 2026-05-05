@@ -357,19 +357,13 @@ export class CoreServices {
       );
     logger.debug("Secret store initialized");
 
-    // Agent configuration stores read directly from Postgres (`getDb()`).
-    // No process-local cache — at current scale (~7 SELECTs per chat
-    // dispatch) PG handles the load comfortably and we get strong
-    // read-after-write across pods for free.
-    this.agentSettingsStore = new AgentSettingsStore();
     this.channelBindingService = new ChannelBindingService();
     this.userAgentsStore = new UserAgentsStore();
-    this.agentMetadataStore = new AgentMetadataStore();
-    logger.debug(
-      "Agent settings, channel binding, user agents & metadata stores initialized"
-    );
 
-    // Initialize agent sub-stores
+    // Initialize agent sub-stores. The configStore here owns all Postgres I/O
+    // for agent settings + metadata; the AgentSettingsStore / AgentMetadataStore
+    // wrappers below add the declared-agent overlay and convenience helpers
+    // without duplicating the storage layer.
     if (!this.configStore || !this.connectionStore || !this.accessStore) {
       if (this.config.agents?.length) {
         const inMemoryStore = new InMemoryAgentStore();
@@ -392,6 +386,12 @@ export class CoreServices {
     } else {
       logger.debug("Using host-provided agent sub-stores (embedded mode)");
     }
+
+    this.agentSettingsStore = new AgentSettingsStore(this.configStore);
+    this.agentMetadataStore = new AgentMetadataStore(this.configStore);
+    logger.debug(
+      "Agent settings, channel binding, user agents & metadata stores initialized"
+    );
 
     // Initialize external OAuth client if configured. The KV here is a tiny
     // per-process TTL map — the only state ExternalAuthClient persists is a

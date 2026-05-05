@@ -785,6 +785,50 @@ describe('MCP Authentication', () => {
       );
     });
 
+    it('allows OAuth access token to cross-org when user has membership', async () => {
+      // PATs are intentionally org-scoped (above), but OAuth tokens bind to
+      // whichever org the user picked at consent time and the membership
+      // check is the real authorization gate. Without this, `lobu login`
+      // (which OAuths into one org) would lock the user out of every other
+      // org they're admin in — including from minting a PAT for that org.
+      const org2 = await createTestOrganization({ name: 'OAuth Cross-Org Target' });
+      await addUserToOrganization(user.id, org2.id);
+      const { token } = await createTestAccessToken(user.id, org.id, client.client_id);
+
+      const response = await post(`/mcp/${org2.slug}`, {
+        body: {
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/list',
+          params: {},
+        },
+        token,
+      });
+
+      expect(response.status).toBe(200);
+    });
+
+    it('rejects OAuth cross-org call when user is not a member', async () => {
+      const org2 = await createTestOrganization({ name: 'OAuth Stranger Org' });
+      // Deliberately not adding user to org2.
+      const { token } = await createTestAccessToken(user.id, org.id, client.client_id);
+
+      const response = await post(`/mcp/${org2.slug}`, {
+        body: {
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/list',
+          params: {},
+        },
+        token,
+      });
+
+      expect(response.status).toBe(403);
+      const body = await response.json();
+      expect(body.error).toBe('forbidden');
+      expect(body.error_description).toContain('not a member');
+    });
+
     it('should reject PAT without owl_pat_ prefix', async () => {
       const response = await post('/mcp', {
         body: {

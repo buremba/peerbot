@@ -35,13 +35,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Skip if no token
+      - name: Skip if secrets not configured
         id: gate
         env:
           TOKEN: ${{ secrets.LOBU_TOKEN }}
+          ANTHROPIC: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           if [ -z "${TOKEN:-}" ]; then
             echo "LOBU_TOKEN not set — skipping (expected for fork PRs)."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          elif [ -z "${ANTHROPIC:-}" ]; then
+            echo "ANTHROPIC_API_KEY not set — skipping until repo secret is configured."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"

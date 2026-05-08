@@ -96,11 +96,11 @@ Lists tools when called without arguments, or executes a tool when given a tool 
 # List available tools
 lobu memory run --org my-org
 
-# Search knowledge
-lobu memory run search_knowledge '{"query":"Acme"}' --org my-org
+# Search memory (legacy alias: search_knowledge)
+lobu memory run search_memory '{"query":"Acme"}' --org my-org
 
-# Save new knowledge
-lobu memory run save_knowledge '{"content":"Prefers weekly summaries","semantic_type":"preference","metadata":{}}' --org my-org
+# Save new memory (legacy alias: save_knowledge)
+lobu memory run save_memory '{"content":"Prefers weekly summaries","semantic_type":"preference","metadata":{}}' --org my-org
 
 # Discover SDK methods
 lobu memory run search '{"query":"watchers.create"}' --org my-org

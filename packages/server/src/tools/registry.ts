@@ -93,9 +93,25 @@ const READ_ONLY = { readOnlyHint: true, idempotentHint: true } as const;
 const TOOLS: ToolDefinition[] = [
   // ─── Memory hot path — read ───────────────────────────────────────────────
   {
+    name: 'search_memory',
+    description:
+      'First step when answering anything about the user. Searches the workspace memory graph for entities, saved facts, decisions, preferences, and notes. Supports fuzzy matching and entity_type filtering. Pair writes with `save_memory`; reach for `query` only when a TS script is needed.',
+    inputSchema: SearchSchema,
+    annotations: READ_ONLY,
+    handler: search,
+  },
+  {
+    name: 'save_memory',
+    description:
+      "Save user-shared facts, preferences, decisions, observations, and notes the moment they surface. Storage is append-only — pass `supersedes_event_id` to replace an existing fact (the old event is hidden from future searches without losing history). Optionally attach to entities via `entity_ids`. Always search first to avoid duplicates.",
+    inputSchema: SaveContentSchema,
+    annotations: { destructiveHint: false },
+    handler: saveContent,
+  },
+  {
     name: 'search_knowledge',
     description:
-      'First step when answering anything about the user. Searches the workspace knowledge graph for entities, saved facts, decisions, preferences, and notes. Supports fuzzy matching and entity_type filtering. Pair writes with `save_knowledge`; reach for `query` only when a TS script is needed.',
+      'Legacy alias for `search_memory`. Searches the workspace memory graph for entities, saved facts, decisions, preferences, and notes.',
     inputSchema: SearchSchema,
     annotations: READ_ONLY,
     handler: search,
@@ -103,7 +119,7 @@ const TOOLS: ToolDefinition[] = [
   {
     name: 'save_knowledge',
     description:
-      "Save user-shared facts, preferences, decisions, observations, and notes the moment they surface. Storage is append-only — pass `supersedes_event_id` to replace an existing fact (the old event is hidden from future searches without losing history). Optionally attach to entities via `entity_ids`. Always search first to avoid duplicates.",
+      'Legacy alias for `save_memory`. Saves user-shared facts, preferences, decisions, observations, and notes using append-only storage.',
     inputSchema: SaveContentSchema,
     annotations: { destructiveHint: false },
     handler: saveContent,

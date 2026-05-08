@@ -111,7 +111,9 @@ describe('requiresOwnerAdmin', () => {
 });
 
 describe('member write access', () => {
-  it('should allow members to save knowledge', () => {
+  it('should allow members to save memory', () => {
+    expect(requiresMemberWrite('save_memory', {}, false)).toBe(true);
+    expect(getRequiredAccessLevel('save_memory', {}, false)).toBe('write');
     expect(requiresMemberWrite('save_knowledge', {}, false)).toBe(true);
     expect(getRequiredAccessLevel('save_knowledge', {}, false)).toBe('write');
   });
@@ -134,7 +136,8 @@ describe('isPublicReadable', () => {
     expect(isPublicReadable('resolve_path', {})).toBe(true);
   });
 
-  it('should allow public read for search_knowledge', () => {
+  it('should allow public read for search memory tools', () => {
+    expect(isPublicReadable('search_memory', {})).toBe(true);
     expect(isPublicReadable('search_knowledge', {})).toBe(true);
   });
 

@@ -37,14 +37,20 @@ describe('MCP query / run tool surface', () => {
     publicSlug = publicOrg.slug;
   });
 
-  it('exposes query, run, save_knowledge with the expected annotations', async () => {
+  it('exposes query, run, memory aliases with the expected annotations', async () => {
     const result = await mcpListTools({ token });
     const byName = new Map<string, any>(result.tools.map((t: any) => [t.name, t]));
     expect(byName.has('execute')).toBe(false);
     expect(byName.get('query')?.annotations).toEqual({ readOnlyHint: true, idempotentHint: true });
     expect(byName.get('run')?.annotations).toEqual({ destructiveHint: true });
     expect(byName.get('run')?.inputSchema?.properties?.dry_run).toBeTruthy();
-    expect(byName.get('save_knowledge')?.annotations).toEqual({ destructiveHint: false });
+    expect(byName.get('search_memory')?.annotations).toEqual({
+      readOnlyHint: true,
+      idempotentHint: true,
+    });
+    expect(byName.get('save_memory')?.annotations).toEqual({ destructiveHint: false });
+    expect(byName.get('search_knowledge')?.description).toContain('Legacy alias');
+    expect(byName.get('save_knowledge')?.description).toContain('Legacy alias');
   });
 
   it('hides write tools from anonymous visitors on a public /mcp/{slug}', async () => {
@@ -71,11 +77,13 @@ describe('MCP query / run tool surface', () => {
     const body = await listRes.json();
     const names = (body.result?.tools as Array<{ name: string }>).map((t) => t.name);
 
-    // Public-readable tools survive: search_knowledge, search (SDK discovery).
+    // Public-readable tools survive: search_memory aliases and search (SDK discovery).
+    expect(names).toContain('search_memory');
     expect(names).toContain('search_knowledge');
     expect(names).toContain('search');
     // Write surface and admin-tier reads must be filtered out for anonymous
     // visitors — including the new `query`, `run`, `query_sql`.
+    expect(names).not.toContain('save_memory');
     expect(names).not.toContain('save_knowledge');
     expect(names).not.toContain('run');
     expect(names).not.toContain('query');

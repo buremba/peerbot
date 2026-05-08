@@ -13,6 +13,7 @@
 export type ToolAccessLevel = 'read' | 'write' | 'admin';
 
 const MEMBER_WRITE_ACTIONS: Record<string, Set<string> | null> = {
+  save_memory: null,
   save_knowledge: null,
   // `run` reaches admin handlers inside the script; per-call gates fire
   // on each SDK method, so the entry-point check is just write-tier.
@@ -76,6 +77,7 @@ const OWNER_ADMIN_ACTIONS: Record<string, Set<string>> = {
 
 const PUBLIC_READ_ACTIONS: Record<string, Set<string> | null> = {
   resolve_path: null,
+  search_memory: null,
   search_knowledge: null,
   // SDK method discovery — safe to expose; surfaces no data.
   search: null,

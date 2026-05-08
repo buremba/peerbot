@@ -485,7 +485,7 @@ function buildDispatchMessage(params: {
     'Required steps:',
     `1. Call read_knowledge with {"watcher_id": ${params.watcherId}, "since": "${readKnowledgeSince}", "until": "${readKnowledgeUntil}"${versionPin}}.`,
     '2. Analyze the returned content using prompt_rendered and extraction_schema.',
-    `3. Call manage_watchers(action="complete_window") with the returned window_token and your extracted_data${params.payload.version_id != null ? `, including "template_version_id": ${params.payload.version_id}` : ''}.`,
+    `3. Call manage_watchers(action="complete_window") with the returned window_token, extracted_data, and "watcher_run_id": ${params.runId}${params.payload.version_id != null ? `, including "template_version_id": ${params.payload.version_id}` : ''}.`,
     '4. Include this run_metadata object in complete_window exactly, and add any extra provider/job fields you know:',
     JSON.stringify(
       {

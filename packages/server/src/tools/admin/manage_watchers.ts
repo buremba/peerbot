@@ -458,6 +458,12 @@ export const ManageWatchersSchema = Type.Object({
         '[complete_window] Optional structured execution metadata for provenance (provider, session id, parameters, etc.).',
     })
   ),
+  watcher_run_id: Type.Optional(
+    Type.Number({
+      description:
+        '[complete_window] Optional watcher run id for run completion/provenance. Workers should pass the Watcher run ID from the dispatch prompt.',
+    })
+  ),
   template_version_id: Type.Optional(
     Type.Number({
       description:
@@ -1285,8 +1291,8 @@ async function handleCompleteWindow(
     args.run_metadata && typeof args.run_metadata === 'object' && !Array.isArray(args.run_metadata)
       ? (args.run_metadata as Record<string, unknown>)
       : {};
-  const watcherRunIdRaw = provenanceMetadata.watcher_run_id;
-  const watcherRunId =
+  const watcherRunIdRaw = args.watcher_run_id ?? provenanceMetadata.watcher_run_id;
+  let watcherRunId =
     watcherRunIdRaw !== undefined && watcherRunIdRaw !== null && Number.isFinite(Number(watcherRunIdRaw))
       ? Number(watcherRunIdRaw)
       : null;
@@ -1359,6 +1365,24 @@ async function handleCompleteWindow(
   const MAX_ROLLUP_DEPTH = 3;
   if (tokenIsRollup && tokenDepth != null && tokenDepth > MAX_ROLLUP_DEPTH) {
     throw new Error(`Rollup depth ${tokenDepth} exceeds maximum of ${MAX_ROLLUP_DEPTH}`);
+  }
+
+  if (watcherRunId == null && ctx.userId === `watcher_${watcherId}`) {
+    const runRows = await sql`
+      SELECT id
+      FROM runs
+      WHERE watcher_id = ${watcherId}
+        AND run_type = 'watcher'
+        AND status = 'running'
+      ORDER BY created_at DESC
+      LIMIT 1
+    `;
+    if (runRows.length > 0 && runRows[0].id != null) {
+      watcherRunId = Number(runRows[0].id);
+      provenanceMetadata.watcher_run_id = watcherRunId;
+    }
+  } else if (watcherRunId != null && provenanceMetadata.watcher_run_id == null) {
+    provenanceMetadata.watcher_run_id = watcherRunId;
   }
 
   // ============================================

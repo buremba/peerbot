@@ -22,7 +22,13 @@ interface ParsedDateAlias {
  * @throws Error if the alias is invalid
  */
 export function parseDateAlias(alias: string, referenceDate: Date = new Date()): ParsedDateAlias {
-  const trimmed = alias.trim().toLowerCase();
+  const raw = alias.trim();
+  const unquoted =
+    raw.length >= 2 &&
+    ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'")))
+      ? raw.slice(1, -1).trim()
+      : raw;
+  const trimmed = unquoted.toLowerCase();
 
   // Named aliases
   const namedAliases: Record<string, () => Date> = {
@@ -106,9 +112,9 @@ export function parseDateAlias(alias: string, referenceDate: Date = new Date()):
   }
 
   // ISO 8601 with time (YYYY-MM-DDTHH:MM:SS or with timezone)
-  const isoWithTimeMatch = trimmed.match(/^\d{4}-\d{2}-\d{2}T/);
+  const isoWithTimeMatch = unquoted.match(/^\d{4}-\d{2}-\d{2}T/i);
   if (isoWithTimeMatch) {
-    const date = new Date(alias); // Use original casing for ISO parsing
+    const date = new Date(unquoted); // Use unquoted original casing for ISO parsing
     if (Number.isNaN(date.getTime())) {
       throw new Error(`Invalid ISO datetime: "${alias}"`);
     }

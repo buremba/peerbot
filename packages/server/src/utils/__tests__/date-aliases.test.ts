@@ -92,9 +92,15 @@ describe('parseDateAlias', () => {
       expect(result.date.getDate()).toBe(15);
     });
 
-    // Note: ISO datetime with T separator doesn't work because the function
-    // lowercases the input, turning T→t which doesn't match the internal regex.
-    // This tests the actual behavior of the function.
+    it('should parse ISO datetime string', () => {
+      const result = parseDateAlias('2025-01-15T12:30:00Z', ref);
+      expect(result.date.toISOString()).toBe('2025-01-15T12:30:00.000Z');
+    });
+
+    it('should parse quoted ISO datetime string', () => {
+      const result = parseDateAlias('"2025-01-15T12:30:00Z"', ref);
+      expect(result.date.toISOString()).toBe('2025-01-15T12:30:00.000Z');
+    });
   });
 
   describe('invalid inputs', () => {

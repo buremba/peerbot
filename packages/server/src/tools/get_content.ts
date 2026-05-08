@@ -1345,13 +1345,10 @@ export async function getContent(
 // ============================================
 
 import type { WatcherSource } from '../types/watchers';
-import type { WindowTokenQueryParams } from '../utils/jwt';
-
 interface ContentQueryParams {
   sources: WatcherSource[];
   window_start: string;
   window_end: string;
-  query_params: WindowTokenQueryParams;
   organizationId: string;
   entityIds?: number[];
 }
@@ -1528,9 +1525,8 @@ async function handleWatcherMode(
         window_start: windowStart,
         window_end: windowEnd,
         granularity: rollupGranularity,
-        sources: [],
-        query_params: { limit: 0, offset: 0, sort_by: 'date', sort_order: 'desc' },
         content_count: 0,
+        content_ids: [],
         is_rollup: true,
         source_window_ids: sourceWindowIds,
         depth: 1,
@@ -1590,15 +1586,8 @@ async function handleWatcherMode(
   // NOTE: Window creation is deferred to complete_window action
   // This allows batched processing where each batch creates its own window
 
-  // Determine query params for deterministic re-query
   const contentLimit = Math.min(args.limit || 500, 2000); // Max 2000 per source
   const contentOffset = args.offset || 0;
-  const queryParamsInner = {
-    limit: contentLimit,
-    offset: contentOffset,
-    sort_by: args.sort_by || 'score',
-    sort_order: args.sort_order || 'desc',
-  };
   const windowStartIso = windowStart.toISOString();
   const windowEndIso = windowEnd.toISOString();
 
@@ -1611,7 +1600,6 @@ async function handleWatcherMode(
       sources,
       window_start: windowStartIso,
       window_end: windowEndIso,
-      query_params: queryParamsInner,
       organizationId: watcher.organization_id as string,
       entityIds: watcherEntityIds,
     }),
@@ -1632,18 +1620,23 @@ async function handleWatcherMode(
   const totalCount = Number(totalStatsResult[0]?.total_count || 0);
   const totalCountChars = Number(totalStatsResult[0]?.total_chars || 0);
 
-  // Generate signed JWT window token with all query params
-  // NOTE: window_id is NOT included - it will be created by complete_window
-  // content_count is included for staleness detection
+  const contentIds = allContent
+    .map((item) => Number((item as Record<string, unknown>).id))
+    .filter((id) => Number.isFinite(id) && id > 0)
+    .map((id) => Math.trunc(id));
+
+  // Generate signed JWT window token with the exact content IDs returned to
+  // the worker. complete_window uses these IDs directly, so window bookkeeping
+  // matches what the agent actually saw.
+  // NOTE: window_id is NOT included - it will be created by complete_window.
   const windowToken = await generateWindowToken(
     {
       watcher_id: watcherId,
       window_start: windowStartIso,
       window_end: windowEndIso,
       granularity: timeGranularity,
-      sources,
-      query_params: queryParamsInner,
-      content_count: allContent.length,
+      content_count: contentIds.length,
+      content_ids: contentIds,
     },
     env
   );
@@ -1792,7 +1785,7 @@ async function handleWatcherMode(
 
   return {
     content: allContent as ContentItem[],
-    total: allContent.length,
+    total: contentIds.length,
     page: {
       limit: contentLimit,
       offset: contentOffset,

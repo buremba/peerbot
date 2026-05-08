@@ -18,16 +18,13 @@
 
 import { type Static, Type } from '@sinclair/typebox';
 import Ajv from 'ajv';
-import { createDbClientFromEnv, type DbClient, getDb, pgBigintArray } from '../../db/client';
+import { createDbClientFromEnv, type DbClient, getDb } from '../../db/client';
 import type { Env } from '../../index';
 import { isLobuGatewayRunning } from '../../lobu/gateway';
 import type { ComponentReferenceDocumentation } from '../../types/templates';
-import type { WatcherSource } from '../../types/watchers';
 import { entityLinkMatchSql } from '../../utils/content-search';
 import { nextRunAt, validateSchedule } from '../../utils/cron';
-import { type DataSourceContext, executeDataSources } from '../../utils/execute-data-sources';
 import { recordChangeEvent } from '../../utils/insert-event';
-import type { WindowTokenQueryParams } from '../../utils/jwt';
 import { verifyWindowToken } from '../../utils/jwt';
 import logger from '../../utils/logger';
 import { requireReadAccess, requireWriteAccess } from '../../utils/organization-access';
@@ -210,51 +207,6 @@ async function getNextNumericId(sql: DbClient, table: NumericIdTable): Promise<n
     `SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM ${table}`
   );
   return Number(rows[0]?.next_id ?? 1);
-}
-
-// ============================================
-// Content Query (inlined from watcher-content-query)
-// ============================================
-
-interface ContentQueryParams {
-  sources: WatcherSource[];
-  window_start: string;
-  window_end: string;
-  query_params: WindowTokenQueryParams;
-  organizationId: string;
-  entityIds?: number[];
-}
-
-function buildContentQueryContext(params: ContentQueryParams): DataSourceContext {
-  return {
-    organizationId: params.organizationId,
-    entityIds: params.entityIds,
-    windowStart: params.window_start,
-    windowEnd: params.window_end,
-  };
-}
-
-async function queryContentIds(sql: DbClient, params: ContentQueryParams): Promise<number[]> {
-  const results = await executeDataSources(params.sources, buildContentQueryContext(params), sql, {
-    wrapQuery: (q) => `SELECT id FROM (${q}) AS _cw_ids`,
-  });
-
-  const allIds: number[] = [];
-  for (const rows of Object.values(results)) {
-    for (const row of rows) {
-      const id = (row as Record<string, unknown>).id;
-      if (typeof id === 'number') allIds.push(id);
-      else if (typeof id === 'string') {
-        const parsed = Number.parseInt(id, 10);
-        if (Number.isFinite(parsed)) allIds.push(parsed);
-      }
-    }
-  }
-
-  const { limit, offset } = params.query_params;
-  const start = Number(offset) || 0;
-  const end = start + (Number(limit) || allIds.length);
-  return [...new Set(allIds)].slice(start, end);
 }
 
 // ============================================
@@ -1320,15 +1272,9 @@ async function handleCompleteWindow(
     window_start: string;
     window_end: string;
     granularity: string;
-    sources: Array<{ name: string; query: string }>;
     window_id?: number;
-    query_params: {
-      limit: number;
-      offset: number;
-      sort_by: 'date' | 'score';
-      sort_order: 'asc' | 'desc';
-    };
     content_count: number;
+    content_ids: number[];
     iat: number;
   };
 
@@ -1348,10 +1294,9 @@ async function handleCompleteWindow(
     window_start,
     window_end,
     granularity,
-    sources,
     window_id: tokenWindowId,
-    query_params,
     content_count: tokenContentCount,
+    content_ids: tokenContentIds,
     iat: tokenIssuedAt,
     is_rollup: tokenIsRollup,
     source_window_ids: tokenSourceWindowIds,
@@ -1557,59 +1502,37 @@ async function handleCompleteWindow(
   }
 
   // ============================================
-  // STEP 3: Query content IDs (batch query)
+  // STEP 3: Resolve the exact content IDs analyzed by the worker
   // ============================================
-  const entityIds = watcherRows[0].entity_ids as number[] | null;
-  const parsedEntityIds =
-    Array.isArray(entityIds) && entityIds.length > 0 ? entityIds.map(Number) : undefined;
-  const allContentIds = await queryContentIds(sql, {
-    sources,
-    window_start,
-    window_end,
-    query_params,
-    organizationId: watcherRows[0].organization_id as string,
-    entityIds: parsedEntityIds,
-  });
-  const batchContentIds = [...new Set(allContentIds)];
+  if (!Array.isArray(tokenContentIds)) {
+    throw new Error(
+      'Invalid window_token: content_ids is required. Get a fresh token from read_knowledge({ watcher_id: ... }).'
+    );
+  }
 
-  // Log staleness detection
-  const tokenAge = Math.floor(Date.now() / 1000) - tokenIssuedAt;
+  const batchContentIds = [
+    ...new Set(
+      tokenContentIds
+        .map((id) => Number(id))
+        .filter((id) => Number.isFinite(id) && id > 0)
+        .map((id) => Math.trunc(id))
+    ),
+  ];
+
   if (batchContentIds.length !== tokenContentCount) {
-    logger.warn(
-      `[complete_window] Content count mismatch: token had ${tokenContentCount} items, query returned ${batchContentIds.length}. Token age: ${tokenAge}s`
-    );
-  } else {
-    logger.info(
-      `[complete_window] Token valid: ${batchContentIds.length} content items, token age: ${tokenAge}s`
+    throw new Error(
+      `Invalid window_token: content_ids has ${batchContentIds.length} IDs, but content_count is ${tokenContentCount}. ` +
+        'Get a fresh token from read_knowledge({ watcher_id: ... }).'
     );
   }
 
-  // ============================================
-  // STEP 4: Deduplicate content (batch query)
-  // ============================================
-  let alreadyAnalyzed: any[] = [];
-  if (batchContentIds.length > 0) {
-    alreadyAnalyzed = await sql.unsafe(
-      `SELECT DISTINCT iwc.event_id
-       FROM watcher_window_events iwc
-       JOIN watcher_windows iw ON iw.id = iwc.window_id
-       WHERE iw.watcher_id = $1
-         AND iwc.event_id = ANY($2::bigint[])`,
-      [watcherId, pgBigintArray(batchContentIds)]
-    );
-  }
-  const alreadyAnalyzedIds = new Set(alreadyAnalyzed.map((r) => Number(r.event_id)));
-  const uniqueContentIds = batchContentIds.filter((id) => !alreadyAnalyzedIds.has(id));
-
-  const skippedCount = batchContentIds.length - uniqueContentIds.length;
-  if (skippedCount > 0) {
-    logger.info(
-      `[complete_window] Skipped ${skippedCount} content items already analyzed by watcher ${watcherId}`
-    );
-  }
+  const tokenAge = Math.floor(Date.now() / 1000) - tokenIssuedAt;
+  logger.info(
+    `[complete_window] Token valid: ${batchContentIds.length} content items, token age: ${tokenAge}s`
+  );
 
   // ============================================
-  // STEP 5: Process extracted_data BEFORE any writes (in-memory)
+  // STEP 4: Process extracted_data BEFORE any writes (in-memory)
   // ============================================
   const fieldsToStrip = getFieldsToStrip(classifiers);
   const cleanedExtractedData = stripFields(extractedData, Array.from(fieldsToStrip));
@@ -1640,7 +1563,7 @@ async function handleCompleteWindow(
         UPDATE watcher_windows
         SET
           extracted_data = ${sql.json(cleanedExtractedData)},
-          content_analyzed = ${uniqueContentIds.length},
+          content_analyzed = ${batchContentIds.length},
           model_used = ${provenanceModel},
           client_id = ${provenanceClientId},
           run_metadata = ${sql.json(provenanceMetadata)},
@@ -1677,7 +1600,7 @@ async function handleCompleteWindow(
           logger.info(
             `[complete_window] Deleted existing window ${windowId} (replace_existing=true)`
           );
-        } else if (watcherRunId != null || uniqueContentIds.length === 0) {
+        } else if (watcherRunId != null || batchContentIds.length === 0) {
           // Idempotent replay: reuse the existing window so retries/manual
           // runs can still mark their run completed. Only refresh analysis
           // payload if the existing row was itself a no-op write — never
@@ -1688,6 +1611,7 @@ async function handleCompleteWindow(
             await tx`
               UPDATE watcher_windows
               SET extracted_data = ${sql.json(cleanedExtractedData)},
+                  content_analyzed = ${batchContentIds.length},
                   model_used = ${provenanceModel},
                   client_id = ${provenanceClientId},
                   run_metadata = ${sql.json(provenanceMetadata)},
@@ -1723,7 +1647,7 @@ async function handleCompleteWindow(
             ) VALUES (
               ${newWindowId},
               ${watcherId}, ${resolvedVersionId}, ${window_start}, ${window_end}, ${timeGranularity},
-              ${sql.json(cleanedExtractedData)}, ${uniqueContentIds.length}, ${provenanceModel}, ${provenanceClientId}, ${sql.json(provenanceMetadata)}, ${watcherRunId}, NOW()
+              ${sql.json(cleanedExtractedData)}, ${batchContentIds.length}, ${provenanceModel}, ${provenanceClientId}, ${sql.json(provenanceMetadata)}, ${watcherRunId}, NOW()
             )
           `;
         } catch (err: any) {
@@ -1747,12 +1671,12 @@ async function handleCompleteWindow(
     // STEP 8: Link content to window (bulk INSERT)
     // Build VALUES clause for bulk insert
     // ============================================
-    if (uniqueContentIds.length > 0) {
+    if (batchContentIds.length > 0) {
       let nextWindowEventId = await getNextNumericId(tx, 'watcher_window_events');
       const valuePlaceholders: string[] = [];
       const insertParams: unknown[] = [];
       let pIdx = 1;
-      for (const contentId of uniqueContentIds) {
+      for (const contentId of batchContentIds) {
         valuePlaceholders.push(`($${pIdx}, $${pIdx + 1}, $${pIdx + 2}, NOW())`);
         insertParams.push(nextWindowEventId, windowId, contentId);
         nextWindowEventId += 1;
@@ -1771,7 +1695,7 @@ async function handleCompleteWindow(
     // STEP 9: Process classifications
     // If this fails (e.g., embeddings service down), the transaction rolls back
     // ============================================
-    const validContentIds = new Set(uniqueContentIds);
+    const validContentIds = new Set(batchContentIds);
     await processWatcherClassifications(
       tx,
       watcherId,
@@ -1829,7 +1753,7 @@ async function handleCompleteWindow(
 
     logger.info(
       `[manage_watchers] Completed window ${windowId} for watcher ${watcherId} ` +
-        `(${window_start} - ${window_end}), linked ${uniqueContentIds.length} content items`
+        `(${window_start} - ${window_end}), linked ${batchContentIds.length} content items`
     );
 
     return {
@@ -1838,7 +1762,7 @@ async function handleCompleteWindow(
       window_id: windowId,
       window_start,
       window_end,
-      content_linked: uniqueContentIds.length,
+      content_linked: batchContentIds.length,
     };
   });
 
@@ -1906,7 +1830,7 @@ async function handleCompleteWindow(
           window_start: result.window_start,
           window_end: result.window_end,
           granularity: timeGranularity,
-          content_analyzed: uniqueContentIds.length,
+          content_analyzed: batchContentIds.length,
         },
         watcher: {
           id: Number(result.watcher_id),

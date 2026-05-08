@@ -11,6 +11,7 @@ import { inferWatcherGranularityFromSchedule } from '@lobu/connector-sdk';
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { DbClient } from '../../../db/client';
 import type { Env } from '../../../index';
+import { generateWindowToken } from '../../../utils/jwt';
 import { createWatcherRun } from '../../../utils/queue-helpers';
 import { computePendingWindow } from '../../../utils/window-utils';
 import {
@@ -197,5 +198,52 @@ describe('watcher automation contract', () => {
     expect(completion.action).toBe('complete_window');
     expect(String(run.status)).toBe('completed');
     expect(Number(run.window_id)).toBe(completion.window_id);
+  });
+
+  it('links the exact signed content IDs without re-running watcher sources', async () => {
+    const { sql, workspace, api, entityId, watcherId } = await createAutomatedWatcher();
+
+    const event = await createTestEvent({
+      entity_id: entityId,
+      organization_id: workspace.org.id,
+      content: 'Content returned to the watcher worker.',
+      occurred_at: new Date(Date.now() - 60 * 60 * 1000),
+    });
+    const windowStart = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+    const windowEnd = new Date().toISOString();
+
+    const windowToken = await generateWindowToken(
+      {
+        watcher_id: watcherId,
+        window_start: windowStart,
+        window_end: windowEnd,
+        granularity: 'daily',
+        content_count: 1,
+        content_ids: [event.id],
+      },
+      { JWT_SECRET: 'test-jwt-secret-for-testing-only' } as Env
+    );
+
+    const completion = (await api.watchers.completeWindow({
+      watcher_id: String(watcherId),
+      window_token: windowToken,
+      extracted_data: { summary: 'Summary from exact content IDs' },
+    })) as { action: string; window_id: number; content_linked: number };
+
+    const [window] = await sql`
+      SELECT content_analyzed
+      FROM watcher_windows
+      WHERE id = ${completion.window_id}
+    `;
+    const links = await sql`
+      SELECT event_id
+      FROM watcher_window_events
+      WHERE window_id = ${completion.window_id}
+    `;
+
+    expect(completion.action).toBe('complete_window');
+    expect(completion.content_linked).toBe(1);
+    expect(Number(window.content_analyzed)).toBe(1);
+    expect(links.map((row) => Number(row.event_id))).toEqual([event.id]);
   });
 });

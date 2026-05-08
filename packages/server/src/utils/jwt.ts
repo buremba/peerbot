@@ -1,23 +1,12 @@
 /**
  * JWT utilities for window tokens
  *
- * Window tokens are signed JWTs that encode all query parameters for event fetching.
- * This prevents client manipulation of dates, sources, or filters.
+ * Window tokens are signed JWTs that encode the exact event IDs returned to
+ * the watcher worker. complete_window links those IDs deterministically.
  */
 
 import { timingSafeEqual } from 'node:crypto';
 import type { Env } from '../index';
-
-/**
- * Query parameters stored in window token for deterministic re-query.
- * Since content is immutable, the same query params will always return the same results.
- */
-export interface WindowTokenQueryParams {
-  limit: number;
-  offset: number;
-  sort_by: 'date' | 'score';
-  sort_order: 'asc' | 'desc';
-}
 
 interface WindowTokenPayload {
   watcher_id: number;
@@ -25,9 +14,8 @@ interface WindowTokenPayload {
   window_start: string;
   window_end: string;
   granularity: string; // Required for window creation
-  sources: Array<{ name: string; query: string }>;
-  query_params: WindowTokenQueryParams; // ensures deterministic re-query
   content_count: number; // Content count at token generation - for staleness detection
+  content_ids: number[]; // Exact event IDs returned to the worker; complete_window links these deterministically
   // Condensation/rollup fields
   is_rollup?: boolean; // True when this token is for creating a rollup window
   source_window_ids?: number[]; // IDs of leaf windows being condensed
@@ -98,7 +86,7 @@ function getJwtSecret(env: Env): string {
 /**
  * Generate a signed window token
  *
- * @param payload - Token payload containing watcher_id, dates, sources, and window_id
+ * @param payload - Token payload containing watcher_id, dates, content IDs, and optional window_id
  * @param env - Environment with JWT secret
  * @returns Signed JWT token string
  */

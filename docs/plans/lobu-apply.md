@@ -73,7 +73,7 @@ CLI-visible:
 
 ## v1 work breakdown — 3 parallel PRs
 
-Each PR is a draft branch off `feat/owletto-cli-merge` (PR #459). Subagents work in isolated worktrees. PR-3 (CLI) develops against a stub initially; integration with PR-2's real route happens after that PR merges.
+Each PR is a draft branch off `feat/lobu-cli-merge` (PR #459). Subagents work in isolated worktrees. PR-3 (CLI) develops against a stub initially; integration with PR-2's real route happens after that PR merges.
 
 ### PR-1 — persist the silently-dropped agent settings fields
 
@@ -107,7 +107,7 @@ Validation:
 Today `agent-routes.ts:POST /` returns 409 on same-org duplicate (`agent-routes.ts:319-321`). Connections create with random ID (`POST /:agentId/platforms`), no upsert.
 
 Scope:
-- **Modify `POST /` in agent-routes.ts** (around line 293): same-org duplicate returns `200` with the existing agent payload instead of `409`. Cross-org duplicate keeps the existing 409 (separate concern, will be fixed by future org-scoped IDs work). The Owletto-MCP auto-injection in `saveSettings` (line 339-344) must be preserved on first create but skipped on the idempotent-return path.
+- **Modify `POST /` in agent-routes.ts** (around line 293): same-org duplicate returns `200` with the existing agent payload instead of `409`. Cross-org duplicate keeps the existing 409 (separate concern, will be fixed by future org-scoped IDs work). The Lobu-MCP auto-injection in `saveSettings` (line 339-344) must be preserved on first create but skipped on the idempotent-return path.
 - **New route** `PUT /:agentId/platforms/by-stable-id/:stableId` mounted in agent-routes.ts. Uses `buildStablePlatformId(agentId, type, name)` from `gateway/config/file-loader.ts:56` for ID generation client-side; route receives the stable ID in URL. Body shape mirrors `POST /:agentId/platforms`. Behavior:
   - If stable ID exists: update config in place. If config materially changes, return `{ updated: true, willRestart: true }`. If unchanged, return `{ noop: true }`.
   - If stable ID doesn't exist: create with that ID (skip the random-ID path).
@@ -166,7 +166,7 @@ Pi flagged these — explicit do-not-copy list for the CLI agent:
 
 The script:
 1. Builds packages + CLI.
-2. Boots `start-local.ts` against PGlite with `LOBU_LOCAL_BOOTSTRAP=true`. The bootstrap path mints a default user/org (slug `dev`)/PAT and saves the token to `${OWLETTO_DATA_DIR}/bootstrap-pat.txt`.
+2. Boots `start-local.ts` against PGlite with `LOBU_LOCAL_BOOTSTRAP=true`. The bootstrap path mints a default user/org (slug `dev`)/PAT and saves the token to `${LOBU_DATA_DIR}/bootstrap-pat.txt`.
 3. Reads the PAT, configures a CLI context pointing at the local server, and `lobu login --token <PAT>`.
 4. Drops a sample project at `/tmp/e2e-project/` with one agent, one telegram connection, one provider, and one entity-type yaml.
 5. `lobu apply --dry-run` → asserts `+ agent`, `+ connection`, `+ entity-type` rows.
@@ -184,12 +184,12 @@ Manual steps from the original plan (DB-first `lobu run`, postgres editing) are 
 - **Runtime cache invalidation**: cloud workers may cache settings. Existing PG NOTIFY infrastructure (`agent_changed_notify` migration on main) handles this; apply just writes through the same paths.
 - **Connection restart side effects**: PR-2's PUT response includes `willRestart`. PR-3's diff renderer surfaces this in the plan output ("connection X — will restart") so users aren't surprised by dropped in-flight messages.
 - **Redacted values**: when comparing remote settings to desired, never diff `***1234` against the desired plaintext. v1 normalizer treats redacted values from GET as opaque; CLI uses `has_value` boolean only.
-- **Cloud-injected MCP server on agent create**: `agent-routes.ts:339-344` auto-injects an Owletto MCP server. PR-2 must preserve this on first create but skip it on the idempotent-existing-agent return so we don't reset it on every apply.
+- **Cloud-injected MCP server on agent create**: `agent-routes.ts:339-344` auto-injects an Lobu MCP server. PR-2 must preserve this on first create but skip it on the idempotent-existing-agent return so we don't reset it on every apply.
 
 ## Stacking & ordering
 
 ```
-                  feat/owletto-cli-merge (#459)
+                  feat/lobu-cli-merge (#459)
                             │
                             ▼
                   feat/lobu-apply-plan

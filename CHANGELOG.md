@@ -5,7 +5,7 @@
 
 ### Bug Fixes
 
-* **ci:** restore owletto-* image names so prod can pull them ([#512](https://github.com/lobu-ai/lobu/issues/512)) ([f4f841c](https://github.com/lobu-ai/lobu/commit/f4f841c34c95be9068173a8efee026cc9ac886ca))
+* **ci:** restore lobu-* image names so prod can pull them ([#512](https://github.com/lobu-ai/lobu/issues/512)) ([f4f841c](https://github.com/lobu-ai/lobu/commit/f4f841c34c95be9068173a8efee026cc9ac886ca))
 * **connectors:** replace Deno-style 'npm:' specifiers with real deps ([#513](https://github.com/lobu-ai/lobu/issues/513)) ([ecdeb7c](https://github.com/lobu-ai/lobu/commit/ecdeb7ce4269d4be3d500cdc111278b9f0b2fff8))
 * **publish:** add re-export shims to deprecated redirect packages ([#510](https://github.com/lobu-ai/lobu/issues/510)) ([cb499fc](https://github.com/lobu-ai/lobu/commit/cb499fcac01ae7cb20ae09c1c44496655bb77155))
 
@@ -15,7 +15,7 @@
 ### ⚠ BREAKING CHANGES
 
 * external MCP clients calling `manage_connections` or `manage_auth_profiles` directly will receive `Tool not found`. Move those callers to the REST proxy at `POST /api/{orgSlug}/{toolName}`.
-* **owletto-backend:** the `execute` MCP tool is removed. External MCP clients must switch to `run` (mutating scripts) or `query` (read-only scripts). The internal `manage_connections` and `manage_auth_profiles` tools are no longer visible on the public MCP surface; CLI/web flows continue to reach them via the REST proxy.
+* **lobu-backend:** the `execute` MCP tool is removed. External MCP clients must switch to `run` (mutating scripts) or `query` (read-only scripts). The internal `manage_connections` and `manage_auth_profiles` tools are no longer visible on the public MCP surface; CLI/web flows continue to reach them via the REST proxy.
 
 ### Features
 
@@ -27,8 +27,8 @@
 * **landing:** Attio-style landing redesign with use-case-driven hero ([0e7af50](https://github.com/lobu-ai/lobu/commit/0e7af505acd6e16ec8a7284edff41d861709d12a))
 * **landing:** dark mode support with system preference detection ([#497](https://github.com/lobu-ai/lobu/issues/497)) ([da7f8cd](https://github.com/lobu-ai/lobu/commit/da7f8cd8f3fb148ad41d7ee2670c58915d8099ee))
 * migrate browser-auth to REST, demote manage_* to internal MCP ([#439](https://github.com/lobu-ai/lobu/issues/439)) ([9f883a5](https://github.com/lobu-ai/lobu/commit/9f883a5d56c92665da27bce37886d97e665565d5))
-* **owletto-backend:** 401 + WWW-Authenticate for unauth /mcp ([#438](https://github.com/lobu-ai/lobu/issues/438)) ([ae703fa](https://github.com/lobu-ai/lobu/commit/ae703fa69478fc3d54a464ef3e7c99a51c3bff7c))
-* **owletto-backend:** split MCP execute into query (read-only) + run (full) ([#432](https://github.com/lobu-ai/lobu/issues/432)) ([aef8254](https://github.com/lobu-ai/lobu/commit/aef825435dbc4a5015b5f6cc35419940e245e6a5))
+* **lobu-backend:** 401 + WWW-Authenticate for unauth /mcp ([#438](https://github.com/lobu-ai/lobu/issues/438)) ([ae703fa](https://github.com/lobu-ai/lobu/commit/ae703fa69478fc3d54a464ef3e7c99a51c3bff7c))
+* **lobu-backend:** split MCP execute into query (read-only) + run (full) ([#432](https://github.com/lobu-ai/lobu/issues/432)) ([aef8254](https://github.com/lobu-ai/lobu/commit/aef825435dbc4a5015b5f6cc35419940e245e6a5))
 * **scheduler:** unified TaskScheduler — replace setInterval maintenance loop ([#478](https://github.com/lobu-ai/lobu/issues/478)) ([ab4ee13](https://github.com/lobu-ai/lobu/commit/ab4ee1383535e1abe2ec9eea1202b4fc9aadaeb4))
 * **watchers:** edit propagates across the group; snapshot version_id on runs ([#485](https://github.com/lobu-ai/lobu/issues/485)) ([7a18f83](https://github.com/lobu-ai/lobu/commit/7a18f83acab4be1e5f0e3b0b2db2cdeec60b9f92))
 * **worker:** per-exec OS sandbox for spawned binaries in embedded mode ([daa25d7](https://github.com/lobu-ai/lobu/commit/daa25d7065d2abe1584642d7c94378c8c707b6d2))
@@ -49,14 +49,14 @@
 * harden lobu memory watcher reliability ([#498](https://github.com/lobu-ai/lobu/issues/498)) ([459c7b2](https://github.com/lobu-ai/lobu/commit/459c7b2910a676f84d73cab522e34bd3e5013058))
 * **landing:** send start CTA to app ([#492](https://github.com/lobu-ai/lobu/issues/492)) ([ed112a4](https://github.com/lobu-ai/lobu/commit/ed112a412df082bf97938e81f9580dd96873dc8f))
 * **list_watchers:** cap pending-content total at 1000 rows ([#488](https://github.com/lobu-ai/lobu/issues/488)) ([e296a99](https://github.com/lobu-ai/lobu/commit/e296a9952b2dad0a3eee415f9aee7f50ae393a67))
-* **owletto-backend:** make classification reconciliation candidate query selective ([#454](https://github.com/lobu-ai/lobu/issues/454)) ([4b83739](https://github.com/lobu-ai/lobu/commit/4b837390d0de44a6003ffd0a10354512558091fc))
-* **owletto-backend:** MCP rough edges — org scope, paginated SDK examples, knowledge.delete tombstone ([#442](https://github.com/lobu-ai/lobu/issues/442)) ([6f2ae98](https://github.com/lobu-ai/lobu/commit/6f2ae988b802393f6653485cacac3727c91452c9))
-* **owletto-backend:** re-register list_watchers/get_watcher/read_knowledge for REST ([#434](https://github.com/lobu-ai/lobu/issues/434)) ([dac1603](https://github.com/lobu-ai/lobu/commit/dac1603f7e3c5988e3656e4753539351fd510308))
+* **lobu-backend:** make classification reconciliation candidate query selective ([#454](https://github.com/lobu-ai/lobu/issues/454)) ([4b83739](https://github.com/lobu-ai/lobu/commit/4b837390d0de44a6003ffd0a10354512558091fc))
+* **lobu-backend:** MCP rough edges — org scope, paginated SDK examples, knowledge.delete tombstone ([#442](https://github.com/lobu-ai/lobu/issues/442)) ([6f2ae98](https://github.com/lobu-ai/lobu/commit/6f2ae988b802393f6653485cacac3727c91452c9))
+* **lobu-backend:** re-register list_watchers/get_watcher/read_knowledge for REST ([#434](https://github.com/lobu-ai/lobu/issues/434)) ([dac1603](https://github.com/lobu-ai/lobu/commit/dac1603f7e3c5988e3656e4753539351fd510308))
 * **public-pages:** serve scrapeable HTML for generic clients ([#415](https://github.com/lobu-ai/lobu/issues/415)) ([818c804](https://github.com/lobu-ai/lobu/commit/818c804fde615724d6b02c3a278345508b465919))
 * **public-pages:** skip SSR shell for signed-in users ([4c31a04](https://github.com/lobu-ai/lobu/commit/4c31a04543035ac0928bc22c623025031062dfbb))
 * **reddit:** request identity scope so /api/v1/me works ([#449](https://github.com/lobu-ai/lobu/issues/449)) ([2fc08d8](https://github.com/lobu-ai/lobu/commit/2fc08d80e3fa61eff7c6c386c4f63374cf16f4f7))
 * **watchers:** connector dep hygiene + dispatcher fail-closed ([#444](https://github.com/lobu-ai/lobu/issues/444)) ([b4bb37f](https://github.com/lobu-ai/lobu/commit/b4bb37fd62c26b085d0490972d3b261cab445db5))
-* **watchers:** include watcher_group_id in list response; bump owletto-web for inline version chip ([#435](https://github.com/lobu-ai/lobu/issues/435)) ([4f9db5a](https://github.com/lobu-ai/lobu/commit/4f9db5a1437d531e5263bf431dcefa076156c087))
+* **watchers:** include watcher_group_id in list response; bump lobu-web for inline version chip ([#435](https://github.com/lobu-ai/lobu/issues/435)) ([4f9db5a](https://github.com/lobu-ai/lobu/commit/4f9db5a1437d531e5263bf431dcefa076156c087))
 * **worker:** skip --import tsx when running under Bun ([#412](https://github.com/lobu-ai/lobu/issues/412)) ([39e031d](https://github.com/lobu-ai/lobu/commit/39e031d512561db27215a44469995ca11c043eb1))
 
 
@@ -95,7 +95,7 @@
 * **examples:** statement ingestion playbook + Nix tooling ([#355](https://github.com/lobu-ai/lobu/issues/355)) ([d82d76c](https://github.com/lobu-ai/lobu/commit/d82d76ce236ad98d754f13a2da0ba02373d142b7))
 * **landing:** add siloed-vs-shared memory topology section ([#375](https://github.com/lobu-ai/lobu/issues/375)) ([c759955](https://github.com/lobu-ai/lobu/commit/c7599556764bc1b9437f55b85e966ccb84c70b6c))
 * **landing:** canonical https://lobu.ai/mcp endpoint with OAuth proxy and tracing ([#389](https://github.com/lobu-ai/lobu/issues/389)) ([29c6d2f](https://github.com/lobu-ai/lobu/commit/29c6d2f74ff622c6f1a78ec8c359a13f88c9ba1c))
-* **owletto-backend:** multi-org execute + search MCP tools ([#348](https://github.com/lobu-ai/lobu/issues/348)) ([bb4ff94](https://github.com/lobu-ai/lobu/commit/bb4ff94d046acc4c8db74e5585764bb592e925a9))
+* **lobu-backend:** multi-org execute + search MCP tools ([#348](https://github.com/lobu-ai/lobu/issues/348)) ([bb4ff94](https://github.com/lobu-ai/lobu/commit/bb4ff94d046acc4c8db74e5585764bb592e925a9))
 * **watchers:** per-field feedback storage with mutation kinds ([#363](https://github.com/lobu-ai/lobu/issues/363)) ([5e0c16e](https://github.com/lobu-ai/lobu/commit/5e0c16ed4012a2e4330ae5802d60c1752797c4b9))
 * **worker,backend:** capture subprocess output and exit metadata on run records ([#376](https://github.com/lobu-ai/lobu/issues/376)) ([02eb47a](https://github.com/lobu-ai/lobu/commit/02eb47a2af63b57538a75393a576d76ceb0ff2ab))
 * **world-model:** allow read-only cross-org list_rules ([#399](https://github.com/lobu-ai/lobu/issues/399)) ([b30dc63](https://github.com/lobu-ai/lobu/commit/b30dc6347eea136a78d7b24fb98f63e0bbdc5ef0))
@@ -143,11 +143,11 @@
 * **auth:** align Claude OAuth client with public CLI to avoid 429 ([#345](https://github.com/lobu-ai/lobu/issues/345)) ([aa91a81](https://github.com/lobu-ai/lobu/commit/aa91a81da7ce0caa1afa18f3ab37a24888f37502))
 * **ci:** bump landing deploy to Node 22 for Astro 6 ([#344](https://github.com/lobu-ai/lobu/issues/344)) ([1eb9d60](https://github.com/lobu-ai/lobu/commit/1eb9d603cb1c6be549ac6b8927f4875d024253b7))
 * **cli:** migrate to @inquirer/prompts to fix Node 25 readline crash ([#364](https://github.com/lobu-ai/lobu/issues/364)) ([8ab0dd9](https://github.com/lobu-ai/lobu/commit/8ab0dd9c9d41f9bc8436a7e2d038f78bb5453f50))
-* **embedded-lobu:** make the embedded gateway boot cleanly in the owletto app image ([#332](https://github.com/lobu-ai/lobu/issues/332)) ([c378015](https://github.com/lobu-ai/lobu/commit/c378015e51adf7fbf688684bcb1684680b2f38d3))
+* **embedded-lobu:** make the embedded gateway boot cleanly in the lobu app image ([#332](https://github.com/lobu-ai/lobu/issues/332)) ([c378015](https://github.com/lobu-ai/lobu/commit/c378015e51adf7fbf688684bcb1684680b2f38d3))
 * **events:** tolerate stale client_id refs on insert + relax FK ([#339](https://github.com/lobu-ai/lobu/issues/339)) ([5c19d26](https://github.com/lobu-ai/lobu/commit/5c19d26bdf6604aba88c44ee437773abb2e9f071))
 * **gateway,dev-native:** thread worker entryPoint through config, unblock native dev ([#347](https://github.com/lobu-ai/lobu/issues/347)) ([e5ff4d8](https://github.com/lobu-ai/lobu/commit/e5ff4d8d5bd73b02cf010d64a668610a4fde7767))
 * **mcp-handler,entity-management:** SSE close race + classify entity-type errors ([#340](https://github.com/lobu-ai/lobu/issues/340)) ([4b4649a](https://github.com/lobu-ai/lobu/commit/4b4649aef22db89f8a4fe6abe787ec7bd321b01b))
-* **owletto-backend:** unblock image builds after dead-code refactor ([#329](https://github.com/lobu-ai/lobu/issues/329)) ([5619e1f](https://github.com/lobu-ai/lobu/commit/5619e1f338c312cff299e73170e6d247a4382704))
+* **lobu-backend:** unblock image builds after dead-code refactor ([#329](https://github.com/lobu-ai/lobu/issues/329)) ([5619e1f](https://github.com/lobu-ai/lobu/commit/5619e1f338c312cff299e73170e6d247a4382704))
 * post-merge review follow-ups (path traversal, Sentry PII, Slack instr guard, MCP join rate-limit) ([#325](https://github.com/lobu-ai/lobu/issues/325)) ([3faad40](https://github.com/lobu-ai/lobu/commit/3faad40d0da299f683c492de84623aea2332f6eb))
 * **resolve_path:** return 4xx instead of throwing on client-input errors ([#338](https://github.com/lobu-ai/lobu/issues/338)) ([326f543](https://github.com/lobu-ai/lobu/commit/326f543a90539a7504918b8c56743140384a5f17))
 * **sentry:** disable NodeSystemError integration to unblock node v24 builds ([#341](https://github.com/lobu-ai/lobu/issues/341)) ([4124e00](https://github.com/lobu-ai/lobu/commit/4124e0094129d4c625cbad5f3026bac031159542))
@@ -166,25 +166,25 @@
 
 * **core:** add guardrail primitive ([#254](https://github.com/lobu-ai/lobu/issues/254)) ([#317](https://github.com/lobu-ai/lobu/issues/317)) ([912dfff](https://github.com/lobu-ai/lobu/commit/912dfffbe78a3cfa0e0664338ee8a9c4fd826110))
 * **gateway:** Gemini Code Assist OAuth for CI smoke ([#315](https://github.com/lobu-ai/lobu/issues/315)) ([e4957d0](https://github.com/lobu-ai/lobu/commit/e4957d007993268dbaf7074721953da5a88205cd))
-* **owletto-backend:** accept entity_link_overrides at install/create/connect ([#318](https://github.com/lobu-ai/lobu/issues/318)) ([c08e052](https://github.com/lobu-ai/lobu/commit/c08e0521df83b78fd669ce794110e61e49429443))
+* **lobu-backend:** accept entity_link_overrides at install/create/connect ([#318](https://github.com/lobu-ai/lobu/issues/318)) ([c08e052](https://github.com/lobu-ai/lobu/commit/c08e0521df83b78fd669ce794110e61e49429443))
 
 ## [4.1.0](https://github.com/lobu-ai/lobu/compare/lobu-v4.0.1...lobu-v4.1.0) (2026-04-23)
 
 
 ### Features
 
-* add separate Lobu and Owletto starter skill installs ([#304](https://github.com/lobu-ai/lobu/issues/304)) ([d0a4bc4](https://github.com/lobu-ai/lobu/commit/d0a4bc4d7ef61c56250b698805ae854396391469))
+* add separate Lobu and Lobu starter skill installs ([#304](https://github.com/lobu-ai/lobu/issues/304)) ([d0a4bc4](https://github.com/lobu-ai/lobu/commit/d0a4bc4d7ef61c56250b698805ae854396391469))
 * **landing:** rewrite hero headline and subhead for agent-first pitch ([#312](https://github.com/lobu-ai/lobu/issues/312)) ([044b1ed](https://github.com/lobu-ai/lobu/commit/044b1ed5eb2fa1ea578701673cc1922afeee1e3d))
-* **owletto-backend:** centralize transactional email + rebrand to Lobu ([#314](https://github.com/lobu-ai/lobu/issues/314)) ([4db7a1e](https://github.com/lobu-ai/lobu/commit/4db7a1e2e3dc7c214f13fa5d0bea885db080617a))
-* **owletto-backend:** gate $member list to members, emails to admins ([#309](https://github.com/lobu-ai/lobu/issues/309)) ([c37c72f](https://github.com/lobu-ai/lobu/commit/c37c72f6473838163149b12c8677d8dda6acabb2))
-* **owletto-backend:** public-org read access + self-serve join ([#296](https://github.com/lobu-ai/lobu/issues/296)) ([38cf00f](https://github.com/lobu-ai/lobu/commit/38cf00f09c51d57fbe5d1fb3f8811f84b2d35756))
+* **lobu-backend:** centralize transactional email + rebrand to Lobu ([#314](https://github.com/lobu-ai/lobu/issues/314)) ([4db7a1e](https://github.com/lobu-ai/lobu/commit/4db7a1e2e3dc7c214f13fa5d0bea885db080617a))
+* **lobu-backend:** gate $member list to members, emails to admins ([#309](https://github.com/lobu-ai/lobu/issues/309)) ([c37c72f](https://github.com/lobu-ai/lobu/commit/c37c72f6473838163149b12c8677d8dda6acabb2))
+* **lobu-backend:** public-org read access + self-serve join ([#296](https://github.com/lobu-ai/lobu/issues/296)) ([38cf00f](https://github.com/lobu-ai/lobu/commit/38cf00f09c51d57fbe5d1fb3f8811f84b2d35756))
 
 
 ### Bug Fixes
 
 * **landing:** move outcome channel into outcome box ([#306](https://github.com/lobu-ai/lobu/issues/306)) ([885ab61](https://github.com/lobu-ai/lobu/commit/885ab6171bbc3e347e32c3dbf36583eef2b4f215))
-* **owletto-backend:** add missing memberRole to internal ToolContext literals ([#311](https://github.com/lobu-ai/lobu/issues/311)) ([dce8105](https://github.com/lobu-ai/lobu/commit/dce8105ba0de3c4e03ba7ce268cd3e2899cc2a61))
-* **owletto-backend:** exclude watcher runs from worker poll claims ([#313](https://github.com/lobu-ai/lobu/issues/313)) ([afd5d7b](https://github.com/lobu-ai/lobu/commit/afd5d7b78ed5f2125e655349079aff3b0658106e))
+* **lobu-backend:** add missing memberRole to internal ToolContext literals ([#311](https://github.com/lobu-ai/lobu/issues/311)) ([dce8105](https://github.com/lobu-ai/lobu/commit/dce8105ba0de3c4e03ba7ce268cd3e2899cc2a61))
+* **lobu-backend:** exclude watcher runs from worker poll claims ([#313](https://github.com/lobu-ai/lobu/issues/313)) ([afd5d7b](https://github.com/lobu-ai/lobu/commit/afd5d7b78ed5f2125e655349079aff3b0658106e))
 
 ## [4.0.1](https://github.com/lobu-ai/lobu/compare/lobu-v4.0.0...lobu-v4.0.1) (2026-04-21)
 
@@ -208,13 +208,13 @@
 
 ### Bug Fixes
 
-* **docker:** include owletto workspaces in Dockerfile.worker ([#274](https://github.com/lobu-ai/lobu/issues/274)) ([2aa042b](https://github.com/lobu-ai/lobu/commit/2aa042bce577fd4c498a5defbaa532515b39dd23))
+* **docker:** include lobu workspaces in Dockerfile.worker ([#274](https://github.com/lobu-ai/lobu/issues/274)) ([2aa042b](https://github.com/lobu-ai/lobu/commit/2aa042bce577fd4c498a5defbaa532515b39dd23))
 * **gateway:** escape user input in MCP OAuth callback to prevent XSS ([#284](https://github.com/lobu-ai/lobu/issues/284)) ([ab19e8a](https://github.com/lobu-ai/lobu/commit/ab19e8ac569df321866921fd64b59bca9d01920d))
 * **gateway:** require worker auth on /api/bedrock/* to prevent unauthenticated AWS spend ([#287](https://github.com/lobu-ai/lobu/issues/287)) ([5e6e91c](https://github.com/lobu-ai/lobu/commit/5e6e91c32a75e872a052705854277d8114b5c240))
 * **landing:** repair broken links surfaced by audit ([#275](https://github.com/lobu-ai/lobu/issues/275)) ([1de4aee](https://github.com/lobu-ai/lobu/commit/1de4aee458e9039396f62b6d357c1c5450040b27))
 * **landing:** resolve zod parse error on connect-from route ([#271](https://github.com/lobu-ai/lobu/issues/271)) ([cef2284](https://github.com/lobu-ai/lobu/commit/cef2284ab1c1e10f1406f43301378036767dbafa))
 * **landing:** wire benchmark methodology link and add tables to memory + comparison ([#276](https://github.com/lobu-ai/lobu/issues/276)) ([39a0436](https://github.com/lobu-ai/lobu/commit/39a043696a4910f931d885dfe6baa48f5570d0fe))
-* **owletto-backend:** use parameter binding in content-search to prevent SQL injection ([#286](https://github.com/lobu-ai/lobu/issues/286)) ([65511c1](https://github.com/lobu-ai/lobu/commit/65511c1fc2eb13a3ebd180ca341a8d74ea57a877))
+* **lobu-backend:** use parameter binding in content-search to prevent SQL injection ([#286](https://github.com/lobu-ai/lobu/issues/286)) ([65511c1](https://github.com/lobu-ai/lobu/commit/65511c1fc2eb13a3ebd180ca341a8d74ea57a877))
 
 
 ### Code Refactoring
@@ -228,24 +228,24 @@
 
 * inline memory config into lobu.toml and rename devops→engineering ([#247](https://github.com/lobu-ai/lobu/issues/247)) ([1daf272](https://github.com/lobu-ai/lobu/commit/1daf2728bec2b374a52c2212231ae641f439e89a))
 * **landing:** add memory benchmarks section + methodology docs ([#242](https://github.com/lobu-ai/lobu/issues/242)) ([28e2980](https://github.com/lobu-ai/lobu/commit/28e2980796ed037aca37f90ab7785f95050c83d0))
-* **owletto-backend:** allow lobu.ai to embed app via CSP frame-ancestors ([#246](https://github.com/lobu-ai/lobu/issues/246)) ([6cbf3d2](https://github.com/lobu-ai/lobu/commit/6cbf3d29aafee5b5c80f389c25e54c9eb3afc267))
-* **owletto:** absorb skills, benchmarks, and dev scripts from deprecated owletto repo ([#231](https://github.com/lobu-ai/lobu/issues/231)) ([ccef71e](https://github.com/lobu-ai/lobu/commit/ccef71e1b2e3c58d79a767a84f919777b724cc44))
-* **owletto:** consolidate CLI profiles into lobu.toml ([#233](https://github.com/lobu-ai/lobu/issues/233)) ([577ec37](https://github.com/lobu-ai/lobu/commit/577ec3731c70faea3272128b26ad2787d4198a99))
+* **lobu-backend:** allow lobu.ai to embed app via CSP frame-ancestors ([#246](https://github.com/lobu-ai/lobu/issues/246)) ([6cbf3d2](https://github.com/lobu-ai/lobu/commit/6cbf3d29aafee5b5c80f389c25e54c9eb3afc267))
+* **lobu:** absorb skills, benchmarks, and dev scripts from deprecated lobu repo ([#231](https://github.com/lobu-ai/lobu/issues/231)) ([ccef71e](https://github.com/lobu-ai/lobu/commit/ccef71e1b2e3c58d79a767a84f919777b724cc44))
+* **lobu:** consolidate CLI profiles into lobu.toml ([#233](https://github.com/lobu-ai/lobu/issues/233)) ([577ec37](https://github.com/lobu-ai/lobu/commit/577ec3731c70faea3272128b26ad2787d4198a99))
 * subdomain-aware SPA + SSR routing ([#234](https://github.com/lobu-ai/lobu/issues/234)) ([9c66f16](https://github.com/lobu-ai/lobu/commit/9c66f16cd4b16d96356de05e3aa401e6499f0d5e))
 
 
 ### Bug Fixes
 
-* **ci:** initialize owletto-web submodule in landing deploy ([#229](https://github.com/lobu-ai/lobu/issues/229)) ([0dee7bc](https://github.com/lobu-ai/lobu/commit/0dee7bc8c229562b9335aa226f765af563fe25f5))
+* **ci:** initialize lobu-web submodule in landing deploy ([#229](https://github.com/lobu-ai/lobu/issues/229)) ([0dee7bc](https://github.com/lobu-ai/lobu/commit/0dee7bc8c229562b9335aa226f765af563fe25f5))
 * **deps:** sync bun.lock with release-please 3.6.0 version bump ([#227](https://github.com/lobu-ai/lobu/issues/227)) ([e14500c](https://github.com/lobu-ai/lobu/commit/e14500c1ab0d60e50ad38c5c59b8b4f8fa45362b))
 * **landing:** restore campaign description from runtime.request ([#250](https://github.com/lobu-ai/lobu/issues/250)) ([56eac67](https://github.com/lobu-ai/lobu/commit/56eac673486777867c5115ba174f019a0dbe245b))
-* **owletto-backend:** resolve default org when loading social credentials ([#235](https://github.com/lobu-ai/lobu/issues/235)) ([90419cc](https://github.com/lobu-ai/lobu/commit/90419ccd931328f402f9dfbc16b97fb7f355a1a9))
-* ship app.lobu.ai SPA + retire owletto.com defaults ([#230](https://github.com/lobu-ai/lobu/issues/230)) ([e3817d4](https://github.com/lobu-ai/lobu/commit/e3817d41732b51fcbde1b56e69b0da85a1fb51d8))
-* **web:** bump owletto-web for history adapter import fix ([#237](https://github.com/lobu-ai/lobu/issues/237)) ([279a3ed](https://github.com/lobu-ai/lobu/commit/279a3edabeb32080168180f33cf42ccae11f9ef0))
-* **web:** bump owletto-web for public-org auth-redirect fix ([#240](https://github.com/lobu-ai/lobu/issues/240)) ([f4641eb](https://github.com/lobu-ai/lobu/commit/f4641eb163bdc78fdc90dcd5d826f62360144e69))
-* **web:** bump owletto-web for sidebar auth gating ([#238](https://github.com/lobu-ai/lobu/issues/238)) ([e51458e](https://github.com/lobu-ai/lobu/commit/e51458e2998705c987c4de84478719d34d093c3e))
-* **web:** bump owletto-web for sidebar gating + add reserved-subdomain parity test ([#241](https://github.com/lobu-ai/lobu/issues/241)) ([8961e58](https://github.com/lobu-ai/lobu/commit/8961e5865e99d12996e70df1679188f38ad95458))
-* **web:** bump owletto-web for subdomain history adapter ([#236](https://github.com/lobu-ai/lobu/issues/236)) ([a53c978](https://github.com/lobu-ai/lobu/commit/a53c978331acb9fff5b0b2eda2830dc68a6f42e5))
+* **lobu-backend:** resolve default org when loading social credentials ([#235](https://github.com/lobu-ai/lobu/issues/235)) ([90419cc](https://github.com/lobu-ai/lobu/commit/90419ccd931328f402f9dfbc16b97fb7f355a1a9))
+* ship app.lobu.ai SPA + retire lobu.com defaults ([#230](https://github.com/lobu-ai/lobu/issues/230)) ([e3817d4](https://github.com/lobu-ai/lobu/commit/e3817d41732b51fcbde1b56e69b0da85a1fb51d8))
+* **web:** bump lobu-web for history adapter import fix ([#237](https://github.com/lobu-ai/lobu/issues/237)) ([279a3ed](https://github.com/lobu-ai/lobu/commit/279a3edabeb32080168180f33cf42ccae11f9ef0))
+* **web:** bump lobu-web for public-org auth-redirect fix ([#240](https://github.com/lobu-ai/lobu/issues/240)) ([f4641eb](https://github.com/lobu-ai/lobu/commit/f4641eb163bdc78fdc90dcd5d826f62360144e69))
+* **web:** bump lobu-web for sidebar auth gating ([#238](https://github.com/lobu-ai/lobu/issues/238)) ([e51458e](https://github.com/lobu-ai/lobu/commit/e51458e2998705c987c4de84478719d34d093c3e))
+* **web:** bump lobu-web for sidebar gating + add reserved-subdomain parity test ([#241](https://github.com/lobu-ai/lobu/issues/241)) ([8961e58](https://github.com/lobu-ai/lobu/commit/8961e5865e99d12996e70df1679188f38ad95458))
+* **web:** bump lobu-web for subdomain history adapter ([#236](https://github.com/lobu-ai/lobu/issues/236)) ([a53c978](https://github.com/lobu-ai/lobu/commit/a53c978331acb9fff5b0b2eda2830dc68a6f42e5))
 
 ## [3.6.0](https://github.com/lobu-ai/lobu/compare/lobu-v3.5.0...lobu-v3.6.0) (2026-04-20)
 
@@ -253,7 +253,7 @@
 ### Features
 
 * **backend:** wildcard trusted origins + reserved subdomain skip-list ([#214](https://github.com/lobu-ai/lobu/issues/214)) ([7656f2b](https://github.com/lobu-ai/lobu/commit/7656f2bf465a0cb2ea7eb91ec123c42ae015bb02))
-* consolidate owletto into the lobu monorepo (PRs 1–4) ([#212](https://github.com/lobu-ai/lobu/issues/212)) ([a6d0d3f](https://github.com/lobu-ai/lobu/commit/a6d0d3f9a46696b5874e1a4029ab8f73e579a4e3))
+* consolidate lobu into the lobu monorepo (PRs 1–4) ([#212](https://github.com/lobu-ai/lobu/issues/212)) ([a6d0d3f](https://github.com/lobu-ai/lobu/commit/a6d0d3f9a46696b5874e1a4029ab8f73e579a4e3))
 * **gateway:** file-driven agent schedules in lobu.toml ([#211](https://github.com/lobu-ai/lobu/issues/211)) ([6b2eb51](https://github.com/lobu-ai/lobu/commit/6b2eb5128584d0d7d7cfaa38f203684ce422709f))
 * **landing:** architecture diagram badges, blog section, and use-case chat examples ([#206](https://github.com/lobu-ai/lobu/issues/206)) ([969e5ee](https://github.com/lobu-ai/lobu/commit/969e5ee6e96858521187c7af8aaeeb35786516d3))
 * **landing:** consolidate use-case demo into unified trace view ([#226](https://github.com/lobu-ai/lobu/issues/226)) ([c030fa7](https://github.com/lobu-ai/lobu/commit/c030fa709bcd9423224214276e3cd315cce67cff))
@@ -263,17 +263,17 @@
 
 ### Bug Fixes
 
-* **ci:** skip web build when owletto-web is stubbed ([#222](https://github.com/lobu-ai/lobu/issues/222)) ([acee38a](https://github.com/lobu-ai/lobu/commit/acee38aae91b8389553800ccdbbace542460b89f))
+* **ci:** skip web build when lobu-web is stubbed ([#222](https://github.com/lobu-ai/lobu/issues/222)) ([acee38a](https://github.com/lobu-ai/lobu/commit/acee38aae91b8389553800ccdbbace542460b89f))
 * **docker:** build gateway dist + exclude tests from backend typecheck ([#219](https://github.com/lobu-ai/lobu/issues/219)) ([96b0033](https://github.com/lobu-ai/lobu/commit/96b00332c637262d6a22bc624ddee802e938d519))
-* **docker:** name owletto-cli stub package as 'owletto' (unscoped) ([#215](https://github.com/lobu-ai/lobu/issues/215)) ([17fba3f](https://github.com/lobu-ai/lobu/commit/17fba3fac7b910f39d3bad256befa85e9ad9876c))
+* **docker:** name lobu-cli stub package as 'lobu' (unscoped) ([#215](https://github.com/lobu-ai/lobu/issues/215)) ([17fba3f](https://github.com/lobu-ai/lobu/commit/17fba3fac7b910f39d3bad256befa85e9ad9876c))
 * **docker:** unzip in runtime + worker chromium install via bunx ([#216](https://github.com/lobu-ai/lobu/issues/216)) ([019253e](https://github.com/lobu-ai/lobu/commit/019253e8977cf8b0c14b38d5045abd6952b25a5c))
-* **docker:** use bun run build for owletto-web (local vite) ([#221](https://github.com/lobu-ai/lobu/issues/221)) ([7734259](https://github.com/lobu-ai/lobu/commit/7734259b4886b2ab1cbb44468a689b8b5aff33f2))
+* **docker:** use bun run build for lobu-web (local vite) ([#221](https://github.com/lobu-ai/lobu/issues/221)) ([7734259](https://github.com/lobu-ai/lobu/commit/7734259b4886b2ab1cbb44468a689b8b5aff33f2))
 * **gateway,worker:** deliver provider base URLs via session context only ([#225](https://github.com/lobu-ai/lobu/issues/225)) ([9171d37](https://github.com/lobu-ai/lobu/commit/9171d37d34cbe07fd004ee2e7842b8a66328e46b))
 * **gateway:** isolate tsconfig from root bun-types ([#220](https://github.com/lobu-ai/lobu/issues/220)) ([c533e27](https://github.com/lobu-ai/lobu/commit/c533e274217d2af6177f902fd4cf0502f73192b5))
-* **gateway:** Owletto MCP sync, Slack markdown/threading, tool-approval lifecycle, deployment coalescing ([#210](https://github.com/lobu-ai/lobu/issues/210)) ([92ce0eb](https://github.com/lobu-ai/lobu/commit/92ce0eb3308e4d4b476c96b60d5f8e45803d9597))
-* **landing:** refine Owletto memory section copy ([#205](https://github.com/lobu-ai/lobu/issues/205)) ([9075d6c](https://github.com/lobu-ai/lobu/commit/9075d6c74f33716429b030c4406b10e28450b63d))
-* **owletto-backend:** resolve *.lobu.ai as org subdomain under AUTH_COOKIE_DOMAIN ([#224](https://github.com/lobu-ai/lobu/issues/224)) ([c893aae](https://github.com/lobu-ai/lobu/commit/c893aaedb64ac3437e081641947dca297f390f79))
-* **owletto-backend:** resolve typecheck errors blocking build-images ([#218](https://github.com/lobu-ai/lobu/issues/218)) ([7ce6271](https://github.com/lobu-ai/lobu/commit/7ce62711bd2c35d763d01f35426e24e07dc88bf4))
+* **gateway:** Lobu MCP sync, Slack markdown/threading, tool-approval lifecycle, deployment coalescing ([#210](https://github.com/lobu-ai/lobu/issues/210)) ([92ce0eb](https://github.com/lobu-ai/lobu/commit/92ce0eb3308e4d4b476c96b60d5f8e45803d9597))
+* **landing:** refine Lobu memory section copy ([#205](https://github.com/lobu-ai/lobu/issues/205)) ([9075d6c](https://github.com/lobu-ai/lobu/commit/9075d6c74f33716429b030c4406b10e28450b63d))
+* **lobu-backend:** resolve *.lobu.ai as org subdomain under AUTH_COOKIE_DOMAIN ([#224](https://github.com/lobu-ai/lobu/issues/224)) ([c893aae](https://github.com/lobu-ai/lobu/commit/c893aaedb64ac3437e081641947dca297f390f79))
+* **lobu-backend:** resolve typecheck errors blocking build-images ([#218](https://github.com/lobu-ai/lobu/issues/218)) ([7ce6271](https://github.com/lobu-ai/lobu/commit/7ce62711bd2c35d763d01f35426e24e07dc88bf4))
 * **worker:** QA hardening for careops agent (Gemini support, UploadUserFile workspace paths, dedup error messages) ([#203](https://github.com/lobu-ai/lobu/issues/203)) ([8026d5d](https://github.com/lobu-ai/lobu/commit/8026d5d341c5738961f8179a3ab9f5acb72b797e))
 
 ## [3.5.0](https://github.com/lobu-ai/lobu/compare/lobu-v3.4.3...lobu-v3.5.0) (2026-04-16)
@@ -345,13 +345,13 @@
 * **landing:** revamp memory page demo ([96dba19](https://github.com/lobu-ai/lobu/commit/96dba192e07b7861b333c9d7f3fc72701527436a))
 * **landing:** update copy prompt behavior and text ([a551a79](https://github.com/lobu-ai/lobu/commit/a551a7965c9c46aa2b44e2a29eecd065fd9c1f13))
 * live per-agent MCP install flow with discovery and no worker restart ([#106](https://github.com/lobu-ai/lobu/issues/106)) ([435202b](https://github.com/lobu-ai/lobu/commit/435202b965f85a2085e604c463a74f6163111316))
-* make examples/ single source of truth for use cases and Owletto orgs ([3fc5380](https://github.com/lobu-ai/lobu/commit/3fc5380a720681d4b54ca88ff401dcaa7462db70))
+* make examples/ single source of truth for use cases and Lobu orgs ([3fc5380](https://github.com/lobu-ai/lobu/commit/3fc5380a720681d4b54ca88ff401dcaa7462db70))
 * make Hero GitHub button contextual to active use case ([f1ca9fe](https://github.com/lobu-ai/lobu/commit/f1ca9fed7cfbe4326599e546109eca7f6a45bb05))
 * make skills page init preview contextual to selected use-case ([146e87a](https://github.com/lobu-ai/lobu/commit/146e87ad8838c5dd03c5f27900636e05c527823f))
 * **mcp-auth:** surface login prompts as platform link buttons ([9ca5449](https://github.com/lobu-ai/lobu/commit/9ca5449a48321db1e6a81f3ab1172b8768f272fc))
 * migrate gateway to Hono and remove Express from worker ([#94](https://github.com/lobu-ai/lobu/issues/94)) ([499ab1b](https://github.com/lobu-ai/lobu/commit/499ab1b992267017872e90ecb2a662186cd574e3))
-* migrate owletto examples to models/ directory with type field ([3deeb77](https://github.com/lobu-ai/lobu/commit/3deeb77f5eea1cd9d1124691e42430e3bb6fa496))
-* migrate Owletto plugin to published @lobu/owletto-openclaw package ([b4666c5](https://github.com/lobu-ai/lobu/commit/b4666c50c375331aaf5fd2b8802b6891974459e0))
+* migrate lobu examples to models/ directory with type field ([3deeb77](https://github.com/lobu-ai/lobu/commit/3deeb77f5eea1cd9d1124691e42430e3bb6fa496))
+* migrate Lobu plugin to published @lobu/lobu-openclaw package ([b4666c5](https://github.com/lobu-ai/lobu/commit/b4666c50c375331aaf5fd2b8802b6891974459e0))
 * migrate to Chat SDK platform adapters with typed OpenAPI schemas ([89573db](https://github.com/lobu-ai/lobu/commit/89573dbf3242249034f37543671db26493ccbd88))
 * move workspace files to worker filesystem, fix CI, lint cleanup ([142d0c8](https://github.com/lobu-ai/lobu/commit/142d0c8c96a7eb9a0d6792809bbefbd2bbb7027e))
 * multi-auth settings UX, base provider module refactor, and infra improvements ([1c61b30](https://github.com/lobu-ai/lobu/commit/1c61b30e931f68ee37b9d8775fcae66c1e95643c))
@@ -359,13 +359,13 @@
 * **oauth:** add PKCE, RFC 8707 resource, auto-grants, and MCP token endpoint ([63336a7](https://github.com/lobu-ai/lobu/commit/63336a78d92999384fa873216668467a2787666c))
 * **observability:** vendor-neutral OTEL tracing + opt-in Sentry ([#172](https://github.com/lobu-ai/lobu/issues/172)) ([f3345d3](https://github.com/lobu-ai/lobu/commit/f3345d364cfa28c9cc8f9c801041ccb1fd492b5c))
 * **otel:** switch from OTLP HTTP to gRPC exporter (port 4317) ([60178db](https://github.com/lobu-ai/lobu/commit/60178db403596efadcd3124e367b06287f7696ba))
-* Owletto memory plugin, plugin hooks/services, test infrastructure, and misc improvements ([89c27f0](https://github.com/lobu-ai/lobu/commit/89c27f0736e74fe83de6b1664017b21130cd489f))
+* Lobu memory plugin, plugin hooks/services, test infrastructure, and misc improvements ([89c27f0](https://github.com/lobu-ai/lobu/commit/89c27f0736e74fe83de6b1664017b21130cd489f))
 * **proxy:** resolve provider credentials via URL path agentId ([1dbcb8c](https://github.com/lobu-ai/lobu/commit/1dbcb8c3c3a9ee6471733cedfcadf9ee5e1b3f6d))
 * re-enable custom tools and remove unused claudeSessionId tracking ([2adb766](https://github.com/lobu-ai/lobu/commit/2adb766077f1d688ba93ca1994b260aff3f6e4b8))
 * refactor settings page to Alpine.js with pre-compiled Tailwind ([2126001](https://github.com/lobu-ai/lobu/commit/2126001d4e720eae0b99c7b22cd9fcb342ea174a))
 * refresh cli docs and restore release publish chain ([#179](https://github.com/lobu-ai/lobu/issues/179)) ([1ee0595](https://github.com/lobu-ai/lobu/commit/1ee0595d354b0dee1a85d4b3015fd1c9adcab4a0))
 * refresh landing pages and pricing UX ([c8d8b58](https://github.com/lobu-ai/lobu/commit/c8d8b58fd6ea4b16583d67259e61839dc9ee1f52))
-* rename CTA to "Open in Owletto" and open in new tab ([179fc23](https://github.com/lobu-ai/lobu/commit/179fc239b240a31aabd3d412a98035353b638924))
+* rename CTA to "Open in Lobu" and open in new tab ([179fc23](https://github.com/lobu-ai/lobu/commit/179fc239b240a31aabd3d412a98035353b638924))
 * settings page rewrite (Alpine→Preact), history page, Telegram enhancements, landing page ([b2cba55](https://github.com/lobu-ai/lobu/commit/b2cba551671812f2c54e9188fa74cc77ecd2f27c))
 * **settings:** add generic OpenAI provider ([fcae8c3](https://github.com/lobu-ai/lobu/commit/fcae8c30497d52263787930588763b64934160ae))
 * **settings:** add generic OpenAI provider ([f60e93a](https://github.com/lobu-ai/lobu/commit/f60e93af00324191d7f842cb4f99ec8501aa5e04))
@@ -373,7 +373,7 @@
 * show nix packages in landing skill previews ([6095e13](https://github.com/lobu-ai/lobu/commit/6095e13447d9d7c3e6214a9995b9994645ee8bf9))
 * **skills:** add scoring, URI, and system skill search to SearchSkills ([d63d7a8](https://github.com/lobu-ai/lobu/commit/d63d7a8e1a0b16dfcd8761a1ed54690cd84616c6))
 * support Telegram webhooks when PUBLIC_GATEWAY_URL is set ([c3d266e](https://github.com/lobu-ai/lobu/commit/c3d266e59ef45c386bcf7ccbe3808dbf18abb3f4))
-* wire file-first owletto memory config ([46c7554](https://github.com/lobu-ai/lobu/commit/46c7554d27284724333d5aa043316fe208f278b1))
+* wire file-first lobu memory config ([46c7554](https://github.com/lobu-ai/lobu/commit/46c7554d27284724333d5aa043316fe208f278b1))
 * **worker:** ConnectService, CallService, DisconnectService tools and integration runtime ([af5a270](https://github.com/lobu-ai/lobu/commit/af5a270ba8e5d66e77cb7cd9c1d495d183e22a44))
 * **worker:** expand ConnectService to support AI provider setup ([45b0c93](https://github.com/lobu-ai/lobu/commit/45b0c9396a759a14eb67c22347aee2de08e4543e))
 * **worker:** generic MCP login tools + bash hardening ([5e167a4](https://github.com/lobu-ai/lobu/commit/5e167a41bf87f71704c7f936759624a26e959e85))
@@ -428,7 +428,7 @@
 * **cli:** replace RequestInfo with portable fetch input type ([ba23c4a](https://github.com/lobu-ai/lobu/commit/ba23c4a260949f75e81876dd4e85e35449d5cada))
 * **cli:** restore system skills and add CLI to publish workflow ([1fc3687](https://github.com/lobu-ai/lobu/commit/1fc3687985505bf6dd9133b94f162bdd568947c4))
 * correct session-manager tests to use proper session key format ([45af581](https://github.com/lobu-ai/lobu/commit/45af581e3ee97e0a8433362a9437c7634edbeb79))
-* deduplicate owletto URL logic, fix skills card title, add skills link to memory reuse step ([78ad65e](https://github.com/lobu-ai/lobu/commit/78ad65e75faa689fbaa3715c0cc3eec1496c8527))
+* deduplicate lobu URL logic, fix skills card title, add skills link to memory reuse step ([78ad65e](https://github.com/lobu-ai/lobu/commit/78ad65e75faa689fbaa3715c0cc3eec1496c8527))
 * delete existing webhook before starting Telegram long polling ([c6cd02c](https://github.com/lobu-ai/lobu/commit/c6cd02c8f2bc711934764823448723feda6d503f))
 * **deploy:** remove broken global.imageRegistry that caused double-slash in Bitnami Redis image paths ([e37d81c](https://github.com/lobu-ai/lobu/commit/e37d81c79593234b9fb44aa2f2e1b9150fa3678f))
 * **deploy:** update sealed secrets with all required keys ([fbe588e](https://github.com/lobu-ai/lobu/commit/fbe588e8296746a29f1ddb12af56f56856f3b420))
@@ -465,7 +465,7 @@
 * **landing:** bold connector label inline instead of separate heading ([3ac690e](https://github.com/lobu-ai/lobu/commit/3ac690e5f803408fa8ee4a91ebd87f9ecdf07138))
 * **landing:** clarify use-case source CTA ([d0b64f2](https://github.com/lobu-ai/lobu/commit/d0b64f2367c4c0f7e8c815c2ae89d92047ae38d8))
 * **landing:** correct homepage prompt and CLI command references ([5f4429f](https://github.com/lobu-ai/lobu/commit/5f4429fa118a23018df97db83cda7c8a62760602))
-* **landing:** correct owletto demo links ([150a7c9](https://github.com/lobu-ai/lobu/commit/150a7c94f26b04e51271e6dc9074a649eb178099))
+* **landing:** correct lobu demo links ([150a7c9](https://github.com/lobu-ai/lobu/commit/150a7c94f26b04e51271e6dc9074a649eb178099))
 * **landing:** improve hero CTA labels ([ae6a807](https://github.com/lobu-ai/lobu/commit/ae6a807ae33679770e7f851ab0f4c8ef5dce2c3a))
 * **landing:** inline connector labels to balance recall/auth column heights ([6125016](https://github.com/lobu-ai/lobu/commit/61250162d3a4b28fccfcb273282e39afbc000a69))
 * **landing:** keep homepage hero generic ([8078103](https://github.com/lobu-ai/lobu/commit/807810394c3d6ed87aa445075b4e9b7e4e248136))
@@ -552,11 +552,11 @@
 * **landing:** add terms of service page ([0347573](https://github.com/lobu-ai/lobu/commit/0347573d58d5aff6594713bb4a7277f7227d9e83))
 * **landing:** remove Lobu for X labels and redundant use case summaries ([e861218](https://github.com/lobu-ai/lobu/commit/e861218120dbfc5265152bd09b2ab96a6202f5c3))
 * **landing:** update copy prompt behavior and text ([a551a79](https://github.com/lobu-ai/lobu/commit/a551a7965c9c46aa2b44e2a29eecd065fd9c1f13))
-* make examples/ single source of truth for use cases and Owletto orgs ([3fc5380](https://github.com/lobu-ai/lobu/commit/3fc5380a720681d4b54ca88ff401dcaa7462db70))
+* make examples/ single source of truth for use cases and Lobu orgs ([3fc5380](https://github.com/lobu-ai/lobu/commit/3fc5380a720681d4b54ca88ff401dcaa7462db70))
 * make Hero GitHub button contextual to active use case ([f1ca9fe](https://github.com/lobu-ai/lobu/commit/f1ca9fed7cfbe4326599e546109eca7f6a45bb05))
-* migrate owletto examples to models/ directory with type field ([3deeb77](https://github.com/lobu-ai/lobu/commit/3deeb77f5eea1cd9d1124691e42430e3bb6fa496))
-* rename CTA to "Open in Owletto" and open in new tab ([179fc23](https://github.com/lobu-ai/lobu/commit/179fc239b240a31aabd3d412a98035353b638924))
-* wire file-first owletto memory config ([46c7554](https://github.com/lobu-ai/lobu/commit/46c7554d27284724333d5aa043316fe208f278b1))
+* migrate lobu examples to models/ directory with type field ([3deeb77](https://github.com/lobu-ai/lobu/commit/3deeb77f5eea1cd9d1124691e42430e3bb6fa496))
+* rename CTA to "Open in Lobu" and open in new tab ([179fc23](https://github.com/lobu-ai/lobu/commit/179fc239b240a31aabd3d412a98035353b638924))
+* wire file-first lobu memory config ([46c7554](https://github.com/lobu-ai/lobu/commit/46c7554d27284724333d5aa043316fe208f278b1))
 * **worker:** redact sandbox leaks, replace base prompt identity, use signed artifact URLs ([a5c33d8](https://github.com/lobu-ai/lobu/commit/a5c33d818d9de4e0bef8fd1710a2244f8592e33f))
 
 
@@ -564,7 +564,7 @@
 
 * **eval:** isolate trials + feat(worker): MCP-as-CLI for embedded mode ([#184](https://github.com/lobu-ai/lobu/issues/184)) ([c256d6d](https://github.com/lobu-ai/lobu/commit/c256d6d2604b514df9eb2c5658524079286e73b9))
 * **landing:** clarify use-case source CTA ([d0b64f2](https://github.com/lobu-ai/lobu/commit/d0b64f2367c4c0f7e8c815c2ae89d92047ae38d8))
-* **landing:** correct owletto demo links ([150a7c9](https://github.com/lobu-ai/lobu/commit/150a7c94f26b04e51271e6dc9074a649eb178099))
+* **landing:** correct lobu demo links ([150a7c9](https://github.com/lobu-ai/lobu/commit/150a7c94f26b04e51271e6dc9074a649eb178099))
 * **landing:** improve hero CTA labels ([ae6a807](https://github.com/lobu-ai/lobu/commit/ae6a807ae33679770e7f851ab0f4c8ef5dce2c3a))
 * **landing:** keep homepage hero generic ([8078103](https://github.com/lobu-ai/lobu/commit/807810394c3d6ed87aa445075b4e9b7e4e248136))
 * **landing:** left-align skills workspace preview ([54519ca](https://github.com/lobu-ai/lobu/commit/54519cab40a6f157c5f19761e7e5a3ca6a565813))
@@ -590,7 +590,7 @@
 
 * **ci:** guard docker sha tags on release events ([#181](https://github.com/lobu-ai/lobu/issues/181)) ([48b75ac](https://github.com/lobu-ai/lobu/commit/48b75ac8154c801bbdc8676412cf5fabe804d8aa))
 * **cli:** replace RequestInfo with portable fetch input type ([ba23c4a](https://github.com/lobu-ai/lobu/commit/ba23c4a260949f75e81876dd4e85e35449d5cada))
-* deduplicate owletto URL logic, fix skills card title, add skills link to memory reuse step ([78ad65e](https://github.com/lobu-ai/lobu/commit/78ad65e75faa689fbaa3715c0cc3eec1496c8527))
+* deduplicate lobu URL logic, fix skills card title, add skills link to memory reuse step ([78ad65e](https://github.com/lobu-ai/lobu/commit/78ad65e75faa689fbaa3715c0cc3eec1496c8527))
 * make memory step layouts consistent ([990bf61](https://github.com/lobu-ai/lobu/commit/990bf61d7af60d43c6487f99c2b73b27820e4468))
 * point agent-community Try Now to venture-capital org ([b117767](https://github.com/lobu-ai/lobu/commit/b117767c65e1e817a39f567ad39cc2abf2459da0))
 
@@ -651,11 +651,11 @@
 * **landing:** migrate from Vite SPA to Astro with Starlight docs ([687c6f7](https://github.com/lobu-ai/lobu/commit/687c6f737f59f807d5e5723258d549593343b244))
 * **landing:** rename skills-as-saas to skills and update hero copy ([42009c5](https://github.com/lobu-ai/lobu/commit/42009c5d709cbdac0455512326757813d7f27805))
 * **landing:** replace Telegram chat with terminal log for connections row ([2a3467e](https://github.com/lobu-ai/lobu/commit/2a3467e385bef38a1f066ed90482f1bd91cf5b3b))
-* migrate Owletto plugin to published @lobu/owletto-openclaw package ([b4666c5](https://github.com/lobu-ai/lobu/commit/b4666c50c375331aaf5fd2b8802b6891974459e0))
+* migrate Lobu plugin to published @lobu/lobu-openclaw package ([b4666c5](https://github.com/lobu-ai/lobu/commit/b4666c50c375331aaf5fd2b8802b6891974459e0))
 * migrate to Chat SDK platform adapters with typed OpenAPI schemas ([89573db](https://github.com/lobu-ai/lobu/commit/89573dbf3242249034f37543671db26493ccbd88))
 * multi-auth settings UX, base provider module refactor, and infra improvements ([1c61b30](https://github.com/lobu-ai/lobu/commit/1c61b30e931f68ee37b9d8775fcae66c1e95643c))
 * **oauth:** add PKCE, RFC 8707 resource, auto-grants, and MCP token endpoint ([63336a7](https://github.com/lobu-ai/lobu/commit/63336a78d92999384fa873216668467a2787666c))
-* Owletto memory plugin, plugin hooks/services, test infrastructure, and misc improvements ([89c27f0](https://github.com/lobu-ai/lobu/commit/89c27f0736e74fe83de6b1664017b21130cd489f))
+* Lobu memory plugin, plugin hooks/services, test infrastructure, and misc improvements ([89c27f0](https://github.com/lobu-ai/lobu/commit/89c27f0736e74fe83de6b1664017b21130cd489f))
 * **proxy:** resolve provider credentials via URL path agentId ([1dbcb8c](https://github.com/lobu-ai/lobu/commit/1dbcb8c3c3a9ee6471733cedfcadf9ee5e1b3f6d))
 * settings page rewrite (Alpine→Preact), history page, Telegram enhancements, landing page ([b2cba55](https://github.com/lobu-ai/lobu/commit/b2cba551671812f2c54e9188fa74cc77ecd2f27c))
 * **settings:** post-install callback with agent resume ([d96e99b](https://github.com/lobu-ai/lobu/commit/d96e99b120054cebad862f788eef427faefb4e40))

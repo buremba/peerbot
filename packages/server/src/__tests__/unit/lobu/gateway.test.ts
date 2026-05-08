@@ -3,7 +3,7 @@ import { ensureEmbeddedGatewaySecrets } from '../../../lobu/gateway';
 
 const ORIGINAL_ENV = {
   ENCRYPTION_KEY: process.env.ENCRYPTION_KEY,
-  OWLETTO_ALLOW_EPHEMERAL_ENCRYPTION_KEY: process.env.OWLETTO_ALLOW_EPHEMERAL_ENCRYPTION_KEY,
+  LOBU_ALLOW_EPHEMERAL_ENCRYPTION_KEY: process.env.LOBU_ALLOW_EPHEMERAL_ENCRYPTION_KEY,
 };
 
 afterEach(() => {
@@ -19,14 +19,14 @@ afterEach(() => {
 describe('ensureEmbeddedGatewaySecrets', () => {
   it('throws when REDIS-backed embedded mode has no stable encryption key', () => {
     delete process.env.ENCRYPTION_KEY;
-    delete process.env.OWLETTO_ALLOW_EPHEMERAL_ENCRYPTION_KEY;
+    delete process.env.LOBU_ALLOW_EPHEMERAL_ENCRYPTION_KEY;
 
     expect(() => ensureEmbeddedGatewaySecrets()).toThrow(/ENCRYPTION_KEY is required/);
   });
 
   it('allows explicitly ephemeral encryption keys', () => {
     delete process.env.ENCRYPTION_KEY;
-    process.env.OWLETTO_ALLOW_EPHEMERAL_ENCRYPTION_KEY = '1';
+    process.env.LOBU_ALLOW_EPHEMERAL_ENCRYPTION_KEY = '1';
 
     ensureEmbeddedGatewaySecrets();
 

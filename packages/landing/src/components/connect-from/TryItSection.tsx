@@ -5,8 +5,8 @@ import { UseCaseTabs } from "../UseCaseTabs";
 type TryItSectionProps = {
   clientLabel: string;
   mcpBaseUrl: string;
-  owlettoBaseUrl: string;
-  owlettoBaseHostLabel: string;
+  lobuBaseUrl: string;
+  lobuBaseHostLabel: string;
   workspaces: LandingUseCaseWorkspaceOption[];
   initialUseCaseId?: string;
 };
@@ -14,8 +14,8 @@ type TryItSectionProps = {
 export function TryItSection({
   clientLabel,
   mcpBaseUrl,
-  owlettoBaseUrl,
-  owlettoBaseHostLabel,
+  lobuBaseUrl,
+  lobuBaseHostLabel,
   workspaces,
   initialUseCaseId,
 }: TryItSectionProps) {
@@ -29,8 +29,8 @@ export function TryItSection({
   );
 
   const mcpUrl = selected?.mcpUrl ?? mcpBaseUrl;
-  const signInHref = selected?.owlettoUrl ?? owlettoBaseUrl;
-  const signInLabel = selected?.hostLabel ?? owlettoBaseHostLabel;
+  const signInHref = selected?.lobuUrl ?? lobuBaseUrl;
+  const signInLabel = selected?.hostLabel ?? lobuBaseHostLabel;
 
   const tabs = useMemo(
     () => workspaces.map((w) => ({ id: w.id, label: w.label })),

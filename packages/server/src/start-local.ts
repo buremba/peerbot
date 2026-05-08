@@ -1,13 +1,13 @@
 /**
  * Local Server Entry Point (PGlite)
  *
- * Runs the full Owletto stack in a single command:
+ * Runs the full Lobu stack in a single command:
  * - PGlite (WASM Postgres with pgvector + pg_trgm) — in-process
  * - Hono HTTP server — in-process
  * - Embeddings service — child process on port 8790
  * - Maintenance scheduler — in-process
  *
- * Data stored at ~/.owletto/data/ (configurable via OWLETTO_DATA_DIR).
+ * Data stored at ~/.lobu/data/ (configurable via LOBU_DATA_DIR).
  */
 
 import { fork } from 'node:child_process';
@@ -36,7 +36,7 @@ import type { Env } from './index';
 import { getEnvFromProcess } from './utils/env';
 import logger from './utils/logger';
 
-const DATA_DIR = process.env.OWLETTO_DATA_DIR || join(homedir(), '.owletto', 'data');
+const DATA_DIR = process.env.LOBU_DATA_DIR || join(homedir(), '.lobu', 'data');
 const PORT = parseInt(process.env.PORT || '8787', 10);
 const HOST = process.env.HOST?.trim() || '0.0.0.0';
 const EMBEDDINGS_PORT = parseInt(process.env.EMBEDDINGS_PORT || '0', 10);
@@ -81,7 +81,7 @@ async function main() {
     process.env.NODE_ENV = 'development';
   }
   process.env.PGSSLMODE = 'disable';
-  process.env.OWLETTO_DISABLE_PREPARE = '1';
+  process.env.LOBU_DISABLE_PREPARE = '1';
 
   // ─── PGlite ──────────────────────────────────────────────────
 
@@ -99,9 +99,9 @@ async function main() {
   const socketServer = new PGLiteSocketServer({
     db,
     port: pgSocketPort,
-    maxConnections: readPositiveIntEnv('OWLETTO_PGLITE_SOCKET_MAX_CONNECTIONS', 64),
-    idleTimeout: readPositiveIntEnv('OWLETTO_PGLITE_SOCKET_IDLE_TIMEOUT_MS', 0),
-    debug: isTruthyEnv('OWLETTO_PGLITE_SOCKET_DEBUG'),
+    maxConnections: readPositiveIntEnv('LOBU_PGLITE_SOCKET_MAX_CONNECTIONS', 64),
+    idleTimeout: readPositiveIntEnv('LOBU_PGLITE_SOCKET_IDLE_TIMEOUT_MS', 0),
+    debug: isTruthyEnv('LOBU_PGLITE_SOCKET_DEBUG'),
   });
   socketServer.addEventListener('error', (event: Event) => {
     logger.error({ error: (event as CustomEvent).detail }, 'PGlite socket server error');
@@ -168,13 +168,13 @@ async function main() {
   // ─── Listen ──────────────────────────────────────────────────
 
   httpServer.listen(PORT, HOST, () => {
-    logger.info(`Owletto running at http://${HOST}:${PORT}`);
+    logger.info(`Lobu running at http://${HOST}:${PORT}`);
     logger.info(`Data: ${DATA_DIR}`);
   });
 
   // ─── Bootstrap PAT ───────────────────────────────────────────
   // Self-skips when the deployment already has users (production safety) or
-  // when a bootstrap PAT has already been minted under OWLETTO_DATA_DIR.
+  // when a bootstrap PAT has already been minted under LOBU_DATA_DIR.
   // Replaces the previous LOBU_LOCAL_BOOTSTRAP env-flag gate — operators no
   // longer need to opt in for first-run local dev.
   try {
@@ -417,7 +417,7 @@ async function applyEmbeddedSchemaPatches(sql: MigrationSqlClient) {
 //
 // Mints a default user, personal org (slug `dev`), member, and PAT scoped to
 // both. Self-skips when (a) `bootstrap-pat.txt` already exists under
-// OWLETTO_DATA_DIR, or (b) the deployment already has users. The second guard
+// LOBU_DATA_DIR, or (b) the deployment already has users. The second guard
 // prevents auto-bootstrap from polluting a production deployment that already
 // has real users provisioned via the web UI.
 
@@ -484,7 +484,7 @@ async function ensureBootstrapPat(dbUrl: string): Promise<void> {
     }
 
     // Idempotent user/org/member upsert. Re-runs of the embedded schema (e.g.
-    // OWLETTO_DATA_DIR pre-existing without the PAT file) skip ON CONFLICT.
+    // LOBU_DATA_DIR pre-existing without the PAT file) skip ON CONFLICT.
     await sql`
       INSERT INTO "user" (id, name, email, username, "emailVerified", "createdAt", "updatedAt")
       VALUES (

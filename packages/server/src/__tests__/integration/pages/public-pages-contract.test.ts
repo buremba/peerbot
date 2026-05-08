@@ -6,7 +6,7 @@
  *
  * Skipped automatically when packages/web is not initialized — these tests
  * render HTML produced by the web submodule. CI checks it out via
- * OWLETTO_WEB_DEPLOY_KEY; local clones without that key cannot, so we skip
+ * LOBU_WEB_DEPLOY_KEY; local clones without that key cannot, so we skip
  * rather than fail on missing assets.
  */
 
@@ -29,7 +29,7 @@ const WEB_AVAILABLE = existsSync(
   resolve(__dirname, '../../../../../web/src')
 );
 
-const publicWebUrl = 'https://www.owletto.test';
+const publicWebUrl = 'https://www.lobu.test';
 
 describe.skipIf(!WEB_AVAILABLE)('public page contract', () => {
   beforeAll(async () => {
@@ -88,8 +88,8 @@ describe.skipIf(!WEB_AVAILABLE)('public page contract', () => {
     const body = await response.text();
     expect(response.status).toBe(200);
     expect(response.headers.get('cache-control')).toContain('public, max-age=300');
-    expect(body).toContain('Public Contract Org | Owletto');
-    expect(body).toContain('window.__OWLETTO_PUBLIC_BOOTSTRAP__');
+    expect(body).toContain('Public Contract Org | Lobu');
+    expect(body).toContain('window.__LOBU_PUBLIC_BOOTSTRAP__');
     expect(body).toContain('Tracked public brands');
     expect(body).toContain('Brand launch feedback');
   });
@@ -101,7 +101,7 @@ describe.skipIf(!WEB_AVAILABLE)('public page contract', () => {
     });
     const entityBody = await entity.text();
     expect(entity.status).toBe(200);
-    expect(entityBody).toContain('Acme Brand | Public Contract Org | Owletto');
+    expect(entityBody).toContain('Acme Brand | Public Contract Org | Lobu');
     expect(entityBody).toContain(
       '<link rel="canonical" href="http://localhost/public-contract-org/brand/acme-brand" />'
     );

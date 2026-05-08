@@ -5,7 +5,7 @@ sidebar:
   order: 1
 ---
 
-`lobu.toml` is the project configuration file created by `lobu init`. It defines agents, providers, platforms, skills, network access, worker settings, and optional file-first Owletto memory configuration.
+`lobu.toml` is the project configuration file created by `lobu init`. It defines agents, providers, platforms, skills, network access, worker settings, and optional file-first Lobu memory configuration.
 
 ## Minimal example
 
@@ -21,7 +21,7 @@ key = "$OPENROUTER_API_KEY"
 [agents.my-agent.network]
 allowed = ["github.com"]
 
-[memory.owletto]
+[memory.lobu]
 enabled = true
 org = "my-agent"
 name = "My Agent"
@@ -93,8 +93,8 @@ strict = false
 [agents.support.worker]
 nix_packages = ["imagemagick", "ffmpeg"]
 
-# File-first Owletto memory
-[memory.owletto]
+# File-first Lobu memory
+[memory.lobu]
 enabled = true
 org = "support"
 name = "Support"
@@ -105,9 +105,9 @@ data = "./data"
 
 ## Schema reference
 
-### `[memory.owletto]`
+### `[memory.lobu]`
 
-Optional project-level Owletto memory configuration for file-first projects.
+Optional project-level Lobu memory configuration for file-first projects.
 
 Typical companion layout:
 
@@ -120,15 +120,15 @@ project/
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `enabled` | boolean | no | Enables file-first Owletto memory resolution for the project |
-| `org` | string | yes (when enabled) | Owletto organization slug — scopes the MCP endpoint |
+| `enabled` | boolean | no | Enables file-first Lobu memory resolution for the project |
+| `org` | string | yes (when enabled) | Lobu organization slug — scopes the MCP endpoint |
 | `name` | string | yes (when enabled) | Human-readable project name |
 | `description` | string | no | Short project description |
 | `visibility` | string | no | `public` or `private`; defaults to Lobu's account setting |
-| `models` | string | no | Path to Owletto model files, usually `./models` |
-| `data` | string | no | Path to Owletto seed data, usually `./data` |
+| `models` | string | no | Path to Lobu model files, usually `./models` |
+| `data` | string | no | Path to Lobu seed data, usually `./data` |
 
-When `[memory.owletto]` is enabled, Lobu reads `org` directly from `lobu.toml` and derives the effective Owletto MCP endpoint. `MEMORY_URL` remains available as an optional base-endpoint override for local or custom Owletto deployments.
+When `[memory.lobu]` is enabled, Lobu reads `org` directly from `lobu.toml` and derives the effective Lobu MCP endpoint. `MEMORY_URL` remains available as an optional base-endpoint override for local or custom Lobu deployments.
 
 
 ### `[agents.<id>]`

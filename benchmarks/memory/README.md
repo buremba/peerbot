@@ -1,6 +1,6 @@
 # Memory Benchmark Harness
 
-This folder holds the reproducible memory benchmark harness used to compare Owletto against external memory systems (Mem0, Supermemory, Letta, Zep) on public datasets.
+This folder holds the reproducible memory benchmark harness used to compare Lobu against external memory systems (Mem0, Supermemory, Letta, Zep) on public datasets.
 
 The headline result tables are published in the [main README](../../README.md#benchmarks). This document covers **how to reproduce them**, how the harness is structured, and what caveats matter when interpreting the results.
 
@@ -18,7 +18,7 @@ benchmarks/memory/
 │   ├── locomo.50.json
 │   ├── longmemeval-oracle.10.json
 │   ├── longmemeval-oracle.50.json
-│   └── owletto-memory-bench.v1.json
+│   └── lobu-memory-bench.v1.json
 ├── config.example.json    # Reference multi-system config
 └── config.*.json          # Per-scenario run configs
 ```
@@ -48,7 +48,7 @@ Single-session knowledge questions where the relevant context is provided up-fro
 
 Multi-session conversational benchmark. Each scenario is ~19 sessions of 18+ turns between two participants, then a question grounded in the dialogue. Categories: `single-hop`, `multi-hop`, `temporal`. Tests **long-horizon conversational memory**.
 
-The Owletto adapter chunks each session by turn at ingest, then reconstructs the full session text at retrieval — this keeps both fine-grained recall and full-context grounding.
+The Lobu adapter chunks each session by turn at ingest, then reconstructs the full session text at retrieval — this keeps both fine-grained recall and full-context grounding.
 
 ## Reproducing the published results
 
@@ -71,14 +71,14 @@ ZAI_API_KEY=... MEM0_API_KEY=... SUPERMEMORY_API_KEY=... LETTA_API_KEY=... \
   pnpm benchmark:memory --config benchmarks/memory/config.longmemeval.oracle.50.compare.all.zai.json
 ```
 
-### LoCoMo-50, three-way (Owletto vs Mem0 vs Supermemory)
+### LoCoMo-50, three-way (Lobu vs Mem0 vs Supermemory)
 
 ```bash
 ZAI_API_KEY=... MEM0_API_KEY=... SUPERMEMORY_API_KEY=... \
   pnpm benchmark:memory --config benchmarks/memory/config.locomo.50.compare.top-memory.zai.json
 ```
 
-### Owletto-only, no external API keys needed
+### Lobu-only, no external API keys needed
 
 ```bash
 # Retrieval-only (no answerer)
@@ -102,28 +102,28 @@ pnpm benchmark:memory --config benchmarks/memory/config.locomo.30.local.json
 | Config | Suite | Systems | Notes |
 |---|---|---|---|
 | `config.example.json` | — | reference | Template showing all knobs |
-| `config.local.json` | small | owletto-local | Quick smoke test |
-| `config.local.retrieval-only.json` | small | owletto-local | No answerer call |
-| `config.locomo.5.local.json` | LoCoMo-5 | owletto-local | Fastest iteration |
-| `config.locomo.5.compare.all.zai.json` | LoCoMo-5 | owletto, mem0, supermemory, zep | Smoke compare against all hosted systems (1 trial) |
-| `config.locomo.10.compare.top-memory.zai.json` | LoCoMo-10 | owletto, mem0, supermemory | Quick 3-way, 3 trials |
-| `config.locomo.15.local.json` | LoCoMo-15 | owletto-local | |
-| `config.locomo.30.local.json` | LoCoMo-30 | owletto-local | |
-| `config.locomo.50.zai.json` | LoCoMo-50 | owletto-local | Owletto-only full run, 3 trials |
-| `config.locomo.50.compare.top-memory.zai.json` | LoCoMo-50 | owletto, mem0, supermemory | Public 3-way compare, 3 trials |
-| `config.longmemeval.oracle.50.json` | LongMemEval-50 | owletto-local | Retrieval-only |
-| `config.longmemeval.oracle.50.zai.json` | LongMemEval-50 | owletto-local | Full QA, 3 trials |
+| `config.local.json` | small | lobu-local | Quick smoke test |
+| `config.local.retrieval-only.json` | small | lobu-local | No answerer call |
+| `config.locomo.5.local.json` | LoCoMo-5 | lobu-local | Fastest iteration |
+| `config.locomo.5.compare.all.zai.json` | LoCoMo-5 | lobu, mem0, supermemory, zep | Smoke compare against all hosted systems (1 trial) |
+| `config.locomo.10.compare.top-memory.zai.json` | LoCoMo-10 | lobu, mem0, supermemory | Quick 3-way, 3 trials |
+| `config.locomo.15.local.json` | LoCoMo-15 | lobu-local | |
+| `config.locomo.30.local.json` | LoCoMo-30 | lobu-local | |
+| `config.locomo.50.zai.json` | LoCoMo-50 | lobu-local | Lobu-only full run, 3 trials |
+| `config.locomo.50.compare.top-memory.zai.json` | LoCoMo-50 | lobu, mem0, supermemory | Public 3-way compare, 3 trials |
+| `config.longmemeval.oracle.50.json` | LongMemEval-50 | lobu-local | Retrieval-only |
+| `config.longmemeval.oracle.50.zai.json` | LongMemEval-50 | lobu-local | Full QA, 3 trials |
 | `config.longmemeval.oracle.50.compare.all.zai.json` | LongMemEval-50 | all systems | Public full compare, 3 trials |
-| `config.longmemeval.oracle.50.compare.top-memory.zai.json` | LongMemEval-50 | owletto, mem0, supermemory | 3 trials |
-| `config.longmemeval.oracle.50.compare.supermemory.zai.json` | LongMemEval-50 | owletto, supermemory | 3 trials |
-| `config.longmemeval.oracle.50.compare.supermemory.native.zai.json` | LongMemEval-50 | owletto + supermemory variants | Compares Supermemory's native options, 3 trials |
+| `config.longmemeval.oracle.50.compare.top-memory.zai.json` | LongMemEval-50 | lobu, mem0, supermemory | 3 trials |
+| `config.longmemeval.oracle.50.compare.supermemory.zai.json` | LongMemEval-50 | lobu, supermemory | 3 trials |
+| `config.longmemeval.oracle.50.compare.supermemory.native.zai.json` | LongMemEval-50 | lobu + supermemory variants | Compares Supermemory's native options, 3 trials |
 
 ## GitHub Actions
 
 The **Memory Benchmark** workflow runs the same harness in CI and uploads JSON+Markdown artifacts.
 
 - Workflow: [`benchmark-memory.yml`](../../.github/workflows/benchmark-memory.yml)
-- Trigger: [Actions → Memory Benchmark → Run workflow](https://github.com/lobu-ai/owletto/actions/workflows/benchmark-memory.yml)
+- Trigger: [Actions → Memory Benchmark → Run workflow](https://github.com/lobu-ai/lobu/actions/workflows/benchmark-memory.yml)
 
 Inputs:
 
@@ -133,7 +133,7 @@ Inputs:
 | `limit` | integer (number of scenarios) | `50` |
 | `trials` | integer (full benchmark reruns) | `3` |
 | `model` | answerer model id (e.g. `glm-5.1`) | `glm-5.1` |
-| `providers` | comma-separated: `owletto-local,supermemory,supermemory-rerank,supermemory-profile,mem0,letta` | `owletto-local,supermemory,mem0` |
+| `providers` | comma-separated: `lobu-local,supermemory,supermemory-rerank,supermemory-profile,mem0,letta` | `lobu-local,supermemory,mem0` |
 
 Each run writes a summary into the GitHub Actions UI and uploads the JSON/Markdown report under **Artifacts**.
 
@@ -162,9 +162,9 @@ To add a new system, write a Python adapter that defines `reset` / `setup` / `in
 
 The benchmark's `latency` field is **retrieval latency**, not end-to-end wall clock. The reported `context tokens` is a client-side estimate (`chars / 4`).
 
-Public accuracy comparisons are close to apples-to-apples because all systems get the same scenarios, same questions, same top-K, and same downstream answerer. Latency is inherently less apples-to-apples whenever Owletto is run **locally/in-process** while competing systems are called as **hosted APIs over the network**.
+Public accuracy comparisons are close to apples-to-apples because all systems get the same scenarios, same questions, same top-K, and same downstream answerer. Latency is inherently less apples-to-apples whenever Lobu is run **locally/in-process** while competing systems are called as **hosted APIs over the network**.
 
-Owletto's retrieval path is a **multi-step plan**, not a single provider call:
+Lobu's retrieval path is a **multi-step plan**, not a single provider call:
 
 - shared query expansion / normalization in the product search path
 - entity search plus org-wide content search
@@ -172,14 +172,14 @@ Owletto's retrieval path is a **multi-step plan**, not a single provider call:
 - linked-context fetches
 - chronology-aware historical reads when the prompt implies it
 
-That extra orchestration is what gets Owletto to **100% retrieval recall** on LongMemEval, but it also costs round trips. By contrast, the Mem0 and Supermemory adapters issue a **single provider search request** per question and return the top hits directly.
+That extra orchestration is what gets Lobu to **100% retrieval recall** on LongMemEval, but it also costs round trips. By contrast, the Mem0 and Supermemory adapters issue a **single provider search request** per question and return the top hits directly.
 
 So the latency comparison should be read as:
 
-- **Owletto:** richer retrieval orchestration, higher recall, higher latency-per-call, lower total LLM cost downstream
+- **Lobu:** richer retrieval orchestration, higher recall, higher latency-per-call, lower total LLM cost downstream
 - **Mem0 / Supermemory:** thinner single-call path, lower latency-per-call, lower recall
 
-A minimal single-query Owletto fast-path is not part of the published runs.
+A minimal single-query Lobu fast-path is not part of the published runs.
 
 ## Open levers / next steps
 

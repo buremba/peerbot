@@ -25,7 +25,7 @@ Authentication is shared with the rest of the CLI. Run `lobu login` once.
 - Agents (metadata: `agentId`, `name`, `description`)
 - Agent settings: `networkConfig`, `egressConfig`, `nixConfig`, `mcpServers`, `skillsConfig`, `toolsConfig`, `guardrails`, `preApprovedTools`, `providerModelPreferences`, `modelSelection`, `IDENTITY.md` / `SOUL.md` / `USER.md`
 - Chat platforms under `[[agents.<id>.platforms]]`, keyed by a stable ID derived from `(agentId, type, name?)`
-- Memory entity types and relationship types (from `models/*.yaml` referenced by `[memory.owletto].models`)
+- Memory entity types and relationship types (from `models/*.yaml` referenced by `[memory.lobu].models`)
 
 ## What is not synced (v1)
 

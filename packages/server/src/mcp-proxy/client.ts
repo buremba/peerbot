@@ -124,7 +124,7 @@ async function initializeSession(
       params: {
         protocolVersion: MCP_PROTOCOL_VERSION,
         capabilities: {},
-        clientInfo: { name: 'owletto-mcp-proxy', version: '1.0.0' },
+        clientInfo: { name: 'lobu-mcp-proxy', version: '1.0.0' },
       },
       id: 0,
     }),
@@ -372,7 +372,7 @@ export async function probeMcpServer(upstreamUrl: string): Promise<{
     params: {
       protocolVersion: MCP_PROTOCOL_VERSION,
       capabilities: {},
-      clientInfo: { name: 'owletto-mcp-proxy', version: '1.0.0' },
+      clientInfo: { name: 'lobu-mcp-proxy', version: '1.0.0' },
     },
     id: 0,
   });

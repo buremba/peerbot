@@ -3,7 +3,7 @@
  *
  * Implementations:
  *   - InMemoryAgentStore (SDK-embedded mode, populated from `GatewayConfig.agents`)
- *   - Host-provided store (embedded backend, e.g. PostgresAgentStore in Owletto)
+ *   - Host-provided store (embedded backend, e.g. PostgresAgentStore in Lobu)
  */
 
 import type { PluginsConfig } from "./plugin-types";
@@ -62,7 +62,7 @@ export interface AgentSettings {
   /** OpenClaw plugin configuration */
   pluginsConfig?: PluginsConfig;
   /**
-   * Reusable auth profiles persisted by host stores (e.g. Owletto's Postgres
+   * Reusable auth profiles persisted by host stores (e.g. Lobu's Postgres
    * store). Lobu's gateway runtime uses UserAuthProfileStore instead, but the
    * host's settings JSON column still round-trips this list.
    */

@@ -145,7 +145,7 @@ export async function createTestAgent(options: {
       ${options.organizationId},
       ${name},
       ${options.description ?? null},
-      'owletto',
+      'lobu',
       ${ownerUserId},
       false,
       NOW(),
@@ -176,7 +176,7 @@ export async function seedSystemEntityTypes(): Promise<void> {
 
   await sql`
     INSERT INTO "organization" (id, name, slug, "createdAt")
-    VALUES (${TEST_SYSTEM_ORG_ID}, 'Owletto System', 'public-owletto', NOW())
+    VALUES (${TEST_SYSTEM_ORG_ID}, 'Lobu System', 'public-lobu', NOW())
     ON CONFLICT (id) DO NOTHING
   `;
 

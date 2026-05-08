@@ -1,7 +1,7 @@
 # ===========================================
-# Owletto Worker (connector-worker daemon)
+# Lobu Worker (connector-worker daemon)
 # ===========================================
-# Self-hosted worker for Owletto connectors and embedding generation.
+# Self-hosted worker for Lobu connectors and embedding generation.
 
 FROM node:22-bookworm AS builder
 
@@ -30,14 +30,14 @@ COPY packages/core/package.json packages/core/
 
 # Stub workspaces not needed at build time
 RUN mkdir -p packages/cli packages/landing \
-               packages/server packages/owletto-cli \
+               packages/server packages/lobu-cli \
                packages/openclaw-plugin packages/web packages/agent-worker packages/mcpsandbox \
     && for p in cli landing server \
                 openclaw-plugin web agent-worker mcpsandbox; do \
         echo "{\"name\":\"@lobu/$p\",\"version\":\"0.0.0\",\"private\":true}" > "packages/$p/package.json"; \
       done \
     && echo '{"name":"@lobu/worker","version":"0.0.0","private":true}' > packages/agent-worker/package.json \
-    && echo '{"name":"owletto","version":"0.0.0","private":true}' > packages/owletto-cli/package.json
+    && echo '{"name":"lobu","version":"0.0.0","private":true}' > packages/lobu-cli/package.json
 
 RUN --mount=type=cache,target=/root/.bun/install/cache bun install
 

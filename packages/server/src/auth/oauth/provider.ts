@@ -746,7 +746,7 @@ export class OAuthProvider {
       authorization_servers: [this.baseUrl],
       scopes_supported: [...AVAILABLE_SCOPES],
       bearer_methods_supported: ['header'],
-      resource_name: 'Owletto',
+      resource_name: 'Lobu',
       resource_documentation: `${this.baseUrl}/docs`,
     };
   }

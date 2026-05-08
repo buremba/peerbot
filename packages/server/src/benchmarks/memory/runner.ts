@@ -1,8 +1,8 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { CommandBenchmarkAdapter } from './adapters/command';
-import { OwlettoInprocessBenchmarkAdapter } from './adapters/owletto-inprocess';
-import { OwlettoMcpBenchmarkAdapter } from './adapters/owletto-mcp';
+import { LobuInprocessBenchmarkAdapter } from './adapters/lobu-inprocess';
+import { LobuMcpBenchmarkAdapter } from './adapters/lobu-mcp';
 import { buildContextText, createAnswerer, estimateApproxTokens } from './answerer';
 import { loadBenchmarkConfig } from './config';
 import { renderMarkdownReport } from './publish';
@@ -18,8 +18,8 @@ import type {
 } from './types';
 
 function createAdapter(system: BenchSystemConfig): BenchmarkAdapter {
-  if (system.type === 'owletto-mcp') return new OwlettoMcpBenchmarkAdapter(system);
-  if (system.type === 'owletto-inprocess') return new OwlettoInprocessBenchmarkAdapter(system);
+  if (system.type === 'lobu-mcp') return new LobuMcpBenchmarkAdapter(system);
+  if (system.type === 'lobu-inprocess') return new LobuInprocessBenchmarkAdapter(system);
   if (system.type === 'command') return new CommandBenchmarkAdapter(system);
   throw new Error(
     `Unsupported benchmark system '${(system as { type?: string }).type ?? 'unknown'}'`
@@ -272,9 +272,9 @@ export async function runBenchmarkFromConfigPath(configPath: string): Promise<{
 }> {
   const config = loadBenchmarkConfig(configPath);
   const report = await runBenchmark(config);
-  mkdirSync(config.outputDir ?? '.owletto/benchmarks/memory', { recursive: true });
+  mkdirSync(config.outputDir ?? '.lobu/benchmarks/memory', { recursive: true });
   const basePath = join(
-    config.outputDir ?? '.owletto/benchmarks/memory',
+    config.outputDir ?? '.lobu/benchmarks/memory',
     `${report.suiteId}-${Date.now()}`
   );
   const reportPath = `${basePath}.json`;

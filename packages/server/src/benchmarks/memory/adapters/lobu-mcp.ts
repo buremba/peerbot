@@ -4,7 +4,7 @@ import type {
   BenchmarkAdapter,
   BenchmarkRelationshipType,
   BenchmarkSuite,
-  OwlettoMcpSystemConfig,
+  LobuMcpSystemConfig,
   RetrievalResult,
   RetrieveContext,
   RetrievedMemory,
@@ -52,7 +52,7 @@ function isHistoricalLookup(prompt: string): boolean {
   );
 }
 
-export class OwlettoMcpBenchmarkAdapter implements BenchmarkAdapter {
+export class LobuMcpBenchmarkAdapter implements BenchmarkAdapter {
   readonly id: string;
   readonly label: string;
 
@@ -60,7 +60,7 @@ export class OwlettoMcpBenchmarkAdapter implements BenchmarkAdapter {
   private readonly entityIds = new Map<string, number>();
   private readonly eventIds = new Map<string, number>();
 
-  constructor(private readonly config: OwlettoMcpSystemConfig) {
+  constructor(private readonly config: LobuMcpSystemConfig) {
     this.id = config.id;
     this.label = config.label;
     const token = config.tokenEnv ? process.env[config.tokenEnv] : undefined;

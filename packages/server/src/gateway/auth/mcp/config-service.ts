@@ -31,10 +31,10 @@ interface HttpMcpServerConfig {
    */
   authScope?: "user" | "channel";
   /**
-   * Marks an MCP whose upstream is the same embedded Owletto process. The
+   * Marks an MCP whose upstream is the same embedded Lobu process. The
    * gateway proxy passes the worker JWT directly (no OAuth), bypasses the
    * SSRF localhost guard, and stamps the upstream request with the
-   * direct-auth header so Owletto promotes it to admin scope.
+   * direct-auth header so Lobu promotes it to admin scope.
    */
   internal?: boolean;
 }

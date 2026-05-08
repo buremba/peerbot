@@ -1,6 +1,6 @@
 # Releasing
 
-The published packages ship as a synchronized release: `@lobu/core`, `@lobu/worker`, `@lobu/cli`, `@lobu/connector-sdk`, `@lobu/connectors`, `@lobu/connector-worker`, `@lobu/embeddings`, and `@lobu/openclaw-plugin`. The old `@lobu/owletto-*` package names are published as deprecated compatibility redirects to the renamed packages. (The previously published `owletto` unscoped package was retired when its commands moved into `@lobu/cli` as the `lobu memory` namespace.) [release-please](https://github.com/googleapis/release-please) reads conventional commits on `main` and drives versioning; publishing uses npm OIDC trusted publishing (no `NPM_TOKEN`, no OTP).
+The published packages ship as a synchronized release: `@lobu/core`, `@lobu/worker`, `@lobu/cli`, `@lobu/connector-sdk`, `@lobu/connectors`, `@lobu/connector-worker`, `@lobu/embeddings`, and `@lobu/openclaw-plugin`. The old `@lobu/lobu-*` package names are published as deprecated compatibility redirects to the renamed packages. (The previously published `lobu` unscoped package was retired when its commands moved into `@lobu/cli` as the `lobu memory` namespace.) [release-please](https://github.com/googleapis/release-please) reads conventional commits on `main` and drives versioning; publishing uses npm OIDC trusted publishing (no `NPM_TOKEN`, no OTP).
 
 ## Flow
 

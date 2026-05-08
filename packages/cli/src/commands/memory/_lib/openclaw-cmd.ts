@@ -265,7 +265,7 @@ export async function configureMemoryPlugin(
     plugins.entries = {};
   }
   const entries = plugins.entries as Record<string, unknown>;
-  const pluginId = "openclaw-owletto";
+  const pluginId = "openclaw-lobu";
   const existingEntry = isRecord(entries[pluginId])
     ? (entries[pluginId] as Record<string, unknown>)
     : {};

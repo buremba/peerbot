@@ -290,9 +290,9 @@ describe("callMcpTool", () => {
       );
     };
 
-    await callMcpTool(gw, "owletto", "list_connections", { limit: 5 });
+    await callMcpTool(gw, "lobu", "list_connections", { limit: 5 });
     expect(capturedUrl).toBe(
-      "http://gateway:8080/mcp/owletto/tools/list_connections"
+      "http://gateway:8080/mcp/lobu/tools/list_connections"
     );
   });
 
@@ -308,7 +308,7 @@ describe("callMcpTool", () => {
       );
     };
 
-    await callMcpTool(gw, "owletto", "test_tool", {});
+    await callMcpTool(gw, "lobu", "test_tool", {});
     expect(capturedHeaders.Authorization).toBe("Bearer test-token-123");
     expect(capturedHeaders["Content-Type"]).toBe("application/json");
   });
@@ -413,20 +413,20 @@ describe("createMcpAuthToolDefinitions", () => {
     const tools = createMcpAuthToolDefinitions(
       [
         {
-          id: "owletto",
-          name: "Owletto",
+          id: "lobu",
+          name: "Lobu",
           requiresAuth: true,
           authenticated: false,
           configured: true,
         },
       ] as any,
       gw,
-      new Set(["owletto_login"])
+      new Set(["lobu_login"])
     );
 
     expect(tools.map((tool) => tool.name)).toEqual([
-      "owletto_login_check",
-      "owletto_logout",
+      "lobu_login_check",
+      "lobu_logout",
     ]);
   });
 
@@ -509,7 +509,7 @@ describe("createMcpToolDefinitions", () => {
 
   test("creates N ToolDefinitions for N MCP tools", () => {
     const mcpTools = {
-      owletto: [
+      lobu: [
         { name: "list_connections", description: "List connections" },
         { name: "manage_connections", description: "Manage connections" },
       ],
@@ -522,7 +522,7 @@ describe("createMcpToolDefinitions", () => {
 
   test("tool names match MCP tool names", () => {
     const mcpTools = {
-      owletto: [
+      lobu: [
         { name: "list_connections", description: "List" },
         { name: "create_issue", description: "Create" },
       ],
@@ -536,11 +536,11 @@ describe("createMcpToolDefinitions", () => {
 
   test("tool label includes mcpId", () => {
     const mcpTools = {
-      owletto: [{ name: "test_tool", description: "Test" }],
+      lobu: [{ name: "test_tool", description: "Test" }],
     };
 
     const defs = createMcpToolDefinitions(mcpTools, gw);
-    expect(defs[0].label).toBe("owletto/test_tool");
+    expect(defs[0].label).toBe("lobu/test_tool");
   });
 
   test("tool description includes mcpId when no description provided", () => {
@@ -554,9 +554,7 @@ describe("createMcpToolDefinitions", () => {
 
   test("uses provided description when available", () => {
     const mcpTools = {
-      owletto: [
-        { name: "list_connections", description: "List all connections" },
-      ],
+      lobu: [{ name: "list_connections", description: "List all connections" }],
     };
 
     const defs = createMcpToolDefinitions(mcpTools, gw);
@@ -565,14 +563,14 @@ describe("createMcpToolDefinitions", () => {
 
   test("prepends mcpContext instructions to tool descriptions", () => {
     const mcpTools = {
-      owletto: [
+      lobu: [
         { name: "store_memory", description: "Store a memory entry" },
         { name: "recall_memory", description: "Recall stored memories" },
       ],
       other: [{ name: "do_thing", description: "Does a thing" }],
     };
     const mcpContext = {
-      owletto: "Check memory at conversation start",
+      lobu: "Check memory at conversation start",
     };
 
     const defs = createMcpToolDefinitions(mcpTools, gw, mcpContext);
@@ -589,7 +587,7 @@ describe("createMcpToolDefinitions", () => {
 
   test("works without mcpContext (backwards compatible)", () => {
     const mcpTools = {
-      owletto: [{ name: "test_tool", description: "Original desc" }],
+      lobu: [{ name: "test_tool", description: "Original desc" }],
     };
 
     const defs = createMcpToolDefinitions(mcpTools, gw);
@@ -619,7 +617,7 @@ describe("createMcpToolDefinitions", () => {
 
     try {
       const mcpTools = {
-        owletto: [{ name: "list_connections", description: "List" }],
+        lobu: [{ name: "list_connections", description: "List" }],
       };
 
       const defs = createMcpToolDefinitions(mcpTools, gw);
@@ -634,7 +632,7 @@ describe("createMcpToolDefinitions", () => {
       );
 
       expect(capturedUrl).toBe(
-        "http://gateway:8080/mcp/owletto/tools/list_connections"
+        "http://gateway:8080/mcp/lobu/tools/list_connections"
       );
       expect(JSON.parse(capturedBody)).toEqual({ limit: 10 });
       expect(result.content[0].text).toContain("result data");
@@ -661,7 +659,7 @@ describe("session context cache TTL", () => {
       mcpStatus: [],
       mcpTools: {},
       mcpInstructions: {},
-      mcpContext: { owletto: "Check memory" },
+      mcpContext: { lobu: "Check memory" },
       providerConfig: {},
       skillsConfig: [],
     };
@@ -695,8 +693,8 @@ describe("session context cache TTL", () => {
     const second = await getOpenClawSessionContext();
 
     expect(fetchCount).toBe(1);
-    expect(first.mcpContext).toEqual({ owletto: "Check memory" });
-    expect(second.mcpContext).toEqual({ owletto: "Check memory" });
+    expect(first.mcpContext).toEqual({ lobu: "Check memory" });
+    expect(second.mcpContext).toEqual({ lobu: "Check memory" });
   });
 
   test("re-fetches after cache TTL expires (5 minutes)", async () => {

@@ -3,7 +3,7 @@
 
 export interface GeneratedUseCaseModel {
   id: string;
-  owlettoOrg: string;
+  lobuOrg: string;
   agent: {
     identity: string[];
     soul: string[];
@@ -36,7 +36,7 @@ export interface GeneratedUseCaseModel {
 export const generatedUseCaseModels: Record<string, GeneratedUseCaseModel> = {
   "agent-community": {
     id: "agent-community",
-    owlettoOrg: "market",
+    lobuOrg: "market",
     agent: {
       identity: [
         "You are a community concierge agent that helps private communities discover aligned members, explain why they should meet, and draft warm introductions.",
@@ -95,7 +95,7 @@ export const generatedUseCaseModels: Record<string, GeneratedUseCaseModel> = {
   },
   atlas: {
     id: "atlas",
-    owlettoOrg: "atlas",
+    lobuOrg: "atlas",
     agent: {
       identity: [],
       soul: [],
@@ -129,7 +129,7 @@ export const generatedUseCaseModels: Record<string, GeneratedUseCaseModel> = {
   },
   delivery: {
     id: "delivery",
-    owlettoOrg: "delivery",
+    lobuOrg: "delivery",
     agent: {
       identity: [
         "You are a delivery agent that helps delivery teams keep milestones, blockers, owners, and artifacts aligned.",
@@ -186,7 +186,7 @@ export const generatedUseCaseModels: Record<string, GeneratedUseCaseModel> = {
   },
   ecommerce: {
     id: "ecommerce",
-    owlettoOrg: "ecommerce",
+    lobuOrg: "ecommerce",
     agent: {
       identity: [
         "You are an ecommerce operations agent that helps teams manage subscriptions, process order changes, and resolve customer requests.",
@@ -245,7 +245,7 @@ export const generatedUseCaseModels: Record<string, GeneratedUseCaseModel> = {
   },
   engineering: {
     id: "engineering",
-    owlettoOrg: "devops",
+    lobuOrg: "devops",
     agent: {
       identity: [
         "You are an engineering agent that helps platform teams triage incidents, reviews, and deploy safety checks.",
@@ -301,7 +301,7 @@ export const generatedUseCaseModels: Record<string, GeneratedUseCaseModel> = {
   },
   finance: {
     id: "finance",
-    owlettoOrg: "finance",
+    lobuOrg: "finance",
     agent: {
       identity: [
         "You are a finance agent that helps finance teams reconcile data, explain variance, and prepare reporting runs.",
@@ -358,7 +358,7 @@ export const generatedUseCaseModels: Record<string, GeneratedUseCaseModel> = {
   },
   leadership: {
     id: "leadership",
-    owlettoOrg: "leadership",
+    lobuOrg: "leadership",
     agent: {
       identity: [
         "You are a leadership agent that helps leadership teams turn memos, decisions, and board materials into reusable operating context.",
@@ -415,7 +415,7 @@ export const generatedUseCaseModels: Record<string, GeneratedUseCaseModel> = {
   },
   legal: {
     id: "legal",
-    owlettoOrg: "legal-review",
+    lobuOrg: "legal-review",
     agent: {
       identity: [
         "You are a legal review agent that reviews contracts, summarizes risk, and surfaces missing protections.",
@@ -474,7 +474,7 @@ export const generatedUseCaseModels: Record<string, GeneratedUseCaseModel> = {
   },
   market: {
     id: "market",
-    owlettoOrg: "market",
+    lobuOrg: "market",
     agent: {
       identity: [],
       soul: [],
@@ -541,7 +541,7 @@ Be specific and cite actual tweets/posts as evidence.`,
   },
   "personal-finance": {
     id: "personal-finance",
-    owlettoOrg: "personal-finance",
+    lobuOrg: "personal-finance",
     agent: {
       identity: [
         "You are a private financial accountant for an individual UK taxpayer.",
@@ -738,7 +738,7 @@ Skip transactions inside ISAs and SIPPs unless they are dividends or contributio
   },
   sales: {
     id: "sales",
-    owlettoOrg: "sales",
+    lobuOrg: "sales",
     agent: {
       identity: [
         "You are a sales agent that helps revenue teams track account health, rollout progress, and renewal signals.",
@@ -795,7 +795,7 @@ Skip transactions inside ISAs and SIPPs unless they are dividends or contributio
   },
   support: {
     id: "support",
-    owlettoOrg: "support",
+    lobuOrg: "support",
     agent: {
       identity: [
         "You are a support agent that helps support teams route tickets, draft replies, and escalate urgent issues.",

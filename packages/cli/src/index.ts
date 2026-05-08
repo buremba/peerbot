@@ -99,11 +99,11 @@ Memory:
     )
     .option(
       "--memory <choice>",
-      "Memory backend: none | owletto-cloud | owletto-custom"
+      "Memory backend: none | lobu-cloud | lobu-custom"
     )
     .option(
       "--memory-url <url>",
-      "Custom memory MCP URL (with --memory owletto-custom)"
+      "Custom memory MCP URL (with --memory lobu-custom)"
     )
     .option("--otel-endpoint <url>", "OpenTelemetry collector endpoint")
     .option("--sentry", "Enable Sentry error reporting")
@@ -827,13 +827,10 @@ Memory:
   memory
     .command("seed [path]")
     .description(
-      "Provision a Lobu memory workspace from [memory.owletto] in lobu.toml + ./models + optional ./data"
+      "Provision a Lobu memory workspace from [memory.lobu] in lobu.toml + ./models + optional ./data"
     )
     .option("--dry-run", "Log what would be created without mutating")
-    .option(
-      "--org <slug>",
-      "Org slug override (defaults to [memory.owletto].org)"
-    )
+    .option("--org <slug>", "Org slug override (defaults to [memory.lobu].org)")
     .option("--url <url>", "Server URL override")
     .option("-c, --context <name>", "Use a named context")
     .action(

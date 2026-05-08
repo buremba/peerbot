@@ -350,7 +350,7 @@ routes.post('/', mcpAuth, async (c) => {
       )
       VALUES (
         ${agentId}, ${orgId}, ${name}, ${description ?? null},
-        'owletto', ${user.id},
+        'lobu', ${user.id},
         ${sql.json(ownerMcpServers)}, ${sql.json(ownerPreApprovedTools)}, ${now}, ${now}
       )
       ON CONFLICT (id) DO NOTHING

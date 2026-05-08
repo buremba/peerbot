@@ -7,7 +7,7 @@
  *
  *   - `postgres` (default) — external Postgres via DATABASE_URL. Matches the
  *     historical test contract; full-suite compatible.
- *   - `pglite` (opt-in via `pnpm test:pglite` / OWLETTO_TEST_BACKEND=pglite) —
+ *   - `pglite` (opt-in via `pnpm test:pglite` / LOBU_TEST_BACKEND=pglite) —
  *     ephemeral in-memory PGlite + socket server. Zero external dependencies.
  *     Currently reliable for targeted runs (e.g. the PostgresSecretStore
  *     suite); the full integration suite under a single vitest worker still
@@ -25,7 +25,7 @@ import { closeTestDb, setupTestDatabase } from './test-db';
 let pglite: PgliteBackend | null = null;
 
 function resolveBackend(): 'pglite' | 'postgres' {
-  const explicit = process.env.OWLETTO_TEST_BACKEND?.trim().toLowerCase();
+  const explicit = process.env.LOBU_TEST_BACKEND?.trim().toLowerCase();
   if (explicit === 'pglite' || explicit === 'postgres') return explicit;
   // Default to external Postgres — matches the historical test contract.
   // Opt into PGlite explicitly via `pnpm test:pglite`.
@@ -47,14 +47,14 @@ export async function setup(): Promise<void> {
     // Matches the production embedded path in src/start-local.ts — the
     // PGlite socket doesn't support SSL negotiation or prepared statements.
     process.env.PGSSLMODE = 'disable';
-    process.env.OWLETTO_DISABLE_PREPARE = '1';
+    process.env.LOBU_DISABLE_PREPARE = '1';
     console.log(`✅ PGlite ready at ${pglite.url}`);
   } else {
     const databaseUrl = process.env.DATABASE_URL?.trim();
     if (!databaseUrl) {
       throw new Error(
-        'OWLETTO_TEST_BACKEND=postgres requires DATABASE_URL. ' +
-          'Example: DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5433/owletto_test'
+        'LOBU_TEST_BACKEND=postgres requires DATABASE_URL. ' +
+          'Example: DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5433/lobu_test'
       );
     }
     process.env.DATABASE_URL = databaseUrl;

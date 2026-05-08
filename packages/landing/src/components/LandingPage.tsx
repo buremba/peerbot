@@ -2,8 +2,8 @@ import { useState } from "preact/hooks";
 import type { LandingUseCaseId } from "../use-case-definitions";
 import {
   DEFAULT_LANDING_USE_CASE_ID,
-  getOwlettoBaseUrl,
-  getOwlettoUrl,
+  getLobuBaseUrl,
+  getLobuUrl,
   type SurfaceHeroCopy,
 } from "../use-case-showcases";
 import { ArchitectureSection } from "./ArchitectureSection";
@@ -35,8 +35,8 @@ export function LandingPage(props: {
   const [activeStage, setActiveStage] = useState<HeroStageId>("model");
   const [autoAdvance, setAutoAdvance] = useState(true);
   const startUrl = props.defaultUseCaseId
-    ? getOwlettoUrl(activeUseCaseId)
-    : getOwlettoBaseUrl();
+    ? getLobuUrl(activeUseCaseId)
+    : getLobuBaseUrl();
 
   const handleStageChange = (id: HeroStageId) => {
     setAutoAdvance(false);

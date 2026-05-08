@@ -260,7 +260,7 @@ async function fetchRawUserInfo(params: {
 
     // Reddit requires a User-Agent header for all API calls
     if (params.provider === 'reddit') {
-      headers['User-Agent'] = 'owletto:connector:v1.0 (by /u/owletto)';
+      headers['User-Agent'] = 'lobu:connector:v1.0 (by /u/lobu)';
     }
 
     const response = await fetch(config.userinfoUrl, { headers });

@@ -25,13 +25,13 @@ type ConnectFromClientConfig = {
   docsHref: string;
   docsLabel: string;
   /**
-   * One-liner shown directly under the page title that explains what Owletto
+   * One-liner shown directly under the page title that explains what Lobu
    * adds to this agent.
    */
   valueProp: string;
   /**
    * The text the user copies into their agent (or assistant) so it can install
-   * Owletto for them.
+   * Lobu for them.
    */
   installPrompt: string;
   /**
@@ -62,12 +62,12 @@ const connectFromClientConfigs: Record<
     valueProp:
       "Add structured, queryable long-term memory to ChatGPT — the same graph other agents share, recalled and updated through one MCP endpoint.",
     installPrompt:
-      "Connect ChatGPT to Owletto: open Settings → Integrations → Model Context Protocol → Add Server, name it `Owletto`, and paste the MCP URL https://lobu.ai/mcp. Sign in with your Lobu account when prompted, then point ChatGPT at the workspace I want it to use.",
+      "Connect ChatGPT to Lobu: open Settings → Integrations → Model Context Protocol → Add Server, name it `Lobu`, and paste the MCP URL https://lobu.ai/mcp. Sign in with your Lobu account when prompted, then point ChatGPT at the workspace I want it to use.",
     describe: mcpClientDescribe("ChatGPT"),
     docsSetupTitle: "Connect ChatGPT",
     docsSetupSteps: [
       "Open Settings → Integrations → Model Context Protocol → Add Server in ChatGPT.",
-      "Name the server `Owletto` and paste https://lobu.ai/mcp as the URL.",
+      "Name the server `Lobu` and paste https://lobu.ai/mcp as the URL.",
       "Complete the Lobu sign-in flow in the popup.",
       "Pick the workspace ChatGPT should read and write.",
     ],
@@ -86,7 +86,7 @@ const connectFromClientConfigs: Record<
     valueProp:
       "Give Claude durable, structured memory it can search and append to — so the same recall is available across Claude, ChatGPT, and your own agents.",
     installPrompt:
-      "Connect Claude to Owletto: open Settings → Connectors → Add Custom Connector, paste the MCP URL https://lobu.ai/mcp, complete the Lobu sign-in, then enable the connector. Pick the workspace I want Claude to read and write.",
+      "Connect Claude to Lobu: open Settings → Connectors → Add Custom Connector, paste the MCP URL https://lobu.ai/mcp, complete the Lobu sign-in, then enable the connector. Pick the workspace I want Claude to read and write.",
     describe: mcpClientDescribe("Claude"),
     docsSetupTitle: "Connect Claude",
     docsSetupSteps: [
@@ -116,18 +116,18 @@ const connectFromClientConfigs: Record<
     docsHref: "/connect-from/openclaw/",
     docsLabel: "OpenClaw setup docs",
     valueProp:
-      "Layer structured, shareable Owletto memory on top of OpenClaw's built-in filesystem memory — the plugin extends OpenClaw's filesystem plugin and can optionally take over its memory slot, so different OpenClaw agents can talk to each other through the same Owletto graph.",
+      "Layer structured, shareable Lobu memory on top of OpenClaw's built-in filesystem memory — the plugin extends OpenClaw's filesystem plugin and can optionally take over its memory slot, so different OpenClaw agents can talk to each other through the same Lobu graph.",
     installPrompt:
       "Install Lobu memory in OpenClaw. Run:\n\n  openclaw plugins install @lobu/openclaw-plugin\n  lobu login\n  lobu memory configure --url https://lobu.ai/mcp --org <org-slug>\n  lobu memory health --url https://lobu.ai/mcp --org <org-slug>\n\nThe plugin extends OpenClaw's filesystem plugin and can replace its memory slot. After install, point me at the Lobu memory workspace I should use as shared memory across my OpenClaw agents.",
     npmPackage: {
       name: "@lobu/openclaw-plugin",
       registryUrl: "https://www.npmjs.com/package/@lobu/openclaw-plugin",
       sourceUrl:
-        "https://github.com/lobu-ai/owletto/tree/main/packages/openclaw-plugin",
+        "https://github.com/lobu-ai/lobu/tree/main/packages/openclaw-plugin",
       installCommand: "openclaw plugins install @lobu/openclaw-plugin",
     },
     describe: (showcase) =>
-      `Install Owletto into OpenClaw and point it at the ${showcase.label.toLowerCase()} workspace so multiple OpenClaw agents share the same memory shown in this example.`,
+      `Install Lobu into OpenClaw and point it at the ${showcase.label.toLowerCase()} workspace so multiple OpenClaw agents share the same memory shown in this example.`,
     docsSetupTitle: "Install in OpenClaw",
     docsSetupSteps: [
       "Install the plugin: `openclaw plugins install @lobu/openclaw-plugin`.",

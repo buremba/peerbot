@@ -27,16 +27,16 @@ packages/**/*.d.ts.map
 !packages/**/src/types/*.d.ts
 # Redirect packages publish a hand-written index.js + index.d.ts shim
 # (no build step — they re-export from the renamed package).
-!packages/owletto-sdk/index.js
-!packages/owletto-sdk/index.d.ts
-!packages/owletto-connectors/index.js
-!packages/owletto-connectors/index.d.ts
-!packages/owletto-worker/index.js
-!packages/owletto-worker/index.d.ts
-!packages/owletto-embeddings/index.js
-!packages/owletto-embeddings/index.d.ts
-!packages/owletto-openclaw/index.js
-!packages/owletto-openclaw/index.d.ts
+!packages/lobu-sdk/index.js
+!packages/lobu-sdk/index.d.ts
+!packages/lobu-connectors/index.js
+!packages/lobu-connectors/index.d.ts
+!packages/lobu-worker/index.js
+!packages/lobu-worker/index.d.ts
+!packages/lobu-embeddings/index.js
+!packages/lobu-embeddings/index.d.ts
+!packages/lobu-openclaw/index.js
+!packages/lobu-openclaw/index.d.ts
 tsconfig.tsbuildinfo
 **/tsconfig.tsbuildinfo
 
@@ -61,7 +61,7 @@ dump.rdb
 
 # Auto-generated page CSS
 packages/server/src/gateway/routes/public/page-styles.ts
-packages/owletto-cli/runtime/
+packages/lobu-cli/runtime/
 
 # Auto-generated history page JS bundle
 packages/server/src/gateway/routes/public/history-page-bundle.ts

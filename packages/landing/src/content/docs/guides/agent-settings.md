@@ -33,23 +33,23 @@ See [Tool Policy](/guides/tool-policy/) for the operator-facing config, and [`lo
 
 ## Memory Plugins
 
-Memory is pluggable. In file-first projects, the gateway first checks `[memory.owletto]` in `lobu.toml`; any agent can still override the default via `pluginsConfig`.
+Memory is pluggable. In file-first projects, the gateway first checks `[memory.lobu]` in `lobu.toml`; any agent can still override the default via `pluginsConfig`.
 
 ### Defaults
 
 | Effective config | Plugin used |
 |---|---|
-| `[memory.owletto]` disabled or unresolved, and no `MEMORY_URL` override | `@openclaw/native-memory` — files under the worker workspace. Not shared across threads. |
-| `[memory.owletto]` enabled | `@lobu/openclaw-plugin` — the OpenClaw memory plugin for Owletto. It translates OpenClaw memory calls into Owletto MCP requests via the gateway's `/mcp/owletto` proxy. Cross-session, shareable across agents. |
-| `MEMORY_URL` set | Used as the base Owletto MCP endpoint before Lobu scopes it to the org from `[memory.owletto]` in `lobu.toml`. Useful for local or custom Owletto deployments. |
+| `[memory.lobu]` disabled or unresolved, and no `MEMORY_URL` override | `@openclaw/native-memory` — files under the worker workspace. Not shared across threads. |
+| `[memory.lobu]` enabled | `@lobu/openclaw-plugin` — the OpenClaw memory plugin for Lobu. It translates OpenClaw memory calls into Lobu MCP requests via the gateway's `/mcp/lobu` proxy. Cross-session, shareable across agents. |
+| `MEMORY_URL` set | Used as the base Lobu MCP endpoint before Lobu scopes it to the org from `[memory.lobu]` in `lobu.toml`. Useful for local or custom Lobu deployments. |
 
-`lobu init` now scaffolds the file-first Owletto memory layout for memory-enabled projects:
+`lobu init` now scaffolds the file-first Lobu memory layout for memory-enabled projects:
 
-- `[memory.owletto]` in `lobu.toml` (org, name, description, models, data)
+- `[memory.lobu]` in `lobu.toml` (org, name, description, models, data)
 - `models/`
 - `data/`
 
-For **Lobu Cloud**, Lobu can use the hosted default automatically. For **Owletto Local** and **Custom URL**, `MEMORY_URL` remains the base-endpoint override.
+For **Lobu Cloud**, Lobu can use the hosted default automatically. For **Lobu Local** and **Custom URL**, `MEMORY_URL` remains the base-endpoint override.
 
 If the preferred plugin isn't installed, the gateway falls back to the other one (or to no memory if neither is installed).
 
@@ -57,7 +57,7 @@ If the preferred plugin isn't installed, the gateway falls back to the other one
 
 A per-agent `pluginsConfig` **replaces** the default plugin list entirely — it does not merge. Include every plugin the agent should run.
 
-Switch one agent to Owletto:
+Switch one agent to Lobu:
 
 ```json
 {
@@ -71,7 +71,7 @@ Switch one agent to Owletto:
 
 The gateway injects the internal `mcpUrl` and `gatewayAuthUrl` automatically — you don't need to hand-write them.
 
-That means the plugin source is the only part you normally set yourself. OpenClaw loads `@lobu/openclaw-plugin` as the agent's `slot: "memory"` plugin, and Lobu fills in the proxy/auth details needed to reach Owletto safely.
+That means the plugin source is the only part you normally set yourself. OpenClaw loads `@lobu/openclaw-plugin` as the agent's `slot: "memory"` plugin, and Lobu fills in the proxy/auth details needed to reach Lobu safely.
 
 Switch to native memory:
 

@@ -196,7 +196,7 @@ const agentEntrySchema = z.object({
 
 // ── Memory ─────────────────────────────────────────────────────────────────
 
-const owlettoMemorySchema = z.object({
+const lobuMemorySchema = z.object({
   enabled: z.boolean().optional(),
   org: z.string().optional(),
   name: z.string().optional(),
@@ -207,7 +207,7 @@ const owlettoMemorySchema = z.object({
 });
 
 const memorySchema = z.object({
-  owletto: owlettoMemorySchema.optional(),
+  lobu: lobuMemorySchema.optional(),
 });
 
 // ── Top Level ───────────────────────────────────────────────────────────────
@@ -229,5 +229,5 @@ export type NetworkEntry = z.infer<typeof networkSchema>;
 export type EgressEntry = z.infer<typeof egressSchema>;
 export type ToolsEntry = z.infer<typeof toolsSchema>;
 export type WorkerEntry = z.infer<typeof workerSchema>;
-export type OwlettoMemoryEntry = z.infer<typeof owlettoMemorySchema>;
+export type LobuMemoryEntry = z.infer<typeof lobuMemorySchema>;
 export type MemoryEntry = z.infer<typeof memorySchema>;

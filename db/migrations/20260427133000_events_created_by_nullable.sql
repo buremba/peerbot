@@ -1,6 +1,6 @@
 -- migrate:up transaction:false
 
--- `events.created_by` represents the Owletto user that explicitly saved or
+-- `events.created_by` represents the Lobu user that explicitly saved or
 -- authored an event. Connector/scheduled/system-produced events have no human
 -- saver; their provenance is represented by connector_key, connection_id,
 -- feed_id, run_id, and client_id. Keep user attribution nullable and enforce

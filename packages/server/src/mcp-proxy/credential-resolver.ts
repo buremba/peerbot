@@ -2,7 +2,7 @@
  * MCP Proxy Credential Resolver
  *
  * Resolves OAuth credentials for upstream MCP server calls.
- * Uses existing Owletto infrastructure: connections, auth_profiles, accounts.
+ * Uses existing Lobu infrastructure: connections, auth_profiles, accounts.
  */
 
 import { CredentialService } from '../auth/credentials';

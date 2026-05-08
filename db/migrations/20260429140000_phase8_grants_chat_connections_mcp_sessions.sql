@@ -10,7 +10,7 @@
 -- 2. `chat_connections` — chat-platform (Telegram/Slack/Discord/...) connection
 --    rows. Replaces the `connection:<id>`, `connections:all`, and
 --    `connections:agent:<id>` Redis keys used by ChatInstanceManager. The
---    existing `public.connections` table is for Owletto product connectors,
+--    existing `public.connections` table is for Lobu product connectors,
 --    not chat platforms.
 -- 3. `mcp_proxy_sessions` — short-lived MCP server session-id mappings used
 --    by the MCP proxy. The existing `public.mcp_sessions` table is the

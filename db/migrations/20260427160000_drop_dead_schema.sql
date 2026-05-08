@@ -2,7 +2,7 @@
 
 -- Drop schema objects that have no readers, writers, or references in the
 -- TypeScript source tree (`packages/server/src` is the source of
--- truth — `owletto-cli/runtime` is a generated mirror).
+-- truth — `lobu-cli/runtime` is a generated mirror).
 --
 -- Verification:
 --   * Strict SQL grep across packages/{server,gateway,worker,

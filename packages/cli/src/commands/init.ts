@@ -14,7 +14,7 @@ import {
 } from "../commands/providers/registry.js";
 import { renderTemplate } from "../utils/template.js";
 
-const DEFAULT_OWLETTO_MCP_URL = "https://lobu.ai/mcp";
+const DEFAULT_LOBU_MCP_URL = "https://lobu.ai/mcp";
 
 const PROJECT_NAME_PATTERN = /^[a-z0-9-]+$/;
 const PLATFORM_CHOICES = [
@@ -28,7 +28,7 @@ const PLATFORM_CHOICES = [
 type PlatformChoice = (typeof PLATFORM_CHOICES)[number];
 const NETWORK_CHOICES = ["restricted", "open", "isolated"] as const;
 type NetworkChoice = (typeof NETWORK_CHOICES)[number];
-const MEMORY_CHOICES = ["none", "owletto-cloud", "owletto-custom"] as const;
+const MEMORY_CHOICES = ["none", "lobu-cloud", "lobu-custom"] as const;
 type MemoryChoice = (typeof MEMORY_CHOICES)[number];
 
 export interface InitOptions {
@@ -56,13 +56,9 @@ export async function initCommand(
   const useDefaults = options.yes === true;
 
   // Catch flag combos that can't satisfy a prompt before we mkdir anything.
-  if (
-    useDefaults &&
-    options.memory === "owletto-custom" &&
-    !options.memoryUrl
-  ) {
+  if (useDefaults && options.memory === "lobu-custom" && !options.memoryUrl) {
     console.error(
-      chalk.red("\n✗ --memory owletto-custom requires --memory-url <url>.\n")
+      chalk.red("\n✗ --memory lobu-custom requires --memory-url <url>.\n")
     );
     process.exit(1);
   }
@@ -309,27 +305,27 @@ export async function initCommand(
         message: "Memory:",
         choices: [
           { name: "None (filesystem memory)", value: "none" },
-          { name: "Lobu Cloud (app.lobu.ai)", value: "owletto-cloud" },
-          { name: "Custom Lobu memory URL", value: "owletto-custom" },
+          { name: "Lobu Cloud (app.lobu.ai)", value: "lobu-cloud" },
+          { name: "Custom Lobu memory URL", value: "lobu-custom" },
         ],
         default: "none",
       }),
   })) as MemoryChoice;
 
   const envSecrets: Array<{ envVar: string; value: string }> = [];
-  const includeOwlettoMemory = memoryChoice !== "none";
-  let owlettoUrl = "";
+  const includeLobuMemory = memoryChoice !== "none";
+  let lobuUrl = "";
 
-  if (memoryChoice === "owletto-cloud") {
-    owlettoUrl = DEFAULT_OWLETTO_MCP_URL;
-  } else if (memoryChoice === "owletto-custom") {
-    owlettoUrl =
+  if (memoryChoice === "lobu-cloud") {
+    lobuUrl = DEFAULT_LOBU_MCP_URL;
+  } else if (memoryChoice === "lobu-custom") {
+    lobuUrl =
       options.memoryUrl ??
       (await input({
         message: "Lobu memory MCP URL:",
         validate: (v: string) => (v ? true : "URL is required"),
       }));
-    envSecrets.push({ envVar: "MEMORY_URL", value: owlettoUrl });
+    envSecrets.push({ envVar: "MEMORY_URL", value: lobuUrl });
   }
 
   const otelEndpoint = await promptOrDefault({
@@ -407,7 +403,7 @@ export async function initCommand(
   try {
     await mkdir(join(projectDir, "data"), { recursive: true });
 
-    if (includeOwlettoMemory) {
+    if (includeLobuMemory) {
       await mkdir(join(projectDir, "models"), { recursive: true });
       await mkdir(join(projectDir, "data", "entities"), { recursive: true });
       await mkdir(join(projectDir, "data", "relationships"), {
@@ -430,9 +426,9 @@ export async function initCommand(
       platformType: platformType || undefined,
       platformConfig:
         Object.keys(platformConfig).length > 0 ? platformConfig : undefined,
-      includeOwlettoMemory,
-      owlettoOrg: includeOwlettoMemory ? projectName : undefined,
-      owlettoName: includeOwlettoMemory ? humanizeSlug(projectName) : undefined,
+      includeLobuMemory,
+      lobuOrg: includeLobuMemory ? projectName : undefined,
+      lobuName: includeLobuMemory ? humanizeSlug(projectName) : undefined,
     });
 
     const variables = {
@@ -534,7 +530,7 @@ export async function initCommand(
         "       DATABASE_URL=postgresql://postgres:lobu@localhost:5432/postgres"
       )
     );
-    if (owlettoUrl) {
+    if (lobuUrl) {
       console.log(
         chalk.cyan(`  ${n++}. Wire memory clients: lobu memory init`)
       );
@@ -644,10 +640,10 @@ export async function generateLobuToml(
     providerModel?: string;
     platformType?: string;
     platformConfig?: Record<string, string>;
-    includeOwlettoMemory?: boolean;
-    owlettoOrg?: string;
-    owlettoName?: string;
-    owlettoDescription?: string;
+    includeLobuMemory?: boolean;
+    lobuOrg?: string;
+    lobuName?: string;
+    lobuDescription?: string;
   }
 ): Promise<void> {
   const id = options.agentName;
@@ -729,18 +725,18 @@ export async function generateLobuToml(
     lines.push("allowed = []");
   }
 
-  if (options.includeOwlettoMemory) {
-    const org = options.owlettoOrg ?? options.agentName;
-    const name = options.owlettoName ?? humanizeSlug(options.agentName);
+  if (options.includeLobuMemory) {
+    const org = options.lobuOrg ?? options.agentName;
+    const name = options.lobuName ?? humanizeSlug(options.agentName);
     lines.push(
       "",
       "# Project-scoped Lobu memory",
-      `[memory.owletto]`,
+      `[memory.lobu]`,
       "enabled = true",
       `org = ${JSON.stringify(org)}`,
       `name = ${JSON.stringify(name)}`,
-      ...(options.owlettoDescription
-        ? [`description = ${JSON.stringify(options.owlettoDescription)}`]
+      ...(options.lobuDescription
+        ? [`description = ${JSON.stringify(options.lobuDescription)}`]
         : []),
       'models = "./models"',
       'data = "./data"'

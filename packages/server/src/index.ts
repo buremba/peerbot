@@ -95,7 +95,7 @@ function isAllowedCorsOrigin(origin: string, _env: Env, requestUrl: string): boo
 
   if (parsed.origin === canonicalOrigin) return true;
 
-  // Allow wildcard subdomains of the canonical origin (e.g. acme.owletto.com)
+  // Allow wildcard subdomains of the canonical origin (e.g. acme.lobu.com)
   // and — when AUTH_COOKIE_DOMAIN is configured — sibling subdomains under the
   // cookie zone so browsers on `acme.lobu.ai` can call `app.lobu.ai`.
   const parsedHost = parsed.hostname.toLowerCase();
@@ -386,7 +386,7 @@ app.use('/*', async (c, next) => {
 app.get('/health', (c) => {
   return c.json({
     status: 'ok',
-    service: 'owletto-api',
+    service: 'lobu-api',
     timestamp: new Date().toISOString(),
     ...getRuntimeInfo(c.env),
   });
@@ -483,7 +483,7 @@ app.get('/legal', (c) => {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Legal Information - Owletto</title>
+  <title>Legal Information - Lobu</title>
   <style>
     body { font-family: system-ui, -apple-system, sans-serif; max-width: 800px; margin: 40px auto; padding: 0 20px; line-height: 1.6; }
     h1 { color: #333; }
@@ -492,7 +492,7 @@ app.get('/legal', (c) => {
   </style>
 </head>
 <body>
-  <h1>Owletto</h1>
+  <h1>Lobu</h1>
   <p>Legal Information and Terms of Service</p>
 
   <h2>Service Description</h2>
@@ -955,8 +955,8 @@ app.get('/.well-known/ai-plugin.json', (c) => {
   const legalInfoUrl = c.env.PUBLIC_LEGAL_URL ?? new URL('/legal', baseUrl).toString();
   return c.json({
     schema_version: 'v1',
-    name_for_human: 'Owletto',
-    name_for_model: 'owletto',
+    name_for_human: 'Lobu',
+    name_for_model: 'lobu',
     description_for_human:
       'Build searchable workspace knowledge from customer content across platforms',
     description_for_model:

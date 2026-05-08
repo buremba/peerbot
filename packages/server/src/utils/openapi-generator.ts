@@ -246,7 +246,7 @@ export function generateOpenAPISpec(serverUrl: string) {
   return {
     openapi: '3.1.0',
     info: {
-      title: 'Owletto API',
+      title: 'Lobu API',
       description:
         'API for building searchable workspace knowledge from customer content across multiple platforms',
       version: '1.0.0',

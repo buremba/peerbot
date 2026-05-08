@@ -459,7 +459,7 @@ export default class WebsiteConnector extends ConnectorRuntime {
 
   private async fetchSitemap(sitemapUrl: string): Promise<string[]> {
     const response = await fetch(sitemapUrl, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; OwlettoBot/1.0)' },
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; LobuBot/1.0)' },
     });
 
     if (!response.ok) {

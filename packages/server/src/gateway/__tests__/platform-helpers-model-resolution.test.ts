@@ -73,7 +73,7 @@ describe("resolveAgentOptions model resolution", () => {
     expect(resolved.model).toBeUndefined();
   });
 
-  test("normalizes legacy Owletto gateway URLs to the embedded gateway", async () => {
+  test("normalizes legacy Lobu gateway URLs to the embedded gateway", async () => {
     process.env.PORT = "8787";
 
     const settingsStore = {
@@ -116,7 +116,7 @@ describe("resolveAgentOptions model resolution", () => {
     });
   });
 
-  test("normalizes custom Owletto endpoints to the embedded gateway", async () => {
+  test("normalizes custom Lobu endpoints to the embedded gateway", async () => {
     process.env.PORT = "8787";
 
     const settingsStore = {
@@ -129,8 +129,8 @@ describe("resolveAgentOptions model resolution", () => {
                 slot: "memory",
                 enabled: true,
                 config: {
-                  mcpUrl: "https://owletto.example.com/mcp",
-                  gatewayAuthUrl: "https://owletto.example.com",
+                  mcpUrl: "https://lobu.example.com/mcp",
+                  gatewayAuthUrl: "https://lobu.example.com",
                 },
               },
             ],
@@ -159,7 +159,7 @@ describe("resolveAgentOptions model resolution", () => {
     });
   });
 
-  test("injects Owletto mcpUrl/gatewayAuthUrl when override omits config", async () => {
+  test("injects Lobu mcpUrl/gatewayAuthUrl when override omits config", async () => {
     process.env.PORT = "8787";
 
     const settingsStore = {

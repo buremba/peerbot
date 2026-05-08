@@ -1,13 +1,13 @@
 /**
  * Worker-side MCP-as-CLI bootstrap for embedded deployment mode.
  *
- * Registers one `just-bash` custom command per MCP server (e.g. `owletto`,
+ * Registers one `just-bash` custom command per MCP server (e.g. `lobu`,
  * `gmail`). The agent invokes MCP tools via the sandboxed bash:
  *
- *   owletto search_knowledge <<<'{"query":"foo"}'
- *   owletto --help
- *   owletto save_knowledge --schema
- *   owletto auth login
+ *   lobu search_knowledge <<<'{"query":"foo"}'
+ *   lobu --help
+ *   lobu save_knowledge --schema
+ *   lobu auth login
  *
  * Payload is read from `ctx.stdin` as JSON. If stdin is empty, falls back to
  * `args[1]` as a JSON string (defense-in-depth for models that write the JSON

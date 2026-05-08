@@ -65,7 +65,7 @@ def post_json(path: str, body: Dict[str, Any]) -> Any:
         headers={
             'Content-Type': 'application/json',
             'Authorization': f'Bearer {api_key}',
-            'User-Agent': 'owletto-supermemory-benchmark-adapter',
+            'User-Agent': 'lobu-supermemory-benchmark-adapter',
         },
         method='POST',
     )
@@ -86,7 +86,7 @@ def chunked(values: List[Any], size: int) -> List[List[Any]]:
 
 def container_tag(payload: Dict[str, Any]) -> str:
     run_id = str(payload.get('runId') or 'benchmark-run')
-    return f'owletto:{run_id}'[:100]
+    return f'lobu:{run_id}'[:100]
 
 
 def normalize_metadata(metadata: Dict[str, Any] | None) -> Dict[str, Any]:

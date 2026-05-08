@@ -29,7 +29,7 @@
       "!**/packages/connectors/**",
       "!**/packages/embeddings/**",
       "!**/packages/web/**",
-      "!**/scripts/owletto/**",
+      "!**/scripts/lobu/**",
       "!**/benchmarks/**",
       "!**/skills/**"
     ]

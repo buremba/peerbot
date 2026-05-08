@@ -4,22 +4,22 @@ import { describe, expect, it } from 'vitest';
 import {
   renderFallbackSystemContext,
   renderSkillMemorySection,
-} from '../../../../openclaw-plugin/src/owletto-guidance';
+} from '../../../../openclaw-plugin/src/lobu-guidance';
 
 // Memory guidance now lives in the bundled Lobu skill. Resolve relative to this
 // file so the test works regardless of `process.cwd()` (worktrees, vitest's
 // per-package cwd, IDE runners).
 const skillPath = resolve(__dirname, '../../../../../skills/lobu/SKILL.md');
-const START_MARKER = '<!-- owletto-memory-guidance:start -->';
-const END_MARKER = '<!-- owletto-memory-guidance:end -->';
+const START_MARKER = '<!-- lobu-memory-guidance:start -->';
+const END_MARKER = '<!-- lobu-memory-guidance:end -->';
 
-describe('owletto guidance sync', () => {
+describe('lobu guidance sync', () => {
   it('renders plugin fallback context with namespaced tool names', () => {
     const text = renderFallbackSystemContext();
 
-    expect(text).toContain('owletto_save_knowledge');
-    expect(text).toContain('owletto_search_knowledge');
-    expect(text).toContain('<owletto-system>');
+    expect(text).toContain('lobu_save_knowledge');
+    expect(text).toContain('lobu_search_knowledge');
+    expect(text).toContain('<lobu-system>');
   });
 
   it('keeps the skill memory section in sync with the shared renderer', () => {

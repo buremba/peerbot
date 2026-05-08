@@ -2,7 +2,7 @@
  * Tests covering the two `lobu apply`-friendly extensions to lobu/agent-routes.ts:
  *
  *   1. POST /agents — same-org duplicate returns 200 (idempotent), cross-org
- *      collision still 409, and the Owletto MCP auto-injection only runs on
+ *      collision still 409, and the Lobu MCP auto-injection only runs on
  *      the create path (never on the idempotent return).
  *   2. PUT /agents/:agentId/platforms/by-stable-id/:stableId — caller-supplied
  *      stable-ID upsert. Same config → noop. Changed config → updated +
@@ -225,7 +225,7 @@ describe('POST /agents — idempotent same-org create', () => {
     expect(rows.length).toBe(1);
   });
 
-  test('idempotent path does not re-inject the Owletto MCP server', async () => {
+  test('idempotent path does not re-inject the Lobu MCP server', async () => {
     const app = await importAgentRoutes();
     const { getDb } = await import('../../db/client.js');
     const sql = getDb();

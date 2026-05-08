@@ -91,12 +91,7 @@ function sanitizeDirSegment(value: string): string {
 }
 
 function getDedicatedChromeProfileDir(name: string): string {
-  return join(
-    homedir(),
-    ".owletto",
-    "chrome-profiles",
-    sanitizeDirSegment(name)
-  );
+  return join(homedir(), ".lobu", "chrome-profiles", sanitizeDirSegment(name));
 }
 
 async function waitForCdpEndpoint(
@@ -181,7 +176,7 @@ async function extractCookiesMacOS(
   }
 
   // Copy to temp file to avoid locking issues with running Chrome
-  const tmpDir = mkdtempSync(join(tmpdir(), "owletto-auth-"));
+  const tmpDir = mkdtempSync(join(tmpdir(), "lobu-auth-"));
   const tmpCookiePath = join(tmpDir, "Cookies");
   copyFileSync(cookiePath, tmpCookiePath);
   const journalSrc = join(profileDir, chromeProfileDir, "Cookies-journal");
@@ -340,7 +335,7 @@ async function extractCookiesCDP(
     });
   });
 
-  const tmpDir = mkdtempSync(join(tmpdir(), "owletto-auth-"));
+  const tmpDir = mkdtempSync(join(tmpdir(), "lobu-auth-"));
   mkdirSync(join(tmpDir, "Default"), { recursive: true });
 
   const cookieSrc = join(profileDir, chromeProfileDir, "Cookies");

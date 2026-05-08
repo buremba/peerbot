@@ -1,5 +1,5 @@
 /**
- * Plugin configuration types for the Owletto OpenClaw plugin.
+ * Plugin configuration types for the Lobu OpenClaw plugin.
  */
 
 export interface PluginConfig {

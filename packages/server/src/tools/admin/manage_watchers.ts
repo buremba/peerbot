@@ -1551,7 +1551,7 @@ async function handleCompleteWindow(
     // Empty-content replay is idempotent: if a zero-content window already
     // exists for this period (a prior run consumed all candidates already),
     // refresh provenance instead of throwing "Window already exists". This
-    // keeps the agent loop from retrying the same period forever (OWLETTO-Q)
+    // keeps the agent loop from retrying the same period forever (LOBU-Q)
     // without needing a separate no-op code path.
     // ============================================
     let windowId!: number;

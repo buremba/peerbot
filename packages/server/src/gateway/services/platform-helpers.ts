@@ -15,12 +15,12 @@ import { buildMemoryPlugins, getInternalGatewayUrl } from "../config/index.js";
 import type { MessagePayload } from "../infrastructure/queue/queue-producer.js";
 
 const logger = createLogger("platform-helpers");
-const OWLETTO_PLUGIN_SOURCE = "@lobu/openclaw-plugin";
+const LOBU_PLUGIN_SOURCE = "@lobu/openclaw-plugin";
 
-function readOwlettoRuntimeDefaults(): PluginConfig | null {
+function readLobuRuntimeDefaults(): PluginConfig | null {
   const configuredPlugin = buildMemoryPlugins().find(
     (plugin) =>
-      plugin.source === OWLETTO_PLUGIN_SOURCE && plugin.slot === "memory"
+      plugin.source === LOBU_PLUGIN_SOURCE && plugin.slot === "memory"
   );
   if (configuredPlugin) {
     return configuredPlugin;
@@ -28,7 +28,7 @@ function readOwlettoRuntimeDefaults(): PluginConfig | null {
 
   const gatewayUrl = getInternalGatewayUrl();
   return {
-    source: OWLETTO_PLUGIN_SOURCE,
+    source: LOBU_PLUGIN_SOURCE,
     slot: "memory",
     enabled: true,
     config: {
@@ -38,12 +38,12 @@ function readOwlettoRuntimeDefaults(): PluginConfig | null {
   };
 }
 
-function normalizeOwlettoPluginConfig(
+function normalizeLobuPluginConfig(
   plugin: PluginConfig,
   runtimeDefault: PluginConfig | null
 ): PluginConfig {
   if (
-    plugin.source !== OWLETTO_PLUGIN_SOURCE ||
+    plugin.source !== LOBU_PLUGIN_SOURCE ||
     plugin.slot !== "memory" ||
     !runtimeDefault?.config
   ) {
@@ -95,10 +95,10 @@ function normalizePluginsConfig(
     return pluginsConfig;
   }
 
-  const runtimeDefault = readOwlettoRuntimeDefaults();
+  const runtimeDefault = readLobuRuntimeDefaults();
   let changed = false;
   const plugins = pluginsConfig.plugins.map((plugin) => {
-    const normalized = normalizeOwlettoPluginConfig(plugin, runtimeDefault);
+    const normalized = normalizeLobuPluginConfig(plugin, runtimeDefault);
     if (normalized !== plugin) {
       changed = true;
     }

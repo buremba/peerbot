@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import type { LandingUseCaseId } from "../use-case-definitions";
 import {
-  getOwlettoBaseUrl,
-  getOwlettoLoginUrl,
-  getOwlettoUrl,
+  getLobuBaseUrl,
+  getLobuLoginUrl,
+  getLobuUrl,
   landingUseCaseGroupedOptions,
 } from "../use-case-showcases";
 
@@ -305,10 +305,10 @@ export function Nav({
 }: NavProps) {
   const [openId, setOpenId] = useState<string | null>(null);
   const solutions = buildSolutionsMenu();
-  const loginUrl = getOwlettoLoginUrl();
+  const loginUrl = getLobuLoginUrl();
   const startUrl = startUseCaseId
-    ? getOwlettoUrl(startUseCaseId)
-    : getOwlettoBaseUrl();
+    ? getLobuUrl(startUseCaseId)
+    : getLobuBaseUrl();
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -327,7 +327,7 @@ export function Nav({
         class="block text-center text-[13px] font-medium py-2 px-4 hover:opacity-80 transition-opacity"
         style={{ background: "#0b0b0d", color: "#ffffff" }}
       >
-        Owletto memory · MCP · open source
+        Lobu memory · MCP · open source
         <span class="ml-2" aria-hidden="true">
           →
         </span>

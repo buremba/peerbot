@@ -45,7 +45,7 @@ describe('MCP member write access', () => {
         params: {
           protocolVersion: '2025-03-26',
           capabilities: {},
-          clientInfo: { name: 'owletto-test', version: '1.0' },
+          clientInfo: { name: 'lobu-test', version: '1.0' },
         },
       },
       token,

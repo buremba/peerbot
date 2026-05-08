@@ -15,7 +15,7 @@ from _bench_protocol import serve  # noqa: E402
 
 BASE_URL = (os.environ.get('LETTA_BASE_URL') or 'https://api.letta.com').rstrip('/')
 API_KEY = os.environ.get('LETTA_API_KEY')
-STATE_DIR = Path(os.environ.get('LETTA_BENCHMARK_STATE_DIR', '/tmp/owletto-letta-benchmark'))
+STATE_DIR = Path(os.environ.get('LETTA_BENCHMARK_STATE_DIR', '/tmp/lobu-letta-benchmark'))
 BENCHMARK_PREFIX = '[[benchmark_id:'
 
 
@@ -28,7 +28,7 @@ def request_json(method: str, path: str, body: Dict[str, Any] | None = None) -> 
     headers = {
         'Content-Type': 'application/json',
         'Accept': 'application/json',
-        'User-Agent': 'Mozilla/5.0 (owletto-letta-benchmark-adapter)',
+        'User-Agent': 'Mozilla/5.0 (lobu-letta-benchmark-adapter)',
     }
     if API_KEY:
         headers['Authorization'] = f'Bearer {API_KEY}'
@@ -129,7 +129,7 @@ def action_setup(payload: Dict[str, Any]) -> Any:
     archive = request_json(
         'POST',
         '/v1/archives/',
-        {'name': f'owletto-bench-{run_id}'[:120]},
+        {'name': f'lobu-bench-{run_id}'[:120]},
     )
     write_state(run_id, {'archive_id': archive['id'], 'passages': [], 'flushed': False})
     return {'archive_id': archive['id']}

@@ -339,7 +339,7 @@ export interface ToolsConfig {
    * - "tools" (default): each MCP tool is registered as a first-class
    *   function-call tool with its JSON Schema.
    * - "cli": MCP servers are exposed as one `just-bash` command per server
-   *   (e.g. `owletto search_knowledge <<<'{...}'`). Keeps the first-class
+   *   (e.g. `lobu search_knowledge <<<'{...}'`). Keeps the first-class
    *   tool list small; relies on the sandboxed bash to invoke MCP tools.
    */
   mcpExposure?: "tools" | "cli";

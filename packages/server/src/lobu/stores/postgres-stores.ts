@@ -84,7 +84,7 @@ function rowToMetadata(row: Record<string, any>): AgentMetadata {
     name: row.name,
     description: row.description ?? undefined,
     owner: {
-      platform: row.owner_platform ?? 'owletto',
+      platform: row.owner_platform ?? 'lobu',
       userId: row.owner_user_id ?? '',
     },
     isWorkspaceAgent: row.is_workspace_agent ?? undefined,

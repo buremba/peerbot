@@ -32,7 +32,7 @@ def request_json(method: str, path: str, body: Dict[str, Any] | None = None) -> 
             'Content-Type': 'application/json',
             'Accept': 'application/json',
             'Authorization': f'Token {api_key}',
-            'User-Agent': 'owletto-mem0-benchmark-adapter',
+            'User-Agent': 'lobu-mem0-benchmark-adapter',
         },
         method=method,
     )
@@ -49,7 +49,7 @@ def request_json(method: str, path: str, body: Dict[str, Any] | None = None) -> 
 def scope_user_id(payload: Dict[str, Any]) -> str:
     run_id = str(payload.get('runId') or 'benchmark-run')
     suffix = hashlib.sha1(run_id.encode('utf-8')).hexdigest()[:16]
-    return f'owletto-bench-{suffix}'
+    return f'lobu-bench-{suffix}'
 
 
 def normalize_metadata(metadata: Dict[str, Any] | None) -> Dict[str, Any]:

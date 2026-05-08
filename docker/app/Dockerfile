@@ -1,5 +1,5 @@
 # ===========================================
-# Owletto API + Frontend (server)
+# Lobu API + Frontend (server)
 # ===========================================
 # Hono server that runs the gateway in-process and serves the web frontend.
 
@@ -37,11 +37,11 @@ COPY packages/web/package.jso[n] packages/web/
 
 # Stub out workspace packages we don't build in this image so bun install doesn't
 # error on missing manifests.
-RUN mkdir -p packages/cli packages/landing packages/owletto-cli packages/browser-extension packages/mcpsandbox \
+RUN mkdir -p packages/cli packages/landing packages/lobu-cli packages/browser-extension packages/mcpsandbox \
     && for p in cli landing browser-extension mcpsandbox; do \
         echo "{\"name\":\"@lobu/$p\",\"version\":\"0.0.0\",\"private\":true}" > "packages/$p/package.json"; \
       done \
-    && echo '{"name":"owletto","version":"0.0.0","private":true}' > packages/owletto-cli/package.json
+    && echo '{"name":"lobu","version":"0.0.0","private":true}' > packages/lobu-cli/package.json
 
 # Hoisted layout (npm-style flat node_modules) is required so the bundled
 # server.bundle.mjs (built below) can resolve transitive npm deps via Node's

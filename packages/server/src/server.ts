@@ -70,7 +70,7 @@ function resolveWebSourceRoot(): string {
   );
   if (!existsSync(path.join(webSourceDir, 'index.html'))) {
     throw new Error(
-      `Owletto web source directory not found: ${webSourceDir}. ` +
+      `Lobu web source directory not found: ${webSourceDir}. ` +
         `Set WEB_SOURCE_DIR or LOBU_DEV_PROJECT_PATH to the monorepo root.`
     );
   }

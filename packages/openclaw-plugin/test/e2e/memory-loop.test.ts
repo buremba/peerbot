@@ -1,7 +1,7 @@
 /**
  * Layer 2 — Memory Loop Agent E2E Test
  *
- * Drives `openclaw agent --local` through the Owletto plugin to exercise
+ * Drives `openclaw agent --local` through the Lobu plugin to exercise
  * memory save (via tool call) and recall (via autoRecall hook).
  *
  * Uses DIFFERENT session IDs for save and recall so the recall agent has
@@ -157,7 +157,7 @@ describe.skipIf(SKIP)('memory save + recall via agent', () => {
   const recallSessionId = `e2e-recall-${Date.now()}`;
 
   it('saves a memory via agent tool call', async () => {
-    // The agent should call owletto_save_knowledge when told to remember.
+    // The agent should call lobu_save_knowledge when told to remember.
     // Timeout is generous because the agent may make multiple tool calls
     // (search → list entities → list schemas → save_knowledge).
     const result = runOpenclawAgent(

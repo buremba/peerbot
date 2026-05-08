@@ -59,7 +59,7 @@ function validateSupportedImports(sourceCode: string, label: string): void {
   for (const specifier of importSpecifiers) {
     if (specifier.startsWith('./') || specifier.startsWith('../') || specifier.startsWith('@/')) {
       throw new Error(
-        `Unsupported import "${specifier}". ${label} sources must be single-file and may only import from owletto, npm:... specifiers, or published packages.`
+        `Unsupported import "${specifier}". ${label} sources must be single-file and may only import from lobu, npm:... specifiers, or published packages.`
       );
     }
   }
@@ -118,7 +118,7 @@ export async function compileSource(
       format: 'esm',
       platform: 'node',
       alias: {
-        owletto: SDK_ENTRY,
+        lobu: SDK_ENTRY,
         '@lobu/connector-sdk': SDK_ENTRY,
       },
       write: true,
@@ -143,7 +143,7 @@ export async function compileSource(
       if (error instanceof Error) {
         throw new Error(
           `${config.label} compilation failed: ${error.message}. ` +
-            'If this source imports local project modules, replace them with owletto or npm: imports.'
+            'If this source imports local project modules, replace them with lobu or npm: imports.'
         );
       }
       throw error;

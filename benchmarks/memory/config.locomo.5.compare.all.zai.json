@@ -1,6 +1,6 @@
 {
   "suitePath": "benchmarks/memory/suites/locomo.5.json",
-  "outputDir": ".owletto/benchmarks/memory/smoke-compare-all",
+  "outputDir": ".lobu/benchmarks/memory/smoke-compare-all",
   "trials": 1,
   "topK": 8,
   "parallelSystems": true,
@@ -14,9 +14,9 @@
   },
   "systems": [
     {
-      "id": "owletto-local",
-      "label": "Owletto (local in-process)",
-      "type": "owletto-inprocess",
+      "id": "lobu-local",
+      "label": "Lobu (local in-process)",
+      "type": "lobu-inprocess",
       "embedWrites": true,
       "topK": 8,
       "searchLimit": 5,

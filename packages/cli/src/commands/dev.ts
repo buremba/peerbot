@@ -20,7 +20,7 @@ export interface DevOptions {
  * `lobu run` — start the embedded Lobu stack.
  *
  * Spawns the bundled @lobu/server Node server, which hosts the
- * gateway, embedded workers, embeddings, and the Owletto memory backend
+ * gateway, embedded workers, embeddings, and the Lobu memory backend
  * in-process. Workers are spawned as child subprocesses by the gateway's
  * EmbeddedDeploymentManager. Postgres must be reachable via DATABASE_URL
  * in .env.

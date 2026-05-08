@@ -49,7 +49,7 @@ trap cleanup EXIT INT TERM
 # ─── pre-flight ────────────────────────────────────────────────────────
 rm -rf "${DATA_DIR}" "${PROJECT_DIR}" "${SERVER_LOG}"
 # Stale local build that the dev workflow occasionally produces.
-rm -rf "${REPO_ROOT}/packages/owletto-cli/runtime" 2>/dev/null || true
+rm -rf "${REPO_ROOT}/packages/lobu-cli/runtime" 2>/dev/null || true
 
 # ─── 1. build ──────────────────────────────────────────────────────────
 echo "==> step 1: build packages + CLI"
@@ -72,7 +72,7 @@ echo "==> step 2: start start-local.ts on :${PORT}"
 # socket bind.
 env \
   -u DATABASE_URL \
-  OWLETTO_DATA_DIR="${DATA_DIR}" \
+  LOBU_DATA_DIR="${DATA_DIR}" \
   PORT="${PORT}" \
   HOST=127.0.0.1 \
   PG_SOCKET_PORT=0 \
@@ -140,7 +140,7 @@ key = "$ANTHROPIC_API_KEY"
 type = "telegram"
 config = { botToken = "$TELEGRAM_BOT_TOKEN", chatId = "12345" }
 
-[memory.owletto]
+[memory.lobu]
 enabled = true
 org = "dev"
 name = "Local Dev"

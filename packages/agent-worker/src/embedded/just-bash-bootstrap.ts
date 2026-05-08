@@ -5,7 +5,7 @@
  * as a BashOperations interface for pi-coding-agent's bash tool.
  *
  * When nix binaries are detected on PATH (via nix-shell wrapper from gateway)
- * or known CLI tools (e.g. owletto) are found, they are registered as
+ * or known CLI tools (e.g. lobu) are found, they are registered as
  * just-bash customCommands that delegate to real exec.
  */
 
@@ -124,7 +124,7 @@ const UNSANDBOXED_INTERPRETERS = new Set<string>([
 /**
  * Discover binaries to register as custom commands:
  * 1. All executables from /nix/store/ PATH directories
- * 2. Known CLI tools (owletto) from anywhere on PATH
+ * 2. Known CLI tools (lobu) from anywhere on PATH
  *
  * UNSANDBOXED_INTERPRETERS are filtered out unless the spawned worker has
  * LOBU_ALLOW_UNSANDBOXED_EXEC=1 in its env (set explicitly per-agent for
@@ -159,7 +159,7 @@ function discoverBinaries(): Map<string, string> {
   }
 
   // Discover known CLI tools from full PATH
-  for (const name of ["owletto"]) {
+  for (const name of ["lobu"]) {
     if (binaries.has(name)) continue;
     if (!isAllowed(name)) continue;
     for (const dir of pathDirs) {
@@ -336,7 +336,7 @@ interface EmbeddedBashOpsOptions {
   workspaceDir?: string;
   /**
    * When provided together with `gw`, MCP servers are exposed as one
-   * `just-bash` custom command per server (e.g. `owletto search_knowledge
+   * `just-bash` custom command per server (e.g. `lobu search_knowledge
    * <<<'{...}'`). Only applied when `mcpExposure === "cli"`. The ref's
    * optional `refresh()` is invoked after successful auth operations so
    * CLI handlers pick up freshly-discovered MCP tools without rebuilding Bash.
@@ -416,7 +416,7 @@ export async function createEmbeddedBashOps(
       : undefined;
 
   // Build MCP CLI commands first so that explicit MCP registrations win over
-  // any PATH-discovered binary with the same name (e.g. `owletto` is both an
+  // any PATH-discovered binary with the same name (e.g. `lobu` is both an
   // installed nix binary and an MCP server).
   let mcpCliCommands: McpCliCommand[] = [];
   if (options.mcpExposure === "cli" && options.mcpRuntimeRef && options.gw) {

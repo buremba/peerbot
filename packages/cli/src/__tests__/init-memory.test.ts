@@ -22,33 +22,33 @@ describe("init memory scaffolding", () => {
     rmSync(projectDir, { recursive: true, force: true });
   });
 
-  test("generateLobuToml inlines the [memory.owletto] fields when enabled", async () => {
+  test("generateLobuToml inlines the [memory.lobu] fields when enabled", async () => {
     await generateLobuToml(projectDir, {
       agentName: "support",
       allowedDomains: "github.com,.github.com",
-      includeOwlettoMemory: true,
-      owlettoOrg: "support",
-      owlettoName: "Support",
-      owlettoDescription: "Help support teams",
+      includeLobuMemory: true,
+      lobuOrg: "support",
+      lobuName: "Support",
+      lobuDescription: "Help support teams",
     });
 
     const content = readFileSync(join(projectDir, "lobu.toml"), "utf-8");
 
-    expect(content).toContain("[memory.owletto]");
+    expect(content).toContain("[memory.lobu]");
     expect(content).toContain('org = "support"');
     expect(content).toContain('name = "Support"');
     expect(content).toContain('description = "Help support teams"');
     expect(content).toContain('models = "./models"');
     expect(content).toContain('data = "./data"');
-    expect(content).not.toContain("owletto.yaml");
-    expect(existsSync(join(projectDir, "owletto.yaml"))).toBe(false);
+    expect(content).not.toContain("lobu.yaml");
+    expect(existsSync(join(projectDir, "lobu.yaml"))).toBe(false);
   });
 
   test("generateLobuToml falls back to the agent name when org/name are omitted", async () => {
     await generateLobuToml(projectDir, {
       agentName: "support",
       allowedDomains: "github.com",
-      includeOwlettoMemory: true,
+      includeLobuMemory: true,
     });
 
     const content = readFileSync(join(projectDir, "lobu.toml"), "utf-8");

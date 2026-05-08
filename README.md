@@ -84,7 +84,7 @@ Every Lobu agent ships with tools for autonomous execution and persistence:
 | **Conversation context** — pull earlier thread messages | `GetChannelHistory` |
 | **File & media delivery** — share reports, charts, audio | `UploadUserFile`, `GenerateAudio` |
 | **Skills** — extend via `lobu.toml` or admin settings | `lobu.toml`, Settings UI |
-| **Connected APIs** — GitHub, Google, etc. with Owletto-managed OAuth | MCP tools via Owletto |
+| **Connected APIs** — GitHub, Google, etc. with Lobu-managed OAuth | MCP tools via Lobu |
 | **Managed MCP proxy** — any MCP server with secret injection | [MCP Proxy](docs/SECURITY.md#credentials) |
 | **Nix + external MCP** — browsing, headless UI, custom tools | `bash` (Nix), MCP servers |
 
@@ -97,7 +97,7 @@ Every Lobu agent ships with tools for autonomous execution and persistence:
 ### Design
 
 - **Gateway as single egress.** All worker traffic — internet and MCP — routes through the gateway. Workers have no direct network access; domain filtering controls which services they reach.
-- **MCP proxy.** Gateway resolves `${env:VAR}` secrets and routes to upstream MCP servers. OAuth for third-party APIs stays in Owletto — workers never see tokens.
+- **MCP proxy.** Gateway resolves `${env:VAR}` secrets and routes to upstream MCP servers. OAuth for third-party APIs stays in Lobu — workers never see tokens.
 - **Multi-platform, multi-tenant.** One instance serves Slack, Telegram, WhatsApp, Discord, Teams, and the REST API. Each channel/DM gets its own runtime, model, tools, credentials, and Nix packages.
 - **OpenClaw runtime.** Workers run [OpenClaw Pi Agent](https://openclaw.ai/) with per-agent model selection. Supports OpenClaw skills and `IDENTITY.md` / `SOUL.md` / `USER.md` workspace files.
 - **Multi-provider auth.** 16 LLM providers (OpenAI, Gemini, Groq, DeepSeek, Mistral, …) via a config-driven registry. API keys stay on the gateway.
@@ -120,7 +120,7 @@ Lobu is the **infrastructure layer** for autonomous agents. Frameworks like Lang
 ## Security and Privacy
 
 - [**Worker egress through the gateway proxy**](docs/SECURITY.md#network-egress) — `HTTP_PROXY=http://localhost:8118` with allowlist/blocklist + LLM egress judge. On Linux production hosts the worker spawn uses `systemd-run --user --scope` with `IPAddressDeny=any` to enforce egress at the kernel level; in dev (macOS) the proxy is best-effort.
-- [**Secrets stay in gateway**](docs/SECURITY.md#credentials) — provider credentials and `${env:}` substitution; OAuth lives in Owletto. Workers never see real keys.
+- [**Secrets stay in gateway**](docs/SECURITY.md#credentials) — provider credentials and `${env:}` substitution; OAuth lives in Lobu. Workers never see real keys.
 - [**Threat model: single-tenant local isolation**](docs/SECURITY.md) — `just-bash` and `isolated-vm` are policy + best-effort sandboxes, not security boundaries for hostile code. See `docs/SECURITY.md` before exposing Lobu to untrusted users.
 - [**Nix system packages**](docs/SECURITY.md#skills-and-policy) — per-agent reproducible tooling and skill policy.
 

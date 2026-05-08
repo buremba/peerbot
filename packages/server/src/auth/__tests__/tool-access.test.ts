@@ -364,7 +364,7 @@ describe('first-party tool-name coverage', () => {
   // invariants.
   const __dirname = dirname(fileURLToPath(import.meta.url));
   const webSrcRoot = join(__dirname, '..', '..', '..', '..', 'web', 'src');
-  // The standalone owletto-cli package was merged into @lobu/cli's `memory`
+  // The standalone lobu-cli package was merged into @lobu/cli's `memory`
   // namespace; the REST callTool(...) sites moved to packages/cli/src/commands/memory/.
   const cliSrcRoot = join(__dirname, '..', '..', '..', '..', 'cli', 'src', 'commands', 'memory');
 

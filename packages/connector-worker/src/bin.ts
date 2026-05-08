@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * @owletto/worker CLI
+ * @lobu/worker CLI
  *
  * CLI entry point for the worker package.
  *
@@ -16,7 +16,7 @@ import { assertExternalDepsResolvable } from './runtime-deps.js';
 
 function printUsage(): void {
   console.log(`
-@owletto/worker - Self-hosted worker for Owletto - connectors and embedding generation
+@lobu/worker - Self-hosted worker for Lobu - connectors and embedding generation
 
 Usage:
   connector-worker <command> [options]

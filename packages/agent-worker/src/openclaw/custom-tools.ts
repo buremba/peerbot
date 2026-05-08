@@ -207,7 +207,7 @@ export function createOpenClawCustomTools(params: {
 /**
  * Convert MCP tool definitions from session context into first-class
  * OpenClaw ToolDefinition objects that call the MCP proxy directly.
- * Tools are dynamically discovered from each MCP server (e.g. owletto).
+ * Tools are dynamically discovered from each MCP server (e.g. lobu).
  */
 export function createMcpToolDefinitions(
   mcpTools: Record<string, McpToolDef[]>,

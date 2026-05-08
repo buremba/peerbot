@@ -11,7 +11,7 @@ import {
 const tempDirs: string[] = [];
 const originalEnv = {
   PATH: process.env.PATH,
-  OWLETTO_EXEC_SANDBOX: process.env.OWLETTO_EXEC_SANDBOX,
+  LOBU_EXEC_SANDBOX: process.env.LOBU_EXEC_SANDBOX,
   LOBU_ALLOW_UNSANDBOXED_EXEC: process.env.LOBU_ALLOW_UNSANDBOXED_EXEC,
 };
 
@@ -29,7 +29,7 @@ afterEach(() => {
     fs.rmSync(dir, { recursive: true, force: true });
   }
   restoreEnv("PATH");
-  restoreEnv("OWLETTO_EXEC_SANDBOX");
+  restoreEnv("LOBU_EXEC_SANDBOX");
   restoreEnv("LOBU_ALLOW_UNSANDBOXED_EXEC");
   resetSandboxProbeForTests();
 });
@@ -48,7 +48,7 @@ describe("createEmbeddedBashOps", () => {
     fs.chmodSync(hostCat, 0o755);
 
     process.env.PATH = `${nixBin}:${process.env.PATH ?? ""}`;
-    process.env.OWLETTO_EXEC_SANDBOX = "off";
+    process.env.LOBU_EXEC_SANDBOX = "off";
     delete process.env.LOBU_ALLOW_UNSANDBOXED_EXEC;
 
     const ops = await createEmbeddedBashOps({ workspaceDir: workspace });
@@ -65,9 +65,9 @@ describe("createEmbeddedBashOps", () => {
 
 describe("buildBinaryInvocation", () => {
   test("runs node shebang scripts through node", () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lobu-owletto-"));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lobu-lobu-"));
     tempDirs.push(dir);
-    const scriptPath = path.join(dir, "owletto");
+    const scriptPath = path.join(dir, "lobu");
     fs.writeFileSync(
       scriptPath,
       "#!/usr/bin/env node\nconsole.log('ok');\n",

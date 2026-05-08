@@ -26,9 +26,9 @@ function isTruthyEnv(name: string): boolean {
   return /^(1|true|yes|on)$/i.test(process.env[name]?.trim() ?? '');
 }
 
-const SOCKET_MAX_CONNECTIONS = readPositiveIntEnv('OWLETTO_PGLITE_SOCKET_MAX_CONNECTIONS', 64);
-const SOCKET_IDLE_TIMEOUT_MS = readPositiveIntEnv('OWLETTO_PGLITE_SOCKET_IDLE_TIMEOUT_MS', 0);
-const SOCKET_DEBUG = isTruthyEnv('OWLETTO_PGLITE_SOCKET_DEBUG');
+const SOCKET_MAX_CONNECTIONS = readPositiveIntEnv('LOBU_PGLITE_SOCKET_MAX_CONNECTIONS', 64);
+const SOCKET_IDLE_TIMEOUT_MS = readPositiveIntEnv('LOBU_PGLITE_SOCKET_IDLE_TIMEOUT_MS', 0);
+const SOCKET_DEBUG = isTruthyEnv('LOBU_PGLITE_SOCKET_DEBUG');
 
 export interface PgliteBackend {
   url: string;

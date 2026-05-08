@@ -154,7 +154,7 @@ async function ensureMcpSession(options?: {
         protocolVersion: '2025-03-26',
         capabilities: {},
         clientInfo: {
-          name: 'owletto-test',
+          name: 'lobu-test',
           version: '1.0',
           ...(options?.agentId ? { agentId: options.agentId } : {}),
         },

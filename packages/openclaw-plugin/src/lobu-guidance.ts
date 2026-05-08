@@ -4,14 +4,14 @@ type MemoryGuidanceTools = {
 };
 
 const MEMORY_INTRO =
-  'Your long-term memory is powered by Owletto. Do NOT use local files (memory/, MEMORY.md) for memory.';
+  'Your long-term memory is powered by Lobu. Do NOT use local files (memory/, MEMORY.md) for memory.';
 
 const MEMORY_RULE_TEMPLATES = [
-  'Owletto automatically recalls relevant memories when you receive a message.',
+  'Lobu automatically recalls relevant memories when you receive a message.',
   'To save something, call {{saveTool}} with the content and an appropriate semantic_type.',
   'To search, call {{searchTool}}. Results include view_url links to the web interface.',
-  'NEVER construct Owletto URLs yourself. When the user asks for a link, call {{searchTool}} to get the correct view_url.',
-  'When the user says "remember this", save it to Owletto immediately.',
+  'NEVER construct Lobu URLs yourself. When the user asks for a link, call {{searchTool}} to get the correct view_url.',
+  'When the user says "remember this", save it to Lobu immediately.',
 ];
 
 function renderTemplate(template: string, tools: MemoryGuidanceTools): string {
@@ -20,7 +20,7 @@ function renderTemplate(template: string, tools: MemoryGuidanceTools): string {
     .replaceAll('{{searchTool}}', tools.searchTool);
 }
 
-function renderOwlettoMemoryGuidance(tools: MemoryGuidanceTools): string[] {
+function renderLobuMemoryGuidance(tools: MemoryGuidanceTools): string[] {
   return MEMORY_RULE_TEMPLATES.map((template) => renderTemplate(template, tools));
 }
 
@@ -28,24 +28,24 @@ export function renderFallbackSystemContext(options?: { gatewayMode?: boolean })
   const isGateway = options?.gatewayMode === true;
   const tools: MemoryGuidanceTools = isGateway
     ? { saveTool: 'save_knowledge', searchTool: 'search_knowledge' }
-    : { saveTool: 'owletto_save_knowledge', searchTool: 'owletto_search_knowledge' };
+    : { saveTool: 'lobu_save_knowledge', searchTool: 'lobu_search_knowledge' };
 
-  const lines = renderOwlettoMemoryGuidance(tools);
+  const lines = renderLobuMemoryGuidance(tools);
 
   const authGuidance = isGateway
-    ? '\n- If save_knowledge or search_knowledge returns an authentication error, call owletto_login to start authentication. After the user completes login, call owletto_login_check to finish.'
+    ? '\n- If save_knowledge or search_knowledge returns an authentication error, call lobu_login to start authentication. After the user completes login, call lobu_login_check to finish.'
     : '';
 
-  return `<owletto-system>
+  return `<lobu-system>
 ## Memory
 
 ${MEMORY_INTRO}
 ${lines.map((line) => `- ${line}`).join('\n')}${authGuidance}
-</owletto-system>`;
+</lobu-system>`;
 }
 
 export function renderSkillMemorySection(): string {
-  const lines = renderOwlettoMemoryGuidance({
+  const lines = renderLobuMemoryGuidance({
     saveTool: 'save_knowledge',
     searchTool: 'search_knowledge',
   });

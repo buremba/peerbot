@@ -26,7 +26,7 @@ def request_json(method: str, path: str, body: Dict[str, Any] | None = None) -> 
     headers = {
         'Content-Type': 'application/json',
         'Accept': 'application/json',
-        'User-Agent': 'owletto-zep-benchmark-adapter',
+        'User-Agent': 'lobu-zep-benchmark-adapter',
     }
     if API_KEY:
         headers['Authorization'] = f'Api-Key {API_KEY}'
@@ -72,7 +72,7 @@ def request_json(method: str, path: str, body: Dict[str, Any] | None = None) -> 
 def scope_user_id(payload: Dict[str, Any]) -> str:
     run_id = str(payload.get('runId') or 'benchmark-run')
     suffix = hashlib.sha1(run_id.encode('utf-8')).hexdigest()[:16]
-    return f'owletto-bench-{suffix}'
+    return f'lobu-bench-{suffix}'
 
 
 def normalize_metadata(metadata: Dict[str, Any] | None) -> Dict[str, Any]:
@@ -136,7 +136,7 @@ def action_setup(payload: Dict[str, Any]) -> Any:
         {
             'user_id': user_id,
             'metadata': {
-                'source': 'owletto-memory-benchmark',
+                'source': 'lobu-memory-benchmark',
             },
         },
     )

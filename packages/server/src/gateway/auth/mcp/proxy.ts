@@ -121,7 +121,7 @@ interface HttpMcpServerConfig {
   headers?: Record<string, string>;
   /** Credential scoping strategy: "user" (default) or "channel" (shared in a Slack channel). */
   authScope?: "user" | "channel";
-  /** True when the upstream is the same embedded Owletto process (lobu-memory). */
+  /** True when the upstream is the same embedded Lobu process (lobu-memory). */
   internal?: boolean;
 }
 
@@ -1291,7 +1291,7 @@ export class McpProxy {
       headers.Authorization = `Bearer ${credentialToken}`;
     }
 
-    // Stamp internal MCP requests so the embedded Owletto multi-tenant
+    // Stamp internal MCP requests so the embedded Lobu multi-tenant
     // middleware promotes the worker JWT to admin scope for this org.
     if (internal) {
       headers["X-Lobu-Memory-Direct-Auth"] = "1";
@@ -1353,7 +1353,7 @@ export class McpProxy {
     const sessionKey = this.buildSessionKey(agentId, mcpId, scopeKey);
     const sessionId = await this.getSession(sessionKey);
 
-    // Internal MCPs (lobu-memory) live in the same Owletto process and accept
+    // Internal MCPs (lobu-memory) live in the same Lobu process and accept
     // the worker JWT directly; forcing a second OAuth login would block
     // unattended watcher runs. Non-internal MCPs use per-user credentials.
     let credentialToken: string | undefined;

@@ -1,6 +1,6 @@
 # Security
 
-Lobu runs as a single Node process — gateway, embedded workers, embeddings, and the Owletto memory backend in-process; Postgres is the only user-provided external. There is no Docker or Kubernetes deployment manager. This page documents what's isolated, what's policy, and what isn't a security boundary at all.
+Lobu runs as a single Node process — gateway, embedded workers, embeddings, and the Lobu memory backend in-process; Postgres is the only user-provided external. There is no Docker or Kubernetes deployment manager. This page documents what's isolated, what's policy, and what isn't a security boundary at all.
 
 ## Threat model
 
@@ -24,7 +24,7 @@ If your threat model includes hostile code execution, run Lobu inside a stronger
 `just-bash` (`@mariozechner/pi-coding-agent`) is the shell sandbox the worker uses for every shell command an agent issues. It enforces:
 
 - `maxCommandCount: 50_000`, `maxLoopIterations: 50_000`, `maxCallDepth: 50` — these help against DoS, **not** sandbox escape.
-- A binary allowlist scoped to `/nix/store/` plus a known list (`owletto`, etc.). The allowlist is built at worker spawn from the agent's `nixPackages` config.
+- A binary allowlist scoped to `/nix/store/` plus a known list (`lobu`, etc.). The allowlist is built at worker spawn from the agent's `nixPackages` config.
 
 This is a **policy layer**, not a security boundary. If you allow `nodejs`, `python3`, `bash`, `sh`, `curl`, `git`, `bun`, `nix`, or any package manager into `nixPackages`, the agent has full code-execution capability and the depth caps no longer matter.
 
@@ -59,7 +59,7 @@ This closes most of the gap between "subprocess on the same host" and what Docke
 - Provider credentials and client secrets live on the gateway.
 - The `secret-proxy` swaps `lobu_secret_<uuid>` placeholders for real keys at egress. **Workers never see real provider keys**, regardless of mode.
 - MCP credentials are resolved per-user via device-auth and injected by the gateway proxy at call time.
-- Third-party API auth (GitHub, Google, etc.) is handled by Owletto — workers call these through Owletto MCP tools and never see OAuth tokens.
+- Third-party API auth (GitHub, Google, etc.) is handled by Lobu — workers call these through Lobu MCP tools and never see OAuth tokens.
 
 A compromised worker session cannot leak global platform tokens or MCP client secrets.
 

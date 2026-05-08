@@ -795,7 +795,7 @@ export function createDeviceAuthRoutes(
     }
   });
 
-  // GET /internal/device-auth/status?mcpId=owletto
+  // GET /internal/device-auth/status?mcpId=lobu
   router.get("/internal/device-auth/status", authenticateWorker, async (c) => {
     const mcpId = c.req.query("mcpId");
     if (!mcpId) {
@@ -815,7 +815,7 @@ export function createDeviceAuthRoutes(
     return c.json({ authenticated: !!credential });
   });
 
-  // DELETE /internal/device-auth/credential?mcpId=owletto
+  // DELETE /internal/device-auth/credential?mcpId=lobu
   // Logout: revoke a stored credential + purge the underlying secret.
   router.delete(
     "/internal/device-auth/credential",

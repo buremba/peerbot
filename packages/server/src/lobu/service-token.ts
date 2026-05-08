@@ -3,7 +3,7 @@ import { getDb } from '../db/client';
 import logger from '../utils/logger';
 
 /**
- * Generate a short-lived OAuth access token from Owletto's own auth system.
+ * Generate a short-lived OAuth access token from Lobu's own auth system.
  * Embedded Lobu accepts this via the external auth bridge.
  */
 export async function getLobuServiceToken(organizationId?: string): Promise<string | null> {
@@ -37,7 +37,7 @@ export async function getLobuServiceToken(organizationId?: string): Promise<stri
         ${id},
         'access',
         ${tokenHash},
-        'owletto-internal',
+        'lobu-internal',
         ${user.user_id},
         ${user.org_id},
         'profile:read',

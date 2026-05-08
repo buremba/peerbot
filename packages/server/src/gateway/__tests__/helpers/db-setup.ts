@@ -38,7 +38,7 @@ export function ensurePgliteForGatewayTests(): Promise<void> {
       backend = await startPgliteBackend();
       process.env.DATABASE_URL = backend.url;
       process.env.PGSSLMODE = "disable";
-      process.env.OWLETTO_DISABLE_PREPARE = "1";
+      process.env.LOBU_DISABLE_PREPARE = "1";
     }
     if (!process.env.ENCRYPTION_KEY) {
       process.env.ENCRYPTION_KEY =

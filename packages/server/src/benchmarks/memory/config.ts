@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import type { BenchmarkRunConfig, CommandSystemConfig, OwlettoMcpSystemConfig } from './types';
+import type { BenchmarkRunConfig, CommandSystemConfig, LobuMcpSystemConfig } from './types';
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -16,7 +16,7 @@ function resolveEnvValue(value: string): string {
   return resolved;
 }
 
-function validateOwlettoConfig(config: OwlettoMcpSystemConfig): OwlettoMcpSystemConfig {
+function validateLobuConfig(config: LobuMcpSystemConfig): LobuMcpSystemConfig {
   assert(config.mcpUrl, `System '${config.id}' is missing mcpUrl`);
   return config;
 }
@@ -51,8 +51,8 @@ export function loadBenchmarkConfig(path: string): BenchmarkRunConfig {
   const systems = config.systems
     .filter((system) => system.enabled !== false)
     .map((system) => {
-      if (system.type === 'owletto-mcp') return validateOwlettoConfig(system);
-      if (system.type === 'owletto-inprocess') return system;
+      if (system.type === 'lobu-mcp') return validateLobuConfig(system);
+      if (system.type === 'lobu-inprocess') return system;
       if (system.type === 'command') return validateCommandConfig(system);
       throw new Error(
         `Unsupported benchmark system type '${(system as { type?: string }).type ?? 'unknown'}'`
@@ -62,7 +62,7 @@ export function loadBenchmarkConfig(path: string): BenchmarkRunConfig {
   return {
     ...config,
     suitePath: resolve(process.cwd(), config.suitePath),
-    outputDir: resolve(process.cwd(), config.outputDir ?? '.owletto/benchmarks/memory'),
+    outputDir: resolve(process.cwd(), config.outputDir ?? '.lobu/benchmarks/memory'),
     trials: Math.max(config.trials ?? 1, 1),
     topK: Math.max(config.topK ?? 8, 1),
     systems,

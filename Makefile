@@ -76,9 +76,9 @@ test-unit:
 # Requires DATABASE_URL pointing at a Postgres with pgvector installed.
 # Tip for a clean local DB:
 #   sudo apt-get install -y postgresql-16-pgvector
-#   sudo -u postgres createdb owletto_test
-#   sudo -u postgres psql -d owletto_test -c "CREATE EXTENSION vector"
-#   export DATABASE_URL=postgres://postgres@127.0.0.1:5432/owletto_test PGSSLMODE=disable
+#   sudo -u postgres createdb lobu_test
+#   sudo -u postgres psql -d lobu_test -c "CREATE EXTENSION vector"
+#   export DATABASE_URL=postgres://postgres@127.0.0.1:5432/lobu_test PGSSLMODE=disable
 test-integration:
 	@: $${DATABASE_URL?Set DATABASE_URL=postgres://… (with pgvector) before running}
 	@echo "🧪 Integration suite (Postgres at $${DATABASE_URL%%@*}@…)…"

@@ -2,7 +2,7 @@
  * Shared types for the integration system.
  *
  * OAuth credential management for third-party APIs (GitHub, Google, etc.)
- * is handled by Owletto.
+ * is handled by Lobu.
  */
 
 import type { ProviderConfigEntry } from "./provider-config-types";

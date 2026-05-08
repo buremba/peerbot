@@ -48,7 +48,7 @@ describe('MCP Authentication', () => {
     client = await createTestOAuthClient();
     agent = await createTestAgent({
       organizationId: org.id,
-      agentId: 'owletto-test-agent',
+      agentId: 'lobu-test-agent',
       ownerUserId: user.id,
     });
     publicEntity = await createTestEntity({
@@ -92,7 +92,7 @@ describe('MCP Authentication', () => {
           params: {
             protocolVersion: '2025-03-26',
             capabilities: {},
-            clientInfo: { name: 'owletto-test', version: '1.0' },
+            clientInfo: { name: 'lobu-test', version: '1.0' },
           },
         },
       });
@@ -127,7 +127,7 @@ describe('MCP Authentication', () => {
           params: {
             protocolVersion: '2025-03-26',
             capabilities: {},
-            clientInfo: { name: 'owletto-test', version: '1.0' },
+            clientInfo: { name: 'lobu-test', version: '1.0' },
           },
         },
       });
@@ -159,7 +159,7 @@ describe('MCP Authentication', () => {
           params: {
             protocolVersion: '2025-03-26',
             capabilities: {},
-            clientInfo: { name: 'owletto-test', version: '1.0' },
+            clientInfo: { name: 'lobu-test', version: '1.0' },
           },
         },
       });
@@ -236,7 +236,7 @@ describe('MCP Authentication', () => {
           params: {
             protocolVersion: '2025-03-26',
             capabilities: {},
-            clientInfo: { name: 'owletto-test', version: '1.0' },
+            clientInfo: { name: 'lobu-test', version: '1.0' },
           },
         },
       });
@@ -444,7 +444,7 @@ describe('MCP Authentication', () => {
           params: {
             protocolVersion: '2025-03-26',
             capabilities: {},
-            clientInfo: { name: 'owletto-test', version: '1.0' },
+            clientInfo: { name: 'lobu-test', version: '1.0' },
           },
         },
         token,
@@ -529,7 +529,7 @@ describe('MCP Authentication', () => {
           params: {
             protocolVersion: '2025-03-26',
             capabilities: {},
-            clientInfo: { name: 'owletto-test', version: '1.0' },
+            clientInfo: { name: 'lobu-test', version: '1.0' },
           },
         },
         token: orgToken,
@@ -660,7 +660,7 @@ describe('MCP Authentication', () => {
             protocolVersion: '2025-03-26',
             capabilities: {},
             clientInfo: {
-              name: 'owletto-test',
+              name: 'lobu-test',
               version: '1.0',
               agentId: 'missing-agent',
             },
@@ -888,7 +888,7 @@ describe('MCP Authentication', () => {
       // Verify expected tools are present. The legacy `manage_*`,
       // `read_knowledge`, `get_watcher`, `list_watchers` MCP tools are now
       // internal-only and reachable via the SDK from `run` / `query` scripts.
-      // owletto-cli's browser-auth flow now hits the REST proxy, so
+      // lobu-cli's browser-auth flow now hits the REST proxy, so
       // `manage_connections` / `manage_auth_profiles` are no longer public-MCP.
       const toolNames = result.tools.map((t: any) => t.name);
       expect(toolNames).toContain('search_knowledge');

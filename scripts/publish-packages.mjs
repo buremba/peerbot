@@ -30,7 +30,7 @@ const PACKAGES = [
 ];
 
 // Published package names that don't use the @lobu/ scope. The unscoped
-// `owletto` package was retired when the CLI merged into @lobu/cli; the
+// `lobu` package was retired when the CLI merged into @lobu/cli; the
 // allow-list stays in case another unscoped package ever gets added.
 const UNSCOPED_ALLOWED_PUBLISHED_NAMES = new Set();
 
@@ -207,7 +207,7 @@ async function main() {
   } else {
     console.log("\n[2/3] Building packages");
     run("bun", ["run", "build:packages"]);
-    run("bun", ["run", "build:owletto"]);
+    run("bun", ["run", "build:lobu"]);
   }
 
   console.log("\n[3/3] Publishing to npm");

@@ -79,7 +79,7 @@ describe("embedded MCP CLI through real just-bash", () => {
   test("heredoc JSON on stdin reaches the handler as a parsed object", async () => {
     const ref: McpRuntimeRef = {
       current: {
-        mcpTools: { owletto: [searchKnowledge] },
+        mcpTools: { lobu: [searchKnowledge] },
         mcpStatus: [],
         mcpContext: {},
       },
@@ -94,7 +94,7 @@ describe("embedded MCP CLI through real just-bash", () => {
     });
 
     const result = await bash.exec(
-      `owletto search_knowledge <<'EOF'
+      `lobu search_knowledge <<'EOF'
 {"query":"architecture"}
 EOF`,
       { cwd: "/" }
@@ -108,7 +108,7 @@ EOF`,
   test("echo … | <server> <tool> routes the piped JSON into the handler", async () => {
     const ref: McpRuntimeRef = {
       current: {
-        mcpTools: { owletto: [searchKnowledge] },
+        mcpTools: { lobu: [searchKnowledge] },
         mcpStatus: [],
         mcpContext: {},
       },
@@ -123,7 +123,7 @@ EOF`,
     });
 
     const result = await bash.exec(
-      `echo '{"query":"piped"}' | owletto search_knowledge`,
+      `echo '{"query":"piped"}' | lobu search_knowledge`,
       { cwd: "/" }
     );
 
@@ -134,11 +134,11 @@ EOF`,
   test("<server> --help lists the discovered tools", async () => {
     const ref: McpRuntimeRef = {
       current: {
-        mcpTools: { owletto: [searchKnowledge] },
+        mcpTools: { lobu: [searchKnowledge] },
         mcpStatus: [
           {
-            id: "owletto",
-            name: "Owletto",
+            id: "lobu",
+            name: "Lobu",
             requiresAuth: true,
             requiresInput: false,
             authenticated: true,
@@ -153,7 +153,7 @@ EOF`,
       callTool: async () => ({ content: [] }),
     });
 
-    const result = await bash.exec("owletto --help", { cwd: "/" });
+    const result = await bash.exec("lobu --help", { cwd: "/" });
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("search_knowledge");
     expect(result.stdout).toContain("auth login|check|logout");
@@ -162,7 +162,7 @@ EOF`,
   test("unknown subcommand exits with stderr diagnostic", async () => {
     const ref: McpRuntimeRef = {
       current: {
-        mcpTools: { owletto: [] },
+        mcpTools: { lobu: [] },
         mcpStatus: [],
         mcpContext: {},
       },
@@ -172,7 +172,7 @@ EOF`,
       callTool: async () => ({ content: [] }),
     });
 
-    const result = await bash.exec("owletto mystery", { cwd: "/" });
+    const result = await bash.exec("lobu mystery", { cwd: "/" });
     expect(result.exitCode).toBe(2);
     expect(result.stderr).toContain("unknown tool");
   });

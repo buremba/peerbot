@@ -74,7 +74,7 @@ export async function buildWorkspaceInstructions(organizationId: string): Promis
 
     // Assemble
     const sections: string[] = [
-      '## Owletto — Your Persistent Memory',
+      '## Lobu — Your Persistent Memory',
       '',
       "You have persistent memory. Use it proactively — don't wait to be asked.",
     ];

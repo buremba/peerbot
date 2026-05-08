@@ -6,9 +6,9 @@ import {
 } from "../../connect-from-config";
 import {
   getLandingUseCaseShowcase,
-  getOwlettoBaseHostLabel,
-  getOwlettoBaseUrl,
-  getOwlettoMcpUrl,
+  getLobuBaseHostLabel,
+  getLobuBaseUrl,
+  getLobuMcpUrl,
   landingUseCaseWorkspaceOptions,
 } from "../../use-case-showcases";
 import type { LandingUseCaseId } from "../../use-case-definitions";
@@ -21,9 +21,9 @@ const { clientId, useCaseId } = Astro.props as {
 };
 const client = getConnectFromClientConfig(clientId);
 const showcase = useCaseId ? getLandingUseCaseShowcase(useCaseId) : undefined;
-const owlettoMcpUrl = getOwlettoMcpUrl();
-const owlettoBaseUrl = getOwlettoBaseUrl();
-const owlettoBaseHostLabel = getOwlettoBaseHostLabel();
+const lobuMcpUrl = getLobuMcpUrl();
+const lobuBaseUrl = getLobuBaseUrl();
+const lobuBaseHostLabel = getLobuBaseHostLabel();
 
 const clientSwitcherLinks = connectFromClientIds
   .filter((id) => id !== clientId)
@@ -60,9 +60,9 @@ const relatedLinks = client.docsRelated.map((link) => {
 <TryItSection
   client:load
   clientLabel={client.label}
-  mcpBaseUrl={owlettoMcpUrl}
-  owlettoBaseUrl={owlettoBaseUrl}
-  owlettoBaseHostLabel={owlettoBaseHostLabel}
+  mcpBaseUrl={lobuMcpUrl}
+  lobuBaseUrl={lobuBaseUrl}
+  lobuBaseHostLabel={lobuBaseHostLabel}
   workspaces={landingUseCaseWorkspaceOptions}
   initialUseCaseId={useCaseId}
 />
@@ -84,7 +84,7 @@ const relatedLinks = client.docsRelated.map((link) => {
 ) : null}
 
 <p>
-  Paste this into {client.label} and it will install Owletto for you.
+  Paste this into {client.label} and it will install Lobu for you.
 </p>
 <CopyableSnippet
   client:load

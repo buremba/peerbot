@@ -30,7 +30,7 @@ function makeRef(overrides: Partial<McpRuntimeState> = {}): McpRuntimeRef {
   };
 }
 
-const owlettoTool: McpToolDef = {
+const lobuTool: McpToolDef = {
   name: "search_knowledge",
   description: "Search the memory store",
   inputSchema: {
@@ -88,25 +88,25 @@ describe("isMcpIdReserved (edge cases)", () => {
 describe("renderHelp branches via --help", () => {
   test("includes mcpContext prefix when present", async () => {
     const ref = makeRef({
-      mcpTools: { owletto: [owlettoTool] },
+      mcpTools: { lobu: [lobuTool] },
       mcpStatus: [
         {
-          id: "owletto",
-          name: "Owletto",
+          id: "lobu",
+          name: "Lobu",
           requiresAuth: false,
           requiresInput: false,
           authenticated: true,
           configured: true,
         },
       ],
-      mcpContext: { owletto: "Owletto session: 12 facts in memory." },
+      mcpContext: { lobu: "Lobu session: 12 facts in memory." },
     });
-    const handler = buildMcpServerHandler("owletto", ref, gw, {
+    const handler = buildMcpServerHandler("lobu", ref, gw, {
       callTool: async () => ({ content: [] }),
     });
     const out = await handler(["--help"], {});
     expect(out.exitCode).toBe(0);
-    expect(out.stdout).toContain("Owletto session: 12 facts in memory.");
+    expect(out.stdout).toContain("Lobu session: 12 facts in memory.");
     // requiresAuth=false → no auth line
     expect(out.stdout).not.toContain("auth login|check|logout");
   });
@@ -134,8 +134,8 @@ describe("renderHelp branches via --help", () => {
   });
 
   test("-h alias also renders help", async () => {
-    const ref = makeRef({ mcpTools: { owletto: [owlettoTool] } });
-    const handler = buildMcpServerHandler("owletto", ref, gw, {
+    const ref = makeRef({ mcpTools: { lobu: [lobuTool] } });
+    const handler = buildMcpServerHandler("lobu", ref, gw, {
       callTool: async () => ({ content: [] }),
     });
     const out = await handler(["-h"], {});
@@ -144,8 +144,8 @@ describe("renderHelp branches via --help", () => {
   });
 
   test("truncates long tool descriptions and collapses whitespace", async () => {
-    const ref = makeRef({ mcpTools: { owletto: [longTool] } });
-    const handler = buildMcpServerHandler("owletto", ref, gw, {
+    const ref = makeRef({ mcpTools: { lobu: [longTool] } });
+    const handler = buildMcpServerHandler("lobu", ref, gw, {
       callTool: async () => ({ content: [] }),
     });
     const out = await handler(["--help"], {});
@@ -160,8 +160,8 @@ describe("renderHelp branches via --help", () => {
   });
 
   test("renders tool with no description without trailing whitespace", async () => {
-    const ref = makeRef({ mcpTools: { owletto: [undescribedTool] } });
-    const handler = buildMcpServerHandler("owletto", ref, gw, {
+    const ref = makeRef({ mcpTools: { lobu: [undescribedTool] } });
+    const handler = buildMcpServerHandler("lobu", ref, gw, {
       callTool: async () => ({ content: [] }),
     });
     const out = await handler(["--help"], {});
@@ -177,25 +177,25 @@ describe("renderHelp branches via --help", () => {
 describe("summariseAuthStart edge cases", () => {
   test("falls through to raw text on unknown status", () => {
     const raw = JSON.stringify({ status: "weird_unknown_status", x: 1 });
-    expect(summariseAuthStart(raw, "owletto")).toBe(raw);
+    expect(summariseAuthStart(raw, "lobu")).toBe(raw);
   });
 
   test("returns raw text when JSON parse fails", () => {
-    expect(summariseAuthStart("not json", "owletto")).toBe("not json");
+    expect(summariseAuthStart("not json", "lobu")).toBe("not json");
   });
 
   test("returns raw text when payload is a JSON array (not object)", () => {
     const raw = "[1,2,3]";
-    expect(summariseAuthStart(raw, "owletto")).toBe(raw);
+    expect(summariseAuthStart(raw, "lobu")).toBe(raw);
   });
 });
 
 describe("summariseAuthCheck edge cases", () => {
   test("defaults missing fields to unknown/false", () => {
-    const out = summariseAuthCheck({}, "owletto", "raw");
+    const out = summariseAuthCheck({}, "lobu", "raw");
     expect(JSON.parse(out)).toEqual({
       status: "unknown",
-      mcp_id: "owletto",
+      mcp_id: "lobu",
       authenticated: false,
     });
   });
@@ -223,8 +223,8 @@ describe("auth subcommand routing", () => {
     const ref = makeRef({
       mcpStatus: [
         {
-          id: "owletto",
-          name: "Owletto",
+          id: "lobu",
+          name: "Lobu",
           requiresAuth: true,
           requiresInput: false,
           authenticated: true,
@@ -232,7 +232,7 @@ describe("auth subcommand routing", () => {
         },
       ],
     });
-    const handler = buildMcpServerHandler("owletto", ref, gw, {
+    const handler = buildMcpServerHandler("lobu", ref, gw, {
       callTool: async () => ({ content: [] }),
     });
 
@@ -240,7 +240,7 @@ describe("auth subcommand routing", () => {
     expect(r.exitCode).toBe(0);
     const parsed = JSON.parse(r.stdout.trim());
     expect(parsed.status).toBe("already_authenticated");
-    expect(parsed.mcp_id).toBe("owletto");
+    expect(parsed.mcp_id).toBe("lobu");
   });
 
   test("auth check (pending) emits authenticated=false and skips refresh", async () => {
@@ -267,7 +267,7 @@ describe("auth subcommand routing", () => {
         return null;
       },
     };
-    const handler = buildMcpServerHandler("owletto", ref, gw, {
+    const handler = buildMcpServerHandler("lobu", ref, gw, {
       callTool: async () => ({ content: [] }),
     });
 
@@ -298,20 +298,20 @@ describe("auth subcommand routing", () => {
       refresh: async () => {
         refreshCalls += 1;
         return {
-          mcpTools: { owletto: [owlettoTool] },
+          mcpTools: { lobu: [lobuTool] },
           mcpStatus: [],
           mcpContext: {},
         };
       },
     };
-    const handler = buildMcpServerHandler("owletto", ref, gw, {
+    const handler = buildMcpServerHandler("lobu", ref, gw, {
       callTool: async () => ({ content: [] }),
     });
 
     const r = await handler(["auth", "check"], {});
     expect(r.exitCode).toBe(0);
     expect(refreshCalls).toBe(1);
-    expect(ref.current.mcpTools.owletto).toEqual([owlettoTool]);
+    expect(ref.current.mcpTools.lobu).toEqual([lobuTool]);
   });
 
   test("auth check refresh failure is swallowed (does not throw)", async () => {
@@ -329,7 +329,7 @@ describe("auth subcommand routing", () => {
         throw new Error("session ctx down");
       },
     };
-    const handler = buildMcpServerHandler("owletto", ref, gw, {
+    const handler = buildMcpServerHandler("lobu", ref, gw, {
       callTool: async () => ({ content: [] }),
     });
 
@@ -350,7 +350,7 @@ describe("auth subcommand routing", () => {
     let refreshed = 0;
     const ref: McpRuntimeRef = {
       current: {
-        mcpTools: { owletto: [owlettoTool] },
+        mcpTools: { lobu: [lobuTool] },
         mcpStatus: [],
         mcpContext: {},
       },
@@ -363,7 +363,7 @@ describe("auth subcommand routing", () => {
         };
       },
     };
-    const handler = buildMcpServerHandler("owletto", ref, gw, {
+    const handler = buildMcpServerHandler("lobu", ref, gw, {
       callTool: async () => ({ content: [] }),
     });
 
@@ -379,8 +379,8 @@ describe("auth subcommand routing", () => {
       Response.json({ success: true })
     ) as unknown as typeof fetch;
 
-    const ref = makeRef({ mcpTools: { owletto: [owlettoTool] } });
-    const handler = buildMcpServerHandler("owletto", ref, gw, {
+    const ref = makeRef({ mcpTools: { lobu: [lobuTool] } });
+    const handler = buildMcpServerHandler("lobu", ref, gw, {
       callTool: async () => ({ content: [] }),
     });
 
@@ -390,7 +390,7 @@ describe("auth subcommand routing", () => {
 
   test("auth without verb returns helpful error", async () => {
     const ref = makeRef();
-    const handler = buildMcpServerHandler("owletto", ref, gw, {
+    const handler = buildMcpServerHandler("lobu", ref, gw, {
       callTool: async () => ({ content: [] }),
     });
 
@@ -402,7 +402,7 @@ describe("auth subcommand routing", () => {
 
   test("auth unknown verb returns helpful error", async () => {
     const ref = makeRef();
-    const handler = buildMcpServerHandler("owletto", ref, gw, {
+    const handler = buildMcpServerHandler("lobu", ref, gw, {
       callTool: async () => ({ content: [] }),
     });
 
@@ -439,11 +439,11 @@ describe("parsePayload further edge cases", () => {
 describe("buildMcpCliCommands edge cases", () => {
   test("dedupes server ids that appear in both mcpTools and mcpStatus", () => {
     const ref = makeRef({
-      mcpTools: { owletto: [owlettoTool] },
+      mcpTools: { lobu: [lobuTool] },
       mcpStatus: [
         {
-          id: "owletto",
-          name: "Owletto",
+          id: "lobu",
+          name: "Lobu",
           requiresAuth: false,
           requiresInput: false,
           authenticated: true,
@@ -452,7 +452,7 @@ describe("buildMcpCliCommands edge cases", () => {
       ],
     });
     const cmds = buildMcpCliCommands(ref, gw);
-    expect(cmds.map((c) => c.name)).toEqual(["owletto"]);
+    expect(cmds.map((c) => c.name)).toEqual(["lobu"]);
   });
 
   test("returns empty list when nothing is registered", () => {

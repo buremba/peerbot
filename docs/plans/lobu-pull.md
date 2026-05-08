@@ -1,6 +1,6 @@
 # `lobu pull` — Plan
 
-Status: **planning** · Owner: @buremba · Stacks on `feat/owletto-cli-merge` · Builds on `lobu-apply.md` (v1 already merged)
+Status: **planning** · Owner: @buremba · Stacks on `feat/lobu-cli-merge` · Builds on `lobu-apply.md` (v1 already merged)
 
 ## Goal
 
@@ -149,9 +149,9 @@ Pull **omits** volatile fields. Specifically:
 
 > [decision needed: any other field with churn that I'm missing? Cross-check during PR review against the file-loader's normalization output.]
 
-### `[memory.owletto]` block
+### `[memory.lobu]` block
 
-Pull infers and writes a `[memory.owletto]` block with `org = "<orgSlug>"` and `mcp_url = "<mcpUrl>"` derived from the CLI's current auth context (the same `mcpUrl` the GETs are running against). This is a **new** thing pull does that apply does not — apply doesn't *write* it because file-loader synthesizes it from the token at runtime. Pull writes it explicitly because the goal is "filesystem matches cloud", and the org binding is part of that match. If the user later moves the project to a different org, they edit this block — same as today.
+Pull infers and writes a `[memory.lobu]` block with `org = "<orgSlug>"` and `mcp_url = "<mcpUrl>"` derived from the CLI's current auth context (the same `mcpUrl` the GETs are running against). This is a **new** thing pull does that apply does not — apply doesn't *write* it because file-loader synthesizes it from the token at runtime. Pull writes it explicitly because the goal is "filesystem matches cloud", and the org binding is part of that match. If the user later moves the project to a different org, they edit this block — same as today.
 
 ### No-local-project case
 
@@ -216,7 +216,7 @@ If any step fails, the PR is not ready.
 ## Stacking & ordering
 
 ```
-   feat/owletto-cli-merge (#459)
+   feat/lobu-cli-merge (#459)
             │
             ▼
    lobu-apply v1 PRs (already merged)

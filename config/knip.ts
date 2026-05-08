@@ -9,7 +9,7 @@ const config: KnipConfig = {
   ignoreUnresolved: ["^npm:"],
   workspaces: {
     // Connector source files are loaded by file path
-    // (scripts/owletto/install-connectors.ts), not imported as modules.
+    // (scripts/lobu/install-connectors.ts), not imported as modules.
     "packages/connectors": {
       entry: ["src/*.ts"],
     },
@@ -30,14 +30,14 @@ const config: KnipConfig = {
     },
     "packages/server": {
       entry: [
-        // Embedded server boot path; previously also used by `owletto start`
+        // Embedded server boot path; previously also used by `lobu start`
         // before the CLI merge collapsed everything onto `lobu run`.
         "src/start-local.ts",
-        // Reached via cross-workspace import from scripts/owletto/sync-local.ts.
+        // Reached via cross-workspace import from scripts/lobu/sync-local.ts.
         "src/lib/feed-sync.ts",
         // Dynamically imported at runtime by reaction-executor.
         "src/tools/admin/notify.ts",
-        // Benchmark suite — entries are scripts in scripts/owletto/.
+        // Benchmark suite — entries are scripts in scripts/lobu/.
         "src/benchmarks/memory/runner.ts",
         "src/benchmarks/memory/adapters/*.ts",
         "src/benchmarks/memory/public-datasets/*.ts",

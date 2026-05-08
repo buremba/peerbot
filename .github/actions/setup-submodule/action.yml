@@ -47,7 +47,7 @@ runs:
         # `git status --porcelain` after install).
         printf '%s\n' \
           '{' \
-          '  "name": "@owletto/web",' \
+          '  "name": "@lobu/web",' \
           '  "private": true,' \
           '  "version": "1.6.0",' \
           '  "description": "Stub — private submodule not initialized"' \

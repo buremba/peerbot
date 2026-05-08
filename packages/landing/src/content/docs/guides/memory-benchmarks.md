@@ -47,7 +47,7 @@ Latency is **retrieval-only latency**, not end-to-end wall clock. It is not full
 
 ## Reproducing the results
 
-The full harness lives in the [`owletto` repo](https://github.com/lobu-ai/owletto) under [`benchmarks/memory/`](https://github.com/lobu-ai/owletto/tree/main/benchmarks/memory). The TypeScript runner is at `src/benchmarks/memory/`. External systems are integrated as long-lived Python adapter subprocesses framed over JSONL-on-stdin, which avoids per-op fork/exec cost.
+The full harness lives in the [`lobu` repo](https://github.com/lobu-ai/lobu) under [`benchmarks/memory/`](https://github.com/lobu-ai/lobu/tree/main/benchmarks/memory). The TypeScript runner is at `src/benchmarks/memory/`. External systems are integrated as long-lived Python adapter subprocesses framed over JSONL-on-stdin, which avoids per-op fork/exec cost.
 
 ### Prerequisites
 
@@ -88,14 +88,14 @@ pnpm benchmark:memory --config benchmarks/memory/config.locomo.10.compare.top-me
 pnpm benchmark:memory --config benchmarks/memory/config.locomo.30.local.json
 ```
 
-A complete table of available configs is documented in [`benchmarks/memory/README.md`](https://github.com/lobu-ai/owletto/blob/main/benchmarks/memory/README.md#available-configs).
+A complete table of available configs is documented in [`benchmarks/memory/README.md`](https://github.com/lobu-ai/lobu/blob/main/benchmarks/memory/README.md#available-configs).
 
 ## GitHub Actions
 
 The Memory Benchmark workflow runs the same harness in CI and uploads JSON + Markdown artifacts.
 
-- Workflow: [`benchmark-memory.yml`](https://github.com/lobu-ai/owletto/blob/main/.github/workflows/benchmark-memory.yml)
-- Trigger: [Actions → Memory Benchmark → Run workflow](https://github.com/lobu-ai/owletto/actions/workflows/benchmark-memory.yml)
+- Workflow: [`benchmark-memory.yml`](https://github.com/lobu-ai/lobu/blob/main/.github/workflows/benchmark-memory.yml)
+- Trigger: [Actions → Memory Benchmark → Run workflow](https://github.com/lobu-ai/lobu/actions/workflows/benchmark-memory.yml)
 
 Inputs include `dataset` (`longmemeval-oracle` or `locomo`), `limit`, `trials`, `model` (answerer model id), and `providers` (comma-separated adapter list).
 
@@ -103,12 +103,12 @@ Inputs include `dataset` (`longmemeval-oracle` or `locomo`), `limit`, `trials`, 
 
 | System | Adapter | Notes |
 |---|---|---|
-| Mem0 | [`adapters/mem0_adapter.py`](https://github.com/lobu-ai/owletto/blob/main/benchmarks/memory/adapters/mem0_adapter.py) | `MEM0_API_KEY` |
-| Supermemory | [`adapters/supermemory_adapter.py`](https://github.com/lobu-ai/owletto/blob/main/benchmarks/memory/adapters/supermemory_adapter.py) | `SUPERMEMORY_API_KEY` |
-| Letta | [`adapters/letta_adapter.py`](https://github.com/lobu-ai/owletto/blob/main/benchmarks/memory/adapters/letta_adapter.py) | `LETTA_API_KEY` |
-| Zep | [`adapters/zep_adapter.py`](https://github.com/lobu-ai/owletto/blob/main/benchmarks/memory/adapters/zep_adapter.py) | `ZEP_API_KEY` (Cloud) or `ZEP_BASE_URL` (self-hosted) |
+| Mem0 | [`adapters/mem0_adapter.py`](https://github.com/lobu-ai/lobu/blob/main/benchmarks/memory/adapters/mem0_adapter.py) | `MEM0_API_KEY` |
+| Supermemory | [`adapters/supermemory_adapter.py`](https://github.com/lobu-ai/lobu/blob/main/benchmarks/memory/adapters/supermemory_adapter.py) | `SUPERMEMORY_API_KEY` |
+| Letta | [`adapters/letta_adapter.py`](https://github.com/lobu-ai/lobu/blob/main/benchmarks/memory/adapters/letta_adapter.py) | `LETTA_API_KEY` |
+| Zep | [`adapters/zep_adapter.py`](https://github.com/lobu-ai/lobu/blob/main/benchmarks/memory/adapters/zep_adapter.py) | `ZEP_API_KEY` (Cloud) or `ZEP_BASE_URL` (self-hosted) |
 
-To add a new system, write a Python adapter that defines `reset` / `setup` / `ingest` / `retrieve` action handlers. The shared protocol module is at [`adapters/_bench_protocol.py`](https://github.com/lobu-ai/owletto/blob/main/benchmarks/memory/adapters/_bench_protocol.py).
+To add a new system, write a Python adapter that defines `reset` / `setup` / `ingest` / `retrieve` action handlers. The shared protocol module is at [`adapters/_bench_protocol.py`](https://github.com/lobu-ai/lobu/blob/main/benchmarks/memory/adapters/_bench_protocol.py).
 
 ## Why Lobu wins on retention
 

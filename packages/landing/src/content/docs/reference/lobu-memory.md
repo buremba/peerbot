@@ -116,7 +116,7 @@ lobu memory run run '{"dry_run":true,"script":"export default async (ctx, client
 
 ### `lobu memory seed`
 
-Provisions a memory workspace from `[memory.owletto]` in `lobu.toml`, `./models`, and optional `./data`.
+Provisions a memory workspace from `[memory.lobu]` in `lobu.toml`, `./models`, and optional `./data`.
 
 ```bash
 lobu memory seed
@@ -143,7 +143,7 @@ Useful flags:
 
 ## Skills
 
-The old standalone Owletto starter skills are folded into the bundled Lobu starter skill:
+The old standalone Lobu starter skills are folded into the bundled Lobu starter skill:
 
 ```bash
 # Enable the Lobu skill from the agent settings UI

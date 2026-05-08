@@ -179,7 +179,7 @@ export function getConfiguredConnectorCatalogUris(rawUris?: string): string[] {
 }
 
 export async function compileConnectorFromFile(filePath: string): Promise<string> {
-  const tmpDir = await mkdtemp(join(tmpdir(), 'owletto-connector-'));
+  const tmpDir = await mkdtemp(join(tmpdir(), 'lobu-connector-'));
   const outPath = join(tmpDir, 'out.mjs');
 
   try {
@@ -190,7 +190,7 @@ export async function compileConnectorFromFile(filePath: string): Promise<string
       format: 'esm',
       platform: 'node',
       target: 'node20',
-      alias: { owletto: SDK_ENTRY, '@lobu/connector-sdk': SDK_ENTRY },
+      alias: { lobu: SDK_ENTRY, '@lobu/connector-sdk': SDK_ENTRY },
       banner: {
         js: `import { createRequire as __createRequire } from 'module'; const require = __createRequire(import.meta.url);`,
       },

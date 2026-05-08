@@ -103,7 +103,7 @@ export async function compileReactionScript(source: string): Promise<string> {
   const { compileSource } = await import('../utils/compiler-core');
   // Match `runScript`'s execute-time esbuild config exactly so save-time and
   // runtime accept the same set of imports. Drift here used to externalize
-  // `@owletto/reactions`, which the runtime recompile would then fail to
+  // `@lobu/reactions`, which the runtime recompile would then fail to
   // resolve.
   const result = await compileSource(source, {
     tmpPrefix: '.reaction-compile-',

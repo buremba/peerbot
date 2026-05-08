@@ -309,7 +309,7 @@ async function main() {
     if (started) return;
     started = true;
 
-    // Keep temp module under cwd so bare imports (e.g. owletto) resolve via local node_modules.
+    // Keep temp module under cwd so bare imports (e.g. lobu) resolve via local node_modules.
     const tmpFile = join(process.cwd(), `.connector-child-${process.pid}-${Date.now()}.mjs`);
 
     try {

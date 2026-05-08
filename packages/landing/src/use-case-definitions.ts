@@ -170,7 +170,7 @@ export type LandingUseCaseDefinition = {
   model: LandingUseCaseModelDefinition;
   skills: LandingUseCaseSkillsDefinition;
   memory: LandingUseCaseMemoryDefinition;
-  owlettoOrg?: string;
+  lobuOrg?: string;
 };
 
 export const technicalLinks = {
@@ -418,7 +418,7 @@ export const landingUseCases = {
         },
       ],
     },
-    owlettoOrg: g("legal").owlettoOrg,
+    lobuOrg: g("legal").lobuOrg,
   },
   engineering: {
     id: "engineering",
@@ -582,7 +582,7 @@ export const landingUseCases = {
         },
       ],
     },
-    owlettoOrg: g("engineering").owlettoOrg,
+    lobuOrg: g("engineering").lobuOrg,
   },
   support: {
     id: "support",
@@ -765,7 +765,7 @@ export const landingUseCases = {
         },
       ],
     },
-    owlettoOrg: g("support").owlettoOrg,
+    lobuOrg: g("support").lobuOrg,
   },
   finance: {
     id: "finance",
@@ -932,7 +932,7 @@ export const landingUseCases = {
         },
       ],
     },
-    owlettoOrg: g("finance").owlettoOrg,
+    lobuOrg: g("finance").lobuOrg,
   },
   sales: {
     id: "sales",
@@ -1121,7 +1121,7 @@ export const landingUseCases = {
         },
       ],
     },
-    owlettoOrg: g("sales").owlettoOrg,
+    lobuOrg: g("sales").lobuOrg,
   },
   delivery: {
     id: "delivery",
@@ -1316,7 +1316,7 @@ export const landingUseCases = {
         },
       ],
     },
-    owlettoOrg: g("delivery").owlettoOrg,
+    lobuOrg: g("delivery").lobuOrg,
   },
   leadership: {
     id: "leadership",
@@ -1503,7 +1503,7 @@ export const landingUseCases = {
         },
       ],
     },
-    owlettoOrg: g("leadership").owlettoOrg,
+    lobuOrg: g("leadership").lobuOrg,
   },
   "agent-community": {
     id: "agent-community",
@@ -1754,7 +1754,7 @@ export const landingUseCases = {
         },
       ],
     },
-    owlettoOrg: g("agent-community").owlettoOrg,
+    lobuOrg: g("agent-community").lobuOrg,
   },
   ecommerce: {
     id: "ecommerce",
@@ -1919,7 +1919,7 @@ export const landingUseCases = {
         },
       ],
     },
-    owlettoOrg: g("ecommerce").owlettoOrg,
+    lobuOrg: g("ecommerce").lobuOrg,
   },
   market: {
     id: "market",
@@ -2094,7 +2094,7 @@ export const landingUseCases = {
         },
       ],
     },
-    owlettoOrg: g("market").owlettoOrg,
+    lobuOrg: g("market").lobuOrg,
   },
 } satisfies Record<string, LandingUseCaseDefinition>;
 

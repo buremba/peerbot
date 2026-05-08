@@ -15,7 +15,7 @@ key = "$ANTHROPIC_API_KEY"
 [agents.sales.network]
 allowed = ["github.com", ".github.com", ".githubusercontent.com", "registry.npmjs.org", ".npmjs.org"]
 
-[memory.owletto]
+[memory.lobu]
 enabled = true
 org = "sales"
 name = "Sales"

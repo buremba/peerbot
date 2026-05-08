@@ -28,26 +28,26 @@ describe('getPublicWebUrl', () => {
   });
 
   it('returns explicit baseUrl when provided', () => {
-    expect(getPublicWebUrl(undefined, 'https://configured.owletto.com')).toBe(
-      'https://configured.owletto.com'
+    expect(getPublicWebUrl(undefined, 'https://configured.lobu.com')).toBe(
+      'https://configured.lobu.com'
     );
   });
 
   it('strips trailing slash from baseUrl', () => {
-    expect(getPublicWebUrl(undefined, 'https://fallback.owletto.com/')).toBe(
-      'https://fallback.owletto.com'
+    expect(getPublicWebUrl(undefined, 'https://fallback.lobu.com/')).toBe(
+      'https://fallback.lobu.com'
     );
   });
 
   it('prefers explicit baseUrl over requestUrl', () => {
     expect(
-      getPublicWebUrl('https://request.owletto.com/mcp', 'https://configured.owletto.com')
-    ).toBe('https://configured.owletto.com');
+      getPublicWebUrl('https://request.lobu.com/mcp', 'https://configured.lobu.com')
+    ).toBe('https://configured.lobu.com');
   });
 
   it('prefers PUBLIC_WEB_URL env var when no explicit baseUrl', () => {
-    process.env.PUBLIC_WEB_URL = 'https://env.owletto.com';
-    expect(getPublicWebUrl('https://request.owletto.com/mcp')).toBe('https://env.owletto.com');
+    process.env.PUBLIC_WEB_URL = 'https://env.lobu.com';
+    expect(getPublicWebUrl('https://request.lobu.com/mcp')).toBe('https://env.lobu.com');
   });
 
   it('falls back to HOSTED_UI_FALLBACK_ORIGIN when no env, no baseUrl, no local frontend', () => {
@@ -55,7 +55,7 @@ describe('getPublicWebUrl', () => {
   });
 
   it('falls back to HOSTED_UI_FALLBACK_ORIGIN even when requestUrl is given (backend-only host)', () => {
-    expect(getPublicWebUrl('https://request.owletto.com/mcp')).toBe(HOSTED_UI_FALLBACK_ORIGIN);
+    expect(getPublicWebUrl('https://request.lobu.com/mcp')).toBe(HOSTED_UI_FALLBACK_ORIGIN);
   });
 });
 
@@ -63,9 +63,9 @@ describe('buildEntityUrl', () => {
   it('builds URL with provided baseUrl', () => {
     const url = buildEntityUrl(
       { ownerSlug: 'acme', entityType: 'topic', slug: 'test-topic' },
-      'https://app.owletto.com'
+      'https://app.lobu.com'
     );
-    expect(url).toBe('https://app.owletto.com/acme/topic/test-topic');
+    expect(url).toBe('https://app.lobu.com/acme/topic/test-topic');
   });
 
   it('builds relative URL when no base provided', () => {

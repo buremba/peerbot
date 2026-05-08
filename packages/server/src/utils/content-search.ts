@@ -1580,7 +1580,7 @@ async function searchContentBySingleQuery(
     // Clamp to [0, 1] so callers can't accidentally invert the weighting.
     const vectorWeight = Math.max(0, Math.min(1, options.vector_weight ?? 0.6));
     const textWeight = 1 - vectorWeight;
-    if (process.env.OWLETTO_DEBUG_SEARCH === '1') {
+    if (process.env.LOBU_DEBUG_SEARCH === '1') {
       logger.info(
         { vector_weight: vectorWeight, text_weight: textWeight, q: queryText.slice(0, 40) },
         '[content-search] weights'

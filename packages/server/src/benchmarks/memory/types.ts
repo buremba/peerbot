@@ -171,8 +171,8 @@ interface BenchSystemConfigBase {
   linkLimit?: number;
 }
 
-export interface OwlettoMcpSystemConfig extends BenchSystemConfigBase {
-  type: 'owletto-mcp';
+export interface LobuMcpSystemConfig extends BenchSystemConfigBase {
+  type: 'lobu-mcp';
   mcpUrl: string;
   tokenEnv?: string;
   searchLimit?: number;
@@ -186,14 +186,14 @@ export interface CommandSystemConfig extends BenchSystemConfigBase {
   env?: Record<string, string>;
 }
 
-interface OwlettoInprocessSystemConfig extends BenchSystemConfigBase {
-  type: 'owletto-inprocess';
+interface LobuInprocessSystemConfig extends BenchSystemConfigBase {
+  type: 'lobu-inprocess';
   embedWrites?: boolean;
 }
 
 export type BenchSystemConfig =
-  | OwlettoMcpSystemConfig
-  | OwlettoInprocessSystemConfig
+  | LobuMcpSystemConfig
+  | LobuInprocessSystemConfig
   | CommandSystemConfig;
 
 export interface BenchmarkRunConfig {

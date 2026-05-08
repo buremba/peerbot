@@ -23,7 +23,7 @@ const cleanups: (() => void)[] = [];
 afterEach(() => {
   for (const c of cleanups.splice(0)) c();
   resetSandboxProbeForTests();
-  delete process.env.OWLETTO_EXEC_SANDBOX;
+  delete process.env.LOBU_EXEC_SANDBOX;
 });
 
 describe("probeSandboxStrategy", () => {
@@ -31,8 +31,8 @@ describe("probeSandboxStrategy", () => {
     resetSandboxProbeForTests();
   });
 
-  test("returns kind=none when OWLETTO_EXEC_SANDBOX=off", () => {
-    process.env.OWLETTO_EXEC_SANDBOX = "off";
+  test("returns kind=none when LOBU_EXEC_SANDBOX=off", () => {
+    process.env.LOBU_EXEC_SANDBOX = "off";
     expect(probeSandboxStrategy()).toEqual({ kind: "none" });
   });
 
@@ -50,7 +50,7 @@ describe("probeSandboxStrategy", () => {
   });
 
   test("ignores unknown override and falls back to auto", () => {
-    process.env.OWLETTO_EXEC_SANDBOX = "garbage";
+    process.env.LOBU_EXEC_SANDBOX = "garbage";
     const s = probeSandboxStrategy();
     if (process.platform === "darwin") {
       expect(s.kind).toBe("sandbox-exec");
@@ -61,15 +61,15 @@ describe("probeSandboxStrategy", () => {
 
   test("explicit override fails closed when backend unavailable", () => {
     if (process.platform !== "darwin") return;
-    process.env.OWLETTO_EXEC_SANDBOX = "bwrap";
+    process.env.LOBU_EXEC_SANDBOX = "bwrap";
     expect(() => probeSandboxStrategy()).toThrow(/bubblewrap is unavailable/);
   });
 
   test("cache invalidates when override env changes", () => {
-    process.env.OWLETTO_EXEC_SANDBOX = "off";
+    process.env.LOBU_EXEC_SANDBOX = "off";
     const a = probeSandboxStrategy();
     expect(a.kind).toBe("none");
-    process.env.OWLETTO_EXEC_SANDBOX = "auto";
+    process.env.LOBU_EXEC_SANDBOX = "auto";
     const b = probeSandboxStrategy();
     expect(b).not.toBe(a);
   });
@@ -244,7 +244,7 @@ describeDarwin("sandbox-exec escape matrix", () => {
   let workspace: string;
 
   beforeEach(() => {
-    process.env.OWLETTO_EXEC_SANDBOX = "sandbox-exec";
+    process.env.LOBU_EXEC_SANDBOX = "sandbox-exec";
     resetSandboxProbeForTests();
     strategy = probeSandboxStrategy();
     workspace = tmpWorkspace();
@@ -399,7 +399,7 @@ describeBwrap("bwrap escape matrix", () => {
   let workspace: string;
 
   beforeEach(() => {
-    process.env.OWLETTO_EXEC_SANDBOX = "bwrap";
+    process.env.LOBU_EXEC_SANDBOX = "bwrap";
     resetSandboxProbeForTests();
     strategy = probeSandboxStrategy();
     workspace = tmpWorkspace();

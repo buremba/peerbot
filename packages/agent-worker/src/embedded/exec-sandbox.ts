@@ -2,7 +2,7 @@
  * Per-exec sandbox for embedded just-bash custom commands.
  *
  * just-bash's interpreter and `ReadWriteFs` already root file ops in the
- * thread workspace, but spawned binaries (gh, git, owletto, anything from
+ * thread workspace, but spawned binaries (gh, git, lobu, anything from
  * /nix/store) bypass that — once execFile fires, the child has the host's
  * full FS view. This module wraps every spawn in an OS sandbox so the child
  * sees only the workspace + ro system paths.
@@ -17,7 +17,7 @@
  *   - "none" — no sandbox available; commands run with host privileges. A
  *     warning is logged once at probe time.
  *
- * Override with OWLETTO_EXEC_SANDBOX={auto,bwrap,sandbox-exec,off}. Explicit
+ * Override with LOBU_EXEC_SANDBOX={auto,bwrap,sandbox-exec,off}. Explicit
  * overrides fail closed: requesting `bwrap` on a host without bubblewrap is a
  * hard error, not a silent fallback to "none".
  */
@@ -60,7 +60,7 @@ let cached: CacheEntry | null = null;
 let warnedNoSandbox = false;
 
 function cacheKey(): string {
-  return `${process.platform}|${process.env.OWLETTO_EXEC_SANDBOX ?? ""}`;
+  return `${process.platform}|${process.env.LOBU_EXEC_SANDBOX ?? ""}`;
 }
 
 function which(bin: string): string | null {
@@ -77,12 +77,12 @@ function which(bin: string): string | null {
 }
 
 function envOverride(): SandboxKind | null {
-  const v = process.env.OWLETTO_EXEC_SANDBOX?.toLowerCase();
+  const v = process.env.LOBU_EXEC_SANDBOX?.toLowerCase();
   if (!v || v === "auto") return null;
   if (v === "off" || v === "none") return "none";
   if (v === "bwrap" || v === "sandbox-exec") return v;
   console.warn(
-    `[exec-sandbox] Unknown OWLETTO_EXEC_SANDBOX=${v}, falling back to auto.`
+    `[exec-sandbox] Unknown LOBU_EXEC_SANDBOX=${v}, falling back to auto.`
   );
   return null;
 }
@@ -153,7 +153,7 @@ export function probeSandboxStrategy(): SandboxStrategy {
         return setCache(key, { kind: "sandbox-exec", path: p });
       }
       throw new Error(
-        `[exec-sandbox] OWLETTO_EXEC_SANDBOX=sandbox-exec but ${p} not found.`
+        `[exec-sandbox] LOBU_EXEC_SANDBOX=sandbox-exec but ${p} not found.`
       );
     }
     if (override === "bwrap") {
@@ -162,7 +162,7 @@ export function probeSandboxStrategy(): SandboxStrategy {
         return setCache(key, { kind: "bwrap", path: p });
       }
       throw new Error(
-        `[exec-sandbox] OWLETTO_EXEC_SANDBOX=bwrap but bubblewrap is unavailable ` +
+        `[exec-sandbox] LOBU_EXEC_SANDBOX=bwrap but bubblewrap is unavailable ` +
           `or user namespaces are blocked. Install bubblewrap and ensure ` +
           `kernel.unprivileged_userns_clone=1 (or seccomp profile permits unshare).`
       );

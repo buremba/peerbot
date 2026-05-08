@@ -1,4 +1,4 @@
-import { getOwlettoBaseUrl } from "../use-case-showcases";
+import { getLobuBaseUrl } from "../use-case-showcases";
 
 function HexCluster() {
   return (
@@ -36,7 +36,7 @@ function HexCluster() {
   );
 }
 
-export function CTA({ startUrl = getOwlettoBaseUrl() }: { startUrl?: string }) {
+export function CTA({ startUrl = getLobuBaseUrl() }: { startUrl?: string }) {
   return (
     <section class="px-4 sm:px-6 py-20">
       <div

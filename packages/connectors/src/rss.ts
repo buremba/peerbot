@@ -118,7 +118,7 @@ export default class RSSConnector extends ConnectorRuntime {
 
   private readonly MAX_DEDUP_IDS = 500;
   private readonly FETCH_TIMEOUT_MS = 15000;
-  private readonly USER_AGENT = 'Owletto-RSS-Connector/1.0.0';
+  private readonly USER_AGENT = 'Lobu-RSS-Connector/1.0.0';
 
   // -------------------------------------------------------------------------
   // sync

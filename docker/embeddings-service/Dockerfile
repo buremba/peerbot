@@ -20,7 +20,7 @@ COPY packages/embeddings/package.json packages/embeddings/
 
 # Stub workspaces not needed at build time
 RUN mkdir -p packages/cli packages/core packages/landing \
-               packages/server packages/owletto-cli packages/connectors \
+               packages/server packages/lobu-cli packages/connectors \
                packages/browser-extension packages/openclaw-plugin packages/connector-sdk \
                packages/web packages/connector-worker packages/agent-worker packages/mcpsandbox \
     && for p in cli core landing server connectors \
@@ -28,7 +28,7 @@ RUN mkdir -p packages/cli packages/core packages/landing \
         echo "{\"name\":\"@lobu/$p\",\"version\":\"0.0.0\",\"private\":true}" > "packages/$p/package.json"; \
       done \
     && echo '{"name":"@lobu/worker","version":"0.0.0","private":true}' > packages/agent-worker/package.json \
-    && echo '{"name":"owletto","version":"0.0.0","private":true}' > packages/owletto-cli/package.json
+    && echo '{"name":"lobu","version":"0.0.0","private":true}' > packages/lobu-cli/package.json
 
 RUN --mount=type=cache,target=/root/.bun/install/cache bun install
 

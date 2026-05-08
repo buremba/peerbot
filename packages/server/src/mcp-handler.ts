@@ -103,7 +103,7 @@ const formatRef = { rawJson: false };
 
 function createServerForContext(env: Env, authCtx: SessionAuthContext): Server {
   const server = new Server(
-    { name: 'owletto-mcp', version: '0.2.0' },
+    { name: 'lobu-mcp', version: '0.2.0' },
     {
       capabilities: { tools: {} },
       ...(authCtx.instructions && { instructions: authCtx.instructions }),
@@ -222,7 +222,7 @@ async function readInitializeRequest(req: Request): Promise<{
   clientInfo: Record<string, unknown> | null;
   capabilities: Record<string, unknown> | null;
 } | null> {
-  const headerAgentId = req.headers.get('x-owletto-agent-id')?.trim() || null;
+  const headerAgentId = req.headers.get('x-lobu-agent-id')?.trim() || null;
   try {
     const body = await req.clone().json();
     const messages = Array.isArray(body) ? body : [body];
@@ -475,7 +475,7 @@ function withSSEHeartbeat(response: Response): Response {
   // The heartbeat, the pipe, the source close handler, and the pipe error
   // handler can all race to terminate the writer. Once it transitions
   // closed/aborted any further close()/abort() throws "Invalid state"
-  // (Sentry: OWLETTO-30). Latch on the first terminal call.
+  // (Sentry: LOBU-30). Latch on the first terminal call.
   let terminated = false;
   let intervalId: NodeJS.Timeout | undefined;
   const closeWriter = () => {

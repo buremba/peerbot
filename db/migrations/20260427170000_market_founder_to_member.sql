@@ -12,7 +12,7 @@
 -- The post-migration shape:
 --   - `$member` entities in market carry the founder's metadata, including
 --     `metadata.role='founder'` so the public browse route in
---     `lobu-ai/owletto-web` can filter `$member` rows on role.
+--     `lobu-ai/lobu-web` can filter `$member` rows on role.
 --   - `entity_identities` rows are written for every namespace value the
 --     migration can extract (email, linkedin_url, twitter_handle).
 --   - Existing relationship rows (`works_at`, `founded`, `previously_at`,

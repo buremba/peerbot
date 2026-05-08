@@ -68,10 +68,10 @@ Workers never receive raw provider credentials or OAuth tokens. The gateway reso
 | Category | How it works | Where secret material can live |
 |---|---|---|
 | Provider secrets | Standalone `lobu run` can read from `.env` / `$ENV_VAR` or `secret_ref`. Embedded mode can pass `key` / `secretRef` at startup or resolve credentials dynamically per request. | Built-in Postgres-backed encrypted secret store, external refs such as `secret://...` or `aws-sm://...`, or a host-provided embedded secret store |
-| Per-user MCP / OAuth tokens | Collected through device-auth and injected by the gateway MCP proxy per call. Integration auth for GitHub, Google, Linear, and similar services is handled through [Owletto](/getting-started/memory/). | Writable gateway secret store or host-provided embedded secret store |
+| Per-user MCP / OAuth tokens | Collected through device-auth and injected by the gateway MCP proxy per call. Integration auth for GitHub, Google, Linear, and similar services is handled through [Lobu](/getting-started/memory/). | Writable gateway secret store or host-provided embedded secret store |
 
 - **AWS Secrets Manager refs are read-only**. `aws-sm://...` works well for durable provider secret references, but refreshed user tokens still need a writable secret store.
-- **Workers never touch third-party OAuth tokens directly**. They call integrations through Owletto MCP tools and the gateway proxy.
+- **Workers never touch third-party OAuth tokens directly**. They call integrations through Lobu MCP tools and the gateway proxy.
 
 For concrete config examples, see the [`lobu.toml` reference](/reference/lobu-toml/) and the [CLI reference](/reference/cli/).
 

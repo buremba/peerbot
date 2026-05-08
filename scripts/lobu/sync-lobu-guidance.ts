@@ -1,10 +1,10 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { renderSkillMemorySection } from '../../packages/openclaw-plugin/src/owletto-guidance.ts';
+import { renderSkillMemorySection } from '../../packages/openclaw-plugin/src/lobu-guidance.ts';
 
 const SKILL_PATH = resolve(process.cwd(), 'skills/lobu/SKILL.md');
-const START_MARKER = '<!-- owletto-memory-guidance:start -->';
-const END_MARKER = '<!-- owletto-memory-guidance:end -->';
+const START_MARKER = '<!-- lobu-memory-guidance:start -->';
+const END_MARKER = '<!-- lobu-memory-guidance:end -->';
 
 const skill = readFileSync(SKILL_PATH, 'utf-8');
 const startIndex = skill.indexOf(START_MARKER);

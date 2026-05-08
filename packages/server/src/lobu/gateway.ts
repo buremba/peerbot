@@ -2,7 +2,7 @@
  * Lobu Gateway — embedded initialization
  *
  * Initializes the in-process Lobu gateway (now living under ../gateway/) using
- * PostgreSQL-backed stores and bridging Owletto's Better Auth sessions to
+ * PostgreSQL-backed stores and bridging Lobu's Better Auth sessions to
  * Lobu's settings auth.
  */
 
@@ -100,14 +100,14 @@ function ensureEmbeddedWorkerLauncher(): void {
 
 function ensureEmbeddedGatewaySecrets(): void {
   if (!process.env.ENCRYPTION_KEY) {
-    if (process.env.OWLETTO_ALLOW_EPHEMERAL_ENCRYPTION_KEY === '1') {
+    if (process.env.LOBU_ALLOW_EPHEMERAL_ENCRYPTION_KEY === '1') {
       process.env.ENCRYPTION_KEY = crypto.randomBytes(32).toString('base64url');
       logger.warn(
-        '[Lobu] Generated ephemeral ENCRYPTION_KEY because OWLETTO_ALLOW_EPHEMERAL_ENCRYPTION_KEY=1'
+        '[Lobu] Generated ephemeral ENCRYPTION_KEY because LOBU_ALLOW_EPHEMERAL_ENCRYPTION_KEY=1'
       );
     } else {
       throw new Error(
-        'ENCRYPTION_KEY is required for the embedded Lobu gateway. Set ENCRYPTION_KEY explicitly or opt into ephemeral local keys with OWLETTO_ALLOW_EPHEMERAL_ENCRYPTION_KEY=1.'
+        'ENCRYPTION_KEY is required for the embedded Lobu gateway. Set ENCRYPTION_KEY explicitly or opt into ephemeral local keys with LOBU_ALLOW_EPHEMERAL_ENCRYPTION_KEY=1.'
       );
     }
   }
@@ -202,7 +202,7 @@ export async function initLobuGateway(): Promise<Hono | null> {
       );
     }
 
-    // Auth bridge: translate Owletto's Better Auth session → Lobu's SettingsTokenPayload
+    // Auth bridge: translate Lobu's Better Auth session → Lobu's SettingsTokenPayload
     const authProvider = (c: any): EmbeddedSettingsSession | null => {
       const user = c.get('user');
       const session = c.get('session');
@@ -244,7 +244,7 @@ export async function initLobuGateway(): Promise<Hono | null> {
     // Mount worker gateway routes before wrapping in lobuApp (createGatewayApp
     // doesn't include these — they're only mounted in the standalone CLI gateway)
 
-    // Embedded Lobu auth routes need the Owletto Better Auth session, but they are mounted
+    // Embedded Lobu auth routes need the Lobu Better Auth session, but they are mounted
     // outside the main app's auth middleware. Hydrate the shared user/session context here.
     lobuApp = new HonoApp<{ Bindings: Env }>();
     lobuApp.use('*', async (c: any, next: any) => {

@@ -32,7 +32,7 @@ const testEnv: Env = {
  * syntax error. Those dispatches work on real Postgres. The test suite runs
  * under PGlite by default (fast, zero-deps) so we skip those cases here.
  */
-const IS_PGLITE = process.env.OWLETTO_TEST_BACKEND === "pglite";
+const IS_PGLITE = process.env.LOBU_TEST_BACKEND === "pglite";
 const pgOnlyIt = IS_PGLITE ? it.skip : it;
 
 describe("ClientSDK namespace dispatch (read paths)", () => {

@@ -4,7 +4,7 @@
 -- `events.client_id -> oauth_clients.id`. The original FK had no ON DELETE
 -- behaviour, so when an oauth_client row was removed (manual cleanup, e2e
 -- teardown, expired registration) any in-flight token still issuing inserts
--- failed with `events_client_id_fkey` violations (Sentry: OWLETTO-34).
+-- failed with `events_client_id_fkey` violations (Sentry: LOBU-34).
 --
 -- Match the relaxation already applied to other event-side FKs
 -- (connection_id, feed_id, run_id) and let stale client references reset

@@ -15,7 +15,7 @@ describe("buildMemoryPlugins", () => {
   test("uses LOBU memory plugin when installed without MEMORY_URL", () => {
     process.env.PORT = "8787";
 
-    expect(buildMemoryPlugins({ hasOwlettoPlugin: true })).toEqual([
+    expect(buildMemoryPlugins({ hasLobuPlugin: true })).toEqual([
       {
         source: "@lobu/openclaw-plugin",
         slot: "memory",
@@ -31,7 +31,7 @@ describe("buildMemoryPlugins", () => {
   test("falls back to native memory when LOBU memory plugin is unavailable", () => {
     expect(
       buildMemoryPlugins({
-        hasOwlettoPlugin: false,
+        hasLobuPlugin: false,
         hasNativeMemoryPlugin: true,
       })
     ).toEqual([
@@ -46,7 +46,7 @@ describe("buildMemoryPlugins", () => {
   test("returns no plugin when neither LOBU memory nor native memory plugin exists", () => {
     expect(
       buildMemoryPlugins({
-        hasOwlettoPlugin: false,
+        hasLobuPlugin: false,
         hasNativeMemoryPlugin: false,
       })
     ).toEqual([]);

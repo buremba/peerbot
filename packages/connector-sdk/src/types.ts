@@ -58,7 +58,7 @@ export interface Content {
   // Source-native item type (e.g. 'thread', 'message', 'email', 'issue', 'review')
   origin_type?: string;
 
-  // Semantic type inside Owletto (defaults to 'content' for raw connector ingests)
+  // Semantic type inside Lobu (defaults to 'content' for raw connector ingests)
   semantic_type?: string;
 
   // Calculated engagement score (0-100, calculated by feed implementation)

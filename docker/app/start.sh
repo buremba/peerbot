@@ -3,7 +3,7 @@ set -e
 
 MODE="${1:-server}"
 
-echo "Starting Owletto backend (Node)"
+echo "Starting Lobu backend (Node)"
 echo "================================"
 
 echo "Environment:"

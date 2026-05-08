@@ -30,7 +30,7 @@ function makeRef(overrides: Partial<McpRuntimeState> = {}): McpRuntimeRef {
   };
 }
 
-const owlettoTool: McpToolDef = {
+const lobuTool: McpToolDef = {
   name: "search_knowledge",
   description: "Search the memory store",
   inputSchema: {
@@ -95,7 +95,7 @@ describe("isMcpIdReserved", () => {
   });
 
   test("allows normal MCP ids", () => {
-    expect(isMcpIdReserved("owletto")).toBeNull();
+    expect(isMcpIdReserved("lobu")).toBeNull();
     expect(isMcpIdReserved("gmail")).toBeNull();
   });
 });
@@ -103,11 +103,11 @@ describe("isMcpIdReserved", () => {
 describe("buildMcpServerHandler", () => {
   test("--help lists tools and usage", async () => {
     const ref = makeRef({
-      mcpTools: { owletto: [owlettoTool] },
+      mcpTools: { lobu: [lobuTool] },
       mcpStatus: [
         {
-          id: "owletto",
-          name: "Owletto",
+          id: "lobu",
+          name: "Lobu",
           requiresAuth: true,
           requiresInput: false,
           authenticated: true,
@@ -115,32 +115,32 @@ describe("buildMcpServerHandler", () => {
         },
       ],
     });
-    const handler = buildMcpServerHandler("owletto", ref, gw, {
+    const handler = buildMcpServerHandler("lobu", ref, gw, {
       callTool: async () => ({ content: [] }),
     });
 
     const result = await handler(["--help"], {});
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain("owletto — MCP server CLI");
+    expect(result.stdout).toContain("lobu — MCP server CLI");
     expect(result.stdout).toContain("search_knowledge");
     expect(result.stdout).toContain("auth login|check|logout");
   });
 
   test("--schema prints JSON schema for a known tool", async () => {
-    const ref = makeRef({ mcpTools: { owletto: [owlettoTool] } });
-    const handler = buildMcpServerHandler("owletto", ref, gw, {
+    const ref = makeRef({ mcpTools: { lobu: [lobuTool] } });
+    const handler = buildMcpServerHandler("lobu", ref, gw, {
       callTool: async () => ({ content: [] }),
     });
 
     const result = await handler(["search_knowledge", "--schema"], {});
     expect(result.exitCode).toBe(0);
     const parsed = JSON.parse(result.stdout);
-    expect(parsed).toEqual(owlettoTool.inputSchema);
+    expect(parsed).toEqual(lobuTool.inputSchema);
   });
 
   test("--schema on unknown tool exits 2", async () => {
-    const ref = makeRef({ mcpTools: { owletto: [] } });
-    const handler = buildMcpServerHandler("owletto", ref, gw, {
+    const ref = makeRef({ mcpTools: { lobu: [] } });
+    const handler = buildMcpServerHandler("lobu", ref, gw, {
       callTool: async () => ({ content: [] }),
     });
 
@@ -150,13 +150,13 @@ describe("buildMcpServerHandler", () => {
   });
 
   test("tool invocation parses JSON from stdin and routes to callTool", async () => {
-    const ref = makeRef({ mcpTools: { owletto: [owlettoTool] } });
+    const ref = makeRef({ mcpTools: { lobu: [lobuTool] } });
     const calls: Array<{
       mcpId: string;
       toolName: string;
       payload: Record<string, unknown>;
     }> = [];
-    const handler = buildMcpServerHandler("owletto", ref, gw, {
+    const handler = buildMcpServerHandler("lobu", ref, gw, {
       callTool: async (_gw, mcpId, toolName, payload) => {
         calls.push({ mcpId, toolName, payload });
         return { content: [{ type: "text", text: "search ok" }] };
@@ -170,7 +170,7 @@ describe("buildMcpServerHandler", () => {
     expect(result.stdout.trim()).toBe("search ok");
     expect(calls).toEqual([
       {
-        mcpId: "owletto",
+        mcpId: "lobu",
         toolName: "search_knowledge",
         payload: { query: "architecture" },
       },
@@ -178,9 +178,9 @@ describe("buildMcpServerHandler", () => {
   });
 
   test("tool invocation falls back to args[1] when stdin is empty", async () => {
-    const ref = makeRef({ mcpTools: { owletto: [owlettoTool] } });
+    const ref = makeRef({ mcpTools: { lobu: [lobuTool] } });
     const captured: Record<string, unknown>[] = [];
-    const handler = buildMcpServerHandler("owletto", ref, gw, {
+    const handler = buildMcpServerHandler("lobu", ref, gw, {
       callTool: async (_gw, _mcpId, _toolName, payload) => {
         captured.push(payload);
         return { content: [] };
@@ -196,9 +196,9 @@ describe("buildMcpServerHandler", () => {
   });
 
   test("tool invocation defaults to empty object when no payload given", async () => {
-    const ref = makeRef({ mcpTools: { owletto: [owlettoTool] } });
+    const ref = makeRef({ mcpTools: { lobu: [lobuTool] } });
     const captured: Record<string, unknown>[] = [];
-    const handler = buildMcpServerHandler("owletto", ref, gw, {
+    const handler = buildMcpServerHandler("lobu", ref, gw, {
       callTool: async (_gw, _mcpId, _toolName, payload) => {
         captured.push(payload);
         return { content: [] };
@@ -211,8 +211,8 @@ describe("buildMcpServerHandler", () => {
   });
 
   test("invalid JSON payload exits 2", async () => {
-    const ref = makeRef({ mcpTools: { owletto: [owlettoTool] } });
-    const handler = buildMcpServerHandler("owletto", ref, gw, {
+    const ref = makeRef({ mcpTools: { lobu: [lobuTool] } });
+    const handler = buildMcpServerHandler("lobu", ref, gw, {
       callTool: async () => {
         throw new Error("should not be called");
       },
@@ -224,8 +224,8 @@ describe("buildMcpServerHandler", () => {
   });
 
   test("unknown tool exits 2", async () => {
-    const ref = makeRef({ mcpTools: { owletto: [] } });
-    const handler = buildMcpServerHandler("owletto", ref, gw, {
+    const ref = makeRef({ mcpTools: { lobu: [] } });
+    const handler = buildMcpServerHandler("lobu", ref, gw, {
       callTool: async () => ({ content: [] }),
     });
 
@@ -235,8 +235,8 @@ describe("buildMcpServerHandler", () => {
   });
 
   test("callTool throwing surfaces as exitCode 1", async () => {
-    const ref = makeRef({ mcpTools: { owletto: [owlettoTool] } });
-    const handler = buildMcpServerHandler("owletto", ref, gw, {
+    const ref = makeRef({ mcpTools: { lobu: [lobuTool] } });
+    const handler = buildMcpServerHandler("lobu", ref, gw, {
       callTool: async () => {
         throw new Error("network down");
       },
@@ -249,8 +249,8 @@ describe("buildMcpServerHandler", () => {
 
   test("reads mcpTools through ref.current on each invocation", async () => {
     // Start empty, then mutate the ref and confirm the handler picks up new tools.
-    const ref = makeRef({ mcpTools: { owletto: [] } });
-    const handler = buildMcpServerHandler("owletto", ref, gw, {
+    const ref = makeRef({ mcpTools: { lobu: [] } });
+    const handler = buildMcpServerHandler("lobu", ref, gw, {
       callTool: async () => ({ content: [{ type: "text", text: "ok" }] }),
     });
 
@@ -259,7 +259,7 @@ describe("buildMcpServerHandler", () => {
 
     ref.current = {
       ...ref.current,
-      mcpTools: { owletto: [owlettoTool] },
+      mcpTools: { lobu: [lobuTool] },
     };
 
     const r2 = await handler(["search_knowledge"], { stdin: "{}" });
@@ -270,7 +270,7 @@ describe("buildMcpServerHandler", () => {
 describe("buildMcpCliCommands", () => {
   test("builds one command per MCP server", () => {
     const ref = makeRef({
-      mcpTools: { owletto: [owlettoTool] },
+      mcpTools: { lobu: [lobuTool] },
       mcpStatus: [
         {
           id: "gmail",
@@ -283,7 +283,7 @@ describe("buildMcpCliCommands", () => {
       ],
     });
     const commands = buildMcpCliCommands(ref, gw);
-    expect(commands.map((c) => c.name).sort()).toEqual(["gmail", "owletto"]);
+    expect(commands.map((c) => c.name).sort()).toEqual(["gmail", "lobu"]);
   });
 
   test("skips MCP ids that collide with bash builtins", () => {
@@ -298,8 +298,8 @@ describe("buildMcpCliCommands", () => {
           configured: true,
         },
         {
-          id: "owletto",
-          name: "Owletto",
+          id: "lobu",
+          name: "Lobu",
           requiresAuth: false,
           requiresInput: false,
           authenticated: true,
@@ -308,7 +308,7 @@ describe("buildMcpCliCommands", () => {
       ],
     });
     const commands = buildMcpCliCommands(ref, gw);
-    expect(commands.map((c) => c.name)).toEqual(["owletto"]);
+    expect(commands.map((c) => c.name)).toEqual(["lobu"]);
   });
 
   test("skips MCP ids that collide with package-install denylist", () => {
@@ -337,11 +337,11 @@ describe("summariseAuthStart / summariseAuthCheck", () => {
         verification_url: "https://example.com/verify",
         interaction_posted: true,
       }),
-      "owletto"
+      "lobu"
     );
     const parsed = JSON.parse(out);
     expect(parsed.status).toBe("login_started");
-    expect(parsed.mcp_id).toBe("owletto");
+    expect(parsed.mcp_id).toBe("lobu");
     expect(parsed.interaction_posted).toBe(true);
     expect(out).not.toContain("https://example.com/verify");
   });
@@ -349,7 +349,7 @@ describe("summariseAuthStart / summariseAuthCheck", () => {
   test("summariseAuthStart passes through already_authenticated", () => {
     const out = summariseAuthStart(
       JSON.stringify({ status: "already_authenticated" }),
-      "owletto"
+      "lobu"
     );
     expect(JSON.parse(out).status).toBe("already_authenticated");
   });
@@ -361,7 +361,7 @@ describe("summariseAuthStart / summariseAuthCheck", () => {
       user_code: "ABCD-1234",
       interaction_posted: false,
     });
-    const out = summariseAuthStart(raw, "owletto");
+    const out = summariseAuthStart(raw, "lobu");
     expect(out).toBe(raw);
     expect(out).toContain("https://example.com/verify");
     expect(out).toContain("ABCD-1234");
@@ -370,17 +370,17 @@ describe("summariseAuthStart / summariseAuthCheck", () => {
   test("summariseAuthCheck emits authenticated=true on success", () => {
     const out = summariseAuthCheck(
       { status: "authenticated", authenticated: true },
-      "owletto",
+      "lobu",
       "raw"
     );
     expect(JSON.parse(out)).toEqual({
       status: "authenticated",
-      mcp_id: "owletto",
+      mcp_id: "lobu",
       authenticated: true,
     });
   });
 
   test("summariseAuthCheck falls back to raw text when parse fails", () => {
-    expect(summariseAuthCheck(null, "owletto", "raw text")).toBe("raw text");
+    expect(summariseAuthCheck(null, "lobu", "raw text")).toBe("raw text");
   });
 });

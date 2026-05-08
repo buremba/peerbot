@@ -1,6 +1,6 @@
 {
   "suitePath": "benchmarks/memory/suites/longmemeval-oracle.50.json",
-  "outputDir": ".owletto/benchmarks/memory/public-zai-local",
+  "outputDir": ".lobu/benchmarks/memory/public-zai-local",
   "trials": 3,
   "topK": 8,
   "answerer": {
@@ -13,9 +13,9 @@
   },
   "systems": [
     {
-      "id": "owletto-local",
-      "label": "Owletto (local in-process)",
-      "type": "owletto-inprocess",
+      "id": "lobu-local",
+      "label": "Lobu (local in-process)",
+      "type": "lobu-inprocess",
       "embedWrites": false,
       "topK": 8,
       "searchLimit": 5,

@@ -34,23 +34,23 @@ npx @lobu/cli@latest eval
 npx @lobu/cli@latest login
 ```
 
-<!-- owletto-memory-guidance:start -->
+<!-- lobu-memory-guidance:start -->
 ## Memory Defaults
 
-Your long-term memory is powered by Owletto. Do NOT use local files (memory/, MEMORY.md) for memory.
-- Owletto automatically recalls relevant memories when you receive a message.
+Your long-term memory is powered by Lobu. Do NOT use local files (memory/, MEMORY.md) for memory.
+- Lobu automatically recalls relevant memories when you receive a message.
 - To save something, call save_knowledge with the content and an appropriate semantic_type.
 - To search, call search_knowledge. Results include view_url links to the web interface.
-- NEVER construct Owletto URLs yourself. When the user asks for a link, call search_knowledge to get the correct view_url.
-- When the user says "remember this", save it to Owletto immediately.
-<!-- owletto-memory-guidance:end -->
+- NEVER construct Lobu URLs yourself. When the user asks for a link, call search_knowledge to get the correct view_url.
+- When the user says "remember this", save it to Lobu immediately.
+<!-- lobu-memory-guidance:end -->
 
 ## Lobu Memory
 
 Configure project-scoped memory in `lobu.toml`:
 
 ```toml
-[memory.owletto]
+[memory.lobu]
 enabled = true
 org = "my-org"
 name = "My workspace"

@@ -1,6 +1,6 @@
 # Connector SDK
 
-Connectors are TypeScript modules that sync data from external services into Owletto and optionally execute write-back actions. Each connector is a single `.ts` file that exports a class extending `ConnectorRuntime` from `@lobu/connector-sdk`.
+Connectors are TypeScript modules that sync data from external services into Lobu and optionally execute write-back actions. Each connector is a single `.ts` file that exports a class extending `ConnectorRuntime` from `@lobu/connector-sdk`.
 
 ## Quick Start
 
@@ -98,7 +98,7 @@ interface ConnectorDefinition {
 
 ### MCP Config
 
-Set `mcpConfig` to proxy an upstream MCP server through Owletto. The connector acts as a bridge, exposing the MCP server's tools as connector actions. Useful for wrapping existing MCP servers with Owletto's auth, approval, and audit trail.
+Set `mcpConfig` to proxy an upstream MCP server through Lobu. The connector acts as a bridge, exposing the MCP server's tools as connector actions. Useful for wrapping existing MCP servers with Lobu's auth, approval, and audit trail.
 
 ### OpenAPI Config
 

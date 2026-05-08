@@ -19,7 +19,7 @@
 - When fixing unused-parameter errors, delete the parameter rather than prefixing with `_`.
 
 ### Submodules
-`packages/web` is a submodule of `lobu-ai/owletto-web`. Push the submodule change to a reachable branch first (usually `main`), then bump the pointer in the parent — the parent must never point at an unreachable SHA, or production cloning will fail.
+`packages/web` is a submodule of `lobu-ai/lobu-web`. Push the submodule change to a reachable branch first (usually `main`), then bump the pointer in the parent — the parent must never point at an unreachable SHA, or production cloning will fail.
 
 ### Frontend (web)
 When editing UI under `packages/web`, follow the design rules in @packages/web/DESIGN_GUIDELINES.md — confirmations, surfaces, empty states, selection, forms, page copy, radius, Sheet vs Dialog. Match the existing components and exemplar files referenced there; do not introduce new primitives without updating the guideline in the same PR.
@@ -32,7 +32,7 @@ All chat platforms (Telegram, Slack, Discord, WhatsApp, Teams) run through Chat 
 **One transport per platform: webhooks via the Chat SDK adapter.** Don't add per-platform alternative transports (Slack Socket Mode, Telegram long-polling, Discord Gateway WebSocket bridges, etc.) or extra runtime SDKs to support them. Local dev for webhook-only platforms uses a tunnel (cloudflared / ngrok / Tailscale Funnel); Lobu Cloud users get a public URL for free. Sticking to the Chat SDK keeps one delivery story, one set of retries, and zero extra dependencies.
 
 #### Orchestration
-- **Embedded-only deployment.** Gateway, workers, embeddings, and the Owletto memory backend run in a single Node process (`lobu run`, or `bun run dev` in the monorepo). Workers spawn as `child_process.spawn` subprocesses on the same host; on Linux the spawn path uses `systemd-run --user --scope` for cgroup limits + IPAddressDeny + capability drops. There is no Docker or Kubernetes deployment manager.
+- **Embedded-only deployment.** Gateway, workers, embeddings, and the Lobu memory backend run in a single Node process (`lobu run`, or `bun run dev` in the monorepo). Workers spawn as `child_process.spawn` subprocesses on the same host; on Linux the spawn path uses `systemd-run --user --scope` for cgroup limits + IPAddressDeny + capability drops. There is no Docker or Kubernetes deployment manager.
 - Postgres (with pgvector) is the only user-provided external. The Node process connects out via `DATABASE_URL`. Runtime state that previously lived in Redis (queues, chat connection rows, grant cache, MCP proxy sessions) is now in dedicated Postgres tables.
 - Workers are sandboxed and **never see real credentials**. The gateway's `secret-proxy` swaps `lobu_secret_<uuid>` placeholders for real keys at egress; workers receive only the placeholders.
 
@@ -41,7 +41,7 @@ All chat platforms (Telegram, Slack, Discord, WhatsApp, Teams) run through Chat 
 - Workers discover MCP tools at startup and register them as first-class agent tools (direct function calls, not curl instructions).
 - Workers call MCP tools via the gateway proxy using their JWT.
 - Built-in MCPs: `AskUser` (request user input), `UploadFile` (share files with user).
-- **Integration auth lives in Owletto** — OAuth, token refresh, and API proxying for third-party services (GitHub, Google, etc.) are handled by Owletto MCP servers. Workers never see OAuth tokens.
+- **Integration auth lives in Lobu** — OAuth, token refresh, and API proxying for third-party services (GitHub, Google, etc.) are handled by Lobu MCP servers. Workers never see OAuth tokens.
 - **`events` is append-only.** Never `DELETE FROM events`. To hide a row, insert a tombstone event whose `supersedes_event_id` points at it — the `current_event_records` view filters out anything that has a newer superseder, and `include_superseded` recovers history. `client.knowledge.delete()` and `save_knowledge({ supersedes_event_id, ... })` are the only sanctioned write paths for "removing" content.
 
 #### Guardrails
@@ -59,7 +59,7 @@ All chat platforms (Telegram, Slack, Discord, WhatsApp, Teams) run through Chat 
   - `"*"` + `WORKER_DISALLOWED_DOMAINS="malicious.com,spam.org"` → blocklist mode.
 - Domain format: exact (`api.example.com`) or wildcard (`.example.com`).
 - In embedded mode `HTTP_PROXY` is advisory at the language layer — a worker can `connect()` directly bypassing it. On Linux production hosts, the systemd-run worker spawn adds `IPAddressDeny=any` + `IPAddressAllow=127.0.0.1` so kernel-level routing forces traffic through the proxy.
-- `WORKER_ENV_*` gateway vars are forwarded to workers with the prefix stripped (`WORKER_ENV_FOO=bar` → `FOO=bar`). Use only for worker runtime env, not the default Owletto memory plugin config.
+- `WORKER_ENV_*` gateway vars are forwarded to workers with the prefix stripped (`WORKER_ENV_FOO=bar` → `FOO=bar`). Use only for worker runtime env, not the default Lobu memory plugin config.
 
 #### Egress judge
 Skills and agents can route risky domains through an LLM judge instead of a flat allow/deny. Hooks into the same HTTP proxy at `packages/server/src/gateway/proxy/http-proxy.ts`; invoked only when a `judgedDomains` rule matches, so most traffic bypasses the judge.
@@ -143,7 +143,7 @@ Run the validation that matches what you touched:
 | `packages/{core,server,agent-worker,cli}/*` | `make build-packages` |
 | Broad TS check | `bun run typecheck` |
 
-For MCP work, verify tool calls against the gateway proxy or Owletto directly (e.g. via `bun -e`) before exercising the full agent loop.
+For MCP work, verify tool calls against the gateway proxy or Lobu directly (e.g. via `bun -e`) before exercising the full agent loop.
 
 If the change affects bot behavior, run the test bot:
 
@@ -184,7 +184,7 @@ SECRET=$(grep '^BETTER_AUTH_SECRET=' .env | cut -d= -f2-)
 
 # Prod uses the secret on the K8s pod
 SECRET=$(kubectl exec -n summaries-prod \
-  $(kubectl get pod -n summaries-prod -l app.kubernetes.io/name=owletto-app -o name | head -1 | sed 's|pod/||') \
+  $(kubectl get pod -n summaries-prod -l app.kubernetes.io/name=lobu-app -o name | head -1 | sed 's|pod/||') \
   -- printenv BETTER_AUTH_SECRET)
 
 # Session token comes from the DB (prod DB serves both targets)
@@ -227,6 +227,6 @@ Worker sessions persist across restarts via host-mounted workspaces under `./wor
 
 ### Integration authentication
 
-OAuth for third-party APIs (GitHub, Google, Linear, etc.) is handled by **Owletto**, not the gateway. Workers hit those APIs through Owletto MCP tools and never see tokens directly.
+OAuth for third-party APIs (GitHub, Google, Linear, etc.) is handled by **Lobu**, not the gateway. Workers hit those APIs through Lobu MCP tools and never see tokens directly.
 
 Skills that need network declare `networkConfig.allowedDomains`; skills that need system tools declare `nixPackages`. Both are merged into the agent's allowlist / Nix env when the skill is enabled, with no per-skill approval prompt — review skills before installing. Destructive MCP tool calls still require in-thread approval unless pre-approved in `[agents.<id>.tools]` in `lobu.toml`.

@@ -1,14 +1,14 @@
 {
   "suitePath": "benchmarks/memory/suites/locomo.50.json",
-  "outputDir": ".owletto/benchmarks/memory/public",
+  "outputDir": ".lobu/benchmarks/memory/public",
   "trials": 1,
   "topK": 8,
   "answerer": { "type": "none" },
   "systems": [
     {
-      "id": "owletto-local",
-      "label": "Owletto (local in-process)",
-      "type": "owletto-inprocess",
+      "id": "lobu-local",
+      "label": "Lobu (local in-process)",
+      "type": "lobu-inprocess",
       "embedWrites": true,
       "vectorWeight": 0.85,
       "topK": 8,

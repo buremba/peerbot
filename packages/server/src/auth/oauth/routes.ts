@@ -53,7 +53,7 @@ async function parseRequestBody(c: {
  * Delegates to the shared `resolveBaseUrl()` utility.
  *
  * Skips PUBLIC_WEB_URL so OAuth discovery and endpoints always
- * reflect the domain that actually serves them (e.g. owletto.com), not a
+ * reflect the domain that actually serves them (e.g. lobu.com), not a
  * downstream gateway domain that would need to proxy every /oauth/* request.
  */
 function getBaseUrl(c: {

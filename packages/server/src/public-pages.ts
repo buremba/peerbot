@@ -498,7 +498,7 @@ function buildWorkspaceModel(
 
   return {
     status: 200,
-    title: `${organization.name} | Owletto`,
+    title: `${organization.name} | Lobu`,
     description,
     canonicalUrl,
     robots: 'index,follow,max-image-preview:large',
@@ -582,7 +582,7 @@ function buildEntityTypeModel(params: {
 
   return {
     status: 200,
-    title: `${params.entityType.name} | ${params.organization.name} | Owletto`,
+    title: `${params.entityType.name} | ${params.organization.name} | Lobu`,
     description,
     canonicalUrl,
     robots: 'index,follow,max-image-preview:large',
@@ -733,7 +733,7 @@ function buildEntityModel(
 
   return {
     status: 200,
-    title: `${entity.name} | ${organization.name} | Owletto`,
+    title: `${entity.name} | ${organization.name} | Lobu`,
     description,
     canonicalUrl,
     robots: 'index,follow,max-image-preview:large',
@@ -801,7 +801,7 @@ function buildNotFoundModel(
 
   return {
     status: 404,
-    title: `Not Found | ${organization.name} | Owletto`,
+    title: `Not Found | ${organization.name} | Lobu`,
     description,
     canonicalUrl,
     robots: 'noindex,nofollow',
@@ -860,7 +860,7 @@ function injectIntoTemplate(templateHtml: string, model: PublicPageModel): strin
     /<div id="root"><\/div>/i,
     `<div id="ssr-hydrate-shell" data-public-ssr>${model.bodyHtml}</div><div id="root"></div>`
   );
-  const bootstrapScript = `<script>window.__OWLETTO_PUBLIC_BOOTSTRAP__=${serializeForScript(
+  const bootstrapScript = `<script>window.__LOBU_PUBLIC_BOOTSTRAP__=${serializeForScript(
     model.bootstrap
   )};</script>`;
 

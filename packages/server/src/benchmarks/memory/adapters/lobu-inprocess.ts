@@ -122,7 +122,7 @@ let pgliteBackend: PgliteBackend | null = null;
 let databaseReady = false;
 
 async function ensurePglite(): Promise<void> {
-  const benchmarkDatabaseUrl = process.env.OWLETTO_BENCHMARK_DATABASE_URL?.trim();
+  const benchmarkDatabaseUrl = process.env.LOBU_BENCHMARK_DATABASE_URL?.trim();
 
   if (benchmarkDatabaseUrl) {
     process.env.DATABASE_URL = benchmarkDatabaseUrl;
@@ -134,7 +134,7 @@ async function ensurePglite(): Promise<void> {
     pgliteBackend = await startPgliteBackend();
     process.env.DATABASE_URL = pgliteBackend.url;
     process.env.PGSSLMODE = 'disable';
-    process.env.OWLETTO_DISABLE_PREPARE = '1';
+    process.env.LOBU_DISABLE_PREPARE = '1';
     process.env.ENCRYPTION_KEY =
       process.env.ENCRYPTION_KEY ??
       '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
@@ -146,7 +146,7 @@ async function ensurePglite(): Promise<void> {
   }
 }
 
-export class OwlettoInprocessBenchmarkAdapter implements BenchmarkAdapter {
+export class LobuInprocessBenchmarkAdapter implements BenchmarkAdapter {
   readonly id: string;
   readonly label: string;
 
@@ -732,7 +732,7 @@ export class OwlettoInprocessBenchmarkAdapter implements BenchmarkAdapter {
         params: {
           protocolVersion: '2025-03-26',
           capabilities: {},
-          clientInfo: { name: 'owletto-memory-benchmark', version: '1.0.0' },
+          clientInfo: { name: 'lobu-memory-benchmark', version: '1.0.0' },
         },
       },
       token,

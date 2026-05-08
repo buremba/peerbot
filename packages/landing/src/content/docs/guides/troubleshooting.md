@@ -109,15 +109,15 @@ ps -o pid,rss,command -p "$(pgrep -f 'server/dist/server.bundle.mjs')"
 rm -rf workspaces/*
 ```
 
-## Owletto connection issues
+## Lobu connection issues
 
 ```bash
-# Owletto runs in-process with the gateway. /health covers both.
+# Lobu runs in-process with the gateway. /health covers both.
 curl http://localhost:8787/health
 
 # Check file-first memory config
-# - lobu.toml should contain [memory.owletto] with enabled = true and an org
-# - MEMORY_URL is optional; use it mainly for custom external Owletto URLs
+# - lobu.toml should contain [memory.lobu] with enabled = true and an org
+# - MEMORY_URL is optional; use it mainly for custom external Lobu URLs
 
 # Test connection
 npx @lobu/cli@latest memory health

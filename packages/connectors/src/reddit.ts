@@ -257,7 +257,7 @@ export default class RedditConnector extends ConnectorRuntime {
 
   private readonly MAX_PAGES = 10;
   private readonly RATE_LIMIT_MS = 1000;
-  private readonly USER_AGENT = 'Owletto-Connector/1.0.0';
+  private readonly USER_AGENT = 'Lobu-Connector/1.0.0';
 
   // -------------------------------------------------------------------------
   // sync

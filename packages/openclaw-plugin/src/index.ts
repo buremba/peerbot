@@ -10,7 +10,7 @@ import { homedir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { renderFallbackSystemContext } from './owletto-guidance.js';
+import { renderFallbackSystemContext } from './lobu-guidance.js';
 import type {
   McpToolDefinition,
   McpToolResponse,
@@ -26,7 +26,7 @@ type PluginLogger = {
 };
 
 const AUTH_REQUIRED_MSG =
-  'Lobu memory is not connected. Call the owletto_login tool to authenticate, then show the user the login URL and code. After the user completes login in their browser, call owletto_login_check to finish authentication.';
+  'Lobu memory is not connected. Call the lobu_login tool to authenticate, then show the user the login URL and code. After the user completes login in their browser, call lobu_login_check to finish authentication.';
 const DEFAULT_RECALL_LIMIT = 6;
 
 // Minimal fallback context used before the workspace instructions are fetched.
@@ -118,7 +118,7 @@ interface AuthStore {
 }
 
 function getTokenStorePath(): string {
-  return resolve(homedir(), '.owletto', 'openclaw-auth.json');
+  return resolve(homedir(), '.lobu', 'openclaw-auth.json');
 }
 
 function normalizeMcpUrl(input: string): string {
@@ -192,10 +192,10 @@ function saveStoredSession(
 }
 
 const fallbackLogger: PluginLogger = {
-  info: (msg: string) => console.log(`[openclaw-owletto-plugin] INFO: ${msg}`),
-  warn: (msg: string) => console.warn(`[openclaw-owletto-plugin] WARN: ${msg}`),
-  error: (msg: string) => console.error(`[openclaw-owletto-plugin] ERROR: ${msg}`),
-  debug: (msg: string) => console.debug(`[openclaw-owletto-plugin] DEBUG: ${msg}`),
+  info: (msg: string) => console.log(`[openclaw-lobu-plugin] INFO: ${msg}`),
+  warn: (msg: string) => console.warn(`[openclaw-lobu-plugin] WARN: ${msg}`),
+  error: (msg: string) => console.error(`[openclaw-lobu-plugin] ERROR: ${msg}`),
+  debug: (msg: string) => console.debug(`[openclaw-lobu-plugin] DEBUG: ${msg}`),
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -272,10 +272,10 @@ function resolvePluginConfig(api: Record<string, unknown>, pluginId: string): Re
   const cfg = readPluginConfig(api, pluginId);
 
   const mcpUrl = asString(cfg.mcpUrl);
-  const webUrl = asString(cfg.webUrl) ?? asString(process.env.OWLETTO_WEB_URL);
-  const token = asString(cfg.token) ?? asString(process.env.OWLETTO_MCP_TOKEN);
+  const webUrl = asString(cfg.webUrl) ?? asString(process.env.LOBU_WEB_URL);
+  const token = asString(cfg.token) ?? asString(process.env.LOBU_MCP_TOKEN);
   const tokenCommand =
-    asString(cfg.tokenCommand) ?? asString(process.env.OWLETTO_MCP_TOKEN_COMMAND);
+    asString(cfg.tokenCommand) ?? asString(process.env.LOBU_MCP_TOKEN_COMMAND);
   const gatewayAuthUrl = asString(cfg.gatewayAuthUrl) ?? asString(process.env.GATEWAY_AUTH_URL);
 
   const headers: Record<string, string> = {};
@@ -316,10 +316,10 @@ function parseErrorMessage(payload: unknown): string {
   return 'Unknown MCP error';
 }
 
-class OwlettoAuthError extends Error {
+class LobuAuthError extends Error {
   constructor(message: string) {
     super(message);
-    this.name = 'OwlettoAuthError';
+    this.name = 'LobuAuthError';
   }
 }
 
@@ -369,7 +369,7 @@ async function gatewayDeviceAuthStart(gatewayAuthUrl: string): Promise<{
       'Content-Type': 'application/json',
       Authorization: `Bearer ${workerToken}`,
     },
-    body: JSON.stringify({ mcpId: 'owletto' }),
+    body: JSON.stringify({ mcpId: 'lobu' }),
   });
 
   if (!response.ok) {
@@ -397,7 +397,7 @@ async function gatewayDeviceAuthPoll(
       'Content-Type': 'application/json',
       Authorization: `Bearer ${workerToken}`,
     },
-    body: JSON.stringify({ mcpId: 'owletto' }),
+    body: JSON.stringify({ mcpId: 'lobu' }),
   });
 
   return (await response.json()) as { status: string; message?: string };
@@ -408,7 +408,7 @@ async function gatewayDeviceAuthCheck(gatewayAuthUrl: string): Promise<boolean> 
   if (!workerToken) return false;
 
   try {
-    const response = await fetch(`${gatewayAuthUrl}/internal/device-auth/status?mcpId=owletto`, {
+    const response = await fetch(`${gatewayAuthUrl}/internal/device-auth/status?mcpId=lobu`, {
       headers: { Authorization: `Bearer ${workerToken}` },
     });
     if (!response.ok) return false;
@@ -436,7 +436,7 @@ function spawnWorkerDaemon(mcpUrl: string, accessToken: string, log: PluginLogge
   if (workerProcess) {
     // Already running — check if the process is still alive
     if (workerProcess.exitCode === null && !workerProcess.killed) {
-      log.info('owletto: worker daemon already running');
+      log.info('lobu: worker daemon already running');
       return;
     }
     workerProcess = null;
@@ -453,7 +453,7 @@ function spawnWorkerDaemon(mcpUrl: string, accessToken: string, log: PluginLogge
 
     workerProcess.unref();
 
-    log.info(`owletto: worker daemon spawned (pid=${workerProcess.pid})`);
+    log.info(`lobu: worker daemon spawned (pid=${workerProcess.pid})`);
 
     // Clean up on process exit
     const cleanup = () => {
@@ -470,7 +470,7 @@ function spawnWorkerDaemon(mcpUrl: string, accessToken: string, log: PluginLogge
     process.on('SIGTERM', cleanup);
   } catch (err) {
     log.warn(
-      `owletto: failed to spawn worker daemon: ${err instanceof Error ? err.message : String(err)}`
+      `lobu: failed to spawn worker daemon: ${err instanceof Error ? err.message : String(err)}`
     );
   }
 }
@@ -501,7 +501,7 @@ async function initiateDeviceLogin(
     body: JSON.stringify({
       grant_types: ['urn:ietf:params:oauth:grant-type:device_code', 'refresh_token'],
       token_endpoint_auth_method: 'none',
-      client_name: 'OpenClaw Owletto Plugin',
+      client_name: 'OpenClaw Lobu Plugin',
       software_id: 'openclaw',
       software_version: PLUGIN_VERSION,
       scope,
@@ -679,7 +679,7 @@ async function reinitializeMcpSession(config: ResolvedPluginConfig): Promise<boo
         params: {
           protocolVersion: MCP_PROTOCOL_VERSION,
           capabilities: {},
-          clientInfo: { name: 'openclaw-owletto', version: '1.0.0' },
+          clientInfo: { name: 'openclaw-lobu', version: '1.0.0' },
         },
       }),
     });
@@ -738,7 +738,7 @@ async function callMcpTool(
 
   if (response.status === 401 || response.status === 403) {
     clearSessionTokens();
-    throw new OwlettoAuthError(AUTH_REQUIRED_MSG);
+    throw new LobuAuthError(AUTH_REQUIRED_MSG);
   }
 
   // Re-initialize MCP session on stale/missing session errors
@@ -763,7 +763,7 @@ async function callMcpTool(
     const errMsg = parseErrorMessage(data);
     if (isAuthErrorMessage(errMsg)) {
       clearSessionTokens();
-      throw new OwlettoAuthError(errMsg);
+      throw new LobuAuthError(errMsg);
     }
     throw new Error(errMsg);
   }
@@ -773,7 +773,7 @@ async function callMcpTool(
     const errMsg = parseErrorMessage(rpcResponse.error);
     if (isAuthErrorMessage(errMsg)) {
       clearSessionTokens();
-      throw new OwlettoAuthError(errMsg);
+      throw new LobuAuthError(errMsg);
     }
     throw new Error(errMsg);
   }
@@ -793,7 +793,7 @@ async function callMcpTool(
     const errMsg = contentText || parseErrorMessage(rpcResult.error);
     if (isAuthErrorMessage(errMsg)) {
       clearSessionTokens();
-      throw new OwlettoAuthError(errMsg);
+      throw new LobuAuthError(errMsg);
     }
     throw new Error(errMsg);
   }
@@ -829,7 +829,7 @@ async function fetchWorkspaceInstructions(
         params: {
           protocolVersion: MCP_PROTOCOL_VERSION,
           capabilities: {},
-          clientInfo: { name: 'openclaw-owletto', version: '1.0.0' },
+          clientInfo: { name: 'openclaw-lobu', version: '1.0.0' },
         },
       },
       authHeaders
@@ -843,11 +843,11 @@ async function fetchWorkspaceInstructions(
         : null;
     if (result && typeof result.instructions === 'string') {
       cachedWorkspaceInstructions = result.instructions;
-      log.info('owletto: loaded workspace instructions after login');
+      log.info('lobu: loaded workspace instructions after login');
     }
   } catch (err) {
     log.warn(
-      `owletto: failed to fetch workspace instructions: ${err instanceof Error ? err.message : String(err)}`
+      `lobu: failed to fetch workspace instructions: ${err instanceof Error ? err.message : String(err)}`
     );
   }
 }
@@ -886,7 +886,7 @@ function fetchMcpBootstrapSync(config: ResolvedPluginConfig): McpBootstrap {
     const base = { 'Content-Type': 'application/json', 'Accept': 'application/json' };
     if (token) base.Authorization = 'Bearer ' + token;
     async function run() {
-      const initRes = await fetch(url, { method: 'POST', headers: base, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'openclaw-owletto', version: '1.0.0' } } }) });
+      const initRes = await fetch(url, { method: 'POST', headers: base, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'openclaw-lobu', version: '1.0.0' } } }) });
       const initData = await initRes.json();
       const sid = initRes.headers.get('mcp-session-id');
       const h2 = { ...base };
@@ -931,19 +931,19 @@ function registerMcpTools(
 
   if (instructions) {
     cachedWorkspaceInstructions = instructions;
-    log.info('owletto: loaded workspace instructions from MCP server');
+    log.info('lobu: loaded workspace instructions from MCP server');
   }
 
   if (tools.length === 0) {
-    log.warn('owletto: no MCP tools found (or fetch failed)');
+    log.warn('lobu: no MCP tools found (or fetch failed)');
     return;
   }
 
   for (const tool of tools) {
     registerTool({
-      name: `owletto_${tool.name}`,
+      name: `lobu_${tool.name}`,
       label: tool.name.replace(/_/g, ' '),
-      description: tool.description || `Owletto MCP tool: ${tool.name}`,
+      description: tool.description || `Lobu MCP tool: ${tool.name}`,
       parameters: tool.inputSchema || { type: 'object', properties: {} },
       execute: async (_id: string, args: Record<string, unknown>) => {
         const result = await callMcpTool(config, tool.name, args);
@@ -952,11 +952,11 @@ function registerMcpTools(
     });
   }
 
-  log.info(`owletto: registered ${tools.length} MCP tools`);
+  log.info(`lobu: registered ${tools.length} MCP tools`);
 }
 
 const plugin = {
-  id: 'openclaw-owletto',
+  id: 'openclaw-lobu',
   name: 'Lobu Memory',
   description: 'Lobu long-term memory plugin via MCP.',
   kind: 'memory' as const,
@@ -970,7 +970,7 @@ const plugin = {
     const config = resolvePluginConfig(api, plugin.id);
 
     if (!config.mcpUrl) {
-      log.warn('owletto: missing config.mcpUrl (plugins.entries.openclaw-owletto.config.mcpUrl)');
+      log.warn('lobu: missing config.mcpUrl (plugins.entries.openclaw-lobu.config.mcpUrl)');
     }
 
     // Initialize fallback system context based on mode
@@ -1036,12 +1036,12 @@ const plugin = {
                   refreshToken: _sessionRefreshToken!,
                   accessToken: sessionToken,
                 });
-                log.info('owletto: refreshed expired access token');
+                log.info('lobu: refreshed expired access token');
               }
             }
           } catch (refreshErr) {
             log.warn(
-              `owletto: token refresh failed: ${refreshErr instanceof Error ? refreshErr.message : String(refreshErr)}`
+              `lobu: token refresh failed: ${refreshErr instanceof Error ? refreshErr.message : String(refreshErr)}`
             );
           }
         }
@@ -1060,10 +1060,10 @@ const plugin = {
       const mcpUrl = config.mcpUrl;
 
       registerTool({
-        name: 'owletto_login',
-        label: 'Owletto Login',
+        name: 'lobu_login',
+        label: 'Lobu Login',
         description:
-          'Start Lobu memory authentication. Only call this if other Lobu memory tools return authentication errors. If Lobu memory is already connected, skip this step. Returns a URL and code for the user to complete login in their browser. After the user completes login, call owletto_login_check to finish.',
+          'Start Lobu memory authentication. Only call this if other Lobu memory tools return authentication errors. If Lobu memory is already connected, skip this step. Returns a URL and code for the user to complete login in their browser. After the user completes login, call lobu_login_check to finish.',
         parameters: {
           type: 'object',
           properties: {},
@@ -1082,7 +1082,7 @@ const plugin = {
                       text: JSON.stringify({
                         status: 'already_authenticated',
                         message:
-                          "You are already authenticated with Owletto. Do NOT call owletto_login again. Proceed directly with the user's request using the available owletto tools.",
+                          "You are already authenticated with Lobu. Do NOT call lobu_login again. Proceed directly with the user's request using the available lobu tools.",
                       }),
                     },
                   ],
@@ -1098,12 +1098,12 @@ const plugin = {
                     text: JSON.stringify({
                       status: 'login_started',
                       message:
-                        'Open this URL in your browser and enter the code to connect Owletto:',
+                        'Open this URL in your browser and enter the code to connect Lobu:',
                       verification_url: started.verificationUriComplete || started.verificationUri,
                       user_code: started.userCode,
                       expires_in_seconds: started.expiresIn,
                       next_step:
-                        'After the user completes login in their browser, call owletto_login_check to finish authentication.',
+                        'After the user completes login in their browser, call lobu_login_check to finish authentication.',
                     }),
                   },
                 ],
@@ -1120,7 +1120,7 @@ const plugin = {
                     text: JSON.stringify({
                       status: 'already_authenticated',
                       message:
-                        "You are already authenticated with Owletto. Do NOT call owletto_login again. Proceed directly with the user's request using the available owletto tools (owletto_search to discover SDK methods, owletto_execute to run TypeScript over the typed client SDK, owletto_search_knowledge for entity/knowledge search, owletto_save_knowledge to persist).",
+                        "You are already authenticated with Lobu. Do NOT call lobu_login again. Proceed directly with the user's request using the available lobu tools (lobu_search to discover SDK methods, lobu_execute to run TypeScript over the typed client SDK, lobu_search_knowledge for entity/knowledge search, lobu_save_knowledge to persist).",
                     }),
                   },
                 ],
@@ -1137,12 +1137,12 @@ const plugin = {
                   type: 'text',
                   text: JSON.stringify({
                     status: 'login_started',
-                    message: 'Open this URL in your browser and enter the code to connect Owletto:',
+                    message: 'Open this URL in your browser and enter the code to connect Lobu:',
                     verification_url: activeDeviceLogin.verificationUriComplete,
                     user_code: activeDeviceLogin.userCode,
                     expires_in_seconds: activeDeviceLogin.expiresIn,
                     next_step:
-                      'After the user completes login in their browser, call owletto_login_check to finish authentication.',
+                      'After the user completes login in their browser, call lobu_login_check to finish authentication.',
                   }),
                 },
               ],
@@ -1166,10 +1166,10 @@ const plugin = {
       });
 
       registerTool({
-        name: 'owletto_login_check',
-        label: 'Owletto Login Check',
+        name: 'lobu_login_check',
+        label: 'Lobu Login Check',
         description:
-          'Check if the user has completed Owletto login in their browser. Call this after owletto_login. Returns success when authenticated, or pending if still waiting.',
+          'Check if the user has completed Lobu login in their browser. Call this after lobu_login. Returns success when authenticated, or pending if still waiting.',
         parameters: {
           type: 'object',
           properties: {},
@@ -1181,7 +1181,7 @@ const plugin = {
               const result = await gatewayDeviceAuthPoll(config.gatewayAuthUrl);
 
               if (result.status === 'complete') {
-                log.info('owletto: gateway device auth completed');
+                log.info('lobu: gateway device auth completed');
 
                 // Fetch workspace instructions now that we're authenticated
                 if (!cachedWorkspaceInstructions) {
@@ -1195,7 +1195,7 @@ const plugin = {
                       text: JSON.stringify({
                         status: 'authenticated',
                         message:
-                          'Owletto login successful! Memory tools are now available for this session.',
+                          'Lobu login successful! Memory tools are now available for this session.',
                       }),
                     },
                   ],
@@ -1211,7 +1211,7 @@ const plugin = {
                       text: JSON.stringify({
                         status: 'pending',
                         message: 'Waiting for user to approve in browser...',
-                        next_step: 'Wait a few seconds, then call owletto_login_check again.',
+                        next_step: 'Wait a few seconds, then call lobu_login_check again.',
                       }),
                     },
                   ],
@@ -1241,7 +1241,7 @@ const plugin = {
                     type: 'text',
                     text: JSON.stringify({
                       status: 'error',
-                      message: 'No login in progress. Call owletto_login first.',
+                      message: 'No login in progress. Call lobu_login first.',
                     }),
                   },
                 ],
@@ -1267,10 +1267,10 @@ const plugin = {
                     refreshToken: result.refreshToken,
                     accessToken: result.accessToken,
                   });
-                  log.info('owletto: persisted auth token to disk');
+                  log.info('lobu: persisted auth token to disk');
                 } catch (err) {
                   log.warn(
-                    `owletto: failed to persist auth token: ${err instanceof Error ? err.message : String(err)}`
+                    `lobu: failed to persist auth token: ${err instanceof Error ? err.message : String(err)}`
                   );
                 }
               }
@@ -1291,7 +1291,7 @@ const plugin = {
                     text: JSON.stringify({
                       status: 'authenticated',
                       message:
-                        'Owletto login successful! Memory tools are now available for this session.',
+                        'Lobu login successful! Memory tools are now available for this session.',
                     }),
                   },
                 ],
@@ -1307,7 +1307,7 @@ const plugin = {
                     text: JSON.stringify({
                       status: 'pending',
                       message: result.message,
-                      next_step: 'Wait a few seconds, then call owletto_login_check again.',
+                      next_step: 'Wait a few seconds, then call lobu_login_check again.',
                     }),
                   },
                 ],
@@ -1345,7 +1345,7 @@ const plugin = {
         },
       });
 
-      log.info('owletto: registered login tools (owletto_login, owletto_login_check)');
+      log.info('lobu: registered login tools (lobu_login, lobu_login_check)');
     }
 
     // Dynamic tool registration from MCP server (synchronous so tools are
@@ -1360,7 +1360,7 @@ const plugin = {
     {
       const getSystemContext = () =>
         cachedWorkspaceInstructions
-          ? `<owletto-system>\n${cachedWorkspaceInstructions}\n</owletto-system>`
+          ? `<lobu-system>\n${cachedWorkspaceInstructions}\n</lobu-system>`
           : FALLBACK_SYSTEM_CONTEXT;
       const doRecall = async (query: string): Promise<string> => {
         if (!config.autoRecall || !hasAuthConfigured(config)) {
@@ -1381,17 +1381,17 @@ const plugin = {
           if (!text.trim()) return '';
 
           return (
-            '<owletto-memory>\n' +
+            '<lobu-memory>\n' +
             "Use these long-term memories only when directly relevant to the user's request.\n" +
             'Do not mention this memory block unless needed.\n\n' +
             text +
-            '\n</owletto-memory>'
+            '\n</lobu-memory>'
           );
         } catch (err) {
-          if (err instanceof OwlettoAuthError) {
+          if (err instanceof LobuAuthError) {
             return '';
           }
-          log.error(`owletto recall failed: ${err instanceof Error ? err.message : String(err)}`);
+          log.error(`lobu recall failed: ${err instanceof Error ? err.message : String(err)}`);
           return '';
         }
       };
@@ -1483,7 +1483,7 @@ const plugin = {
         if (!lastUser || !lastAssistant) return;
 
         const combined = `User: ${lastUser}\nAssistant: ${lastAssistant}`;
-        if (combined.length < 16 || combined.includes('<owletto-memory>')) return;
+        if (combined.length < 16 || combined.includes('<lobu-memory>')) return;
 
         lastCapturedLen = messages.length;
         const content = combined.length > 2000 ? combined.slice(0, 2000) : combined;
@@ -1494,17 +1494,17 @@ const plugin = {
           semantic_type: 'observation',
           metadata: {},
         })
-          .then(() => log.info('owletto: captured conversation observation'))
+          .then(() => log.info('lobu: captured conversation observation'))
           .catch((err) =>
             log.warn(
-              `owletto: autoCapture failed: ${err instanceof Error ? err.message : String(err)}`
+              `lobu: autoCapture failed: ${err instanceof Error ? err.message : String(err)}`
             )
           );
       });
     }
 
     log.info(
-      `owletto: initialized (configured=${!!config.mcpUrl}, token=${!!config.token}, tokenCommand=${!!config.tokenCommand}, tools=${!!registerTool})`
+      `lobu: initialized (configured=${!!config.mcpUrl}, token=${!!config.token}, tokenCommand=${!!config.tokenCommand}, tools=${!!registerTool})`
     );
   },
 };

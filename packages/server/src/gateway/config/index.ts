@@ -19,7 +19,7 @@ import type { OrchestratorConfig } from "../orchestration/base-deployment-manage
 
 const __filename = fileURLToPath(import.meta.url);
 const logger = createLogger("cli-config");
-const OWLETTO_PLUGIN_SOURCE = "@lobu/openclaw-plugin";
+const LOBU_PLUGIN_SOURCE = "@lobu/openclaw-plugin";
 const NATIVE_MEMORY_PLUGIN_SOURCE = "@openclaw/native-memory";
 const WORKER_PACKAGE_JSON_CANDIDATES = [
   path.resolve(process.cwd(), "packages/agent-worker/package.json"),
@@ -222,7 +222,7 @@ function isPluginInstalled(source: string): boolean {
 }
 
 export function buildMemoryPlugins(options?: {
-  hasOwlettoPlugin?: boolean;
+  hasLobuPlugin?: boolean;
   hasNativeMemoryPlugin?: boolean;
 }): PluginConfig[] {
   const nativeMemoryPlugin: PluginConfig = {
@@ -234,17 +234,17 @@ export function buildMemoryPlugins(options?: {
     options?.hasNativeMemoryPlugin ??
     isPluginInstalled(NATIVE_MEMORY_PLUGIN_SOURCE);
 
-  const hasOwlettoPlugin =
-    options?.hasOwlettoPlugin ?? isPluginInstalled(OWLETTO_PLUGIN_SOURCE);
-  if (!hasOwlettoPlugin) {
+  const hasLobuPlugin =
+    options?.hasLobuPlugin ?? isPluginInstalled(LOBU_PLUGIN_SOURCE);
+  if (!hasLobuPlugin) {
     if (hasNativeMemoryPlugin) {
       logger.warn(
-        `${OWLETTO_PLUGIN_SOURCE} is not installed; falling back to ${NATIVE_MEMORY_PLUGIN_SOURCE}`
+        `${LOBU_PLUGIN_SOURCE} is not installed; falling back to ${NATIVE_MEMORY_PLUGIN_SOURCE}`
       );
       return [nativeMemoryPlugin];
     }
     logger.warn(
-      `${OWLETTO_PLUGIN_SOURCE} is not installed and ${NATIVE_MEMORY_PLUGIN_SOURCE} is unavailable; continuing without a memory plugin`
+      `${LOBU_PLUGIN_SOURCE} is not installed and ${NATIVE_MEMORY_PLUGIN_SOURCE} is unavailable; continuing without a memory plugin`
     );
     return [];
   }
@@ -252,7 +252,7 @@ export function buildMemoryPlugins(options?: {
   const gatewayUrl = getInternalGatewayUrl();
   return [
     {
-      source: OWLETTO_PLUGIN_SOURCE,
+      source: LOBU_PLUGIN_SOURCE,
       slot: "memory",
       enabled: true,
       config: {

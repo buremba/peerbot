@@ -69,7 +69,7 @@ interface CreatedDbClient {
 }
 
 function createDbClient(connectionString: string, maxConnections?: number): CreatedDbClient {
-  const embeddedCompatMode = process.env.OWLETTO_DISABLE_PREPARE === '1';
+  const embeddedCompatMode = process.env.LOBU_DISABLE_PREPARE === '1';
   const embeddedProtocolOptions = embeddedCompatMode
     ? ({ max_pipeline: 1, prepare: false } as Record<string, unknown>)
     : {};

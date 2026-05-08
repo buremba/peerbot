@@ -578,7 +578,7 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
       return workerAgentId && workerAgentId === resolvedAgentId ? null : deny();
     }
 
-    // 3. External OAuth (Owletto / memory-url userinfo).
+    // 3. External OAuth (Lobu / memory-url userinfo).
     if (externalAuthClient) {
       try {
         const userInfo = (await externalAuthClient.fetchUserInfo(bearer)) as {

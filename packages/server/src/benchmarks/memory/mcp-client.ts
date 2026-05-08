@@ -38,7 +38,7 @@ export class McpJsonClient {
       params: {
         protocolVersion: '2025-03-26',
         capabilities: {},
-        clientInfo: { name: 'owletto-memory-benchmark', version: '1.0.0' },
+        clientInfo: { name: 'lobu-memory-benchmark', version: '1.0.0' },
       },
     });
 

@@ -2,7 +2,7 @@
  * OAuth 2.0 device-code client used by `lobu login`.
  *
  * Mirrors the same flow that `@lobu/openclaw-plugin` uses against
- * Owletto-hosted issuers: dynamic client registration (RFC 7591) +
+ * Lobu-hosted issuers: dynamic client registration (RFC 7591) +
  * device authorization grant (RFC 8628) + refresh-token grant.
  */
 
@@ -65,7 +65,7 @@ export class OAuthError extends Error {
 
 /**
  * Find the OAuth issuer for an API URL by stripping the path and fetching
- * `<origin>/.well-known/oauth-authorization-server`. Both Owletto-hosted
+ * `<origin>/.well-known/oauth-authorization-server`. Both Lobu-hosted
  * issuers (community.lobu.ai, app.lobu.ai) and the embedded local gateway
  * publish discovery at the API origin.
  */

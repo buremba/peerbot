@@ -2,7 +2,7 @@
 
 -- The bespoke `lobu login` device-code flow that backed `cli_sessions` has
 -- been replaced with standard OAuth 2.0 device-code (issued by the existing
--- Owletto IdP). The CLI now mints OAuth bearer tokens, so `cli_sessions` is
+-- Lobu IdP). The CLI now mints OAuth bearer tokens, so `cli_sessions` is
 -- dead.
 DROP INDEX IF EXISTS public.cli_sessions_user_id_idx;
 DROP INDEX IF EXISTS public.cli_sessions_expires_at_idx;

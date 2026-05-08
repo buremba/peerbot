@@ -503,13 +503,13 @@ export function removeAuthFile(): void {
 // Plugin Dist Sync (ensure container extension matches the local build)
 // ---------------------------------------------------------------------------
 
-const EXTENSION_DIST_DIR = resolve(REPO_ROOT, 'data/openclaw/extensions/openclaw-owletto/dist');
+const EXTENSION_DIST_DIR = resolve(REPO_ROOT, 'data/openclaw/extensions/openclaw-lobu/dist');
 const PLUGIN_DIST_DIR = resolve(REPO_ROOT, 'packages/openclaw-plugin/dist');
 
 /**
  * Copy the locally built plugin dist into the extension directory that the
  * container loads.  The volume mount at ./data/openclaw exposes this to the
- * container at /home/openclaw/.openclaw/extensions/openclaw-owletto/dist.
+ * container at /home/openclaw/.openclaw/extensions/openclaw-lobu/dist.
  *
  * Call this while the container is stopped so the file-watcher doesn't
  * trigger a disruptive restart.
@@ -534,7 +534,7 @@ export function patchOpenclawPluginConfig(orgSlug: string): void {
   _originalOpenclawConfig = readFileSync(OPENCLAW_CONFIG_FILE, 'utf-8');
   const config = JSON.parse(_originalOpenclawConfig);
 
-  const pluginConfig = config?.plugins?.entries?.['openclaw-owletto']?.config;
+  const pluginConfig = config?.plugins?.entries?.['openclaw-lobu']?.config;
   if (pluginConfig) {
     delete pluginConfig.tokenCommand;
     delete pluginConfig.gatewayAuthUrl;

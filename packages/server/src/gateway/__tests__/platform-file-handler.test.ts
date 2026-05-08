@@ -20,7 +20,7 @@ describe("ChatInstanceManager platform file handlers", () => {
             id: "conn-1",
             platform: "telegram",
             config: { botToken: "telegram-token" },
-            metadata: { botUsername: "owlettobot" },
+            metadata: { botUsername: "lobubot" },
           },
           chat: {},
         },
@@ -67,7 +67,7 @@ describe("ChatInstanceManager platform file handlers", () => {
 
     expect(result).toEqual({
       fileId: "file-123",
-      permalink: "https://t.me/owlettobot",
+      permalink: "https://t.me/lobubot",
       name: "test.txt",
       size: 5,
     });

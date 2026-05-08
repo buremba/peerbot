@@ -3,7 +3,7 @@
  * `getDb()` postgres-js client.
  *
  * Why we own this instead of using `@chat-adapter/state-pg`:
- *   - state-pg requires a `pg.Pool` (node-postgres). Owletto otherwise speaks
+ *   - state-pg requires a `pg.Pool` (node-postgres). Lobu otherwise speaks
  *     postgres-js everywhere, so depending on state-pg meant carrying both
  *     drivers + a second connection pool just to keep one upstream library
  *     happy.
@@ -29,7 +29,7 @@ import {
 import { randomUUID } from "node:crypto";
 import { getDb, type DbClient } from "../../db/client";
 
-interface OwlettoStateAdapterOptions {
+interface LobuStateAdapterOptions {
   /** Key prefix scoping every row. Lets multiple state-adapter consumers in
    *  the same DB coexist (e.g. "chat-conn" for the Chat SDK adapter, "foo"
    *  for some hypothetical second consumer). Defaults to "chat-sdk" to match
@@ -38,14 +38,14 @@ interface OwlettoStateAdapterOptions {
   logger?: Logger;
 }
 
-class OwlettoStateAdapter implements StateAdapter {
+class LobuStateAdapter implements StateAdapter {
   private readonly sql: DbClient;
   private readonly keyPrefix: string;
   private readonly logger: Logger;
   private connected = false;
   private connectPromise: Promise<void> | null = null;
 
-  constructor(options: OwlettoStateAdapterOptions = {}) {
+  constructor(options: LobuStateAdapterOptions = {}) {
     this.sql = getDb();
     this.keyPrefix = options.keyPrefix ?? "chat-sdk";
     this.logger =
@@ -434,7 +434,7 @@ class OwlettoStateAdapter implements StateAdapter {
   private ensureConnected(): void {
     if (!this.connected) {
       throw new Error(
-        "OwlettoStateAdapter is not connected. Call connect() first."
+        "LobuStateAdapter is not connected. Call connect() first."
       );
     }
   }
@@ -447,5 +447,5 @@ class OwlettoStateAdapter implements StateAdapter {
  * the dedicated test fixture instead of calling this function.
  */
 export function createGatewayStateAdapter(): StateAdapter {
-  return new OwlettoStateAdapter({ keyPrefix: "chat-conn" });
+  return new LobuStateAdapter({ keyPrefix: "chat-conn" });
 }

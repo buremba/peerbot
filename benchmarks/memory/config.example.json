@@ -1,6 +1,6 @@
 {
-  "suitePath": "benchmarks/memory/suites/owletto-memory-bench.v1.json",
-  "outputDir": ".owletto/benchmarks/memory",
+  "suitePath": "benchmarks/memory/suites/lobu-memory-bench.v1.json",
+  "outputDir": ".lobu/benchmarks/memory",
   "trials": 3,
   "topK": 8,
   "answerer": {
@@ -13,9 +13,9 @@
   },
   "systems": [
     {
-      "id": "owletto-local",
-      "label": "Owletto (local in-process)",
-      "type": "owletto-inprocess",
+      "id": "lobu-local",
+      "label": "Lobu (local in-process)",
+      "type": "lobu-inprocess",
       "embedWrites": false,
       "topK": 8,
       "searchLimit": 5,
@@ -23,11 +23,11 @@
       "linkLimit": 8
     },
     {
-      "id": "owletto",
-      "label": "Owletto (external MCP)",
-      "type": "owletto-mcp",
+      "id": "lobu",
+      "label": "Lobu (external MCP)",
+      "type": "lobu-mcp",
       "mcpUrl": "http://localhost:8787/mcp/your-org-slug",
-      "tokenEnv": "OWLETTO_BENCH_TOKEN",
+      "tokenEnv": "LOBU_BENCH_TOKEN",
       "enabled": false,
       "topK": 8,
       "searchLimit": 5,

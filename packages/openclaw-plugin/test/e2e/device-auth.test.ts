@@ -2,7 +2,7 @@
  * Layer 1 — Device Auth Integration Test
  *
  * Exercises the full RFC 8628 device-code OAuth flow against the running
- * Owletto backend. No LLM needed — pure HTTP calls.
+ * Lobu backend. No LLM needed — pure HTTP calls.
  *
  * Prerequisites:
  *   - docker compose up (at least: app, redis)

@@ -150,7 +150,7 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: owletto_test
+          POSTGRES_DB: lobu_test
         ports:
           - 5433:5432
         options: >-
@@ -159,7 +159,7 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
-      DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5433/owletto_test
+      DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5433/lobu_test
     steps:
       - uses: actions/checkout@v4
 
@@ -191,7 +191,7 @@ jobs:
             if pg_isready -h 127.0.0.1 -p 5433 -U postgres; then break; fi
             sleep 1
           done
-          PGPASSWORD=postgres psql -h 127.0.0.1 -p 5433 -U postgres -d owletto_test \
+          PGPASSWORD=postgres psql -h 127.0.0.1 -p 5433 -U postgres -d lobu_test \
             -c "CREATE EXTENSION IF NOT EXISTS vector"
 
       - name: server integration suite (vitest under Node)

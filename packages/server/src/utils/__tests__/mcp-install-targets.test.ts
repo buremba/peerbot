@@ -20,7 +20,7 @@ const getMcpInstallTargets = submoduleAvailable
 const describeIfSubmodule = submoduleAvailable ? describe : describe.skip;
 
 describeIfSubmodule('getMcpInstallTargets', () => {
-  const mcpUrl = 'http://localhost:4821/mcp/public-owletto';
+  const mcpUrl = 'http://localhost:4821/mcp/public-lobu';
 
   it('returns all first-class MCP targets', () => {
     const targets = getMcpInstallTargets(mcpUrl);

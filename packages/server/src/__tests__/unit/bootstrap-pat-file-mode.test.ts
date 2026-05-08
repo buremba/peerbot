@@ -1,7 +1,7 @@
 /**
  * Bootstrap PAT file mode contract.
  *
- * `start-local.ts` writes the bootstrap PAT to ${OWLETTO_DATA_DIR}/bootstrap-pat.txt
+ * `start-local.ts` writes the bootstrap PAT to ${LOBU_DATA_DIR}/bootstrap-pat.txt
  * with `writeFileSync(..., { mode: 0o600 })` so the token can't be read by
  * other local users on shared machines. This test pins the contract:
  *
@@ -36,7 +36,7 @@ describe('bootstrap PAT file mode', () => {
     // is acceptable; the suite is currently macOS-first.
     if (process.platform === 'win32') return;
 
-    const dir = mkdtempSync(join(tmpdir(), 'owletto-bootstrap-pat-'));
+    const dir = mkdtempSync(join(tmpdir(), 'lobu-bootstrap-pat-'));
     const file = join(dir, 'bootstrap-pat.txt');
     writeFileSync(file, 'owl_pat_test\n', { mode: 0o600 });
     const observed = statSync(file).mode & 0o777;

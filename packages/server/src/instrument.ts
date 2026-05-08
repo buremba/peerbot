@@ -25,7 +25,7 @@ if (dsn) {
     // some Node builds we run under (notably v24.x in our app image) don't
     // expose. The integration itself then throws inside the event processor
     // and the underlying exception never reaches Sentry. Drop it. (Sentry:
-    // OWLETTO-36.)
+    // LOBU-36.)
     integrations: (defaults) => defaults.filter((i) => i.name !== 'NodeSystemError'),
   });
 }

@@ -53,7 +53,7 @@ export function getTestDb(): postgres.Sql {
     if (!url) {
       throw new Error(
         'DATABASE_URL is required for tests. Set it in your environment or .env file.\n' +
-          'Example: DATABASE_URL=postgresql://localhost:5432/owletto_test'
+          'Example: DATABASE_URL=postgresql://localhost:5432/lobu_test'
       );
     }
     sql = postgres(url, {

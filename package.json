@@ -20,7 +20,7 @@
     "typecheck": "tsc --noEmit",
     "dev": "./scripts/dev-native.sh",
     "build:packages": "cd packages/core && bun run build && cd ../connector-sdk && bun run build && cd ../agent-worker && bun run build && cd ../openclaw-plugin && bun run build && cd ../embeddings && bun run build && cd ../connector-worker && bun run build && cd ../server && bun run build:server && cd ../cli && bun run build",
-    "build:owletto": "cd packages/embeddings && bun run build && cd ../..",
+    "build:lobu": "cd packages/embeddings && bun run build && cd ../..",
     "watch:packages": "tsc -b --watch packages/core packages/agent-worker",
     "test:packages": "cd packages/core && bun run test && cd ../agent-worker && bun run test",
     "typecheck:packages": "cd packages/core && bun run typecheck && cd ../agent-worker && bun run typecheck",
@@ -28,13 +28,13 @@
     "slack:manifest:print": "bun run scripts/slack-manifest.ts print",
     "slack:manifest:validate": "bun run scripts/slack-manifest.ts validate",
     "slack:manifest:update": "bun run scripts/slack-manifest.ts update",
-    "owletto:feeds:sync": "bun run scripts/owletto/sync-local.ts",
-    "owletto:guidance:sync": "bun run scripts/owletto/sync-owletto-guidance.ts",
-    "owletto:bench:memory": "bun run scripts/owletto/run-memory-benchmark.ts",
-    "owletto:bench:locomo:prepare": "bun run scripts/owletto/prepare-locomo-suite.ts",
-    "owletto:bench:longmemeval:prepare": "bun run scripts/owletto/prepare-longmemeval-suite.ts",
-    "owletto:connectors:install": "bun run scripts/owletto/install-connectors.ts",
-    "owletto:connectors:dry-run": "bun run scripts/owletto/dry-run-connector.ts"
+    "lobu:feeds:sync": "bun run scripts/lobu/sync-local.ts",
+    "lobu:guidance:sync": "bun run scripts/lobu/sync-lobu-guidance.ts",
+    "lobu:bench:memory": "bun run scripts/lobu/run-memory-benchmark.ts",
+    "lobu:bench:locomo:prepare": "bun run scripts/lobu/prepare-locomo-suite.ts",
+    "lobu:bench:longmemeval:prepare": "bun run scripts/lobu/prepare-longmemeval-suite.ts",
+    "lobu:connectors:install": "bun run scripts/lobu/install-connectors.ts",
+    "lobu:connectors:dry-run": "bun run scripts/lobu/dry-run-connector.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.2.2",
@@ -48,8 +48,5 @@
   },
   "engines": {
     "node": ">=22 <25"
-  },
-  "patchedDependencies": {
-    "@chat-adapter/telegram@4.20.0": "patches/@chat-adapter%2Ftelegram@4.20.0.patch"
   }
 }

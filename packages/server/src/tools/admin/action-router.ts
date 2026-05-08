@@ -62,7 +62,14 @@ export async function routeAction<TResult>(
   try {
     return await handler();
   } catch (error) {
-    logger.error({ error }, `${toolName} error:`);
+    logger.error(
+      {
+        error,
+        error_message: error instanceof Error ? error.message : String(error),
+        error_stack: error instanceof Error ? error.stack : undefined,
+      },
+      `${toolName} error:`
+    );
     throw error;
   }
 }

@@ -1367,7 +1367,7 @@ async function handleCompleteWindow(
     throw new Error(`Rollup depth ${tokenDepth} exceeds maximum of ${MAX_ROLLUP_DEPTH}`);
   }
 
-  if (watcherRunId == null && ctx.userId === `watcher_${watcherId}`) {
+  if (watcherRunId == null) {
     const runRows = await sql`
       SELECT id
       FROM runs
@@ -1381,7 +1381,7 @@ async function handleCompleteWindow(
       watcherRunId = Number(runRows[0].id);
       provenanceMetadata.watcher_run_id = watcherRunId;
     }
-  } else if (watcherRunId != null && provenanceMetadata.watcher_run_id == null) {
+  } else if (provenanceMetadata.watcher_run_id == null) {
     provenanceMetadata.watcher_run_id = watcherRunId;
   }
 

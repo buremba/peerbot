@@ -42,7 +42,7 @@ const defaultOrgCache = new Map<string, { orgId: string | null; expiresAt: numbe
 async function resolveDefaultOrgId(userId: string): Promise<string | null> {
   const cached = defaultOrgCache.get(userId);
   if (cached && cached.expiresAt > Date.now()) return cached.orgId;
-  let orgId: string | null = null;
+
   try {
     const sql = getDb();
     const rows = await sql`
@@ -52,18 +52,20 @@ async function resolveDefaultOrgId(userId: string): Promise<string | null> {
       ORDER BY m."createdAt" ASC
       LIMIT 1
     `;
-    orgId = (rows[0]?.organization_id as string | undefined) ?? null;
+    const orgId = (rows[0]?.organization_id as string | undefined) ?? null;
+    if (orgId) {
+      defaultOrgCache.set(userId, { orgId, expiresAt: Date.now() + DEFAULT_ORG_TTL_MS });
+    }
+    return orgId;
   } catch (err) {
-    // The DB may not be reachable yet at request time (e.g. boot races) —
-    // fail open so the rest of the request can still proceed; the route
-    // handler will surface its own error if it actually needs the org.
+    // The DB may not be reachable yet at request time (e.g. boot races).
+    // Do not cache that transient miss; callers decide how to surface it.
     logger.warn(
       { err: err instanceof Error ? err.message : String(err) },
-      '[Lobu] resolveDefaultOrgId: lookup failed, returning null'
+      '[Lobu] resolveDefaultOrgId: lookup failed'
     );
+    throw err;
   }
-  defaultOrgCache.set(userId, { orgId, expiresAt: Date.now() + DEFAULT_ORG_TTL_MS });
-  return orgId;
 }
 
 type EmbeddedSettingsSession = {
@@ -284,10 +286,14 @@ export async function initLobuGateway(): Promise<Hono | null> {
         await next();
         return;
       }
-      const orgId = await resolveDefaultOrgId(user.id);
+      let orgId: string | null;
+      try {
+        orgId = await resolveDefaultOrgId(user.id);
+      } catch {
+        return c.json({ error: 'Unable to resolve organization membership' }, 503);
+      }
       if (!orgId) {
-        await next();
-        return;
+        return c.json({ error: 'No organization membership found' }, 404);
       }
       c.set('organizationId', orgId);
       await orgContext.run({ organizationId: orgId }, () => next());

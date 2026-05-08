@@ -570,6 +570,48 @@ export class McpProxy {
     }
 
     try {
+      try {
+        const initBody = JSON.stringify({
+          jsonrpc: "2.0",
+          method: "initialize",
+          params: {
+            protocolVersion: "2024-11-05",
+            capabilities: {},
+            clientInfo: { name: "lobu-gateway", version: "1.0.0" },
+          },
+          id: 0,
+        });
+        await this.sendUpstreamRequest(
+          httpServer,
+          agentId,
+          mcpId,
+          "POST",
+          initBody,
+          scopeKey,
+          httpServer.internal === true ? auth.token : undefined
+        );
+        const notifyBody = JSON.stringify({
+          jsonrpc: "2.0",
+          method: "notifications/initialized",
+        });
+        await this.sendUpstreamRequest(
+          httpServer,
+          agentId,
+          mcpId,
+          "POST",
+          notifyBody,
+          scopeKey,
+          httpServer.internal === true ? auth.token : undefined
+        ).catch(() => {
+          /* noop */
+        });
+      } catch (initError) {
+        logger.warn("MCP initialize failed before listing tools", {
+          mcpId,
+          error: initError instanceof Error ? initError.message : String(initError),
+        });
+      }
+
       const jsonRpcBody = JSON.stringify({
         jsonrpc: "2.0",
         method: "tools/list",

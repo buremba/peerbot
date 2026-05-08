@@ -1,6 +1,6 @@
 /**
  * Integration smoke for the `query` / `run` rename + `save_knowledge`
- * append-only annotation. Read-only Proxy semantics live in the sandbox unit
+ * write annotation. Read-only Proxy semantics live in the sandbox unit
  * tests; this file guards the MCP surface annotations and the public-org
  * visitor read-only filter.
  */
@@ -43,7 +43,8 @@ describe('MCP query / run tool surface', () => {
     expect(byName.has('execute')).toBe(false);
     expect(byName.get('query')?.annotations).toEqual({ readOnlyHint: true, idempotentHint: true });
     expect(byName.get('run')?.annotations).toEqual({ destructiveHint: true });
-    expect(byName.get('save_knowledge')?.annotations).toEqual({ readOnlyHint: true });
+    expect(byName.get('run')?.inputSchema?.properties?.dry_run).toBeTruthy();
+    expect(byName.get('save_knowledge')?.annotations).toEqual({ destructiveHint: false });
   });
 
   it('hides write tools from anonymous visitors on a public /mcp/{slug}', async () => {

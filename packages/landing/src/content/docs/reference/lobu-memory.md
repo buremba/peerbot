@@ -105,8 +105,11 @@ lobu memory run save_knowledge '{"content":"Prefers weekly summaries","semantic_
 # Discover SDK methods
 lobu memory run search '{"query":"watchers.create"}' --org my-org
 
-# Run a TypeScript script over the typed client SDK
-lobu memory run execute '{"script":"export default async (ctx, client) => client.entities.list({ entity_type: \"company\", limit: 5 })"}' --org my-org
+# Query with a read-only TypeScript script over the typed client SDK
+lobu memory run query '{"script":"export default async (ctx, client) => client.entities.list({ entity_type: \"company\", limit: 5 })"}' --org my-org
+
+# Preview a mutating script without applying write/external SDK calls
+lobu memory run run '{"dry_run":true,"script":"export default async (ctx, client) => client.entities.create({ type: \"company\", name: \"Acme\" })"}' --org my-org
 ```
 
 ## Seed Project Memory

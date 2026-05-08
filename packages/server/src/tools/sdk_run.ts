@@ -20,14 +20,22 @@ const SCRIPT_FIELDS = {
   ),
 };
 
-export const RunSchema = Type.Object(SCRIPT_FIELDS);
+export const RunSchema = Type.Object({
+  ...SCRIPT_FIELDS,
+  dry_run: Type.Optional(
+    Type.Boolean({
+      description:
+        "Preview mode. Read SDK calls still execute, but write/external SDK calls are skipped and returned in side_effect_preview.",
+    }),
+  ),
+});
 export const QuerySchema = Type.Object(SCRIPT_FIELDS);
 export type RunArgs = Static<typeof RunSchema>;
 export type QueryArgs = Static<typeof QuerySchema>;
 
 async function runSandbox(
   mode: SDKMode,
-  args: RunArgs,
+  args: RunArgs | QueryArgs,
   env: Env,
   ctx: ToolContext,
 ): Promise<unknown> {
@@ -37,6 +45,7 @@ async function runSandbox(
     sdk: (abortSignal) => buildClientSDK(ctx, env, { mode, allowCrossOrg, abortSignal }),
     sdkMode: mode,
     allowCrossOrg,
+    dryRun: mode === "full" && "dry_run" in args && args.dry_run === true,
     context: {
       organization_id: ctx.organizationId,
       user_id: ctx.userId,
@@ -51,6 +60,9 @@ async function runSandbox(
     error: result.error,
     duration_ms: result.durationMs,
     sdk_calls: result.sdkCalls,
+    sdk_call_trace: result.sdkCallTrace,
+    side_effect_preview: result.sideEffectPreview,
+    dry_run: mode === "full" && "dry_run" in args && args.dry_run === true,
   };
 }
 

@@ -115,6 +115,69 @@ describe("guest-side proxy traps", () => {
     expect(result.error?.message ?? "").toMatch(/not a function|undefined/i);
   });
 
+  it("dry-run skips write methods and returns a side-effect preview", async () => {
+    let created = false;
+    const sdk = stubSDK({
+      entities: {
+        list: async () => [{ id: 1, name: "Acme" }],
+        create: async () => {
+          created = true;
+          return { id: 2 };
+        },
+      } as never,
+    });
+    const result = await runOrSkip({
+      source: `
+        export default async (_ctx, client) => {
+          const before = await client.entities.list({ entity_type: 'company' });
+          const create = await client.entities.create({
+            type: 'company',
+            name: 'Dry Run Co',
+            metadata: {
+              api_key: 'secret-value',
+              access_token: 'access-secret',
+              client_secret: 'client-secret',
+              cookie: 'session-cookie',
+              public_note: 'safe',
+            },
+          });
+          return { before, create };
+        };
+      `,
+      sdk,
+      sdkMode: "full",
+      dryRun: true,
+    });
+    if (!result) return;
+    expect(result.success).toBe(true);
+    expect(created).toBe(false);
+    expect(result.returnValue).toEqual({
+      before: [{ id: 1, name: "Acme" }],
+      create: { dry_run: true, skipped_call: "entities.create", access: "write" },
+    });
+    expect(result.sideEffectPreview).toEqual([
+      {
+        path: "entities.create",
+        orgPath: [],
+        access: "write",
+        args: [
+          {
+            type: "company",
+            name: "Dry Run Co",
+            metadata: {
+              api_key: "[redacted]",
+              access_token: "[redacted]",
+              client_secret: "[redacted]",
+              cookie: "[redacted]",
+              public_note: "safe",
+            },
+          },
+        ],
+        skipped: true,
+      },
+    ]);
+  });
+
   it("__sdk_dispatch rejects inherited Object.prototype paths", async () => {
     // Bypassing the proxy via the global dispatch should still fail because
     // the host requires an own-property entry for both ns and method.

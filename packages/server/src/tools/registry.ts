@@ -105,7 +105,7 @@ const TOOLS: ToolDefinition[] = [
     description:
       "Save user-shared facts, preferences, decisions, observations, and notes the moment they surface. Storage is append-only — pass `supersedes_event_id` to replace an existing fact (the old event is hidden from future searches without losing history). Optionally attach to entities via `entity_ids`. Always search first to avoid duplicates.",
     inputSchema: SaveContentSchema,
-    annotations: { readOnlyHint: true },
+    annotations: { destructiveHint: false },
     handler: saveContent,
   },
   // ─── Discovery ────────────────────────────────────────────────────────────
@@ -147,7 +147,7 @@ const TOOLS: ToolDefinition[] = [
   {
     name: 'run',
     description:
-      'Destructive — confirm before running. Runs a TypeScript script in a sandboxed isolate over the FULL `ClientSDK`. Signature: `export default async (ctx, client) => ...`. Can mutate entities, watchers, knowledge, classifiers, connections, etc. Use `query` for reads. Output capped at 1 MB. Example: `export default async (_ctx, client) => client.entities.create({ type: "company", name: "Acme" });`',
+      'Destructive — confirm before running. Runs a TypeScript script in a sandboxed isolate over the FULL `ClientSDK`. Signature: `export default async (ctx, client) => ...`. Can mutate entities, watchers, knowledge, classifiers, connections, etc. Use `query` for reads. Pass `dry_run: true` to execute reads while skipping write/external SDK calls and returning `side_effect_preview`. Output capped at 1 MB. Example: `export default async (_ctx, client) => client.entities.create({ type: "company", name: "Acme" });`',
     inputSchema: RunSchema,
     annotations: { destructiveHint: true },
     handler: runSdkScript,

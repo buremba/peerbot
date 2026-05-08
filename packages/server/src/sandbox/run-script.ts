@@ -6,6 +6,7 @@
  */
 
 import type { ClientSDK } from "./client-sdk";
+import { METHOD_METADATA, type MethodAccess } from "./method-metadata";
 import { type SDKMode, enumerateSDKManifest } from "./sdk-manifest";
 
 export interface RunLimits {
@@ -18,6 +19,12 @@ export interface RunLimits {
 export interface RunScriptOptions {
   source: string;
   context?: Record<string, unknown>;
+  /**
+   * Preview mode for full-SDK scripts. Read calls still execute so scripts can
+   * inspect state, but write/external SDK calls are skipped and returned in
+   * `sideEffectPreview` instead of mutating state or reaching external systems.
+   */
+  dryRun?: boolean;
   /**
    * Either a pre-built SDK or a builder that receives the wall-clock
    * AbortSignal so handlers can race their work against the timeout and
@@ -40,10 +47,20 @@ export interface LogEntry {
   ts: number;
 }
 
+export interface SdkCallTraceEntry {
+  path: string;
+  orgPath: string[];
+  access: MethodAccess | "unknown";
+  args: unknown[];
+  skipped: boolean;
+}
+
 export interface RunScriptResult {
   success: boolean;
   returnValue?: unknown;
   logs: LogEntry[];
+  sdkCallTrace: SdkCallTraceEntry[];
+  sideEffectPreview: SdkCallTraceEntry[];
   error?: {
     name: string;
     message: string;
@@ -61,6 +78,30 @@ const DEFAULT_LIMITS: Required<RunLimits> = {
   sdkCallQuota: 200,
   outputBytes: 1_048_576,
 };
+const MAX_TRACE_ARGS_BYTES = 8192;
+const SENSITIVE_TRACE_KEY =
+  /(api[_-]?key|apikey|auth[_-]?data|auth[_-]?values|authorization|cookie|credential|password|private[_-]?key|secret|token)/i;
+
+function redactTraceValue(value: unknown, depth = 0): unknown {
+  if (depth > 8) return "[truncated]";
+  if (Array.isArray(value)) return value.map((item) => redactTraceValue(item, depth + 1));
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).map(([key, child]) => [
+      key,
+      SENSITIVE_TRACE_KEY.test(key) ? "[redacted]" : redactTraceValue(child, depth + 1),
+    ]),
+  );
+}
+
+function traceArgs(args: unknown[]): unknown[] {
+  const redacted = redactTraceValue(args) as unknown[];
+  const json = JSON.stringify(redacted);
+  if (Buffer.byteLength(json, "utf8") > MAX_TRACE_ARGS_BYTES) {
+    return [{ truncated: true, bytes: Buffer.byteLength(json, "utf8") }];
+  }
+  return JSON.parse(json) as unknown[];
+}
 
 function clampNumber(value: number | undefined, fallback: number, min: number, max: number) {
   const n = Number.isFinite(value) ? value : fallback;
@@ -255,6 +296,8 @@ export async function runScript(
     typeof options.sdk === "function" ? options.sdk(abortController.signal) : options.sdk;
 
   const logs: LogEntry[] = [];
+  const sdkCallTrace: SdkCallTraceEntry[] = [];
+  const sideEffectPreview: SdkCallTraceEntry[] = [];
   let sdkCalls = 0;
   let outputBytes = 0;
 
@@ -271,6 +314,8 @@ export async function runScript(
       },
       durationMs: Date.now() - started,
       sdkCalls: 0,
+      sdkCallTrace,
+      sideEffectPreview,
     };
   }
 
@@ -303,6 +348,8 @@ export async function runScript(
       },
       durationMs: Date.now() - started,
       sdkCalls: 0,
+      sdkCallTrace,
+      sideEffectPreview,
     };
   }
 
@@ -335,9 +382,25 @@ export async function runScript(
         const dispatchPromise: Promise<unknown> = (async () => {
           if (path === "log") {
             target.log(args[0] as string, args[1] as Record<string, unknown> | undefined);
+            sdkCallTrace.push({
+              path,
+              orgPath,
+              access: METHOD_METADATA[path]?.access ?? "unknown",
+              args: traceArgs(args),
+              skipped: false,
+            });
             return undefined;
           }
-          if (path === "query") return target.query(args[0] as string);
+          if (path === "query") {
+            sdkCallTrace.push({
+              path,
+              orgPath,
+              access: METHOD_METADATA[path]?.access ?? "unknown",
+              args: traceArgs(args),
+              skipped: false,
+            });
+            return target.query(args[0] as string);
+          }
           const [ns, method] = path.split(".");
           // `__sdk_dispatch` is a guest-visible global, so a malicious script
           // could call it directly with an inherited path like `entities.constructor`.
@@ -354,6 +417,19 @@ export async function runScript(
             typeof namespace[method] !== "function"
           ) {
             throw new Error(`Unknown SDK method: '${path}'`);
+          }
+          const access = METHOD_METADATA[path]?.access ?? "unknown";
+          const trace: SdkCallTraceEntry = {
+            path,
+            orgPath,
+            access,
+            args: traceArgs(args),
+            skipped: options.dryRun === true && access !== "read",
+          };
+          sdkCallTrace.push(trace);
+          if (trace.skipped) {
+            sideEffectPreview.push(trace);
+            return { dry_run: true, skipped_call: path, access };
           }
           return namespace[method](...args);
         })();
@@ -403,6 +479,8 @@ export async function runScript(
       logs,
       durationMs: Date.now() - started,
       sdkCalls,
+      sdkCallTrace,
+      sideEffectPreview,
     };
   } catch (err) {
     const e = err as Error;
@@ -425,6 +503,8 @@ export async function runScript(
       error: { name, message: e.message, stack: e.stack },
       durationMs: Date.now() - started,
       sdkCalls,
+      sdkCallTrace,
+      sideEffectPreview,
     };
   } finally {
     clearTimeout(abortTimer);

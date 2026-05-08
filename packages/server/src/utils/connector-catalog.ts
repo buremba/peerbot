@@ -12,10 +12,15 @@ const require_ = createRequire(import.meta.url);
 const SDK_ENTRY = require_.resolve('@lobu/connector-sdk');
 
 const DEFAULT_CONNECTOR_DIR_CANDIDATES = [
+  // Published CLI runtime: packages/cli/scripts/build.cjs copies bundled
+  // connector source files next to server.bundle.mjs at dist/connectors.
+  resolve(import.meta.dirname ?? __dirname, 'connectors'),
+  // Local monorepo source and built-server layouts.
   resolve(import.meta.dirname ?? __dirname, '../../../connectors/src'),
   resolve(import.meta.dirname ?? __dirname, '../../connectors'),
   resolve(import.meta.dirname ?? __dirname, '../../../connectors'),
   resolve(import.meta.dirname ?? __dirname, '../../../../../connectors'),
+  // Explicit project/runtime roots for dev and custom deployments.
   resolve(process.cwd(), 'packages/connectors/src'),
   resolve(process.cwd(), 'connectors'),
 ];

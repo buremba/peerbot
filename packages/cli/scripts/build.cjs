@@ -30,6 +30,11 @@ if (fs.existsSync(providersSrc)) {
   fs.cpSync(providersSrc, providersDest);
 }
 
+// Copy bundled connector source files next to the embedded server bundle.
+// The server lists these runtime code-based connectors for picker UIs and
+// compiles them on demand when a workspace installs or runs one.
+copyDirIfExists("../connectors/src", "dist/connectors");
+
 // Copy the server server bundle so `lobu run` is self-contained.
 // @lobu/server is private (`private: true` in its package.json),
 // so `npx @lobu/cli` users can never resolve it via npm — they only get

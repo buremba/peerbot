@@ -37,6 +37,37 @@ USE_FAKE_LLM="${LOBU_E2E_FAKE_LLM:-1}"
 FAKE_LLM_PORT="${LOBU_E2E_FAKE_LLM_PORT:-9876}"
 FAKE_LLM_BASE_URL="http://127.0.0.1:${FAKE_LLM_PORT}"
 
+process_cwd() {
+  lsof -a -p "$1" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1
+}
+
+is_repo_process() {
+  local cwd
+  cwd="$(process_cwd "$1")"
+  [[ "$cwd" == "$REPO_ROOT" || "$cwd" == "$REPO_ROOT"/* ]]
+}
+
+kill_repo_pid() {
+  local pid="$1"
+  if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null && is_repo_process "$pid"; then
+    kill "$pid" 2>/dev/null || true
+    for _ in 1 2 3 4 5; do
+      kill -0 "$pid" 2>/dev/null || return 0
+      sleep 1
+    done
+    kill -9 "$pid" 2>/dev/null || true
+  fi
+}
+
+kill_repo_dev_processes() {
+  local pattern pid
+  for pattern in 'tsx watch.*src/server.ts' 'node.*src/server.ts'; do
+    while IFS= read -r pid; do
+      kill_repo_pid "$pid"
+    done < <(pgrep -f "$pattern" 2>/dev/null || true)
+  done
+}
+
 cleanup() {
   for pidfile in "$PIDFILE" "$FAKE_LLM_PIDFILE"; do
     if [[ -s "$pidfile" ]]; then
@@ -51,16 +82,18 @@ cleanup() {
       fi
     fi
   done
-  # tsx watch fork-spawns a child node that holds :8118 / :8787 — pkill the
-  # whole tree, then double-check via port owner so a stale orphan from a
-  # crashed prior run can't keep the next run from booting.
-  pkill -f 'tsx watch.*src/server.ts' 2>/dev/null || true
-  pkill -f 'node.*src/server.ts' 2>/dev/null || true
-  for port in 8118 8787 "$FAKE_LLM_PORT"; do
-    holder=$(lsof -ti :"$port" 2>/dev/null || true)
-    if [[ -n "$holder" ]]; then
-      kill -9 $holder 2>/dev/null || true
-    fi
+  # tsx watch fork-spawns child processes that can hold :8118 / $PORT after
+  # the parent exits. Only kill processes whose cwd is this checkout so a
+  # sibling dev server in another worktree survives cleanup.
+  kill_repo_dev_processes
+  ports=(8118 "$PORT")
+  if [[ "$USE_FAKE_LLM" != "0" ]]; then
+    ports+=("$FAKE_LLM_PORT")
+  fi
+  for port in "${ports[@]}"; do
+    while IFS= read -r holder; do
+      kill_repo_pid "$holder"
+    done < <(lsof -ti :"$port" 2>/dev/null || true)
   done
   rm -f "$PIDFILE" "$FAKE_LLM_PIDFILE"
   echo "  server log retained at: $LOG"
@@ -96,14 +129,21 @@ fi
 if [[ "$USE_FAKE_LLM" != "0" ]]; then
   echo "Starting fake LLM server on ${FAKE_LLM_BASE_URL}..."
   (
-    bun -e "
-      import('${REPO_ROOT}/packages/server/src/__tests__/fixtures/fake-llm-server.ts').then(async ({ startFakeLlmServer }) => {
-        const handle = await startFakeLlmServer({ port: ${FAKE_LLM_PORT} });
-        process.stdout.write('fake-llm listening at ' + handle.url + '\\n');
+    FAKE_LLM_MODULE="${REPO_ROOT}/packages/server/src/__tests__/fixtures/fake-llm-server.ts" \
+    FAKE_LLM_PORT="$FAKE_LLM_PORT" \
+    bun -e '
+      const modulePath = process.env.FAKE_LLM_MODULE;
+      const port = Number(process.env.FAKE_LLM_PORT);
+      if (!modulePath || !Number.isInteger(port)) {
+        throw new Error("FAKE_LLM_MODULE and numeric FAKE_LLM_PORT are required");
+      }
+      import(modulePath).then(async ({ startFakeLlmServer }) => {
+        const handle = await startFakeLlmServer({ port });
+        process.stdout.write("fake-llm listening at " + handle.url + "\n");
         // Keep the process alive
         setInterval(() => {}, 1 << 30);
       }).catch((err) => { console.error(err); process.exit(1); });
-    " >"$FAKE_LLM_LOG" 2>&1 &
+    ' >"$FAKE_LLM_LOG" 2>&1 &
     echo $! > "$FAKE_LLM_PIDFILE"
   ) || true
   # Wait for the fake to bind
@@ -143,6 +183,11 @@ echo "Server healthy"
 
 # 6. Run the e2e suite
 echo "Running openclaw-plugin e2e..."
-APP_URL="$APP_URL" \
-LOBU_E2E_FAKE_LLM_URL="${FAKE_LLM_BASE_URL}" \
-  bun run --cwd packages/openclaw-plugin test:e2e
+if [[ "$USE_FAKE_LLM" != "0" ]]; then
+  APP_URL="$APP_URL" \
+  LOBU_E2E_FAKE_LLM_URL="${FAKE_LLM_BASE_URL}" \
+    bun run --cwd packages/openclaw-plugin test:e2e
+else
+  APP_URL="$APP_URL" \
+    bun run --cwd packages/openclaw-plugin test:e2e
+fi

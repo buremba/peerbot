@@ -48,7 +48,10 @@ const ConnectedEventSchema = z.object({
   deploymentName: z.string(),
 });
 
-// PlatformMetadata has known fields plus string index signature
+// Platform metadata is a transport envelope for platform-specific details.
+// Known chat fields are typed below, but gateway callers may include nested
+// objects such as watcher run intent metadata, file descriptors, or provider
+// context. Preserve those values instead of rejecting otherwise valid jobs.
 const PlatformMetadataSchema = z
   .object({
     team_id: z.string().optional(),
@@ -57,18 +60,7 @@ const PlatformMetadataSchema = z
     thread_ts: z.string().optional(),
     files: z.array(z.any()).optional(),
   })
-  .and(
-    z.record(
-      z.string(),
-      z.union([
-        z.string(),
-        z.number(),
-        z.boolean(),
-        z.array(z.any()),
-        z.undefined(),
-      ])
-    )
-  );
+  .catchall(z.unknown());
 
 // AgentOptions has known fields plus arbitrary extra fields (including nested objects)
 const AgentOptionsSchema = z

@@ -1,0 +1,22 @@
+# Keep Docker builds reproducible and close to a clean CI checkout.
+.git
+.github
+.pi
+node_modules
+**/node_modules
+
+# Build outputs must be produced inside the Docker build, not copied from a
+# developer machine. Copying these can mask missing build steps.
+dist
+**/dist
+tsconfig.tsbuildinfo
+**/tsconfig.tsbuildinfo
+
+# Local/editor noise
+.env
+.env.*
+.DS_Store
+coverage
+**/coverage
+.vscode
+.idea

@@ -74,6 +74,7 @@ COPY packages/web packages/web
 # at runtime (ESM-only export, not bundled), so dist/ must exist on disk.
 RUN cd packages/core && bunx tsc \
     && cd ../connector-sdk && bunx tsc \
+    && cd ../embeddings && bunx tsc \
     && cd ../connector-worker && bunx tsc \
     && cd ../openclaw-plugin && bun run build
 

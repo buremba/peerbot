@@ -390,7 +390,13 @@ export const ManageWatchersSchema = Type.Object({
   window_token: Type.Optional(
     Type.String({
       description:
-        '[complete_window] Required. JWT from read_knowledge(watcher_id, since, until). Contains signed window parameters.',
+        '[complete_window] JWT from read_knowledge(watcher_id, since, until). Pass this or window_tokens.',
+    })
+  ),
+  window_tokens: Type.Optional(
+    Type.Array(Type.String(), {
+      description:
+        '[complete_window] Multiple page JWTs from read_knowledge for the same watcher window. Content IDs are unioned and linked atomically.',
     })
   ),
   client_id: Type.Optional(
@@ -1252,10 +1258,16 @@ async function handleCompleteWindow(
   // ============================================
   // STEP 1: Validate inputs (no DB calls)
   // ============================================
-  if (!args.window_token) {
+  const windowTokens =
+    Array.isArray(args.window_tokens) && args.window_tokens.length > 0
+      ? args.window_tokens
+      : args.window_token
+        ? [args.window_token]
+        : [];
+  if (windowTokens.length === 0) {
     throw new Error(
-      'window_token is required for complete_window action. ' +
-        'Get this token from read_knowledge({ watcher_id: ... }) response.'
+      'window_token or window_tokens is required for complete_window action. ' +
+        'Get tokens from read_knowledge({ watcher_id: ... }) responses.'
     );
   }
   if (!args.extracted_data) {
@@ -1266,20 +1278,18 @@ async function handleCompleteWindow(
   }
   const extractedData = normalizeExtractedData(args.extracted_data);
 
-  // Verify and decode JWT window token (in-memory)
-  let tokenPayload: {
-    watcher_id: number;
-    window_start: string;
-    window_end: string;
-    granularity: string;
-    window_id?: number;
-    content_count: number;
-    content_ids: number[];
-    iat: number;
+  // Verify and decode JWT window token(s) (in-memory)
+  type VerifiedWindowToken = Awaited<ReturnType<typeof verifyWindowToken>> & {
+    is_rollup?: boolean;
+    source_window_ids?: number[];
+    depth?: number;
   };
+  let tokenPayloads: VerifiedWindowToken[];
 
   try {
-    tokenPayload = await verifyWindowToken(args.window_token, env);
+    tokenPayloads = (await Promise.all(
+      windowTokens.map((token) => verifyWindowToken(token, env))
+    )) as VerifiedWindowToken[];
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
     throw new Error(
@@ -1289,23 +1299,33 @@ async function handleCompleteWindow(
     );
   }
 
+  const firstToken = tokenPayloads[0];
   const {
     watcher_id: watcherId,
     window_start,
     window_end,
     granularity,
     window_id: tokenWindowId,
-    content_count: tokenContentCount,
-    content_ids: tokenContentIds,
-    iat: tokenIssuedAt,
     is_rollup: tokenIsRollup,
     source_window_ids: tokenSourceWindowIds,
     depth: tokenDepth,
-  } = tokenPayload as typeof tokenPayload & {
-    is_rollup?: boolean;
-    source_window_ids?: number[];
-    depth?: number;
-  };
+  } = firstToken;
+
+  for (const token of tokenPayloads) {
+    if (
+      token.watcher_id !== watcherId ||
+      token.window_start !== window_start ||
+      token.window_end !== window_end ||
+      token.granularity !== granularity ||
+      token.window_id !== tokenWindowId
+    ) {
+      throw new Error('All window_tokens must belong to the same watcher window.');
+    }
+  }
+
+  if (tokenPayloads.length > 1 && tokenIsRollup) {
+    throw new Error('Rollup completion accepts exactly one window_token.');
+  }
 
   const MAX_ROLLUP_DEPTH = 3;
   if (tokenIsRollup && tokenDepth != null && tokenDepth > MAX_ROLLUP_DEPTH) {
@@ -1504,31 +1524,39 @@ async function handleCompleteWindow(
   // ============================================
   // STEP 3: Resolve the exact content IDs analyzed by the worker
   // ============================================
-  if (!Array.isArray(tokenContentIds)) {
-    throw new Error(
-      'Invalid window_token: content_ids is required. Get a fresh token from read_knowledge({ watcher_id: ... }).'
-    );
+  const perTokenIds = tokenPayloads.map((token) => {
+    if (!Array.isArray(token.content_ids)) {
+      throw new Error(
+        'Invalid window_token: content_ids is required. Get a fresh token from read_knowledge({ watcher_id: ... }).'
+      );
+    }
+    const ids = [
+      ...new Set(
+        token.content_ids
+          .map((id) => Number(id))
+          .filter((id) => Number.isFinite(id) && id > 0)
+          .map((id) => Math.trunc(id))
+      ),
+    ];
+    if (ids.length !== token.content_count) {
+      throw new Error(
+        `Invalid window_token: content_ids has ${ids.length} IDs, but content_count is ${token.content_count}. ` +
+          'Get a fresh token from read_knowledge({ watcher_id: ... }).'
+      );
+    }
+    return ids;
+  });
+
+  const batchContentIds = [...new Set(perTokenIds.flat())];
+  const summedContentCount = perTokenIds.reduce((sum, ids) => sum + ids.length, 0);
+  if (batchContentIds.length !== summedContentCount) {
+    throw new Error('window_tokens contain overlapping content IDs. Pass each read_knowledge page token once.');
   }
 
-  const batchContentIds = [
-    ...new Set(
-      tokenContentIds
-        .map((id) => Number(id))
-        .filter((id) => Number.isFinite(id) && id > 0)
-        .map((id) => Math.trunc(id))
-    ),
-  ];
-
-  if (batchContentIds.length !== tokenContentCount) {
-    throw new Error(
-      `Invalid window_token: content_ids has ${batchContentIds.length} IDs, but content_count is ${tokenContentCount}. ` +
-        'Get a fresh token from read_knowledge({ watcher_id: ... }).'
-    );
-  }
-
-  const tokenAge = Math.floor(Date.now() / 1000) - tokenIssuedAt;
+  const oldestTokenIssuedAt = Math.min(...tokenPayloads.map((token) => token.iat));
+  const tokenAge = Math.floor(Date.now() / 1000) - oldestTokenIssuedAt;
   logger.info(
-    `[complete_window] Token valid: ${batchContentIds.length} content items, token age: ${tokenAge}s`
+    `[complete_window] Token valid: ${batchContentIds.length} content items across ${tokenPayloads.length} page(s), oldest token age: ${tokenAge}s`
   );
 
   // ============================================

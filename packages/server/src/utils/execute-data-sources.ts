@@ -420,8 +420,12 @@ export async function executeDataSources(
   context: DataSourceContext,
   sql: DbClient,
   options?: {
-    /** Transform the scoped SQL before execution (e.g. wrap for ID-only extraction). */
-    wrapQuery?: (scopedSql: string) => string;
+    /** Transform the scoped SQL before execution (e.g. wrap for ID-only extraction or pagination). */
+    wrapQuery?: (
+      scopedSql: string,
+      params: unknown[],
+      sourceName: string
+    ) => string | { sql: string; params: unknown[] };
   }
 ): Promise<Record<string, unknown[]>> {
   const results: Record<string, unknown[]> = {};
@@ -449,7 +453,13 @@ export async function executeDataSources(
         }
 
         if (options?.wrapQuery) {
-          scopedQuery = options.wrapQuery(scopedQuery);
+          const wrapped = options.wrapQuery(scopedQuery, params, name);
+          if (typeof wrapped === 'string') {
+            scopedQuery = wrapped;
+          } else {
+            scopedQuery = wrapped.sql;
+            params = wrapped.params;
+          }
         }
 
         const rows = await sql.begin(async (tx) => {

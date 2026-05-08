@@ -200,6 +200,74 @@ describe('watcher automation contract', () => {
     expect(Number(run.window_id)).toBe(completion.window_id);
   });
 
+  it('paginates watcher reads by cursor and completes from multiple page tokens', async () => {
+    const { sql, workspace, api, entityId, watcherId } = await createAutomatedWatcher();
+
+    const base = Date.UTC(2026, 0, 2, 12, 0, 0);
+    const events = [];
+    for (let i = 0; i < 5; i++) {
+      events.push(
+        await createTestEvent({
+          entity_id: entityId,
+          organization_id: workspace.org.id,
+          title: `Paginated event ${i}`,
+          content: `Paginated watcher content ${i}`,
+          occurred_at: new Date(base - i * 60_000),
+        })
+      );
+    }
+
+    const page1 = (await api.knowledge.read({
+      watcher_id: watcherId,
+      since: '2026-01-02',
+      until: '2026-01-02',
+      limit: 2,
+    })) as {
+      content: Array<{ id: number; occurred_at: string }>;
+      window_token: string;
+      page: { has_more: boolean; next_cursor?: { occurred_at: string; id: number } };
+    };
+
+    expect(page1.content.map((item) => item.id)).toEqual([events[0].id, events[1].id]);
+    expect(page1.page.has_more).toBe(true);
+    expect(page1.page.next_cursor).toBeDefined();
+
+    const page2 = (await api.knowledge.read({
+      watcher_id: watcherId,
+      since: '2026-01-02',
+      until: '2026-01-02',
+      limit: 2,
+      before_occurred_at: page1.page.next_cursor!.occurred_at,
+      before_id: page1.page.next_cursor!.id,
+    })) as {
+      content: Array<{ id: number }>;
+      window_token: string;
+      page: { has_more: boolean; next_cursor?: { occurred_at: string; id: number } };
+    };
+
+    expect(page2.content.map((item) => item.id)).toEqual([events[2].id, events[3].id]);
+    expect(page2.page.has_more).toBe(true);
+
+    const completion = (await api.watchers.completeWindow({
+      watcher_id: String(watcherId),
+      window_tokens: [page1.window_token, page2.window_token],
+      extracted_data: { summary: 'Summary across two pages' },
+    })) as { action: string; window_id: number; content_linked: number };
+
+    const links = await sql`
+      SELECT event_id
+      FROM watcher_window_events
+      WHERE window_id = ${completion.window_id}
+      ORDER BY event_id
+    `;
+
+    expect(completion.action).toBe('complete_window');
+    expect(completion.content_linked).toBe(4);
+    expect(links.map((row) => Number(row.event_id)).sort((a, b) => a - b)).toEqual(
+      [events[0].id, events[1].id, events[2].id, events[3].id].sort((a, b) => a - b)
+    );
+  });
+
   it('links the exact signed content IDs without re-running watcher sources', async () => {
     const { sql, workspace, api, entityId, watcherId } = await createAutomatedWatcher();
 

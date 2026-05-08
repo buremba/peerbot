@@ -6,7 +6,7 @@
  *   - data/(nested).yml   — seed entities and relationships
  *
  * Project-level metadata (org/name/description/visibility) lives in
- * [memory.lobu] inside lobu.toml.
+ * [memory] inside lobu.toml.
  *
  * Bump CURRENT_SCHEMA_VERSION when making breaking changes.
  */

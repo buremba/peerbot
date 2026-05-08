@@ -61,7 +61,6 @@ export {
   type McpServerEntry as TomlMcpServerEntry,
   type MemoryEntry as TomlMemoryEntry,
   type NetworkEntry as TomlNetworkEntry,
-  type LobuMemoryEntry as TomlLobuMemoryEntry,
   type ProviderEntry as TomlProviderEntry,
   type SkillsEntry as TomlSkillsEntry,
   type ToolsEntry,

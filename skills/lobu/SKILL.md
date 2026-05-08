@@ -50,7 +50,7 @@ Your long-term memory is powered by Lobu. Do NOT use local files (memory/, MEMOR
 Configure project-scoped memory in `lobu.toml`:
 
 ```toml
-[memory.lobu]
+[memory]
 enabled = true
 org = "my-org"
 name = "My workspace"

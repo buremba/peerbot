@@ -33,19 +33,19 @@ See [Tool Policy](/guides/tool-policy/) for the operator-facing config, and [`lo
 
 ## Memory Plugins
 
-Memory is pluggable. In file-first projects, the gateway first checks `[memory.lobu]` in `lobu.toml`; any agent can still override the default via `pluginsConfig`.
+Memory is pluggable. In file-first projects, the gateway first checks `[memory]` in `lobu.toml`; any agent can still override the default via `pluginsConfig`.
 
 ### Defaults
 
 | Effective config | Plugin used |
 |---|---|
-| `[memory.lobu]` disabled or unresolved, and no `MEMORY_URL` override | `@openclaw/native-memory` — files under the worker workspace. Not shared across threads. |
-| `[memory.lobu]` enabled | `@lobu/openclaw-plugin` — the OpenClaw memory plugin for Lobu. It translates OpenClaw memory calls into Lobu MCP requests via the gateway's `/mcp/lobu` proxy. Cross-session, shareable across agents. |
-| `MEMORY_URL` set | Used as the base Lobu MCP endpoint before Lobu scopes it to the org from `[memory.lobu]` in `lobu.toml`. Useful for local or custom Lobu deployments. |
+| `[memory]` disabled or unresolved, and no `MEMORY_URL` override | `@openclaw/native-memory` — files under the worker workspace. Not shared across threads. |
+| `[memory]` enabled | `@lobu/openclaw-plugin` — the OpenClaw memory plugin for Lobu. It translates OpenClaw memory calls into Lobu MCP requests via the gateway's `/mcp/lobu` proxy. Cross-session, shareable across agents. |
+| `MEMORY_URL` set | Used as the base Lobu MCP endpoint before Lobu scopes it to the org from `[memory]` in `lobu.toml`. Useful for local or custom Lobu deployments. |
 
 `lobu init` now scaffolds the file-first Lobu memory layout for memory-enabled projects:
 
-- `[memory.lobu]` in `lobu.toml` (org, name, description, models, data)
+- `[memory]` in `lobu.toml` (org, name, description, models, data)
 - `models/`
 - `data/`
 

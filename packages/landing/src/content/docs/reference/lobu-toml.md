@@ -21,7 +21,7 @@ key = "$OPENROUTER_API_KEY"
 [agents.my-agent.network]
 allowed = ["github.com"]
 
-[memory.lobu]
+[memory]
 enabled = true
 org = "my-agent"
 name = "My Agent"
@@ -94,7 +94,7 @@ strict = false
 nix_packages = ["imagemagick", "ffmpeg"]
 
 # File-first Lobu memory
-[memory.lobu]
+[memory]
 enabled = true
 org = "support"
 name = "Support"
@@ -105,7 +105,7 @@ data = "./data"
 
 ## Schema reference
 
-### `[memory.lobu]`
+### `[memory]`
 
 Optional project-level Lobu memory configuration for file-first projects.
 
@@ -128,7 +128,7 @@ project/
 | `models` | string | no | Path to Lobu model files, usually `./models` |
 | `data` | string | no | Path to Lobu seed data, usually `./data` |
 
-When `[memory.lobu]` is enabled, Lobu reads `org` directly from `lobu.toml` and derives the effective Lobu MCP endpoint. `MEMORY_URL` remains available as an optional base-endpoint override for local or custom Lobu deployments.
+When `[memory]` is enabled, Lobu reads `org` directly from `lobu.toml` and derives the effective Lobu MCP endpoint. `MEMORY_URL` remains available as an optional base-endpoint override for local or custom Lobu deployments.
 
 
 ### `[agents.<id>]`

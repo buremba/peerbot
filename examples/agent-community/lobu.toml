@@ -15,7 +15,7 @@ key = "$ANTHROPIC_API_KEY"
 [agents.agent-community.network]
 allowed = ["github.com", ".github.com", ".githubusercontent.com", "registry.npmjs.org", ".npmjs.org"]
 
-[memory.lobu]
+[memory]
 enabled = true
 org = "market"
 name = "Agent Community"

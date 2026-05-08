@@ -827,10 +827,10 @@ Memory:
   memory
     .command("seed [path]")
     .description(
-      "Provision a Lobu memory workspace from [memory.lobu] in lobu.toml + ./models + optional ./data"
+      "Provision a Lobu memory workspace from [memory] in lobu.toml + ./models + optional ./data"
     )
     .option("--dry-run", "Log what would be created without mutating")
-    .option("--org <slug>", "Org slug override (defaults to [memory.lobu].org)")
+    .option("--org <slug>", "Org slug override (defaults to [memory].org)")
     .option("--url <url>", "Server URL override")
     .option("-c, --context <name>", "Use a named context")
     .action(

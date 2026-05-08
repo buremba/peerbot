@@ -22,7 +22,7 @@ describe("init memory scaffolding", () => {
     rmSync(projectDir, { recursive: true, force: true });
   });
 
-  test("generateLobuToml inlines the [memory.lobu] fields when enabled", async () => {
+  test("generateLobuToml inlines the [memory] fields when enabled", async () => {
     await generateLobuToml(projectDir, {
       agentName: "support",
       allowedDomains: "github.com,.github.com",
@@ -34,7 +34,7 @@ describe("init memory scaffolding", () => {
 
     const content = readFileSync(join(projectDir, "lobu.toml"), "utf-8");
 
-    expect(content).toContain("[memory.lobu]");
+    expect(content).toContain("[memory]");
     expect(content).toContain('org = "support"');
     expect(content).toContain('name = "Support"');
     expect(content).toContain('description = "Help support teams"');

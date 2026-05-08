@@ -196,7 +196,7 @@ const agentEntrySchema = z.object({
 
 // ── Memory ─────────────────────────────────────────────────────────────────
 
-const lobuMemorySchema = z.object({
+const memorySchema = z.object({
   enabled: z.boolean().optional(),
   org: z.string().optional(),
   name: z.string().optional(),
@@ -204,10 +204,6 @@ const lobuMemorySchema = z.object({
   visibility: z.enum(["public", "private"]).optional(),
   models: z.string().optional(),
   data: z.string().optional(),
-});
-
-const memorySchema = z.object({
-  lobu: lobuMemorySchema.optional(),
 });
 
 // ── Top Level ───────────────────────────────────────────────────────────────
@@ -229,5 +225,4 @@ export type NetworkEntry = z.infer<typeof networkSchema>;
 export type EgressEntry = z.infer<typeof egressSchema>;
 export type ToolsEntry = z.infer<typeof toolsSchema>;
 export type WorkerEntry = z.infer<typeof workerSchema>;
-export type LobuMemoryEntry = z.infer<typeof lobuMemorySchema>;
 export type MemoryEntry = z.infer<typeof memorySchema>;

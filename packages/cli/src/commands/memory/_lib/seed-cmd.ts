@@ -135,18 +135,16 @@ function resolveProjectLayout(inputPath?: string): ProjectLayout {
     string,
     unknown
   >;
-  const memory = (toml.memory as Record<string, unknown> | undefined)?.lobu as
-    | Record<string, unknown>
-    | undefined;
+  const memory = toml.memory as Record<string, unknown> | undefined;
 
   if (!memory) {
     throw new ValidationError(
-      `lobu.toml at ${projectPath} is missing a [memory.lobu] section`
+      `lobu.toml at ${projectPath} is missing a [memory] section`
     );
   }
   if (memory.enabled === false) {
     throw new ValidationError(
-      `[memory.lobu] in ${projectPath} is disabled (enabled = false)`
+      `[memory] in ${projectPath} is disabled (enabled = false)`
     );
   }
 
@@ -154,12 +152,12 @@ function resolveProjectLayout(inputPath?: string): ProjectLayout {
   const name = typeof memory.name === "string" ? memory.name.trim() : "";
   if (!org) {
     throw new ValidationError(
-      `[memory.lobu] in ${projectPath} is missing required field "org"`
+      `[memory] in ${projectPath} is missing required field "org"`
     );
   }
   if (!name) {
     throw new ValidationError(
-      `[memory.lobu] in ${projectPath} is missing required field "name"`
+      `[memory] in ${projectPath} is missing required field "name"`
     );
   }
 

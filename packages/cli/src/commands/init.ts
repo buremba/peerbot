@@ -731,7 +731,7 @@ export async function generateLobuToml(
     lines.push(
       "",
       "# Project-scoped Lobu memory",
-      `[memory.lobu]`,
+      `[memory]`,
       "enabled = true",
       `org = ${JSON.stringify(org)}`,
       `name = ${JSON.stringify(name)}`,

@@ -19,7 +19,7 @@ key = "$Z_AI_API_KEY"
 [agents.atlas-curator.network]
 allowed = ["github.com", ".github.com", ".githubusercontent.com", "api.z.ai", ".z.ai"]
 
-[memory.owletto]
+[memory]
 enabled = true
 org = "atlas"
 name = "Atlas"

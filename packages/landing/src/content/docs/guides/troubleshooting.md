@@ -116,7 +116,7 @@ rm -rf workspaces/*
 curl http://localhost:8787/health
 
 # Check file-first memory config
-# - lobu.toml should contain [memory.lobu] with enabled = true and an org
+# - lobu.toml should contain [memory] with enabled = true and an org
 # - MEMORY_URL is optional; use it mainly for custom external Lobu URLs
 
 # Test connection

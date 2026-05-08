@@ -620,7 +620,7 @@ function parseRelationshipType(raw: unknown): DesiredRelationshipType {
 }
 
 /**
- * Read memory schema files referenced by `[memory.lobu].models`. Each YAML
+ * Read memory schema files referenced by `[memory].models`. Each YAML
  * file in that directory should declare `type: entity_type` or
  * `type: relationship_type` (matches the seed-cmd schema).
  *
@@ -631,8 +631,8 @@ async function loadMemorySchema(
   projectRoot: string
 ): Promise<DesiredState["memorySchema"]> {
   const empty = { entityTypes: [], relationshipTypes: [] };
-  const lobu = config.memory?.lobu;
-  if (!lobu || lobu.enabled === false) return empty;
+  const mem = config.memory;
+  if (!mem || mem.enabled === false) return empty;
 
   const inline = config.memory as unknown as
     | { schema?: RawMemorySchema }
@@ -651,7 +651,7 @@ async function loadMemorySchema(
   }
 
   // Models directory (matches seed-cmd's resolution rules).
-  const modelsRel = lobu.models?.trim() || "./models";
+  const modelsRel = mem.models?.trim() || "./models";
   const modelsPath = resolve(projectRoot, modelsRel);
 
   const { existsSync, readdirSync, readFileSync } = await import("node:fs");

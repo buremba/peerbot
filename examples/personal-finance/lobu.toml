@@ -25,7 +25,7 @@ allowed = [
 # pdftotext (poppler) + csv tooling for statement parsing. See INGESTION.md.
 nix_packages = ["poppler_utils", "csvtk"]
 
-[memory.lobu]
+[memory]
 enabled = true
 org = "personal-finance"
 name = "Personal Finance"

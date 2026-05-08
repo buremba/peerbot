@@ -116,7 +116,7 @@ lobu memory run run '{"dry_run":true,"script":"export default async (ctx, client
 
 ### `lobu memory seed`
 
-Provisions a memory workspace from `[memory.lobu]` in `lobu.toml`, `./models`, and optional `./data`.
+Provisions a memory workspace from `[memory]` in `lobu.toml`, `./models`, and optional `./data`.
 
 ```bash
 lobu memory seed

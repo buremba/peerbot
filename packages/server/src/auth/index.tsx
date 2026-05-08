@@ -16,6 +16,7 @@ import {
 	PasswordResetEmail,
 	passwordResetSubject,
 } from "../email/templates/password-reset";
+import { WelcomeEmail, welcomeSubject } from "../email/templates/welcome";
 import { notifyInvitationReceived } from "../notifications/triggers";
 import {
 	deleteMemberEntity,
@@ -463,7 +464,7 @@ export async function createAuth(env: Env, request?: Request) {
 						}
 						return { data: user };
 					},
-					after: async (user) => {
+					after: async (user, context) => {
 						try {
 							const { ensurePersonalOrganization } = await import(
 								"./personal-org-provisioning"
@@ -482,6 +483,32 @@ export async function createAuth(env: Env, request?: Request) {
 							}
 						} catch (error) {
 							console.error("[Auth] Failed to provision personal org:", error);
+						}
+
+						try {
+							if (!env.RESEND_API_KEY && runtimeNodeEnv !== "production") {
+								console.info(
+									{ email: user.email },
+									"[Auth] Development signup welcome email skipped (RESEND_API_KEY not configured)",
+								);
+								return;
+							}
+							await sendTransactionalEmail({
+								env,
+								to: user.email,
+								category: "auth",
+								subject: welcomeSubject,
+								react: (
+									<WelcomeEmail
+										name={user.name}
+										appUrl={resolveBaseUrl({
+											request: context?.request ?? undefined,
+										})}
+									/>
+								),
+							});
+						} catch (error) {
+							console.error("[Auth] Failed to send signup welcome email:", error);
 						}
 					},
 				},

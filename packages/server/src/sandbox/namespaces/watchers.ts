@@ -62,7 +62,9 @@ export interface WatcherUpdateInput {
 export interface WatcherCompleteWindowInput {
   watcher_id: WatcherId;
   /** JWT obtained from read_knowledge(watcher_id, since, until). */
-  window_token: string;
+  window_token?: string;
+  /** Multiple page JWTs obtained from read_knowledge for the same watcher window. */
+  window_tokens?: string[];
   extracted_data: Record<string, unknown>;
   replace_existing?: boolean;
   client_id?: string;

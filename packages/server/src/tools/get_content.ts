@@ -382,6 +382,10 @@ interface GetContentResult {
     has_more: boolean;
     has_older?: boolean;
     has_newer?: boolean;
+    next_cursor?: {
+      occurred_at: string;
+      id: number;
+    };
   };
   classification_stats?: {
     [classifierSlug: string]: {
@@ -1351,6 +1355,12 @@ interface ContentQueryParams {
   window_end: string;
   organizationId: string;
   entityIds?: number[];
+  page?: {
+    sourceName: string;
+    limit: number;
+    beforeOccurredAt?: string;
+    beforeId?: number;
+  };
 }
 
 function buildContentQueryContext(params: ContentQueryParams): DataSourceContext {
@@ -1365,8 +1375,68 @@ function buildContentQueryContext(params: ContentQueryParams): DataSourceContext
 async function queryContentData(
   sql: DbClient,
   params: ContentQueryParams
-): Promise<{ sourcesContent: Record<string, unknown[]>; allContent: unknown[] }> {
-  const results = await executeDataSources(params.sources, buildContentQueryContext(params), sql);
+): Promise<{
+  sourcesContent: Record<string, unknown[]>;
+  allContent: unknown[];
+  page?: { has_more: boolean; next_cursor?: { occurred_at: string; id: number } };
+}> {
+  const page = params.page;
+  const results = await executeDataSources(params.sources, buildContentQueryContext(params), sql, {
+    wrapQuery: page
+      ? (scopedQuery, queryParams, sourceName) => {
+          if (sourceName !== page.sourceName) return scopedQuery;
+
+          const nextParams = [...queryParams];
+          const where: string[] = [
+            '_watcher_page.id IS NOT NULL',
+            '_watcher_page.occurred_at IS NOT NULL',
+          ];
+          if (page.beforeOccurredAt && page.beforeId) {
+            nextParams.push(page.beforeOccurredAt);
+            const occurredAtParam = `$${nextParams.length}`;
+            nextParams.push(page.beforeId);
+            const idParam = `$${nextParams.length}`;
+            where.push(
+              `(_watcher_page.occurred_at < ${occurredAtParam}::timestamptz OR ` +
+                `(_watcher_page.occurred_at = ${occurredAtParam}::timestamptz AND _watcher_page.id < ${idParam}::bigint))`
+            );
+          }
+          nextParams.push(page.limit + 1);
+          const limitParam = `$${nextParams.length}`;
+
+          return {
+            sql:
+              `SELECT * FROM (${scopedQuery}) AS _watcher_page ` +
+              `WHERE ${where.join(' AND ')} ` +
+              'ORDER BY _watcher_page.occurred_at DESC NULLS LAST, _watcher_page.id DESC ' +
+              `LIMIT ${limitParam}`,
+            params: nextParams,
+          };
+        }
+      : undefined,
+  });
+
+  let pageResult: { has_more: boolean; next_cursor?: { occurred_at: string; id: number } } | undefined;
+  if (page) {
+    const rows = results[page.sourceName] ?? [];
+    const trimmed = rows.slice(0, page.limit);
+    const hasMore = rows.length > page.limit;
+    results[page.sourceName] = trimmed;
+    const last = trimmed[trimmed.length - 1] as Record<string, unknown> | undefined;
+    const lastOccurredAt = last?.occurred_at;
+    const lastId = Number(last?.id);
+    pageResult = {
+      has_more: hasMore,
+      ...(hasMore && lastOccurredAt && Number.isFinite(lastId)
+        ? {
+            next_cursor: {
+              occurred_at: new Date(lastOccurredAt as string | Date).toISOString(),
+              id: Math.trunc(lastId),
+            },
+          }
+        : {}),
+    };
+  }
 
   const seen = new Set<number>();
   const allContent: unknown[] = [];
@@ -1407,7 +1477,7 @@ async function queryContentData(
     }
   }
 
-  return { sourcesContent: results as Record<string, unknown[]>, allContent };
+  return { sourcesContent: results as Record<string, unknown[]>, allContent, page: pageResult };
 }
 
 // ============================================
@@ -1586,7 +1656,7 @@ async function handleWatcherMode(
   // NOTE: Window creation is deferred to complete_window action
   // This allows batched processing where each batch creates its own window
 
-  const contentLimit = Math.min(args.limit || 500, 2000); // Max 2000 per source
+  const contentLimit = Math.min(Math.max(args.limit || 100, 1), 1000); // Page size; agents can request more pages with next_cursor.
   const contentOffset = args.offset || 0;
   const windowStartIso = windowStart.toISOString();
   const windowEndIso = windowEnd.toISOString();
@@ -1602,6 +1672,12 @@ async function handleWatcherMode(
       window_end: windowEndIso,
       organizationId: watcher.organization_id as string,
       entityIds: watcherEntityIds,
+      page: {
+        sourceName: 'content',
+        limit: contentLimit,
+        beforeOccurredAt: args.before_occurred_at,
+        beforeId: args.before_id,
+      },
     }),
     sql.unsafe(
       `
@@ -1616,7 +1692,7 @@ async function handleWatcherMode(
       [...sourceEntityIds, windowStartIso, windowEndIso]
     ),
   ]);
-  const { sourcesContent, allContent } = contentData;
+  const { sourcesContent, allContent, page: contentPage } = contentData;
   const totalCount = Number(totalStatsResult[0]?.total_count || 0);
   const totalCountChars = Number(totalStatsResult[0]?.total_chars || 0);
 
@@ -1771,6 +1847,12 @@ async function handleWatcherMode(
 
   // Append past reactions, feedback, and guidance to the rendered prompt
   let enrichedPrompt = promptRendered;
+  if (enrichedPrompt && contentPage?.has_more) {
+    enrichedPrompt +=
+      '\n\n## Pagination\n' +
+      `This page includes ${allContent.length} content items and more items are available in this same watcher window. ` +
+      'If you need more evidence before completing the window, call read_knowledge again with the same watcher_id/since/until and page.next_cursor as before_occurred_at/before_id.';
+  }
   if (enrichedPrompt) {
     if (reactionsGuidance) {
       enrichedPrompt += `\n\n## Reactions Guidance\n${reactionsGuidance}`;
@@ -1789,7 +1871,8 @@ async function handleWatcherMode(
     page: {
       limit: contentLimit,
       offset: contentOffset,
-      has_more: contentOffset + allContent.length < totalCount,
+      has_more: contentPage?.has_more ?? false,
+      ...(contentPage?.next_cursor ? { next_cursor: contentPage.next_cursor } : {}),
     },
     window_token: windowToken,
     window_start: windowStartIso,

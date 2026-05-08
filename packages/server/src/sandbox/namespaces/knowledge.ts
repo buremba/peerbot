@@ -40,6 +40,8 @@ export interface KnowledgeReadInput {
   since?: string;
   until?: string;
   limit?: number;
+  before_occurred_at?: string;
+  before_id?: number;
   entity_ids?: number[];
 }
 

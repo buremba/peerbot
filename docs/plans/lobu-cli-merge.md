@@ -5,7 +5,7 @@ Sequel to `lobu-absorption.md`. That plan said flattening the `lobu-*` prefix wa
 ## Why
 
 - `lobu run` already embeds the Lobu backend in-process (`packages/server` boots inside `lobu run`). Two CLIs, one runtime is the worst of both worlds for lobu users.
-- `lobu seed` already reads `[memory.lobu]` from `lobu.toml` — the cross-config coupling exists.
+- `lobu memory seed` reads `[memory]` from `lobu.toml` — the cross-config coupling exists.
 - `lobu dev` (docker-compose) contradicts CLAUDE.md ("embedded-only, no Docker"). `docker-compose.dev.yml` does not exist at the repo root. The command is dead code (see PR-2).
 - Three near-duplicate health commands (`lobu status`, `lobu doctor`, `lobu health`) is one job.
 - Two `init`s with overlapping intent confuses onboarding.
@@ -17,7 +17,7 @@ Sequel to `lobu-absorption.md`. That plan said flattening the `lobu-*` prefix wa
 
 ## Out of scope
 
-- Renaming `packages/lobu-*` directories or the `[memory.lobu]` config key. Provenance prefix stays for now — collapsing the bin is enough churn for one cycle.
+- Renaming `packages/lobu-*` directories or the `[memory]` config key. Provenance prefix stays for now — collapsing the bin is enough churn for one cycle.
 - Changing the `openclaw-plugin` MCP plugin name (still `@lobu/openclaw-plugin`). Only its `tokenCommand` doc changes.
 - Lobu memory product surface area, schemas, MCP tools.
 

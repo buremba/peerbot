@@ -14,7 +14,7 @@ Today `lobu.config.json` at the repo root holds CLI profiles:
 }
 ```
 
-Lobu already owns `lobu.toml` with zod schema in `packages/core/src/lobu-toml-schema.ts` (has `[memory.lobu]` section). Collapse the JSON into a new TOML section:
+Lobu already owns `lobu.toml` with zod schema in `packages/core/src/lobu-toml-schema.ts` (has `[memory]` section). Collapse the JSON into a new TOML section:
 
 ```toml
 [lobu.profiles.local]

@@ -109,7 +109,7 @@ Good agents should be able to **think messily and remember cleanly**.
 Lobu makes this split explicit.
 
 - Every agent has a local workspace.
-- In file-first projects, Lobu enables Lobu from `[memory.lobu]` in `lobu.toml`.
+- In file-first projects, Lobu enables Lobu from `[memory]` in `lobu.toml`.
 - `MEMORY_URL` is still supported as an optional base-endpoint override for local or custom Lobu deployments.
 - If no Lobu config is resolved, Lobu uses `@openclaw/native-memory`, so memory stays local to that workspace.
 - If Lobu is configured, Lobu uses `@lobu/openclaw-plugin` when that plugin is installed, otherwise it falls back to native memory.

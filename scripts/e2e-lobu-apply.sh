@@ -140,7 +140,7 @@ key = "$ANTHROPIC_API_KEY"
 type = "telegram"
 config = { botToken = "$TELEGRAM_BOT_TOKEN", chatId = "12345" }
 
-[memory.lobu]
+[memory]
 enabled = true
 org = "dev"
 name = "Local Dev"

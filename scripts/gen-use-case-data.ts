@@ -6,6 +6,7 @@
  * Run: bun scripts/gen-use-case-data.ts
  */
 
+import { spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -63,9 +64,9 @@ function resolveLobuLayout(exampleDir: string): ExampleLobuLayout | null {
   if (!existsSync(tomlPath)) return null;
 
   const toml = parseToml(readFileSync(tomlPath, "utf-8")) as {
-    memory?: { lobu?: { enabled?: boolean; org?: string; models?: string } };
+    memory?: { enabled?: boolean; org?: string; models?: string };
   };
-  const memory = toml.memory?.lobu;
+  const memory = toml.memory;
   if (!memory || memory.enabled === false) return null;
   const org = memory.org?.trim();
   if (!org) return null;
@@ -337,6 +338,23 @@ if (!existsSync(outDir)) {
 }
 
 writeFileSync(OUTPUT_PATH, output);
+
+const format = spawnSync(
+  "bunx",
+  [
+    "biome",
+    "format",
+    "--config-path",
+    "config/biome.config.json",
+    "--write",
+    OUTPUT_PATH,
+  ],
+  { cwd: ROOT, stdio: "inherit" }
+);
+if (format.status !== 0) {
+  process.exit(format.status ?? 1);
+}
+
 console.log(
   `Generated ${Object.keys(models).length} use case models → ${OUTPUT_PATH}`
 );

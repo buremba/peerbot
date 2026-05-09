@@ -156,6 +156,21 @@ Use the docs MCP before answering.
     expect(settings.mcpServers?.docs?.url).toBe("https://docs.example.com/mcp");
   });
 
+  test("rejects stale nested memory config", async () => {
+    const dir = mkProject(
+      `[agents.triage]
+name = "Triage"
+dir = "./agents/triage"
+
+[memory.lobu]
+enabled = false
+org = "dev"
+models = "./custom-models"
+`
+    );
+    await expect(loadDesiredState({ cwd: dir })).rejects.toThrow(/lobu/);
+  });
+
   test("rejects watcher blocks (v1 doesn't sync watchers)", async () => {
     const dir = mkProject(
       `[agents.triage]

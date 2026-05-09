@@ -1,5 +1,47 @@
 # Changelog
 
+## [6.1.0](https://github.com/lobu-ai/lobu/compare/lobu-v6.0.1...lobu-v6.1.0) (2026-05-09)
+
+
+### Features
+
+* **auth:** send welcome email on signup ([d687938](https://github.com/lobu-ai/lobu/commit/d68793865d5933b79fe862eae9c71e739075bc95))
+* **cli:** non-interactive init, project link, beefier doctor ([#521](https://github.com/lobu-ai/lobu/issues/521)) ([1b02761](https://github.com/lobu-ai/lobu/commit/1b027610b2075a2fbd73c7ada1cc6a57ad3f7bd4))
+* **connectors:** add normalized GitHub stargazer identities ([f59f5ef](https://github.com/lobu-ai/lobu/commit/f59f5ef6208962a7c8722f80a7fdd6680711c959))
+* **mcp:** add dry-run preview for SDK run tool ([b991ef9](https://github.com/lobu-ai/lobu/commit/b991ef9ac824c30bb9eac4fe9e6db839439ad76d))
+* **mcp:** add memory tool aliases ([d61846b](https://github.com/lobu-ai/lobu/commit/d61846bedce1fa909643e840309416fd4ab4cb35))
+* **mcp:** normalize tool names and audit sharp calls ([864acb0](https://github.com/lobu-ai/lobu/commit/864acb05da37935a0f020fd2dc0570031a65b861))
+
+
+### Bug Fixes
+
+* address unaddressed Codex review comments from [#478](https://github.com/lobu-ai/lobu/issues/478) / [#498](https://github.com/lobu-ai/lobu/issues/498) / [#521](https://github.com/lobu-ai/lobu/issues/521) ([#535](https://github.com/lobu-ai/lobu/issues/535)) ([1c704f0](https://github.com/lobu-ai/lobu/commit/1c704f0e2612df47d3665ecb12a857c88699e2ed))
+* **build:** build embeddings before connector-worker ([#528](https://github.com/lobu-ai/lobu/issues/528)) ([1979f5c](https://github.com/lobu-ai/lobu/commit/1979f5cda459a8355a8ee835feefb996b23a0a0d))
+* **chat-instance:** self-bind org context in startInstance for boot + webhooks ([#522](https://github.com/lobu-ai/lobu/issues/522)) ([5257162](https://github.com/lobu-ai/lobu/commit/5257162e0db4fc8a9cbd2f3522e56cef2404d1f9))
+* **ci:** restore patches directory for docker builds ([4ffe1c9](https://github.com/lobu-ai/lobu/commit/4ffe1c95fe4c0b22f7e827b824bdeb71ad5705cd))
+* cluster of bugs surfaced by parallel bug-hunting subagents ([#523](https://github.com/lobu-ai/lobu/issues/523)) ([680fe4d](https://github.com/lobu-ai/lobu/commit/680fe4d78793ad7322798c375c9de11f74095add))
+* complete memory config flattening ([4154651](https://github.com/lobu-ai/lobu/commit/415465137c06411c59b0e59443eff1ff26927a36))
+* **connectors:** recover reddit sync and watcher memory auth ([#542](https://github.com/lobu-ai/lobu/issues/542)) ([48adcb4](https://github.com/lobu-ai/lobu/commit/48adcb4a1516f2f246e9671966ae53e48309dc45))
+* **connectors:** use claimed_at instead of nonexistent started_at on runs ([#515](https://github.com/lobu-ai/lobu/issues/515)) ([5db2c86](https://github.com/lobu-ai/lobu/commit/5db2c865571646636341ca3fe1cd0410af916155))
+* **db:** guard chat_connections copy on table existence ([#525](https://github.com/lobu-ai/lobu/issues/525)) ([7d95910](https://github.com/lobu-ai/lobu/commit/7d95910630bc7db64c7b1674e660f86426d6c027))
+* **docker/worker:** build @lobu/core before connector-sdk in worker image ([#530](https://github.com/lobu-ai/lobu/issues/530)) ([3d8e233](https://github.com/lobu-ai/lobu/commit/3d8e233de150a02c6dfd9987b5e0960160cc93ec))
+* **docker:** build embeddings before connector worker in app image ([#541](https://github.com/lobu-ai/lobu/issues/541)) ([9169103](https://github.com/lobu-ai/lobu/commit/9169103434b308a827084c9d8ebbc557538578f0))
+* **docker:** remove deleted owletto package copies from app image ([#539](https://github.com/lobu-ai/lobu/issues/539)) ([2e0f092](https://github.com/lobu-ai/lobu/commit/2e0f0922b0b52467b67964396932d837b0dc72da))
+* dogfood workflow + auth bug allowing cross-org OAuth ([#536](https://github.com/lobu-ai/lobu/issues/536)) ([feae13a](https://github.com/lobu-ai/lobu/commit/feae13aa680213a05baf6b3120a9b02a99921e4f))
+* drop @types/node override, align embeddings to 20.19.9 ([#524](https://github.com/lobu-ai/lobu/issues/524)) ([b28530d](https://github.com/lobu-ai/lobu/commit/b28530d5c87bdf82d488e41f744cc0567272777c))
+* format tools.ts (collapse stripEnv to one line) ([#518](https://github.com/lobu-ai/lobu/issues/518)) ([a0ecd6e](https://github.com/lobu-ai/lobu/commit/a0ecd6e0c59b9ed91bd4c67e29bffbd9461353d9))
+* **gateway:** handle missing Lobu org context ([b513001](https://github.com/lobu-ai/lobu/commit/b513001d5e41177ec3bc4ef61990334f273a9d99))
+* **gateway:** initialize memory tool listing ([#545](https://github.com/lobu-ai/lobu/issues/545)) ([f1614d7](https://github.com/lobu-ai/lobu/commit/f1614d72e87a94e26c5fd5b496807626225da0c2))
+* **gateway:** unscoped agent route + fake LLM e2e harness + validateUrlDomain bypass ([#532](https://github.com/lobu-ai/lobu/issues/532)) ([04036b5](https://github.com/lobu-ai/lobu/commit/04036b5151af84317ddc760f443c1ed2e94e2df6))
+* **server:** speed up event thread context lookups ([#558](https://github.com/lobu-ai/lobu/issues/558)) ([adcf965](https://github.com/lobu-ai/lobu/commit/adcf9659e6f867d194d6d48eabf24851aca9c673))
+* unblock npx install ([#500](https://github.com/lobu-ai/lobu/issues/500)) and onboard DeepSeek V4 default ([#503](https://github.com/lobu-ai/lobu/issues/503)) ([#519](https://github.com/lobu-ai/lobu/issues/519)) ([98bd94e](https://github.com/lobu-ai/lobu/commit/98bd94e97cb9f75abdb0b06e55793fd5a907cfbf))
+* **watchers:** accept ISO datetime aliases ([#549](https://github.com/lobu-ai/lobu/issues/549)) ([53dcc4a](https://github.com/lobu-ai/lobu/commit/53dcc4aab04147ff91a54f8248015db6e55a7db9))
+* **watchers:** infer running completion run ([#550](https://github.com/lobu-ai/lobu/issues/550)) ([b0e816a](https://github.com/lobu-ai/lobu/commit/b0e816a1e7997a28ea4f6a878e6d6e150be12460))
+* **watchers:** link exact window content ids ([#551](https://github.com/lobu-ai/lobu/issues/551)) ([da3f7c9](https://github.com/lobu-ai/lobu/commit/da3f7c91a702fe18fd7072925ff734704f637a0d))
+* **watchers:** page source reads by cursor ([#556](https://github.com/lobu-ai/lobu/issues/556)) ([2507773](https://github.com/lobu-ai/lobu/commit/2507773429323c9dba9db4a3eff92cea2a25900a))
+* **web:** redirect root visitors to login ([#555](https://github.com/lobu-ai/lobu/issues/555)) ([91091b6](https://github.com/lobu-ai/lobu/commit/91091b65fcb144646d0ac7daf42ceb18fcb5a3d0))
+* **worker:** accept nested platform metadata ([#547](https://github.com/lobu-ai/lobu/issues/547)) ([0e8769c](https://github.com/lobu-ai/lobu/commit/0e8769cbbdc918e0edfb46c40b674384118bd396))
+
 ## [6.0.1](https://github.com/lobu-ai/lobu/compare/lobu-v6.0.0...lobu-v6.0.1) (2026-05-04)
 
 

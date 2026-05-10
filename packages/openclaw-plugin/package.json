@@ -20,7 +20,8 @@
     "build": "tsc && cp ./openclaw.plugin.json ./dist/openclaw.plugin.json",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist",
-    "test:e2e": "vitest run --config test/e2e/vitest.config.ts"
+    "test:e2e": "vitest run --config test/e2e/vitest.config.ts",
+    "test:unit": "vitest run --config test/unit/vitest.config.ts"
   },
   "openclaw": {
     "extensions": [

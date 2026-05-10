@@ -85,6 +85,16 @@ const WikiSearchSchema = {
   required: ['query'],
 };
 
+const MemorySearchSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    query: { type: 'string', minLength: 1 },
+    maxResults: { type: 'number', minimum: 1 },
+  },
+  required: ['query'],
+};
+
 const WikiGetSchema = {
   type: 'object',
   additionalProperties: false,
@@ -426,7 +436,23 @@ async function runWikiApply(
     const watcherId = args.watcher_id ?? args.watcherId;
     const windowId = args.window_id ?? args.windowId;
     const corrections = Array.isArray(args.corrections) ? args.corrections : null;
-    if ((typeof watcherId === 'string' || typeof watcherId === 'number') && typeof windowId === 'number' && corrections) {
+    const looksLikeWatcherFeedback =
+      (typeof watcherId === 'string' || typeof watcherId === 'number') &&
+      typeof windowId === 'number' &&
+      corrections !== null;
+    if (looksLikeWatcherFeedback) {
+      const invalid = corrections!.filter(
+        (c): c is Record<string, unknown> =>
+          !isRecord(c) || typeof c.field_path !== 'string' || c.field_path.trim().length === 0
+      );
+      if (corrections!.length === 0) {
+        throw new Error('wiki_apply update_metadata: corrections must be a non-empty array');
+      }
+      if (invalid.length > 0) {
+        throw new Error(
+          `wiki_apply update_metadata: ${invalid.length} correction(s) missing required "field_path" string`
+        );
+      }
       const result = await callMcpToolJson(callMcpTool, config, 'manage_watchers', {
         action: 'submit_feedback',
         watcher_id: String(watcherId),
@@ -462,6 +488,15 @@ async function runWikiApply(
   throw new Error('wiki_apply supports op="create_synthesis" and op="update_metadata" in Lobu compat mode.');
 }
 
+type SessionCall = {
+  tool: string;
+  at: number;
+  argsSummary: Record<string, unknown>;
+  outcome: Record<string, unknown>;
+};
+
+const SESSION_BUFFER_CAP = 32;
+
 export function registerMemoryWikiCompatTools(
   config: ResolvedPluginConfig,
   registerTool: (def: Record<string, unknown>) => void,
@@ -473,6 +508,18 @@ export function registerMemoryWikiCompatTools(
     log.warn('lobu: memoryWikiCompat enabled but mcpUrl is missing; wiki_* tools not registered');
     return;
   }
+
+  const sessionCalls: SessionCall[] = [];
+  const recordCall = (
+    tool: string,
+    argsSummary: Record<string, unknown>,
+    outcome: Record<string, unknown>
+  ): void => {
+    sessionCalls.push({ tool, at: Date.now(), argsSummary, outcome });
+    if (sessionCalls.length > SESSION_BUFFER_CAP) {
+      sessionCalls.splice(0, sessionCalls.length - SESSION_BUFFER_CAP);
+    }
+  };
 
   const registerTextTool = (
     name: string,
@@ -522,6 +569,7 @@ export function registerMemoryWikiCompatTools(
           'no separate Markdown vault is written by this spike.',
         ],
       };
+      recordCall('wiki_status', {}, { watcherCount, memoryAvailable: status.memory_available });
       return { text: stringifyResult(status), details: status };
     }
   );
@@ -531,7 +579,16 @@ export function registerMemoryWikiCompatTools(
     'Wiki Search',
     'Search Lobu memory-wiki compatibility corpus. corpus=memory searches raw Lobu memory; corpus=wiki searches claims/syntheses/watchers; corpus=all merges both.',
     WikiSearchSchema,
-    (args) => runWikiSearch(callMcpTool, config, args)
+    async (args) => {
+      const result = await runWikiSearch(callMcpTool, config, args);
+      const results = Array.isArray(result.details.results) ? result.details.results : [];
+      recordCall(
+        'wiki_search',
+        { query: result.details.query, corpus: result.details.corpus },
+        { resultCount: results.length, kinds: results.map((r) => (isRecord(r) ? r.kind : undefined)) }
+      );
+      return result;
+    }
   );
 
   registerTextTool(
@@ -539,7 +596,15 @@ export function registerMemoryWikiCompatTools(
     'Wiki Get',
     'Read a Lobu-backed wiki compatibility result by path or lookup, e.g. sources/events/123, reports/watchers/7, watcher:7, window:9, event:123.',
     WikiGetSchema,
-    (args) => runWikiGet(callMcpTool, config, args)
+    async (args) => {
+      const result = await runWikiGet(callMcpTool, config, args);
+      recordCall(
+        'wiki_get',
+        { lookup: result.details.lookup, sourceTool: result.details.sourceTool },
+        { hadResult: result.details.result != null }
+      );
+      return result;
+    }
   );
 
   registerTextTool(
@@ -547,32 +612,88 @@ export function registerMemoryWikiCompatTools(
     'Wiki Apply',
     'Apply a narrow memory-wiki compatible mutation backed by Lobu MCP. Supports create_synthesis via save_memory and update_metadata via watcher feedback or claim event.',
     WikiApplySchema,
-    (args) => runWikiApply(callMcpTool, config, args)
+    async (args) => {
+      const result = await runWikiApply(callMcpTool, config, args);
+      const hasEvidence =
+        (Array.isArray(args.sourceIds) && args.sourceIds.length > 0) ||
+        args.watcher_id != null ||
+        args.window_id != null ||
+        (Array.isArray(args.claims) && args.claims.length > 0);
+      recordCall(
+        'wiki_apply',
+        {
+          op: asString(args.op),
+          sourceTool: result.details.sourceTool,
+          status: asString(args.status),
+          confidence: typeof args.confidence === 'number' ? args.confidence : null,
+        },
+        { hasEvidence }
+      );
+      return result;
+    }
   );
 
   registerTextTool(
     'wiki_lint',
     'Wiki Lint',
-    'Validate Lobu memory-wiki compatibility conventions for this session. Spike implementation checks connectivity and explains missing optional projections.',
+    'Lint the recent memory-wiki compatibility tool calls in this session for missing evidence, missing provenance, and low-confidence active claims.',
     { type: 'object', additionalProperties: false, properties: {} },
     async () => {
-      const status = {
-        ok: true,
-        warnings: [
-          'compiled Markdown vault export is not implemented in compat mode',
-          'claim/evidence schemas are conventions over Lobu metadata during the spike',
-        ],
+      const conventions = {
         required_provenance: ['event ids', 'watcher window ids', 'source URLs when available'],
+        evidence_fields: ['sourceIds', 'watcher_id', 'window_id', 'claims'],
+        confidence_floor_for_active: 0.5,
       };
-      return { text: stringifyResult(status), details: status };
+      const warnings: Array<{ tool: string; at: number; reason: string; details: Record<string, unknown> }> = [];
+      for (const call of sessionCalls) {
+        if (call.tool === 'wiki_apply' && call.outcome.hasEvidence === false) {
+          warnings.push({
+            tool: call.tool,
+            at: call.at,
+            reason: 'wiki_apply written with no evidence (sourceIds/watcher_id/window_id/claims all empty)',
+            details: call.argsSummary,
+          });
+        }
+        if (
+          call.tool === 'wiki_apply' &&
+          call.argsSummary.status === 'active' &&
+          typeof call.argsSummary.confidence === 'number' &&
+          call.argsSummary.confidence < conventions.confidence_floor_for_active
+        ) {
+          warnings.push({
+            tool: call.tool,
+            at: call.at,
+            reason: `wiki_apply status=active with confidence ${call.argsSummary.confidence} below floor ${conventions.confidence_floor_for_active}`,
+            details: call.argsSummary,
+          });
+        }
+        if (
+          (call.tool === 'wiki_search' || call.tool === 'memory_search') &&
+          call.outcome.resultCount === 0
+        ) {
+          warnings.push({
+            tool: call.tool,
+            at: call.at,
+            reason: 'search returned zero results — agent may have queried with an off-vocabulary term',
+            details: call.argsSummary,
+          });
+        }
+      }
+      const report = {
+        ok: warnings.length === 0,
+        observed_calls: sessionCalls.length,
+        warnings,
+        conventions,
+      };
+      return { text: stringifyResult(report), details: report };
     }
   );
 
   registerTextTool(
     'memory_search',
     'Memory Search',
-    'OpenClaw compatibility alias for Lobu search_memory. Accepts the same args plus optional corpus, which is ignored unless set to wiki/all; use wiki_search for corpus routing.',
-    { ...WikiSearchSchema, required: ['query'] },
+    'OpenClaw compatibility alias for Lobu search_memory. Searches Lobu memory only — use wiki_search for corpus routing across wiki/all.',
+    MemorySearchSchema,
     async (args) => {
       const query = asString(args.query) ?? '';
       const maxResults = readPositiveNumber(args.maxResults, 8, 25);
@@ -584,6 +705,7 @@ export function registerMemoryWikiCompatTools(
         limit: maxResults,
       });
       const text = raw ? extractTextFromContent(raw.content) : '';
+      recordCall('memory_search', { query, maxResults }, { hadResults: text.length > 0 });
       return { text, details: { sourceTool: 'search_memory' } };
     }
   );
@@ -593,7 +715,15 @@ export function registerMemoryWikiCompatTools(
     'Memory Get',
     'OpenClaw compatibility alias for Lobu read_knowledge.',
     WikiGetSchema,
-    (args) => runWikiGet(callMcpTool, config, args)
+    async (args) => {
+      const result = await runWikiGet(callMcpTool, config, args);
+      recordCall(
+        'memory_get',
+        { lookup: result.details.lookup, sourceTool: result.details.sourceTool },
+        { hadResult: result.details.result != null }
+      );
+      return result;
+    }
   );
 
   log.info('lobu: registered memory-wiki compatibility tools');

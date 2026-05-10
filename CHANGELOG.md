@@ -1,5 +1,15 @@
 # Changelog
 
+## [6.1.1](https://github.com/lobu-ai/lobu/compare/lobu-v6.1.0...lobu-v6.1.1) (2026-05-10)
+
+
+### Bug Fixes
+
+* **cli:** make lobu run self-contained ([4e5c86b](https://github.com/lobu-ai/lobu/commit/4e5c86ba4c7fe19931d2f83b4094e33bc16efa71))
+* preflight production database migrations ([#563](https://github.com/lobu-ai/lobu/issues/563)) ([c51a85b](https://github.com/lobu-ai/lobu/commit/c51a85b7b4d98af7b5b64ab34977d4d5ef118645))
+* scaffold provider and platform env placeholders ([#565](https://github.com/lobu-ai/lobu/issues/565)) ([587074d](https://github.com/lobu-ai/lobu/commit/587074d0f5cd8e3f6651ee990ba38902efeeebdc))
+* workspace membership consistency ([668fe06](https://github.com/lobu-ai/lobu/commit/668fe060b2341d4c6422fe81043fc332c62d0502))
+
 ## [6.1.0](https://github.com/lobu-ai/lobu/compare/lobu-v6.0.1...lobu-v6.1.0) (2026-05-09)
 
 

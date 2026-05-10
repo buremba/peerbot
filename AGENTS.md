@@ -125,7 +125,7 @@ When the user pivots mid-session, the default failure mode is piling unrelated w
 
 ## Development
 
-Prerequisites: Bun and a reachable Postgres (with pgvector) via `DATABASE_URL`.
+Prerequisites: Bun, Node.js **22.x–24.x** (`.nvmrc` and `.node-version` pin `22`), and a reachable Postgres (with pgvector) via `DATABASE_URL`. Node 25+ is rejected at boot — `isolated-vm` (used by `query_sdk` / `run_sdk`) has no Node 25+ build yet (upstream: [`laverdet/isolated-vm#553`](https://github.com/laverdet/isolated-vm/issues/553)).
 
 ```bash
 ./scripts/setup-dev.sh   # first-time setup (builds packages, checks bun)

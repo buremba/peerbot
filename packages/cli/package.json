@@ -101,7 +101,7 @@
     "README.md"
   ],
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=22 <25"
   },
   "optionalDependencies": {
     "isolated-vm": "^6.1.2"

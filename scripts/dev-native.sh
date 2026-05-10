@@ -21,6 +21,21 @@ cd "$REPO_ROOT"
 
 command -v bun >/dev/null || { echo "bun is required: curl -fsSL https://bun.sh/install | bash"; exit 1; }
 
+# Lobu's SDK sandbox (query_sdk / run_sdk) depends on isolated-vm@6, which has
+# not shipped Node 25+ support yet (upstream: laverdet/isolated-vm#553). The
+# call-site gate in packages/server/src/sandbox/run-script.ts only surfaces
+# this when an agent invokes the sandbox; we fail fast here so `make dev`
+# itself refuses to boot under an unsupported Node major.
+node_major=$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || true)
+if [ -z "$node_major" ] || [ "$node_major" -lt 22 ] || [ "$node_major" -ge 25 ]; then
+  current=$(node -v 2>/dev/null || echo 'unknown')
+  echo "❌ Unsupported Node.js runtime: $current (required: 22.x–24.x)"
+  echo "   isolated-vm has no Node 25+ build yet — see https://github.com/laverdet/isolated-vm/issues/553"
+  echo "   Quick fix on macOS: brew install node@22 && PATH=/opt/homebrew/opt/node@22/bin:\$PATH make dev"
+  echo "   Or use a version manager (nvm, fnm, mise, asdf, volta) that honours .nvmrc / .node-version."
+  exit 1
+fi
+
 if [ ! -f .env ]; then
   echo "❌ .env not found at $REPO_ROOT/.env"
   echo "   Copy from .env.example or run: npx @lobu/cli@latest"

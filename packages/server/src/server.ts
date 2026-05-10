@@ -8,6 +8,14 @@
  * - Sentry error tracking
  */
 
+import { assertSupportedNodeVersion } from './utils/assert-node-version';
+
+// Refuse to boot under an unsupported Node major (isolated-vm gate). The
+// equivalent check at the sandbox call site only surfaces hours later when an
+// agent finally invokes query_sdk / run_sdk; failing fast here keeps the
+// diagnostic close to the cause.
+assertSupportedNodeVersion();
+
 // Sentry must init before any other imports for auto-instrumentation
 import './instrument';
 

@@ -10,6 +10,12 @@
  * Data stored at ~/.lobu/data/ (configurable via LOBU_DATA_DIR).
  */
 
+import { assertSupportedNodeVersion } from './utils/assert-node-version';
+
+// Refuse to boot under an unsupported Node major (isolated-vm gate). See
+// assert-node-version.ts for the upstream tracking link.
+assertSupportedNodeVersion();
+
 import { fork } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';

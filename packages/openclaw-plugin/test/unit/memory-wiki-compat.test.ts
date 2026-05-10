@@ -175,6 +175,27 @@ describe('upstream failures propagate', () => {
     h.setResponse('query_sdk', { content: [{ type: 'text', text: 'Tool not found: query_sdk' }], isError: true });
     await expect(h.invoke('wiki_search', { query: 'anything', corpus: 'wiki' })).rejects.toThrow(/query_sdk/);
   });
+
+  it('runSdkScript surfaces sandbox success=false envelope as a thrown error', async () => {
+    const h = makeHarness();
+    h.setResponse(
+      'query_sdk',
+      jsonContent({
+        success: false,
+        error: { name: 'RuntimeUnavailable', message: 'isolated-vm is not installed' },
+      })
+    );
+    await expect(h.invoke('wiki_get', { lookup: 'watcher:42' })).rejects.toThrow(/RuntimeUnavailable/);
+  });
+
+  it('wiki_get returns null cleanly when the SDK script return_value is explicitly null', async () => {
+    const h = makeHarness();
+    h.setResponse('query_sdk', jsonContent({ success: true, return_value: null }));
+    const result = await h.invoke('wiki_get', { lookup: 'watcher:99' });
+    // The result.details.result must be null, not the envelope object
+    expect((result.details as { result: unknown }).result).toBeNull();
+    expect(result.content[0].text).toContain('lookup=watcher:99');
+  });
 });
 
 describe('wiki_get lookup parser (query_sdk)', () => {
@@ -355,5 +376,26 @@ describe('wiki_lint session-aware', () => {
     const result = await h.invoke('wiki_lint');
     const report = result.details as { warnings: Array<{ reason: string }> };
     expect(report.warnings.some((w) => /zero results/.test(w.reason))).toBe(true);
+  });
+
+  it('warns when memory_search returns zero results (matches wiki_search behaviour)', async () => {
+    h.setResponse('search_memory', { content: [{ type: 'text', text: '' }], isError: false });
+    await h.invoke('memory_search', { query: 'no hits' });
+    const result = await h.invoke('wiki_lint');
+    const report = result.details as { warnings: Array<{ tool: string; reason: string }> };
+    expect(report.warnings.some((w) => w.tool === 'memory_search' && /zero results/.test(w.reason))).toBe(true);
+  });
+
+  it('does NOT flag wiki_apply update_metadata with camelCase watcherId/windowId as missing evidence', async () => {
+    h.setResponse('run_sdk', jsonContent({ success: true, return_value: { ok: true } }));
+    await h.invoke('wiki_apply', {
+      op: 'update_metadata',
+      watcherId: 7,
+      windowId: 12,
+      corrections: [{ field_path: 'summary', value: 'x' }],
+    });
+    const result = await h.invoke('wiki_lint');
+    const report = result.details as { warnings: Array<{ reason: string }> };
+    expect(report.warnings.every((w) => !/no evidence/.test(w.reason))).toBe(true);
   });
 });

@@ -89,9 +89,14 @@ async function runSdkScript<T = unknown>(
     const message = envelope.error?.message ?? 'sandbox script failed';
     throw new Error(`${toolName} reported ${name}: ${message}`);
   }
-  // Real query_sdk wraps the script return in `return_value`; tests pass the
-  // value directly in the response and rely on the fallback.
-  return (envelope.return_value ?? (envelope as unknown as T)) as T;
+  // Real query_sdk wraps the script return in `return_value` (which may
+  // legitimately be `null` when the script returns null); tests pass the
+  // value directly in the response and rely on the fallback when the key
+  // isn't present at all.
+  if (Object.prototype.hasOwnProperty.call(envelope, 'return_value')) {
+    return (envelope.return_value ?? null) as T;
+  }
+  return envelope as unknown as T;
 }
 
 type WikiCorpus = 'memory' | 'wiki' | 'all';
@@ -675,7 +680,9 @@ export function registerMemoryWikiCompatTools(
       const hasEvidence =
         (Array.isArray(args.sourceIds) && args.sourceIds.length > 0) ||
         args.watcher_id != null ||
+        args.watcherId != null ||
         args.window_id != null ||
+        args.windowId != null ||
         (Array.isArray(args.claims) && args.claims.length > 0);
       recordCall(
         'wiki_apply',
@@ -763,7 +770,11 @@ export function registerMemoryWikiCompatTools(
         limit: maxResults,
       });
       const text = raw ? extractTextFromContent(raw.content) : '';
-      recordCall('memory_search', { query, maxResults }, { hadResults: text.length > 0 });
+      // resultCount is the key wiki_lint reads to flag zero-result searches;
+      // memory_search has no parsed structure to count, so approximate "0
+      // results" as "empty text body" while keeping the same key shape as
+      // wiki_search.
+      recordCall('memory_search', { query, maxResults }, { resultCount: text.length > 0 ? 1 : 0 });
       return { text, details: { sourceTool: 'search_memory' } };
     }
   );

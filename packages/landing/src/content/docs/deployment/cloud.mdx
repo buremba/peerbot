@@ -1,0 +1,48 @@
+---
+title: Lobu Cloud
+sidebar:
+  label: Lobu Cloud
+  order: 1
+description: Use the managed Lobu service instead of running infrastructure yourself.
+---
+
+Lobu Cloud is the managed deployment option for teams that want Lobu without operating a server, containers, Kubernetes, ingress, database migrations, or chat-platform webhooks.
+
+## When to use Lobu Cloud
+
+Use Lobu Cloud when you want:
+
+- A hosted public URL for Slack, Telegram, Discord, WhatsApp, Teams, Google Chat, and REST API webhooks.
+- Managed runtime updates and database migrations.
+- The same admin UI for agents, providers, skills, platform connections, and tool policy.
+- Lobu-managed OAuth and integration credentials so workers never receive raw secrets.
+- A fast path to production without provisioning Postgres or Kubernetes.
+
+## Get started
+
+Open [app.lobu.ai](https://app.lobu.ai) and create or select an organization.
+
+From there you can:
+
+1. Create an agent.
+2. Add model providers and choose default models.
+3. Connect chat platforms from the agent's settings.
+4. Enable skills and set worker network policy.
+5. Invite teammates or wire automation with [`lobu apply`](/reference/lobu-apply/).
+
+## Cloud vs self-hosted
+
+| | Lobu Cloud | Self-hosted |
+|---|---|---|
+| Runtime | Managed by Lobu | You run it |
+| Public URL | Included | You provide ingress/tunnel/DNS |
+| Database | Managed | Bring Postgres with pgvector |
+| Updates | Automatic | You deploy upgrades |
+| Secrets | Lobu-managed OAuth + secret proxy | Your secret manager / env |
+| Data residency | Lobu-managed | Your infrastructure |
+
+## Next steps
+
+- [Sync agents from GitHub](/guides/sync-from-github/) with `lobu apply`.
+- Configure chat platforms under [Platforms](/platforms/slack/).
+- Review [tool policy](/guides/tool-policy/) before pre-approving MCP tools.

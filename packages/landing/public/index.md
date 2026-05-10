@@ -27,7 +27,10 @@ The canonical MCP endpoint at [https://lobu.ai/mcp](https://lobu.ai/mcp) lets MC
 
 ## Deployment
 
-- [Getting started](https://lobu.ai/getting-started/): Boot Lobu as a single Node process (`lobu run`)
+- [Lobu Cloud](https://lobu.ai/deployment/cloud/): Managed deployment with no infrastructure to run
+- [Docker](https://lobu.ai/deployment/docker/): Run the Lobu app container on a single host
+- [Kubernetes](https://lobu.ai/deployment/kubernetes/): Deploy Lobu with the public Helm chart
+- [Getting started](https://lobu.ai/getting-started/): Boot Lobu locally with `lobu run`
 - [Architecture](https://lobu.ai/guides/architecture/): Embedded gateway + worker deployment model
 
 ## Messaging platforms

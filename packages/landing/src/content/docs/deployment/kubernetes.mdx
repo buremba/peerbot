@@ -1,0 +1,122 @@
+---
+title: Kubernetes
+sidebar:
+  label: Kubernetes
+  order: 3
+description: Deploy Lobu to Kubernetes with the public Helm chart.
+---
+
+Use the public Helm chart when you want to run Lobu on Kubernetes instead of a VM or local `lobu run` process. The chart deploys the API/chat gateway, connector worker, embeddings service, persistent volumes, optional ingress, and an optional migration hook.
+
+## Prerequisites
+
+- A Kubernetes cluster with an ingress controller, if you want public webhooks or the admin UI.
+- Helm 3 with OCI registry support.
+- A reachable Postgres database with pgvector enabled.
+- Runtime secrets for Lobu (`JWT_SECRET`, `BETTER_AUTH_SECRET`, provider API keys, OAuth client secrets, and connector credentials as needed).
+
+## Create secrets
+
+Create a namespace and store the database URL and runtime secrets in Kubernetes Secrets:
+
+```bash
+kubectl create namespace lobu
+
+kubectl -n lobu create secret generic lobu-db \
+  --from-literal=uri='postgresql://USER:PASSWORD@HOST:5432/lobu?sslmode=require'
+
+kubectl -n lobu create secret generic lobu-secrets \
+  --from-literal=JWT_SECRET='replace-with-a-long-random-value' \
+  --from-literal=BETTER_AUTH_SECRET='replace-with-a-long-random-value' \
+  --from-literal=ANTHROPIC_API_KEY='sk-ant-...'
+```
+
+Add any other provider, platform, or OAuth secrets your deployment needs to `lobu-secrets`.
+
+## Prepare values
+
+Start from the chart's example values file:
+
+```bash
+curl -fsSLo values.yaml \
+  https://raw.githubusercontent.com/lobu-ai/lobu/main/charts/lobu/values.example.yaml
+```
+
+Edit at least these fields:
+
+```yaml
+secretName: lobu-secrets
+
+database:
+  existingSecret: lobu-db
+  existingSecretKey: uri
+
+app:
+  env:
+    NODE_ENV: production
+    SKIP_MIGRATIONS: "1"
+    WORKER_ALLOWED_DOMAINS: ""
+
+ingress:
+  enabled: true
+  className: nginx
+  hosts:
+    - lobu.example.com
+```
+
+When `ingress.hosts` is set, the app derives `PUBLIC_WEB_URL` from the first host. If your public URL differs from that host, set `app.env.PUBLIC_WEB_URL` explicitly.
+
+## Install
+
+```bash
+helm install lobu oci://ghcr.io/lobu-ai/charts/lobu \
+  --namespace lobu --create-namespace \
+  -f values.yaml
+```
+
+The example values enable the Helm migration job and set `SKIP_MIGRATIONS: "1"` so app pods do not repeat migrations on startup.
+
+## Verify
+
+```bash
+kubectl -n lobu get pods -l app.kubernetes.io/instance=lobu
+kubectl -n lobu logs deploy/lobu-app
+kubectl -n lobu get ingress
+```
+
+If ingress is not enabled, port-forward the app service:
+
+```bash
+kubectl -n lobu port-forward svc/lobu-app 8787:8787
+open http://localhost:8787
+```
+
+Check health through your public URL or the port-forward:
+
+```bash
+curl https://lobu.example.com/health
+# or
+curl http://localhost:8787/health
+```
+
+## Upgrade
+
+Pin image tags for production upgrades, then run:
+
+```bash
+helm upgrade lobu oci://ghcr.io/lobu-ai/charts/lobu \
+  --namespace lobu \
+  -f values.yaml
+```
+
+## Chart-managed secrets
+
+For production, prefer an external secret manager or pre-created Kubernetes Secrets. For demos, the chart can create a Secret with `secrets.create: true`.
+
+If you enable both `secrets.create` and `migrations.enabled` and put `DATABASE_URL` in `secrets.stringData`, leave `migrations.database.existingSecret` empty. Pre-install hooks run before normal Helm resources are created, so the migration job reads `secrets.stringData.DATABASE_URL` directly in that setup.
+
+## Next steps
+
+- Configure chat platforms from the [admin UI](/guides/admin-ui/) or the connection API.
+- Review [security](/guides/security/) before enabling broad worker network access.
+- Use [observability](/guides/observability/) for tracing, logs, and error monitoring.

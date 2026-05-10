@@ -1,6 +1,6 @@
 # Lobu
 
-> Open-source platform for persistent, sandboxed AI agents with shared memory, installable skills, chat integrations, and MCP access. Self-hosted Lobu runs as a single Node process and uses Postgres with pgvector as the only required external service.
+> Open-source backend for multi-user AI agents with isolated workers, per-user OAuth, connected sources, shared memory, and secrets agents never see. Self-hosted Lobu runs as a single Node process and uses Postgres with pgvector as the only required external service.
 
 ## Start here
 

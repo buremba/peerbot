@@ -2610,10 +2610,10 @@ export const DEFAULT_LANDING_USE_CASE_ID: LandingUseCaseId = "market";
 const surfaceHeroCopy: Record<SurfaceId, SurfaceHeroCopyConfig> = {
   landing: {
     default: {
-      title: "Your AI team, running on your infrastructure",
-      highlight: "AI team",
+      title: "Open-source backend for multi-user AI agents",
+      highlight: "multi-user AI agents",
       description:
-        "Sandboxed persistent agents powered by the OpenClaw harness, long-term memory, and installable skills.",
+        "Multi-user agents with isolated workers, connected sources, shared memory, and secrets agents never see.",
     },
     byUseCase: {
       legal: {

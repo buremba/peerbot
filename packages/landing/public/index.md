@@ -1,10 +1,10 @@
 # Lobu
 
-> Open-source platform for persistent, sandboxed AI agents with shared memory, installable skills, chat integrations, and MCP access. Self-hosted Lobu runs as a single Node process and uses Postgres with pgvector as the only required external service.
+> Open-source backend for multi-user AI agents with isolated workers, per-user OAuth, connected sources, shared memory, and secrets agents never see. Self-hosted Lobu runs as a single Node process and uses Postgres with pgvector as the only required external service.
 
 ## What Lobu does
 
-Lobu runs autonomous agents where your team already works: Slack, Telegram, WhatsApp, Discord, Microsoft Teams, Google Chat, REST API, and MCP-capable clients. Each agent runs in an isolated worker with gateway-mediated credentials, scoped network egress, and approval flows for sensitive tool calls. Lobu Memory keeps typed entities, decisions, observations, and preferences reusable across conversations and agents.
+Lobu runs multi-user agents where your team already works: Slack, Telegram, WhatsApp, Discord, Microsoft Teams, Google Chat, REST API, and MCP-capable clients. Each user or channel gets an isolated worker with gateway-mediated credentials, scoped network egress, and approval flows for sensitive tool calls. Lobu Memory keeps typed entities, decisions, observations, and preferences reusable across conversations and agents.
 
 ## Connect any agent to Lobu
 

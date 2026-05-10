@@ -446,8 +446,8 @@ export function ServerlessSection() {
                 class="text-sm mb-5 max-w-md mx-auto leading-relaxed"
                 style={{ color: "var(--color-page-text-muted)" }}
               >
-                Skip the setup and maintenance. Get started in seconds with our
-                fully managed serverless platform.
+                Skip the setup and maintenance. Get started in seconds with
+                fully managed Lobu Cloud.
               </p>
               <div class="flex flex-wrap gap-3 justify-center">
                 <button

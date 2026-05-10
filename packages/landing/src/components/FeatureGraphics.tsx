@@ -302,50 +302,123 @@ function MemoryAgentCard({
 }
 
 export function SkillsGraphic() {
-  return (
-    <div
-      class="w-full max-w-md rounded-xl overflow-hidden bg-[var(--color-page-surface)]"
-      style={{ border: "1px solid var(--color-page-border)" }}
-    >
-      <div
-        class="flex items-center gap-1 px-3 py-2 text-[12px] font-mono"
-        style={{
-          background: "var(--color-page-surface-dim)",
-          borderBottom: "1px solid var(--color-page-border)",
-          color: "var(--color-page-text-muted)",
-        }}
-      >
-        <span
-          class="px-2 py-0.5 rounded"
-          style={{
-            background: "var(--color-page-surface)",
-            border: "1px solid var(--color-page-border)",
-            color: "var(--color-page-text)",
-          }}
-        >
-          SKILL.md
-        </span>
-        <span class="px-2 py-0.5">lobu.toml</span>
-        <span class="px-2 py-0.5">runner.ts</span>
-      </div>
-      <pre
-        class="text-[12px] leading-[1.6] p-4 font-mono"
-        style={{ color: "var(--color-page-text)" }}
-      >
-        {`---
-name: github-triage
-network:
-  allow: [api.github.com]
-nixPackages: [gh]
-mcp:
-  - github
----
+  const included = [
+    { label: "Instructions", value: "Triage new issues" },
+    { label: "Tools", value: "GitHub MCP + gh" },
+    { label: "Network", value: "api.github.com" },
+    { label: "Policy", value: "Approve comments" },
+  ];
 
-# Triage every new issue
-- Pull recent issues
-- Cross-reference owners
-- Comment with the next step`}
-      </pre>
+  return (
+    <div class="w-full max-w-md flex flex-col gap-3">
+      <div
+        class="rounded-xl bg-[var(--color-page-surface)] shadow-sm overflow-hidden"
+        style={{ border: "1px solid var(--color-page-border)" }}
+      >
+        <div
+          class="flex items-center justify-between px-4 py-3"
+          style={{ borderBottom: "1px solid var(--color-page-border)" }}
+        >
+          <div class="flex items-center gap-3">
+            <span
+              class="inline-flex h-9 w-9 items-center justify-center rounded-lg text-[16px]"
+              style={{
+                background: "rgba(var(--color-tg-accent-rgb), 0.08)",
+                border: "1px solid rgba(var(--color-tg-accent-rgb), 0.22)",
+              }}
+              aria-hidden="true"
+            >
+              ⚡
+            </span>
+            <div>
+              <div
+                class="text-[14px] font-semibold"
+                style={{ color: "var(--color-page-text)" }}
+              >
+                GitHub triage skill
+              </div>
+              <div
+                class="text-[11px]"
+                style={{ color: "var(--color-page-text-muted)" }}
+              >
+                Packaged capability
+              </div>
+            </div>
+          </div>
+          <span
+            class="rounded-md px-2 py-1 text-[10px] font-semibold uppercase tracking-wider"
+            style={{
+              background: "var(--color-page-surface-dim)",
+              border: "1px solid var(--color-page-border)",
+              color: "var(--color-page-text-muted)",
+            }}
+          >
+            Installed
+          </span>
+        </div>
+
+        <div class="p-4">
+          <p
+            class="mb-4 text-[13px] leading-relaxed"
+            style={{ color: "var(--color-page-text-muted)" }}
+          >
+            Give agents issue intake, owner routing, and safe GitHub actions in
+            one reusable bundle.
+          </p>
+          <div class="grid grid-cols-2 gap-2">
+            {included.map((item) => (
+              <div
+                key={item.label}
+                class="rounded-lg px-3 py-2"
+                style={{
+                  background: "var(--color-page-surface-dim)",
+                  border: "1px solid var(--color-page-border)",
+                }}
+              >
+                <div
+                  class="text-[10px] font-semibold uppercase tracking-wider"
+                  style={{ color: "var(--color-page-text-muted)" }}
+                >
+                  {item.label}
+                </div>
+                <div
+                  class="mt-1 text-[12px] font-medium leading-snug"
+                  style={{ color: "var(--color-page-text)" }}
+                >
+                  {item.value}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-3 gap-2">
+        {[
+          { icon: "📄", label: "Contract review" },
+          { icon: "💬", label: "Support desk" },
+          { icon: "📈", label: "Revenue research" },
+        ].map((skill) => (
+          <div
+            key={skill.label}
+            class="rounded-lg px-3 py-3 text-center"
+            style={{
+              background: "var(--color-page-bg)",
+              border: "1px solid var(--color-page-border)",
+            }}
+          >
+            <div class="text-[16px]" aria-hidden="true">
+              {skill.icon}
+            </div>
+            <div
+              class="mt-2 text-[11px] font-medium leading-tight"
+              style={{ color: "var(--color-page-text)" }}
+            >
+              {skill.label}
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

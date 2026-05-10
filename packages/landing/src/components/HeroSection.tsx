@@ -4,7 +4,6 @@ import {
   getLandingUseCaseShowcase,
   type SurfaceHeroCopy,
 } from "../use-case-showcases";
-import { HighlightedText } from "./HighlightedText";
 
 const GitHubIcon = () => (
   <svg
@@ -47,10 +46,10 @@ export type HeroStageId =
   | "knowledge";
 
 const STAGE_TABS: Array<{ id: HeroStageId; label: string; index: number }> = [
-  { id: "model", label: "Model", index: 1 },
-  { id: "integrate", label: "Integrate", index: 2 },
-  { id: "watch", label: "Watch", index: 3 },
-  { id: "connect", label: "Connect", index: 4 },
+  { id: "model", label: "Model data", index: 1 },
+  { id: "integrate", label: "Connect systems", index: 2 },
+  { id: "watch", label: "Monitor signals", index: 3 },
+  { id: "connect", label: "Deploy agents", index: 4 },
 ];
 
 const TAB_CYCLE_MS = 5000;
@@ -87,8 +86,9 @@ export function HeroSection(props: {
     setCycleSeed((s) => s + 1);
   };
 
-  const headlineText = "Open-source backend for multi-user AI agents";
-  const headlineHighlight = "multi-user AI agents";
+  const headlinePrefix = "Open-source backend for";
+  const headlineHighlight = "multi-user";
+  const headlineSuffix = "AI agents";
   const subhead =
     props.heroCopy?.description ??
     "Give every user an isolated agent workspace with OAuth, connected sources, shared memory, watchers, and secrets agents never see.";
@@ -116,7 +116,13 @@ export function HeroSection(props: {
             letterSpacing: "-0.025em",
           }}
         >
-          <HighlightedText text={headlineText} highlight={headlineHighlight} />
+          <span class="block">{headlinePrefix}</span>
+          <span class="block">
+            <span style={{ color: "var(--color-tg-accent)" }}>
+              {headlineHighlight}
+            </span>{" "}
+            {headlineSuffix}
+          </span>
         </h1>
 
         <p

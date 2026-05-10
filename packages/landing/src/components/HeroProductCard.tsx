@@ -310,41 +310,53 @@ function buildWatcherRows(useCase: LandingUseCaseDefinition): WatcherRow[] {
 
 export type AgentRow = {
   name: string;
-  provider: string;
+  entryPoint: string;
   skills: string[];
   status: "Active" | "Paused";
   last: string;
 };
 
-const PROVIDER_OPTIONS = [
-  "Claude Opus 4.7",
-  "GPT-5",
-  "Claude Sonnet 4.6",
-  "Haiku 4.5",
-];
+const ENTRY_POINT_OPTIONS = ["OpenClaw", "Slack", "ChatGPT", "Telegram"];
+
+const FALLBACK_AGENT_SKILLS: Record<string, string[]> = {
+  legal: ["contract-review", "clause-risk", "legal-memory"],
+  engineering: ["incident-triage", "github-prs", "deploy-watch"],
+  support: ["ticket-triage", "crm-lookup", "reply-drafts"],
+  finance: ["reconciliation", "stripe", "close-review"],
+  sales: ["account-research", "crm-sync", "renewal-risk"],
+  leadership: ["decision-brief", "risk-summary", "follow-ups"],
+  "agent-community": ["member-intros", "event-digest", "moderation"],
+  market: ["deal-research", "founder-signals", "portfolio-news"],
+};
 
 function buildAgentRows(useCase: LandingUseCaseDefinition): AgentRow[] {
-  const skills = useCase.skills.skills ?? [];
+  const skills = useCase.skills.skills.length
+    ? useCase.skills.skills
+    : (FALLBACK_AGENT_SKILLS[useCase.id] ?? [
+        useCase.skills.skillId,
+        "memory-sync",
+        "source-monitor",
+      ]);
   const baseAgent = useCase.skills.agentId ?? `${useCase.id}-agent`;
   const watcherName = useCase.memory.watcher.name;
   return [
     {
       name: baseAgent,
-      provider: PROVIDER_OPTIONS[0],
+      entryPoint: ENTRY_POINT_OPTIONS[0],
       skills: skills.slice(0, 2),
       status: "Active",
       last: "Just now",
     },
     {
       name: watcherName,
-      provider: PROVIDER_OPTIONS[1],
+      entryPoint: ENTRY_POINT_OPTIONS[1],
       skills: skills.slice(2, 4),
       status: "Active",
       last: "14m ago",
     },
     {
       name: `${useCase.label.toLowerCase()} digest`,
-      provider: PROVIDER_OPTIONS[2],
+      entryPoint: ENTRY_POINT_OPTIONS[2],
       skills: skills.slice(0, 1),
       status: "Paused",
       last: "—",
@@ -2503,6 +2515,44 @@ function ActionField({
 
 /* ------------------------------ tab 4: connect ------------------------------ */
 
+function DeployChannelGroup({
+  title,
+  items,
+}: {
+  title: string;
+  items: Array<{ label: string; active?: boolean }>;
+}) {
+  return (
+    <div class="flex min-w-0 items-center gap-2">
+      <span
+        class="shrink-0 text-[10px] font-semibold uppercase tracking-wider"
+        style={{ color: "var(--color-page-text-muted)" }}
+      >
+        {title}
+      </span>
+      <div class="flex min-w-0 flex-wrap gap-1.5 lg:flex-nowrap">
+        {items.map((item) => (
+          <span
+            key={item.label}
+            class="inline-flex items-center rounded-md px-2 py-1 text-[11px] font-medium"
+            style={{
+              background: item.active
+                ? "rgba(var(--color-tg-accent-rgb), 0.08)"
+                : "var(--color-page-surface-dim)",
+              border: item.active
+                ? "1px solid rgba(var(--color-tg-accent-rgb), 0.25)"
+                : "1px solid var(--color-page-border)",
+              color: "var(--color-page-text)",
+            }}
+          >
+            {item.label}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function AgentsConnect({
   info,
   agents,
@@ -2510,34 +2560,71 @@ function AgentsConnect({
   info: AgentInfo;
   agents: AgentRow[];
 }) {
+  const mcpClients = [
+    { label: "OpenClaw", active: true },
+    { label: "Claude" },
+    { label: "ChatGPT" },
+    { label: "Any MCP client" },
+  ];
+  const chatChannels = [
+    { label: "Slack", active: true },
+    { label: "Telegram" },
+    { label: "Discord" },
+    { label: "WhatsApp" },
+    { label: "Teams" },
+    { label: "REST API" },
+  ];
+
   return (
     <div class="flex flex-col gap-4">
       <div
-        class="rounded-2xl bg-[var(--color-page-surface)] p-4 flex items-center gap-4"
+        class="rounded-2xl bg-[var(--color-page-surface)] p-4"
         style={{ border: "1px solid var(--color-page-border)" }}
       >
-        <div class="flex items-center gap-2 shrink-0">
-          <span style={{ color: "var(--color-page-text)" }}>
-            <SparklesIcon size={18} />
-          </span>
-          <h4
-            class="text-[15px] font-semibold"
-            style={{ color: "var(--color-page-text)" }}
-          >
-            Connect your agent
-          </h4>
+        <div class="flex flex-col gap-4 lg:flex-row lg:items-center">
+          <div class="flex min-w-0 flex-1 items-start gap-3">
+            <span style={{ color: "var(--color-page-text)" }}>
+              <SparklesIcon size={18} />
+            </span>
+            <div class="min-w-0">
+              <h4
+                class="text-[15px] font-semibold"
+                style={{ color: "var(--color-page-text)" }}
+              >
+                Deploy agents everywhere users work
+              </h4>
+              <p
+                class="mt-1 text-[12px] leading-relaxed"
+                style={{ color: "var(--color-page-text-muted)" }}
+              >
+                One Lobu backend reaches MCP clients, chat platforms, and
+                always-on workers with the same memory and credentials.
+              </p>
+            </div>
+          </div>
+          <div class="flex items-center gap-2 shrink-0">
+            <PrimaryButton label={info.primaryClient} active />
+            <GhostButton label="Slack" />
+            <GhostButton label="ChatGPT" />
+          </div>
         </div>
         <div
-          class="flex-1 min-w-0 flex items-center gap-2 px-3 py-2 rounded-md font-mono text-[12px]"
+          class="mt-4 flex min-w-0 items-center gap-2 rounded-md px-3 py-2 font-mono text-[12px]"
           style={{
             background: "var(--color-page-surface-dim)",
             color: "var(--color-page-text)",
             border: "1px solid var(--color-page-border)",
           }}
         >
+          <span
+            class="text-[10px] font-sans uppercase tracking-wider"
+            style={{ color: "var(--color-page-text-muted)" }}
+          >
+            MCP
+          </span>
           <span class="flex-1 truncate">{info.mcpEndpoint}</span>
           <span
-            class="inline-flex items-center h-6 px-2 rounded text-[11px] font-medium"
+            class="inline-flex h-6 items-center rounded px-2 text-[11px] font-medium"
             style={{
               background: "var(--color-page-surface)",
               color: "var(--color-page-text)",
@@ -2547,14 +2634,19 @@ function AgentsConnect({
             Copy
           </span>
         </div>
-        <div class="flex items-center gap-2 shrink-0">
-          <PrimaryButton label={info.primaryClient} active />
-          <GhostButton label="Cursor" />
-          <GhostButton label="ChatGPT" />
+      </div>
+
+      <div
+        class="rounded-2xl bg-[var(--color-page-surface)] p-4"
+        style={{ border: "1px solid var(--color-page-border)" }}
+      >
+        <div class="flex flex-col gap-3 xl:flex-row xl:items-center xl:gap-8">
+          <DeployChannelGroup title="MCP" items={mcpClients} />
+          <DeployChannelGroup title="Chat/API" items={chatChannels} />
         </div>
       </div>
 
-      <AlwaysOnAgentsTable rows={agents} />
+      <AlwaysOnAgentsTable rows={agents.slice(0, 3)} />
     </div>
   );
 }
@@ -2562,28 +2654,28 @@ function AgentsConnect({
 const DEFAULT_AGENT_ROWS: AgentRow[] = [
   {
     name: "Triage bot",
-    provider: "Claude Opus 4.7",
+    entryPoint: "OpenClaw",
     skills: ["github-triage", "linear-sync"],
     last: "2h ago",
     status: "Active",
   },
   {
     name: "Daily digest",
-    provider: "GPT-5",
+    entryPoint: "Slack",
     skills: ["digest", "slack-post"],
     last: "1d ago",
     status: "Active",
   },
   {
     name: "Inbox cleaner",
-    provider: "Haiku 4.5",
+    entryPoint: "ChatGPT",
     skills: ["gmail-triage"],
     last: "12m ago",
     status: "Active",
   },
   {
     name: "Stripe reconciler",
-    provider: "Claude Sonnet 4.6",
+    entryPoint: "Telegram",
     skills: ["stripe", "postgres"],
     last: "—",
     status: "Paused",
@@ -2611,7 +2703,7 @@ function AlwaysOnAgentsTable({ rows }: { rows: AgentRow[] }) {
           class="text-[12px]"
           style={{ color: "var(--color-page-text-muted)" }}
         >
-          Run on a schedule with their own provider + skills
+          Run from MCP clients, chat platforms, or schedules
         </span>
         <span class="ml-auto inline-flex items-center gap-1.5">
           <SearchInput />
@@ -2627,7 +2719,7 @@ function AlwaysOnAgentsTable({ rows }: { rows: AgentRow[] }) {
         }}
       >
         <span>Name</span>
-        <span>Provider</span>
+        <span>Entry point</span>
         <span>Skills</span>
         <span>Status</span>
         <span class="text-right">Last run</span>
@@ -2659,7 +2751,7 @@ function AlwaysOnAgentsTable({ rows }: { rows: AgentRow[] }) {
             {row.name}
           </span>
           <span style={{ color: "var(--color-page-text-muted)" }}>
-            {row.provider}
+            {row.entryPoint}
           </span>
           <span class="flex flex-wrap items-center gap-1">
             {row.skills.map((s) => (

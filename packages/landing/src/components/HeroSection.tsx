@@ -87,7 +87,7 @@ export function HeroSection(props: {
     setCycleSeed((s) => s + 1);
   };
 
-  const headlineText = "The open-source backend for multi-user AI agents.";
+  const headlineText = "Open-source backend for multi-user AI agents";
   const headlineHighlight = "multi-user AI agents";
   const subhead =
     props.heroCopy?.description ??

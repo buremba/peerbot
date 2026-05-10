@@ -105,15 +105,18 @@ describe('memory-wiki-compat tool registration', () => {
 });
 
 describe('wiki_status', () => {
-  it('reports memory_available and watcher_count', async () => {
+  it('reports memory_available and watcher_count via query_sdk', async () => {
     const h = makeHarness();
-    h.setResponse('list_watchers', jsonContent({ watchers: [{ watcher_id: 1 }, { watcher_id: 2 }] }));
+    h.setResponse('query_sdk', jsonContent({ watchers: [{ watcher_id: 1 }, { watcher_id: 2 }] }));
     h.setResponse('search_memory', jsonContent({ content: [] }));
     const result = await h.invoke('wiki_status');
     const status = result.details as Record<string, unknown>;
     expect(status.watcher_count).toBe(2);
     expect(status.memory_available).toBe(true);
     expect(status.source_of_truth).toBe('lobu-memory-mcp');
+    const sdkCall = h.calls.find((c) => c.tool === 'query_sdk');
+    expect(sdkCall).toBeDefined();
+    expect(String(sdkCall!.args.script)).toContain('client.watchers.list');
   });
 });
 
@@ -130,71 +133,89 @@ describe('wiki_search corpus routing', () => {
     expect(results.length).toBeGreaterThan(0);
   });
 
-  it('corpus=wiki calls list_watchers + read_knowledge (claim+synthesis) and skips search_memory', async () => {
+  it('corpus=wiki fans out via query_sdk (one script with watchers.list + knowledge.read)', async () => {
     const h = makeHarness();
-    h.setResponse('list_watchers', jsonContent({ watchers: [{ watcher_id: 3, watcher_name: 'hello watcher', historical_content_count: 5 }] }));
-    h.setResponse('read_knowledge', jsonContent({ content: [{ id: 11, title: 'a claim' }] }));
+    h.setResponse(
+      'query_sdk',
+      jsonContent({
+        watchers: { watchers: [{ watcher_id: 3, watcher_name: 'hello watcher', historical_content_count: 5 }] },
+        claims: { content: [{ id: 11, title: 'a claim' }] },
+        syntheses: { content: [] },
+      })
+    );
     const result = await h.invoke('wiki_search', { query: 'hello there', corpus: 'wiki' });
-    const toolsHit = h.calls.map((c) => c.tool);
-    expect(toolsHit).toContain('list_watchers');
-    expect(toolsHit).toContain('read_knowledge');
-    expect(toolsHit).not.toContain('search_memory');
+    const sdkCalls = h.calls.filter((c) => c.tool === 'query_sdk');
+    expect(sdkCalls.length).toBe(1);
+    const script = String(sdkCalls[0].args.script);
+    expect(script).toContain('client.watchers.list');
+    expect(script).toContain("semantic_type: 'claim'");
+    expect(script).toContain("semantic_type: 'synthesis'");
+    expect(h.calls.find((c) => c.tool === 'search_memory')).toBeUndefined();
     const results = (result.details as { results: Array<{ corpus: string }> }).results;
+    expect(results.length).toBeGreaterThan(0);
     expect(results.every((r) => r.corpus === 'wiki')).toBe(true);
   });
 
-  it('corpus=all merges memory + wiki and short queries skip read_knowledge', async () => {
+  it('corpus=all merges search_memory + query_sdk; short queries embed includeContent=false', async () => {
     const h = makeHarness();
     h.setResponse('search_memory', jsonContent({ content: [{ id: 1, title: 'mem' }] }));
-    h.setResponse('list_watchers', jsonContent({ watchers: [] }));
+    h.setResponse('query_sdk', jsonContent({ watchers: { watchers: [] }, claims: null, syntheses: null }));
     await h.invoke('wiki_search', { query: 'hi', corpus: 'all' });
     const toolsHit = h.calls.map((c) => c.tool);
     expect(toolsHit).toContain('search_memory');
-    expect(toolsHit).toContain('list_watchers');
-    // 'hi' is < 3 chars so read_knowledge is skipped
-    expect(toolsHit).not.toContain('read_knowledge');
+    expect(toolsHit).toContain('query_sdk');
+    const script = String(h.calls.find((c) => c.tool === 'query_sdk')!.args.script);
+    expect(script).toContain('includeContent = false');
   });
 });
 
-describe('wiki_get lookup parser', () => {
-  it('watcher:7 -> get_watcher', async () => {
+describe('upstream failures propagate', () => {
+  it('wiki_search corpus=wiki throws when query_sdk returns isError', async () => {
     const h = makeHarness();
-    h.setResponse('get_watcher', jsonContent({ watcher_id: '7', name: 'demo' }));
+    h.setResponse('query_sdk', { content: [{ type: 'text', text: 'Tool not found: query_sdk' }], isError: true });
+    await expect(h.invoke('wiki_search', { query: 'anything', corpus: 'wiki' })).rejects.toThrow(/query_sdk/);
+  });
+});
+
+describe('wiki_get lookup parser (query_sdk)', () => {
+  it('watcher:7 -> query_sdk with client.watchers.get("7")', async () => {
+    const h = makeHarness();
+    h.setResponse('query_sdk', jsonContent({ watcher_id: '7', name: 'demo' }));
     const result = await h.invoke('wiki_get', { lookup: 'watcher:7' });
-    expect(h.calls[0]).toEqual({ tool: 'get_watcher', args: { watcher_id: '7' } });
-    expect((result.details as { sourceTool: string }).sourceTool).toBe('get_watcher');
+    expect(h.calls[0].tool).toBe('query_sdk');
+    expect(String(h.calls[0].args.script)).toContain('client.watchers.get("7")');
+    expect((result.details as { sourceTool: string }).sourceTool).toBe('client.watchers.get');
   });
 
-  it('window:9 -> read_knowledge with window_id', async () => {
+  it('window:9 -> query_sdk with client.knowledge.read({ window_id: 9 })', async () => {
     const h = makeHarness();
-    h.setResponse('read_knowledge', jsonContent({ content: [] }));
+    h.setResponse('query_sdk', jsonContent({ content: [] }));
     await h.invoke('wiki_get', { lookup: 'window:9' });
-    expect(h.calls[0].tool).toBe('read_knowledge');
-    expect(h.calls[0].args.window_id).toBe(9);
+    expect(h.calls[0].tool).toBe('query_sdk');
+    expect(String(h.calls[0].args.script)).toMatch(/client\.knowledge\.read\(\{\s*window_id:\s*9/);
   });
 
-  it('event:123 -> read_knowledge with content_ids', async () => {
+  it('event:123 -> query_sdk with client.knowledge.read({ content_ids: [123] })', async () => {
     const h = makeHarness();
-    h.setResponse('read_knowledge', jsonContent({ content: [{ id: 123 }] }));
+    h.setResponse('query_sdk', jsonContent({ content: [{ id: 123 }] }));
     await h.invoke('wiki_get', { lookup: 'event:123' });
-    expect(h.calls[0].tool).toBe('read_knowledge');
-    expect(h.calls[0].args.content_ids).toEqual([123]);
+    expect(h.calls[0].tool).toBe('query_sdk');
+    expect(String(h.calls[0].args.script)).toContain('content_ids: [123]');
   });
 
-  it('reports/watchers/4 path -> get_watcher', async () => {
+  it('reports/watchers/4 path -> client.watchers.get', async () => {
     const h = makeHarness();
-    h.setResponse('get_watcher', jsonContent({ watcher_id: '4' }));
+    h.setResponse('query_sdk', jsonContent({ watcher_id: '4' }));
     await h.invoke('wiki_get', { lookup: 'reports/watchers/4' });
-    expect(h.calls[0].tool).toBe('get_watcher');
-    expect(h.calls[0].args.watcher_id).toBe('4');
+    expect(String(h.calls[0].args.script)).toContain('client.watchers.get("4")');
   });
 
-  it('plain natural-language lookup -> read_knowledge query fallback', async () => {
+  it('plain natural-language lookup -> client.knowledge.read({ query }) fallback', async () => {
     const h = makeHarness();
-    h.setResponse('read_knowledge', jsonContent({ content: [] }));
+    h.setResponse('query_sdk', jsonContent({ content: [] }));
     await h.invoke('wiki_get', { lookup: 'what did the watcher report on monday' });
-    expect(h.calls[0].tool).toBe('read_knowledge');
-    expect(h.calls[0].args.query).toBe('what did the watcher report on monday');
+    expect(h.calls[0].tool).toBe('query_sdk');
+    expect(String(h.calls[0].args.script)).toContain('"what did the watcher report on monday"');
   });
 });
 
@@ -219,21 +240,21 @@ describe('wiki_apply create_synthesis', () => {
 });
 
 describe('wiki_apply update_metadata', () => {
-  it('routes well-formed corrections to manage_watchers.submit_feedback', async () => {
+  it('routes well-formed corrections through run_sdk -> client.watchers.submitFeedback', async () => {
     const h = makeHarness();
-    h.setResponse('manage_watchers', jsonContent({ ok: true }));
+    h.setResponse('run_sdk', jsonContent({ ok: true }));
     await h.invoke('wiki_apply', {
       op: 'update_metadata',
       watcher_id: 7,
       window_id: 12,
       corrections: [{ field_path: 'summary', value: 'better summary' }],
     });
-    expect(h.calls[0].tool).toBe('manage_watchers');
-    expect(h.calls[0].args).toMatchObject({
-      action: 'submit_feedback',
-      watcher_id: '7',
-      window_id: 12,
-    });
+    expect(h.calls[0].tool).toBe('run_sdk');
+    const script = String(h.calls[0].args.script);
+    expect(script).toContain('client.watchers.submitFeedback');
+    expect(script).toContain('"watcher_id":"7"');
+    expect(script).toContain('"window_id":12');
+    expect(script).toContain('"field_path":"summary"');
   });
 
   it('throws when corrections array is empty', async () => {
@@ -329,7 +350,7 @@ describe('wiki_lint session-aware', () => {
 
   it('warns when wiki_search returns zero results', async () => {
     h.setResponse('search_memory', jsonContent({ content: [] }));
-    h.setResponse('list_watchers', jsonContent({ watchers: [] }));
+    h.setResponse('query_sdk', jsonContent({ watchers: { watchers: [] }, claims: null, syntheses: null }));
     await h.invoke('wiki_search', { query: 'nonexistent topic', corpus: 'all' });
     const result = await h.invoke('wiki_lint');
     const report = result.details as { warnings: Array<{ reason: string }> };

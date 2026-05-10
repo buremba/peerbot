@@ -47,7 +47,51 @@ async function callMcpToolJson<T = unknown>(
 ): Promise<T | null> {
   const result = await callMcpTool(config, toolName, args, { rawJson: true });
   if (!result) return null;
+  if (result.isError) {
+    throw new Error(`MCP tool ${toolName} returned error: ${extractTextFromContent(result.content).slice(0, 240)}`);
+  }
   return parseJsonText<T>(extractTextFromContent(result.content));
+}
+
+/**
+ * Execute a TypeScript snippet via the MCP `query_sdk` (read-only) or `run_sdk` (writes)
+ * tool. INTERNAL_REST_TOOLS like list_watchers / read_knowledge / manage_watchers are not
+ * exposed on the MCP wire (their `internal: true` flag hides them from tools/list); the
+ * agent-facing path for these capabilities is to script over the ClientSDK.
+ */
+function stripMarkdownJsonFence(text: string): string {
+  const fenced = text.match(/^\s*```(?:json)?\s*\n([\s\S]*?)\n```\s*$/i);
+  return fenced ? fenced[1] : text;
+}
+
+async function runSdkScript<T = unknown>(
+  callMcpTool: McpToolCaller,
+  config: ResolvedPluginConfig,
+  mode: 'read' | 'write',
+  script: string
+): Promise<T | null> {
+  const toolName = mode === 'read' ? 'query_sdk' : 'run_sdk';
+  const raw = await callMcpTool(config, toolName, { script }, { rawJson: true });
+  if (!raw) return null;
+  if (raw.isError) {
+    throw new Error(`MCP tool ${toolName} returned error: ${extractTextFromContent(raw.content).slice(0, 240)}`);
+  }
+  // The sandbox tool returns its envelope wrapped in a ```json fenced block.
+  const text = stripMarkdownJsonFence(extractTextFromContent(raw.content));
+  const envelope = parseJsonText<{
+    success?: boolean;
+    error?: { name?: string; message?: string };
+    return_value?: T;
+  }>(text);
+  if (envelope == null) return null;
+  if (envelope.success === false) {
+    const name = envelope.error?.name ?? 'SdkScriptError';
+    const message = envelope.error?.message ?? 'sandbox script failed';
+    throw new Error(`${toolName} reported ${name}: ${message}`);
+  }
+  // Real query_sdk wraps the script return in `return_value`; tests pass the
+  // value directly in the response and rely on the fallback.
+  return (envelope.return_value ?? (envelope as unknown as T)) as T;
 }
 
 type WikiCorpus = 'memory' | 'wiki' | 'all';
@@ -242,7 +286,7 @@ function watcherResultsFromList(raw: unknown, query: string, maxResults: number)
           id: typeof watcherId === 'number' || typeof watcherId === 'string' ? watcherId : undefined,
           source_url: typeof watcher.view_url === 'string' ? watcher.view_url : null,
           details: {
-            source: 'list_watchers',
+            source: 'client.watchers.list',
             pending_content_count: pending,
             historical_content_count: historical,
           },
@@ -282,7 +326,7 @@ function contentResultsFromReadKnowledge(
         snippet: pickSnippet(item.text_content ?? item.payload_text ?? item.content ?? item.metadata),
         id: typeof id === 'number' || typeof id === 'string' ? id : undefined,
         source_url: typeof item.source_url === 'string' ? item.source_url : null,
-        details: { source: 'read_knowledge', semantic_type: semanticType },
+        details: { source: 'client.knowledge.read', semantic_type: semanticType },
       };
     });
 }
@@ -293,28 +337,34 @@ async function searchWikiCorpus(
   query: string,
   maxResults: number
 ): Promise<WikiSearchResult[]> {
-  const [watchersRaw, claimsRaw, synthesesRaw] = await Promise.all([
-    callMcpToolJson(callMcpTool, config, 'list_watchers', { include_details: false }).catch(() => null),
-    query.length >= 3
-      ? callMcpToolJson(callMcpTool, config, 'read_knowledge', {
-          query,
-          semantic_type: 'claim',
-          limit: maxResults,
-        }).catch(() => null)
-      : Promise.resolve(null),
-    query.length >= 3
-      ? callMcpToolJson(callMcpTool, config, 'read_knowledge', {
-          query,
-          semantic_type: 'synthesis',
-          limit: maxResults,
-        }).catch(() => null)
-      : Promise.resolve(null),
+  const includeContent = query.length >= 3;
+  const script = `
+export default async (_ctx, client) => {
+  const query = ${JSON.stringify(query)};
+  const limit = ${maxResults};
+  const includeContent = ${includeContent};
+  const [watchers, claims, syntheses] = await Promise.all([
+    client.watchers.list({ include_details: false }).catch((e) => ({ error: String(e) })),
+    includeContent
+      ? client.knowledge.read({ query, semantic_type: 'claim', limit }).catch((e) => ({ error: String(e) }))
+      : null,
+    includeContent
+      ? client.knowledge.read({ query, semantic_type: 'synthesis', limit }).catch((e) => ({ error: String(e) }))
+      : null,
   ]);
-
+  return { watchers, claims, syntheses };
+};
+`;
+  const sdkResult = await runSdkScript<{
+    watchers: unknown;
+    claims: unknown;
+    syntheses: unknown;
+  }>(callMcpTool, config, 'read', script);
+  if (!sdkResult) return [];
   return [
-    ...contentResultsFromReadKnowledge(claimsRaw, 'claim', maxResults),
-    ...contentResultsFromReadKnowledge(synthesesRaw, 'synthesis', maxResults),
-    ...watcherResultsFromList(watchersRaw, query, maxResults),
+    ...contentResultsFromReadKnowledge(sdkResult.claims, 'claim', maxResults),
+    ...contentResultsFromReadKnowledge(sdkResult.syntheses, 'synthesis', maxResults),
+    ...watcherResultsFromList(sdkResult.watchers, query, maxResults),
   ]
     .sort((a, b) => b.score - a.score)
     .slice(0, maxResults);
@@ -343,11 +393,11 @@ async function runWikiSearch(
   const maxResults = readPositiveNumber(args.maxResults, 8, 25);
   const [memory, wiki] = await Promise.all([
     corpus === 'memory' || corpus === 'all'
-      ? searchMemoryCorpus(callMcpTool, config, query, maxResults).catch(() => [])
-      : Promise.resolve([]),
+      ? searchMemoryCorpus(callMcpTool, config, query, maxResults)
+      : Promise.resolve<WikiSearchResult[]>([]),
     corpus === 'wiki' || corpus === 'all'
-      ? searchWikiCorpus(callMcpTool, config, query, maxResults).catch(() => [])
-      : Promise.resolve([]),
+      ? searchWikiCorpus(callMcpTool, config, query, maxResults)
+      : Promise.resolve<WikiSearchResult[]>([]),
   ]);
   const results = [...wiki, ...memory].sort((a, b) => b.score - a.score).slice(0, maxResults);
   return {
@@ -381,20 +431,21 @@ async function runWikiGet(
   const lookup = asString(args.lookup) ?? '';
   const lineCount = readPositiveNumber(args.lineCount, 80, 500);
   const parsed = parseWikiLookup(lookup);
-  let raw: unknown = null;
-  let sourceTool = 'read_knowledge';
+  let script = '';
+  let sourceTool = 'client.knowledge.read';
 
   if (parsed.kind === 'watcher' && parsed.id != null) {
-    sourceTool = 'get_watcher';
-    raw = await callMcpToolJson(callMcpTool, config, 'get_watcher', { watcher_id: String(parsed.id) });
+    sourceTool = 'client.watchers.get';
+    script = `export default async (_ctx, client) => client.watchers.get(${JSON.stringify(String(parsed.id))});`;
   } else if (parsed.kind === 'window' && parsed.id != null) {
-    raw = await callMcpToolJson(callMcpTool, config, 'read_knowledge', { window_id: parsed.id, limit: lineCount });
+    script = `export default async (_ctx, client) => client.knowledge.read({ window_id: ${parsed.id}, limit: ${lineCount} });`;
   } else if (parsed.id != null) {
-    raw = await callMcpToolJson(callMcpTool, config, 'read_knowledge', { content_ids: [parsed.id], limit: lineCount });
+    script = `export default async (_ctx, client) => client.knowledge.read({ content_ids: [${parsed.id}], limit: ${lineCount} });`;
   } else {
-    raw = await callMcpToolJson(callMcpTool, config, 'read_knowledge', { query: lookup, limit: 1 });
+    script = `export default async (_ctx, client) => client.knowledge.read({ query: ${JSON.stringify(lookup)}, limit: 1 });`;
   }
 
+  const raw = await runSdkScript<unknown>(callMcpTool, config, 'read', script);
   const text = stringifyResult(raw ?? { message: `No result for ${lookup}` });
   return {
     text: `Lobu memory-wiki compatibility get (${sourceTool}, lookup=${lookup})\n\n${text}`,
@@ -453,15 +504,15 @@ async function runWikiApply(
           `wiki_apply update_metadata: ${invalid.length} correction(s) missing required "field_path" string`
         );
       }
-      const result = await callMcpToolJson(callMcpTool, config, 'manage_watchers', {
-        action: 'submit_feedback',
+      const script = `export default async (_ctx, client) => client.watchers.submitFeedback(${JSON.stringify({
         watcher_id: String(watcherId),
         window_id: windowId,
         corrections,
-      });
+      })});`;
+      const result = await runSdkScript(callMcpTool, config, 'write', script);
       return {
-        text: `Submitted watcher feedback via manage_watchers.submit_feedback.\n\n${stringifyResult(result)}`,
-        details: { op, sourceTool: 'manage_watchers', result },
+        text: `Submitted watcher feedback via client.watchers.submitFeedback.\n\n${stringifyResult(result)}`,
+        details: { op, sourceTool: 'client.watchers.submitFeedback', result },
       };
     }
 
@@ -546,8 +597,12 @@ export function registerMemoryWikiCompatTools(
     'Inspect Lobu-backed OpenClaw memory-wiki compatibility status. This is a compatibility layer, not a separate wiki source of truth.',
     { type: 'object', additionalProperties: false, properties: {} },
     async () => {
+      const watcherCountScript = `export default async (_ctx, client) => {
+  const r = await client.watchers.list({ include_details: false }).catch((e) => ({ error: String(e) }));
+  return r;
+};`;
       const [watchers, memoryProbe] = await Promise.all([
-        callMcpToolJson(callMcpTool, config, 'list_watchers', { include_details: false }).catch((error) => ({ error: String(error) })),
+        runSdkScript<unknown>(callMcpTool, config, 'read', watcherCountScript).catch((error) => ({ error: String(error) })),
         callMcpToolJson(callMcpTool, config, 'search_memory', {
           query: 'memory wiki compatibility status',
           include_content: false,
@@ -555,7 +610,10 @@ export function registerMemoryWikiCompatTools(
           limit: 1,
         }).catch((error) => ({ error: String(error) })),
       ]);
-      const watcherCount = isRecord(watchers) && Array.isArray(watchers.watchers) ? watchers.watchers.length : null;
+      const watcherCount =
+        isRecord(watchers) && Array.isArray((watchers as { watchers?: unknown }).watchers)
+          ? ((watchers as { watchers: unknown[] }).watchers.length)
+          : null;
       const status = {
         mode: 'lobu-memory-wiki-compat',
         source_of_truth: 'lobu-memory-mcp',

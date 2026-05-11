@@ -6,7 +6,7 @@
 - **`packages/agent-worker`**: Agent execution via OpenClaw runtime in `src/openclaw/`. Worker talks only to gateway and agent. No platform knowledge.
 
 ### Module Boundaries
-- Gateway: Connections → `src/connections/`, orchestration → `src/orchestration/`, Slack OAuth routes → `src/routes/public/slack.ts`
+- Gateway: Connections → `src/gateway/connections/`, orchestration → `src/gateway/orchestration/`, Slack OAuth routes → `src/gateway/routes/public/slack.ts`
 - Worker: Platform-agnostic, agent logic isolated to `src/openclaw/`
 - Core: Shared interfaces, utils, types for gateway+worker
 - **Platform isolation**: InteractionService events (e.g. `link-button:created`) carry an explicit `platform` field. Each platform renderer MUST filter on its own platform identity (`platform === "telegram"`, `platform === "slack"`). Never reference another platform's identifier.
@@ -19,7 +19,7 @@
 - When fixing unused-parameter errors, delete the parameter rather than prefixing with `_`.
 
 ### Submodules
-`packages/web` is a submodule of `lobu-ai/lobu-web`. Push the submodule change to a reachable branch first (usually `main`), then bump the pointer in the parent — the parent must never point at an unreachable SHA, or production cloning will fail.
+`packages/web` is a submodule of `lobu-ai/owletto-web`. Push the submodule change to a reachable branch first (usually `main`), then bump the pointer in the parent — the parent must never point at an unreachable SHA, or production cloning will fail.
 
 ### Frontend (web)
 When editing UI under `packages/web`, follow the design rules in @packages/web/DESIGN_GUIDELINES.md — confirmations, surfaces, empty states, selection, forms, page copy, radius, Sheet vs Dialog. Match the existing components and exemplar files referenced there; do not introduce new primitives without updating the guideline in the same PR.
@@ -29,11 +29,11 @@ When editing UI under `packages/web`, follow the design rules in @packages/web/D
 #### Platform
 All chat platforms (Telegram, Slack, Discord, WhatsApp, Teams) run through Chat SDK adapters in `packages/server/src/gateway/connections/`. Connections are created via the `/agents` admin UI or the connections CRUD API — no per-platform env vars. Each connection has a typed config schema (bot token for Telegram, signing secret + bot token for Slack, etc.). Gateway also exposes a public endpoint that triggers an agent run. Settings-page provider order is drag-sortable, with per-provider model selection inline.
 
-**One transport per platform: webhooks via the Chat SDK adapter.** Don't add per-platform alternative transports (Slack Socket Mode, Telegram long-polling, Discord Gateway WebSocket bridges, etc.) or extra runtime SDKs to support them. Local dev for webhook-only platforms uses a tunnel (cloudflared / ngrok / Tailscale Funnel); Lobu Cloud users get a public URL for free. Sticking to the Chat SDK keeps one delivery story, one set of retries, and zero extra dependencies.
+**Webhooks via the Chat SDK adapter are the default transport.** Don't add new per-platform alternative transports (Slack Socket Mode, Discord Gateway WebSocket bridges, etc.) or extra runtime SDKs. The lone exception is Telegram, whose connection config exposes an optional `polling` mode (`mode: "auto" | "webhook" | "polling"`) implemented inside the Chat SDK adapter — still no extra SDK. Local dev for webhook-only platforms uses a tunnel (cloudflared / ngrok / Tailscale Funnel); Lobu Cloud users get a public URL for free. Sticking to the Chat SDK keeps one delivery story, one set of retries, and zero extra dependencies.
 
 #### Orchestration
 - **Embedded-only deployment.** Gateway, workers, embeddings, and the Lobu memory backend run in a single Node process (`lobu run`, or `bun run dev` in the monorepo). Workers spawn as `child_process.spawn` subprocesses on the same host; on Linux the spawn path uses `systemd-run --user --scope` for cgroup limits + IPAddressDeny + capability drops. There is no Docker or Kubernetes deployment manager.
-- Postgres (with pgvector) is the only user-provided external. The Node process connects out via `DATABASE_URL`. Runtime state that previously lived in Redis (queues, chat connection rows, grant cache, MCP proxy sessions) is now in dedicated Postgres tables.
+- Postgres (with pgvector) is the only user-provided external. The Node process connects out via `DATABASE_URL`. Runtime state — queues, chat connection rows, grant cache, MCP proxy sessions — lives in dedicated Postgres tables.
 - Workers are sandboxed and **never see real credentials**. The gateway's `secret-proxy` swaps `lobu_secret_<uuid>` placeholders for real keys at egress; workers receive only the placeholders.
 
 #### MCP

@@ -10,7 +10,7 @@ There is no Lobu-side sync feature. The repo is the source of truth and CI is th
 ## What you need
 
 1. A git repo with a `lobu.toml` at the root (or in a subdirectory).
-2. A `LOBU_TOKEN` secret in the repo (`Settings → Secrets and variables → Actions`). Mint one with `lobu auth tokens create --scope apply` from a logged-in shell.
+2. A `LOBU_TOKEN` secret in the repo (`Settings → Secrets and variables → Actions`). Mint one with `lobu token create` from a logged-in shell (it defaults to the `mcp:read mcp:write` scope, which `lobu apply` uses).
 3. Any provider keys your agents reference (`ANTHROPIC_API_KEY`, etc.) added as repo secrets too — `lobu apply` reads them via `$VAR` interpolation in `lobu.toml`.
 
 ## Drop-in workflow
@@ -108,7 +108,7 @@ Stage on push-to-main, prod on tag, prod-on-approval — all standard Actions pa
 ## What `lobu apply` will not do
 
 - It will not edit secrets in your provider accounts. `$VAR` references are resolved at apply time from the runner's environment; the values never leave the runner.
-- It will not import existing cloud-side agents into your repo. If you've been editing in the admin UI and want to flip to git-managed, run `lobu pull` (planned) or hand-write `lobu.toml` against the current state.
+- It will not import existing cloud-side agents into your repo. If you've been editing in the admin UI and want to flip to git-managed, hand-write `lobu.toml` against the current state. (A `lobu pull` to scaffold this automatically is not yet implemented.)
 - It will not silently overwrite manual UI edits without showing the diff. Every apply prints the plan; `--dry-run` lets you preview without converging.
 
 ## Drift between UI and git

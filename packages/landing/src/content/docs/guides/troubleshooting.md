@@ -3,7 +3,7 @@ title: Troubleshooting
 description: Common issues and how to fix them.
 ---
 
-Lobu boots as a single Node process (`lobu run` / `node packages/server/dist/server.bundle.mjs`). Postgres (with pgvector) is the only user-provided external, reached via `DATABASE_URL`. Worker subprocesses are spawned by the gateway's `EmbeddedDeploymentManager`.
+Lobu boots as a single Node process: `lobu run`. A scaffolded project defaults to an **in-process PGlite** database (entry `start-local.bundle.mjs`), so `DATABASE_URL` is optional — set it only when you want an external Postgres (with pgvector), in which case the entry is `server.bundle.mjs`. The monorepo `make dev` always requires `DATABASE_URL`. Worker subprocesses are spawned by the gateway's `EmbeddedDeploymentManager`. There is no Redis.
 
 ## Worker won't start
 
@@ -21,7 +21,8 @@ make clean-workers   # in the monorepo
 
 # Common causes:
 # - Port 8787 already in use → Change GATEWAY_PORT or PORT in .env
-# - DATABASE_URL not reachable → see "Agent not responding" below
+# - DATABASE_URL set but not reachable → see "Agent not responding" below
+#   (with the default PGlite backend there's no DATABASE_URL to misconfigure)
 # - Invalid lobu.toml → npx @lobu/cli@latest validate
 ```
 
@@ -31,7 +32,8 @@ make clean-workers   # in the monorepo
 # Check if Lobu is running
 curl http://localhost:8787/health
 
-# Check Postgres connection
+# If you've configured an external Postgres, check the connection
+# (skip this with the default in-process PGlite backend)
 psql "$DATABASE_URL" -c 'select 1'
 
 # Clear stale chat history (for stuck conversations).
@@ -101,8 +103,9 @@ curl -v http://localhost:8118
 ## Out of memory / disk space
 
 ```bash
-# Check Node process memory
-ps -o pid,rss,command -p "$(pgrep -f 'server/dist/server.bundle.mjs')"
+# Check Node process memory (the entry is server.bundle.mjs with an external
+# Postgres, or start-local.bundle.mjs with the default PGlite backend)
+ps -o pid,rss,command -p "$(pgrep -f '(server|start-local)\.bundle\.mjs')"
 
 # Workspaces accumulate per agent under ./workspaces/
 # Clear stale ones if disk is filling up:
@@ -136,6 +139,8 @@ npx @lobu/cli@latest memory health
 ```
 
 ## Postgres not reachable
+
+Only relevant if you've configured an external Postgres via `DATABASE_URL` — the default scaffolded backend is in-process PGlite and has nothing to connect to.
 
 ```bash
 # Verify DATABASE_URL in .env

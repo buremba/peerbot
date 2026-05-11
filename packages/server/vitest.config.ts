@@ -17,8 +17,7 @@ export default defineConfig({
     // bun:test-style unit tests live alongside vitest integration tests — skip
     // those for vitest. They run via `bun test` (see the existing CI command).
     // Anything under `src/gateway/**/__tests__` is bun:test-style (carried over
-    // from the merged @lobu/gateway package, plus the Phase-2/-5 caches+queue
-    // unit tests added during the Redis removal).
+    // from the merged @lobu/gateway package, plus the caches + queue unit tests).
     exclude: [
       "src/__tests__/unit/**",
       "src/gateway/**/__tests__/**",

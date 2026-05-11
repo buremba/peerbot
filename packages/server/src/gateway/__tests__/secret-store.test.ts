@@ -21,9 +21,8 @@ const TEST_ENCRYPTION_KEY =
   "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
 /**
- * In-memory writable secret store. Replaces the deleted RedisSecretStore in
- * tests — the production substrate is now PostgresSecretStore (covered by
- * its own test file).
+ * In-memory writable secret store for tests — the production substrate is
+ * PostgresSecretStore (covered by its own test file).
  */
 class InMemoryWritableStore implements WritableSecretStore {
   private readonly entries = new Map<

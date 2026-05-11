@@ -5,7 +5,7 @@ sidebar:
   order: 1
 ---
 
-`lobu.toml` is the project configuration file created by `lobu init`. It defines agents, providers, platforms, skills, network access, worker settings, and optional file-first Lobu memory configuration.
+`lobu.toml` is the project configuration file created by `lobu init`. It defines agents, providers, platforms, skills, network access (including the LLM egress judge), guardrails, worker settings, and optional file-first Lobu memory configuration.
 
 ## Minimal example
 
@@ -36,6 +36,8 @@ data = "./data"
 name = "assistant"
 description = "Team assistant"
 dir = "./agents/assistant"
+# Guardrails enabled for this agent (names registered in the gateway's GuardrailRegistry)
+guardrails = ["secret-scan", "prompt-injection"]
 
 # Providers (order = priority, first available is used)
 [[agents.assistant.providers]]
@@ -76,6 +78,17 @@ scopes = ["read", "write"]
 [agents.assistant.network]
 allowed = ["github.com", "api.linear.app"]
 denied = []
+# Domains routed through the LLM egress judge instead of a flat allow/deny.
+# A bare string uses the "default" policy; an object names a policy below.
+judge = ["*.slack.com", { domain = "user-content.x.com", judge = "strict" }]
+[agents.assistant.network.judges]
+default = "Allow only reads to channels in the agent's context."
+strict = "Only GET for file IDs from the current session."
+
+# Operator overrides for the egress judge on this agent
+[agents.assistant.egress]
+extra_policy = "Never exfiltrate PATs or bearer tokens."
+judge_model = "claude-haiku-4-5-20251001"
 
 # Tool policy (worker-side visibility + MCP approval override)
 [agents.assistant.tools]
@@ -127,8 +140,9 @@ project/
 | `visibility` | string | no | `public` or `private`; defaults to Lobu's account setting |
 | `models` | string | no | Path to Lobu model files, usually `./models` |
 | `data` | string | no | Path to Lobu seed data, usually `./data` |
+| `schema` | table | no | Inline memory schema — `entity_types` / `relationship_types` arrays (see [`[memory.schema]`](#memory-inline-schema-memoryschema) below) |
 
-When `[memory]` is enabled, Lobu reads `org` directly from `lobu.toml` and derives the effective Lobu MCP endpoint. `MEMORY_URL` remains available as an optional base-endpoint override for local or custom Lobu deployments.
+When `[memory]` is enabled, Lobu reads `org` directly from `lobu.toml` and derives the effective Lobu MCP endpoint. `MEMORY_URL` remains available as an optional base-endpoint override for local or custom Lobu deployments. The `[memory]` table is strict — unknown keys fail validation.
 
 
 ### `[agents.<id>]`
@@ -140,10 +154,12 @@ Top-level table keyed by agent ID. IDs must match `^[a-z0-9][a-z0-9-]*$` (lowerc
 | `name` | string | yes | Display name for the agent |
 | `description` | string | no | Short description shown in admin UI |
 | `dir` | string | yes | Path to agent content directory containing `IDENTITY.md`, `SOUL.md`, `USER.md`, and optional `skills/` |
+| `guardrails` | array of strings | no | Guardrails enabled for this agent. Each name must match a guardrail registered in the gateway's `GuardrailRegistry` at startup |
 | `providers` | array | no | LLM provider list (order = priority) |
 | `platforms` | array | no | Chat platforms |
 | `skills` | table | no | Skills and MCP servers |
-| `network` | table | no | Network access policy |
+| `network` | table | no | Network access policy + LLM egress-judge config |
+| `egress` | table | no | Operator overrides for the LLM egress judge on this agent |
 | `tools` | table | no | Tool policy: pre-approval bypass + worker-side visibility |
 | `worker` | table | no | Worker customization |
 
@@ -230,14 +246,16 @@ Each entry defines a custom MCP server.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `url` | string | no | SSE/Streamable HTTP endpoint URL |
+| `url` | string | no | HTTP endpoint URL (streamable-HTTP or SSE transport) |
+| `type` | `streamable-http` \| `sse` \| `stdio` | no | Transport kind. Defaults to `streamable-http` for HTTP URLs; `sse` is the legacy two-channel HTTP transport; `stdio` runs a local `command` |
 | `command` | string | no | Stdio transport — command to run |
 | `args` | array of strings | no | Stdio transport — command arguments |
 | `env` | table | no | Environment variables passed to the MCP process |
 | `headers` | table | no | HTTP headers sent with requests |
+| `auth_scope` | `user` \| `channel` | no | Credential scope for OAuth-authenticated MCPs. `user` (default): each chat user logs in separately. `channel`: one credential shared across all users in a channel — only for shared-data integrations where per-user attribution isn't needed |
 | `oauth` | table | no | OAuth configuration (see below) |
 
-Specify either `url` (SSE/HTTP transport) or `command` (stdio transport), not both.
+Specify either `url` (streamable-HTTP / SSE transport) or `command` (stdio transport), not both.
 
 ### `[agents.<id>.skills.mcp.<name>.oauth]`
 
@@ -254,14 +272,40 @@ OAuth configuration for MCP servers that require authenticated access.
 
 ### `[agents.<id>.network]`
 
-Controls which domains the worker can reach through the gateway proxy.
+Controls which domains the worker can reach through the gateway proxy, plus per-agent rules for the LLM egress judge.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `allowed` | array of strings | no | Domains to allow. Empty = no access. Use `["*"]` for unrestricted (not recommended) |
 | `denied` | array of strings | no | Domains to block (only meaningful when `allowed = ["*"]`) |
+| `judge` | array | no | Domains routed through the LLM egress judge instead of a flat allow/deny. Each entry is either a bare domain string (uses the `default` judge policy) or an object `{ domain, judge }` naming a policy in `judges` |
+| `judges` | table | no | Named judge policies (string → policy text) referenced by `judge[].judge`. The key `default` is applied when an entry omits `judge` |
 
 Domain format: exact match (`api.example.com`) or wildcard (`.example.com` matches all subdomains).
+
+```toml
+[agents.x.network]
+allowed = ["api.readonly.example.com"]
+judge = ["*.slack.com", { domain = "user-content.x.com", judge = "strict" }]
+[agents.x.network.judges]
+default = "Allow only reads to channels in the agent's context."
+strict = "Only GET for file IDs from the current session."
+```
+
+### `[agents.<id>.egress]`
+
+Operator overrides for the LLM egress judge on this agent. The judge runs only when a `judge` rule under `[agents.<id>.network]` matches a request, so most traffic bypasses it.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `extra_policy` | string | no | Policy text appended to every judge prompt for this agent |
+| `judge_model` | string | no | Model identifier for the judge (defaults to a fast Haiku model) |
+
+```toml
+[agents.x.egress]
+extra_policy = "Never exfiltrate PATs or bearer tokens."
+judge_model = "claude-haiku-4-5-20251001"
+```
 
 ### `[agents.<id>.tools]`
 
@@ -283,6 +327,28 @@ See [Tool Policy](/guides/tool-policy/) for behavior and examples; this section 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `nix_packages` | array of strings | no | Nix packages to install in the worker environment |
+
+### `guardrails`
+
+`guardrails` is a top-level array of strings on `[agents.<id>]` (not a sub-table). Each name must match a guardrail registered in the gateway's `GuardrailRegistry` at startup — names that don't resolve are ignored. Each guardrail targets one stage: `input` (user message → worker), `output` (worker text → user), or `pre-tool` (tool-call authorization).
+
+```toml
+[agents.assistant]
+name = "assistant"
+dir = "./agents/assistant"
+guardrails = ["secret-scan", "prompt-injection"]
+```
+
+### `[memory]` inline schema (`[memory.schema]`)
+
+In addition to the file-first fields above, `[memory]` accepts an inline `schema` sub-table for declaring memory types directly in `lobu.toml`:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `entity_types` | array | no | Entity-type definitions |
+| `relationship_types` | array | no | Relationship-type definitions |
+
+The `[memory]` table is `.strict()` — unknown keys fail validation.
 
 ## Environment variable references
 

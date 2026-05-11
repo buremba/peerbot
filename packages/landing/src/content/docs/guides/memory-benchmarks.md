@@ -47,45 +47,47 @@ Latency is **retrieval-only latency**, not end-to-end wall clock. It is not full
 
 ## Reproducing the results
 
-The full harness lives in the [`lobu` repo](https://github.com/lobu-ai/lobu) under [`benchmarks/memory/`](https://github.com/lobu-ai/lobu/tree/main/benchmarks/memory). The TypeScript runner is at `src/benchmarks/memory/`. External systems are integrated as long-lived Python adapter subprocesses framed over JSONL-on-stdin, which avoids per-op fork/exec cost.
+The full harness lives in the [`lobu` repo](https://github.com/lobu-ai/lobu) under [`benchmarks/memory/`](https://github.com/lobu-ai/lobu/tree/main/benchmarks/memory). The TypeScript runner is at `packages/server/src/benchmarks/memory/runner.ts`, driven by `scripts/lobu/run-memory-benchmark.ts` (root `package.json` exposes it as `bun run lobu:bench:memory`). External systems are integrated as long-lived Python adapter subprocesses framed over JSONL-on-stdin, which avoids per-op fork/exec cost.
 
 ### Prerequisites
 
-- Node.js 20+, pnpm 9+, Docker
+- Bun and Node.js 22.x–24.x
 - `ZAI_API_KEY` (z.ai, used as the answerer model `glm-5.1`)
 - API keys for any external systems you want to include: `MEM0_API_KEY`, `SUPERMEMORY_API_KEY`, `LETTA_API_KEY`, `ZEP_API_KEY`
+
+Run the harness with `bun run scripts/lobu/run-memory-benchmark.ts --config <path>` (or the shortcut `bun run lobu:bench:memory --config <path>`).
 
 ### LongMemEval oracle-50, all systems
 
 ```bash
 ZAI_API_KEY=... MEM0_API_KEY=... SUPERMEMORY_API_KEY=... LETTA_API_KEY=... \
-  pnpm benchmark:memory --config benchmarks/memory/config.longmemeval.oracle.50.compare.all.zai.json
+  bun run scripts/lobu/run-memory-benchmark.ts --config benchmarks/memory/config.longmemeval.oracle.50.compare.all.zai.json
 ```
 
 ### LoCoMo-50, three-way (Lobu vs Mem0 vs Supermemory)
 
 ```bash
 ZAI_API_KEY=... MEM0_API_KEY=... SUPERMEMORY_API_KEY=... \
-  pnpm benchmark:memory --config benchmarks/memory/config.locomo.50.compare.top-memory.zai.json
+  bun run scripts/lobu/run-memory-benchmark.ts --config benchmarks/memory/config.locomo.50.compare.top-memory.zai.json
 ```
 
 ### Lobu-only, no external API keys
 
 ```bash
 # Retrieval-only (no answerer)
-pnpm benchmark:memory --config benchmarks/memory/config.longmemeval.oracle.50.json
+bun run scripts/lobu/run-memory-benchmark.ts --config benchmarks/memory/config.longmemeval.oracle.50.json
 
 # Full QA with z.ai answerer
-ZAI_API_KEY=... pnpm benchmark:memory --config benchmarks/memory/config.longmemeval.oracle.50.zai.json
-ZAI_API_KEY=... pnpm benchmark:memory --config benchmarks/memory/config.locomo.50.zai.json
+ZAI_API_KEY=... bun run scripts/lobu/run-memory-benchmark.ts --config benchmarks/memory/config.longmemeval.oracle.50.zai.json
+ZAI_API_KEY=... bun run scripts/lobu/run-memory-benchmark.ts --config benchmarks/memory/config.locomo.50.zai.json
 ```
 
 ### Smaller LoCoMo slices
 
 ```bash
-pnpm benchmark:memory --config benchmarks/memory/config.locomo.5.local.json
-pnpm benchmark:memory --config benchmarks/memory/config.locomo.10.compare.top-memory.zai.json
-pnpm benchmark:memory --config benchmarks/memory/config.locomo.30.local.json
+bun run scripts/lobu/run-memory-benchmark.ts --config benchmarks/memory/config.locomo.5.local.json
+bun run scripts/lobu/run-memory-benchmark.ts --config benchmarks/memory/config.locomo.10.compare.top-memory.zai.json
+bun run scripts/lobu/run-memory-benchmark.ts --config benchmarks/memory/config.locomo.30.local.json
 ```
 
 A complete table of available configs is documented in [`benchmarks/memory/README.md`](https://github.com/lobu-ai/lobu/blob/main/benchmarks/memory/README.md#available-configs).

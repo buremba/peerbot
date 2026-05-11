@@ -23,7 +23,7 @@ import WebMCP from "../components/WebMCP.astro";
 import { themeScript } from "../styles/theme-script";
 
 const canonicalURL = new URL(Astro.url.pathname, Astro.site);
-const ogImage = new URL("/lobster-icon.png", Astro.site);
+const ogImage = new URL("/lobu-og.png", Astro.site);
 const markdownPath =
   Astro.url.pathname === "/"
     ? "/index.md"
@@ -41,8 +41,8 @@ const hasMarkdownTwin = existsSync(markdownFileURL);
     <title>{title}</title>
     <meta name="description" content={description} />
     <link rel="canonical" href={canonicalURL} />
-    <link rel="icon" href="/favicon.ico" />
-    <link rel="icon" type="image/png" href="/lobster-icon.png" />
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <link rel="icon" type="image/svg+xml" href="/lobster-icon.svg" />
     <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
     <meta name="theme-color" content="#0a0a0b" media="(prefers-color-scheme: dark)" />
 
@@ -85,7 +85,7 @@ const hasMarkdownTwin = existsSync(markdownFileURL);
       "@type": "Organization",
       "name": "Lobu",
       "url": "https://lobu.ai",
-      "logo": "https://lobu.ai/lobster-icon.png",
+      "logo": "https://lobu.ai/lobster-icon.svg",
       "description": "Open-source backend for multi-user AI agents with isolated workers, per-user OAuth, connected sources, shared memory, and secrets agents never see.",
       "sameAs": [
         "https://github.com/lobu-ai/lobu",

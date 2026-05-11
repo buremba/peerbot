@@ -68,7 +68,7 @@ export function Footer() {
                 fontFamily: "var(--font-display)",
               }}
             >
-              <img src="/lobster-icon.png" alt="Lobu" class="w-7 h-7" />
+              <img src="/lobster-icon.svg" alt="Lobu" class="w-7 h-7" />
               Lobu
             </a>
             <p

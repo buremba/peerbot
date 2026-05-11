@@ -12,7 +12,8 @@
 
 import { spawnSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 
@@ -27,7 +28,7 @@ const PACKAGES = [
   {
     dir: "packages/openclaw-plugin",
     transform: rewriteWorkspaceRefs,
-    clawhub: { displayName: "Lobu", family: "code-plugin" },
+    clawhub: { slug: "lobu", displayName: "Lobu", family: "code-plugin" },
   },
   { dir: "packages/connectors", transform: rewriteWorkspaceRefs },
   { dir: "packages/connector-worker", transform: rewriteWorkspaceRefs },
@@ -176,45 +177,69 @@ function gitCommitSha() {
 // done locally (`clawhub login` then `clawhub package publish`) to claim the
 // slug; after that, register this workflow as the trusted publisher and CI
 // takes over.
+//
+// ClawHub forces the catalog slug to equal the package's `package.json` name,
+// so to publish under a clean `lobu` slug without renaming the npm package
+// (which `@lobu/openclaw-plugin` consumers depend on), we publish from a temp
+// copy whose `package.json` name is the slug. The npm tarball is unaffected.
 async function publishToClawhub({ dir, clawhub }) {
   const absDir = path.join(REPO_ROOT, dir);
   const pkg = JSON.parse(
     await readFile(path.join(absDir, "package.json"), "utf8")
   );
-  const { displayName, family } = clawhub;
+  const { slug, displayName, family } = clawhub;
   const version = pkg.version;
-  // ClawHub enforces slug === npm package.json name, then strips the scope
-  // server-side. So `@lobu/openclaw-plugin` lands at slug `openclaw-plugin`.
-  const slug = pkg.name.replace(/^@[^/]+\//, "");
 
   if (isClawhubVersionPublished(slug, version)) {
     console.log(`  → ${slug}@${version} already on ClawHub, skipping`);
     return;
   }
 
-  const commit = gitCommitSha();
-  console.log(`  → publishing ${slug}@${version} to ClawHub`);
-  run("npx", [
-    "--yes",
-    "clawhub@latest",
-    "package",
-    "publish",
-    absDir,
-    "--family",
-    family,
-    "--display-name",
-    displayName,
-    "--version",
-    version,
-    "--tags",
-    "latest",
-    "--source-repo",
-    CLAWHUB_SOURCE_REPO,
-    "--source-commit",
-    commit,
-    "--source-path",
-    dir,
-  ]);
+  const stageDir = await mkdtemp(path.join(os.tmpdir(), "clawhub-stage-"));
+  try {
+    await cp(absDir, stageDir, {
+      recursive: true,
+      filter: (src) =>
+        !src.split(path.sep).includes("node_modules") &&
+        !src.split(path.sep).includes(".git"),
+    });
+    const stagedPkgPath = path.join(stageDir, "package.json");
+    const stagedPkg = JSON.parse(await readFile(stagedPkgPath, "utf8"));
+    stagedPkg.name = slug;
+    await writeFile(
+      stagedPkgPath,
+      `${JSON.stringify(stagedPkg, null, 2)}\n`,
+      "utf8"
+    );
+
+    const commit = gitCommitSha();
+    console.log(`  → publishing ${slug}@${version} to ClawHub`);
+    run("npx", [
+      "--yes",
+      "clawhub@latest",
+      "package",
+      "publish",
+      stageDir,
+      "--family",
+      family,
+      "--name",
+      slug,
+      "--display-name",
+      displayName,
+      "--version",
+      version,
+      "--tags",
+      "latest",
+      "--source-repo",
+      CLAWHUB_SOURCE_REPO,
+      "--source-commit",
+      commit,
+      "--source-path",
+      dir,
+    ]);
+  } finally {
+    await rm(stageDir, { recursive: true, force: true });
+  }
 }
 
 function publishArgs(otp) {

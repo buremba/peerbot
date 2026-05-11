@@ -1764,6 +1764,234 @@ async function searchContentBySingleQuery(
   };
 }
 
+// Candidate fan-out sizes for the index-driven org-wide path. Each side feeds
+// into a small re-ranked merge, so a few hundred is plenty for any sane
+// content_limit while keeping the candidate scans cheap.
+const CANDIDATE_TEXT_LIMIT = 200;
+const CANDIDATE_VECTOR_LIMIT = 200;
+// Backstop so a pathological candidate scan can't hang the request. Callers
+// (search_memory) already tolerate an empty content list, so failing fast and
+// degrading to "no content" beats a multi-minute query.
+const CANDIDATE_QUERY_TIMEOUT_MS = 6000;
+
+/**
+ * Index-driven org-wide relevance search.
+ *
+ * The legacy single-query path ORs a text predicate with `embedding <=> $vec >=
+ * threshold` in one WHERE; Postgres can't use the fulltext GIN, the trgm GIN,
+ * or the ivfflat ANN index for that, so it sequential-scans the org's events
+ * (tens of seconds — 27–210s on a ~720k-event org). Here we run the text side
+ * against the GIN indexes and the vector side against the ivfflat ANN index
+ * (`ORDER BY embedding <=> $vec LIMIT k`, which the index *can* serve, with
+ * pgvector 0.8 iterative scan handling the org filter), then merge + re-rank a
+ * few hundred candidates. Only used for the org-wide, non-chronological,
+ * no-classifications search path; everything else stays on
+ * `searchContentBySingleQuery`.
+ */
+async function searchContentCandidatesFast(
+  sql: DbClient,
+  queryText: string,
+  options: ContentSearchOptions & { offset?: number },
+  env?: Env
+): Promise<ContentSearchResponse> {
+  const limit = Math.min(options.limit ?? 50, 500);
+  const offset = options.offset ?? 0;
+  const trimmedQuery = queryText.trim();
+  const orgId = options.organization_id;
+  if (!orgId) {
+    return {
+      content: [],
+      total: 0,
+      page: buildPageInfo({ limit, offset, total: 0, returnedCount: 0, useDateFeed: false, cursor: null }),
+    };
+  }
+
+  let queryEmbedding: number[] | null = options.query_embedding?.length
+    ? options.query_embedding
+    : null;
+  if (!queryEmbedding && env?.EMBEDDINGS_SERVICE_URL) {
+    try {
+      const embs = await generateEmbeddings([trimmedQuery], env);
+      queryEmbedding = embs[0] ?? null;
+    } catch (err) {
+      logger.warn(
+        { err: err instanceof Error ? err.message : String(err) },
+        '[content-search] embedding generation failed; text-only candidates'
+      );
+    }
+  }
+  const hasEmbedding = queryEmbedding !== null;
+  const rawMinSim = Number(options.min_similarity ?? 0.3);
+  const minSim = Number.isFinite(rawMinSim) ? Math.max(0, Math.min(1, rawMinSim)) : 0.3;
+  const vectorWeight = Math.max(0, Math.min(1, options.vector_weight ?? 0.6));
+  const textWeight = 1 - vectorWeight;
+
+  const sinceDate = options.since ? parseDateAlias(options.since).date : null;
+  const untilDate = options.until ? toEndOfDay(parseDateAlias(options.until).date) : null;
+
+  // Param layout (built incrementally so optional fragments don't desync $N):
+  //   $1 query text (used by TSQUERY_SQL + ILIKE)
+  //   $2 organization_id (candidate scans — kept simple so the org btree /
+  //      ivfflat indexes stay usable; the org-bridge branches in
+  //      buildOrgScopeWhere are deliberately skipped here)
+  //   [$N vector literal, $N minSim] when an embedding is in play
+  //   $N platform, $N since, $N until — applied on the small candidate set
+  //   visibility params (when a visibility_scope is supplied)
+  const params: unknown[] = [trimmedQuery, orgId];
+  const orgIdx = 2;
+  let vecIdx: number | null = null;
+  let minSimIdx: number | null = null;
+  if (hasEmbedding) {
+    vecIdx = params.length + 1;
+    params.push(toVectorLiteral(queryEmbedding!));
+    minSimIdx = params.length + 1;
+    params.push(minSim);
+  }
+  const platformIdx = params.length + 1;
+  params.push(options.platform ?? null);
+  const sinceIdx = params.length + 1;
+  params.push(sinceDate?.toISOString() ?? null);
+  const untilIdx = params.length + 1;
+  params.push(untilDate?.toISOString() ?? null);
+  const visibility = buildConnectionVisibilityClause(
+    {
+      organizationId: options.visibility_scope?.organizationId,
+      userId: options.visibility_scope?.userId ?? null,
+      baseParamIndex: params.length + 1,
+    },
+    'f'
+  );
+  params.push(...visibility.params);
+
+  const vecLiteralRef = vecIdx ? `$${vecIdx}::vector` : null;
+  const minSimRef = minSimIdx ? `$${minSimIdx}::float8` : null;
+  // Match the exact expression `idx_events_fulltext` is built on
+  // (`to_tsvector('english', COALESCE(payload_text, ''))`) so the GIN index is
+  // usable. The richer title-weighted document expr is reserved for ranking the
+  // small candidate set in the final select.
+  const indexedTsvE = `to_tsvector('english', COALESCE(e.payload_text, ''))`;
+  const richDocF = buildSearchDocumentExpr('f');
+
+  // Text candidates: GIN fulltext via the tsquery (which already ORs the query
+  // tokens), org-scoped via the btree index. No ORDER BY here — the planner can
+  // stop at the first ${CANDIDATE_TEXT_LIMIT} matches; the final select re-ranks.
+  const textCte =
+    trimmedQuery.length > 0
+      ? `text_cands AS (
+        SELECT e.id, NULL::float8 AS sim, 1 AS from_text
+        FROM events e
+        WHERE e.organization_id = $${orgIdx}::text
+          AND ${TSQUERY_SQL} IS NOT NULL
+          AND ${indexedTsvE} @@ ${TSQUERY_SQL}
+        LIMIT ${CANDIDATE_TEXT_LIMIT}
+      )`
+      : null;
+  // Vector candidates: ivfflat ANN on event_embeddings (`ORDER BY <=> LIMIT k` —
+  // the only shape the index can serve), org-scoped via the join + iterative scan.
+  const vecCte = vecLiteralRef
+    ? `vec_cands AS (
+        SELECT emb.event_id AS id,
+          (1 - (emb.embedding <=> ${vecLiteralRef}))::float8 AS sim,
+          0 AS from_text
+        FROM event_embeddings emb
+        JOIN events e ON e.id = emb.event_id
+        WHERE e.organization_id = $${orgIdx}::text
+        ORDER BY emb.embedding <=> ${vecLiteralRef}
+        LIMIT ${CANDIDATE_VECTOR_LIMIT}
+      )`
+    : null;
+  const cteList = [textCte, vecCte].filter(Boolean) as string[];
+  if (cteList.length === 0) {
+    return {
+      content: [],
+      total: 0,
+      page: buildPageInfo({ limit, offset, total: 0, returnedCount: 0, useDateFeed: false, cursor: null }),
+    };
+  }
+  const unionSelects = [
+    textCte ? 'SELECT id, sim, from_text FROM text_cands' : null,
+    vecCte ? 'SELECT id, sim, from_text FROM vec_cands' : null,
+  ]
+    .filter(Boolean)
+    .join('\n        UNION ALL\n        ');
+
+  const textRankF = `COALESCE(ts_rank_cd(${richDocF}, ${TSQUERY_SQL}), 0)::float8`;
+  const combinedScoreSql = vecLiteralRef
+    ? `(COALESCE(r.sim, 0) * ${vectorWeight} + ${textRankF} * ${textWeight})`
+    : textRankF;
+  // A text candidate is always kept (it matched the tsquery). A vector-only
+  // candidate is kept only if it clears the similarity floor.
+  const keepSql =
+    vecLiteralRef && minSimRef
+      ? `(is_text OR (sim IS NOT NULL AND sim >= ${minSimRef}))`
+      : 'is_text';
+  const querySql = `
+    WITH ${cteList.join(',\n    ')},
+    merged AS (
+      SELECT id, MAX(sim) AS sim, bool_or(from_text > 0) AS is_text
+      FROM (
+        ${unionSelects}
+      ) u
+      GROUP BY id
+    ),
+    ranked AS (
+      SELECT id, sim FROM merged WHERE ${keepSql}
+    )
+    SELECT ${BASE_COLUMNS_SQL},
+      NULL as classifications,
+      f.created_at,
+      r.sim as similarity,
+      ${combinedScoreSql} as combined_score
+    FROM ranked r
+    JOIN current_event_records f ON f.id = r.id
+    WHERE ($${platformIdx}::text IS NULL OR f.connector_key = $${platformIdx}::text)
+      AND ($${sinceIdx}::timestamptz IS NULL OR f.occurred_at >= $${sinceIdx}::timestamptz)
+      AND ($${untilIdx}::timestamptz IS NULL OR f.occurred_at <= $${untilIdx}::timestamptz)
+      ${visibility.sql}
+    ORDER BY combined_score DESC, (f.id % 997) ASC, f.occurred_at DESC, f.id DESC
+    LIMIT ${validateNumericId(limit, 'limit')}`;
+
+  let rows: any[];
+  try {
+    rows = (await sql.begin(async (tx: DbClient) => {
+      await tx.unsafe(`SET LOCAL statement_timeout = ${CANDIDATE_QUERY_TIMEOUT_MS}`);
+      return await tx.unsafe(querySql, params);
+    })) as any[];
+  } catch (err) {
+    logger.warn(
+      { err: err instanceof Error ? err.message : String(err) },
+      '[content-search] fast candidate query failed; returning empty content'
+    );
+    rows = [];
+  }
+  const content = rows as any as ContentSearchResult[];
+  return {
+    content,
+    total: content.length,
+    page: buildPageInfo({
+      limit,
+      offset,
+      total: content.length,
+      returnedCount: content.length,
+      useDateFeed: false,
+      cursor: null,
+    }),
+  };
+}
+
+function canUseFastCandidatePath(queryText: string, options: ContentSearchOptions): boolean {
+  return (
+    queryText.trim().length >= 3 &&
+    options.entity_id == null &&
+    !!options.organization_id &&
+    !options.include_classifications &&
+    !(options.classification_filters && options.classification_filters.length > 0) &&
+    !options.classification_source &&
+    options.sort_by !== 'date' &&
+    !isDateFeedMode(options)
+  );
+}
+
 export async function searchContentByText(
   queryText: string | null,
   options: ContentSearchOptions & { offset?: number },
@@ -1782,6 +2010,12 @@ export async function searchContentByText(
       return await searchContentBySingleQuery(sql, '', options, env);
     }
     return await listContentInternal(sql, options, limit, offset);
+  }
+
+  // Org-wide relevance search → index-driven candidate path (no 8× variant
+  // loop; the tsquery already ORs query tokens).
+  if (canUseFastCandidatePath(queryText, options)) {
+    return await searchContentCandidatesFast(sql, queryText, options, env);
   }
 
   const queryVariants = expandSearchQueries(queryText, { maxVariants: 8 });

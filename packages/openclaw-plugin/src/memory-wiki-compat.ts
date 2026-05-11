@@ -673,6 +673,19 @@ type SessionCall = {
 
 const SESSION_BUFFER_CAP = 32;
 
+// Agent tools registered by registerMemoryWikiCompatTools() when memoryWikiCompat
+// is enabled. OpenClaw 2026.5.x requires these to appear in `contracts.tools` in
+// openclaw.plugin.json — a unit test enforces the manifest stays in sync.
+export const MEMORY_WIKI_COMPAT_TOOL_NAMES = [
+  'wiki_status',
+  'wiki_search',
+  'wiki_get',
+  'wiki_apply',
+  'wiki_lint',
+  'memory_search',
+  'memory_get',
+] as const;
+
 export function registerMemoryWikiCompatTools(
   config: ResolvedPluginConfig,
   registerTool: (def: Record<string, unknown>) => void,

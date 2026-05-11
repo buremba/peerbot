@@ -30,6 +30,58 @@ const AUTH_REQUIRED_MSG =
   'Lobu memory is not connected. Call the lobu_login tool to authenticate, then show the user the login URL and code. After the user completes login in their browser, call lobu_login_check to finish authentication.';
 const DEFAULT_RECALL_LIMIT = 6;
 
+// Lobu MCP server tools exposed via `tools/list` (see packages/server/src/tools/registry.ts).
+// Each is registered with OpenClaw as `lobu_<name>`. OpenClaw 2026.5.x requires every
+// runtime-registered tool to appear in `contracts.tools` in openclaw.plugin.json — keep the
+// `lobu_*` entries there in sync with this set (a unit test enforces it). Server tools not
+// listed here are skipped rather than registered (and rejected) until this plugin is updated
+// to declare them.
+export const KNOWN_MCP_TOOL_NAMES = new Set([
+  'search_memory',
+  'save_memory',
+  'list_organizations',
+  'search_sdk',
+  'query_sdk',
+  'query_sql',
+  'run_sdk',
+]);
+
+// Auth tools the plugin always registers in standalone mode (see register()).
+export const LOGIN_TOOL_NAMES = ['lobu_login', 'lobu_login_check'] as const;
+
+// `before_prompt_build` / `before_agent_start` run inside OpenClaw's hook budget
+// (~15s) — a slow `search_memory` must not blow that. Bound the recall round-trip
+// well under it and degrade to "no recall" rather than letting OpenClaw kill the hook.
+const RECALL_TIMEOUT_MS = 8_000;
+
+/**
+ * Run `work` with a hard wall-clock deadline. On timeout, the supplied
+ * `AbortSignal` is aborted (so an in-flight `fetch` cancels instead of
+ * lingering) and `onTimeout` is returned regardless of what is still pending.
+ * `work` is responsible for swallowing its own rejections; if it rejects after
+ * the deadline, the rejection is observed and ignored.
+ */
+export async function runWithAbortDeadline<T>(
+  work: (signal: AbortSignal) => Promise<T>,
+  timeoutMs: number,
+  onTimeout: T
+): Promise<T> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<T>((resolveDeadline) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      resolveDeadline(onTimeout);
+    }, timeoutMs);
+  });
+  const guarded = work(controller.signal).catch(() => onTimeout);
+  try {
+    return await Promise.race([guarded, deadline]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 // Minimal fallback context used before the workspace instructions are fetched.
 // Initialized lazily per mode (gateway vs standalone) in register().
 let FALLBACK_SYSTEM_CONTEXT: string | null = null;
@@ -976,7 +1028,14 @@ function registerMcpTools(
     return;
   }
 
+  let registered = 0;
   for (const tool of tools) {
+    if (!KNOWN_MCP_TOOL_NAMES.has(tool.name)) {
+      log.warn(
+        `lobu: MCP server exposes tool "${tool.name}" not declared in contracts.tools; skipping. Update @lobu/openclaw-plugin to register it.`
+      );
+      continue;
+    }
     registerTool({
       name: `lobu_${tool.name}`,
       label: tool.name.replace(/_/g, ' '),
@@ -987,9 +1046,10 @@ function registerMcpTools(
         return { content: result?.content ?? [], details: {} };
       },
     });
+    registered++;
   }
 
-  log.info(`lobu: registered ${tools.length} MCP tools`);
+  log.info(`lobu: registered ${registered} MCP tools`);
 }
 
 const plugin = {
@@ -1403,19 +1463,20 @@ const plugin = {
         cachedWorkspaceInstructions
           ? `<lobu-system>\n${cachedWorkspaceInstructions}\n</lobu-system>`
           : FALLBACK_SYSTEM_CONTEXT;
-      const doRecall = async (query: string): Promise<string> => {
-        if (!config.autoRecall || !hasAuthConfigured(config)) {
-          return '';
-        }
-
+      const recallOnce = async (query: string, signal: AbortSignal): Promise<string> => {
         try {
-          const result = await callMcpTool(config, 'search_memory', {
-            query,
-            include_content: true,
-            content_limit: config.recallLimit,
-            include_connections: false,
-            limit: 3,
-          });
+          const result = await callMcpTool(
+            config,
+            'search_memory',
+            {
+              query,
+              include_content: true,
+              content_limit: config.recallLimit,
+              include_connections: false,
+              limit: 3,
+            },
+            { signal }
+          );
           if (!result) return '';
 
           const text = extractTextFromContent(result.content);
@@ -1429,12 +1490,30 @@ const plugin = {
             '\n</lobu-memory>'
           );
         } catch (err) {
-          if (err instanceof LobuAuthError) {
+          if (err instanceof LobuAuthError) return '';
+          if (
+            signal.aborted ||
+            (err instanceof Error && (err.name === 'AbortError' || err.name === 'TimeoutError'))
+          ) {
+            log.warn(`lobu recall skipped: search_memory exceeded ${RECALL_TIMEOUT_MS}ms`);
             return '';
           }
           log.error(`lobu recall failed: ${err instanceof Error ? err.message : String(err)}`);
           return '';
         }
+      };
+      // Hard-bound the recall round-trip so it can never blow OpenClaw's hook
+      // budget: abort the in-flight MCP fetch at RECALL_TIMEOUT_MS and degrade
+      // to "no recall" no matter what is still pending (token command, network).
+      const doRecall = async (query: string): Promise<string> => {
+        if (!config.autoRecall || !hasAuthConfigured(config)) {
+          return '';
+        }
+        return runWithAbortDeadline(
+          (signal) => recallOnce(query, signal),
+          RECALL_TIMEOUT_MS,
+          ''
+        );
       };
       const buildPrependContext = (recallBlock: string) => ({
         prependContext: getSystemContext() + (recallBlock ? '\n' + recallBlock : ''),

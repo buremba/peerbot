@@ -4,6 +4,26 @@
   "kind": "memory",
   "description": "Lobu memory over MCP. Set mcpUrl to enable. Authentication via token, tokenCommand, or interactive device login.",
   "entry": "./dist/index.js",
+  "contracts": {
+    "tools": [
+      "lobu_login",
+      "lobu_login_check",
+      "lobu_search_memory",
+      "lobu_save_memory",
+      "lobu_list_organizations",
+      "lobu_search_sdk",
+      "lobu_query_sdk",
+      "lobu_query_sql",
+      "lobu_run_sdk",
+      "wiki_status",
+      "wiki_search",
+      "wiki_get",
+      "wiki_apply",
+      "wiki_lint",
+      "memory_search",
+      "memory_get"
+    ]
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,

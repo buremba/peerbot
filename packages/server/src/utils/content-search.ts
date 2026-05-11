@@ -1823,20 +1823,15 @@ async function searchContentCandidatesFast(
   const hasEmbedding = queryEmbedding !== null;
   const rawMinSim = Number(options.min_similarity ?? 0.3);
   const minSim = Number.isFinite(rawMinSim) ? Math.max(0, Math.min(1, rawMinSim)) : 0.3;
-  const vectorWeight = Math.max(0, Math.min(1, options.vector_weight ?? 0.6));
+  const rawVectorWeight = Number(options.vector_weight ?? 0.6);
+  const vectorWeight = Number.isFinite(rawVectorWeight) ? Math.max(0, Math.min(1, rawVectorWeight)) : 0.6;
   const textWeight = 1 - vectorWeight;
 
-  const sinceDate = options.since ? parseDateAlias(options.since).date : null;
-  const untilDate = options.until ? toEndOfDay(parseDateAlias(options.until).date) : null;
-
-  // Param layout (built incrementally so optional fragments don't desync $N):
-  //   $1 query text (used by TSQUERY_SQL + ILIKE)
-  //   $2 organization_id (candidate scans — kept simple so the org btree /
-  //      ivfflat indexes stay usable; the org-bridge branches in
-  //      buildOrgScopeWhere are deliberately skipped here)
-  //   [$N vector literal, $N minSim] when an embedding is in play
-  //   $N platform, $N since, $N until — applied on the small candidate set
-  //   visibility params (when a visibility_scope is supplied)
+  // Param layout: $1 query text (used by TSQUERY_SQL), $2 organization_id,
+  // then [$N vector literal, $N minSim] when an embedding is in play.
+  // canUseFastCandidatePath guarantees no other row filters / offset, so the
+  // candidate scans stay index-friendly and the final select only re-applies
+  // the org guard (defense in depth — IDs are already org-scoped).
   const params: unknown[] = [trimmedQuery, orgId];
   const orgIdx = 2;
   let vecIdx: number | null = null;
@@ -1847,21 +1842,6 @@ async function searchContentCandidatesFast(
     minSimIdx = params.length + 1;
     params.push(minSim);
   }
-  const platformIdx = params.length + 1;
-  params.push(options.platform ?? null);
-  const sinceIdx = params.length + 1;
-  params.push(sinceDate?.toISOString() ?? null);
-  const untilIdx = params.length + 1;
-  params.push(untilDate?.toISOString() ?? null);
-  const visibility = buildConnectionVisibilityClause(
-    {
-      organizationId: options.visibility_scope?.organizationId,
-      userId: options.visibility_scope?.userId ?? null,
-      baseParamIndex: params.length + 1,
-    },
-    'f'
-  );
-  params.push(...visibility.params);
 
   const vecLiteralRef = vecIdx ? `$${vecIdx}::vector` : null;
   const minSimRef = minSimIdx ? `$${minSimIdx}::float8` : null;
@@ -1944,10 +1924,7 @@ async function searchContentCandidatesFast(
       ${combinedScoreSql} as combined_score
     FROM ranked r
     JOIN current_event_records f ON f.id = r.id
-    WHERE ($${platformIdx}::text IS NULL OR f.connector_key = $${platformIdx}::text)
-      AND ($${sinceIdx}::timestamptz IS NULL OR f.occurred_at >= $${sinceIdx}::timestamptz)
-      AND ($${untilIdx}::timestamptz IS NULL OR f.occurred_at <= $${untilIdx}::timestamptz)
-      ${visibility.sql}
+    WHERE f.organization_id = $${orgIdx}::text
     ORDER BY combined_score DESC, (f.id % 997) ASC, f.occurred_at DESC, f.id DESC
     LIMIT ${validateNumericId(limit, 'limit')}`;
 
@@ -1979,14 +1956,35 @@ async function searchContentCandidatesFast(
   };
 }
 
-function canUseFastCandidatePath(queryText: string, options: ContentSearchOptions): boolean {
+// The fast path only handles the plain org-wide relevance shape (which is what
+// search_memory recall uses): no entity scope, no classifications, no
+// chronological/date-feed ordering, and none of the extra row filters — those
+// are applied only to the post-candidate set, so allowing them could
+// under-return when the candidate cap is hit. Everything else stays on
+// searchContentBySingleQuery.
+function canUseFastCandidatePath(
+  queryText: string,
+  options: ContentSearchOptions & { offset?: number }
+): boolean {
   return (
     queryText.trim().length >= 3 &&
     options.entity_id == null &&
     !!options.organization_id &&
+    (options.offset ?? 0) === 0 &&
     !options.include_classifications &&
     !(options.classification_filters && options.classification_filters.length > 0) &&
     !options.classification_source &&
+    !options.connection_ids?.length &&
+    !options.visibility_scope &&
+    options.platform == null &&
+    options.since == null &&
+    options.until == null &&
+    options.engagement_min == null &&
+    options.engagement_max == null &&
+    options.semantic_type == null &&
+    options.interaction_status == null &&
+    options.window_id == null &&
+    options.exclude_watcher_id == null &&
     options.sort_by !== 'date' &&
     !isDateFeedMode(options)
   );

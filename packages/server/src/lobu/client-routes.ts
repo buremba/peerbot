@@ -35,22 +35,30 @@ type MessagingClientRecord = {
 };
 
 /**
+ * Software ids Lobu's own surfaces register with — the exact, non-spoofable
+ * signal for first-party clients. (Keep in sync with the CLI / bridge clients.)
+ */
+const LOBU_FIRST_PARTY_SOFTWARE_IDS = new Set([
+  'lobu-cli',
+  'lobu',
+  'lobu-mac-bridge',
+  'lobu-ios-bridge',
+  'lobu-bridge',
+]);
+
+/**
  * Recognises Lobu's first-party surfaces (CLI, Mac/iOS bridges) so the UI can
  * fold them into a "your devices & tools" group instead of listing them
- * alongside third-party MCP apps. Heuristic on the registered software id /
- * client name — these all carry a "Lobu …" name today.
+ * alongside third-party MCP apps. Prefers the exact software-id allowlist;
+ * the "Lobu …" client-name check is a best-effort fallback for clients that
+ * register without a known software id (and could in theory be spoofed — this
+ * is a display category, not an access boundary).
  */
 function isFirstPartyLobuClient(name: string | null, softwareId: string | null): boolean {
-  const n = (name ?? '').trim().toLowerCase();
   const s = (softwareId ?? '').trim().toLowerCase();
-  return (
-    n === 'lobu' ||
-    n.startsWith('lobu ') ||
-    n.startsWith('lobu-') ||
-    s === 'lobu' ||
-    s.startsWith('lobu-') ||
-    s.startsWith('lobu ')
-  );
+  if (s && LOBU_FIRST_PARTY_SOFTWARE_IDS.has(s)) return true;
+  const n = (name ?? '').trim().toLowerCase();
+  return n === 'lobu' || n.startsWith('lobu ') || n.startsWith('lobu-');
 }
 
 const PLATFORM_SCHEMAS: Record<

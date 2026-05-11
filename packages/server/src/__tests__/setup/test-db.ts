@@ -257,9 +257,8 @@ export async function cleanupTestDatabase(): Promise<void> {
  */
 async function fixSchemaConstraints(db: postgres.Sql): Promise<void> {
   try {
-    // runs.run_type needs the connector lanes plus the lobu-queue lanes that
-    // landed in the Phase 5 redis -> runs migration. Keep this in sync with
-    // db/migrations/20260429060000_extend_runs_for_lobu_queue.sql.
+    // runs.run_type needs the connector lanes plus the lobu-queue lanes. Keep
+    // this in sync with db/migrations/20260429060000_extend_runs_for_lobu_queue.sql.
     await db.unsafe(`
       ALTER TABLE IF EXISTS runs DROP CONSTRAINT IF EXISTS runs_run_type_check;
       ALTER TABLE IF EXISTS runs ADD CONSTRAINT runs_run_type_check

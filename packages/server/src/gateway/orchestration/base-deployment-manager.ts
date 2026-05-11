@@ -705,9 +705,7 @@ export abstract class BaseDeploymentManager {
     context?: ProviderCredentialContext
   ): Promise<Record<string, string>> {
     // Tests that exercise deployment lifecycle without a secret store can
-    // skip placeholder injection (no secrets to swap). Previously this short-
-    // circuited on the absent redisClient; now the secretStore plays the
-    // same role.
+    // skip placeholder injection (no secrets to swap).
     if (!this.secretStore) return envVars;
     const secretStore = this.secretStore;
 

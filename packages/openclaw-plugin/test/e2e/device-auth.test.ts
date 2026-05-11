@@ -5,7 +5,7 @@
  * Lobu backend. No LLM needed — pure HTTP calls.
  *
  * Prerequisites:
- *   - docker compose up (at least: app, redis)
+ *   - docker compose up (at least: app)
  *   - DATABASE_URL in env (or .env)
  */
 

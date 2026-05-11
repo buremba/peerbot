@@ -3,7 +3,7 @@ import { ChatInstanceManager } from "../connections/chat-instance-manager.js";
 
 /**
  * Helper: create a ChatInstanceManager with mocked internals for testing
- * sendPlatformMessage without requiring Redis.
+ * sendPlatformMessage without a live gateway.
  */
 function createTestManager(overrides: {
   listConnections: (...args: any[]) => Promise<any[]>;

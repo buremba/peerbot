@@ -1,0 +1,57 @@
+version: 1
+type: watcher
+slug: funnel-digest
+name: Weekly funnel digest
+# Monday 09:00 — the week's funnel snapshot + the one thing to do.
+schedule: "0 9 * * 1"
+prompt: |
+  Produce the weekly funnel digest and post it to Slack. Keep it short.
+
+  1. The single recommended action for the week, on the first line. Pick the
+     move that does the most to get pilot #1 closer (almost always: follow up
+     with the warmest lead in "conversation", or progress whichever pilot
+     conversation is furthest along).
+  2. Funnel snapshot: count of `lead` entities per stage; what moved since the
+     last digest (new leads, stage changes, new/updated `pilot` entities).
+  3. Top-of-funnel since last digest: new GitHub stars, X mentions/replies,
+     HN/PH activity.
+  4. Stale: any lead in `conversation` with no `lead:interaction` in 7+ days —
+     list them for follow-up.
+  5. One gap callout if there is one (e.g. "18 new stars, 0 became leads —
+     is inbound-triage catching the right signal?").
+
+  Tone: a checklist a busy founder reads in 30 seconds. End on the next action,
+  not the status. Remember: the metric that matters is customer conversations
+  this week — if that number is below 3, say so plainly.
+extraction_schema:
+  type: object
+  required:
+    - top_action
+    - stage_counts
+    - moved
+    - top_of_funnel
+    - stale_leads
+  properties:
+    top_action:
+      type: string
+    stage_counts:
+      type: object
+    moved:
+      type: object
+      properties:
+        new_leads: { type: integer }
+        stage_changes: { type: integer }
+        pilot_updates: { type: integer }
+    top_of_funnel:
+      type: object
+      properties:
+        stars: { type: integer }
+        x_mentions: { type: integer }
+        hn_ph_activity: { type: integer }
+    stale_leads:
+      type: array
+      items: { type: string }
+    gap:
+      type: string
+    conversations_this_week:
+      type: integer

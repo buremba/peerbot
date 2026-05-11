@@ -1,0 +1,53 @@
+version: 1
+type: entity
+slug: lead
+name: Lead
+description: A person who has shown a signal toward Lobu — starred, engaged, asked, or talked to us
+icon: user
+color: "#10B981"
+metadata_schema:
+  type: object
+  required:
+    - name
+    - source
+    - stage
+  properties:
+    name:
+      type: string
+      x-table-label: Name
+      x-table-column: true
+    company:
+      type: string
+      x-table-label: Company
+      x-table-column: true
+    stage:
+      type: string
+      enum: [signal, trial, conversation, pilot, customer, cold]
+      x-table-label: Stage
+      x-table-column: true
+    source:
+      type: string
+      description: Where they first showed up — "github:stargazer", "x:mention", "github:issue-comment", "demo-form", "intro", etc.
+      x-table-label: Source
+      x-table-column: true
+    github_handle:
+      type: string
+      x-table-label: GitHub
+      x-table-column: true
+    x_handle:
+      type: string
+      x-table-label: X
+    email:
+      type: string
+      x-table-label: Email
+    last_touch:
+      type: string
+      description: ISO date of the most recent interaction
+      x-table-label: Last touch
+      x-table-column: true
+    next_action:
+      type: string
+      x-table-label: Next action
+      x-table-column: true
+    notes:
+      type: string

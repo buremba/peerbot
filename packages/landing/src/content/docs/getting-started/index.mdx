@@ -63,24 +63,7 @@ Install the Lobu skill into your coding agent so it already understands the proj
 npx skills add lobu-ai/lobu --skill lobu
 ```
 
-The [vercel-labs/skills](https://github.com/vercel-labs/skills) CLI auto-detects [Claude Code](https://claude.ai/claude-code), [Codex](https://openai.com/index/codex/), [OpenCode](https://opencode.ai), Cursor, and OpenClaw, and drops `SKILL.md` in the right directory. Pin one host with `-a <agent>` (e.g. `-a claude-code`) to scope it.
-
-With the skill installed, open your coding agent in the project and start shaping behavior — it already knows how Lobu works. If you'd rather prime it manually, paste this prompt:
-
-```
-I am building a Lobu agent in this repository.
-
-Please:
-1. Read AGENTS.md, lobu.toml, and agents/my-agent/{IDENTITY,SOUL,USER}.md first.
-2. Help me shape the agent behavior by editing those files directly.
-3. Use Lobu skills when they make sense: https://lobu.ai/getting-started/skills/
-4. Suggest any provider, skill, or connection changes needed in lobu.toml.
-5. Keep the project runnable with `npx @lobu/cli@latest run`.
-
-Explain what you change and why.
-```
-
-### What to ask for
+See [Skills](/getting-started/skills/) for which coding agents this supports and how to scope it. With the skill installed, open your coding agent in the project and shape behavior by editing `agents/my-agent/{IDENTITY,SOUL,USER}.md`, `lobu.toml`, and `agents/my-agent/evals/` — then re-run `npx @lobu/cli@latest chat "…"` and `npx @lobu/cli@latest eval` after each change.
 
 | File | What to ask for |
 |------|----------------|
@@ -91,34 +74,16 @@ Explain what you change and why.
 | `agents/my-agent/evals/` | "Write an eval that tests the agent follows the cancellation rule" |
 | `agents/my-agent/skills/` | "Create a custom skill for our internal API" |
 
-After each change, test with:
-
-```bash
-npx @lobu/cli@latest chat "Hello, can you cancel my subscription?"
-npx @lobu/cli@latest eval
-```
-
 ## Configuration
 
-Lobu supports two configuration approaches depending on how you deploy:
+`lobu.toml` plus the files under `agents/<id>/` are the source of truth — agents, providers, enabled skills, MCP servers, network policy, and (optionally) memory. Edit them locally and `lobu run` picks them up immediately.
 
-### CLI
-
-Runtime agent configuration lives in the web app/API. Use the UI for providers, platforms, and skills; use local files for validate/apply workflows:
+To run an agent on **Lobu Cloud**, push the same files up with `lobu apply`:
 
 ```bash
-# Select the target org and inspect remote agents
-npx @lobu/cli@latest org set my-org
-npx @lobu/cli@latest agent list
-
-# Validate/apply local artifacts when you are using a checked-out project
-npx @lobu/cli@latest validate
-npx @lobu/cli@latest apply --org my-org
-
-# Run the embedded app/server locally
-npx @lobu/cli@latest run
+npx @lobu/cli@latest login              # authenticate
+npx @lobu/cli@latest validate           # check lobu.toml + agent files
+npx @lobu/cli@latest apply --org my-org # sync to your Cloud org
 ```
 
-See the [CLI Reference](/reference/cli/) for all available commands.
-
-The web app and CLI use the same org-scoped REST API for runtime management — adding providers, connections, skills, and viewing agent status.
+The Cloud web app and the CLI talk to the same org-scoped REST API, so anything you do in the UI (add providers, connections, skills; view agent status) you can also drive from `lobu.toml` + `lobu apply`. See the [CLI Reference](/reference/cli/) and [`lobu apply`](/reference/lobu-apply/) for the full surface.

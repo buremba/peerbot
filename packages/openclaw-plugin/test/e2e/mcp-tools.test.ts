@@ -8,7 +8,7 @@
  * No LLM needed — pure HTTP JSON-RPC calls.
  *
  * Prerequisites:
- *   - docker compose up (at least: app, redis, postgres, embeddings)
+ *   - docker compose up (at least: app, postgres, embeddings)
  *   - DATABASE_URL in env (or .env)
  */
 

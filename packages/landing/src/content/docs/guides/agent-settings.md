@@ -7,8 +7,14 @@ Agent settings control behavior of each worker session.
 
 ## What You Can Configure
 
+Two surfaces feed an agent's effective config:
+
+- **Runtime config** — the camelCase keys below, stored per agent and edited through the web UI or the settings API.
+- **`lobu.toml` operator config** — file-first declarations (e.g. `[agents.<id>.tools]`, `[agents.<id>.egress]`, guardrails) applied with `lobu apply`.
+
+Runtime config keys:
+
 - **Provider and model** — `model`, `modelSelection` (auto/pinned), `providerModelPreferences`, `installedProviders`
-- **Allowed/disallowed tools** — configured in `[agents.<id>.tools]` in `lobu.toml`
 - **Skills/plugins and MCP server config** — `skillsConfig`, `mcpServers`, `pluginsConfig`
 - **Permission grants (network domains)** — `networkConfig`
 - **Agent prompts** — `identityMd`, `soulMd`, `userMd`
@@ -16,6 +22,8 @@ Agent settings control behavior of each worker session.
 - **Worker environment** — `nixConfig` for Nix packages
 - **Verbose logging** — `verboseLogging` to show tool calls and reasoning
 - **Template inheritance** — `templateAgentId` for settings fallback from a template agent
+
+Allowed/disallowed tools are part of the `lobu.toml` operator surface — `[agents.<id>.tools]`.
 
 ## How Settings Apply
 
@@ -43,7 +51,7 @@ Memory is pluggable. In file-first projects, the gateway first checks `[memory]`
 | `[memory]` enabled | `@lobu/openclaw-plugin` — the OpenClaw memory plugin for Lobu. It translates OpenClaw memory calls into Lobu MCP requests via the gateway's `/mcp/lobu` proxy. Cross-session, shareable across agents. |
 | `MEMORY_URL` set | Used as the base Lobu MCP endpoint before Lobu scopes it to the org from `[memory]` in `lobu.toml`. Useful for local or custom Lobu deployments. |
 
-`lobu init` now scaffolds the file-first Lobu memory layout for memory-enabled projects:
+`lobu init` scaffolds the file-first Lobu memory layout for memory-enabled projects:
 
 - `[memory]` in `lobu.toml` (org, name, description, models, data)
 - `models/`

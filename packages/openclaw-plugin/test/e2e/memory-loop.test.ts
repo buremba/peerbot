@@ -9,7 +9,7 @@
  * injected the memory from the MCP server.
  *
  * Prerequisites:
- *   - docker compose up (app, redis, embeddings, openclaw)
+ *   - docker compose up (app, embeddings, openclaw)
  *   - DATABASE_URL, BETTER_AUTH_SECRET, ZAI_API_KEY in env (or .env)
  *   - zai model provider configured in the openclaw container
  */

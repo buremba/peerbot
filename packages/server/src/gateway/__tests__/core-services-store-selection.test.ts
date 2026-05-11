@@ -136,9 +136,9 @@ describe("CoreServices store selection", () => {
     });
     (coreServices as any).queue = new MockMessageQueue();
 
-    // After Phase 6 the Redis-backed default sub-store is gone; if the host
-    // doesn't provide config/connection/access stores AND no lobu.toml is
-    // present, initializeSessionServices throws.
+    // There is no default sub-store; if the host doesn't provide
+    // config/connection/access stores AND no lobu.toml is present,
+    // initializeSessionServices throws.
     await expect(
       (coreServices as any).initializeSessionServices()
     ).rejects.toThrow(/No agent sub-stores configured/);

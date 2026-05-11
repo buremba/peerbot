@@ -12,40 +12,36 @@ Lobu's Slack adapter supports assistant threads, rich UI, and interactive workfl
 
 ## Setup
 
-### Single-workspace setup
+Lobu supports two Slack installation models:
+
+- **Single-workspace connection** — for self-hosted deployments. You create your own Slack app, install it to one workspace, then configure Lobu with the **Signing Secret** and **Bot Token**.
+- **OAuth / multi-workspace distribution** — for shared deployments. Users install a shared Slack app through an install link, Slack redirects back to Lobu, and Lobu creates or updates one Slack connection per workspace. Incoming events are routed by Slack `team_id`, so each installed workspace is isolated behind its own Lobu connection even when many workspaces share the same app.
+
+### Single-workspace connection
 
 1. Create a Slack app at [api.slack.com/apps](https://api.slack.com/apps) and install it to your workspace.
 2. Copy the **Signing Secret** and **Bot Token** (`xoxb-...`) from the app settings.
 3. Use Agents → Platforms in the web app to add Slack to your agent, or run `lobu init` to scaffold a local project and pick Slack in the wizard.
-4. Start the stack with `lobu run -d` — the bot is now live in your Slack workspace.
-
-## Installation Modes
-
-Lobu supports two Slack installation models:
-
-- **Single-workspace connection** for self-hosted deployments. You create your own Slack app, install it to one workspace, then configure Lobu with the **Signing Secret** and **Bot Token**.
-- **OAuth / multi-workspace distribution** for shared deployments. In this mode, users install a shared Slack app through an install link, Slack redirects back to Lobu, and Lobu creates or updates one Slack connection per Slack workspace.
-
-For OAuth distribution, incoming Slack events are routed by Slack `team_id`, so each installed workspace is isolated behind its own Lobu connection even when many workspaces share the same app.
+4. Start the stack with `lobu run` — the bot is now live in your Slack workspace.
 
 ### Shared OAuth distribution
 
-If you want one Slack app that many workspaces can install, create the app for your public Lobu deployment and wire Slack back to these Lobu endpoints:
+Create the app for your public Lobu deployment and wire Slack back to these Lobu endpoints:
 
 - **Install URL for users:** `https://<your-lobu-base-url>/slack/install`
 - **OAuth redirect URL:** `https://<your-lobu-base-url>/slack/oauth_callback`
 - **Events / interactivity / slash commands URL:** `https://<your-lobu-base-url>/slack/events`
 
-Minimum setup:
+Steps:
 
 1. Create a Slack app for your public Lobu domain.
-2. Configure the app's OAuth redirect URL to `https://<your-lobu-base-url>/slack/oauth_callback`.
+2. Set the app's OAuth redirect URL to `https://<your-lobu-base-url>/slack/oauth_callback`.
 3. Point event subscriptions, interactive requests, and slash commands to `https://<your-lobu-base-url>/slack/events`.
 4. Add the bot scopes your Lobu deployment needs.
 5. Configure Lobu with the Slack app's **Client ID**, **Client Secret**, and **Signing Secret**.
-6. Share `https://<your-lobu-base-url>/slack/install` with users who should install the app to their Slack workspace.
+6. Share `https://<your-lobu-base-url>/slack/install` with users who should install the app.
 
-When a user completes the Slack install flow, Lobu exchanges the OAuth code, stores the workspace installation, and creates or updates the Lobu Slack connection for that workspace automatically.
+When a user completes the install flow, Lobu exchanges the OAuth code, stores the workspace installation, and creates or updates the Lobu Slack connection for that workspace automatically.
 
 ## Configuration
 

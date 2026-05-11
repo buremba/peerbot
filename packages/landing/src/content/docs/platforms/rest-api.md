@@ -28,7 +28,19 @@ curl -X POST http://localhost:8787/api/v1/agents/{agentId}/messages \
   -H "Content-Type: application/json" \
   -d '{
     "platform": "api",
-    "channel": "test",
+    "content": "Hello!"
+  }'
+```
+
+To route the message into a Slack workspace instead, set `platform` to `slack` and include a `slack` routing object:
+
+```bash
+curl -X POST http://localhost:8787/api/v1/agents/{agentId}/messages \
+  -H "Authorization: Bearer $LOBU_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "platform": "slack",
+    "slack": { "channel": "C0123456789", "thread": "1700000000.000100" },
     "content": "Hello!"
   }'
 ```

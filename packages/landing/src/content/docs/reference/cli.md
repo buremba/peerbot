@@ -40,13 +40,22 @@ Interactive prompts guide you through provider, platform, network access policy,
 
 ---
 
-### `run`
+### `run` (aliases: `dev`, `start`)
 
 Run the embedded Lobu stack. `lobu.toml` is not required. With no `DATABASE_URL`, the command starts bundled local PGlite and stores data under `~/.lobu/data` (override with `LOBU_DATA_DIR`). If `DATABASE_URL` is set in the environment or `.env`, Lobu uses that external Postgres instead.
 
 ```bash
 npx @lobu/cli@latest run
+npx @lobu/cli@latest run --port 9000
+npx @lobu/cli@latest dev --verbose       # `dev` and `start` are aliases for `run`
 ```
+
+| Flag | Description |
+|------|-------------|
+| `--port <port>` | Gateway port (overrides `GATEWAY_PORT` in `.env`) |
+| `--quiet` | Suppress the startup banner; raise log level to `warn` |
+| `--verbose` | Lower log level to `debug` |
+| `--log-level <level>` | Forwarded as `LOG_LEVEL` to the bundled server |
 
 The command spawns the bundled Node server and forwards stdio. Ctrl+C cleanly stops the server and worker subprocesses.
 
@@ -112,6 +121,12 @@ npx @lobu/cli@latest agent update my-agent --description "Handles support"
 npx @lobu/cli@latest agent delete my-agent --yes
 ```
 
+`agent scaffold <agentId>` adds a new local agent (`agents/<id>/*` plus an entry in `lobu.toml`) without touching existing agents — the local-files counterpart of `agent create`:
+
+```bash
+npx @lobu/cli@latest agent scaffold support-bot --name "Support Bot" --description "Handles tickets"
+```
+
 Config helpers use the web app's `/config` API:
 
 ```bash
@@ -131,17 +146,23 @@ Send a prompt to an agent and stream the response to the terminal.
 npx @lobu/cli@latest chat "What is the weather?"
 npx @lobu/cli@latest chat "Hello" --agent my-agent --thread conv-123
 npx @lobu/cli@latest chat "Check my PRs" --user telegram:12345
+npx @lobu/cli@latest chat "Where did we leave off?" --continue
 npx @lobu/cli@latest chat "Status update" -c staging
 ```
+
+`-u/--user` impersonates a platform user ID (`telegram:<numeric-id>`, `slack:<member-id>`), which routes the message through that platform instead of replying directly in the terminal.
 
 | Flag | Description |
 |------|-------------|
 | `-a, --agent <id>` | Agent ID (defaults to first agent in local `lobu.toml` when present) |
-| `-u, --user <id>` | Route through a platform (e.g. `telegram:12345`, `slack:C0123`) |
+| `-u, --user <id>` | User ID to impersonate, e.g. `telegram:12345`. With this flag the message routes through the user's platform (Telegram/Slack) |
 | `-t, --thread <id>` | Thread/conversation ID for multi-turn conversations |
 | `-g, --gateway <url>` | Gateway URL (default: `http://localhost:8787` or from `.env`) |
 | `--dry-run` | Process without persisting history |
-| `--new` | Force a new session |
+| `--new` | Force a new session (ignore an existing one) |
+| `-C, --continue` | Resume the last thread for this `(context, agent)` |
+| `--auto-approve` | Auto-approve every tool call — use only in trusted environments |
+| `--json` | Emit raw SSE events as JSON lines instead of rendered text |
 | `-c, --context <name>` | Use a named context for gateway URL and credentials |
 
 ---
@@ -161,11 +182,26 @@ npx @lobu/cli@latest eval --ci --output results.json
 |------|-------------|
 | `-a, --agent <id>` | Agent ID (defaults to first in local `lobu.toml`) |
 | `-g, --gateway <url>` | Gateway URL (default: `http://localhost:8787`) |
-| `-m, --model <model>` | Model to evaluate |
+| `-m, --model <model>` | Model to evaluate (e.g. `claude/sonnet`, `openai/gpt-4.1`) |
 | `--trials <n>` | Override trial count |
 | `--ci` | CI mode: JSON output, non-zero exit on failure |
 | `--output <file>` | Write results to JSON file |
 | `--list` | List available evals without running them |
+| `-c, --context <name>` | Use a named context |
+
+#### `eval new <name>`
+
+Scaffold a new YAML eval into the agent's `evals/` directory.
+
+```bash
+npx @lobu/cli@latest eval new smoke-test --description "Quick smoke test" --trials 3
+```
+
+| Flag | Description |
+|------|-------------|
+| `-a, --agent <id>` | Agent ID (defaults to first in local `lobu.toml`) |
+| `--description <text>` | Eval description |
+| `--trials <n>` | Trial count |
 
 ---
 
@@ -181,14 +217,27 @@ Returns exit code `1` if validation fails.
 
 ---
 
-### `apply`
+### `apply` (alias: `deploy`)
 
-Sync local `lobu.toml` and agent directories to a Lobu org.
+Sync local `lobu.toml` and agent directories to a Lobu Cloud org. Idempotent, prompt-confirmed, one-way (files are the source of truth).
 
 ```bash
-npx @lobu/cli@latest apply --org my-org
-npx @lobu/cli@latest apply --dry-run
+npx @lobu/cli@latest apply                  # plan + prompt + apply
+npx @lobu/cli@latest apply --dry-run         # plan only, no mutations
+npx @lobu/cli@latest apply --yes --org my-org   # CI mode, no prompt
+npx @lobu/cli@latest deploy --only agents    # `deploy` is an alias
 ```
+
+| Flag | Description |
+|------|-------------|
+| `--dry-run` | Show the plan and exit without mutating |
+| `--yes` | Skip the confirmation prompt (CI mode) |
+| `--only <kind>` | Restrict to one resource family: `agents` or `memory` |
+| `--org <slug>` | Org slug override (defaults to the active session) |
+| `--url <url>` | Server URL override |
+| `--force` | Bypass the project-link guard if `context`/`org` don't match `.lobu/project.json` |
+
+See [`lobu apply`](/reference/lobu-apply/) for the full flow — plan output, apply order, stable platform IDs, drift, and required-secret checks.
 
 ---
 
@@ -203,6 +252,58 @@ npx @lobu/cli@latest status --org my-org
 
 ---
 
+### `link` / `unlink`
+
+`link` binds the current directory to a `(context, org)` pair, written to `.lobu/project.json`. Subsequent commands in this directory default to that context and org, and `lobu apply` refuses to run against a different pair unless you pass `--force`. `unlink` removes the file.
+
+```bash
+npx @lobu/cli@latest link --org my-org
+npx @lobu/cli@latest link -c staging --org my-org
+npx @lobu/cli@latest unlink
+```
+
+| Flag | Description |
+|------|-------------|
+| `-c, --context <name>` | Use a named context |
+| `--org <slug>` | Org slug to link (defaults to the active org) |
+
+---
+
+### `doctor`
+
+Run local health checks: dependencies, `DATABASE_URL` reachability, pgvector, ports, and provider keys.
+
+```bash
+npx @lobu/cli@latest doctor
+npx @lobu/cli@latest doctor --memory-only      # only check memory MCP connectivity + auth
+```
+
+| Flag | Description |
+|------|-------------|
+| `--memory-only` | Only check memory MCP connectivity and authentication |
+
+---
+
+### `telemetry`
+
+Show or toggle anonymous error reporting (Sentry). With no subcommand, prints the current status.
+
+```bash
+npx @lobu/cli@latest telemetry            # same as `telemetry status`
+npx @lobu/cli@latest telemetry status
+npx @lobu/cli@latest telemetry on         # writes SENTRY_DSN to .env
+npx @lobu/cli@latest telemetry on --dsn https://...@sentry.example.com/1
+npx @lobu/cli@latest telemetry off        # removes SENTRY_DSN from .env
+```
+
+| Subcommand | Description |
+|------------|-------------|
+| `status` | Show whether telemetry is on or off (default) |
+| `on` | Enable telemetry — accepts `--dsn <dsn>` to override Lobu's default DSN |
+| `off` | Disable telemetry |
+
+---
+
 ### `logout`, `whoami`, `token`
 
 ```bash
@@ -210,6 +311,25 @@ npx @lobu/cli@latest whoami
 npx @lobu/cli@latest token --raw
 npx @lobu/cli@latest logout
 ```
+
+`token` (no subcommand) prints the stored session token. `token create` mints an **org-scoped personal access token** suitable for servers and CI — it survives a `lobu logout` and is not tied to the device-code session:
+
+```bash
+npx @lobu/cli@latest token create --org my-org --name ci-token --scope "mcp:read mcp:write" --expires-in-days 90
+npx @lobu/cli@latest token create --org my-org --raw      # token only, for scripting
+npx @lobu/cli@latest token create --org my-org --json
+```
+
+| Flag | Description |
+|------|-------------|
+| `--org <slug>` | Org slug override |
+| `--name <name>` | Token name (default: `lobu-cli-YYYY-MM-DD`) |
+| `--description <text>` | Token description |
+| `--scope <scope>` | Space-separated scopes (default: `mcp:read mcp:write`) |
+| `--expires-in-days <days>` | Expire the token after N days (positive integer) |
+| `--raw` | Print the token only, no labels |
+| `--json` | Print the full JSON response |
+| `-c, --context <name>` | Use a named context |
 
 ## Typical workflow
 

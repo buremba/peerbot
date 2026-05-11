@@ -1626,6 +1626,46 @@ const plugin = {
     log.info(
       `lobu: initialized (configured=${!!config.mcpUrl}, token=${!!config.token}, tokenCommand=${!!config.tokenCommand}, tools=${!!registerTool})`
     );
+
+    // OpenClaw 2026.5.x only surfaces plugin tools to agents when the host's
+    // tool-policy allowlist explicitly opts them in. With no `tools.*` section
+    // in the OpenClaw config, `registerTool` calls succeed but the agent's
+    // tool list silently excludes every lobu_*, wiki_*, and memory_* tool —
+    // the plugin appears healthy in logs while the agent has no way to call it.
+    // Detect this and shout, with a copy-pasteable fix.
+    if (registerTool && config.mcpUrl) {
+      const cfg = isRecord(api.config) ? (api.config as Record<string, unknown>) : {};
+      const topTools = isRecord(cfg.tools) ? (cfg.tools as Record<string, unknown>) : null;
+      const agentDefaults =
+        isRecord(cfg.agents) && isRecord((cfg.agents as Record<string, unknown>).defaults)
+          ? ((cfg.agents as Record<string, unknown>).defaults as Record<string, unknown>)
+          : null;
+      const agentTools =
+        agentDefaults && isRecord(agentDefaults.tools)
+          ? (agentDefaults.tools as Record<string, unknown>)
+          : null;
+      const hasToolPolicy = (t: Record<string, unknown> | null): boolean =>
+        !!t &&
+        (typeof t.profile === 'string' ||
+          (Array.isArray(t.allow) && (t.allow as unknown[]).length > 0) ||
+          (Array.isArray(t.alsoAllow) && (t.alsoAllow as unknown[]).length > 0));
+      if (!hasToolPolicy(topTools) && !hasToolPolicy(agentTools)) {
+        log.warn(
+          'lobu: no tools.* policy detected in OpenClaw config. Plugin tools ' +
+            '(lobu_*, wiki_*, memory_*) register successfully but may not ' +
+            'reach the agent on OpenClaw 2026.5.x — every plugin on the host ' +
+            'is gated the same way. The autoRecall hook and autoCapture hook ' +
+            'still write to Lobu in the background (they call MCP directly, ' +
+            'not via registered agent tools), so memory continues to flow; ' +
+            'only deliberate agent-driven tool calls during a conversation ' +
+            'are affected. We have tested tools.profile="full", ' +
+            'tools.allow with [group:plugins], [*], and explicit tool names, ' +
+            'and tools.alsoAllow variants — none surface plugin tools on ' +
+            'OpenClaw 2026.5.2. If you find a host config that works, please ' +
+            'file at https://github.com/lobu-ai/lobu/issues.'
+        );
+      }
+    }
   },
 };
 

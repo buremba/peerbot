@@ -152,6 +152,10 @@ curl http://localhost:8787/api/v1/agents/support/channels \
   -H "Authorization: Bearer $LOBU_API_TOKEN"
 ```
 
+## Platform connections
+
+Platform connections (Telegram, Slack, Discord, WhatsApp, Teams bots) are created and managed either from the `/agents` admin UI or via the `/api/v1/connections` CRUD API — each connection has a typed config schema (bot token for Telegram, signing secret + bot token for Slack, etc.). See the OpenAPI spec at `/api/docs` for the connection endpoints.
+
 ## Interactive API reference
 
 All endpoints are documented in the OpenAPI spec at `/api/docs` on your running gateway. Browse it for request/response schemas and try requests directly.

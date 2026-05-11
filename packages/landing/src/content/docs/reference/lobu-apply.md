@@ -16,7 +16,19 @@ lobu apply --yes                 # plan + apply, no prompt (CI)
 lobu apply --only agents         # restrict to agent + platform resources
 lobu apply --only memory         # restrict to entity + relationship types
 lobu apply --org my-org          # override active org
+lobu apply --url https://...     # override the server URL
+lobu apply --force               # bypass the .lobu/project.json link guard
+lobu deploy                      # `deploy` is an alias for `apply`
 ```
+
+| Flag | Description |
+| --- | --- |
+| `--dry-run` | Show the plan and exit without mutating |
+| `--yes` | Skip the confirmation prompt (CI mode) |
+| `--only <kind>` | Restrict to one resource family: `agents` or `memory` |
+| `--org <slug>` | Org slug override (defaults to the active session) |
+| `--url <url>` | Server URL override |
+| `--force` | Bypass the project-link guard when `.lobu/project.json` points at a different `(context, org)` |
 
 Authentication is shared with the rest of the CLI. Run `lobu login` once.
 

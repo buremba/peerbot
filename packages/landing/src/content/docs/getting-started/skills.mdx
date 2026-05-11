@@ -12,7 +12,7 @@ A **skill** is a reusable capability bundle for an agent. In Lobu, skills can ad
 - system packages
 - network requirements
 
-Lobu still discovers local `SKILL.md` files at runtime. Bundled skills are enabled from the agent settings UI; local skills live in your project so you can commit and customize them.
+Lobu discovers local `SKILL.md` files at runtime. Bundled skills are enabled from the agent settings UI; local skills live in your project so you can commit and customize them.
 
 ## Lobu Starter Skill
 
@@ -78,13 +78,10 @@ See [Tool Policy](/guides/tool-policy/) for that split.
 
 ## Skills Vs Memory
 
-Skills and memory are related but different:
-
 - **Skills** teach the agent how to work and what capabilities to request.
-- **Lobu memory** is the long-term memory and integrations surface.
-- **Lobu** can enable memory through `[memory]` in `lobu.toml`.
+- **Memory** is the long-term, shared knowledge surface — enabled per-project via `[memory]` in [`lobu.toml`](/reference/lobu-toml/).
 
-Installing the Lobu starter skill teaches the agent the workflow; runtime wiring still lives in Lobu configuration. See [Memory](/getting-started/memory/) for that setup.
+Installing the Lobu starter skill teaches the workflow; the memory wiring itself lives in `lobu.toml`. See [Memory](/getting-started/memory/).
 
 ## Read Next
 

@@ -57,7 +57,7 @@ function escapeLikePrefix(prefix: string): string {
 
 /**
  * Resolve a name-or-ref input to a plain logical name. Throws on refs that
- * target a non-default scheme, matching RedisSecretStore's behavior.
+ * target a non-default scheme.
  */
 function resolveName(nameOrRef: string): string {
   const parsed = parseSecretRef(nameOrRef);

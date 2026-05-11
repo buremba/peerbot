@@ -247,7 +247,7 @@ describe("HTTP Proxy Startup", () => {
 
 // ─── Domain filtering tests ──────────────────────────────────────────────────
 // Global config is WORKER_ALLOWED_DOMAINS=* (unrestricted), so all domains pass.
-// Domain restriction via per-agent grants requires Redis and is tested separately.
+// Domain restriction via per-agent grants is tested separately.
 
 describe("HTTP Proxy Domain Filtering (unrestricted mode)", () => {
   const deploymentName = "domain-test-worker";

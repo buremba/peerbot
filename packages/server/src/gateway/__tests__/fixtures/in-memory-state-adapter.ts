@@ -1,6 +1,6 @@
 /**
  * Minimal in-memory StateAdapter for Chat SDK tests.
- * Implements the full StateAdapter interface so a real `Chat` can boot without Redis.
+ * Implements the full StateAdapter interface so a real `Chat` can boot without an external state store.
  */
 import type { Lock, StateAdapter } from "chat";
 

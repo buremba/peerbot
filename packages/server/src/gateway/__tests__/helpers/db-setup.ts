@@ -1,11 +1,10 @@
 /**
  * Bun:test PG harness shared across the gateway test suite.
  *
- * Some store tests in this directory previously ran entirely on a
- * MockRedisClient. After Phase 6 the stores read/write Postgres directly,
- * so callers need a real DB. We boot an ephemeral PGlite once per test
- * process the first time `ensurePgliteForGatewayTests()` is called, run
- * migrations, and reuse it for the rest of the suite.
+ * Store tests in this directory read/write Postgres directly, so callers
+ * need a real DB. We boot an ephemeral PGlite once per test process the
+ * first time `ensurePgliteForGatewayTests()` is called, run migrations, and
+ * reuse it for the rest of the suite.
  *
  * Tests that don't need PG (pure helpers, classification logic, etc.) can
  * skip calling this entirely and pay no cost.

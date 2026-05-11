@@ -161,6 +161,18 @@ async function main() {
         server: {
           middlewareMode: true,
           hmr: { server: httpServer },
+          // The worker scratch dir (packages/server/workspaces/<agent>/.openclaw/*)
+          // is written constantly while an agent runs; without this Vite triggers
+          // a full browser page reload on every session.jsonl write, which kills
+          // the in-flight chat SSE connection.
+          watch: {
+            ignored: [
+              '**/workspaces/**',
+              '**/.openclaw/**',
+              '**/dist/**',
+              '**/node_modules/**',
+            ],
+          },
         },
         appType: 'custom',
       });

@@ -1438,6 +1438,25 @@ const STOPWORDS = [
   'approved',
   'made',
 ];
+const STOPWORDS_SET = new Set(STOPWORDS);
+
+/**
+ * Build a `tsquery` *string* (OR of clean lexemes, e.g. `"project | codename"`)
+ * from a free-text query — the JS mirror of NORMALIZED_QUERY_SQL/TSQUERY_SQL.
+ * Returning a plain string lets callers bind it as a parameter to
+ * `to_tsquery('english', $N)` so Postgres can use the fulltext GIN index
+ * (the in-SQL CASE+regexp form is opaque to the planner). Returns `null` when
+ * nothing usable survives normalization.
+ */
+function buildTsqueryString(queryText: string): string | null {
+  const tokens = queryText
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]+/g, ' ')
+    .split(/\s+/)
+    .filter((t) => t.length > 0 && !STOPWORDS_SET.has(t));
+  return tokens.length > 0 ? tokens.join(' | ') : null;
+}
+
 const NORMALIZED_QUERY_SQL = `trim(regexp_replace(regexp_replace(lower($1), '\\m(${STOPWORDS.join('|')})\\M', ' ', 'g'), '[^a-z0-9\\s]+', ' ', 'g'))`;
 const TSQUERY_SQL = `CASE WHEN NULLIF(${NORMALIZED_QUERY_SQL}, '') IS NOT NULL THEN to_tsquery('english', regexp_replace(${NORMALIZED_QUERY_SQL}, '\\s+', ' | ', 'g')) ELSE NULL END`;
 
@@ -1827,13 +1846,22 @@ async function searchContentCandidatesFast(
   const vectorWeight = Number.isFinite(rawVectorWeight) ? Math.max(0, Math.min(1, rawVectorWeight)) : 0.6;
   const textWeight = 1 - vectorWeight;
 
-  // Param layout: $1 query text (used by TSQUERY_SQL), $2 organization_id,
-  // then [$N vector literal, $N minSim] when an embedding is in play.
-  // canUseFastCandidatePath guarantees no other row filters / offset, so the
-  // candidate scans stay index-friendly and the final select only re-applies
-  // the org guard (defense in depth — IDs are already org-scoped).
-  const params: unknown[] = [trimmedQuery, orgId];
-  const orgIdx = 2;
+  // The tsquery is computed + sanitized in JS to `^[a-z0-9 |]+$` and inlined as
+  // a literal (not bound) so Postgres can estimate selectivity and pick the
+  // bitmap-index plan; `to_tsquery('english', $N)` with a parameter yields a
+  // generic plan that falls back to an org-btree scan re-building tsvectors per
+  // row over the whole org. The sanitization makes literal inlining injection-safe.
+  let tsqueryStr = trimmedQuery.length > 0 ? buildTsqueryString(trimmedQuery) : null;
+  if (tsqueryStr && !/^[a-z0-9 |]+$/.test(tsqueryStr)) {
+    // buildTsqueryString should never produce this; bail to vector-only rather
+    // than risk inlining anything unexpected.
+    tsqueryStr = null;
+  }
+
+  // Param layout: $1 organization_id, [$N vector literal, $N minSim] when an
+  // embedding is in play. canUseFastCandidatePath guarantees no other filters.
+  const params: unknown[] = [orgId];
+  const orgIdx = 1;
   let vecIdx: number | null = null;
   let minSimIdx: number | null = null;
   if (hasEmbedding) {
@@ -1845,27 +1873,24 @@ async function searchContentCandidatesFast(
 
   const vecLiteralRef = vecIdx ? `$${vecIdx}::vector` : null;
   const minSimRef = minSimIdx ? `$${minSimIdx}::float8` : null;
-  // Match the exact expression `idx_events_fulltext` is built on
-  // (`to_tsvector('english', COALESCE(payload_text, ''))`) so the GIN index is
-  // usable. The richer title-weighted document expr is reserved for ranking the
-  // small candidate set in the final select.
+  const tsqRef = tsqueryStr ? `to_tsquery('english', '${tsqueryStr}')` : null;
   const indexedTsvE = `to_tsvector('english', COALESCE(e.payload_text, ''))`;
   const richDocF = buildSearchDocumentExpr('f');
 
-  // Text candidates: GIN fulltext via the tsquery (which already ORs the query
-  // tokens), org-scoped via the btree index. No ORDER BY here — the planner can
-  // stop at the first ${CANDIDATE_TEXT_LIMIT} matches; the final select re-ranks.
-  const textCte =
-    trimmedQuery.length > 0
-      ? `text_cands AS (
+  // Text candidates: GIN fulltext (`tsv @@ to_tsquery(...)` matches the index
+  // expr; the tsquery already ORs the query tokens). ORDER BY ts_rank LIMIT k
+  // pushes the planner to the bitmap-index path (org btree ∩ fulltext GIN) +
+  // sort rather than an org-btree early-stop that re-builds tsvectors per row.
+  const textCte = tsqRef
+    ? `text_cands AS (
         SELECT e.id, NULL::float8 AS sim, 1 AS from_text
         FROM events e
         WHERE e.organization_id = $${orgIdx}::text
-          AND ${TSQUERY_SQL} IS NOT NULL
-          AND ${indexedTsvE} @@ ${TSQUERY_SQL}
+          AND ${indexedTsvE} @@ ${tsqRef}
+        ORDER BY ts_rank_cd(${indexedTsvE}, ${tsqRef}) DESC
         LIMIT ${CANDIDATE_TEXT_LIMIT}
       )`
-      : null;
+    : null;
   // Vector candidates: ivfflat ANN on event_embeddings (`ORDER BY <=> LIMIT k` —
   // the only shape the index can serve), org-scoped via the join + iterative scan.
   const vecCte = vecLiteralRef
@@ -1895,7 +1920,7 @@ async function searchContentCandidatesFast(
     .filter(Boolean)
     .join('\n        UNION ALL\n        ');
 
-  const textRankF = `COALESCE(ts_rank_cd(${richDocF}, ${TSQUERY_SQL}), 0)::float8`;
+  const textRankF = tsqRef ? `COALESCE(ts_rank_cd(${richDocF}, ${tsqRef}), 0)::float8` : '0::float8';
   const combinedScoreSql = vecLiteralRef
     ? `(COALESCE(r.sim, 0) * ${vectorWeight} + ${textRankF} * ${textWeight})`
     : textRankF;

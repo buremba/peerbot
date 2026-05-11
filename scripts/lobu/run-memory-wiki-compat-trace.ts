@@ -97,11 +97,11 @@ class McpJsonClient {
     private readonly token?: string
   ) {}
 
-  private async fetchJson(body: Record<string, unknown>): Promise<Response> {
+  private async fetchJson(body: Record<string, unknown>, signal?: AbortSignal): Promise<Response> {
     const headers: Record<string, string> = { 'Content-Type': 'application/json', Accept: 'application/json' };
     if (this.token) headers.Authorization = `Bearer ${this.token}`;
     if (this.sessionId) headers['mcp-session-id'] = this.sessionId;
-    const res = await fetch(this.url, { method: 'POST', headers, body: JSON.stringify(body) });
+    const res = await fetch(this.url, { method: 'POST', headers, body: JSON.stringify(body), signal });
     if (!res.ok) throw new Error(`MCP HTTP ${res.status} ${res.statusText}`);
     return res;
   }
@@ -120,9 +120,9 @@ class McpJsonClient {
     await this.fetchJson({ jsonrpc: '2.0', method: 'notifications/initialized' });
   }
 
-  async callTool(name: string, args: Record<string, unknown>): Promise<McpToolResponse> {
+  async callTool(name: string, args: Record<string, unknown>, options?: { signal?: AbortSignal }): Promise<McpToolResponse> {
     await this.init();
-    const res = await this.fetchJson({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } });
+    const res = await this.fetchJson({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }, options?.signal);
     const json = (await res.json()) as { error?: { message: string }; result?: McpToolResponse };
     if (json.error) throw new Error(json.error.message);
     return json.result ?? { content: [], isError: false };
@@ -178,9 +178,9 @@ async function runCompat(client: McpJsonClient, tools: Map<string, RegisteredToo
   let upstreamCalls = 0;
   // Patch the client.callTool to count upstream MCP calls for the duration of this probe.
   const original = client.callTool.bind(client);
-  client.callTool = async (name, args) => {
+  client.callTool = async (name, args, options) => {
     upstreamCalls += 1;
-    return original(name, args);
+    return original(name, args, options);
   };
   try {
     const res = await tool.execute('trace', probe.compatArgs);
@@ -255,7 +255,7 @@ function makeResolvedConfig(mcpUrl: string, token: string | null): ResolvedPlugi
     autoRecall: false,
     autoCapture: false,
     recallLimit: 10,
-    memoryWikiCompat: { enabled: true },
+    memoryWikiCompat: { enabled: true, fanoutTimeoutMs: 30_000 },
   };
 }
 
@@ -276,10 +276,11 @@ async function main(): Promise<void> {
   const callMcpTool = async (
     _config: ResolvedPluginConfig,
     name: string,
-    args: Record<string, unknown>
+    args: Record<string, unknown>,
+    options?: { signal?: AbortSignal }
   ): Promise<McpToolResponse | null> => {
     try {
-      return await client.callTool(name, args);
+      return await client.callTool(name, args, options);
     } catch (error) {
       return { content: [{ type: 'text', text: `ERROR: ${error instanceof Error ? error.message : String(error)}` }], isError: true };
     }

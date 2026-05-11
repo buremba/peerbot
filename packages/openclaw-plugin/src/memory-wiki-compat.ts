@@ -7,15 +7,77 @@ type PluginLogger = {
   debug?(message: string, ...args: unknown[]): void;
 };
 
+type McpToolCallOptions = { rawJson?: boolean; signal?: AbortSignal };
+
 type McpToolCaller = (
   config: ResolvedPluginConfig,
   toolName: string,
   args: Record<string, unknown>,
-  options?: { rawJson?: boolean }
+  options?: McpToolCallOptions
 ) => Promise<McpToolResponse | null>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
+}
+
+type FanoutOutcome<T> =
+  | { ok: true; value: T; durationMs: number }
+  | { ok: false; reason: 'timeout' | 'error'; error: string; durationMs: number };
+
+/**
+ * Race a fanout part against a wall-clock timeout. Returns a tagged result so
+ * callers can return partial responses (with a `degraded`/`timeouts` marker)
+ * instead of letting one slow upstream block the whole wiki tool response.
+ *
+ * If the underlying MCP caller supports AbortSignal, the timeout also aborts
+ * the in-flight request so CLI harnesses and long-lived plugin hosts don't
+ * accumulate orphaned HTTP calls after returning a degraded partial result.
+ */
+async function raceFanout<T>(
+  label: string,
+  start: (signal: AbortSignal) => Promise<T>,
+  timeoutMs: number
+): Promise<FanoutOutcome<T>> {
+  // Defensive: callers occasionally pass an unresolved or non-finite timeout
+  // (e.g. a third-party config that didn't go through `resolveMemoryWikiCompatConfig`).
+  // Fall back to a safe default rather than letting `setTimeout(undefined)` fire immediately.
+  const safeTimeoutMs =
+    typeof timeoutMs === 'number' && Number.isFinite(timeoutMs) && timeoutMs >= 1
+      ? Math.floor(timeoutMs)
+      : 30_000;
+  const started = Date.now();
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const timeoutPromise = new Promise<FanoutOutcome<T>>((resolve) => {
+    timer = setTimeout(() => {
+      controller.abort(`${label} timed out after ${safeTimeoutMs}ms`);
+      resolve({
+        ok: false,
+        reason: 'timeout',
+        error: `${label} timed out after ${safeTimeoutMs}ms`,
+        durationMs: Date.now() - started,
+      });
+    }, safeTimeoutMs);
+  });
+  const settled = start(controller.signal).then<FanoutOutcome<T>, FanoutOutcome<T>>(
+    (value) => ({ ok: true, value, durationMs: Date.now() - started }),
+    (error) => ({
+      ok: false,
+      reason: controller.signal.aborted ? 'timeout' : 'error',
+      error:
+        error instanceof Error
+          ? error.message
+          : typeof controller.signal.reason === 'string'
+            ? controller.signal.reason
+            : String(error),
+      durationMs: Date.now() - started,
+    })
+  );
+  try {
+    return await Promise.race([settled, timeoutPromise]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 function asString(value: unknown): string | null {
@@ -43,9 +105,10 @@ async function callMcpToolJson<T = unknown>(
   callMcpTool: McpToolCaller,
   config: ResolvedPluginConfig,
   toolName: string,
-  args: Record<string, unknown>
+  args: Record<string, unknown>,
+  options?: Pick<McpToolCallOptions, 'signal'>
 ): Promise<T | null> {
-  const result = await callMcpTool(config, toolName, args, { rawJson: true });
+  const result = await callMcpTool(config, toolName, args, { rawJson: true, signal: options?.signal });
   if (!result) return null;
   if (result.isError) {
     throw new Error(`MCP tool ${toolName} returned error: ${extractTextFromContent(result.content).slice(0, 240)}`);
@@ -68,10 +131,11 @@ async function runSdkScript<T = unknown>(
   callMcpTool: McpToolCaller,
   config: ResolvedPluginConfig,
   mode: 'read' | 'write',
-  script: string
+  script: string,
+  options?: Pick<McpToolCallOptions, 'signal'>
 ): Promise<T | null> {
   const toolName = mode === 'read' ? 'query_sdk' : 'run_sdk';
-  const raw = await callMcpTool(config, toolName, { script }, { rawJson: true });
+  const raw = await callMcpTool(config, toolName, { script }, { rawJson: true, signal: options?.signal });
   if (!raw) return null;
   if (raw.isError) {
     throw new Error(`MCP tool ${toolName} returned error: ${extractTextFromContent(raw.content).slice(0, 240)}`);
@@ -249,7 +313,8 @@ async function searchMemoryCorpus(
   callMcpTool: McpToolCaller,
   config: ResolvedPluginConfig,
   query: string,
-  maxResults: number
+  maxResults: number,
+  options?: Pick<McpToolCallOptions, 'signal'>
 ): Promise<WikiSearchResult[]> {
   const raw = await callMcpToolJson(callMcpTool, config, 'search_memory', {
     query,
@@ -257,7 +322,7 @@ async function searchMemoryCorpus(
     content_limit: maxResults,
     include_connections: false,
     limit: maxResults,
-  });
+  }, options);
   return memoryResultsFromSearch(raw, maxResults);
 }
 
@@ -340,7 +405,8 @@ async function searchWikiCorpus(
   callMcpTool: McpToolCaller,
   config: ResolvedPluginConfig,
   query: string,
-  maxResults: number
+  maxResults: number,
+  options?: Pick<McpToolCallOptions, 'signal'>
 ): Promise<WikiSearchResult[]> {
   const includeContent = query.length >= 3;
   const script = `
@@ -364,7 +430,7 @@ export default async (_ctx, client) => {
     watchers: unknown;
     claims: unknown;
     syntheses: unknown;
-  }>(callMcpTool, config, 'read', script);
+  }>(callMcpTool, config, 'read', script, options);
   if (!sdkResult) return [];
   return [
     ...contentResultsFromReadKnowledge(sdkResult.claims, 'claim', maxResults),
@@ -375,17 +441,27 @@ export default async (_ctx, client) => {
     .slice(0, maxResults);
 }
 
-function formatWikiSearchResults(query: string, corpus: WikiCorpus, results: WikiSearchResult[]): string {
+function formatWikiSearchResults(
+  query: string,
+  corpus: WikiCorpus,
+  results: WikiSearchResult[],
+  meta: { degraded: boolean; timeouts: string[] } = { degraded: false, timeouts: [] }
+): string {
+  const degradedSuffix = meta.degraded
+    ? `\nWarning: partial results — fanout ${meta.timeouts.length ? `timed out on [${meta.timeouts.join(', ')}]` : 'reported errors'}.`
+    : '';
   if (results.length === 0) {
-    return `No Lobu wiki compatibility results for ${JSON.stringify(query)} in corpus=${corpus}.`;
+    return `No Lobu wiki compatibility results for ${JSON.stringify(query)} in corpus=${corpus}.${degradedSuffix}`;
   }
-  return [
-    `Lobu memory-wiki compatibility search for ${JSON.stringify(query)} (corpus=${corpus}).`,
-    ...results.map((result, index) => {
-      const source = result.source_url ? ` — ${result.source_url}` : '';
-      return `${index + 1}. ${result.title} (${result.corpus}/${result.kind}, path=${result.path}, score=${result.score.toFixed(2)})${source}\n   ${result.snippet}`;
-    }),
-  ].join('\n');
+  return (
+    [
+      `Lobu memory-wiki compatibility search for ${JSON.stringify(query)} (corpus=${corpus}).`,
+      ...results.map((result, index) => {
+        const source = result.source_url ? ` — ${result.source_url}` : '';
+        return `${index + 1}. ${result.title} (${result.corpus}/${result.kind}, path=${result.path}, score=${result.score.toFixed(2)})${source}\n   ${result.snippet}`;
+      }),
+    ].join('\n') + degradedSuffix
+  );
 }
 
 async function runWikiSearch(
@@ -396,18 +472,42 @@ async function runWikiSearch(
   const query = asString(args.query) ?? '';
   const corpus = normalizeCorpus(args.corpus);
   const maxResults = readPositiveNumber(args.maxResults, 8, 25);
-  const [memory, wiki] = await Promise.all([
-    corpus === 'memory' || corpus === 'all'
-      ? searchMemoryCorpus(callMcpTool, config, query, maxResults)
-      : Promise.resolve<WikiSearchResult[]>([]),
-    corpus === 'wiki' || corpus === 'all'
-      ? searchWikiCorpus(callMcpTool, config, query, maxResults)
-      : Promise.resolve<WikiSearchResult[]>([]),
+  const timeoutMs = config.memoryWikiCompat.fanoutTimeoutMs;
+  const wantMemory = corpus === 'memory' || corpus === 'all';
+  const wantWiki = corpus === 'wiki' || corpus === 'all';
+  const [memoryOutcome, wikiOutcome] = await Promise.all([
+    wantMemory
+      ? raceFanout(
+          'wiki_search:memory',
+          (signal) => searchMemoryCorpus(callMcpTool, config, query, maxResults, { signal }),
+          timeoutMs
+        )
+      : Promise.resolve<FanoutOutcome<WikiSearchResult[]>>({ ok: true, value: [], durationMs: 0 }),
+    wantWiki
+      ? raceFanout(
+          'wiki_search:wiki',
+          (signal) => searchWikiCorpus(callMcpTool, config, query, maxResults, { signal }),
+          timeoutMs
+        )
+      : Promise.resolve<FanoutOutcome<WikiSearchResult[]>>({ ok: true, value: [], durationMs: 0 }),
   ]);
+  const memory = memoryOutcome.ok ? memoryOutcome.value : [];
+  const wiki = wikiOutcome.ok ? wikiOutcome.value : [];
   const results = [...wiki, ...memory].sort((a, b) => b.score - a.score).slice(0, maxResults);
+  const timeouts: string[] = [];
+  const fanoutErrors: Array<{ part: string; reason: string; error: string }> = [];
+  if (wantMemory && !memoryOutcome.ok) {
+    if (memoryOutcome.reason === 'timeout') timeouts.push('memory');
+    fanoutErrors.push({ part: 'memory', reason: memoryOutcome.reason, error: memoryOutcome.error });
+  }
+  if (wantWiki && !wikiOutcome.ok) {
+    if (wikiOutcome.reason === 'timeout') timeouts.push('wiki');
+    fanoutErrors.push({ part: 'wiki', reason: wikiOutcome.reason, error: wikiOutcome.error });
+  }
+  const degraded = fanoutErrors.length > 0;
   return {
-    text: formatWikiSearchResults(query, corpus, results),
-    details: { query, corpus, results },
+    text: formatWikiSearchResults(query, corpus, results, { degraded, timeouts }),
+    details: { query, corpus, results, degraded, timeouts, fanout_errors: fanoutErrors },
   };
 }
 
@@ -450,7 +550,27 @@ async function runWikiGet(
     script = `export default async (_ctx, client) => client.knowledge.read({ query: ${JSON.stringify(lookup)}, limit: 1 });`;
   }
 
-  const raw = await runSdkScript<unknown>(callMcpTool, config, 'read', script);
+  const outcome = await raceFanout(
+    'wiki_get',
+    (signal) => runSdkScript<unknown>(callMcpTool, config, 'read', script, { signal }),
+    config.memoryWikiCompat.fanoutTimeoutMs
+  );
+  if (!outcome.ok) {
+    const reason = outcome.reason === 'timeout' ? 'timeout' : 'error';
+    return {
+      text: `Lobu memory-wiki compatibility get (${sourceTool}, lookup=${lookup}) — ${reason}: ${outcome.error}`,
+      details: {
+        lookup,
+        parsed,
+        sourceTool,
+        result: null,
+        degraded: true,
+        timeout: outcome.reason === 'timeout',
+        error: outcome.error,
+      },
+    };
+  }
+  const raw = outcome.value;
   const text = stringifyResult(raw ?? { message: `No result for ${lookup}` });
   return {
     text: `Lobu memory-wiki compatibility get (${sourceTool}, lookup=${lookup})\n\n${text}`,
@@ -606,33 +726,61 @@ export function registerMemoryWikiCompatTools(
   const r = await client.watchers.list({ include_details: false }).catch((e) => ({ error: String(e) }));
   return r;
 };`;
-      const [watchers, memoryProbe] = await Promise.all([
-        runSdkScript<unknown>(callMcpTool, config, 'read', watcherCountScript).catch((error) => ({ error: String(error) })),
-        callMcpToolJson(callMcpTool, config, 'search_memory', {
-          query: 'memory wiki compatibility status',
-          include_content: false,
-          include_connections: false,
-          limit: 1,
-        }).catch((error) => ({ error: String(error) })),
+      const timeoutMs = config.memoryWikiCompat.fanoutTimeoutMs;
+      const [watchersOutcome, memoryOutcome] = await Promise.all([
+        raceFanout(
+          'wiki_status:watchers',
+          (signal) => runSdkScript<unknown>(callMcpTool, config, 'read', watcherCountScript, { signal }),
+          timeoutMs
+        ),
+        raceFanout(
+          'wiki_status:memory',
+          (signal) => callMcpToolJson(callMcpTool, config, 'search_memory', {
+            query: 'memory wiki compatibility status',
+            include_content: false,
+            include_connections: false,
+            limit: 1,
+          }, { signal }),
+          timeoutMs
+        ),
       ]);
+      const watchers = watchersOutcome.ok ? watchersOutcome.value : null;
       const watcherCount =
         isRecord(watchers) && Array.isArray((watchers as { watchers?: unknown }).watchers)
           ? ((watchers as { watchers: unknown[] }).watchers.length)
           : null;
+      const timeouts: string[] = [];
+      const fanoutErrors: Array<{ part: string; reason: string; error: string }> = [];
+      if (!watchersOutcome.ok) {
+        if (watchersOutcome.reason === 'timeout') timeouts.push('watchers');
+        fanoutErrors.push({ part: 'watchers', reason: watchersOutcome.reason, error: watchersOutcome.error });
+      }
+      if (!memoryOutcome.ok) {
+        if (memoryOutcome.reason === 'timeout') timeouts.push('memory');
+        fanoutErrors.push({ part: 'memory', reason: memoryOutcome.reason, error: memoryOutcome.error });
+      }
       const status = {
         mode: 'lobu-memory-wiki-compat',
         source_of_truth: 'lobu-memory-mcp',
         corpus: ['memory', 'wiki', 'all'],
         tools: ['wiki_status', 'wiki_search', 'wiki_get', 'wiki_apply', 'wiki_lint', 'memory_search', 'memory_get'],
         watcher_count: watcherCount,
-        memory_available: !isRecord(memoryProbe) || !('error' in memoryProbe),
+        memory_available: memoryOutcome.ok,
+        degraded: !watchersOutcome.ok || !memoryOutcome.ok,
+        timeouts,
+        fanout_errors: fanoutErrors,
+        fanout_timeout_ms: timeoutMs,
         notes: [
           'corpus is memory|wiki|all within the authenticated Lobu org; it is not an org selector.',
           'wiki corpus is a virtual projection over Lobu claims, syntheses, watchers, reports, and sources.',
           'no separate Markdown vault is written by this spike.',
         ],
       };
-      recordCall('wiki_status', {}, { watcherCount, memoryAvailable: status.memory_available });
+      recordCall(
+        'wiki_status',
+        {},
+        { watcherCount, memoryAvailable: status.memory_available, degraded: status.degraded }
+      );
       return { text: stringifyResult(status), details: status };
     }
   );

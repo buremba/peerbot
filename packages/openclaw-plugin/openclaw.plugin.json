@@ -58,6 +58,13 @@
               "enabled": {
                 "type": "boolean",
                 "default": false
+              },
+              "fanoutTimeoutMs": {
+                "type": "integer",
+                "minimum": 1000,
+                "maximum": 90000,
+                "default": 30000,
+                "description": "Per-fanout timeout (ms) for SDK-backed wiki calls. Slow paths are dropped and the tool returns partial results with a degraded marker. Defaults to 30000."
               }
             }
           }

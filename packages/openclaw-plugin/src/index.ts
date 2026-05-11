@@ -70,7 +70,8 @@ const MCP_PROTOCOL_VERSION = '2025-03-26';
 async function mcpFetch(
   url: string,
   body: unknown,
-  extraHeaders?: Record<string, string>
+  extraHeaders?: Record<string, string>,
+  signal?: AbortSignal
 ): Promise<{ data: unknown; response: Response }> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -85,6 +86,7 @@ async function mcpFetch(
     method: 'POST',
     headers,
     body: JSON.stringify(body),
+    signal,
   });
 
   const newSessionId = response.headers.get('mcp-session-id');
@@ -217,14 +219,33 @@ function asPositiveInt(value: unknown, fallback: number): number {
   return n > 0 ? n : fallback;
 }
 
-function resolveMemoryWikiCompatConfig(value: unknown): { enabled: boolean } {
+const DEFAULT_WIKI_FANOUT_TIMEOUT_MS = 30_000;
+const MIN_WIKI_FANOUT_TIMEOUT_MS = 1_000;
+const MAX_WIKI_FANOUT_TIMEOUT_MS = 90_000;
+
+function clampFanoutTimeoutMs(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return DEFAULT_WIKI_FANOUT_TIMEOUT_MS;
+  }
+  if (value < MIN_WIKI_FANOUT_TIMEOUT_MS) return MIN_WIKI_FANOUT_TIMEOUT_MS;
+  if (value > MAX_WIKI_FANOUT_TIMEOUT_MS) return MAX_WIKI_FANOUT_TIMEOUT_MS;
+  return Math.floor(value);
+}
+
+function resolveMemoryWikiCompatConfig(value: unknown): {
+  enabled: boolean;
+  fanoutTimeoutMs: number;
+} {
   if (typeof value === 'boolean') {
-    return { enabled: value };
+    return { enabled: value, fanoutTimeoutMs: DEFAULT_WIKI_FANOUT_TIMEOUT_MS };
   }
   if (isRecord(value)) {
-    return { enabled: asBoolean(value.enabled, false) };
+    return {
+      enabled: asBoolean(value.enabled, false),
+      fanoutTimeoutMs: clampFanoutTimeoutMs(value.fanoutTimeoutMs),
+    };
   }
-  return { enabled: false };
+  return { enabled: false, fanoutTimeoutMs: DEFAULT_WIKI_FANOUT_TIMEOUT_MS };
 }
 
 function getLogger(api: Record<string, unknown>): PluginLogger {
@@ -710,7 +731,7 @@ async function callMcpTool(
   config: ResolvedPluginConfig,
   toolName: string,
   args: Record<string, unknown>,
-  options?: { rawJson?: boolean }
+  options?: { rawJson?: boolean; signal?: AbortSignal }
 ): Promise<McpToolResponse | null> {
   if (!config.mcpUrl) return null;
   const token = await resolveAuthToken(config);
@@ -733,7 +754,7 @@ async function callMcpTool(
 
   let result: { data: unknown; response: Response };
   try {
-    result = await mcpFetch(config.mcpUrl, rpcBody, authHeaders);
+    result = await mcpFetch(config.mcpUrl, rpcBody, authHeaders, options?.signal);
   } catch (err) {
     throw new Error(`MCP fetch failed: ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -746,7 +767,7 @@ async function callMcpTool(
     if (refreshed && sessionToken) {
       authHeaders.Authorization = `Bearer ${sessionToken}`;
       const retryBody = { ...rpcBody, id: `${rpcId}-retry` };
-      const retry = await mcpFetch(config.mcpUrl, retryBody, authHeaders);
+      const retry = await mcpFetch(config.mcpUrl, retryBody, authHeaders, options?.signal);
       data = retry.data;
       response = retry.response;
     }
@@ -768,7 +789,7 @@ async function callMcpTool(
       const newSession = await reinitializeMcpSession(config);
       if (newSession) {
         const retryBody = { ...rpcBody, id: `${rpcId}-reinit` };
-        const retry = await mcpFetch(config.mcpUrl!, retryBody, authHeaders);
+        const retry = await mcpFetch(config.mcpUrl!, retryBody, authHeaders, options?.signal);
         data = retry.data;
         response = retry.response;
       }

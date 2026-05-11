@@ -10,9 +10,16 @@ type RegisteredTool = {
   execute: (id: string, args: Record<string, unknown>) => Promise<McpToolResponse & { details: Record<string, unknown> }>;
 };
 
-type FakeCall = { tool: string; args: Record<string, unknown> };
+type FakeCall = { tool: string; args: Record<string, unknown>; options?: { signal?: AbortSignal } };
 
 function makeConfig(overrides: Partial<ResolvedPluginConfig> = {}): ResolvedPluginConfig {
+  const baseWikiCompat: ResolvedPluginConfig['memoryWikiCompat'] = {
+    enabled: true,
+    fanoutTimeoutMs: 30_000,
+  };
+  const overriddenWikiCompat = overrides.memoryWikiCompat
+    ? { ...baseWikiCompat, ...overrides.memoryWikiCompat }
+    : baseWikiCompat;
   return {
     mcpUrl: 'http://localhost:8787/mcp',
     webUrl: null,
@@ -23,8 +30,8 @@ function makeConfig(overrides: Partial<ResolvedPluginConfig> = {}): ResolvedPlug
     autoRecall: false,
     autoCapture: false,
     recallLimit: 10,
-    memoryWikiCompat: { enabled: true },
     ...overrides,
+    memoryWikiCompat: overriddenWikiCompat,
   };
 }
 
@@ -51,6 +58,7 @@ type Harness = {
   calls: FakeCall[];
   responses: Map<string, McpToolResponse | null>;
   setResponse(tool: string, response: McpToolResponse | null): void;
+  setDelay(tool: string, ms: number): void;
   invoke(name: string, args?: Record<string, unknown>): ReturnType<RegisteredTool['execute']>;
 };
 
@@ -58,15 +66,31 @@ function makeHarness(overrideConfig: Partial<ResolvedPluginConfig> = {}): Harnes
   const tools = new Map<string, RegisteredTool>();
   const calls: FakeCall[] = [];
   const responses = new Map<string, McpToolResponse | null>();
+  const delays = new Map<string, number>();
   const registerTool = (def: Record<string, unknown>): void => {
     tools.set(def.name as string, def as unknown as RegisteredTool);
   };
   const callMcpTool = async (
     _config: ResolvedPluginConfig,
     toolName: string,
-    args: Record<string, unknown>
+    args: Record<string, unknown>,
+    options?: { signal?: AbortSignal }
   ): Promise<McpToolResponse | null> => {
-    calls.push({ tool: toolName, args });
+    calls.push({ tool: toolName, args, options });
+    const delay = delays.get(toolName);
+    if (delay && delay > 0) {
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(resolve, delay);
+        options?.signal?.addEventListener(
+          'abort',
+          () => {
+            clearTimeout(timer);
+            reject(new Error('aborted'));
+          },
+          { once: true }
+        );
+      });
+    }
     return responses.has(toolName) ? (responses.get(toolName) ?? null) : null;
   };
   registerMemoryWikiCompatTools(makeConfig(overrideConfig), registerTool, noopLogger(), callMcpTool);
@@ -76,6 +100,9 @@ function makeHarness(overrideConfig: Partial<ResolvedPluginConfig> = {}): Harnes
     responses,
     setResponse(tool, response) {
       responses.set(tool, response);
+    },
+    setDelay(tool, ms) {
+      delays.set(tool, ms);
     },
     invoke(name, args = {}) {
       const tool = tools.get(name);
@@ -169,14 +196,24 @@ describe('wiki_search corpus routing', () => {
   });
 });
 
-describe('upstream failures propagate', () => {
-  it('wiki_search corpus=wiki throws when query_sdk returns isError', async () => {
+describe('upstream failures degrade gracefully', () => {
+  it('wiki_search corpus=wiki returns degraded empty result when query_sdk returns isError', async () => {
     const h = makeHarness();
     h.setResponse('query_sdk', { content: [{ type: 'text', text: 'Tool not found: query_sdk' }], isError: true });
-    await expect(h.invoke('wiki_search', { query: 'anything', corpus: 'wiki' })).rejects.toThrow(/query_sdk/);
+    const result = await h.invoke('wiki_search', { query: 'anything', corpus: 'wiki' });
+    const details = result.details as {
+      results: unknown[];
+      degraded: boolean;
+      fanout_errors: Array<{ part: string; reason: string; error: string }>;
+    };
+    expect(details.degraded).toBe(true);
+    expect(details.results).toEqual([]);
+    expect(details.fanout_errors[0]?.part).toBe('wiki');
+    expect(details.fanout_errors[0]?.reason).toBe('error');
+    expect(details.fanout_errors[0]?.error).toMatch(/query_sdk/);
   });
 
-  it('runSdkScript surfaces sandbox success=false envelope as a thrown error', async () => {
+  it('wiki_get surfaces sandbox success=false envelope as a degraded error result (not a thrown exception)', async () => {
     const h = makeHarness();
     h.setResponse(
       'query_sdk',
@@ -185,7 +222,12 @@ describe('upstream failures propagate', () => {
         error: { name: 'RuntimeUnavailable', message: 'isolated-vm is not installed' },
       })
     );
-    await expect(h.invoke('wiki_get', { lookup: 'watcher:42' })).rejects.toThrow(/RuntimeUnavailable/);
+    const result = await h.invoke('wiki_get', { lookup: 'watcher:42' });
+    const details = result.details as Record<string, unknown>;
+    expect(details.degraded).toBe(true);
+    expect(details.timeout).toBe(false);
+    expect(details.result).toBeNull();
+    expect(String(details.error)).toMatch(/RuntimeUnavailable/);
   });
 
   it('wiki_get returns null cleanly when the SDK script return_value is explicitly null', async () => {
@@ -397,5 +439,77 @@ describe('wiki_lint session-aware', () => {
     const result = await h.invoke('wiki_lint');
     const report = result.details as { warnings: Array<{ reason: string }> };
     expect(report.warnings.every((w) => !/no evidence/.test(w.reason))).toBe(true);
+  });
+});
+
+describe('fanout timeout (slow upstreams do not block whole tool call)', () => {
+  it('wiki_status returns partial status when watchers fanout times out', async () => {
+    const h = makeHarness({ memoryWikiCompat: { enabled: true, fanoutTimeoutMs: 50 } });
+    h.setResponse('query_sdk', jsonContent({ watchers: [{ watcher_id: 1 }] }));
+    h.setDelay('query_sdk', 200);
+    h.setResponse('search_memory', jsonContent({ content: [] }));
+
+    const started = Date.now();
+    const result = await h.invoke('wiki_status');
+    const elapsed = Date.now() - started;
+
+    const status = result.details as Record<string, unknown>;
+    expect(elapsed).toBeLessThan(180);
+    expect(status.degraded).toBe(true);
+    expect(status.timeouts).toEqual(['watchers']);
+    expect(status.watcher_count).toBeNull();
+    expect(status.memory_available).toBe(true);
+    expect(Array.isArray(status.fanout_errors)).toBe(true);
+    expect(h.calls.find((call) => call.tool === 'query_sdk')?.options?.signal?.aborted).toBe(true);
+  });
+
+  it('wiki_search corpus=all merges partial results when one side times out', async () => {
+    const h = makeHarness({ memoryWikiCompat: { enabled: true, fanoutTimeoutMs: 50 } });
+    h.setResponse('search_memory', jsonContent({ content: [{ id: 1, title: 'memory hit', text_content: 'hi' }] }));
+    h.setResponse('query_sdk', jsonContent({ watchers: { watchers: [] }, claims: null, syntheses: null }));
+    h.setDelay('query_sdk', 200);
+
+    const started = Date.now();
+    const result = await h.invoke('wiki_search', { query: 'hi', corpus: 'all' });
+    const elapsed = Date.now() - started;
+
+    const details = result.details as {
+      results: Array<{ corpus: string }>;
+      degraded: boolean;
+      timeouts: string[];
+    };
+    expect(elapsed).toBeLessThan(180);
+    expect(details.degraded).toBe(true);
+    expect(details.timeouts).toEqual(['wiki']);
+    expect(details.results.some((r) => r.corpus === 'memory')).toBe(true);
+    expect(result.content[0]!.text).toMatch(/partial results/);
+  });
+
+  it('wiki_get reports a clean timeout error when the SDK script hangs', async () => {
+    const h = makeHarness({ memoryWikiCompat: { enabled: true, fanoutTimeoutMs: 50 } });
+    h.setResponse('query_sdk', jsonContent({ id: 7 }));
+    h.setDelay('query_sdk', 200);
+
+    const started = Date.now();
+    const result = await h.invoke('wiki_get', { lookup: 'watcher:7' });
+    const elapsed = Date.now() - started;
+
+    const details = result.details as Record<string, unknown>;
+    expect(elapsed).toBeLessThan(180);
+    expect(details.degraded).toBe(true);
+    expect(details.timeout).toBe(true);
+    expect(details.result).toBeNull();
+    expect(result.content[0]!.text).toMatch(/timeout/);
+  });
+
+  it('wiki_search corpus=all does not flag degraded when both sides return in time', async () => {
+    const h = makeHarness({ memoryWikiCompat: { enabled: true, fanoutTimeoutMs: 200 } });
+    h.setResponse('search_memory', jsonContent({ content: [{ id: 1, title: 'm', text_content: 'x' }] }));
+    h.setResponse('query_sdk', jsonContent({ watchers: { watchers: [] }, claims: null, syntheses: null }));
+
+    const result = await h.invoke('wiki_search', { query: 'hi', corpus: 'all' });
+    const details = result.details as { degraded: boolean; timeouts: string[] };
+    expect(details.degraded).toBe(false);
+    expect(details.timeouts).toEqual([]);
   });
 });

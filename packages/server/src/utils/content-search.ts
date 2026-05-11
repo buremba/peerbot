@@ -1783,10 +1783,8 @@ async function searchContentBySingleQuery(
   };
 }
 
-// Candidate fan-out sizes for the index-driven org-wide path. Each side feeds
-// into a small re-ranked merge, so a few hundred is plenty for any sane
-// content_limit while keeping the candidate scans cheap.
-const CANDIDATE_TEXT_LIMIT = 200;
+// ANN fan-out for the index-driven org-wide path — a few hundred is plenty for
+// any sane content_limit while keeping the ivfflat scan cheap.
 const CANDIDATE_VECTOR_LIMIT = 200;
 // Backstop so a pathological candidate scan can't hang the request. Callers
 // (search_memory) already tolerate an empty content list, so failing fast and
@@ -1794,17 +1792,21 @@ const CANDIDATE_VECTOR_LIMIT = 200;
 const CANDIDATE_QUERY_TIMEOUT_MS = 6000;
 
 /**
- * Index-driven org-wide relevance search.
+ * Index-driven org-wide relevance search (vector-primary).
  *
  * The legacy single-query path ORs a text predicate with `embedding <=> $vec >=
- * threshold` in one WHERE; Postgres can't use the fulltext GIN, the trgm GIN,
- * or the ivfflat ANN index for that, so it sequential-scans the org's events
- * (tens of seconds — 27–210s on a ~720k-event org). Here we run the text side
- * against the GIN indexes and the vector side against the ivfflat ANN index
- * (`ORDER BY embedding <=> $vec LIMIT k`, which the index *can* serve, with
- * pgvector 0.8 iterative scan handling the org filter), then merge + re-rank a
- * few hundred candidates. Only used for the org-wide, non-chronological,
- * no-classifications search path; everything else stays on
+ * threshold` in one WHERE; Postgres can't use the fulltext GIN or the ivfflat
+ * ANN index for that, so it sequential-scans the org's events — tens of seconds
+ * (27–210s on a ~720k-event org), and `searchContentByText` runs it up to 8×.
+ *
+ * Here the candidates come from the ivfflat ANN index alone
+ * (`ORDER BY embedding <=> $vec LIMIT k` — the only shape the index serves,
+ * with pgvector 0.8 iterative scan handling the org filter), then ~200 are
+ * re-ranked with cosine + a title-weighted `ts_rank` (computed only over that
+ * small set). No fulltext-candidate scan — `events` has no stored `tsvector`
+ * column, so any fulltext candidate query is the same per-row tsvector rebuild
+ * the legacy path suffers; semantic recall covers the recall use case. Only
+ * used when an embedding is available; everything else stays on
  * `searchContentBySingleQuery`.
  */
 async function searchContentCandidatesFast(
@@ -1835,121 +1837,57 @@ async function searchContentCandidatesFast(
     } catch (err) {
       logger.warn(
         { err: err instanceof Error ? err.message : String(err) },
-        '[content-search] embedding generation failed; text-only candidates'
+        '[content-search] embedding generation failed; fast path returns no content'
       );
     }
   }
-  const hasEmbedding = queryEmbedding !== null;
-  const rawMinSim = Number(options.min_similarity ?? 0.3);
-  const minSim = Number.isFinite(rawMinSim) ? Math.max(0, Math.min(1, rawMinSim)) : 0.3;
-  const rawVectorWeight = Number(options.vector_weight ?? 0.6);
-  const vectorWeight = Number.isFinite(rawVectorWeight) ? Math.max(0, Math.min(1, rawVectorWeight)) : 0.6;
-  const textWeight = 1 - vectorWeight;
-
-  // The tsquery is computed + sanitized in JS to `^[a-z0-9 |]+$` and inlined as
-  // a literal (not bound) so Postgres can estimate selectivity and pick the
-  // bitmap-index plan; `to_tsquery('english', $N)` with a parameter yields a
-  // generic plan that falls back to an org-btree scan re-building tsvectors per
-  // row over the whole org. The sanitization makes literal inlining injection-safe.
-  let tsqueryStr = trimmedQuery.length > 0 ? buildTsqueryString(trimmedQuery) : null;
-  if (tsqueryStr && !/^[a-z0-9 |]+$/.test(tsqueryStr)) {
-    // buildTsqueryString should never produce this; bail to vector-only rather
-    // than risk inlining anything unexpected.
-    tsqueryStr = null;
-  }
-
-  // Param layout: $1 organization_id, [$N vector literal, $N minSim] when an
-  // embedding is in play. canUseFastCandidatePath guarantees no other filters.
-  const params: unknown[] = [orgId];
-  const orgIdx = 1;
-  let vecIdx: number | null = null;
-  let minSimIdx: number | null = null;
-  if (hasEmbedding) {
-    vecIdx = params.length + 1;
-    params.push(toVectorLiteral(queryEmbedding!));
-    minSimIdx = params.length + 1;
-    params.push(minSim);
-  }
-
-  const vecLiteralRef = vecIdx ? `$${vecIdx}::vector` : null;
-  const minSimRef = minSimIdx ? `$${minSimIdx}::float8` : null;
-  const tsqRef = tsqueryStr ? `to_tsquery('english', '${tsqueryStr}')` : null;
-  const indexedTsvE = `to_tsvector('english', COALESCE(e.payload_text, ''))`;
-  const richDocF = buildSearchDocumentExpr('f');
-
-  // Text candidates: GIN fulltext (`tsv @@ to_tsquery(...)` matches the index
-  // expr; the tsquery already ORs the query tokens). ORDER BY ts_rank LIMIT k
-  // pushes the planner to the bitmap-index path (org btree ∩ fulltext GIN) +
-  // sort rather than an org-btree early-stop that re-builds tsvectors per row.
-  const textCte = tsqRef
-    ? `text_cands AS (
-        SELECT e.id, NULL::float8 AS sim, 1 AS from_text
-        FROM events e
-        WHERE e.organization_id = $${orgIdx}::text
-          AND ${indexedTsvE} @@ ${tsqRef}
-        ORDER BY ts_rank_cd(${indexedTsvE}, ${tsqRef}) DESC
-        LIMIT ${CANDIDATE_TEXT_LIMIT}
-      )`
-    : null;
-  // Vector candidates: ivfflat ANN on event_embeddings (`ORDER BY <=> LIMIT k` —
-  // the only shape the index can serve), org-scoped via the join + iterative scan.
-  const vecCte = vecLiteralRef
-    ? `vec_cands AS (
-        SELECT emb.event_id AS id,
-          (1 - (emb.embedding <=> ${vecLiteralRef}))::float8 AS sim,
-          0 AS from_text
-        FROM event_embeddings emb
-        JOIN events e ON e.id = emb.event_id
-        WHERE e.organization_id = $${orgIdx}::text
-        ORDER BY emb.embedding <=> ${vecLiteralRef}
-        LIMIT ${CANDIDATE_VECTOR_LIMIT}
-      )`
-    : null;
-  const cteList = [textCte, vecCte].filter(Boolean) as string[];
-  if (cteList.length === 0) {
+  if (queryEmbedding === null) {
+    // No embedding → nothing the fast path can do (callers gate on an embedding
+    // source; this is the transient-generation-failure case). search_memory
+    // already tolerates an empty content list.
     return {
       content: [],
       total: 0,
       page: buildPageInfo({ limit, offset, total: 0, returnedCount: 0, useDateFeed: false, cursor: null }),
     };
   }
-  const unionSelects = [
-    textCte ? 'SELECT id, sim, from_text FROM text_cands' : null,
-    vecCte ? 'SELECT id, sim, from_text FROM vec_cands' : null,
-  ]
-    .filter(Boolean)
-    .join('\n        UNION ALL\n        ');
+  const rawMinSim = Number(options.min_similarity ?? 0.3);
+  const minSim = Number.isFinite(rawMinSim) ? Math.max(0, Math.min(1, rawMinSim)) : 0.3;
+  const rawVectorWeight = Number(options.vector_weight ?? 0.6);
+  const vectorWeight = Number.isFinite(rawVectorWeight) ? Math.max(0, Math.min(1, rawVectorWeight)) : 0.6;
+  const textWeight = 1 - vectorWeight;
 
-  const textRankF = tsqRef ? `COALESCE(ts_rank_cd(${richDocF}, ${tsqRef}), 0)::float8` : '0::float8';
-  const combinedScoreSql = vecLiteralRef
-    ? `(COALESCE(r.sim, 0) * ${vectorWeight} + ${textRankF} * ${textWeight})`
-    : textRankF;
-  // A text candidate is always kept (it matched the tsquery). A vector-only
-  // candidate is kept only if it clears the similarity floor.
-  const keepSql =
-    vecLiteralRef && minSimRef
-      ? `(is_text OR (sim IS NOT NULL AND sim >= ${minSimRef}))`
-      : 'is_text';
+  // tsquery for the title-weighted re-rank over the ~200 candidate rows.
+  // Computed + sanitized in JS to `^[a-z0-9 |]+$` and inlined as a literal so
+  // it's injection-safe and cheap (no per-row work in the candidate scan).
+  let tsqueryStr = trimmedQuery.length > 0 ? buildTsqueryString(trimmedQuery) : null;
+  if (tsqueryStr && !/^[a-z0-9 |]+$/.test(tsqueryStr)) tsqueryStr = null;
+  const tsqRef = tsqueryStr ? `to_tsquery('english', '${tsqueryStr}')` : null;
+  const richDocF = buildSearchDocumentExpr('f');
+  const textRankF = tsqRef ? `COALESCE(ts_rank_cd(${richDocF}, ${tsqRef}), 0)::float8` : null;
+  const combinedScoreSql = textRankF
+    ? `(v.sim * ${vectorWeight} + ${textRankF} * ${textWeight})`
+    : 'v.sim';
+
+  // Param layout: $1 organization_id, $2 vector literal, $3 minSim.
+  const params: unknown[] = [orgId, toVectorLiteral(queryEmbedding), minSim];
   const querySql = `
-    WITH ${cteList.join(',\n    ')},
-    merged AS (
-      SELECT id, MAX(sim) AS sim, bool_or(from_text > 0) AS is_text
-      FROM (
-        ${unionSelects}
-      ) u
-      GROUP BY id
-    ),
-    ranked AS (
-      SELECT id, sim FROM merged WHERE ${keepSql}
+    WITH vec_cands AS (
+      SELECT emb.event_id AS id, (1 - (emb.embedding <=> $2::vector))::float8 AS sim
+      FROM event_embeddings emb
+      JOIN events e ON e.id = emb.event_id
+      WHERE e.organization_id = $1::text
+      ORDER BY emb.embedding <=> $2::vector
+      LIMIT ${CANDIDATE_VECTOR_LIMIT}
     )
     SELECT ${BASE_COLUMNS_SQL},
       NULL as classifications,
       f.created_at,
-      r.sim as similarity,
+      v.sim as similarity,
       ${combinedScoreSql} as combined_score
-    FROM ranked r
-    JOIN current_event_records f ON f.id = r.id
-    WHERE f.organization_id = $${orgIdx}::text
+    FROM vec_cands v
+    JOIN current_event_records f ON f.id = v.id
+    WHERE f.organization_id = $1::text AND v.sim >= $3::float8
     ORDER BY combined_score DESC, (f.id % 997) ASC, f.occurred_at DESC, f.id DESC
     LIMIT ${validateNumericId(limit, 'limit')}`;
 
@@ -2037,7 +1975,11 @@ export async function searchContentByText(
 
   // Org-wide relevance search → index-driven candidate path (no 8× variant
   // loop; the tsquery already ORs query tokens).
-  if (canUseFastCandidatePath(queryText, options)) {
+  // Fast vector-primary path: only when an embedding is available (a precomputed
+  // query_embedding or an embeddings service to generate one) — without one
+  // there's no fast candidate source.
+  const embeddingAvailable = !!options.query_embedding?.length || !!env?.EMBEDDINGS_SERVICE_URL;
+  if (embeddingAvailable && canUseFastCandidatePath(queryText, options)) {
     return await searchContentCandidatesFast(sql, queryText, options, env);
   }
 

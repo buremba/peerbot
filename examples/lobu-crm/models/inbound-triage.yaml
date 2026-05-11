@@ -1,0 +1,58 @@
+version: 1
+type: watcher
+slug: inbound-triage
+name: Inbound triage
+# Every 2 hours during the day — catch new signals fast without spamming.
+schedule: "0 8-22/2 * * *"
+prompt: |
+  Look for new top-of-funnel signals since the last run, across the connectors
+  in this org:
+    - GitHub: new stargazers on lobu-ai/lobu; new issues / issue comments /
+      PR comments — especially anything with deployment, self-host, multi-tenant,
+      "how do I", or evaluation language.
+    - X: new @-mentions of Lobu, replies to Burak's Lobu threads, quote-tweets.
+    - Hacker News / Product Hunt: new comments or posts mentioning Lobu or OpenClaw.
+
+  For each signal that looks like a real person (not a bot, not a casual star):
+    1. search_memory for an existing `lead` (match github handle / x handle / email).
+    2. If none, create a `lead` entity at the lowest stage the evidence supports
+       (a bare star → "signal"; a deployment-flavored issue comment or a
+       "how do I deploy this for my team" mention → "trial" or "conversation"),
+       with source set to where it came from, and entity_ids linking to the
+       source event. Then save a `lead:created` event.
+    3. If a lead exists, enrich it (add the handle, bump the stage if the new
+       signal warrants it, update last_touch) and save a `lead:interaction` or
+       `lead:stage_changed` event as appropriate.
+
+  Then post to Slack: the new/updated leads, ranked by closeness-to-a-paying-pilot,
+  each with a one-line recommended next action (e.g. "reply on the issue and offer
+  a 20-min call"). If nothing notable, post nothing — don't manufacture noise.
+extraction_schema:
+  type: object
+  required:
+    - new_leads
+    - enriched_leads
+    - recommended_actions
+  properties:
+    new_leads:
+      type: array
+      items:
+        type: object
+        properties:
+          name: { type: string }
+          handle: { type: string }
+          source: { type: string }
+          stage: { type: string }
+          why: { type: string }
+    enriched_leads:
+      type: array
+      items:
+        type: object
+        properties:
+          name: { type: string }
+          change: { type: string }
+    recommended_actions:
+      type: array
+      items: { type: string }
+    notable:
+      type: boolean

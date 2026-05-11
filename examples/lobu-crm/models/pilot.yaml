@@ -1,0 +1,43 @@
+version: 1
+type: entity
+slug: pilot
+name: Pilot
+description: A paid pilot — a company running Lobu for their team under a time-boxed agreement
+icon: rocket
+color: "#F59E0B"
+metadata_schema:
+  type: object
+  required:
+    - company
+    - status
+  properties:
+    company:
+      type: string
+      x-table-label: Company
+      x-table-column: true
+    status:
+      type: string
+      enum: [active, won, lost, paused]
+      x-table-label: Status
+      x-table-column: true
+    seats:
+      type: integer
+      x-table-label: Seats
+      x-table-column: true
+    mrr:
+      type: string
+      description: Monthly recurring revenue for the pilot, e.g. "$750"
+      x-table-label: MRR
+      x-table-column: true
+    start_date:
+      type: string
+      x-table-label: Start
+      x-table-column: true
+    success_metric:
+      type: string
+      description: The one metric agreed up front that defines pilot success
+      x-table-label: Success metric
+      x-table-column: true
+    lead_id:
+      type: string
+      description: The lead entity this pilot converted from

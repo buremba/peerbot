@@ -1,0 +1,5 @@
+version: 1
+type: relationship
+slug: converted-to
+name: Converted To
+description: Links a lead to the pilot it became, so the path from first signal to paying pilot stays explicit.

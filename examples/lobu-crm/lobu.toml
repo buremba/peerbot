@@ -1,0 +1,38 @@
+# lobu.toml — Lobu CRM / funnel agent
+# Docs: https://lobu.ai/docs/getting-started
+#
+# Org `lobu-crm` is a dedicated workspace, separate from `buremba` (the personal
+# second brain). Connectors are configured in the org (dashboard / API), scoped
+# narrow so the agent's context stays funnel-only:
+#   - github       → lobu-ai/lobu  (stars, issues, PRs, comments)
+#   - x            → @lobu mentions + replies to your Lobu threads
+#   - hackernews   → search "lobu" / "openclaw"
+#   - producthunt  → the launch / "lobu"
+#   - website (optional) → lobu.ai + competitor changelogs (onyx, dust, glean)
+
+[agents.marketing]
+name = "marketing"
+description = "Maintains Lobu's funnel CRM — leads, pilots, inbound triage, weekly digest"
+dir = "./agents/marketing"
+
+[[agents.marketing.providers]]
+id = "anthropic"
+model = "claude/sonnet-4-5"
+key = "$ANTHROPIC_API_KEY"
+
+[agents.marketing.network]
+allowed = [
+  "github.com", ".github.com", "api.github.com", ".githubusercontent.com",
+  "x.com", "api.x.com", "twitter.com",
+  "news.ycombinator.com", "hn.algolia.com",
+  "api.producthunt.com",
+  "lobu.ai",
+]
+
+[memory]
+enabled = true
+org = "lobu-crm"
+name = "Lobu CRM"
+description = "Funnel CRM for Lobu — leads, pilots, conversations, launch signals"
+models = "./models"
+data = "./data"

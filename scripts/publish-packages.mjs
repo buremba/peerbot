@@ -24,10 +24,16 @@ const PACKAGES = [
   { dir: "packages/agent-worker", transform: rewriteWorkspaceRefs },
   { dir: "packages/embeddings", transform: rewriteWorkspaceRefs },
   { dir: "packages/cli", transform: rewriteWorkspaceRefs },
-  { dir: "packages/openclaw-plugin", transform: rewriteWorkspaceRefs },
+  {
+    dir: "packages/openclaw-plugin",
+    transform: rewriteWorkspaceRefs,
+    clawhub: { displayName: "Lobu", family: "code-plugin" },
+  },
   { dir: "packages/connectors", transform: rewriteWorkspaceRefs },
   { dir: "packages/connector-worker", transform: rewriteWorkspaceRefs },
 ];
+
+const CLAWHUB_SOURCE_REPO = "lobu-ai/lobu";
 
 // Published package names that don't use the @lobu/ scope. The unscoped
 // `lobu` package was retired when the CLI merged into @lobu/cli; the
@@ -135,6 +141,82 @@ function isVersionPublished(name, version) {
   return result.status === 0 && result.stdout.trim() === version;
 }
 
+function isClawhubVersionPublished(slug, version) {
+  const result = spawnSync(
+    "npx",
+    [
+      "--yes",
+      "clawhub@latest",
+      "package",
+      "inspect",
+      slug,
+      "--version",
+      version,
+      "--json",
+    ],
+    { stdio: ["ignore", "pipe", "pipe"], encoding: "utf8" }
+  );
+  return result.status === 0;
+}
+
+function gitCommitSha() {
+  const result = spawnSync("git", ["rev-parse", "HEAD"], {
+    stdio: ["ignore", "pipe", "pipe"],
+    encoding: "utf8",
+  });
+  if (result.status !== 0) {
+    throw new Error("git rev-parse HEAD failed");
+  }
+  return result.stdout.trim();
+}
+
+// ClawHub publish via `clawhub package publish`. Auth in CI uses GitHub
+// Actions OIDC automatically when `id-token: write` is granted AND the package
+// is registered as a trusted publisher in ClawHub. First-ever publish must be
+// done locally (`clawhub login` then `clawhub package publish`) to claim the
+// slug; after that, register this workflow as the trusted publisher and CI
+// takes over.
+async function publishToClawhub({ dir, clawhub }) {
+  const absDir = path.join(REPO_ROOT, dir);
+  const pkg = JSON.parse(
+    await readFile(path.join(absDir, "package.json"), "utf8")
+  );
+  const { displayName, family } = clawhub;
+  const version = pkg.version;
+  // ClawHub enforces slug === npm package.json name, then strips the scope
+  // server-side. So `@lobu/openclaw-plugin` lands at slug `openclaw-plugin`.
+  const slug = pkg.name.replace(/^@[^/]+\//, "");
+
+  if (isClawhubVersionPublished(slug, version)) {
+    console.log(`  → ${slug}@${version} already on ClawHub, skipping`);
+    return;
+  }
+
+  const commit = gitCommitSha();
+  console.log(`  → publishing ${slug}@${version} to ClawHub`);
+  run("npx", [
+    "--yes",
+    "clawhub@latest",
+    "package",
+    "publish",
+    absDir,
+    "--family",
+    family,
+    "--display-name",
+    displayName,
+    "--version",
+    version,
+    "--tags",
+    "latest",
+    "--source-repo",
+    CLAWHUB_SOURCE_REPO,
+    "--source-commit",
+    commit,
+    "--source-path",
+    dir,
+  ]);
+}
+
 function publishArgs(otp) {
   const args = ["publish", "--access", "public"];
   if (otp) args.push(`--otp=${otp}`);
@@ -196,26 +278,34 @@ async function main() {
   const { bump, otp, skipBuild, skipBump } = parseArgs(process.argv.slice(2));
 
   if (skipBump) {
-    console.log("\n[1/3] Skipping version bump (--skip-bump)");
+    console.log("\n[1/4] Skipping version bump (--skip-bump)");
   } else {
-    console.log(`\n[1/3] Bumping version (${bump})`);
+    console.log(`\n[1/4] Bumping version (${bump})`);
     run("node", ["scripts/bump-version.mjs", bump]);
   }
 
   if (skipBuild) {
-    console.log("\n[2/3] Skipping build (--skip-build)");
+    console.log("\n[2/4] Skipping build (--skip-build)");
   } else {
-    console.log("\n[2/3] Building packages");
+    console.log("\n[2/4] Building packages");
     run("bun", ["run", "build:packages"]);
     run("bun", ["run", "build:lobu"]);
   }
 
-  console.log("\n[3/3] Publishing to npm");
+  console.log("\n[3/4] Publishing to npm");
   if (otp) {
     console.log("  (using --otp from command line or $NPM_OTP)");
   }
   for (const pkg of PACKAGES) {
     await publishPackage(pkg, otp);
+  }
+
+  const clawhubTargets = PACKAGES.filter((pkg) => pkg.clawhub);
+  if (clawhubTargets.length > 0) {
+    console.log("\n[4/4] Publishing to ClawHub");
+    for (const pkg of clawhubTargets) {
+      await publishToClawhub(pkg);
+    }
   }
 
   console.log("\nDone.");

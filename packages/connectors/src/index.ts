@@ -14,6 +14,7 @@ export * from './linkedin.ts';
 export * from './microsoft_outlook.ts';
 export * from './producthunt.ts';
 export * from './reddit.ts';
+export * from './revolut.ts';
 export * from './rss.ts';
 export * from './spotify.ts';
 export * from './trustpilot.ts';

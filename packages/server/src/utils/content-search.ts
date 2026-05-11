@@ -488,6 +488,11 @@ interface ContentSearchOptions {
   // regeneration step inside searchContentBySingleQuery — useful when the caller
   // already computed an embedding (e.g. search_memory receiving query_embedding).
   query_embedding?: number[];
+
+  // Internal recall-only performance hint. When true, org-wide score searches may
+  // use a bounded hybrid candidate set instead of the exact full match set. Do
+  // not use for user-visible get_content pagination/totals.
+  approximate_candidate_search?: boolean;
 }
 
 /**
@@ -1683,65 +1688,60 @@ async function searchContentBySingleQuery(
   const offsetParamIdx = limitParamIdx + 1;
   const validatedLimit = validateNumericId(limit, 'limit');
 
-  // ── Index-driven candidate path (org-wide relevance) ──────────────────────
-  // For org-wide queries that aren't the chronological date feed, instead of
-  // letting `filtered_ids` seq-scan the org's events behind a non-indexable
-  // WHERE (ILIKE OR per-row to_tsvector OR `embedding <=> $vec >= thr`), pull a
-  // few hundred candidate ids from the indexes that already serve those shapes —
-  // the ivfflat ANN, the fulltext GIN (`idx_events_fulltext`), and the trigram
-  // GIN (`idx_events_raw_content_trgm`) — each org-scoped via the same
-  // `buildOrgScopeWhere` triple-OR (entity/connection-bridged events stay
-  // visible), then run the unchanged filter/score/thread/classification
-  // machinery over just that set. Entity-scoped queries (the entity link
-  // already pre-trims the scan) and date-feed-with-query (needs the full match
-  // set for the cursor + count) stay on the legacy `WHERE ${searchWhereSQL}`.
+  // ── Recall-only index-driven candidate path ──────────────────────────────
+  // Exact org-wide search keeps using `searchWhereSQL` so title-only matches,
+  // filtered result sets, totals, and offsets retain their historical semantics.
+  // The bounded candidate path is opt-in for recall/search_memory snippets: the
+  // caller ignores exact totals/pagination and only needs a small set of highly
+  // relevant rows under the OpenClaw recall timeout.
   const useCandidatePath =
+    options.approximate_candidate_search === true &&
     entityId == null &&
     options.organization_id != null &&
     !useDateFeed &&
-    (hasEmbedding || trimmedQuery.length >= 3);
+    effectiveOffset === 0 &&
+    hasEmbedding;
   const hasTextCandidates = useCandidatePath && trimmedQuery.length >= 3;
   let searchCandidatesCteSql = '';
   if (useCandidatePath) {
     // $tsq is appended last in queryParams; offsetParamIdx is the current tail
     // (useDateFeed is false here, so there is no cursor block before it).
     const tsqueryParamIdx = offsetParamIdx + 1;
-    // buildOrgScopeWhere was given baseParamIndex 11 and, for an org-wide query
-    // (entity_id null), emits exactly one param there — the organization id.
-    const candOrgScope = `(ce.organization_id = $11::text
-            OR EXISTS (SELECT 1 FROM entities cent WHERE cent.id = ANY(ce.entity_ids) AND cent.organization_id = $11::text)
-            OR cc.organization_id = $11::text)`;
+    const candidateFilterJoins = `LEFT JOIN connections c ON c.id = f.connection_id
+          LEFT JOIN watcher_window_events iwf
+            ON iwf.event_id = f.id
+            AND ($6::int IS NOT NULL)
+            AND iwf.window_id = $6::int`;
     const branches: string[] = [];
-    if (hasEmbedding) {
-      // ivfflat ANN — the only shape that index serves; pgvector 0.8 iterative
-      // scan applies the org filter + min_similarity floor as it walks the
-      // index, so the LIMIT 200 returns the closest 200 *above* the threshold
-      // rather than the global top 200 (which could all be below it).
-      branches.push(`SELECT emb.event_id AS id
+    // ivfflat ANN — the only shape that index serves. Apply the same downstream
+    // filters before the candidate LIMIT so a filtered recall does not discard
+    // all relevant rows after picking 200 unfiltered org-wide ids.
+    branches.push(`SELECT emb.event_id AS id
           FROM event_embeddings emb
-          JOIN events ce ON ce.id = emb.event_id
-          LEFT JOIN connections cc ON cc.id = ce.connection_id
-          WHERE ${candOrgScope}
+          JOIN current_event_records f ON f.id = emb.event_id
+          ${candidateFilterJoins}
+          WHERE ${standardFiltersSQL}
             AND (1 - (emb.embedding <=> ${vecParam})) >= ${minSimilarityParam}
           ORDER BY emb.embedding <=> ${vecParam}
           LIMIT ${CANDIDATE_VECTOR_LIMIT}`);
-    }
     if (hasTextCandidates) {
       // fulltext GIN — the `@@` is index-served; no `ts_rank` here (that would
       // rebuild the tsvector per matched row over the whole org). The rank is
       // computed downstream over just the merged candidate set.
       branches.push(`SELECT ce.id AS id
           FROM events ce
-          LEFT JOIN connections cc ON cc.id = ce.connection_id
+          JOIN current_event_records f ON f.id = ce.id
+          ${candidateFilterJoins}
           WHERE to_tsvector('english', COALESCE(ce.payload_text, '')) @@ to_tsquery('english', $${tsqueryParamIdx})
-            AND ${candOrgScope}
+            AND ${standardFiltersSQL}
           LIMIT ${CANDIDATE_VECTOR_LIMIT}`);
-      // trigram GIN — preserves the ILIKE substring match (exact strings, ids).
+      // trigram GIN — preserves the payload substring match (exact strings, ids).
       branches.push(`SELECT ce.id AS id
           FROM events ce
-          LEFT JOIN connections cc ON cc.id = ce.connection_id
+          JOIN current_event_records f ON f.id = ce.id
+          ${candidateFilterJoins}
           WHERE ce.payload_text ILIKE '%' || $1 || '%'
-            AND ${candOrgScope}
+            AND ${standardFiltersSQL}
           LIMIT ${CANDIDATE_VECTOR_LIMIT}`);
     }
     // Each branch has its own ORDER BY/LIMIT and must therefore be
@@ -1752,6 +1752,18 @@ async function searchContentBySingleQuery(
       ),
       `;
   }
+
+  const nonDateFilteredIdsCteSql = `filtered_ids AS (
+        SELECT f.id, f.score, f.occurred_at, f.title, f.payload_text, f.embedding
+        FROM current_event_records f
+        ${useCandidatePath ? 'JOIN search_candidates sc ON sc.id = f.id' : ''}
+        LEFT JOIN connections c ON c.id = f.connection_id
+        LEFT JOIN watcher_window_events iwf
+          ON iwf.event_id = f.id
+          AND ($6::int IS NOT NULL)
+          AND iwf.window_id = $6::int
+        WHERE ${useCandidatePath ? standardFiltersSQL : searchWhereSQL}
+      )`;
 
   const querySQL = useDateFeed
     ? `
@@ -1795,16 +1807,9 @@ async function searchContentBySingleQuery(
       ${ctes}
       ${searchFinalSelect}`
     : `
-      WITH RECURSIVE ${useCandidatePath ? searchCandidatesCteSql : ''}filtered_ids AS (
-        SELECT f.id, f.score, f.occurred_at, f.title, f.payload_text, f.embedding
-        FROM current_event_records f
-        ${useCandidatePath ? 'JOIN search_candidates sc ON sc.id = f.id' : ''}
-        LEFT JOIN connections c ON c.id = f.connection_id
-        LEFT JOIN watcher_window_events iwf
-          ON iwf.event_id = f.id
-          AND ($6::int IS NOT NULL)
-          AND iwf.window_id = $6::int
-        WHERE ${useCandidatePath ? standardFiltersSQL : searchWhereSQL}
+      WITH RECURSIVE ${useCandidatePath ? searchCandidatesCteSql : ''}${nonDateFilteredIdsCteSql},
+      full_count AS (
+        SELECT COUNT(*) as total_count FROM filtered_ids
       ),
       result_set AS (
         SELECT
@@ -1812,7 +1817,7 @@ async function searchContentBySingleQuery(
           ${textRankExpr} as text_rank,
           ${similarityExpr} as similarity,
           ${combinedScoreExpr} as combined_score,
-          COUNT(*) OVER() as total_count,
+          (SELECT total_count FROM full_count) as total_count,
           NULL::bigint as cursor_fetched_count
         FROM filtered_ids fi
         ORDER BY ${resultSetOrderBy}
@@ -1866,7 +1871,21 @@ async function searchContentBySingleQuery(
   } else {
     rawRows = (await sql.unsafe(querySQL, queryParams)) as any[];
   }
-  const total = rawRows.length > 0 ? parseInt(String(rawRows[0].total_count ?? '0'), 10) : 0;
+
+  let emptyPageTotal: number | null = null;
+  if (!useDateFeed && rawRows.length === 0 && effectiveOffset > 0) {
+    const countSQL = `
+      WITH RECURSIVE ${useCandidatePath ? searchCandidatesCteSql : ''}${nonDateFilteredIdsCteSql}
+      SELECT COUNT(*) as total_count FROM filtered_ids`;
+    const countParams = useCandidatePath ? queryParams : queryParams.slice(0, cursorBaseParamIdx - 1);
+    const countRows = (await sql.unsafe(countSQL, countParams)) as any[];
+    emptyPageTotal = parseInt(String(countRows[0]?.total_count ?? '0'), 10);
+  }
+
+  const total =
+    rawRows.length > 0
+      ? parseInt(String(rawRows[0].total_count ?? '0'), 10)
+      : (emptyPageTotal ?? 0);
   const content = needClassifications
     ? deduplicateWithClassifications(rawRows)
     : (rawRows as any as ContentSearchResult[]);

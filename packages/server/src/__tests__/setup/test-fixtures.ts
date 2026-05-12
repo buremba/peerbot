@@ -8,6 +8,7 @@
 import { serializeSigned } from 'hono/utils/cookie';
 import { generateSecureToken, hashToken } from '../../auth/oauth/utils';
 import { pgTextArray } from '../../db/client';
+import { ensureUniqueConnectionSlug } from '../../utils/connections';
 import { generateSlug } from '../../utils/entity-management';
 import { getTestDb } from './test-db';
 
@@ -538,20 +539,30 @@ export async function createTestConnection(options: {
   entity_ids?: number[];
   status?: string;
   display_name?: string;
+  slug?: string;
   created_by?: string;
   visibility?: 'org' | 'private';
 }): Promise<TestConnection> {
   const sql = getTestDb();
 
+  const displayName = options.display_name ?? `Test Connection ${options.connector_key}`;
+  const slug = await ensureUniqueConnectionSlug({
+    organizationId: options.organization_id,
+    connectorKey: options.connector_key,
+    explicitSlug: options.slug,
+    displayName,
+  });
+
   const entityIdsLiteral = options.entity_ids ? pgBigintArray(options.entity_ids) : null;
   const [inserted] = await sql`
     INSERT INTO connections (
-      organization_id, connector_key, display_name, status,
+      organization_id, connector_key, slug, display_name, status,
       created_by, visibility, created_at, updated_at
     ) VALUES (
       ${options.organization_id},
       ${options.connector_key},
-      ${options.display_name ?? `Test Connection ${options.connector_key}`},
+      ${slug},
+      ${displayName},
       ${options.status ?? 'active'},
       ${options.created_by ?? null},
       ${options.visibility ?? 'org'},

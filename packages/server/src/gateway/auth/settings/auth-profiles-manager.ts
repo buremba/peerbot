@@ -51,6 +51,13 @@ interface AuthProfilesManagerOptions {
   userAuthProfiles: UserAuthProfileStore;
   secretStore: WritableSecretStore;
   runtimeCredentialResolver?: RuntimeProviderCredentialResolver;
+  /**
+   * Resolve an agent's owning user id. Agent runs execute as a synthetic /
+   * platform user (web panel, Telegram, watcher), not the operator who
+   * connected a provider in the agent settings UI — so credential lookups
+   * fall back to the owner's user-scoped profiles via this resolver.
+   */
+  agentOwnerResolver?: (agentId: string) => Promise<string | undefined>;
 }
 
 /**
@@ -74,6 +81,9 @@ export class AuthProfilesManager {
   private readonly userAuthProfiles: UserAuthProfileStore;
   private readonly secretStore: WritableSecretStore;
   private readonly runtimeCredentialResolver?: RuntimeProviderCredentialResolver;
+  private readonly agentOwnerResolver?: (
+    agentId: string
+  ) => Promise<string | undefined>;
   private lazyRefreshHooks?: LazyRefreshHooks;
 
   constructor(options: AuthProfilesManagerOptions) {
@@ -82,6 +92,7 @@ export class AuthProfilesManager {
     this.userAuthProfiles = options.userAuthProfiles;
     this.secretStore = options.secretStore;
     this.runtimeCredentialResolver = options.runtimeCredentialResolver;
+    this.agentOwnerResolver = options.agentOwnerResolver;
   }
 
   /** Wired by boot after TaskScheduler is up. Until then, lazy refresh is a
@@ -164,19 +175,52 @@ export class AuthProfilesManager {
    * resolved to plaintext. Intended for admin/agent-config surfaces.
    *
    * Order:
-   *   1. user-scoped profiles (most authoritative)
-   *   2. ephemeral profiles registered by SDK host
-   *   3. declared credentials from registry (synthesized as `api-key`)
+   *   1. requesting user's user-scoped profiles (most authoritative)
+   *   2. agent owner's user-scoped profiles (run-time fallback)
+   *   3. ephemeral profiles registered by SDK host
+   *   4. declared credentials from registry (synthesized as `api-key`)
    */
+  /** User-scoped profiles owned by the agent's owner (empty when the owner is
+   *  the requesting user or no owner resolver is wired). */
+  private async listAgentOwnerProfiles(
+    agentId: string,
+    requestingUserId?: string
+  ): Promise<AuthProfile[]> {
+    if (!this.agentOwnerResolver) return [];
+    try {
+      const ownerUserId = await this.agentOwnerResolver(agentId);
+      if (!ownerUserId || ownerUserId === requestingUserId) return [];
+      return await this.userAuthProfiles.list(ownerUserId, agentId);
+    } catch (error) {
+      logger.warn(
+        {
+          agentId,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        "agent owner resolver failed; skipping owner credential fallback"
+      );
+      return [];
+    }
+  }
+
   async listProfiles(agentId: string, userId?: string): Promise<AuthProfile[]> {
     const userProfiles = userId
       ? await this.userAuthProfiles.list(userId, agentId)
       : [];
+
+    // Agent runs execute as a synthetic/platform user, not the operator who
+    // connected the provider in the agent settings UI. Fall back to the agent
+    // owner's user-scoped profiles so a UI-connected API key actually resolves
+    // for chat/watcher/Telegram runs. (`dedupeByScope` keeps the run user's
+    // own profile when both exist.)
+    const ownerProfiles = await this.listAgentOwnerProfiles(agentId, userId);
+
     const ephemeral = this.ephemeralProfiles.get(agentId) || [];
     const declared = this.synthesizeDeclaredProfiles(agentId);
 
     const merged = this.dedupeByScope([
       ...this.normalizeProfiles(userProfiles),
+      ...this.normalizeProfiles(ownerProfiles),
       ...this.normalizeProfiles(ephemeral),
       ...declared,
     ]);

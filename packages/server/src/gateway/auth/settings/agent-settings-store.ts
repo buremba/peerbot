@@ -1,5 +1,6 @@
 import {
   type AgentConfigStore,
+  type AgentMetadata,
   type AgentSettings,
   type AuthProfile,
   createLogger,
@@ -103,5 +104,11 @@ export class AgentSettingsStore {
   async hasSettings(agentId: string): Promise<boolean> {
     const settings = await this.getSettings(agentId);
     return settings !== null;
+  }
+
+  /** Agent metadata (name, owner, …). Declared agents have no persisted row. */
+  async getMetadata(agentId: string): Promise<AgentMetadata | null> {
+    if (this.declaredAgents?.get(agentId)) return null;
+    return this.configStore.getMetadata(agentId);
   }
 }

@@ -470,7 +470,7 @@ export class CoreServices {
       secretStore: this.secretStore,
       runtimeCredentialResolver: this.options?.providerCredentialResolver,
       agentOwnerResolver: async (agentId) =>
-        (await this.agentSettingsStore.getMetadata(agentId))?.owner.userId,
+        (await this.agentSettingsStore?.getMetadata(agentId))?.owner.userId,
     });
     this.transcriptionService = new TranscriptionService(
       this.authProfilesManager

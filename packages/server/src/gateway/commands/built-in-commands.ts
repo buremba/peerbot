@@ -79,22 +79,24 @@ export function registerBuiltInCommands(
     },
   });
 
-  // Slack Preview: redeem a `/link <code>` minted by `lobu run` and bind this
-  // channel/DM to that agent. Re-running `/link` with a different code rebinds.
+  // Slack Preview: redeem a `/lobu link <code>` minted by `lobu run` and bind
+  // this channel/DM to that agent. Re-running it with a different code rebinds.
+  // (Slack only delivers the natively-registered `/lobu` slash command, so this
+  // is reached as the `link` subcommand — not a bare `/link`.)
   registry.register({
     name: "link",
     description:
       "Link this chat to a Lobu agent using a code from `lobu run` (Slack Preview)",
     handler: async (ctx: CommandContext) => {
-      const code = ctx.args.trim().replace(/^\/link\s+/i, "").trim();
+      const code = ctx.args.trim();
       if (!code) {
         await ctx.reply(
-          "Usage: `/link <code>` — get a code by running `lobu run` on a Slack-Preview-enabled agent."
+          "Usage: `/lobu link <code>` — get a code by running `lobu run` on a Slack-Preview-enabled agent."
         );
         return;
       }
       if (ctx.platform !== "slack" || !ctx.teamId) {
-        await ctx.reply("`/link` only works in Slack.");
+        await ctx.reply("`/lobu link` only works in Slack.");
         return;
       }
       const result = await consumeSlackPreviewClaim({

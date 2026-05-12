@@ -11,7 +11,7 @@ import logger from '../utils/logger';
 //   * The link code lives in `oauth_states` (scope `slack-preview-claim`).
 //   * The hosted "Lobu Developer" workspace is just an ordinary Slack
 //     `agent_connections` row (no env var, no relay service).
-//   * `/link <code>` in that workspace consumes the claim and writes a normal
+//   * `/lobu link <code>` in that workspace consumes the claim and writes a normal
 //     `agent_channel_bindings` row (platform `slack`) — so inbound messages
 //     route through the exact same Chat SDK adapter path every other platform
 //     connection uses.
@@ -91,7 +91,7 @@ export function slackSurfaceType(channelId: string): SurfaceType {
 
 /**
  * POST /api/:orgSlug/preview/slack/claims — called by `lobu run` (authenticated
- * via mcpAuth) to mint a short-lived `/link` code for one of the org's agents.
+ * via mcpAuth) to mint a short-lived `/lobu link` code for one of the org's agents.
  */
 export async function createSlackPreviewClaim(c: Context<{ Bindings: Env }>) {
   const auth = requireOrgUser(c);
@@ -148,7 +148,7 @@ export async function createSlackPreviewClaim(c: Context<{ Bindings: Env }>) {
       return c.json({
         provider: PROVIDER,
         code,
-        command: `/link ${code}`,
+        command: `/lobu link ${code}`,
         slack_url: slackPreviewUrl(),
         expires_at: expiresAt.toISOString(),
         allowed_surfaces: surfaces,
@@ -169,8 +169,8 @@ export type ConsumeClaimResult =
   | { status: 'surface_not_allowed'; surfaceType: SurfaceType };
 
 /**
- * Consume a `/link` code and bind the originating Slack channel/DM to the
- * agent the code was minted for. One-time use; last `/link` for a surface wins
+ * Consume a `/lobu link` code and bind the originating Slack channel/DM to the
+ * agent the code was minted for. One-time use; last link for a surface wins
  * (re-linking just rebinds — there's no separate unlink step). Called from the
  * `link` chat command, so it never touches HTTP.
  */

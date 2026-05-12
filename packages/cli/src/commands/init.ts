@@ -778,7 +778,7 @@ export async function generateLobuToml(
   if (options.enableSlackPreview) {
     lines.push(
       "",
-      "# Public Slack Preview (Lobu Developer) — `lobu run` prints a `/link <code>`",
+      "# Public Slack Preview (Lobu Developer) — `lobu run` prints a `/lobu link <code>`",
       "# you redeem by DMing the hosted Lobu Developer Slack bot.",
       `[agents.${id}.preview.slack]`,
       "enabled = true",

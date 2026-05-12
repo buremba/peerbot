@@ -85,7 +85,7 @@ describe("Slack Preview claims + channel bindings (Postgres-backed)", () => {
     expect(res.status).toBe(200);
     const code = res.body.code as string;
     expect(code).toMatch(/^demo-agent-[A-Z0-9]{6}$/);
-    expect(res.body.command).toBe(`/link ${code}`);
+    expect(res.body.command).toBe(`/lobu link ${code}`);
     expect(res.body.allowed_surfaces).toEqual(["dm", "channel"]);
 
     const sql = getDb();

@@ -1,0 +1,66 @@
+# lobu.toml — Office Bot
+# Docs: https://lobu.ai/docs/getting-started
+#
+# Office Bot is an umbrella project for office-ops agents that live in a team
+# chat. The first (and so far only) agent is `food-ordering`: it runs the
+# weekday lunch flow — who's in, collect recommendations, post the options,
+# gather everyone's order, then assemble a Deliveroo basket and hand the
+# checkout link to a human.
+#
+# Target platform: Slack (a Slack connection added to the office channel). While
+# developing, you don't need any chat platform at all — drive the agent over the
+# CLI:  `lobu chat -a food-ordering "<prompt>"`  against a local `lobu run`.
+#
+# Connections are configured in the org (admin UI / API), not here. The
+# food-ordering agent needs:
+#   - a Slack chat connection on the office channel (prod) — none for CLI dev
+#   - the two `lunch-*` watchers below (defined as `type: watcher` models)
+#   - Deliveroo browser-auth cookies, captured with:
+#       lobu memory browser-auth --connector deliveroo --auth-profile-slug office
+#
+# Future office agents (desk-booking, supplies, socials, …) get their own
+# [agents.<id>] block here and their own ./agents/<id>/ dir.
+
+[agents.food-ordering]
+name = "food-ordering"
+description = "Runs the office lunch order — presence check, recommendations, options poll, order collection, Deliveroo basket handoff"
+dir = "./agents/food-ordering"
+
+[[agents.food-ordering.providers]]
+id = "z-ai"
+model = "z-ai/glm-4.7"
+key = "$Z_AI_API_KEY"
+
+[agents.food-ordering.network]
+# The chat transport (Slack) is the gateway's job, not the worker's — the worker
+# only needs to fetch playwright/chromium for the deliveroo-order skill.
+allowed = [
+  "api.z.ai", ".z.ai",
+  "registry.npmjs.org", ".npmjs.org",
+  "playwright.azureedge.net", "cdn.playwright.dev",
+]
+# Deliveroo goes through the egress judge — reading menus and assembling a
+# basket is fine; touching payment, addresses, or the account profile is not.
+judge = [
+  "deliveroo.co.uk", ".deliveroo.co.uk",
+  "deliveroo.com", ".deliveroo.com",
+]
+
+[agents.food-ordering.network.judges]
+default = """
+Allow GET requests that read restaurant listings, menus, item details, and the
+current basket. Allow POST/PUT requests whose effect is limited to building or
+modifying a basket / group order (adding, removing, changing quantity of items;
+creating a shareable group-order link). DENY anything that completes checkout,
+submits payment, reads or writes saved payment methods, changes the delivery
+address, or modifies the account profile. If the request's effect is unclear,
+fail closed and deny with a reason.
+"""
+
+[memory]
+enabled = true
+org = "office-bot"
+name = "Office Bot"
+description = "Office-ops agents — first up: the weekday lunch order"
+models = "./models"
+data = "./data"

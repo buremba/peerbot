@@ -459,6 +459,63 @@ const EMBEDDED_SCHEMA_PATCHES: EmbeddedSchemaPatch[] = [
       `);
     },
   },
+  {
+    // Mirrors db/migrations/20260512000000_device_worker_connection_binding.sql
+    // for already-initialized embedded/PGlite databases (where dbmate
+    // migrations don't run).
+    id: 'device-worker-connection-binding',
+    apply: async (sql) => {
+      await sql.unsafe(`
+        ALTER TABLE public.device_workers
+        ADD COLUMN IF NOT EXISTS id uuid NOT NULL DEFAULT gen_random_uuid()
+      `);
+      await sql.unsafe(`
+        CREATE UNIQUE INDEX IF NOT EXISTS device_workers_id_key
+        ON public.device_workers (id)
+      `);
+      await sql.unsafe(`
+        ALTER TABLE public.connections
+        ADD COLUMN IF NOT EXISTS device_worker_id uuid
+      `);
+      await sql.unsafe(`
+        DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint WHERE conname = 'connections_device_worker_id_fkey'
+          ) THEN
+            ALTER TABLE public.connections
+              ADD CONSTRAINT connections_device_worker_id_fkey
+              FOREIGN KEY (device_worker_id)
+              REFERENCES public.device_workers (id)
+              ON DELETE SET NULL;
+          END IF;
+        END $$;
+      `);
+      await sql.unsafe(`
+        CREATE INDEX IF NOT EXISTS idx_connections_device_worker_id
+        ON public.connections (device_worker_id)
+        WHERE device_worker_id IS NOT NULL
+      `);
+      await sql.unsafe(`
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_connections_org_connector_device_live
+        ON public.connections (organization_id, connector_key, device_worker_id)
+        WHERE deleted_at IS NULL AND device_worker_id IS NOT NULL
+      `);
+      await sql.unsafe(`
+        CREATE TABLE IF NOT EXISTS public.device_worker_org_grants (
+          device_worker_id uuid NOT NULL REFERENCES public.device_workers (id) ON DELETE CASCADE,
+          organization_id text NOT NULL,
+          granted_by text NOT NULL,
+          granted_at timestamptz NOT NULL DEFAULT now(),
+          PRIMARY KEY (device_worker_id, organization_id)
+        )
+      `);
+      await sql.unsafe(`
+        CREATE INDEX IF NOT EXISTS device_worker_org_grants_org_idx
+        ON public.device_worker_org_grants (organization_id)
+      `);
+    },
+  },
 ];
 
 async function applyEmbeddedSchemaPatches(sql: MigrationSqlClient) {

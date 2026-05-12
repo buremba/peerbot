@@ -811,22 +811,26 @@ async function handleCreate(
     if (err) return { error: err };
   }
 
-  // No-auth connectors: one connection per user
+  // No-auth connectors are limited to one connection per user — except when the
+  // connection is pinned to a device worker, where the cardinality is "one per
+  // (org, connector, device)" (enforced just above + by the unique index), so a
+  // user's second device can back the same connector with its own connection.
   const authMethods =
     (connector.auth_schema as { methods?: Array<{ type: string }> })?.methods ?? [];
   const isNoAuth = authMethods.length > 0 && authMethods.every((m) => m.type === 'none');
-  if (isNoAuth) {
+  if (isNoAuth && !deviceBinding.deviceWorkerId) {
     const existing = await sql`
       SELECT id FROM connections
       WHERE organization_id = ${organizationId}
         AND connector_key = ${args.connector_key}
         AND created_by = ${effectiveCreatedBy}
+        AND device_worker_id IS NULL
         AND deleted_at IS NULL
       LIMIT 1
     `;
     if (existing.length > 0) {
       return {
-        error: `This user already has a ${connector.name} connection (id: ${existing[0].id}). No-auth connectors are limited to one connection per user.`,
+        error: `This user already has a ${connector.name} connection (id: ${existing[0].id}). No-auth connectors are limited to one connection per user (unless pinned to different devices).`,
       };
     }
   }

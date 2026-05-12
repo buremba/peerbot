@@ -1,0 +1,140 @@
+version: 2
+
+entities:
+  - slug: lunch-run
+    name: Lunch run
+    description: One day's office lunch order — who's in, what they ordered, the restaurant, the basket link, and where it ended up
+    icon: utensils
+    color: "#F97316"
+    metadata_schema:
+      type: object
+      required:
+        - date
+        - channel
+        - status
+      properties:
+        date:
+          type: string
+          description: ISO date of the run (one run per day)
+          x-table-label: Date
+          x-table-column: true
+        channel:
+          type: string
+          description: The chat channel/conversation the run happened in
+          x-table-label: Channel
+        status:
+          type: string
+          enum: [collecting, done, cancelled]
+          x-table-label: Status
+          x-table-column: true
+        restaurant:
+          type: string
+          x-table-label: Restaurant
+          x-table-column: true
+        thread_ref:
+          type: string
+          description: Reference to the thread/message where the run is happening — lunch-finalize uses this to find the conversation
+        items:
+          type: array
+          description: Per-person order lines
+          items:
+            type: object
+            properties:
+              person: { type: string }
+              item: { type: string }
+              price: { type: number }
+              notes: { type: string }
+        subtotal:
+          type: number
+          x-table-label: Subtotal
+          x-table-column: true
+        basket_url:
+          type: string
+          description: Deliveroo group-order / basket link handed to a human, or null if placed manually
+        notes:
+          type: string
+
+watchers:
+  - slug: lunch-open
+    name: Open the lunch run
+    # Workdays 11:00 Europe/London — post the lunch call and open the thread.
+    schedule: "0 11 * * 1-5"
+    prompt: |
+      Open today's office lunch run (step 1 in your instructions):
+
+      1. Check memory for a `lunch-run` entity dated today — if one exists and isn't
+         cancelled, stop (don't open a second one).
+      2. Guess who's in from recent chat activity and past `lunch-run` entities.
+      3. Post the lunch call in the channel: react 🍕 / "+1" to join, drop restaurant
+         recommendations, options coming ~11:35, targeting ~12:30 delivery. @-mention
+         the people you think are in, but make clear anyone can join or skip.
+      4. Open a thread off that message.
+      5. Save a `lunch-run` entity {date, channel, status: "collecting", thread_ref,
+         restaurant: null, items: []} and a `lunch:opened` event linked to it.
+
+      Then end — the lunch-finalize watcher takes it from here. Keep it to one short
+      message in the channel.
+    extraction_schema:
+      type: object
+      required:
+        - opened
+      properties:
+        opened:
+          type: boolean
+          description: true if a new run was opened, false if one already existed
+        in_office_guess:
+          type: array
+          items: { type: string }
+        thread_ref:
+          type: string
+
+  - slug: lunch-finalize
+    name: Collect orders and hand off
+    # Workdays 11:35 Europe/London — read the thread, post options/collect orders,
+    # build the Deliveroo basket, post the summary, hand off to a human.
+    schedule: "35 11 * * 1-5"
+    prompt: |
+      Finalize today's office lunch run (step 2 in your instructions):
+
+      1. Find today's `lunch-run` entity (status "collecting"). If there isn't one,
+         open one (step 1) and stop. If it's already "done"/"cancelled", do nothing.
+      2. Read the run's thread — work out who's in (🍕 / "+1" / put in an order) and
+         any restaurant recommendations. If nobody's in: post a "skipping today 👋"
+         note, set the run to "cancelled", save a `lunch:cancelled` event, stop.
+      3. Pick the restaurant (a clear thread recommendation, else a usual spot from
+         USER.md, biased away from the last couple of runs).
+      4. Post the options — if the deliveroo-order skill can scrape the menu, a
+         numbered shortlist of ~5–8 popular items with prices; otherwise just name
+         the restaurant (a link to its Deliveroo page is fine). Always accept
+         free-text orders.
+      5. Collect orders from replies + number reactions into items: [{person, item,
+         price?, notes}]. Ask directly about anything ambiguous — don't guess silently.
+      6. Build the Deliveroo basket via the deliveroo-order skill (login with stored
+         cookies → add items → group-order/basket link + subtotal). If it fails for
+         any reason, fall back: basket_url = null, continue.
+      7. Post the summary in the thread: restaurant; per-person list (@person — item
+         (notes)); subtotal + per-head (flag if well over budget); the basket link if
+         you have one; and the next action — "@here someone hit checkout & pay:
+         <link>" or, with no link, "@here someone needs to place this manually".
+      8. Update the `lunch-run` entity (status "done", restaurant, items, subtotal,
+         basket_url) and save a `lunch:placed` event linked to it.
+
+      Never complete checkout or pay. A run with no basket automation is still a
+      success if the order list got collected and handed off cleanly.
+    extraction_schema:
+      type: object
+      required:
+        - outcome
+      properties:
+        outcome:
+          type: string
+          enum: [placed, manual, cancelled, no-run]
+          description: placed = basket link handed off; manual = order list handed off without a link; cancelled = nobody in; no-run = no run existed to finalize
+        restaurant:
+          type: string
+        headcount:
+          type: integer
+        subtotal:
+          type: number
+        basket_url:
+          type: string

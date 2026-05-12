@@ -23,11 +23,11 @@ name: mac-release
 #   APPLE_ID                Apple ID email used for notarization
 #   APPLE_APP_PASSWORD      app-specific password for that Apple ID
 #
-# The cask push uses HOMEBREW_TAP_TOKEN if set, else RELEASE_PLEASE_TOKEN (any
-# PAT with write access to lobu-ai/homebrew-tap works). It always runs — if no
-# usable token is configured the job fails loudly rather than skipping. No
-# provisioning profile is required — the app ships only standard entitlements
-# (the HealthKit entitlement is disabled; see apps/mac/Lobu/Lobu.entitlements).
+# The cask push uses HOMEBREW_TAP_DEPLOY_KEY — the private half of a write
+# deploy key on lobu-ai/homebrew-tap (scoped to just that repo, not a PAT). It
+# always runs; if the secret is missing the job fails loudly. No provisioning
+# profile is required — the app ships only standard entitlements (the HealthKit
+# entitlement is disabled; see apps/mac/Lobu/Lobu.entitlements).
 
 on:
   workflow_dispatch:
@@ -142,15 +142,20 @@ jobs:
 
       - name: Publish Homebrew cask
         env:
-          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN || secrets.RELEASE_PLEASE_TOKEN }}
+          DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
         run: |
-          if [ -z "$GH_TOKEN" ]; then
-            echo "::error::No HOMEBREW_TAP_TOKEN or RELEASE_PLEASE_TOKEN configured — cannot push the Homebrew cask. Add a PAT with write access to lobu-ai/homebrew-tap."
+          if [ -z "$DEPLOY_KEY" ]; then
+            echo "::error::HOMEBREW_TAP_DEPLOY_KEY is not set — add the private half of a write deploy key for lobu-ai/homebrew-tap as that secret."
             exit 1
           fi
           VERSION="${{ steps.v.outputs.version }}"
           SHA="${{ steps.sum.outputs.sha256 }}"
-          git clone "https://x-access-token:${GH_TOKEN}@github.com/lobu-ai/homebrew-tap.git" tap
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/tap_key
+          chmod 600 ~/.ssh/tap_key
+          ssh-keyscan -t ed25519,rsa github.com >> ~/.ssh/known_hosts 2>/dev/null
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/tap_key -o IdentitiesOnly=yes"
+          git clone git@github.com:lobu-ai/homebrew-tap.git tap
           mkdir -p tap/Casks
           # build the cask from the template: strip the leading doc comment,
           # fill version/sha, and keep/drop the caveats block per signing mode.

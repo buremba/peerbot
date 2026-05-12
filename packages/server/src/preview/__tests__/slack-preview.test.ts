@@ -1,4 +1,4 @@
-import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { beforeAll, beforeEach, describe, expect, test } from "vitest";
 import type { Context } from "hono";
 import { CommandRegistry } from "@lobu/core";
 import { registerBuiltInCommands } from "../../gateway/commands/built-in-commands.js";

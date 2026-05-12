@@ -1279,6 +1279,11 @@ app.get('*', async (c) => {
   }
 
   const baseUrl = new URL(c.req.url).origin;
+  // Unknown paths fall through to this discovery blob. Browsers hit it for
+  // `/favicon.ico`, `/apple-touch-icon.png`, etc. before those assets exist —
+  // without `no-store` a CDN caches the JSON for that path and keeps serving it
+  // even after a deploy ships the real file. Don't let that happen.
+  c.header('Cache-Control', 'no-store');
   return c.json({
     status: 'ok',
     mcp_endpoint: new URL('/mcp', baseUrl).toString(),

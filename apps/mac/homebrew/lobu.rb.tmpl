@@ -13,6 +13,10 @@ cask "lobu" do
 
   depends_on macos: ">= :sonoma"
 
+  # Filled in by the mac-release workflow: a "right-click → Open" caveat while
+  # the build is unsigned, or empty once it ships notarized.
+  @CAVEATS@
+
   app "Lobu.app"
 
   zap trash: [

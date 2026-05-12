@@ -1,20 +1,22 @@
-import { beforeAll, beforeEach, describe, expect, test } from "vitest";
-import type { Context } from "hono";
 import { CommandRegistry } from "@lobu/core";
-import { registerBuiltInCommands } from "../../gateway/commands/built-in-commands.js";
-import { getDb } from "../../db/client.js";
+import type { Context } from "hono";
+import { beforeAll, beforeEach, describe, expect, test } from "vitest";
+import { cleanupTestDatabase } from "../../__tests__/setup/test-db.js";
 import {
-  ensurePgliteForGatewayTests,
-  resetTestDatabase,
-} from "../../gateway/__tests__/helpers/db-setup.js";
+  createTestAgent,
+  createTestOrganization,
+} from "../../__tests__/setup/test-fixtures.js";
+import { getDb } from "../../db/client.js";
+import { registerBuiltInCommands } from "../../gateway/commands/built-in-commands.js";
 import type { Env } from "../../index";
 import { consumeSlackPreviewClaim, createSlackPreviewClaim } from "../slack";
 
-const ORG_ID = "org-slack-preview";
-const USER_ID = "user-slack-preview";
 const AGENT_ID = "demo-agent";
 const OTHER_AGENT_ID = "other-agent";
 const TEAM_ID = "T_DEVELOPER";
+
+let ORG_ID = "";
+const USER_ID = "user-slack-preview";
 
 interface FakeResponse {
   status: number;
@@ -53,31 +55,29 @@ async function createClaim(
   return res.body.code as string;
 }
 
-async function seedOrgAndAgents(): Promise<void> {
-  const sql = getDb();
-  await sql`
-    INSERT INTO organization (id, name, slug)
-    VALUES (${ORG_ID}, 'Slack Preview Org', 'slack-preview-org')
-    ON CONFLICT (id) DO NOTHING
-  `;
-  await sql`
-    INSERT INTO agents (id, organization_id, name)
-    VALUES (${AGENT_ID}, ${ORG_ID}, 'Demo'), (${OTHER_AGENT_ID}, ${ORG_ID}, 'Other')
-    ON CONFLICT (id) DO NOTHING
-  `;
-}
-
-describe("Slack Preview claims + channel bindings (Postgres-backed)", () => {
+describe("Slack Preview claims + channel bindings", () => {
   beforeAll(async () => {
-    await ensurePgliteForGatewayTests();
+    await cleanupTestDatabase();
+    const org = await createTestOrganization({
+      name: "Slack Preview Org",
+      slug: "slack-preview-org",
+    });
+    ORG_ID = org.id;
+    await createTestAgent({ organizationId: ORG_ID, agentId: AGENT_ID, name: "Demo" });
+    await createTestAgent({
+      organizationId: ORG_ID,
+      agentId: OTHER_AGENT_ID,
+      name: "Other",
+    });
   });
 
   beforeEach(async () => {
-    await resetTestDatabase();
-    await seedOrgAndAgents();
+    const sql = getDb();
+    await sql`DELETE FROM agent_channel_bindings`;
+    await sql`DELETE FROM oauth_states WHERE scope = 'slack-preview-claim'`;
   });
 
-  test("claim mints a /link code in oauth_states under the dedicated scope", async () => {
+  test("claim mints a /lobu link code in oauth_states under the dedicated scope", async () => {
     const res = await createSlackPreviewClaim(
       orgUserContext({ agent_id: AGENT_ID, surfaces: ["dm", "channel"] })
     );
@@ -134,8 +134,9 @@ describe("Slack Preview claims + channel bindings (Postgres-backed)", () => {
     });
 
     // Claim consumed; replay fails.
-    expect(await consumeSlackPreviewClaim({ code, teamId: TEAM_ID, channelId: "D123" }))
-      .toEqual({ status: "not_found" });
+    expect(
+      await consumeSlackPreviewClaim({ code, teamId: TEAM_ID, channelId: "D123" })
+    ).toEqual({ status: "not_found" });
   });
 
   test("re-linking a channel rebinds it to the new agent (last link wins)", async () => {
@@ -175,7 +176,8 @@ describe("Slack Preview claims + channel bindings (Postgres-backed)", () => {
     expect(
       await consumeSlackPreviewClaim({ code, teamId: TEAM_ID, channelId: "D1" })
     ).toEqual({ status: "not_found" });
-    const bindings = await sql`SELECT 1 FROM agent_channel_bindings WHERE platform = 'slack'`;
+    const bindings =
+      await sql`SELECT 1 FROM agent_channel_bindings WHERE platform = 'slack'`;
     expect(bindings).toHaveLength(0);
   });
 
@@ -204,7 +206,7 @@ describe("Slack Preview claims + channel bindings (Postgres-backed)", () => {
     expect((rows[0] as { channel_id: string }).channel_id).toBe("slack:D999");
   });
 
-  test("the /link chat command redeems a code end to end", async () => {
+  test("the /lobu link chat command redeems a code end to end", async () => {
     const code = await createClaim(AGENT_ID);
     const registry = new CommandRegistry();
     // registerBuiltInCommands wires `status` against an agent settings store we

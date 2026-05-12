@@ -398,7 +398,7 @@ export class OAuthProvider {
     email: string;
     name: string | null;
     organization_slug: string | null;
-    organizations: { slug: string; name: string }[];
+    organizations: { id: string; slug: string; name: string }[];
   } | null> {
     const authInfo = await this.verifyAccessToken(token);
     if (!authInfo) return null;
@@ -423,7 +423,7 @@ export class OAuthProvider {
     }
 
     const orgs = await this.sql`
-      SELECT o.slug, o.name
+      SELECT o.id, o.slug, o.name
       FROM "member" m
       JOIN "organization" o ON o.id = m."organizationId"
       WHERE m."userId" = ${authInfo.userId}
@@ -436,7 +436,11 @@ export class OAuthProvider {
       email: user.email,
       name: user.name,
       organization_slug: organizationSlug,
-      organizations: orgs.map((o) => ({ slug: o.slug as string, name: o.name as string })),
+      organizations: orgs.map((o) => ({
+        id: o.id as string,
+        slug: o.slug as string,
+        name: o.name as string,
+      })),
     };
   }
 

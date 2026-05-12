@@ -21,6 +21,19 @@ const KIND_LABEL: Record<DiffRow["kind"], string> = {
   feed: "feed",
 };
 
+const KIND_HEADING: Record<DiffRow["kind"], string> = {
+  agent: "agents",
+  settings: "settings",
+  platform: "platforms",
+  "entity-type": "entity-types",
+  "relationship-type": "relationship-types",
+  watcher: "watchers",
+  "connector-definition": "connector-definitions",
+  "auth-profile": "auth-profiles",
+  connection: "connections",
+  feed: "feeds",
+};
+
 function fieldsList(fields: string[] | undefined): string {
   if (!fields?.length) return "";
   return chalk.dim(` (${fields.join(", ")})`);
@@ -122,7 +135,7 @@ export function renderPlan(plan: DiffPlan): string {
     const rowsForKind = plan.rows.filter((row) => row.kind === kind);
     if (rowsForKind.length === 0) continue;
     lines.push("");
-    lines.push(chalk.bold(`  ${KIND_LABEL[kind]}s:`));
+    lines.push(chalk.bold(`  ${KIND_HEADING[kind]}:`));
     for (const row of rowsForKind) {
       lines.push(...renderRow(row));
     }

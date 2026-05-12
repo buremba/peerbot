@@ -871,7 +871,12 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
 
   // Persist the resolved org id back into lobu.toml so the whole team applies
   // to the same org. Best-effort — a read-only lobu.toml must not fail apply.
-  if (resolvedOrg && state.memory?.organizationId !== resolvedOrg.id) {
+  // Skipped on `--dry-run`: that flag promises no mutation, local files included.
+  if (
+    !opts.dryRun &&
+    resolvedOrg &&
+    state.memory?.organizationId !== resolvedOrg.id
+  ) {
     await writeMemoryOrganizationId(cwd, resolvedOrg.id).catch(() => undefined);
   }
 

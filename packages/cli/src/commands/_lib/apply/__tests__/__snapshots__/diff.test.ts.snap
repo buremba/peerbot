@@ -7,7 +7,7 @@ Plan:
   agents:
   + agent triage
 
-  settingss:
+  settings:
   + settings triage
 
 Summary: 2 create, 0 update, 0 noop, 0 drift"
@@ -20,7 +20,7 @@ Plan:
   agents:
   = agent triage
 
-  settingss:
+  settings:
   = settings triage
 
 Summary: 0 create, 0 update, 2 noop, 0 drift"
@@ -33,7 +33,7 @@ Plan:
   agents:
   ~ agent triage (name)
 
-  settingss:
+  settings:
   = settings triage
 
 Summary: 0 create, 1 update, 1 noop, 0 drift"
@@ -56,7 +56,7 @@ Plan:
   agents:
   = agent triage
 
-  settingss:
+  settings:
   ~ settings triage (networkConfig)
 
 Summary: 0 create, 1 update, 1 noop, 0 drift"
@@ -69,7 +69,7 @@ Plan:
   agents:
   + agent triage
 
-  settingss:
+  settings:
   + settings triage
 
   platforms:
@@ -85,7 +85,7 @@ Plan:
   agents:
   = agent triage
 
-  settingss:
+  settings:
   = settings triage
 
   platforms:

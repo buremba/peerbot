@@ -30,8 +30,13 @@ const sessionCache = new TtlCache<{ user: any; session: any } | null>(30_000); /
  * these resolve to "authenticated user, no active org" instead of failing on
  * a missing orgSlug. The bare `/mcp` endpoint is handled separately because
  * it's an exact-match, not a prefix.
+ *
+ * `/api/workers/` is here because device workers (Lobu for Mac/iPhone) poll
+ * those endpoints with a user token that may not be bound to any org — the
+ * `/api/workers/*` middleware in index.ts does the per-endpoint authz and
+ * falls back to the user's personal org.
  */
-const UNSCOPED_PATH_PREFIXES = ['/mcp/', '/api/me/'];
+const UNSCOPED_PATH_PREFIXES = ['/mcp/', '/api/me/', '/api/workers/'];
 
 export function invalidateMembershipRoleCache(
   organizationId: string,

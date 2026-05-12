@@ -649,18 +649,18 @@ app.use('/api/workers/*', async (c, next) => {
         return c.json({ error: 'Worker token missing device_worker:run scope' }, 403);
       }
       const userId = c.var.user.id;
-      // mcpAuth already verified the token resolves to (and the user is a
-      // member of) `c.var.organizationId`. A device worker is scoped to that
-      // org plus the user's personal org (the auto-wire target), and nothing
-      // else.
+      // A device worker is scoped to the org its token is bound to (if any —
+      // mcpAuth verified membership) plus the user's personal org, the
+      // auto-wire target. Device-code tokens (Lobu for Mac/iPhone) often aren't
+      // bound to any org, so the personal org alone is a valid scope.
       const boundOrgId = c.var.organizationId;
-      if (!boundOrgId) {
-        return c.json({ error: 'Worker token must be bound to an organization' }, 403);
-      }
       const personalOrg = await findExistingPersonalOrg(userId, getDb());
-      const orgIds = personalOrg
-        ? Array.from(new Set([boundOrgId, personalOrg.id]))
-        : [boundOrgId];
+      const orgIds = Array.from(
+        new Set([boundOrgId, personalOrg?.id].filter((id): id is string => !!id))
+      );
+      if (orgIds.length === 0) {
+        return c.json({ error: 'No organization in scope for this worker token' }, 403);
+      }
       c.set('workerAuthMode', 'user');
       c.set('workerUserId', userId);
       c.set('workerOrgIds', orgIds);

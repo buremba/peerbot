@@ -27,28 +27,6 @@ export async function confirmPlan(opts: ConfirmOptions): Promise<boolean> {
 }
 
 /**
- * Confirm provisioning a new organization — the `[memory].org` slug (or
- * `--org`) doesn't resolve to one of the operator's orgs yet. `yes`
- * short-circuits to true; non-TTY without `--yes` throws.
- */
-export async function confirmCreateOrg(
-  slug: string,
-  name: string,
-  yes: boolean
-): Promise<boolean> {
-  if (yes) return true;
-  if (!process.stdin.isTTY || !process.stdout.isTTY) {
-    throw new ValidationError(
-      `Organization "${slug}" doesn't exist and --yes was not supplied. Re-run with --yes to create it non-interactively.`
-    );
-  }
-  return confirm({
-    message: `Organization "${slug}" doesn't exist. Create it now as "${name}"?`,
-    default: false,
-  });
-}
-
-/**
  * Confirm uploading + compiling custom connector source on the gateway.
  * `yes` short-circuits to true; non-TTY without `--yes` throws rather than
  * hanging on a closed stdin.

@@ -195,10 +195,15 @@ export interface DesiredState {
   agents: DesiredAgent[];
   /**
    * `[memory]` metadata from lobu.toml — the org slug `lobu apply` defaults to,
-   * and (when that org doesn't exist yet) the name/description it bootstraps the
-   * new org with.
+   * the resolved `organization_id` (written back once known), and the
+   * name/description shown when telling the operator to create the org.
    */
-  memory?: { org?: string; name?: string; description?: string };
+  memory?: {
+    org?: string;
+    organizationId?: string;
+    name?: string;
+    description?: string;
+  };
   memorySchema: {
     entityTypes: DesiredEntityType[];
     relationshipTypes: DesiredRelationshipType[];
@@ -1649,6 +1654,9 @@ export async function loadDesiredState(
     config.memory && config.memory.enabled !== false
       ? {
           ...(config.memory.org ? { org: config.memory.org } : {}),
+          ...(config.memory.organization_id
+            ? { organizationId: config.memory.organization_id }
+            : {}),
           ...(config.memory.name ? { name: config.memory.name } : {}),
           ...(config.memory.description
             ? { description: config.memory.description }

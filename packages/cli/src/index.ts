@@ -505,6 +505,18 @@ Memory:
       await orgSetCommand(slug, options);
     });
 
+  org
+    .command("create <slug>")
+    .description("Open the browser to create an organization (slug pre-filled)")
+    .option("-n, --name <name>", "Organization display name")
+    .option("-c, --context <name>", "Use a named context")
+    .action(
+      async (slug: string, options: { name?: string; context?: string }) => {
+        const { orgCreateCommand } = await import("./commands/org.js");
+        await orgCreateCommand(slug, options);
+      }
+    );
+
   // ─── link / unlink ──────────────────────────────────────────────────
   program
     .command("link")

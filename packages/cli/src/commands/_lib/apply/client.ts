@@ -240,39 +240,34 @@ export class ApplyClient {
     return { status: res.status, body: parsed as T };
   }
 
-  // ── Organization (better-auth org plugin, mounted at /api/auth) ───────────
+  // ── Organization ──────────────────────────────────────────────────────────
 
   /**
-   * Orgs the current session is a member of. Used to decide whether the
-   * `[memory].org` slug already resolves to one of the operator's orgs (use
-   * it as-is) or needs creating. Does not depend on `this.orgSlug`.
+   * Orgs the authenticated user belongs to, read from the OAuth userinfo
+   * endpoint — the same source `lobu org list` uses. Used to check whether the
+   * `[memory].org` slug already resolves to one of the operator's orgs. Does
+   * not depend on `this.orgSlug`. (`lobu apply` can't create an org headlessly
+   * — that needs a logged-in browser session — so there is no `createOrg`.)
    */
   async listOrgs(): Promise<RemoteOrg[]> {
-    const { body } = await this.request<RemoteOrg[] | { value?: RemoteOrg[] }>(
+    const { body } = await this.request<{ organizations?: unknown }>(
       "GET",
-      `/api/auth/organization/list`
+      `/oauth/userinfo`
     );
-    return Array.isArray(body) ? body : (body.value ?? []);
-  }
-
-  /**
-   * Create an organization with an explicit slug (the `[memory].org` value).
-   * A reserved slug, or one already owned by an org the session isn't a
-   * member of, surfaces as a structured error the caller turns into a
-   * "pick another slug" message rather than a silent failure.
-   */
-  async createOrg(input: { slug: string; name: string }): Promise<RemoteOrg> {
-    const { body } = await this.request<RemoteOrg>(
-      "POST",
-      `/api/auth/organization/create`,
-      {
-        name: input.name,
-        slug: input.slug,
-        keepCurrentActiveOrganization: true,
-      },
-      [200, 201]
-    );
-    return body;
+    const orgs = Array.isArray(body.organizations) ? body.organizations : [];
+    const out: RemoteOrg[] = [];
+    for (const entry of orgs) {
+      if (!isRecord(entry)) continue;
+      const id = typeof entry.id === "string" ? entry.id : "";
+      const slug = typeof entry.slug === "string" ? entry.slug : "";
+      if (!id || !slug) continue;
+      out.push({
+        id,
+        slug,
+        ...(typeof entry.name === "string" ? { name: entry.name } : {}),
+      });
+    }
+    return out;
   }
 
   // ── Agents ────────────────────────────────────────────────────────────────

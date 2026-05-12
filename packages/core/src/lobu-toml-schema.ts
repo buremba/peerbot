@@ -200,6 +200,9 @@ const memorySchema = z
   .object({
     enabled: z.boolean().optional(),
     org: z.string().optional(),
+    /** Resolved organization id, written back by `lobu apply` once the org is
+     *  resolved or created. Committed so the whole team applies to the same org. */
+    organization_id: z.string().optional(),
     name: z.string().optional(),
     description: z.string().optional(),
     visibility: z.enum(["public", "private"]).optional(),

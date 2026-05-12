@@ -1,4 +1,5 @@
 import chalk from "chalk";
+import open from "open";
 import {
   getActiveOrg,
   listOrganizations,
@@ -53,4 +54,19 @@ export async function orgSetCommand(
   console.log(
     chalk.green(`\n  Active org for context ${target.name} set to ${slug}\n`)
   );
+}
+
+export async function orgCreateCommand(
+  slug: string,
+  options?: { name?: string; context?: string }
+): Promise<void> {
+  const target = await resolveContext(options?.context);
+  const origin = new URL(target.apiUrl).origin;
+  const name = options?.name?.trim() || slug;
+  const url = `${origin}/orgs/new?slug=${encodeURIComponent(slug)}&name=${encodeURIComponent(name)}`;
+  console.log(
+    chalk.bold(`\n  Opening ${url}`) +
+      chalk.dim("\n  (paste it into your browser if it doesn't open)\n")
+  );
+  await open(url).catch(() => undefined);
 }

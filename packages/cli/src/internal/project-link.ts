@@ -7,9 +7,6 @@ const LINK_FILE = "project.json";
 export interface ProjectLink {
   context: string;
   org: string;
-  /** Resolved organization id — recorded when `lobu apply` provisions or
-   *  resolves the org, so later commands can skip the slug→id lookup. */
-  organizationId?: string;
   /** ISO timestamp the link was written. */
   linkedAt: string;
 }
@@ -34,9 +31,6 @@ export async function loadProjectLink(
     return {
       context: parsed.context,
       org: parsed.org,
-      ...(typeof parsed.organizationId === "string"
-        ? { organizationId: parsed.organizationId }
-        : {}),
       linkedAt: parsed.linkedAt,
     };
   } catch {

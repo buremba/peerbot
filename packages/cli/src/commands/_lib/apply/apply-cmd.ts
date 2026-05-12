@@ -1,9 +1,9 @@
+import { readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import chalk from "chalk";
 import { resolveContext } from "../../../internal/context.js";
-import {
-  loadProjectLink,
-  saveProjectLink,
-} from "../../../internal/project-link.js";
+import { loadProjectLink } from "../../../internal/project-link.js";
+import { CONFIG_FILENAME } from "../../../config/loader.js";
 import { ApiError, ValidationError } from "../../memory/_lib/errors.js";
 import { printError, printText } from "../../memory/_lib/output.js";
 import {
@@ -28,17 +28,38 @@ import {
   validateAuthProfileAgainstConnector,
   validateConnectionAgainstConnector,
 } from "./desired-state.js";
-import {
-  confirmCreateOrg,
-  confirmCustomConnectors,
-  confirmPlan,
-} from "./prompt.js";
+import { confirmCustomConnectors, confirmPlan } from "./prompt.js";
 import {
   renderMissingSecrets,
   renderPlan,
   renderPostApplyPunchList,
   renderProgress,
 } from "./render.js";
+
+/**
+ * Write `organization_id = "<id>"` into the `[memory]` section of lobu.toml —
+ * replacing an existing value or inserting it just under the `[memory]` header.
+ * Surgical text edit; preserves comments and the rest of the file.
+ */
+async function writeMemoryOrganizationId(
+  cwd: string,
+  organizationId: string
+): Promise<void> {
+  const path = join(cwd, CONFIG_FILENAME);
+  const raw = await readFile(path, "utf-8");
+  const line = `organization_id = "${organizationId}"`;
+
+  if (/^\s*organization_id\s*=.*$/m.test(raw)) {
+    const next = raw.replace(/^\s*organization_id\s*=.*$/m, line);
+    if (next !== raw) await writeFile(path, next);
+    return;
+  }
+
+  const header = raw.match(/^\[memory\][^\n]*$/m);
+  if (!header || header.index === undefined) return;
+  const at = header.index + header[0].length;
+  await writeFile(path, `${raw.slice(0, at)}\n${line}${raw.slice(at)}`);
+}
 
 export interface ApplyOptions {
   cwd?: string;
@@ -783,7 +804,7 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
   // Org slug resolution: explicit --org ▸ active-session org ▸ `[memory].org`
   // from lobu.toml. The toml slug is the declarative default — if no org with
   // that slug exists yet, `lobu apply` offers to provision it (below).
-  const { client, orgSlug } = await resolveApplyClient({
+  const { client, orgSlug, apiBaseUrl } = await resolveApplyClient({
     url: opts.url,
     org: opts.org ?? state.memory?.org,
     fetchImpl: opts.fetchImpl,
@@ -820,39 +841,38 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
     }
   }
 
-  // Bootstrap a missing org. If the resolved slug doesn't match one of the
-  // operator's orgs, offer to create it (Railway `init`-style) and record the
-  // resolved id in `.lobu/project.json`. Older servers without the org-list
-  // endpoint return null → skip the check and let the normal flow surface any
-  // org error.
+  // Check the resolved org exists / the operator is a member. `lobu apply`
+  // can't create an org headlessly — that needs a logged-in browser session —
+  // so a missing org stops here with a link to create it. `listOrgs()` failing
+  // (old server, or a token the userinfo endpoint rejects) → null → skip the
+  // check and let the normal flow surface any org error.
   const myOrgs = await client.listOrgs().catch(() => null);
-  if (myOrgs !== null && !myOrgs.some((o) => o.slug === orgSlug)) {
+  const resolvedOrg =
+    myOrgs?.find((o) => o.slug === orgSlug) ??
+    (state.memory?.organizationId
+      ? myOrgs?.find((o) => o.id === state.memory?.organizationId)
+      : undefined);
+  if (myOrgs !== null && !resolvedOrg) {
     const orgName = state.memory?.name ?? slugToTitle(orgSlug);
-    if (opts.dryRun) {
-      printText(
-        chalk.cyan(`\n  + org ${orgSlug} (${orgName}) — would be created`)
-      );
-      printText(
-        chalk.dim(
-          `  then sync ${state.agents.length} agent(s), ${state.watchers.length} watcher(s), ${state.memorySchema.entityTypes.length} entity type(s) into it.\n`
-        )
-      );
-      printText(chalk.dim("Dry run — no changes applied."));
-      return;
-    }
-    const ok = await confirmCreateOrg(orgSlug, orgName, opts.yes ?? false);
-    if (!ok) {
-      printText(chalk.dim("\nCancelled."));
-      return;
-    }
-    const created = await client.createOrg({ slug: orgSlug, name: orgName });
-    const ctx = await resolveContext().catch(() => null);
-    await saveProjectLink(cwd, {
-      context: ctx?.name ?? link?.context ?? "prod",
-      org: created.slug || orgSlug,
-      ...(created.id ? { organizationId: created.id } : {}),
-    });
-    printText(chalk.green(`  ✓ created org ${created.slug || orgSlug}`));
+    const createUrl = `${apiBaseUrl}/orgs/new?slug=${encodeURIComponent(orgSlug)}&name=${encodeURIComponent(orgName)}`;
+    printError(
+      [
+        "",
+        `Organization "${orgSlug}" not found, or you're not a member.`,
+        "",
+        `  Create it:  ${createUrl}`,
+        `  (or:        \`lobu org create ${orgSlug}\`)`,
+        "",
+        "then re-run `lobu apply`. (Or target an existing org with `--org <slug>`.)",
+      ].join("\n")
+    );
+    throw new ValidationError(`organization "${orgSlug}" not found`);
+  }
+
+  // Persist the resolved org id back into lobu.toml so the whole team applies
+  // to the same org. Best-effort — a read-only lobu.toml must not fail apply.
+  if (resolvedOrg && state.memory?.organizationId !== resolvedOrg.id) {
+    await writeMemoryOrganizationId(cwd, resolvedOrg.id).catch(() => undefined);
   }
 
   // SECURITY (#4): confirm BEFORE fetching any `source_url` or uploading custom

@@ -7,12 +7,8 @@
  * db/migrations/20260512131703_connections_slug.sql.
  */
 
-import type postgres from 'postgres';
-import { getDb } from '../db/client';
+import { type DbClient, getDb } from '../db/client';
 import { generateSlug } from './entity-management';
-
-// Accepts either the singleton pool or a transaction handle from `sql.begin`.
-type Sql = postgres.Sql<Record<string, never>> | postgres.TransactionSql<Record<string, never>>;
 
 /**
  * Slugify a connection name: lowercase, runs of non-alphanumerics → `-`,
@@ -33,7 +29,8 @@ export function slugifyConnectionName(value: string | null | undefined): string 
  *   the org, append `-2`, `-3`, … until free.
  * - `excludeId` skips a specific connection row (used on update so a connection
  *   doesn't collide with itself).
- * - Pass `sql` to run inside an existing transaction (e.g. worker autowire).
+ * - Pass `db` to run inside an existing transaction (e.g. worker autowire) —
+ *   `sql.begin` hands the callback a `DbClient`-shaped handle.
  */
 export async function ensureUniqueConnectionSlug(params: {
   organizationId: string;
@@ -41,9 +38,9 @@ export async function ensureUniqueConnectionSlug(params: {
   explicitSlug?: string | null;
   displayName?: string | null;
   excludeId?: number | null;
-  sql?: Sql;
+  db?: DbClient;
 }): Promise<string> {
-  const sql = params.sql ?? getDb();
+  const sql = params.db ?? getDb();
   const fromExplicit = slugifyConnectionName(params.explicitSlug);
   const fromName = slugifyConnectionName(params.displayName);
   const baseSlug = fromExplicit || fromName || slugifyConnectionName(params.connectorKey) || 'connection';

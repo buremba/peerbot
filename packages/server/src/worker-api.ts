@@ -189,7 +189,7 @@ async function ensureDeviceConnectorWired(
           organizationId,
           connectorKey,
           displayName: metadata.name,
-          sql: tx,
+          db: tx,
         });
         const inserted = (await tx`
           INSERT INTO connections (

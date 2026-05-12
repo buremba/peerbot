@@ -95,6 +95,7 @@ export const QUERYABLE_SCHEMA = {
         'id',
         'organization_id',
         'connector_key',
+        'slug',
         'display_name',
         'status',
         'account_id',

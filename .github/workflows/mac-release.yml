@@ -1,0 +1,156 @@
+name: mac-release
+
+# Builds, signs, notarizes and ships Lobu for Mac.
+#
+# Trigger by pushing a tag like `mac-v0.1.0`, or run manually with a version.
+# Produces a notarized Lobu.dmg attached to a GitHub Release and bumps the
+# Homebrew cask in lobu-ai/homebrew-tap so `brew install --cask lobu-ai/tap/lobu`
+# always tracks the latest build.
+#
+# Required repo secrets (Settings → Secrets and variables → Actions):
+#   APPLE_CERT_P12_BASE64   base64 of a "Developer ID Application" .p12
+#   APPLE_CERT_PASSWORD     password for that .p12
+#   APPLE_TEAM_ID           10-char Apple Developer team id
+#   APPLE_ID                Apple ID email used for notarization
+#   APPLE_APP_PASSWORD      app-specific password for that Apple ID
+#   HOMEBREW_TAP_TOKEN      PAT with write access to lobu-ai/homebrew-tap
+#   APPLE_PROVISION_PROFILE_BASE64
+#                           base64 of a "Developer ID" provisioning profile for
+#                           the ai.lobu.mac App ID. Required because the app uses
+#                           the restricted `com.apple.developer.healthkit`
+#                           entitlement, which only validates when an embedded
+#                           profile grants it. Create it at developer.apple.com
+#                           (Certificates → Profiles → Developer ID) after
+#                           enabling HealthKit on the App ID.
+# An ephemeral keychain password is generated per run; no secret needed for it.
+#
+# Required repo variable (Settings → Secrets and variables → Actions → Variables):
+#   APPLE_PROVISION_PROFILE_NAME   the profile's "Name" exactly as shown in the
+#                                  Apple Developer portal (used as
+#                                  PROVISIONING_PROFILE_SPECIFIER).
+
+on:
+  push:
+    tags: ['mac-v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build, e.g. 0.1.0'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: v
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${GITHUB_REF_NAME#mac-v}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Import signing certificate
+        env:
+          CERT_P12_BASE64: ${{ secrets.APPLE_CERT_P12_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/build.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 24)"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          echo "$CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN"
+          security default-keychain -s "$KEYCHAIN"
+
+      - name: Install provisioning profile
+        env:
+          PROFILE_BASE64: ${{ secrets.APPLE_PROVISION_PROFILE_BASE64 }}
+        run: |
+          DEST="$HOME/Library/MobileDevice/Provisioning Profiles"
+          mkdir -p "$DEST"
+          echo "$PROFILE_BASE64" | base64 --decode > "$DEST/lobu_mac.provisionprofile"
+
+      - name: Archive
+        run: |
+          xcodebuild \
+            -project apps/mac/Lobu.xcodeproj \
+            -scheme Lobu \
+            -configuration Release \
+            -archivePath "$RUNNER_TEMP/Lobu.xcarchive" \
+            archive \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="Developer ID Application" \
+            DEVELOPMENT_TEAM="${{ secrets.APPLE_TEAM_ID }}" \
+            PROVISIONING_PROFILE_SPECIFIER="${{ vars.APPLE_PROVISION_PROFILE_NAME }}" \
+            ENABLE_HARDENED_RUNTIME=YES \
+            MARKETING_VERSION="${{ steps.v.outputs.version }}"
+
+      - name: Build DMG
+        run: |
+          # The archived app is already signed with Developer ID + hardened
+          # runtime by the Archive step, so we package it straight from the
+          # xcarchive — no -exportArchive / ExportOptions.plist dance needed.
+          APP="$RUNNER_TEMP/Lobu.xcarchive/Products/Applications/Lobu.app"
+          test -d "$APP" || { echo "::error::Lobu.app missing from archive"; exit 1; }
+          STAGE="$RUNNER_TEMP/dmg-stage"
+          mkdir -p "$STAGE"
+          cp -R "$APP" "$STAGE/"
+          brew install create-dmg
+          # create-dmg can exit non-zero on cosmetic AppleScript hiccups while
+          # still producing the image, so verify the artifact instead of $?.
+          create-dmg \
+            --volname "Lobu" \
+            --window-size 540 380 \
+            --icon-size 100 \
+            --icon "Lobu.app" 140 190 \
+            --app-drop-link 400 190 \
+            "$RUNNER_TEMP/Lobu.dmg" \
+            "$STAGE" || true
+          test -f "$RUNNER_TEMP/Lobu.dmg" || { echo "::error::DMG was not created"; exit 1; }
+
+      - name: Notarize and staple
+        run: |
+          xcrun notarytool submit "$RUNNER_TEMP/Lobu.dmg" \
+            --apple-id "${{ secrets.APPLE_ID }}" \
+            --team-id "${{ secrets.APPLE_TEAM_ID }}" \
+            --password "${{ secrets.APPLE_APP_PASSWORD }}" \
+            --wait
+          xcrun stapler staple "$RUNNER_TEMP/Lobu.dmg"
+
+      - name: Checksum
+        id: sum
+        run: echo "sha256=$(shasum -a 256 "$RUNNER_TEMP/Lobu.dmg" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: mac-v${{ steps.v.outputs.version }}
+          name: Lobu for Mac ${{ steps.v.outputs.version }}
+          files: ${{ runner.temp }}/Lobu.dmg
+
+      - name: Update Homebrew tap
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          VERSION="${{ steps.v.outputs.version }}"
+          SHA="${{ steps.sum.outputs.sha256 }}"
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/lobu-ai/homebrew-tap.git" tap
+          mkdir -p tap/Casks
+          sed -e "s/@VERSION@/$VERSION/g" -e "s/@SHA256@/$SHA/g" \
+            apps/mac/homebrew/lobu.rb.tmpl > tap/Casks/lobu.rb
+          cd tap
+          git config user.name "lobu-bot"
+          git config user.email "bot@lobu.ai"
+          git add Casks/lobu.rb
+          git commit -m "lobu ${VERSION}"
+          git push origin HEAD:refs/heads/main

@@ -1,0 +1,23 @@
+# Source template for the Homebrew cask. The mac-release workflow fills in
+# @VERSION@ / @SHA256@ and commits the result to lobu-ai/homebrew-tap as
+# Casks/lobu.rb, so users can `brew install --cask lobu-ai/tap/lobu`.
+cask "lobu" do
+  version "@VERSION@"
+  sha256 "@SHA256@"
+
+  url "https://github.com/lobu-ai/lobu/releases/download/mac-v#{version}/Lobu.dmg",
+      verified: "github.com/lobu-ai/lobu/"
+  name "Lobu"
+  desc "Menu bar app that syncs on-device data into your Lobu workspace"
+  homepage "https://lobu.ai/"
+
+  depends_on macos: ">= :sonoma"
+
+  app "Lobu.app"
+
+  zap trash: [
+    "~/Library/Application Support/ai.lobu.mac",
+    "~/Library/Caches/ai.lobu.mac",
+    "~/Library/Preferences/ai.lobu.mac.plist",
+  ]
+end

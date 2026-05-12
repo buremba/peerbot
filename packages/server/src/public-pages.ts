@@ -824,7 +824,33 @@ function buildNotFoundModel(
   };
 }
 
+// Per-page meta the base index.html ships sensible defaults for; we replace
+// rather than append so a public page never ends up with two of each.
+const OVERRIDDEN_META = [
+  'description',
+  'og:title',
+  'og:description',
+  'og:type',
+  'og:url',
+  'og:image',
+  'twitter:card',
+  'twitter:title',
+  'twitter:description',
+  'twitter:image',
+];
+
+function stripOverriddenHead(templateHtml: string): string {
+  const metaPattern = new RegExp(
+    `<meta\\s+(?:name|property)="(?:${OVERRIDDEN_META.join('|')})"[^>]*>\\s*`,
+    'gi'
+  );
+  return templateHtml
+    .replace(metaPattern, '')
+    .replace(/<link\s+rel="canonical"[^>]*>\s*/gi, '');
+}
+
 function injectIntoTemplate(templateHtml: string, model: PublicPageModel): string {
+  const ogImage = model.openGraphImage || `${new URL(model.canonicalUrl).origin}/lobu-og.png`;
   const headTags = [
     `<meta name="description" content="${escapeAttribute(model.description)}" />`,
     `<meta name="robots" content="${escapeAttribute(model.robots)}" />`,
@@ -833,15 +859,11 @@ function injectIntoTemplate(templateHtml: string, model: PublicPageModel): strin
     `<meta property="og:description" content="${escapeAttribute(model.description)}" />`,
     `<meta property="og:type" content="website" />`,
     `<meta property="og:url" content="${escapeAttribute(model.canonicalUrl)}" />`,
-    `<meta name="twitter:card" content="${model.openGraphImage ? 'summary_large_image' : 'summary'}" />`,
+    `<meta property="og:image" content="${escapeAttribute(ogImage)}" />`,
+    `<meta name="twitter:card" content="summary_large_image" />`,
     `<meta name="twitter:title" content="${escapeAttribute(model.title)}" />`,
     `<meta name="twitter:description" content="${escapeAttribute(model.description)}" />`,
-    model.openGraphImage
-      ? `<meta property="og:image" content="${escapeAttribute(model.openGraphImage)}" />`
-      : '',
-    model.openGraphImage
-      ? `<meta name="twitter:image" content="${escapeAttribute(model.openGraphImage)}" />`
-      : '',
+    `<meta name="twitter:image" content="${escapeAttribute(ogImage)}" />`,
     ...model.structuredData.map(
       (item) => `<script type="application/ld+json">${serializeForScript(item)}</script>`
     ),
@@ -849,7 +871,7 @@ function injectIntoTemplate(templateHtml: string, model: PublicPageModel): strin
     .filter(Boolean)
     .join('\n');
 
-  const withTitle = templateHtml.replace(
+  const withTitle = stripOverriddenHead(templateHtml).replace(
     /<title>.*?<\/title>/is,
     `<title>${escapeHtml(model.title)}</title>`
   );

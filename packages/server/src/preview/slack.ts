@@ -90,6 +90,19 @@ export function slackSurfaceType(channelId: string): SurfaceType {
 }
 
 /**
+ * `agent_channel_bindings.channel_id` stores Slack channels in the canonical
+ * `slack:<id>` form that the message-handler bridge looks up via `getBinding`
+ * (`thread.channelId`). The `/lobu link` slash command hands us the bare Slack
+ * channel id (`D…` / `C…`), so prefix it; a value that already carries a
+ * transport prefix is left as-is.
+ */
+export function canonicalSlackChannelId(channelId: string): string {
+  return /^[a-z]+:/i.test(channelId)
+    ? channelId
+    : `${SLACK_PLATFORM}:${channelId}`;
+}
+
+/**
  * POST /api/:orgSlug/preview/slack/claims — called by `lobu run` (authenticated
  * via mcpAuth) to mint a short-lived `/lobu link` code for one of the org's agents.
  */
@@ -179,8 +192,11 @@ export async function consumeSlackPreviewClaim(args: {
   teamId: string;
   channelId: string;
 }): Promise<ConsumeClaimResult> {
-  const { code, teamId, channelId } = args;
-  const surfaceType = slackSurfaceType(channelId);
+  const { code, teamId } = args;
+  const surfaceType = slackSurfaceType(args.channelId);
+  // Store the binding under the same `slack:<id>` key the message bridge uses
+  // for getBinding — the slash command gives us the bare channel id.
+  const channelId = canonicalSlackChannelId(args.channelId);
   const sql = getDb();
 
   return sql.begin(async (tx) => {

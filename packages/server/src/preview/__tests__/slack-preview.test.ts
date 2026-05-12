@@ -118,8 +118,8 @@ describe("Slack Preview claims + channel bindings", () => {
       organizationId: ORG_ID,
     });
 
-    // Resolvable by the same (platform, channel_id, team_id) lookup
-    // message-handler-bridge uses for every inbound Slack message.
+    // Stored under the canonical `slack:<id>` key the message-handler bridge
+    // looks up via getBinding — the bare slash-command channel id is prefixed.
     const sql = getDb();
     const rows = await sql`
       SELECT agent_id, platform, channel_id, team_id
@@ -129,7 +129,7 @@ describe("Slack Preview claims + channel bindings", () => {
     expect(rows[0]).toMatchObject({
       agent_id: AGENT_ID,
       platform: "slack",
-      channel_id: "D123",
+      channel_id: "slack:D123",
       team_id: TEAM_ID,
     });
 
@@ -155,7 +155,7 @@ describe("Slack Preview claims + channel bindings", () => {
     const sql = getDb();
     const rows = await sql`
       SELECT agent_id FROM agent_channel_bindings
-      WHERE platform = 'slack' AND channel_id = 'Csame' AND team_id = ${TEAM_ID}
+      WHERE platform = 'slack' AND channel_id = 'slack:Csame' AND team_id = ${TEAM_ID}
     `;
     expect(rows).toHaveLength(1);
     expect((rows[0] as { agent_id: string }).agent_id).toBe(OTHER_AGENT_ID);
@@ -188,8 +188,9 @@ describe("Slack Preview claims + channel bindings", () => {
     ).toEqual({ status: "surface_not_allowed", surfaceType: "channel" });
   });
 
-  test("a transport-prefixed DM channelId still counts as a dm and binds verbatim", async () => {
-    // The Slack bridge sometimes passes the Chat SDK thread id (`slack:D…`).
+  test("an already-`slack:`-prefixed DM channelId counts as a dm and is stored as-is", async () => {
+    // Callers that already pass the canonical thread id (`slack:D…`) shouldn't
+    // get it double-prefixed.
     const code = await createClaim(AGENT_ID, ["dm"]);
     expect(
       await consumeSlackPreviewClaim({
@@ -232,7 +233,7 @@ describe("Slack Preview claims + channel bindings", () => {
     const sql = getDb();
     const rows = await sql`
       SELECT agent_id FROM agent_channel_bindings
-      WHERE platform = 'slack' AND channel_id = 'D777' AND team_id = ${TEAM_ID}
+      WHERE platform = 'slack' AND channel_id = 'slack:D777' AND team_id = ${TEAM_ID}
     `;
     expect((rows[0] as { agent_id: string }).agent_id).toBe(AGENT_ID);
 

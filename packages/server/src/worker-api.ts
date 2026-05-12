@@ -184,7 +184,11 @@ async function ensureDeviceConnectorWired(
       connectionId = existingConn[0]?.id;
       if (!connectionId) {
         // Stable slug for `lobu apply` diffing — same generation path as
-        // manage_connections, run inside this transaction.
+        // manage_connections. No insert-retry here: this whole block runs
+        // under a `pg_advisory_xact_lock` keyed on (userId, connectorKey) plus
+        // the existence check above, so the slug can't be raced for this
+        // (org, connector, user) tuple — and a unique violation would abort
+        // the surrounding transaction, making a retry pointless anyway.
         const slug = await ensureUniqueConnectionSlug({
           organizationId,
           connectorKey,

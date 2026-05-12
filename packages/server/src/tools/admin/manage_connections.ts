@@ -38,7 +38,14 @@ import {
   summarizeBrowserSessionAuthData,
 } from '../../utils/auth-profiles';
 import { createConnectToken } from '../../utils/connect-tokens';
-import { ensureUniqueConnectionSlug } from '../../utils/connections';
+import {
+  ConnectionSlugConflictError,
+  connectionSlugFormatError,
+  connectionSlugTaken,
+  insertConnectionWithSlug,
+  isConnectionSlugUniqueViolation,
+  resolveNewConnectionSlug,
+} from '../../utils/connections';
 import { ensureConnectorInstalled } from '../../utils/ensure-connector-installed';
 import { applyEntityLinkOverrides } from '../../utils/entity-link-overrides';
 import { recordChangeEvent } from '../../utils/insert-event';
@@ -970,31 +977,46 @@ async function handleCreate(
       ? 'pending_auth'
       : 'active';
 
-  const slug = await ensureUniqueConnectionSlug({
+  const slugResult = await resolveNewConnectionSlug({
     organizationId,
     connectorKey: args.connector_key,
     explicitSlug: args.slug,
     displayName,
   });
+  if ('error' in slugResult) return { error: slugResult.error };
 
-  const inserted = await sql`
-    INSERT INTO connections (
-      organization_id, connector_key, slug, display_name, status,
-      auth_profile_id, app_auth_profile_id, config, created_by, visibility, device_worker_id
-    ) VALUES (
-      ${organizationId}, ${args.connector_key},
-      ${slug},
-      ${displayName},
-      ${connectionStatus},
-      ${interactiveAuthProfileId ?? authSelection?.authProfile?.id ?? null},
-      ${authSelection?.appAuthProfile?.id ?? null},
-      ${splitConfig.connectionConfig ? sql.json(splitConfig.connectionConfig) : null},
-      ${effectiveCreatedBy},
-      ${visibility},
-      ${deviceBinding.deviceWorkerId}
-    )
-    RETURNING *
-  `;
+  // biome-ignore lint/suspicious/noExplicitAny: postgres.js row shape
+  let inserted: any[];
+  try {
+    inserted = await insertConnectionWithSlug({
+      organizationId,
+      connectorKey: args.connector_key,
+      displayName,
+      initialSlug: slugResult.slug,
+      explicit: !!args.slug?.trim(),
+      doInsert: (slug) => sql`
+        INSERT INTO connections (
+          organization_id, connector_key, slug, display_name, status,
+          auth_profile_id, app_auth_profile_id, config, created_by, visibility, device_worker_id
+        ) VALUES (
+          ${organizationId}, ${args.connector_key},
+          ${slug},
+          ${displayName},
+          ${connectionStatus},
+          ${interactiveAuthProfileId ?? authSelection?.authProfile?.id ?? null},
+          ${authSelection?.appAuthProfile?.id ?? null},
+          ${splitConfig.connectionConfig ? sql.json(splitConfig.connectionConfig) : null},
+          ${effectiveCreatedBy},
+          ${visibility},
+          ${deviceBinding.deviceWorkerId}
+        )
+        RETURNING *
+      `,
+    });
+  } catch (err) {
+    if (err instanceof ConnectionSlugConflictError) return { error: err.message };
+    throw err;
+  }
 
   if (authSelection?.authProfile?.profile_kind === 'oauth_account') {
     await syncOAuthConnectionsForAuthProfile(organizationId, authSelection.authProfile.id);
@@ -1068,7 +1090,18 @@ async function handleConnect(
 
   const setupUrl = buildSetupUrl({ connectorKey: args.connector_key });
 
-  // Idempotent: reuse existing pending_auth connection with a valid connect token
+  // Validate an explicit slug up-front (same boundary check create does).
+  const explicitSlug = args.slug?.trim();
+  if (explicitSlug) {
+    const fmtErr = connectionSlugFormatError(explicitSlug);
+    if (fmtErr) return { error: fmtErr };
+  }
+
+  // Idempotent: reuse an existing pending_auth connection with a valid connect
+  // token for the same connector/user. When the caller asked for a specific
+  // slug, only reuse a pending row whose slug matches — otherwise we'd hand back
+  // a connection under the wrong stable identity, so fall through and create a
+  // fresh row with the requested slug instead.
   const pendingRows = await sql`
     SELECT c.id, c.slug, ct.token
     FROM connections c
@@ -1078,6 +1111,7 @@ async function handleConnect(
       AND c.connector_key = ${args.connector_key}
       AND c.status = 'pending_auth'
       AND c.deleted_at IS NULL
+      ${explicitSlug ? sql`AND c.slug = ${explicitSlug}` : sql``}
       ${userId ? sql`AND c.created_by = ${userId}` : sql``}
     ORDER BY ct.created_at DESC
     LIMIT 1
@@ -1180,30 +1214,45 @@ async function handleConnect(
     };
   }
 
-  const connectSlug = await ensureUniqueConnectionSlug({
+  const connectSlugResult = await resolveNewConnectionSlug({
     organizationId,
     connectorKey: args.connector_key,
     explicitSlug: args.slug,
     displayName: connectDisplayName,
   });
+  if ('error' in connectSlugResult) return { error: connectSlugResult.error, setup_url: setupUrl };
 
-  const insertedConn = await sql`
-    INSERT INTO connections (
-      organization_id, connector_key, slug, display_name, status,
-      auth_profile_id, app_auth_profile_id, config, created_by, visibility
-    ) VALUES (
-      ${organizationId}, ${args.connector_key},
-      ${connectSlug},
-      ${connectDisplayName},
-      ${connectionStatus},
-      ${authSelection.authProfile?.id ?? null},
-      ${authSelection.appAuthProfile?.id ?? null},
-      ${splitConfig.connectionConfig ? sql.json(splitConfig.connectionConfig) : null},
-      ${userId},
-      ${connectVisibility}
-    )
-    RETURNING *
-  `;
+  // biome-ignore lint/suspicious/noExplicitAny: postgres.js row shape
+  let insertedConn: any[];
+  try {
+    insertedConn = await insertConnectionWithSlug({
+      organizationId,
+      connectorKey: args.connector_key,
+      displayName: connectDisplayName,
+      initialSlug: connectSlugResult.slug,
+      explicit: !!args.slug?.trim(),
+      doInsert: (slug) => sql`
+        INSERT INTO connections (
+          organization_id, connector_key, slug, display_name, status,
+          auth_profile_id, app_auth_profile_id, config, created_by, visibility
+        ) VALUES (
+          ${organizationId}, ${args.connector_key},
+          ${slug},
+          ${connectDisplayName},
+          ${connectionStatus},
+          ${authSelection.authProfile?.id ?? null},
+          ${authSelection.appAuthProfile?.id ?? null},
+          ${splitConfig.connectionConfig ? sql.json(splitConfig.connectionConfig) : null},
+          ${userId},
+          ${connectVisibility}
+        )
+        RETURNING *
+      `,
+    });
+  } catch (err) {
+    if (err instanceof ConnectionSlugConflictError) return { error: err.message, setup_url: setupUrl };
+    throw err;
+  }
 
   const connection = insertedConn[0] as {
     id: number;
@@ -1469,29 +1518,46 @@ async function handleUpdate(
 
   // Slug is only ever changed when the caller passes one explicitly — a
   // display_name change never touches it (that's the whole point of a stable
-  // identity for `lobu apply`).
-  const nextSlug =
-    args.slug && args.slug.trim().length > 0
-      ? await ensureUniqueConnectionSlug({
-          organizationId,
-          connectorKey: existing.connector_key,
-          explicitSlug: args.slug,
-          excludeId: args.connection_id,
-        })
-      : null;
+  // identity for `lobu apply`). An explicit slug is validated for format and
+  // rejected on collision (never auto-suffixed).
+  let nextSlug: string | null = null;
+  const updateExplicitSlug = args.slug?.trim();
+  if (updateExplicitSlug) {
+    const fmtErr = connectionSlugFormatError(updateExplicitSlug);
+    if (fmtErr) return { error: fmtErr };
+    if (
+      await connectionSlugTaken({
+        organizationId,
+        slug: updateExplicitSlug,
+        excludeId: args.connection_id,
+      })
+    ) {
+      return { error: `Connection slug '${updateExplicitSlug}' already exists for this organization.` };
+    }
+    nextSlug = updateExplicitSlug;
+  }
 
-  const updated = await sql`
-    UPDATE connections
-    SET display_name = COALESCE(${args.display_name ?? null}, display_name),
-        slug = COALESCE(${nextSlug}, slug),
-        status = COALESCE(${effectiveStatus}, status),
-        auth_profile_id = ${nextAuthProfileId},
-        app_auth_profile_id = ${nextAppAuthProfileId},
-        config = CASE WHEN ${splitConfig.connectionConfig ? sql.json(splitConfig.connectionConfig) : null}::jsonb IS NOT NULL THEN COALESCE(config, '{}'::jsonb) || ${splitConfig.connectionConfig ? sql.json(splitConfig.connectionConfig) : null}::jsonb ELSE config END,
-        updated_at = NOW()
-    WHERE id = ${args.connection_id} AND organization_id = ${organizationId} AND deleted_at IS NULL
-    RETURNING *
-  `;
+  // biome-ignore lint/suspicious/noExplicitAny: postgres.js row shape
+  let updated: any[];
+  try {
+    updated = await sql`
+      UPDATE connections
+      SET display_name = COALESCE(${args.display_name ?? null}, display_name),
+          slug = COALESCE(${nextSlug}, slug),
+          status = COALESCE(${effectiveStatus}, status),
+          auth_profile_id = ${nextAuthProfileId},
+          app_auth_profile_id = ${nextAppAuthProfileId},
+          config = CASE WHEN ${splitConfig.connectionConfig ? sql.json(splitConfig.connectionConfig) : null}::jsonb IS NOT NULL THEN COALESCE(config, '{}'::jsonb) || ${splitConfig.connectionConfig ? sql.json(splitConfig.connectionConfig) : null}::jsonb ELSE config END,
+          updated_at = NOW()
+      WHERE id = ${args.connection_id} AND organization_id = ${organizationId} AND deleted_at IS NULL
+      RETURNING *
+    `;
+  } catch (err) {
+    if (isConnectionSlugUniqueViolation(err) && updateExplicitSlug) {
+      return { error: `Connection slug '${updateExplicitSlug}' already exists for this organization.` };
+    }
+    throw err;
+  }
 
   if (hasDeviceWorkerArg) {
     await sql`

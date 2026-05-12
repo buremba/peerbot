@@ -4,19 +4,38 @@
  * Covers the stable `connections.slug` added so `lobu apply` can diff
  * connections by an immutable key: slugify rules, auto-generation from
  * display_name, per-org collision suffixing, cross-org reuse, the partial
- * unique index (live rows only), and the `excludeId` no-op on update.
+ * unique index (live rows only), the `excludeId` no-op on update, the explicit
+ * -slug guard (format validation + error-not-suffix on collision), the
+ * concurrent-create insert retry, and that the migration backfill semantics
+ * (deterministic base / base-N, soft-deleted rows excluded) agree with the
+ * runtime helpers (`utils/connections.ts` — the source of truth).
  *
- * The `manage_connections(update)` tool only touches `slug` when the caller
- * passes one explicitly — that wiring is exercised at the helper level here
- * (`ensureUniqueConnectionSlug({ excludeId })`) plus the schema/handler in
- * manage_connections.ts; a full tool-level test needs a connector definition
- * + env scaffolding that PR 2 (CLI apply) brings in.
+ * The `manage_connections` tool handlers thread these helpers (schema +
+ * `resolveNewConnectionSlug` / `insertConnectionWithSlug` / `connectionSlugFormatError`);
+ * a full tool-level harness needs a connector definition + env scaffolding that
+ * PR 2 (CLI apply) brings in.
  */
 
 import { beforeEach, describe, expect, it } from 'vitest';
-import { ensureUniqueConnectionSlug, slugifyConnectionName } from '../../../utils/connections';
+import {
+  CONNECTION_SLUG_PATTERN,
+  ConnectionSlugConflictError,
+  connectionSlugFormatError,
+  ensureUniqueConnectionSlug,
+  insertConnectionWithSlug,
+  resolveNewConnectionSlug,
+  slugifyConnectionName,
+} from '../../../utils/connections';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import { createTestConnection, createTestOrganization } from '../../setup/test-fixtures';
+
+async function rawInsertConnection(orgId: string, slug: string, displayName: string): Promise<void> {
+  const sql = getTestDb();
+  await sql`
+    INSERT INTO connections (organization_id, connector_key, slug, display_name, status, visibility, created_at, updated_at)
+    VALUES (${orgId}, 'x', ${slug}, ${displayName}, 'active', 'org', NOW(), NOW())
+  `;
+}
 
 describe('connections.slug', () => {
   beforeEach(async () => {
@@ -143,5 +162,126 @@ describe('connections.slug', () => {
       excludeId: conn.id,
     });
     expect(slug).toBe('keep-me');
+  });
+
+  // ── explicit-slug guard ────────────────────────────────────────────────────
+
+  it('rejects malformed explicit slugs at the boundary', () => {
+    expect(connectionSlugFormatError('valid-slug-1')).toBeNull();
+    expect(connectionSlugFormatError('a')).toBeNull();
+    expect(connectionSlugFormatError('UPPER')).not.toBeNull();
+    expect(connectionSlugFormatError('-leading')).not.toBeNull();
+    expect(connectionSlugFormatError('has space')).not.toBeNull();
+    expect(connectionSlugFormatError('dot.slug')).not.toBeNull();
+    expect(connectionSlugFormatError('a'.repeat(64))).not.toBeNull();
+    expect(connectionSlugFormatError('a'.repeat(63))).toBeNull();
+    expect(CONNECTION_SLUG_PATTERN.test('ok-1')).toBe(true);
+  });
+
+  it('resolveNewConnectionSlug errors (does NOT suffix) on an explicit-slug collision', async () => {
+    const org = await createTestOrganization({ name: 'Slug Org G' });
+    await rawInsertConnection(org.id, 'taken-slug', 'First');
+
+    const explicitConflict = await resolveNewConnectionSlug({
+      organizationId: org.id,
+      connectorKey: 'x',
+      explicitSlug: 'taken-slug',
+      displayName: 'Second',
+    });
+    expect(explicitConflict).toEqual({
+      error: `Connection slug 'taken-slug' already exists for this organization.`,
+    });
+
+    // Same display name, no explicit slug → auto-generate-and-suffix is fine.
+    const auto = await resolveNewConnectionSlug({
+      organizationId: org.id,
+      connectorKey: 'x',
+      displayName: 'Taken Slug',
+    });
+    expect(auto).toEqual({ slug: 'taken-slug-2' });
+  });
+
+  it('resolveNewConnectionSlug rejects a malformed explicit slug', async () => {
+    const org = await createTestOrganization({ name: 'Slug Org G2' });
+    const res = await resolveNewConnectionSlug({
+      organizationId: org.id,
+      connectorKey: 'x',
+      explicitSlug: 'Bad Slug',
+    });
+    expect('error' in res).toBe(true);
+  });
+
+  it('insertConnectionWithSlug: explicit conflict throws ConnectionSlugConflictError (no retry)', async () => {
+    const org = await createTestOrganization({ name: 'Slug Org H' });
+    await rawInsertConnection(org.id, 'race-slug', 'Existing');
+    const sql = getTestDb();
+    await expect(
+      insertConnectionWithSlug({
+        organizationId: org.id,
+        connectorKey: 'x',
+        displayName: 'New',
+        initialSlug: 'race-slug',
+        explicit: true,
+        doInsert: (s) => sql`
+          INSERT INTO connections (organization_id, connector_key, slug, display_name, status, visibility, created_at, updated_at)
+          VALUES (${org.id}, 'x', ${s}, 'New', 'active', 'org', NOW(), NOW())
+          RETURNING *
+        `,
+      })
+    ).rejects.toBeInstanceOf(ConnectionSlugConflictError);
+  });
+
+  it('insertConnectionWithSlug: auto-generated path retries on conflict with a fresh suffix', async () => {
+    const org = await createTestOrganization({ name: 'Slug Org I' });
+    await rawInsertConnection(org.id, 'busy', 'Existing');
+    const sql = getTestDb();
+    const inserted = (await insertConnectionWithSlug({
+      organizationId: org.id,
+      connectorKey: 'x',
+      displayName: 'Busy',
+      initialSlug: 'busy', // stale candidate — already taken
+      explicit: false,
+      doInsert: (s) => sql`
+        INSERT INTO connections (organization_id, connector_key, slug, display_name, status, visibility, created_at, updated_at)
+        VALUES (${org.id}, 'x', ${s}, 'Busy', 'active', 'org', NOW(), NOW())
+        RETURNING *
+      `,
+    })) as Array<{ slug: string }>;
+    expect(inserted[0]?.slug).toBe('busy-2');
+  });
+
+  // ── backfill collision resolution / runtime agreement ─────────────────────
+
+  it('backfill semantics: deterministic base / base-N among colliding rows, soft-deleted rows excluded', async () => {
+    // createTestConnection inserts via ensureUniqueConnectionSlug — the same
+    // algorithm the migration backfill mirrors. A soft-deleted row keeps the
+    // clean slug and does NOT consume a suffix slot for live rows.
+    const org = await createTestOrganization({ name: 'Slug Org J' });
+    const sql = getTestDb();
+    await rawInsertConnection(org.id, 'collide', 'Soft Deleted');
+    await sql`UPDATE connections SET deleted_at = NOW() WHERE organization_id = ${org.id} AND slug = 'collide'`;
+
+    await createTestConnection({ organization_id: org.id, connector_key: 'x', display_name: 'Collide' });
+    await createTestConnection({ organization_id: org.id, connector_key: 'x', display_name: 'Collide' });
+    await createTestConnection({ organization_id: org.id, connector_key: 'x', display_name: 'Collide' });
+
+    const live = await sql`
+      SELECT slug FROM connections
+      WHERE organization_id = ${org.id} AND deleted_at IS NULL
+      ORDER BY id
+    `;
+    expect(live.map((r) => r.slug as string)).toEqual(['collide', 'collide-2', 'collide-3']);
+  });
+
+  it('backfill slugify rules agree with slugifyConnectionName', () => {
+    // The migration uses lower(...) + regexp_replace('[^a-z0-9]+'->'-') + trim,
+    // which is exactly slugifyConnectionName / generateSlug.
+    for (const sample of ['Acme Gmail', 'X', 'a.b.c', '  weird__name!! ', '日本語 mix 7']) {
+      const expected = sample
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '');
+      expect(slugifyConnectionName(sample)).toBe(expected);
+    }
   });
 });

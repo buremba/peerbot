@@ -3,12 +3,45 @@
  *
  * Connections carry a stable `slug` (unique per org among live rows) so that
  * `lobu apply` can diff connections by an immutable key instead of the mutable
- * `display_name`. The slugify rules here MUST stay in sync with the backfill in
- * db/migrations/20260512131703_connections_slug.sql.
+ * `display_name`. The slugify rules here are the source of truth — the backfill
+ * in db/migrations/20260512131703_connections_slug.sql mirrors their semantics.
  */
 
 import { type DbClient, getDb } from '../db/client';
 import { generateSlug } from './entity-management';
+
+/**
+ * Server-side slug format guard. Lowercase letters/digits/hyphens, 1–63 chars,
+ * must start with an alphanumeric. The CLI `apply` pipeline will eventually
+ * apply the same validation; enforce it at the API boundary now.
+ */
+export const CONNECTION_SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
+
+export function connectionSlugFormatError(slug: string): string | null {
+  if (CONNECTION_SLUG_PATTERN.test(slug)) return null;
+  return `Invalid connection slug '${slug}'. Slugs must be 1–63 chars of lowercase letters, digits, and hyphens, starting with a letter or digit (pattern ${CONNECTION_SLUG_PATTERN.source}).`;
+}
+
+/** Thrown when a connection insert hits the per-org slug unique constraint. */
+export class ConnectionSlugConflictError extends Error {
+  constructor(public readonly slug: string) {
+    super(`Connection slug '${slug}' already exists for this organization.`);
+    this.name = 'ConnectionSlugConflictError';
+  }
+}
+
+const PG_UNIQUE_VIOLATION = '23505';
+const CONNECTION_SLUG_CONSTRAINT = 'connections_org_slug_unique';
+
+/** True when a thrown DB error is the per-org connection-slug unique violation. */
+export function isConnectionSlugUniqueViolation(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const e = err as { code?: unknown; constraint_name?: unknown; message?: unknown };
+  if (e.code !== PG_UNIQUE_VIOLATION) return false;
+  if (typeof e.constraint_name === 'string') return e.constraint_name === CONNECTION_SLUG_CONSTRAINT;
+  // Fallback when the driver doesn't surface the constraint name.
+  return typeof e.message === 'string' && e.message.includes(CONNECTION_SLUG_CONSTRAINT);
+}
 
 /**
  * Slugify a connection name: lowercase, runs of non-alphanumerics → `-`,
@@ -20,17 +53,40 @@ export function slugifyConnectionName(value: string | null | undefined): string 
   return generateSlug(value);
 }
 
+/** Whether a slug is already used by a live (`deleted_at IS NULL`) connection in the org. */
+export async function connectionSlugTaken(params: {
+  organizationId: string;
+  slug: string;
+  excludeId?: number | null;
+  db?: DbClient;
+}): Promise<boolean> {
+  const sql = params.db ?? getDb();
+  const rows = await sql`
+    SELECT 1
+    FROM connections
+    WHERE organization_id = ${params.organizationId}
+      AND slug = ${params.slug}
+      AND deleted_at IS NULL
+      AND (${params.excludeId ?? null}::bigint IS NULL OR id <> ${params.excludeId ?? null}::bigint)
+    LIMIT 1
+  `;
+  return rows.length > 0;
+}
+
 /**
- * Resolve a unique connection slug for an org.
+ * Generate a unique connection slug for an org (auto-generate path only — never
+ * pass a caller-supplied explicit slug here, since this auto-suffixes on
+ * collision which would silently break a caller's stable identity).
  *
- * - Prefer an explicit slug, then the slugified display name, then
- *   `connectorKey` as the base.
- * - If the base is taken by another live (`deleted_at IS NULL`) connection in
- *   the org, append `-2`, `-3`, … until free.
- * - `excludeId` skips a specific connection row (used on update so a connection
- *   doesn't collide with itself).
- * - Pass `db` to run inside an existing transaction (e.g. worker autowire) —
- *   `sql.begin` hands the callback a `DbClient`-shaped handle.
+ * - base = slugify(displayName) → slugify(connectorKey) → 'connection'
+ * - if `base` is taken by another live connection in the org, try `base-2`,
+ *   `base-3`, … until free.
+ * - `explicitSlug` is treated only as a *base hint* (still auto-suffixed) — used
+ *   by test fixtures that want collision-tolerant seed data, not by the API.
+ * - `excludeId` skips a specific connection row (so a row doesn't collide with
+ *   itself on update).
+ * - Pass `db` to run inside an existing transaction (`sql.begin` hands the
+ *   callback a `DbClient`-shaped handle).
  */
 export async function ensureUniqueConnectionSlug(params: {
   organizationId: string;
@@ -43,22 +99,95 @@ export async function ensureUniqueConnectionSlug(params: {
   const sql = params.db ?? getDb();
   const fromExplicit = slugifyConnectionName(params.explicitSlug);
   const fromName = slugifyConnectionName(params.displayName);
-  const baseSlug = fromExplicit || fromName || slugifyConnectionName(params.connectorKey) || 'connection';
+  const baseSlug =
+    fromExplicit || fromName || slugifyConnectionName(params.connectorKey) || 'connection';
 
   let candidate = baseSlug;
   let suffix = 2;
   for (;;) {
-    const rows = await sql`
-      SELECT id
-      FROM connections
-      WHERE organization_id = ${params.organizationId}
-        AND slug = ${candidate}
-        AND deleted_at IS NULL
-        AND (${params.excludeId ?? null}::bigint IS NULL OR id <> ${params.excludeId ?? null}::bigint)
-      LIMIT 1
-    `;
-    if (rows.length === 0) return candidate;
+    const taken = await connectionSlugTaken({
+      organizationId: params.organizationId,
+      slug: candidate,
+      excludeId: params.excludeId,
+      db: sql,
+    });
+    if (!taken) return candidate;
     candidate = `${baseSlug}-${suffix}`;
     suffix += 1;
+  }
+}
+
+/**
+ * Resolve the slug for a *new* connection row from the tool args.
+ *
+ * - Explicit slug → validate the format and reject (no auto-suffixing) if it's
+ *   already taken in the org. Returns `{ error }` for the caller to surface.
+ * - No explicit slug → auto-generate-and-suffix from `displayName` /
+ *   `connectorKey`.
+ */
+export async function resolveNewConnectionSlug(params: {
+  organizationId: string;
+  connectorKey: string;
+  explicitSlug?: string | null;
+  displayName?: string | null;
+  db?: DbClient;
+}): Promise<{ slug: string } | { error: string }> {
+  const explicit = params.explicitSlug?.trim();
+  if (explicit) {
+    const fmtErr = connectionSlugFormatError(explicit);
+    if (fmtErr) return { error: fmtErr };
+    if (await connectionSlugTaken({ organizationId: params.organizationId, slug: explicit, db: params.db })) {
+      return { error: `Connection slug '${explicit}' already exists for this organization.` };
+    }
+    return { slug: explicit };
+  }
+  return {
+    slug: await ensureUniqueConnectionSlug({
+      organizationId: params.organizationId,
+      connectorKey: params.connectorKey,
+      displayName: params.displayName,
+      db: params.db,
+    }),
+  };
+}
+
+/**
+ * Insert a connection row with slug-conflict handling.
+ *
+ * `doInsert(slug)` performs the actual `INSERT ... RETURNING *` with the given
+ * slug. Because `resolveNewConnectionSlug`'s "is it taken?" check and the insert
+ * aren't atomic, two concurrent creates can race on the same candidate:
+ *   - explicit slug (`explicit: true`): a conflict is fatal — throw
+ *     `ConnectionSlugConflictError` (caller maps it to `{ error }`).
+ *   - auto-generated: retry up to `maxAttempts`, regenerating a fresh suffix
+ *     each time; if still conflicting, surface the conflict.
+ */
+export async function insertConnectionWithSlug<T>(opts: {
+  organizationId: string;
+  connectorKey: string;
+  displayName?: string | null;
+  initialSlug: string;
+  explicit: boolean;
+  doInsert: (slug: string) => Promise<T>;
+  db?: DbClient;
+  maxAttempts?: number;
+}): Promise<T> {
+  const maxAttempts = opts.explicit ? 1 : (opts.maxAttempts ?? 5);
+  let slug = opts.initialSlug;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await opts.doInsert(slug);
+    } catch (err) {
+      if (!isConnectionSlugUniqueViolation(err) || attempt >= maxAttempts) {
+        if (isConnectionSlugUniqueViolation(err)) throw new ConnectionSlugConflictError(slug);
+        throw err;
+      }
+      slug = await ensureUniqueConnectionSlug({
+        organizationId: opts.organizationId,
+        connectorKey: opts.connectorKey,
+        displayName: opts.displayName,
+        db: opts.db,
+      });
+    }
   }
 }

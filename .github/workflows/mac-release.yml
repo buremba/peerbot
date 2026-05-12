@@ -2,10 +2,12 @@ name: mac-release
 
 # Builds, signs, notarizes and ships Lobu for Mac.
 #
-# Trigger by pushing a tag like `mac-v0.1.0`, or run manually with a version.
-# Produces a notarized Lobu.dmg attached to a GitHub Release and bumps the
-# Homebrew cask in lobu-ai/homebrew-tap so `brew install --cask lobu-ai/tap/lobu`
-# always tracks the latest build.
+# Runs automatically as part of release CD: when release-please cuts a release,
+# release-please.yml dispatches this workflow with that version. Can also be run
+# manually (workflow_dispatch) with a version. It attaches a notarized Lobu.dmg
+# to the existing `lobu-v<version>` GitHub Release — so `releases/latest/download/
+# Lobu.dmg` always points at the current build — and bumps the Homebrew cask in
+# lobu-ai/homebrew-tap so `brew install --cask lobu-ai/tap/lobu` tracks it too.
 #
 # Required repo secrets (Settings → Secrets and variables → Actions):
 #   APPLE_CERT_P12_BASE64   base64 of a "Developer ID Application" .p12
@@ -30,12 +32,10 @@ name: mac-release
 #                                  PROVISIONING_PROFILE_SPECIFIER).
 
 on:
-  push:
-    tags: ['mac-v*']
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to build, e.g. 0.1.0'
+        description: 'Release version, e.g. 0.42.0 (must have a lobu-v<version> release)'
         required: true
 
 permissions:
@@ -49,12 +49,7 @@ jobs:
 
       - name: Resolve version
         id: v
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "version=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "version=${GITHUB_REF_NAME#mac-v}" >> "$GITHUB_OUTPUT"
-          fi
+        run: echo "version=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
 
       - name: Import signing certificate
         env:
@@ -131,12 +126,12 @@ jobs:
         id: sum
         run: echo "sha256=$(shasum -a 256 "$RUNNER_TEMP/Lobu.dmg" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
-      - name: Publish GitHub Release
+      - name: Attach DMG to the release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: mac-v${{ steps.v.outputs.version }}
-          name: Lobu for Mac ${{ steps.v.outputs.version }}
+          tag_name: lobu-v${{ steps.v.outputs.version }}
           files: ${{ runner.temp }}/Lobu.dmg
+          fail_on_unmatched_files: true
 
       - name: Update Homebrew tap
         env:

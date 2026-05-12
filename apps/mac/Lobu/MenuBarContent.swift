@@ -421,20 +421,33 @@ struct MenuBarContent: View {
     // MARK: Footer
     // -------------------------------------------------------------------------
 
+    /// Where new builds are published by the `mac-release` CI job (one DMG per
+    /// Lobu release). "Check for updates" just opens this page.
+    private static let releasesURL = URL(string: "https://github.com/lobu-ai/lobu/releases/latest")!
+
+    private var appVersion: String {
+        let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
+        return v.map { "v\($0)" } ?? ""
+    }
+
     private var footerRow: some View {
-        HStack {
+        HStack(spacing: 10) {
             Button("Quit Lobu") {
                 state.stopLocalLobu()
                 NSApplication.shared.terminate(nil)
             }
                 .buttonStyle(.plain)
                 .font(.caption)
+            Button("Check for Updates \u{2197}") {
+                NSWorkspace.shared.open(Self.releasesURL)
+            }
+                .buttonStyle(.plain)
+                .font(.caption)
             Spacer()
-            Text(state.baseURL.replacingOccurrences(of: "https://", with: ""))
+            Text(appVersion)
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
                 .lineLimit(1)
-                .truncationMode(.middle)
         }
         .menuRow()
     }

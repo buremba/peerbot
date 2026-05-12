@@ -53,7 +53,7 @@ models = "./custom-models"
     });
   }
 
-  test("keeps inline [memory.schema] support", () => {
+  test("rejects the removed inline [memory.schema] block", () => {
     const parsed = parseToml(`${BASE_AGENT}
 [memory]
 enabled = true
@@ -66,9 +66,6 @@ slug = "person"
 
     const result = lobuConfigSchema.safeParse(parsed);
 
-    expect(result.success).toBe(true);
-    if (result.success) {
-      expect(result.data.memory?.schema?.entity_types).toHaveLength(1);
-    }
+    expect(result.success).toBe(false);
   });
 });

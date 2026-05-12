@@ -357,7 +357,7 @@ entities:
     ]);
   });
 
-  test("reads inline [memory.schema] entity/relationship types with metadata_schema", async () => {
+  test("rejects the removed inline [memory.schema] block", async () => {
     const dir = mkProject(
       `[agents.triage]
 name = "Triage"
@@ -370,31 +370,10 @@ org = "dev"
 [[memory.schema.entity_types]]
 slug = "account"
 name = "Account"
-metadata_schema = { type = "object", required = ["tier"], properties = { tier = { type = "string" } } }
-
-[[memory.schema.relationship_types]]
-slug = "owns"
-name = "Owns"
-rules = [{ source = "account", target = "product" }]
 `
     );
 
-    const { state } = await loadDesiredState({ cwd: dir });
-    expect(state.memorySchema.entityTypes).toEqual([
-      {
-        slug: "account",
-        name: "Account",
-        required: ["tier"],
-        properties: { tier: { type: "string" } },
-      },
-    ]);
-    expect(state.memorySchema.relationshipTypes).toEqual([
-      {
-        slug: "owns",
-        name: "Owns",
-        rules: [{ source: "account", target: "product" }],
-      },
-    ]);
+    await expect(loadDesiredState({ cwd: dir })).rejects.toThrow();
   });
 
   test("surfaces a YAML syntax error with file context", async () => {

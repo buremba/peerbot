@@ -196,11 +196,6 @@ const agentEntrySchema = z.object({
 
 // ── Memory ─────────────────────────────────────────────────────────────────
 
-const memoryInlineSchema = z.object({
-  entity_types: z.array(z.unknown()).optional(),
-  relationship_types: z.array(z.unknown()).optional(),
-});
-
 const memorySchema = z
   .object({
     enabled: z.boolean().optional(),
@@ -211,7 +206,6 @@ const memorySchema = z
     models: z.string().optional(),
     data: z.string().optional(),
     connectors: z.string().optional(),
-    schema: memoryInlineSchema.optional(),
   })
   .strict();
 

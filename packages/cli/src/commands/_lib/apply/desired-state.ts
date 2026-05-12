@@ -690,11 +690,6 @@ function buildPlatforms(
   return out;
 }
 
-interface RawMemorySchema {
-  entity_types?: unknown;
-  relationship_types?: unknown;
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -702,7 +697,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function parseEntityType(raw: unknown): DesiredEntityType {
   if (!isRecord(raw) || typeof raw.slug !== "string") {
     throw new ValidationError(
-      `memory.entity_types entries must be objects with a "slug" string field; got ${JSON.stringify(raw)}`
+      `model-bundle "entities" entries must be objects with a "slug" string field; got ${JSON.stringify(raw)}`
     );
   }
   const out: DesiredEntityType = { slug: raw.slug };
@@ -759,7 +754,7 @@ function parseWatcher(raw: unknown): DesiredWatcher {
 function parseRelationshipType(raw: unknown): DesiredRelationshipType {
   if (!isRecord(raw) || typeof raw.slug !== "string") {
     throw new ValidationError(
-      `memory.relationship_types entries must be objects with a "slug" string field; got ${JSON.stringify(raw)}`
+      `model-bundle "relationships" entries must be objects with a "slug" string field; got ${JSON.stringify(raw)}`
     );
   }
   const out: DesiredRelationshipType = { slug: raw.slug };
@@ -806,23 +801,6 @@ async function loadMemoryModels(
   };
   const mem = config.memory;
   if (!mem || mem.enabled === false) return empty;
-
-  const inline = config.memory as unknown as
-    | { schema?: RawMemorySchema }
-    | undefined;
-  if (inline?.schema) {
-    const entityTypesRaw = Array.isArray(inline.schema.entity_types)
-      ? inline.schema.entity_types
-      : [];
-    const relTypesRaw = Array.isArray(inline.schema.relationship_types)
-      ? inline.schema.relationship_types
-      : [];
-    return {
-      entityTypes: entityTypesRaw.map(parseEntityType),
-      relationshipTypes: relTypesRaw.map(parseRelationshipType),
-      watchers: [],
-    };
-  }
 
   // Models directory (matches seed-cmd's resolution rules).
   const modelsRel = mem.models?.trim() || "./models";

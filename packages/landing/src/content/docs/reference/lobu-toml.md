@@ -140,7 +140,6 @@ project/
 | `visibility` | string | no | `public` or `private`; defaults to Lobu's account setting |
 | `models` | string | no | Path to Lobu `version: 2` model bundle YAML files, usually `./models` |
 | `data` | string | no | Path to Lobu seed data, usually `./data` |
-| `schema` | table | no | Inline memory schema — `entity_types` / `relationship_types` arrays (see [`[memory.schema]`](#memory-inline-schema-memoryschema) below) |
 
 When `[memory]` is enabled, Lobu reads `org` directly from `lobu.toml` and derives the effective Lobu MCP endpoint. `MEMORY_URL` remains available as an optional base-endpoint override for local or custom Lobu deployments. The `[memory]` table is strict — unknown keys fail validation.
 
@@ -339,30 +338,9 @@ dir = "./agents/assistant"
 guardrails = ["secret-scan", "prompt-injection"]
 ```
 
-### `[memory]` inline schema (`[memory.schema]`)
+### Memory model schema
 
-In addition to the file-first fields above, `[memory]` accepts an inline `schema` sub-table for declaring memory types directly in `lobu.toml`:
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `entity_types` | array | no | Entity-type definitions |
-| `relationship_types` | array | no | Relationship-type definitions |
-
-Each entity type takes `slug` (required), optional `name` / `description`, and an optional JSON-Schema `metadata_schema`; each relationship type takes `slug`, optional `name` / `description`, and optional `rules` (`{ source, target }` entity-type pairs) — the same shapes used by `version: 2` model bundles under `[memory].models`.
-
-```toml
-[[memory.schema.entity_types]]
-slug = "account"
-name = "Account"
-metadata_schema = { type = "object", required = ["tier"], properties = { tier = { type = "string" } } }
-
-[[memory.schema.relationship_types]]
-slug = "owns"
-name = "Owns"
-rules = [{ source = "account", target = "product" }]
-```
-
-The `[memory]` table is `.strict()` — unknown keys fail validation.
+Entity types, relationship types, and watchers are declared in `version: 2` model bundle YAML files under the directory `[memory].models` points at (usually `./models`) — see [`lobu memory seed`](/reference/lobu-memory/) and [`lobu apply`](/reference/lobu-apply/) for the bundle format. The `[memory]` table itself is `.strict()` — unknown keys (including the removed inline `schema` sub-table) fail validation.
 
 ## Environment variable references
 

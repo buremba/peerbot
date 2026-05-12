@@ -186,6 +186,24 @@ describe("Slack Preview claims + channel bindings (Postgres-backed)", () => {
     ).toEqual({ status: "surface_not_allowed", surfaceType: "channel" });
   });
 
+  test("a transport-prefixed DM channelId still counts as a dm and binds verbatim", async () => {
+    // The Slack bridge sometimes passes the Chat SDK thread id (`slack:D…`).
+    const code = await createClaim(AGENT_ID, ["dm"]);
+    expect(
+      await consumeSlackPreviewClaim({
+        code,
+        teamId: TEAM_ID,
+        channelId: "slack:D999",
+      })
+    ).toMatchObject({ status: "bound", agentId: AGENT_ID });
+    const sql = getDb();
+    const rows = await sql`
+      SELECT channel_id FROM agent_channel_bindings
+      WHERE platform = 'slack' AND team_id = ${TEAM_ID}
+    `;
+    expect((rows[0] as { channel_id: string }).channel_id).toBe("slack:D999");
+  });
+
   test("the /link chat command redeems a code end to end", async () => {
     const code = await createClaim(AGENT_ID);
     const registry = new CommandRegistry();

@@ -78,9 +78,15 @@ function slackPreviewUrl(): string {
   return process.env.LOBU_DEVELOPER_SLACK_URL || DEFAULT_SLACK_PREVIEW_URL;
 }
 
-/** Slack convention: DM channels start with `D`; everything else is a group/channel. */
+/**
+ * Slack convention: DM channels start with `D`; everything else is a
+ * group/channel. The bridge sometimes hands us the Chat SDK thread id
+ * (`slack:D012…` / `slack:C012…:172…`) rather than the bare channel id, so
+ * strip a leading transport prefix and any thread-ts suffix before the check.
+ */
 export function slackSurfaceType(channelId: string): SurfaceType {
-  return channelId.startsWith('D') ? 'dm' : 'channel';
+  const id = channelId.replace(/^[a-z]+:/i, '').split(':')[0]!;
+  return id.startsWith('D') ? 'dm' : 'channel';
 }
 
 /**

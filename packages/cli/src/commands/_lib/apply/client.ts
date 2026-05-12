@@ -711,7 +711,11 @@ export class ApplyClient {
       ...(payload.appAuthProfileSlug !== undefined
         ? { app_auth_profile_slug: payload.appAuthProfileSlug }
         : {}),
-      ...(payload.config !== undefined ? { config: payload.config } : {}),
+      // `lobu apply` is declarative — replace, don't merge, so removed
+      // manifest keys disappear remotely (server defaults to merge).
+      ...(payload.config !== undefined
+        ? { config: payload.config, replace_config: true }
+        : {}),
     });
     if (!body.connection) {
       throw new ApiError(
@@ -775,7 +779,9 @@ export class ApplyClient {
       feed_id: feedId,
       ...(payload.name !== undefined ? { display_name: payload.name } : {}),
       ...(payload.schedule !== undefined ? { schedule: payload.schedule } : {}),
-      ...(payload.config !== undefined ? { config: payload.config } : {}),
+      ...(payload.config !== undefined
+        ? { config: payload.config, replace_config: true }
+        : {}),
     });
     if (!body.feed) {
       throw new ApiError(`update feed #${feedId} returned no feed payload`);

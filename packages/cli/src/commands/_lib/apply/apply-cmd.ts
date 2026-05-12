@@ -18,13 +18,14 @@ import {
   type RemoteSnapshot,
 } from "./diff.js";
 import {
+  type DesiredConnectorDefinition,
   type DesiredState,
   loadDesiredState,
   resolveConnectorSchemas,
   validateAuthProfileAgainstConnector,
   validateConnectionAgainstConnector,
 } from "./desired-state.js";
-import { confirmPlan } from "./prompt.js";
+import { confirmCustomConnectors, confirmPlan } from "./prompt.js";
 import {
   renderMissingSecrets,
   renderPlan,
@@ -45,17 +46,14 @@ export interface ApplyOptions {
   fetchImpl?: typeof fetch;
 }
 
+interface PendingAuthEntry {
+  slug: string;
+  kind: string;
+  connectUrl?: string;
+}
+
 // ── Required-secrets check ─────────────────────────────────────────────────
 
-/**
- * v1 secret check: every `$VAR` referenced in lobu.toml must be present in
- * the apply runner's environment. The file-loader already substitutes envs
- * in-place during gateway boot, so this is the same set of names operators
- * must satisfy at runtime — surfacing it pre-mutation gives the operator
- * a cleaner failure than a silent empty-string config push.
- *
- * Plan §7 reserves cloud-side secret-list cross-checks for v3.
- */
 function checkRequiredSecrets(state: DesiredState): { missing: string[] } {
   const missing = state.requiredSecrets.filter(
     (name) => process.env[name] === undefined || process.env[name] === ""
@@ -81,8 +79,6 @@ async function fetchRemoteSnapshot(
   if (only !== "memory") {
     const desiredAgentIds = state.agents.map((a) => a.metadata.agentId);
     const remoteAgentIds = new Set(agents.map((a) => a.agentId));
-    // Only GET settings for agents that exist; new agents have no remote
-    // settings to compare against.
     const targetAgentIds = desiredAgentIds.filter((id) =>
       remoteAgentIds.has(id)
     );
@@ -133,21 +129,89 @@ async function fetchRemoteSnapshot(
   };
 }
 
-// ── Connector validation ───────────────────────────────────────────────────
+// ── Connector definitions (phase 1: install/update, then refetch catalog) ──
 
 /**
- * Validate declared connections / auth profiles against the connector
- * definitions the server knows about (bundled catalog + installed custom).
- * Connectors that only exist as a local `.ts` not yet compiled by the server
- * are skipped — the server validates those at `install_connector` /
- * `create_feed` time. Schema mismatches throw `ValidationError`.
+ * Install/update the project's custom connector definitions, then install any
+ * *bundled* connectors referenced by an auth-profile / connection (the server
+ * only resolves *installed* defs in `create_auth_profile` / `create_feed`, not
+ * the catalog). Returns the fresh connector-definition catalog so config
+ * validation runs against the now-current schemas — fixing the "validate
+ * against stale remote schema before installing the local connector" bug.
+ *
+ * SECURITY: `install_connector` compiles + imports + instantiates the connector
+ * runtime class on the gateway. Custom connector source must already have been
+ * confirmed by the operator (see `confirmCustomConnectorSource`). The CLI
+ * fetches `source_url` content client-side (no gateway-side fetch from a
+ * manifest URL) — see `materializeConnectorSource`.
+ * TODO(security): the server-side connector compiler/metadata-extractor still
+ * runs with full gateway env/fs/network and only blocks relative imports — it
+ * should run sandboxed (no secrets, restricted fs/net, block node:* / dynamic
+ * import / require). Tracked separately; out of scope for this PR.
  */
+async function installConnectorDefinitions(
+  client: ApplyClient,
+  state: DesiredState,
+  catalog: RemoteConnectorDefinition[]
+): Promise<RemoteConnectorDefinition[]> {
+  const installedKeys = new Set(
+    catalog.filter((d) => d.installed).map((d) => d.key)
+  );
+  let mutated = false;
+
+  for (const def of state.connectors.definitions) {
+    const result =
+      def.sourceCode !== undefined
+        ? await client.installConnector({ sourceCode: def.sourceCode })
+        : await client.installConnector({ sourceUrl: def.sourceUrl });
+    mutated = true;
+    printText(
+      renderProgress(
+        "update",
+        "connector-definition",
+        result.connectorKey || def.key || def.sourceFile,
+        result.updated ? "(installed)" : "(unchanged)"
+      )
+    );
+  }
+
+  // Bundled connectors referenced by an auth-profile / connection.
+  const catalogByKey = new Map(
+    catalog.filter((d) => d.installable && d.source_uri).map((d) => [d.key, d])
+  );
+  const referenced = new Set<string>([
+    ...state.connectors.authProfiles.map((p) => p.connector),
+    ...state.connectors.connections.map((c) => c.connector),
+  ]);
+  for (const key of [...referenced].sort()) {
+    if (installedKeys.has(key)) continue;
+    const entry = catalogByKey.get(key);
+    if (!entry?.source_uri) continue; // custom local-only — handled above
+    const result = await client.installConnector({
+      sourceUri: entry.source_uri,
+    });
+    mutated = true;
+    printText(
+      renderProgress(
+        "update",
+        "connector-definition",
+        result.connectorKey || key,
+        result.updated ? "(installed bundled)" : "(bundled — unchanged)"
+      )
+    );
+  }
+
+  return mutated ? await client.listConnectorDefinitions(true) : catalog;
+}
+
+// ── Connector validation (against the now-current catalog) ─────────────────
+
 function validateConnectorState(
   state: DesiredState,
-  remote: RemoteSnapshot
+  connectorDefinitions: RemoteConnectorDefinition[]
 ): void {
   const defByKey = new Map<string, RemoteConnectorDefinition>(
-    remote.connectorDefinitions.map((d) => [d.key, d])
+    connectorDefinitions.map((d) => [d.key, d])
   );
   const authProfilesBySlug = new Map(
     state.connectors.authProfiles.map((p) => [p.slug, p])
@@ -169,7 +233,65 @@ function validateConnectorState(
   }
 }
 
-// ── Apply executor ─────────────────────────────────────────────────────────
+// ── source_url fetched client-side; security confirmation gate ─────────────
+
+async function materializeConnectorSource(
+  defs: DesiredConnectorDefinition[],
+  fetchImpl: typeof fetch
+): Promise<void> {
+  for (const def of defs) {
+    if (def.sourceCode !== undefined || !def.sourceUrl) continue;
+    let res: Response;
+    try {
+      res = await fetchImpl(def.sourceUrl);
+    } catch (err) {
+      throw new ValidationError(
+        `${def.sourceFile}: failed to fetch connector source_url ${def.sourceUrl} — ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+    if (!res.ok) {
+      throw new ValidationError(
+        `${def.sourceFile}: connector source_url ${def.sourceUrl} returned HTTP ${res.status} ${res.statusText}`
+      );
+    }
+    def.sourceCode = await res.text();
+    if (!def.sourceCode.trim()) {
+      throw new ValidationError(
+        `${def.sourceFile}: connector source_url ${def.sourceUrl} returned an empty body`
+      );
+    }
+  }
+}
+
+async function confirmCustomConnectorSource(
+  defs: DesiredConnectorDefinition[],
+  yes: boolean
+): Promise<void> {
+  if (defs.length === 0) return;
+  printText(
+    chalk.yellow(
+      `\n  ⚠ This project ships ${defs.length} custom connector source file${defs.length === 1 ? "" : "s"}:`
+    )
+  );
+  for (const def of defs) {
+    printText(
+      chalk.yellow(
+        `    - ${def.sourceFile}${def.sourceUrl ? ` (from ${def.sourceUrl})` : ""}`
+      )
+    );
+  }
+  printText(
+    chalk.yellow(
+      "  `lobu apply` will upload this source and the gateway will COMPILE and EXECUTE it.\n  Only proceed if you trust this code."
+    )
+  );
+  const ok = await confirmCustomConnectors(yes);
+  if (!ok) {
+    throw new ValidationError("Cancelled — custom connectors not confirmed.");
+  }
+}
+
+// ── Apply executor (auth profiles → connections → feeds) ───────────────────
 
 interface ApplyContext {
   client: ApplyClient;
@@ -178,25 +300,10 @@ interface ApplyContext {
   remote: RemoteSnapshot;
 }
 
-interface PendingAuthEntry {
-  slug: string;
-  kind: string;
-  connectUrl?: string;
-}
-
-/**
- * Execute the plan in dependency order:
- *   agents → settings → platforms → entity types → relationship types →
- *   watchers → connector definitions → auth profiles → connections (+ feeds)
- *
- * No retry loop, no topological sort. First failure prints partial progress
- * and re-throws. Returns the post-apply punch-list (pending interactive-auth
- * profiles + informational notes).
- */
 async function executePlan(
-  ctx: ApplyContext
-): Promise<{ pendingAuth: PendingAuthEntry[] }> {
-  const pendingAuth: PendingAuthEntry[] = [];
+  ctx: ApplyContext,
+  pendingAuth: PendingAuthEntry[]
+): Promise<void> {
   const rowsByKind = (kind: DiffRow["kind"]) =>
     ctx.plan.rows.filter(
       (row) => row.kind === kind && row.verb !== "noop" && row.verb !== "drift"
@@ -292,86 +399,30 @@ async function executePlan(
     printText(renderProgress(row.verb, "watcher", row.id));
   }
 
-  // 7) Connector definitions (idempotent install — server compiles the source)
-  for (const row of rowsByKind("connector-definition")) {
-    if (row.kind !== "connector-definition") continue;
-    if (!row.desired) continue;
-    const def = row.desired;
-    const result = await ctx.client.installConnector(
-      def.sourceCode !== undefined
-        ? { sourceCode: def.sourceCode }
-        : { sourceUrl: def.sourceUrl }
-    );
-    printText(
-      renderProgress(
-        "create",
-        "connector-definition",
-        result.connectorKey || def.key || def.sourceFile,
-        result.updated ? "(installed)" : "(unchanged)"
-      )
-    );
-  }
+  // Connector definitions are installed in phase 1 (before validation), so no
+  // `connector-definition` rows are executed here.
 
-  // 7b) Bundled connectors referenced by an auth profile / connection must be
-  //     installed into the org before `create_auth_profile` (which only finds
-  //     installed defs, not the catalog). Install from the catalog's
-  //     server-side source URI; skip ones already installed or custom.
-  {
-    const installedKeys = new Set(
-      (ctx.remote.connectorDefinitions ?? [])
-        .filter((d) => d.installed)
-        .map((d) => d.key)
-    );
-    const catalogByKey = new Map(
-      (ctx.remote.connectorDefinitions ?? [])
-        .filter((d) => d.installable && d.source_uri)
-        .map((d) => [d.key, d])
-    );
-    const referenced = new Set<string>([
-      ...ctx.state.connectors.authProfiles.map((p) => p.connector),
-      ...ctx.state.connectors.connections.map((c) => c.connector),
-    ]);
-    for (const key of [...referenced].sort()) {
-      if (installedKeys.has(key)) continue;
-      const catalog = catalogByKey.get(key);
-      if (!catalog?.source_uri) continue; // custom local-only connector handled above
-      const result = await ctx.client.installConnector({
-        sourceUri: catalog.source_uri,
-      });
-      printText(
-        renderProgress(
-          "create",
-          "connector-definition",
-          result.connectorKey || key,
-          result.updated ? "(installed bundled)" : "(bundled — unchanged)"
-        )
-      );
-    }
-  }
-
-  // 8) Auth profiles (create / update; interactive kinds → punch-list)
+  // 7) Auth profiles (create / update; interactive kinds → punch-list)
   for (const row of rowsByKind("auth-profile")) {
     if (row.kind !== "auth-profile") continue;
     const desired = ctx.state.connectors.authProfiles.find(
       (p) => p.slug === row.id
     );
     if (!desired) continue;
-    let result;
-    if (row.verb === "create") {
-      result = await ctx.client.createAuthProfile({
-        slug: desired.slug,
-        connector: desired.connector,
-        kind: desired.kind,
-        name: desired.name,
-        credentials: desired.credentials,
-      });
-    } else {
-      result = await ctx.client.updateAuthProfile({
-        slug: desired.slug,
-        name: desired.name,
-        credentials: desired.credentials,
-      });
-    }
+    const result =
+      row.verb === "create"
+        ? await ctx.client.createAuthProfile({
+            slug: desired.slug,
+            connector: desired.connector,
+            kind: desired.kind,
+            name: desired.name,
+            credentials: desired.credentials,
+          })
+        : await ctx.client.updateAuthProfile({
+            slug: desired.slug,
+            name: desired.name,
+            credentials: desired.credentials,
+          });
     if (
       (desired.kind === "oauth_account" ||
         desired.kind === "browser_session") &&
@@ -385,27 +436,8 @@ async function executePlan(
     }
     printText(renderProgress(row.verb, "auth-profile", row.id));
   }
-  // Interactive-auth profiles that were unchanged but still pending — re-issue
-  // a connect token so the operator gets a fresh URL.
-  for (const row of ctx.plan.rows) {
-    if (row.kind !== "auth-profile" || row.verb !== "noop") continue;
-    if (!row.needsAuth || !row.desired) continue;
-    if (pendingAuth.some((p) => p.slug === row.desired?.slug)) continue;
-    let connectUrl: string | undefined;
-    if (row.desired.kind === "oauth_account") {
-      connectUrl = await ctx.client
-        .reconnectAuthProfile(row.desired.slug)
-        .catch(() => undefined);
-    }
-    pendingAuth.push({
-      slug: row.desired.slug,
-      kind: row.desired.kind,
-      ...(connectUrl ? { connectUrl } : {}),
-    });
-  }
 
-  // 9) Connections, keyed by slug. Track resolved connection IDs (existing or
-  //    just-created) so feed sync can address them afterwards.
+  // 8) Connections, keyed by slug.
   const remoteConnBySlug = new Map(
     ctx.remote.connections.map((c) => [c.slug, c])
   );
@@ -441,7 +473,7 @@ async function executePlan(
     printText(renderProgress(row.verb, "connection", row.id));
   }
 
-  // 10) Feeds (per connection — covers feeds whose connection itself was a noop)
+  // 9) Feeds (per connection — covers feeds whose connection itself was a noop)
   for (const row of rowsByKind("feed")) {
     if (row.kind !== "feed") continue;
     if (!row.desired) continue;
@@ -475,15 +507,45 @@ async function executePlan(
     }
     printText(renderProgress(row.verb, "feed", row.id));
   }
+}
 
-  return { pendingAuth };
+// Collect pending interactive-auth profiles from a (no-op) plan and re-issue a
+// fresh connect URL — used both when "nothing to apply" and on partial failure.
+async function collectPendingAuthFromPlan(
+  client: ApplyClient,
+  plan: DiffPlan,
+  already: PendingAuthEntry[]
+): Promise<PendingAuthEntry[]> {
+  const out = [...already];
+  for (const row of plan.rows) {
+    if (row.kind !== "auth-profile" || !("needsAuth" in row) || !row.needsAuth)
+      continue;
+    if (!row.desired) continue;
+    if (out.some((p) => p.slug === row.desired?.slug)) continue;
+    let connectUrl: string | undefined;
+    if (row.desired.kind === "oauth_account") {
+      connectUrl = await client
+        .reconnectAuthProfile(row.desired.slug)
+        .catch(() => undefined);
+    }
+    out.push({
+      slug: row.desired.slug,
+      kind: row.desired.kind,
+      ...(connectUrl ? { connectUrl } : {}),
+    });
+  }
+  return out;
 }
 
 // ── Top-level command ──────────────────────────────────────────────────────
 
 export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
   const cwd = opts.cwd ?? process.cwd();
-  const { state, configPath } = await loadDesiredState({ cwd });
+  const fetchImpl = opts.fetchImpl ?? fetch;
+  const { state, configPath } = await loadDesiredState({
+    cwd,
+    ...(opts.only ? { only: opts.only } : {}),
+  });
 
   printText(chalk.dim(`Config: ${configPath}`));
 
@@ -533,11 +595,41 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
     }
   }
 
+  // SECURITY (#2): fetch any `source_url` connector content client-side so the
+  // gateway never fetches a URL from a project manifest, then require explicit
+  // confirmation before uploading custom connector source for compilation.
+  await materializeConnectorSource(state.connectors.definitions, fetchImpl);
+  if (!opts.dryRun) {
+    await confirmCustomConnectorSource(
+      state.connectors.definitions,
+      opts.yes ?? false
+    );
+  }
+
+  // Snapshot the remote state.
   const remote = await fetchRemoteSnapshot(client, state, opts.only);
-  // Validate connector configs against the connector definitions the server
-  // knows about — fails loud before any mutation.
-  validateConnectorState(state, remote);
-  const plan = computeDiff(state, remote, { only: opts.only });
+
+  // Phase 1 (#5): install/update connector definitions FIRST, then refetch the
+  // connector-definition catalog so validation runs against current schemas.
+  let connectorDefinitions = remote.connectorDefinitions;
+  if (!opts.dryRun && !opts.only) {
+    connectorDefinitions = await installConnectorDefinitions(
+      client,
+      state,
+      remote.connectorDefinitions
+    );
+  }
+
+  // Validate connection / auth-profile config against the (now-current) catalog.
+  validateConnectorState(state, connectorDefinitions);
+
+  // Diff using the refreshed catalog (so an updated custom connector's new
+  // schema is what the connection config is checked against).
+  const diffSnapshot: RemoteSnapshot = {
+    ...remote,
+    connectorDefinitions,
+  };
+  const plan = computeDiff(state, diffSnapshot, { only: opts.only });
 
   printText(renderPlan(plan));
 
@@ -546,15 +638,19 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
     return;
   }
 
-  if (plan.counts.create === 0 && plan.counts.update === 0) {
+  const hasPendingAuth = plan.rows.some(
+    (r) => r.kind === "auth-profile" && "needsAuth" in r && r.needsAuth
+  );
+
+  if (plan.counts.create === 0 && plan.counts.update === 0 && !hasPendingAuth) {
     printText(chalk.green("\nNothing to apply."));
     return;
   }
 
-  // Build a plain-text summary for the inquirer prompt — chalk-decorated
-  // text confuses some terminals when re-printed by the prompt library.
+  // Confirm the plan (unless --yes). Even a plan with only pending-auth rows
+  // is "actionable" — we re-issue connect tokens.
   const { create, update, noop, drift } = plan.counts;
-  const summaryLine = `${create} create, ${update} update, ${noop} noop, ${drift} drift`;
+  const summaryLine = `${create} create, ${update} update, ${noop} noop, ${drift} drift${hasPendingAuth ? " + pending auth" : ""}`;
   const approved = await confirmPlan({
     yes: opts.yes ?? false,
     summaryLine,
@@ -564,26 +660,37 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
     return;
   }
 
-  printText(chalk.bold("\nApplying:"));
-  try {
-    const { pendingAuth } = await executePlan({ client, state, plan, remote });
-    printText(chalk.green("\nApply complete."));
-    const punchList = renderPostApplyPunchList({
-      pendingAuth,
-      notes: plan.notes,
-    });
-    if (punchList) printText(punchList);
-  } catch (err) {
-    if (err instanceof ApiError) {
-      printError(`\n${err.message}`);
-    } else if (err instanceof Error) {
-      printError(`\n${err.message}`);
-    } else {
-      printError(`\n${String(err)}`);
+  const pendingAuth: PendingAuthEntry[] = [];
+  let applyErr: unknown;
+  if (plan.counts.create > 0 || plan.counts.update > 0) {
+    printText(chalk.bold("\nApplying:"));
+    try {
+      await executePlan(
+        { client, state, plan, remote: diffSnapshot },
+        pendingAuth
+      );
+      printText(chalk.green("\nApply complete."));
+    } catch (err) {
+      applyErr = err;
+      printError(`\n${err instanceof Error ? err.message : String(err)}`);
+      printError(
+        "Apply halted on first failure. Re-run `lobu apply` once the underlying issue is resolved — every endpoint is idempotent."
+      );
     }
-    printError(
-      "Apply halted on first failure. Re-run `lobu apply` once the underlying issue is resolved — every endpoint is idempotent."
-    );
-    throw err;
   }
+
+  // Always render the punch-list — even on partial failure, so the operator
+  // keeps the connect URLs and the informational notes.
+  const finalPending = await collectPendingAuthFromPlan(
+    client,
+    plan,
+    pendingAuth
+  );
+  const punchList = renderPostApplyPunchList({
+    pendingAuth: finalPending,
+    notes: plan.notes,
+  });
+  if (punchList) printText(punchList);
+
+  if (applyErr) throw applyErr;
 }

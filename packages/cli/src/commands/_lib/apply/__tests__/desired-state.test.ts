@@ -416,4 +416,93 @@ source_url: https://example.com/acme.ts
       )
     ).toThrow(/connection "bad" config/);
   });
+
+  // ── round-2 ──────────────────────────────────────────────────────────────
+
+  test("rejects a non-canonical connection slug", async () => {
+    const dir = mkConnectorsProject({
+      "x.yaml": `version: 1
+type: connection
+slug: My_Connection
+connector: hackernews
+`,
+    });
+    await expect(loadDesiredState({ cwd: dir, env: {} })).rejects.toThrow(
+      /connection slug "My_Connection" must match/
+    );
+  });
+
+  test("rejects an invalid feed cron schedule", async () => {
+    const dir = mkConnectorsProject({
+      "x.yaml": `version: 1
+type: connection
+slug: hn
+connector: hackernews
+feeds:
+  - feed: stories
+    schedule: "not a cron"
+`,
+    });
+    await expect(loadDesiredState({ cwd: dir, env: {} })).rejects.toThrow(
+      /invalid cron expression/
+    );
+  });
+
+  test("rejects duplicate connector keys across definitions", async () => {
+    const dir = mkConnectorsProject({
+      "a.yaml": `version: 1
+type: connector
+key: dup
+source_url: https://example.com/a.ts
+---
+version: 1
+type: connector
+key: dup
+source_url: https://example.com/b.ts
+`,
+    });
+    await expect(loadDesiredState({ cwd: dir, env: {} })).rejects.toThrow(
+      /duplicate connector key "dup"|connector key "dup" is declared by more than one/
+    );
+  });
+
+  test("rejects duplicate connector keys across separate files", async () => {
+    const dir = mkConnectorsProject({
+      "a.yaml": `version: 1
+type: connector
+key: dup2
+source_url: https://example.com/a.ts
+`,
+      "b.yaml": `version: 1
+type: connector
+key: dup2
+source_url: https://example.com/b.ts
+`,
+    });
+    await expect(loadDesiredState({ cwd: dir, env: {} })).rejects.toThrow(
+      /duplicate connector key "dup2"|connector key "dup2" is declared by more than one/
+    );
+  });
+
+  test("--only agents skips the connectors dir (no connector-secret expansion)", async () => {
+    const dir = mkConnectorsProject({
+      "auth.yaml": `version: 1
+type: auth_profile
+slug: hn-token
+connector: hackernews
+kind: env
+credentials:
+  HN_TOKEN: $HN_API_TOKEN
+`,
+    });
+    // $HN_API_TOKEN is unset, but --only agents must not load/expand it.
+    const { state } = await loadDesiredState({
+      cwd: dir,
+      env: {},
+      only: "agents",
+    });
+    expect(state.connectors.authProfiles).toHaveLength(0);
+    expect(state.connectors.connections).toHaveLength(0);
+    expect(state.requiredSecrets).not.toContain("HN_API_TOKEN");
+  });
 });

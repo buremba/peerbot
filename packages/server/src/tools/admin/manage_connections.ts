@@ -186,6 +186,12 @@ const UpdateAction = Type.Object({
         'Reassign which device worker runs this connection. Null moves it back to the cloud pool (only allowed if the connector has no required_capability).',
     })
   ),
+  replace_config: Type.Optional(
+    Type.Boolean({
+      description:
+        'When true and `config` is provided, replace the stored connection config with exactly that object (declarative apply); when false/omitted, merge into the existing config (default).',
+    })
+  ),
 });
 
 const DeleteAction = Type.Object({
@@ -1516,6 +1522,12 @@ async function handleUpdate(
     };
   }
 
+  // Config write mode: declarative `lobu apply` passes `replace_config: true`
+  // so a removed manifest key actually disappears remotely. Default (merge)
+  // is preserved for the web UI / partial updates.
+  const replaceConfig = args.replace_config === true && args.config !== undefined;
+  const connectionConfigForReplace = splitConfig.connectionConfig ?? {};
+
   // Slug is only ever changed when the caller passes one explicitly — a
   // display_name change never touches it (that's the whole point of a stable
   // identity for `lobu apply`). An explicit slug is validated for format and
@@ -1547,7 +1559,11 @@ async function handleUpdate(
           status = COALESCE(${effectiveStatus}, status),
           auth_profile_id = ${nextAuthProfileId},
           app_auth_profile_id = ${nextAppAuthProfileId},
-          config = CASE WHEN ${splitConfig.connectionConfig ? sql.json(splitConfig.connectionConfig) : null}::jsonb IS NOT NULL THEN COALESCE(config, '{}'::jsonb) || ${splitConfig.connectionConfig ? sql.json(splitConfig.connectionConfig) : null}::jsonb ELSE config END,
+          config = ${
+            replaceConfig
+              ? sql`${sql.json(connectionConfigForReplace)}::jsonb`
+              : sql`CASE WHEN ${splitConfig.connectionConfig ? sql.json(splitConfig.connectionConfig) : null}::jsonb IS NOT NULL THEN COALESCE(config, '{}'::jsonb) || ${splitConfig.connectionConfig ? sql.json(splitConfig.connectionConfig) : null}::jsonb ELSE config END`
+          },
           updated_at = NOW()
       WHERE id = ${args.connection_id} AND organization_id = ${organizationId} AND deleted_at IS NULL
       RETURNING *

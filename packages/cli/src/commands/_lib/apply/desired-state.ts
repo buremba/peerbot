@@ -15,6 +15,31 @@ import {
   isLoadError,
   loadConfig,
 } from "../../../config/loader.js";
+import { CronExpressionParser } from "cron-parser";
+
+// ── Connector slug / schedule validators (round-2) ─────────────────────────
+// Mirror packages/server/src/utils/connections.ts CONNECTION_SLUG_PATTERN and
+// the server's validateSchedule (packages/server/src/utils/cron.ts) so the CLI
+// fails loud *before* any mutation instead of getting a server 4xx.
+const CONNECTION_SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
+// auth_profiles slugs are sanitized server-side; require canonical form so the
+// diff key matches what is stored (server cap is 80 chars).
+const AUTH_PROFILE_SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{0,79}$/;
+const MIN_CRON_INTERVAL_MS = 60_000;
+
+function cronError(schedule: string): string | null {
+  try {
+    const it = CronExpressionParser.parse(schedule);
+    const first = it.next().toDate();
+    const second = it.next().toDate();
+    if (second.getTime() - first.getTime() < MIN_CRON_INTERVAL_MS) {
+      return `schedule "${schedule}" is too frequent (minimum interval is 1 minute)`;
+    }
+    return null;
+  } catch (err) {
+    return `invalid cron expression "${schedule}" — ${err instanceof Error ? err.message : String(err)}`;
+  }
+}
 
 // ── Stable platform IDs (mirror of file-loader.ts) ─────────────────────────
 //
@@ -882,6 +907,11 @@ function parseConnectionDoc(
       `${file}: \`type: connection\` doc is missing a "slug" string`
     );
   }
+  if (!CONNECTION_SLUG_PATTERN.test(slug)) {
+    throw new ValidationError(
+      `${file}: connection slug "${slug}" must match /^[a-z0-9][a-z0-9-]{0,62}$/ (lowercase letters/digits/hyphens, no leading hyphen, ≤63 chars)`
+    );
+  }
   const connector = asString(raw.connector);
   if (!connector) {
     throw new ValidationError(
@@ -937,7 +967,15 @@ function parseConnectionDoc(
       const feedName = asString(entry.name);
       if (feedName) feed.name = feedName;
       const schedule = asString(entry.schedule);
-      if (schedule) feed.schedule = schedule;
+      if (schedule) {
+        const err = cronError(schedule);
+        if (err) {
+          throw new ValidationError(
+            `${file}: connection "${slug}" feed "${feedKey}" ${err}`
+          );
+        }
+        feed.schedule = schedule;
+      }
       if (entry.config !== undefined) {
         if (!isRecord(entry.config)) {
           throw new ValidationError(
@@ -960,6 +998,11 @@ function parseAuthProfileDoc(
   if (!slug) {
     throw new ValidationError(
       `${file}: \`type: auth_profile\` doc is missing a "slug" string`
+    );
+  }
+  if (!AUTH_PROFILE_SLUG_PATTERN.test(slug)) {
+    throw new ValidationError(
+      `${file}: auth_profile slug "${slug}" must match /^[a-z0-9][a-z0-9-]{0,79}$/ (lowercase letters/digits/hyphens, no leading hyphen, ≤80 chars)`
     );
   }
   const connector = asString(raw.connector);
@@ -1191,7 +1234,10 @@ async function loadConnectors(
             sourceFile: rel,
           });
         } else if (parsed.sourcePath) {
-          const abs = resolve(projectRoot, parsed.sourcePath);
+          // `source_path` is resolved relative to the manifest YAML file's
+          // directory (the connectors/ dir), matching the watcher-classifier
+          // `source_path` convention.
+          const abs = resolve(dirPath, parsed.sourcePath);
           if (tsFileDefinitions.has(abs)) {
             // Already auto-discovered; the `type: connector` doc is redundant
             // but harmless — just record the declared key for clearer output.
@@ -1222,11 +1268,20 @@ async function loadConnectors(
     }
   }
 
+  const allDefs = [...definitionsByKey.values(), ...tsFileDefinitions.values()];
+  const seenKeys = new Set<string>();
+  for (const def of allDefs) {
+    if (def.key === null) continue;
+    if (seenKeys.has(def.key)) {
+      throw new ValidationError(
+        `${dirRel}/: connector key "${def.key}" is declared by more than one connector definition (a \`type: connector\` doc and/or a \`*.connector.ts\` file) — keys must be unique`
+      );
+    }
+    seenKeys.add(def.key);
+  }
+
   return {
-    definitions: [
-      ...definitionsByKey.values(),
-      ...tsFileDefinitions.values(),
-    ].sort((a, b) =>
+    definitions: allDefs.sort((a, b) =>
       (a.key ?? a.sourceFile).localeCompare(b.key ?? b.sourceFile)
     ),
     authProfiles: [...authProfiles.values()].sort((a, b) =>
@@ -1243,7 +1298,9 @@ async function loadConnectors(
 export interface ResolvedConnectorSchemas {
   /** Connector key → `optionsSchema` (JSON Schema), if declared. */
   optionsSchema?: Record<string, unknown>;
-  /** Feed key → `configSchema` (JSON Schema). */
+  /** Every feed key declared by the connector (`connector.feeds` keys). */
+  feedKeys: Set<string>;
+  /** Feed key → `configSchema` (JSON Schema), for keys that declare one. */
   feedConfigSchemas: Map<string, Record<string, unknown>>;
   /** Allowed auth-profile kinds for the connector (from `authSchema.methods`). */
   authKinds: Set<string>;
@@ -1299,12 +1356,14 @@ export function resolveConnectorSchemas(
     ("auth_schema" in def ? (def.auth_schema ?? undefined) : undefined) ??
     undefined;
 
+  const feedKeys = new Set<string>();
   const feedConfigSchemas = new Map<string, Record<string, unknown>>();
   if (feedsRaw && typeof feedsRaw === "object") {
     for (const [feedKey, feedDef] of Object.entries(
       feedsRaw as Record<string, FeedDefinition | Record<string, unknown>>
     )) {
       if (!feedDef || typeof feedDef !== "object") continue;
+      feedKeys.add(feedKey);
       const cfg = (feedDef as { configSchema?: unknown }).configSchema;
       if (cfg && typeof cfg === "object") {
         feedConfigSchemas.set(feedKey, cfg as Record<string, unknown>);
@@ -1314,6 +1373,7 @@ export function resolveConnectorSchemas(
 
   return {
     ...(optionsSchema ? { optionsSchema } : {}),
+    feedKeys,
     feedConfigSchemas,
     authKinds: schemaFromAuthMethods(authSchema),
   };
@@ -1376,12 +1436,9 @@ export function validateConnectionAgainstConnector(
   }
   for (const feed of connection.feeds) {
     if (!schemas) continue;
-    if (
-      schemas.feedConfigSchemas.size > 0 &&
-      !schemas.feedConfigSchemas.has(feed.feedKey)
-    ) {
+    if (schemas.feedKeys.size > 0 && !schemas.feedKeys.has(feed.feedKey)) {
       throw new ValidationError(
-        `${connection.sourceFile}: connection "${connection.slug}" references unknown feed "${feed.feedKey}" for connector "${connection.connector}"`
+        `${connection.sourceFile}: connection "${connection.slug}" references unknown feed "${feed.feedKey}" for connector "${connection.connector}" (known feeds: ${[...schemas.feedKeys].sort().join(", ") || "(none)"})`
       );
     }
     const feedSchema = schemas.feedConfigSchemas.get(feed.feedKey);
@@ -1459,6 +1516,12 @@ export interface LoadDesiredStateOptions {
   cwd: string;
   /** Env to resolve `$VAR` refs against; defaults to `process.env`. */
   env?: NodeJS.ProcessEnv;
+  /**
+   * When set, only the named resource family is loaded — `"agents"` and
+   * `"memory"` both skip the `connectors/` dir (and its `$VAR` credential
+   * expansion), so `--only agents` doesn't require connector secrets.
+   */
+  only?: "agents" | "memory";
 }
 
 export async function loadDesiredState(
@@ -1502,12 +1565,9 @@ export async function loadDesiredState(
     opts.cwd
   );
 
-  const connectors = await loadConnectors(
-    config,
-    opts.cwd,
-    env,
-    requiredSecrets
-  );
+  const connectors = opts.only
+    ? { definitions: [], authProfiles: [], connections: [] }
+    : await loadConnectors(config, opts.cwd, env, requiredSecrets);
 
   return {
     state: {

@@ -416,34 +416,75 @@ async function handleCreateAuthProfile(
       return { error: `Connector '${args.connector_key}' does not support OAuth account profiles` };
     }
 
-    // Don't create the profile yet — store metadata in the connect token and
-    // create the real profile as active in the OAuth callback.
-    const pendingSlug = normalizeAuthProfileSlug(
-      args.slug,
-      args.display_name || `${connector.name} ${oauthMethod.provider} Account`
-    );
+    const displayName =
+      args.display_name || `${connector.name} ${oauthMethod.provider} Account`;
+    // Idempotent: if a profile with this slug already exists, reuse it (issue a
+    // fresh connect token if it still needs auth). This lets a connection
+    // reference `auth_profile_slug = <slug>` in the *same* `lobu apply` —
+    // previously this branch never persisted a row, so the slug didn't resolve.
+    const existing = args.slug
+      ? await getAuthProfileBySlug(ctx.organizationId, normalizeAuthProfileSlug(args.slug, displayName))
+      : null;
+    if (existing) {
+      if (existing.profile_kind !== 'oauth_account' || existing.connector_key !== args.connector_key) {
+        return {
+          error: `Auth profile '${existing.slug}' already exists with a different kind/connector (${existing.profile_kind} / ${existing.connector_key}) — use a new slug`,
+        };
+      }
+      if (existing.status === 'active') {
+        return { action: 'create_auth_profile', auth_profile: serializeAuthProfile(existing) };
+      }
+      const requestedScopes = resolveRequestedOAuthScopes(oauthMethod, args.requested_scopes);
+      const connectToken = await createConnectToken({
+        organizationId: ctx.organizationId,
+        connectorKey: args.connector_key,
+        authType: 'oauth',
+        authProfileId: existing.id,
+        authConfig: {
+          ...buildOAuthConnectConfig(oauthMethod, requestedScopes),
+          requestedScopes,
+        },
+        createdBy: ctx.userId,
+      });
+      return {
+        action: 'create_auth_profile',
+        auth_profile: serializeAuthProfile(existing),
+        connect_url: `${getConnectBaseUrl(ctx)}/connect/${connectToken.token}/oauth/start`,
+        connect_token: connectToken.token,
+      };
+    }
+
+    // Create a real `pending_auth` row up front so downstream
+    // `auth_profile_slug` lookups (connection create, etc.) resolve. The OAuth
+    // callback flips it to `active` once the user finishes authorization.
+    const authProfile = await createAuthProfile({
+      organizationId: ctx.organizationId,
+      connectorKey: args.connector_key,
+      displayName,
+      slug: args.slug,
+      profileKind: 'oauth_account',
+      authData: {},
+      provider: oauthMethod.provider.toLowerCase(),
+      status: 'pending_auth',
+      createdBy: ctx.userId ?? 'api',
+    });
 
     const requestedScopes = resolveRequestedOAuthScopes(oauthMethod, args.requested_scopes);
     const connectToken = await createConnectToken({
       organizationId: ctx.organizationId,
       connectorKey: args.connector_key,
       authType: 'oauth',
+      authProfileId: authProfile.id,
       authConfig: {
         ...buildOAuthConnectConfig(oauthMethod, requestedScopes),
         requestedScopes,
-        pendingProfileMeta: {
-          displayName: args.display_name || `${connector.name} ${oauthMethod.provider} Account`,
-          slug: pendingSlug,
-          connectorKey: args.connector_key,
-          provider: oauthMethod.provider,
-        },
       },
       createdBy: ctx.userId,
     });
 
     return {
       action: 'create_auth_profile',
-      pending_slug: pendingSlug,
+      auth_profile: serializeAuthProfile(authProfile),
       connect_url: `${getConnectBaseUrl(ctx)}/connect/${connectToken.token}/oauth/start`,
       connect_token: connectToken.token,
     };

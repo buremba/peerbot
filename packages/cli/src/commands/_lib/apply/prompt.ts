@@ -25,3 +25,21 @@ export async function confirmPlan(opts: ConfirmOptions): Promise<boolean> {
     default: false,
   });
 }
+
+/**
+ * Confirm uploading + compiling custom connector source on the gateway.
+ * `yes` short-circuits to true; non-TTY without `--yes` throws rather than
+ * hanging on a closed stdin.
+ */
+export async function confirmCustomConnectors(yes: boolean): Promise<boolean> {
+  if (yes) return true;
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    throw new ValidationError(
+      "Custom connector source present and --yes was not supplied. Re-run with --yes once you've reviewed the connector code."
+    );
+  }
+  return confirm({
+    message: "Compile & execute these connectors on the gateway?",
+    default: false,
+  });
+}

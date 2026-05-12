@@ -688,4 +688,147 @@ describe("apply diff — connectors", () => {
     });
     expect(renderPlan(plan)).toMatchSnapshot();
   });
+
+  // ── round-2 ──────────────────────────────────────────────────────────────
+
+  test("connection slug bound to a different connector remotely is a hard error", () => {
+    expect(() =>
+      computeDiff(connectorState(), {
+        ...emptyRemote(),
+        connectorDefinitions: [builtinConnectorDef],
+        connections: [
+          {
+            id: 9,
+            slug: "hn-frontpage",
+            connector_key: "rss",
+            status: "active",
+            auth_profile_slug: null,
+            app_auth_profile_slug: null,
+            config: {},
+          },
+        ],
+      })
+    ).toThrow(/bound to connector "rss" remotely.*declares "hackernews"/);
+  });
+
+  test("auth-profile slug bound to a different kind remotely is a hard error", () => {
+    expect(() =>
+      computeDiff(connectorState(), {
+        ...emptyRemote(),
+        connectorDefinitions: [builtinConnectorDef],
+        authProfiles: [
+          {
+            slug: "hn-token",
+            connector_key: "hackernews",
+            profile_kind: "oauth_app",
+            status: "active",
+          },
+        ],
+      })
+    ).toThrow(/auth_profile "hn-token" is bound to hackernews\/oauth_app/);
+  });
+
+  test("credential rotation re-pushes: env profile shows update (credentials)", () => {
+    const plan = computeDiff(connectorState(), {
+      ...emptyRemote(),
+      connectorDefinitions: [builtinConnectorDef],
+      authProfiles: [
+        {
+          slug: "hn-token",
+          display_name: "HN token",
+          connector_key: "hackernews",
+          profile_kind: "env",
+          status: "active",
+        },
+      ],
+    });
+    const row = plan.rows.find(
+      (r) => r.kind === "auth-profile" && r.id === "hn-token"
+    );
+    expect(row?.verb).toBe("update");
+    expect(row && "changedFields" in row ? row.changedFields : []).toContain(
+      "credentials"
+    );
+  });
+
+  test("a fully-converged remote state produces no connector create/update (except idempotent connector-def re-push)", () => {
+    // Build a remote snapshot that exactly mirrors connectorState(): the env
+    // auth profile has no declared-credential drift suppression, so it would
+    // re-push (update credentials). The acme connector def is installed, so it
+    // shows as a (no-op-on-server) "update". Everything else is noop.
+    const remote: RemoteSnapshot = {
+      ...emptyRemote(),
+      connectorDefinitions: [
+        { key: "hackernews", installed: false, installable: true },
+        { key: "x", installed: false, installable: true },
+        { key: "acme", installed: true, installable: false },
+      ],
+      authProfiles: [
+        {
+          slug: "hn-token",
+          display_name: "HN token",
+          connector_key: "hackernews",
+          profile_kind: "env",
+          status: "active",
+        },
+        {
+          slug: "x-account",
+          connector_key: "x",
+          profile_kind: "oauth_account",
+          status: "active",
+        },
+      ],
+      connections: [
+        {
+          id: 7,
+          slug: "hn-frontpage",
+          connector_key: "hackernews",
+          display_name: "HN front page",
+          status: "active",
+          auth_profile_slug: "hn-token",
+          app_auth_profile_slug: null,
+          config: {},
+        },
+      ],
+      feedsByConnectionId: new Map([
+        [
+          7,
+          [
+            {
+              id: 11,
+              connection_id: 7,
+              feed_key: "stories",
+              status: "active",
+              schedule: "0 * * * *",
+              config: {},
+            },
+          ],
+        ],
+      ]),
+    };
+    const plan = computeDiff(connectorState(), remote);
+    // Only "update" rows allowed: the connector-def re-push and the
+    // env-credential re-push — both idempotent on the server.
+    const nonIdempotentChurn = plan.rows.filter(
+      (r) =>
+        (r.verb === "create" || r.verb === "update") &&
+        !(r.kind === "connector-definition") &&
+        !(r.kind === "auth-profile" && r.id === "hn-token")
+    );
+    expect(nonIdempotentChurn).toEqual([]);
+    expect(plan.notes).toEqual([]);
+  });
+
+  test("connector-definition with an already-installed key renders as update, not create", () => {
+    const installedAcme = { key: "acme", installed: true, installable: false };
+    const plan = computeDiff(connectorState(), {
+      ...emptyRemote(),
+      connectorDefinitions: [builtinConnectorDef, installedAcme],
+    });
+    // connectorState()'s acme def has key:"acme"; it is installed remotely.
+    const row = plan.rows.find(
+      (r) => r.kind === "connector-definition" && r.id?.startsWith("acme")
+    );
+    expect(row?.verb).toBe("update");
+  });
 });

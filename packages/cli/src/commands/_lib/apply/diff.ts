@@ -1,4 +1,5 @@
 import type { AgentSettings } from "@lobu/core";
+import { ValidationError } from "../../memory/_lib/errors.js";
 import type {
   RemoteAgent,
   RemoteAuthProfile,
@@ -437,17 +438,18 @@ function diffConnectorDefinition(
   installedKeys: ReadonlySet<string>
 ): ConnectorDefinitionDiffRow {
   const id = connectorDefinitionId(desired);
-  // We can only assert "noop" when the key is known *and* installed — but the
-  // CLI can't compare source hashes (no local compile), so even an installed
-  // key gets a "create" row that `install_connector` resolves to a no-op on
-  // apply if the code is byte-identical. Keeping it as "create" is the
-  // conservative, honest plan output.
+  // The CLI can't compare source hashes (the server compiles, and the stored
+  // hash is of the *compiled* output) — so we always emit a "sync" row;
+  // `install_connector` is idempotent and reports `updated:false` on apply
+  // when the code is byte-identical, so this never churns remote state.
   const installedRemotely = desired.key
     ? installedKeys.has(desired.key)
     : false;
   return {
     kind: "connector-definition",
-    verb: "create",
+    // "update" (re-push) when already installed; `install_connector` is
+    // idempotent and reports `updated:false` if the code is unchanged.
+    verb: installedRemotely ? "update" : "create",
     id,
     desired,
     installedRemotely,
@@ -467,14 +469,30 @@ function diffAuthProfile(
       needsAuth: INTERACTIVE_AUTH_KINDS.has(desired.kind),
     };
   }
+  // `connector` / `kind` are immutable — `update_auth_profile` can't change
+  // them, so reusing a slug for a different connector/kind would silently push
+  // credentials into the wrong profile. Hard-stop instead.
+  if (
+    remote.connector_key !== desired.connector ||
+    remote.profile_kind !== desired.kind
+  ) {
+    throw new ValidationError(
+      `${desired.sourceFile}: auth_profile "${desired.slug}" is bound to ${remote.connector_key}/${remote.profile_kind} remotely, but the manifest declares ${desired.connector}/${desired.kind} — delete it manually or use a new slug`
+    );
+  }
   const changed: string[] = [];
   if ((desired.name ?? "") !== (remote.display_name ?? "")) {
     changed.push("name");
   }
-  // Credentials are never read back from the server in cleartext — the CLI
-  // cannot diff them. We re-push them every apply only when the manifest
-  // declares them; treat "has declared credentials" as an always-update so
-  // rotated secrets propagate, but only for non-interactive kinds.
+  // Credentials can't be read back from the server (write-only secrets). For
+  // non-interactive kinds with declared credentials, always re-push them
+  // (idempotent) so rotated secrets propagate — show as a redacted "credentials"
+  // change. Interactive kinds never carry credentials in the manifest.
+  const declaresCredentials =
+    !INTERACTIVE_AUTH_KINDS.has(desired.kind) &&
+    desired.credentials !== undefined &&
+    Object.keys(desired.credentials).length > 0;
+  if (declaresCredentials) changed.push("credentials");
   const needsAuth =
     INTERACTIVE_AUTH_KINDS.has(desired.kind) && remote.status !== "active";
   if (changed.length === 0 && !needsAuth) {
@@ -488,7 +506,7 @@ function diffAuthProfile(
   }
   return {
     kind: "auth-profile",
-    verb: needsAuth && changed.length === 0 ? "noop" : "update",
+    verb: changed.length > 0 ? "update" : "noop",
     id: desired.slug,
     desired,
     remote,
@@ -509,11 +527,18 @@ function diffConnection(
       desired,
     };
   }
+  // `connector` is immutable — `update` can't change `connector_key`, so a
+  // slug bound to a different connector remotely must be a hard error, never
+  // an "update" that mutates auth/config on the wrong connector.
+  if (remote.connector_key !== desired.connector) {
+    throw new ValidationError(
+      `${desired.sourceFile}: connection "${desired.slug}" is bound to connector "${remote.connector_key}" remotely, but the manifest declares "${desired.connector}" — delete it manually or use a new slug`
+    );
+  }
   const changed: string[] = [];
   if ((desired.name ?? "") !== (remote.display_name ?? "")) {
     changed.push("name");
   }
-  if (desired.connector !== remote.connector_key) changed.push("connector");
   if (
     (desired.authProfileSlug ?? null) !== (remote.auth_profile_slug ?? null)
   ) {

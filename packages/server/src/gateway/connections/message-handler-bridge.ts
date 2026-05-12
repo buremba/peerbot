@@ -398,6 +398,7 @@ export class MessageHandlerBridge {
           platform,
           userId,
           channelId,
+          teamId,
           isGroup,
           conversationId,
           connectionId: this.connection.id,

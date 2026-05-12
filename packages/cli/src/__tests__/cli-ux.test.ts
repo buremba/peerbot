@@ -119,7 +119,7 @@ describe("lobu init --yes", () => {
     expect(toml).toContain("[agents.preview-on.preview.slack]");
     expect(toml).toContain("enabled = true");
     expect(toml).toContain('provider = "lobu-public"');
-    expect(toml).toContain('surfaces = ["dm", "thread"]');
+    expect(toml).toContain('surfaces = ["dm"]');
   });
 
   test("--provider with bad id throws before writing files", async () => {

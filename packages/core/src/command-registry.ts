@@ -9,6 +9,8 @@ const logger = createLogger("command-registry");
 export interface CommandContext {
   userId: string;
   channelId: string;
+  /** Workspace/team id for platforms that have one (Slack). Undefined elsewhere. */
+  teamId?: string;
   conversationId?: string;
   connectionId?: string;
   agentId?: string;

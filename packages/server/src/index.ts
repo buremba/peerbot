@@ -35,7 +35,7 @@ import {
   restMarkAllAsRead,
   restMarkAsRead,
 } from './notifications/routes';
-import { bindSlackPreviewClaim, createSlackPreviewClaim } from './preview/slack';
+import { createSlackPreviewClaim } from './preview/slack';
 import {
   buildPublicPageModel,
   buildRobotsTxt,
@@ -791,9 +791,9 @@ app.get('/api/organizations', async (c) => {
   return c.json({ organizations: orgs });
 });
 
-// Slack Preview claim/binding registry
+// Slack Preview: mint a `/link <code>` for an agent. The code is redeemed by
+// DMing the hosted "Lobu Developer" Slack bot — no relay endpoint here.
 app.post('/api/:orgSlug/preview/slack/claims', mcpAuth, createSlackPreviewClaim);
-app.post('/api/internal/preview/slack/bind', bindSlackPreviewClaim);
 
 // Notifications
 app.get('/api/:orgSlug/notifications', mcpAuth, restListNotifications);

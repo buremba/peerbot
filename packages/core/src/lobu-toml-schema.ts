@@ -181,8 +181,8 @@ const previewSlackSchema = z
     enabled: z.boolean().optional(),
     /** Hosted preview provider. Additional providers can be added later. */
     provider: z.literal("lobu-public").optional(),
-    /** Slack surfaces this preview code can bind. */
-    surfaces: z.array(z.enum(["dm", "channel", "thread"])).optional(),
+    /** Slack surfaces this preview code can bind (a DM with the bot, or a channel it's in). */
+    surfaces: z.array(z.enum(["dm", "channel"])).optional(),
     /** Short-lived claim code TTL. Capped by the hosted preview API. */
     code_ttl_minutes: z.number().int().positive().max(60).optional(),
   })

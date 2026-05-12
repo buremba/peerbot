@@ -64,6 +64,7 @@ export class CommandDispatcher {
     return this.registry.tryHandle(commandName, {
       userId: input.userId,
       channelId: input.channelId,
+      teamId: input.teamId,
       conversationId: input.conversationId,
       connectionId: input.connectionId,
       agentId,

@@ -14,7 +14,7 @@ describe("lobu.toml preview schema", () => {
 [agents.triage.preview.slack]
 enabled = true
 provider = "lobu-public"
-surfaces = ["dm", "thread"]
+surfaces = ["dm", "channel"]
 code_ttl_minutes = 15
 `);
 
@@ -24,9 +24,18 @@ code_ttl_minutes = 15
     if (result.success) {
       expect(result.data.agents.triage?.preview?.slack?.surfaces).toEqual([
         "dm",
-        "thread",
+        "channel",
       ]);
     }
+  });
+
+  test("rejects an unknown surface", () => {
+    const parsed = parseToml(`${BASE_AGENT}
+[agents.triage.preview.slack]
+enabled = true
+surfaces = ["thread"]
+`);
+    expect(lobuConfigSchema.safeParse(parsed).success).toBe(false);
   });
 });
 

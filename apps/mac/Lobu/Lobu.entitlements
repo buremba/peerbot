@@ -8,7 +8,18 @@
 	<true/>
 	<key>com.apple.security.files.user-selected.read-only</key>
 	<true/>
-	<key>com.apple.developer.healthkit</key>
-	<true/>
+	<!--
+	  HealthKit is intentionally disabled here, not removed. The
+	  `com.apple.developer.healthkit` entitlement is "restricted" — notarized
+	  Developer ID builds only accept it with an embedded provisioning profile
+	  (needs an App ID + Developer ID profile created in the Apple portal). The
+	  Apple Health integration code (HealthKitSyncService, the AppState glue,
+	  the menu-bar row) is kept and stays inert: HealthKitSyncService.isAvailable()
+	  checks hasHealthKitEntitlement(), so without this entitlement the feature
+	  reports "not available" and never errors. To re-enable, add back:
+	      <key>com.apple.developer.healthkit</key><true/>
+	  and wire APPLE_PROVISION_PROFILE_BASE64 / APPLE_PROVISION_PROFILE_NAME into
+	  .github/workflows/mac-release.yml.
+	-->
 </dict>
 </plist>

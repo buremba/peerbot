@@ -23,6 +23,12 @@ struct HealthKitOutput {
 /// (which can backfill hours later) still get picked up. Origin ids are stable
 /// per day / per workout uuid, so server-side `onConflictUpdate` dedup absorbs
 /// the overlap as no-op upserts.
+///
+/// NOTE: shipping builds currently omit the `com.apple.developer.healthkit`
+/// entitlement (see Lobu.entitlements for why), so `isAvailable()` returns
+/// false and this service is dormant. It's kept wired up on purpose —
+/// re-adding the entitlement + a Developer ID provisioning profile is all it
+/// takes to switch Apple Health back on.
 enum HealthKitSyncService {
     enum HealthKitError: LocalizedError {
         case unavailable

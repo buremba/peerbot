@@ -16,20 +16,10 @@ name: mac-release
 #   APPLE_ID                Apple ID email used for notarization
 #   APPLE_APP_PASSWORD      app-specific password for that Apple ID
 #   HOMEBREW_TAP_TOKEN      PAT with write access to lobu-ai/homebrew-tap
-#   APPLE_PROVISION_PROFILE_BASE64
-#                           base64 of a "Developer ID" provisioning profile for
-#                           the ai.lobu.mac App ID. Required because the app uses
-#                           the restricted `com.apple.developer.healthkit`
-#                           entitlement, which only validates when an embedded
-#                           profile grants it. Create it at developer.apple.com
-#                           (Certificates → Profiles → Developer ID) after
-#                           enabling HealthKit on the App ID.
 # An ephemeral keychain password is generated per run; no secret needed for it.
-#
-# Required repo variable (Settings → Secrets and variables → Actions → Variables):
-#   APPLE_PROVISION_PROFILE_NAME   the profile's "Name" exactly as shown in the
-#                                  Apple Developer portal (used as
-#                                  PROVISIONING_PROFILE_SPECIFIER).
+# No provisioning profile is required — the app ships only standard
+# Developer-ID entitlements (HealthKit is disabled; re-adding the
+# `com.apple.developer.healthkit` entitlement would reintroduce that need).
 
 on:
   workflow_dispatch:
@@ -67,14 +57,6 @@ jobs:
           security list-keychains -d user -s "$KEYCHAIN"
           security default-keychain -s "$KEYCHAIN"
 
-      - name: Install provisioning profile
-        env:
-          PROFILE_BASE64: ${{ secrets.APPLE_PROVISION_PROFILE_BASE64 }}
-        run: |
-          DEST="$HOME/Library/MobileDevice/Provisioning Profiles"
-          mkdir -p "$DEST"
-          echo "$PROFILE_BASE64" | base64 --decode > "$DEST/lobu_mac.provisionprofile"
-
       - name: Archive
         run: |
           xcodebuild \
@@ -86,7 +68,6 @@ jobs:
             CODE_SIGN_STYLE=Manual \
             CODE_SIGN_IDENTITY="Developer ID Application" \
             DEVELOPMENT_TEAM="${{ secrets.APPLE_TEAM_ID }}" \
-            PROVISIONING_PROFILE_SPECIFIER="${{ vars.APPLE_PROVISION_PROFILE_NAME }}" \
             ENABLE_HARDENED_RUNTIME=YES \
             MARKETING_VERSION="${{ steps.v.outputs.version }}"
 

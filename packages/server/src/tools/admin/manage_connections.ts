@@ -267,6 +267,12 @@ const ConnectAction = Type.Object({
   config: Type.Optional(
     Type.Record(Type.String(), Type.Any(), { description: 'Connection config' })
   ),
+  device_worker_id: Type.Optional(
+    Type.String({
+      description:
+        "Run this connection's syncs/actions on a specific device worker (its device_workers.id) instead of the cloud pool. Required for connectors that declare a required_capability; optional otherwise. The device must belong to you or be granted to this org.",
+    })
+  ),
   entity_link_overrides: Type.Optional(EntityLinkOverridesSchema),
 });
 
@@ -1101,6 +1107,29 @@ async function handleConnect(
     };
   }
 
+  const deviceBinding = await resolveDeviceBinding({
+    organizationId,
+    userId,
+    connector,
+    deviceWorkerId: args.device_worker_id,
+  });
+  if ('error' in deviceBinding) return deviceBinding;
+  if (deviceBinding.deviceWorkerId) {
+    const dup = (await sql`
+      SELECT id FROM connections
+      WHERE organization_id = ${organizationId}
+        AND connector_key = ${args.connector_key}
+        AND device_worker_id = ${deviceBinding.deviceWorkerId}
+        AND deleted_at IS NULL
+      LIMIT 1
+    `) as unknown as Array<{ id: number }>;
+    if (dup.length > 0) {
+      return {
+        error: `A ${connector.name} connection (id: ${dup[0].id}) is already assigned to that device in this org.`,
+      };
+    }
+  }
+
   if (args.entity_link_overrides !== undefined) {
     const err = await applyEntityLinkOverrides(
       organizationId,
@@ -1134,6 +1163,7 @@ async function handleConnect(
       AND c.status = 'pending_auth'
       AND c.deleted_at IS NULL
       ${explicitSlug ? sql`AND c.slug = ${explicitSlug}` : sql``}
+      ${deviceBinding.deviceWorkerId ? sql`AND c.device_worker_id = ${deviceBinding.deviceWorkerId}` : sql``}
       ${userId ? sql`AND c.created_by = ${userId}` : sql``}
     ORDER BY ct.created_at DESC
     LIMIT 1
@@ -1256,7 +1286,7 @@ async function handleConnect(
       doInsert: (slug) => sql`
         INSERT INTO connections (
           organization_id, connector_key, slug, display_name, status,
-          auth_profile_id, app_auth_profile_id, config, created_by, visibility
+          auth_profile_id, app_auth_profile_id, config, created_by, visibility, device_worker_id
         ) VALUES (
           ${organizationId}, ${args.connector_key},
           ${slug},
@@ -1266,7 +1296,8 @@ async function handleConnect(
           ${authSelection.appAuthProfile?.id ?? null},
           ${splitConfig.connectionConfig ? sql.json(splitConfig.connectionConfig) : null},
           ${userId},
-          ${connectVisibility}
+          ${connectVisibility},
+          ${deviceBinding.deviceWorkerId}
         )
         RETURNING *
       `,

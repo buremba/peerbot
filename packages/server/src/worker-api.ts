@@ -81,19 +81,37 @@ function normalizeAdvertisedCapabilities(capabilities: Record<string, boolean>):
  * devices so they don't race past the existence checks and create duplicates.
  * Best-effort: failures are logged but never surface to the poll response.
  *
- * Note: the connection it creates is intentionally left *unpinned*
- * (`device_worker_id = NULL`). "Unpinned" means "any of this user's fresh
- * devices that advertise the capability" — exactly the right semantics for a
- * personal-org auto-wire. An explicit per-device binding is something the user
- * sets via `manage_connections`; per-device auto-wire is a possible follow-up.
+ * Device pin (`connections.device_worker_id`): when exactly one of the user's
+ * fresh devices advertises the capability, the connection is auto-pinned to it
+ * (a deterministic 1:1 binding the Devices page can show); when several qualify
+ * it's left unpinned ("any of my fresh devices that advertise the capability").
+ * A pin to a device that's still in the fresh set is treated as deliberate and
+ * never overridden; a pin to a device that has dropped out is repaired (to the
+ * sole remaining fresh device, or NULL) so the connection keeps running.
  */
 async function ensureDeviceConnectorWired(
   userId: string,
   organizationId: string,
   connectorKey: string,
-  declaredFeedKeys: string[]
+  declaredFeedKeys: string[],
+  matchingDeviceIds: string[]
 ): Promise<void> {
   const sql = getDb();
+
+  // Self-heal the device pin against the user's current fleet. Cheap, idempotent
+  // (the WHERE matches nothing when the pin is already a valid fresh device), and
+  // runs even on the fast path so a stale pin doesn't silently strand the feeds.
+  const reconcilePin = async (db: typeof sql, connectionId: number) => {
+    const target = matchingDeviceIds.length === 1 ? matchingDeviceIds[0] : null;
+    await db`
+      UPDATE connections
+      SET device_worker_id = ${target}::uuid, updated_at = NOW()
+      WHERE id = ${connectionId}
+        AND device_worker_id IS DISTINCT FROM ${target}::uuid
+        AND (device_worker_id IS NULL OR NOT (device_worker_id = ANY(${matchingDeviceIds}::uuid[])))
+    `;
+  };
+
   try {
     // Fast path: definition + version + connection + EVERY declared feed active
     // → nothing to repair or re-activate. The feed list comes from the bundled
@@ -129,6 +147,9 @@ async function ensureDeviceConnectorWired(
       version_key: string | null;
       active_feed_keys: string[] | null;
     }>;
+    if (existingReady[0]?.connection_id) {
+      await reconcilePin(sql, existingReady[0].connection_id);
+    }
     const activeFeedKeys = new Set(existingReady[0]?.active_feed_keys ?? []);
     if (
       existingReady[0]?.connection_id &&
@@ -242,6 +263,10 @@ async function ensureDeviceConnectorWired(
           `;
         }
       }
+
+      // Pin the (possibly just-created) connection to the sole fresh device
+      // serving the capability, or leave it unpinned when several do.
+      await reconcilePin(tx, connectionId);
     });
 
     if (connectionId) {
@@ -317,15 +342,20 @@ async function reconcileDeviceCapabilities(userId: string): Promise<void> {
   }
   if (deviceConnectors.length === 0) return;
 
-  let liveCaps = new Set<string>();
+  // deviceId → capabilities it currently advertises (fresh devices only). Used
+  // both to decide which connectors to wire and which device to pin them to.
+  const deviceCaps = new Map<string, Set<string>>();
   try {
     const rows = (await sql`
-      SELECT DISTINCT jsonb_array_elements_text(capabilities) AS cap
+      SELECT id, capabilities
       FROM device_workers
       WHERE user_id = ${userId}
         AND last_seen_at > now() - ${DEVICE_WORKER_FRESH_INTERVAL}::interval
-    `) as unknown as Array<{ cap: string }>;
-    liveCaps = new Set(rows.map((r) => r.cap));
+    `) as unknown as Array<{ id: string; capabilities: unknown }>;
+    for (const r of rows) {
+      const caps = Array.isArray(r.capabilities) ? (r.capabilities as string[]) : [];
+      deviceCaps.set(r.id, new Set(caps));
+    }
   } catch (err) {
     logger.warn(
       { userId, err: errorMessage(err) },
@@ -333,6 +363,8 @@ async function reconcileDeviceCapabilities(userId: string): Promise<void> {
     );
     return;
   }
+  const devicesWithCapability = (capability: string): string[] =>
+    [...deviceCaps.entries()].filter(([, caps]) => caps.has(capability)).map(([id]) => id);
 
   const personalOrg = await findExistingPersonalOrg(userId, sql).catch(() => null);
   if (!personalOrg) {
@@ -341,12 +373,71 @@ async function reconcileDeviceCapabilities(userId: string): Promise<void> {
   }
 
   await Promise.allSettled(
-    deviceConnectors.map((dc) =>
-      liveCaps.has(dc.requiredCapability)
-        ? ensureDeviceConnectorWired(userId, personalOrg.id, dc.key, dc.feedKeys)
-        : pauseStaleDeviceFeeds(userId, personalOrg.id, dc.key)
-    )
+    deviceConnectors.map((dc) => {
+      const matchingDeviceIds = devicesWithCapability(dc.requiredCapability);
+      return matchingDeviceIds.length > 0
+        ? ensureDeviceConnectorWired(
+            userId,
+            personalOrg.id,
+            dc.key,
+            dc.feedKeys,
+            matchingDeviceIds
+          )
+        : pauseStaleDeviceFeeds(userId, personalOrg.id, dc.key);
+    })
   );
+}
+
+/**
+ * Drop this user's device→org grants for orgs they're no longer a member of, and
+ * un-pin + pause the connections those grants backed (same effect as the owner
+ * explicitly revoking the grant via `DELETE /api/me/device-grants`). Membership
+ * changes happen in Better Auth without a hook into the gateway, so this runs
+ * opportunistically on every user-scoped poll. Best-effort; never throws.
+ */
+async function reconcileStaleDeviceGrants(userId: string): Promise<void> {
+  const sql = getDb();
+  try {
+    await sql.begin(async (tx) => {
+      const stale = (await tx`
+        DELETE FROM device_worker_org_grants g
+        WHERE g.device_worker_id IN (SELECT id FROM device_workers WHERE user_id = ${userId})
+          AND NOT EXISTS (
+            SELECT 1 FROM "member" m
+            WHERE m."userId" = ${userId} AND m."organizationId" = g.organization_id
+          )
+        RETURNING g.device_worker_id, g.organization_id
+      `) as unknown as Array<{ device_worker_id: string; organization_id: string }>;
+      if (stale.length === 0) return;
+      for (const { device_worker_id, organization_id } of stale) {
+        const affected = (await tx`
+          UPDATE connections
+          SET device_worker_id = NULL,
+              status = 'paused',
+              error_message = 'Device access to this organization was revoked',
+              updated_at = NOW()
+          WHERE device_worker_id = ${device_worker_id} AND organization_id = ${organization_id}
+          RETURNING id
+        `) as unknown as Array<{ id: number }>;
+        const ids = affected.map((r) => r.id);
+        if (ids.length > 0) {
+          await tx`
+            UPDATE feeds SET status = 'paused', updated_at = NOW()
+            WHERE connection_id = ANY(${ids}::bigint[]) AND deleted_at IS NULL AND status = 'active'
+          `;
+        }
+      }
+      logger.info(
+        { userId, grants: stale.length },
+        '[device-connectors] Reconciled stale device→org grants'
+      );
+    });
+  } catch (err) {
+    logger.warn(
+      { userId, err: errorMessage(err) },
+      '[device-connectors] Failed to reconcile stale device→org grants'
+    );
+  }
 }
 
 /**
@@ -492,6 +583,9 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
       // the ones that have gone away. The just-upserted row above is already
       // visible to this query, so the polling device's capabilities count.
       await reconcileDeviceCapabilities(workerUserId);
+      // Membership changes (leaving an org) happen outside the gateway; drop any
+      // now-orphaned device→org grants and pause the connections they backed.
+      await reconcileStaleDeviceGrants(workerUserId);
     } catch (err) {
       logger.error(
         { worker_id, err: errorMessage(err) },

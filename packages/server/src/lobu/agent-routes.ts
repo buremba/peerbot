@@ -272,16 +272,34 @@ function sanitizeAuthProfileForClient(profile: AuthProfile) {
   };
 }
 
+/** Whitelist client-supplied profile metadata down to the non-secret fields. */
+function sanitizeClientProfileMetadata(
+  metadata: AuthProfile['metadata']
+): AuthProfile['metadata'] | undefined {
+  if (!metadata) return undefined;
+  const next = {
+    ...(metadata.email ? { email: metadata.email } : {}),
+    ...(typeof metadata.expiresAt === 'number' ? { expiresAt: metadata.expiresAt } : {}),
+    ...(metadata.accountId ? { accountId: metadata.accountId } : {}),
+  };
+  return Object.keys(next).length > 0 ? next : undefined;
+}
+
 /**
  * Reconcile the user-scoped auth profiles for `(userId, agentId)` against the
  * list the web client just submitted in a `PATCH /config` body.
  *
- *   - profiles in the store but absent from `desired` are removed (with their
- *     secrets), so deleting a provider row in the UI actually deletes it.
  *   - entries in `desired` that carry a non-empty `credential` are upserted
- *     (the secret is written to the secret store, the ref to the profile JSON).
+ *     first (the secret is written to the secret store, the ref to the profile
+ *     JSON) — done before any removal so a failed write can't leave the user
+ *     with fewer credentials than they started with.
+ *   - profiles in the store but absent from `desired` are then removed (with
+ *     their secrets), so deleting a provider row in the UI actually deletes it.
  *   - entries with an empty/absent `credential` are unchanged rows the client
  *     round-tripped — left as-is so the stored secret is preserved.
+ *
+ * Throws if the auth-profiles manager is unavailable; the caller surfaces that
+ * rather than reporting a save that was dropped.
  */
 async function reconcileAgentAuthProfiles(
   agentId: string,
@@ -289,21 +307,14 @@ async function reconcileAgentAuthProfiles(
   desired: AuthProfile[]
 ): Promise<void> {
   const manager = getLobuCoreServices()?.getAuthProfilesManager?.();
-  if (!manager) return;
-  const store = manager.getUserAuthProfileStore();
-  const current = await store.list(userId, agentId);
-  const desiredIds = new Set(desired.map((profile) => profile.id).filter(Boolean));
-  for (const existing of current) {
-    if (!desiredIds.has(existing.id)) {
-      await store.remove(userId, agentId, {
-        provider: existing.provider,
-        profileId: existing.id,
-      });
-    }
+  if (!manager) {
+    throw new Error('Auth profile store is not available — retry once startup completes');
   }
+  const store = manager.getUserAuthProfileStore();
   for (const profile of desired) {
     const credential = typeof profile.credential === 'string' ? profile.credential.trim() : '';
     if (!credential) continue;
+    const metadata = sanitizeClientProfileMetadata(profile.metadata);
     await manager.upsertProfile({
       userId,
       agentId,
@@ -313,10 +324,27 @@ async function reconcileAgentAuthProfiles(
       authType: profile.authType,
       label: profile.label,
       model: profile.model,
-      ...(profile.metadata ? { metadata: profile.metadata } : {}),
+      ...(metadata ? { metadata } : {}),
       makePrimary: true,
     });
   }
+  const desiredIds = new Set(desired.map((profile) => profile.id).filter(Boolean));
+  const current = await store.list(userId, agentId);
+  for (const existing of current) {
+    if (!desiredIds.has(existing.id)) {
+      await store.remove(userId, agentId, {
+        provider: existing.provider,
+        profileId: existing.id,
+      });
+    }
+  }
+}
+
+/** True if the submitted profile list contains at least one fresh credential. */
+function hasFreshCredential(profiles: AuthProfile[]): boolean {
+  return profiles.some(
+    (profile) => typeof profile.credential === 'string' && profile.credential.trim().length > 0
+  );
 }
 
 // ── List agents ──────────────────────────────────────────────────────────────
@@ -764,8 +792,27 @@ routes.patch('/:agentId/config', mcpAuth, async (c) => {
     } & Record<string, unknown>;
     if (Array.isArray(authProfiles)) {
       const user = c.get('user');
-      if (user?.id) {
-        await reconcileAgentAuthProfiles(agentId, user.id, authProfiles);
+      if (!user?.id) {
+        // Admin-PAT callers (`lobu apply`) manage declared-agent credentials
+        // out of band; reject only if they actually tried to set one here.
+        if (hasFreshCredential(authProfiles)) {
+          return c.json(
+            { error: 'Setting agent auth profiles requires a web session' },
+            403
+          );
+        }
+      } else {
+        try {
+          await reconcileAgentAuthProfiles(agentId, user.id, authProfiles);
+        } catch (error) {
+          return c.json(
+            {
+              error:
+                error instanceof Error ? error.message : 'Failed to persist auth profiles',
+            },
+            503
+          );
+        }
       }
     }
 

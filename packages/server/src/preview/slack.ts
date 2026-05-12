@@ -1,11 +1,20 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { Context } from 'hono';
-import { getDb, pgTextArray } from '../db/client';
+import { getDb } from '../db/client';
 import type { Env } from '../index';
 import { errorMessage } from '../utils/errors';
 import logger from '../utils/logger';
 
+// Slack Preview lets people trying Lobu locally talk to their agent through the
+// hosted "Lobu Developer" Slack workspace before they have their own bot token.
+// It rides on two existing tables — no Slack-Preview-specific schema:
+//   * `oauth_states` (scope `slack-preview-claim`) holds the short-lived link code.
+//   * `agent_channel_bindings` (platform `slack-preview`) holds the live
+//     surface → agent mapping the relay routes on.
+
 const PROVIDER = 'lobu-public-slack';
+const BINDING_PLATFORM = 'slack-preview';
+const CLAIM_SCOPE = 'slack-preview-claim';
 const DEFAULT_SLACK_PREVIEW_URL = 'https://lobu.ai/slack/developer';
 const DEFAULT_TTL_MINUTES = 15;
 const MAX_TTL_MINUTES = 60;
@@ -13,14 +22,12 @@ const SURFACES = new Set(['dm', 'channel', 'thread']);
 
 type SurfaceType = 'dm' | 'channel' | 'thread';
 
-interface ClaimRow {
-  id: string;
-  organization_id: string;
-  agent_id: string;
-  created_by: string | null;
-  allowed_surfaces: string[];
-  expires_at: string;
-  claimed_at: string | null;
+interface ClaimPayload {
+  organizationId: string;
+  agentId: string;
+  createdBy: string | null;
+  allowedSurfaces: SurfaceType[];
+  createdAt: number;
 }
 
 function codeHash(code: string): string {
@@ -136,29 +143,28 @@ export async function createSlackPreviewClaim(c: Context<{ Bindings: Env }>) {
     );
   }
 
+  const expiresAt = new Date(Date.now() + ttlMinutes * 60_000);
+
   for (let attempt = 0; attempt < 5; attempt++) {
     const code = `${codePrefix}-${randomCodeSuffix()}`;
-    const hash = codeHash(code);
+    const payload: ClaimPayload = {
+      organizationId: auth.organizationId,
+      agentId,
+      createdBy: auth.userId,
+      allowedSurfaces: surfaces,
+      createdAt: Date.now(),
+    };
     try {
-      const rows = await sql<{ id: string; expires_at: string }>`
-        INSERT INTO agent_preview_claims (
-          organization_id, agent_id, created_by, provider, code_hash, code_prefix,
-          allowed_surfaces, expires_at
-        )
-        VALUES (
-          ${auth.organizationId}, ${agentId}, ${auth.userId}, ${PROVIDER}, ${hash}, ${codePrefix},
-          ${pgTextArray(surfaces)}::text[], now() + (${ttlMinutes} * interval '1 minute')
-        )
-        RETURNING id, expires_at
+      await sql`
+        INSERT INTO oauth_states (id, scope, payload, expires_at)
+        VALUES (${codeHash(code)}, ${CLAIM_SCOPE}, ${sql.json(payload)}, ${expiresAt})
       `;
-      const expiresAt = rows[0]!.expires_at;
       return c.json({
-        id: rows[0]!.id,
         provider: PROVIDER,
         code,
         command: `link ${code}`,
         slack_url: slackPreviewUrl(),
-        expires_at: expiresAt,
+        expires_at: expiresAt.toISOString(),
         allowed_surfaces: surfaces,
       });
     } catch (err: unknown) {
@@ -186,7 +192,6 @@ export async function bindSlackPreviewClaim(c: Context<{ Bindings: Env }>) {
   const externalTeamId = typeof body.external_team_id === 'string' ? body.external_team_id.trim() : '';
   const externalChannelId =
     typeof body.external_channel_id === 'string' ? body.external_channel_id.trim() : '';
-  const externalUserId = typeof body.external_user_id === 'string' ? body.external_user_id.trim() : null;
   const externalThreadTs =
     typeof body.external_thread_ts === 'string' && body.external_thread_ts.trim()
       ? body.external_thread_ts.trim()
@@ -205,72 +210,40 @@ export async function bindSlackPreviewClaim(c: Context<{ Bindings: Env }>) {
 
   try {
     const result = await sql.begin(async (tx) => {
-      const claims = await tx<ClaimRow>`
-        SELECT id, organization_id, agent_id, created_by, allowed_surfaces, expires_at, claimed_at
-        FROM agent_preview_claims
-        WHERE provider = ${PROVIDER}
-          AND code_hash = ${codeHash(code)}
-        FOR UPDATE
+      const claims = await tx<{ payload: ClaimPayload }>`
+        DELETE FROM oauth_states
+        WHERE id = ${codeHash(code)}
+          AND scope = ${CLAIM_SCOPE}
+          AND expires_at > now()
+        RETURNING payload
       `;
-      const claim = claims[0];
+      const claim = claims[0]?.payload;
       if (!claim) return { status: 'not_found' as const };
-      if (claim.claimed_at) return { status: 'already_claimed' as const };
-      if (new Date(claim.expires_at).getTime() <= Date.now()) return { status: 'expired' as const };
-      if (!claim.allowed_surfaces.includes(surfaceType)) return { status: 'surface_not_allowed' as const };
+      if (!claim.allowedSurfaces.includes(surfaceType)) return { status: 'surface_not_allowed' as const };
 
-      const inserted = await tx<{ id: string }>`
-        INSERT INTO agent_preview_bindings (
-          organization_id, agent_id, created_by, claim_id, provider, surface_type,
-          external_team_id, external_user_id, external_channel_id, external_thread_ts,
-          surface_key, metadata
-        )
-        VALUES (
-          ${claim.organization_id}, ${claim.agent_id}, ${claim.created_by}, ${claim.id}, ${PROVIDER}, ${surfaceType},
-          ${externalTeamId}, ${externalUserId}, ${externalChannelId}, ${externalThreadTs},
-          ${key}, ${tx.json({ source: 'slack-preview-relay' })}
-        )
-        RETURNING id
+      const inserted = await tx`
+        INSERT INTO agent_channel_bindings (agent_id, platform, channel_id, team_id, created_at)
+        VALUES (${claim.agentId}, ${BINDING_PLATFORM}, ${key}, ${externalTeamId}, now())
+        ON CONFLICT (platform, channel_id, team_id) DO NOTHING
+        RETURNING agent_id
       `;
-
-      await tx`
-        UPDATE agent_preview_claims
-        SET claimed_at = now(),
-            claimed_by_external = ${tx.json({
-              team_id: externalTeamId,
-              user_id: externalUserId,
-              channel_id: externalChannelId,
-              thread_ts: externalThreadTs,
-              surface_type: surfaceType,
-              surface_key: key,
-            })}
-        WHERE id = ${claim.id}
-      `;
+      if (inserted.length === 0) return { status: 'already_linked' as const };
 
       return {
         status: 'bound' as const,
-        bindingId: inserted[0]!.id,
-        organizationId: claim.organization_id,
-        agentId: claim.agent_id,
+        organizationId: claim.organizationId,
+        agentId: claim.agentId,
         surfaceKey: key,
       };
     });
 
-    if (result.status === 'not_found') return c.json({ error: 'Preview code not found' }, 404);
-    if (result.status === 'expired') return c.json({ error: 'Preview code expired' }, 410);
-    if (result.status === 'already_claimed') return c.json({ error: 'Preview code already used' }, 409);
+    if (result.status === 'not_found') {
+      return c.json({ error: 'Preview code not found or expired' }, 404);
+    }
     if (result.status === 'surface_not_allowed') {
       return c.json({ error: `Preview code is not valid for ${surfaceType} bindings` }, 400);
     }
-
-    return c.json({
-      status: 'bound',
-      binding_id: result.bindingId,
-      organization_id: result.organizationId,
-      agent_id: result.agentId,
-      surface_key: result.surfaceKey,
-    });
-  } catch (err: unknown) {
-    if ((err as { code?: string }).code === '23505') {
+    if (result.status === 'already_linked') {
       return c.json(
         {
           error: 'Slack surface is already linked',
@@ -279,6 +252,14 @@ export async function bindSlackPreviewClaim(c: Context<{ Bindings: Env }>) {
         409
       );
     }
+
+    return c.json({
+      status: 'bound',
+      organization_id: result.organizationId,
+      agent_id: result.agentId,
+      surface_key: result.surfaceKey,
+    });
+  } catch (err: unknown) {
     logger.error({ err: errorMessage(err) }, '[SlackPreview] bind claim failed');
     return c.json({ error: errorMessage(err) }, 500);
   }

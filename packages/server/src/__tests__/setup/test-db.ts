@@ -56,9 +56,15 @@ export function getTestDb(): postgres.Sql {
           'Example: DATABASE_URL=postgresql://localhost:5432/lobu_test'
       );
     }
+    // The PGlite socket server is happiest with very few, short-lived
+    // connections (same reason `db/client.ts` pins the embedded pool to 1).
+    // A 5-connection pool that lingers 20s after idle churns the socket and
+    // has been observed to drop connections mid-suite (ECONNRESET in the
+    // cleanup hook). Against real Postgres the wider pool is fine.
+    const isPglite = process.env.LOBU_DISABLE_PREPARE === '1';
     sql = postgres(url, {
-      max: 5,
-      idle_timeout: 20,
+      max: isPglite ? 1 : 5,
+      idle_timeout: isPglite ? 0 : 20,
       // Integration tests trigger many CASCADE/TRUNCATE notices; suppress them to
       // reduce noisy output and hook slowdowns.
       onnotice: () => {},

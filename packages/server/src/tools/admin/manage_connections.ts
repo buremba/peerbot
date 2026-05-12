@@ -903,13 +903,18 @@ async function handleCreate(
           .usable
       : false;
 
+  // A `pending_auth` auth profile is OK on create — the connection is created
+  // in `pending_auth` and the OAuth/connect callback flips both the profile and
+  // the connection to `active`. This lets a connection reference a freshly
+  // created oauth_account profile in the same `lobu apply`.
   if (
     authSelection?.authProfile &&
     authSelection.authProfile.profile_kind !== 'browser_session' &&
-    authSelection.authProfile.status !== 'active'
+    authSelection.authProfile.status !== 'active' &&
+    authSelection.authProfile.status !== 'pending_auth'
   ) {
     return {
-      error: `Selected auth profile '${authSelection.authProfile.slug}' is not active.`,
+      error: `Selected auth profile '${authSelection.authProfile.slug}' is ${authSelection.authProfile.status} — must be active or pending_auth.`,
     };
   }
 
@@ -977,9 +982,11 @@ async function handleCreate(
     interactiveAuthProfileId = profile.id;
   }
 
-  const connectionStatus = interactiveMethod
-    ? 'pending_auth'
-    : authSelection?.authProfile?.profile_kind === 'browser_session' && !browserProfileUsable
+  const connectionStatus =
+    interactiveMethod ||
+    (authSelection?.authProfile?.profile_kind === 'browser_session' &&
+      !browserProfileUsable) ||
+    authSelection?.authProfile?.status === 'pending_auth'
       ? 'pending_auth'
       : 'active';
 

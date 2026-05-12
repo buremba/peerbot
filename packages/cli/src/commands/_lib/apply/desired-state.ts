@@ -1070,6 +1070,21 @@ function parseConnectorDoc(
       `${file}: connector "${key}" must declare exactly one of \`source_path\` or \`source_url\``
     );
   }
+  if (sourceUrl) {
+    let parsed: URL;
+    try {
+      parsed = new URL(sourceUrl);
+    } catch {
+      throw new ValidationError(
+        `${file}: connector "${key}" source_url is not a valid URL: ${sourceUrl}`
+      );
+    }
+    if (parsed.protocol !== "https:") {
+      throw new ValidationError(
+        `${file}: connector "${key}" source_url must use https (got ${parsed.protocol}//)`
+      );
+    }
+  }
   return {
     key,
     ...(sourcePath ? { sourcePath } : {}),
@@ -1223,9 +1238,18 @@ async function loadConnectors(
       } else if (type === "connector") {
         const parsed = parseConnectorDoc(doc, rel);
         if (parsed.sourceUrl) {
-          if (definitionsByKey.has(parsed.key)) {
+          const prior = definitionsByKey.get(parsed.key);
+          if (prior) {
             throw new ValidationError(
-              `${rel}: duplicate connector key "${parsed.key}"`
+              `connector key "${parsed.key}" is declared twice — in ${prior.sourceFile} and ${rel}; keys must be unique`
+            );
+          }
+          const priorTs = [...tsFileDefinitions.values()].find(
+            (d) => d.key === parsed.key
+          );
+          if (priorTs) {
+            throw new ValidationError(
+              `connector key "${parsed.key}" is declared twice — in ${priorTs.sourceFile} and ${rel}; keys must be unique`
             );
           }
           definitionsByKey.set(parsed.key, {
@@ -1238,11 +1262,29 @@ async function loadConnectors(
           // directory (the connectors/ dir), matching the watcher-classifier
           // `source_path` convention.
           const abs = resolve(dirPath, parsed.sourcePath);
+          // The declared key must not collide with another connector definition.
+          const keyClash =
+            definitionsByKey.get(parsed.key) ??
+            [...tsFileDefinitions.entries()].find(
+              ([p, d]) => d.key === parsed.key && p !== abs
+            )?.[1];
+          if (keyClash) {
+            throw new ValidationError(
+              `connector key "${parsed.key}" is declared twice — in ${keyClash.sourceFile} and ${rel}; keys must be unique`
+            );
+          }
           if (tsFileDefinitions.has(abs)) {
-            // Already auto-discovered; the `type: connector` doc is redundant
-            // but harmless — just record the declared key for clearer output.
+            // Already auto-discovered as a `*.connector.ts` file; the
+            // `type: connector` doc just declares its key for clearer output.
             const existing = tsFileDefinitions.get(abs);
-            if (existing) existing.key = parsed.key;
+            if (existing) {
+              if (existing.key !== null && existing.key !== parsed.key) {
+                throw new ValidationError(
+                  `${existing.sourceFile} declares connector key "${existing.key}" but ${rel} declares "${parsed.key}" for the same file — they must agree`
+                );
+              }
+              existing.key = parsed.key;
+            }
           } else {
             let sourceCode: string;
             try {
@@ -1269,15 +1311,16 @@ async function loadConnectors(
   }
 
   const allDefs = [...definitionsByKey.values(), ...tsFileDefinitions.values()];
-  const seenKeys = new Set<string>();
+  const seenKeys = new Map<string, string>();
   for (const def of allDefs) {
     if (def.key === null) continue;
-    if (seenKeys.has(def.key)) {
+    const prior = seenKeys.get(def.key);
+    if (prior) {
       throw new ValidationError(
-        `${dirRel}/: connector key "${def.key}" is declared by more than one connector definition (a \`type: connector\` doc and/or a \`*.connector.ts\` file) — keys must be unique`
+        `connector key "${def.key}" is declared twice — in ${prior} and ${def.sourceFile}; keys must be unique`
       );
     }
-    seenKeys.add(def.key);
+    seenKeys.set(def.key, def.sourceFile);
   }
 
   return {

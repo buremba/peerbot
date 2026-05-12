@@ -260,9 +260,12 @@ async function handleCreateFeed(
   }
 
   const conn = connRows[0] as any;
-  if (conn.status !== 'active') {
-    return { error: `Connection is ${conn.status}, must be active to create feeds` };
+  // A `pending_auth` connection is OK — the feed is created paused; the
+  // OAuth/connect callback activates the connection AND its feeds together.
+  if (conn.status !== 'active' && conn.status !== 'pending_auth') {
+    return { error: `Connection is ${conn.status}, must be active or pending_auth to create feeds` };
   }
+  const feedInitialStatus = conn.status === 'pending_auth' ? 'pending_auth' : 'active';
 
   const feedsSchema = conn.feeds_schema as Record<string, any> | null;
   if (feedsSchema && !feedsSchema[args.feed_key]) {
@@ -276,7 +279,8 @@ async function handleCreateFeed(
   if (scheduleError) {
     return { error: scheduleError };
   }
-  const nextRunAtVal = nextRunAt(schedule);
+  // Don't schedule a first run for a feed whose connection is still pending auth.
+  const nextRunAtVal = feedInitialStatus === 'active' ? nextRunAt(schedule) : null;
   const entityIdsValue =
     args.entity_ids && args.entity_ids.length > 0 ? pgBigintArray(args.entity_ids) : null;
 
@@ -293,7 +297,7 @@ async function handleCreateFeed(
       organization_id, connection_id, feed_key, display_name, status,
       entity_ids, config, schedule, next_run_at
     ) VALUES (
-      ${organizationId}, ${args.connection_id}, ${args.feed_key}, ${displayName}, 'active',
+      ${organizationId}, ${args.connection_id}, ${args.feed_key}, ${displayName}, ${feedInitialStatus},
       ${entityIdsValue}::bigint[],
       ${args.config ? sql.json(args.config) : null},
       ${schedule}, ${nextRunAtVal}

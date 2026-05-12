@@ -462,7 +462,7 @@ source_url: https://example.com/b.ts
 `,
     });
     await expect(loadDesiredState({ cwd: dir, env: {} })).rejects.toThrow(
-      /duplicate connector key "dup"|connector key "dup" is declared by more than one/
+      /connector key "dup" is declared twice/
     );
   });
 
@@ -480,7 +480,7 @@ source_url: https://example.com/b.ts
 `,
     });
     await expect(loadDesiredState({ cwd: dir, env: {} })).rejects.toThrow(
-      /duplicate connector key "dup2"|connector key "dup2" is declared by more than one/
+      /connector key "dup2" is declared twice/
     );
   });
 
@@ -504,5 +504,60 @@ credentials:
     expect(state.connectors.authProfiles).toHaveLength(0);
     expect(state.connectors.connections).toHaveLength(0);
     expect(state.requiredSecrets).not.toContain("HN_API_TOKEN");
+  });
+
+  // ── round-3 ──────────────────────────────────────────────────────────────
+
+  test("rejects two type:connector docs with the same key (cites both files)", async () => {
+    const dir = mkConnectorsProject({
+      "a.yaml": `version: 1
+type: connector
+key: dup3
+source_url: https://example.com/a.ts
+`,
+      "b.yaml": `version: 1
+type: connector
+key: dup3
+source_url: https://example.com/b.ts
+`,
+    });
+    let msg = "";
+    await loadDesiredState({ cwd: dir, env: {} }).catch((e) => {
+      msg = e instanceof Error ? e.message : String(e);
+    });
+    expect(msg).toMatch(/connector key "dup3" is declared twice/);
+    expect(msg).toMatch(/a\.yaml/);
+    expect(msg).toMatch(/b\.yaml/);
+  });
+
+  test("rejects two type:connector docs with the same key in one file", async () => {
+    const dir = mkConnectorsProject({
+      "a.yaml": `version: 1
+type: connector
+key: dup4
+source_url: https://example.com/a.ts
+---
+version: 1
+type: connector
+key: dup4
+source_url: https://example.com/b.ts
+`,
+    });
+    await expect(loadDesiredState({ cwd: dir, env: {} })).rejects.toThrow(
+      /connector key "dup4" is declared twice/
+    );
+  });
+
+  test("rejects a non-https connector source_url", async () => {
+    const dir = mkConnectorsProject({
+      "a.yaml": `version: 1
+type: connector
+key: insecure
+source_url: http://example.com/a.ts
+`,
+    });
+    await expect(loadDesiredState({ cwd: dir, env: {} })).rejects.toThrow(
+      /source_url must use https/
+    );
   });
 });

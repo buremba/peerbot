@@ -61,6 +61,116 @@ function checkRequiredSecrets(state: DesiredState): { missing: string[] } {
   return { missing };
 }
 
+// ── source_url: confirmed-before-fetch, https-only, bounded fetch ──────────
+
+const CONNECTOR_SOURCE_MAX_BYTES = 2 * 1024 * 1024; // 2 MiB
+const CONNECTOR_SOURCE_FETCH_TIMEOUT_MS = 15_000;
+
+async function materializeConnectorSource(
+  defs: DesiredConnectorDefinition[],
+  fetchImpl: typeof fetch
+): Promise<void> {
+  for (const def of defs) {
+    if (def.sourceCode !== undefined || !def.sourceUrl) continue;
+    let url: URL;
+    try {
+      url = new URL(def.sourceUrl);
+    } catch {
+      throw new ValidationError(
+        `${def.sourceFile}: connector source_url is not a valid URL: ${def.sourceUrl}`
+      );
+    }
+    if (url.protocol !== "https:") {
+      throw new ValidationError(
+        `${def.sourceFile}: connector source_url must use https (got ${url.protocol}//): ${def.sourceUrl}`
+      );
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(
+      () => controller.abort(),
+      CONNECTOR_SOURCE_FETCH_TIMEOUT_MS
+    );
+    let res: Response;
+    try {
+      res = await fetchImpl(def.sourceUrl, { signal: controller.signal });
+    } catch (err) {
+      throw new ValidationError(
+        `${def.sourceFile}: failed to fetch connector source_url ${def.sourceUrl} — ${err instanceof Error ? err.message : String(err)}`
+      );
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!res.ok) {
+      throw new ValidationError(
+        `${def.sourceFile}: connector source_url ${def.sourceUrl} returned HTTP ${res.status} ${res.statusText}`
+      );
+    }
+    const contentType = (res.headers.get("content-type") ?? "").toLowerCase();
+    if (
+      contentType &&
+      !/(text\/|application\/(typescript|javascript|x-typescript|octet-stream))/.test(
+        contentType
+      )
+    ) {
+      throw new ValidationError(
+        `${def.sourceFile}: connector source_url ${def.sourceUrl} returned unexpected content-type "${contentType}" — expected text/*, application/typescript, or application/javascript`
+      );
+    }
+    const body = await res.text();
+    if (body.length > CONNECTOR_SOURCE_MAX_BYTES) {
+      throw new ValidationError(
+        `${def.sourceFile}: connector source_url ${def.sourceUrl} body is ${body.length} bytes — exceeds the ${CONNECTOR_SOURCE_MAX_BYTES}-byte cap`
+      );
+    }
+    if (!body.trim()) {
+      throw new ValidationError(
+        `${def.sourceFile}: connector source_url ${def.sourceUrl} returned an empty body`
+      );
+    }
+    def.sourceCode = body;
+  }
+}
+
+/**
+ * Warn + require confirmation BEFORE the CLI fetches any `source_url` or
+ * uploads any custom connector source for compilation on the gateway.
+ *
+ * SECURITY: `install_connector` compiles + imports + instantiates the connector
+ * runtime class on the gateway. The server-side compiler currently runs with
+ * full gateway env/fs/network and only blocks relative imports — this consent
+ * gate is the operator's last line of defence. (TODO(security): sandbox the
+ * server-side connector compiler — tracked separately, out of scope here.)
+ */
+async function confirmCustomConnectorSource(
+  defs: DesiredConnectorDefinition[],
+  yes: boolean
+): Promise<void> {
+  if (defs.length === 0) return;
+  printText(
+    chalk.yellow(
+      `\n  ⚠ This project ships ${defs.length} custom connector source ${defs.length === 1 ? "definition" : "definitions"}:`
+    )
+  );
+  for (const def of defs) {
+    printText(
+      chalk.yellow(
+        def.sourceUrl
+          ? `    - ${def.sourceFile} → fetches ${def.sourceUrl}`
+          : `    - ${def.sourceFile}`
+      )
+    );
+  }
+  printText(
+    chalk.yellow(
+      "  `lobu apply` will fetch (https) and UPLOAD this source; the gateway will COMPILE and EXECUTE it.\n  Only proceed if you trust this code."
+    )
+  );
+  const ok = await confirmCustomConnectors(yes);
+  if (!ok) {
+    throw new ValidationError("Cancelled — custom connectors not confirmed.");
+  }
+}
+
 // ── Snapshot ───────────────────────────────────────────────────────────────
 
 async function fetchRemoteSnapshot(
@@ -129,37 +239,31 @@ async function fetchRemoteSnapshot(
   };
 }
 
-// ── Connector definitions (phase 1: install/update, then refetch catalog) ──
+// ── Connector definition install (runs INSIDE executePlan, after confirm) ──
 
 /**
- * Install/update the project's custom connector definitions, then install any
- * *bundled* connectors referenced by an auth-profile / connection (the server
- * only resolves *installed* defs in `create_auth_profile` / `create_feed`, not
- * the catalog). Returns the fresh connector-definition catalog so config
- * validation runs against the now-current schemas — fixing the "validate
- * against stale remote schema before installing the local connector" bug.
- *
- * SECURITY: `install_connector` compiles + imports + instantiates the connector
- * runtime class on the gateway. Custom connector source must already have been
- * confirmed by the operator (see `confirmCustomConnectorSource`). The CLI
- * fetches `source_url` content client-side (no gateway-side fetch from a
- * manifest URL) — see `materializeConnectorSource`.
- * TODO(security): the server-side connector compiler/metadata-extractor still
- * runs with full gateway env/fs/network and only blocks relative imports — it
- * should run sandboxed (no secrets, restricted fs/net, block node:* / dynamic
- * import / require). Tracked separately; out of scope for this PR.
+ * Install/update the project's custom connector definitions, then any *bundled*
+ * connectors referenced by an auth-profile / connection (the server only
+ * resolves *installed* defs in `create_auth_profile` / `create_feed`, not the
+ * catalog). Returns the fresh connector-definition catalog.
  */
 async function installConnectorDefinitions(
   client: ApplyClient,
   state: DesiredState,
-  catalog: RemoteConnectorDefinition[]
+  catalog: RemoteConnectorDefinition[],
+  plan: DiffPlan
 ): Promise<RemoteConnectorDefinition[]> {
   const installedKeys = new Set(
     catalog.filter((d) => d.installed).map((d) => d.key)
   );
   let mutated = false;
 
-  for (const def of state.connectors.definitions) {
+  // Iterate the plan's connector-definition rows so progress mirrors the plan.
+  for (const row of plan.rows) {
+    if (row.kind !== "connector-definition") continue;
+    if (row.verb === "noop" || row.verb === "drift") continue;
+    const def = row.desired;
+    if (!def) continue;
     const result =
       def.sourceCode !== undefined
         ? await client.installConnector({ sourceCode: def.sourceCode })
@@ -167,7 +271,7 @@ async function installConnectorDefinitions(
     mutated = true;
     printText(
       renderProgress(
-        "update",
+        row.verb,
         "connector-definition",
         result.connectorKey || def.key || def.sourceFile,
         result.updated ? "(installed)" : "(unchanged)"
@@ -193,7 +297,7 @@ async function installConnectorDefinitions(
     mutated = true;
     printText(
       renderProgress(
-        "update",
+        "create",
         "connector-definition",
         result.connectorKey || key,
         result.updated ? "(installed bundled)" : "(bundled — unchanged)"
@@ -204,7 +308,7 @@ async function installConnectorDefinitions(
   return mutated ? await client.listConnectorDefinitions(true) : catalog;
 }
 
-// ── Connector validation (against the now-current catalog) ─────────────────
+// ── Connector config validation (against a given catalog) ──────────────────
 
 function validateConnectorState(
   state: DesiredState,
@@ -233,65 +337,7 @@ function validateConnectorState(
   }
 }
 
-// ── source_url fetched client-side; security confirmation gate ─────────────
-
-async function materializeConnectorSource(
-  defs: DesiredConnectorDefinition[],
-  fetchImpl: typeof fetch
-): Promise<void> {
-  for (const def of defs) {
-    if (def.sourceCode !== undefined || !def.sourceUrl) continue;
-    let res: Response;
-    try {
-      res = await fetchImpl(def.sourceUrl);
-    } catch (err) {
-      throw new ValidationError(
-        `${def.sourceFile}: failed to fetch connector source_url ${def.sourceUrl} — ${err instanceof Error ? err.message : String(err)}`
-      );
-    }
-    if (!res.ok) {
-      throw new ValidationError(
-        `${def.sourceFile}: connector source_url ${def.sourceUrl} returned HTTP ${res.status} ${res.statusText}`
-      );
-    }
-    def.sourceCode = await res.text();
-    if (!def.sourceCode.trim()) {
-      throw new ValidationError(
-        `${def.sourceFile}: connector source_url ${def.sourceUrl} returned an empty body`
-      );
-    }
-  }
-}
-
-async function confirmCustomConnectorSource(
-  defs: DesiredConnectorDefinition[],
-  yes: boolean
-): Promise<void> {
-  if (defs.length === 0) return;
-  printText(
-    chalk.yellow(
-      `\n  ⚠ This project ships ${defs.length} custom connector source file${defs.length === 1 ? "" : "s"}:`
-    )
-  );
-  for (const def of defs) {
-    printText(
-      chalk.yellow(
-        `    - ${def.sourceFile}${def.sourceUrl ? ` (from ${def.sourceUrl})` : ""}`
-      )
-    );
-  }
-  printText(
-    chalk.yellow(
-      "  `lobu apply` will upload this source and the gateway will COMPILE and EXECUTE it.\n  Only proceed if you trust this code."
-    )
-  );
-  const ok = await confirmCustomConnectors(yes);
-  if (!ok) {
-    throw new ValidationError("Cancelled — custom connectors not confirmed.");
-  }
-}
-
-// ── Apply executor (auth profiles → connections → feeds) ───────────────────
+// ── Apply executor ─────────────────────────────────────────────────────────
 
 interface ApplyContext {
   client: ApplyClient;
@@ -399,10 +445,25 @@ async function executePlan(
     printText(renderProgress(row.verb, "watcher", row.id));
   }
 
-  // Connector definitions are installed in phase 1 (before validation), so no
-  // `connector-definition` rows are executed here.
+  // 7) Connector definitions (install — happens AFTER the plan was confirmed),
+  //    then refetch the catalog and validate connection/feed config against the
+  //    now-current schemas (so an updated custom connector's new schema is what
+  //    the connection config is checked against).
+  const hasConnectorWork =
+    ctx.state.connectors.definitions.length > 0 ||
+    ctx.state.connectors.authProfiles.length > 0 ||
+    ctx.state.connectors.connections.length > 0;
+  if (hasConnectorWork) {
+    const freshCatalog = await installConnectorDefinitions(
+      ctx.client,
+      ctx.state,
+      ctx.remote.connectorDefinitions,
+      ctx.plan
+    );
+    validateConnectorState(ctx.state, freshCatalog);
+  }
 
-  // 7) Auth profiles (create / update; interactive kinds → punch-list)
+  // 8) Auth profiles (create / update; interactive kinds → punch-list)
   for (const row of rowsByKind("auth-profile")) {
     if (row.kind !== "auth-profile") continue;
     const desired = ctx.state.connectors.authProfiles.find(
@@ -437,7 +498,7 @@ async function executePlan(
     printText(renderProgress(row.verb, "auth-profile", row.id));
   }
 
-  // 8) Connections, keyed by slug.
+  // 9) Connections, keyed by slug.
   const remoteConnBySlug = new Map(
     ctx.remote.connections.map((c) => [c.slug, c])
   );
@@ -473,7 +534,7 @@ async function executePlan(
     printText(renderProgress(row.verb, "connection", row.id));
   }
 
-  // 9) Feeds (per connection — covers feeds whose connection itself was a noop)
+  // 10) Feeds (per connection — covers feeds whose connection itself was a noop)
   for (const row of rowsByKind("feed")) {
     if (row.kind !== "feed") continue;
     if (!row.desired) continue;
@@ -595,46 +656,37 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
     }
   }
 
-  // SECURITY (#2): fetch any `source_url` connector content client-side so the
-  // gateway never fetches a URL from a project manifest, then require explicit
-  // confirmation before uploading custom connector source for compilation.
-  await materializeConnectorSource(state.connectors.definitions, fetchImpl);
+  // SECURITY (#4): confirm BEFORE fetching any `source_url` or uploading custom
+  // connector source — `lobu apply --dry-run` should never hit a manifest URL.
   if (!opts.dryRun) {
     await confirmCustomConnectorSource(
       state.connectors.definitions,
       opts.yes ?? false
     );
+    await materializeConnectorSource(state.connectors.definitions, fetchImpl);
   }
 
-  // Snapshot the remote state.
+  // Snapshot remote state. Connector-def rows in the plan are computed against
+  // this (current/stale) catalog — "create" when the key isn't installed,
+  // "update" when it is. Connector defs are NOT installed here; that happens in
+  // `executePlan`, AFTER plan confirmation.
   const remote = await fetchRemoteSnapshot(client, state, opts.only);
 
-  // Phase 1 (#5): install/update connector definitions FIRST, then refetch the
-  // connector-definition catalog so validation runs against current schemas.
-  let connectorDefinitions = remote.connectorDefinitions;
-  if (!opts.dryRun && !opts.only) {
-    connectorDefinitions = await installConnectorDefinitions(
-      client,
-      state,
-      remote.connectorDefinitions
-    );
-  }
+  // Validate connection/auth-profile config against the catalog we have now.
+  // Connectors that only exist locally (not yet installed) are skipped — the
+  // server validates those on install / create_feed, and `executePlan`
+  // re-validates against the fresh post-install catalog.
+  validateConnectorState(state, remote.connectorDefinitions);
 
-  // Validate connection / auth-profile config against the (now-current) catalog.
-  validateConnectorState(state, connectorDefinitions);
-
-  // Diff using the refreshed catalog (so an updated custom connector's new
-  // schema is what the connection config is checked against).
-  const diffSnapshot: RemoteSnapshot = {
-    ...remote,
-    connectorDefinitions,
-  };
-  const plan = computeDiff(state, diffSnapshot, { only: opts.only });
-
+  const plan = computeDiff(state, remote, { only: opts.only });
   printText(renderPlan(plan));
 
   if (opts.dryRun) {
-    printText(chalk.dim("\nDry run — no changes applied."));
+    printText(
+      chalk.dim(
+        "\nDry run — no changes applied. (Connector-definition install + post-install schema validation are skipped in dry-run.)"
+      )
+    );
     return;
   }
 
@@ -647,8 +699,6 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
     return;
   }
 
-  // Confirm the plan (unless --yes). Even a plan with only pending-auth rows
-  // is "actionable" — we re-issue connect tokens.
   const { create, update, noop, drift } = plan.counts;
   const summaryLine = `${create} create, ${update} update, ${noop} noop, ${drift} drift${hasPendingAuth ? " + pending auth" : ""}`;
   const approved = await confirmPlan({
@@ -665,10 +715,7 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
   if (plan.counts.create > 0 || plan.counts.update > 0) {
     printText(chalk.bold("\nApplying:"));
     try {
-      await executePlan(
-        { client, state, plan, remote: diffSnapshot },
-        pendingAuth
-      );
+      await executePlan({ client, state, plan, remote }, pendingAuth);
       printText(chalk.green("\nApply complete."));
     } catch (err) {
       applyErr = err;

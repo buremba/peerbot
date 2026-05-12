@@ -470,17 +470,26 @@ async function handleCreateAuthProfile(
     });
 
     const requestedScopes = resolveRequestedOAuthScopes(oauthMethod, args.requested_scopes);
-    const connectToken = await createConnectToken({
-      organizationId: ctx.organizationId,
-      connectorKey: args.connector_key,
-      authType: 'oauth',
-      authProfileId: authProfile.id,
-      authConfig: {
-        ...buildOAuthConnectConfig(oauthMethod, requestedScopes),
-        requestedScopes,
-      },
-      createdBy: ctx.userId,
-    });
+    let connectToken: Awaited<ReturnType<typeof createConnectToken>>;
+    try {
+      connectToken = await createConnectToken({
+        organizationId: ctx.organizationId,
+        connectorKey: args.connector_key,
+        authType: 'oauth',
+        authProfileId: authProfile.id,
+        authConfig: {
+          ...buildOAuthConnectConfig(oauthMethod, requestedScopes),
+          requestedScopes,
+        },
+        createdBy: ctx.userId,
+      });
+    } catch (err) {
+      // Best-effort cleanup so a token-insert failure doesn't orphan a
+      // `pending_auth` profile. (The orphan is self-healing — a retry reuses
+      // the row and issues a fresh token — but cleaning up keeps state tidy.)
+      await deleteAuthProfile(ctx.organizationId, authProfile.slug).catch(() => {});
+      throw err;
+    }
 
     return {
       action: 'create_auth_profile',

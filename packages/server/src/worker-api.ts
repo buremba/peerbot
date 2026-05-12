@@ -9,7 +9,7 @@ import { basename } from 'node:path';
 import type { Context } from 'hono';
 import { createAuth } from './auth';
 import { findExistingPersonalOrg } from './auth/personal-org-provisioning';
-import { getDb, pgTextArray } from './db/client';
+import { getDb, pgBigintArray, pgTextArray } from './db/client';
 import { emit } from './events/emitter';
 import type { Env } from './index';
 import { notifyBrowserAuthExpired } from './notifications/triggers';
@@ -108,7 +108,7 @@ async function ensureDeviceConnectorWired(
       SET device_worker_id = ${target}::uuid, updated_at = NOW()
       WHERE id = ${connectionId}
         AND device_worker_id IS DISTINCT FROM ${target}::uuid
-        AND (device_worker_id IS NULL OR NOT (device_worker_id = ANY(${matchingDeviceIds}::uuid[])))
+        AND (device_worker_id IS NULL OR NOT (device_worker_id = ANY(${pgTextArray(matchingDeviceIds)}::uuid[])))
     `;
   };
 
@@ -121,9 +121,13 @@ async function ensureDeviceConnectorWired(
       SELECT
         c.id AS connection_id,
         cv.connector_key AS version_key,
+        -- jsonb_agg, not array_agg: postgres.js (fetch_types:false) returns a
+        -- text[] result column as the literal string "{a,b}", which would make
+        -- the fast-path feed check below silently always miss. jsonb arrays are
+        -- parsed to JS arrays by the db client's value transform.
         COALESCE(
-          array_agg(f.feed_key) FILTER (WHERE f.id IS NOT NULL),
-          ARRAY[]::text[]
+          jsonb_agg(f.feed_key) FILTER (WHERE f.id IS NOT NULL),
+          '[]'::jsonb
         ) AS active_feed_keys
       FROM connector_definitions cd
       LEFT JOIN connector_versions cv
@@ -423,7 +427,7 @@ async function reconcileStaleDeviceGrants(userId: string): Promise<void> {
         if (ids.length > 0) {
           await tx`
             UPDATE feeds SET status = 'paused', updated_at = NOW()
-            WHERE connection_id = ANY(${ids}::bigint[]) AND deleted_at IS NULL AND status = 'active'
+            WHERE connection_id = ANY(${pgBigintArray(ids)}::bigint[]) AND deleted_at IS NULL AND status = 'active'
           `;
         }
       }
@@ -1865,9 +1869,12 @@ export async function listDeviceWorkers(c: Context<{ Bindings: Env }>) {
         dw.label,
         dw.last_seen_at,
         (dw.last_seen_at > now() - interval '20 minutes') AS online,
-        COALESCE(
-          (SELECT array_agg(g.organization_id) FROM device_worker_org_grants g WHERE g.device_worker_id = dw.id),
-          ARRAY[]::text[]
+        -- jsonb_agg (not array_agg): postgres.js runs with fetch_types:false and
+        -- leaves a text[] result column as the raw literal string "{a,b}"; jsonb
+        -- arrays are parsed to JS arrays by the db client's value transform.
+        (
+          SELECT COALESCE(jsonb_agg(g.organization_id), '[]'::jsonb)
+          FROM device_worker_org_grants g WHERE g.device_worker_id = dw.id
         ) AS granted_org_ids,
         (SELECT count(*) FROM connections cn WHERE cn.device_worker_id = dw.id AND cn.deleted_at IS NULL)::int AS connector_count
       FROM device_workers dw
@@ -1970,7 +1977,7 @@ export async function setDeviceOrgGrant(c: Context<{ Bindings: Env }>, grant: bo
         if (ids.length > 0) {
           await tx`
             UPDATE feeds SET status = 'paused', updated_at = NOW()
-            WHERE connection_id = ANY(${ids}::bigint[]) AND deleted_at IS NULL AND status = 'active'
+            WHERE connection_id = ANY(${pgBigintArray(ids)}::bigint[]) AND deleted_at IS NULL AND status = 'active'
           `;
         }
       });

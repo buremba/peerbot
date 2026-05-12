@@ -63,7 +63,7 @@ export function LandingPage(props: {
         />
       </section>
 
-      <LogoStrip />
+      {/* <LogoStrip /> */}
 
       <SectionCornerLabels
         index={1}

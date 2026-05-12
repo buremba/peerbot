@@ -28,6 +28,7 @@ export const RESERVED_PATHS = [
   ...OWNER_ROUTE_SEGMENTS,
   'auth',
   'api',
+  'inbox',
   'templates',
   'help',
   'account',

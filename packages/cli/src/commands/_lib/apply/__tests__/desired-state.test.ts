@@ -323,6 +323,68 @@ relationships:
     ]);
   });
 
+  test("skips empty / comments-only model YAML files", async () => {
+    const dir = mkProject(
+      `[agents.triage]
+name = "Triage"
+dir = "./agents/triage"
+
+[memory]
+enabled = true
+org = "dev"
+models = "./models"
+`
+    );
+    const modelsDir = join(dir, "models");
+    mkdirSync(modelsDir, { recursive: true });
+    writeFileSync(join(modelsDir, "blank.yaml"), "");
+    writeFileSync(
+      join(modelsDir, "comment-only.yaml"),
+      "# placeholder, nothing here yet\n"
+    );
+    writeFileSync(
+      join(modelsDir, "schema.yaml"),
+      `version: 2
+entities:
+  - slug: product
+    name: Product
+`
+    );
+
+    const { state } = await loadDesiredState({ cwd: dir });
+    expect(state.memorySchema.entityTypes.map((e) => e.slug)).toEqual([
+      "product",
+    ]);
+  });
+
+  test("surfaces a YAML syntax error with file context", async () => {
+    const dir = mkProject(
+      `[agents.triage]
+name = "Triage"
+dir = "./agents/triage"
+
+[memory]
+enabled = true
+org = "dev"
+models = "./models"
+`
+    );
+    const modelsDir = join(dir, "models");
+    mkdirSync(modelsDir, { recursive: true });
+    writeFileSync(
+      join(modelsDir, "broken.yaml"),
+      `version: 2
+entities:
+  - slug: product
+   name: Product
+`
+    );
+
+    await expect(loadDesiredState({ cwd: dir })).rejects.toThrow(
+      /broken\.yaml/
+    );
+  });
+
   test("rejects watcher blocks in lobu.toml (apply syncs model-bundle watchers, not toml)", async () => {
     const dir = mkProject(
       `[agents.triage]

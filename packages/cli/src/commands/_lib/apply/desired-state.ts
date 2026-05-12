@@ -11,7 +11,9 @@ import addFormats from "ajv-formats";
 import { parse as parseToml } from "smol-toml";
 import { ValidationError } from "../../memory/_lib/errors.js";
 import {
+  type ValidationError as SchemaError,
   expandModelDefinition,
+  parseModelYamlFile,
   validateModel,
 } from "../../memory/_lib/schema.js";
 import {
@@ -833,7 +835,6 @@ async function loadMemoryModels(
   const modelsPath = resolve(projectRoot, modelsRel);
 
   const { existsSync, readdirSync, readFileSync } = await import("node:fs");
-  const { parseAllDocuments } = await import("yaml");
 
   if (!existsSync(modelsPath)) return empty;
 
@@ -858,25 +859,20 @@ async function loadMemoryModels(
       });
   };
 
+  const errors: SchemaError[] = [];
   for (const file of readModelFiles(modelsPath)) {
     const raw = readFileSync(join(modelsPath, file), "utf-8");
-    const documents = parseAllDocuments(raw).map((doc) => doc.toJSON());
-    documents.forEach((document, idx) => {
-      const documentFile = documents.length > 1 ? `${file}#${idx + 1}` : file;
+    const { documents, errors: parseErrors } = parseModelYamlFile(raw, file);
+    errors.push(...parseErrors);
+    for (const { data: document, file: documentFile } of documents) {
       const expanded = expandModelDefinition(document, documentFile);
-      const errors = [
-        ...expanded.errors,
-        ...expanded.models.flatMap((model) =>
-          validateModel(model.data, model.file)
-        ),
-      ];
-      if (errors.length > 0) {
-        const detail = errors
-          .map((e) => `${e.file}: ${e.field} — ${e.message}`)
-          .join("\n  ");
-        throw new ValidationError(`Model validation failed\n  ${detail}`);
-      }
+      errors.push(...expanded.errors);
       for (const model of expanded.models) {
+        const modelErrors = validateModel(model.data, model.file);
+        if (modelErrors.length > 0) {
+          errors.push(...modelErrors);
+          continue;
+        }
         if (model.modelType === "entity") {
           entityTypes.push(parseEntityType(model.data));
         } else if (model.modelType === "relationship") {
@@ -885,7 +881,14 @@ async function loadMemoryModels(
           watchers.push(parseWatcher(model.data));
         }
       }
-    });
+    }
+  }
+
+  if (errors.length > 0) {
+    const detail = errors
+      .map((e) => `${e.file}: ${e.field} — ${e.message}`)
+      .join("\n  ");
+    throw new ValidationError(`Model validation failed\n  ${detail}`);
   }
 
   return { entityTypes, relationshipTypes, watchers };

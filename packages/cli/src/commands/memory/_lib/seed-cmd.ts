@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { parse as parseToml } from "smol-toml";
-import { parse as parseYaml, parseAllDocuments } from "yaml";
+import { parse as parseYaml } from "yaml";
 import { ApiError, ValidationError } from "./errors.js";
 import {
   getSessionForOrg,
@@ -19,6 +19,7 @@ import {
   type SeedEntitySchema,
   type SeedRelationshipSchema,
   expandModelDefinition,
+  parseModelYamlFile,
   validateDataRecord,
   validateModel,
 } from "./schema.js";
@@ -55,7 +56,7 @@ interface ProjectLayout {
 function readYamlModelFilesRecursive(
   dir: string,
   prefix = ""
-): Array<{ documents: unknown[]; file: string }> {
+): Array<{ raw: string; file: string }> {
   if (!existsSync(dir)) return [];
 
   return readdirSync(dir, { withFileTypes: true })
@@ -72,14 +73,7 @@ function readYamlModelFilesRecursive(
       ) {
         return [];
       }
-      return [
-        {
-          documents: parseAllDocuments(readFileSync(fullPath, "utf8")).map(
-            (doc) => doc.toJSON()
-          ),
-          file: relPath,
-        },
-      ];
+      return [{ raw: readFileSync(fullPath, "utf8"), file: relPath }];
     });
 }
 
@@ -212,9 +206,10 @@ function resolveProjectLayout(inputPath?: string): ProjectLayout {
 function loadModels(modelsPath: string): ParsedModel[] {
   const models: ParsedModel[] = [];
   const errors: SchemaError[] = [];
-  for (const { documents, file } of readYamlModelFilesRecursive(modelsPath)) {
-    documents.forEach((document, idx) => {
-      const documentFile = documents.length > 1 ? `${file}#${idx + 1}` : file;
+  for (const { raw, file } of readYamlModelFilesRecursive(modelsPath)) {
+    const { documents, errors: parseErrors } = parseModelYamlFile(raw, file);
+    errors.push(...parseErrors);
+    for (const { data: document, file: documentFile } of documents) {
       const expanded = expandModelDefinition(document, documentFile);
       errors.push(...expanded.errors);
       for (const model of expanded.models) {
@@ -229,7 +224,7 @@ function loadModels(modelsPath: string): ParsedModel[] {
           });
         }
       }
-    });
+    }
   }
   checkErrors(errors);
   return models;

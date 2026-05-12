@@ -13,6 +13,7 @@
 
 import { AutoCreateWhenRule } from "@lobu/connector-sdk";
 import { TypeCompiler } from "@sinclair/typebox/compiler";
+import { parseAllDocuments } from "yaml";
 
 export const CURRENT_SCHEMA_VERSION = 2;
 
@@ -180,6 +181,49 @@ function normalizeModelType(value: unknown): ModelType | null {
   }
 }
 
+/**
+ * Parse a models YAML file into one entry per document. Handles multi-document
+ * (`---`-separated) streams, surfaces YAML syntax errors with file context, and
+ * skips empty / comments-only documents (which `yaml` parses as `null`) instead
+ * of treating them as malformed model files.
+ */
+export function parseModelYamlFile(
+  raw: string,
+  file: string
+): {
+  documents: Array<{ data: Record<string, unknown>; file: string }>;
+  errors: ValidationError[];
+} {
+  const errors: ValidationError[] = [];
+  const documents: Array<{ data: Record<string, unknown>; file: string }> = [];
+  const parsed = parseAllDocuments(raw);
+  parsed.forEach((doc, idx) => {
+    const documentFile = parsed.length > 1 ? `${file}#${idx + 1}` : file;
+    if (doc.errors.length > 0) {
+      for (const err of doc.errors) {
+        errors.push({
+          file: documentFile,
+          field: "yaml",
+          message: err.message,
+        });
+      }
+      return;
+    }
+    const json = doc.toJSON();
+    if (json === null || json === undefined) return;
+    if (!isRecord(json)) {
+      errors.push({
+        file: documentFile,
+        field: "root",
+        message: "model file must contain a YAML object",
+      });
+      return;
+    }
+    documents.push({ data: json, file: documentFile });
+  });
+  return { documents, errors };
+}
+
 // Single source of truth for auto_create_when shape lives in
 // `@lobu/connector-sdk`'s `AutoCreateWhenRule` schema. Compile once at module
 // load and surface every TypeBox error as a ValidationError.
@@ -238,11 +282,7 @@ function expandModelSection(
       });
       return [];
     }
-    const data = {
-      version: entry.version ?? parent.version,
-      ...entry,
-      type: modelType,
-    };
+    const data = { ...entry, version: parent.version, type: modelType };
     return [{ data, file: entryFile, modelType }];
   });
 }

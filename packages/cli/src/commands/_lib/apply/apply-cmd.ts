@@ -1,6 +1,9 @@
 import chalk from "chalk";
 import { resolveContext } from "../../../internal/context.js";
-import { loadProjectLink } from "../../../internal/project-link.js";
+import {
+  loadProjectLink,
+  saveProjectLink,
+} from "../../../internal/project-link.js";
 import { ApiError, ValidationError } from "../../memory/_lib/errors.js";
 import { printError, printText } from "../../memory/_lib/output.js";
 import {
@@ -25,7 +28,11 @@ import {
   validateAuthProfileAgainstConnector,
   validateConnectionAgainstConnector,
 } from "./desired-state.js";
-import { confirmCustomConnectors, confirmPlan } from "./prompt.js";
+import {
+  confirmCreateOrg,
+  confirmCustomConnectors,
+  confirmPlan,
+} from "./prompt.js";
 import {
   renderMissingSecrets,
   renderPlan,
@@ -743,6 +750,17 @@ async function collectPendingAuthFromPlan(
 
 // ── Top-level command ──────────────────────────────────────────────────────
 
+/** "office-bot" → "Office Bot" — default display name for a bootstrapped org. */
+function slugToTitle(slug: string): string {
+  return (
+    slug
+      .split(/[-_]+/)
+      .filter(Boolean)
+      .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+      .join(" ") || slug
+  );
+}
+
 export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
   const cwd = opts.cwd ?? process.cwd();
   const fetchImpl = opts.fetchImpl ?? fetch;
@@ -762,9 +780,12 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
     );
   }
 
+  // Org slug resolution: explicit --org ▸ active-session org ▸ `[memory].org`
+  // from lobu.toml. The toml slug is the declarative default — if no org with
+  // that slug exists yet, `lobu apply` offers to provision it (below).
   const { client, orgSlug } = await resolveApplyClient({
     url: opts.url,
-    org: opts.org,
+    org: opts.org ?? state.memory?.org,
     fetchImpl: opts.fetchImpl,
   });
   printText(chalk.dim(`Org: ${orgSlug}`));
@@ -797,6 +818,41 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
       );
       throw new ValidationError("project-link mismatch");
     }
+  }
+
+  // Bootstrap a missing org. If the resolved slug doesn't match one of the
+  // operator's orgs, offer to create it (Railway `init`-style) and record the
+  // resolved id in `.lobu/project.json`. Older servers without the org-list
+  // endpoint return null → skip the check and let the normal flow surface any
+  // org error.
+  const myOrgs = await client.listOrgs().catch(() => null);
+  if (myOrgs !== null && !myOrgs.some((o) => o.slug === orgSlug)) {
+    const orgName = state.memory?.name ?? slugToTitle(orgSlug);
+    if (opts.dryRun) {
+      printText(
+        chalk.cyan(`\n  + org ${orgSlug} (${orgName}) — would be created`)
+      );
+      printText(
+        chalk.dim(
+          `  then sync ${state.agents.length} agent(s), ${state.watchers.length} watcher(s), ${state.memorySchema.entityTypes.length} entity type(s) into it.\n`
+        )
+      );
+      printText(chalk.dim("Dry run — no changes applied."));
+      return;
+    }
+    const ok = await confirmCreateOrg(orgSlug, orgName, opts.yes ?? false);
+    if (!ok) {
+      printText(chalk.dim("\nCancelled."));
+      return;
+    }
+    const created = await client.createOrg({ slug: orgSlug, name: orgName });
+    const ctx = await resolveContext().catch(() => null);
+    await saveProjectLink(cwd, {
+      context: ctx?.name ?? link?.context ?? "prod",
+      org: created.slug || orgSlug,
+      ...(created.id ? { organizationId: created.id } : {}),
+    });
+    printText(chalk.green(`  ✓ created org ${created.slug || orgSlug}`));
   }
 
   // SECURITY (#4): confirm BEFORE fetching any `source_url` or uploading custom

@@ -78,4 +78,65 @@ describe("ApplyClient", () => {
     });
     expect("entity_id" in body).toBe(false);
   });
+
+  test("listOrgs GETs the better-auth org-list endpoint and tolerates a bare array", async () => {
+    const client = new ApplyClient(
+      { apiBaseUrl: "https://example.test", orgSlug: "acme", token: "tok" },
+      (async (url, init) => {
+        expect(String(url)).toBe(
+          "https://example.test/api/auth/organization/list"
+        );
+        expect(init?.method).toBe("GET");
+        return new Response(
+          JSON.stringify([{ id: "org_1", slug: "acme", name: "Acme" }]),
+          { status: 200 }
+        );
+      }) as typeof fetch
+    );
+
+    expect(await client.listOrgs()).toEqual([
+      { id: "org_1", slug: "acme", name: "Acme" },
+    ]);
+  });
+
+  test("createOrg POSTs name+slug to the better-auth org-create endpoint", async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const client = new ApplyClient(
+      {
+        apiBaseUrl: "https://example.test",
+        orgSlug: "office-bot",
+        token: "tok",
+      },
+      (async (url, init) => {
+        calls.push({ url: String(url), init });
+        return new Response(
+          JSON.stringify({
+            id: "org_2",
+            slug: "office-bot",
+            name: "Office Bot",
+          }),
+          { status: 200 }
+        );
+      }) as typeof fetch
+    );
+
+    const org = await client.createOrg({
+      slug: "office-bot",
+      name: "Office Bot",
+    });
+    expect(calls[0]?.url).toBe(
+      "https://example.test/api/auth/organization/create"
+    );
+    expect(calls[0]?.init?.method).toBe("POST");
+    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({
+      name: "Office Bot",
+      slug: "office-bot",
+      keepCurrentActiveOrganization: true,
+    });
+    expect(org).toEqual({
+      id: "org_2",
+      slug: "office-bot",
+      name: "Office Bot",
+    });
+  });
 });

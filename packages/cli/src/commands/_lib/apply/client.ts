@@ -261,14 +261,15 @@ export class ApplyClient {
    * member of, surfaces as a structured error the caller turns into a
    * "pick another slug" message rather than a silent failure.
    */
-  async createOrg(input: {
-    slug: string;
-    name: string;
-  }): Promise<RemoteOrg> {
+  async createOrg(input: { slug: string; name: string }): Promise<RemoteOrg> {
     const { body } = await this.request<RemoteOrg>(
       "POST",
       `/api/auth/organization/create`,
-      { name: input.name, slug: input.slug, keepCurrentActiveOrganization: true },
+      {
+        name: input.name,
+        slug: input.slug,
+        keepCurrentActiveOrganization: true,
+      },
       [200, 201]
     );
     return body;

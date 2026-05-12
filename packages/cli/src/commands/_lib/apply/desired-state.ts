@@ -193,6 +193,12 @@ export interface DesiredAgent {
 
 export interface DesiredState {
   agents: DesiredAgent[];
+  /**
+   * `[memory]` metadata from lobu.toml — the org slug `lobu apply` defaults to,
+   * and (when that org doesn't exist yet) the name/description it bootstraps the
+   * new org with.
+   */
+  memory?: { org?: string; name?: string; description?: string };
   memorySchema: {
     entityTypes: DesiredEntityType[];
     relationshipTypes: DesiredRelationshipType[];
@@ -1639,9 +1645,21 @@ export async function loadDesiredState(
     ? { definitions: [], authProfiles: [], connections: [] }
     : await loadConnectors(config, opts.cwd, env, requiredSecrets);
 
+  const memory =
+    config.memory && config.memory.enabled !== false
+      ? {
+          ...(config.memory.org ? { org: config.memory.org } : {}),
+          ...(config.memory.name ? { name: config.memory.name } : {}),
+          ...(config.memory.description
+            ? { description: config.memory.description }
+            : {}),
+        }
+      : undefined;
+
   return {
     state: {
       agents,
+      ...(memory ? { memory } : {}),
       memorySchema: { entityTypes, relationshipTypes },
       watchers,
       connectors,

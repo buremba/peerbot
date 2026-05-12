@@ -100,13 +100,18 @@ export class ApiResponseRenderer implements ResponseRenderer {
       return;
     }
 
-    // Broadcast error to SSE clients
-    this.sseManager.broadcast(sessionId, "error", {
+    const errorEvent = {
       type: "error",
       error: payload.error,
       messageId: payload.messageId,
       timestamp: payload.timestamp || Date.now(),
-    });
+    };
+
+    // Keep the legacy `error` event for existing consumers, but also emit a
+    // non-reserved event name for browsers: native EventSource treats `error`
+    // specially and may not expose server-sent event data to addEventListener.
+    this.sseManager.broadcast(sessionId, "error", errorEvent);
+    this.sseManager.broadcast(sessionId, "agent-error", errorEvent);
 
     logger.error(`Broadcast error to session ${sessionId}: ${payload.error}`);
 

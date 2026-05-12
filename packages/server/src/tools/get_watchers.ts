@@ -12,7 +12,7 @@ import {
   type WatcherTimeGranularity,
 } from '@lobu/connector-sdk';
 import { type Static, Type } from '@sinclair/typebox';
-import { createDbClientFromEnv, getDb } from '../db/client';
+import { createDbClientFromEnv, type DbClient, getDb } from '../db/client';
 import type { Env } from '../index';
 import type {
   PendingAnalysis,
@@ -34,7 +34,10 @@ import {
 } from '../utils/date-aliases';
 import { parseJsonObject } from '@lobu/core';
 import logger from '../utils/logger';
-import { requireReadAccess } from '../utils/organization-access';
+import {
+  requireOrgReadAccess,
+  requireReadAccess,
+} from '../utils/organization-access';
 
 import { renderPromptPreview } from '../utils/template-renderer';
 import { buildWatchersUrl, type EntityInfo, getPublicWebUrl } from '../utils/url-builder';
@@ -283,6 +286,36 @@ async function buildEntityInfo(entityRow: Record<string, unknown>): Promise<{
   };
 }
 
+async function requireWatcherReadAccess(
+  sql: DbClient,
+  watcherId: string,
+  ctx: ToolContext
+): Promise<void> {
+  const rows = await sql`
+    SELECT organization_id, entity_ids
+    FROM watchers
+    WHERE id = ${watcherId}
+    LIMIT 1
+  `;
+  if (rows.length === 0) return;
+
+  const row = rows[0] as { organization_id: string | null; entity_ids: unknown };
+  if (!row.organization_id || row.organization_id !== ctx.organizationId) {
+    throw new Error(
+      `Access denied: watcher ${watcherId} is not accessible to your organization`
+    );
+  }
+
+  const entityIds = parseBigintArray(row.entity_ids);
+  if (entityIds.length > 0) {
+    for (const entityId of entityIds) {
+      await requireReadAccess(sql, entityId, ctx);
+    }
+  } else {
+    await requireOrgReadAccess(sql, ctx);
+  }
+}
+
 // ============================================
 // Tool Implementation
 // ============================================
@@ -321,6 +354,8 @@ export async function getWatcher(
   if (!args.watcher_id) {
     throw new Error('watcher_id is required. Use list_watchers to discover available watchers.');
   }
+
+  await requireWatcherReadAccess(pgSql, args.watcher_id, ctx);
 
   // Entity resolution is deferred — for the typical case (only watcher_id
   // given), the watcher metadata query below already returns the watcher's

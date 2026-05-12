@@ -17,6 +17,7 @@ import { cleanupTestDatabase } from '../../setup/test-db';
 
 describe('watcher CRUD', () => {
   let owner: TestApiClient;
+  let intruder: TestApiClient;
   let entityId: number;
 
   beforeAll(async () => {
@@ -27,6 +28,15 @@ describe('watcher CRUD', () => {
     owner = await TestApiClient.for({
       organizationId: org.id,
       userId: user.id,
+      memberRole: 'owner',
+    });
+
+    const otherOrg = await createTestOrganization({ name: 'Watcher Other Org' });
+    const otherUser = await createTestUser({ email: 'watcher-other@test.com' });
+    await addUserToOrganization(otherUser.id, otherOrg.id, 'owner');
+    intruder = await TestApiClient.for({
+      organizationId: otherOrg.id,
+      userId: otherUser.id,
       memberRole: 'owner',
     });
 
@@ -101,6 +111,38 @@ describe('watcher CRUD', () => {
         extraction_schema: { type: 'object', properties: {} },
       })
     ).rejects.toThrow(/organization|entity_id/i);
+  });
+
+  it('blocks cross-org reads and writes for org-scoped watchers', async () => {
+    const created = (await owner.watchers.create({
+      slug: 'cross-org-org-scoped-watcher',
+      name: 'Cross Org Protected',
+      prompt: 'Track org-wide signals.',
+      extraction_schema: {
+        type: 'object',
+        properties: { signals: { type: 'array', items: { type: 'string' } } },
+      },
+    })) as { watcher_id: string };
+
+    await expect(intruder.watchers.get(created.watcher_id)).rejects.toThrow(
+      /access|organization/i
+    );
+    await expect(
+      intruder.watchers.update({
+        watcher_id: created.watcher_id,
+        schedule: '0 11 * * *',
+      })
+    ).rejects.toThrow(/access|organization/i);
+    await expect(intruder.watchers.delete([created.watcher_id])).rejects.toThrow(
+      /access|organization/i
+    );
+
+    const got = (await owner.watchers.get(created.watcher_id)) as {
+      watcher?: { schedule: string | null };
+    };
+    expect(got.watcher?.schedule).toBeNull();
+
+    await owner.watchers.delete([created.watcher_id]);
   });
 
   it('blocks a member from deleting watchers (admin-only)', async () => {

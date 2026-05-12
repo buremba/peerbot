@@ -348,6 +348,20 @@ In addition to the file-first fields above, `[memory]` accepts an inline `schema
 | `entity_types` | array | no | Entity-type definitions |
 | `relationship_types` | array | no | Relationship-type definitions |
 
+Each entity type takes `slug` (required), optional `name` / `description`, and an optional JSON-Schema `metadata_schema`; each relationship type takes `slug`, optional `name` / `description`, and optional `rules` (`{ source, target }` entity-type pairs) — the same shapes used by `version: 2` model bundles under `[memory].models`.
+
+```toml
+[[memory.schema.entity_types]]
+slug = "account"
+name = "Account"
+metadata_schema = { type = "object", required = ["tier"], properties = { tier = { type = "string" } } }
+
+[[memory.schema.relationship_types]]
+slug = "owns"
+name = "Owns"
+rules = [{ source = "account", target = "product" }]
+```
+
 The `[memory]` table is `.strict()` — unknown keys fail validation.
 
 ## Environment variable references

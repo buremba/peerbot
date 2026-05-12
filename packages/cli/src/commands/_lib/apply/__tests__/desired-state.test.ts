@@ -357,6 +357,46 @@ entities:
     ]);
   });
 
+  test("reads inline [memory.schema] entity/relationship types with metadata_schema", async () => {
+    const dir = mkProject(
+      `[agents.triage]
+name = "Triage"
+dir = "./agents/triage"
+
+[memory]
+enabled = true
+org = "dev"
+
+[[memory.schema.entity_types]]
+slug = "account"
+name = "Account"
+metadata_schema = { type = "object", required = ["tier"], properties = { tier = { type = "string" } } }
+
+[[memory.schema.relationship_types]]
+slug = "owns"
+name = "Owns"
+rules = [{ source = "account", target = "product" }]
+`
+    );
+
+    const { state } = await loadDesiredState({ cwd: dir });
+    expect(state.memorySchema.entityTypes).toEqual([
+      {
+        slug: "account",
+        name: "Account",
+        required: ["tier"],
+        properties: { tier: { type: "string" } },
+      },
+    ]);
+    expect(state.memorySchema.relationshipTypes).toEqual([
+      {
+        slug: "owns",
+        name: "Owns",
+        rules: [{ source: "account", target: "product" }],
+      },
+    ]);
+  });
+
   test("surfaces a YAML syntax error with file context", async () => {
     const dir = mkProject(
       `[agents.triage]

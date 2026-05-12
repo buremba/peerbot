@@ -718,12 +718,6 @@ function parseEntityType(raw: unknown): DesiredEntityType {
       out.properties = raw.metadata_schema.properties;
     }
   }
-  if (Array.isArray(raw.required)) {
-    out.required = raw.required.filter(
-      (v): v is string => typeof v === "string"
-    );
-  }
-  if (isRecord(raw.properties)) out.properties = raw.properties;
   if (isRecord(raw.metadata)) out.metadata = raw.metadata;
   return out;
 }

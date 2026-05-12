@@ -7,7 +7,10 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import chalk from "chalk";
 import ora from "ora";
+import { isLoadError, loadConfig } from "../config/loader.js";
+import { resolveApiClient } from "../internal/api-client.js";
 import { parseEnvContent } from "../internal/index.js";
+import { loadProjectLink } from "../internal/project-link.js";
 
 export interface DevOptions {
   port?: string;
@@ -104,6 +107,7 @@ export async function devCommand(
   }
 
   if (!options.quiet) {
+    await printSlackPreviewInstructions(cwd);
     console.log(chalk.cyan(`\n  Starting Lobu...\n`));
     console.log(chalk.dim(`  bundle:        ${bundlePath}`));
     if (hasDatabaseUrl) {
@@ -224,6 +228,81 @@ export function isPortFree(port: number): Promise<boolean> {
       settle(false);
     }
   });
+}
+
+async function printSlackPreviewInstructions(cwd: string): Promise<void> {
+  const loaded = await loadConfig(cwd);
+  if (isLoadError(loaded)) return;
+
+  const enabledAgents = Object.entries(loaded.config.agents).filter(
+    ([, agent]) => agent.preview?.slack?.enabled === true
+  );
+  if (enabledAgents.length === 0) return;
+
+  let clientInfo: Awaited<ReturnType<typeof resolveApiClient>>;
+  try {
+    const projectLink = await loadProjectLink(cwd);
+    clientInfo = await resolveApiClient({
+      context: projectLink?.context,
+      org: projectLink?.org,
+    });
+  } catch (error) {
+    console.log(
+      chalk.yellow(
+        "\n  Slack Preview is enabled, but no Lobu Cloud session is available."
+      )
+    );
+    console.log(
+      chalk.dim(
+        "  Run `lobu login`, `lobu org set <slug>`, and `lobu apply`; then restart `lobu run` to get a Slack link code.\n"
+      )
+    );
+    return;
+  }
+
+  console.log(chalk.cyan("\n  Slack Preview"));
+  for (const [agentId, agent] of enabledAgents) {
+    const slack = agent.preview?.slack;
+    try {
+      const claim = await clientInfo.client.post<{
+        code: string;
+        command: string;
+        slack_url: string;
+        expires_at: string;
+        allowed_surfaces: string[];
+      }>(`/api/${clientInfo.orgSlug}/preview/slack/claims`, {
+        agent_id: agentId,
+        surfaces: slack?.surfaces ?? ["dm"],
+        ttl_minutes: slack?.code_ttl_minutes ?? 15,
+      });
+      console.log(chalk.dim(`  agent:        ${agentId}`));
+      console.log(chalk.dim(`  slack:        ${claim.slack_url}`));
+      console.log(chalk.dim(`  command:      ${claim.command}`));
+      console.log(chalk.dim(`  expires:      ${claim.expires_at}`));
+      console.log(
+        chalk.dim(
+          "  In the public Lobu Developer Slack, DM @Lobu Developer with the command above."
+        )
+      );
+    } catch (error) {
+      console.log(
+        chalk.yellow(`  Could not create Slack Preview code for ${agentId}.`)
+      );
+      console.log(
+        chalk.dim(
+          "  Make sure the agent has been synced with `lobu apply` and try again."
+        )
+      );
+      if (process.env.DEBUG) {
+        console.log(
+          chalk.dim(
+            `  ${error instanceof Error ? error.message : String(error)}`
+          )
+        );
+      }
+    }
+  }
+  console.log();
 }
 
 function redactUrl(url: string): string {

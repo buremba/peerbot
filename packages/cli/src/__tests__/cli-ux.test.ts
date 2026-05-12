@@ -113,6 +113,15 @@ describe("lobu init --yes", () => {
     expect(env).toMatch(/SENTRY_DSN=/);
   });
 
+  test("--slack-preview writes agent preview config", async () => {
+    await initCommand(cwd, "preview-on", { yes: true, slackPreview: true });
+    const toml = readFileSync(join(cwd, "preview-on", "lobu.toml"), "utf-8");
+    expect(toml).toContain("[agents.preview-on.preview.slack]");
+    expect(toml).toContain("enabled = true");
+    expect(toml).toContain('provider = "lobu-public"');
+    expect(toml).toContain('surfaces = ["dm", "thread"]');
+  });
+
   test("--provider with bad id throws before writing files", async () => {
     await expect(
       initCommand(cwd, "bad-provider", {

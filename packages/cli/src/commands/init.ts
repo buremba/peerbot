@@ -45,6 +45,7 @@ export interface InitOptions {
   otelEndpoint?: string;
   sentry?: boolean;
   noSentry?: boolean;
+  slackPreview?: boolean;
 }
 
 export async function initCommand(
@@ -292,6 +293,18 @@ export async function initCommand(
     }
   }
 
+  const enableSlackPreview = await promptBooleanOrDefault({
+    flag: options.slackPreview,
+    useDefaults,
+    defaultValue: false,
+    prompt: () =>
+      confirm({
+        message:
+          "Enable Slack Preview with the public Lobu Developer Slack bot?",
+        default: false,
+      }),
+  });
+
   const memoryChoice = (await promptOrDefault({
     flag: options.memory,
     useDefaults,
@@ -427,6 +440,7 @@ export async function initCommand(
       platformConfig:
         Object.keys(platformConfig).length > 0 ? platformConfig : undefined,
       includeLobuMemory,
+      enableSlackPreview,
       lobuOrg: includeLobuMemory ? projectName : undefined,
       lobuName: includeLobuMemory ? humanizeSlug(projectName) : undefined,
     });
@@ -544,6 +558,18 @@ export async function initCommand(
         chalk.cyan(`  ${n++}. Wire memory clients: lobu memory init`)
       );
     }
+    if (enableSlackPreview) {
+      console.log(
+        chalk.cyan(
+          `  ${n++}. Link the project to Lobu Cloud and register it: lobu login && lobu org set <slug> && lobu apply`
+        )
+      );
+      console.log(
+        chalk.dim(
+          "       Then `lobu run` will print a short-lived Slack Preview link code."
+        )
+      );
+    }
     console.log(chalk.cyan(`  ${n++}. API docs: ${gatewayUrl}/api/docs`));
     console.log(
       chalk.dim(
@@ -614,6 +640,17 @@ async function promptOrDefault<T extends string>(
   return opts.prompt();
 }
 
+async function promptBooleanOrDefault(opts: {
+  flag: boolean | undefined;
+  useDefaults: boolean;
+  defaultValue: boolean;
+  prompt: () => Promise<boolean>;
+}): Promise<boolean> {
+  if (opts.flag !== undefined) return opts.flag;
+  if (opts.useDefaults) return opts.defaultValue;
+  return opts.prompt();
+}
+
 // Placeholder env-var refs for `--yes` mode; the user fills the values into .env.
 const PLATFORM_PLACEHOLDERS: Record<PlatformChoice, Record<string, string>> = {
   telegram: { botToken: "$TELEGRAM_BOT_TOKEN" },
@@ -667,6 +704,7 @@ export async function generateLobuToml(
     lobuOrg?: string;
     lobuName?: string;
     lobuDescription?: string;
+    enableSlackPreview?: boolean;
   }
 ): Promise<void> {
   const id = options.agentName;
@@ -736,6 +774,18 @@ export async function generateLobuToml(
     '# token_url = "https://auth.example.com/token"',
     '# client_id = "$MY_MCP_CLIENT_ID"'
   );
+
+  if (options.enableSlackPreview) {
+    lines.push(
+      "",
+      "# Public Slack Preview (Lobu Developer) — `lobu run` prints a short-lived link code.",
+      `[agents.${id}.preview.slack]`,
+      "enabled = true",
+      'provider = "lobu-public"',
+      'surfaces = ["dm", "thread"]',
+      "code_ttl_minutes = 15"
+    );
+  }
 
   lines.push("", `[agents.${id}.network]`);
   if (options.allowedDomains) {

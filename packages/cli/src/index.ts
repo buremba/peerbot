@@ -108,6 +108,11 @@ Memory:
     .option("--otel-endpoint <url>", "OpenTelemetry collector endpoint")
     .option("--sentry", "Enable Sentry error reporting")
     .option("--no-sentry", "Disable Sentry without prompting")
+    .option(
+      "--slack-preview",
+      "Enable public Lobu Developer Slack Preview in lobu.toml"
+    )
+    .option("--no-slack-preview", "Disable Slack Preview without prompting")
     .action(
       async (
         name: string | undefined,
@@ -124,6 +129,7 @@ Memory:
           memoryUrl?: string;
           otelEndpoint?: string;
           sentry?: boolean;
+          slackPreview?: boolean;
         }
       ) => {
         try {
@@ -144,6 +150,7 @@ Memory:
             otelEndpoint: options.otelEndpoint,
             sentry: options.sentry === true,
             noSentry: options.sentry === false,
+            slackPreview: options.slackPreview,
           });
         } catch (error) {
           console.error(chalk.red("\n  Error:"), error);

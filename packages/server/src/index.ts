@@ -35,6 +35,7 @@ import {
   restMarkAllAsRead,
   restMarkAsRead,
 } from './notifications/routes';
+import { bindSlackPreviewClaim, createSlackPreviewClaim } from './preview/slack';
 import {
   buildPublicPageModel,
   buildRobotsTxt,
@@ -789,6 +790,10 @@ app.get('/api/organizations', async (c) => {
   const orgs = await provider.listOrganizations(search, userId);
   return c.json({ organizations: orgs });
 });
+
+// Slack Preview claim/binding registry
+app.post('/api/:orgSlug/preview/slack/claims', mcpAuth, createSlackPreviewClaim);
+app.post('/api/internal/preview/slack/bind', bindSlackPreviewClaim);
 
 // Notifications
 app.get('/api/:orgSlug/notifications', mcpAuth, restListNotifications);

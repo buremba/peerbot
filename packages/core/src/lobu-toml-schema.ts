@@ -173,6 +173,27 @@ const workerSchema = z.object({
   nix_packages: z.array(z.string()).optional(),
 });
 
+// ── Preview ─────────────────────────────────────────────────────────────────
+
+const previewSlackSchema = z
+  .object({
+    /** Enable Lobu Developer public Slack preview for this agent. */
+    enabled: z.boolean().optional(),
+    /** Hosted preview provider. Additional providers can be added later. */
+    provider: z.literal("lobu-public").optional(),
+    /** Slack surfaces this preview code can bind. */
+    surfaces: z.array(z.enum(["dm", "channel", "thread"])).optional(),
+    /** Short-lived claim code TTL. Capped by the hosted preview API. */
+    code_ttl_minutes: z.number().int().positive().max(60).optional(),
+  })
+  .strict();
+
+const previewSchema = z
+  .object({
+    slack: previewSlackSchema.optional(),
+  })
+  .strict();
+
 // ── Agent ───────────────────────────────────────────────────────────────────
 
 const agentEntrySchema = z.object({
@@ -192,6 +213,7 @@ const agentEntrySchema = z.object({
    */
   guardrails: z.array(z.string()).optional(),
   worker: workerSchema.optional(),
+  preview: previewSchema.optional(),
 });
 
 // ── Memory ─────────────────────────────────────────────────────────────────
@@ -234,4 +256,5 @@ export type NetworkEntry = z.infer<typeof networkSchema>;
 export type EgressEntry = z.infer<typeof egressSchema>;
 export type ToolsEntry = z.infer<typeof toolsSchema>;
 export type WorkerEntry = z.infer<typeof workerSchema>;
+export type PreviewEntry = z.infer<typeof previewSchema>;
 export type MemoryEntry = z.infer<typeof memorySchema>;

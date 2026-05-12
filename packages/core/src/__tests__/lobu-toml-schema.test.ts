@@ -8,6 +8,28 @@ name = "Triage"
 dir = "./agents/triage"
 `;
 
+describe("lobu.toml preview schema", () => {
+  test("accepts public Slack Preview config", () => {
+    const parsed = parseToml(`${BASE_AGENT}
+[agents.triage.preview.slack]
+enabled = true
+provider = "lobu-public"
+surfaces = ["dm", "thread"]
+code_ttl_minutes = 15
+`);
+
+    const result = lobuConfigSchema.safeParse(parsed);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.agents.triage?.preview?.slack?.surfaces).toEqual([
+        "dm",
+        "thread",
+      ]);
+    }
+  });
+});
+
 describe("lobu.toml memory schema", () => {
   test("accepts flattened [memory] fields", () => {
     const parsed = parseToml(`${BASE_AGENT}

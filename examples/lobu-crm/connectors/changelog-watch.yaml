@@ -1,0 +1,25 @@
+# Competitor & own changelog watcher.
+# Connector definition: packages/connectors/src/website.ts (no auth).
+---
+version: 1
+type: connection
+slug: competitor-changelogs
+connector: website
+name: Competitor changelogs
+config:
+  urls:
+    - https://lobu.ai/changelog
+    - https://docs.dust.tt/changelog
+    - https://www.glean.com/release-notes
+  max_pages: 10
+feeds:
+  - feed: pages
+    name: Changelog pages
+    schedule: "0 7 * * *"
+    config:
+      urls:
+        - https://lobu.ai/changelog
+        - https://docs.dust.tt/changelog
+        - https://www.glean.com/release-notes
+      max_pages: 10
+      parse_sections: false

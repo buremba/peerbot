@@ -1,0 +1,18 @@
+# Hacker News — mentions of "lobu" / "openclaw".
+# Connector definition: packages/connectors/src/hackernews.ts (no auth).
+---
+version: 1
+type: connection
+slug: hn-lobu
+connector: hackernews
+name: Hacker News — lobu / openclaw
+config:
+  search_query: lobu OR openclaw
+  lookback_days: 180
+feeds:
+  - feed: stories
+    name: HN stories — lobu / openclaw
+    schedule: "0 */4 * * *"
+    config:
+      search_query: lobu OR openclaw
+      lookback_days: 180

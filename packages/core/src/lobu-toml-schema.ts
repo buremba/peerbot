@@ -210,6 +210,7 @@ const memorySchema = z
     visibility: z.enum(["public", "private"]).optional(),
     models: z.string().optional(),
     data: z.string().optional(),
+    connectors: z.string().optional(),
     schema: memoryInlineSchema.optional(),
   })
   .strict();

@@ -59,6 +59,71 @@ export interface UpsertEntityTypeResult {
   noop?: boolean;
 }
 
+// ── Connectors / auth profiles / connections wire types ────────────────────
+
+export interface RemoteConnectorDefinition {
+  key: string;
+  name?: string;
+  version?: string;
+  options_schema?: Record<string, unknown> | null;
+  feeds_schema?: Record<string, unknown> | null;
+  auth_schema?: Record<string, unknown> | null;
+  installed?: boolean;
+  installable?: boolean;
+  catalog_origin?: string;
+  /** `file://` URI of the bundled source on the server host (catalog entries). */
+  source_uri?: string | null;
+}
+
+export interface RemoteAuthProfile {
+  id?: number;
+  slug: string;
+  display_name?: string;
+  connector_key: string;
+  profile_kind: string;
+  status: string;
+}
+
+export interface RemoteConnection {
+  id: number;
+  slug: string;
+  connector_key: string;
+  display_name?: string;
+  status: string;
+  auth_profile_slug?: string | null;
+  app_auth_profile_slug?: string | null;
+  config?: Record<string, unknown> | null;
+}
+
+export interface RemoteFeed {
+  id: number;
+  connection_id: number;
+  feed_key: string;
+  display_name?: string;
+  status: string;
+  schedule?: string | null;
+  config?: Record<string, unknown> | null;
+}
+
+export interface InstallConnectorResult {
+  connectorKey: string;
+  updated: boolean;
+  version?: string;
+}
+
+/**
+ * Result of ensuring an auth profile exists. For interactive kinds
+ * (`oauth_account` / `browser_session`) `connectUrl` carries the URL the
+ * operator must open to complete auth; `status` is the state the server
+ * reports (`pending_auth` until auth completes).
+ */
+export interface EnsureAuthProfileResult {
+  created: boolean;
+  updated: boolean;
+  status?: string;
+  connectUrl?: string;
+}
+
 // ── Shape predicates ───────────────────────────────────────────────────────
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -412,6 +477,314 @@ export class ApplyClient {
       ...(payload.schedule ? { schedule: payload.schedule } : {}),
       ...(payload.sources?.length ? { sources: payload.sources } : {}),
     });
+  }
+
+  // ── Connector definitions ─────────────────────────────────────────────────
+
+  private async connectionsTool<T>(body: Record<string, unknown>): Promise<T> {
+    const { body: parsed } = await this.request<T>(
+      "POST",
+      `/api/${this.orgSlug}/manage_connections`,
+      body
+    );
+    return parsed;
+  }
+
+  private async feedsTool<T>(body: Record<string, unknown>): Promise<T> {
+    const { body: parsed } = await this.request<T>(
+      "POST",
+      `/api/${this.orgSlug}/manage_feeds`,
+      body
+    );
+    return parsed;
+  }
+
+  private async authProfilesTool<T>(body: Record<string, unknown>): Promise<T> {
+    const { body: parsed } = await this.request<T>(
+      "POST",
+      `/api/${this.orgSlug}/manage_auth_profiles`,
+      body
+    );
+    return parsed;
+  }
+
+  /** Installed org connectors + (with `includeInstallable`) the bundled catalog. */
+  async listConnectorDefinitions(
+    includeInstallable = true
+  ): Promise<RemoteConnectorDefinition[]> {
+    const body = await this.connectionsTool<{
+      connector_definitions?: RemoteConnectorDefinition[];
+    }>({
+      action: "list_connector_definitions",
+      include_installable: includeInstallable,
+    });
+    return body.connector_definitions ?? [];
+  }
+
+  /**
+   * Idempotent connector install. The CLI passes raw TypeScript source
+   * (`compiled: false`) or a `source_url`; the server compiles + extracts
+   * metadata and returns the resolved `connectorKey` plus `updated` (false
+   * when the installed code is byte-identical).
+   */
+  async installConnector(payload: {
+    sourceCode?: string;
+    sourceUrl?: string;
+    /** `file://` URI of a bundled connector source on the server host. */
+    sourceUri?: string;
+  }): Promise<InstallConnectorResult> {
+    const body = await this.connectionsTool<{
+      installed?: boolean;
+      connector_key?: string;
+      version?: string;
+      updated?: boolean;
+    }>({
+      action: "install_connector",
+      ...(payload.sourceCode !== undefined
+        ? { source_code: payload.sourceCode, compiled: false }
+        : {}),
+      ...(payload.sourceUrl ? { source_url: payload.sourceUrl } : {}),
+      ...(payload.sourceUri ? { source_uri: payload.sourceUri } : {}),
+    });
+    return {
+      connectorKey: body.connector_key ?? "",
+      updated: body.updated ?? false,
+      ...(body.version ? { version: body.version } : {}),
+    };
+  }
+
+  async uninstallConnector(connectorKey: string): Promise<void> {
+    await this.connectionsTool({
+      action: "uninstall_connector",
+      connector_key: connectorKey,
+    });
+  }
+
+  // ── Auth profiles ─────────────────────────────────────────────────────────
+
+  async listAuthProfiles(): Promise<RemoteAuthProfile[]> {
+    const body = await this.authProfilesTool<{
+      auth_profiles?: RemoteAuthProfile[];
+    }>({ action: "list_auth_profiles" });
+    return body.auth_profiles ?? [];
+  }
+
+  async getAuthProfileBySlug(slug: string): Promise<RemoteAuthProfile | null> {
+    try {
+      const body = await this.authProfilesTool<{
+        auth_profile?: RemoteAuthProfile;
+      }>({ action: "get_auth_profile", auth_profile_slug: slug });
+      return body.auth_profile ?? null;
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) return null;
+      throw err;
+    }
+  }
+
+  async createAuthProfile(payload: {
+    slug: string;
+    connector: string;
+    kind: string;
+    name?: string;
+    credentials?: Record<string, string>;
+  }): Promise<EnsureAuthProfileResult> {
+    const body = await this.authProfilesTool<{
+      auth_profile?: { status?: string };
+      connect_url?: string;
+    }>({
+      action: "create_auth_profile",
+      connector_key: payload.connector,
+      profile_kind: payload.kind,
+      display_name: payload.name ?? payload.slug,
+      slug: payload.slug,
+      ...(payload.credentials && Object.keys(payload.credentials).length > 0
+        ? { credentials: payload.credentials }
+        : {}),
+    });
+    return {
+      created: true,
+      updated: false,
+      ...(body.auth_profile?.status
+        ? { status: body.auth_profile.status }
+        : {}),
+      ...(body.connect_url ? { connectUrl: body.connect_url } : {}),
+    };
+  }
+
+  async updateAuthProfile(payload: {
+    slug: string;
+    name?: string;
+    credentials?: Record<string, string>;
+  }): Promise<EnsureAuthProfileResult> {
+    const body = await this.authProfilesTool<{
+      auth_profile?: { status?: string };
+      connect_url?: string;
+    }>({
+      action: "update_auth_profile",
+      auth_profile_slug: payload.slug,
+      ...(payload.name ? { display_name: payload.name } : {}),
+      ...(payload.credentials && Object.keys(payload.credentials).length > 0
+        ? { credentials: payload.credentials }
+        : {}),
+    });
+    return {
+      created: false,
+      updated: true,
+      ...(body.auth_profile?.status
+        ? { status: body.auth_profile.status }
+        : {}),
+      ...(body.connect_url ? { connectUrl: body.connect_url } : {}),
+    };
+  }
+
+  /** Re-issue a connect token for an existing interactive-auth profile. */
+  async reconnectAuthProfile(slug: string): Promise<string | undefined> {
+    const body = await this.authProfilesTool<{ connect_url?: string }>({
+      action: "update_auth_profile",
+      auth_profile_slug: slug,
+      reconnect: true,
+    });
+    return body.connect_url;
+  }
+
+  async deleteAuthProfile(slug: string): Promise<void> {
+    await this.authProfilesTool({
+      action: "delete_auth_profile",
+      auth_profile_slug: slug,
+    });
+  }
+
+  // ── Connections ───────────────────────────────────────────────────────────
+
+  async listConnections(): Promise<RemoteConnection[]> {
+    const body = await this.connectionsTool<{
+      connections?: RemoteConnection[];
+    }>({ action: "list", limit: 500 });
+    return body.connections ?? [];
+  }
+
+  async createConnection(payload: {
+    slug: string;
+    connector: string;
+    name?: string;
+    authProfileSlug?: string;
+    appAuthProfileSlug?: string;
+    config?: Record<string, unknown>;
+  }): Promise<RemoteConnection> {
+    const body = await this.connectionsTool<{ connection?: RemoteConnection }>({
+      action: "create",
+      connector_key: payload.connector,
+      slug: payload.slug,
+      ...(payload.name ? { display_name: payload.name } : {}),
+      ...(payload.authProfileSlug
+        ? { auth_profile_slug: payload.authProfileSlug }
+        : {}),
+      ...(payload.appAuthProfileSlug
+        ? { app_auth_profile_slug: payload.appAuthProfileSlug }
+        : {}),
+      ...(payload.config ? { config: payload.config } : {}),
+    });
+    if (!body.connection) {
+      throw new ApiError(
+        `create connection "${payload.slug}" returned no connection payload`
+      );
+    }
+    return body.connection;
+  }
+
+  async updateConnection(
+    connectionId: number,
+    payload: {
+      name?: string;
+      authProfileSlug?: string | null;
+      appAuthProfileSlug?: string | null;
+      config?: Record<string, unknown>;
+    }
+  ): Promise<RemoteConnection> {
+    const body = await this.connectionsTool<{ connection?: RemoteConnection }>({
+      action: "update",
+      connection_id: connectionId,
+      ...(payload.name !== undefined ? { display_name: payload.name } : {}),
+      ...(payload.authProfileSlug !== undefined
+        ? { auth_profile_slug: payload.authProfileSlug }
+        : {}),
+      ...(payload.appAuthProfileSlug !== undefined
+        ? { app_auth_profile_slug: payload.appAuthProfileSlug }
+        : {}),
+      ...(payload.config !== undefined ? { config: payload.config } : {}),
+    });
+    if (!body.connection) {
+      throw new ApiError(
+        `update connection #${connectionId} returned no connection payload`
+      );
+    }
+    return body.connection;
+  }
+
+  async deleteConnection(connectionId: number): Promise<void> {
+    await this.connectionsTool({
+      action: "delete",
+      connection_id: connectionId,
+    });
+  }
+
+  // ── Feeds (managed per-connection) ────────────────────────────────────────
+
+  async listFeeds(connectionId: number): Promise<RemoteFeed[]> {
+    const body = await this.feedsTool<{ feeds?: RemoteFeed[] }>({
+      action: "list_feeds",
+      connection_id: connectionId,
+      limit: 500,
+    });
+    return body.feeds ?? [];
+  }
+
+  async createFeed(payload: {
+    connectionId: number;
+    feedKey: string;
+    name?: string;
+    schedule?: string;
+    config?: Record<string, unknown>;
+  }): Promise<RemoteFeed> {
+    const body = await this.feedsTool<{ feed?: RemoteFeed }>({
+      action: "create_feed",
+      connection_id: payload.connectionId,
+      feed_key: payload.feedKey,
+      ...(payload.name ? { display_name: payload.name } : {}),
+      ...(payload.schedule ? { schedule: payload.schedule } : {}),
+      ...(payload.config ? { config: payload.config } : {}),
+    });
+    if (!body.feed) {
+      throw new ApiError(
+        `create feed "${payload.feedKey}" returned no feed payload`
+      );
+    }
+    return body.feed;
+  }
+
+  async updateFeed(
+    feedId: number,
+    payload: {
+      name?: string;
+      schedule?: string;
+      config?: Record<string, unknown>;
+    }
+  ): Promise<RemoteFeed> {
+    const body = await this.feedsTool<{ feed?: RemoteFeed }>({
+      action: "update_feed",
+      feed_id: feedId,
+      ...(payload.name !== undefined ? { display_name: payload.name } : {}),
+      ...(payload.schedule !== undefined ? { schedule: payload.schedule } : {}),
+      ...(payload.config !== undefined ? { config: payload.config } : {}),
+    });
+    if (!body.feed) {
+      throw new ApiError(`update feed #${feedId} returned no feed payload`);
+    }
+    return body.feed;
+  }
+
+  async deleteFeed(feedId: number): Promise<void> {
+    await this.feedsTool({ action: "delete_feed", feed_id: feedId });
   }
 }
 

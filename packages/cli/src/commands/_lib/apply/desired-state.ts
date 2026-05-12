@@ -1,6 +1,13 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import type {
+  ConnectorAuthSchema,
+  ConnectorDefinition,
+  FeedDefinition,
+} from "@lobu/connector-sdk";
 import type { AgentSettings, LobuTomlConfig, TomlAgentEntry } from "@lobu/core";
+import Ajv from "ajv";
+import addFormats from "ajv-formats";
 import { parse as parseToml } from "smol-toml";
 import { ValidationError } from "../../memory/_lib/errors.js";
 import {
@@ -76,6 +83,68 @@ export interface DesiredWatcher {
   sources?: Array<{ name: string; query: string }>;
 }
 
+export interface DesiredFeed {
+  /** Feed key from the connector definition (`FeedDefinition.key`). */
+  feedKey: string;
+  name?: string;
+  schedule?: string;
+  config?: Record<string, unknown>;
+}
+
+export interface DesiredConnection {
+  /** Stable public identifier — diff key. */
+  slug: string;
+  /** Connector key (e.g. `github`, `hackernews`). */
+  connector: string;
+  name?: string;
+  /** Slug of the runtime/account auth profile (`auth:` in the manifest). */
+  authProfileSlug?: string;
+  /** Slug of the OAuth-app auth profile (`app_auth:` in the manifest). */
+  appAuthProfileSlug?: string;
+  config?: Record<string, unknown>;
+  feeds: DesiredFeed[];
+  /** Relative path of the YAML file the doc came from (for error messages). */
+  sourceFile: string;
+}
+
+export type DesiredAuthProfileKind =
+  | "env"
+  | "oauth_app"
+  | "oauth_account"
+  | "browser_session";
+
+export interface DesiredAuthProfile {
+  /** Stable slug — diff key. */
+  slug: string;
+  connector: string;
+  kind: DesiredAuthProfileKind;
+  name?: string;
+  /**
+   * key→value credentials. Values may be `$ENV` references (collected into
+   * `requiredSecrets`). Only meaningful for `kind: env | oauth_app`; must be
+   * absent/empty for `oauth_account | browser_session`.
+   */
+  credentials?: Record<string, string>;
+  sourceFile: string;
+}
+
+export interface DesiredConnectorDefinition {
+  /** Connector key — diff key (`null` until the server compiles a `.ts`). */
+  key: string | null;
+  /** Local `.ts` path (absolute) — mutually exclusive with `sourceUrl`. */
+  sourcePath?: string;
+  /** Remote URL — mutually exclusive with `sourcePath`. */
+  sourceUrl?: string;
+  /**
+   * Raw TypeScript source read from `sourcePath`, pushed verbatim to the
+   * server (which compiles, extracts metadata, and returns the real `key`).
+   * Absent when `sourceUrl` is used.
+   */
+  sourceCode?: string;
+  /** For error messages — the `.connector.ts` file or `type: connector` doc. */
+  sourceFile: string;
+}
+
 export interface DesiredAgent {
   metadata: DesiredAgentMetadata;
   /**
@@ -100,9 +169,20 @@ export interface DesiredState {
   /** Watchers declared as `type: watcher` in `models/*.yaml`. */
   watchers: DesiredWatcher[];
   /**
-   * Names of env vars referenced as `$NAME` anywhere in lobu.toml. The CLI
-   * surfaces these to the user before mutating remote state so missing
-   * secrets fail loud instead of expanding to empty strings.
+   * Data-source connectors declared in `[memory].connectors` dir:
+   * `*.connector.ts` files (+ `type: connector` manifests), `type: connection`
+   * docs, and `type: auth_profile` docs.
+   */
+  connectors: {
+    definitions: DesiredConnectorDefinition[];
+    authProfiles: DesiredAuthProfile[];
+    connections: DesiredConnection[];
+  };
+  /**
+   * Names of env vars referenced as `$NAME` anywhere in lobu.toml or in
+   * connector auth-profile credentials. The CLI surfaces these to the user
+   * before mutating remote state so missing secrets fail loud instead of
+   * expanding to empty strings.
    */
   requiredSecrets: string[];
 }
@@ -779,6 +859,599 @@ async function rejectUnsupportedAgentShapes(cwd: string): Promise<void> {
   }
 }
 
+// ── Connectors (data-source connectors) ───────────────────────────────────
+
+const AUTH_PROFILE_KINDS: ReadonlySet<string> = new Set([
+  "env",
+  "oauth_app",
+  "oauth_account",
+  "browser_session",
+]);
+
+function asString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function parseConnectionDoc(
+  raw: Record<string, unknown>,
+  file: string
+): DesiredConnection {
+  const slug = asString(raw.slug);
+  if (!slug) {
+    throw new ValidationError(
+      `${file}: \`type: connection\` doc is missing a "slug" string`
+    );
+  }
+  const connector = asString(raw.connector);
+  if (!connector) {
+    throw new ValidationError(
+      `${file}: connection "${slug}" is missing a "connector" key`
+    );
+  }
+  const out: DesiredConnection = {
+    slug,
+    connector,
+    feeds: [],
+    sourceFile: file,
+  };
+  const name = asString(raw.name);
+  if (name) out.name = name;
+  const auth = asString(raw.auth);
+  if (auth) out.authProfileSlug = auth;
+  const appAuth = asString(raw.app_auth);
+  if (appAuth) out.appAuthProfileSlug = appAuth;
+  if (raw.config !== undefined) {
+    if (!isRecord(raw.config)) {
+      throw new ValidationError(
+        `${file}: connection "${slug}" \`config\` must be an object`
+      );
+    }
+    out.config = raw.config;
+  }
+  if (raw.feeds !== undefined) {
+    if (!Array.isArray(raw.feeds)) {
+      throw new ValidationError(
+        `${file}: connection "${slug}" \`feeds\` must be an array`
+      );
+    }
+    const seen = new Set<string>();
+    for (const entry of raw.feeds) {
+      if (!isRecord(entry)) {
+        throw new ValidationError(
+          `${file}: connection "${slug}" feed entries must be objects`
+        );
+      }
+      const feedKey = asString(entry.feed);
+      if (!feedKey) {
+        throw new ValidationError(
+          `${file}: connection "${slug}" feed entry is missing a "feed" key`
+        );
+      }
+      if (seen.has(feedKey)) {
+        throw new ValidationError(
+          `${file}: connection "${slug}" declares feed "${feedKey}" twice`
+        );
+      }
+      seen.add(feedKey);
+      const feed: DesiredFeed = { feedKey };
+      const feedName = asString(entry.name);
+      if (feedName) feed.name = feedName;
+      const schedule = asString(entry.schedule);
+      if (schedule) feed.schedule = schedule;
+      if (entry.config !== undefined) {
+        if (!isRecord(entry.config)) {
+          throw new ValidationError(
+            `${file}: connection "${slug}" feed "${feedKey}" \`config\` must be an object`
+          );
+        }
+        feed.config = entry.config;
+      }
+      out.feeds.push(feed);
+    }
+  }
+  return out;
+}
+
+function parseAuthProfileDoc(
+  raw: Record<string, unknown>,
+  file: string
+): DesiredAuthProfile {
+  const slug = asString(raw.slug);
+  if (!slug) {
+    throw new ValidationError(
+      `${file}: \`type: auth_profile\` doc is missing a "slug" string`
+    );
+  }
+  const connector = asString(raw.connector);
+  if (!connector) {
+    throw new ValidationError(
+      `${file}: auth_profile "${slug}" is missing a "connector" key`
+    );
+  }
+  const kind = asString(raw.kind);
+  if (!kind || !AUTH_PROFILE_KINDS.has(kind)) {
+    throw new ValidationError(
+      `${file}: auth_profile "${slug}" \`kind\` must be one of env|oauth_app|oauth_account|browser_session (got ${JSON.stringify(raw.kind)})`
+    );
+  }
+  const out: DesiredAuthProfile = {
+    slug,
+    connector,
+    kind: kind as DesiredAuthProfileKind,
+    sourceFile: file,
+  };
+  const name = asString(raw.name);
+  if (name) out.name = name;
+  if (raw.credentials !== undefined) {
+    if (!isRecord(raw.credentials)) {
+      throw new ValidationError(
+        `${file}: auth_profile "${slug}" \`credentials\` must be an object`
+      );
+    }
+    const creds: Record<string, string> = {};
+    for (const [k, v] of Object.entries(raw.credentials)) {
+      if (typeof v !== "string") {
+        throw new ValidationError(
+          `${file}: auth_profile "${slug}" credential "${k}" must be a string (use $ENV for secrets)`
+        );
+      }
+      creds[k] = v;
+    }
+    if (kind === "oauth_account" || kind === "browser_session") {
+      if (Object.keys(creds).length > 0) {
+        throw new ValidationError(
+          `${file}: auth_profile "${slug}" has \`kind: ${kind}\` — credentials must not be set; \`lobu apply\` never writes interactive-auth tokens (complete auth via the connect URL).`
+        );
+      }
+    } else {
+      out.credentials = creds;
+    }
+  }
+  return out;
+}
+
+function parseConnectorDoc(
+  raw: Record<string, unknown>,
+  file: string
+): { key: string; sourcePath?: string; sourceUrl?: string } {
+  const key = asString(raw.key);
+  if (!key) {
+    throw new ValidationError(
+      `${file}: \`type: connector\` doc is missing a "key" string`
+    );
+  }
+  const sourcePath = asString(raw.source_path);
+  const sourceUrl = asString(raw.source_url);
+  if (!!sourcePath === !!sourceUrl) {
+    throw new ValidationError(
+      `${file}: connector "${key}" must declare exactly one of \`source_path\` or \`source_url\``
+    );
+  }
+  return {
+    key,
+    ...(sourcePath ? { sourcePath } : {}),
+    ...(sourceUrl ? { sourceUrl } : {}),
+  };
+}
+
+interface LoadedConnectors {
+  definitions: DesiredConnectorDefinition[];
+  authProfiles: DesiredAuthProfile[];
+  connections: DesiredConnection[];
+}
+
+const EMPTY_CONNECTORS: LoadedConnectors = {
+  definitions: [],
+  authProfiles: [],
+  connections: [],
+};
+
+/**
+ * Load the `[memory].connectors` directory:
+ *  - every `*.connector.ts` is auto-discovered as a connector definition
+ *    (raw source pushed to the server, which compiles + extracts the key)
+ *  - `*.yaml` files are multi-doc (`---`-separated); each doc carries
+ *    `version: 1` and a `type:` of `connection`, `auth_profile`, or `connector`
+ *
+ * `connector:` config validation against the connector's `optionsSchema` /
+ * feed `configSchema` / `authSchema` happens later (in `apply-cmd`) once the
+ * remote connector-definition catalog is available — the CLI never compiles
+ * connectors locally.
+ */
+async function loadConnectors(
+  config: LobuTomlConfig,
+  projectRoot: string,
+  env: NodeJS.ProcessEnv,
+  envRefs: Set<string>
+): Promise<LoadedConnectors> {
+  const mem = config.memory;
+  if (!mem || mem.enabled === false) return EMPTY_CONNECTORS;
+  const dirRel = mem.connectors?.trim() || "./connectors";
+  const dirPath = resolve(projectRoot, dirRel);
+
+  let entries: string[];
+  try {
+    entries = (await readdir(dirPath)).sort();
+  } catch {
+    return EMPTY_CONNECTORS;
+  }
+
+  const { parseAllDocuments } = await import("yaml");
+
+  const definitionsByKey = new Map<string, DesiredConnectorDefinition>();
+  // `.connector.ts` files keyed by their *absolute path* — we don't know the
+  // connector key until the server compiles them. `type: connector` docs with
+  // `source_path:` that point at one of these files just dedupe to the file.
+  const tsFileDefinitions = new Map<string, DesiredConnectorDefinition>();
+  const authProfiles = new Map<string, DesiredAuthProfile>();
+  const connections = new Map<string, DesiredConnection>();
+
+  for (const entry of entries) {
+    const entryPath = join(dirPath, entry);
+    let entryStat;
+    try {
+      entryStat = await stat(entryPath);
+    } catch {
+      continue;
+    }
+    if (!entryStat.isFile()) continue;
+
+    // Auto-discovered local connector definition.
+    if (entry.endsWith(".connector.ts")) {
+      const sourceCode = await readFile(entryPath, "utf-8");
+      tsFileDefinitions.set(entryPath, {
+        key: null,
+        sourcePath: entryPath,
+        sourceCode,
+        sourceFile: `${dirRel}/${entry}`,
+      });
+      continue;
+    }
+
+    if (!entry.endsWith(".yaml") && !entry.endsWith(".yml")) continue;
+
+    const rel = `${dirRel}/${entry}`;
+    const raw = await readFile(entryPath, "utf-8");
+    let docs: unknown[];
+    try {
+      docs = parseAllDocuments(raw)
+        .map((doc) => doc.toJSON() as unknown)
+        .filter((doc) => doc !== null && doc !== undefined);
+    } catch (err) {
+      throw new ValidationError(
+        `${rel}: failed to parse YAML — ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+
+    for (const doc of docs) {
+      if (!isRecord(doc)) {
+        throw new ValidationError(
+          `${rel}: each connectors doc must be a mapping with \`version\` and \`type\``
+        );
+      }
+      const type = asString(doc.type);
+      if (!type) {
+        throw new ValidationError(
+          `${rel}: connectors doc is missing a "type" (connection|auth_profile|connector)`
+        );
+      }
+      if (doc.version !== undefined && doc.version !== 1) {
+        throw new ValidationError(
+          `${rel}: unsupported connectors doc version ${JSON.stringify(doc.version)} (expected 1)`
+        );
+      }
+      if (type === "connection") {
+        const conn = parseConnectionDoc(doc, rel);
+        if (connections.has(conn.slug)) {
+          throw new ValidationError(
+            `${rel}: duplicate connection slug "${conn.slug}"`
+          );
+        }
+        connections.set(conn.slug, conn);
+      } else if (type === "auth_profile") {
+        const profile = parseAuthProfileDoc(doc, rel);
+        if (authProfiles.has(profile.slug)) {
+          throw new ValidationError(
+            `${rel}: duplicate auth_profile slug "${profile.slug}"`
+          );
+        }
+        if (profile.credentials) {
+          // Expand `$ENV` refs in-place (collect them too, so the apply
+          // secrets gate fails loud) — never push literal `$NAME` strings.
+          const resolved: Record<string, string> = {};
+          for (const [k, v] of Object.entries(profile.credentials)) {
+            const ref = asEnvRef(v);
+            if (!ref) {
+              resolved[k] = v;
+              continue;
+            }
+            envRefs.add(ref);
+            const value = env[ref];
+            if (value === undefined || value === "") {
+              throw new ValidationError(
+                `${rel}: auth_profile "${profile.slug}" credential "${k}" references $${ref}, but it is unset or empty in the apply environment`
+              );
+            }
+            resolved[k] = value;
+          }
+          profile.credentials = resolved;
+        }
+        authProfiles.set(profile.slug, profile);
+      } else if (type === "connector") {
+        const parsed = parseConnectorDoc(doc, rel);
+        if (parsed.sourceUrl) {
+          if (definitionsByKey.has(parsed.key)) {
+            throw new ValidationError(
+              `${rel}: duplicate connector key "${parsed.key}"`
+            );
+          }
+          definitionsByKey.set(parsed.key, {
+            key: parsed.key,
+            sourceUrl: parsed.sourceUrl,
+            sourceFile: rel,
+          });
+        } else if (parsed.sourcePath) {
+          const abs = resolve(projectRoot, parsed.sourcePath);
+          if (tsFileDefinitions.has(abs)) {
+            // Already auto-discovered; the `type: connector` doc is redundant
+            // but harmless — just record the declared key for clearer output.
+            const existing = tsFileDefinitions.get(abs);
+            if (existing) existing.key = parsed.key;
+          } else {
+            let sourceCode: string;
+            try {
+              sourceCode = await readFile(abs, "utf-8");
+            } catch {
+              throw new ValidationError(
+                `${rel}: connector "${parsed.key}" \`source_path\` ${parsed.sourcePath} does not exist`
+              );
+            }
+            tsFileDefinitions.set(abs, {
+              key: parsed.key,
+              sourcePath: abs,
+              sourceCode,
+              sourceFile: rel,
+            });
+          }
+        }
+      } else {
+        throw new ValidationError(
+          `${rel}: unknown connectors doc type "${type}" (expected connection|auth_profile|connector)`
+        );
+      }
+    }
+  }
+
+  return {
+    definitions: [
+      ...definitionsByKey.values(),
+      ...tsFileDefinitions.values(),
+    ].sort((a, b) =>
+      (a.key ?? a.sourceFile).localeCompare(b.key ?? b.sourceFile)
+    ),
+    authProfiles: [...authProfiles.values()].sort((a, b) =>
+      a.slug.localeCompare(b.slug)
+    ),
+    connections: [...connections.values()].sort((a, b) =>
+      a.slug.localeCompare(b.slug)
+    ),
+  };
+}
+
+// ── Connector-config validation (used by apply-cmd with remote catalog) ────
+
+export interface ResolvedConnectorSchemas {
+  /** Connector key → `optionsSchema` (JSON Schema), if declared. */
+  optionsSchema?: Record<string, unknown>;
+  /** Feed key → `configSchema` (JSON Schema). */
+  feedConfigSchemas: Map<string, Record<string, unknown>>;
+  /** Allowed auth-profile kinds for the connector (from `authSchema.methods`). */
+  authKinds: Set<string>;
+}
+
+function schemaFromAuthMethods(
+  authSchema: ConnectorAuthSchema | Record<string, unknown> | null | undefined
+): Set<string> {
+  const kinds = new Set<string>();
+  if (!authSchema || typeof authSchema !== "object") return kinds;
+  const methods = (authSchema as { methods?: unknown }).methods;
+  if (!Array.isArray(methods)) return kinds;
+  for (const method of methods) {
+    if (!isRecord(method)) continue;
+    const t = asString(method.type);
+    // ConnectorAuthMethod `type` ∈ env_keys | oauth | browser | interactive | none
+    if (t === "env_keys") kinds.add("env");
+    else if (t === "oauth") {
+      kinds.add("oauth_app");
+      kinds.add("oauth_account");
+    } else if (t === "browser" || t === "interactive") {
+      kinds.add("browser_session");
+    }
+  }
+  return kinds;
+}
+
+/**
+ * Build per-connector validation schemas from a connector definition. Accepts
+ * either a typed `ConnectorDefinition` (from `@lobu/connector-sdk`) or the
+ * snake_cased shape the server's `manage_connections list_connector_definitions`
+ * returns (`options_schema`, `feeds_schema`, `auth_schema`).
+ */
+export function resolveConnectorSchemas(
+  def:
+    | ConnectorDefinition
+    | {
+        options_schema?: Record<string, unknown> | null;
+        feeds_schema?: Record<string, unknown> | null;
+        auth_schema?: Record<string, unknown> | null;
+      }
+): ResolvedConnectorSchemas {
+  const optionsSchema =
+    ("optionsSchema" in def ? def.optionsSchema : undefined) ??
+    ("options_schema" in def ? (def.options_schema ?? undefined) : undefined) ??
+    undefined;
+  const feedsRaw =
+    ("feeds" in def ? def.feeds : undefined) ??
+    ("feeds_schema" in def ? (def.feeds_schema ?? undefined) : undefined) ??
+    undefined;
+  const authSchema =
+    ("authSchema" in def ? def.authSchema : undefined) ??
+    ("auth_schema" in def ? (def.auth_schema ?? undefined) : undefined) ??
+    undefined;
+
+  const feedConfigSchemas = new Map<string, Record<string, unknown>>();
+  if (feedsRaw && typeof feedsRaw === "object") {
+    for (const [feedKey, feedDef] of Object.entries(
+      feedsRaw as Record<string, FeedDefinition | Record<string, unknown>>
+    )) {
+      if (!feedDef || typeof feedDef !== "object") continue;
+      const cfg = (feedDef as { configSchema?: unknown }).configSchema;
+      if (cfg && typeof cfg === "object") {
+        feedConfigSchemas.set(feedKey, cfg as Record<string, unknown>);
+      }
+    }
+  }
+
+  return {
+    ...(optionsSchema ? { optionsSchema } : {}),
+    feedConfigSchemas,
+    authKinds: schemaFromAuthMethods(authSchema),
+  };
+}
+
+let sharedAjv: Ajv | null = null;
+function getAjv(): Ajv {
+  if (!sharedAjv) {
+    sharedAjv = new Ajv({ allErrors: true, strict: false });
+    addFormats(sharedAjv);
+  }
+  return sharedAjv;
+}
+
+function validateAgainstSchema(
+  schema: Record<string, unknown>,
+  value: unknown,
+  context: string
+): void {
+  const ajv = getAjv();
+  let validate;
+  try {
+    validate = ajv.compile(schema);
+  } catch (err) {
+    // A malformed connector schema is the connector author's problem, not the
+    // operator's — surface it but don't block the whole apply on it.
+    throw new ValidationError(
+      `${context}: connector declares an invalid JSON schema — ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+  if (!validate(value ?? {})) {
+    const detail = (validate.errors ?? [])
+      .map((e) => `${e.instancePath || "(root)"} ${e.message ?? ""}`.trim())
+      .join("; ");
+    throw new ValidationError(
+      `${context}: ${detail || "does not match the connector schema"}`
+    );
+  }
+}
+
+/**
+ * Validate a single connection (+ its feeds) and its referenced auth-profile
+ * kinds against a resolved connector schema. Pass `null` to skip schema
+ * checks (e.g. a connector that only exists as a local `.ts` not yet
+ * compiled by the server) — structural checks have already run at load time.
+ */
+export function validateConnectionAgainstConnector(
+  connection: DesiredConnection,
+  authProfiles: ReadonlyMap<string, DesiredAuthProfile>,
+  schemas: ResolvedConnectorSchemas | null
+): void {
+  // Validate against `{}` when config is omitted too — that surfaces missing
+  // required keys instead of letting an empty config slip through.
+  if (schemas?.optionsSchema) {
+    validateAgainstSchema(
+      schemas.optionsSchema,
+      connection.config ?? {},
+      `${connection.sourceFile}: connection "${connection.slug}" config`
+    );
+  }
+  for (const feed of connection.feeds) {
+    if (!schemas) continue;
+    if (
+      schemas.feedConfigSchemas.size > 0 &&
+      !schemas.feedConfigSchemas.has(feed.feedKey)
+    ) {
+      throw new ValidationError(
+        `${connection.sourceFile}: connection "${connection.slug}" references unknown feed "${feed.feedKey}" for connector "${connection.connector}"`
+      );
+    }
+    const feedSchema = schemas.feedConfigSchemas.get(feed.feedKey);
+    if (feedSchema) {
+      validateAgainstSchema(
+        feedSchema,
+        feed.config ?? {},
+        `${connection.sourceFile}: connection "${connection.slug}" feed "${feed.feedKey}" config`
+      );
+    }
+  }
+  // `auth:` must reference a runtime/account profile (never `oauth_app`);
+  // `app_auth:` must reference an `oauth_app` profile.
+  if (connection.authProfileSlug) {
+    const profile = requireAuthProfile(
+      connection,
+      authProfiles,
+      connection.authProfileSlug
+    );
+    if (profile.kind === "oauth_app") {
+      throw new ValidationError(
+        `${connection.sourceFile}: connection "${connection.slug}" \`auth\` references auth profile "${connection.authProfileSlug}" of kind \`oauth_app\` — use \`app_auth\` for OAuth-app credentials and \`auth\` for the account/runtime profile`
+      );
+    }
+  }
+  if (connection.appAuthProfileSlug) {
+    const profile = requireAuthProfile(
+      connection,
+      authProfiles,
+      connection.appAuthProfileSlug
+    );
+    if (profile.kind !== "oauth_app") {
+      throw new ValidationError(
+        `${connection.sourceFile}: connection "${connection.slug}" \`app_auth\` must reference an \`oauth_app\` auth profile (got \`${profile.kind}\`)`
+      );
+    }
+  }
+}
+
+function requireAuthProfile(
+  connection: DesiredConnection,
+  authProfiles: ReadonlyMap<string, DesiredAuthProfile>,
+  slugRef: string
+): DesiredAuthProfile {
+  const profile = authProfiles.get(slugRef);
+  if (!profile) {
+    throw new ValidationError(
+      `${connection.sourceFile}: connection "${connection.slug}" references auth profile "${slugRef}" which is not declared in any \`type: auth_profile\` doc`
+    );
+  }
+  if (profile.connector !== connection.connector) {
+    throw new ValidationError(
+      `${connection.sourceFile}: connection "${connection.slug}" references auth profile "${slugRef}" for connector "${profile.connector}", but the connection uses connector "${connection.connector}"`
+    );
+  }
+  return profile;
+}
+
+export function validateAuthProfileAgainstConnector(
+  profile: DesiredAuthProfile,
+  schemas: ResolvedConnectorSchemas | null
+): void {
+  if (!schemas) return;
+  if (schemas.authKinds.size > 0 && !schemas.authKinds.has(profile.kind)) {
+    throw new ValidationError(
+      `${profile.sourceFile}: auth_profile "${profile.slug}" uses \`kind: ${profile.kind}\`, but connector "${profile.connector}" supports: ${[...schemas.authKinds].sort().join(", ") || "(none)"}`
+    );
+  }
+}
+
 // ── Public API ─────────────────────────────────────────────────────────────
 
 export interface LoadDesiredStateOptions {
@@ -829,11 +1502,19 @@ export async function loadDesiredState(
     opts.cwd
   );
 
+  const connectors = await loadConnectors(
+    config,
+    opts.cwd,
+    env,
+    requiredSecrets
+  );
+
   return {
     state: {
       agents,
       memorySchema: { entityTypes, relationshipTypes },
       watchers,
+      connectors,
       requiredSecrets: [...requiredSecrets].sort(),
     },
     configPath,

@@ -1,0 +1,31 @@
+# X — @lobu mentions & replies.
+# Connector definition: packages/connectors/src/x.ts
+---
+version: 1
+type: auth_profile
+slug: x-account
+connector: x
+kind: oauth_account
+name: X — @lobu
+# No credentials here on purpose: `lobu apply` never writes OAuth tokens.
+# After `lobu apply`, finish the OAuth flow via the connect URL it prints
+# (or in the dashboard) to make this profile `active`.
+---
+version: 1
+type: connection
+slug: x-mentions
+connector: x
+name: X — @lobu mentions & replies
+auth: x-account
+config:
+  search_query: "@lobu OR lobu.ai"
+  search_filter: live
+  max_scrolls: 10
+feeds:
+  - feed: tweets
+    name: X mentions — @lobu
+    schedule: "0 */3 * * *"
+    config:
+      search_query: "@lobu OR lobu.ai"
+      search_filter: live
+      max_scrolls: 10

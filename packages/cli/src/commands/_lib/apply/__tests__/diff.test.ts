@@ -29,6 +29,7 @@ function buildState(
     agents,
     memorySchema: { entityTypes: [], relationshipTypes: [] },
     watchers: [],
+    connectors: { definitions: [], authProfiles: [], connections: [] },
     requiredSecrets: [],
     ...overrides,
   };
@@ -42,6 +43,10 @@ function emptyRemote(): RemoteSnapshot {
     entityTypes: [],
     relationshipTypes: [],
     watchers: [],
+    connectorDefinitions: [],
+    authProfiles: [],
+    connections: [],
+    feedsByConnectionId: new Map(),
   };
 }
 
@@ -450,5 +455,237 @@ describe("renderSummary", () => {
     const desired = buildState([]);
     const plan = computeDiff(desired, emptyRemote());
     expect(renderSummary(plan)).toMatchSnapshot();
+  });
+});
+
+describe("apply diff — connectors", () => {
+  const builtinConnectorDef = {
+    key: "hackernews",
+    name: "Hacker News",
+    installed: false,
+    installable: true,
+  };
+
+  function connectorState() {
+    return buildState([], {
+      connectors: {
+        definitions: [
+          {
+            key: "acme",
+            sourcePath: "/proj/connectors/acme.connector.ts",
+            sourceCode: "export default class {}",
+            sourceFile: "connectors/acme.connector.ts",
+          },
+        ],
+        authProfiles: [
+          {
+            slug: "hn-token",
+            connector: "hackernews",
+            kind: "env" as const,
+            name: "HN token",
+            credentials: { HN_TOKEN: "$HN_TOKEN" },
+            sourceFile: "connectors/hackernews.yaml",
+          },
+          {
+            slug: "x-account",
+            connector: "x",
+            kind: "oauth_account" as const,
+            sourceFile: "connectors/x.yaml",
+          },
+        ],
+        connections: [
+          {
+            slug: "hn-frontpage",
+            connector: "hackernews",
+            name: "HN front page",
+            authProfileSlug: "hn-token",
+            feeds: [{ feedKey: "stories", schedule: "0 * * * *" }],
+            sourceFile: "connectors/hackernews.yaml",
+          },
+        ],
+      },
+    });
+  }
+
+  test("create verbs for new connector def, auth profile, connection, feed", () => {
+    const plan = computeDiff(connectorState(), {
+      ...emptyRemote(),
+      connectorDefinitions: [builtinConnectorDef],
+    });
+    const def = plan.rows.find((r) => r.kind === "connector-definition");
+    expect(def?.verb).toBe("create");
+    const authEnv = plan.rows.find(
+      (r) => r.kind === "auth-profile" && r.id === "hn-token"
+    );
+    expect(authEnv?.verb).toBe("create");
+    const authOauth = plan.rows.find(
+      (r) => r.kind === "auth-profile" && r.id === "x-account"
+    );
+    expect(authOauth?.verb).toBe("create");
+    expect(
+      authOauth && "needsAuth" in authOauth ? authOauth.needsAuth : undefined
+    ).toBe(true);
+    const conn = plan.rows.find((r) => r.kind === "connection");
+    expect(conn?.verb).toBe("create");
+    const feed = plan.rows.find((r) => r.kind === "feed");
+    expect(feed?.verb).toBe("create");
+    expect(feed?.id).toBe("hn-frontpage/stories");
+  });
+
+  test("noop when connection + feed already match remotely", () => {
+    const remote: RemoteSnapshot = {
+      ...emptyRemote(),
+      connectorDefinitions: [builtinConnectorDef],
+      authProfiles: [
+        {
+          slug: "hn-token",
+          display_name: "HN token",
+          connector_key: "hackernews",
+          profile_kind: "env",
+          status: "active",
+        },
+        {
+          slug: "x-account",
+          connector_key: "x",
+          profile_kind: "oauth_account",
+          status: "active",
+        },
+      ],
+      connections: [
+        {
+          id: 7,
+          slug: "hn-frontpage",
+          connector_key: "hackernews",
+          display_name: "HN front page",
+          status: "active",
+          auth_profile_slug: "hn-token",
+          app_auth_profile_slug: null,
+          config: {},
+        },
+      ],
+      feedsByConnectionId: new Map([
+        [
+          7,
+          [
+            {
+              id: 11,
+              connection_id: 7,
+              feed_key: "stories",
+              status: "active",
+              schedule: "0 * * * *",
+              config: {},
+            },
+          ],
+        ],
+      ]),
+    };
+    const plan = computeDiff(connectorState(), remote);
+    expect(plan.rows.find((r) => r.kind === "connection")?.verb).toBe("noop");
+    expect(plan.rows.find((r) => r.kind === "feed")?.verb).toBe("noop");
+    expect(
+      plan.rows.find((r) => r.kind === "auth-profile" && r.id === "x-account")
+        ?.verb
+    ).toBe("noop");
+  });
+
+  test("update when feed schedule changes; needs-auth when oauth profile inactive", () => {
+    const remote: RemoteSnapshot = {
+      ...emptyRemote(),
+      connectorDefinitions: [builtinConnectorDef],
+      authProfiles: [
+        {
+          slug: "hn-token",
+          display_name: "HN token",
+          connector_key: "hackernews",
+          profile_kind: "env",
+          status: "active",
+        },
+        {
+          slug: "x-account",
+          connector_key: "x",
+          profile_kind: "oauth_account",
+          status: "pending_auth",
+        },
+      ],
+      connections: [
+        {
+          id: 7,
+          slug: "hn-frontpage",
+          connector_key: "hackernews",
+          display_name: "HN front page",
+          status: "active",
+          auth_profile_slug: "hn-token",
+          app_auth_profile_slug: null,
+          config: {},
+        },
+      ],
+      feedsByConnectionId: new Map([
+        [
+          7,
+          [
+            {
+              id: 11,
+              connection_id: 7,
+              feed_key: "stories",
+              status: "active",
+              schedule: "0 0 * * *",
+              config: {},
+            },
+          ],
+        ],
+      ]),
+    };
+    const plan = computeDiff(connectorState(), remote);
+    const feed = plan.rows.find((r) => r.kind === "feed");
+    expect(feed?.verb).toBe("update");
+    expect(feed && "changedFields" in feed ? feed.changedFields : []).toEqual([
+      "schedule",
+    ]);
+    const authOauth = plan.rows.find(
+      (r) => r.kind === "auth-profile" && r.id === "x-account"
+    );
+    expect(
+      authOauth && "needsAuth" in authOauth ? authOauth.needsAuth : undefined
+    ).toBe(true);
+  });
+
+  test("undeclared remote connector becomes an informational note (no uninstall)", () => {
+    const remote: RemoteSnapshot = {
+      ...emptyRemote(),
+      connectorDefinitions: [
+        builtinConnectorDef,
+        {
+          key: "legacy",
+          name: "Legacy",
+          installed: true,
+          installable: false,
+        },
+      ],
+    };
+    const plan = computeDiff(connectorState(), remote);
+    expect(plan.notes.some((n) => n.includes('"legacy"'))).toBe(true);
+    expect(
+      plan.rows.some(
+        (r) => r.kind === "connector-definition" && r.id === "legacy"
+      )
+    ).toBe(false);
+  });
+
+  test("connectors are skipped when --only is set", () => {
+    const plan = computeDiff(connectorState(), emptyRemote(), {
+      only: "agents",
+    });
+    expect(plan.rows.some((r) => r.kind === "connection")).toBe(false);
+    expect(plan.rows.some((r) => r.kind === "connector-definition")).toBe(
+      false
+    );
+  });
+
+  test("render includes the connectors sections", () => {
+    const plan = computeDiff(connectorState(), {
+      ...emptyRemote(),
+      connectorDefinitions: [builtinConnectorDef],
+    });
+    expect(renderPlan(plan)).toMatchSnapshot();
   });
 });

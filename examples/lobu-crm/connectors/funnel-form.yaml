@@ -1,0 +1,15 @@
+# Demo-request form submissions — backed by the custom funnel-form.connector.ts.
+---
+version: 1
+type: connection
+slug: funnel-form-submissions
+connector: funnel-form
+name: Demo-request form submissions
+config:
+  endpoint: "https://lobu.ai/api/demo-requests"
+feeds:
+  - feed: submissions
+    name: Form submissions
+    schedule: "*/15 * * * *"
+    config:
+      endpoint: "https://lobu.ai/api/demo-requests"

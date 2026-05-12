@@ -1,0 +1,64 @@
+# GitHub — funnel signals from lobu-ai/lobu (stars, issues, PRs, comments).
+# Connector definition: packages/connectors/src/github.ts
+#
+# Two auth profiles: an `oauth_app` (the registered GitHub OAuth App's client
+# credentials, from env) referenced via `app_auth:`, and an `oauth_account`
+# (the actual access token) referenced via `auth:`. The account profile has no
+# credentials here — `lobu apply` never writes OAuth tokens; finish the OAuth
+# flow via the connect URL printed after apply (or in the dashboard).
+---
+version: 1
+type: auth_profile
+slug: github-app
+connector: github
+kind: oauth_app
+name: GitHub OAuth App
+credentials:
+  GITHUB_CLIENT_ID: $GITHUB_CLIENT_ID
+  GITHUB_CLIENT_SECRET: $GITHUB_CLIENT_SECRET
+---
+version: 1
+type: auth_profile
+slug: github-account
+connector: github
+kind: oauth_account
+name: GitHub — lobu-ai
+---
+version: 1
+type: connection
+slug: github-lobu
+connector: github
+name: GitHub — lobu-ai/lobu
+auth: github-account
+app_auth: github-app
+config:
+  repo_owner: lobu-ai
+  repo_name: lobu
+feeds:
+  - feed: stargazers
+    name: Stars — lobu-ai/lobu
+    schedule: "0 */6 * * *"
+    config:
+      repo_owner: lobu-ai
+      repo_name: lobu
+  - feed: issues
+    name: Issues — lobu-ai/lobu
+    schedule: "15 */6 * * *"
+    config:
+      repo_owner: lobu-ai
+      repo_name: lobu
+      lookback_days: 90
+  - feed: issue_comments
+    name: Issue comments — lobu-ai/lobu
+    schedule: "30 */6 * * *"
+    config:
+      repo_owner: lobu-ai
+      repo_name: lobu
+      lookback_days: 90
+  - feed: pr_comments
+    name: PR comments — lobu-ai/lobu
+    schedule: "45 */6 * * *"
+    config:
+      repo_owner: lobu-ai
+      repo_name: lobu
+      lookback_days: 90

@@ -28,6 +28,8 @@ allowed = [
   "api.producthunt.com",
   "api.z.ai", ".z.ai",
   "lobu.ai",
+  # Competitor changelog pages scraped by the `website` connector
+  ".dust.tt", ".glean.com",
 ]
 
 [memory]
@@ -37,3 +39,7 @@ name = "Lobu CRM"
 description = "Funnel CRM for Lobu — leads, pilots, conversations, launch signals"
 models = "./models"
 data = "./data"
+# Data-source connectors (`*.connector.ts` + `type: connection|auth_profile|connector`
+# manifests). Synced by `lobu apply`; interactive-auth profiles (oauth_account)
+# are finished in the dashboard.
+connectors = "./connectors"

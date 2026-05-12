@@ -109,3 +109,24 @@ Summary: 2 create, 0 update, 0 noop, 0 drift"
 `;
 
 exports[`renderSummary renders zero-row plan 1`] = `"Summary: 0 create, 0 update, 0 noop, 0 drift"`;
+
+exports[`apply diff — connectors render includes the connectors sections 1`] = `
+"
+Plan:
+
+  connector-definitions:
+  + connector-definition acme (from connectors/acme.connector.ts)
+
+  auth-profiles:
+  + auth-profile hn-token
+  + auth-profile x-account
+      ⚠ interactive auth — complete it via the connect URL printed after apply
+
+  connections:
+  + connection hn-frontpage
+
+  feeds:
+  + feed hn-frontpage/stories
+
+Summary: 5 create, 0 update, 0 noop, 0 drift"
+`;

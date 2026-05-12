@@ -415,20 +415,19 @@ routes.get('/', mcpAuth, async (c) => {
     `;
     const platformsMap = new Map(platformRows.map((r: any) => [r.agent_id, (r.platforms ?? []) as string[]]));
 
-    // Provider ids per agent, derived from the row's auth_profiles + installed_providers.
+    // Provider ids per agent, derived from the row's installed_providers
+    // (plus auth_profiles when that column is present on this schema).
     const providerRows = await sql`
-      SELECT id, auth_profiles, installed_providers
+      SELECT id, installed_providers
       FROM agents
       WHERE organization_id = ${orgId}
     `;
     const providersMap = new Map<string, string[]>();
     for (const r of providerRows) {
       const set = new Set<string>();
-      for (const p of ((r as any).auth_profiles ?? []) as any[]) {
-        if (p?.provider) set.add(String(p.provider));
-      }
       for (const p of ((r as any).installed_providers ?? []) as any[]) {
         if (p?.providerId) set.add(String(p.providerId));
+        else if (p?.provider) set.add(String(p.provider));
       }
       providersMap.set((r as any).id, [...set]);
     }

@@ -37,6 +37,12 @@ export interface RemoteRelationshipType {
   rules?: Array<{ source: string; target: string }>;
 }
 
+export interface RemoteOrg {
+  id: string;
+  slug: string;
+  name?: string;
+}
+
 export interface RemoteWatcher {
   slug: string;
   name?: string;
@@ -232,6 +238,40 @@ export class ApplyClient {
     }
 
     return { status: res.status, body: parsed as T };
+  }
+
+  // ── Organization (better-auth org plugin, mounted at /api/auth) ───────────
+
+  /**
+   * Orgs the current session is a member of. Used to decide whether the
+   * `[memory].org` slug already resolves to one of the operator's orgs (use
+   * it as-is) or needs creating. Does not depend on `this.orgSlug`.
+   */
+  async listOrgs(): Promise<RemoteOrg[]> {
+    const { body } = await this.request<RemoteOrg[] | { value?: RemoteOrg[] }>(
+      "GET",
+      `/api/auth/organization/list`
+    );
+    return Array.isArray(body) ? body : (body.value ?? []);
+  }
+
+  /**
+   * Create an organization with an explicit slug (the `[memory].org` value).
+   * A reserved slug, or one already owned by an org the session isn't a
+   * member of, surfaces as a structured error the caller turns into a
+   * "pick another slug" message rather than a silent failure.
+   */
+  async createOrg(input: {
+    slug: string;
+    name: string;
+  }): Promise<RemoteOrg> {
+    const { body } = await this.request<RemoteOrg>(
+      "POST",
+      `/api/auth/organization/create`,
+      { name: input.name, slug: input.slug, keepCurrentActiveOrganization: true },
+      [200, 201]
+    );
+    return body;
   }
 
   // ── Agents ────────────────────────────────────────────────────────────────

@@ -82,6 +82,7 @@ async function fetchRemoteSnapshot(
   const entityTypes = only === "agents" ? [] : await client.listEntityTypes();
   const relationshipTypes =
     only === "agents" ? [] : await client.listRelationshipTypes();
+  const watchers = only === "agents" ? [] : await client.listWatchers();
 
   return {
     agents,
@@ -89,6 +90,7 @@ async function fetchRemoteSnapshot(
     platformsByAgent,
     entityTypes,
     relationshipTypes,
+    watchers,
   };
 }
 
@@ -182,6 +184,23 @@ async function executePlan(ctx: ApplyContext): Promise<void> {
     if (!row.desired) continue;
     await ctx.client.upsertRelationshipType(row.desired);
     printText(renderProgress(row.verb, "relationship-type", row.id));
+  }
+
+  // 6) Watchers (create-only; drift ignored)
+  for (const row of rowsByKind("watcher")) {
+    if (row.kind !== "watcher") continue;
+    if (!row.desired) continue;
+    const w = row.desired;
+    await ctx.client.createWatcher({
+      slug: w.slug,
+      name: w.name,
+      description: w.description,
+      prompt: w.prompt,
+      extraction_schema: w.extractionSchema,
+      schedule: w.schedule,
+      sources: w.sources,
+    });
+    printText(renderProgress(row.verb, "watcher", row.id));
   }
 }
 

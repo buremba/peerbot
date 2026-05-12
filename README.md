@@ -4,7 +4,7 @@
 
 OpenClaw is a full agent runtime (~800k LOC) but it's [single-tenant by design](https://x.com/steipete/status/2026092642623201379) — every user shares the same filesystem and bash session. Lobu rewrites only the gateway layer (~40k LOC) to be multi-tenant and keeps OpenClaw's Pi harness untouched inside each worker.
 
-**Embedded mode** uses [just-bash](https://github.com/nicholasgasior/just-bash) + Nix for reproducible packages. Each user gets an isolated virtual filesystem and bash session at ~50MB per instance — tested at 300 concurrent instances on a single machine, no Docker needed.
+**Embedded mode** uses [just-bash](https://www.npmjs.com/package/just-bash) + Nix for reproducible packages. Each user gets an isolated virtual filesystem and bash session at ~50MB per instance — tested at 300 concurrent instances on a single machine, no Docker needed.
 
 Embed OpenClaw-powered agents into your product, or give your team agents without managing a separate instance per person.
 

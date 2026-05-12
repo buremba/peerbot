@@ -37,6 +37,12 @@ export interface RemoteRelationshipType {
   rules?: Array<{ source: string; target: string }>;
 }
 
+export interface RemoteWatcher {
+  slug: string;
+  name?: string;
+  watcher_id?: string;
+}
+
 export interface UpsertPlatformResult {
   /** Server reports `noop: true` when the desired config matches what's stored. */
   noop?: boolean;
@@ -369,6 +375,43 @@ export class ApplyClient {
       }
     }
     return result;
+  }
+
+  // ── Watchers ──────────────────────────────────────────────────────────────
+
+  async listWatchers(): Promise<RemoteWatcher[]> {
+    const { body } = await this.request<{ watchers?: RemoteWatcher[] }>(
+      "GET",
+      `/api/${this.orgSlug}/watchers`
+    );
+    return body.watchers ?? [];
+  }
+
+  /**
+   * Create an org-scoped (entity-less) watcher. `extraction_schema` is sent as
+   * a JSON object — the `manage_watchers` tool accepts `Type.Any()` there and
+   * normalizes string-or-object internally. Duplicate-slug surfaces as a
+   * structured error the caller swallows for idempotency.
+   */
+  async createWatcher(payload: {
+    slug: string;
+    name?: string;
+    description?: string;
+    prompt: string;
+    extraction_schema: Record<string, unknown>;
+    schedule?: string;
+    sources?: Array<{ name: string; query: string }>;
+  }): Promise<void> {
+    await this.request("POST", `/api/${this.orgSlug}/manage_watchers`, {
+      action: "create",
+      slug: payload.slug,
+      ...(payload.name ? { name: payload.name } : {}),
+      ...(payload.description ? { description: payload.description } : {}),
+      prompt: payload.prompt,
+      extraction_schema: payload.extraction_schema,
+      ...(payload.schedule ? { schedule: payload.schedule } : {}),
+      ...(payload.sources?.length ? { sources: payload.sources } : {}),
+    });
   }
 }
 

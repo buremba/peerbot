@@ -21,11 +21,16 @@ function buildDesiredAgent(
   };
 }
 
-function buildState(agents: DesiredAgent[]): DesiredState {
+function buildState(
+  agents: DesiredAgent[],
+  overrides: Partial<DesiredState> = {}
+): DesiredState {
   return {
     agents,
     memorySchema: { entityTypes: [], relationshipTypes: [] },
+    watchers: [],
     requiredSecrets: [],
+    ...overrides,
   };
 }
 
@@ -36,6 +41,7 @@ function emptyRemote(): RemoteSnapshot {
     platformsByAgent: new Map(),
     entityTypes: [],
     relationshipTypes: [],
+    watchers: [],
   };
 }
 
@@ -266,6 +272,7 @@ describe("apply diff — memory schema", () => {
           },
         ],
       },
+      watchers: [],
       requiredSecrets: [],
     };
     const plan = computeDiff(desired, emptyRemote());
@@ -280,6 +287,7 @@ describe("apply diff — memory schema", () => {
         entityTypes: [{ slug: "company", name: "Company" }],
         relationshipTypes: [],
       },
+      watchers: [],
       requiredSecrets: [],
     };
     const remote: RemoteSnapshot = {
@@ -392,6 +400,48 @@ describe("apply diff — empty container preservation", () => {
     const plan = computeDiff(desired, remote);
     const platformRow = plan.rows.find((r) => r.kind === "platform");
     expect(platformRow?.verb).toBe("update");
+  });
+});
+
+describe("apply diff — watchers", () => {
+  const desiredWatcher = {
+    slug: "weekly-digest",
+    name: "Weekly digest",
+    prompt: "Produce a digest.",
+    extractionSchema: { type: "object" as const },
+    schedule: "0 9 * * 1",
+  };
+
+  test("create when watcher missing remotely", () => {
+    const desired = buildState([], { watchers: [desiredWatcher] });
+    const plan = computeDiff(desired, emptyRemote());
+    const row = plan.rows.find((r) => r.kind === "watcher");
+    expect(row?.verb).toBe("create");
+    expect(row?.id).toBe("weekly-digest");
+  });
+
+  test("noop when watcher already exists remotely", () => {
+    const desired = buildState([], { watchers: [desiredWatcher] });
+    const remote: RemoteSnapshot = {
+      ...emptyRemote(),
+      watchers: [{ slug: "weekly-digest", name: "Weekly digest" }],
+    };
+    const plan = computeDiff(desired, remote);
+    const row = plan.rows.find((r) => r.kind === "watcher");
+    expect(row?.verb).toBe("noop");
+    expect(plan.counts.create).toBe(0);
+  });
+
+  test("drift when remote watcher not declared in models", () => {
+    const desired = buildState([], { watchers: [] });
+    const remote: RemoteSnapshot = {
+      ...emptyRemote(),
+      watchers: [{ slug: "orphan-watcher" }],
+    };
+    const plan = computeDiff(desired, remote);
+    const row = plan.rows.find((r) => r.kind === "watcher");
+    expect(row?.verb).toBe("drift");
+    expect(plan.counts.drift).toBe(1);
   });
 });
 

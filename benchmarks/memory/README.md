@@ -2,7 +2,7 @@
 
 This folder holds the reproducible memory benchmark harness used to compare Lobu against external memory systems (Mem0, Supermemory, Letta, Zep) on public datasets.
 
-The headline result tables are published in the [main README](../../README.md#benchmarks). This document covers **how to reproduce them**, how the harness is structured, and what caveats matter when interpreting the results.
+The headline result tables are published in the [memory benchmarks guide](../../packages/landing/src/content/docs/guides/memory-benchmarks.md). This document covers **how to reproduce them**, how the harness is structured, and what caveats matter when interpreting the results.
 
 ## Layout
 
@@ -23,7 +23,7 @@ benchmarks/memory/
 └── config.*.json          # Per-scenario run configs
 ```
 
-The TypeScript runner lives at `src/benchmarks/memory/`. Each adapter implements `reset` / `setup` / `ingestScenario` / `retrieve` / `dispose`. Python adapters share a long-lived JSONL-over-stdin protocol so the per-op fork+exec cost stays out of the wall clock.
+The TypeScript runner lives at `packages/server/src/benchmarks/memory/runner.ts`, driven by `scripts/lobu/run-memory-benchmark.ts`. Each adapter implements `reset` / `setup` / `ingestScenario` / `retrieve` / `dispose`. Python adapters share a long-lived JSONL-over-stdin protocol so the per-op fork+exec cost stays out of the wall clock.
 
 ## Methodology guardrails
 
@@ -54,7 +54,7 @@ The Lobu adapter chunks each session by turn at ingest, then reconstructs the fu
 
 ### Prerequisites
 
-- Node.js 20+, pnpm 9+, Docker
+- Bun, Node 22.x–24.x
 - `ZAI_API_KEY` (z.ai, used as the answerer model `glm-5.1`)
 - API keys for every external system you want to include:
   - `MEM0_API_KEY`
@@ -64,37 +64,39 @@ The Lobu adapter chunks each session by turn at ingest, then reconstructs the fu
 
 Public compare/full-QA presets in this folder default to **3 trials**. Retrieval-only smoke configs remain single-trial for speed.
 
+All invocations below use the runner script directly; `bun run lobu:bench:memory` (defined in the root `package.json`) is a shortcut for `bun run scripts/lobu/run-memory-benchmark.ts`.
+
 ### LongMemEval oracle-50, all systems
 
 ```bash
 ZAI_API_KEY=... MEM0_API_KEY=... SUPERMEMORY_API_KEY=... LETTA_API_KEY=... \
-  pnpm benchmark:memory --config benchmarks/memory/config.longmemeval.oracle.50.compare.all.zai.json
+  bun run scripts/lobu/run-memory-benchmark.ts --config benchmarks/memory/config.longmemeval.oracle.50.compare.all.zai.json
 ```
 
 ### LoCoMo-50, three-way (Lobu vs Mem0 vs Supermemory)
 
 ```bash
 ZAI_API_KEY=... MEM0_API_KEY=... SUPERMEMORY_API_KEY=... \
-  pnpm benchmark:memory --config benchmarks/memory/config.locomo.50.compare.top-memory.zai.json
+  bun run scripts/lobu/run-memory-benchmark.ts --config benchmarks/memory/config.locomo.50.compare.top-memory.zai.json
 ```
 
 ### Lobu-only, no external API keys needed
 
 ```bash
 # Retrieval-only (no answerer)
-pnpm benchmark:memory --config benchmarks/memory/config.longmemeval.oracle.50.json
+bun run scripts/lobu/run-memory-benchmark.ts --config benchmarks/memory/config.longmemeval.oracle.50.json
 
 # Full QA with z.ai answerer
-ZAI_API_KEY=... pnpm benchmark:memory --config benchmarks/memory/config.longmemeval.oracle.50.zai.json
-ZAI_API_KEY=... pnpm benchmark:memory --config benchmarks/memory/config.locomo.50.zai.json
+ZAI_API_KEY=... bun run scripts/lobu/run-memory-benchmark.ts --config benchmarks/memory/config.longmemeval.oracle.50.zai.json
+ZAI_API_KEY=... bun run scripts/lobu/run-memory-benchmark.ts --config benchmarks/memory/config.locomo.50.zai.json
 ```
 
 ### Smaller LoCoMo slices (faster iteration)
 
 ```bash
-pnpm benchmark:memory --config benchmarks/memory/config.locomo.5.local.json
-pnpm benchmark:memory --config benchmarks/memory/config.locomo.10.compare.top-memory.zai.json
-pnpm benchmark:memory --config benchmarks/memory/config.locomo.30.local.json
+bun run scripts/lobu/run-memory-benchmark.ts --config benchmarks/memory/config.locomo.5.local.json
+bun run scripts/lobu/run-memory-benchmark.ts --config benchmarks/memory/config.locomo.10.compare.top-memory.zai.json
+bun run scripts/lobu/run-memory-benchmark.ts --config benchmarks/memory/config.locomo.30.local.json
 ```
 
 ## Available configs
@@ -183,4 +185,4 @@ A minimal single-query Lobu fast-path is not part of the published runs.
 
 ## Open levers / next steps
 
-The current weakest categories and the most actionable improvements are tracked in [`docs/memory-benchmark-next-steps.md`](../../docs/memory-benchmark-next-steps.md).
+The current weakest categories and the most actionable improvements are tracked alongside the harness in this folder's configs and the [memory benchmarks guide](../../packages/landing/src/content/docs/guides/memory-benchmarks.md).

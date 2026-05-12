@@ -17,7 +17,7 @@ afterEach(() => {
 });
 
 describe('ensureEmbeddedGatewaySecrets', () => {
-  it('throws when REDIS-backed embedded mode has no stable encryption key', () => {
+  it('throws when embedded mode has no stable encryption key', () => {
     delete process.env.ENCRYPTION_KEY;
     delete process.env.LOBU_ALLOW_EPHEMERAL_ENCRYPTION_KEY;
 

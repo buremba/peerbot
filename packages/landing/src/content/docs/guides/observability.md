@@ -17,14 +17,13 @@ Each incoming message creates a root span that propagates through the full reque
 
 1. **message_received** — gateway ingests message from API or platform (Slack, Telegram, etc.)
 2. **queue_processing** — message consumer picks up the job
-3. **worker_creation** — gateway spawns the worker subprocess
-4. **job_received** — worker receives the job
-5. **exec_execution** — sandbox command execution (if applicable)
-6. **agent_execution** — agent runs the prompt
+3. **job_received** — worker receives the job
+4. **exec_execution** — sandbox command execution (if applicable)
+5. **agent_execution** — agent runs the prompt
 
 **Response path (worker → platform):**
 
-8. **response_delivery** — gateway receives worker response and routes to platform renderer
+6. **response_delivery** — gateway receives worker response and routes to platform renderer
 
 Spans are linked via W3C `traceparent` headers propagated through the queue, so a single trace ID connects the full round-trip from message ingestion through agent execution to response delivery. All entry points (API, Slack, Telegram, Discord, etc.) create root spans.
 
@@ -50,7 +49,7 @@ Lobu doesn't bundle observability infrastructure. Run Tempo and Grafana however 
 For a minimal local stack:
 
 ```bash
-docker run -d --name tempo -p 4318:4318 -p 3200:3200 \
+docker run -d --name tempo -p 4317:4317 -p 3200:3200 \
   -v "$PWD/tempo.yaml:/etc/tempo.yaml" -v tempo-data:/var/tempo \
   grafana/tempo:latest -config.file=/etc/tempo.yaml
 
@@ -59,7 +58,7 @@ docker run -d --name grafana -p 3001:3000 \
   -v grafana-data:/var/lib/grafana grafana/grafana:latest
 ```
 
-Minimal `tempo.yaml`:
+Minimal `tempo.yaml` — Lobu's exporter speaks OTLP **gRPC**, so enable the `grpc` receiver (port 4317):
 
 ```yaml
 server:
@@ -69,8 +68,8 @@ distributor:
   receivers:
     otlp:
       protocols:
-        http:
-          endpoint: "0.0.0.0:4318"
+        grpc:
+          endpoint: "0.0.0.0:4317"
 
 storage:
   trace:

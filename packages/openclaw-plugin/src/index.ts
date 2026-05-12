@@ -11,6 +11,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { renderFallbackSystemContext } from './lobu-guidance.js';
+import { registerMemoryWikiCompatTools } from './memory-wiki-compat.js';
 import type {
   McpToolDefinition,
   McpToolResponse,
@@ -28,6 +29,58 @@ type PluginLogger = {
 const AUTH_REQUIRED_MSG =
   'Lobu memory is not connected. Call the lobu_login tool to authenticate, then show the user the login URL and code. After the user completes login in their browser, call lobu_login_check to finish authentication.';
 const DEFAULT_RECALL_LIMIT = 6;
+
+// Lobu MCP server tools exposed via `tools/list` (see packages/server/src/tools/registry.ts).
+// Each is registered with OpenClaw as `lobu_<name>`. OpenClaw 2026.5.x requires every
+// runtime-registered tool to appear in `contracts.tools` in openclaw.plugin.json — keep the
+// `lobu_*` entries there in sync with this set (a unit test enforces it). Server tools not
+// listed here are skipped rather than registered (and rejected) until this plugin is updated
+// to declare them.
+export const KNOWN_MCP_TOOL_NAMES = new Set([
+  'search_memory',
+  'save_memory',
+  'list_organizations',
+  'search_sdk',
+  'query_sdk',
+  'query_sql',
+  'run_sdk',
+]);
+
+// Auth tools the plugin always registers in standalone mode (see register()).
+export const LOGIN_TOOL_NAMES = ['lobu_login', 'lobu_login_check'] as const;
+
+// `before_prompt_build` / `before_agent_start` run inside OpenClaw's hook budget
+// (~15s) — a slow `search_memory` must not blow that. Bound the recall round-trip
+// well under it and degrade to "no recall" rather than letting OpenClaw kill the hook.
+const RECALL_TIMEOUT_MS = 8_000;
+
+/**
+ * Run `work` with a hard wall-clock deadline. On timeout, the supplied
+ * `AbortSignal` is aborted (so an in-flight `fetch` cancels instead of
+ * lingering) and `onTimeout` is returned regardless of what is still pending.
+ * `work` is responsible for swallowing its own rejections; if it rejects after
+ * the deadline, the rejection is observed and ignored.
+ */
+export async function runWithAbortDeadline<T>(
+  work: (signal: AbortSignal) => Promise<T>,
+  timeoutMs: number,
+  onTimeout: T
+): Promise<T> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<T>((resolveDeadline) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      resolveDeadline(onTimeout);
+    }, timeoutMs);
+  });
+  const guarded = work(controller.signal).catch(() => onTimeout);
+  try {
+    return await Promise.race([guarded, deadline]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 // Minimal fallback context used before the workspace instructions are fetched.
 // Initialized lazily per mode (gateway vs standalone) in register().
@@ -69,7 +122,8 @@ const MCP_PROTOCOL_VERSION = '2025-03-26';
 async function mcpFetch(
   url: string,
   body: unknown,
-  extraHeaders?: Record<string, string>
+  extraHeaders?: Record<string, string>,
+  signal?: AbortSignal
 ): Promise<{ data: unknown; response: Response }> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -84,6 +138,7 @@ async function mcpFetch(
     method: 'POST',
     headers,
     body: JSON.stringify(body),
+    signal,
   });
 
   const newSessionId = response.headers.get('mcp-session-id');
@@ -216,6 +271,35 @@ function asPositiveInt(value: unknown, fallback: number): number {
   return n > 0 ? n : fallback;
 }
 
+const DEFAULT_WIKI_FANOUT_TIMEOUT_MS = 30_000;
+const MIN_WIKI_FANOUT_TIMEOUT_MS = 1_000;
+const MAX_WIKI_FANOUT_TIMEOUT_MS = 90_000;
+
+function clampFanoutTimeoutMs(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return DEFAULT_WIKI_FANOUT_TIMEOUT_MS;
+  }
+  if (value < MIN_WIKI_FANOUT_TIMEOUT_MS) return MIN_WIKI_FANOUT_TIMEOUT_MS;
+  if (value > MAX_WIKI_FANOUT_TIMEOUT_MS) return MAX_WIKI_FANOUT_TIMEOUT_MS;
+  return Math.floor(value);
+}
+
+function resolveMemoryWikiCompatConfig(value: unknown): {
+  enabled: boolean;
+  fanoutTimeoutMs: number;
+} {
+  if (typeof value === 'boolean') {
+    return { enabled: value, fanoutTimeoutMs: DEFAULT_WIKI_FANOUT_TIMEOUT_MS };
+  }
+  if (isRecord(value)) {
+    return {
+      enabled: asBoolean(value.enabled, false),
+      fanoutTimeoutMs: clampFanoutTimeoutMs(value.fanoutTimeoutMs),
+    };
+  }
+  return { enabled: false, fanoutTimeoutMs: DEFAULT_WIKI_FANOUT_TIMEOUT_MS };
+}
+
 function getLogger(api: Record<string, unknown>): PluginLogger {
   const logger = api.logger;
   if (
@@ -297,6 +381,7 @@ function resolvePluginConfig(api: Record<string, unknown>, pluginId: string): Re
     autoRecall: asBoolean(cfg.autoRecall, true),
     autoCapture: asBoolean(cfg.autoCapture, true),
     recallLimit: asPositiveInt(cfg.recallLimit, DEFAULT_RECALL_LIMIT),
+    memoryWikiCompat: resolveMemoryWikiCompatConfig(cfg.memoryWikiCompat),
   };
 }
 
@@ -697,13 +782,17 @@ async function reinitializeMcpSession(config: ResolvedPluginConfig): Promise<boo
 async function callMcpTool(
   config: ResolvedPluginConfig,
   toolName: string,
-  args: Record<string, unknown>
+  args: Record<string, unknown>,
+  options?: { rawJson?: boolean; signal?: AbortSignal }
 ): Promise<McpToolResponse | null> {
   if (!config.mcpUrl) return null;
   const token = await resolveAuthToken(config);
 
   const rpcId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const authHeaders: Record<string, string> = { ...config.headers };
+  if (options?.rawJson) {
+    authHeaders['X-MCP-Format'] = 'json';
+  }
   if (token) {
     authHeaders.Authorization = `Bearer ${token}`;
   }
@@ -717,7 +806,7 @@ async function callMcpTool(
 
   let result: { data: unknown; response: Response };
   try {
-    result = await mcpFetch(config.mcpUrl, rpcBody, authHeaders);
+    result = await mcpFetch(config.mcpUrl, rpcBody, authHeaders, options?.signal);
   } catch (err) {
     throw new Error(`MCP fetch failed: ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -730,7 +819,7 @@ async function callMcpTool(
     if (refreshed && sessionToken) {
       authHeaders.Authorization = `Bearer ${sessionToken}`;
       const retryBody = { ...rpcBody, id: `${rpcId}-retry` };
-      const retry = await mcpFetch(config.mcpUrl, retryBody, authHeaders);
+      const retry = await mcpFetch(config.mcpUrl, retryBody, authHeaders, options?.signal);
       data = retry.data;
       response = retry.response;
     }
@@ -752,7 +841,7 @@ async function callMcpTool(
       const newSession = await reinitializeMcpSession(config);
       if (newSession) {
         const retryBody = { ...rpcBody, id: `${rpcId}-reinit` };
-        const retry = await mcpFetch(config.mcpUrl!, retryBody, authHeaders);
+        const retry = await mcpFetch(config.mcpUrl!, retryBody, authHeaders, options?.signal);
         data = retry.data;
         response = retry.response;
       }
@@ -939,7 +1028,14 @@ function registerMcpTools(
     return;
   }
 
+  let registered = 0;
   for (const tool of tools) {
+    if (!KNOWN_MCP_TOOL_NAMES.has(tool.name)) {
+      log.warn(
+        `lobu: MCP server exposes tool "${tool.name}" not declared in contracts.tools; skipping. Update @lobu/openclaw-plugin to register it.`
+      );
+      continue;
+    }
     registerTool({
       name: `lobu_${tool.name}`,
       label: tool.name.replace(/_/g, ' '),
@@ -950,9 +1046,10 @@ function registerMcpTools(
         return { content: result?.content ?? [], details: {} };
       },
     });
+    registered++;
   }
 
-  log.info(`lobu: registered ${tools.length} MCP tools`);
+  log.info(`lobu: registered ${registered} MCP tools`);
 }
 
 const plugin = {
@@ -1355,6 +1452,10 @@ const plugin = {
       registerMcpTools(config, registerTool, log);
     }
 
+    if (registerTool && config.memoryWikiCompat.enabled) {
+      registerMemoryWikiCompatTools(config, registerTool, log, callMcpTool);
+    }
+
     // Inject workspace instructions (dynamic from server) or fallback (static).
     // When autoRecall is enabled, also inject recalled memories.
     {
@@ -1362,19 +1463,20 @@ const plugin = {
         cachedWorkspaceInstructions
           ? `<lobu-system>\n${cachedWorkspaceInstructions}\n</lobu-system>`
           : FALLBACK_SYSTEM_CONTEXT;
-      const doRecall = async (query: string): Promise<string> => {
-        if (!config.autoRecall || !hasAuthConfigured(config)) {
-          return '';
-        }
-
+      const recallOnce = async (query: string, signal: AbortSignal): Promise<string> => {
         try {
-          const result = await callMcpTool(config, 'search_memory', {
-            query,
-            include_content: true,
-            content_limit: config.recallLimit,
-            include_connections: false,
-            limit: 3,
-          });
+          const result = await callMcpTool(
+            config,
+            'search_memory',
+            {
+              query,
+              include_content: true,
+              content_limit: config.recallLimit,
+              include_connections: false,
+              limit: 3,
+            },
+            { signal }
+          );
           if (!result) return '';
 
           const text = extractTextFromContent(result.content);
@@ -1388,12 +1490,30 @@ const plugin = {
             '\n</lobu-memory>'
           );
         } catch (err) {
-          if (err instanceof LobuAuthError) {
+          if (err instanceof LobuAuthError) return '';
+          if (
+            signal.aborted ||
+            (err instanceof Error && (err.name === 'AbortError' || err.name === 'TimeoutError'))
+          ) {
+            log.warn(`lobu recall skipped: search_memory exceeded ${RECALL_TIMEOUT_MS}ms`);
             return '';
           }
           log.error(`lobu recall failed: ${err instanceof Error ? err.message : String(err)}`);
           return '';
         }
+      };
+      // Hard-bound the recall round-trip so it can never blow OpenClaw's hook
+      // budget: abort the in-flight MCP fetch at RECALL_TIMEOUT_MS and degrade
+      // to "no recall" no matter what is still pending (token command, network).
+      const doRecall = async (query: string): Promise<string> => {
+        if (!config.autoRecall || !hasAuthConfigured(config)) {
+          return '';
+        }
+        return runWithAbortDeadline(
+          (signal) => recallOnce(query, signal),
+          RECALL_TIMEOUT_MS,
+          ''
+        );
       };
       const buildPrependContext = (recallBlock: string) => ({
         prependContext: getSystemContext() + (recallBlock ? '\n' + recallBlock : ''),
@@ -1506,6 +1626,46 @@ const plugin = {
     log.info(
       `lobu: initialized (configured=${!!config.mcpUrl}, token=${!!config.token}, tokenCommand=${!!config.tokenCommand}, tools=${!!registerTool})`
     );
+
+    // OpenClaw 2026.5.x only surfaces plugin tools to agents when the host's
+    // tool-policy allowlist explicitly opts them in. With no `tools.*` section
+    // in the OpenClaw config, `registerTool` calls succeed but the agent's
+    // tool list silently excludes every lobu_*, wiki_*, and memory_* tool —
+    // the plugin appears healthy in logs while the agent has no way to call it.
+    // Detect this and shout, with a copy-pasteable fix.
+    if (registerTool && config.mcpUrl) {
+      const cfg = isRecord(api.config) ? (api.config as Record<string, unknown>) : {};
+      const topTools = isRecord(cfg.tools) ? (cfg.tools as Record<string, unknown>) : null;
+      const agentDefaults =
+        isRecord(cfg.agents) && isRecord((cfg.agents as Record<string, unknown>).defaults)
+          ? ((cfg.agents as Record<string, unknown>).defaults as Record<string, unknown>)
+          : null;
+      const agentTools =
+        agentDefaults && isRecord(agentDefaults.tools)
+          ? (agentDefaults.tools as Record<string, unknown>)
+          : null;
+      const hasToolPolicy = (t: Record<string, unknown> | null): boolean =>
+        !!t &&
+        (typeof t.profile === 'string' ||
+          (Array.isArray(t.allow) && (t.allow as unknown[]).length > 0) ||
+          (Array.isArray(t.alsoAllow) && (t.alsoAllow as unknown[]).length > 0));
+      if (!hasToolPolicy(topTools) && !hasToolPolicy(agentTools)) {
+        log.warn(
+          'lobu: no tools.* policy detected in OpenClaw config. Plugin tools ' +
+            '(lobu_*, wiki_*, memory_*) register successfully but may not ' +
+            'reach the agent on OpenClaw 2026.5.x — every plugin on the host ' +
+            'is gated the same way. The autoRecall hook and autoCapture hook ' +
+            'still write to Lobu in the background (they call MCP directly, ' +
+            'not via registered agent tools), so memory continues to flow; ' +
+            'only deliberate agent-driven tool calls during a conversation ' +
+            'are affected. We have tested tools.profile="full", ' +
+            'tools.allow with [group:plugins], [*], and explicit tool names, ' +
+            'and tools.alsoAllow variants — none surface plugin tools on ' +
+            'OpenClaw 2026.5.2. If you find a host config that works, please ' +
+            'file at https://github.com/lobu-ai/lobu/issues.'
+        );
+      }
+    }
   },
 };
 

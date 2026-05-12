@@ -4,12 +4,14 @@ import type {
   RemoteEntityType,
   RemotePlatform,
   RemoteRelationshipType,
+  RemoteWatcher,
 } from "./client.js";
 import type {
   DesiredAgent,
   DesiredEntityType,
   DesiredPlatform,
   DesiredRelationshipType,
+  DesiredWatcher,
 } from "./desired-state.js";
 
 // ── Diff verbs ──────────────────────────────────────────────────────────────
@@ -60,12 +62,21 @@ export interface RelationshipTypeDiffRow extends BaseRow {
   changedFields?: string[];
 }
 
+export interface WatcherDiffRow extends BaseRow {
+  kind: "watcher";
+  desired?: DesiredWatcher;
+  remote?: RemoteWatcher;
+  /** Always absent — watchers are create-or-noop, never updated by apply. */
+  changedFields?: string[];
+}
+
 export type DiffRow =
   | AgentDiffRow
   | SettingsDiffRow
   | PlatformDiffRow
   | EntityTypeDiffRow
-  | RelationshipTypeDiffRow;
+  | RelationshipTypeDiffRow
+  | WatcherDiffRow;
 
 export interface DiffPlan {
   rows: DiffRow[];
@@ -332,6 +343,29 @@ function diffRelationshipType(
   };
 }
 
+/**
+ * Watchers are sync-on-create only: a model file declares a watcher, and the
+ * first apply creates it. Subsequent applies see the slug remotely and noop.
+ * Remote watchers without a desired model are reported as drift, never
+ * deleted — and we deliberately don't diff prompt/schema/schedule changes in
+ * v1, so editing a watcher in the UI won't be clobbered by apply.
+ */
+function diffWatcher(
+  desired: DesiredWatcher,
+  remote: RemoteWatcher | undefined
+): WatcherDiffRow {
+  if (!remote) {
+    return { kind: "watcher", verb: "create", id: desired.slug, desired };
+  }
+  return {
+    kind: "watcher",
+    verb: "noop",
+    id: desired.slug,
+    desired,
+    remote,
+  };
+}
+
 // ── Top-level diff ─────────────────────────────────────────────────────────
 
 export interface RemoteSnapshot {
@@ -342,6 +376,7 @@ export interface RemoteSnapshot {
   platformsByAgent: Map<string, RemotePlatform[]>;
   entityTypes: RemoteEntityType[];
   relationshipTypes: RemoteRelationshipType[];
+  watchers: RemoteWatcher[];
 }
 
 export interface DesiredStateForDiff {
@@ -350,6 +385,7 @@ export interface DesiredStateForDiff {
     entityTypes: DesiredEntityType[];
     relationshipTypes: DesiredRelationshipType[];
   };
+  watchers: DesiredWatcher[];
 }
 
 export interface ComputeDiffOptions {
@@ -470,6 +506,24 @@ export function computeDiff(
           verb: "drift",
           id: remoteRel.slug,
           remote: remoteRel,
+        });
+      }
+    }
+
+    const remoteWatcherBySlug = new Map(
+      remote.watchers.map((w) => [w.slug, w])
+    );
+    const desiredWatcherSlugs = new Set(desired.watchers.map((w) => w.slug));
+    for (const watcher of desired.watchers) {
+      rows.push(diffWatcher(watcher, remoteWatcherBySlug.get(watcher.slug)));
+    }
+    for (const remoteWatcher of remote.watchers) {
+      if (!desiredWatcherSlugs.has(remoteWatcher.slug)) {
+        rows.push({
+          kind: "watcher",
+          verb: "drift",
+          id: remoteWatcher.slug,
+          remote: remoteWatcher,
         });
       }
     }

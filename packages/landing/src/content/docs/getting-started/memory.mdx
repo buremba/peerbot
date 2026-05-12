@@ -8,7 +8,7 @@ import { WatcherTraceCard } from "../../../components/memory/WatcherTraceCard";
 
 Most agent memory systems are flat files scoped to one user. The agent appends notes, then re-scans them every turn to recall context. That works for a personal assistant. It breaks the moment two agents — or a watcher, or another teammate — need to converge on the same fact.
 
-Lobu uses **entity-based memory** through [Lobu](https://app.lobu.ai). Facts attach to typed entities (Company, Project, Member), so any agent in your org reads the same record.
+Lobu's memory layer is **entity-based**: facts attach to typed entities (Company, Project, Member), so any agent in your org reads the same record.
 
 ## Filesystem vs entity memory
 
@@ -93,7 +93,13 @@ If you only need a working directory for one session, the filesystem is enough.
 
 ## Set it up
 
-Lobu memory wiring (TOML config, plugin install, CLI) is covered in the [Getting Started guide](/getting-started/) and the [Lobu Memory CLI reference](/reference/lobu-memory/).
+The fastest path is to install the Lobu skill into your coding agent and let it do the wiring — it knows the TOML config, plugin install, and CLI flow:
+
+```bash
+npx skills add lobu-ai/lobu --skill lobu
+```
+
+For the step-by-step manual setup, see the [Getting Started guide](/getting-started/) and the [Lobu Memory CLI reference](/reference/lobu-memory/).
 
 ## Read next
 

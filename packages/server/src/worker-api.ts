@@ -5,9 +5,11 @@
  * Updated for V1 integration platform: runs-based job model.
  */
 
+import { basename } from 'node:path';
 import type { Context } from 'hono';
 import { createAuth } from './auth';
-import { getDb } from './db/client';
+import { findExistingPersonalOrg } from './auth/personal-org-provisioning';
+import { getDb, pgTextArray } from './db/client';
 import { emit } from './events/emitter';
 import type { Env } from './index';
 import { notifyBrowserAuthExpired } from './notifications/triggers';
@@ -20,6 +22,14 @@ import {
 } from './connectors/repair-agent';
 import { autoLinkEvent } from './utils/auto-linker';
 import { nextRunAt as nextRunAtFromCron } from './utils/cron';
+import {
+  type BundledDeviceConnector,
+  compileConnectorFromFile,
+  findBundledConnectorFile,
+  getBundledDeviceConnectors,
+} from './utils/connector-catalog';
+import { extractConnectorMetadata } from './utils/connector-compiler';
+import { upsertConnectorDefinitionRecords } from './utils/connector-definition-install';
 import { resolveConnectorCode } from './utils/ensure-connector-installed';
 import { applyEntityLinks } from './utils/entity-link-upsert';
 import { errorMessage } from './utils/errors';
@@ -39,6 +49,331 @@ const DUE_FEEDS_LOCK_KEY = 71001;
 const DUE_FEED_MATERIALIZE_COOLDOWN_MS = 5000;
 let lastDueFeedMaterializeAttemptAt = 0;
 
+/** A device worker counts toward "serves capability X" only if seen this recently. */
+const DEVICE_WORKER_FRESH_INTERVAL = '7 days';
+const WORKER_CAPABILITY_NAME_RE = /^[a-z][a-z0-9_.:-]{0,63}$/;
+
+function normalizeAdvertisedCapabilities(capabilities: Record<string, boolean>): string[] {
+  return Array.from(
+    new Set(
+      Object.entries(capabilities)
+        .map(([key, value]) => [key.trim(), value] as const)
+        .filter(
+          ([key, value]) =>
+            value === true && key !== 'browser' && WORKER_CAPABILITY_NAME_RE.test(key)
+        )
+        .map(([key]) => key)
+    )
+  );
+}
+
+/**
+ * Install + wire a bundled device connector into the user's personal org:
+ * connector definition (idempotent), a no-auth connection, the first feed, and
+ * re-activate the feed if a previous "capability went away" pass had paused it.
+ * Called by {@link reconcileDeviceCapabilities} for each device connector whose
+ * `requiredCapability` is currently advertised by the user's fleet — which
+ * connectors those are is read from the catalog, never hardcoded here.
+ *
+ * The per-(user, connector) advisory lock serializes concurrent polls / multiple
+ * devices so they don't race past the existence checks and create duplicates.
+ * Best-effort: failures are logged but never surface to the poll response.
+ */
+async function ensureDeviceConnectorWired(
+  userId: string,
+  organizationId: string,
+  connectorKey: string,
+  declaredFeedKeys: string[]
+): Promise<void> {
+  const sql = getDb();
+  try {
+    // Fast path: definition + version + connection + EVERY declared feed active
+    // → nothing to repair or re-activate. The feed list comes from the bundled
+    // catalog source, not the installed DB row, so adding a new bundled feed
+    // still heals existing installs after deploy.
+    const existingReady = (await sql`
+      SELECT
+        c.id AS connection_id,
+        cv.connector_key AS version_key,
+        COALESCE(
+          array_agg(f.feed_key) FILTER (WHERE f.id IS NOT NULL),
+          ARRAY[]::text[]
+        ) AS active_feed_keys
+      FROM connector_definitions cd
+      LEFT JOIN connector_versions cv
+        ON cv.connector_key = cd.key AND cv.version = cd.version
+      LEFT JOIN connections c
+        ON c.organization_id = cd.organization_id
+       AND c.connector_key = cd.key
+       AND c.created_by = ${userId}
+       AND c.deleted_at IS NULL
+      LEFT JOIN feeds f
+        ON f.connection_id = c.id
+       AND f.status = 'active'
+       AND f.deleted_at IS NULL
+      WHERE cd.organization_id = ${organizationId}
+        AND cd.key = ${connectorKey}
+        AND cd.status = 'active'
+      GROUP BY c.id, cv.connector_key
+      LIMIT 1
+    `) as unknown as Array<{
+      connection_id: number | null;
+      version_key: string | null;
+      active_feed_keys: string[] | null;
+    }>;
+    const activeFeedKeys = new Set(existingReady[0]?.active_feed_keys ?? []);
+    if (
+      existingReady[0]?.connection_id &&
+      existingReady[0]?.version_key &&
+      declaredFeedKeys.length > 0 &&
+      declaredFeedKeys.every((feedKey) => activeFeedKeys.has(feedKey))
+    ) {
+      return;
+    }
+
+    // Compile metadata outside the lock (pure CPU + a child process — slow).
+    const filePath = findBundledConnectorFile(connectorKey);
+    if (!filePath) {
+      logger.warn({ connectorKey }, '[auto-wire] Bundled connector file not found');
+      return;
+    }
+    const compiledCode = await compileConnectorFromFile(filePath);
+    const metadata = await extractConnectorMetadata(compiledCode);
+    if (!metadata.key || !metadata.name || !metadata.version) return;
+    const feedsSchema = metadata.feeds as Record<string, { configSchema?: unknown }> | null;
+    const feedKeys = feedsSchema ? Object.keys(feedsSchema) : [];
+    if (feedKeys.length === 0) return;
+
+    let connectionId: number | undefined;
+    await sql.begin(async (tx) => {
+      // Serialize per (user, connector): two concurrent polls / two devices
+      // both reach here, but only one holds the lock at a time, so the
+      // existence-check-then-insert below is atomic.
+      await tx`SELECT pg_advisory_xact_lock(hashtext('lobu:autowire'), hashtext(${`${userId}:${connectorKey}`}))`;
+
+      // 2. Ensure the connector definition + version are installed (idempotent).
+      await upsertConnectorDefinitionRecords({
+        sql: tx,
+        organizationId,
+        metadata,
+        versionRecord: {
+          compiledCode: null,
+          compiledCodeHash: null,
+          sourceCode: null,
+          sourcePath: basename(filePath),
+        },
+      });
+
+      // 3. Reuse or create the connection (no-auth, active, private).
+      const existingConn = (await tx`
+        SELECT id FROM connections
+        WHERE organization_id = ${organizationId}
+          AND connector_key = ${connectorKey}
+          AND created_by = ${userId}
+          AND deleted_at IS NULL
+        LIMIT 1
+      `) as unknown as Array<{ id: number }>;
+      connectionId = existingConn[0]?.id;
+      if (!connectionId) {
+        const inserted = (await tx`
+          INSERT INTO connections (
+            organization_id, connector_key, display_name, status,
+            auth_profile_id, app_auth_profile_id, config, created_by, visibility
+          ) VALUES (
+            ${organizationId}, ${connectorKey}, ${metadata.name}, 'active',
+            NULL, NULL, NULL, ${userId}, 'private'
+          )
+          RETURNING id
+        `) as unknown as Array<{ id: number }>;
+        connectionId = inserted[0]?.id;
+      }
+      if (!connectionId) return;
+
+      // 4. Ensure every feed the connector declares exists, is active, and is
+      //    due at least once — multi-feed device connectors (e.g. apple.health
+      //    has daily_summaries + workouts) need all of them wired, not just the
+      //    first one. Also re-activates feeds a previous "capability went away"
+      //    pass had paused.
+      for (const feedKey of feedKeys) {
+        const existingFeed = (await tx`
+          SELECT id FROM feeds
+          WHERE connection_id = ${connectionId}
+            AND feed_key = ${feedKey}
+            AND deleted_at IS NULL
+          LIMIT 1
+        `) as unknown as Array<{ id: number }>;
+
+        if (existingFeed[0]?.id) {
+          await tx`
+            UPDATE feeds
+            SET status = 'active',
+                next_run_at = COALESCE(next_run_at, NOW()),
+                updated_at = current_timestamp
+            WHERE id = ${existingFeed[0].id}
+          `;
+        } else {
+          await tx`
+            INSERT INTO feeds (
+              organization_id, connection_id, feed_key, display_name, status, config, next_run_at
+            ) VALUES (
+              ${organizationId}, ${connectionId}, ${feedKey},
+              ${metadata.name}, 'active', NULL, NOW()
+            )
+          `;
+        }
+      }
+    });
+
+    if (connectionId) {
+      logger.info(
+        { userId, connectorKey, organizationId, connectionId },
+        '[device-connectors] Wired device connector'
+      );
+    }
+  } catch (err) {
+    logger.error(
+      { userId, connectorKey, err: errorMessage(err) },
+      '[device-connectors] Failed to wire device connector'
+    );
+  }
+}
+
+/**
+ * Pause the auto-wired feeds of `connectorKey` in the user's personal org —
+ * called when no recently-seen device of the user still advertises the
+ * connector's `requiredCapability`, so a `materializeDueFeeds` pass stops
+ * creating runs nothing can claim. Limited to no-auth, user-owned connections
+ * in the personal org (exactly what {@link ensureDeviceConnectorWired} creates);
+ * that function re-activates them if the capability comes back. Best-effort.
+ */
+async function pauseStaleDeviceFeeds(userId: string, organizationId: string, connectorKey: string) {
+  const sql = getDb();
+  try {
+    await sql`
+      UPDATE feeds f
+      SET status = 'paused', updated_at = current_timestamp
+      FROM connections c
+      WHERE f.connection_id = c.id
+        AND c.organization_id = ${organizationId}
+        AND c.connector_key = ${connectorKey}
+        AND c.created_by = ${userId}
+        AND c.auth_profile_id IS NULL
+        AND c.deleted_at IS NULL
+        AND f.status = 'active'
+        AND f.deleted_at IS NULL
+    `;
+  } catch (err) {
+    logger.warn(
+      { userId, connectorKey, err: errorMessage(err) },
+      '[device-connectors] Failed to pause stale device feeds'
+    );
+  }
+}
+
+/**
+ * Reconcile a user's device connectors against what their device fleet can
+ * actually serve. The set of device connectors comes from the catalog (any
+ * bundled connector with a `runtime` block + a `requiredCapability`); the set of
+ * served capabilities is the union over the user's devices seen within
+ * `DEVICE_WORKER_FRESH_INTERVAL`. For each device connector: if its capability
+ * is served, wire / re-activate it; otherwise pause its auto-wired feeds so
+ * `materializeDueFeeds` stops creating runs nothing can claim.
+ *
+ * Best-effort; runs on every user-scoped poll. Nothing connector-specific is
+ * hardcoded — adding a new device connector is just a new file in the catalog.
+ */
+async function reconcileDeviceCapabilities(userId: string): Promise<void> {
+  const sql = getDb();
+
+  let deviceConnectors: BundledDeviceConnector[];
+  try {
+    deviceConnectors = await getBundledDeviceConnectors();
+  } catch (err) {
+    logger.warn(
+      { userId, err: errorMessage(err) },
+      '[device-connectors] Failed to read device connector catalog'
+    );
+    return;
+  }
+  if (deviceConnectors.length === 0) return;
+
+  let liveCaps = new Set<string>();
+  try {
+    const rows = (await sql`
+      SELECT DISTINCT jsonb_array_elements_text(capabilities) AS cap
+      FROM device_workers
+      WHERE user_id = ${userId}
+        AND last_seen_at > now() - ${DEVICE_WORKER_FRESH_INTERVAL}::interval
+    `) as unknown as Array<{ cap: string }>;
+    liveCaps = new Set(rows.map((r) => r.cap));
+  } catch (err) {
+    logger.warn(
+      { userId, err: errorMessage(err) },
+      '[device-connectors] Failed to read device capabilities'
+    );
+    return;
+  }
+
+  const personalOrg = await findExistingPersonalOrg(userId, sql).catch(() => null);
+  if (!personalOrg) {
+    logger.warn({ userId }, '[device-connectors] No personal org found for user');
+    return;
+  }
+
+  await Promise.allSettled(
+    deviceConnectors.map((dc) =>
+      liveCaps.has(dc.requiredCapability)
+        ? ensureDeviceConnectorWired(userId, personalOrg.id, dc.key, dc.feedKeys)
+        : pauseStaleDeviceFeeds(userId, personalOrg.id, dc.key)
+    )
+  );
+}
+
+/**
+ * Verify that the request's worker auth scope is allowed to touch this run.
+ * Trusted/anonymous workers see everything; user-scoped device workers can only
+ * touch a run that (a) belongs to one of the user's orgs, (b) is currently
+ * `running`, and (c) — when the caller passes its worker id — was claimed by
+ * that same worker. That last check stops one device from streaming/completing
+ * another worker's run; (b) stops it from re-touching a pending/finished run.
+ *
+ * Returns a Hono response on rejection, or null on pass.
+ */
+async function authorizeRunForWorker(
+  c: Context<{ Bindings: Env }>,
+  runId: number,
+  expectedWorkerId?: string
+): Promise<Response | null> {
+  if (c.var.workerAuthMode !== 'user') {
+    return null;
+  }
+  const orgIds = c.var.workerOrgIds ?? [];
+  if (orgIds.length === 0) {
+    return c.json({ error: 'Forbidden' }, 403);
+  }
+  const sql = getDb();
+  const rows = (await sql`
+    SELECT organization_id, status, claimed_by FROM runs WHERE id = ${runId} LIMIT 1
+  `) as unknown as Array<{ organization_id: string; status: string; claimed_by: string | null }>;
+  if (rows.length === 0) {
+    return c.json({ error: 'Run not found' }, 404);
+  }
+  const run = rows[0];
+  if (!orgIds.includes(run.organization_id)) {
+    return c.json({ error: 'Forbidden' }, 403);
+  }
+  if (run.status !== 'running') {
+    return c.json({ error: 'Run is not in progress' }, 409);
+  }
+  if (!expectedWorkerId?.trim()) {
+    return c.json({ error: 'worker_id is required' }, 400);
+  }
+  if (run.claimed_by !== expectedWorkerId) {
+    return c.json({ error: 'Forbidden' }, 403);
+  }
+  return null;
+}
+
 /**
  * POST /api/workers/poll
  *
@@ -47,16 +382,97 @@ let lastDueFeedMaterializeAttemptAt = 0;
  */
 export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   let worker_id: string;
-  let capabilities: { browser?: boolean } = {};
+  let capabilities: Record<string, boolean> = {};
+  let platform: string | null = null;
+  let app_version: string | null = null;
+  let label: string | null = null;
   try {
-    const body = await c.req.json<{ worker_id: string; capabilities?: { browser?: boolean } }>();
+    const body = await c.req.json<{
+      worker_id: string;
+      capabilities?: Record<string, boolean>;
+      platform?: string;
+      app_version?: string;
+      label?: string;
+    }>();
     worker_id = body.worker_id;
     capabilities = body.capabilities ?? {};
+    platform = body.platform ?? null;
+    app_version = body.app_version ?? null;
+    label = body.label ?? null;
   } catch {
     return c.json({ error: 'Invalid or missing JSON body' }, 400);
   }
   const sql = getDb();
   const hasBrowser = capabilities.browser ?? false;
+  // Capability set the worker advertised (excluding browser, which has its
+  // own legacy gate via connector_definitions.api_type). Used to filter on
+  // connector_definitions.required_capability.
+  const advertisedCapabilities = normalizeAdvertisedCapabilities(capabilities);
+  // Trusted fleet workers (WORKER_API_TOKEN) run the no-capability cloud
+  // connectors too, so '' (a NULL required_capability becomes '' via COALESCE
+  // below) belongs in their match set. User-scoped workers — the Lobu Mac
+  // Bridge, anything in `workerAuthMode === 'user'` — are *device* workers:
+  // they may ONLY claim runs whose connector declares a `required_capability`
+  // they advertise, never the cloud connectors. So '' is excluded for them,
+  // which means a bridge with no granted capabilities claims *nothing* instead
+  // of hijacking-and-failing arbitrary cloud-connector runs (e.g. hackernews).
+  const isUserScopedWorker = c.var.workerAuthMode === 'user';
+  const capabilityMatchSet = isUserScopedWorker
+    ? advertisedCapabilities
+    : [''].concat(advertisedCapabilities);
+
+  // Device-worker registry: upsert device_workers row for user-scoped workers
+  // so /api/me/devices can enumerate them. Also ensure advertised capability
+  // connectors are fully wired. Best-effort — never fail the poll.
+  const workerUserId = c.var.workerUserId;
+  if (workerUserId) {
+    try {
+      const incomingCaps = advertisedCapabilities;
+
+      await sql`
+        INSERT INTO device_workers (user_id, worker_id, platform, app_version, capabilities, label)
+        VALUES (
+          ${workerUserId}, ${worker_id}, ${platform}, ${app_version},
+          ${sql.json(incomingCaps)}, ${label}
+        )
+        ON CONFLICT (user_id, worker_id) DO UPDATE SET
+          platform = EXCLUDED.platform,
+          app_version = EXCLUDED.app_version,
+          capabilities = EXCLUDED.capabilities,
+          label = COALESCE(EXCLUDED.label, device_workers.label),
+          last_seen_at = now()
+      `;
+
+      // Reconcile this user's device connectors against the capabilities their
+      // whole fleet currently advertises: auto-wire / re-activate the ones that
+      // are present (cheap fast path, also heals partially-wired state), pause
+      // the ones that have gone away. The just-upserted row above is already
+      // visible to this query, so the polling device's capabilities count.
+      await reconcileDeviceCapabilities(workerUserId);
+    } catch (err) {
+      logger.error(
+        { worker_id, err: errorMessage(err) },
+        '[pollWorkerJob] device_workers upsert failed (non-fatal)'
+      );
+    }
+  }
+
+  // User-scoped workers (e.g. Lobu for Mac) can only claim runs in the
+  // org their token is bound to, plus the user's personal org (where device
+  // connectors auto-wire) — the set is computed in the /api/workers/* auth
+  // middleware. Trusted workers (matched WORKER_API_TOKEN) and anonymous
+  // local-dev requests see all pending runs — preserving the existing
+  // server-side worker fleet behavior.
+  const workerAuthMode = c.var.workerAuthMode;
+  const workerOrgIds = c.var.workerOrgIds;
+  if (workerAuthMode === 'user' && (!workerOrgIds || workerOrgIds.length === 0)) {
+    // No org in scope — nothing this worker can ever claim.
+    return c.json({ next_poll_seconds: 30 });
+  }
+  const orgScopeActive = workerAuthMode === 'user';
+  // Always pass a non-empty array to ANY() to keep the SQL valid; the gate
+  // below only activates when orgScopeActive is true.
+  const orgScopeIds = orgScopeActive && workerOrgIds ? workerOrgIds : [''];
 
   const claimNextPendingRun = async () =>
     sql.begin(async (tx) => {
@@ -64,6 +480,15 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
       WITH next_run AS (
         SELECT r.id
         FROM runs r
+        LEFT JOIN LATERAL (
+          SELECT cd.api_type, cd.required_capability
+          FROM connector_definitions cd
+          WHERE cd.key = r.connector_key
+            AND cd.organization_id = r.organization_id
+            AND cd.status = 'active'
+          ORDER BY cd.updated_at DESC, cd.id DESC
+          LIMIT 1
+        ) cd ON true
         WHERE r.status = 'pending'
           -- Connector worker only ever claims its own lanes. The lobu-queue
           -- run types (chat_message, schedule, agent_run, internal) are
@@ -71,11 +496,14 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
           -- allow-list keeps the lanes separated.
           AND r.run_type IN ('sync', 'action', 'embed_backfill', 'auth')
           AND (r.approval_status = 'auto' OR r.approval_status = 'approved')
-          AND (${hasBrowser} OR COALESCE((SELECT cd.api_type FROM connector_definitions cd WHERE cd.key = r.connector_key LIMIT 1), 'api') = 'api')
+          AND (${hasBrowser} OR COALESCE(cd.api_type, 'api') = 'api')
+          AND COALESCE(cd.required_capability, '') = ANY(${pgTextArray(capabilityMatchSet)}::text[])
+          AND (${!isUserScopedWorker} OR cd.required_capability IS NOT NULL)
+          AND (${!orgScopeActive} OR r.organization_id = ANY(${pgTextArray(orgScopeIds)}::text[]))
         ORDER BY
           CASE WHEN r.run_type = 'auth' THEN 0 ELSE 1 END,
           r.created_at ASC
-        FOR UPDATE SKIP LOCKED
+        FOR UPDATE OF r SKIP LOCKED
         LIMIT 1
       )
       UPDATE runs r
@@ -204,21 +632,28 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     }
   }
 
-  const { credentials, connectionCredentials, sessionState } = row.connection_id
-    ? await resolveExecutionAuth({
-        organizationId: row.organization_id,
-        connectionId: row.connection_id,
-        authProfileId: row.auth_profile_id,
-        appAuthProfileId: row.app_auth_profile_id,
-        credentialDb: sql,
-        logContext: { run_id: row.run_id },
-        logMessage: 'Failed to resolve connection credentials for worker poll',
-      })
-    : {
-        credentials: null,
-        connectionCredentials: {},
-        sessionState: null,
-      };
+  // User-scoped device workers (Lobu for Mac etc.) only ever run no-auth bundled
+  // connectors gated by `required_capability`. Never hand a user OAuth/PAT
+  // client real connection credentials or auth-profile state — strip them
+  // unconditionally, so a connector that's misconfigured with both a
+  // `required_capability` and an auth profile can't leak secrets to a device.
+  // (`isUserScopedWorker` is computed above for the capability-match set.)
+  const { credentials, connectionCredentials, sessionState } =
+    !isUserScopedWorker && row.connection_id
+      ? await resolveExecutionAuth({
+          organizationId: row.organization_id,
+          connectionId: row.connection_id,
+          authProfileId: row.auth_profile_id,
+          appAuthProfileId: row.app_auth_profile_id,
+          credentialDb: sql,
+          logContext: { run_id: row.run_id },
+          logMessage: 'Failed to resolve connection credentials for worker poll',
+        })
+      : {
+          credentials: null,
+          connectionCredentials: {},
+          sessionState: null,
+        };
 
   return c.json({
     run_id: row.run_id,
@@ -238,8 +673,8 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     session_state: sessionState ?? undefined,
     action_key: row.action_key ?? undefined,
     action_input: (row as any).approved_input ?? row.action_input ?? undefined,
-    auth_profile_id: row.run_auth_profile_id ?? undefined,
-    previous_credentials: row.auth_profile_auth_data ?? undefined,
+    auth_profile_id: isUserScopedWorker ? undefined : (row.run_auth_profile_id ?? undefined),
+    previous_credentials: isUserScopedWorker ? undefined : (row.auth_profile_auth_data ?? undefined),
   });
 }
 
@@ -250,11 +685,14 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
  */
 export async function heartbeat(c: Context<{ Bindings: Env }>) {
   try {
-    const { run_id, progress } = await c.req.json<{
+    const { run_id, worker_id, progress } = await c.req.json<{
       run_id: number;
       worker_id: string;
       progress?: { items_collected_so_far?: number };
     }>();
+
+    const denied = await authorizeRunForWorker(c, run_id, worker_id);
+    if (denied) return denied;
 
     const sql = getDb();
 
@@ -281,6 +719,7 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
     const batch = await c.req.json<{
       type: 'batch';
       run_id: number;
+      worker_id?: string;
       items: Array<{
         id: string;
         title?: string;
@@ -301,6 +740,9 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
       }>;
       checkpoint?: Record<string, unknown>;
     }>();
+
+    const denied = await authorizeRunForWorker(c, batch.run_id, batch.worker_id);
+    if (denied) return denied;
 
     const sql = getDb();
 
@@ -481,6 +923,9 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
       exit_signal?: string | null;
       exit_reason?: 'ok' | 'error_message' | 'timeout' | 'oom' | 'crash';
     }>();
+
+    const denied = await authorizeRunForWorker(c, req.run_id, req.worker_id);
+    if (denied) return denied;
 
     const sql = getDb();
 
@@ -1210,6 +1655,57 @@ export async function completeActionRun(c: Context<{ Bindings: Env }>) {
     return c.json({ success: true });
   } catch (err: unknown) {
     logger.error({ error: errorMessage(err) }, '[completeActionRun] Error');
+    return c.json({ error: errorMessage(err) }, 500);
+  }
+}
+
+/**
+ * GET /api/me/devices
+ *
+ * Returns the calling user's registered device workers.
+ * Requires session / PAT / OAuth authentication (mcpAuth).
+ */
+export async function listDeviceWorkers(c: Context<{ Bindings: Env }>) {
+  const userId = c.var.user?.id;
+  if (!userId) {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
+  try {
+    const sql = getDb();
+    const rows = (await sql`
+      SELECT
+        worker_id,
+        platform,
+        app_version,
+        capabilities,
+        label,
+        last_seen_at,
+        (last_seen_at > now() - interval '20 minutes') AS online
+      FROM device_workers
+      WHERE user_id = ${userId}
+      ORDER BY last_seen_at DESC
+    `) as unknown as Array<{
+      worker_id: string;
+      platform: string | null;
+      app_version: string | null;
+      capabilities: string[];
+      label: string | null;
+      last_seen_at: string;
+      online: boolean;
+    }>;
+    return c.json({
+      devices: rows.map((r) => ({
+        worker_id: r.worker_id,
+        platform: r.platform,
+        app_version: r.app_version,
+        capabilities: Array.isArray(r.capabilities) ? r.capabilities : [],
+        label: r.label,
+        last_seen_at: r.last_seen_at,
+        online: r.online,
+      })),
+    });
+  } catch (err: unknown) {
+    logger.error({ error: errorMessage(err) }, '[listDeviceWorkers] Error');
     return c.json({ error: errorMessage(err) }, 500);
   }
 }

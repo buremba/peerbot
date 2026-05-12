@@ -21,10 +21,10 @@ Workers call `tools/list` and `tools/call` — credential handling is invisible.
 
 MCP servers come from two sources, merged per agent:
 
-1. **Agent settings + local skills** — MCP servers come from per-agent settings and local `SKILL.md` files.
-2. **Per-agent settings** — MCPs added through the settings page or agent-driven install.
+1. **Per-agent settings + local skills** — MCPs added through the settings page or an agent-driven install, plus any declared in local `SKILL.md` files.
+2. **Global MCPs** — servers registered with the gateway at boot time, available to every agent.
 
-Global MCPs take precedence when IDs collide.
+When an ID collides, the **per-agent definition overrides the global one** — global MCPs are the fallback.
 
 ## Authentication methods
 
@@ -36,21 +36,22 @@ There are three ways an MCP server can authenticate:
 | **Device-code OAuth** | `oauth` on the MCP server | Per-user OAuth — each user authenticates in their browser |
 | **Lobu-managed** | N/A (Lobu handles internally) | Third-party APIs (GitHub, Google, Linear, etc.) |
 
+Each MCP server is configured under `[agents.<id>.skills.mcp.<name>]` in [`lobu.toml`](/reference/lobu-toml/), under `mcpServers.<name>` in a skill's [`SKILL.md`](/reference/skill-md/) frontmatter, or in the agent's settings. The JSON snippets below show the fields a single server config accepts:
+
+### No auth
+
+```json
+{ "id": "my-mcp", "name": "My MCP", "url": "https://mcp.example.com", "type": "sse" }
+```
+
 ### Static headers
 
 For MCP servers that use a shared API key or service token. The header value supports `${env:VAR_NAME}` substitution so secrets stay in environment variables.
 
 ```json
 {
-  "id": "my-mcp",
-  "mcpServers": [{
-    "id": "my-mcp",
-    "url": "https://mcp.example.com",
-    "type": "sse",
-    "headers": {
-      "Authorization": "Bearer ${env:MY_MCP_TOKEN}"
-    }
-  }]
+  "id": "my-mcp", "name": "My MCP", "url": "https://mcp.example.com", "type": "sse",
+  "headers": { "Authorization": "Bearer ${env:MY_MCP_TOKEN}" }
 }
 ```
 
@@ -59,65 +60,6 @@ No user interaction needed. The gateway injects the header on every request.
 ### Device-code OAuth (per-user auth)
 
 For MCP servers that implement the [OAuth 2.0 Device Authorization Grant](https://datatracker.ietf.org/doc/html/rfc8628). Each user authenticates individually by clicking a link and logging in via their browser.
-
-#### How it works
-
-```
-User (chat)          Worker              Gateway              MCP Server (OAuth)
-    |                   |                   |                       |
-    |  "use tool X"     |                   |                       |
-    |------------------>|                   |                       |
-    |                   |  tools/call X     |                       |
-    |                   |------------------>|                       |
-    |                   |                   |  tools/call X         |
-    |                   |                   |---------------------->|
-    |                   |                   |  401 Unauthorized     |
-    |                   |                   |<---------------------|
-    |                   |                   |                       |
-    |                   |                   |  POST /oauth/register |
-    |                   |                   |---------------------->|
-    |                   |                   |  { client_id }        |
-    |                   |                   |<---------------------|
-    |                   |                   |                       |
-    |                   |                   |  POST /oauth/device_authorization
-    |                   |                   |---------------------->|
-    |                   |                   |  { device_code,       |
-    |                   |                   |    user_code,         |
-    |                   |                   |    verification_uri } |
-    |                   |                   |<---------------------|
-    |                   |                   |                       |
-    |                   |  login_required   |                       |
-    |                   |  + link + code    |                       |
-    |                   |<------------------|                       |
-    |  "Click this link |                   |                       |
-    |   and enter code  |                   |                       |
-    |   ABCD-1234"      |                   |                       |
-    |<------------------|                   |                       |
-    |                   |                   |                       |
-    |  (user clicks link, logs in via browser)                     |
-    |                   |                   |                       |
-    |  "done, try again"|                   |                       |
-    |------------------>|                   |                       |
-    |                   |  tools/call X     |                       |
-    |                   |------------------>|                       |
-    |                   |                   |  poll device_code     |
-    |                   |                   |---------------------->|
-    |                   |                   |  { access_token,      |
-    |                   |                   |    refresh_token }    |
-    |                   |                   |<---------------------|
-    |                   |                   |                       |
-    |                   |                   |  (store credential)   |
-    |                   |                   |                       |
-    |                   |                   |  tools/call X + token |
-    |                   |                   |---------------------->|
-    |                   |                   |  { result }           |
-    |                   |                   |<---------------------|
-    |                   |  { result }       |                       |
-    |                   |<------------------|                       |
-    |  "Here's the      |                   |                       |
-    |   result..."      |                   |                       |
-    |<------------------|                   |                       |
-```
 
 #### Step by step
 
@@ -148,7 +90,16 @@ User (chat)          Worker              Gateway              MCP Server (OAuth)
 
 #### Configuration
 
-By default, the gateway auto-derives OAuth endpoints from the MCP server's URL origin:
+By default, the gateway auto-derives OAuth endpoints from the MCP server's URL origin — so the minimal config is just an empty `oauth` object:
+
+```json
+{
+  "id": "my-mcp", "name": "My MCP", "url": "https://mcp.example.com", "type": "sse",
+  "oauth": {}
+}
+```
+
+The auto-derived endpoints are:
 
 - Registration: `{origin}/oauth/register`
 - Device authorization: `{origin}/oauth/device_authorization`
@@ -208,54 +159,3 @@ MCP sessions (via `Mcp-Session-Id` header) are tracked in Postgres (`mcp_proxy_s
 ## Tool approval
 
 MCP tools can declare [annotations](https://modelcontextprotocol.io/docs/concepts/tool-annotations) indicating whether they are destructive or have side effects. The gateway checks these annotations and may require explicit user approval before executing a tool call. Grants are stored per agent and checked on each call.
-
-## Configuration reference
-
-### Adding an MCP via local skills or agent settings
-
-Skills-registry entries wrap one or more MCP server definitions:
-
-```json
-{
-  "id": "my-mcp",
-  "name": "My MCP Server",
-  "description": "What this MCP does",
-  "mcpServers": [ /* one of the server configs below */ ]
-}
-```
-
-The inner `mcpServers[]` entry varies by auth mode:
-
-**No auth**
-```json
-{ "id": "my-mcp", "name": "My MCP", "url": "https://mcp.example.com", "type": "sse" }
-```
-
-**Static auth headers** (`${env:VAR}` substitution)
-```json
-{
-  "id": "my-mcp", "name": "My MCP", "url": "https://mcp.example.com", "type": "sse",
-  "headers": { "Authorization": "Bearer ${env:MY_MCP_TOKEN}" }
-}
-```
-
-**Per-user OAuth, auto-derived endpoints**
-```json
-{
-  "id": "my-mcp", "name": "My MCP", "url": "https://mcp.example.com", "type": "sse",
-  "oauth": {}
-}
-```
-
-**Per-user OAuth, pre-registered client or custom endpoints**
-```json
-{
-  "id": "my-mcp", "name": "My MCP", "url": "https://mcp.example.com", "type": "sse",
-  "oauth": {
-    "clientId": "my-pre-registered-client",
-    "tokenUrl": "https://auth.example.com/oauth/token",
-    "deviceAuthorizationUrl": "https://auth.example.com/oauth/device_authorization",
-    "scopes": ["read", "write"]
-  }
-}
-```

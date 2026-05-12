@@ -28,6 +28,7 @@ export type {
   ConnectorAuthOAuth,
   ConnectorAuthSchema,
   ConnectorDefinition,
+  ConnectorRuntimeInfo,
   ContentItem,
   EntityIdentitySpec,
   EntityLinkOverride,

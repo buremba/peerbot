@@ -41,10 +41,6 @@ export default defineConfig({
   site: "https://lobu.ai",
   redirects: {
     "/pricing": "/serverless-openclaw",
-    "/for/careops": "/for/support",
-    "/connect-from/chatgpt/for/careops": "/connect-from/chatgpt/for/support",
-    "/connect-from/claude/for/careops": "/connect-from/claude/for/support",
-    "/connect-from/openclaw/for/careops": "/connect-from/openclaw/for/support",
   },
   integrations: [
     starlight({

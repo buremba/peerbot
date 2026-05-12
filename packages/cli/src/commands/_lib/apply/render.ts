@@ -14,6 +14,7 @@ const KIND_LABEL: Record<DiffRow["kind"], string> = {
   platform: "platform",
   "entity-type": "entity-type",
   "relationship-type": "relationship-type",
+  watcher: "watcher",
 };
 
 function fieldsList(fields: string[] | undefined): string {
@@ -64,6 +65,7 @@ export function renderPlan(plan: DiffPlan): string {
     "platform",
     "entity-type",
     "relationship-type",
+    "watcher",
   ];
   for (const kind of order) {
     const rowsForKind = plan.rows.filter((row) => row.kind === kind);

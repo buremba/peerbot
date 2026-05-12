@@ -252,7 +252,10 @@ export class TestApiClient {
       (this.ctx.userId !== null ? ('oauth' as TokenType) : ('anonymous' as TokenType));
     const scopedToOrg = overrides.scopedToOrg ?? this.ctx.scopedToOrg ?? true;
     const ctx: ToolContext = {
-      organizationId: overrides.organizationId ?? this.ctx.organizationId,
+      organizationId:
+        overrides.organizationId !== undefined
+          ? overrides.organizationId
+          : this.ctx.organizationId,
       userId: overrides.userId !== undefined ? overrides.userId : this.ctx.userId,
       memberRole:
         overrides.memberRole !== undefined

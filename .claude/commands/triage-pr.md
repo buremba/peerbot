@@ -4,16 +4,9 @@ description: Triage a PR — classify, optionally fix, optionally enable auto-me
 
 # /triage-pr
 
-Argument: PR number (or URL). Defaults to the current PR when invoked from CI via `$PR_NUMBER` env.
+Argument: PR number (or URL).
 
-## Triggers (CI)
-
-The `pr-triage.yml` workflow re-runs this command on:
-
-- `pull_request` (opened / synchronize / ready_for_review / reopened / labeled).
-- `pull_request_review` (submitted) — when a trusted reviewer (OWNER/MEMBER/COLLABORATOR) or an approval bot (`codex-approver[bot]`, `chatgpt-codex-connector[bot]`) submits.
-- `issue_comment` (created) — only when the comment is from a trusted actor AND its first line is exactly `/triage` (or `/triage <args>`). This is the manual nudge: post `/triage` on a PR to force re-classification.
-- `workflow_dispatch` with a `pr_number` input.
+> **Manual-only:** the `pr-triage.yml` workflow that previously ran this command on PR events was removed; this slash command is now invoked by hand from a Claude Code session. The references below to `pull_request_review`, `/triage` comments, and `workflow_dispatch` describe how triage used to be triggered and are kept as design notes — re-introduce them if/when CI auto-triage is restored.
 
 Exactly one of three terminal classifications: `auto-mergeable`, `needs-fixes`, `needs-human`. Each maps to a specific set of actions. The agent must finish each run by writing a `<!-- triage:summary -->` marker comment with the head SHA and decision so re-runs are idempotent.
 

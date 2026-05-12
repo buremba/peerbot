@@ -36,12 +36,19 @@ lobu run
 
 ### `lobu memory init`
 
-Configures local MCP-capable clients to use a Lobu memory MCP endpoint.
+Wires an existing project's agents to a memory MCP endpoint and configures local MCP-capable clients.
 
 ```bash
 lobu memory init
 lobu memory init --url http://localhost:8787/mcp
+lobu memory init --agent support-bot --skip-auth
 ```
+
+| Flag | Description |
+|------|-------------|
+| `--url <url>` | MCP server URL (skips the picker) |
+| `--agent <id>` | Configure a specific agent only |
+| `--skip-auth` | Skip the authentication step |
 
 The wizard detects supported clients and auto-configures them when possible. Browser-managed clients fall back to manual setup instructions.
 
@@ -112,6 +119,17 @@ lobu memory run query_sdk '{"script":"export default async (ctx, client) => clie
 lobu memory run run_sdk '{"dry_run":true,"script":"export default async (ctx, client) => client.entities.create({ type: \"company\", name: \"Acme\" })"}' --org my-org
 ```
 
+### `lobu memory exec <script>`
+
+Sugar for `lobu memory run run_sdk '{"script": ...}'` — runs the given TypeScript ClientSDK script source via the memory MCP without hand-quoting the JSON wrapper. `<script>` is the script text itself, so pipe a file in with `$(cat ...)`.
+
+```bash
+lobu memory exec 'export default async (ctx, client) => client.entities.list({ entity_type: "company", limit: 5 })' --org my-org
+lobu memory exec "$(cat script.ts)" --url https://lobu.ai/mcp --org my-org
+```
+
+Accepts the same `--url`, `--org`, and `-c/--context` flags as `lobu memory run`.
+
 ## Seed Project Memory
 
 ### `lobu memory seed`
@@ -128,25 +146,31 @@ lobu memory seed --org my-org --url https://lobu.ai/mcp
 
 ### `lobu memory browser-auth`
 
-Captures browser cookie state for connectors that rely on a real browser session.
+Captures cookie state from your local Chrome for connectors that rely on a real browser session. `--connector` is required.
 
 ```bash
 lobu memory browser-auth --connector x --auth-profile-slug my-profile
 lobu memory browser-auth --connector x --auth-profile-slug my-profile --check
+lobu memory browser-auth --connector x --launch-cdp --remote-debug-port 9222
 ```
 
-Useful flags:
-
-- `--chrome-profile <name>` chooses a local Chrome profile
-- `--launch-cdp` launches a dedicated remote-debugging Chrome profile
-- `--dedicated-profile <name>` names the dedicated profile
+| Flag | Description |
+|------|-------------|
+| `--connector <key>` | **Required.** Connector key (e.g. `x`) |
+| `--domains <list>` | Comma-separated cookie-domain override |
+| `--chrome-profile <name>` | Chrome profile name (prompts interactively if omitted) |
+| `--auth-profile-slug <slug>` | Browser auth profile slug to store cookies on |
+| `--launch-cdp` | Launch a dedicated Chrome user-data-dir with remote debugging enabled |
+| `--remote-debug-port <port>` | Remote debugging port for `--launch-cdp` (default `9222`) |
+| `--dedicated-profile <name>` | Dedicated Chrome profile dir name for `--launch-cdp` |
+| `--check` | Check whether stored cookies for a browser auth profile are still valid |
 
 ## Skills
 
-The old standalone Lobu starter skills are folded into the bundled Lobu starter skill:
+The old standalone Lobu starter skills are folded into a single bundled `lobu` skill. Enable it from the agent settings UI, or add it to a project:
 
 ```bash
-# Enable the Lobu skill from the agent settings UI
+npx skills add lobu-ai/lobu --skill lobu
 ```
 
 Local skills are still discovered from `skills/<id>/SKILL.md` and `agents/<agent-id>/skills/<id>/SKILL.md`.

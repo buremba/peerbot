@@ -177,9 +177,9 @@ describe("device auth secret storage", () => {
 
     expect(started?.userCode).toBe("user-code-123");
 
-    // Pending device-auth state is now stored directly under the secret name
-    // (no Redis pointer). The blob still encrypts via PostgresSecretStore in
-    // production; the in-memory test store keeps the JSON plaintext.
+    // Pending device-auth state is stored directly under the secret name. The
+    // blob encrypts via PostgresSecretStore in production; the in-memory test
+    // store keeps the JSON plaintext.
     const pendingEntries = await secretStore.list(
       "mcp-auth/agent-1/user-1/github/device-auth"
     );

@@ -1,5 +1,0 @@
-version: 1
-type: relationship
-slug: created-task
-name: Created Task
-description: Turn requests and promises into follow-ups with clear ownership.

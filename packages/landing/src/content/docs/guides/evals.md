@@ -15,7 +15,7 @@ npx @lobu/cli@latest eval
 npx @lobu/cli@latest eval ping
 
 # Run with a different model
-npx @lobu/cli@latest eval --model anthropic/claude-sonnet-4
+npx @lobu/cli@latest eval --model claude/sonnet-4-5
 
 # CI mode (JSON output, exit 1 on failure)
 npx @lobu/cli@latest eval --ci --output results.json
@@ -190,7 +190,7 @@ When a rubric is present, its score is weighted 50% alongside assertion scores (
 |------|-------------|
 | `-a, --agent <id>` | Agent ID (defaults to first in `lobu.toml`) |
 | `-g, --gateway <url>` | Gateway URL (default: from `.env` or `http://localhost:8787`) |
-| `-m, --model <model>` | Model to evaluate (e.g., `anthropic/claude-sonnet-4`) |
+| `-m, --model <model>` | Model to evaluate (e.g., `claude/sonnet-4-5`) |
 | `--trials <n>` | Override trial count for all evals |
 | `--ci` | CI mode: JSON output, exit code 1 on any failure |
 | `--output <file>` | Write results to a JSON file |

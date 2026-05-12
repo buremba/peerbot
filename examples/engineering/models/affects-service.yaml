@@ -1,5 +1,0 @@
-version: 1
-type: relationship
-slug: affects-service
-name: Affects Service
-description: Attach incidents to the systems they degrade so impact stays visible.

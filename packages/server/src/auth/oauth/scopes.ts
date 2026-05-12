@@ -6,7 +6,13 @@
  */
 
 /** All available scopes */
-export const AVAILABLE_SCOPES = ['mcp:read', 'mcp:write', 'mcp:admin', 'profile:read'] as const;
+export const AVAILABLE_SCOPES = [
+  'mcp:read',
+  'mcp:write',
+  'mcp:admin',
+  'profile:read',
+  'device_worker:run',
+] as const;
 
 /** Default scopes for MCP access */
 export const DEFAULT_SCOPES = ['mcp:read', 'mcp:write'] as const;

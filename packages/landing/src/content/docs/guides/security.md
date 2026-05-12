@@ -59,8 +59,6 @@ Behavior:
 - **Audit**: every decision emits a structured `egress-decision` log with verdict, source (`global | grant | judge`), latency, and policy hash. No request bodies/headers are logged.
 - **Required**: `ANTHROPIC_API_KEY` in the gateway env. Gateways with no judged-domain rules never construct the judge client.
 
-A working end-to-end example lives at [`examples/engineering/agents/engineering/skills/egress-guardrail/SKILL.md`](https://github.com/lobu-ai/lobu/blob/main/examples/engineering/agents/engineering/skills/egress-guardrail/SKILL.md).
-
 ## Credentials
 
 Workers never receive raw provider credentials or OAuth tokens. The gateway resolves credentials, injects them only at proxy time, and keeps workers on opaque placeholders or agent-scoped proxy URLs.

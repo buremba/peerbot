@@ -39,8 +39,20 @@ export type ScopedConnectorDefinitionRow = {
   default_repair_agent_id?: string | null;
   status: string;
   login_enabled?: boolean | null;
+  required_capability?: string | null;
+  /**
+   * `runtime` is stored as raw jsonb (the catalog extractor doesn't narrow it),
+   * so the row type stays untyped here. Consumers that want the structured
+   * shape — `ConnectorRuntimeInfo` — narrow at the use site.
+   */
+  runtime?: Record<string, unknown> | null;
   created_at?: string;
   updated_at?: string;
+};
+
+export type ConnectorRuntimeInfo = {
+  platforms: Array<'ios' | 'android' | 'macos' | 'windows' | 'linux'>;
+  scopes?: string[];
 };
 
 function getOAuthMethods(authSchema: AuthSchema | string): OAuthAuthMethod[] {
@@ -89,6 +101,8 @@ export async function listScopedConnectorDefinitions(params: {
       d.default_repair_agent_id,
       d.status,
       d.login_enabled,
+      d.required_capability,
+      d.runtime,
       d.created_at,
       d.updated_at,
       cv.source_path

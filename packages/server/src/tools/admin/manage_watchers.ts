@@ -27,7 +27,12 @@ import { nextRunAt, validateSchedule } from '../../utils/cron';
 import { recordChangeEvent } from '../../utils/insert-event';
 import { verifyWindowToken } from '../../utils/jwt';
 import logger from '../../utils/logger';
-import { requireReadAccess, requireWriteAccess } from '../../utils/organization-access';
+import {
+  requireOrgReadAccess,
+  requireOrgWriteAccess,
+  requireReadAccess,
+  requireWriteAccess,
+} from '../../utils/organization-access';
 import { resolveUsernames } from '../../utils/resolve-usernames';
 import { computeStableKeys } from '../../utils/stable-keys';
 import {
@@ -265,7 +270,8 @@ export const ManageWatchersSchema = Type.Object({
   ),
   entity_id: Type.Optional(
     Type.Number({
-      description: 'Entity ID. Required for create. Optional for list.',
+      description:
+        'Entity ID. Optional for create — provide it to attach the watcher to an entity; omit it for an org-scoped/global watcher. Optional for list.',
     })
   ),
   entity_ids: Type.Optional(
@@ -602,36 +608,40 @@ export async function manageWatchers(
   const pgSql = createDbClientFromEnv(env);
 
   // Validate organization access based on action type
-  if (args.action === 'create' && args.entity_id) {
-    await requireWriteAccess(pgSql, args.entity_id, ctx);
-  } else if (args.action === 'update' && args.watcher_id) {
-    const entityId = await getWatcherEntityId(args.watcher_id);
-    if (entityId) await requireWriteAccess(pgSql, entityId, ctx);
-  } else if (args.action === 'trigger' && args.watcher_id) {
-    const entityId = await getWatcherEntityId(args.watcher_id);
-    if (entityId) await requireWriteAccess(pgSql, entityId, ctx);
-  } else if (args.action === 'delete' && args.watcher_ids && args.watcher_ids.length > 0) {
-    const entityIds = await getWatchersEntityIds(args.watcher_ids);
-    for (const entityId of entityIds) {
-      await requireWriteAccess(pgSql, entityId, ctx);
+  if (args.action === 'create') {
+    if (args.entity_id) {
+      await requireWriteAccess(pgSql, args.entity_id, ctx);
+    } else {
+      await requireOrgWriteAccess(pgSql, ctx);
     }
+  } else if (args.action === 'update' && args.watcher_id) {
+    await requireWatcherAccess(pgSql, [args.watcher_id], ctx, 'write');
+  } else if (args.action === 'trigger' && args.watcher_id) {
+    await requireWatcherAccess(pgSql, [args.watcher_id], ctx, 'write');
+  } else if (args.action === 'delete' && args.watcher_ids && args.watcher_ids.length > 0) {
+    await requireWatcherAccess(pgSql, args.watcher_ids, ctx, 'write');
   } else if (args.action === 'upgrade') {
     if (args.watcher_ids && args.watcher_ids.length > 0) {
-      const entityIds = await getWatchersEntityIds(args.watcher_ids);
-      for (const entityId of entityIds) {
-        await requireWriteAccess(pgSql, entityId, ctx);
-      }
+      await requireWatcherAccess(pgSql, args.watcher_ids, ctx, 'write');
+    } else if (args.watcher_id) {
+      await requireWatcherAccess(pgSql, [args.watcher_id], ctx, 'write');
     } else if (args.entity_id) {
       await requireWriteAccess(pgSql, args.entity_id, ctx);
     }
   } else if (args.action === 'complete_window' && args.entity_id) {
     await requireWriteAccess(pgSql, args.entity_id, ctx);
+  } else if (args.action === 'create_version' && args.watcher_id) {
+    await requireWatcherAccess(pgSql, [args.watcher_id], ctx, 'write');
+  } else if (args.action === 'set_reaction_script' && args.watcher_id) {
+    await requireWatcherAccess(pgSql, [args.watcher_id], ctx, 'write');
   } else if (args.action === 'submit_feedback' && args.watcher_id) {
-    const entityId = await getWatcherEntityId(args.watcher_id);
-    if (entityId) await requireWriteAccess(pgSql, entityId, ctx);
+    await requireWatcherAccess(pgSql, [args.watcher_id], ctx, 'write');
   } else if (args.action === 'get_feedback' && args.watcher_id) {
-    const entityId = await getWatcherEntityId(args.watcher_id);
-    if (entityId) await requireReadAccess(pgSql, entityId, ctx);
+    await requireWatcherAccess(pgSql, [args.watcher_id], ctx, 'read');
+  } else if (args.action === 'get_versions' && args.watcher_id) {
+    await requireWatcherAccess(pgSql, [args.watcher_id], ctx, 'read');
+  } else if (args.action === 'get_version_details' && args.watcher_id) {
+    await requireWatcherAccess(pgSql, [args.watcher_id], ctx, 'read');
   } else if (args.action === 'create_from_version' && args.entity_ids) {
     for (const eid of args.entity_ids) {
       await requireWriteAccess(pgSql, eid, ctx);
@@ -664,40 +674,75 @@ export async function listWatchers(
   const pgSql = createDbClientFromEnv(env);
   if (args.entity_id) {
     await requireReadAccess(pgSql, args.entity_id, ctx);
+  } else {
+    await requireOrgReadAccess(pgSql, ctx);
   }
   return handleList(args, env, ctx);
 }
 
-/**
- * Helper: Get first entity_id from a single watcher (uses entity_ids bigint[])
- */
-async function getWatcherEntityId(watcherId: string): Promise<number | null> {
-  const sql = getDb();
-  const result = await sql`
-    SELECT entity_ids FROM watchers WHERE id = ${watcherId}
-  `;
-  if (result.length === 0) return null;
-  const raw = result[0].entity_ids;
-  const ids: number[] = Array.isArray(raw)
-    ? raw.map(Number)
-    : typeof raw === 'string'
-      ? (raw as string).replace(/[{}]/g, '').split(',').filter(Boolean).map(Number)
-      : [];
-  return ids[0] ?? null;
+type WatcherAccessMode = 'read' | 'write';
+
+interface WatcherAccessRow {
+  id: string | number;
+  organization_id: string | null;
+  entity_ids: unknown;
 }
 
-/**
- * Helper: Get unique entity_ids from multiple watchers (uses entity_ids bigint[])
- */
-async function getWatchersEntityIds(watcherIds: string[]): Promise<number[]> {
+function parseWatcherEntityIds(raw: unknown): number[] {
+  if (Array.isArray(raw)) return raw.map(Number).filter((id) => Number.isFinite(id));
+  if (typeof raw === 'string') {
+    return raw
+      .replace(/[{}]/g, '')
+      .split(',')
+      .filter(Boolean)
+      .map(Number)
+      .filter((id) => Number.isFinite(id));
+  }
+  return [];
+}
+
+async function getWatcherAccessRows(watcherIds: string[]): Promise<WatcherAccessRow[]> {
   if (watcherIds.length === 0) return [];
   const sql = getDb();
   const placeholders = watcherIds.map((_, idx) => `$${idx + 1}`).join(',');
-  const result = await sql.unsafe(
-    `SELECT DISTINCT unnest(entity_ids) as entity_id FROM watchers WHERE id IN (${placeholders})`,
+  return sql.unsafe<WatcherAccessRow>(
+    `SELECT id, organization_id, entity_ids FROM watchers WHERE id IN (${placeholders})`,
     watcherIds
   );
-  return result.map((r) => Number(r.entity_id));
+}
+
+async function requireWatcherAccess(
+  sql: DbClient,
+  watcherIds: string[],
+  ctx: ToolContext,
+  mode: WatcherAccessMode
+): Promise<void> {
+  const rows = await getWatcherAccessRows(watcherIds);
+
+  for (const row of rows) {
+    const watcherOrgId = row.organization_id ? String(row.organization_id) : null;
+    if (!watcherOrgId || watcherOrgId !== ctx.organizationId) {
+      throw new Error(`Access denied: watcher ${row.id} does not belong to your organization`);
+    }
+
+    const entityIds = parseWatcherEntityIds(row.entity_ids);
+    if (entityIds.length > 0) {
+      for (const entityId of entityIds) {
+        if (mode === 'write') {
+          await requireWriteAccess(sql, entityId, ctx);
+        } else {
+          await requireReadAccess(sql, entityId, ctx);
+        }
+      }
+      continue;
+    }
+
+    if (mode === 'write') {
+      await requireOrgWriteAccess(sql, ctx);
+    } else {
+      await requireOrgReadAccess(sql, ctx);
+    }
+  }
 }
 
 // ============================================
@@ -821,11 +866,7 @@ async function handleCreate(
     throw new Error('extraction_schema is required for create action');
   }
 
-  // Require entity_id
-  if (!args.entity_id) {
-    throw new Error('entity_id is required');
-  }
-
+  // entity_id is optional: omit it for an org-scoped/global watcher.
   const entityId = args.entity_id;
 
   // Parse JSON inputs
@@ -883,22 +924,31 @@ async function handleCreate(
   let organizationId: string | null = ctx.organizationId ?? null;
   let organizationSlug: string | null = null;
 
-  const entityResult = await sql`
-    SELECT
-      e.id, et.slug AS entity_type, e.parent_id, e.slug, e.organization_id,
-      parent.slug as parent_slug, pet.slug as parent_entity_type
-    FROM entities e
-    JOIN entity_types et ON et.id = e.entity_type_id
-    LEFT JOIN entities parent ON e.parent_id = parent.id
-    LEFT JOIN entity_types pet ON pet.id = parent.entity_type_id
-    WHERE e.id = ${entityId}
-  `;
-  if (entityResult.length === 0) {
-    throw new Error(`Entity with ID ${entityId} not found`);
+  if (entityId) {
+    const entityResult = await sql`
+      SELECT
+        e.id, et.slug AS entity_type, e.parent_id, e.slug, e.organization_id,
+        parent.slug as parent_slug, pet.slug as parent_entity_type
+      FROM entities e
+      JOIN entity_types et ON et.id = e.entity_type_id
+      LEFT JOIN entities parent ON e.parent_id = parent.id
+      LEFT JOIN entity_types pet ON pet.id = parent.entity_type_id
+      WHERE e.id = ${entityId}
+    `;
+    if (entityResult.length === 0) {
+      throw new Error(`Entity with ID ${entityId} not found`);
+    }
+    entityRow = entityResult[0] as EntityRow;
+    organizationId = entityRow.organization_id;
+    organizationSlug = await getOrganizationSlug(organizationId);
+  } else {
+    if (!organizationId) {
+      throw new Error(
+        'entity_id or an organization context is required to create a watcher'
+      );
+    }
+    organizationSlug = await getOrganizationSlug(organizationId);
   }
-  entityRow = entityResult[0] as EntityRow;
-  organizationId = entityRow.organization_id;
-  organizationSlug = await getOrganizationSlug(organizationId);
 
   // Check slug uniqueness within org
   const existingSlug = await sql`
@@ -1045,6 +1095,11 @@ async function handleCreateFromVersion(
   if (versionRows.length === 0) throw new Error(`Version ${args.version_id} not found`);
   const version = versionRows[0];
   const organizationId = version.organization_id as string;
+  if (!organizationId || organizationId !== ctx.organizationId) {
+    throw new Error(
+      `Access denied: watcher version ${args.version_id} does not belong to your organization`
+    );
+  }
 
   // Fetch entity names for name pattern substitution
   const entityRows = await sql`
@@ -1326,6 +1381,9 @@ async function handleCompleteWindow(
   if (tokenPayloads.length > 1 && tokenIsRollup) {
     throw new Error('Rollup completion accepts exactly one window_token.');
   }
+
+  const pgSql = createDbClientFromEnv(env);
+  await requireWatcherAccess(pgSql, [String(watcherId)], ctx, 'write');
 
   const MAX_ROLLUP_DEPTH = 3;
   if (tokenIsRollup && tokenDepth != null && tokenDepth > MAX_ROLLUP_DEPTH) {

@@ -25,6 +25,14 @@ const memberRoleCache = new TtlCache<string | null>(60_000); // 60s
 const ownerCache = new TtlCache<ResolvedOwner | null>(300_000); // 5min
 const sessionCache = new TtlCache<{ user: any; session: any } | null>(30_000); // 30s
 
+/**
+ * Path namespaces that don't carry an org context. Authenticated requests to
+ * these resolve to "authenticated user, no active org" instead of failing on
+ * a missing orgSlug. The bare `/mcp` endpoint is handled separately because
+ * it's an exact-match, not a prefix.
+ */
+const UNSCOPED_PATH_PREFIXES = ['/mcp/', '/api/me/'];
+
 export function invalidateMembershipRoleCache(
   organizationId: string,
   userId: string | null | undefined
@@ -130,7 +138,14 @@ export class MultiTenantProvider implements WorkspaceProvider {
     const baseUrl = getConfiguredPublicOrigin() ?? new URL(c.req.url).origin;
     const requestPath = new URL(c.req.url).pathname;
     const isMcpRoute = requestPath === '/mcp' || requestPath.startsWith('/mcp/');
-    const isUnscopedMcpRoute = requestPath === '/mcp' || requestPath === '/mcp/';
+    // Routes that don't carry an org context resolve to "authenticated user,
+    // no active org" instead of failing on a missing orgSlug. Two cases today:
+    //   - the bare /mcp endpoint (MCP discovery / initialization)
+    //   - the user-scoped /api/me/* namespace (current user's accounts,
+    //     devices, web-session handoff, etc.)
+    const isUnscopedRoute =
+      UNSCOPED_PATH_PREFIXES.some((prefix) => requestPath.startsWith(prefix)) ||
+      requestPath === '/mcp';
     const requestedOrgSlug = c.req.param('orgSlug') || c.get('subdomainOrg') || null;
     const requestedToolName = c.req.param('toolName') || null;
 
@@ -374,7 +389,7 @@ export class MultiTenantProvider implements WorkspaceProvider {
       }
 
       if (!effectiveOrgId) {
-        if (isUnscopedMcpRoute) {
+        if (isUnscopedRoute) {
           await setContextAndContinue({
             mcpAuthInfo: authInfo,
             mcpIsAuthenticated: true,
@@ -489,7 +504,7 @@ export class MultiTenantProvider implements WorkspaceProvider {
 
       if (session?.user && session.session) {
         if (!requestedOrgId) {
-          if (isUnscopedMcpRoute) {
+          if (isUnscopedRoute) {
             await setContextAndContinue({
               mcpIsAuthenticated: true,
               organizationId: null,

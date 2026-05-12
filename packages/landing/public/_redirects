@@ -4,11 +4,3 @@
 /skills/*     /#skills       301
 /pricing      /serverless-openclaw/ 301
 /pricing/*    /serverless-openclaw/ 301
-/for/careops     /for/support/ 301
-/for/careops/    /for/support/ 301
-/connect-from/chatgpt/for/careops    /connect-from/chatgpt/for/support/   301
-/connect-from/chatgpt/for/careops/   /connect-from/chatgpt/for/support/   301
-/connect-from/claude/for/careops     /connect-from/claude/for/support/    301
-/connect-from/claude/for/careops/    /connect-from/claude/for/support/    301
-/connect-from/openclaw/for/careops   /connect-from/openclaw/for/support/  301
-/connect-from/openclaw/for/careops/  /connect-from/openclaw/for/support/  301

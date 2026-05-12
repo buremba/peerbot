@@ -20,12 +20,19 @@
     "build": "tsc && cp ./openclaw.plugin.json ./dist/openclaw.plugin.json",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist",
-    "test:e2e": "vitest run --config test/e2e/vitest.config.ts"
+    "test:e2e": "vitest run --config test/e2e/vitest.config.ts",
+    "test:unit": "vitest run --config test/unit/vitest.config.ts"
   },
   "openclaw": {
     "extensions": [
       "./dist/index.js"
-    ]
+    ],
+    "compat": {
+      "pluginApi": ">=2026.4.0"
+    },
+    "build": {
+      "openclawVersion": "2026.5.7"
+    }
   },
   "devDependencies": {
     "@types/node": "^20.10.0",

@@ -99,7 +99,8 @@ TEST_PLATFORM=whatsapp TEST_CHANNEL=+1234567890 ./scripts/test-bot.sh "Hello"
 | Variable | Description |
 |----------|-------------|
 | `TEST_PLATFORM` | Force platform: `telegram`, `slack`, `whatsapp` (auto-detected if unset) |
-| `TEST_CHANNEL` | Channel/chat ID for the target platform |
+| `TEST_CHANNEL` | Channel/chat ID for the target platform (generic; overrides the per-platform fallbacks below) |
+| `QA_SLACK_CHANNEL` | Slack channel ID (fallback for Slack when `TEST_CHANNEL` is unset) |
 | `TEST_TIMEOUT` | Response timeout in seconds (default: 120) |
 | `TEST_AGENT_ID` | Agent ID to test (default: `test-{platform}`) |
 | `GATEWAY_URL` | Gateway URL (default: `http://localhost:8787`) |
@@ -176,11 +177,11 @@ psql "$DATABASE_URL" -c \
 For automated quality checks, use the `eval` command:
 
 ```bash
-npx @lobu/cli@latest eval                           # run all evals
-npx @lobu/cli@latest eval basic-qa                  # run a specific eval
-npx @lobu/cli@latest eval --model claude/sonnet     # eval with a specific model
+npx @lobu/cli@latest eval                              # run all evals
+npx @lobu/cli@latest eval basic-qa                     # run a specific eval
+npx @lobu/cli@latest eval --model claude/sonnet        # eval with a specific model
 npx @lobu/cli@latest eval --list                       # list available evals
-npx @lobu/cli@latest eval --ci --output results.json  # CI mode
+npx @lobu/cli@latest eval --ci --output results.json   # CI mode
 ```
 
 Eval files live in the agent directory and define test cases with expected outcomes. Use `--ci` for non-zero exit codes on failure in CI/CD pipelines.

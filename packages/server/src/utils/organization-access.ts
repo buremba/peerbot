@@ -108,3 +108,58 @@ export async function requireWriteAccess(
     throw new Error(`Access denied: entity ${entityId} does not belong to your organization`);
   }
 }
+
+/**
+ * Check if the caller may write at the organization level (no entity scope).
+ * Used by org-scoped resources like watchers that have their own organization_id.
+ */
+async function canWriteOrg(sql: DbClient, ctx: ToolContext): Promise<boolean> {
+  if (!ctx.organizationId) return false;
+
+  // System/internal calls (e.g. reaction scripts) — authenticated context is sufficient
+  if (!ctx.userId && ctx.isAuthenticated) return true;
+  if (!ctx.userId) return false;
+
+  const membership = await sql`
+    SELECT 1
+    FROM "member"
+    WHERE "organizationId" = ${ctx.organizationId}
+      AND "userId" = ${ctx.userId}
+      AND role IN ('owner', 'admin')
+    LIMIT 1
+  `;
+  return membership.length > 0;
+}
+
+/**
+ * Check if the caller may read at the organization level (no entity scope).
+ * Mirrors entity read behavior: once the request is scoped to the organization,
+ * anonymous/system contexts are allowed and authenticated users must be members.
+ */
+async function canReadOrg(sql: DbClient, ctx: ToolContext): Promise<boolean> {
+  if (!ctx.organizationId) return false;
+  if (!ctx.userId) return true;
+
+  const orgRole = await getWorkspaceRole(sql, ctx.organizationId, ctx.userId);
+  return orgRole !== null;
+}
+
+/**
+ * Require organization-level read access or throw.
+ */
+export async function requireOrgReadAccess(sql: DbClient, ctx: ToolContext): Promise<void> {
+  const ok = await canReadOrg(sql, ctx);
+  if (!ok) {
+    throw new Error('Access denied: organization-level read access is required');
+  }
+}
+
+/**
+ * Require organization-level write access or throw.
+ */
+export async function requireOrgWriteAccess(sql: DbClient, ctx: ToolContext): Promise<void> {
+  const ok = await canWriteOrg(sql, ctx);
+  if (!ok) {
+    throw new Error('Access denied: organization-level write access is required');
+  }
+}

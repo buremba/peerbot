@@ -312,7 +312,9 @@ export const QUERYABLE_SCHEMA = {
         'login_enabled',
         'api_type',
         'favicon_domain',
-        'default_repair_agent_id'
+        'default_repair_agent_id',
+        'required_capability',
+        'runtime'
       ),
     },
   ],

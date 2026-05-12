@@ -171,7 +171,62 @@ models = "./custom-models"
     await expect(loadDesiredState({ cwd: dir })).rejects.toThrow(/lobu/);
   });
 
-  test("rejects watcher blocks (v1 doesn't sync watchers)", async () => {
+  test("loads watcher model files into state.watchers", async () => {
+    const dir = mkProject(
+      `[agents.triage]
+name = "Triage"
+dir = "./agents/triage"
+
+[memory]
+enabled = true
+org = "dev"
+models = "./models"
+`
+    );
+    const modelsDir = join(dir, "models");
+    mkdirSync(modelsDir, { recursive: true });
+    writeFileSync(
+      join(modelsDir, "digest.yaml"),
+      `version: 1
+type: watcher
+slug: weekly-digest
+name: Weekly digest
+description: A short weekly summary.
+schedule: "0 9 * * 1"
+prompt: |
+  Produce a short weekly digest.
+extraction_schema:
+  type: object
+  required: [summary]
+  properties:
+    summary: { type: string }
+sources:
+  - name: content
+    query: SELECT * FROM events ORDER BY occurred_at DESC
+`
+    );
+
+    const { state } = await loadDesiredState({ cwd: dir });
+    expect(state.watchers).toHaveLength(1);
+    const w = state.watchers[0]!;
+    expect(w.slug).toBe("weekly-digest");
+    expect(w.name).toBe("Weekly digest");
+    expect(w.description).toBe("A short weekly summary.");
+    expect(w.schedule).toBe("0 9 * * 1");
+    expect(w.prompt).toContain("weekly digest");
+    expect(w.extractionSchema).toMatchObject({
+      type: "object",
+      required: ["summary"],
+    });
+    expect(w.sources).toEqual([
+      {
+        name: "content",
+        query: "SELECT * FROM events ORDER BY occurred_at DESC",
+      },
+    ]);
+  });
+
+  test("rejects watcher blocks in lobu.toml (apply syncs models/*.yaml watchers, not toml)", async () => {
     const dir = mkProject(
       `[agents.triage]
 name = "Triage"

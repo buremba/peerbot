@@ -81,6 +81,8 @@ type ExtractedConnectorCatalogMetadata = {
   mcp_config: Record<string, unknown> | null;
   openapi_config: Record<string, unknown> | null;
   favicon_domain: string | null;
+  required_capability: string | null;
+  runtime: Record<string, unknown> | null;
   login_enabled: boolean;
 };
 
@@ -94,6 +96,8 @@ interface CatalogConnectorDefinition {
   actions_schema: Record<string, unknown> | null;
   options_schema: Record<string, unknown> | null;
   favicon_domain: string | null;
+  required_capability: string | null;
+  runtime: Record<string, unknown> | null;
   status: 'active';
   login_enabled: boolean;
   source_path: string;
@@ -249,6 +253,8 @@ async function extractConnectorCatalogMetadata(
       mcp_config: metadata.mcpConfig ?? null,
       openapi_config: metadata.openapiConfig ?? null,
       favicon_domain: metadata.faviconDomain ?? null,
+      required_capability: metadata.requiredCapability ?? null,
+      runtime: (metadata.runtime as Record<string, unknown> | undefined) ?? null,
       login_enabled: false,
     } satisfies ExtractedConnectorCatalogMetadata;
 
@@ -310,6 +316,8 @@ export async function listCatalogConnectorDefinitions(
         actions_schema: metadata.actions_schema,
         options_schema: metadata.options_schema,
         favicon_domain: metadata.favicon_domain,
+        required_capability: metadata.required_capability,
+        runtime: metadata.runtime,
         status: 'active',
         login_enabled: metadata.login_enabled,
         source_path: basename(filePath),
@@ -322,4 +330,36 @@ export async function listCatalogConnectorDefinitions(
   }
 
   return definitions.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/** A bundled connector that runs on a device worker rather than the cloud fleet. */
+export interface BundledDeviceConnector {
+  /** Connector key, e.g. `apple.screen_time`. */
+  key: string;
+  /** Worker capability the device must advertise to run it, e.g. `screentime`. */
+  requiredCapability: string;
+  /** Feed keys declared by the bundled source. Used to heal partially-wired installs. */
+  feedKeys: string[];
+}
+
+/**
+ * Bundled connectors that are device-bound: they declare both a `runtime` block
+ * and a `requiredCapability` gate, which together mean "only a device worker
+ * advertising that capability can run me" (e.g. apple.screen_time on the Lobu
+ * Lobu for Mac). The gateway auto-wires these into a user's personal org when a
+ * device advertises the capability — nothing about which connectors those are
+ * is hardcoded; it's derived from the connector definitions in the catalog.
+ */
+export async function getBundledDeviceConnectors(): Promise<BundledDeviceConnector[]> {
+  const defs = await listCatalogConnectorDefinitions();
+  return defs
+    .filter((d) => d.runtime != null && typeof d.required_capability === 'string')
+    .map((d) => ({
+      key: d.key,
+      requiredCapability: d.required_capability as string,
+      feedKeys:
+        d.feeds_schema && typeof d.feeds_schema === 'object' && !Array.isArray(d.feeds_schema)
+          ? Object.keys(d.feeds_schema)
+          : [],
+    }));
 }

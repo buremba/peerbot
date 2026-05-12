@@ -5,6 +5,9 @@
   "license": "BUSL-1.1",
   "type": "module",
   "description": "Lobu memory backend — Hono HTTP server, MCP handler, REST API, in-process Lobu gateway",
+  "engines": {
+    "node": ">=22 <25"
+  },
   "scripts": {
     "dev": "tsx watch --ignore=../web/** --ignore=../../node_modules/** src/server.ts",
     "start": "tsx src/server.ts",

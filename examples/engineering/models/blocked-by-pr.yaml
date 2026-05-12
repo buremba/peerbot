@@ -1,5 +1,0 @@
-version: 1
-type: relationship
-slug: blocked-by-pr
-name: Blocked by PR
-description: Keep remediation work connected to the code changes that need action.

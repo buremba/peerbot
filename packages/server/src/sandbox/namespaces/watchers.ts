@@ -30,7 +30,8 @@ export interface WatcherListFilter {
 }
 
 export interface WatcherCreateInput {
-  entity_id: number;
+  /** Attach the watcher to an entity. Omit for an org-scoped/global watcher. */
+  entity_id?: number;
   prompt: string;
   extraction_schema: Record<string, unknown>;
   sources?: Source[];

@@ -41,6 +41,7 @@ tsconfig.tsbuildinfo
 **/tsconfig.tsbuildinfo
 
 workspaces/*
+**/workspaces/
 
 # SSH keys for Terraform
 charts/lobu/provider/hetzner/ssh_key

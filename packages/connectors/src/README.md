@@ -465,7 +465,7 @@ Browser connectors use `patchright` (an npm alias for Playwright). The SDK also 
 
 Connector code runs in a worker subprocess with a restricted environment. Key things to know:
 
-- **Minimal env vars**: Only `PATH`, `HOME`, `TMPDIR`, `TZ`, `NODE_ENV`, and `NODE_PATH` are available. No access to the host's env vars.
+- **Minimal env vars**: Only `PATH`, `HOME`, `TMPDIR`, `TZ`, `NODE_ENV`, `NODE_PATH`, and `PLAYWRIGHT_BROWSERS_PATH` are available. No access to the host's env vars.
 - **Secrets via ctx**: API keys and tokens flow through `ctx.credentials` and `ctx.config`, not environment variables. The `env_keys` auth method stores secrets on auth profiles, and the platform injects them into `ctx.config` at sync time.
 - **No filesystem persistence**: Don't write to disk expecting it to survive between syncs. Use `checkpoint` for state.
 
@@ -506,7 +506,7 @@ Connectors can also be installed manually via `client.connections.installConnect
 2. If `compiled_code` is NULL (bundled connectors), it compiles from `connectors/{source_path}` on disk via esbuild
 3. The compiled code is sent to the worker, written to a temp file (`.connector-child-{pid}.mjs`), and loaded via dynamic `import()`
 4. Each sync/action runs in an **isolated child process** with a 10-minute timeout and 512MB memory limit
-5. The child process has a restricted environment — only `PATH`, `HOME`, `TMPDIR`, `TZ`, `NODE_ENV`, and `PLAYWRIGHT_BROWSERS_PATH` are available as env vars
+5. The child process has a restricted environment — only `PATH`, `HOME`, `TMPDIR`, `TZ`, `NODE_ENV`, `NODE_PATH`, and `PLAYWRIGHT_BROWSERS_PATH` are available as env vars
 6. Secrets flow through `ctx.credentials` and `ctx.config`, not environment variables
 
 This means edits to `.ts` files in `connectors/` take effect on the next sync without reinstalling.

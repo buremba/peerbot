@@ -8,6 +8,13 @@
  * - Sentry error tracking
  */
 
+// Refuse to boot under an unsupported Node major (isolated-vm gate). The
+// module performs the check on load, so this side-effect import MUST be the
+// first one — ESM evaluates sibling imports in textual order, so anything
+// above this line would otherwise run first and could itself crash on the
+// unsupported runtime.
+import './utils/assert-node-version';
+
 // Sentry must init before any other imports for auto-instrumentation
 import './instrument';
 

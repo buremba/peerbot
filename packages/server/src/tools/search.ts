@@ -261,6 +261,11 @@ async function fetchContentSnippets(
       limit: contentLimit,
       min_similarity: 0.4,
       query_embedding: queryEmbedding,
+      // Recall wants the most *relevant* matching content, not the most recent.
+      // This also opts into the bounded recall-only candidate path (the implicit
+      // default is a chronological date feed).
+      sort_by: 'score',
+      approximate_candidate_search: true,
     },
     env
   );

@@ -249,62 +249,6 @@ export const generatedUseCaseModels: Record<string, GeneratedUseCaseModel> = {
         '{"type":"object","required":["subscription_status","pending_changes","recent_orders","communication_preferences","open_requests"],"properties":{"subscription_status":{"type":"string"},"pending_changes":{"type":"array","items":{"type":"string"}},"recent_orders":{"type":"array","items":{"type":"string"}},"communication_preferences":{"type":"string"},"open_requests":{"type":"array","items":{"type":"string"}}}}',
     },
   },
-  engineering: {
-    id: "engineering",
-    lobuOrg: "devops",
-    agent: {
-      identity: [
-        "You are an engineering agent that helps platform teams triage incidents, reviews, and deploy safety checks.",
-        "You keep humans aligned on what is broken, blocked, or ready to ship.",
-      ],
-      soul: [
-        "- Prefer signal over noise.",
-        "- Highlight user impact and rollout risk.",
-        "- Never auto-deploy without approval.",
-        "- Summarize incidents with user impact first.",
-      ],
-      user: [
-        "- Team: Platform engineering",
-        "- Rotation: Primary on-call this week",
-        "- Preference: Incident-first summaries",
-      ],
-    },
-    model: {
-      entities: ["Deploy", "Incident", "Pull Request", "Service"],
-    },
-    skills: {
-      agentId: "engineering-control",
-      skillId: "engineering-control",
-      description:
-        "Help platform teams triage incidents, reviews, and deploy safety checks",
-      skills: [],
-      nixPackages: [],
-      allowedDomains: [
-        "github.com",
-        ".github.com",
-        "registry.npmjs.org",
-        ".npmjs.org",
-      ],
-      mcpServer: "",
-      providerId: "anthropic",
-      model: "claude/sonnet-4-5",
-      apiKeyEnv: "ANTHROPIC_API_KEY",
-      skillInstructions: [
-        "- Prefer signal over noise.",
-        "- Highlight user impact and rollout risk.",
-        "- Never auto-deploy without approval.",
-        "- Summarize incidents with user impact first.",
-      ],
-    },
-    watcher: {
-      name: "Incident monitor",
-      schedule: "*/15 * * * *",
-      prompt:
-        "Check for active incidents, pending deploys, and blocked PRs. Highlight user impact and rollout risk for on-call triage.",
-      extractionSchema:
-        '{"type":"object","required":["active_incidents","pending_deploys","blocked_prs"],"properties":{"active_incidents":{"type":"array","items":{"type":"string"}},"pending_deploys":{"type":"array","items":{"type":"string"}},"blocked_prs":{"type":"array","items":{"type":"string"}},"rollback_candidates":{"type":"array","items":{"type":"string"}}}}',
-    },
-  },
   finance: {
     id: "finance",
     lobuOrg: "finance",
@@ -797,63 +741,6 @@ Skip transactions inside ISAs and SIPPs unless they are dividends or contributio
         "Poll CRM data for tracked accounts. Track expansion progress, risk level changes, and renewal timeline.",
       extractionSchema:
         '{"type":"object","required":["risk_level","expansion_status","renewal_blockers","activity_delta"],"properties":{"risk_level":{"type":"string"},"expansion_status":{"type":"string"},"renewal_blockers":{"type":"array","items":{"type":"string"}},"activity_delta":{"type":"string"}}}',
-    },
-  },
-  support: {
-    id: "support",
-    lobuOrg: "support",
-    agent: {
-      identity: [
-        "You are a support agent that helps support teams route tickets, draft replies, and escalate urgent issues.",
-        "You balance empathy with fast, accurate resolution paths.",
-      ],
-      soul: [
-        "- Be calm and helpful.",
-        "- Confirm what the customer needs next.",
-        "- Escalate outages or billing risk immediately.",
-        "- Aim for first reply under 15 minutes.",
-      ],
-      user: [
-        "- Team: Support operations",
-        "- SLA: First reply under 15 minutes",
-        "- Preference: Reusable macros where possible",
-      ],
-    },
-    model: {
-      entities: ["Organization", "Person", "Preference", "Task"],
-    },
-    skills: {
-      agentId: "support",
-      skillId: "support",
-      description:
-        "Help support teams route tickets, draft replies, and escalate urgent issues",
-      skills: [],
-      nixPackages: [],
-      allowedDomains: [
-        "github.com",
-        ".github.com",
-        ".githubusercontent.com",
-        "registry.npmjs.org",
-        ".npmjs.org",
-      ],
-      mcpServer: "",
-      providerId: "anthropic",
-      model: "claude/sonnet-4-5",
-      apiKeyEnv: "ANTHROPIC_API_KEY",
-      skillInstructions: [
-        "- Be calm and helpful.",
-        "- Confirm what the customer needs next.",
-        "- Escalate outages or billing risk immediately.",
-        "- Aim for first reply under 15 minutes.",
-      ],
-    },
-    watcher: {
-      name: "Contact freshness",
-      schedule: "0 0 * * *",
-      prompt:
-        "Monitor contacts for role changes, new preferences, and overdue follow-ups. Update ownership and communication preferences as relationships change.",
-      extractionSchema:
-        '{"type":"object","required":["status","role_changed","new_preferences","overdue_tasks"],"properties":{"status":{"type":"string"},"role_changed":{"type":"boolean"},"new_preferences":{"type":"array","items":{"type":"string"}},"overdue_tasks":{"type":"array","items":{"type":"string"}}}}',
     },
   },
 };

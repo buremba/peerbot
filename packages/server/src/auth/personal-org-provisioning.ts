@@ -95,7 +95,7 @@ async function lockPersonalOrgForUser(userId: string, sql: Sql): Promise<void> {
   `;
 }
 
-async function findExistingPersonalOrg(
+export async function findExistingPersonalOrg(
   userId: string,
   sql: Sql
 ): Promise<{ id: string; slug: string } | null> {

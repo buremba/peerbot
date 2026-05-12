@@ -64,6 +64,18 @@ export interface DesiredRelationshipType {
   metadata?: Record<string, unknown>;
 }
 
+export interface DesiredWatcher {
+  slug: string;
+  name?: string;
+  description?: string;
+  schedule?: string;
+  prompt: string;
+  /** Parsed JSON Schema object describing the LLM output. */
+  extractionSchema: Record<string, unknown>;
+  /** Optional SQL data sources; server applies a default when omitted. */
+  sources?: Array<{ name: string; query: string }>;
+}
+
 export interface DesiredAgent {
   metadata: DesiredAgentMetadata;
   /**
@@ -85,6 +97,8 @@ export interface DesiredState {
     entityTypes: DesiredEntityType[];
     relationshipTypes: DesiredRelationshipType[];
   };
+  /** Watchers declared as `type: watcher` in `models/*.yaml`. */
+  watchers: DesiredWatcher[];
   /**
    * Names of env vars referenced as `$NAME` anywhere in lobu.toml. The CLI
    * surfaces these to the user before mutating remote state so missing
@@ -593,6 +607,40 @@ function parseEntityType(raw: unknown): DesiredEntityType {
   return out;
 }
 
+function parseWatcher(raw: unknown): DesiredWatcher {
+  if (!isRecord(raw) || typeof raw.slug !== "string") {
+    throw new ValidationError(
+      `watcher model files must be objects with a "slug" string field; got ${JSON.stringify(raw)}`
+    );
+  }
+  if (typeof raw.prompt !== "string" || !raw.prompt.trim()) {
+    throw new ValidationError(
+      `watcher "${raw.slug}" is missing a "prompt" string`
+    );
+  }
+  const extractionSchema = isRecord(raw.extraction_schema)
+    ? raw.extraction_schema
+    : {};
+  const out: DesiredWatcher = {
+    slug: raw.slug,
+    prompt: raw.prompt,
+    extractionSchema,
+  };
+  if (typeof raw.name === "string") out.name = raw.name;
+  if (typeof raw.description === "string") out.description = raw.description;
+  if (typeof raw.schedule === "string") out.schedule = raw.schedule;
+  if (Array.isArray(raw.sources)) {
+    out.sources = raw.sources
+      .filter(isRecord)
+      .filter(
+        (s): s is { name: string; query: string } & Record<string, unknown> =>
+          typeof s.name === "string" && typeof s.query === "string"
+      )
+      .map((s) => ({ name: s.name, query: s.query }));
+  }
+  return out;
+}
+
 function parseRelationshipType(raw: unknown): DesiredRelationshipType {
   if (!isRecord(raw) || typeof raw.slug !== "string") {
     throw new ValidationError(
@@ -619,18 +667,28 @@ function parseRelationshipType(raw: unknown): DesiredRelationshipType {
   return out;
 }
 
+interface LoadedMemoryModels {
+  entityTypes: DesiredEntityType[];
+  relationshipTypes: DesiredRelationshipType[];
+  watchers: DesiredWatcher[];
+}
+
 /**
  * Read memory schema files referenced by `[memory].models`. Each YAML
- * file in that directory should declare `type: entity_type` or
- * `type: relationship_type` (matches the seed-cmd schema).
- *
- * v1: parse only entity_type and relationship_type. Watchers are deferred.
+ * file in that directory should declare `type: entity_type`,
+ * `type: relationship_type`, or `type: watcher` (matches the seed-cmd
+ * schema). `lobu apply` syncs entity types, relationship types, and
+ * watchers from these files; watcher sync is create-only (drift ignored).
  */
-async function loadMemorySchema(
+async function loadMemoryModels(
   config: LobuTomlConfig,
   projectRoot: string
-): Promise<DesiredState["memorySchema"]> {
-  const empty = { entityTypes: [], relationshipTypes: [] };
+): Promise<LoadedMemoryModels> {
+  const empty: LoadedMemoryModels = {
+    entityTypes: [],
+    relationshipTypes: [],
+    watchers: [],
+  };
   const mem = config.memory;
   if (!mem || mem.enabled === false) return empty;
 
@@ -647,6 +705,7 @@ async function loadMemorySchema(
     return {
       entityTypes: entityTypesRaw.map(parseEntityType),
       relationshipTypes: relTypesRaw.map(parseRelationshipType),
+      watchers: [],
     };
   }
 
@@ -661,6 +720,7 @@ async function loadMemorySchema(
 
   const entityTypes: DesiredEntityType[] = [];
   const relationshipTypes: DesiredRelationshipType[] = [];
+  const watchers: DesiredWatcher[] = [];
 
   const files = readdirSync(modelsPath)
     .filter((f) => f.endsWith(".yaml") || f.endsWith(".yml"))
@@ -677,11 +737,12 @@ async function loadMemorySchema(
       parsed.type === "relationship"
     ) {
       relationshipTypes.push(parseRelationshipType(parsed));
+    } else if (parsed.type === "watcher") {
+      watchers.push(parseWatcher(parsed));
     }
-    // watcher files are out of scope for v1 apply
   }
 
-  return { entityTypes, relationshipTypes };
+  return { entityTypes, relationshipTypes, watchers };
 }
 
 /**
@@ -712,7 +773,7 @@ async function rejectUnsupportedAgentShapes(cwd: string): Promise<void> {
     const watchers = (agentConfig as Record<string, unknown>).watchers;
     if (Array.isArray(watchers) && watchers.length > 0) {
       throw new ValidationError(
-        `agent "${agentId}" declares [[agents.${agentId}.watchers]] — \`lobu apply\` does not sync watchers in v1. Remove the block or use \`lobu memory seed\`.`
+        `agent "${agentId}" declares [[agents.${agentId}.watchers]] — \`lobu apply\` syncs watchers from \`models/*.yaml\` (\`type: watcher\`), not from lobu.toml. Move the watcher to a model file or use \`lobu memory seed\`.`
       );
     }
   }
@@ -763,12 +824,16 @@ export async function loadDesiredState(
     agents.push({ metadata, settings, platforms });
   }
 
-  const memorySchema = await loadMemorySchema(config, opts.cwd);
+  const { entityTypes, relationshipTypes, watchers } = await loadMemoryModels(
+    config,
+    opts.cwd
+  );
 
   return {
     state: {
       agents,
-      memorySchema,
+      memorySchema: { entityTypes, relationshipTypes },
+      watchers,
       requiredSecrets: [...requiredSecrets].sort(),
     },
     configPath,

@@ -29,6 +29,7 @@
       "!**/packages/connectors/**",
       "!**/packages/embeddings/**",
       "!**/packages/web/**",
+      "!**/apps/**",
       "!**/scripts/lobu/**",
       "!**/benchmarks/**",
       "!**/skills/**"

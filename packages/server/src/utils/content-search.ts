@@ -18,7 +18,6 @@ import { parseDateAlias, toEndOfDay } from './date-aliases';
 import { generateEmbeddings } from './embeddings';
 import { toVectorLiteral } from './entity-management';
 import logger from './logger';
-import { expandSearchQueries } from './query-expansion';
 import { validateNumericId } from './sql-validation';
 
 const CONTEXT_CASE_SQL = `
@@ -489,6 +488,11 @@ interface ContentSearchOptions {
   // regeneration step inside searchContentBySingleQuery — useful when the caller
   // already computed an embedding (e.g. search_memory receiving query_embedding).
   query_embedding?: number[];
+
+  // Internal recall-only performance hint. When true, org-wide score searches may
+  // use a bounded hybrid candidate set instead of the exact full match set. Do
+  // not use for user-visible get_content pagination/totals.
+  approximate_candidate_search?: boolean;
 }
 
 /**
@@ -1438,8 +1442,36 @@ const STOPWORDS = [
   'approved',
   'made',
 ];
+const STOPWORDS_SET = new Set(STOPWORDS);
+
+/**
+ * Build a `tsquery` *string* (OR of clean lexemes, e.g. `"project | codename"`)
+ * from a free-text query — the JS mirror of NORMALIZED_QUERY_SQL/TSQUERY_SQL.
+ * Returning a plain string lets callers bind it as a parameter to
+ * `to_tsquery('english', $N)` so Postgres can use the fulltext GIN index
+ * (the in-SQL CASE+regexp form is opaque to the planner). Returns `null` when
+ * nothing usable survives normalization.
+ */
+function buildTsqueryString(queryText: string): string | null {
+  const tokens = queryText
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]+/g, ' ')
+    .split(/\s+/)
+    .filter((t) => t.length > 0 && !STOPWORDS_SET.has(t));
+  return tokens.length > 0 ? tokens.join(' | ') : null;
+}
+
 const NORMALIZED_QUERY_SQL = `trim(regexp_replace(regexp_replace(lower($1), '\\m(${STOPWORDS.join('|')})\\M', ' ', 'g'), '[^a-z0-9\\s]+', ' ', 'g'))`;
 const TSQUERY_SQL = `CASE WHEN NULLIF(${NORMALIZED_QUERY_SQL}, '') IS NOT NULL THEN to_tsquery('english', regexp_replace(${NORMALIZED_QUERY_SQL}, '\\s+', ' | ', 'g')) ELSE NULL END`;
+
+// Per-source fan-out for the index-driven candidate path — a few hundred from
+// each of the ivfflat ANN / fulltext GIN / trigram GIN is plenty for any sane
+// content_limit while keeping each index scan cheap.
+const CANDIDATE_VECTOR_LIMIT = 200;
+// Backstop so a pathological candidate scan can't hang the request. Every caller
+// tolerates an empty content list, so failing fast and degrading to "no content"
+// beats a multi-minute query.
+const CANDIDATE_QUERY_TIMEOUT_MS = 6000;
 
 async function searchContentBySingleQuery(
   sql: DbClient,
@@ -1655,6 +1687,84 @@ async function searchContentBySingleQuery(
   const limitParamIdx = cursorBaseParamIdx + cursorClause.params.length;
   const offsetParamIdx = limitParamIdx + 1;
   const validatedLimit = validateNumericId(limit, 'limit');
+
+  // ── Recall-only index-driven candidate path ──────────────────────────────
+  // Exact org-wide search keeps using `searchWhereSQL` so title-only matches,
+  // filtered result sets, totals, and offsets retain their historical semantics.
+  // The bounded candidate path is opt-in for recall/search_memory snippets: the
+  // caller ignores exact totals/pagination and only needs a small set of highly
+  // relevant rows under the OpenClaw recall timeout.
+  const useCandidatePath =
+    options.approximate_candidate_search === true &&
+    entityId == null &&
+    options.organization_id != null &&
+    !useDateFeed &&
+    effectiveOffset === 0 &&
+    hasEmbedding;
+  const hasTextCandidates = useCandidatePath && trimmedQuery.length >= 3;
+  let searchCandidatesCteSql = '';
+  if (useCandidatePath) {
+    // $tsq is appended last in queryParams; offsetParamIdx is the current tail
+    // (useDateFeed is false here, so there is no cursor block before it).
+    const tsqueryParamIdx = offsetParamIdx + 1;
+    const candidateFilterJoins = `LEFT JOIN connections c ON c.id = f.connection_id
+          LEFT JOIN watcher_window_events iwf
+            ON iwf.event_id = f.id
+            AND ($6::int IS NOT NULL)
+            AND iwf.window_id = $6::int`;
+    const branches: string[] = [];
+    // ivfflat ANN — the only shape that index serves. Apply the same downstream
+    // filters before the candidate LIMIT so a filtered recall does not discard
+    // all relevant rows after picking 200 unfiltered org-wide ids.
+    branches.push(`SELECT emb.event_id AS id
+          FROM event_embeddings emb
+          JOIN current_event_records f ON f.id = emb.event_id
+          ${candidateFilterJoins}
+          WHERE ${standardFiltersSQL}
+            AND (1 - (emb.embedding <=> ${vecParam})) >= ${minSimilarityParam}
+          ORDER BY emb.embedding <=> ${vecParam}
+          LIMIT ${CANDIDATE_VECTOR_LIMIT}`);
+    if (hasTextCandidates) {
+      // fulltext GIN — the `@@` is index-served; no `ts_rank` here (that would
+      // rebuild the tsvector per matched row over the whole org). The rank is
+      // computed downstream over just the merged candidate set.
+      branches.push(`SELECT ce.id AS id
+          FROM events ce
+          JOIN current_event_records f ON f.id = ce.id
+          ${candidateFilterJoins}
+          WHERE to_tsvector('english', COALESCE(ce.payload_text, '')) @@ to_tsquery('english', $${tsqueryParamIdx})
+            AND ${standardFiltersSQL}
+          LIMIT ${CANDIDATE_VECTOR_LIMIT}`);
+      // trigram GIN — preserves the payload substring match (exact strings, ids).
+      branches.push(`SELECT ce.id AS id
+          FROM events ce
+          JOIN current_event_records f ON f.id = ce.id
+          ${candidateFilterJoins}
+          WHERE ce.payload_text ILIKE '%' || $1 || '%'
+            AND ${standardFiltersSQL}
+          LIMIT ${CANDIDATE_VECTOR_LIMIT}`);
+    }
+    // Each branch has its own ORDER BY/LIMIT and must therefore be
+    // parenthesized for the UNION to parse. `UNION` (not UNION ALL) dedupes
+    // ids that several sources surface — cheap over ≤200 rows per branch.
+    searchCandidatesCteSql = `search_candidates AS (
+        ${branches.map((b) => `(${b})`).join('\n        UNION\n        ')}
+      ),
+      `;
+  }
+
+  const nonDateFilteredIdsCteSql = `filtered_ids AS (
+        SELECT f.id, f.score, f.occurred_at, f.title, f.payload_text, f.embedding
+        FROM current_event_records f
+        ${useCandidatePath ? 'JOIN search_candidates sc ON sc.id = f.id' : ''}
+        LEFT JOIN connections c ON c.id = f.connection_id
+        LEFT JOIN watcher_window_events iwf
+          ON iwf.event_id = f.id
+          AND ($6::int IS NOT NULL)
+          AND iwf.window_id = $6::int
+        WHERE ${useCandidatePath ? standardFiltersSQL : searchWhereSQL}
+      )`;
+
   const querySQL = useDateFeed
     ? `
       WITH RECURSIVE filtered_ids AS (
@@ -1697,15 +1807,9 @@ async function searchContentBySingleQuery(
       ${ctes}
       ${searchFinalSelect}`
     : `
-      WITH RECURSIVE filtered_ids AS (
-        SELECT f.id, f.score, f.occurred_at, f.title, f.payload_text, f.embedding
-        FROM current_event_records f
-        LEFT JOIN connections c ON c.id = f.connection_id
-        LEFT JOIN watcher_window_events iwf
-          ON iwf.event_id = f.id
-          AND ($6::int IS NOT NULL)
-          AND iwf.window_id = $6::int
-        WHERE ${searchWhereSQL}
+      WITH RECURSIVE ${useCandidatePath ? searchCandidatesCteSql : ''}${nonDateFilteredIdsCteSql},
+      full_count AS (
+        SELECT COUNT(*) as total_count FROM filtered_ids
       ),
       result_set AS (
         SELECT
@@ -1713,7 +1817,7 @@ async function searchContentBySingleQuery(
           ${textRankExpr} as text_rank,
           ${similarityExpr} as similarity,
           ${combinedScoreExpr} as combined_score,
-          COUNT(*) OVER() as total_count,
+          (SELECT total_count FROM full_count) as total_count,
           NULL::bigint as cursor_fetched_count
         FROM filtered_ids fi
         ORDER BY ${resultSetOrderBy}
@@ -1742,9 +1846,46 @@ async function searchContentBySingleQuery(
     ...cursorClause.params,
     ...(useDateFeed ? [fetchLimit] : [limit, effectiveOffset]),
   ];
+  if (hasTextCandidates) {
+    // $tsq for the fulltext candidate branch. null (all-stopword query) →
+    // to_tsquery('english', NULL) → `@@ NULL` → that branch matches nothing.
+    queryParams.push(buildTsqueryString(trimmedQuery));
+  }
 
-  const rawRows = (await sql.unsafe(querySQL, queryParams)) as any[];
-  const total = rawRows.length > 0 ? parseInt(String(rawRows[0].total_count ?? '0'), 10) : 0;
+  let rawRows: any[];
+  if (useCandidatePath) {
+    // Backstop: a pathological candidate scan degrades to "no content" (every
+    // caller tolerates an empty list) rather than hanging the request.
+    try {
+      rawRows = (await sql.begin(async (tx: DbClient) => {
+        await tx.unsafe(`SET LOCAL statement_timeout = ${CANDIDATE_QUERY_TIMEOUT_MS}`);
+        return await tx.unsafe(querySQL, queryParams);
+      })) as any[];
+    } catch (err) {
+      logger.warn(
+        { err: err instanceof Error ? err.message : String(err) },
+        '[content-search] candidate query failed; returning empty content'
+      );
+      rawRows = [];
+    }
+  } else {
+    rawRows = (await sql.unsafe(querySQL, queryParams)) as any[];
+  }
+
+  let emptyPageTotal: number | null = null;
+  if (!useDateFeed && rawRows.length === 0 && effectiveOffset > 0) {
+    const countSQL = `
+      WITH RECURSIVE ${useCandidatePath ? searchCandidatesCteSql : ''}${nonDateFilteredIdsCteSql}
+      SELECT COUNT(*) as total_count FROM filtered_ids`;
+    const countParams = useCandidatePath ? queryParams : queryParams.slice(0, cursorBaseParamIdx - 1);
+    const countRows = (await sql.unsafe(countSQL, countParams)) as any[];
+    emptyPageTotal = parseInt(String(countRows[0]?.total_count ?? '0'), 10);
+  }
+
+  const total =
+    rawRows.length > 0
+      ? parseInt(String(rawRows[0].total_count ?? '0'), 10)
+      : (emptyPageTotal ?? 0);
   const content = needClassifications
     ? deduplicateWithClassifications(rawRows)
     : (rawRows as any as ContentSearchResult[]);
@@ -1784,28 +1925,11 @@ export async function searchContentByText(
     return await listContentInternal(sql, options, limit, offset);
   }
 
-  const queryVariants = expandSearchQueries(queryText, { maxVariants: 8 });
-  let lastResult: ContentSearchResponse | null = null;
-
-  for (const variant of queryVariants) {
-    const result = await searchContentBySingleQuery(sql, variant, options, env);
-    if (result.content.length > 0) {
-      if (variant !== queryText.trim()) {
-        logger.info(
-          { originalQuery: queryText.trim(), fallbackQuery: variant },
-          '[content-search] recovered results via fallback query variant'
-        );
-      }
-      return result;
-    }
-    lastResult = result;
-  }
-
-  return (
-    lastResult ?? {
-      content: [],
-      total: 0,
-      page: { limit, offset, has_more: false },
-    }
-  );
+  // One pass through searchContentBySingleQuery. For an org-wide query it takes
+  // the index-driven candidate path internally (ivfflat ANN ∪ fulltext GIN ∪
+  // trigram GIN, merged + re-ranked); entity-scoped queries use the entity-link
+  // join. The old per-variant retry loop is gone — the candidate query's
+  // to_tsquery already ORs the query's tokens, which is what the variants were
+  // approximating.
+  return await searchContentBySingleQuery(sql, queryText, options, env);
 }

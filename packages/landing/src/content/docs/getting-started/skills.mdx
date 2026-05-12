@@ -12,13 +12,25 @@ A **skill** is a reusable capability bundle for an agent. In Lobu, skills can ad
 - system packages
 - network requirements
 
-Lobu still discovers local `SKILL.md` files at runtime. Bundled skills are enabled from the agent settings UI; local skills live in your project so you can commit and customize them.
+Lobu discovers local `SKILL.md` files at runtime. Bundled skills are enabled from the agent settings UI; local skills live in your project so you can commit and customize them.
 
-## Bundled Starter Skill
+## Lobu Starter Skill
 
-The bundled Lobu starter skill includes project, runtime, and memory guidance. Enable it from the agent settings UI.
+The bundled Lobu skill teaches an agent the project layout, `lobu.toml`, prompt files, evals, memory tools, watchers, and client setup. Two places to install it:
 
-Use the **Lobu** skill when the agent should understand Lobu projects, `lobu.toml`, prompt files, evals, project structure, memory tools, watchers, and client setup.
+### In your coding agent
+
+Drop `SKILL.md` into Claude Code, Cursor, Codex, OpenCode, or OpenClaw with one command:
+
+```bash
+npx skills add lobu-ai/lobu --skill lobu
+```
+
+The [vercel-labs/skills](https://github.com/vercel-labs/skills) CLI auto-detects your editor and writes to the right directory. Pin one host with `-a <agent>` (e.g. `-a claude-code`, `-a cursor`).
+
+### In a Lobu agent
+
+Enable the bundled skill from the agent settings UI in [app.lobu.ai](https://app.lobu.ai). Local `SKILL.md` files under `skills/` and `agents/<id>/skills/` are also loaded at runtime — see [Local Skill Locations](#local-skill-locations) below.
 
 <SkillsRegistryTable client:load />
 
@@ -66,13 +78,10 @@ See [Tool Policy](/guides/tool-policy/) for that split.
 
 ## Skills Vs Memory
 
-Skills and memory are related but different:
-
 - **Skills** teach the agent how to work and what capabilities to request.
-- **Lobu memory** is the long-term memory and integrations surface.
-- **Lobu** can enable memory through `[memory]` in `lobu.toml`.
+- **Memory** is the long-term, shared knowledge surface — enabled per-project via `[memory]` in [`lobu.toml`](/reference/lobu-toml/).
 
-Installing the Lobu starter skill teaches the agent the workflow; runtime wiring still lives in Lobu configuration. See [Memory](/getting-started/memory/) for that setup.
+Installing the Lobu starter skill teaches the workflow; the memory wiring itself lives in `lobu.toml`. See [Memory](/getting-started/memory/).
 
 ## Read Next
 

@@ -20,8 +20,6 @@ const COLUMNS: FooterColumn[] = [
   {
     heading: "Solutions",
     links: [
-      { label: "Engineering", href: "/for/engineering" },
-      { label: "Support", href: "/for/support" },
       { label: "Legal", href: "/for/legal" },
       { label: "Sales", href: "/for/sales" },
       { label: "Finance", href: "/for/finance" },
@@ -70,7 +68,7 @@ export function Footer() {
                 fontFamily: "var(--font-display)",
               }}
             >
-              <img src="/lobster-icon.png" alt="Lobu" class="w-7 h-7" />
+              <img src="/lobster-icon.svg" alt="Lobu" class="w-7 h-7" />
               Lobu
             </a>
             <p

@@ -15,7 +15,7 @@ This page compares Lobu against other ways to run agents for multiple users.
 | **Multi-tenant** | Per-user/channel isolation | Single user | Per-thread sandbox | Per-conversation |
 | **Platforms** | Slack, Telegram, WhatsApp, Discord, Teams, Google Chat, REST API | CLI and API | API endpoints (MCP, A2A, Agent Protocol) | API |
 | **Embeddable** | Mount inside Next.js, Express, Hono, Fastify | No | No | No |
-| **Self-hosted** | Single Node process (BYO Postgres) | Single process | LangSmith hosted (self-host option) | Cloud only |
+| **Self-hosted** | Single Node process (bundled PGlite, or BYO Postgres) | Single process | LangSmith hosted (self-host option) | Cloud only |
 | **Model support** | Any provider via config | Any provider | Any LangChain-compatible provider | Anthropic only |
 | **Runtime** | OpenClaw | OpenClaw | LangGraph | Claude |
 | **Network isolation** | Gateway-mediated egress, domain filtering | Host network | Sandbox-level | Platform-managed |
@@ -24,7 +24,7 @@ This page compares Lobu against other ways to run agents for multiple users.
 | **Agent Protocol / A2A** | Not yet | No | Yes | No |
 | **Built-in evals** | YAML eval framework with model comparison | No | No | No |
 | **Memory** | Self-hosted Lobu plugin | Local | LangSmith APIs | Platform-managed |
-| **Scale-to-zero** | Built-in idle timeout | Always running | Managed by LangSmith | Managed |
+| **Worker lifecycle** | Persistent subprocess per channel; reaped on config change / shutdown | Always running | Managed by LangSmith | Managed |
 | **Config format** | `lobu.toml` + IDENTITY/SOUL/USER.md | CLI flags | `deepagents.toml` + AGENTS.md | Dashboard |
 | **License** | Open source | Open source | MIT (harness), proprietary (hosting) | Proprietary |
 
@@ -58,9 +58,9 @@ See the [memory benchmarks methodology](/guides/memory-benchmarks/) for fairness
 
 Lobu runs as a single Node process. Each user/channel gets its own worker subprocess that the gateway spawns on demand.
 
-### Single-process (BYO Postgres)
+### Single-process
 
-Uses [just-bash](https://github.com/nicholasgasior/just-bash) (virtual bash) + **Nix** for reproducible packages. Each user gets an isolated virtual filesystem and bash session at ~50MB memory footprint. Tested at **300 concurrent instances on a single machine**.
+Uses [just-bash](https://www.npmjs.com/package/just-bash) (virtual bash) + **Nix** for reproducible packages. Each user gets an isolated virtual filesystem and bash session at ~50MB memory footprint. Tested at **300 concurrent instances on a single machine**.
 
 - **Subprocess boundary per user** — `child_process.spawn` per session; SIGKILL recoverable.
 - **Workspace persistence** — `./workspaces/{agentId}/` survives gateway restarts.
@@ -119,7 +119,7 @@ If you need a single personal agent for yourself, use OpenClaw directly.
 
 Lobu and OpenClaw are complementary. OpenClaw is the single-user runtime. Lobu is the multi-user backend around it: routing, isolation, credentials, memory, and delivery.
 
-OpenClaw (~800k LOC) was designed as a **single-tenant, single-user system**. Production deployments need multi-tenant isolation, platform routing, credential separation, network control, and scale-to-zero — concerns OpenClaw doesn't have opinions about.
+OpenClaw (~800k LOC) was designed as a **single-tenant, single-user system**. Production deployments need multi-tenant isolation, platform routing, credential separation, and network control — concerns OpenClaw doesn't have opinions about.
 
 | Capability | Lobu | OpenClaw |
 |---|---|---|
@@ -128,8 +128,8 @@ OpenClaw (~800k LOC) was designed as a **single-tenant, single-user system**. Pr
 | Worker isolation | Subprocess + just-bash + (Linux) systemd-run hardening | Runs on host |
 | Secret handling | Gateway proxy injects credentials | Direct env vars |
 | Egress control | Domain allowlists via HTTP proxy | Host network |
-| Scale-to-zero | Built-in idle timeout and wake | Always running |
-| Deployment | Single Node process (BYO Postgres) | Single process |
+| Worker lifecycle | Persistent subprocess per channel | Always running |
+| Deployment | Single Node process (bundled PGlite or BYO Postgres) | Single process |
 
 Inside each Lobu worker, the full OpenClaw runtime runs untouched. Lobu rewrites only the gateway layer (~40k LOC) to be multi-tenant.
 
@@ -180,11 +180,10 @@ Claude Managed Agents is Anthropic's hosted agent platform.
 What "we'll build it ourselves" entails:
 
 - **Sandboxing**: per-user worker lifecycle with workspace persistence
-- **Platform adapters**: Slack Events API, Telegram long-polling, WhatsApp webhooks, each with their own auth flows
+- **Platform adapters**: Slack Events API, Telegram, WhatsApp webhooks, each with their own auth flows
 - **Credential isolation**: proxy layer that injects secrets without exposing them to agent code
 - **Network policy**: domain-filtered egress through a gateway proxy
 - **MCP proxy**: secret injection, OAuth token refresh, and routing for MCP servers
-- **Scale-to-zero**: idle detection, teardown, and wake-on-message
 - **Eval framework**: automated quality testing across models
 - **Admin UI**: per-agent configuration, connection management, status monitoring
 

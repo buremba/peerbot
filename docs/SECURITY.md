@@ -21,7 +21,7 @@ If your threat model includes hostile code execution, run Lobu inside a stronger
 
 ## What `just-bash` actually is
 
-`just-bash` (`@mariozechner/pi-coding-agent`) is the shell sandbox the worker uses for every shell command an agent issues. It enforces:
+`just-bash` is the shell sandbox the worker uses for every shell command an agent issues (it's a separate dependency from `@mariozechner/pi-coding-agent`, which is the Pi harness). It enforces:
 
 - `maxCommandCount: 50_000`, `maxLoopIterations: 50_000`, `maxCallDepth: 50` — these help against DoS, **not** sandbox escape.
 - A binary allowlist scoped to `/nix/store/` plus a known list (`lobu`, etc.). The allowlist is built at worker spawn from the agent's `nixPackages` config.

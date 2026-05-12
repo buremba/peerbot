@@ -34,7 +34,7 @@ interface SessionContextData {
 /**
  * Provides instructions from enabled skills for the agent.
  * Fetches skill content from AgentSettings and injects as instructions.
- * Falls back to generic skills.sh discovery instructions if no skills configured.
+ * Falls back to generic skill discovery instructions if no skills configured.
  */
 class SkillsInstructionProvider extends BaseInstructionProvider {
   readonly name = "skills";
@@ -47,7 +47,7 @@ class SkillsInstructionProvider extends BaseInstructionProvider {
   protected async buildInstructions(
     context: InstructionContext
   ): Promise<string> {
-    // If no settings store or agentId, return generic skills.sh instructions
+    // If no settings store or agentId, return generic skill discovery instructions
     if (!this.agentSettingsStore || !context.agentId) {
       return this.getGenericSkillsInstructions();
     }

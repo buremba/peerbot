@@ -1,7 +1,7 @@
 /**
  * Test setup and utilities for Gateway tests.
  *
- * Shared mocks (Redis, Queue, fetch, factories) live in @lobu/core fixtures.
+ * Shared mocks (Queue, fetch, factories) live in @lobu/core fixtures.
  * This file re-exports them and adds gateway-specific helpers.
  */
 

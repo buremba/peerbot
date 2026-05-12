@@ -1,10 +1,9 @@
 /**
  * Integration tests for RunsQueue against a real Postgres (PGlite in CI).
  *
- * Phase 10 of Redis -> Postgres migration: covers the production behaviors
- * that unit-level mocking cannot exercise — SKIP LOCKED concurrency,
- * graceful shutdown release, priority + expires_at + retryDelay options,
- * startup recovery scan.
+ * Covers the production behaviors that unit-level mocking cannot exercise —
+ * SKIP LOCKED concurrency, graceful shutdown release, priority + expires_at +
+ * retryDelay options, startup recovery scan.
  *
  * PGlite is a single-process WASM Postgres so the SKIP LOCKED concurrency
  * test cannot exercise real cross-process contention. We assert the

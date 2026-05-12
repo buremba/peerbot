@@ -84,6 +84,13 @@ export class AuthProfilesManager {
   private readonly agentOwnerResolver?: (
     agentId: string
   ) => Promise<string | undefined>;
+  /** Short-lived `agentId → ownerUserId` cache — owner lookups happen on the
+   *  credential hot path (per proxy request), the owner rarely changes. */
+  private readonly agentOwnerCache = new Map<
+    string,
+    { ownerUserId: string | undefined; expiresAt: number }
+  >();
+  private static readonly AGENT_OWNER_CACHE_TTL_MS = 60_000;
   private lazyRefreshHooks?: LazyRefreshHooks;
 
   constructor(options: AuthProfilesManagerOptions) {
@@ -182,15 +189,15 @@ export class AuthProfilesManager {
    */
   /** User-scoped profiles owned by the agent's owner (empty when the owner is
    *  the requesting user or no owner resolver is wired). */
-  private async listAgentOwnerProfiles(
-    agentId: string,
-    requestingUserId?: string
-  ): Promise<AuthProfile[]> {
-    if (!this.agentOwnerResolver) return [];
+  private async resolveAgentOwnerUserId(
+    agentId: string
+  ): Promise<string | undefined> {
+    if (!this.agentOwnerResolver) return undefined;
+    const cached = this.agentOwnerCache.get(agentId);
+    if (cached && cached.expiresAt > Date.now()) return cached.ownerUserId;
+    let ownerUserId: string | undefined;
     try {
-      const ownerUserId = await this.agentOwnerResolver(agentId);
-      if (!ownerUserId || ownerUserId === requestingUserId) return [];
-      return await this.userAuthProfiles.list(ownerUserId, agentId);
+      ownerUserId = await this.agentOwnerResolver(agentId);
     } catch (error) {
       logger.warn(
         {
@@ -199,8 +206,27 @@ export class AuthProfilesManager {
         },
         "agent owner resolver failed; skipping owner credential fallback"
       );
-      return [];
+      return undefined;
     }
+    this.agentOwnerCache.set(agentId, {
+      ownerUserId,
+      expiresAt: Date.now() + AuthProfilesManager.AGENT_OWNER_CACHE_TTL_MS,
+    });
+    return ownerUserId;
+  }
+
+  private async listAgentOwnerProfiles(
+    agentId: string,
+    requestingUserId?: string
+  ): Promise<AuthProfile[]> {
+    const ownerUserId = await this.resolveAgentOwnerUserId(agentId);
+    if (!ownerUserId || ownerUserId === requestingUserId) return [];
+    const ownerProfiles = await this.userAuthProfiles.list(ownerUserId, agentId);
+    // Only API-key profiles fall back to the owner. OAuth/device-code profiles
+    // carry per-user refresh state (`ensureFreshCredential` keys refresh by the
+    // *requesting* userId, which here is the synthetic run user) — surfacing an
+    // owner OAuth token would attribute its refresh to the wrong user row.
+    return ownerProfiles.filter((profile) => profile.authType === "api-key");
   }
 
   async listProfiles(agentId: string, userId?: string): Promise<AuthProfile[]> {

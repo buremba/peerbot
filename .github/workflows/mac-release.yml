@@ -23,12 +23,11 @@ name: mac-release
 #   APPLE_ID                Apple ID email used for notarization
 #   APPLE_APP_PASSWORD      app-specific password for that Apple ID
 #
-# The cask push uses HOMEBREW_TAP_TOKEN if set, else falls back to
-# RELEASE_PLEASE_TOKEN (any PAT with write access to lobu-ai/homebrew-tap works);
-# if neither exists the cask step is skipped and the DMG still ships on the
-# release. No provisioning profile is required — the app ships only standard
-# entitlements (the HealthKit entitlement is disabled; see
-# apps/mac/Lobu/Lobu.entitlements).
+# The cask push uses HOMEBREW_TAP_TOKEN if set, else RELEASE_PLEASE_TOKEN (any
+# PAT with write access to lobu-ai/homebrew-tap works). It always runs — if no
+# usable token is configured the job fails loudly rather than skipping. No
+# provisioning profile is required — the app ships only standard entitlements
+# (the HealthKit entitlement is disabled; see apps/mac/Lobu/Lobu.entitlements).
 
 on:
   workflow_dispatch:
@@ -54,7 +53,6 @@ jobs:
         id: mode
         env:
           CERT_P12_BASE64: ${{ secrets.APPLE_CERT_P12_BASE64 }}
-          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN || secrets.RELEASE_PLEASE_TOKEN }}
         run: |
           if [ -n "$CERT_P12_BASE64" ]; then
             echo "signed=true" >> "$GITHUB_OUTPUT"
@@ -63,7 +61,6 @@ jobs:
             echo "signed=false" >> "$GITHUB_OUTPUT"
             echo "::warning::APPLE_CERT_P12_BASE64 not set — building an UNSIGNED DMG (Gatekeeper warns on first open). Add the signing secrets to get a notarized build."
           fi
-          if [ -n "$TAP_TOKEN" ]; then echo "tap=true" >> "$GITHUB_OUTPUT"; else echo "tap=false" >> "$GITHUB_OUTPUT"; echo "::warning::No HOMEBREW_TAP_TOKEN / RELEASE_PLEASE_TOKEN — skipping the Homebrew cask update."; fi
 
       # ── SIGNED path: import the Developer ID cert into an ephemeral keychain ──
       - name: Import signing certificate
@@ -143,11 +140,14 @@ jobs:
           files: ${{ runner.temp }}/Lobu.dmg
           fail_on_unmatched_files: true
 
-      - name: Update Homebrew tap
-        if: steps.mode.outputs.tap == 'true'
+      - name: Publish Homebrew cask
         env:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN || secrets.RELEASE_PLEASE_TOKEN }}
         run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::No HOMEBREW_TAP_TOKEN or RELEASE_PLEASE_TOKEN configured — cannot push the Homebrew cask. Add a PAT with write access to lobu-ai/homebrew-tap."
+            exit 1
+          fi
           VERSION="${{ steps.v.outputs.version }}"
           SHA="${{ steps.sum.outputs.sha256 }}"
           git clone "https://x-access-token:${GH_TOKEN}@github.com/lobu-ai/homebrew-tap.git" tap

@@ -11,6 +11,7 @@ import { bindSlackPreviewClaim, createSlackPreviewClaim } from "../slack";
 const ORG_ID = "org-slack-preview";
 const USER_ID = "user-slack-preview";
 const AGENT_ID = "demo-agent";
+const OTHER_AGENT_ID = "other-agent";
 const RELAY_TOKEN = "relay-test-token";
 
 interface FakeResponse {
@@ -77,7 +78,7 @@ async function seedOrgAndAgent(): Promise<void> {
   `;
   await sql`
     INSERT INTO agents (id, organization_id, name)
-    VALUES (${AGENT_ID}, ${ORG_ID}, 'Demo')
+    VALUES (${AGENT_ID}, ${ORG_ID}, 'Demo'), (${OTHER_AGENT_ID}, ${ORG_ID}, 'Other')
     ON CONFLICT (id) DO NOTHING
   `;
 }
@@ -145,7 +146,7 @@ describe("Slack Preview claims + bindings (Postgres-backed)", () => {
     expect(remaining).toHaveLength(0);
   });
 
-  test("re-binding the same surface is rejected with 409", async () => {
+  test("re-linking a surface rebinds it to the new agent (last link wins)", async () => {
     const c1 = await call(
       createSlackPreviewClaim,
       orgUserContext({ agent_id: AGENT_ID })
@@ -161,9 +162,9 @@ describe("Slack Preview claims + bindings (Postgres-backed)", () => {
 
     const c2 = await call(
       createSlackPreviewClaim,
-      orgUserContext({ agent_id: AGENT_ID })
+      orgUserContext({ agent_id: OTHER_AGENT_ID })
     );
-    const conflict = await call(
+    const rebound = await call(
       bindSlackPreviewClaim,
       relayContext({
         code: c2.body.code,
@@ -171,8 +172,16 @@ describe("Slack Preview claims + bindings (Postgres-backed)", () => {
         external_channel_id: "Dsame",
       })
     );
-    expect(conflict.status).toBe(409);
-    expect(conflict.body.error).toBe("Slack surface is already linked");
+    expect(rebound.status).toBe(200);
+    expect(rebound.body.agent_id).toBe(OTHER_AGENT_ID);
+
+    const sql = getDb();
+    const rows = await sql`
+      SELECT agent_id FROM agent_channel_bindings
+      WHERE platform = 'slack-preview' AND channel_id = 'dm:Dsame' AND team_id = 'T1'
+    `;
+    expect(rows).toHaveLength(1);
+    expect((rows[0] as { agent_id: string }).agent_id).toBe(OTHER_AGENT_ID);
   });
 
   test("unknown / expired code → 404", async () => {

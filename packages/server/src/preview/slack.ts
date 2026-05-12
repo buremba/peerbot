@@ -219,15 +219,18 @@ export async function bindSlackPreviewClaim(c: Context<{ Bindings: Env }>) {
       `;
       const claim = claims[0]?.payload;
       if (!claim) return { status: 'not_found' as const };
-      if (!claim.allowedSurfaces.includes(surfaceType)) return { status: 'surface_not_allowed' as const };
+      if (!claim.allowedSurfaces.includes(surfaceType)) {
+        return { status: 'surface_not_allowed' as const };
+      }
 
-      const inserted = await tx`
+      // Last `link` wins — re-linking a surface to a different agent just
+      // rebinds it, so there's no separate `unlink` step to forget. Mirrors
+      // ChannelBindingService.createBinding's upsert for real connections.
+      await tx`
         INSERT INTO agent_channel_bindings (agent_id, platform, channel_id, team_id, created_at)
         VALUES (${claim.agentId}, ${BINDING_PLATFORM}, ${key}, ${externalTeamId}, now())
-        ON CONFLICT (platform, channel_id, team_id) DO NOTHING
-        RETURNING agent_id
+        ON CONFLICT (platform, channel_id, team_id) DO UPDATE SET agent_id = EXCLUDED.agent_id
       `;
-      if (inserted.length === 0) return { status: 'already_linked' as const };
 
       return {
         status: 'bound' as const,
@@ -242,15 +245,6 @@ export async function bindSlackPreviewClaim(c: Context<{ Bindings: Env }>) {
     }
     if (result.status === 'surface_not_allowed') {
       return c.json({ error: `Preview code is not valid for ${surfaceType} bindings` }, 400);
-    }
-    if (result.status === 'already_linked') {
-      return c.json(
-        {
-          error: 'Slack surface is already linked',
-          message: 'Run `unlink` in Slack before linking this DM, channel, or thread to another agent.',
-        },
-        409
-      );
     }
 
     return c.json({

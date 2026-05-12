@@ -386,12 +386,63 @@ routes.get('/', mcpAuth, async (c) => {
       for (const clientId of runtimeIds) ids.add(clientId);
     }
 
+    // Watchers owned by each agent (active only).
+    const watcherCounts = await sql`
+      SELECT agent_id, count(*)::int as count
+      FROM watchers
+      WHERE organization_id = ${orgId} AND status = 'active' AND agent_id IS NOT NULL
+      GROUP BY agent_id
+    `;
+    const watcherCountMap = new Map(watcherCounts.map((r: any) => [r.agent_id, r.count]));
+
+    // Distinct end-users per agent across messaging platforms.
+    const userCounts = await sql`
+      SELECT u.agent_id, count(DISTINCT (u.platform, u.user_id))::int as count
+      FROM agent_users u
+      JOIN agents a ON a.id = u.agent_id
+      WHERE a.organization_id = ${orgId}
+      GROUP BY u.agent_id
+    `;
+    const userCountMap = new Map(userCounts.map((r: any) => [r.agent_id, r.count]));
+
+    // Distinct connection platforms per agent.
+    const platformRows = await sql`
+      SELECT c.agent_id, array_agg(DISTINCT c.platform) as platforms
+      FROM agent_connections c
+      JOIN agents a ON a.id = c.agent_id
+      WHERE a.organization_id = ${orgId}
+      GROUP BY c.agent_id
+    `;
+    const platformsMap = new Map(platformRows.map((r: any) => [r.agent_id, (r.platforms ?? []) as string[]]));
+
+    // Provider ids per agent, derived from the row's auth_profiles + installed_providers.
+    const providerRows = await sql`
+      SELECT id, auth_profiles, installed_providers
+      FROM agents
+      WHERE organization_id = ${orgId}
+    `;
+    const providersMap = new Map<string, string[]>();
+    for (const r of providerRows) {
+      const set = new Set<string>();
+      for (const p of ((r as any).auth_profiles ?? []) as any[]) {
+        if (p?.provider) set.add(String(p.provider));
+      }
+      for (const p of ((r as any).installed_providers ?? []) as any[]) {
+        if (p?.providerId) set.add(String(p.providerId));
+      }
+      providersMap.set((r as any).id, [...set]);
+    }
+
     return c.json({
       agents: agents.map((a) => ({
         ...a,
         connectionCount: countMap.get(a.agentId) ?? 0,
         activeConnectionCount: activeCountMap.get(a.agentId) ?? 0,
         clientCount: clientCountMap.get(a.agentId)?.size ?? 0,
+        watcherCount: watcherCountMap.get(a.agentId) ?? 0,
+        userCount: userCountMap.get(a.agentId) ?? 0,
+        platforms: platformsMap.get(a.agentId) ?? [],
+        providers: providersMap.get(a.agentId) ?? [],
         status: (activeCountMap.get(a.agentId) ?? 0) > 0 ? 'active' : 'idle',
       })),
     });

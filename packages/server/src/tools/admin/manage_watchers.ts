@@ -582,6 +582,11 @@ export const ListWatchersSchema = Type.Object({
       description: 'Optional entity ID to list watchers attached to a specific entity',
     })
   ),
+  agent_id: Type.Optional(
+    Type.String({
+      description: 'Optional agent ID to list watchers owned by a specific agent',
+    })
+  ),
   status: Type.Optional(
     Type.String({
       description: 'Optional status filter. Use "active" or "archived". Omit to include all.',
@@ -2235,6 +2240,12 @@ async function handleList(
   if (args.watcher_id) {
     conditions.push(`i.id = $${paramCount}`);
     params.push(args.watcher_id);
+    paramCount++;
+  }
+
+  if (args.agent_id) {
+    conditions.push(`i.agent_id = $${paramCount}`);
+    params.push(args.agent_id);
     paramCount++;
   }
 

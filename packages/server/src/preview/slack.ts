@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomInt } from 'node:crypto';
 import type { Context } from 'hono';
 import { getDb } from '../db/client';
 import type { Env } from '../index';
@@ -48,9 +48,15 @@ function slugify(value: string): string {
     .slice(0, 32);
 }
 
+// Uppercase letters + digits — readable, no ambiguous punctuation, and a fixed
+// length (the old base64url-then-strip approach could yield < 6 chars when the
+// random bytes happened to land on `-`/`_`).
+const CODE_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+
 function randomCodeSuffix(): string {
-  // 6 base32-ish chars, no ambiguous punctuation.
-  return randomBytes(5).toString('base64url').replace(/[^a-zA-Z0-9]/g, '').slice(0, 6).toUpperCase();
+  let out = '';
+  for (let i = 0; i < 6; i++) out += CODE_ALPHABET[randomInt(CODE_ALPHABET.length)];
+  return out;
 }
 
 function normalizeSurfaces(input: unknown): SurfaceType[] {

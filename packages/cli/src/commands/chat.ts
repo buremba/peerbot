@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import chalk from "chalk";
 import {
+  agentApiBase,
   apiBaseFromContextUrl,
   getCurrentContextName,
   getToken,
@@ -80,7 +81,9 @@ export async function chatCommand(
   } else {
     gatewayUrl = await resolveGatewayUrl({ cwd });
   }
-  gatewayUrl = gatewayUrl.replace(/\/$/, "");
+  // The Agent API lives under `<origin>/lobu` on every Lobu deployment; the
+  // context apiUrl and `.env` PORT only give the origin.
+  gatewayUrl = agentApiBase(gatewayUrl);
 
   const authToken = await getToken(options.context);
   if (!authToken) {

@@ -9,6 +9,7 @@ import { basename, join } from "node:path";
 import chalk from "chalk";
 import { parse as parseYaml } from "yaml";
 import {
+  agentApiBase,
   apiBaseFromContextUrl,
   getToken,
   resolveContext,
@@ -119,12 +120,12 @@ export async function evalCommand(
   }
 
   // Auth and gateway required from here (not needed for --list)
-  const gatewayUrl = (
+  const gatewayUrl = agentApiBase(
     options.gateway ??
-    (options.context
-      ? apiBaseFromContextUrl((await resolveContext(options.context)).apiUrl)
-      : await resolveGatewayUrl({ cwd }))
-  ).replace(/\/$/, "");
+      (options.context
+        ? apiBaseFromContextUrl((await resolveContext(options.context)).apiUrl)
+        : await resolveGatewayUrl({ cwd }))
+  );
 
   const authToken = await getToken(options.context);
   if (!authToken) {

@@ -99,7 +99,7 @@ describe("chatCommand example integration", () => {
         const url = String(input);
 
         if (
-          url === "http://gateway.test/api/v1/agents" &&
+          url === "http://gateway.test/lobu/api/v1/agents" &&
           init?.method === "POST"
         ) {
           const body = JSON.parse(String(init.body)) as Record<string, unknown>;
@@ -111,7 +111,7 @@ describe("chatCommand example integration", () => {
         }
 
         if (
-          url === "http://gateway.test/api/v1/agents/session-1/events" &&
+          url === "http://gateway.test/lobu/api/v1/agents/session-1/events" &&
           !init?.method
         ) {
           return createSseResponse([
@@ -156,14 +156,14 @@ describe("chatCommand example integration", () => {
         }
 
         if (
-          url === "http://gateway.test/api/v1/agents/session-1/messages" &&
+          url === "http://gateway.test/lobu/api/v1/agents/session-1/messages" &&
           init?.method === "POST"
         ) {
           return Response.json({ success: true });
         }
 
         if (
-          url === "http://gateway.test/api/v1/agents/approve" &&
+          url === "http://gateway.test/lobu/api/v1/agents/approve" &&
           init?.method === "POST"
         ) {
           const body = JSON.parse(String(init.body)) as Record<string, unknown>;
@@ -224,7 +224,8 @@ describe("chatCommand example integration", () => {
         const url = String(input);
 
         if (
-          url === "http://gateway.test/api/v1/agents/vc-tracking/messages" &&
+          url ===
+            "http://gateway.test/lobu/api/v1/agents/vc-tracking/messages" &&
           init?.method === "POST"
         ) {
           return Response.json({
@@ -235,7 +236,7 @@ describe("chatCommand example integration", () => {
 
         if (
           url ===
-            "http://gateway.test/api/v1/agents/vc-tracking/events?platform=telegram" &&
+            "http://gateway.test/lobu/api/v1/agents/vc-tracking/events?platform=telegram" &&
           !init?.method
         ) {
           return createSseResponse([
@@ -288,7 +289,8 @@ describe("chatCommand example integration", () => {
         const url = String(input);
 
         if (
-          url === "http://gateway.test/api/v1/agents/vc-tracking/messages" &&
+          url ===
+            "http://gateway.test/lobu/api/v1/agents/vc-tracking/messages" &&
           init?.method === "POST"
         ) {
           return Response.json({
@@ -299,7 +301,7 @@ describe("chatCommand example integration", () => {
 
         if (
           url ===
-            "http://gateway.test/api/v1/agents/vc-tracking/events?platform=telegram" &&
+            "http://gateway.test/lobu/api/v1/agents/vc-tracking/events?platform=telegram" &&
           !init?.method
         ) {
           return createSseResponse([
@@ -340,7 +342,8 @@ describe("chatCommand example integration", () => {
         const url = String(input);
 
         if (
-          url === "http://gateway.test/api/v1/agents/vc-tracking/messages" &&
+          url ===
+            "http://gateway.test/lobu/api/v1/agents/vc-tracking/messages" &&
           init?.method === "POST"
         ) {
           return Response.json({
@@ -351,7 +354,7 @@ describe("chatCommand example integration", () => {
 
         if (
           url ===
-            "http://gateway.test/api/v1/agents/vc-tracking/events?platform=telegram" &&
+            "http://gateway.test/lobu/api/v1/agents/vc-tracking/events?platform=telegram" &&
           !init?.method
         ) {
           return createSseResponse([
@@ -388,7 +391,8 @@ describe("chatCommand example integration", () => {
         const url = String(input);
 
         if (
-          url === "http://gateway.test/api/v1/agents/vc-tracking/messages" &&
+          url ===
+            "http://gateway.test/lobu/api/v1/agents/vc-tracking/messages" &&
           init?.method === "POST"
         ) {
           const body = JSON.parse(String(init.body)) as Record<string, unknown>;
@@ -401,7 +405,7 @@ describe("chatCommand example integration", () => {
 
         if (
           url ===
-            "http://gateway.test/api/v1/agents/vc-tracking/events?platform=telegram" &&
+            "http://gateway.test/lobu/api/v1/agents/vc-tracking/events?platform=telegram" &&
           !init?.method
         ) {
           return createSseResponse([

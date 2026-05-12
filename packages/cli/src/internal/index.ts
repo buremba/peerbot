@@ -25,4 +25,9 @@ export {
   listOrganizations,
   resolveApiClient,
 } from "./api-client.js";
-export { GATEWAY_DEFAULT_URL, resolveGatewayUrl } from "./gateway-url.js";
+export {
+  agentApiBase,
+  GATEWAY_AGENT_API_PREFIX,
+  GATEWAY_DEFAULT_URL,
+  resolveGatewayUrl,
+} from "./gateway-url.js";

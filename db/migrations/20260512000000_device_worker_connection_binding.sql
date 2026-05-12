@@ -64,10 +64,14 @@ CREATE INDEX IF NOT EXISTS device_worker_org_grants_org_idx
 UPDATE public.connections c
 SET device_worker_id = dw.id
 FROM (
-    SELECT user_id, min(id) AS id
-    FROM public.device_workers
-    GROUP BY user_id
-    HAVING count(*) = 1
+    -- Users with exactly one device worker (no min(uuid) needed — and Postgres
+    -- has no aggregate for uuid anyway).
+    SELECT dw1.user_id, dw1.id
+    FROM public.device_workers dw1
+    WHERE NOT EXISTS (
+        SELECT 1 FROM public.device_workers dw2
+        WHERE dw2.user_id = dw1.user_id AND dw2.id <> dw1.id
+    )
 ) dw
 WHERE c.created_by = dw.user_id
   AND c.device_worker_id IS NULL

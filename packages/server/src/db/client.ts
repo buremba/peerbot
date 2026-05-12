@@ -70,12 +70,22 @@ interface CreatedDbClient {
 
 function createDbClient(connectionString: string, maxConnections?: number): CreatedDbClient {
   const embeddedCompatMode = process.env.LOBU_DISABLE_PREPARE === '1';
-  const embeddedProtocolOptions = embeddedCompatMode
-    ? ({ max_pipeline: 1, prepare: false } as Record<string, unknown>)
-    : {};
+
+  // PGlite's socket server can't safely interleave queries that postgres.js
+  // (and Kysely's reserve() path used by better-auth) pipeline across multiple
+  // connections — concurrent requests collide on the unnamed prepared statement
+  // and crash with "bind message supplies N parameters, but prepared statement
+  // requires M". Pin the embedded pool to a single connection so everything
+  // serializes. With a single connection, named prepared statements (postgres.js
+  // default) are safe again — and necessary: `prepare: false` mangles the
+  // dynamically-composed `sql` fragments used by tools like manage_connections
+  // into "syntax error at or near \"$1\"" on PGlite.
+  const poolMax = embeddedCompatMode
+    ? 1
+    : (maxConnections ?? parseInt(process.env.DB_POOL_MAX || '20', 10));
 
   const rawClient = postgres(connectionString, {
-    max: maxConnections ?? parseInt(process.env.DB_POOL_MAX || '20', 10),
+    max: poolMax,
     // Keep connections forever client-side. Postgres handles eviction via its
     // own idle/lifetime settings; recycling every 20s on the client side
     // forces every spotty-traffic burst to pay a ~1s TCP+TLS handshake.
@@ -87,7 +97,6 @@ function createDbClient(connectionString: string, maxConnections?: number): Crea
       application_name: 'server',
     },
     fetch_types: false,
-    ...embeddedProtocolOptions,
     transform: {
       value: {
         // IMPORTANT: fetch_types: false means postgres.js doesn't auto-parse
@@ -126,41 +135,14 @@ function createDbClient(connectionString: string, maxConnections?: number): Crea
     },
   });
 
+  // Always hand back the raw postgres.js client. In embedded mode the pool is
+  // already pinned to 1 connection (above), which serializes queries at the
+  // connection level — so no JS-side serialization wrapper is needed. An earlier
+  // wrapper broke postgres.js fragment nesting (`sql`${query} AND …``) by
+  // returning a Promise instead of a PendingQuery, which surfaced as
+  // "syntax error at or near \"$1\"" from tools like manage_connections.
   const dbClient = rawClient as unknown as DbClient;
-
-  if (!embeddedCompatMode) {
-    return { wrapped: dbClient, raw: rawClient };
-  }
-
-  return { wrapped: createSerializedClient(dbClient), raw: rawClient };
-}
-
-function createSerializedClient(client: DbClient): DbClient {
-  let queue: Promise<void> = Promise.resolve();
-
-  function serialize<T>(run: () => Promise<T>): Promise<T> {
-    const result = queue.then(run, run);
-    queue = result.then(
-      () => undefined,
-      () => undefined
-    );
-    return result;
-  }
-
-  const wrapped = ((strings: TemplateStringsArray, ...values: unknown[]) =>
-    serialize(() => client(strings, ...values))) as DbClient;
-
-  wrapped.unsafe = (query, params, queryOptions) =>
-    serialize(() => client.unsafe(query, params, queryOptions)) as DbQuery<any>;
-  wrapped.array = client.array.bind(client);
-  wrapped.json = client.json.bind(client);
-  wrapped.begin = async <T>(fn: (sql: DbClient) => Promise<T>) =>
-    client.begin((tx) => fn(createSerializedClient(tx)));
-  if (client.end) {
-    wrapped.end = client.end.bind(client);
-  }
-
-  return wrapped;
+  return { wrapped: dbClient, raw: rawClient };
 }
 
 /**

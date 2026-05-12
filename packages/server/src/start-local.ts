@@ -477,7 +477,8 @@ async function applyEmbeddedSchemaPatches(sql: MigrationSqlClient) {
 // has real users provisioned via the web UI.
 
 const BOOTSTRAP_USER_ID = 'bootstrap-user';
-const BOOTSTRAP_USER_EMAIL = 'dev@local';
+// Needs a dotted domain — better-auth's email validator rejects bare `dev@local`.
+const BOOTSTRAP_USER_EMAIL = 'dev@lobu.local';
 const BOOTSTRAP_USER_NAME = 'Local Developer';
 const BOOTSTRAP_USERNAME = 'dev-local';
 const BOOTSTRAP_ORG_ID = 'org-bootstrap-dev';
@@ -485,6 +486,11 @@ const BOOTSTRAP_ORG_SLUG = 'dev';
 const BOOTSTRAP_ORG_NAME = 'Local Dev';
 const BOOTSTRAP_MEMBER_ID = 'member-bootstrap-dev';
 const BOOTSTRAP_PAT_FILENAME = 'bootstrap-pat.txt';
+// Fixed credential-login password for the bootstrap user. Local PGlite only —
+// the user-count guard below means this never lands in a real deployment.
+// Must be >= 8 chars to satisfy the web login form's minlength validation.
+const BOOTSTRAP_PASSWORD = 'lobudev123';
+const BOOTSTRAP_ACCOUNT_ID = 'account-bootstrap-dev';
 
 function isLoopbackPgUrl(dbUrl: string): boolean {
   try {
@@ -609,6 +615,25 @@ async function ensureBootstrapPat(dbUrl: string): Promise<void> {
 
     writeFileSync(patFilePath, `${token}\n`, { mode: 0o600 });
 
+    // Credential login for the web UI — same user, fixed password. Uses
+    // better-auth's default password hasher so `/api/auth/sign-in/email`
+    // accepts it. `emailVerified` was set true above, so no verification gate.
+    const { hashPassword } = await import('better-auth/crypto');
+    const passwordHash = await hashPassword(BOOTSTRAP_PASSWORD);
+    await sql`
+      INSERT INTO "account" (id, "accountId", "providerId", "userId", password, "createdAt", "updatedAt")
+      VALUES (
+        ${BOOTSTRAP_ACCOUNT_ID},
+        ${BOOTSTRAP_USER_ID},
+        'credential',
+        ${BOOTSTRAP_USER_ID},
+        ${passwordHash},
+        NOW(),
+        NOW()
+      )
+      ON CONFLICT ("providerId", "accountId") DO NOTHING
+    `;
+
     const url = `http://localhost:${PORT}`;
     // PAT printed once for dev bootstrap; do not redirect this log line through
     // any remote sink (Sentry, OTEL exporter, etc.). The bootstrap PAT carries
@@ -619,9 +644,12 @@ async function ensureBootstrapPat(dbUrl: string): Promise<void> {
     process.stdout.write(
       `[bootstrap PAT] WARNING: this PAT has full mcp:admin scope. Treat it like a password.\n`
     );
+    process.stdout.write(
+      `[bootstrap login] ${BOOTSTRAP_USER_EMAIL} / ${BOOTSTRAP_PASSWORD}  →  ${url}\n`
+    );
     logger.info(
       { path: patFilePath, org: BOOTSTRAP_ORG_SLUG, url },
-      'Bootstrap PAT minted (printed once, mcp:admin scope)'
+      'Bootstrap PAT + web login minted (printed once)'
     );
   } finally {
     await sql.end();

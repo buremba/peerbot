@@ -23,6 +23,7 @@ import type { Env } from '../../index';
 import { isLobuGatewayRunning } from '../../lobu/gateway';
 import type { ComponentReferenceDocumentation } from '../../types/templates';
 import { entityLinkMatchSql } from '../../utils/content-search';
+import { ToolUserError } from '../../utils/errors';
 import { nextRunAt, validateSchedule } from '../../utils/cron';
 import { recordChangeEvent } from '../../utils/insert-event';
 import { verifyWindowToken } from '../../utils/jwt';
@@ -857,13 +858,13 @@ async function handleCreate(
 
   // Require slug + prompt + extraction_schema for create
   if (!args.slug) {
-    throw new Error('slug is required for create action');
+    throw new ToolUserError('slug is required for create action');
   }
   if (!args.prompt) {
-    throw new Error('prompt is required for create action');
+    throw new ToolUserError('prompt is required for create action');
   }
   if (!args.extraction_schema) {
-    throw new Error('extraction_schema is required for create action');
+    throw new ToolUserError('extraction_schema is required for create action');
   }
 
   // entity_id is optional: omit it for an org-scoped/global watcher.
@@ -892,7 +893,7 @@ async function handleCreate(
     sources,
   });
   if (validation) {
-    throw new Error(`Watcher validation failed: ${validation}`);
+    throw new ToolUserError(`Watcher validation failed: ${validation}`, 422);
   }
 
   if (classifiers && extractionSchema) {
@@ -901,14 +902,14 @@ async function handleCreate(
       extractionSchema
     );
     if (classifierValidation) {
-      throw new Error(`Classifier-schema compatibility error: ${classifierValidation}`);
+      throw new ToolUserError(`Classifier-schema compatibility error: ${classifierValidation}`, 422);
     }
   }
 
   if (args.schedule) {
     const scheduleError = validateSchedule(args.schedule);
     if (scheduleError) {
-      throw new Error(scheduleError);
+      throw new ToolUserError(scheduleError);
     }
   }
 
@@ -936,14 +937,14 @@ async function handleCreate(
       WHERE e.id = ${entityId}
     `;
     if (entityResult.length === 0) {
-      throw new Error(`Entity with ID ${entityId} not found`);
+      throw new ToolUserError(`Entity with ID ${entityId} not found`, 404);
     }
     entityRow = entityResult[0] as EntityRow;
     organizationId = entityRow.organization_id;
     organizationSlug = await getOrganizationSlug(organizationId);
   } else {
     if (!organizationId) {
-      throw new Error(
+      throw new ToolUserError(
         'entity_id or an organization context is required to create a watcher'
       );
     }
@@ -957,7 +958,10 @@ async function handleCreate(
     LIMIT 1
   `;
   if (existingSlug.length > 0) {
-    throw new Error(`Watcher with slug '${args.slug}' already exists in this organization`);
+    throw new ToolUserError(
+      `Watcher with slug '${args.slug}' already exists in this organization`,
+      409
+    );
   }
 
   // Validate schedule if provided
@@ -2396,7 +2400,7 @@ async function handleCreateVersion(
     sources,
   });
   if (validation) {
-    throw new Error(`Watcher validation failed: ${validation}`);
+    throw new ToolUserError(`Watcher validation failed: ${validation}`, 422);
   }
 
   if (classifiers && extractionSchema) {
@@ -2405,7 +2409,7 @@ async function handleCreateVersion(
       extractionSchema
     );
     if (classifierValidation) {
-      throw new Error(`Classifier-schema compatibility error: ${classifierValidation}`);
+      throw new ToolUserError(`Classifier-schema compatibility error: ${classifierValidation}`, 422);
     }
   }
 

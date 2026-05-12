@@ -13,6 +13,7 @@ import { hasRequiredMcpScope } from '../auth/tool-access';
 import { getDb } from '../db/client';
 import type { Env } from '../index';
 import { autoLinkEvent } from '../utils/auto-linker';
+import { ToolUserError } from '../utils/errors';
 import { validateSaveContentSemanticType } from '../utils/event-kind-validation';
 import { insertEvent } from '../utils/insert-event';
 import logger from '../utils/logger';
@@ -137,10 +138,10 @@ export async function saveContent(
   const isSystem = ctx.userId === null && ctx.isAuthenticated;
   if (!isSystem) {
     if (!ctx.memberRole) {
-      throw new Error('save_memory requires workspace membership with write access.');
+      throw new ToolUserError('save_memory requires workspace membership with write access.', 403);
     }
     if (!hasRequiredMcpScope('write', ctx.scopes)) {
-      throw new Error('save_memory requires an MCP session with write access.');
+      throw new ToolUserError('save_memory requires an MCP session with write access.', 403);
     }
   }
 
@@ -151,16 +152,16 @@ export async function saveContent(
 
   const entityIds: number[] = args.entity_ids ?? [];
   const semanticType = args.semantic_type;
-  if (!semanticType) throw new Error('semantic_type is required');
+  if (!semanticType) throw new ToolUserError('semantic_type is required');
 
   const payloadType = args.payload_type ?? 'text';
 
   // Validate content requirement based on payload_type
   if ((payloadType === 'text' || payloadType === 'markdown') && !args.content) {
-    throw new Error(`content is required for payload_type '${payloadType}'`);
+    throw new ToolUserError(`content is required for payload_type '${payloadType}'`);
   }
   if (payloadType === 'json_template' && !args.payload_template) {
-    throw new Error("payload_template is required when payload_type is 'json_template'");
+    throw new ToolUserError("payload_template is required when payload_type is 'json_template'");
   }
 
   // 1. Require write access for each entity
@@ -176,7 +177,7 @@ export async function saveContent(
     entityIds.length > 0 ? entityIds : undefined
   );
   if (!kindValidation.valid) {
-    throw new Error(kindValidation.errors.join('\n'));
+    throw new ToolUserError(kindValidation.errors.join('\n'), 422);
   }
 
   // 3. Validate event metadata against entity type's event kind schema (if entity-associated)

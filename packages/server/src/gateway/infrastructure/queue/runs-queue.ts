@@ -70,16 +70,6 @@ function shouldEmitSentryAlert(runId: number): boolean {
   return true;
 }
 
-const sentryAlertedTags = new Map<string, number>();
-
-function shouldEmitSentryAlertByTag(tag: string): boolean {
-  const now = Date.now();
-  const last = sentryAlertedTags.get(tag);
-  if (last && now - last < SENTRY_DEDUPE_WINDOW_MS) return false;
-  sentryAlertedTags.set(tag, now);
-  return true;
-}
-
 function queueBreadcrumb(
   category: string,
   message: string,
@@ -839,21 +829,13 @@ export class RunsQueue implements IMessageQueue {
            RETURNING id`,
         );
         if (result.count > 0) {
+          // Operational housekeeping, not an incident — log it, but don't
+          // page Sentry (Seer flagged the alert super-low actionability).
           logger.warn(
             `Reclaimed ${result.count} stale runs (claimed > ${
               CLAIM_VISIBILITY_TIMEOUT_MS / 1000
             }s ago)`,
           );
-          if (shouldEmitSentryAlertByTag("stale-claim-sweeper")) {
-            try {
-              Sentry.captureMessage(
-                `Stale-claim sweeper reclaimed ${result.count} run(s)`,
-                { level: "warning", extra: { count: result.count } },
-              );
-            } catch {
-              // ignore
-            }
-          }
         }
       } catch (err) {
         logger.warn(

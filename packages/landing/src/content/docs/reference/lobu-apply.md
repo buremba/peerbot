@@ -32,16 +32,32 @@ lobu deploy                      # `deploy` is an alias for `apply`
 
 Authentication is shared with the rest of the CLI. Run `lobu login` once.
 
-## What gets synced (v1)
+## What gets synced
 
 - Agents (metadata: `agentId`, `name`, `description`)
 - Agent settings: `networkConfig`, `egressConfig`, `nixConfig`, `mcpServers`, `skillsConfig`, `toolsConfig`, `guardrails`, `preApprovedTools`, `providerModelPreferences`, `modelSelection`, `IDENTITY.md` / `SOUL.md` / `USER.md`
 - Chat platforms under `[[agents.<id>.platforms]]`, keyed by a stable ID derived from `(agentId, type, name?)`
-- Memory entity types and relationship types (from `models/*.yaml` referenced by `[memory].models`)
+- Memory entity types, relationship types, and watchers from YAML bundles under `[memory].models`
 
-## What is not synced (v1)
+Model bundles use the dbt-style Lobu model schema:
 
-- Watchers — declare them in cloud or via `lobu memory seed` for now
+```yaml
+version: 2
+entities:
+  - slug: account
+    name: Account
+relationships:
+  - slug: owns
+    name: Owns
+watchers:
+  - slug: account-digest
+    name: Account digest
+    schedule: "0 9 * * 1"
+    prompt: Summarize account changes.
+```
+
+## What is not synced
+
 - Memory data (entities, relationships, knowledge events)
 - Secret values — `lobu apply` only checks that the env vars referenced as `$VAR` in `lobu.toml` are present locally, never uploads their values
 - Anything not in the list above

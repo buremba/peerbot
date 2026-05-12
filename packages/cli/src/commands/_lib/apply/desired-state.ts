@@ -11,6 +11,10 @@ import addFormats from "ajv-formats";
 import { parse as parseToml } from "smol-toml";
 import { ValidationError } from "../../memory/_lib/errors.js";
 import {
+  expandModelDefinition,
+  validateModel,
+} from "../../memory/_lib/schema.js";
+import {
   CONFIG_FILENAME,
   isLoadError,
   loadConfig,
@@ -191,7 +195,7 @@ export interface DesiredState {
     entityTypes: DesiredEntityType[];
     relationshipTypes: DesiredRelationshipType[];
   };
-  /** Watchers declared as `type: watcher` in `models/*.yaml`. */
+  /** Watchers declared under `[memory].models` YAML files. */
   watchers: DesiredWatcher[];
   /**
    * Data-source connectors declared in `[memory].connectors` dir:
@@ -702,6 +706,16 @@ function parseEntityType(raw: unknown): DesiredEntityType {
   const out: DesiredEntityType = { slug: raw.slug };
   if (typeof raw.name === "string") out.name = raw.name;
   if (typeof raw.description === "string") out.description = raw.description;
+  if (isRecord(raw.metadata_schema)) {
+    if (Array.isArray(raw.metadata_schema.required)) {
+      out.required = raw.metadata_schema.required.filter(
+        (v): v is string => typeof v === "string"
+      );
+    }
+    if (isRecord(raw.metadata_schema.properties)) {
+      out.properties = raw.metadata_schema.properties;
+    }
+  }
   if (Array.isArray(raw.required)) {
     out.required = raw.required.filter(
       (v): v is string => typeof v === "string"
@@ -779,11 +793,11 @@ interface LoadedMemoryModels {
 }
 
 /**
- * Read memory schema files referenced by `[memory].models`. Each YAML
- * file in that directory should declare `type: entity_type`,
- * `type: relationship_type`, or `type: watcher` (matches the seed-cmd
- * schema). `lobu apply` syncs entity types, relationship types, and
- * watchers from these files; watcher sync is create-only (drift ignored).
+ * Read memory schema files referenced by `[memory].models`. Every nested YAML
+ * file must be a dbt-style `version: 2` bundle with top-level `entities`,
+ * `relationships`, and `watchers` arrays; multi-document YAML streams are
+ * supported. `lobu apply` syncs entity types, relationship types, and watchers
+ * from these files; watcher sync is create-only (drift ignored).
  */
 async function loadMemoryModels(
   config: LobuTomlConfig,
@@ -819,7 +833,7 @@ async function loadMemoryModels(
   const modelsPath = resolve(projectRoot, modelsRel);
 
   const { existsSync, readdirSync, readFileSync } = await import("node:fs");
-  const { parse: parseYaml } = await import("yaml");
+  const { parseAllDocuments } = await import("yaml");
 
   if (!existsSync(modelsPath)) return empty;
 
@@ -827,24 +841,51 @@ async function loadMemoryModels(
   const relationshipTypes: DesiredRelationshipType[] = [];
   const watchers: DesiredWatcher[] = [];
 
-  const files = readdirSync(modelsPath)
-    .filter((f) => f.endsWith(".yaml") || f.endsWith(".yml"))
-    .sort();
+  const readModelFiles = (dir: string, prefix = ""): string[] => {
+    return readdirSync(dir, { withFileTypes: true })
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .flatMap((entry) => {
+        const relPath = prefix ? join(prefix, entry.name) : entry.name;
+        const fullPath = join(dir, entry.name);
+        if (entry.isDirectory()) return readModelFiles(fullPath, relPath);
+        if (
+          entry.isFile() &&
+          (entry.name.endsWith(".yaml") || entry.name.endsWith(".yml"))
+        ) {
+          return [relPath];
+        }
+        return [];
+      });
+  };
 
-  for (const file of files) {
+  for (const file of readModelFiles(modelsPath)) {
     const raw = readFileSync(join(modelsPath, file), "utf-8");
-    const parsed = parseYaml(raw) as unknown;
-    if (!isRecord(parsed) || typeof parsed.type !== "string") continue;
-    if (parsed.type === "entity_type" || parsed.type === "entity") {
-      entityTypes.push(parseEntityType(parsed));
-    } else if (
-      parsed.type === "relationship_type" ||
-      parsed.type === "relationship"
-    ) {
-      relationshipTypes.push(parseRelationshipType(parsed));
-    } else if (parsed.type === "watcher") {
-      watchers.push(parseWatcher(parsed));
-    }
+    const documents = parseAllDocuments(raw).map((doc) => doc.toJSON());
+    documents.forEach((document, idx) => {
+      const documentFile = documents.length > 1 ? `${file}#${idx + 1}` : file;
+      const expanded = expandModelDefinition(document, documentFile);
+      const errors = [
+        ...expanded.errors,
+        ...expanded.models.flatMap((model) =>
+          validateModel(model.data, model.file)
+        ),
+      ];
+      if (errors.length > 0) {
+        const detail = errors
+          .map((e) => `${e.file}: ${e.field} — ${e.message}`)
+          .join("\n  ");
+        throw new ValidationError(`Model validation failed\n  ${detail}`);
+      }
+      for (const model of expanded.models) {
+        if (model.modelType === "entity") {
+          entityTypes.push(parseEntityType(model.data));
+        } else if (model.modelType === "relationship") {
+          relationshipTypes.push(parseRelationshipType(model.data));
+        } else if (model.modelType === "watcher") {
+          watchers.push(parseWatcher(model.data));
+        }
+      }
+    });
   }
 
   return { entityTypes, relationshipTypes, watchers };
@@ -878,7 +919,7 @@ async function rejectUnsupportedAgentShapes(cwd: string): Promise<void> {
     const watchers = (agentConfig as Record<string, unknown>).watchers;
     if (Array.isArray(watchers) && watchers.length > 0) {
       throw new ValidationError(
-        `agent "${agentId}" declares [[agents.${agentId}.watchers]] — \`lobu apply\` syncs watchers from \`models/*.yaml\` (\`type: watcher\`), not from lobu.toml. Move the watcher to a model file or use \`lobu memory seed\`.`
+        `agent "${agentId}" declares [[agents.${agentId}.watchers]] — \`lobu apply\` syncs watchers from YAML files under \`[memory].models\`, not from lobu.toml. Move the watcher to a model file or use \`lobu memory seed\`.`
       );
     }
   }

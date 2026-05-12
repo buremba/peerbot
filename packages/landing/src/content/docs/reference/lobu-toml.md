@@ -138,7 +138,7 @@ project/
 | `name` | string | yes (when enabled) | Human-readable project name |
 | `description` | string | no | Short project description |
 | `visibility` | string | no | `public` or `private`; defaults to Lobu's account setting |
-| `models` | string | no | Path to Lobu model files, usually `./models` |
+| `models` | string | no | Path to Lobu `version: 2` model bundle YAML files, usually `./models` |
 | `data` | string | no | Path to Lobu seed data, usually `./data` |
 | `schema` | table | no | Inline memory schema — `entity_types` / `relationship_types` arrays (see [`[memory.schema]`](#memory-inline-schema-memoryschema) below) |
 

@@ -1,5 +1,0 @@
-version: 1
-type: relationship
-slug: approved
-name: Approved
-description: Keep approved decisions queryable without re-reading the whole source memo.

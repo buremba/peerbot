@@ -1,8 +1,0 @@
-version: 1
-type: relationship
-slug: expense_of
-name: Expense Of
-description: An expense is incurred against a subject — a $member (personal allowable expense), a property (SA105/SA106), or a company (operating cost on the business books).
-metadata_schema:
-  type: object
-  properties: {}

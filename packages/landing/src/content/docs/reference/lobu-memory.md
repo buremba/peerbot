@@ -134,7 +134,22 @@ Accepts the same `--url`, `--org`, and `-c/--context` flags as `lobu memory run`
 
 ### `lobu memory seed`
 
-Provisions a memory workspace from `[memory]` in `lobu.toml`, `./models`, and optional `./data`.
+Provisions a memory workspace from `[memory]` in `lobu.toml`, `version: 2` model bundle YAML files under `./models`, and optional `./data`.
+
+```yaml
+version: 2
+entities:
+  - slug: account
+    name: Account
+relationships:
+  - slug: owns
+    name: Owns
+watchers:
+  - slug: account-digest
+    name: Account digest
+    schedule: "0 9 * * 1"
+    prompt: Summarize account changes.
+```
 
 ```bash
 lobu memory seed

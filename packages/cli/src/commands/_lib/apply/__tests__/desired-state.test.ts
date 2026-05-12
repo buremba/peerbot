@@ -187,22 +187,22 @@ models = "./models"
     mkdirSync(modelsDir, { recursive: true });
     writeFileSync(
       join(modelsDir, "digest.yaml"),
-      `version: 1
-type: watcher
-slug: weekly-digest
-name: Weekly digest
-description: A short weekly summary.
-schedule: "0 9 * * 1"
-prompt: |
-  Produce a short weekly digest.
-extraction_schema:
-  type: object
-  required: [summary]
-  properties:
-    summary: { type: string }
-sources:
-  - name: content
-    query: SELECT * FROM events ORDER BY occurred_at DESC
+      `version: 2
+watchers:
+  - slug: weekly-digest
+    name: Weekly digest
+    description: A short weekly summary.
+    schedule: "0 9 * * 1"
+    prompt: |
+      Produce a short weekly digest.
+    extraction_schema:
+      type: object
+      required: [summary]
+      properties:
+        summary: { type: string }
+    sources:
+      - name: content
+        query: SELECT * FROM events ORDER BY occurred_at DESC
 `
     );
 
@@ -226,7 +226,104 @@ sources:
     ]);
   });
 
-  test("rejects watcher blocks in lobu.toml (apply syncs models/*.yaml watchers, not toml)", async () => {
+  test("loads dbt-style bundled model files recursively", async () => {
+    const dir = mkProject(
+      `[agents.triage]
+name = "Triage"
+dir = "./agents/triage"
+
+[memory]
+enabled = true
+org = "dev"
+models = "./models"
+`
+    );
+    const domainDir = join(dir, "models", "sales");
+    mkdirSync(domainDir, { recursive: true });
+    writeFileSync(
+      join(domainDir, "schema.yml"),
+      `version: 2
+entities:
+  - slug: account
+    name: Account
+    description: Customer account
+    metadata_schema:
+      type: object
+      required: [tier]
+      properties:
+        tier: { type: string }
+relationships:
+  - slug: owns
+    name: Owns
+    rules:
+      - source: account
+        target: product
+watchers:
+  - slug: account-digest
+    name: Account digest
+    schedule: "0 9 * * 1"
+    prompt: Summarize account changes.
+`
+    );
+
+    const { state } = await loadDesiredState({ cwd: dir });
+    expect(state.memorySchema.entityTypes).toEqual([
+      {
+        slug: "account",
+        name: "Account",
+        description: "Customer account",
+        required: ["tier"],
+        properties: { tier: { type: "string" } },
+      },
+    ]);
+    expect(state.memorySchema.relationshipTypes).toEqual([
+      {
+        slug: "owns",
+        name: "Owns",
+        rules: [{ source: "account", target: "product" }],
+      },
+    ]);
+    expect(state.watchers.map((w) => w.slug)).toEqual(["account-digest"]);
+  });
+
+  test("loads multiple model YAML documents from one file", async () => {
+    const dir = mkProject(
+      `[agents.triage]
+name = "Triage"
+dir = "./agents/triage"
+
+[memory]
+enabled = true
+org = "dev"
+models = "./models"
+`
+    );
+    const modelsDir = join(dir, "models");
+    mkdirSync(modelsDir, { recursive: true });
+    writeFileSync(
+      join(modelsDir, "combined.yaml"),
+      `version: 2
+entities:
+  - slug: product
+    name: Product
+---
+version: 2
+relationships:
+  - slug: affects
+    name: Affects
+`
+    );
+
+    const { state } = await loadDesiredState({ cwd: dir });
+    expect(state.memorySchema.entityTypes.map((e) => e.slug)).toEqual([
+      "product",
+    ]);
+    expect(state.memorySchema.relationshipTypes.map((r) => r.slug)).toEqual([
+      "affects",
+    ]);
+  });
+
+  test("rejects watcher blocks in lobu.toml (apply syncs model-bundle watchers, not toml)", async () => {
     const dir = mkProject(
       `[agents.triage]
 name = "Triage"

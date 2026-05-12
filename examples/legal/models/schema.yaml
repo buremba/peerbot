@@ -1,0 +1,140 @@
+version: 2
+entities:
+  - slug: clause
+    name: Clause
+    description: A specific provision or section within a contract that defines terms or obligations
+    icon: list
+    color: '#8B5CF6'
+    metadata_schema:
+      type: object
+      properties:
+        clause_type:
+          type: string
+          x-table-label: Type
+          x-table-column: true
+        section:
+          type: string
+          x-table-label: Section
+          x-table-column: true
+        risk_level:
+          type: string
+          x-table-label: Risk Level
+          x-table-column: true
+        language_summary:
+          type: string
+          x-table-label: Summary
+          x-table-column: true
+  - slug: contract
+    name: Contract
+    description: A legal agreement between parties with defined terms, obligations, and conditions
+    icon: file-text
+    color: '#3B82F6'
+    metadata_schema:
+      type: object
+      properties:
+        contract_type:
+          type: string
+          x-table-label: Type
+          x-table-column: true
+        status:
+          type: string
+          x-table-label: Status
+          x-table-column: true
+        effective_date:
+          type: string
+          x-table-label: Effective Date
+          x-table-column: true
+        counterparty_name:
+          type: string
+          x-table-label: Counterparty
+          x-table-column: true
+        governing_law:
+          type: string
+          x-table-label: Governing Law
+  - slug: counterparty
+    name: Counterparty
+    description: An external party involved in a contract or legal agreement
+    icon: building
+    color: '#F59E0B'
+    metadata_schema:
+      type: object
+      properties:
+        organization_name:
+          type: string
+          x-table-label: Organization
+          x-table-column: true
+        jurisdiction:
+          type: string
+          x-table-label: Jurisdiction
+          x-table-column: true
+        contact_person:
+          type: string
+          x-table-label: Contact
+          x-table-column: true
+        relationship_status:
+          type: string
+          x-table-label: Status
+          x-table-column: true
+  - slug: risk
+    name: Risk
+    description: A legal risk identified in a contract or clause that requires attention or mitigation
+    icon: shield-alert
+    color: '#EF4444'
+    metadata_schema:
+      type: object
+      properties:
+        severity:
+          type: string
+          x-table-label: Severity
+          x-table-column: true
+        category:
+          type: string
+          x-table-label: Category
+          x-table-column: true
+        mitigation:
+          type: string
+          x-table-label: Mitigation
+          x-table-column: true
+        source_clause:
+          type: string
+          x-table-label: Source Clause
+          x-table-column: true
+relationships:
+  - slug: belongs-to-counterparty
+    name: Belongs to Counterparty
+    description: Tie agreements and negotiation context back to the right external party.
+  - slug: contains-clause
+    name: Contains Clause
+    description: Represent how a contract is composed so risky language stays attached to the right section.
+  - slug: creates-risk
+    name: Creates Risk
+    description: Keep legal risk linked to the clause or term that caused it.
+watchers:
+  - slug: contract-review-tracker
+    name: Contract review tracker
+    schedule: 0 8 * * 1-5
+    prompt: |
+      Review active contracts for approaching deadlines, unsigned agreements, and unresolved risk items. Flag any clauses that still need counsel approval.
+    extraction_schema:
+      type: object
+      required:
+        - pending_contracts
+        - unresolved_risks
+        - approaching_deadlines
+      properties:
+        pending_contracts:
+          type: array
+          items:
+            type: string
+        unresolved_risks:
+          type: array
+          items:
+            type: string
+        approaching_deadlines:
+          type: array
+          items:
+            type: string
+        flagged_clauses:
+          type: array
+          items:
+            type: string

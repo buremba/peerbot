@@ -1,5 +1,0 @@
-version: 1
-type: relationship
-slug: subscribed-to
-name: Subscribed To
-description: Track which plans and products each customer subscribes to.

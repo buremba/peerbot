@@ -1,5 +1,0 @@
-version: 1
-type: relationship
-slug: interested-in
-name: Interested In
-description: Store durable interests and goals that can be reused across matching and introductions.

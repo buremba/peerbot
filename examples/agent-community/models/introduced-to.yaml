@@ -1,5 +1,0 @@
-version: 1
-type: relationship
-slug: introduced-to
-name: Introduced To
-description: Track completed introductions so the system avoids duplicate outreach and preserves relationship history.

@@ -1,5 +1,0 @@
-version: 1
-type: relationship
-slug: blocked-by
-name: Blocked By
-description: Tie blockers directly to the project and milestone they threaten.

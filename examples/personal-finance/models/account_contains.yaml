@@ -1,8 +1,0 @@
-version: 1
-type: relationship
-slug: account_contains
-name: Account Contains
-description: An account contains a transaction or holding.
-metadata_schema:
-  type: object
-  properties: {}

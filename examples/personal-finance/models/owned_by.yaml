@@ -1,8 +1,0 @@
-version: 1
-type: relationship
-slug: owned_by
-name: Owned By
-description: An asset (account, holding, asset_lot, property) is owned by a subject ($member or company). Use co_owned_by instead when ownership is shared.
-metadata_schema:
-  type: object
-  properties: {}

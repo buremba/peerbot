@@ -1,5 +1,0 @@
-version: 1
-type: relationship
-slug: expanded-into
-name: Expanded Into
-description: Track where an account is growing so territory and rollout context stay explicit.

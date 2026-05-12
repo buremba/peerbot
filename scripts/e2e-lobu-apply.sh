@@ -166,17 +166,17 @@ cat > "${PROJECT_DIR}/agents/triage/USER.md" <<'MD'
 - e2e harness driver
 MD
 
-cat > "${PROJECT_DIR}/models/person.yaml" <<'YAML'
-version: 1
-type: entity
-slug: person
-name: Person
-description: Test person entity for e2e
-metadata_schema:
-  type: object
-  properties:
-    full_name:
-      type: string
+cat > "${PROJECT_DIR}/models/schema.yaml" <<'YAML'
+version: 2
+entities:
+  - slug: person
+    name: Person
+    description: Test person entity for e2e
+    metadata_schema:
+      type: object
+      properties:
+        full_name:
+          type: string
 YAML
 
 # ─── 5. configure CLI context + login ──────────────────────────────────

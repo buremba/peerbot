@@ -1,8 +1,0 @@
-version: 1
-type: relationship
-slug: assessment_for
-name: Assessment For
-description: A tax_assessment is for a particular tax_year and subject. Used to anchor agent projections and HMRC SA302 outputs to the same year + filer so they can be compared.
-metadata_schema:
-  type: object
-  properties: {}

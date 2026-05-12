@@ -1,5 +1,0 @@
-version: 1
-type: relationship
-slug: summarized-in
-name: Summarized In
-description: Let agents trace reporting outputs back to the supporting data.

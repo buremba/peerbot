@@ -1,0 +1,233 @@
+version: 2
+entities:
+  - slug: lead
+    name: Lead
+    description: A person who has shown a signal toward Lobu — starred, engaged, asked, or talked to us
+    icon: user
+    color: '#10B981'
+    metadata_schema:
+      type: object
+      required:
+        - name
+        - source
+        - stage
+      properties:
+        name:
+          type: string
+          x-table-label: Name
+          x-table-column: true
+        company:
+          type: string
+          x-table-label: Company
+          x-table-column: true
+        stage:
+          type: string
+          enum:
+            - signal
+            - trial
+            - conversation
+            - pilot
+            - customer
+            - cold
+          x-table-label: Stage
+          x-table-column: true
+        source:
+          type: string
+          description: Where they first showed up — "github:stargazer", "x:mention", "github:issue-comment", "demo-form", "intro", etc.
+          x-table-label: Source
+          x-table-column: true
+        github_handle:
+          type: string
+          x-table-label: GitHub
+          x-table-column: true
+        x_handle:
+          type: string
+          x-table-label: X
+        email:
+          type: string
+          x-table-label: Email
+        last_touch:
+          type: string
+          description: ISO date of the most recent interaction
+          x-table-label: Last touch
+          x-table-column: true
+        next_action:
+          type: string
+          x-table-label: Next action
+          x-table-column: true
+        notes:
+          type: string
+  - slug: pilot
+    name: Pilot
+    description: A paid pilot — a company running Lobu for their team under a time-boxed agreement
+    icon: rocket
+    color: '#F59E0B'
+    metadata_schema:
+      type: object
+      required:
+        - company
+        - status
+      properties:
+        company:
+          type: string
+          x-table-label: Company
+          x-table-column: true
+        status:
+          type: string
+          enum:
+            - active
+            - won
+            - lost
+            - paused
+          x-table-label: Status
+          x-table-column: true
+        seats:
+          type: integer
+          x-table-label: Seats
+          x-table-column: true
+        mrr:
+          type: string
+          description: Monthly recurring revenue for the pilot, e.g. "$750"
+          x-table-label: MRR
+          x-table-column: true
+        start_date:
+          type: string
+          x-table-label: Start
+          x-table-column: true
+        success_metric:
+          type: string
+          description: The one metric agreed up front that defines pilot success
+          x-table-label: Success metric
+          x-table-column: true
+        lead_id:
+          type: string
+          description: The lead entity this pilot converted from
+relationships:
+  - slug: converted-to
+    name: Converted To
+    description: Links a lead to the pilot it became, so the path from first signal to paying pilot stays explicit.
+watchers:
+  - slug: funnel-digest
+    name: Weekly funnel digest
+    schedule: 0 9 * * 1
+    prompt: |
+      Produce the weekly funnel digest and post it to Slack. Keep it short.
+
+      1. The single recommended action for the week, on the first line. Pick the
+         move that does the most to get pilot #1 closer (almost always: follow up
+         with the warmest lead in "conversation", or progress whichever pilot
+         conversation is furthest along).
+      2. Funnel snapshot: count of `lead` entities per stage; what moved since the
+         last digest (new leads, stage changes, new/updated `pilot` entities).
+      3. Top-of-funnel since last digest: new GitHub stars, X mentions/replies,
+         HN/PH activity.
+      4. Stale: any lead in `conversation` with no `lead:interaction` in 7+ days —
+         list them for follow-up.
+      5. One gap callout if there is one (e.g. "18 new stars, 0 became leads —
+         is inbound-triage catching the right signal?").
+
+      Tone: a checklist a busy founder reads in 30 seconds. End on the next action,
+      not the status. Remember: the metric that matters is customer conversations
+      this week — if that number is below 3, say so plainly.
+    extraction_schema:
+      type: object
+      required:
+        - top_action
+        - stage_counts
+        - moved
+        - top_of_funnel
+        - stale_leads
+      properties:
+        top_action:
+          type: string
+        stage_counts:
+          type: object
+        moved:
+          type: object
+          properties:
+            new_leads:
+              type: integer
+            stage_changes:
+              type: integer
+            pilot_updates:
+              type: integer
+        top_of_funnel:
+          type: object
+          properties:
+            stars:
+              type: integer
+            x_mentions:
+              type: integer
+            hn_ph_activity:
+              type: integer
+        stale_leads:
+          type: array
+          items:
+            type: string
+        gap:
+          type: string
+        conversations_this_week:
+          type: integer
+  - slug: inbound-triage
+    name: Inbound triage
+    schedule: 0 8-22/2 * * *
+    prompt: |
+      Look for new top-of-funnel signals since the last run, across the connectors
+      in this org:
+        - GitHub: new stargazers on lobu-ai/lobu; new issues / issue comments /
+          PR comments — especially anything with deployment, self-host, multi-tenant,
+          "how do I", or evaluation language.
+        - X: new @-mentions of Lobu, replies to Burak's Lobu threads, quote-tweets.
+        - Hacker News / Product Hunt: new comments or posts mentioning Lobu or OpenClaw.
+
+      For each signal that looks like a real person (not a bot, not a casual star):
+        1. search_memory for an existing `lead` (match github handle / x handle / email).
+        2. If none, create a `lead` entity at the lowest stage the evidence supports
+           (a bare star → "signal"; a deployment-flavored issue comment or a
+           "how do I deploy this for my team" mention → "trial" or "conversation"),
+           with source set to where it came from, and entity_ids linking to the
+           source event. Then save a `lead:created` event.
+        3. If a lead exists, enrich it (add the handle, bump the stage if the new
+           signal warrants it, update last_touch) and save a `lead:interaction` or
+           `lead:stage_changed` event as appropriate.
+
+      Then post to Slack: the new/updated leads, ranked by closeness-to-a-paying-pilot,
+      each with a one-line recommended next action (e.g. "reply on the issue and offer
+      a 20-min call"). If nothing notable, post nothing — don't manufacture noise.
+    extraction_schema:
+      type: object
+      required:
+        - new_leads
+        - enriched_leads
+        - recommended_actions
+      properties:
+        new_leads:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              handle:
+                type: string
+              source:
+                type: string
+              stage:
+                type: string
+              why:
+                type: string
+        enriched_leads:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              change:
+                type: string
+        recommended_actions:
+          type: array
+          items:
+            type: string
+        notable:
+          type: boolean

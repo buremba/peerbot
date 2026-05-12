@@ -1,0 +1,155 @@
+version: 2
+entities:
+  - slug: organization
+    name: Organization
+    description: A customer account or prospect being tracked by the revenue team
+    icon: building
+    color: '#3B82F6'
+    metadata_schema:
+      type: object
+      properties:
+        company_name:
+          type: string
+          x-table-label: Company
+          x-table-column: true
+        stage:
+          type: string
+          x-table-label: Stage
+          x-table-column: true
+        arr:
+          type: string
+          x-table-label: ARR
+          x-table-column: true
+        renewal_date:
+          type: string
+          x-table-label: Renewal Date
+          x-table-column: true
+  - slug: product
+    name: Product
+    description: A product rollout or pilot being tracked at a customer account
+    icon: package
+    color: '#F59E0B'
+    metadata_schema:
+      type: object
+      properties:
+        product_name:
+          type: string
+          x-table-label: Product
+          x-table-column: true
+        pilot_status:
+          type: string
+          x-table-label: Status
+          x-table-column: true
+        owner_team:
+          type: string
+          x-table-label: Owner
+          x-table-column: true
+        account:
+          type: string
+          x-table-label: Account
+          x-table-column: true
+  - slug: region
+    name: Region
+    description: A geographic region where an account is expanding or operating
+    icon: globe
+    color: '#10B981'
+    metadata_schema:
+      type: object
+      properties:
+        region_name:
+          type: string
+          x-table-label: Region
+          x-table-column: true
+        expansion_status:
+          type: string
+          x-table-label: Status
+          x-table-column: true
+        parent_account:
+          type: string
+          x-table-label: Account
+          x-table-column: true
+        market_size:
+          type: string
+          x-table-label: Market Size
+  - slug: renewal-risk
+    name: Renewal Risk
+    description: A commercial signal or concern that affects an upcoming renewal or expansion
+    icon: alert-triangle
+    color: '#EF4444'
+    metadata_schema:
+      type: object
+      properties:
+        signal:
+          type: string
+          x-table-label: Signal
+          x-table-column: true
+        severity:
+          type: string
+          x-table-label: Severity
+          x-table-column: true
+        affects:
+          type: string
+          x-table-label: Affects
+          x-table-column: true
+        next_step:
+          type: string
+          x-table-label: Next Step
+          x-table-column: true
+  - slug: team
+    name: Team
+    description: An internal team or customer function that owns a pilot or initiative
+    icon: users
+    color: '#8B5CF6'
+    metadata_schema:
+      type: object
+      properties:
+        team_name:
+          type: string
+          x-table-label: Team
+          x-table-column: true
+        role:
+          type: string
+          x-table-label: Role
+          x-table-column: true
+        owns:
+          type: string
+          x-table-label: Owns
+          x-table-column: true
+        account:
+          type: string
+          x-table-label: Account
+          x-table-column: true
+relationships:
+  - slug: affects
+    name: Affects
+    description: Connect commercial signals directly to the renewal or expansion they influence.
+  - slug: expanded-into
+    name: Expanded Into
+    description: Track where an account is growing so territory and rollout context stay explicit.
+  - slug: runs
+    name: Runs
+    description: Link the internal team or customer function to the pilot they own.
+watchers:
+  - slug: account-health-monitor
+    name: Account health monitor
+    schedule: 0 */12 * * *
+    prompt: |
+      Poll CRM data for tracked accounts. Track expansion progress, risk level changes, and renewal timeline.
+    extraction_schema:
+      type: object
+      required:
+        - risk_level
+        - expansion_status
+        - renewal_blockers
+        - activity_delta
+      properties:
+        risk_level:
+          type: string
+        expansion_status:
+          type: string
+        renewal_blockers:
+          type: array
+          items:
+            type: string
+        activity_delta:
+          type: string

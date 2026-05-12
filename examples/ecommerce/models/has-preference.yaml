@@ -1,5 +1,0 @@
-version: 1
-type: relationship
-slug: has-preference
-name: Has Preference
-description: Persist communication and delivery preferences across interactions.

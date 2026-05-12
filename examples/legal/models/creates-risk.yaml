@@ -1,5 +1,0 @@
-version: 1
-type: relationship
-slug: creates-risk
-name: Creates Risk
-description: Keep legal risk linked to the clause or term that caused it.

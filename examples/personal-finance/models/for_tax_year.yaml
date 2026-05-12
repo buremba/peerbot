@@ -1,8 +1,0 @@
-version: 1
-type: relationship
-slug: for_tax_year
-name: For Tax Year
-description: An entity (transaction, cgt_event, contribution, relief_claim, expense) is recorded against a particular tax year.
-metadata_schema:
-  type: object
-  properties: {}

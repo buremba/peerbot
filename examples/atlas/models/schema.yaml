@@ -1,0 +1,155 @@
+version: 2
+entities:
+  - slug: city
+    name: City
+    description: Populated place (city, town, metro area)
+    icon: building-2
+    color: '#22c55e'
+    metadata_schema:
+      type: object
+      properties:
+        country_id:
+          type: integer
+          description: FK to atlas.country
+          x-table-column: true
+          x-table-label: Country
+          x-link-entity-type: country
+        region_id:
+          type: integer
+          description: FK to atlas.region (optional — not every city is region-tagged)
+          x-table-column: true
+          x-table-label: Region
+          x-link-entity-type: region
+        latitude:
+          type: number
+          description: Decimal degrees, WGS84
+        longitude:
+          type: number
+          description: Decimal degrees, WGS84
+        population:
+          type: integer
+          description: City proper population (latest available estimate)
+  - slug: country
+    name: Country
+    description: Sovereign country (ISO 3166-1)
+    icon: flag
+    color: '#0ea5e9'
+    metadata_schema:
+      type: object
+      properties:
+        iso2:
+          type: string
+          minLength: 2
+          maxLength: 2
+          x-table-column: true
+          x-table-label: ISO2
+        iso3:
+          type: string
+          minLength: 3
+          maxLength: 3
+          x-table-column: true
+          x-table-label: ISO3
+        currency:
+          type: string
+          description: ISO 4217 currency code (e.g. USD, EUR, GBP)
+          x-table-column: true
+          x-table-label: Currency
+        region:
+          type: string
+          description: UN macro region (e.g. Europe, Africa, Asia, Americas, Oceania)
+          x-table-column: true
+          x-table-label: Region
+        population:
+          type: integer
+          description: Approximate population (latest available estimate)
+  - slug: industry
+    name: Industry
+    description: Industry / sector taxonomy node (NAICS, BICS, or custom)
+    icon: factory
+    color: '#a855f7'
+    metadata_schema:
+      type: object
+      properties:
+        parent_id:
+          type: integer
+          description: FK to parent atlas.industry (self-reference for hierarchy)
+          x-table-column: true
+          x-table-label: Parent
+          x-link-entity-type: industry
+        taxonomy_source:
+          type: string
+          enum:
+            - NAICS
+            - BICS
+            - custom
+          x-table-column: true
+          x-table-label: Source
+        code:
+          type: string
+          description: Taxonomy code (e.g. NAICS 541512)
+          x-table-column: true
+          x-table-label: Code
+  - slug: region
+    name: Region
+    description: First-level administrative region (state, province, etc.) within a country
+    icon: map
+    color: '#14b8a6'
+    metadata_schema:
+      type: object
+      properties:
+        country_id:
+          type: integer
+          description: FK to atlas.country
+          x-table-column: true
+          x-table-label: Country
+          x-link-entity-type: country
+        iso_3166_2:
+          type: string
+          description: ISO 3166-2 code (e.g. US-CA, GB-LND)
+          x-table-column: true
+          x-table-label: ISO 3166-2
+  - slug: technology
+    name: Technology
+    description: Technology, framework, library, platform, or developer tool
+    icon: cpu
+    color: '#f97316'
+    metadata_schema:
+      type: object
+      properties:
+        category:
+          type: string
+          description: Coarse category (e.g. database, frontend-framework, observability)
+          x-table-column: true
+          x-table-label: Category
+        homepage_url:
+          type: string
+          format: uri
+          x-table-column: true
+          x-table-label: Homepage
+  - slug: university
+    name: University
+    description: Higher-education institution
+    icon: graduation-cap
+    color: '#ec4899'
+    metadata_schema:
+      type: object
+      properties:
+        country_id:
+          type: integer
+          description: FK to atlas.country
+          x-table-column: true
+          x-table-label: Country
+          x-link-entity-type: country
+        city_id:
+          type: integer
+          description: FK to atlas.city (optional)
+          x-table-column: true
+          x-table-label: City
+          x-link-entity-type: city
+        founded_year:
+          type: integer
+          x-table-column: true
+          x-table-label: Founded
+        homepage_url:
+          type: string
+          format: uri

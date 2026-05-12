@@ -1,8 +1,0 @@
-version: 1
-type: relationship
-slug: obligation_for
-name: Obligation For
-description: A filing_obligation belongs to a tax_year and a subject ($member or company). The same SA100 obligation is "for" the user's $member and "for" their tax_year.
-metadata_schema:
-  type: object
-  properties: {}

@@ -1,0 +1,135 @@
+version: 2
+entities:
+  - slug: account
+    name: Account
+    description: A financial account that holds balances, transactions, and reconciliation state
+    icon: wallet
+    color: '#3B82F6'
+    metadata_schema:
+      type: object
+      properties:
+        account_name:
+          type: string
+          x-table-label: Account
+          x-table-column: true
+        account_type:
+          type: string
+          x-table-label: Type
+          x-table-column: true
+        balance:
+          type: string
+          x-table-label: Balance
+          x-table-column: true
+        reconciliation_status:
+          type: string
+          x-table-label: Reconciliation
+          x-table-column: true
+  - slug: report
+    name: Report
+    description: A financial report or summary generated from account and transaction data
+    icon: file-bar-chart
+    color: '#8B5CF6'
+    metadata_schema:
+      type: object
+      properties:
+        report_name:
+          type: string
+          x-table-label: Report
+          x-table-column: true
+        period:
+          type: string
+          x-table-label: Period
+          x-table-column: true
+        status:
+          type: string
+          x-table-label: Status
+          x-table-column: true
+        exceptions_count:
+          type: string
+          x-table-label: Exceptions
+          x-table-column: true
+  - slug: transaction
+    name: Transaction
+    description: A financial transaction that affects account balances
+    icon: arrow-left-right
+    color: '#10B981'
+    metadata_schema:
+      type: object
+      properties:
+        description:
+          type: string
+          x-table-label: Description
+          x-table-column: true
+        amount:
+          type: string
+          x-table-label: Amount
+          x-table-column: true
+        date:
+          type: string
+          x-table-label: Date
+          x-table-column: true
+        category:
+          type: string
+          x-table-label: Category
+          x-table-column: true
+  - slug: variance
+    name: Variance
+    description: A discrepancy or anomaly identified during reconciliation or reporting
+    icon: alert-triangle
+    color: '#EF4444'
+    metadata_schema:
+      type: object
+      properties:
+        variance_type:
+          type: string
+          x-table-label: Type
+          x-table-column: true
+        amount:
+          type: string
+          x-table-label: Amount
+          x-table-column: true
+        source_account:
+          type: string
+          x-table-label: Account
+          x-table-column: true
+        explanation:
+          type: string
+          x-table-label: Explanation
+          x-table-column: true
+relationships:
+  - slug: creates-variance
+    name: Creates Variance
+    description: Keep anomalies attached to the source records that produced them.
+  - slug: reconciles-to
+    name: Reconciles To
+    description: Tie transactions and balances back to the accounts they roll into.
+  - slug: summarized-in
+    name: Summarized In
+    description: Let agents trace reporting outputs back to the supporting data.
+watchers:
+  - slug: reconciliation-monitor
+    name: Reconciliation monitor
+    schedule: 0 6 * * 1-5
+    prompt: |
+      Check accounts for unreconciled transactions, new variances, and approaching reporting deadlines. Lead with exceptions that need review.
+    extraction_schema:
+      type: object
+      required:
+        - unreconciled_count
+        - new_variances
+        - approaching_deadlines
+      properties:
+        unreconciled_count:
+          type: integer
+        new_variances:
+          type: array
+          items:
+            type: string
+        approaching_deadlines:
+          type: array
+          items:
+            type: string
+        payment_risks:
+          type: array
+          items:
+            type: string

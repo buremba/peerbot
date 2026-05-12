@@ -1,5 +1,0 @@
-version: 1
-type: relationship
-slug: writes-about
-name: Writes About
-description: Capture blog posts, newsletters, and public writing so matching includes current thinking, not just static bios.

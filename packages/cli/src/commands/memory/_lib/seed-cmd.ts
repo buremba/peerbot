@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { parse as parseToml } from "smol-toml";
-import { parse as parseYaml } from "yaml";
+import { parse as parseYaml, parseAllDocuments } from "yaml";
 import { ApiError, ValidationError } from "./errors.js";
 import {
   getSessionForOrg,
@@ -18,6 +18,7 @@ import {
   type ValidationError as SchemaError,
   type SeedEntitySchema,
   type SeedRelationshipSchema,
+  expandModelDefinition,
   validateDataRecord,
   validateModel,
 } from "./schema.js";
@@ -51,20 +52,35 @@ interface ProjectLayout {
   description?: string;
 }
 
-function readYamlFiles(
-  dir: string
-): Array<{ data: Record<string, unknown>; file: string }> {
+function readYamlModelFilesRecursive(
+  dir: string,
+  prefix = ""
+): Array<{ documents: unknown[]; file: string }> {
   if (!existsSync(dir)) return [];
-  return readdirSync(dir)
-    .filter((f) => f.endsWith(".yaml") || f.endsWith(".yml"))
-    .sort()
-    .map((f) => ({
-      data: parseYaml(readFileSync(resolve(dir, f), "utf8")) as Record<
-        string,
-        unknown
-      >,
-      file: basename(f),
-    }));
+
+  return readdirSync(dir, { withFileTypes: true })
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .flatMap((entry) => {
+      const relPath = prefix ? join(prefix, entry.name) : entry.name;
+      const fullPath = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        return readYamlModelFilesRecursive(fullPath, relPath);
+      }
+      if (
+        !entry.isFile() ||
+        (!entry.name.endsWith(".yaml") && !entry.name.endsWith(".yml"))
+      ) {
+        return [];
+      }
+      return [
+        {
+          documents: parseAllDocuments(readFileSync(fullPath, "utf8")).map(
+            (doc) => doc.toJSON()
+          ),
+          file: relPath,
+        },
+      ];
+    });
 }
 
 function readYamlFilesRecursive(
@@ -191,18 +207,32 @@ function resolveProjectLayout(inputPath?: string): ProjectLayout {
 }
 
 /**
- * Load models from the `models/` directory (type in each file).
+ * Load models from every YAML file under the `models/` directory.
  */
 function loadModels(modelsPath: string): ParsedModel[] {
-  const entries = readYamlFiles(modelsPath);
-  for (const { data, file } of entries) {
-    checkErrors(validateModel(data, file));
+  const models: ParsedModel[] = [];
+  const errors: SchemaError[] = [];
+  for (const { documents, file } of readYamlModelFilesRecursive(modelsPath)) {
+    documents.forEach((document, idx) => {
+      const documentFile = documents.length > 1 ? `${file}#${idx + 1}` : file;
+      const expanded = expandModelDefinition(document, documentFile);
+      errors.push(...expanded.errors);
+      for (const model of expanded.models) {
+        const modelErrors = validateModel(model.data, model.file);
+        if (modelErrors.length > 0) {
+          errors.push(...modelErrors);
+        } else {
+          models.push({
+            data: model.data,
+            file: model.file,
+            modelType: model.modelType,
+          });
+        }
+      }
+    });
   }
-  return entries.map(({ data, file }) => ({
-    data,
-    file,
-    modelType: data.type as ModelType,
-  }));
+  checkErrors(errors);
+  return models;
 }
 
 function loadDataRecords(dataPath: string): ParsedDataRecord[] {

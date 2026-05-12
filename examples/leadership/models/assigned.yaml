@@ -1,5 +1,0 @@
-version: 1
-type: relationship
-slug: assigned
-name: Assigned
-description: Turn follow-up work into durable ownership instead of transient notes.

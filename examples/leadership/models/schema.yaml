@@ -1,0 +1,159 @@
+version: 2
+entities:
+  - slug: decision
+    name: Decision
+    description: A leadership decision extracted from a document with its approval status
+    icon: check-circle
+    color: '#10B981'
+    metadata_schema:
+      type: object
+      properties:
+        subject:
+          type: string
+          x-table-label: Subject
+          x-table-column: true
+        status:
+          type: string
+          x-table-label: Status
+          x-table-column: true
+        source_document:
+          type: string
+          x-table-label: Source
+          x-table-column: true
+        decision_date:
+          type: string
+          x-table-label: Date
+          x-table-column: true
+  - slug: document
+    name: Document
+    description: A source document such as a board memo, strategy brief, or executive report
+    icon: file-text
+    color: '#3B82F6'
+    metadata_schema:
+      type: object
+      properties:
+        document_name:
+          type: string
+          x-table-label: Document
+          x-table-column: true
+        document_type:
+          type: string
+          x-table-label: Type
+          x-table-column: true
+        date:
+          type: string
+          x-table-label: Date
+          x-table-column: true
+        decisions_count:
+          type: string
+          x-table-label: Decisions
+          x-table-column: true
+  - slug: region
+    name: Region
+    description: A geographic region referenced in strategic decisions or expansion plans
+    icon: globe
+    color: '#F59E0B'
+    metadata_schema:
+      type: object
+      properties:
+        region_name:
+          type: string
+          x-table-label: Region
+          x-table-column: true
+        decision_context:
+          type: string
+          x-table-label: Context
+          x-table-column: true
+        status:
+          type: string
+          x-table-label: Status
+          x-table-column: true
+        budget_approved:
+          type: string
+          x-table-label: Budget
+  - slug: risk
+    name: Risk
+    description: A blocker or dependency that is holding up a decision or initiative
+    icon: shield-alert
+    color: '#EF4444'
+    metadata_schema:
+      type: object
+      properties:
+        blocker:
+          type: string
+          x-table-label: Blocker
+          x-table-column: true
+        affects:
+          type: string
+          x-table-label: Affects
+          x-table-column: true
+        state:
+          type: string
+          x-table-label: State
+          x-table-column: true
+        owner:
+          type: string
+          x-table-label: Owner
+          x-table-column: true
+  - slug: task
+    name: Task
+    description: An assigned follow-up action extracted from a leadership document or meeting
+    icon: check-square
+    color: '#8B5CF6'
+    metadata_schema:
+      type: object
+      properties:
+        action:
+          type: string
+          x-table-label: Action
+          x-table-column: true
+        owner:
+          type: string
+          x-table-label: Owner
+          x-table-column: true
+        deadline:
+          type: string
+          x-table-label: Deadline
+          x-table-column: true
+        source:
+          type: string
+          x-table-label: Source
+          x-table-column: true
+relationships:
+  - slug: approved
+    name: Approved
+    description: Keep approved decisions queryable without re-reading the whole source memo.
+  - slug: assigned
+    name: Assigned
+    description: Turn follow-up work into durable ownership instead of transient notes.
+  - slug: blocked-by
+    name: Blocked By
+    description: Attach blocked decisions to the dependency that is holding them up.
+watchers:
+  - slug: board-action-tracker
+    name: Board action tracker
+    schedule: 0 8 * * *
+    prompt: |
+      Track board action items: check task delivery status, blocker resolution progress, and approaching deadlines for the next board packet.
+    extraction_schema:
+      type: object
+      required:
+        - action_items
+        - blocked_items
+        - deadlines_approaching
+        - completion_status
+      properties:
+        action_items:
+          type: array
+          items:
+            type: string
+        blocked_items:
+          type: array
+          items:
+            type: string
+        deadlines_approaching:
+          type: array
+          items:
+            type: string
+        completion_status:
+          type: string

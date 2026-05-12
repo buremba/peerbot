@@ -1,5 +1,0 @@
-version: 1
-type: relationship
-slug: matches-with
-name: Matches With
-description: Represent suggested introductions with reasons and confidence so outreach history is auditable.

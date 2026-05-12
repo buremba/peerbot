@@ -1,8 +1,0 @@
-version: 1
-type: relationship
-slug: employed_by
-name: Employed By
-description: An employment-type income source flows from a particular employer (a company entity). Pairs with employee_of when the agent has the direct subject-to-subject employment fact.
-metadata_schema:
-  type: object
-  properties: {}

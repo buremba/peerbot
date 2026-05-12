@@ -1,6 +1,10 @@
-# Source template for the Homebrew cask. The mac-release workflow fills in
-# @VERSION@ / @SHA256@ and commits the result to lobu-ai/homebrew-tap as
-# Casks/lobu.rb, so users can `brew install --cask lobu-ai/tap/lobu`.
+# Source template for the Homebrew cask. The mac-release workflow:
+#   - drops everything above the `cask` line (this comment block),
+#   - fills in @VERSION@ / @SHA256@,
+#   - for a notarized build, deletes the @CAVEATS_START@..@CAVEATS_END@ block;
+#     for an unsigned build, keeps it and just removes the marker comment lines,
+# then commits the result to lobu-ai/homebrew-tap as Casks/lobu.rb so
+# `brew install --cask lobu-ai/tap/lobu` works.
 cask "lobu" do
   version "@VERSION@"
   sha256 "@SHA256@"
@@ -13,10 +17,6 @@ cask "lobu" do
 
   depends_on macos: ">= :sonoma"
 
-  # Filled in by the mac-release workflow: a "right-click → Open" caveat while
-  # the build is unsigned, or empty once it ships notarized.
-  @CAVEATS@
-
   app "Lobu.app"
 
   zap trash: [
@@ -24,4 +24,11 @@ cask "lobu" do
     "~/Library/Caches/ai.lobu.mac",
     "~/Library/Preferences/ai.lobu.mac.plist",
   ]
+  # @CAVEATS_START@
+
+  caveats <<~EOS
+    Lobu for Mac is not notarized yet. The first time you open it, right-click
+    Lobu in Applications and choose Open, then confirm — once only.
+  EOS
+  # @CAVEATS_END@
 end

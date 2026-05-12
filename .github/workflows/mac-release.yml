@@ -23,10 +23,11 @@ name: mac-release
 #   APPLE_ID                Apple ID email used for notarization
 #   APPLE_APP_PASSWORD      app-specific password for that Apple ID
 #
-# HOMEBREW_TAP_TOKEN (PAT with write access to lobu-ai/homebrew-tap) is used in
-# both modes for the cask push; if it's absent the cask step is skipped (the DMG
-# still ships on the release). No provisioning profile is required — the app
-# ships only standard entitlements (the HealthKit entitlement is disabled; see
+# The cask push uses HOMEBREW_TAP_TOKEN if set, else falls back to
+# RELEASE_PLEASE_TOKEN (any PAT with write access to lobu-ai/homebrew-tap works);
+# if neither exists the cask step is skipped and the DMG still ships on the
+# release. No provisioning profile is required — the app ships only standard
+# entitlements (the HealthKit entitlement is disabled; see
 # apps/mac/Lobu/Lobu.entitlements).
 
 on:
@@ -53,7 +54,7 @@ jobs:
         id: mode
         env:
           CERT_P12_BASE64: ${{ secrets.APPLE_CERT_P12_BASE64 }}
-          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN || secrets.RELEASE_PLEASE_TOKEN }}
         run: |
           if [ -n "$CERT_P12_BASE64" ]; then
             echo "signed=true" >> "$GITHUB_OUTPUT"
@@ -62,7 +63,7 @@ jobs:
             echo "signed=false" >> "$GITHUB_OUTPUT"
             echo "::warning::APPLE_CERT_P12_BASE64 not set — building an UNSIGNED DMG (Gatekeeper warns on first open). Add the signing secrets to get a notarized build."
           fi
-          if [ -n "$TAP_TOKEN" ]; then echo "tap=true" >> "$GITHUB_OUTPUT"; else echo "tap=false" >> "$GITHUB_OUTPUT"; echo "::warning::HOMEBREW_TAP_TOKEN not set — skipping the Homebrew cask update."; fi
+          if [ -n "$TAP_TOKEN" ]; then echo "tap=true" >> "$GITHUB_OUTPUT"; else echo "tap=false" >> "$GITHUB_OUTPUT"; echo "::warning::No HOMEBREW_TAP_TOKEN / RELEASE_PLEASE_TOKEN — skipping the Homebrew cask update."; fi
 
       # ── SIGNED path: import the Developer ID cert into an ephemeral keychain ──
       - name: Import signing certificate
@@ -145,19 +146,21 @@ jobs:
       - name: Update Homebrew tap
         if: steps.mode.outputs.tap == 'true'
         env:
-          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN || secrets.RELEASE_PLEASE_TOKEN }}
         run: |
           VERSION="${{ steps.v.outputs.version }}"
           SHA="${{ steps.sum.outputs.sha256 }}"
           git clone "https://x-access-token:${GH_TOKEN}@github.com/lobu-ai/homebrew-tap.git" tap
           mkdir -p tap/Casks
+          # build the cask from the template: strip the leading doc comment,
+          # fill version/sha, and keep/drop the caveats block per signing mode.
+          sed '/^cask "lobu" do$/,$!d' apps/mac/homebrew/lobu.rb.tmpl > tap/Casks/lobu.rb
           if [ "${{ steps.mode.outputs.signed }}" = "true" ]; then
-            CAVEATS=""
+            sed -i '' '/# @CAVEATS_START@/,/# @CAVEATS_END@/d' tap/Casks/lobu.rb
           else
-            CAVEATS='caveats "Lobu for Mac is not notarized yet — the first time you open it, right-click Lobu in Applications and choose Open, then confirm. You only need to do this once."'
+            sed -i '' '/# @CAVEATS_START@/d;/# @CAVEATS_END@/d' tap/Casks/lobu.rb
           fi
-          sed -e "s|@VERSION@|$VERSION|g" -e "s|@SHA256@|$SHA|g" -e "s|@CAVEATS@|$CAVEATS|" \
-            apps/mac/homebrew/lobu.rb.tmpl > tap/Casks/lobu.rb
+          sed -i '' "s|@VERSION@|$VERSION|g;s|@SHA256@|$SHA|g" tap/Casks/lobu.rb
           cd tap
           git config user.name "lobu-bot"
           git config user.email "bot@lobu.ai"

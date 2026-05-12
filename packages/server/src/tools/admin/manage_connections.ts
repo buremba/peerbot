@@ -903,18 +903,27 @@ async function handleCreate(
           .usable
       : false;
 
-  // A `pending_auth` auth profile is OK on create — the connection is created
-  // in `pending_auth` and the OAuth/connect callback flips both the profile and
-  // the connection to `active`. This lets a connection reference a freshly
-  // created oauth_account profile in the same `lobu apply`.
+  // A `pending_auth` auth profile is OK on create *only* for kinds that can
+  // actually become active out of band — `oauth_account` (OAuth callback) and
+  // `browser_session` (already handled above). The connection is created
+  // `pending_auth` and the callback flips both to `active`. This lets a
+  // connection reference a freshly created oauth_account profile in the same
+  // `lobu apply`. An `env`/`oauth_app` profile that's not active is an error.
   if (
     authSelection?.authProfile &&
     authSelection.authProfile.profile_kind !== 'browser_session' &&
     authSelection.authProfile.status !== 'active' &&
-    authSelection.authProfile.status !== 'pending_auth'
+    !(
+      authSelection.authProfile.status === 'pending_auth' &&
+      authSelection.authProfile.profile_kind === 'oauth_account'
+    )
   ) {
     return {
-      error: `Selected auth profile '${authSelection.authProfile.slug}' is ${authSelection.authProfile.status} — must be active or pending_auth.`,
+      error: `Selected auth profile '${authSelection.authProfile.slug}' is ${authSelection.authProfile.status}${
+        authSelection.authProfile.profile_kind === 'oauth_account'
+          ? ' — must be active or pending_auth'
+          : ' — must be active'
+      }.`,
     };
   }
 

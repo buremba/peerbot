@@ -831,4 +831,71 @@ describe("apply diff — connectors", () => {
     );
     expect(row?.verb).toBe("update");
   });
+
+  // ── round-4 ──────────────────────────────────────────────────────────────
+
+  test("referenced-but-not-installed bundled connector becomes a connector-definition create row", () => {
+    const plan = computeDiff(connectorState(), {
+      ...emptyRemote(),
+      connectorDefinitions: [
+        // hackernews: installable + has a server-side source_uri, not installed
+        {
+          key: "hackernews",
+          installed: false,
+          installable: true,
+          source_uri: "file:///app/connectors/hackernews.ts",
+        },
+        // x: same
+        {
+          key: "x",
+          installed: false,
+          installable: true,
+          source_uri: "file:///app/connectors/x.ts",
+        },
+      ],
+    });
+    const hn = plan.rows.find(
+      (r) => r.kind === "connector-definition" && r.id === "hackernews"
+    );
+    expect(hn?.verb).toBe("create");
+    const x = plan.rows.find(
+      (r) => r.kind === "connector-definition" && r.id === "x"
+    );
+    expect(x?.verb).toBe("create");
+    // acme is locally declared (sourcePath) — it still gets its own row.
+    expect(
+      plan.rows.some(
+        (r) => r.kind === "connector-definition" && r.id?.startsWith("acme")
+      )
+    ).toBe(true);
+  });
+
+  test("a locally-supplied connector key is NOT also a bundled-install row (no double mutation)", () => {
+    // Pretend "acme" is *also* in the bundled catalog with a source_uri; the
+    // local .connector.ts should win — no bundled row for "acme".
+    const state = connectorState();
+    // Make a connection reference "acme" so it's in referencedConnectorKeys.
+    state.connectors.connections.push({
+      slug: "acme-conn",
+      connector: "acme",
+      feeds: [],
+      sourceFile: "connectors/acme.yaml",
+    });
+    const plan = computeDiff(state, {
+      ...emptyRemote(),
+      connectorDefinitions: [
+        {
+          key: "acme",
+          installed: false,
+          installable: true,
+          source_uri: "file:///app/connectors/acme.ts",
+        },
+      ],
+    });
+    const acmeRows = plan.rows.filter(
+      (r) => r.kind === "connector-definition" && r.id?.startsWith("acme")
+    );
+    // Exactly one row — the locally-declared def — never a bundled duplicate.
+    expect(acmeRows).toHaveLength(1);
+  });
 });

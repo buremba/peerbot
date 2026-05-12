@@ -260,12 +260,13 @@ async function handleCreateFeed(
   }
 
   const conn = connRows[0] as any;
-  // A `pending_auth` connection is OK — the feed is created paused; the
-  // OAuth/connect callback activates the connection AND its feeds together.
+  // A `pending_auth` connection is OK — the feed is created `paused` (the
+  // `feeds.status` CHECK only allows active|paused|error). The OAuth/connect
+  // callback un-pauses the connection's feeds when it activates the connection.
   if (conn.status !== 'active' && conn.status !== 'pending_auth') {
     return { error: `Connection is ${conn.status}, must be active or pending_auth to create feeds` };
   }
-  const feedInitialStatus = conn.status === 'pending_auth' ? 'pending_auth' : 'active';
+  const feedInitialStatus = conn.status === 'active' ? 'active' : 'paused';
 
   const feedsSchema = conn.feeds_schema as Record<string, any> | null;
   if (feedsSchema && !feedsSchema[args.feed_key]) {

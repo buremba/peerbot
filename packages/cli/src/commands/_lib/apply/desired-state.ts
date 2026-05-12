@@ -1137,6 +1137,10 @@ async function loadConnectors(
   const { parseAllDocuments } = await import("yaml");
 
   const definitionsByKey = new Map<string, DesiredConnectorDefinition>();
+  // Keys explicitly declared by a `type: connector` doc (vs auto-discovered
+  // from a `*.connector.ts` filename). A given connector key may be declared by
+  // at most one such doc — even two docs pointing at the same `source_path`.
+  const connectorDocKeyDeclaredBy = new Map<string, string>();
   // `.connector.ts` files keyed by their *absolute path* — we don't know the
   // connector key until the server compiles them. `type: connector` docs with
   // `source_path:` that point at one of these files just dedupe to the file.
@@ -1237,6 +1241,13 @@ async function loadConnectors(
         authProfiles.set(profile.slug, profile);
       } else if (type === "connector") {
         const parsed = parseConnectorDoc(doc, rel);
+        const priorDoc = connectorDocKeyDeclaredBy.get(parsed.key);
+        if (priorDoc) {
+          throw new ValidationError(
+            `connector key "${parsed.key}" is declared by two \`type: connector\` docs — ${priorDoc} and ${rel}; keys must be unique`
+          );
+        }
+        connectorDocKeyDeclaredBy.set(parsed.key, rel);
         if (parsed.sourceUrl) {
           const prior = definitionsByKey.get(parsed.key);
           if (prior) {

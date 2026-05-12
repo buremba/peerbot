@@ -830,6 +830,30 @@ export function computeDiff(
     for (const def of desiredConnectors.definitions) {
       rows.push(diffConnectorDefinition(def, installedKeys));
     }
+    // Bundled connectors referenced by a desired auth-profile / connection that
+    // the org doesn't have installed yet — `lobu apply` will install them from
+    // the catalog's server-side `source_uri`. Surface them as plan rows so the
+    // operator approves these connector-definition mutations too. (Skipped when
+    // a locally-supplied connector declares the same key — that one wins.)
+    const installableByKey = new Map(
+      remoteConnectorDefinitions
+        .filter((d) => d.installable && d.source_uri)
+        .map((d) => [d.key, d])
+    );
+    for (const key of [...referencedConnectorKeys].sort()) {
+      if (installedKeys.has(key)) continue;
+      if (declaredKeys.has(key)) continue; // a local def supplies this key
+      const entry = installableByKey.get(key);
+      if (!entry?.source_uri) continue;
+      rows.push({
+        kind: "connector-definition",
+        verb: "create",
+        id: key,
+        // No `desired` — this is a bundled install, handled by
+        // `installConnectorDefinitions`'s bundled-referenced loop, not the
+        // plan-row loop. The render falls back to `id` (the connector key).
+      });
+    }
     // Conservative: never auto-uninstall remote connector definitions that
     // aren't declared/referenced locally — just note them.
     if (!hasUnnamedLocalDefs) {

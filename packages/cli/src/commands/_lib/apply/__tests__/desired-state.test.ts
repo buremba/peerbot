@@ -462,7 +462,7 @@ source_url: https://example.com/b.ts
 `,
     });
     await expect(loadDesiredState({ cwd: dir, env: {} })).rejects.toThrow(
-      /connector key "dup" is declared twice/
+      /connector key "dup" is declared (twice|by two)/
     );
   });
 
@@ -480,7 +480,7 @@ source_url: https://example.com/b.ts
 `,
     });
     await expect(loadDesiredState({ cwd: dir, env: {} })).rejects.toThrow(
-      /connector key "dup2" is declared twice/
+      /connector key "dup2" is declared (twice|by two)/
     );
   });
 
@@ -525,7 +525,7 @@ source_url: https://example.com/b.ts
     await loadDesiredState({ cwd: dir, env: {} }).catch((e) => {
       msg = e instanceof Error ? e.message : String(e);
     });
-    expect(msg).toMatch(/connector key "dup3" is declared twice/);
+    expect(msg).toMatch(/connector key "dup3" is declared (twice|by two)/);
     expect(msg).toMatch(/a\.yaml/);
     expect(msg).toMatch(/b\.yaml/);
   });
@@ -544,7 +544,7 @@ source_url: https://example.com/b.ts
 `,
     });
     await expect(loadDesiredState({ cwd: dir, env: {} })).rejects.toThrow(
-      /connector key "dup4" is declared twice/
+      /connector key "dup4" is declared (twice|by two)/
     );
   });
 

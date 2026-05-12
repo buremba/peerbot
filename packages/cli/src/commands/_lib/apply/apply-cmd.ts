@@ -66,6 +66,48 @@ function checkRequiredSecrets(state: DesiredState): { missing: string[] } {
 const CONNECTOR_SOURCE_MAX_BYTES = 2 * 1024 * 1024; // 2 MiB
 const CONNECTOR_SOURCE_FETCH_TIMEOUT_MS = 15_000;
 
+/**
+ * Read a response body as a stream, counting *bytes* and aborting as soon as
+ * the running total exceeds `maxBytes` — before buffering the rest. Decodes to
+ * UTF-8 text only after the (bounded) body is in hand. Exported for testing.
+ */
+export async function readBoundedBody(
+  res: Response,
+  maxBytes: number,
+  onOverflow: () => never
+): Promise<string> {
+  const reader = res.body?.getReader();
+  if (!reader) {
+    // No streaming body (rare; e.g. a mock). Fall back to text() + a byte check.
+    const text = await res.text();
+    if (Buffer.byteLength(text, "utf8") > maxBytes) onOverflow();
+    return text;
+  }
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) {
+        total += value.byteLength;
+        if (total > maxBytes) {
+          await reader.cancel().catch(() => undefined);
+          onOverflow();
+        }
+        chunks.push(value);
+      }
+    }
+  } finally {
+    try {
+      reader.releaseLock?.();
+    } catch {
+      // already released by cancel() — ignore
+    }
+  }
+  return Buffer.concat(chunks.map((c) => Buffer.from(c))).toString("utf8");
+}
+
 async function materializeConnectorSource(
   defs: DesiredConnectorDefinition[],
   fetchImpl: typeof fetch
@@ -86,41 +128,51 @@ async function materializeConnectorSource(
       );
     }
     const controller = new AbortController();
+    // Single timer covering the whole exchange — connect AND body consumption.
     const timer = setTimeout(
       () => controller.abort(),
       CONNECTOR_SOURCE_FETCH_TIMEOUT_MS
     );
-    let res: Response;
+    let body: string;
     try {
-      res = await fetchImpl(def.sourceUrl, { signal: controller.signal });
-    } catch (err) {
-      throw new ValidationError(
-        `${def.sourceFile}: failed to fetch connector source_url ${def.sourceUrl} — ${err instanceof Error ? err.message : String(err)}`
-      );
+      let res: Response;
+      try {
+        res = await fetchImpl(def.sourceUrl, { signal: controller.signal });
+      } catch (err) {
+        throw new ValidationError(
+          `${def.sourceFile}: failed to fetch connector source_url ${def.sourceUrl} — ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+      if (!res.ok) {
+        throw new ValidationError(
+          `${def.sourceFile}: connector source_url ${def.sourceUrl} returned HTTP ${res.status} ${res.statusText}`
+        );
+      }
+      const contentType = (res.headers.get("content-type") ?? "").toLowerCase();
+      if (
+        contentType &&
+        !/(text\/|application\/(typescript|javascript|x-typescript|octet-stream))/.test(
+          contentType
+        )
+      ) {
+        throw new ValidationError(
+          `${def.sourceFile}: connector source_url ${def.sourceUrl} returned unexpected content-type "${contentType}" — expected text/*, application/typescript, or application/javascript`
+        );
+      }
+      try {
+        body = await readBoundedBody(res, CONNECTOR_SOURCE_MAX_BYTES, () => {
+          throw new ValidationError(
+            `${def.sourceFile}: connector source_url ${def.sourceUrl} body exceeds the ${CONNECTOR_SOURCE_MAX_BYTES}-byte cap`
+          );
+        });
+      } catch (err) {
+        if (err instanceof ValidationError) throw err;
+        throw new ValidationError(
+          `${def.sourceFile}: failed to read connector source_url ${def.sourceUrl} — ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
     } finally {
       clearTimeout(timer);
-    }
-    if (!res.ok) {
-      throw new ValidationError(
-        `${def.sourceFile}: connector source_url ${def.sourceUrl} returned HTTP ${res.status} ${res.statusText}`
-      );
-    }
-    const contentType = (res.headers.get("content-type") ?? "").toLowerCase();
-    if (
-      contentType &&
-      !/(text\/|application\/(typescript|javascript|x-typescript|octet-stream))/.test(
-        contentType
-      )
-    ) {
-      throw new ValidationError(
-        `${def.sourceFile}: connector source_url ${def.sourceUrl} returned unexpected content-type "${contentType}" — expected text/*, application/typescript, or application/javascript`
-      );
-    }
-    const body = await res.text();
-    if (body.length > CONNECTOR_SOURCE_MAX_BYTES) {
-      throw new ValidationError(
-        `${def.sourceFile}: connector source_url ${def.sourceUrl} body is ${body.length} bytes — exceeds the ${CONNECTOR_SOURCE_MAX_BYTES}-byte cap`
-      );
     }
     if (!body.trim()) {
       throw new ValidationError(
@@ -256,6 +308,17 @@ async function installConnectorDefinitions(
   const installedKeys = new Set(
     catalog.filter((d) => d.installed).map((d) => d.key)
   );
+  // Connector keys this project supplies its own source for — these must NEVER
+  // be replaced by a bundled `source_uri` install, even if a bundled connector
+  // shares the key. (`null` keys — auto-discovered `*.connector.ts` whose key
+  // the server resolves at compile time — are added to this set below as soon
+  // as `install_connector` returns the resolved key, so the bundled loop can't
+  // race them either.)
+  const locallySuppliedKeys = new Set<string>(
+    state.connectors.definitions
+      .map((d) => d.key)
+      .filter((k): k is string => !!k)
+  );
   let mutated = false;
 
   // Iterate the plan's connector-definition rows so progress mirrors the plan.
@@ -268,6 +331,10 @@ async function installConnectorDefinitions(
       def.sourceCode !== undefined
         ? await client.installConnector({ sourceCode: def.sourceCode })
         : await client.installConnector({ sourceUrl: def.sourceUrl });
+    if (result.connectorKey) {
+      locallySuppliedKeys.add(result.connectorKey);
+      installedKeys.add(result.connectorKey);
+    }
     mutated = true;
     printText(
       renderProgress(
@@ -279,7 +346,10 @@ async function installConnectorDefinitions(
     );
   }
 
-  // Bundled connectors referenced by an auth-profile / connection.
+  // Bundled connectors referenced by an auth-profile / connection — installed
+  // ONLY if the org doesn't already have that key (installed in a prior apply
+  // or just installed from local source above). A locally-supplied key is never
+  // overwritten by the bundled `source_uri`.
   const catalogByKey = new Map(
     catalog.filter((d) => d.installable && d.source_uri).map((d) => [d.key, d])
   );
@@ -288,7 +358,7 @@ async function installConnectorDefinitions(
     ...state.connectors.connections.map((c) => c.connector),
   ]);
   for (const key of [...referenced].sort()) {
-    if (installedKeys.has(key)) continue;
+    if (installedKeys.has(key) || locallySuppliedKeys.has(key)) continue;
     const entry = catalogByKey.get(key);
     if (!entry?.source_uri) continue; // custom local-only — handled above
     const result = await client.installConnector({
@@ -310,9 +380,19 @@ async function installConnectorDefinitions(
 
 // ── Connector config validation (against a given catalog) ──────────────────
 
-function validateConnectorState(
+/**
+ * Validate connection / auth-profile config against the connector definitions
+ * the server knows about. When `skipSchemaForConnectorKeys` is given, those
+ * connector keys (the locally-declared `*.connector.ts` / `type: connector`
+ * ones) get only the structural checks here — full JSON-schema validation runs
+ * later, after install + catalog refetch, against the *fresh* schemas. This
+ * avoids rejecting a connection's config against a stale installed schema when
+ * the same apply updates that connector.
+ */
+export function validateConnectorState(
   state: DesiredState,
-  connectorDefinitions: RemoteConnectorDefinition[]
+  connectorDefinitions: RemoteConnectorDefinition[],
+  skipSchemaForConnectorKeys?: ReadonlySet<string>
 ): void {
   const defByKey = new Map<string, RemoteConnectorDefinition>(
     connectorDefinitions.map((d) => [d.key, d])
@@ -320,21 +400,34 @@ function validateConnectorState(
   const authProfilesBySlug = new Map(
     state.connectors.authProfiles.map((p) => [p.slug, p])
   );
+  const schemasFor = (connectorKey: string) => {
+    if (skipSchemaForConnectorKeys?.has(connectorKey)) return null;
+    const def = defByKey.get(connectorKey);
+    return def ? resolveConnectorSchemas(def) : null;
+  };
   for (const profile of state.connectors.authProfiles) {
-    const def = defByKey.get(profile.connector);
-    validateAuthProfileAgainstConnector(
-      profile,
-      def ? resolveConnectorSchemas(def) : null
-    );
+    validateAuthProfileAgainstConnector(profile, schemasFor(profile.connector));
   }
   for (const connection of state.connectors.connections) {
-    const def = defByKey.get(connection.connector);
     validateConnectionAgainstConnector(
       connection,
       authProfilesBySlug,
-      def ? resolveConnectorSchemas(def) : null
+      schemasFor(connection.connector)
     );
   }
+}
+
+// Connector keys declared locally (`*.connector.ts` / `type: connector`).
+// We don't know the key for an auto-discovered `*.connector.ts` until the
+// server compiles it — those have `key === null` — so they can't be in the
+// skip set; their connections are validated only after install (when the key
+// is known and the def is in the refreshed catalog).
+export function locallyDeclaredConnectorKeys(state: DesiredState): Set<string> {
+  return new Set(
+    state.connectors.definitions
+      .map((d) => d.key)
+      .filter((k): k is string => !!k)
+  );
 }
 
 // ── Apply executor ─────────────────────────────────────────────────────────
@@ -354,6 +447,25 @@ async function executePlan(
     ctx.plan.rows.filter(
       (row) => row.kind === kind && row.verb !== "noop" && row.verb !== "drift"
     );
+
+  // 0) Connector definitions FIRST — install/update them (the plan was already
+  //    confirmed), refetch the catalog, then re-validate connection/feed config
+  //    against the now-current schemas. Doing this before any other resource
+  //    means a post-install schema rejection halts apply before mutating
+  //    anything unrelated.
+  const hasConnectorWork =
+    ctx.state.connectors.definitions.length > 0 ||
+    ctx.state.connectors.authProfiles.length > 0 ||
+    ctx.state.connectors.connections.length > 0;
+  if (hasConnectorWork) {
+    const freshCatalog = await installConnectorDefinitions(
+      ctx.client,
+      ctx.state,
+      ctx.remote.connectorDefinitions,
+      ctx.plan
+    );
+    validateConnectorState(ctx.state, freshCatalog);
+  }
 
   // 1) Agents
   for (const row of rowsByKind("agent")) {
@@ -445,25 +557,7 @@ async function executePlan(
     printText(renderProgress(row.verb, "watcher", row.id));
   }
 
-  // 7) Connector definitions (install — happens AFTER the plan was confirmed),
-  //    then refetch the catalog and validate connection/feed config against the
-  //    now-current schemas (so an updated custom connector's new schema is what
-  //    the connection config is checked against).
-  const hasConnectorWork =
-    ctx.state.connectors.definitions.length > 0 ||
-    ctx.state.connectors.authProfiles.length > 0 ||
-    ctx.state.connectors.connections.length > 0;
-  if (hasConnectorWork) {
-    const freshCatalog = await installConnectorDefinitions(
-      ctx.client,
-      ctx.state,
-      ctx.remote.connectorDefinitions,
-      ctx.plan
-    );
-    validateConnectorState(ctx.state, freshCatalog);
-  }
-
-  // 8) Auth profiles (create / update; interactive kinds → punch-list)
+  // Auth profiles (create / update; interactive kinds → punch-list)
   for (const row of rowsByKind("auth-profile")) {
     if (row.kind !== "auth-profile") continue;
     const desired = ctx.state.connectors.authProfiles.find(
@@ -582,18 +676,27 @@ async function collectPendingAuthFromPlan(
     if (row.kind !== "auth-profile" || !("needsAuth" in row) || !row.needsAuth)
       continue;
     if (!row.desired) continue;
-    if (out.some((p) => p.slug === row.desired?.slug)) continue;
-    let connectUrl: string | undefined;
-    if (row.desired.kind === "oauth_account") {
-      connectUrl = await client
-        .reconnectAuthProfile(row.desired.slug)
+    const desired = row.desired;
+    if (out.some((p) => p.slug === desired.slug)) continue;
+    if (desired.kind === "oauth_account") {
+      // A successful reconnect implies the profile exists remotely (and yields
+      // a fresh connect URL). If it fails, the profile may not exist (a failed
+      // create in a partial apply) — don't tell the operator to go finish auth
+      // for something that isn't there; just skip it.
+      const connectUrl = await client
+        .reconnectAuthProfile(desired.slug)
         .catch(() => undefined);
+      if (!connectUrl) continue;
+      out.push({ slug: desired.slug, kind: desired.kind, connectUrl });
+      continue;
     }
-    out.push({
-      slug: row.desired.slug,
-      kind: row.desired.kind,
-      ...(connectUrl ? { connectUrl } : {}),
-    });
+    // browser_session (no reconnect endpoint): include only if the profile row
+    // actually exists remotely.
+    const exists = await client
+      .getAuthProfileBySlug(desired.slug)
+      .catch(() => null);
+    if (!exists) continue;
+    out.push({ slug: desired.slug, kind: desired.kind });
   }
   return out;
 }
@@ -672,11 +775,17 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
   // `executePlan`, AFTER plan confirmation.
   const remote = await fetchRemoteSnapshot(client, state, opts.only);
 
-  // Validate connection/auth-profile config against the catalog we have now.
-  // Connectors that only exist locally (not yet installed) are skipped — the
-  // server validates those on install / create_feed, and `executePlan`
-  // re-validates against the fresh post-install catalog.
-  validateConnectorState(state, remote.connectorDefinitions);
+  // Validate connection/auth-profile config against the catalog we have now,
+  // but SKIP schema validation for connector keys declared locally — those
+  // might update an already-installed schema in this same apply, so they're
+  // schema-validated later (post-install, against the fresh catalog) inside
+  // `executePlan`. Structural checks (auth-slug existence, connector match)
+  // still run here for every connection.
+  validateConnectorState(
+    state,
+    remote.connectorDefinitions,
+    locallyDeclaredConnectorKeys(state)
+  );
 
   const plan = computeDiff(state, remote, { only: opts.only });
   printText(renderPlan(plan));

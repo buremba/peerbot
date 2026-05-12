@@ -487,7 +487,7 @@ async function handleCreateAuthProfile(
       // Best-effort cleanup so a token-insert failure doesn't orphan a
       // `pending_auth` profile. (The orphan is self-healing — a retry reuses
       // the row and issues a fresh token — but cleaning up keeps state tidy.)
-      await deleteAuthProfile(ctx.organizationId, authProfile.slug).catch(() => {});
+      await deleteAuthProfile(ctx.organizationId, authProfile.slug).catch(() => undefined);
       throw err;
     }
 

@@ -13,6 +13,7 @@ import type { Env } from '../../../index';
 import type { ToolContext } from '../../../tools/registry';
 import { manageAuthProfiles } from '../../../tools/admin/manage_auth_profiles';
 import { manageConnections } from '../../../tools/admin/manage_connections';
+import { manageFeeds } from '../../../tools/admin/manage_feeds';
 import { getTestDb, cleanupTestDatabase } from '../../setup/test-db';
 import { initWorkspaceProvider } from '../../../workspace';
 import {
@@ -143,10 +144,39 @@ describe('connectors — pending-auth oauth_account in the same apply', () => {
       ctx
     );
     expect('error' in connRes).toBe(false);
+    let connectionId = 0;
     if ('connection' in connRes) {
       expect((connRes.connection as { status: string }).status).toBe('pending_auth');
       expect((connRes.connection as { slug: string }).slug).toBe('demo-conn');
+      connectionId = (connRes.connection as { id: number }).id;
     }
+
+    // A feed created for a pending_auth connection must land 'paused' with no
+    // next_run_at (the feeds.status CHECK only allows active|paused|error; the
+    // OAuth callback un-pauses it when it activates the connection).
+    const feedRes = await manageFeeds(
+      {
+        action: 'create_feed',
+        connection_id: connectionId,
+        feed_key: 'items',
+        display_name: 'Demo Feed',
+        schedule: '0 */6 * * *',
+      },
+      TEST_ENV,
+      ctx
+    );
+    expect('error' in feedRes).toBe(false);
+    if ('feed' in feedRes) {
+      expect((feedRes.feed as { status: string }).status).toBe('paused');
+      expect((feedRes.feed as { next_run_at: unknown }).next_run_at ?? null).toBeNull();
+    }
+    const feedRows = await sql`
+      SELECT status, next_run_at FROM feeds
+      WHERE organization_id = ${org.id} AND connection_id = ${connectionId}
+    `;
+    expect(feedRows).toHaveLength(1);
+    expect((feedRows[0] as { status: string }).status).toBe('paused');
+    expect((feedRows[0] as { next_run_at: unknown }).next_run_at).toBeNull();
 
     // Re-creating the account profile is idempotent — reuses the row, returns a fresh token.
     const accRes2 = await manageAuthProfiles(

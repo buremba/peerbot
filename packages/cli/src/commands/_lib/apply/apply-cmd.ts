@@ -389,10 +389,28 @@ async function installConnectorDefinitions(
  * avoids rejecting a connection's config against a stale installed schema when
  * the same apply updates that connector.
  */
+export interface ValidateConnectorStateOptions {
+  /**
+   * Connector keys whose JSON-schema validation should be skipped in this pass
+   * (the locally-declared ones in the *pre*-install pass — they're schema-
+   * validated post-install against the fresh catalog).
+   */
+  skipSchemaForConnectorKeys?: ReadonlySet<string>;
+  /**
+   * When true (the *post*-install pass), every connector key referenced by a
+   * desired auth profile or connection must be present in the catalog with
+   * `installed === true` — otherwise a hard `ValidationError` before any
+   * `executePlan` mutation. Catches a typo'd `connector:` ref, or a local
+   * `*.connector.ts` whose compiled `definition.key` differs from what the
+   * manifest assumed (so it never got installed under the expected key).
+   */
+  requireInstalled?: boolean;
+}
+
 export function validateConnectorState(
   state: DesiredState,
   connectorDefinitions: RemoteConnectorDefinition[],
-  skipSchemaForConnectorKeys?: ReadonlySet<string>
+  opts: ValidateConnectorStateOptions = {}
 ): void {
   const defByKey = new Map<string, RemoteConnectorDefinition>(
     connectorDefinitions.map((d) => [d.key, d])
@@ -400,8 +418,30 @@ export function validateConnectorState(
   const authProfilesBySlug = new Map(
     state.connectors.authProfiles.map((p) => [p.slug, p])
   );
+
+  if (opts.requireInstalled) {
+    const refs: Array<{ connector: string; ref: string }> = [
+      ...state.connectors.authProfiles.map((p) => ({
+        connector: p.connector,
+        ref: `auth profile "${p.slug}"`,
+      })),
+      ...state.connectors.connections.map((c) => ({
+        connector: c.connector,
+        ref: `connection "${c.slug}"`,
+      })),
+    ];
+    for (const { connector, ref } of refs) {
+      const def = defByKey.get(connector);
+      if (!def || def.installed !== true) {
+        throw new ValidationError(
+          `connector "${connector}" referenced by ${ref} is not installed in the org — check the \`connector\` key (and, for a local \`*.connector.ts\`, that its \`definition.key\` matches)`
+        );
+      }
+    }
+  }
+
   const schemasFor = (connectorKey: string) => {
-    if (skipSchemaForConnectorKeys?.has(connectorKey)) return null;
+    if (opts.skipSchemaForConnectorKeys?.has(connectorKey)) return null;
     const def = defByKey.get(connectorKey);
     return def ? resolveConnectorSchemas(def) : null;
   };
@@ -464,7 +504,7 @@ async function executePlan(
       ctx.remote.connectorDefinitions,
       ctx.plan
     );
-    validateConnectorState(ctx.state, freshCatalog);
+    validateConnectorState(ctx.state, freshCatalog, { requireInstalled: true });
   }
 
   // 1) Agents
@@ -781,11 +821,9 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
   // schema-validated later (post-install, against the fresh catalog) inside
   // `executePlan`. Structural checks (auth-slug existence, connector match)
   // still run here for every connection.
-  validateConnectorState(
-    state,
-    remote.connectorDefinitions,
-    locallyDeclaredConnectorKeys(state)
-  );
+  validateConnectorState(state, remote.connectorDefinitions, {
+    skipSchemaForConnectorKeys: locallyDeclaredConnectorKeys(state),
+  });
 
   const plan = computeDiff(state, remote, { only: opts.only });
   printText(renderPlan(plan));

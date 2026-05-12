@@ -104,11 +104,11 @@ describe("validateConnectorState — skip stale schema for locally-declared keys
 
   test("does NOT validate config against the stale schema when the key is locally declared", () => {
     expect(() =>
-      validateConnectorState(
-        stateWith(connectors),
-        staleCatalog,
-        locallyDeclaredConnectorKeys(stateWith(connectors))
-      )
+      validateConnectorState(stateWith(connectors), staleCatalog, {
+        skipSchemaForConnectorKeys: locallyDeclaredConnectorKeys(
+          stateWith(connectors)
+        ),
+      })
     ).not.toThrow();
   });
 
@@ -133,11 +133,97 @@ describe("validateConnectorState — skip stale schema for locally-declared keys
       ],
     };
     expect(() =>
-      validateConnectorState(
-        stateWith(bad),
-        staleCatalog,
-        locallyDeclaredConnectorKeys(stateWith(bad))
-      )
+      validateConnectorState(stateWith(bad), staleCatalog, {
+        skipSchemaForConnectorKeys: locallyDeclaredConnectorKeys(
+          stateWith(bad)
+        ),
+      })
     ).toThrow(/references auth profile "nope"/);
+  });
+
+  test("requireInstalled: errors when a referenced connector is not in the fresh catalog", () => {
+    const connectors: DesiredState["connectors"] = {
+      definitions: [],
+      authProfiles: [],
+      connections: [
+        {
+          slug: "c-typo",
+          connector: "doesnt-exist",
+          feeds: [],
+          sourceFile: "connectors/x.yaml",
+        },
+      ],
+    };
+    expect(() =>
+      validateConnectorState(stateWith(connectors), [], {
+        requireInstalled: true,
+      })
+    ).toThrow(
+      /connector "doesnt-exist" referenced by connection "c-typo" is not installed/
+    );
+  });
+
+  test("requireInstalled: errors when a referenced connector is present but not installed", () => {
+    const connectors: DesiredState["connectors"] = {
+      definitions: [],
+      authProfiles: [],
+      connections: [
+        {
+          slug: "c1",
+          connector: "catalog-only",
+          feeds: [],
+          sourceFile: "connectors/x.yaml",
+        },
+      ],
+    };
+    // present in the catalog but installable-not-installed (e.g. a bundled
+    // connector that was never installed for the org).
+    expect(() =>
+      validateConnectorState(
+        stateWith(connectors),
+        [{ key: "catalog-only", installed: false, installable: true }],
+        { requireInstalled: true }
+      )
+    ).toThrow(
+      /connector "catalog-only" referenced by connection "c1" is not installed/
+    );
+  });
+
+  test("requireInstalled: passes when the referenced connector is installed", () => {
+    const connectors: DesiredState["connectors"] = {
+      definitions: [],
+      authProfiles: [
+        {
+          slug: "ap",
+          connector: "myconn",
+          kind: "env",
+          credentials: { K: "v" },
+          sourceFile: "connectors/x.yaml",
+        },
+      ],
+      connections: [
+        {
+          slug: "c1",
+          connector: "myconn",
+          authProfileSlug: "ap",
+          feeds: [],
+          sourceFile: "connectors/x.yaml",
+        },
+      ],
+    };
+    expect(() =>
+      validateConnectorState(
+        stateWith(connectors),
+        [
+          {
+            key: "myconn",
+            installed: true,
+            installable: false,
+            auth_schema: { methods: [{ type: "env_keys" }] },
+          },
+        ],
+        { requireInstalled: true }
+      )
+    ).not.toThrow();
   });
 });

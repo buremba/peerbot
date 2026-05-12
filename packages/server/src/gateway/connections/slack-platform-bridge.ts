@@ -68,16 +68,23 @@ export function registerSlackPlatformHandlers(
 
   chat.onSlashCommand(DEFAULT_SLACK_COMMAND, async (event: SlackSlashEvent) => {
     const raw = event.raw || {};
-    const channelId =
+    const rawChannelId =
       typeof raw.channel_id === "string" ? raw.channel_id : undefined;
     const teamId = typeof raw.team_id === "string" ? raw.team_id : undefined;
     const userId =
       event.user?.userId ||
       (typeof raw.user_id === "string" ? raw.user_id : undefined);
 
-    if (!channelId || !userId || !event.channel) {
+    if (!rawChannelId || !userId || !event.channel) {
       return;
     }
+
+    // Slack hands slash commands the bare channel id (`C…`/`D…`), but inbound
+    // messages reach the dispatcher with the Chat SDK's `slack:<id>` thread
+    // channel id — and `agent_channel_bindings` is keyed on that form. Use it
+    // here too so `getBinding` lookups (and preview `/lobu link` bindings)
+    // agree across both ingress paths.
+    const channelId = `slack:${rawChannelId}`;
 
     const { commandName, commandArgs } = parseSlackCommandText(event.text);
     const reply = createChatReply(async (content) => {
@@ -91,7 +98,7 @@ export function registerSlackPlatformHandlers(
         userId,
         channelId,
         teamId,
-        isGroup: isSlackGroupChannel(channelId),
+        isGroup: isSlackGroupChannel(rawChannelId),
         connectionId: connection.id,
         reply,
       }

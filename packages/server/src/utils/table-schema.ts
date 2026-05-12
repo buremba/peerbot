@@ -108,7 +108,8 @@ export const QUERYABLE_SCHEMA = {
         'app_auth_profile_id',
         'visibility',
         'deleted_at',
-        'agent_id'
+        'agent_id',
+        'device_worker_id'
       ),
     },
     // watchers

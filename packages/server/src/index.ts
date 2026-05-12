@@ -586,6 +586,7 @@ import {
   getAuthRun,
   heartbeat,
   listDeviceWorkers,
+  setDeviceOrgGrant,
   pollAuthSignal,
   pollWorkerJob,
   postAuthSignal,
@@ -691,6 +692,8 @@ app.post('/api/workers/complete-auth', completeAuthRun);
 // devices. Lives under /api/me/ so the workspace resolver treats it as
 // user-scoped (no org slug in the URL).
 app.get('/api/me/devices', mcpAuth, listDeviceWorkers);
+app.post('/api/me/device-grants', mcpAuth, (c) => setDeviceOrgGrant(c, true));
+app.delete('/api/me/device-grants', mcpAuth, (c) => setDeviceOrgGrant(c, false));
 // UI → worker signal channel. Separate path prefix so the worker API auth
 // middleware above doesn't cover it (this one is hit from the web session).
 app.get('/api/auth-runs/active', getActiveAuthRun);

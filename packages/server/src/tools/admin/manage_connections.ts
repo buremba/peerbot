@@ -55,6 +55,7 @@ import {
   installConnectorDefinitionFromSource,
   installConnectorFromMcpUrl,
   listScopedConnectorDefinitions,
+  type ScopedConnectorDefinitionRow,
   toggleConnectorLoginEnabled,
   uninstallConnectorDefinition,
 } from './connector-definition-helpers';
@@ -145,6 +146,12 @@ const CreateAction = Type.Object({
       description: 'Override the connection owner (admin/owner only). Defaults to current user.',
     })
   ),
+  device_worker_id: Type.Optional(
+    Type.String({
+      description:
+        "Run this connection's syncs/actions on a specific device worker (its device_workers.id) instead of the cloud pool. Required for connectors that declare a required_capability; optional otherwise. The device must belong to you or be granted to this org.",
+    })
+  ),
   entity_link_overrides: Type.Optional(EntityLinkOverridesSchema),
 });
 
@@ -156,6 +163,12 @@ const UpdateAction = Type.Object({
   auth_profile_slug: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   app_auth_profile_slug: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   config: Type.Optional(Type.Record(Type.String(), Type.Any())),
+  device_worker_id: Type.Optional(
+    Type.Union([Type.String(), Type.Null()], {
+      description:
+        'Reassign which device worker runs this connection. Null moves it back to the cloud pool (only allowed if the connector has no required_capability).',
+    })
+  ),
 });
 
 const DeleteAction = Type.Object({
@@ -488,6 +501,10 @@ async function handleList(
            app.display_name AS app_auth_profile_name,
            app.status AS app_auth_profile_status,
            app.profile_kind AS app_auth_profile_kind,
+           dw.label AS device_label,
+           dw.platform AS device_platform,
+           dw.worker_id AS device_worker_handle,
+           (dw.id IS NOT NULL AND dw.last_seen_at > now() - interval '20 minutes') AS device_online,
            (SELECT COUNT(*) FROM current_event_records e WHERE e.connection_id = c.id)::int AS event_count,
            (SELECT COUNT(*) FROM feeds f WHERE f.connection_id = c.id AND f.deleted_at IS NULL)::int AS feed_count,
            (SELECT ct.token FROM connect_tokens ct
@@ -511,6 +528,7 @@ async function handleList(
     ) cd ON TRUE
     LEFT JOIN auth_profiles ap ON ap.id = c.auth_profile_id
     LEFT JOIN auth_profiles app ON app.id = c.app_auth_profile_id
+    LEFT JOIN device_workers dw ON dw.id = c.device_worker_id
     WHERE c.organization_id = ${organizationId} AND c.deleted_at IS NULL
   `;
 
@@ -591,6 +609,10 @@ async function handleGet(
            app.display_name AS app_auth_profile_name,
            app.status AS app_auth_profile_status,
            app.profile_kind AS app_auth_profile_kind,
+           dw.label AS device_label,
+           dw.platform AS device_platform,
+           dw.worker_id AS device_worker_handle,
+           (dw.id IS NOT NULL AND dw.last_seen_at > now() - interval '20 minutes') AS device_online,
            (SELECT COUNT(*) FROM current_event_records e WHERE e.connection_id = c.id)::int AS event_count
     FROM connections c
     LEFT JOIN LATERAL (
@@ -604,6 +626,7 @@ async function handleGet(
     ) cd ON TRUE
     LEFT JOIN auth_profiles ap ON ap.id = c.auth_profile_id
     LEFT JOIN auth_profiles app ON app.id = c.app_auth_profile_id
+    LEFT JOIN device_workers dw ON dw.id = c.device_worker_id
     WHERE c.id = ${args.connection_id}
       AND c.organization_id = ${organizationId}
       AND c.deleted_at IS NULL
@@ -653,6 +676,78 @@ async function handleGet(
   };
 }
 
+/**
+ * Validate + normalize a connection's device-worker binding (the "Run on"
+ * target). Returns the resolved id (or `null` = cloud pool) or an error string.
+ *
+ *  - A connector that declares `required_capability` MUST be pinned to a device,
+ *    and that device must currently advertise the capability.
+ *  - Any other connector may optionally be pinned to a device (run-on-device).
+ *  - The requester may pin a device they own, or one explicitly granted to this
+ *    org via `device_worker_org_grants`.
+ */
+async function resolveDeviceBinding(params: {
+  organizationId: string;
+  userId: string | null | undefined;
+  connector: ScopedConnectorDefinitionRow;
+  deviceWorkerId: string | null | undefined;
+}): Promise<{ error: string } | { deviceWorkerId: string | null }> {
+  const sql = getDb();
+  const requiredCapability = params.connector.required_capability ?? null;
+  const deviceWorkerId = params.deviceWorkerId?.trim() || null;
+
+  if (!deviceWorkerId) {
+    if (requiredCapability) {
+      return {
+        error: `Connector '${params.connector.key}' runs on a device — pass device_worker_id for a device that has granted the '${requiredCapability}' permission.`,
+      };
+    }
+    return { deviceWorkerId: null };
+  }
+
+  const rows = (await sql`
+    SELECT dw.id, dw.user_id, dw.capabilities, dw.label
+    FROM device_workers dw
+    WHERE dw.id = ${deviceWorkerId}
+    LIMIT 1
+  `) as unknown as Array<{
+    id: string;
+    user_id: string;
+    capabilities: unknown;
+    label: string | null;
+  }>;
+  const device = rows[0];
+  if (!device) {
+    return { error: `Device worker '${deviceWorkerId}' not found.` };
+  }
+
+  const ownsDevice = !!params.userId && device.user_id === params.userId;
+  if (!ownsDevice) {
+    const granted = (await sql`
+      SELECT 1 FROM device_worker_org_grants
+      WHERE device_worker_id = ${deviceWorkerId}
+        AND organization_id = ${params.organizationId}
+      LIMIT 1
+    `) as unknown as Array<unknown>;
+    if (granted.length === 0) {
+      return {
+        error: `You don't have access to device '${device.label ?? deviceWorkerId}'. The device owner must grant it to this org first.`,
+      };
+    }
+  }
+
+  if (requiredCapability) {
+    const caps = Array.isArray(device.capabilities) ? (device.capabilities as string[]) : [];
+    if (!caps.includes(requiredCapability)) {
+      return {
+        error: `Device '${device.label ?? deviceWorkerId}' hasn't granted the '${requiredCapability}' permission required by '${params.connector.key}'.`,
+      };
+    }
+  }
+
+  return { deviceWorkerId };
+}
+
 async function handleCreate(
   args: Extract<ConnectionsArgs, { action: 'create' }>,
   _env: Env,
@@ -682,6 +777,29 @@ async function handleCreate(
 
   if (!connector) {
     return { error: `Connector '${args.connector_key}' not found or not active` };
+  }
+
+  const deviceBinding = await resolveDeviceBinding({
+    organizationId,
+    userId,
+    connector,
+    deviceWorkerId: args.device_worker_id,
+  });
+  if ('error' in deviceBinding) return deviceBinding;
+  if (deviceBinding.deviceWorkerId) {
+    const dup = (await sql`
+      SELECT id FROM connections
+      WHERE organization_id = ${organizationId}
+        AND connector_key = ${args.connector_key}
+        AND device_worker_id = ${deviceBinding.deviceWorkerId}
+        AND deleted_at IS NULL
+      LIMIT 1
+    `) as unknown as Array<{ id: number }>;
+    if (dup.length > 0) {
+      return {
+        error: `A ${connector.name} connection (id: ${dup[0].id}) is already assigned to that device in this org.`,
+      };
+    }
   }
 
   if (args.entity_link_overrides !== undefined) {
@@ -833,7 +951,7 @@ async function handleCreate(
   const inserted = await sql`
     INSERT INTO connections (
       organization_id, connector_key, display_name, status,
-      auth_profile_id, app_auth_profile_id, config, created_by, visibility
+      auth_profile_id, app_auth_profile_id, config, created_by, visibility, device_worker_id
     ) VALUES (
       ${organizationId}, ${args.connector_key},
       ${displayName},
@@ -842,7 +960,8 @@ async function handleCreate(
       ${authSelection?.appAuthProfile?.id ?? null},
       ${splitConfig.connectionConfig ? sql.json(splitConfig.connectionConfig) : null},
       ${effectiveCreatedBy},
-      ${visibility}
+      ${visibility},
+      ${deviceBinding.deviceWorkerId}
     )
     RETURNING *
   `;
@@ -1206,6 +1325,28 @@ async function handleUpdate(
 
   const hasAuthProfileArg = Object.hasOwn(args, 'auth_profile_slug');
   const hasAppAuthProfileArg = Object.hasOwn(args, 'app_auth_profile_slug');
+  const hasDeviceWorkerArg = Object.hasOwn(args, 'device_worker_id');
+
+  // Resolve the new device-worker binding up front so a bad value rejects the
+  // whole update.
+  let nextDeviceWorkerId: string | null = null;
+  if (hasDeviceWorkerArg) {
+    const connectorDef = await getScopedConnectorDefinition({
+      organizationId,
+      connectorKey: existing.connector_key,
+    });
+    if (!connectorDef) {
+      return { error: `Connector '${existing.connector_key}' not found or not active` };
+    }
+    const binding = await resolveDeviceBinding({
+      organizationId,
+      userId: ctx.userId,
+      connector: connectorDef,
+      deviceWorkerId: args.device_worker_id,
+    });
+    if ('error' in binding) return binding;
+    nextDeviceWorkerId = binding.deviceWorkerId;
+  }
 
   const authSelection = await resolveConnectionAuthSelection({
     organizationId,
@@ -1293,6 +1434,15 @@ async function handleUpdate(
     WHERE id = ${args.connection_id} AND organization_id = ${organizationId}
     RETURNING *
   `;
+
+  if (hasDeviceWorkerArg) {
+    await sql`
+      UPDATE connections
+      SET device_worker_id = ${nextDeviceWorkerId}, updated_at = NOW()
+      WHERE id = ${args.connection_id} AND organization_id = ${organizationId}
+    `;
+    (updated[0] as Record<string, unknown>).device_worker_id = nextDeviceWorkerId;
+  }
 
   const updatedConnection = updated[0] as {
     id: number;

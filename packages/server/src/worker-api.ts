@@ -37,6 +37,7 @@ import { validateConnectorEventSemanticType } from './utils/event-kind-validatio
 import { mergeExecutionConfig, resolveExecutionAuth } from './utils/execution-context';
 import { insertEvent } from './utils/insert-event';
 import logger from './utils/logger';
+import { getWorkspaceRole } from './utils/organization-access';
 
 function parseEntityIds(raw: unknown): number[] {
   if (Array.isArray(raw)) return raw.map(Number);
@@ -78,6 +79,12 @@ function normalizeAdvertisedCapabilities(capabilities: Record<string, boolean>):
  * The per-(user, connector) advisory lock serializes concurrent polls / multiple
  * devices so they don't race past the existence checks and create duplicates.
  * Best-effort: failures are logged but never surface to the poll response.
+ *
+ * Note: the connection it creates is intentionally left *unpinned*
+ * (`device_worker_id = NULL`). "Unpinned" means "any of this user's fresh
+ * devices that advertise the capability" — exactly the right semantics for a
+ * personal-org auto-wire. An explicit per-device binding is something the user
+ * sets via `manage_connections`; per-device auto-wire is a possible follow-up.
  */
 async function ensureDeviceConnectorWired(
   userId: string,
@@ -331,11 +338,15 @@ async function reconcileDeviceCapabilities(userId: string): Promise<void> {
 
 /**
  * Verify that the request's worker auth scope is allowed to touch this run.
- * Trusted/anonymous workers see everything; user-scoped device workers can only
- * touch a run that (a) belongs to one of the user's orgs, (b) is currently
- * `running`, and (c) — when the caller passes its worker id — was claimed by
- * that same worker. That last check stops one device from streaming/completing
- * another worker's run; (b) stops it from re-touching a pending/finished run.
+ * Trusted/anonymous workers see everything; a user-scoped device worker can
+ * only touch a run that (a) is currently `running`, (b) — when the caller
+ * passes its worker id, always required here — was claimed by that same
+ * `worker_id`, and (c) is in scope for this worker: either in one of the
+ * user's orgs, or whose connection is pinned to a device this user owns.
+ * `worker_id` is client-supplied and only unique per install, so (b) alone is
+ * not a sufficient gate — (c) keeps a worker from heartbeating/completing some
+ * unrelated org's run by guessing a `(run_id, worker_id)` pair. (a) stops
+ * re-touching a pending/finished run.
  *
  * Returns a Hono response on rejection, or null on pass.
  */
@@ -347,19 +358,30 @@ async function authorizeRunForWorker(
   if (c.var.workerAuthMode !== 'user') {
     return null;
   }
+  const workerUserId = c.var.workerUserId;
   const orgIds = c.var.workerOrgIds ?? [];
-  if (orgIds.length === 0) {
-    return c.json({ error: 'Forbidden' }, 403);
-  }
   const sql = getDb();
   const rows = (await sql`
-    SELECT organization_id, status, claimed_by FROM runs WHERE id = ${runId} LIMIT 1
-  `) as unknown as Array<{ organization_id: string; status: string; claimed_by: string | null }>;
+    SELECT r.status, r.claimed_by, r.organization_id, dw.user_id AS device_owner
+    FROM runs r
+    LEFT JOIN connections con ON con.id = r.connection_id
+    LEFT JOIN device_workers dw ON dw.id = con.device_worker_id
+    WHERE r.id = ${runId}
+    LIMIT 1
+  `) as unknown as Array<{
+    status: string;
+    claimed_by: string | null;
+    organization_id: string;
+    device_owner: string | null;
+  }>;
   if (rows.length === 0) {
     return c.json({ error: 'Run not found' }, 404);
   }
   const run = rows[0];
-  if (!orgIds.includes(run.organization_id)) {
+  const inScope =
+    orgIds.includes(run.organization_id) ||
+    (!!workerUserId && run.device_owner === workerUserId);
+  if (!inScope) {
     return c.json({ error: 'Forbidden' }, 403);
   }
   if (run.status !== 'running') {
@@ -424,12 +446,18 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   // Device-worker registry: upsert device_workers row for user-scoped workers
   // so /api/me/devices can enumerate them. Also ensure advertised capability
   // connectors are fully wired. Best-effort — never fail the poll.
+  //
+  // `deviceWorkerId` is this device's surrogate id; a pending run whose
+  // connection is pinned to it (connections.device_worker_id) is claimable
+  // regardless of the connector's required_capability — that's how an
+  // otherwise-cloud connector (Reddit, …) ends up running on a chosen device.
   const workerUserId = c.var.workerUserId;
+  let deviceWorkerId: string | null = null;
   if (workerUserId) {
     try {
       const incomingCaps = advertisedCapabilities;
 
-      await sql`
+      const upserted = (await sql`
         INSERT INTO device_workers (user_id, worker_id, platform, app_version, capabilities, label)
         VALUES (
           ${workerUserId}, ${worker_id}, ${platform}, ${app_version},
@@ -441,7 +469,9 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
           capabilities = EXCLUDED.capabilities,
           label = COALESCE(EXCLUDED.label, device_workers.label),
           last_seen_at = now()
-      `;
+        RETURNING id
+      `) as unknown as Array<{ id: string }>;
+      deviceWorkerId = upserted[0]?.id ?? null;
 
       // Reconcile this user's device connectors against the capabilities their
       // whole fleet currently advertises: auto-wire / re-activate the ones that
@@ -480,6 +510,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
       WITH next_run AS (
         SELECT r.id
         FROM runs r
+        LEFT JOIN connections con ON con.id = r.connection_id
         LEFT JOIN LATERAL (
           SELECT cd.api_type, cd.required_capability
           FROM connector_definitions cd
@@ -497,9 +528,47 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
           AND r.run_type IN ('sync', 'action', 'embed_backfill', 'auth')
           AND (r.approval_status = 'auto' OR r.approval_status = 'approved')
           AND (${hasBrowser} OR COALESCE(cd.api_type, 'api') = 'api')
-          AND COALESCE(cd.required_capability, '') = ANY(${pgTextArray(capabilityMatchSet)}::text[])
-          AND (${!isUserScopedWorker} OR cd.required_capability IS NOT NULL)
-          AND (${!orgScopeActive} OR r.organization_id = ANY(${pgTextArray(orgScopeIds)}::text[]))
+          AND (
+            -- (A) trusted/anonymous fleet worker: the no-capability cloud
+            --     connectors plus any capability it happens to advertise, in
+            --     any org — but NEVER a connection pinned to a device.
+            (
+              ${!isUserScopedWorker}
+              AND COALESCE(cd.required_capability, '') = ANY(${pgTextArray(capabilityMatchSet)}::text[])
+              AND con.device_worker_id IS NULL
+            )
+            -- (B) user-scoped device worker: an unpinned capability-matched
+            --     device connector in an org this worker can see ...
+            OR (
+              ${isUserScopedWorker}
+              AND cd.required_capability IS NOT NULL
+              AND cd.required_capability = ANY(${pgTextArray(advertisedCapabilities)}::text[])
+              AND con.device_worker_id IS NULL
+              AND r.organization_id = ANY(${pgTextArray(orgScopeIds)}::text[])
+            )
+            -- ... or any connection explicitly pinned to THIS device (this is
+            --     "run the Reddit connector on my Mac"). Still: a device-only
+            --     connector needs the capability currently advertised, and the
+            --     pin only counts in an org this worker can see or that the
+            --     device owner has granted the device to.
+            OR (
+              ${isUserScopedWorker}
+              AND ${deviceWorkerId}::uuid IS NOT NULL
+              AND con.device_worker_id = ${deviceWorkerId}::uuid
+              AND (
+                cd.required_capability IS NULL
+                OR cd.required_capability = ANY(${pgTextArray(advertisedCapabilities)}::text[])
+              )
+              AND (
+                r.organization_id = ANY(${pgTextArray(orgScopeIds)}::text[])
+                OR EXISTS (
+                  SELECT 1 FROM device_worker_org_grants g
+                  WHERE g.device_worker_id = ${deviceWorkerId}::uuid
+                    AND g.organization_id = r.organization_id
+                )
+              )
+            )
+          )
         ORDER BY
           CASE WHEN r.run_type = 'auth' THEN 0 ELSE 1 END,
           r.created_at ASC
@@ -543,6 +612,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         conn.auth_profile_id,
         conn.app_auth_profile_id,
         conn.config AS connection_config,
+        conn.device_worker_id AS connection_device_worker_id,
         cv.compiled_code,
         ap.auth_data AS auth_profile_auth_data
       FROM runs r
@@ -601,6 +671,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     auth_profile_id: number | null;
     app_auth_profile_id: number | null;
     connection_config: Record<string, unknown> | null;
+    connection_device_worker_id: string | null;
     compiled_code: string | null;
     // Watcher run fields (populated via LEFT JOINs)
     watcher_id: number | null;
@@ -632,28 +703,31 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     }
   }
 
-  // User-scoped device workers (Lobu for Mac etc.) only ever run no-auth bundled
-  // connectors gated by `required_capability`. Never hand a user OAuth/PAT
-  // client real connection credentials or auth-profile state — strip them
-  // unconditionally, so a connector that's misconfigured with both a
-  // `required_capability` and an auth profile can't leak secrets to a device.
-  // (`isUserScopedWorker` is computed above for the capability-match set.)
-  const { credentials, connectionCredentials, sessionState } =
-    !isUserScopedWorker && row.connection_id
-      ? await resolveExecutionAuth({
-          organizationId: row.organization_id,
-          connectionId: row.connection_id,
-          authProfileId: row.auth_profile_id,
-          appAuthProfileId: row.app_auth_profile_id,
-          credentialDb: sql,
-          logContext: { run_id: row.run_id },
-          logMessage: 'Failed to resolve connection credentials for worker poll',
-        })
-      : {
-          credentials: null,
-          connectionCredentials: {},
-          sessionState: null,
-        };
+  // Credential delivery:
+  //  - trusted/anonymous fleet workers always resolve connection credentials;
+  //  - a user-scoped device worker only gets real credentials when the run's
+  //    connection is *explicitly pinned to a device* (connections.device_worker_id),
+  //    which was authorized at bind time. A device connector reached via the
+  //    capability match (no pin) is no-auth by construction, so it gets nothing —
+  //    a connector misconfigured with both a `required_capability` and an auth
+  //    profile still can't leak secrets to an arbitrary capability-matched device.
+  const connectionIsDevicePinned = row.connection_device_worker_id != null;
+  const deliverConnectionAuth = !!row.connection_id && (!isUserScopedWorker || connectionIsDevicePinned);
+  const { credentials, connectionCredentials, sessionState } = deliverConnectionAuth
+    ? await resolveExecutionAuth({
+        organizationId: row.organization_id,
+        connectionId: row.connection_id!,
+        authProfileId: row.auth_profile_id,
+        appAuthProfileId: row.app_auth_profile_id,
+        credentialDb: sql,
+        logContext: { run_id: row.run_id },
+        logMessage: 'Failed to resolve connection credentials for worker poll',
+      })
+    : {
+        credentials: null,
+        connectionCredentials: {},
+        sessionState: null,
+      };
 
   return c.json({
     run_id: row.run_id,
@@ -673,8 +747,8 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     session_state: sessionState ?? undefined,
     action_key: row.action_key ?? undefined,
     action_input: (row as any).approved_input ?? row.action_input ?? undefined,
-    auth_profile_id: isUserScopedWorker ? undefined : (row.run_auth_profile_id ?? undefined),
-    previous_credentials: isUserScopedWorker ? undefined : (row.auth_profile_auth_data ?? undefined),
+    auth_profile_id: deliverConnectionAuth ? (row.run_auth_profile_id ?? undefined) : undefined,
+    previous_credentials: deliverConnectionAuth ? (row.auth_profile_auth_data ?? undefined) : undefined,
   });
 }
 
@@ -1662,7 +1736,9 @@ export async function completeActionRun(c: Context<{ Bindings: Env }>) {
 /**
  * GET /api/me/devices
  *
- * Returns the calling user's registered device workers.
+ * Returns the calling user's registered device workers, each with its surrogate
+ * id (used as `device_worker_id` when pinning a connection), the orgs the user
+ * has granted it to, and how many connections are pinned to it.
  * Requires session / PAT / OAuth authentication (mcpAuth).
  */
 export async function listDeviceWorkers(c: Context<{ Bindings: Env }>) {
@@ -1674,17 +1750,24 @@ export async function listDeviceWorkers(c: Context<{ Bindings: Env }>) {
     const sql = getDb();
     const rows = (await sql`
       SELECT
-        worker_id,
-        platform,
-        app_version,
-        capabilities,
-        label,
-        last_seen_at,
-        (last_seen_at > now() - interval '20 minutes') AS online
-      FROM device_workers
-      WHERE user_id = ${userId}
-      ORDER BY last_seen_at DESC
+        dw.id,
+        dw.worker_id,
+        dw.platform,
+        dw.app_version,
+        dw.capabilities,
+        dw.label,
+        dw.last_seen_at,
+        (dw.last_seen_at > now() - interval '20 minutes') AS online,
+        COALESCE(
+          (SELECT array_agg(g.organization_id) FROM device_worker_org_grants g WHERE g.device_worker_id = dw.id),
+          ARRAY[]::text[]
+        ) AS granted_org_ids,
+        (SELECT count(*) FROM connections cn WHERE cn.device_worker_id = dw.id AND cn.deleted_at IS NULL)::int AS connector_count
+      FROM device_workers dw
+      WHERE dw.user_id = ${userId}
+      ORDER BY dw.last_seen_at DESC
     `) as unknown as Array<{
+      id: string;
       worker_id: string;
       platform: string | null;
       app_version: string | null;
@@ -1692,9 +1775,12 @@ export async function listDeviceWorkers(c: Context<{ Bindings: Env }>) {
       label: string | null;
       last_seen_at: string;
       online: boolean;
+      granted_org_ids: string[];
+      connector_count: number;
     }>;
     return c.json({
       devices: rows.map((r) => ({
+        id: r.id,
         worker_id: r.worker_id,
         platform: r.platform,
         app_version: r.app_version,
@@ -1702,10 +1788,89 @@ export async function listDeviceWorkers(c: Context<{ Bindings: Env }>) {
         label: r.label,
         last_seen_at: r.last_seen_at,
         online: r.online,
+        granted_org_ids: Array.isArray(r.granted_org_ids) ? r.granted_org_ids : [],
+        connector_count: r.connector_count ?? 0,
       })),
     });
   } catch (err: unknown) {
     logger.error({ error: errorMessage(err) }, '[listDeviceWorkers] Error');
+    return c.json({ error: errorMessage(err) }, 500);
+  }
+}
+
+/**
+ * POST /api/me/device-grants  { device_worker_id, organization_id }
+ * DELETE /api/me/device-grants { device_worker_id, organization_id }
+ *
+ * Lets a device owner allow (or stop allowing) one of their devices to back
+ * connectors in an org they're a member of. Org-sharing is always explicit.
+ */
+export async function setDeviceOrgGrant(c: Context<{ Bindings: Env }>, grant: boolean) {
+  const userId = c.var.user?.id;
+  if (!userId) {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
+  let deviceWorkerId: string;
+  let organizationId: string;
+  try {
+    const body = await c.req.json<{ device_worker_id?: string; organization_id?: string }>();
+    deviceWorkerId = (body.device_worker_id ?? '').trim();
+    organizationId = (body.organization_id ?? '').trim();
+    if (!deviceWorkerId || !organizationId) {
+      return c.json({ error: 'device_worker_id and organization_id are required' }, 400);
+    }
+  } catch {
+    return c.json({ error: 'Invalid or missing JSON body' }, 400);
+  }
+  try {
+    const sql = getDb();
+    const owned = (await sql`
+      SELECT 1 FROM device_workers WHERE id = ${deviceWorkerId} AND user_id = ${userId} LIMIT 1
+    `) as unknown as Array<unknown>;
+    if (owned.length === 0) {
+      return c.json({ error: 'Device not found or not owned by you' }, 404);
+    }
+    const role = await getWorkspaceRole(sql, organizationId, userId);
+    if (!role) {
+      return c.json({ error: 'You are not a member of that organization' }, 403);
+    }
+    if (grant) {
+      await sql`
+        INSERT INTO device_worker_org_grants (device_worker_id, organization_id, granted_by)
+        VALUES (${deviceWorkerId}, ${organizationId}, ${userId})
+        ON CONFLICT (device_worker_id, organization_id) DO NOTHING
+      `;
+    } else {
+      await sql.begin(async (tx) => {
+        await tx`
+          DELETE FROM device_worker_org_grants
+          WHERE device_worker_id = ${deviceWorkerId} AND organization_id = ${organizationId}
+        `;
+        // Un-pin and pause connections in that org that were backed by this
+        // device — they can't run anywhere now; the owner re-pins (or
+        // re-grants) to bring them back. Personal-org auto-wired connections
+        // are unpinned and unaffected.
+        const affected = (await tx`
+          UPDATE connections
+          SET device_worker_id = NULL,
+              status = 'paused',
+              error_message = 'Device access to this organization was revoked',
+              updated_at = NOW()
+          WHERE device_worker_id = ${deviceWorkerId} AND organization_id = ${organizationId}
+          RETURNING id
+        `) as unknown as Array<{ id: number }>;
+        const ids = affected.map((r) => r.id);
+        if (ids.length > 0) {
+          await tx`
+            UPDATE feeds SET status = 'paused', updated_at = NOW()
+            WHERE connection_id = ANY(${ids}::bigint[]) AND deleted_at IS NULL AND status = 'active'
+          `;
+        }
+      });
+    }
+    return c.json({ ok: true });
+  } catch (err: unknown) {
+    logger.error({ error: errorMessage(err) }, '[setDeviceOrgGrant] Error');
     return c.json({ error: errorMessage(err) }, 500);
   }
 }

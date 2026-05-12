@@ -63,6 +63,26 @@ This closes most of the gap between "subprocess on the same host" and what Docke
 
 A compromised worker session cannot leak global platform tokens or MCP client secrets.
 
+### Device-pinned connectors
+
+A connection can be pinned to a *device worker* (`connections.device_worker_id`) so its
+syncs/actions run on a specific user-owned device (Lobu for Mac/iPhone) instead of the cloud
+connector-worker pool — mandatory for device-only connectors (`required_capability`, e.g.
+Apple Health), optional for any other connector ("run the Reddit connector on my Mac").
+
+Implications, by design:
+- **Credentials run on the device.** When a pinned connection has an auth profile, the gateway
+  delivers the resolved connection credentials to that device worker over its own user-scoped
+  token — the same path the cloud worker uses. The trust boundary is the user: they own both the
+  device and the data the connector reads. Capability-matched (unpinned) device connectors are
+  no-auth by construction and still receive no credentials.
+- **Egress uses the device's network.** Connector traffic from a device worker is not subject to
+  the gateway's allowlist/blocklist/egress-judge — those govern locally-spawned workers, not a
+  remote device. Treat a device-pinned cloud connector as running on that machine's network.
+- **Binding is authorized at bind time.** A connection can only be pinned to a device the requester
+  owns, or one explicitly granted to the org by its owner (`device_worker_org_grants`); revoking a
+  grant un-pins that org's connections.
+
 ## Skills and policy
 
 Skills are executable, security-sensitive input:

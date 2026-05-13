@@ -1,9 +1,17 @@
+import { randomUUID } from "node:crypto";
 import { decrypt, encrypt } from "@lobu/core";
 import type { Context } from "hono";
 import { getCookie, setCookie } from "hono/cookie";
 import type { SettingsTokenPayload } from "../../auth/settings/token-service.js";
 
-export type AuthProvider = (c: Context) => SettingsTokenPayload | null;
+/**
+ * Settings session payload as carried in the encrypted cookie/token: the
+ * base payload plus a random `jti` minted at issue time so a leaked cookie
+ * can be revoked via the `revoked_tokens` store.
+ */
+export type SettingsSession = SettingsTokenPayload & { jti?: string };
+
+export type AuthProvider = (c: Context) => SettingsSession | null;
 
 const SETTINGS_SESSION_COOKIE_NAME = "lobu_settings_session";
 
@@ -20,12 +28,12 @@ export function setAuthProvider(provider: AuthProvider | null): void {
 
 function decodeSettingsPayload(
   token: string | null | undefined
-): SettingsTokenPayload | null {
+): SettingsSession | null {
   if (!token || token.trim().length === 0) return null;
 
   try {
     const decrypted = decrypt(token);
-    const payload = JSON.parse(decrypted) as SettingsTokenPayload;
+    const payload = JSON.parse(decrypted) as SettingsSession;
 
     if (!payload.userId || !payload.exp) return null;
     if (Date.now() > payload.exp) return null;
@@ -49,7 +57,7 @@ function isSecureRequest(c: Context): boolean {
  * Checks injected auth provider first (for embedded mode),
  * then falls back to cookie-based session auth.
  */
-export function verifySettingsSession(c: Context): SettingsTokenPayload | null {
+export function verifySettingsSession(c: Context): SettingsSession | null {
   if (_authProvider) {
     const result = _authProvider(c);
     if (result) return result;
@@ -61,7 +69,7 @@ export function verifySettingsSession(c: Context): SettingsTokenPayload | null {
 
 export function verifySettingsToken(
   token: string | null | undefined
-): SettingsTokenPayload | null {
+): SettingsSession | null {
   if (!token) return null;
   return decodeSettingsPayload(token);
 }
@@ -73,18 +81,24 @@ export function verifySettingsToken(
 export function verifySettingsSessionOrToken(
   c: Context,
   queryKey = "token"
-): SettingsTokenPayload | null {
+): SettingsSession | null {
   return verifySettingsSession(c) ?? verifySettingsToken(c.req.query(queryKey));
 }
 
 /**
- * Set a settings session cookie from a SettingsTokenPayload.
+ * Set a settings session cookie from a SettingsTokenPayload. A random `jti`
+ * is minted here when the payload doesn't already carry one, so the issued
+ * cookie can be killed via the `revoked_tokens` store before it expires.
  */
 export function setSettingsSessionCookie(
   c: Context,
   session: SettingsTokenPayload
 ): void {
-  const token = encrypt(JSON.stringify(session));
+  const withJti: SettingsSession = {
+    ...session,
+    jti: (session as SettingsSession).jti ?? randomUUID(),
+  };
+  const token = encrypt(JSON.stringify(withJti));
   const maxAgeSeconds = Math.max(
     1,
     Math.floor((session.exp - Date.now()) / 1000)

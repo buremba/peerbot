@@ -128,6 +128,10 @@ interface BootstrapScopeSummary {
   total_content: number;
   active_connections: number;
   watchers_count: number;
+  // Org-level regardless of the focused entity (sidebar nav badges).
+  agents_count: number;
+  // Devices are owned by the requesting user, not the org — count is per-user.
+  devices_count: number;
 }
 
 interface BootstrapContentItem {
@@ -637,7 +641,7 @@ function emptyResult(
 async function fetchBootstrap(
   sql: DbClient,
   _pgSql: ReturnType<typeof createDbClientFromEnv>,
-  _ctx: ToolContext,
+  ctx: ToolContext,
   workspace: ResolvedWorkspace,
   entity: ResolvedEntityDetails | null
 ): Promise<ResolvePathBootstrap> {
@@ -648,6 +652,8 @@ async function fetchBootstrap(
         total_content: 0,
         active_connections: 0,
         watchers_count: 0,
+        agents_count: 0,
+        devices_count: 0,
       },
       recent_content: [],
       recent_feeds: [],
@@ -658,7 +664,7 @@ async function fetchBootstrap(
 
   const [entityTypes, summary, recentContent, recentFeeds, recentWatchers] = await Promise.all([
     listEntityTypes(sql, workspace.id),
-    fetchScopeSummary(sql, workspace.id, entity),
+    fetchScopeSummary(sql, workspace.id, entity, ctx.userId),
     fetchRecentContent(sql, workspace.id, entity?.id ?? null),
     fetchRecentFeeds(sql, workspace.id, entity?.id ?? null),
     fetchRecentWatchers(sql, workspace.slug, workspace.id, entity?.id ?? null),
@@ -711,13 +717,36 @@ async function listEntityTypes(
 async function fetchScopeSummary(
   sql: DbClient,
   organizationId: string,
-  entity: ResolvedEntityDetails | null
+  entity: ResolvedEntityDetails | null,
+  userId: string | null
 ): Promise<BootstrapScopeSummary> {
+  // Agents are org-scoped; devices are owned by the requesting user. Both are
+  // sidebar-nav badges that don't narrow with the focused entity, so fetch
+  // them regardless of `entity`.
+  const [navRow] = await simpleQuery(sql`
+    SELECT
+      (
+        SELECT COUNT(*)::int
+        FROM agents a
+        WHERE a.organization_id = ${organizationId}
+      ) AS agents_count,
+      (
+        SELECT COUNT(*)::int
+        FROM device_workers dw
+        WHERE dw.user_id = ${userId}
+      ) AS devices_count
+  `);
+  const agentsCount = Number((navRow as { agents_count?: number } | undefined)?.agents_count) || 0;
+  const devicesCount =
+    Number((navRow as { devices_count?: number } | undefined)?.devices_count) || 0;
+
   if (entity) {
     return {
       total_content: entity.total_content,
       active_connections: entity.active_connections,
       watchers_count: entity.watchers_count,
+      agents_count: agentsCount,
+      devices_count: devicesCount,
     };
   }
 
@@ -747,6 +776,8 @@ async function fetchScopeSummary(
     active_connections:
       Number((row as { active_connections?: number } | undefined)?.active_connections) || 0,
     watchers_count: Number((row as { watchers_count?: number } | undefined)?.watchers_count) || 0,
+    agents_count: agentsCount,
+    devices_count: devicesCount,
   };
 }
 

@@ -15,7 +15,7 @@ import { generateClientId, generateClientSecret } from './utils';
  * Hash a client secret using scrypt (similar security to bcrypt)
  * Format: salt:hash (both hex encoded)
  */
-function hashClientSecret(secret: string): string {
+export function hashClientSecret(secret: string): string {
   const salt = randomBytes(16);
   const hash = scryptSync(secret, salt, 64);
   return `${salt.toString('hex')}:${hash.toString('hex')}`;

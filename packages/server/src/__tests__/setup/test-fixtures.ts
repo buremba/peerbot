@@ -6,6 +6,7 @@
  */
 
 import { serializeSigned } from 'hono/utils/cookie';
+import { hashClientSecret } from '../../auth/oauth/clients';
 import { generateSecureToken, hashToken } from '../../auth/oauth/utils';
 import { pgTextArray } from '../../db/client';
 import { ensureUniqueConnectionSlug } from '../../utils/connections';
@@ -363,7 +364,7 @@ export async function createTestOAuthClient(options?: {
       token_endpoint_auth_method, client_name, software_id, software_version, metadata, created_at, updated_at
     ) VALUES (
       ${client_id},
-      ${hashToken(client_secret)},
+      ${hashClientSecret(client_secret)},
       ${pgTextArray(redirect_uris)}::text[],
       ${pgTextArray(grant_types)}::text[],
       ${pgTextArray(['code'])}::text[],

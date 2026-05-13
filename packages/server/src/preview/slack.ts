@@ -205,21 +205,25 @@ export type ConsumeClaimResult =
   | { status: 'surface_not_allowed'; surfaceType: SurfaceType };
 
 /**
- * Consume a `/lobu link` code and bind the originating Slack channel/DM to the
- * agent the code was minted for. One-time use; last link for a surface wins
+ * Consume a `/lobu link` (a.k.a. `/link`) code and bind the originating chat to
+ * the agent the code was minted for. One-time use; last link for a surface wins
  * (re-linking just rebinds — there's no separate unlink step). Called from the
  * `link` chat command, so it never touches HTTP.
+ *
+ * Platform-agnostic: the caller supplies the `platform`, the canonical
+ * `channelId` form that platform's message handler looks bindings up by (for
+ * Slack: `canonicalSlackChannelId`), the workspace/`teamId` if the platform has
+ * one, and the resolved `surfaceType` (dm vs channel).
  */
-export async function consumeSlackPreviewClaim(args: {
+export async function consumePreviewClaim(args: {
   code: string;
-  teamId: string;
+  platform: string;
+  /** Workspace id for platforms that have one (Slack); undefined otherwise. */
+  teamId?: string;
   channelId: string;
+  surfaceType: SurfaceType;
 }): Promise<ConsumeClaimResult> {
-  const { code, teamId } = args;
-  const surfaceType = slackSurfaceType(args.channelId);
-  // Store the binding under the same `slack:<id>` key the message bridge uses
-  // for getBinding — the slash command gives us the bare channel id.
-  const channelId = canonicalSlackChannelId(args.channelId);
+  const { code, platform, teamId, channelId, surfaceType } = args;
   const sql = getDb();
 
   return sql.begin(async (tx) => {
@@ -236,13 +240,25 @@ export async function consumeSlackPreviewClaim(args: {
       return { status: 'surface_not_allowed' as const, surfaceType };
     }
 
-    // Mirrors ChannelBindingService.createBinding's upsert for the team-set
-    // case — last link wins.
-    await tx`
-      INSERT INTO agent_channel_bindings (agent_id, platform, channel_id, team_id, created_at)
-      VALUES (${claim.agentId}, ${SLACK_PLATFORM}, ${channelId}, ${teamId}, now())
-      ON CONFLICT (platform, channel_id, team_id) DO UPDATE SET agent_id = EXCLUDED.agent_id
-    `;
+    // Upsert the binding — last link for this chat wins. `ON CONFLICT` can't
+    // target a NULL `team_id`, so for platforms without a workspace concept
+    // (team_id null) we delete-then-insert inside the tx instead.
+    if (teamId) {
+      await tx`
+        INSERT INTO agent_channel_bindings (agent_id, platform, channel_id, team_id, created_at)
+        VALUES (${claim.agentId}, ${platform}, ${channelId}, ${teamId}, now())
+        ON CONFLICT (platform, channel_id, team_id) DO UPDATE SET agent_id = EXCLUDED.agent_id
+      `;
+    } else {
+      await tx`
+        DELETE FROM agent_channel_bindings
+        WHERE platform = ${platform} AND channel_id = ${channelId} AND team_id IS NULL
+      `;
+      await tx`
+        INSERT INTO agent_channel_bindings (agent_id, platform, channel_id, team_id, created_at)
+        VALUES (${claim.agentId}, ${platform}, ${channelId}, NULL, now())
+      `;
+    }
 
     return {
       status: 'bound' as const,

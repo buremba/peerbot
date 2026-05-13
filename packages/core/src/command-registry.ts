@@ -11,6 +11,8 @@ export interface CommandContext {
   channelId: string;
   /** Workspace/team id for platforms that have one (Slack). Undefined elsewhere. */
   teamId?: string;
+  /** True if this is a group/channel rather than a 1:1 DM with the bot. */
+  isGroup?: boolean;
   conversationId?: string;
   connectionId?: string;
   agentId?: string;

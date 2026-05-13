@@ -1,5 +1,8 @@
 import type { CommandContext, CommandRegistry } from "@lobu/core";
-import { consumeSlackPreviewClaim } from "../../preview/slack.js";
+import {
+  canonicalSlackChannelId,
+  consumePreviewClaim,
+} from "../../preview/slack.js";
 import type { AgentSettingsStore } from "../auth/settings/agent-settings-store.js";
 import {
   getModelSelectionState,
@@ -89,20 +92,26 @@ export function registerBuiltInCommands(
       "Link this chat to a Lobu agent using a code from `lobu run` (Slack Preview)",
     handler: async (ctx: CommandContext) => {
       const code = ctx.args.trim();
+      const cmd = ctx.platform === "slack" ? "/lobu link" : "/link";
       if (!code) {
         await ctx.reply(
-          "Usage: `/lobu link <code>` — get a code by running `lobu run` on a Slack-Preview-enabled agent."
+          `Usage: \`${cmd} <code>\` — get a code by running \`lobu run\` on a Preview-enabled agent.`
         );
         return;
       }
-      if (ctx.platform !== "slack" || !ctx.teamId) {
-        await ctx.reply("`/lobu link` only works in Slack.");
-        return;
-      }
-      const result = await consumeSlackPreviewClaim({
+      const surfaceType: "dm" | "channel" = ctx.isGroup ? "channel" : "dm";
+      // The message handler looks bindings up by the platform's canonical
+      // channel-id form; Slack slash commands hand us the bare id.
+      const channelId =
+        ctx.platform === "slack"
+          ? canonicalSlackChannelId(ctx.channelId)
+          : ctx.channelId;
+      const result = await consumePreviewClaim({
         code,
+        platform: ctx.platform,
         teamId: ctx.teamId,
-        channelId: ctx.channelId,
+        channelId,
+        surfaceType,
       });
       switch (result.status) {
         case "bound":
@@ -117,7 +126,7 @@ export function registerBuiltInCommands(
           return;
         case "surface_not_allowed":
           await ctx.reply(
-            `This code can't be used in a ${result.surfaceType === "dm" ? "DM" : "channel"}. Check the agent's \`preview.slack.surfaces\` setting.`
+            `This code can't be used in a ${result.surfaceType === "dm" ? "DM" : "channel"}. Check the agent's \`preview.${ctx.platform}.surfaces\` setting.`
           );
           return;
       }

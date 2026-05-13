@@ -65,6 +65,7 @@ export class CommandDispatcher {
       userId: input.userId,
       channelId: input.channelId,
       teamId: input.teamId,
+      isGroup: input.isGroup,
       conversationId: input.conversationId,
       connectionId: input.connectionId,
       agentId,

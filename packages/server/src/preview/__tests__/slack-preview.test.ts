@@ -9,7 +9,12 @@ import {
 import { getDb } from "../../db/client.js";
 import { registerBuiltInCommands } from "../../gateway/commands/built-in-commands.js";
 import type { Env } from "../../index";
-import { consumeSlackPreviewClaim, createSlackPreviewClaim } from "../slack";
+import {
+  canonicalSlackChannelId,
+  consumePreviewClaim,
+  createSlackPreviewClaim,
+  slackSurfaceType,
+} from "../slack";
 
 const AGENT_ID = "demo-agent";
 const OTHER_AGENT_ID = "other-agent";
@@ -17,6 +22,19 @@ const TEAM_ID = "T_DEVELOPER";
 
 let ORG_ID = "";
 const USER_ID = "user-slack-preview";
+
+// The `link` command computes platform/surface/canonical-channel from the
+// command context before calling `consumePreviewClaim`; mirror that here so the
+// direct-call tests exercise the same shape a real Slack `/lobu link` produces.
+function consumeSlack(args: { code: string; teamId: string; channelId: string }) {
+  return consumePreviewClaim({
+    code: args.code,
+    platform: "slack",
+    teamId: args.teamId,
+    channelId: canonicalSlackChannelId(args.channelId),
+    surfaceType: slackSurfaceType(args.channelId),
+  });
+}
 
 interface FakeResponse {
   status: number;
@@ -107,7 +125,7 @@ describe("Slack Preview claims + channel bindings", () => {
 
   test("consume binds the Slack channel to the agent and is one-time-use", async () => {
     const code = await createClaim(AGENT_ID);
-    const bound = await consumeSlackPreviewClaim({
+    const bound = await consumeSlack({
       code,
       teamId: TEAM_ID,
       channelId: "D123",
@@ -135,17 +153,17 @@ describe("Slack Preview claims + channel bindings", () => {
 
     // Claim consumed; replay fails.
     expect(
-      await consumeSlackPreviewClaim({ code, teamId: TEAM_ID, channelId: "D123" })
+      await consumeSlack({ code, teamId: TEAM_ID, channelId: "D123" })
     ).toEqual({ status: "not_found" });
   });
 
   test("re-linking a channel rebinds it to the new agent (last link wins)", async () => {
-    await consumeSlackPreviewClaim({
+    await consumeSlack({
       code: await createClaim(AGENT_ID),
       teamId: TEAM_ID,
       channelId: "Csame",
     });
-    const rebound = await consumeSlackPreviewClaim({
+    const rebound = await consumeSlack({
       code: await createClaim(OTHER_AGENT_ID),
       teamId: TEAM_ID,
       channelId: "Csame",
@@ -163,7 +181,7 @@ describe("Slack Preview claims + channel bindings", () => {
 
   test("expired or unknown code → not_found, nothing bound", async () => {
     expect(
-      await consumeSlackPreviewClaim({
+      await consumeSlack({
         code: "demo-agent-NOPE00",
         teamId: TEAM_ID,
         channelId: "D1",
@@ -174,7 +192,7 @@ describe("Slack Preview claims + channel bindings", () => {
     const sql = getDb();
     await sql`UPDATE oauth_states SET expires_at = now() - interval '1 minute' WHERE scope = 'slack-preview-claim'`;
     expect(
-      await consumeSlackPreviewClaim({ code, teamId: TEAM_ID, channelId: "D1" })
+      await consumeSlack({ code, teamId: TEAM_ID, channelId: "D1" })
     ).toEqual({ status: "not_found" });
     const bindings =
       await sql`SELECT 1 FROM agent_channel_bindings WHERE platform = 'slack'`;
@@ -184,7 +202,7 @@ describe("Slack Preview claims + channel bindings", () => {
   test("using a dm-only code in a channel → surface_not_allowed", async () => {
     const code = await createClaim(AGENT_ID, ["dm"]);
     expect(
-      await consumeSlackPreviewClaim({ code, teamId: TEAM_ID, channelId: "C9" })
+      await consumeSlack({ code, teamId: TEAM_ID, channelId: "C9" })
     ).toEqual({ status: "surface_not_allowed", surfaceType: "channel" });
   });
 
@@ -193,7 +211,7 @@ describe("Slack Preview claims + channel bindings", () => {
     // get it double-prefixed.
     const code = await createClaim(AGENT_ID, ["dm"]);
     expect(
-      await consumeSlackPreviewClaim({
+      await consumeSlack({
         code,
         teamId: TEAM_ID,
         channelId: "slack:D999",
@@ -221,6 +239,7 @@ describe("Slack Preview claims + channel bindings", () => {
       userId: "U1",
       channelId: "D777",
       teamId: TEAM_ID,
+      isGroup: false,
       platform: "slack",
       args: code,
       reply: async (text: string) => {
@@ -243,6 +262,7 @@ describe("Slack Preview claims + channel bindings", () => {
       userId: "U1",
       channelId: "D777",
       teamId: TEAM_ID,
+      isGroup: false,
       platform: "slack",
       args: "demo-agent-BADBAD",
       reply: async (text: string) => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { createActionCaller } from "../action-call";
+import { createActionCaller } from "../../../sandbox/namespaces/action-call";
 
 describe("createActionCaller", () => {
   it("forces the action discriminator, ignoring a caller-supplied `action` key", async () => {

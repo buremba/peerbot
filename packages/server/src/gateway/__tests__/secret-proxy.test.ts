@@ -147,7 +147,14 @@ describe("SecretProxy user-scoped provider routing", () => {
         .getApp()
         .request("/api/proxy/openai/a/agent-1/u/user-42/v1/chat/completions", {
           method: "POST",
-          headers: { "content-type": "application/json" },
+          headers: {
+            "content-type": "application/json",
+            // Any bearer token satisfies the "URL names an agent → must carry
+            // auth" check added to defend against unauthenticated callers
+            // spending another agent's provider quota; it falls through the
+            // placeholder-swap path so user-scoped routing is still exercised.
+            authorization: "Bearer worker-token-test",
+          },
           body: JSON.stringify({ prompt: "hello" }),
         });
 

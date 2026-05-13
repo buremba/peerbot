@@ -118,6 +118,18 @@ async function deliverToBotConnections(
   }
 }
 
+/**
+ * Notifications are events + per-user targets.
+ *
+ * The `events` table stores the notification's content (org-wide visibility,
+ * searchable, addressable from the knowledge view); `notification_targets`
+ * scopes inbox / read-state to the addressed users. "Send to admins" inserts
+ * ONE event + N targets; "mark read" updates a target row; "unread count"
+ * counts target rows without `read_at`.
+ *
+ * The legacy public.notifications table was migrated by
+ * 20260513200000_notifications_as_events.sql and dropped.
+ */
 export async function createNotificationForUsers(
   userIds: string[],
   params: Omit<CreateNotificationParams, 'userId'>
@@ -125,46 +137,41 @@ export async function createNotificationForUsers(
   if (userIds.length === 0) return;
   const sql = getDb();
 
-  const values = userIds.map((uid) => ({
-    organization_id: params.organizationId,
-    user_id: uid,
-    type: params.type,
-    title: params.title,
-    body: params.body ?? null,
-    resource_type: params.resourceType ?? null,
-    resource_id: params.resourceId ?? null,
-    resource_url: params.resourceUrl ?? null,
-  }));
+  await sql.begin(async (tx) => {
+    const inserted = (await tx`
+      INSERT INTO events
+        (organization_id, title, payload_text, payload_type, semantic_type,
+         occurred_at, metadata)
+      VALUES (
+        ${params.organizationId},
+        ${params.title},
+        ${params.body ?? null},
+        'text',
+        'notification',
+        now(),
+        ${sql.json({
+          notification_type: params.type,
+          resource_type: params.resourceType ?? null,
+          resource_id: params.resourceId ?? null,
+          resource_url: params.resourceUrl ?? null,
+        })}
+      )
+      RETURNING id
+    `) as unknown as Array<{ id: number }>;
+    const eventId = inserted[0]?.id;
+    if (!eventId) return;
 
-  // Batch insert using unnest for efficiency
-  const orgIds = values.map((v) => v.organization_id);
-  const uids = values.map((v) => v.user_id);
-  const types = values.map((v) => v.type);
-  const titles = values.map((v) => v.title);
-  const bodies = values.map((v) => v.body);
-  const resourceTypes = values.map((v) => v.resource_type);
-  const resourceIds = values.map((v) => v.resource_id);
-  const resourceUrls = values.map((v) => v.resource_url);
-
-  await sql`
-    INSERT INTO notifications (organization_id, user_id, type, title, body, resource_type, resource_id, resource_url)
-    SELECT * FROM unnest(
-      ${pgTextArray(orgIds)}::text[],
-      ${pgTextArray(uids)}::text[],
-      ${pgTextArray(types)}::text[],
-      ${pgTextArray(titles)}::text[],
-      ${pgTextArray(bodies)}::text[],
-      ${pgTextArray(resourceTypes)}::text[],
-      ${pgTextArray(resourceIds)}::text[],
-      ${pgTextArray(resourceUrls)}::text[]
-    )
-  `;
+    await tx`
+      INSERT INTO notification_targets (event_id, user_id)
+      SELECT ${eventId}, uid
+      FROM unnest(${pgTextArray(userIds)}::text[]) AS u(uid)
+      ON CONFLICT DO NOTHING
+    `;
+  });
 
   // Deliver to bot connections (fire-and-forget). The bot delivery targets
   // the org's connection default channels and is identical for every user in
-  // this call, so fan it out once — not once per user (which previously
-  // re-fetched connections/targets, re-minted the service token, and posted
-  // N duplicate messages to the same channel).
+  // this call, so fan it out once — not once per user.
   deliverToBotConnections(params).catch((err) =>
     logger.warn({ err }, '[Notifications] Failed to deliver to bot connections')
   );
@@ -182,16 +189,32 @@ export async function listNotifications(opts: {
   const cursor = opts.cursor ?? null;
   const unreadOnly = opts.unreadOnly ?? false;
 
-  const rows = await sql<NotificationRow>`
-    SELECT *
-    FROM notifications
-    WHERE organization_id = ${opts.organizationId}
-      AND user_id = ${opts.userId}
-      AND (${cursor}::bigint IS NULL OR id < ${cursor})
-      AND (${!unreadOnly} OR is_read = false)
-    ORDER BY id DESC
+  const rows = (await sql`
+    SELECT
+      e.id,
+      e.organization_id,
+      t.user_id,
+      COALESCE(e.metadata->>'notification_type', 'generic') AS type,
+      e.title,
+      e.payload_text AS body,
+      e.metadata->>'resource_type' AS resource_type,
+      e.metadata->>'resource_id' AS resource_id,
+      e.metadata->>'resource_url' AS resource_url,
+      (t.read_at IS NOT NULL) AS is_read,
+      t.delivered_at AS created_at
+    FROM notification_targets t
+    JOIN events e ON e.id = t.event_id
+    WHERE e.organization_id = ${opts.organizationId}
+      AND t.user_id = ${opts.userId}
+      AND (${cursor}::bigint IS NULL OR e.id < ${cursor})
+      AND (${!unreadOnly} OR t.read_at IS NULL)
+    -- Order strictly by e.id so the (e.id < cursor) keyset pagination is
+    -- consistent. delivered_at would tie-break for concurrent inserts but
+    -- doesn't match the cursor — using it as the primary key risked
+    -- skipping notifications when delivered_at and e.id disagreed.
+    ORDER BY e.id DESC
     LIMIT ${limit + 1}
-  `;
+  `) as unknown as NotificationRow[];
 
   const hasMore = rows.length > limit;
   const notifications = hasMore ? rows.slice(0, limit) : rows;
@@ -202,13 +225,14 @@ export async function listNotifications(opts: {
 
 export async function getUnreadCount(organizationId: string, userId: string): Promise<number> {
   const sql = getDb();
-  const rows = await sql<{ count: number }>`
+  const rows = (await sql`
     SELECT COUNT(*)::int AS count
-    FROM notifications
-    WHERE organization_id = ${organizationId}
-      AND user_id = ${userId}
-      AND is_read = false
-  `;
+    FROM notification_targets t
+    JOIN events e ON e.id = t.event_id
+    WHERE e.organization_id = ${organizationId}
+      AND t.user_id = ${userId}
+      AND t.read_at IS NULL
+  `) as unknown as Array<{ count: number }>;
   return rows[0].count;
 }
 
@@ -218,43 +242,54 @@ export async function markAsRead(
   notificationId: number
 ): Promise<boolean> {
   const sql = getDb();
-  const rows = await sql`
-    UPDATE notifications
-    SET is_read = true
-    WHERE id = ${notificationId}
-      AND organization_id = ${organizationId}
-      AND user_id = ${userId}
-      AND is_read = false
-    RETURNING id
-  `;
+  const rows = (await sql`
+    UPDATE notification_targets t
+    SET read_at = now()
+    FROM events e
+    WHERE t.event_id = e.id
+      AND e.id = ${notificationId}
+      AND e.organization_id = ${organizationId}
+      AND t.user_id = ${userId}
+      AND t.read_at IS NULL
+    RETURNING t.event_id
+  `) as unknown as Array<{ event_id: number }>;
   return rows.length > 0;
 }
 
 export async function markAllAsRead(organizationId: string, userId: string): Promise<number> {
   const sql = getDb();
-  const rows = await sql`
-    UPDATE notifications
-    SET is_read = true
-    WHERE organization_id = ${organizationId}
-      AND user_id = ${userId}
-      AND is_read = false
-    RETURNING id
-  `;
+  const rows = (await sql`
+    UPDATE notification_targets t
+    SET read_at = now()
+    FROM events e
+    WHERE t.event_id = e.id
+      AND e.organization_id = ${organizationId}
+      AND t.user_id = ${userId}
+      AND t.read_at IS NULL
+    RETURNING t.event_id
+  `) as unknown as Array<{ event_id: number }>;
   return rows.length;
 }
 
+/**
+ * "Deleting" a notification is a per-user concern — the event stays in the
+ * org-wide knowledge stream. We just drop the target row so it disappears
+ * from this user's inbox.
+ */
 export async function deleteNotification(
   organizationId: string,
   userId: string,
   notificationId: number
 ): Promise<boolean> {
   const sql = getDb();
-  const rows = await sql`
-    DELETE FROM notifications
-    WHERE id = ${notificationId}
-      AND organization_id = ${organizationId}
-      AND user_id = ${userId}
-    RETURNING id
-  `;
+  const rows = (await sql`
+    DELETE FROM notification_targets t
+    USING events e
+    WHERE t.event_id = e.id
+      AND e.id = ${notificationId}
+      AND e.organization_id = ${organizationId}
+      AND t.user_id = ${userId}
+    RETURNING t.event_id
+  `) as unknown as Array<{ event_id: number }>;
   return rows.length > 0;
 }

@@ -276,9 +276,19 @@ export async function runScript(
   const started = Date.now();
   const limits = clampLimits(options.limits);
   const sdkMode: SDKMode = options.sdkMode ?? "full";
-  const manifest = enumerateSDKManifest(sdkMode, {
-    allowCrossOrg: options.allowCrossOrg ?? false,
-  });
+  const allowCrossOrg = options.allowCrossOrg ?? false;
+  const manifest = enumerateSDKManifest(sdkMode, { allowCrossOrg });
+
+  // Host-side mirror of the manifest's dispatchable paths. `__sdk_dispatch` is a
+  // guest-visible global, so a malicious script can call it with an un-manifested
+  // method directly — the guest-side Proxy filter is the friendly path, this is
+  // the security backstop. `org` is a guest-side construct (re-walks `orgPath`),
+  // never a dispatch path, so it isn't in this set.
+  const allowedDispatchPaths = new Set<string>(["log", "query"]);
+  for (const [ns, methods] of Object.entries(manifest.byNamespace)) {
+    for (const method of methods) allowedDispatchPaths.add(`${ns}.${method}`);
+  }
+  const FORBIDDEN_ORG_SLUGS = new Set(["__proto__", "constructor", "prototype"]);
 
   // Wall-clock timeout. Each dispatch races the abort signal so the script
   // returns promptly; upstream DB/HTTP itself doesn't cancel today.
@@ -376,8 +386,29 @@ export async function runScript(
           orgPath: string[];
         };
 
+        // Re-enforce the manifest on the host: reject any method the manifest
+        // wouldn't advertise, regardless of run mode (dry-run only skips writes
+        // for the modes that have it — it is not an authorization gate).
+        if (!allowedDispatchPaths.has(path)) {
+          throw new Error(`Unknown SDK method: '${path}'`);
+        }
+        // Cross-org access is gated here too, not just by the manifest omitting
+        // `org` from `topLevel`.
+        if (!allowCrossOrg && orgPath.length > 0) {
+          throw new Error("CrossOrgAccessDenied: cross-org access is not available here.");
+        }
+
         let target: ClientSDK = baseSdk;
-        for (const slug of orgPath) target = await target.org(slug);
+        for (const slug of orgPath) {
+          if (
+            typeof slug !== "string" ||
+            FORBIDDEN_ORG_SLUGS.has(slug) ||
+            !Object.prototype.hasOwnProperty.call(target, "org")
+          ) {
+            throw new Error(`Invalid org slug: '${String(slug)}'`);
+          }
+          target = await target.org(slug);
+        }
 
         const dispatchPromise: Promise<unknown> = (async () => {
           if (path === "log") {

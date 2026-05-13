@@ -1239,40 +1239,15 @@ CREATE TABLE public.namespace (
 );
 
 --
--- Name: notifications; Type: TABLE; Schema: public; Owner: -
+-- Name: notification_targets; Type: TABLE; Schema: public; Owner: -
 --
 
-CREATE TABLE public.notifications (
-    id bigint NOT NULL,
-    organization_id text NOT NULL,
+CREATE TABLE public.notification_targets (
+    event_id bigint NOT NULL,
     user_id text NOT NULL,
-    type text NOT NULL,
-    title text NOT NULL,
-    body text,
-    resource_type text,
-    resource_id text,
-    resource_url text,
-    is_read boolean DEFAULT false NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT notifications_type_check CHECK ((type = ANY (ARRAY['action_approval_needed'::text, 'connection_permission_request'::text, 'invitation_received'::text, 'generic'::text, 'agent_message'::text])))
+    delivered_at timestamp with time zone DEFAULT now() NOT NULL,
+    read_at timestamp with time zone
 );
-
---
--- Name: notifications_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-CREATE SEQUENCE public.notifications_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
---
--- Name: notifications_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
---
-
-ALTER SEQUENCE public.notifications_id_seq OWNED BY public.notifications.id;
 
 --
 -- Name: oauth_authorization_codes; Type: TABLE; Schema: public; Owner: -
@@ -2121,12 +2096,6 @@ ALTER TABLE ONLY public.events ALTER COLUMN id SET DEFAULT nextval('public.conte
 ALTER TABLE ONLY public.feeds ALTER COLUMN id SET DEFAULT nextval('public.feeds_id_seq'::regclass);
 
 --
--- Name: notifications id; Type: DEFAULT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.notifications ALTER COLUMN id SET DEFAULT nextval('public.notifications_id_seq'::regclass);
-
---
 -- Name: personal_access_tokens id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -2537,11 +2506,11 @@ ALTER TABLE ONLY public.namespace
     ADD CONSTRAINT namespace_pkey PRIMARY KEY (slug);
 
 --
--- Name: notifications notifications_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: notification_targets notification_targets_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.notifications
-    ADD CONSTRAINT notifications_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.notification_targets
+    ADD CONSTRAINT notification_targets_pkey PRIMARY KEY (event_id, user_id);
 
 --
 -- Name: oauth_authorization_codes oauth_authorization_codes_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -3544,16 +3513,16 @@ CREATE INDEX idx_latest_ec_source ON public.latest_event_classifications USING b
 CREATE INDEX idx_latest_ec_values_gin ON public.latest_event_classifications USING gin ("values");
 
 --
--- Name: idx_notifications_listing; Type: INDEX; Schema: public; Owner: -
+-- Name: idx_notification_targets_user_all; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX idx_notifications_listing ON public.notifications USING btree (organization_id, user_id, created_at DESC);
+CREATE INDEX idx_notification_targets_user_all ON public.notification_targets USING btree (user_id, delivered_at DESC);
 
 --
--- Name: idx_notifications_unread; Type: INDEX; Schema: public; Owner: -
+-- Name: idx_notification_targets_user_unread; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX idx_notifications_unread ON public.notifications USING btree (organization_id, user_id, is_read, created_at DESC);
+CREATE INDEX idx_notification_targets_user_unread ON public.notification_targets USING btree (user_id, delivered_at DESC) WHERE (read_at IS NULL);
 
 --
 -- Name: idx_runs_active_auth_per_profile; Type: INDEX; Schema: public; Owner: -
@@ -4569,6 +4538,13 @@ ALTER TABLE ONLY public.member
     ADD CONSTRAINT "member_userId_fkey" FOREIGN KEY ("userId") REFERENCES public."user"(id) ON DELETE CASCADE;
 
 --
+-- Name: notification_targets notification_targets_event_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.notification_targets
+    ADD CONSTRAINT notification_targets_event_id_fkey FOREIGN KEY (event_id) REFERENCES public.events(id) ON DELETE CASCADE;
+
+--
 -- Name: oauth_authorization_codes oauth_authorization_codes_client_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -4871,4 +4847,5 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20260510220000'),
     ('20260512000000'),
     ('20260512131703'),
-    ('20260513000000');
+    ('20260513000000'),
+    ('20260513200000');

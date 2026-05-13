@@ -290,4 +290,69 @@ export const EMBEDDED_SCHEMA_PATCHES: EmbeddedSchemaPatch[] = [
       await sql.unsafe(`DROP TABLE IF EXISTS public.device_worker_org_grants`);
     },
   },
+  {
+    // Mirrors db/migrations/20260513200000_notifications_as_events.sql.
+    // Idempotent: only migrates rows from `notifications` if the table still
+    // exists; subsequent boots no-op.
+    id: 'notifications-as-events',
+    apply: async (sql) => {
+      await sql.unsafe(`
+        CREATE TABLE IF NOT EXISTS public.notification_targets (
+          event_id bigint NOT NULL REFERENCES public.events(id) ON DELETE CASCADE,
+          user_id text NOT NULL,
+          delivered_at timestamp with time zone NOT NULL DEFAULT now(),
+          read_at timestamp with time zone,
+          PRIMARY KEY (event_id, user_id)
+        )
+      `);
+      await sql.unsafe(`
+        CREATE INDEX IF NOT EXISTS idx_notification_targets_user_unread
+          ON public.notification_targets (user_id, delivered_at DESC)
+          WHERE read_at IS NULL
+      `);
+      await sql.unsafe(`
+        CREATE INDEX IF NOT EXISTS idx_notification_targets_user_all
+          ON public.notification_targets (user_id, delivered_at DESC)
+      `);
+      // Backfill from the legacy table if it still exists.
+      const legacyExists = (await sql.unsafe(
+        `SELECT to_regclass('public.notifications') IS NOT NULL AS exists`
+      )) as Array<{ exists: boolean }>;
+      if (legacyExists[0]?.exists) {
+        await sql.unsafe(`
+          WITH legacy AS (
+            SELECT id, organization_id, user_id, type, title, body,
+                   resource_type, resource_id, resource_url, is_read, created_at
+            FROM public.notifications
+            ORDER BY id ASC
+          ),
+          inserted AS (
+            INSERT INTO public.events
+              (organization_id, title, payload_text, payload_type, semantic_type,
+               occurred_at, created_at, metadata, origin_id)
+            SELECT
+              l.organization_id, l.title, l.body, 'text', 'notification',
+              l.created_at, l.created_at,
+              jsonb_build_object(
+                'notification_type', l.type,
+                'resource_type', l.resource_type,
+                'resource_id', l.resource_id,
+                'resource_url', l.resource_url,
+                'legacy_notification_id', l.id
+              ),
+              'notification:legacy:' || l.id::text
+            FROM legacy l
+            RETURNING id AS event_id,
+                      (metadata->>'legacy_notification_id')::bigint AS legacy_id
+          )
+          INSERT INTO public.notification_targets (event_id, user_id, delivered_at, read_at)
+          SELECT i.event_id, l.user_id, l.created_at,
+                 CASE WHEN l.is_read THEN l.created_at ELSE NULL END
+          FROM inserted i
+          JOIN public.notifications l ON l.id = i.legacy_id
+        `);
+        await sql.unsafe(`DROP TABLE public.notifications`);
+      }
+    },
+  },
 ];

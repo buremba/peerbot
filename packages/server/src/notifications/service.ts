@@ -208,7 +208,11 @@ export async function listNotifications(opts: {
       AND t.user_id = ${opts.userId}
       AND (${cursor}::bigint IS NULL OR e.id < ${cursor})
       AND (${!unreadOnly} OR t.read_at IS NULL)
-    ORDER BY t.delivered_at DESC, e.id DESC
+    -- Order strictly by e.id so the (e.id < cursor) keyset pagination is
+    -- consistent. delivered_at would tie-break for concurrent inserts but
+    -- doesn't match the cursor — using it as the primary key risked
+    -- skipping notifications when delivered_at and e.id disagreed.
+    ORDER BY e.id DESC
     LIMIT ${limit + 1}
   `) as unknown as NotificationRow[];
 

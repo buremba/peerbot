@@ -11,6 +11,7 @@ import {
   loadAllowedDomains,
   loadDisallowedDomains,
 } from "../config/network-allowlist.js";
+import { getRevokedTokenStore } from "../auth/revoked-token-store.js";
 import type { GrantStore } from "../permissions/grant-store.js";
 import type { PolicyStore } from "../permissions/policy-store.js";
 import { EgressJudge } from "./egress-judge/judge.js";
@@ -533,6 +534,17 @@ function validateProxyAuth(req: http.IncomingMessage): ValidatedProxy | null {
   if (!tokenData) {
     logger.warn(
       `Proxy auth failed: invalid token (claimed deployment: ${creds.deploymentName})`
+    );
+    return null;
+  }
+
+  // Sync fast-path: consults in-process cache only. Same-process revokes
+  // are visible immediately; remote revokes propagate within CACHE_TTL_MS
+  // once any async path populates the cache. Keeping this sync avoids
+  // turning every CONNECT into an async DB hop.
+  if (tokenData.jti && getRevokedTokenStore().isRevokedCached(tokenData.jti)) {
+    logger.warn(
+      `Proxy auth failed: revoked jti (claimed deployment: ${creds.deploymentName})`
     );
     return null;
   }

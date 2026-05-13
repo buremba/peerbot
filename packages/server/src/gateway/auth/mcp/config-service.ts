@@ -4,6 +4,7 @@ import {
   verifyWorkerToken,
 } from "@lobu/core";
 import type { ProviderConfigResolver } from "../../services/provider-config-resolver.js";
+import { getRevokedTokenStore } from "../revoked-token-store.js";
 import type { AgentSettingsStore } from "../settings/agent-settings-store.js";
 
 const logger = createLogger("mcp-config-service");
@@ -147,6 +148,14 @@ export class McpConfigService {
     const tokenData = verifyWorkerToken(workerToken);
     if (!tokenData) {
       logger.warn("Failed to verify worker token");
+      return workerConfig;
+    }
+
+    if (
+      tokenData.jti &&
+      (await getRevokedTokenStore().isRevoked(tokenData.jti))
+    ) {
+      logger.warn("Rejected revoked worker token while building MCP config");
       return workerConfig;
     }
 

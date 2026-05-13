@@ -1,0 +1,183 @@
+name: Security tests
+
+# Dedicated, focused gate for the security workstreams (WS1–WS9). The main
+# `ci.yml` job already exercises these suites alongside everything else, but
+# we want a clearly-named required check so a regression on one of them
+# surfaces independently of unrelated test flake.
+#
+# Scope: only the test files listed below. Out-of-scope: the ~30 stale
+# vitest integration files documented in repo memory under `vitest CI gap`;
+# un-rotting those is a separate, larger workstream.
+#
+# Files covered here:
+#   bun:test
+#     - packages/core/src/__tests__/encryption-key-validation.test.ts   (WS8)
+#     - packages/core/src/__tests__/encryption.test.ts                  (WS8)
+#     - packages/core/src/__tests__/worker-auth.test.ts                 (WS5)
+#     - packages/server/src/__tests__/unit/nix-package-attr-ref.test.ts (WS3)
+#     - packages/server/src/__tests__/unit/secret-proxy-lifecycle.test.ts (WS4)
+#     - packages/server/src/__tests__/unit/egress-judge-timeout.test.ts (WS6)
+#     - packages/server/src/__tests__/unit/sandbox/manifest-enforcement.test.ts (WS7)
+#     - packages/server/src/__tests__/unit/http/proxy-ssrf-hardening.test.ts (WS2)
+#     - packages/server/src/gateway/__tests__/revoked-token-store.test.ts (WS5)
+#     - packages/server/src/gateway/__tests__/proxy-hardening.test.ts   (WS2)
+#     - packages/server/src/gateway/__tests__/secret-proxy-harden.test.ts (WS4)
+#     - packages/server/src/gateway/__tests__/egress-judge-circuit-breaker.test.ts (WS6)
+#   vitest (Node, needs Postgres)
+#     - packages/server/src/__tests__/webhook-signatures.test.ts        (WS1)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+jobs:
+  static-guards:
+    name: Static security guards
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # full history so `git grep` sees every tracked file
+          fetch-depth: 1
+
+      - name: Banned-pattern scan
+        run: ./scripts/check-security-patterns.sh
+
+  bun-security-tests:
+    name: Security tests (bun:test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: lobu_test
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5433/lobu_test
+      # Deterministic key for tests that exercise encrypt/decrypt + jti.
+      ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup-submodule
+        with:
+          deploy-key: ${{ secrets.OWLETTO_WEB_DEPLOY_KEY }}
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.5
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Build core (server tests import from @lobu/core dist)
+        run: |
+          cd packages/core && bun run build && cd ../..
+
+      - name: Verify Postgres + pgvector
+        run: |
+          for i in {1..20}; do
+            if pg_isready -h 127.0.0.1 -p 5433 -U postgres; then break; fi
+            sleep 1
+          done
+          PGPASSWORD=postgres psql -h 127.0.0.1 -p 5433 -U postgres -d lobu_test \
+            -c "CREATE EXTENSION IF NOT EXISTS vector"
+
+      - name: core security tests (encryption, worker-auth)
+        run: |
+          bun test \
+            packages/core/src/__tests__/encryption-key-validation.test.ts \
+            packages/core/src/__tests__/encryption.test.ts \
+            packages/core/src/__tests__/worker-auth.test.ts
+
+      - name: server unit security tests (nix, secret-proxy, egress, sandbox, ssrf)
+        run: |
+          bun test \
+            packages/server/src/__tests__/unit/nix-package-attr-ref.test.ts \
+            packages/server/src/__tests__/unit/secret-proxy-lifecycle.test.ts \
+            packages/server/src/__tests__/unit/egress-judge-timeout.test.ts \
+            packages/server/src/__tests__/unit/sandbox/manifest-enforcement.test.ts \
+            packages/server/src/__tests__/unit/http/proxy-ssrf-hardening.test.ts
+
+      - name: server gateway security tests (revocation, proxy, secret-proxy, egress)
+        run: |
+          bun test \
+            packages/server/src/gateway/__tests__/revoked-token-store.test.ts \
+            packages/server/src/gateway/__tests__/proxy-hardening.test.ts \
+            packages/server/src/gateway/__tests__/secret-proxy-harden.test.ts \
+            packages/server/src/gateway/__tests__/egress-judge-circuit-breaker.test.ts
+
+  vitest-security-tests:
+    name: Security tests (vitest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: lobu_test
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5433/lobu_test
+      ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup-submodule
+        with:
+          deploy-key: ${{ secrets.OWLETTO_WEB_DEPLOY_KEY }}
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.5
+
+      # vitest in this repo runs under Node (isolated-vm etc.) — pin Node 22
+      # so any native addon prebuild matches.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Build core + connector-sdk
+        run: |
+          cd packages/core && bun run build && cd ../..
+          cd packages/connector-sdk && bun run build && cd ../..
+
+      - name: Verify Postgres + pgvector
+        run: |
+          for i in {1..20}; do
+            if pg_isready -h 127.0.0.1 -p 5433 -U postgres; then break; fi
+            sleep 1
+          done
+          PGPASSWORD=postgres psql -h 127.0.0.1 -p 5433 -U postgres -d lobu_test \
+            -c "CREATE EXTENSION IF NOT EXISTS vector"
+
+      - name: webhook-signatures (WS1)
+        working-directory: packages/server
+        run: |
+          node ../../node_modules/.bin/vitest run \
+            src/__tests__/webhook-signatures.test.ts \
+            --reporter=default

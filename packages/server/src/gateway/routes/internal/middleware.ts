@@ -1,4 +1,5 @@
 import { verifyWorkerToken } from "@lobu/core";
+import { getRevokedTokenStore } from "../../auth/revoked-token-store.js";
 
 /**
  * Shared worker authentication middleware for internal routes.
@@ -16,6 +17,12 @@ export const authenticateWorker = async (
   const workerToken = authHeader.substring(7);
   const tokenData = verifyWorkerToken(workerToken);
   if (!tokenData) {
+    return c.json({ error: "Invalid worker token" }, 401);
+  }
+  if (
+    tokenData.jti &&
+    (await getRevokedTokenStore().isRevoked(tokenData.jti))
+  ) {
     return c.json({ error: "Invalid worker token" }, 401);
   }
   c.set("worker", tokenData);

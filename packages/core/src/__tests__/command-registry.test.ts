@@ -21,7 +21,7 @@ function makeCtx(overrides?: Partial<CommandContext>): CommandContext {
     args: "",
     platform: "slack",
     reply: mock(async () => {
-      /* noop */
+      /* no-op test stub */
     }),
     ...overrides,
   };
@@ -36,7 +36,7 @@ describe("CommandRegistry.register / get / getAll", () => {
       name: "help",
       description: "Show help",
       handler: async () => {
-        /* noop */
+        /* no-op test stub */
       },
     };
     registry.register(cmd);
@@ -54,14 +54,14 @@ describe("CommandRegistry.register / get / getAll", () => {
       name: "a",
       description: "A",
       handler: async () => {
-        /* noop */
+        /* no-op test stub */
       },
     };
     const b: CommandDefinition = {
       name: "b",
       description: "B",
       handler: async () => {
-        /* noop */
+        /* no-op test stub */
       },
     };
     registry.register(a);
@@ -82,14 +82,14 @@ describe("CommandRegistry.register / get / getAll", () => {
       name: "ping",
       description: "v1",
       handler: async () => {
-        /* noop */
+        /* no-op test stub */
       },
     };
     const second: CommandDefinition = {
       name: "ping",
       description: "v2",
       handler: async () => {
-        /* noop */
+        /* no-op test stub */
       },
     };
     registry.register(first);
@@ -112,7 +112,7 @@ describe("CommandRegistry.tryHandle", () => {
   test("returns true and calls handler for registered command", async () => {
     const registry = new CommandRegistry();
     const handlerFn = mock(async () => {
-      /* noop */
+      /* no-op test stub */
     });
     registry.register({
       name: "ping",
@@ -130,21 +130,24 @@ describe("CommandRegistry.tryHandle", () => {
 
   test("handler receives the correct context", async () => {
     const registry = new CommandRegistry();
-    const captured: { ctx: CommandContext | null } = { ctx: null };
+    let receivedCtx: CommandContext | null = null;
     registry.register({
       name: "inspect",
       description: "Inspect context",
       handler: async (ctx) => {
-        captured.ctx = ctx;
+        receivedCtx = ctx;
       },
     });
 
     const ctx = makeCtx({ userId: "u-42", channelId: "C99", args: "foo bar" });
     await registry.tryHandle("inspect", ctx);
 
-    expect(captured.ctx?.userId).toBe("u-42");
-    expect(captured.ctx?.channelId).toBe("C99");
-    expect(captured.ctx?.args).toBe("foo bar");
+    // Cast — TS narrows receivedCtx to `null` because the assignment happens
+    // inside an async callback the inference engine can't follow.
+    const got = receivedCtx as CommandContext | null;
+    expect(got?.userId).toBe("u-42");
+    expect(got?.channelId).toBe("C99");
+    expect(got?.args).toBe("foo bar");
   });
 
   test("handler error: still returns true and sends error reply", async () => {
@@ -158,7 +161,7 @@ describe("CommandRegistry.tryHandle", () => {
     });
 
     const replyFn = mock(async () => {
-      /* noop */
+      /* no-op test stub */
     });
     const ctx = makeCtx({ reply: replyFn });
     const handled = await registry.tryHandle("boom", ctx);
@@ -174,7 +177,7 @@ describe("CommandRegistry.tryHandle", () => {
   test("reply is NOT called when handler succeeds", async () => {
     const registry = new CommandRegistry();
     const replyFn = mock(async () => {
-      /* noop */
+      /* no-op test stub */
     });
     registry.register({
       name: "ok",
@@ -200,7 +203,7 @@ describe("CommandRegistry.tryHandle", () => {
       name: "shared",
       description: "In r1",
       handler: async () => {
-        /* noop */
+        /* no-op test stub */
       },
     });
 

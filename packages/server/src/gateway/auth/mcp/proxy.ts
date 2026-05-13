@@ -4,6 +4,7 @@ import { createLogger, verifyWorkerToken } from "@lobu/core";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { storePendingTool } from "./pending-tool-store.js";
+import { getRevokedTokenStore } from "../revoked-token-store.js";
 import { requiresToolApproval } from "../../permissions/approval-policy.js";
 import type { GrantStore } from "../../permissions/grant-store.js";
 import {
@@ -162,14 +163,21 @@ interface McpConfigSource {
   ): Promise<Map<string, HttpMcpServerConfig>>;
 }
 
-function authenticateRequest(
+async function authenticateRequest(
   c: Context
-): { tokenData: any; token: string } | null {
+): Promise<{ tokenData: any; token: string } | null> {
   const sessionToken = extractSessionToken(c);
   if (!sessionToken) return null;
 
   const tokenData = verifyWorkerToken(sessionToken);
   if (!tokenData) return null;
+
+  if (
+    tokenData.jti &&
+    (await getRevokedTokenStore().isRevoked(tokenData.jti))
+  ) {
+    return null;
+  }
 
   return { tokenData, token: sessionToken };
 }
@@ -549,7 +557,7 @@ export class McpProxy {
   private async handleListTools(c: Context): Promise<Response> {
     const mcpId = c.req.param("mcpId");
     if (!mcpId) return c.json({ error: "Missing MCP server id" }, 400);
-    const auth = authenticateRequest(c);
+    const auth = await authenticateRequest(c);
     if (!auth) return c.json({ error: "Invalid authentication token" }, 401);
 
     const agentId = auth.tokenData.agentId || auth.tokenData.userId;
@@ -653,7 +661,7 @@ export class McpProxy {
     if (!mcpId || !toolName) {
       return c.json({ error: "Missing MCP server id or tool name" }, 400);
     }
-    const auth = authenticateRequest(c);
+    const auth = await authenticateRequest(c);
     if (!auth) return c.json({ error: "Invalid authentication token" }, 401);
 
     const agentId = auth.tokenData.agentId || auth.tokenData.userId;
@@ -887,7 +895,7 @@ export class McpProxy {
   }
 
   private async handleListAllTools(c: Context): Promise<Response> {
-    const auth = authenticateRequest(c);
+    const auth = await authenticateRequest(c);
     if (!auth) return c.json({ error: "Invalid authentication token" }, 401);
 
     const agentId = auth.tokenData.agentId || auth.tokenData.userId;

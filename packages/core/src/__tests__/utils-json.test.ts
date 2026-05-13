@@ -67,25 +67,29 @@ describe("toJsonSafe", () => {
   });
 
   test("converts a safe BigInt to a number", () => {
-    const result = toJsonSafe({ count: BigInt(42) }) as { count: unknown };
+    // toJsonSafe's static T = input shape (bigint), but the runtime value is
+    // a number after JSON round-trip. Cast through unknown to assert that.
+    const result = toJsonSafe({ count: BigInt(42) }) as unknown as {
+      count: number;
+    };
     expect(result.count).toBe(42);
     expect(typeof result.count).toBe("number");
   });
 
   test("converts an unsafe BigInt to a string", () => {
     const big = BigInt(Number.MAX_SAFE_INTEGER) + 1n;
-    const result = toJsonSafe({ id: big }) as { id: unknown };
+    const result = toJsonSafe({ id: big }) as unknown as { id: string };
     expect(typeof result.id).toBe("string");
     expect(result.id).toBe(big.toString());
   });
 
   test("nested BigInt fields are converted", () => {
     const result = toJsonSafe({ nested: { x: BigInt(7) } });
-    expect((result as { nested: { x: unknown } }).nested.x).toBe(7);
+    expect((result as any).nested.x).toBe(7);
   });
 
   test("arrays with BigInt elements are converted", () => {
-    const result = toJsonSafe([BigInt(1), BigInt(2)]) as unknown[];
+    const result = toJsonSafe([BigInt(1), BigInt(2)]) as unknown as number[];
     expect(result).toEqual([1, 2]);
   });
 });

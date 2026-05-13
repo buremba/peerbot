@@ -1399,6 +1399,7 @@ async function queryContentData(
           const limitParam = `$${nextParams.length}`;
 
           return {
+            // security-allowed: scopedQuery is an internally-built SQL fragment; where[] entries use $N placeholders.
             sql:
               `SELECT * FROM (${scopedQuery}) AS _watcher_page ` +
               `WHERE ${where.join(' AND ')} ` +

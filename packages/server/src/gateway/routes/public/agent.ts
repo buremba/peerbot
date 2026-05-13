@@ -15,6 +15,7 @@ import type { Context } from "hono";
 import { streamSSE } from "hono/streaming";
 import { z } from "zod";
 import type { AgentMetadataStore } from "../../auth/agent-metadata-store.js";
+import { getRevokedTokenStore } from "../../auth/revoked-token-store.js";
 import {
   createApiAuthMiddleware,
   TOKEN_EXPIRATION_MS,
@@ -529,6 +530,12 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
     if (workerData) {
       const tokenAge = Date.now() - workerData.timestamp;
       if (tokenAge > TOKEN_EXPIRATION_MS) return deny();
+      if (
+        workerData.jti &&
+        (await getRevokedTokenStore().isRevoked(workerData.jti))
+      ) {
+        return deny();
+      }
       const workerAgentId = workerData.agentId || workerData.userId;
       return workerAgentId && workerAgentId === resolvedAgentId ? null : deny();
     }

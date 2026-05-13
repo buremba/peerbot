@@ -68,6 +68,24 @@ export class RevokedTokenStore {
     logger.info("Revoked token", { jti, expiresAt });
   }
 
+  /**
+   * Synchronous fast-path: consults only the in-process TTL cache.
+   * Used by hot/non-async call sites (HTTP CONNECT proxy auth, internal
+   * worker-token middleware) where introducing an `await` would force a
+   * cascading refactor. Revokes performed in the same process are visible
+   * immediately because `revoke()` writes to the cache; revokes performed
+   * elsewhere become visible after the next `isRevoked()` populates the
+   * cache (within `CACHE_TTL_MS`). For middleware paths that already
+   * await DB work, prefer `isRevoked()` for cross-process freshness.
+   */
+  isRevokedCached(jti: string): boolean {
+    if (!jti) return false;
+    const cached = this.cache.get(jti);
+    if (!cached) return false;
+    if (Date.now() - cached.cachedAt >= CACHE_TTL_MS) return false;
+    return cached.revoked;
+  }
+
   /** Returns true if this `jti` has been revoked (and not yet expired). */
   async isRevoked(jti: string): Promise<boolean> {
     if (!jti) return false;

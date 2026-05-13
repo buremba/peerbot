@@ -257,16 +257,17 @@ describe("isBlockedIpAddress — unit coverage", () => {
     expect(__testOnly.isBlockedIpAddress("example.com")).toBe(false);
   });
 
-  // ── Security gap documentation ─────────────────────────────────────────
   // NAT64 well-known prefix (64:ff9b::/96) translates to IPv4 destinations.
-  // The current code does NOT decode NAT64 addresses, so 64:ff9b::7f00:1
-  // (which maps to 127.0.0.1) is NOT blocked. This is documented here so
-  // a future fix can add the corresponding assertion.
+  // `isBlockedIpAddress` now decodes the trailing 32 bits and runs them
+  // through the IPv4 blocklist, so a synthesised loopback address must be
+  // blocked the same way `127.0.0.1` is.
 
-  test("NAT64 gap: 64:ff9b::7f00:1 (→127.0.0.1) is NOT currently blocked", () => {
-    // Once NAT64 decoding is added, this should be .toBe(true).
-    // For now we document the current (insecure) behavior.
-    expect(__testOnly.isBlockedIpAddress("64:ff9b::7f00:1")).toBe(false);
+  test("NAT64: 64:ff9b::7f00:1 (→127.0.0.1) is blocked", () => {
+    expect(__testOnly.isBlockedIpAddress("64:ff9b::7f00:1")).toBe(true);
+  });
+
+  test("NAT64: expanded form 64:ff9b:0:0:0:0:7f00:1 is blocked", () => {
+    expect(__testOnly.isBlockedIpAddress("64:ff9b:0:0:0:0:7f00:1")).toBe(true);
   });
 });
 

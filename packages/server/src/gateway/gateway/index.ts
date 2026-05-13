@@ -10,6 +10,7 @@ import type { Context } from "hono";
 import { Hono } from "hono";
 import { stream } from "hono/streaming";
 import type { ApiKeyProviderModule } from "../auth/api-key-provider-module.js";
+import { getRevokedTokenStore } from "../auth/revoked-token-store.js";
 import type { McpConfigService } from "../auth/mcp/config-service.js";
 import type { McpProxy } from "../auth/mcp/proxy.js";
 import type { McpTool } from "../auth/mcp/tool-cache.js";
@@ -173,7 +174,7 @@ export class WorkerGateway {
    * Handle SSE connection from worker
    */
   private async handleStreamConnection(c: Context): Promise<Response> {
-    const auth = this.authenticateWorker(c);
+    const auth = await this.authenticateWorker(c);
     if (!auth) {
       return c.json({ error: "Invalid token" }, 401);
     }
@@ -278,7 +279,7 @@ export class WorkerGateway {
    * Handle HTTP response from worker
    */
   private async handleWorkerResponse(c: Context): Promise<Response> {
-    const auth = this.authenticateWorker(c);
+    const auth = await this.authenticateWorker(c);
     if (!auth) {
       return c.json({ error: "Invalid token" }, 401);
     }
@@ -349,7 +350,7 @@ export class WorkerGateway {
       return c.json({ error: "session_context_unavailable" }, 503);
     }
 
-    const auth = this.authenticateWorker(c);
+    const auth = await this.authenticateWorker(c);
     if (!auth) {
       return c.json({ error: "Invalid token" }, 401);
     }
@@ -517,9 +518,9 @@ export class WorkerGateway {
     }
   }
 
-  private authenticateWorker(
+  private async authenticateWorker(
     c: Context
-  ): { tokenData: WorkerTokenData; token: string } | null {
+  ): Promise<{ tokenData: WorkerTokenData; token: string } | null> {
     const authHeader = c.req.header("authorization");
 
     if (!authHeader?.startsWith("Bearer ")) {
@@ -531,6 +532,14 @@ export class WorkerGateway {
 
     if (!tokenData) {
       logger.warn("Invalid token");
+      return null;
+    }
+
+    if (
+      tokenData.jti &&
+      (await getRevokedTokenStore().isRevoked(tokenData.jti))
+    ) {
+      logger.warn("Revoked worker token");
       return null;
     }
 

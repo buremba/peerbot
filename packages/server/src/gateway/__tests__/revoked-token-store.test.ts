@@ -6,6 +6,7 @@ import {
   getRevokedTokenStore,
   RevokedTokenStore,
 } from "../auth/revoked-token-store.js";
+import { authenticateWorker } from "../routes/internal/middleware.js";
 import {
   setRevokedTokenStore,
   verifySettingsSession,
@@ -196,5 +197,54 @@ describe("verifySettingsSession — jti revocation", () => {
     expect(await res.json()).toEqual({ ok: false });
 
     setRevokedTokenStore(null);
+  });
+});
+
+// Routes wired through `authenticateWorker` (internal worker endpoints —
+// SSE stream, response post, session-context) used to skip the revocation
+// check because the verify call wasn't async. The middleware now consults
+// the singleton store; this test pins that contract.
+describe("authenticateWorker (internal middleware) — revocation reach", () => {
+  beforeAll(async () => {
+    await ensurePgliteForGatewayTests();
+  });
+
+  beforeEach(async () => {
+    await resetTestDatabase();
+    ensureEncryptionKey();
+  });
+
+  function makeApp() {
+    const app = new Hono();
+    app.use("*", authenticateWorker);
+    app.get("/internal/ping", (c) => c.json({ ok: true }));
+    return app;
+  }
+
+  function workerToken() {
+    return generateWorkerToken("user-internal", "conv-internal", "deploy-internal", {
+      channelId: "chan-internal",
+    });
+  }
+
+  test("valid worker token reaches the handler", async () => {
+    const app = makeApp();
+    const res = await app.request("/internal/ping", {
+      headers: { Authorization: `Bearer ${workerToken()}` },
+    });
+    expect(res.status).toBe(200);
+  });
+
+  test("revoked jti returns 401 from the internal middleware path", async () => {
+    const token = workerToken();
+    const data = verifyWorkerToken(token);
+    if (!data?.jti) throw new Error("worker token missing jti");
+    await getRevokedTokenStore().revoke(data.jti, Date.now() + 60_000);
+
+    const app = makeApp();
+    const res = await app.request("/internal/ping", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(res.status).toBe(401);
   });
 });

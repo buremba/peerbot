@@ -204,65 +204,165 @@ interface ProxyCredentials {
   token: string;
 }
 
-function parseMappedIpv4Address(ip: string): string | null {
-  const normalized = ip.toLowerCase();
-  if (!normalized.startsWith("::ffff:")) {
-    return null;
-  }
+/**
+ * Result of running a host literal through {@link normalizeIpLiteral}.
+ *  - `ipv4`     — the value is (or decodes to) a bare IPv4 address.
+ *  - `ipv6`     — a genuine IPv6 address that doesn't embed an IPv4.
+ *  - `not-ip`   — not an IP literal at all (a DNS name); caller should resolve.
+ *  - `invalid`  — looks like an IP literal but doesn't cleanly parse → reject.
+ */
+type NormalizedHost =
+  | { kind: "ipv4"; value: string }
+  | { kind: "ipv6"; value: string }
+  | { kind: "not-ip" }
+  | { kind: "invalid" };
 
-  const mapped = normalized.substring("::ffff:".length);
-  return net.isIP(mapped) === 4 ? mapped : null;
-}
-
-function parseMappedIpv4HexAddress(ip: string): string | null {
-  const normalized = ip.toLowerCase();
-  if (!normalized.startsWith("::ffff:")) {
-    return null;
-  }
-
-  const mapped = normalized.substring("::ffff:".length);
-  if (mapped.includes(".")) {
-    return null;
-  }
-
-  const parts = mapped.split(":");
-  if (parts.length !== 2) {
-    return null;
-  }
-
-  const high = Number.parseInt(parts[0] || "", 16);
-  const low = Number.parseInt(parts[1] || "", 16);
-  if (
-    Number.isNaN(high) ||
-    Number.isNaN(low) ||
-    high < 0 ||
-    high > 0xffff ||
-    low < 0 ||
-    low > 0xffff
-  ) {
-    return null;
-  }
-
+/** Turn 16 bits + 16 bits into a dotted-quad IPv4 string. */
+function hextetsToIpv4(high: number, low: number): string {
   return `${(high >> 8) & 0xff}.${high & 0xff}.${(low >> 8) & 0xff}.${low & 0xff}`;
 }
 
-function isBlockedIpAddress(ip: string): boolean {
-  const ipv6WithoutZone = ip.split("%", 1)[0] || ip;
-  const mappedIpv4 =
-    parseMappedIpv4Address(ipv6WithoutZone) ||
-    parseMappedIpv4HexAddress(ipv6WithoutZone);
-  if (mappedIpv4) {
-    return blockedIpv4List.check(mappedIpv4, "ipv4");
+/**
+ * Expand a valid IPv6 address string into exactly 8 unsigned 16-bit hextets.
+ * Handles `::` compression and mixed dotted-quad suffixes (e.g. `::ffff:127.0.0.1`).
+ * The caller must pass a string already validated by `net.isIP() === 6`.
+ */
+function expandIpv6ToHextets(addr: string): number[] {
+  const lower = addr.toLowerCase();
+
+  // Detect and handle the embedded IPv4 dotted-quad suffix (e.g. `::ffff:127.0.0.1`).
+  // RFC 4291 §2.2 allows the last 32 bits of an IPv6 address to be written in
+  // dotted-quad form. When present, convert those 4 octets to 2 hextets first.
+  let hexPart = lower;
+  let ipv4Suffix: number[] = [];
+  const dotIdx = lower.lastIndexOf(".");
+  if (dotIdx !== -1) {
+    // The dotted-quad portion starts at the last ':' before the first dot.
+    const colonBeforeDot = lower.lastIndexOf(":", dotIdx);
+    const dotted = lower.slice(colonBeforeDot + 1);
+    hexPart = lower.slice(0, colonBeforeDot + 1); // keep the trailing ':'
+    const octets = dotted.split(".").map((o) => parseInt(o, 10));
+    // octets must be exactly 4 valid bytes (already guaranteed by net.isIP)
+    ipv4Suffix = [
+      ((octets[0]! << 8) | octets[1]!) >>> 0,
+      ((octets[2]! << 8) | octets[3]!) >>> 0,
+    ];
+    // Strip the trailing colon we left on hexPart so split works correctly
+    if (hexPart.endsWith(":") && !hexPart.endsWith("::")) {
+      hexPart = hexPart.slice(0, -1);
+    }
   }
 
-  const family = net.isIP(ipv6WithoutZone);
+  const halves = hexPart.split("::");
+  const left = halves[0] ? halves[0].split(":").map((h) => parseInt(h, 16)) : [];
+  const right =
+    halves.length === 2 && halves[1]
+      ? halves[1].split(":").map((h) => parseInt(h, 16))
+      : [];
+  const rightWithSuffix = [...right, ...ipv4Suffix];
+  const zeros = new Array(8 - left.length - rightWithSuffix.length).fill(0);
+  return [...left, ...zeros, ...rightWithSuffix];
+}
+
+/**
+ * Single funnel for every host literal that reaches the blocklist check —
+ * resolved DNS results and CONNECT/forward targets alike. Collapses the
+ * forms an attacker can use to dress up an internal address as something
+ * `net.BlockList` won't recognise:
+ *   - IPv4-mapped IPv6, dotted (`::ffff:127.0.0.1`) and hex (`::ffff:7f00:1`)
+ *   - NAT64 well-known prefix `64:ff9b::/96` (last 32 bits are an IPv4)
+ *   - zone IDs (`fe80::1%eth0` → strip `%eth0`)
+ *   - compressed / uppercase forms (handled by `net.isIP`)
+ * Anything that looks like an IP but doesn't parse returns `invalid` so the
+ * caller fails closed rather than falling through to a DNS lookup.
+ */
+function normalizeIpLiteral(host: string): NormalizedHost {
+  // Strip a zone identifier first (`%eth0`, `%1`). It's only meaningful for
+  // link-local addresses and never changes the routability decision.
+  const zoneSplit = host.indexOf("%");
+  const bare = (zoneSplit === -1 ? host : host.slice(0, zoneSplit)).trim();
+  if (bare.length === 0) {
+    return zoneSplit === -1 ? { kind: "not-ip" } : { kind: "invalid" };
+  }
+
+  const family = net.isIP(bare);
   if (family === 4) {
-    return blockedIpv4List.check(ipv6WithoutZone, "ipv4");
+    return { kind: "ipv4", value: bare };
   }
-  if (family === 6) {
-    return blockedIpv6List.check(ipv6WithoutZone, "ipv6");
+  if (family === 0) {
+    // Not a valid IP literal. If it contains ':' it was meant to be an IPv6
+    // address (or something pretending to be one) but didn't parse — reject.
+    // Otherwise treat it as a hostname for the caller to resolve.
+    return bare.includes(":") ? { kind: "invalid" } : { kind: "not-ip" };
   }
-  return false;
+
+  // family === 6 from here on.
+  const lower = bare.toLowerCase();
+
+  // IPv4-mapped IPv6: `::ffff:a.b.c.d` or `::ffff:hhhh:hhhh`.
+  if (lower.startsWith("::ffff:")) {
+    const mapped = lower.slice("::ffff:".length);
+    if (mapped.includes(".")) {
+      return net.isIP(mapped) === 4
+        ? { kind: "ipv4", value: mapped }
+        : { kind: "invalid" };
+    }
+    const parts = mapped.split(":");
+    if (parts.length !== 2) {
+      return { kind: "invalid" };
+    }
+    const high = Number.parseInt(parts[0] || "", 16);
+    const low = Number.parseInt(parts[1] || "", 16);
+    if (
+      !Number.isInteger(high) ||
+      !Number.isInteger(low) ||
+      high < 0 ||
+      high > 0xffff ||
+      low < 0 ||
+      low > 0xffff
+    ) {
+      return { kind: "invalid" };
+    }
+    return { kind: "ipv4", value: hextetsToIpv4(high, low) };
+  }
+
+  // NAT64 well-known prefix `64:ff9b::/96` — the trailing 32 bits hold the
+  // synthesised IPv4 destination. Both compressed (`64:ff9b::a9fe:a9fe`) and
+  // expanded (`64:ff9b:0:0:0:0:a9fe:a9fe`) spellings must decode identically.
+  // Canonicalize into 8 hextets and verify the first 96 bits match the prefix.
+  const hextets = expandIpv6ToHextets(bare);
+  if (
+    hextets[0] === 0x0064 &&
+    hextets[1] === 0xff9b &&
+    hextets[2] === 0 &&
+    hextets[3] === 0 &&
+    hextets[4] === 0 &&
+    hextets[5] === 0
+  ) {
+    return { kind: "ipv4", value: hextetsToIpv4(hextets[6]!, hextets[7]!) };
+  }
+
+  return { kind: "ipv6", value: bare };
+}
+
+function isBlockedIpAddress(ip: string): boolean {
+  const normalized = normalizeIpLiteral(ip);
+  switch (normalized.kind) {
+    case "ipv4":
+      return blockedIpv4List.check(normalized.value, "ipv4");
+    case "ipv6":
+      // A genuine IPv6 address can still wrap an internal target via a
+      // mapped/translation prefix `net.BlockList` doesn't know about; the
+      // normalization above handles the standard ones (::ffff:, 64:ff9b::),
+      // so by this point a bare IPv6 only needs the IPv6 blocklist.
+      return blockedIpv6List.check(normalized.value, "ipv6");
+    case "invalid":
+      // Fail closed: an address that looks like an IP literal but won't
+      // parse cleanly must not be allowed through.
+      return true;
+    case "not-ip":
+      return false;
+  }
 }
 
 type DnsLookupAllFn = (
@@ -306,8 +406,21 @@ async function resolveAndValidateTarget(
   rawHostname: string
 ): Promise<TargetResolutionResult> {
   const hostname = stripIpv6Brackets(rawHostname);
-  const ipFamily = net.isIP(hostname);
-  if (ipFamily !== 0) {
+
+  // Route the target literal through the single IP-normalization funnel
+  // before anything else. This catches IPv4-mapped IPv6, NAT64, zone IDs
+  // and compressed forms, and rejects anything that looks like an IP but
+  // doesn't cleanly parse.
+  const normalized = normalizeIpLiteral(hostname);
+  if (normalized.kind === "invalid") {
+    return {
+      ok: false,
+      statusCode: 403,
+      clientMessage: `403 Forbidden - Malformed target host: ${hostname}`,
+      reason: `target host is not a valid address (${hostname})`,
+    };
+  }
+  if (normalized.kind !== "not-ip") {
     if (isBlockedIpAddress(hostname)) {
       return {
         ok: false,
@@ -316,7 +429,9 @@ async function resolveAndValidateTarget(
         reason: `target is local/private IP (${hostname})`,
       };
     }
-    return { ok: true, resolvedIp: hostname };
+    // Pin the connection to the normalized literal — for IPv4-mapped /
+    // NAT64 inputs this is the bare IPv4 we actually validated.
+    return { ok: true, resolvedIp: normalized.value };
   }
 
   let addresses: LookupAddress[];
@@ -355,6 +470,9 @@ async function resolveAndValidateTarget(
     };
   }
 
+  // Return the exact IP we validated. Callers connect to this address, never
+  // re-resolving the hostname — a resolver that flips between a public and an
+  // internal answer (DNS rebinding) therefore can't slip past the blocklist.
   return { ok: true, resolvedIp: addresses[0]?.address };
 }
 
@@ -669,12 +787,21 @@ async function handleConnect(
 
   logger.debug(`Allowing CONNECT to ${hostname} via ${resolvedIp}`);
 
-  // Parse host and port
+  // Parse host and port. The port must be a real integer in 1..65535 —
+  // `parseInt(...) || 443` would silently accept "99999" or "0" and hand a
+  // bogus value to `net.connect`.
   const [host, portStr] = url.split(":");
-  const port = portStr ? parseInt(portStr, 10) || 443 : 443;
+  const port = portStr ? Number.parseInt(portStr, 10) : 443;
 
   if (!host) {
     logger.warn(`Invalid CONNECT host: ${url}`);
+    clientSocket.write("HTTP/1.1 400 Bad Request\r\n\r\n");
+    clientSocket.end();
+    return;
+  }
+
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    logger.warn(`Invalid CONNECT port: ${url}`);
     clientSocket.write("HTTP/1.1 400 Bad Request\r\n\r\n");
     clientSocket.end();
     return;
@@ -816,7 +943,13 @@ async function handleProxyRequest(
   };
 
   const proxyReq = http.request(options, (proxyRes) => {
-    // Forward response headers
+    // Redirects (3xx + Location) are forwarded verbatim and NOT followed
+    // here. This is a forward proxy: the client sees the 3xx, issues a brand
+    // new request for the Location URL, and that request re-enters this proxy
+    // and goes through `checkDomainAccess` + `resolveAndValidateTarget`
+    // again. So a redirect to an internal address can't bypass the guards —
+    // the follow-up request is independently re-validated. (If this code ever
+    // grows redirect-following, the redirect target MUST be re-validated.)
     res.writeHead(proxyRes.statusCode || 500, proxyRes.headers);
     // Stream response body
     proxyRes.pipe(res);

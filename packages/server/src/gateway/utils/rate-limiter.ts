@@ -1,5 +1,22 @@
 import { getDb } from "../../db/client.js";
 
+export function getClientIp(headers: {
+  forwardedFor?: string;
+  realIp?: string;
+}): string {
+  const forwarded = headers.forwardedFor?.split(",")[0]?.trim().toLowerCase();
+  if (forwarded) {
+    return forwarded;
+  }
+
+  const realIp = headers.realIp?.trim().toLowerCase();
+  if (realIp) {
+    return realIp;
+  }
+
+  return "unknown";
+}
+
 /**
  * Sweep expired `public.rate_limits` rows. Safe to call periodically.
  *

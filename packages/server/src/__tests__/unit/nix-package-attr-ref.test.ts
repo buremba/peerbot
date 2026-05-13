@@ -10,6 +10,12 @@ describe("nixPackageAttrRef", () => {
     expect(nixPackageAttrRef("chromium")).toBe("pkgs.chromium");
   });
 
+  it("accepts leaf package names containing underscores", () => {
+    expect(nixPackageAttrRef("poppler_utils")).toBe("pkgs.poppler_utils");
+    expect(nixPackageAttrRef("csvtk")).toBe("pkgs.csvtk");
+    expect(nixPackageAttrRef("cairo_2")).toBe("pkgs.cairo_2");
+  });
+
   it("accepts known-namespace attr paths", () => {
     expect(nixPackageAttrRef("python3Packages.requests")).toBe(
       "pkgs.python3Packages.requests"
@@ -21,6 +27,12 @@ describe("nixPackageAttrRef", () => {
 
   it("rejects Nix-expression injection via shell metacharacters", () => {
     expect(() => nixPackageAttrRef("pkgs.x; touch /tmp/pwn")).toThrow(
+      OrchestratorError
+    );
+    expect(() => nixPackageAttrRef("pkgs;builtins.exec")).toThrow(
+      OrchestratorError
+    );
+    expect(() => nixPackageAttrRef("foo_bar;builtins.exec")).toThrow(
       OrchestratorError
     );
   });

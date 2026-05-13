@@ -193,7 +193,7 @@ const NIX_PACKAGE_NAMESPACES = new Set([
   "luaPackages",
 ]);
 
-const NIX_LEAF_RE = /^[a-z0-9][a-z0-9-]*$/;
+const NIX_LEAF_RE = /^[a-z0-9_][a-z0-9_-]*$/;
 const NIX_ATTR_LEAF_RE = /^[a-zA-Z0-9_][a-zA-Z0-9_-]*$/;
 
 /**
@@ -201,7 +201,7 @@ const NIX_ATTR_LEAF_RE = /^[a-zA-Z0-9_][a-zA-Z0-9_-]*$/;
  * reference (`pkgs.<name>`). `nix-shell -p` evaluates each argument as a Nix
  * *expression*, so a bare string like `pkgs.fetchurl; builtins.exec ...` or
  * `import ./evil.nix` would run code at evaluation time. We never forward the
- * raw string: it must be a strict leaf identifier (`^[a-z0-9][a-z0-9-]*$`) or a
+ * raw string: it must be a strict leaf identifier (`^[a-z0-9_][a-z0-9_-]*$`) or a
  * `<known-namespace>.<leaf>` attr path, and it is re-emitted as an explicit
  * `pkgs.<...>` attribute reference.
  */

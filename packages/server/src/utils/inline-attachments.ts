@@ -20,6 +20,7 @@
  * `current_event_records` view exposes the transcribed text. Failures are
  * swallowed — the unsuperseded `[voice note]` placeholder remains usable.
  */
+import { readFile } from "node:fs/promises";
 import { getDb } from "../db/client";
 import { getLobuCoreServices } from "../lobu/gateway";
 import { getConfiguredPublicOrigin } from "./public-origin";
@@ -110,17 +111,17 @@ export async function materializeInlineAttachments<T extends StreamItemLike>(
       const filename = att.filename || "attachment";
       const mime = att.mime_type || "application/octet-stream";
       const kind = att.kind || inferKindFromMime(mime);
-      let buffer: Buffer;
-      try {
-        buffer = Buffer.from(att.data, "base64");
-      } catch (err) {
+      // `Buffer.from(str, 'base64')` never throws on malformed input — it
+      // silently ignores non-base64 chars. An empty result is the only signal
+      // we get that the input was junk, so guard on length here.
+      const buffer = Buffer.from(att.data, "base64");
+      if (buffer.length === 0) {
         logger.warn(
-          { item_id: item.id, err: String(err) },
-          "[inline-attachments] base64 decode failed — dropping attachment"
+          { item_id: item.id },
+          "[inline-attachments] base64 decoded to 0 bytes — dropping attachment"
         );
         continue;
       }
-      if (buffer.length === 0) continue;
 
       const published = await artifactStore.publish({
         buffer,
@@ -180,49 +181,58 @@ export function triggerAudioTranscriptions(
 ): void {
   if (pending.length === 0) return;
 
+  // Fire-and-forget. The outer try/catch is the safety net for anything
+  // that escapes the per-job catch below — a DB hiccup in
+  // `pickTranscriptionAgent`, an unexpected throw from getLobuCoreServices,
+  // etc. — so a transcription failure cannot crash the stream-batch ack
+  // that already returned.
   void (async () => {
-    const coreServices = getLobuCoreServices();
-    const transcriptionService = coreServices?.getTranscriptionService?.();
-    const artifactStore = coreServices?.getArtifactStore?.();
-    if (!transcriptionService || !artifactStore) {
-      logger.info(
-        { organizationId, pending: pending.length },
-        "[inline-attachments] transcription skipped — coreServices unavailable"
-      );
-      return;
-    }
-
-    const agentId = await pickTranscriptionAgent(
-      organizationId,
-      transcriptionService
-    );
-    if (!agentId) {
-      logger.info(
-        { organizationId, pending: pending.length },
-        "[inline-attachments] no STT-capable agent in org — leaving voice-note placeholders"
-      );
-      return;
-    }
-
-    for (const job of pending) {
-      try {
-        await transcribeOne(job, organizationId, agentId);
-      } catch (err) {
-        logger.warn(
-          { origin_id: job.originId, err: String(err) },
-          "[inline-attachments] transcription job failed"
+    try {
+      const coreServices = getLobuCoreServices();
+      const transcriptionService = coreServices?.getTranscriptionService?.();
+      const artifactStore = coreServices?.getArtifactStore?.();
+      if (!transcriptionService || !artifactStore) {
+        logger.info(
+          { organizationId, pending: pending.length },
+          "[inline-attachments] transcription skipped — coreServices unavailable"
         );
+        return;
       }
+
+      const agentId = await pickTranscriptionAgent(organizationId);
+      if (!agentId) {
+        logger.info(
+          { organizationId, pending: pending.length },
+          "[inline-attachments] no STT-capable agent in org — leaving voice-note placeholders"
+        );
+        return;
+      }
+
+      for (const job of pending) {
+        try {
+          await transcribeOne(job, organizationId, agentId);
+        } catch (err) {
+          logger.warn(
+            { origin_id: job.originId, err: String(err) },
+            "[inline-attachments] transcription job failed"
+          );
+        }
+      }
+    } catch (err) {
+      logger.warn(
+        { organizationId, err: String(err) },
+        "[inline-attachments] transcription orchestrator threw"
+      );
     }
   })();
 }
 
 async function pickTranscriptionAgent(
-  organizationId: string,
-  transcriptionService: NonNullable<
-    ReturnType<NonNullable<ReturnType<typeof getLobuCoreServices>>["getTranscriptionService"]>
-  >
+  organizationId: string
 ): Promise<string | null> {
+  const coreServices = getLobuCoreServices();
+  const transcriptionService = coreServices?.getTranscriptionService?.();
+  if (!transcriptionService) return null;
   const sql = getDb();
   const rows = (await sql`
     SELECT id FROM agents
@@ -254,7 +264,6 @@ async function transcribeOne(
     );
     return;
   }
-  const { readFile } = await import("node:fs/promises");
   const buffer = await readFile(stored.filePath);
 
   const result = await transcriptionService.transcribe(

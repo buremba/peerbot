@@ -179,3 +179,16 @@ releaseGates:
     path: /api/health
     timeoutSeconds: 300
     intervalSeconds: 2
+    # Post-migration schema verification. Each entry is `<table>.<column>`;
+    # the smoke job fails the rollout if any listed column is missing from
+    # `information_schema.columns`. Catches the case where a migration was
+    # edited after it was first applied to prod — the new ALTER never re-runs
+    # (its version is already in `schema_migrations`), but `dbmate up` on a
+    # fresh DB applies the edited file cleanly, so PR CI stays green.
+    # Add a column here whenever a new migration introduces one that app
+    # routes assume exists.
+    requiredSchema:
+      - device_workers.id
+      - device_workers.organization_id
+      - connections.device_worker_id
+      - connections.organization_id

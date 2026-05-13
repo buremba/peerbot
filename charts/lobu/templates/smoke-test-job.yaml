@@ -27,6 +27,13 @@ spec:
         - name: smoke-test
           image: {{ include "lobu.appImage" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            {{- if and .Values.secrets.create (hasKey .Values.secrets.stringData "DATABASE_URL") }}
+            - name: DATABASE_URL
+              value: {{ index .Values.secrets.stringData "DATABASE_URL" | quote }}
+            {{- end }}
+            - name: REQUIRED_SCHEMA
+              value: {{ join "," (default (list) .Values.releaseGates.smokeTest.requiredSchema) | quote }}
           command:
             - /bin/bash
             - -ec
@@ -37,13 +44,13 @@ spec:
 
               while true; do
                 if curl -fsS --max-time 5 "$url" >/tmp/lobu-smoke-response 2>/tmp/lobu-smoke-error; then
-                  echo "smoke test passed"
+                  echo "health endpoint OK"
                   cat /tmp/lobu-smoke-response
-                  exit 0
+                  break
                 fi
 
                 if [ "$SECONDS" -ge "$deadline" ]; then
-                  echo "smoke test timed out" >&2
+                  echo "smoke test timed out waiting for $url" >&2
                   echo "last curl error:" >&2
                   cat /tmp/lobu-smoke-error >&2 || true
                   exit 1
@@ -51,4 +58,67 @@ spec:
 
                 sleep {{ .Values.releaseGates.smokeTest.intervalSeconds | int }}
               done
+
+              if [ -z "${REQUIRED_SCHEMA}" ]; then
+                echo "no requiredSchema configured — skipping schema check"
+                exit 0
+              fi
+              if [ -z "${DATABASE_URL}" ]; then
+                echo "DATABASE_URL not set in smoke-test env — skipping schema check" >&2
+                exit 0
+              fi
+
+              echo "checking required schema columns: ${REQUIRED_SCHEMA}"
+              node --input-type=module <<'NODE'
+              import postgres from "postgres";
+
+              const required = (process.env.REQUIRED_SCHEMA || "")
+                .split(",")
+                .map((s) => s.trim())
+                .filter(Boolean)
+                .map((entry) => {
+                  const [table, column] = entry.split(".");
+                  if (!table || !column) {
+                    console.error(`ERROR: bad requiredSchema entry "${entry}" — must be table.column`);
+                    process.exit(2);
+                  }
+                  return { table, column };
+                });
+
+              const sql = postgres(process.env.DATABASE_URL, {
+                max: 1,
+                connect_timeout: 10,
+                idle_timeout: 1,
+                onnotice: () => {},
+              });
+
+              try {
+                const missing = [];
+                for (const { table, column } of required) {
+                  const rows = await sql`
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND table_name = ${table}
+                      AND column_name = ${column}
+                    LIMIT 1
+                  `;
+                  if (rows.length === 0) {
+                    missing.push(`${table}.${column}`);
+                  }
+                }
+                if (missing.length > 0) {
+                  console.error("ERROR: required schema columns missing after migrate:");
+                  for (const m of missing) console.error(`  - ${m}`);
+                  console.error(
+                    "This usually means a migration in db/migrations/ was edited after\n" +
+                    "it was first applied to this database. Ship a new dated migration\n" +
+                    "instead of editing an existing one."
+                  );
+                  process.exit(1);
+                }
+                console.log(`schema check passed — all ${required.length} required column(s) present`);
+              } finally {
+                await sql.end({ timeout: 1 }).catch(() => {});
+              }
+              NODE
 {{- end }}

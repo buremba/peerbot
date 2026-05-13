@@ -254,9 +254,42 @@ async function runMigrations(dbUrl: string) {
 }
 
 async function applyEmbeddedSchemaPatches(sql: MigrationSqlClient) {
+  // Embedded patches mirror DDL from `db/migrations/*.sql`. When a patch
+  // actually changes the schema (column count delta), that's a drift signal:
+  // the canonical migration didn't run for this database, either because a
+  // dev edited an already-applied migration (the #639 footgun) or because
+  // dbmate isn't wired up. Surface that loudly so it doesn't silently mask
+  // the same bug class in dev that would crash in prod.
+  async function schemaSnapshot(): Promise<{ columns: number; indexes: number }> {
+    try {
+      const rows = (await sql.unsafe(`
+        SELECT
+          (SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public')::int AS columns,
+          (SELECT count(*) FROM pg_indexes WHERE schemaname = 'public')::int AS indexes
+      `)) as Array<{ columns: number; indexes: number }>;
+      return rows[0] ?? { columns: 0, indexes: 0 };
+    } catch {
+      return { columns: 0, indexes: 0 };
+    }
+  }
+
   for (const patch of EMBEDDED_SCHEMA_PATCHES) {
     logger.info({ patch: patch.id }, 'Applying embedded schema patch');
+    const before = await schemaSnapshot();
     await patch.apply(sql);
+    const after = await schemaSnapshot();
+    if (after.columns !== before.columns || after.indexes !== before.indexes) {
+      logger.warn(
+        {
+          patch: patch.id,
+          columnDelta: after.columns - before.columns,
+          indexDelta: after.indexes - before.indexes,
+        },
+        'Embedded patch modified schema — the matching db/migrations/*.sql ' +
+          'did not run for this database. If you just edited a migration, ' +
+          'roll it back and ship a new dated migration file instead.'
+      );
+    }
   }
 }
 

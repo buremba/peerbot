@@ -297,6 +297,8 @@ jobs:
           --health-retries 5
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Lint migration directives
         # Sub-second pre-flight: every file under db/migrations/ must
@@ -310,6 +312,25 @@ jobs:
             exit 1
           fi
 
+      - name: Migration immutability — fail on edits to applied migrations
+        # dbmate keys migrations by their version filename. Once a migration
+        # has shipped to main, editing it silently no-ops in any environment
+        # whose schema_migrations row already lists that version (i.e. prod).
+        # The fresh-Postgres `dbmate up` below applies the latest text of every
+        # file and stays green, so edits-after-apply are invisible to that job.
+        # Fail the PR when a migration file changes (rather than is added)
+        # relative to main; force authors to ship a new dated file instead.
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          edited=$(git diff --name-only --diff-filter=MRD "$BASE_SHA"...HEAD -- db/migrations/ || true)
+          if [ -n "$edited" ]; then
+            echo "::error::Migration files were modified or renamed — applied migrations are immutable. Add a new dated migration instead."
+            echo "$edited"
+            exit 1
+          fi
+
       - name: Install dbmate
         run: |
           curl -fsSL -o /usr/local/bin/dbmate \
@@ -319,7 +340,10 @@ jobs:
       - name: Apply all migrations against an empty Postgres
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/lobu_ci?sslmode=disable
-        run: dbmate --migrations-dir db/migrations up
+        # `dbmate up` dumps `db/schema.sql` after running. The drift check below
+        # diffs that file against the committed version after stripping volatile
+        # lines (see `scripts/normalize-schema.sh`).
+        run: dbmate --migrations-dir db/migrations --schema-file db/schema.sql up
 
       - name: Verify migrations are listed in the schema_migrations table
         env:
@@ -330,5 +354,30 @@ jobs:
           pending=$(dbmate --migrations-dir db/migrations status | grep -c '^\[ \]' || true)
           if [ "$pending" != "0" ]; then
             echo "::error::$pending migrations still pending after dbmate up"
+            exit 1
+          fi
+
+      - name: Normalize generated schema.sql for comparison
+        # pg_dump emits non-deterministic / env-dependent lines that vary
+        # across pg_dump versions and runs: `\restrict <random_token>`,
+        # `\unrestrict <random_token>`, `-- Dumped from database version ...`,
+        # `-- Dumped by pg_dump version ...`, and `SET transaction_timeout = 0;`
+        # (pg17+ only). Strip them so the drift check is purely about the
+        # actual schema. The committed `db/schema.sql` is in the same stripped
+        # form; devs reproducing locally should run `scripts/normalize-schema.sh
+        # db/schema.sql` after `dbmate ... dump`.
+        run: scripts/normalize-schema.sh db/schema.sql
+
+      - name: Schema snapshot drift — db/schema.sql must match `dbmate up` output
+        # Independent backstop against editing applied migrations. The
+        # immutability check above looks at the migration file set; this looks
+        # at the end-state schema. They catch the same class of bug from
+        # opposite sides — a buggy edit could in principle pass one and trip
+        # the other (e.g. rename + edit). Failure mode is concrete: regenerate
+        # `db/schema.sql` locally (`dbmate --schema-file db/schema.sql dump`),
+        # run `scripts/normalize-schema.sh db/schema.sql`, and commit.
+        run: |
+          if ! git diff --exit-code -- db/schema.sql; then
+            echo "::error::db/schema.sql is stale. Regenerate with \`dbmate --migrations-dir db/migrations --schema-file db/schema.sql dump && scripts/normalize-schema.sh db/schema.sql\` and commit the result."
             exit 1
           fi

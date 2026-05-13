@@ -104,19 +104,31 @@ export HOST="${HOST:-127.0.0.1}"
 export PORT="${PORT:-8787}"
 export WORKER_PROXY_PORT="${WORKER_PROXY_PORT:-8118}"
 export PUBLIC_WEB_URL="${PUBLIC_WEB_URL:-http://localhost:${PORT}}"
-export PGSSLMODE="${PGSSLMODE:-require}"
 export LOBU_PROVIDER_REGISTRY_PATH="${LOBU_PROVIDER_REGISTRY_PATH:-$REPO_ROOT/config/providers.json}"
 export LOBU_DEV_PROJECT_PATH="${LOBU_DEV_PROJECT_PATH:-$REPO_ROOT}"
 export LOBU_WORKSPACE_ROOT="${LOBU_WORKSPACE_ROOT:-$REPO_ROOT/workspaces}"
 
 mkdir -p "$LOBU_WORKSPACE_ROOT"
 
+# --- Run -------------------------------------------------------------------
+
 if [ -z "${DATABASE_URL:-}" ]; then
-  echo "❌ DATABASE_URL not set in .env"
-  exit 1
+  # No external Postgres → boot the embedded PGlite backend (src/start-local.ts).
+  # First run mints a web login (dev@lobu.local / lobudev123, org "dev") and a
+  # bootstrap PAT under LOBU_DATA_DIR. Vite HMR still runs in-process.
+  export LOBU_DATA_DIR="${LOBU_DATA_DIR:-$REPO_ROOT/.lobu-dev}"
+  export PGSSLMODE=disable
+  mkdir -p "$LOBU_DATA_DIR"
+  echo "→ no DATABASE_URL set — booting embedded PGlite"
+  echo "→ server on http://${HOST}:${PORT}   (Vite HMR in-process)"
+  echo "→ data dir: $LOBU_DATA_DIR"
+  echo "→ first run seeds a web login: dev@lobu.local / lobudev123   (org 'dev')"
+  echo "→ then run \`lobu apply\` from a project dir to sync its lobu.toml"
+  echo ""
+  exec bun run --filter '@lobu/server' dev:local
 fi
 
-# --- Run -------------------------------------------------------------------
+export PGSSLMODE="${PGSSLMODE:-require}"
 
 echo "→ server on http://${HOST}:${PORT}"
 echo "→ embedded gateway proxy on :${WORKER_PROXY_PORT}"

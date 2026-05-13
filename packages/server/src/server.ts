@@ -22,15 +22,15 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-import { existsSync } from 'node:fs';
 import http from 'node:http';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getRequestListener } from '@hono/node-server';
 import { Hono } from 'hono';
+import { mountViteDev } from './dev-vite';
 import type { Env } from './index';
-import { app as mainApp, setViteDev } from './index';
+import { app as mainApp } from './index';
 import { assertExternalDepsResolvable } from '../../connector-worker/src/runtime-deps';
 import { getEnvFromProcess } from './utils/env';
 import logger from './utils/logger';
@@ -56,32 +56,6 @@ const PACKAGE_REPO_ROOT = path.resolve(
 // paths; without this fallback they'd resolve against process.cwd().
 if (!process.env.LOBU_DEV_PROJECT_PATH) {
   process.env.LOBU_DEV_PROJECT_PATH = PACKAGE_REPO_ROOT;
-}
-
-function resolveWebSourceRoot(): string {
-  const explicit = process.env.WEB_SOURCE_DIR?.trim();
-  if (explicit) {
-    if (!existsSync(path.join(explicit, 'index.html'))) {
-      throw new Error(
-        `WEB_SOURCE_DIR set but no index.html found: ${explicit}`
-      );
-    }
-    return explicit;
-  }
-
-  const projectRoot =
-    process.env.LOBU_DEV_PROJECT_PATH || PACKAGE_REPO_ROOT;
-  const webSourceDir = path.resolve(
-    projectRoot,
-    'packages/web'
-  );
-  if (!existsSync(path.join(webSourceDir, 'index.html'))) {
-    throw new Error(
-      `Lobu web source directory not found: ${webSourceDir}. ` +
-        `Set WEB_SOURCE_DIR or LOBU_DEV_PROJECT_PATH to the monorepo root.`
-    );
-  }
-  return webSourceDir;
 }
 
 // Inject environment variables into Hono context
@@ -155,47 +129,10 @@ async function main() {
   httpServer.keepAliveTimeout = 75_000; // 75 s — above typical 60 s LB idle timeout
   httpServer.headersTimeout = 76_000; // must be strictly > keepAliveTimeout
 
-  let vite: any;
-
-  // In development, start Vite dev server in middleware mode (same port, same process).
-  // Vite handles its own paths (/@vite/*, source transforms, HMR).
-  // Everything Vite doesn't match falls through to Hono via the appended middleware.
-  if (process.env.NODE_ENV === 'development') {
-    try {
-      const { createServer } = await import('vite');
-      vite = await createServer({
-        root: resolveWebSourceRoot(),
-        server: {
-          middlewareMode: true,
-          hmr: { server: httpServer },
-          // The worker scratch dir (packages/server/workspaces/<agent>/.openclaw/*)
-          // is written constantly while an agent runs; without this Vite triggers
-          // a full browser page reload on every session.jsonl write, which kills
-          // the in-flight chat SSE connection.
-          watch: {
-            ignored: [
-              '**/workspaces/**',
-              '**/.openclaw/**',
-              '**/dist/**',
-              '**/node_modules/**',
-            ],
-          },
-        },
-        appType: 'custom',
-      });
-      // Append Hono as the fallback — Vite handles its paths, rest goes to Hono
-      vite.middlewares.use((req: http.IncomingMessage, res: http.ServerResponse) => {
-        honoListener(req, res);
-      });
-      setViteDev(vite);
-      httpServer.on('request', vite.middlewares);
-      logger.info('Vite dev server started in middleware mode');
-    } catch (err) {
-      logger.warn({ err }, 'Failed to start Vite dev server — frontend will not be available');
-    }
-  }
-
-  // Prod: Hono handles all requests directly
+  // In development this attaches a Vite dev server (middleware mode, HMR) and
+  // returns it; in prod (or if Vite fails) it returns null and Hono handles
+  // every request directly.
+  const vite = await mountViteDev(httpServer, honoListener);
   if (!vite) {
     httpServer.on('request', honoListener);
   }

@@ -153,13 +153,27 @@ async function main() {
   });
   wrapper.route('/', mainApp);
 
-  const httpServer = http.createServer(getRequestListener(wrapper.fetch));
+  const honoListener = getRequestListener(wrapper.fetch);
+  const httpServer = http.createServer();
+  // SSE streams (MCP) must survive idle periods — Node defaults to 5s.
+  httpServer.keepAliveTimeout = 75_000;
+  httpServer.headersTimeout = 76_000;
+
+  // In development, serve the SPA with Vite HMR (middleware mode); otherwise
+  // Hono handles every request directly. Dynamically imported so this entry
+  // keeps its lazy-load discipline (assert-node-version / instrument first).
+  const { mountViteDev } = await import('./dev-vite');
+  const vite = await mountViteDev(httpServer, honoListener);
+  if (!vite) {
+    httpServer.on('request', honoListener);
+  }
 
   // ─── Graceful Shutdown ───────────────────────────────────────
 
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutting down');
     stopScheduler();
+    await vite?.close();
     httpServer.close();
     embeddingsChild?.kill();
     await socketServer.stop();
@@ -210,7 +224,11 @@ async function runMigrations(dbUrl: string) {
       // under dist/db/migrations.
       join(fileURLToPath(new URL('.', import.meta.url)), 'db', 'migrations'),
       join(APP_ROOT, 'db', 'migrations'),
-      join(process.cwd(), 'db', 'migrations')
+      // Monorepo `bun run --filter @lobu/server dev:local`: APP_ROOT is
+      // packages/server/, so the migrations live two levels up at repo root.
+      join(APP_ROOT, '..', '..', 'db', 'migrations'),
+      join(process.cwd(), 'db', 'migrations'),
+      join(process.cwd(), '..', '..', 'db', 'migrations')
     );
     if (!migrationsDir) {
       throw new Error('Migrations directory not found.');

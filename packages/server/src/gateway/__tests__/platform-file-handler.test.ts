@@ -19,7 +19,7 @@ describe("ChatInstanceManager platform file handlers", () => {
           connection: {
             id: "conn-1",
             platform: "telegram",
-            config: { botToken: "telegram-token" },
+            config: { platform: "telegram", botToken: "telegram-token" },
             metadata: { botUsername: "lobubot" },
           },
           chat: {},

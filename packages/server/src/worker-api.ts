@@ -18,6 +18,7 @@ import {
   maybeCloseRepairThread,
   maybeOpenOrAppendRepairThread,
 } from './connectors/repair-agent';
+import { captureServerError } from './sentry';
 import { autoLinkEvent } from './utils/auto-linker';
 import { nextRunAt as nextRunAtFromCron } from './utils/cron';
 import { reconcileDeviceCapabilities } from './worker-api/device-reconcile';
@@ -1560,6 +1561,7 @@ export async function listDeviceWorkers(c: Context<{ Bindings: Env }>) {
     });
   } catch (err: unknown) {
     logger.error({ error: errorMessage(err) }, '[listDeviceWorkers] Error');
+    captureServerError(c, err, 'listDeviceWorkers');
     return c.json({ error: errorMessage(err) }, 500);
   }
 }

@@ -38,7 +38,9 @@ import {
   stopLobuGateway,
 } from './lobu/gateway';
 import { bootTaskScheduler } from './scheduled/jobs';
+import * as Sentry from '@sentry/node';
 import { assertExternalDepsResolvable } from '../../connector-worker/src/runtime-deps';
+import { isSentryReported, markSentryReported } from './sentry';
 import { getEnvFromProcess } from './utils/env';
 import logger from './utils/logger';
 import { initWorkspaceProvider } from './workspace';
@@ -67,6 +69,68 @@ const env = getEnvFromProcess();
 app.use('*', async (c, next) => {
   c.env = env as Env;
   return next();
+});
+
+// Server-error capture. Two layers because routes split into two shapes:
+//
+//   (a) routes that throw and let the framework respond — caught by
+//       `app.onError` below, preserving the full stack trace.
+//   (b) routes that try/catch internally and `return c.json(..., 500)` — the
+//       framework never sees the exception, so onError doesn't fire. The
+//       post-response middleware below catches anything with `status >= 500`
+//       so silent 500s still reach Sentry, even if the stack is gone.
+//
+// Either layer marks the request as reported so we don't double-count when
+// both paths converge (e.g. an inner catch already called captureServerError).
+app.use('*', async (c, next) => {
+  await next();
+  if (c.res.status >= 500 && !isSentryReported(c)) {
+    let body: unknown = null;
+    try {
+      body = await c.res.clone().json();
+    } catch {
+      // response wasn't JSON; ignore
+    }
+    const message =
+      (body && typeof body === 'object' && 'error' in body && typeof (body as { error?: unknown }).error === 'string'
+        ? (body as { error: string }).error
+        : null) ?? `HTTP ${c.res.status} from ${c.req.method} ${c.req.path}`;
+    Sentry.captureMessage(message, {
+      level: 'error',
+      tags: {
+        source: 'http_response',
+        http_method: c.req.method,
+        http_status: String(c.res.status),
+      },
+      extra: {
+        path: c.req.path,
+        url: c.req.url,
+        response_body: body,
+      },
+    });
+    markSentryReported(c);
+  }
+});
+
+// Catch-all error handler for thrown exceptions that bubble past route catches.
+// Preserves the original stack trace and returns a generic 500 so handlers
+// don't have to remember to wrap themselves.
+app.onError((err, c) => {
+  if (!isSentryReported(c)) {
+    Sentry.captureException(err, {
+      tags: {
+        source: 'app_onError',
+        http_method: c.req.method,
+      },
+      extra: {
+        path: c.req.path,
+        url: c.req.url,
+      },
+    });
+    markSentryReported(c);
+  }
+  logger.error({ err, path: c.req.path }, 'Unhandled error in HTTP handler');
+  return c.json({ error: 'Internal server error' }, 500);
 });
 
 /**

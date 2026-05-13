@@ -5,8 +5,52 @@
  * This module provides the MCP tool call tracking wrapper.
  */
 
+import type { Context } from 'hono';
 import * as Sentry from '@sentry/node';
 import { ToolUserError } from './utils/errors';
+
+const SENTRY_CAPTURED_FLAG = 'sentryErrorCaptured';
+
+/**
+ * Mark the current request as already reported to Sentry so the response-level
+ * post-middleware doesn't double-count it.
+ */
+export function markSentryReported(c: Context): void {
+  c.set(SENTRY_CAPTURED_FLAG as never, true as never);
+}
+
+export function isSentryReported(c: Context): boolean {
+  return Boolean(c.get(SENTRY_CAPTURED_FLAG as never));
+}
+
+/**
+ * Capture a server-side error from inside a route's catch block. Use this when
+ * the handler swallows the exception and returns a 500 JSON response — the
+ * top-level `app.onError` only sees exceptions that bubble up, so without this
+ * call the error never reaches Sentry. ToolUserError (4xx, user fault) is
+ * skipped to keep the alert feed clean.
+ *
+ * After calling, set `markSentryReported(c)` is implicit so the response-level
+ * post-middleware skips the same request.
+ */
+export function captureServerError(
+  c: Context,
+  error: unknown,
+  source: string
+): void {
+  if (error instanceof ToolUserError) return;
+  Sentry.captureException(error, {
+    tags: {
+      source,
+      http_method: c.req.method,
+    },
+    extra: {
+      path: c.req.path,
+      url: c.req.url,
+    },
+  });
+  markSentryReported(c);
+}
 
 /**
  * Track an MCP tool call with Sentry

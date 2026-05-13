@@ -33,36 +33,18 @@ const PREVIEW_JOIN_DEFAULTS: Record<string, string> = {
 
 export type SurfaceType = 'dm' | 'channel';
 
-/**
- * Reply posted by a `previewMode` connection when a DM/@-mention arrives for a
- * chat that hasn't been linked yet — keyed by platform. Deterministic: no LLM
- * runs for unlinked chats; this is the whole response. A platform without an
- * entry here means an unlinked chat just falls through (the bridge skips it).
- */
-export const PREVIEW_UNLINKED_NOTICE: Record<string, string> = {
-  slack: [
-    "👋 This chat isn't linked to a Lobu agent yet.",
-    '',
-    'To talk to your own agent here:',
-    '1. In your agent project\'s `lobu.toml`: `[agents.<id>.preview.slack]` → `enabled = true` (add `surfaces = ["channel"]` to use it in channels too).',
-    '2. Run `lobu apply` to register the agent in Lobu Cloud.',
-    '3. Run `lobu run` — it prints a `/lobu link <code>`.',
-    '4. Send that `/lobu link <code>` here.',
-    '',
-    'After that, every message in this chat goes to your agent.',
-  ].join('\n'),
-  telegram: [
-    "👋 This chat isn't linked to a Lobu agent yet.",
-    '',
-    'To talk to your own agent here:',
-    '1. In your agent project\'s `lobu.toml`: `[agents.<id>.preview.telegram]` → `enabled = true`.',
-    '2. Run `lobu apply` to register the agent in Lobu Cloud.',
-    '3. Run `lobu run` — it prints a `/link <code>`.',
-    '4. Send that `/link <code>` here.',
-    '',
-    'After that, every message in this chat goes to your agent.',
-  ].join('\n'),
-};
+// Slash-command spellings differ by platform: Slack only delivers the
+// natively-registered `/lobu`, so its subcommands are `/lobu try` etc.; other
+// platforms register each command directly (`/try`, `/agents`, `/link`).
+function tryCommand(platform: string): string {
+  return platform === 'slack' ? '/lobu try' : '/try';
+}
+function listCommand(platform: string): string {
+  return platform === 'slack' ? '/lobu agents' : '/agents';
+}
+function linkCommand(platform: string): string {
+  return platform === 'slack' ? '/lobu link' : '/link';
+}
 
 interface ClaimPayload {
   organizationId: string;
@@ -310,4 +292,164 @@ export async function consumePreviewClaim(args: {
       organizationId: claim.organizationId,
     };
   });
+}
+
+// ── Public-preview "try a demo agent" ────────────────────────────────────────
+//
+// A `previewMode` connection (the hosted "Lobu" workspace bot) exposes every
+// agent in *its own org* as a self-serve demo: `/lobu try <agentId>` binds the
+// chat to that agent — no claim code, no ownership check, no CLI. "The org" is
+// whatever org owns the preview connection's agent; drop your demo agents in it
+// (via `lobu apply` / the agents UI) and they show up here automatically. The
+// connection's own placeholder/concierge agent is excluded from the list.
+
+export interface PreviewAgent {
+  agentId: string;
+  name: string;
+  description: string | null;
+}
+
+/**
+ * Resolve the org a preview connection's demo agents live in (the org of its
+ * owning agent), plus that owning agent's id (excluded from the demo list).
+ * Returns null when the connection or its owning agent can't be resolved.
+ */
+async function resolvePreviewConnectionOrg(
+  connectionId: string
+): Promise<{ organizationId: string; owningAgentId: string } | null> {
+  const sql = getDb();
+  const rows = (await sql`
+    SELECT a.organization_id, c.agent_id
+    FROM agent_connections c
+    JOIN agents a ON a.id = c.agent_id
+    WHERE c.id = ${connectionId}
+    LIMIT 1
+  `) as Array<{ organization_id: string | null; agent_id: string | null }>;
+  const row = rows[0];
+  if (!row?.organization_id || !row.agent_id) return null;
+  return { organizationId: row.organization_id, owningAgentId: row.agent_id };
+}
+
+/**
+ * Demo agents reachable via `/lobu try` through this preview connection. Best
+ * effort: returns `[]` (and logs) on any DB error rather than throwing — this
+ * runs on the hot path of every unlinked message and the worst case is a
+ * fallback notice instead of the menu.
+ */
+export async function listPreviewAgents(connectionId: string): Promise<PreviewAgent[]> {
+  try {
+    const org = await resolvePreviewConnectionOrg(connectionId);
+    if (!org) return [];
+    const sql = getDb();
+    const rows = (await sql`
+      SELECT id, name, description
+      FROM agents
+      WHERE organization_id = ${org.organizationId}
+        AND id <> ${org.owningAgentId}
+      ORDER BY name NULLS LAST, id
+    `) as Array<{ id: string; name: string | null; description: string | null }>;
+    return rows.map((r) => ({
+      agentId: r.id,
+      name: r.name ?? r.id,
+      description: r.description ?? null,
+    }));
+  } catch (err) {
+    logger.warn(
+      { err: errorMessage(err), connectionId },
+      '[preview] listPreviewAgents failed'
+    );
+    return [];
+  }
+}
+
+export type BindPreviewAgentResult =
+  | { status: 'bound'; agentId: string }
+  | { status: 'not_available' }
+  | { status: 'no_connection' };
+
+/**
+ * Bind a chat to a demo agent for a preview connection. The agent must live in
+ * the connection's org — that's the allowlist; there's no per-caller ownership
+ * check (that's the whole point: anyone in the hosted workspace can try them).
+ * Last bind wins; re-running with another agent just rebinds.
+ */
+export async function bindChatToPreviewAgent(args: {
+  connectionId: string;
+  agentId: string;
+  platform: string;
+  /** Workspace id for platforms that have one (Slack); undefined otherwise. */
+  teamId?: string;
+  /** Canonical channel id the message handler looks bindings up by. */
+  channelId: string;
+}): Promise<BindPreviewAgentResult> {
+  const org = await resolvePreviewConnectionOrg(args.connectionId);
+  if (!org) return { status: 'no_connection' };
+  const sql = getDb();
+  const agentRows = (await sql`
+    SELECT id FROM agents
+    WHERE id = ${args.agentId} AND organization_id = ${org.organizationId}
+    LIMIT 1
+  `) as Array<{ id: string }>;
+  const target = agentRows[0];
+  if (!target) return { status: 'not_available' };
+
+  const { platform, teamId, channelId } = args;
+  if (teamId) {
+    await sql`
+      INSERT INTO agent_channel_bindings (agent_id, platform, channel_id, team_id, created_at)
+      VALUES (${target.id}, ${platform}, ${channelId}, ${teamId}, now())
+      ON CONFLICT (platform, channel_id, team_id) DO UPDATE SET agent_id = EXCLUDED.agent_id
+    `;
+  } else {
+    await sql`
+      DELETE FROM agent_channel_bindings
+      WHERE platform = ${platform} AND channel_id = ${channelId} AND team_id IS NULL
+    `;
+    await sql`
+      INSERT INTO agent_channel_bindings (agent_id, platform, channel_id, team_id, created_at)
+      VALUES (${target.id}, ${platform}, ${channelId}, NULL, now())
+    `;
+  }
+  return { status: 'bound', agentId: target.id };
+}
+
+/** The "pick a demo agent" menu — shown on `/lobu try` / `/lobu agents`. */
+export function previewAgentMenu(platform: string, agents: PreviewAgent[]): string {
+  if (agents.length === 0) {
+    return 'No demo agents are available here yet.';
+  }
+  return [
+    'Demo agents you can try here:',
+    ...agents.map(
+      (a) => `• \`${tryCommand(platform)} ${a.agentId}\` — ${a.description || a.name}`
+    ),
+    '',
+    `Pick one, then just send a message. \`${listCommand(platform)}\` shows this list again.`,
+  ].join('\n');
+}
+
+/**
+ * Reply for a `previewMode` connection when an unlinked chat arrives. If the
+ * connection's org has demo agents, it's the `/lobu try` menu; otherwise it
+ * falls back to "wire your own agent" instructions. Returns null only when
+ * there's nothing useful to say (unknown platform).
+ */
+export async function previewUnlinkedNotice(
+  platform: string,
+  connectionId: string
+): Promise<string | null> {
+  if (!PREVIEW_PLATFORMS.has(platform)) return null;
+  const agents = await listPreviewAgents(connectionId);
+  if (agents.length > 0) {
+    return [
+      `👋 Welcome! ${previewAgentMenu(platform, agents)}`,
+      '',
+      `(Building your own agent? Run \`lobu run\` and send the \`${linkCommand(platform)} <code>\` it prints.)`,
+    ].join('\n');
+  }
+  return [
+    "👋 This chat isn't linked to a Lobu agent yet.",
+    '',
+    `Run \`lobu apply\` then \`lobu run\` to get a \`${linkCommand(platform)} <code>\`, and send it here.`,
+  ].join('\n');
 }

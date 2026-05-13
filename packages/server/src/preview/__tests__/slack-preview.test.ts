@@ -10,9 +10,12 @@ import { getDb } from "../../db/client.js";
 import { registerBuiltInCommands } from "../../gateway/commands/built-in-commands.js";
 import type { Env } from "../../index";
 import {
+  bindChatToPreviewAgent,
   canonicalSlackChannelId,
   consumePreviewClaim,
   createPreviewClaim,
+  listPreviewAgents,
+  previewAgentMenu,
   slackSurfaceType,
 } from "../slack";
 
@@ -306,5 +309,174 @@ describe("Slack Preview claims + channel bindings", () => {
       },
     });
     expect(replies2.join("\n")).toMatch(/invalid or expired/i);
+  });
+});
+
+describe("Public preview — /lobu try a demo agent", () => {
+  const PREVIEW_CONN = "conn-preview";
+  const CONCIERGE = "preview-concierge";
+  const DEMO_A = "food-ordering";
+  const DEMO_B = "lunch-bot";
+  let PREVIEW_ORG = "";
+  let OTHER_ORG = "";
+
+  beforeAll(async () => {
+    await cleanupTestDatabase();
+    const org = await createTestOrganization({
+      name: "Public Preview Org",
+      slug: "public-preview-org",
+    });
+    PREVIEW_ORG = org.id;
+    const other = await createTestOrganization({
+      name: "Some Other Org",
+      slug: "some-other-org",
+    });
+    OTHER_ORG = other.id;
+    await createTestAgent({ organizationId: PREVIEW_ORG, agentId: CONCIERGE, name: "Concierge" });
+    await createTestAgent({
+      organizationId: PREVIEW_ORG,
+      agentId: DEMO_A,
+      name: "Food Ordering",
+      description: "Orders lunch from Deliveroo",
+    });
+    await createTestAgent({ organizationId: PREVIEW_ORG, agentId: DEMO_B, name: "Lunch Bot" });
+    await createTestAgent({ organizationId: OTHER_ORG, agentId: "private-agent", name: "Private" });
+
+    const sql = getDb();
+    await sql`
+      INSERT INTO agent_connections (id, agent_id, platform, config, settings, metadata, status, created_at, updated_at)
+      VALUES (${PREVIEW_CONN}, ${CONCIERGE}, 'slack', ${sql.json({ platform: "slack" })},
+              ${sql.json({ previewMode: true })}, ${sql.json({})}, 'active', now(), now())
+    `;
+  });
+
+  beforeEach(async () => {
+    await getDb()`DELETE FROM agent_channel_bindings`;
+  });
+
+  test("listPreviewAgents returns the org's agents, excluding the connection's owning agent", async () => {
+    const agents = await listPreviewAgents(PREVIEW_CONN);
+    expect(agents.map((a) => a.agentId).sort()).toEqual([DEMO_A, DEMO_B]);
+    expect(agents.find((a) => a.agentId === DEMO_A)?.description).toBe(
+      "Orders lunch from Deliveroo"
+    );
+  });
+
+  test("listPreviewAgents returns [] for an unknown connection", async () => {
+    expect(await listPreviewAgents("conn-does-not-exist")).toEqual([]);
+  });
+
+  test("bindChatToPreviewAgent binds a DM to a demo agent in the connection's org", async () => {
+    const res = await bindChatToPreviewAgent({
+      connectionId: PREVIEW_CONN,
+      agentId: DEMO_A,
+      platform: "slack",
+      teamId: TEAM_ID,
+      channelId: canonicalSlackChannelId("D100"),
+    });
+    expect(res).toEqual({ status: "bound", agentId: DEMO_A });
+
+    const rows = await getDb()`
+      SELECT agent_id, channel_id, team_id FROM agent_channel_bindings WHERE platform = 'slack'
+    `;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ agent_id: DEMO_A, channel_id: "slack:D100", team_id: TEAM_ID });
+  });
+
+  test("re-binding switches the chat to the new demo agent (last wins)", async () => {
+    await bindChatToPreviewAgent({
+      connectionId: PREVIEW_CONN, agentId: DEMO_A, platform: "slack",
+      teamId: TEAM_ID, channelId: canonicalSlackChannelId("Dswap"),
+    });
+    const res = await bindChatToPreviewAgent({
+      connectionId: PREVIEW_CONN, agentId: DEMO_B, platform: "slack",
+      teamId: TEAM_ID, channelId: canonicalSlackChannelId("Dswap"),
+    });
+    expect(res).toMatchObject({ status: "bound", agentId: DEMO_B });
+    const rows = await getDb()`
+      SELECT agent_id FROM agent_channel_bindings WHERE channel_id = 'slack:Dswap' AND team_id = ${TEAM_ID}
+    `;
+    expect(rows).toHaveLength(1);
+    expect((rows[0] as { agent_id: string }).agent_id).toBe(DEMO_B);
+  });
+
+  test("won't bind an agent that isn't in the connection's org", async () => {
+    expect(
+      await bindChatToPreviewAgent({
+        connectionId: PREVIEW_CONN, agentId: "private-agent", platform: "slack",
+        teamId: TEAM_ID, channelId: canonicalSlackChannelId("D200"),
+      })
+    ).toEqual({ status: "not_available" });
+    expect(
+      await bindChatToPreviewAgent({
+        connectionId: PREVIEW_CONN, agentId: "no-such-agent", platform: "slack",
+        teamId: TEAM_ID, channelId: canonicalSlackChannelId("D200"),
+      })
+    ).toEqual({ status: "not_available" });
+    expect(await getDb()`SELECT 1 FROM agent_channel_bindings`).toHaveLength(0);
+  });
+
+  test("reports no_connection for an unknown connection id", async () => {
+    expect(
+      await bindChatToPreviewAgent({
+        connectionId: "conn-nope", agentId: DEMO_A, platform: "slack",
+        teamId: TEAM_ID, channelId: canonicalSlackChannelId("D300"),
+      })
+    ).toEqual({ status: "no_connection" });
+  });
+
+  test("the /lobu try chat command binds end to end", async () => {
+    const registry = new CommandRegistry();
+    registerBuiltInCommands(registry, { agentSettingsStore: {} as never });
+
+    const replies: string[] = [];
+    const handled = await registry.tryHandle("try", {
+      userId: "U1",
+      channelId: "D777",
+      teamId: TEAM_ID,
+      isGroup: false,
+      platform: "slack",
+      connectionId: PREVIEW_CONN,
+      args: DEMO_A,
+      reply: async (text: string) => {
+        replies.push(text);
+      },
+    });
+    expect(handled).toBe(true);
+    expect(replies.join("\n")).toContain(`\`${DEMO_A}\``);
+    const rows = await getDb()`
+      SELECT agent_id FROM agent_channel_bindings WHERE channel_id = 'slack:D777' AND team_id = ${TEAM_ID}
+    `;
+    expect((rows[0] as { agent_id: string }).agent_id).toBe(DEMO_A);
+
+    // No arg → menu listing the demo agents, no throw.
+    const menuReplies: string[] = [];
+    await registry.tryHandle("try", {
+      userId: "U1", channelId: "D777", teamId: TEAM_ID, isGroup: false,
+      platform: "slack", connectionId: PREVIEW_CONN, args: "",
+      reply: async (text: string) => { menuReplies.push(text); },
+    });
+    expect(menuReplies.join("\n")).toContain(`/lobu try ${DEMO_A}`);
+
+    // Unknown agent → friendly "no demo agent" + the menu.
+    const badReplies: string[] = [];
+    await registry.tryHandle("try", {
+      userId: "U1", channelId: "D777", teamId: TEAM_ID, isGroup: false,
+      platform: "slack", connectionId: PREVIEW_CONN, args: "nope",
+      reply: async (text: string) => { badReplies.push(text); },
+    });
+    expect(badReplies.join("\n")).toMatch(/no demo agent `nope`/i);
+  });
+
+  test("previewAgentMenu lists agents (or says none)", () => {
+    expect(previewAgentMenu("slack", [])).toMatch(/no demo agents/i);
+    const menu = previewAgentMenu("slack", [
+      { agentId: DEMO_A, name: "Food Ordering", description: "Orders lunch" },
+    ]);
+    expect(menu).toContain(`/lobu try ${DEMO_A}`);
+    expect(menu).toContain("Orders lunch");
+    expect(previewAgentMenu("telegram", [
+      { agentId: DEMO_A, name: "Food Ordering", description: null },
+    ])).toContain(`/try ${DEMO_A}`);
   });
 });

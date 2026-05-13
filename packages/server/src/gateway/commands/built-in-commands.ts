@@ -1,7 +1,10 @@
 import type { CommandContext, CommandRegistry } from "@lobu/core";
 import {
+  bindChatToPreviewAgent,
   canonicalSlackChannelId,
   consumePreviewClaim,
+  listPreviewAgents,
+  previewAgentMenu,
 } from "../../preview/slack.js";
 import type { AgentSettingsStore } from "../auth/settings/agent-settings-store.js";
 import {
@@ -79,6 +82,73 @@ export function registerBuiltInCommands(
       ];
 
       await ctx.reply(parts.join("\n"));
+    },
+  });
+
+  // Public preview: bind this chat to one of the demo agents in the preview
+  // connection's org. `/lobu try <agentId>` (no code, no CLI); `/lobu try` /
+  // `/lobu agents` with no arg lists them. Re-running with another agent
+  // rebinds. (Reached as the `try` / `agents` subcommand on Slack.)
+  const replyDemoMenu = async (ctx: CommandContext, prefix?: string) => {
+    if (!ctx.connectionId) {
+      await ctx.reply("Couldn't identify this workspace — try again in a moment.");
+      return;
+    }
+    const agents = await listPreviewAgents(ctx.connectionId);
+    const menu = previewAgentMenu(ctx.platform, agents);
+    await ctx.reply(prefix ? `${prefix}\n\n${menu}` : menu);
+  };
+
+  registry.register({
+    name: "try",
+    description:
+      "Try a demo agent in this workspace — `try <agentId>` (no arg lists them)",
+    handler: async (ctx: CommandContext) => {
+      const agentId = ctx.args.trim();
+      if (!agentId) {
+        await replyDemoMenu(ctx);
+        return;
+      }
+      if (!ctx.connectionId) {
+        await ctx.reply("Couldn't identify this workspace — try again in a moment.");
+        return;
+      }
+      // Bindings are keyed on the canonical channel-id form; Slack slash
+      // commands hand us the bare id.
+      const channelId =
+        ctx.platform === "slack"
+          ? canonicalSlackChannelId(ctx.channelId)
+          : ctx.channelId;
+      const result = await bindChatToPreviewAgent({
+        connectionId: ctx.connectionId,
+        agentId,
+        platform: ctx.platform,
+        teamId: ctx.teamId,
+        channelId,
+      });
+      switch (result.status) {
+        case "bound":
+          await ctx.reply(
+            `Now talking to \`${result.agentId}\`. Say hi — I'll reply here from now on.`
+          );
+          return;
+        case "not_available":
+          await replyDemoMenu(ctx, `No demo agent \`${agentId}\` here.`);
+          return;
+        case "no_connection":
+          await ctx.reply(
+            "This chat isn't connected to a Lobu preview workspace."
+          );
+          return;
+      }
+    },
+  });
+
+  registry.register({
+    name: "agents",
+    description: "List the demo agents you can try here",
+    handler: async (ctx: CommandContext) => {
+      await replyDemoMenu(ctx);
     },
   });
 

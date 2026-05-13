@@ -5,7 +5,7 @@
  * validation without requiring a database connection.
  */
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import {
   generatePAT,
   generateUserCode,

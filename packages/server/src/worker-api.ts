@@ -149,9 +149,9 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   // below) belongs in their match set. User-scoped workers — the Lobu Mac
   // Bridge, anything in `workerAuthMode === 'user'` — are *device* workers:
   // they may ONLY claim runs whose connector declares a `required_capability`
-  // they advertise, never the cloud connectors. So '' is excluded for them,
+  // they advertise, never the embedded-server connectors. So '' is excluded for them,
   // which means a bridge with no granted capabilities claims *nothing* instead
-  // of hijacking-and-failing arbitrary cloud-connector runs (e.g. hackernews).
+  // of hijacking-and-failing arbitrary embedded-server connector runs (e.g. hackernews).
   const isUserScopedWorker = c.var.workerAuthMode === 'user';
   const capabilityMatchSet = isUserScopedWorker
     ? advertisedCapabilities
@@ -164,7 +164,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   // `deviceWorkerId` is this device's surrogate id; a pending run whose
   // connection is pinned to it (connections.device_worker_id) is claimable
   // regardless of the connector's required_capability — that's how an
-  // otherwise-cloud connector (Reddit, …) ends up running on a chosen device.
+  // otherwise-embedded connector (Reddit, …) ends up running on a chosen device.
   const workerUserId = c.var.workerUserId;
   // The org the device's token was issued for — the workspace the user picked on
   // the OAuth device-authorization page. Falls back to the owner's personal

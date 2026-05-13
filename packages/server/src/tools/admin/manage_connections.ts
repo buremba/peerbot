@@ -167,7 +167,7 @@ const CreateAction = Type.Object({
   device_worker_id: Type.Optional(
     Type.String({
       description:
-        "Run this connection's syncs/actions on a specific device worker (its device_workers.id) instead of the cloud pool. Required for connectors that declare a required_capability; optional otherwise. The device must belong to you or be granted to this org.",
+        "Run this connection's syncs/actions on a specific device worker (its device_workers.id) instead of the Lobu server (runs serverless). Required for connectors that declare a required_capability; optional otherwise. The device must belong to you or be granted to this org.",
     })
   ),
   entity_link_overrides: Type.Optional(EntityLinkOverridesSchema),
@@ -187,7 +187,7 @@ const UpdateAction = Type.Object({
   device_worker_id: Type.Optional(
     Type.Union([Type.String(), Type.Null()], {
       description:
-        'Reassign which device worker runs this connection. Null moves it back to the cloud pool (only allowed if the connector has no required_capability).',
+        'Reassign which device worker runs this connection. Null moves it back to the Lobu server, runs serverless (only allowed if the connector has no required_capability).',
     })
   ),
   replace_config: Type.Optional(
@@ -274,7 +274,7 @@ const ConnectAction = Type.Object({
   device_worker_id: Type.Optional(
     Type.String({
       description:
-        "Run this connection's syncs/actions on a specific device worker (its device_workers.id) instead of the cloud pool. Required for connectors that declare a required_capability; optional otherwise. The device must belong to you or be granted to this org.",
+        "Run this connection's syncs/actions on a specific device worker (its device_workers.id) instead of the Lobu server (runs serverless). Required for connectors that declare a required_capability; optional otherwise. The device must belong to you or be granted to this org.",
     })
   ),
   entity_link_overrides: Type.Optional(EntityLinkOverridesSchema),
@@ -705,7 +705,7 @@ async function handleGet(
 
 /**
  * Validate + normalize a connection's device-worker binding (the "Run on"
- * target). Returns the resolved id (or `null` = cloud pool) or an error string.
+ * target). Returns the resolved id (or `null` = serverless, in the Lobu server) or an error string.
  *
  *  - A connector that declares `required_capability` MUST be pinned to a device,
  *    and that device must currently advertise the capability.

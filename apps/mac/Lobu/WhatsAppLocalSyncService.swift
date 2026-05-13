@@ -42,9 +42,24 @@ enum WhatsAppLocalSyncService {
     /// Apple Core Data timestamps are seconds since 2001-01-01 UTC.
     private static let macEpochOffset: Double = 978307200
 
+    /// Hard cap on a single voice note we'll inline into the stream payload.
+    /// WhatsApp voice notes ~50–200KB for a 30-60s clip; anything over this is
+    /// almost certainly not a voice note and we skip it to keep the JSON body
+    /// bounded. The check is also a guard against arbitrary file reads (e.g.
+    /// a malicious / corrupt `ZMEDIALOCALPATH` value pointing at a large file).
+    private static let maxAudioAttachmentBytes = 2 * 1024 * 1024
+
     static func sourceDatabaseURL() -> URL {
         URL(fileURLWithPath: NSHomeDirectory())
             .appendingPathComponent("Library/Group Containers/group.net.whatsapp.WhatsApp.shared/ChatStorage.sqlite")
+    }
+
+    /// `ZWAMEDIAITEM.ZMEDIALOCALPATH` is relative to the `Message/` directory
+    /// inside the WhatsApp Group Container. Resolves to e.g.
+    /// `~/Library/Group Containers/group.net.whatsapp.WhatsApp.shared/Message/Media/<jid>/<id>.opus`.
+    private static func mediaBaseURL() -> URL {
+        URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent("Library/Group Containers/group.net.whatsapp.WhatsApp.shared/Message")
     }
 
     /// True if the WhatsApp Desktop archive is on disk and openable. The bridge
@@ -137,7 +152,9 @@ enum WhatsAppLocalSyncService {
             let toJID = cString(stmt, 3)
             let isFromMe = sqlite3_column_int(stmt, 4) != 0
             let msgType = Int(sqlite3_column_int(stmt, 5))
-            let groupEvent = Int(sqlite3_column_int(stmt, 6))
+            // Column 6 (ZGROUPEVENTTYPE) is selected so the SELECT shape stays
+            // stable across schemas, but it's no longer a system-event signal
+            // — see the `isSystemEvent` line below.
             let stanzaId = cString(stmt, 7)
             let chatJID = cString(stmt, 8)
             let partnerName = cString(stmt, 9)
@@ -161,7 +178,13 @@ enum WhatsAppLocalSyncService {
             if chatFilter == "group" && !isGroup { continue }
 
             let mediaType = mediaTypeName(forZMessageType: msgType)
-            let isSystemEvent = msgType == 6 || groupEvent != 0
+            // Only ZMESSAGETYPE 6 is a true system/info message ("Alice joined",
+            // "Bob changed the photo"). ZGROUPEVENTTYPE is non-zero on plenty
+            // of non-system rows in newer schemas (media messages in groups
+            // tag it with the membership-event slot), so `groupEvent != 0`
+            // alone was misclassifying every group media message as a system
+            // event and wiping the placeholder back to `[system event]`.
+            let isSystemEvent = msgType == 6
             let occurredAt = Date(timeIntervalSince1970: msgDate + macEpochOffset)
 
             // Sender resolution by chat shape:
@@ -218,6 +241,13 @@ enum WhatsAppLocalSyncService {
             if let mediaPath { metadata["media_local_path"] = AnyEncodable(mediaPath) }
             if isSystemEvent { metadata["is_system_event"] = AnyEncodable(true) }
 
+            // Audio-only attachment ingest. Other media types still get a
+            // labeled placeholder ([image], [video], etc.) but we don't ship
+            // their bytes — non-audio is a separate feature.
+            let attachments: [WorkerStreamAttachment]? = (mediaType == "audio")
+                ? readAudioAttachment(relativePath: mediaPath).map { [$0] }
+                : nil
+
             items.append(
                 WorkerStreamItem(
                     id: originId,
@@ -228,7 +258,8 @@ enum WhatsAppLocalSyncService {
                     // definition's feeds_schema; the gateway's
                     // validateConnectorEventSemanticType drops events that don't.
                     semantic_type: "message",
-                    metadata: metadata
+                    metadata: metadata,
+                    attachments: attachments
                 )
             )
         }
@@ -313,9 +344,14 @@ enum WhatsAppLocalSyncService {
     private static func makePayloadText(text: String?, msgType: Int, mediaTitle: String?, isSystem: Bool) -> String {
         if let text, !text.isEmpty { return text }
         if let mediaTitle { return mediaTitle }
+        // Media-type label wins over the system-event fallback so a media row
+        // never collapses to `[system event]`. The transcription pipeline
+        // later replaces this placeholder for audio.
+        if let kind = mediaTypeName(forZMessageType: msgType) {
+            return kind == "audio" ? "[voice note]" : "[\(kind)]"
+        }
         if isSystem { return "[system event]" }
-        guard let kind = mediaTypeName(forZMessageType: msgType) else { return "" }
-        return "[\(kind)]"
+        return ""
     }
 
     private static func makeTitle(
@@ -330,6 +366,48 @@ enum WhatsAppLocalSyncService {
         if isFromMe { return "→ \(chatLabel)" }
         if isGroup, let sender = pushName { return "\(chatLabel): \(sender)" }
         return chatLabel
+    }
+
+    /// Resolve a WhatsApp Desktop voice-note path on disk and read it as a
+    /// base64-encoded attachment. Returns nil for missing files (WhatsApp
+    /// Desktop downloads media on-demand — a row without a played-back voice
+    /// note has no file at the path), oversized files, or read errors. Any
+    /// failure is silent: voice-note ingest is best-effort and never blocks
+    /// the sync's text-message ingest.
+    private static func readAudioAttachment(relativePath: String?) -> WorkerStreamAttachment? {
+        guard let relativePath, !relativePath.isEmpty else { return nil }
+        let fm = FileManager.default
+        let absoluteURL = mediaBaseURL().appendingPathComponent(relativePath)
+        guard fm.fileExists(atPath: absoluteURL.path) else { return nil }
+        let attrs = try? fm.attributesOfItem(atPath: absoluteURL.path)
+        let size = (attrs?[.size] as? NSNumber)?.intValue ?? 0
+        if size <= 0 || size > maxAudioAttachmentBytes { return nil }
+        guard let data = try? Data(contentsOf: absoluteURL) else { return nil }
+        let filename = absoluteURL.lastPathComponent
+        let mime = mimeTypeForExtension(absoluteURL.pathExtension.lowercased())
+        return WorkerStreamAttachment(
+            kind: "audio",
+            filename: filename,
+            mime_type: mime,
+            data: data.base64EncodedString(),
+            size_bytes: size,
+            duration_ms: nil
+        )
+    }
+
+    private static func mimeTypeForExtension(_ ext: String) -> String {
+        // WhatsApp voice notes ship as Opus in an OGG container (.opus or
+        // .ogg). Other audio attachments may be m4a or wav. Fall back to
+        // application/octet-stream so the gateway still stores them.
+        switch ext {
+        case "opus": return "audio/opus"
+        case "ogg": return "audio/ogg"
+        case "m4a": return "audio/m4a"
+        case "mp4": return "audio/mp4"
+        case "mp3": return "audio/mpeg"
+        case "wav": return "audio/wav"
+        default: return "application/octet-stream"
+        }
     }
 
     private static func extractPhoneFromJID(_ jid: String) -> String? {

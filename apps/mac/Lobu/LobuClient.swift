@@ -141,6 +141,38 @@ struct WorkerStreamItem: Encodable {
     let occurred_at: String
     let semantic_type: String
     let metadata: [String: AnyEncodable]
+    let attachments: [WorkerStreamAttachment]?
+
+    init(
+        id: String,
+        title: String?,
+        payload_text: String,
+        occurred_at: String,
+        semantic_type: String,
+        metadata: [String: AnyEncodable],
+        attachments: [WorkerStreamAttachment]? = nil
+    ) {
+        self.id = id
+        self.title = title
+        self.payload_text = payload_text
+        self.occurred_at = occurred_at
+        self.semantic_type = semantic_type
+        self.metadata = metadata
+        self.attachments = attachments
+    }
+}
+
+/// Connector-emitted file blob. The gateway side decodes `data` (base64) into
+/// the ArtifactStore and replaces the bytes with `{artifact_id, download_url}`
+/// before the row hits `events.attachments`. Audio attachments additionally
+/// trigger background transcription via TranscriptionService.
+struct WorkerStreamAttachment: Encodable {
+    let kind: String
+    let filename: String
+    let mime_type: String
+    let data: String
+    let size_bytes: Int
+    let duration_ms: Int?
 }
 
 struct AnyEncodable: Encodable {

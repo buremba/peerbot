@@ -27,6 +27,10 @@ import { applyEntityLinks } from './utils/entity-link-upsert';
 import { errorMessage } from './utils/errors';
 import { validateConnectorEventSemanticType } from './utils/event-kind-validation';
 import { mergeExecutionConfig, resolveExecutionAuth } from './utils/execution-context';
+import {
+  materializeInlineAttachments,
+  triggerAudioTranscriptions,
+} from './utils/inline-attachments';
 import { insertEvent } from './utils/insert-event';
 import logger from './utils/logger';
 import { getWorkspaceRole } from './utils/organization-access';
@@ -561,6 +565,15 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
     const run = runRows[0];
     const entityIds = parsePgNumberArray(run.entity_ids);
 
+    // Connector-emitted inline attachments (e.g. whatsapp.local voice notes)
+    // come over the wire as base64 in `attachment.data`. Materialize each into
+    // the ArtifactStore before the row hits events.attachments — the events
+    // table is not a binary store. Audio attachments are queued for async
+    // transcription after insert.
+    const { items: materializedItems, pendingTranscriptions } =
+      await materializeInlineAttachments(batch.items);
+    batch.items = materializedItems as typeof batch.items;
+
     // Auto-create dimension entities declared via eventKinds[kind].entityLinks
     // before inserting events. One query per (entityType, matchField) per
     // batch — cheap compared to the per-event inserts that follow.
@@ -662,6 +675,10 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
         throw err;
       }
     }
+
+    // Kick off background transcription for any audio attachments
+    // materialized above. Runs detached — never blocks the stream-batch ack.
+    triggerAudioTranscriptions(run.organization_id, pendingTranscriptions);
 
     // Update feed + run checkpoint if provided (so mid-run state like QR codes
     // surface in UI via recent_runs[0].checkpoint before the run completes).

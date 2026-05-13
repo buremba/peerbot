@@ -197,7 +197,7 @@ function getClaudeOAuthRuntime() {
 
 routes.use('*', mcpAuth);
 
-routes.use('*', (c, next) => {
+routes.use('*', async (c, next) => {
   const orgId = c.get('organizationId');
   if (!orgId) return c.json({ error: 'Organization required' }, 401);
   return orgContext.run({ organizationId: orgId }, next);

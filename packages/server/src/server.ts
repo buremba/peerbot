@@ -43,11 +43,6 @@ import { getEnvFromProcess } from './utils/env';
 import logger from './utils/logger';
 import { initWorkspaceProvider } from './workspace';
 
-// Crash loud at boot if the runtime image is missing any connector external
-// dep, instead of letting every feed silently fail with "Missing npm
-// dependency: X" hours later.
-assertExternalDepsResolvable(createRequire(import.meta.url).resolve);
-
 // Create a wrapper app that injects environment into each request
 const app = new Hono<{ Bindings: Env }>();
 
@@ -65,11 +60,12 @@ if (!process.env.LOBU_DEV_PROJECT_PATH) {
   process.env.LOBU_DEV_PROJECT_PATH = PACKAGE_REPO_ROOT;
 }
 
-// Inject environment variables into Hono context
+// Inject environment variables into Hono context. The snapshot is immutable
+// post-boot and callers only read it, so assign it by reference instead of
+// spreading it onto a fresh `c.env` object on every request.
 const env = getEnvFromProcess();
 app.use('*', async (c, next) => {
-  // Set environment variables on the context
-  Object.assign(c.env, env);
+  c.env = env as Env;
   return next();
 });
 
@@ -158,6 +154,16 @@ async function main() {
 
   httpServer.listen(port, host, () => {
     logger.info({ host, port }, `Server running at http://${host}:${port}`);
+    // Crash loud if the runtime image is missing any connector external dep,
+    // instead of letting every feed silently fail with "Missing npm
+    // dependency: X" hours later. Run this after listen() so the synchronous
+    // require.resolve walk doesn't add to cold-boot/readiness latency.
+    try {
+      assertExternalDepsResolvable(createRequire(import.meta.url).resolve);
+    } catch (err) {
+      logger.error({ err }, 'Connector external dependency check failed');
+      process.exit(1);
+    }
   });
 }
 

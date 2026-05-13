@@ -163,8 +163,10 @@ describe('maybeOpenOrAppendRepairThread', () => {
 
     expect(services.createThreadForAgent).not.toHaveBeenCalled();
     expect(services.enqueueAgentMessage).not.toHaveBeenCalled();
-    // Both queued queries should have been consumed: state load + recent runs.
-    expect(remaining()).toBe(0);
+    // `loadRecentRuns` is now fetched lazily — only the feed-state load runs
+    // when the cheap Branch-2 gates (here: cooldown) reject the failure, so
+    // the queued `FROM runs` query stays unconsumed.
+    expect(remaining()).toBe(1);
   });
 
   it('skips when threshold not yet met', async () => {

@@ -124,10 +124,10 @@ class SentryTransport extends winston.transports.Stream {
               tags: {
                 service: info.service,
               },
-              extra: {
-                ...info,
-                message: info.message,
-              },
+              // Pass `info` directly — Sentry copies it internally; spreading
+              // it here forced a shallow clone (+ serialize) of arbitrarily
+              // large log metadata on every prod error.
+              extra: info,
             });
           } else {
             // Send as message if no Error object

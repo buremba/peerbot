@@ -248,17 +248,29 @@ export async function maybeOpenOrAppendRepairThread(
   // doesn't get consumed before the first real failure.
   if (state.consecutive_failures <= 0) return;
 
-  const recentRuns = await loadRecentRuns(sql, feedId, 10);
-  // The completed run we were called for is the canonical signature source —
-  // not whichever run happens to be at the top of recentRuns. Out-of-order
-  // worker completions (later run finishes before an earlier one) would
-  // otherwise attach the wrong run's diagnostics. If the runId we were
-  // called for isn't yet visible in the recent runs (DB read raced the
-  // INSERT), skip silently — the next failure cron will pick it up.
-  const completedRun = recentRuns.find((r) => r.id === runId) ?? null;
+  // `loadRecentRuns` is the heaviest query in this function (10 rows incl.
+  // text blobs); the Branch-2 cheap gates below reject the vast majority of
+  // failures, so fetch it lazily — Branch 1 needs it immediately, Branch 2
+  // only after its gates pass.
+  let recentRunsCache: DiagnosticRunRow[] | undefined;
+  const getRecentRuns = async (): Promise<DiagnosticRunRow[]> => {
+    if (recentRunsCache === undefined) {
+      recentRunsCache = await loadRecentRuns(sql, feedId, 10);
+    }
+    return recentRunsCache;
+  };
 
   // Branch 1: Thread already open — consider appending.
   if (state.repair_thread_id) {
+    const recentRuns = await getRecentRuns();
+    // The completed run we were called for is the canonical signature source —
+    // not whichever run happens to be at the top of recentRuns. Out-of-order
+    // worker completions (later run finishes before an earlier one) would
+    // otherwise attach the wrong run's diagnostics. If the runId we were
+    // called for isn't yet visible in the recent runs (DB read raced the
+    // INSERT), skip silently — the next failure cron will pick it up.
+    const completedRun = recentRuns.find((r) => r.id === runId) ?? null;
+
     if (!completedRun) {
       logger.debug(
         { feed_id: feedId, run_id: runId },
@@ -415,6 +427,8 @@ export async function maybeOpenOrAppendRepairThread(
     logger.debug({ feed_id: feedId }, '[repair-agent] another worker won the open — skipping');
     return;
   }
+
+  const recentRuns = await getRecentRuns();
 
   try {
     await services.createThreadForAgent(

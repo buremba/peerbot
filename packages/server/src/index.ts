@@ -971,7 +971,6 @@ app.patch('/api/:orgSlug/organization/visibility', mcpAuth, async (c) => {
   invalidateOrgSlugCache(org.slug);
   invalidationEmitter.emit(org.id, {
     keys: ['organizations', 'resolve-path'],
-    resource: { type: 'organization', id: org.id },
   });
 
   return c.json({ organization: { ...org, is_member: true } });
@@ -1102,9 +1101,17 @@ app.post('/api/:orgSlug/:toolName', mcpAuth, async (c) => {
  * OpenAPI spec endpoint for ChatGPT
  * Dynamically generated from tool registry schemas
  */
+// The tool registry is static after boot, so the generated spec only depends
+// on the request origin (a tiny set in practice). Memoize per origin to turn
+// this polled endpoint into a Map lookup instead of an O(tools × schema) walk.
+const openApiSpecCache = new Map<string, object>();
 app.get('/openapi.json', (c) => {
   const serverUrl = new URL(c.req.url).origin;
-  const spec = generateOpenAPISpec(serverUrl);
+  let spec = openApiSpecCache.get(serverUrl);
+  if (!spec) {
+    spec = generateOpenAPISpec(serverUrl);
+    openApiSpecCache.set(serverUrl, spec);
+  }
   return c.json(spec);
 });
 

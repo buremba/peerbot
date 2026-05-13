@@ -6,7 +6,7 @@
  */
 
 import type { Checkpoint, Content, Env } from '@lobu/connector-sdk';
-import { generateEmbedding } from '../embeddings.js';
+import { batchGenerateEmbeddings, generateEmbedding } from '../embeddings.js';
 import {
   executeCompiledConnector,
   getActionOutput,
@@ -524,20 +524,27 @@ async function executeEmbedBackfillRun(
       return { itemsCollected: 0 };
     }
 
-    // Generate embeddings for each event
+    // Generate embeddings in batch — backfill runs are explicitly the
+    // "lots of events" path, so batch through the service / vectorized local
+    // pass instead of one round-trip per event.
+    const pending = events
+      .map((event) => ({
+        event_id: event.id,
+        text: [event.title, event.content].filter(Boolean).join(' ').trim(),
+      }))
+      .filter((p) => p.text.length > 0);
+
     const results: Array<{ event_id: number; embedding: number[] }> = [];
-    for (const event of events) {
-      try {
-        const textForEmbedding = [event.title, event.content].filter(Boolean).join(' ').trim();
-        if (textForEmbedding) {
-          const embedding = await generateEmbedding(textForEmbedding);
-          if (embedding) {
-            results.push({ event_id: event.id, embedding });
-          }
+    try {
+      const embeddings = await batchGenerateEmbeddings(pending.map((p) => p.text));
+      for (let i = 0; i < pending.length; i++) {
+        const embedding = embeddings[i];
+        if (embedding) {
+          results.push({ event_id: pending[i]!.event_id, embedding });
         }
-      } catch (err) {
-        console.error(`[executor] Embedding failed for event ${event.id}:`, err);
       }
+    } catch (err) {
+      console.error(`[executor] Batch embedding failed for run ${run_id}:`, err);
     }
 
     // Submit embeddings back to the API

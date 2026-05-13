@@ -776,17 +776,20 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
       `;
 
       // Repair-agent trigger: open / append / close threads based on the
-      // updated streak state. All errors swallowed inside the helper — must
-      // never block the worker-completion path.
+      // updated streak state. Fire-and-forget — all errors are swallowed
+      // inside the helper, the inner UPDATEs use atomic claims so concurrent
+      // invocations are safe, and the worker-completion ACK should not wait on
+      // repair-thread bookkeeping. (If the process dies mid-check the next
+      // failure re-triggers it.)
       if (isSuccess) {
-        await maybeCloseRepairThread(feedId, req.run_id).catch((err) => {
+        void maybeCloseRepairThread(feedId, req.run_id).catch((err) => {
           logger.warn(
             { feed_id: feedId, error: errorMessage(err) },
             '[completeWorkerJob] maybeCloseRepairThread threw'
           );
         });
       } else {
-        await maybeOpenOrAppendRepairThread(feedId, req.run_id).catch((err) => {
+        void maybeOpenOrAppendRepairThread(feedId, req.run_id).catch((err) => {
           logger.warn(
             { feed_id: feedId, error: errorMessage(err) },
             '[completeWorkerJob] maybeOpenOrAppendRepairThread threw'

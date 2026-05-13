@@ -255,14 +255,14 @@ export class HttpWorkerTransport implements WorkerTransport {
 
     await retryWithBackoff(
       async () => {
+        // Don't `JSON.stringify(payload)` just to truncate it for a log line —
+        // that's a full serialize-then-discard on the per-delta hot path
+        // (and platformMetadata can be large). Log the identifying fields only.
         logger.info(
-          `[WORKER-HTTP] Sending to ${responseUrl}: ${JSON.stringify(payload).substring(0, 500)}`
+          `[WORKER-HTTP] Sending to ${responseUrl}: messageId=${payload.messageId ?? ""}${
+            payload.delta ? ` deltaLength=${payload.delta.length}` : ""
+          }${payload.statusUpdate ? " statusUpdate" : ""}${payload.customEvent ? ` customEvent=${payload.customEvent.name}` : ""}`
         );
-        if (payload.delta) {
-          logger.info(
-            `[WORKER-HTTP] Stream delta payload: deltaLength=${payload.delta?.length}`
-          );
-        }
 
         const response = await fetch(responseUrl, {
           method: "POST",

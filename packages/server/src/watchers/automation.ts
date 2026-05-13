@@ -277,6 +277,29 @@ export async function reconcileWatcherRuns(db?: DbClient): Promise<ReconcileWatc
     reconciled++;
   }
 
+  // Find the (small) set of active watcher runs awaiting a dispatched
+  // message. If there are none — the common steady state — skip the heavy
+  // `chat_message` scan entirely instead of materializing every completed
+  // thread-response run ever.
+  const pendingDispatchRows = await sql`
+    SELECT DISTINCT r.dispatched_message_id
+    FROM runs r
+    WHERE r.run_type = 'watcher'
+      AND r.status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
+      AND r.dispatched_message_id IS NOT NULL
+    LIMIT 200
+  `;
+  const pendingDispatchIds = pendingDispatchRows
+    .map((row) => (row as { dispatched_message_id?: unknown }).dispatched_message_id)
+    .filter((value): value is string => typeof value === 'string' && value.length > 0);
+
+  if (pendingDispatchIds.length === 0) {
+    return { reconciled };
+  }
+
+  // Drive the containment join from the small side (the pending dispatch ids)
+  // and bound the `chat_message` scan to recent completions — anything older
+  // is already handled by `sweepStaleWatcherRuns`.
   const terminalRows = await sql`
     WITH response_payloads AS (
       SELECT
@@ -289,6 +312,7 @@ export async function reconcileWatcherRuns(db?: DbClient): Promise<ReconcileWatc
         AND queue_name = 'thread_response'
         AND status = 'completed'
         AND action_input IS NOT NULL
+        AND completed_at > now() - interval '2 hours'
     )
     SELECT DISTINCT r.dispatched_message_id
     FROM runs r
@@ -297,7 +321,7 @@ export async function reconcileWatcherRuns(db?: DbClient): Promise<ReconcileWatc
      AND rp.payload->'processedMessageIds' ? r.dispatched_message_id
     WHERE r.run_type = 'watcher'
       AND r.status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
-      AND r.dispatched_message_id IS NOT NULL
+      AND r.dispatched_message_id = ANY(${pendingDispatchIds})
     ORDER BY r.dispatched_message_id ASC
     LIMIT 100
   `;

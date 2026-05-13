@@ -122,6 +122,17 @@ function isRedactedSecretValue(value: unknown): value is string {
 function decryptLegacyEncryptedConfig(
   config: Record<string, any>
 ): Record<string, any> {
+  // Fast path (the common case): new writes never produce `enc:v1:` values,
+  // so don't clone the object unless there's actually something to decrypt.
+  let hasEncrypted = false;
+  for (const value of Object.values(config)) {
+    if (typeof value === 'string' && value.startsWith(ENC_PREFIX)) {
+      hasEncrypted = true;
+      break;
+    }
+  }
+  if (!hasEncrypted) return config;
+
   const result = { ...config };
   for (const [key, value] of Object.entries(result)) {
     if (typeof value === 'string' && value.startsWith(ENC_PREFIX)) {

@@ -1328,15 +1328,28 @@ const plugin = {
       // Hard-bound the recall round-trip so it can never blow OpenClaw's hook
       // budget: abort the in-flight MCP fetch at RECALL_TIMEOUT_MS and degrade
       // to "no recall" no matter what is still pending (token command, network).
+      //
+      // OpenClaw fires both `before_prompt_build` and `before_agent_start` for
+      // a turn (often back-to-back with the same prompt text). Memoize the last
+      // (query → recallBlock) so the second event is a free cache hit instead
+      // of a second `search_memory` round-trip.
+      let lastRecallQuery: string | null = null;
+      let lastRecallBlock = '';
       const doRecall = async (query: string): Promise<string> => {
         if (!config.autoRecall || !hasAuthConfigured(config)) {
           return '';
         }
-        return runWithAbortDeadline(
+        if (query === lastRecallQuery) {
+          return lastRecallBlock;
+        }
+        const block = await runWithAbortDeadline(
           (signal) => recallOnce(query, signal),
           RECALL_TIMEOUT_MS,
           ''
         );
+        lastRecallQuery = query;
+        lastRecallBlock = block;
+        return block;
       };
       const buildPrependContext = (recallBlock: string) => ({
         prependContext: getSystemContext() + (recallBlock ? '\n' + recallBlock : ''),

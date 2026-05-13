@@ -42,7 +42,9 @@ interface NotificationRow {
  * Fetches active connections and their default targets from Lobu's internal API,
  * then sends via /api/v1/messaging/send with platform-specific routing.
  */
-async function deliverToBotConnections(params: CreateNotificationParams): Promise<void> {
+async function deliverToBotConnections(
+  params: Omit<CreateNotificationParams, 'userId'>
+): Promise<void> {
   if (!isLobuGatewayRunning()) return;
 
   const port = process.env.PORT || '8787';
@@ -76,37 +78,41 @@ async function deliverToBotConnections(params: CreateNotificationParams): Promis
     if (params.connectionId) {
       connections = connections.filter((c) => c.id === params.connectionId);
     }
+    if (connections.length === 0) return;
 
-    for (const conn of connections) {
-      const target = targetMap.get(conn.platform);
-      // Platform-specific routing
-      const routing: Record<string, unknown> = {};
-      if (conn.platform === 'telegram' && target) {
-        routing.telegram = { chatId: target };
-      } else if (conn.platform === 'slack' && target) {
-        routing.slack = { channel: target };
-      }
+    // Mint the service token once per org (it's org-scoped, not per-connection).
+    const token = await getLobuServiceToken(params.organizationId);
 
-      const token = await getLobuServiceToken(params.organizationId);
-      await fetch(`${lobuBaseUrl}/api/v1/messaging/send`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({
-          agentId: conn.agentId,
-          message: text,
-          platform: conn.platform,
-          ...routing,
-        }),
-      }).catch((err) =>
-        logger.warn(
-          { err, connectionId: conn.id },
-          '[Notifications] Failed to send via Lobu connection'
-        )
-      );
-    }
+    await Promise.allSettled(
+      connections.map((conn) => {
+        const target = targetMap.get(conn.platform);
+        // Platform-specific routing
+        const routing: Record<string, unknown> = {};
+        if (conn.platform === 'telegram' && target) {
+          routing.telegram = { chatId: target };
+        } else if (conn.platform === 'slack' && target) {
+          routing.slack = { channel: target };
+        }
+        return fetch(`${lobuBaseUrl}/api/v1/messaging/send`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify({
+            agentId: conn.agentId,
+            message: text,
+            platform: conn.platform,
+            ...routing,
+          }),
+        }).catch((err) =>
+          logger.warn(
+            { err, connectionId: conn.id },
+            '[Notifications] Failed to send via Lobu connection'
+          )
+        );
+      })
+    );
   } catch (err) {
     logger.warn({ err }, '[Notifications] Failed to deliver to embedded Lobu');
   }
@@ -154,12 +160,14 @@ export async function createNotificationForUsers(
     )
   `;
 
-  // Deliver to bot connections (fire-and-forget) for each user
-  for (const uid of userIds) {
-    deliverToBotConnections({ ...params, userId: uid }).catch((err) =>
-      logger.warn({ err }, '[Notifications] Failed to deliver to bot connections')
-    );
-  }
+  // Deliver to bot connections (fire-and-forget). The bot delivery targets
+  // the org's connection default channels and is identical for every user in
+  // this call, so fan it out once — not once per user (which previously
+  // re-fetched connections/targets, re-minted the service token, and posted
+  // N duplicate messages to the same channel).
+  deliverToBotConnections(params).catch((err) =>
+    logger.warn({ err }, '[Notifications] Failed to deliver to bot connections')
+  );
 }
 
 export async function listNotifications(opts: {

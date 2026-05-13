@@ -7,7 +7,11 @@ export const TOKEN_EXPIRATION_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Creates a Hono middleware that enforces the standard auth check:
- *   1. Settings session cookie  2. External OAuth  3. Worker token
+ *   1. Settings session cookie  2. Worker token (local)  3. External OAuth
+ *
+ * The worker-token check is local + cheap, so it runs before the remote OIDC
+ * userinfo fetch — a valid worker token never needs to round-trip to the
+ * identity provider.
  */
 export function createApiAuthMiddleware(opts: {
   externalAuthClient?: ExternalAuthClient;
@@ -24,17 +28,7 @@ export function createApiAuthMiddleware(opts: {
     }
     const token = authHeader.substring(7);
 
-    // 2. Try external OAuth token (validated against MEMORY_URL userinfo)
-    if (opts.externalAuthClient) {
-      try {
-        const userInfo = await opts.externalAuthClient.fetchUserInfo(token);
-        if (userInfo?.sub) return next();
-      } catch {
-        // Token not valid for external auth, continue to next method
-      }
-    }
-
-    // 3. Try worker token when explicitly allowed for the route
+    // 2. Try worker token when explicitly allowed for the route (local check).
     if (opts.allowWorkerToken !== false) {
       const workerData = verifyWorkerToken(token);
       if (workerData) {
@@ -42,6 +36,16 @@ export function createApiAuthMiddleware(opts: {
         if (tokenAge <= TOKEN_EXPIRATION_MS) {
           return next();
         }
+      }
+    }
+
+    // 3. Try external OAuth token (validated against MEMORY_URL userinfo).
+    if (opts.externalAuthClient) {
+      try {
+        const userInfo = await opts.externalAuthClient.fetchUserInfo(token);
+        if (userInfo?.sub) return next();
+      } catch {
+        // Token not valid for external auth, continue to next method
       }
     }
 

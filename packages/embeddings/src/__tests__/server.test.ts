@@ -12,9 +12,13 @@ mock.module('@hono/node-server', () => ({
 
 // Mock @xenova/transformers so importing ../embeddings (transitively from server)
 // does not try to download a real model or pull native ONNX bindings.
-const fakeExtractor = mock(async (_text: string, _opts: unknown) => ({
-  data: new Float32Array(768).fill(0.001),
-}));
+// Mirrors the real pipeline contract: a string input → [768] tensor, an array
+// of N inputs → flat [N*768] tensor with `dims = [N, 768]`.
+const fakeExtractor = mock(async (input: string | string[], _opts: unknown) => {
+  const n = Array.isArray(input) ? input.length : 1;
+  const data = new Float32Array(768 * n).fill(0.001);
+  return Array.isArray(input) ? { data, dims: [n, 768] } : { data };
+});
 mock.module('@xenova/transformers', () => ({
   pipeline: mock(async () => fakeExtractor),
   env: { cacheDir: '', backends: { onnx: { wasm: { numThreads: 1 } } } },

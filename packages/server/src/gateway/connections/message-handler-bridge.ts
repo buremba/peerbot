@@ -4,12 +4,7 @@
  * settings links, allowlist, audio transcription, etc.
  */
 
-import {
-  createLogger,
-  createRootSpan,
-  flushTracing,
-  generateTraceId,
-} from "@lobu/core";
+import { createLogger, createRootSpan, generateTraceId } from "@lobu/core";
 import { previewUnlinkedNotice } from "../../preview/slack.js";
 import type { CommandDispatcher } from "../commands/command-dispatcher.js";
 import { createChatReply } from "../commands/command-reply-adapters.js";
@@ -583,7 +578,6 @@ export class MessageHandlerBridge {
       }
     } finally {
       rootSpan?.end();
-      void flushTracing();
     }
   }
 
@@ -741,7 +735,6 @@ export class MessageHandlerBridge {
       }
     } finally {
       rootSpan?.end();
-      void flushTracing();
     }
   }
 }

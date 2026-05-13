@@ -1588,11 +1588,13 @@ Use it when the user references past discussions or you need context.`);
 
     try {
       const files = await fs.readdir(outputDir);
-      for (const file of files) {
-        await fs.unlink(path.join(outputDir, file)).catch(() => {
-          /* intentionally empty */
-        });
-      }
+      await Promise.all(
+        files.map((file) =>
+          fs.unlink(path.join(outputDir, file)).catch(() => {
+            /* intentionally empty */
+          })
+        )
+      );
     } catch (error) {
       logger.debug("Could not clear output directory:", error);
     }

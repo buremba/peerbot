@@ -68,17 +68,31 @@ export async function batchGenerateLocalEmbeddings(
 
   for (let i = 0; i < texts.length; i += batchSize) {
     const batch = texts.slice(i, i + batchSize);
-    const batchOutputs = await Promise.all(
-      batch.map((text) =>
-        extractor(text, {
-          pooling: 'cls',
-          normalize: true,
-        })
-      )
-    );
+    // Pass the whole batch as an array — transformers.js runs a single padded,
+    // vectorized ONNX forward pass instead of N separate ones (the WASM backend
+    // is single-threaded, so the old `Promise.all` over per-text calls executed
+    // serially with full per-call tokenization/tensor-alloc overhead).
+    const output = await extractor(batch, {
+      pooling: 'cls',
+      normalize: true,
+    });
 
-    const batchEmbeddings = batchOutputs.map((output) => Array.from(output.data) as number[]);
-    results.push(...batchEmbeddings);
+    // CLS-pooled + L2-normalized output is [batchSize, dim]; slice the flat
+    // Float32Array into per-row vectors. Prefer the tensor's reported dims;
+    // fall back to dividing the flat length by the batch size.
+    const flat = output.data as Float32Array | number[];
+    const dims = (output as { dims?: number[] }).dims;
+    const dim =
+      dims && dims.length >= 2
+        ? dims[dims.length - 1]!
+        : batch.length > 0
+          ? flat.length / batch.length
+          : 0;
+    for (let row = 0; row < batch.length; row++) {
+      results.push(
+        Array.from(flat.slice(row * dim, (row + 1) * dim)) as number[]
+      );
+    }
   }
 
   return results;

@@ -75,6 +75,49 @@ export function sanitizeConversationId(conversationId: string): string {
  * // }
  * ```
  */
+// Compiled once: substring-matches the default sensitive key names (case-insensitive).
+// Equivalent to `.some(k => lowerKey.includes(k))` over the old array, but a single
+// regex test per key instead of an N-way array scan.
+const DEFAULT_SENSITIVE_KEY_RE =
+  /(anthropic_api_key|api_?key|token|password|secret|authorization|bearer|credentials|private_?key)/i;
+
+const MAX_SANITIZE_DEPTH = 8;
+
+function isSensitiveKey(
+  lowerKey: string,
+  additionalLowered: readonly string[]
+): boolean {
+  if (DEFAULT_SENSITIVE_KEY_RE.test(lowerKey)) return true;
+  for (const k of additionalLowered) {
+    if (lowerKey.includes(k)) return true;
+  }
+  return false;
+}
+
+function sanitizeInner(
+  obj: any,
+  additionalLowered: readonly string[],
+  depth: number
+): any {
+  if (!obj || typeof obj !== "object") return obj;
+  if (depth >= MAX_SANITIZE_DEPTH) return obj;
+
+  const sanitized = Array.isArray(obj) ? [...obj] : { ...obj };
+
+  for (const key in sanitized) {
+    const value = sanitized[key];
+    if (typeof value === "string") {
+      if (isSensitiveKey(key.toLowerCase(), additionalLowered)) {
+        sanitized[key] = `[REDACTED:${value.length}]`;
+      }
+    } else if (value && typeof value === "object") {
+      sanitized[key] = sanitizeInner(value, additionalLowered, depth + 1);
+    }
+  }
+
+  return sanitized;
+}
+
 export function sanitizeForLogging(
   obj: any,
   additionalSensitiveKeys: string[] = []
@@ -82,48 +125,8 @@ export function sanitizeForLogging(
   if (!obj || typeof obj !== "object") {
     return obj;
   }
-
-  const defaultSensitiveKeys = [
-    "anthropic_api_key",
-    "api_key",
-    "apiKey",
-    "token",
-    "password",
-    "secret",
-    "authorization",
-    "bearer",
-    "credentials",
-    "privateKey",
-    "private_key",
-  ];
-
-  const sensitiveKeys = [...defaultSensitiveKeys, ...additionalSensitiveKeys];
-
-  const sanitized = Array.isArray(obj) ? [...obj] : { ...obj };
-
-  for (const key in sanitized) {
-    const lowerKey = key.toLowerCase();
-    const isSensitive = sensitiveKeys.some((k) => lowerKey.includes(k));
-
-    if (isSensitive && typeof sanitized[key] === "string") {
-      // Redact but show length for debugging
-      sanitized[key] = `[REDACTED:${sanitized[key].length}]`;
-    } else if (key === "env" && typeof sanitized[key] === "object") {
-      // Recursively sanitize env object
-      sanitized[key] = sanitizeForLogging(
-        sanitized[key],
-        additionalSensitiveKeys
-      );
-    } else if (typeof sanitized[key] === "object") {
-      // Recursively sanitize nested objects
-      sanitized[key] = sanitizeForLogging(
-        sanitized[key],
-        additionalSensitiveKeys
-      );
-    }
-  }
-
-  return sanitized;
+  const additionalLowered = additionalSensitiveKeys.map((k) => k.toLowerCase());
+  return sanitizeInner(obj, additionalLowered, 0);
 }
 
 /**

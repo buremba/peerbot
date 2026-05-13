@@ -8,7 +8,13 @@ const IV_LENGTH = 12; // 96-bit nonce for AES-GCM
  * IMPORTANT: The ENCRYPTION_KEY must be exactly 32 bytes (256 bits) for AES-256.
  * Generate a secure key using: `openssl rand -base64 32` or `openssl rand -hex 32`
  */
+// The encryption key is immutable for the lifetime of the process; derive it
+// once and reuse the buffer instead of re-parsing the env var on every
+// encrypt/decrypt call (these run on per-request / per-worker-RPC hot paths).
+let cachedKey: Buffer | undefined;
+
 function getEncryptionKey(): Buffer {
+  if (cachedKey) return cachedKey;
   const key = process.env.ENCRYPTION_KEY || "";
   if (!key) {
     throw new Error(
@@ -21,6 +27,7 @@ function getEncryptionKey(): Buffer {
   // discards non-base64 chars — so we only need a length check here.
   const base64Buffer = Buffer.from(key, "base64");
   if (base64Buffer.length === 32) {
+    cachedKey = base64Buffer;
     return base64Buffer;
   }
 
@@ -28,6 +35,7 @@ function getEncryptionKey(): Buffer {
   if (/^[0-9a-fA-F]{64}$/.test(key)) {
     const hexBuffer = Buffer.from(key, "hex");
     if (hexBuffer.length === 32) {
+      cachedKey = hexBuffer;
       return hexBuffer;
     }
   }
@@ -70,4 +78,9 @@ export function decrypt(text: string): string {
     decipher.final(),
   ]);
   return decrypted.toString("utf8");
+}
+
+/** Test-only: clear the memoized encryption key (e.g. after mutating ENCRYPTION_KEY). */
+export function __resetEncryptionKeyCacheForTests(): void {
+  cachedKey = undefined;
 }

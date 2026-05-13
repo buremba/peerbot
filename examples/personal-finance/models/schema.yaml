@@ -1159,6 +1159,7 @@ relationships:
           description: Which leg this row represents — outbound (debit on source) or inbound (credit on destination)
 watchers:
   - slug: gmail-tx
+    agent: personal-finance
     name: Gmail financial-event extractor
     schedule: '*/30 * * * *'
     prompt: |

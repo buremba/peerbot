@@ -108,6 +108,7 @@ relationships:
     description: Let agents trace reporting outputs back to the supporting data.
 watchers:
   - slug: reconciliation-monitor
+    agent: finance
     name: Reconciliation monitor
     schedule: 0 6 * * 1-5
     prompt: |

@@ -111,6 +111,7 @@ relationships:
     description: Keep legal risk linked to the clause or term that caused it.
 watchers:
   - slug: contract-review-tracker
+    agent: legal-review
     name: Contract review tracker
     schedule: 0 8 * * 1-5
     prompt: |

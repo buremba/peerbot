@@ -131,6 +131,7 @@ relationships:
     description: Link the internal team or customer function to the pilot they own.
 watchers:
   - slug: account-health-monitor
+    agent: sales
     name: Account health monitor
     schedule: 0 */12 * * *
     prompt: |

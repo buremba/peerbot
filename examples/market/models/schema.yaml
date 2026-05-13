@@ -531,6 +531,7 @@ relationships:
         matchStrategy: unique_only
 watchers:
   - slug: founder-activity-tracker
+    agent: vc-tracking
     name: Founder Activity Tracker
     schedule: 0 10 * * *
     prompt: |
@@ -643,6 +644,7 @@ watchers:
       Track founders going quiet as a potential concern.
       Alert on any public statements about competitors or market conditions.
   - slug: opportunity-matcher
+    agent: vc-tracking
     name: Opportunity Matcher
     schedule: 0 */12 * * *
     prompt: |

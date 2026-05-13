@@ -190,6 +190,7 @@ models = "./models"
       `version: 2
 watchers:
   - slug: weekly-digest
+    agent: triage
     name: Weekly digest
     description: A short weekly summary.
     schedule: "0 9 * * 1"
@@ -210,6 +211,7 @@ watchers:
     expect(state.watchers).toHaveLength(1);
     const w = state.watchers[0]!;
     expect(w.slug).toBe("weekly-digest");
+    expect(w.agent).toBe("triage");
     expect(w.name).toBe("Weekly digest");
     expect(w.description).toBe("A short weekly summary.");
     expect(w.schedule).toBe("0 9 * * 1");
@@ -260,6 +262,7 @@ relationships:
         target: product
 watchers:
   - slug: account-digest
+    agent: triage
     name: Account digest
     schedule: "0 9 * * 1"
     prompt: Summarize account changes.

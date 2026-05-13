@@ -104,6 +104,8 @@ export interface DesiredRelationshipType {
 
 export interface DesiredWatcher {
   slug: string;
+  /** Owning agent id. Every watcher belongs to exactly one agent. */
+  agent: string;
   name?: string;
   description?: string;
   schedule?: string;
@@ -739,11 +741,17 @@ function parseWatcher(raw: unknown): DesiredWatcher {
       `watcher "${raw.slug}" is missing a "prompt" string`
     );
   }
+  if (typeof raw.agent !== "string" || !raw.agent.trim()) {
+    throw new ValidationError(
+      `watcher "${raw.slug}" is missing an "agent" field — every watcher must name the agent that owns it (e.g. \`agent: my-agent\`, matching an \`[agents.<id>]\` block in lobu.toml)`
+    );
+  }
   const extractionSchema = isRecord(raw.extraction_schema)
     ? raw.extraction_schema
     : {};
   const out: DesiredWatcher = {
     slug: raw.slug,
+    agent: raw.agent,
     prompt: raw.prompt,
     extractionSchema,
   };
@@ -905,7 +913,7 @@ async function rejectUnsupportedAgentShapes(cwd: string): Promise<void> {
     const watchers = (agentConfig as Record<string, unknown>).watchers;
     if (Array.isArray(watchers) && watchers.length > 0) {
       throw new ValidationError(
-        `agent "${agentId}" declares [[agents.${agentId}.watchers]] — \`lobu apply\` syncs watchers from YAML files under \`[memory].models\`, not from lobu.toml. Move the watcher to a model file or use \`lobu memory seed\`.`
+        `agent "${agentId}" declares [[agents.${agentId}.watchers]] in lobu.toml — watchers live in a \`[memory].models\` YAML bundle (the same file as your entity types), each with an \`agent: ${agentId}\` field pointing back here. Move the watcher there.`
       );
     }
   }
@@ -1645,6 +1653,14 @@ export async function loadDesiredState(
     config,
     opts.cwd
   );
+
+  for (const watcher of watchers) {
+    if (!config.agents[watcher.agent]) {
+      throw new ValidationError(
+        `watcher "${watcher.slug}" names agent "${watcher.agent}", but there is no \`[agents.${watcher.agent}]\` block in lobu.toml`
+      );
+    }
+  }
 
   const connectors = opts.only
     ? { definitions: [], authProfiles: [], connections: [] }

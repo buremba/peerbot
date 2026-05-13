@@ -107,6 +107,7 @@ relationships:
     description: Keep project ownership queryable across updates and artifacts.
 watchers:
   - slug: phoenix-rollout-tracker
+    agent: delivery
     name: Phoenix rollout tracker
     schedule: 0 9 * * 1
     prompt: |

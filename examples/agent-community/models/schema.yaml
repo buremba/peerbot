@@ -86,6 +86,7 @@ relationships:
     description: Capture blog posts, newsletters, and public writing so matching includes current thinking, not just static bios.
 watchers:
   - slug: opportunity-matcher
+    agent: agent-community
     name: Opportunity matcher
     schedule: 0 */12 * * *
     prompt: |

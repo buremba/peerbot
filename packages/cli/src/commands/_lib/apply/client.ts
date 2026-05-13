@@ -489,13 +489,14 @@ export class ApplyClient {
   }
 
   /**
-   * Create an org-scoped (entity-less) watcher. `extraction_schema` is sent as
-   * a JSON object — the `manage_watchers` tool accepts `Type.Any()` there and
+   * Create a watcher owned by `agentId`. `extraction_schema` is sent as a JSON
+   * object — the `manage_watchers` tool accepts `Type.Any()` there and
    * normalizes string-or-object internally. Duplicate-slug surfaces as a
    * structured error the caller swallows for idempotency.
    */
   async createWatcher(payload: {
     slug: string;
+    agentId: string;
     name?: string;
     description?: string;
     prompt: string;
@@ -506,6 +507,7 @@ export class ApplyClient {
     await this.request("POST", `/api/${this.orgSlug}/manage_watchers`, {
       action: "create",
       slug: payload.slug,
+      agent_id: payload.agentId,
       ...(payload.name ? { name: payload.name } : {}),
       ...(payload.description ? { description: payload.description } : {}),
       prompt: payload.prompt,

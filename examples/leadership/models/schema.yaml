@@ -131,6 +131,7 @@ relationships:
     description: Attach blocked decisions to the dependency that is holding them up.
 watchers:
   - slug: board-action-tracker
+    agent: leadership
     name: Board action tracker
     schedule: 0 8 * * *
     prompt: |

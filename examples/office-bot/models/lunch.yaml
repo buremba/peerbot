@@ -56,6 +56,7 @@ entities:
 
 watchers:
   - slug: lunch-open
+    agent: food-ordering
     name: Open the lunch run
     # Workdays 11:00 Europe/London — post the lunch call and open the thread.
     schedule: "0 11 * * 1-5"
@@ -89,6 +90,7 @@ watchers:
           type: string
 
   - slug: lunch-finalize
+    agent: food-ordering
     name: Collect orders and hand off
     # Workdays 11:35 Europe/London — read the thread, post options/collect orders,
     # build the Deliveroo basket, post the summary, hand off to a human.

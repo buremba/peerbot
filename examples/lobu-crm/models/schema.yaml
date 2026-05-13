@@ -108,6 +108,7 @@ relationships:
     description: Links a lead to the pilot it became, so the path from first signal to paying pilot stays explicit.
 watchers:
   - slug: funnel-digest
+    agent: crm
     name: Weekly funnel digest
     schedule: 0 9 * * 1
     prompt: |
@@ -169,6 +170,7 @@ watchers:
         conversations_this_week:
           type: integer
   - slug: inbound-triage
+    agent: crm
     name: Inbound triage
     schedule: 0 8-22/2 * * *
     prompt: |

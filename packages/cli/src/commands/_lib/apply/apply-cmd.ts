@@ -615,6 +615,7 @@ async function executePlan(
     const w = row.desired;
     await ctx.client.createWatcher({
       slug: w.slug,
+      agentId: w.agent,
       name: w.name,
       description: w.description,
       prompt: w.prompt,

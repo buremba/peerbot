@@ -59,6 +59,7 @@ describe("ApplyClient", () => {
 
     await client.createWatcher({
       slug: "digest",
+      agentId: "triage",
       name: "Digest",
       prompt: "Produce a digest.",
       extraction_schema: { type: "object" },
@@ -71,6 +72,7 @@ describe("ApplyClient", () => {
     expect(body).toEqual({
       action: "create",
       slug: "digest",
+      agent_id: "triage",
       name: "Digest",
       prompt: "Produce a digest.",
       extraction_schema: { type: "object" },

@@ -108,6 +108,7 @@ relationships:
     description: Track which plans and products each customer subscribes to.
 watchers:
   - slug: customer-activity-tracker
+    agent: ecommerce-ops
     name: Customer activity tracker
     schedule: 0 */6 * * *
     prompt: |

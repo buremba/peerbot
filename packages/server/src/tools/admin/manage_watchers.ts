@@ -964,14 +964,6 @@ async function handleCreate(
     );
   }
 
-  // Validate schedule if provided
-  if (args.schedule) {
-    const scheduleError = validateSchedule(args.schedule);
-    if (scheduleError) {
-      return { error: scheduleError } as any;
-    }
-  }
-
   const watcherId = await getNextNumericId(sql, 'watchers');
   const versionId = await getNextWatcherVersionId(sql);
   const createdBy = ctx.userId ?? 'system';
@@ -2524,13 +2516,17 @@ async function handleGetVersions(args: ManageWatchersArgs): Promise<{
   }
 
   const watcherRows = await sql`
-    SELECT id, name, slug, current_version_id FROM watchers WHERE id = ${args.watcher_id}
+    SELECT id, name, slug, current_version_id, watcher_group_id FROM watchers WHERE id = ${args.watcher_id}
   `;
   if (watcherRows.length === 0) {
     throw new Error(`Watcher ${args.watcher_id} not found`);
   }
 
   const currentVersionId = watcherRows[0].current_version_id;
+  // Version rows live on the group root (watcher_group_id), not on each
+  // assignment — see handleCreateVersion. Resolve the root so get_versions
+  // works for assignments created via create_from_version.
+  const groupId = Number(watcherRows[0].watcher_group_id ?? watcherRows[0].id);
 
   const versionRows = await sql`
     SELECT
@@ -2542,7 +2538,7 @@ async function handleGetVersions(args: ManageWatchersArgs): Promise<{
       v.created_by,
       v.change_notes
     FROM watcher_versions v
-    WHERE v.watcher_id = ${args.watcher_id}
+    WHERE v.watcher_id = ${groupId}
     ORDER BY v.version DESC
   `;
 

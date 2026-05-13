@@ -88,12 +88,10 @@ export class MessageBatcher {
         await this.onBatchReady(messagesToProcess);
       }
 
-      // If more messages arrived during processing, start new batch
+      // If more messages arrived during processing, start new batch.
+      // `batchTimer` is always null here — it was cleared at the top of
+      // processBatch() and addMessage() can't set it while isProcessing.
       if (this.messageQueue.length > 0) {
-        if (this.batchTimer) {
-          clearTimeout(this.batchTimer);
-          this.batchTimer = null;
-        }
         logger.info(
           `Starting new batch window for ${this.messageQueue.length} queued messages`
         );

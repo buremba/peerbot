@@ -11,7 +11,6 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { renderFallbackSystemContext } from './lobu-guidance.js';
-import { registerMemoryWikiCompatTools } from './memory-wiki-compat.js';
 import type {
   McpToolDefinition,
   McpToolResponse,
@@ -271,35 +270,6 @@ function asPositiveInt(value: unknown, fallback: number): number {
   return n > 0 ? n : fallback;
 }
 
-const DEFAULT_WIKI_FANOUT_TIMEOUT_MS = 30_000;
-const MIN_WIKI_FANOUT_TIMEOUT_MS = 1_000;
-const MAX_WIKI_FANOUT_TIMEOUT_MS = 90_000;
-
-function clampFanoutTimeoutMs(value: unknown): number {
-  if (typeof value !== 'number' || !Number.isFinite(value)) {
-    return DEFAULT_WIKI_FANOUT_TIMEOUT_MS;
-  }
-  if (value < MIN_WIKI_FANOUT_TIMEOUT_MS) return MIN_WIKI_FANOUT_TIMEOUT_MS;
-  if (value > MAX_WIKI_FANOUT_TIMEOUT_MS) return MAX_WIKI_FANOUT_TIMEOUT_MS;
-  return Math.floor(value);
-}
-
-function resolveMemoryWikiCompatConfig(value: unknown): {
-  enabled: boolean;
-  fanoutTimeoutMs: number;
-} {
-  if (typeof value === 'boolean') {
-    return { enabled: value, fanoutTimeoutMs: DEFAULT_WIKI_FANOUT_TIMEOUT_MS };
-  }
-  if (isRecord(value)) {
-    return {
-      enabled: asBoolean(value.enabled, false),
-      fanoutTimeoutMs: clampFanoutTimeoutMs(value.fanoutTimeoutMs),
-    };
-  }
-  return { enabled: false, fanoutTimeoutMs: DEFAULT_WIKI_FANOUT_TIMEOUT_MS };
-}
-
 function getLogger(api: Record<string, unknown>): PluginLogger {
   const logger = api.logger;
   if (
@@ -381,7 +351,6 @@ function resolvePluginConfig(api: Record<string, unknown>, pluginId: string): Re
     autoRecall: asBoolean(cfg.autoRecall, true),
     autoCapture: asBoolean(cfg.autoCapture, true),
     recallLimit: asPositiveInt(cfg.recallLimit, DEFAULT_RECALL_LIMIT),
-    memoryWikiCompat: resolveMemoryWikiCompatConfig(cfg.memoryWikiCompat),
   };
 }
 
@@ -1308,10 +1277,6 @@ const plugin = {
     // In gateway mode, tools are already registered above.
     if (registerTool && config.mcpUrl && !config.gatewayAuthUrl && hasAuthConfigured(config)) {
       registerMcpTools(config, registerTool, log);
-    }
-
-    if (registerTool && config.memoryWikiCompat.enabled) {
-      registerMemoryWikiCompatTools(config, registerTool, log, callMcpTool);
     }
 
     // Inject workspace instructions (dynamic from server) or fallback (static).

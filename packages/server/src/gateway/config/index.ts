@@ -14,7 +14,6 @@ import {
   getRequiredEnv,
   TIME,
 } from "@lobu/core";
-import { config as dotenvConfig } from "dotenv";
 import type { OrchestratorConfig } from "../orchestration/base-deployment-manager.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -54,11 +53,6 @@ const GATEWAY_DEFAULTS = {
 const DEFAULTS = {
   ...CORE_DEFAULTS,
   ...GATEWAY_DEFAULTS,
-} as const;
-
-const DISPLAY = {
-  SEPARATOR_LENGTH: 50,
-  TOKEN_PREVIEW_LENGTH: 10,
 } as const;
 
 /** Recursively makes all properties optional */
@@ -136,33 +130,6 @@ export interface GatewayConfig {
     staleThresholdMs: number;
     protectActiveWorkers: boolean;
   };
-}
-
-export function loadEnvFile(envPath?: string): void {
-  if (process.env.NODE_ENV === "production") {
-    logger.debug("Production mode - skipping .env file");
-    return;
-  }
-
-  const envProvided = Boolean(envPath);
-  const resolvedPath = envProvided
-    ? path.resolve(process.cwd(), envPath!)
-    : path.resolve(process.cwd(), ".env");
-
-  if (existsSync(resolvedPath)) {
-    // .env is the single source of truth for dev. `override: true` so
-    // values in the file win over stale shell exports inherited from the
-    // user's environment. Production (`NODE_ENV=production`) skips this
-    // path entirely, so real deployments are unaffected.
-    dotenvConfig({ path: resolvedPath, override: true });
-    logger.debug(`Loaded environment variables from ${resolvedPath}`);
-  } else if (envProvided) {
-    logger.warn(
-      `Specified env file ${resolvedPath} was not found; continuing without it.`
-    );
-  } else {
-    logger.debug("No .env file found; relying on process environment.");
-  }
 }
 
 /**
@@ -520,36 +487,3 @@ export function buildGatewayConfig(
   return config;
 }
 
-/**
- * Display gateway configuration (platform-agnostic parts only)
- * Platform-specific display should be handled by platform modules
- */
-export function displayGatewayConfig(config: GatewayConfig): void {
-  const separator = "=".repeat(DISPLAY.SEPARATOR_LENGTH);
-
-  console.log("Gateway Configuration:");
-  console.log(separator);
-
-  console.log("\nQueues:");
-  console.log(`  Retry Limit: ${config.queues.retryLimit}`);
-  console.log(`  Retry Delay: ${config.queues.retryDelay}s`);
-
-  console.log("\nMCP:");
-  console.log(
-    `  Public Gateway: ${config.mcp.publicGatewayUrl || "(not set)"}`
-  );
-
-  console.log("\nOrchestration:");
-  console.log(
-    `  Max Deployments: ${config.orchestration.worker.maxDeployments}`
-  );
-
-  console.log("\nHealth:");
-  console.log(`  Socket Check Interval: ${config.health.checkIntervalMs}ms`);
-  console.log(`  Socket Stale Threshold: ${config.health.staleThresholdMs}ms`);
-  console.log(
-    `  Protect Active Workers: ${config.health.protectActiveWorkers}`
-  );
-
-  console.log(`\n${separator}`);
-}

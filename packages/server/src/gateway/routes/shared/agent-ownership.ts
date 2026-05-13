@@ -13,24 +13,16 @@ interface AgentOwnershipResult {
   ownerUserId?: string;
 }
 
-// Platforms whose user IDs come from an OAuth provider (so the session's
-// `oauthUserId` is the canonical lookup key). All other platforms hand us a
-// deterministic user ID directly (e.g. Telegram's claim-code flow), so
-// `session.userId` is authoritative. Add an entry here if you wire up a new
-// OAuth-based platform.
-const OAUTH_PLATFORMS: ReadonlySet<string> = new Set();
-
+// `external` sessions carry an OAuth-provider user ID, so prefer that as the
+// canonical lookup key; every other platform hands us a deterministic user ID
+// directly (e.g. Telegram's claim-code flow), so `session.userId` is
+// authoritative.
 export function resolveSettingsLookupUserId(
   session: SettingsTokenPayload
 ): string {
-  if (session.platform === "external") {
-    return session.oauthUserId || session.userId;
-  }
-
-  const isDeterministic = !OAUTH_PLATFORMS.has(session.platform);
-  return isDeterministic
-    ? session.userId
-    : session.oauthUserId || session.userId;
+  return session.platform === "external"
+    ? session.oauthUserId || session.userId
+    : session.userId;
 }
 
 function sessionMatchesMetadataOwner(
@@ -103,5 +95,22 @@ export async function verifyOwnedAgentAccess(
     authorized: true,
     ownerPlatform: metadata.owner.platform,
     ownerUserId: metadata.owner.userId,
+  };
+}
+
+/**
+ * Create a token verifier function scoped to a given config.
+ *
+ * The returned async function accepts a decoded settings token payload and an
+ * agentId, then returns the payload if the caller is authorised, or null.
+ */
+export function createTokenVerifier(config: AgentOwnershipConfig) {
+  return async (
+    payload: SettingsTokenPayload | null,
+    agentId: string
+  ): Promise<SettingsTokenPayload | null> => {
+    if (!payload) return null;
+    const result = await verifyOwnedAgentAccess(payload, agentId, config);
+    return result.authorized ? payload : null;
   };
 }

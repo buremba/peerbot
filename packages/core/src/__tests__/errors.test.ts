@@ -4,8 +4,6 @@ import {
   ConfigError,
   ErrorCode,
   OrchestratorError,
-  PlatformError,
-  SessionError,
   WorkerError,
   WorkspaceError,
 } from "../errors";
@@ -103,46 +101,6 @@ describe("WorkspaceError", () => {
     expect(err.name).toBe("WorkspaceError");
     expect(err.operation).toBe("write");
     expect(err).toBeInstanceOf(BaseError);
-  });
-});
-
-describe("PlatformError", () => {
-  test("stores platform and operation", () => {
-    const err = new PlatformError("slack", "send", "rate limited");
-    expect(err.name).toBe("PlatformError");
-    expect(err.platform).toBe("slack");
-    expect(err.operation).toBe("send");
-    expect(err.message).toBe("rate limited");
-  });
-
-  test("toJSON includes platform alongside base fields", () => {
-    const cause = new Error("429");
-    const err = new PlatformError("slack", "send", "rate limited", cause);
-    const json = err.toJSON();
-    expect(json.platform).toBe("slack");
-    expect(json.name).toBe("PlatformError");
-    expect(json.message).toBe("rate limited");
-    expect(json.operation).toBe("send");
-    expect(json.cause).toBe("429");
-  });
-});
-
-describe("SessionError", () => {
-  test("stores sessionKey and code", () => {
-    const err = new SessionError("sess-1", "EXPIRED", "session expired");
-    expect(err.name).toBe("SessionError");
-    expect(err.sessionKey).toBe("sess-1");
-    expect(err.code).toBe("EXPIRED");
-    expect(err.message).toBe("session expired");
-  });
-
-  test("toJSON includes sessionKey and code", () => {
-    const err = new SessionError("sess-1", "EXPIRED", "session expired");
-    const json = err.toJSON();
-    expect(json.sessionKey).toBe("sess-1");
-    expect(json.code).toBe("EXPIRED");
-    expect(json.name).toBe("SessionError");
-    expect(json.message).toBe("session expired");
   });
 });
 

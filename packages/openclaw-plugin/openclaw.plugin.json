@@ -14,14 +14,7 @@
       "lobu_search_sdk",
       "lobu_query_sdk",
       "lobu_query_sql",
-      "lobu_run_sdk",
-      "wiki_status",
-      "wiki_search",
-      "wiki_get",
-      "wiki_apply",
-      "wiki_lint",
-      "memory_search",
-      "memory_get"
+      "lobu_run_sdk"
     ]
   },
   "configSchema": {
@@ -67,30 +60,6 @@
         "type": "boolean",
         "default": true,
         "description": "When true, captures conversation observations as long-term memories after each agent session."
-      },
-      "memoryWikiCompat": {
-        "description": "Spike/compat mode: register OpenClaw memory-wiki style tools (wiki_status, wiki_search, wiki_get, wiki_apply, wiki_lint) backed by existing Lobu MCP tools. Does not write a separate wiki vault.",
-        "oneOf": [
-          { "type": "boolean" },
-          {
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-              "enabled": {
-                "type": "boolean",
-                "default": false
-              },
-              "fanoutTimeoutMs": {
-                "type": "integer",
-                "minimum": 1000,
-                "maximum": 90000,
-                "default": 30000,
-                "description": "Per-fanout timeout (ms) for SDK-backed wiki calls. Slow paths are dropped and the tool returns partial results with a degraded marker. Defaults to 30000."
-              }
-            }
-          }
-        ],
-        "default": false
       }
     }
   },

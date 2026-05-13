@@ -1,5 +1,3 @@
-import type { TObject } from '@sinclair/typebox';
-
 /**
  * Checkpoint data structure for tracking feed sync state
  */
@@ -38,12 +36,6 @@ export interface FeedSyncResult {
   auth_update?: Record<string, any>;
 }
 
-export interface ParentFeedDefinition {
-  type: string;
-  options: FeedOptions;
-  description?: string;
-}
-
 /**
  * Extracted content from platform
  */
@@ -71,16 +63,6 @@ export interface Content {
   // Engagement fields: score, upvotes, downvotes, rating, helpful_count, reply_count, likes, views, retweets, replies, comments
   // Platform fields: post_id, parent_id, etc.
   metadata?: Record<string, any>;
-}
-
-/**
- * Search result from platform search
- */
-export interface SearchResult {
-  url: string; // Link to the resource (company page, app listing, etc.)
-  title: string; // Name or title of the result
-  description: string; // Brief description of the result
-  metadata?: Record<string, any>; // Structured config data (e.g., { subreddit: "spotify", content_type: "posts", requires_parent: "posts" })
 }
 
 /**
@@ -175,152 +157,3 @@ export interface Env {
  */
 export type SessionState = Record<string, any>;
 
-/**
- * Auth field definition for connector environment keys
- */
-export interface FeedAuthEnvField {
-  key: string;
-  label?: string;
-  description?: string;
-  example?: string;
-  secret?: boolean;
-}
-
-export interface FeedAuthNoneMethod {
-  type: 'none';
-}
-
-export interface FeedAuthEnvKeysMethod {
-  type: 'env_keys';
-  required?: boolean;
-  scope?: 'connection' | 'organization';
-  fields: FeedAuthEnvField[];
-  description?: string;
-}
-
-export interface FeedAuthOAuthMethod {
-  type: 'oauth';
-  provider: string;
-  requiredScopes: string[];
-  optionalScopes?: string[];
-  required?: boolean;
-  scope?: 'connection' | 'organization';
-  description?: string;
-  authorizationUrl?: string;
-  tokenUrl?: string;
-  userinfoUrl?: string;
-  authParams?: Record<string, string>;
-  tokenEndpointAuthMethod?: 'client_secret_post' | 'client_secret_basic' | 'none';
-  usePkce?: boolean;
-  loginScopes?: string[];
-  clientIdKey?: string;
-  clientSecretKey?: string;
-  setupInstructions?: string;
-  loginProvisioning?: {
-    autoCreateConnection?: boolean;
-  };
-}
-
-export interface FeedAuthBrowserMethod {
-  type: 'browser';
-  required?: boolean;
-  description?: string;
-  capture?: 'cli';
-}
-
-export type FeedAuthMethod =
-  | FeedAuthNoneMethod
-  | FeedAuthEnvKeysMethod
-  | FeedAuthOAuthMethod
-  | FeedAuthBrowserMethod;
-
-export interface FeedAuthSchema {
-  methods: FeedAuthMethod[];
-}
-
-/**
- * Main feed interface
- */
-export interface IFeed {
-  /**
-   * Unique identifier for this feed type
-   */
-  readonly type: string;
-
-  /**
-   * Human-readable display name for this feed
-   */
-  readonly displayName: string;
-
-  /**
-   * API type: 'api' for HTTP/REST APIs, 'browser' for browser rendering
-   */
-  readonly apiType: 'api' | 'browser';
-
-  /**
-   * Feed mode: 'entity' for platforms with specific pages (repos, subreddits, companies)
-   * or 'search' for query-based platforms (Hacker News, Twitter search)
-   */
-  readonly feedMode: 'entity' | 'search';
-
-  /**
-   * TypeBox schema for validating feed options
-   */
-  readonly optionsSchema: TObject;
-
-  /**
-   * Default SQL formula to calculate normalized score (0-100)
-   * Can reference: f.score, f.content_length, f.metadata, f.occurred_at
-   * Can use window functions like PERCENT_RANK()
-   * User can override this per-connection via connections.scoring_formula
-   */
-  readonly defaultScoringFormula: string;
-
-  /**
-   * Pull new content from platform
-   */
-  pull(
-    options: FeedOptions,
-    checkpoint: Checkpoint | null,
-    env: Env,
-    sessionState?: SessionState | null,
-    updateCheckpointFn?: (checkpoint: Checkpoint) => Promise<void>
-  ): Promise<FeedSyncResult>;
-
-  /**
-   * Validate feed options before saving to database
-   */
-  validateOptions(options: FeedOptions): string | null;
-
-  /**
-   * Get rate limit information for this platform
-   */
-  getRateLimit(): {
-    requests_per_minute: number;
-    requests_per_hour?: number;
-    recommended_interval_ms: number;
-  };
-
-  /**
-   * Search platform for entities
-   * Optional method - not all platforms may support search
-   */
-  search?(searchTerm: string, env: Env): Promise<SearchResult[]>;
-
-  /**
-   * Generate a URL for the connection from options
-   */
-  urlFromOptions(options: FeedOptions): string;
-
-  /**
-   * Generate a human-readable display label from options
-   */
-  displayLabelFromOptions(options: FeedOptions): string;
-
-  /**
-   * Return parent feed definitions required to preserve hierarchy.
-   */
-  getParentFeedDefinitions(options: FeedOptions): ParentFeedDefinition[];
-
-  readonly authSchema?: FeedAuthSchema;
-}

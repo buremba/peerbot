@@ -7,7 +7,11 @@
  */
 
 import type { Env } from "../../index";
+import { deleteContent } from "../../tools/delete_content";
+import { getContent } from "../../tools/get_content";
 import type { ToolContext } from "../../tools/registry";
+import { saveContent } from "../../tools/save_content";
+import { search } from "../../tools/search";
 
 export interface KnowledgeSearchInput {
   query?: string;
@@ -61,20 +65,16 @@ export function buildKnowledgeNamespace(
   env: Env
 ): KnowledgeNamespace {
   return {
-    async search(input) {
-      const { search } = await import("../../tools/search");
+    search(input) {
       return search(input as never, env, ctx) as Promise<unknown>;
     },
-    async save(input) {
-      const { saveContent } = await import("../../tools/save_content");
+    save(input) {
       return saveContent(input as never, env, ctx) as Promise<unknown>;
     },
-    async read(input) {
-      const { getContent } = await import("../../tools/get_content");
+    read(input) {
       return getContent(input as never, env, ctx) as Promise<unknown>;
     },
-    async delete(input) {
-      const { deleteContent } = await import("../../tools/delete_content");
+    delete(input) {
       const args =
         typeof input === "number" ? { event_id: input } : input ?? {};
       return deleteContent(args as never, env, ctx) as Promise<unknown>;

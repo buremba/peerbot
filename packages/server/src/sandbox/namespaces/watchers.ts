@@ -13,6 +13,7 @@ import {
   manageWatchers,
   type ManageWatchersArgs,
 } from "../../tools/admin/manage_watchers";
+import { getWatcher } from "../../tools/get_watchers";
 import type { ToolContext } from "../../tools/registry";
 import { createActionCaller } from "./action-call";
 
@@ -171,8 +172,7 @@ export function buildWatchersNamespace(
   return {
     manage: (input) => manage(input as Record<string, unknown>),
     list: (filter) => listWatchers((filter ?? {}) as never, env, ctx) as Promise<unknown>,
-    async get(watcher_id) {
-      const { getWatcher } = await import("../../tools/get_watchers");
+    get(watcher_id) {
       return getWatcher(
         { watcher_id: asWatcherIdString(watcher_id) } as never,
         env,

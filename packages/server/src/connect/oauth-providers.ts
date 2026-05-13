@@ -18,6 +18,19 @@ interface OAuthProviderConfig {
   tokenEndpointAuthMethod?: OAuthTokenEndpointAuthMethod;
 }
 
+/**
+ * `OAuthProviderConfig` with the endpoint URLs optional. Each consumer needs
+ * only one of authorize / token / userinfo, so the resolver returns whatever it
+ * could resolve and the caller null-checks the field it actually uses.
+ */
+type ResolvedProviderConfig = Omit<
+  OAuthProviderConfig,
+  'authorizationUrl' | 'tokenUrl'
+> & {
+  authorizationUrl?: string;
+  tokenUrl?: string;
+};
+
 const providers: Record<string, OAuthProviderConfig> = {
   google: {
     authorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
@@ -67,7 +80,7 @@ function resolveProviderConfig(params: {
   userinfoUrl?: string;
   authParams?: Record<string, string>;
   tokenEndpointAuthMethod?: OAuthTokenEndpointAuthMethod;
-}): OAuthProviderConfig | null {
+}): ResolvedProviderConfig {
   const builtIn = providers[params.provider] ?? null;
 
   const authorizationUrl = params.authorizationUrl ?? builtIn?.authorizationUrl;
@@ -80,11 +93,9 @@ function resolveProviderConfig(params: {
   const tokenEndpointAuthMethod =
     params.tokenEndpointAuthMethod ?? builtIn?.tokenEndpointAuthMethod ?? 'client_secret_post';
 
-  if (!authorizationUrl || !tokenUrl) return null;
-
   return {
-    authorizationUrl,
-    tokenUrl,
+    ...(authorizationUrl ? { authorizationUrl } : {}),
+    ...(tokenUrl ? { tokenUrl } : {}),
     ...(userinfoUrl ? { userinfoUrl } : {}),
     ...(Object.keys(authParams).length > 0 ? { authParams } : {}),
     tokenEndpointAuthMethod,
@@ -108,9 +119,8 @@ export function buildAuthorizationUrl(params: {
     provider: params.provider,
     authorizationUrl: params.authorizationUrl,
     authParams: params.authParams,
-    tokenUrl: 'https://example.invalid/token',
   });
-  if (!config) return null;
+  if (!config.authorizationUrl) return null;
 
   const url = new URL(config.authorizationUrl);
   url.searchParams.set('client_id', params.clientId);
@@ -160,9 +170,8 @@ export async function exchangeCodeForTokens(params: {
     provider: params.provider,
     tokenUrl: params.tokenUrl,
     tokenEndpointAuthMethod: params.tokenEndpointAuthMethod,
-    authorizationUrl: 'https://example.invalid/authorize',
   });
-  if (!config) return null;
+  if (!config.tokenUrl) return null;
 
   const authMethod = config.tokenEndpointAuthMethod ?? 'client_secret_post';
 
@@ -259,10 +268,8 @@ async function fetchRawUserInfo(params: {
   const config = resolveProviderConfig({
     provider: params.provider,
     userinfoUrl: params.userinfoUrl,
-    authorizationUrl: 'https://example.invalid/authorize',
-    tokenUrl: 'https://example.invalid/token',
   });
-  if (!config?.userinfoUrl) return null;
+  if (!config.userinfoUrl) return null;
 
   try {
     const headers: Record<string, string> = {

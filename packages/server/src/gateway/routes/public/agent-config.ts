@@ -33,7 +33,7 @@ import {
 } from "../../modules/module-system.js";
 import type { GrantStore } from "../../permissions/grant-store.js";
 import { errorResponse } from "../shared/helpers.js";
-import { createTokenVerifier } from "../shared/token-verifier.js";
+import { createTokenVerifier } from "../shared/agent-ownership.js";
 import { verifySettingsSessionOrToken } from "./settings-auth.js";
 
 const TAG = "Configuration";

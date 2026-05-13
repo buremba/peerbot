@@ -7,6 +7,7 @@ import type {
   UserSuggestion,
 } from "@lobu/core";
 import type { AgentMetadataStore } from "./auth/agent-metadata-store.js";
+import type { McpConfigService } from "./auth/mcp/config-service.js";
 import type { McpProxy } from "./auth/mcp/proxy.js";
 import type { ProviderOAuthStateStore } from "./auth/oauth/state-store.js";
 import type { AgentSettingsStore } from "./auth/settings/agent-settings-store.js";
@@ -47,6 +48,7 @@ export interface CoreServices {
   getSecretStore(): WritableSecretStore;
   getWorkerGateway(): WorkerGateway | undefined;
   getMcpProxy(): McpProxy | undefined;
+  getMcpConfigService(): McpConfigService | undefined;
   getModelPreferenceStore(): ModelPreferenceStore | undefined;
   getOAuthStateStore(): ProviderOAuthStateStore | undefined;
   getPublicGatewayUrl(): string;

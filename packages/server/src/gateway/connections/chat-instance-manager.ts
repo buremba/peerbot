@@ -585,11 +585,11 @@ export class ChatInstanceManager {
         commandDispatcher
       );
       registerSlackPlatformHandlers(chat, connection, commandDispatcher);
-      registerSlackAppHome(
-        chat,
-        connection,
-        this.services.getMcpConfigService()
-      );
+      registerSlackAppHome(chat, connection, {
+        mcpConfigService: this.services.getMcpConfigService(),
+        secretStore: this.services.getSecretStore(),
+        publicGatewayUrl: this.publicGatewayUrl,
+      });
 
       chat.registerSingleton();
 

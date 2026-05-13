@@ -245,9 +245,10 @@ export async function storeCredentialForScope(
 /**
  * Delete a stored MCP device-auth credential (logout). Removes the secret
  * row directly so no orphaned tokens linger for the remainder of the 90-day
- * TTL.
+ * TTL. `userId` is the credential scope key — the chat user id for per-user
+ * scope, `channel-<id>` for channel scope.
  */
-async function deleteCredential(
+export async function deleteCredential(
   secretStore: WritableSecretStore,
   agentId: string,
   userId: string,

@@ -1,5 +1,11 @@
 import { createLogger } from "@lobu/core";
 import type { McpConfigService } from "../auth/mcp/config-service.js";
+import { startAuthCodeFlow } from "../auth/mcp/oauth-flow.js";
+import {
+  deleteCredential,
+  getStoredCredential,
+} from "../routes/internal/device-auth.js";
+import type { WritableSecretStore } from "../secrets/index.js";
 import { createChatReply } from "../commands/command-reply-adapters.js";
 import type { CommandDispatcher } from "../commands/command-dispatcher.js";
 import type { PlatformConnection } from "./types.js";
@@ -10,6 +16,9 @@ const DEFAULT_SLACK_COMMAND = "/lobu";
 const DEFAULT_SLACK_TEAM_JOIN_WELCOME =
   "Mention me in a channel or send me a DM to start a thread. Use `/lobu help` to see the built-in commands.";
 const DEFAULT_SLACK_APP_NAME = "Lobu";
+
+const HOME_ACTION_CONNECT = "lobu_home_connect";
+const HOME_ACTION_DISCONNECT = "lobu_home_disconnect";
 
 type SlackSlashEvent = {
   text?: string;
@@ -117,15 +126,34 @@ export function registerSlackPlatformHandlers(
   });
 }
 
+/** Adapter surface used by the home tab — `publishHomeView` lives on the Slack adapter. */
+type SlackHomeAdapter = {
+  publishHomeView?: (
+    userId: string,
+    view: Record<string, unknown>
+  ) => Promise<void>;
+};
+
 type SlackAppHomeEvent = {
   userId: string;
-  adapter?: {
-    publishHomeView?: (
-      userId: string,
-      view: Record<string, unknown>
-    ) => Promise<void>;
-  };
+  adapter?: SlackHomeAdapter;
 };
+
+type SlackActionEvent = {
+  actionId: string;
+  value?: string;
+  user: { userId: string };
+  adapter?: SlackHomeAdapter;
+  raw?: unknown;
+};
+
+/** Dependencies the App Home tab needs to render status and run OAuth. */
+export interface SlackAppHomeDeps {
+  mcpConfigService?: McpConfigService;
+  secretStore?: WritableSecretStore;
+  /** Public origin of the gateway — used to build the OAuth redirect URI. */
+  publicGatewayUrl?: string;
+}
 
 // Internal plumbing MCPs (e.g. the Lobu memory backend) — not user integrations.
 const HIDDEN_HOME_INTEGRATION_IDS = new Set(["lobu-memory"]);
@@ -136,38 +164,85 @@ function humanizeIntegrationName(id: string): string {
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-async function buildIntegrationsBlock(
-  agentId: string,
-  mcpConfigService: McpConfigService
-): Promise<Record<string, unknown> | null> {
-  const statuses = (await mcpConfigService.getMcpStatus(agentId)).filter(
-    (s) => !HIDDEN_HOME_INTEGRATION_IDS.has(s.id)
-  );
-  if (statuses.length === 0) {
+function teamIdFromRawPayload(raw: unknown): string | undefined {
+  const team = (raw as { team?: { id?: unknown } } | undefined)?.team?.id;
+  return typeof team === "string" ? team : undefined;
+}
+
+type IntegrationStatus = {
+  id: string;
+  name: string;
+  requiresAuth: boolean;
+  connected: boolean;
+};
+
+function integrationSection(
+  status: IntegrationStatus,
+  pendingAuthUrl?: string
+): Record<string, unknown> {
+  if (!status.requiresAuth) {
+    return {
+      type: "section",
+      text: { type: "mrkdwn", text: `:white_circle: *${status.name}*` },
+    };
+  }
+  if (status.connected) {
     return {
       type: "section",
       text: {
         type: "mrkdwn",
-        text: "*Integrations*\n_No integrations connected yet._",
+        text: `:white_check_mark: *${status.name}*  ·  connected`,
+      },
+      accessory: {
+        type: "button",
+        text: { type: "plain_text", text: "Disconnect" },
+        action_id: HOME_ACTION_DISCONNECT,
+        value: status.id,
+        style: "danger",
       },
     };
   }
-  const lines = statuses
-    .map((s) => {
-      const name = humanizeIntegrationName(s.name || s.id);
-      return s.requiresAuth ? `• ${name} — sign-in required` : `• ${name}`;
-    })
-    .join("\n");
+  if (pendingAuthUrl) {
+    return {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: `:hourglass_flowing_sand: *${status.name}*  ·  finish signing in`,
+      },
+      accessory: {
+        type: "button",
+        text: { type: "plain_text", text: "Open sign-in ↗" },
+        url: pendingAuthUrl,
+      },
+    };
+  }
   return {
     type: "section",
-    text: { type: "mrkdwn", text: `*Integrations you can use*\n${lines}` },
+    text: {
+      type: "mrkdwn",
+      text: `:white_circle: *${status.name}*  ·  not connected`,
+    },
+    accessory: {
+      type: "button",
+      text: { type: "plain_text", text: "Connect" },
+      action_id: HOME_ACTION_CONNECT,
+      value: status.id,
+      style: "primary",
+    },
   };
 }
 
-async function buildSlackHomeBlocks(
-  connection: PlatformConnection,
-  mcpConfigService?: McpConfigService
-): Promise<unknown[]> {
+interface HomeViewParams {
+  connection: PlatformConnection;
+  deps: SlackAppHomeDeps;
+  /** Slack user the home tab is being rendered for (credential scope key). */
+  userId: string;
+  /** MCP ids → freshly-minted authorization URL, shown as an "Open sign-in" link. */
+  pendingAuthUrls?: Record<string, string>;
+}
+
+async function buildSlackHomeBlocks(params: HomeViewParams): Promise<unknown[]> {
+  const { connection, deps, userId, pendingAuthUrls } = params;
   const botName =
     (typeof connection.metadata?.botUsername === "string" &&
       connection.metadata.botUsername) ||
@@ -185,15 +260,31 @@ async function buildSlackHomeBlocks(
     { type: "divider" },
   ];
 
-  if (!isPreview && connection.agentId && mcpConfigService) {
+  if (!isPreview && connection.agentId && deps.mcpConfigService) {
     try {
-      const integrationsBlock = await buildIntegrationsBlock(
+      const statuses = await loadIntegrationStatusesScoped(
         connection.agentId,
-        mcpConfigService
+        userId,
+        deps
       );
-      if (integrationsBlock) {
-        blocks.push(integrationsBlock, { type: "divider" });
+      blocks.push({
+        type: "header",
+        text: { type: "plain_text", text: "Integrations" },
+      });
+      if (statuses.length === 0) {
+        blocks.push({
+          type: "section",
+          text: {
+            type: "mrkdwn",
+            text: "_No integrations connected yet._",
+          },
+        });
+      } else {
+        for (const status of statuses) {
+          blocks.push(integrationSection(status, pendingAuthUrls?.[status.id]));
+        }
       }
+      blocks.push({ type: "divider" });
     } catch (error) {
       logger.warn(
         { error, agentId: connection.agentId },
@@ -208,44 +299,182 @@ async function buildSlackHomeBlocks(
       type: "mrkdwn",
       text: isPreview
         ? "This is a *preview* workspace. Run `lobu run`, then use `/lobu link <code>` in a channel to connect your own agent."
-        : "*Tips*\n• Mention me in a channel, or DM me directly.\n• `/lobu help` lists the built-in commands.\n• Integrations that need you to sign in will prompt you with a button right in the thread — there's nothing to set up here.",
+        : "*Tips*\n• Mention me in a channel, or DM me directly.\n• `/lobu help` lists the built-in commands.\n• Integrations that need you to sign in will also prompt you with a button right in the thread.",
     },
   });
 
   return blocks;
 }
 
+// Resolve the agent's integrations plus this user's connection status. The
+// Slack user id is the credential scope key (home-tab connect is per-user).
+async function loadIntegrationStatusesScoped(
+  agentId: string,
+  userId: string,
+  deps: SlackAppHomeDeps
+): Promise<IntegrationStatus[]> {
+  const mcpConfigService = deps.mcpConfigService;
+  if (!mcpConfigService) return [];
+  const statuses = (await mcpConfigService.getMcpStatus(agentId)).filter(
+    (s) => !HIDDEN_HOME_INTEGRATION_IDS.has(s.id)
+  );
+  const result: IntegrationStatus[] = [];
+  for (const s of statuses) {
+    let connected = false;
+    if (s.requiresAuth && deps.secretStore) {
+      try {
+        connected = !!(await getStoredCredential(
+          deps.secretStore,
+          agentId,
+          userId,
+          s.id
+        ));
+      } catch {
+        connected = false;
+      }
+    }
+    result.push({
+      id: s.id,
+      name: humanizeIntegrationName(s.name || s.id),
+      requiresAuth: s.requiresAuth,
+      connected,
+    });
+  }
+  return result;
+}
+
+async function publishHome(
+  adapter: SlackHomeAdapter | undefined,
+  params: HomeViewParams
+): Promise<void> {
+  const publishHomeView = adapter?.publishHomeView;
+  if (typeof publishHomeView !== "function") return;
+  try {
+    const blocks = await buildSlackHomeBlocks(params);
+    await publishHomeView(params.userId, { type: "home", blocks });
+  } catch (error) {
+    logger.warn(
+      {
+        error,
+        connectionId: params.connection.id,
+        userId: params.userId,
+      },
+      "Failed to publish Slack home tab"
+    );
+  }
+}
+
+async function startMcpConnectFlow(params: {
+  connection: PlatformConnection;
+  deps: SlackAppHomeDeps;
+  agentId: string;
+  userId: string;
+  mcpId: string;
+  teamId?: string;
+}): Promise<string | null> {
+  const { connection, deps, agentId, userId, mcpId, teamId } = params;
+  const mcpConfigService = deps.mcpConfigService;
+  if (!mcpConfigService || !deps.secretStore || !deps.publicGatewayUrl) {
+    return null;
+  }
+  const httpServer = await mcpConfigService.getHttpServer(mcpId, agentId);
+  if (!httpServer) return null;
+  const redirectUri = `${deps.publicGatewayUrl.replace(/\/+$/, "")}/mcp/oauth/callback`;
+  const { authorizationUrl } = await startAuthCodeFlow({
+    secretStore: deps.secretStore,
+    mcpId,
+    upstreamUrl: httpServer.upstreamUrl,
+    agentId,
+    userId,
+    // Home-tab connect is always per-user.
+    scopeKey: userId,
+    wwwAuthenticate: null,
+    redirectUri,
+    staticOauth: httpServer.oauth,
+    platform: "slack",
+    channelId: userId,
+    conversationId: userId,
+    teamId,
+    connectionId: connection.id,
+  });
+  return authorizationUrl;
+}
+
 /**
- * Publish the Slack App Home tab whenever a user opens it. The home view is
- * derived per-connection: the bot's display name plus the list of integrations
- * the owning agent can use (skipped for preview workspaces and when the MCP
- * config can't be loaded). User-facing OAuth happens in-thread via interaction
- * buttons, so there is intentionally nothing to authorize from this surface.
+ * Publish the Slack App Home tab and wire its Connect / Disconnect buttons.
+ *
+ * The home view lists the integrations the owning agent can use, with a live
+ * per-user status: `Disconnect` for ones the user has authorised, `Connect`
+ * for the rest. `Connect` runs the MCP OAuth auth-code flow and re-publishes
+ * the home tab with an `Open sign-in ↗` link; `Disconnect` revokes the stored
+ * credential. Skipped for preview workspaces and when the MCP config / secret
+ * store aren't available.
  */
 export function registerSlackAppHome(
   chat: any,
   connection: PlatformConnection,
-  mcpConfigService?: McpConfigService
+  deps: SlackAppHomeDeps = {}
 ): void {
   if (connection.platform !== "slack") {
     return;
   }
 
   chat.onAppHomeOpened(async (event: SlackAppHomeEvent) => {
-    const publishHomeView = event.adapter?.publishHomeView;
-    if (typeof publishHomeView !== "function") {
-      return;
-    }
-    try {
-      const blocks = await buildSlackHomeBlocks(connection, mcpConfigService);
-      await publishHomeView(event.userId, { type: "home", blocks });
-    } catch (error) {
-      logger.warn(
-        { error, connectionId: connection.id, userId: event.userId },
-        "Failed to publish Slack home tab"
-      );
-    }
+    await publishHome(event.adapter, {
+      connection,
+      deps,
+      userId: event.userId,
+    });
   });
+
+  chat.onAction(
+    [HOME_ACTION_CONNECT, HOME_ACTION_DISCONNECT],
+    async (event: SlackActionEvent) => {
+      const mcpId = event.value;
+      const userId = event.user?.userId;
+      const agentId = connection.agentId;
+      if (!mcpId || !userId || !agentId) return;
+
+      if (event.actionId === HOME_ACTION_DISCONNECT) {
+        if (deps.secretStore) {
+          try {
+            await deleteCredential(deps.secretStore, agentId, userId, mcpId);
+          } catch (error) {
+            logger.warn(
+              { error, agentId, userId, mcpId },
+              "Failed to disconnect MCP credential from Slack home tab"
+            );
+          }
+        }
+        await publishHome(event.adapter, { connection, deps, userId });
+        return;
+      }
+
+      // Connect: mint an authorization URL, then re-publish with the link.
+      let authorizationUrl: string | null = null;
+      try {
+        authorizationUrl = await startMcpConnectFlow({
+          connection,
+          deps,
+          agentId,
+          userId,
+          mcpId,
+          teamId: teamIdFromRawPayload(event.raw),
+        });
+      } catch (error) {
+        logger.warn(
+          { error, agentId, userId, mcpId },
+          "Failed to start MCP OAuth flow from Slack home tab"
+        );
+      }
+      await publishHome(event.adapter, {
+        connection,
+        deps,
+        userId,
+        pendingAuthUrls: authorizationUrl ? { [mcpId]: authorizationUrl } : {},
+      });
+    }
+  );
 }
 
 export function parseSlackTeamJoinEvent(

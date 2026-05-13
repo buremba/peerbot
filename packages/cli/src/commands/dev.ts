@@ -1,9 +1,9 @@
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { createServer } from "node:net";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import chalk from "chalk";
 import ora from "ora";
@@ -131,12 +131,34 @@ export async function devCommand(
     (options.quiet ? "warn" : options.verbose ? "debug" : undefined);
 
   // Pass-through env: process.env wins so users can override per-invocation,
-  // .env values fill in the rest. LOBU_DEV_PROJECT_PATH is optional and only
-  // used by file-first local workflows that still have a lobu.toml.
+  // .env values fill in the rest.
+  //
+  // LOBU_DEV_PROJECT_PATH points the embedded server at the monorepo root so
+  // it can find the `packages/agent-worker/src/index.ts` worker entry (and
+  // packages/web). When `lobu run` is invoked from a project subdir inside the
+  // monorepo, cwd is *not* the root — walk up to the enclosing workspace root.
+  const enclosingRoot = findEnclosingMonorepoRoot(cwd);
+  const projectPath =
+    process.env.LOBU_DEV_PROJECT_PATH ||
+    envVars.LOBU_DEV_PROJECT_PATH ||
+    enclosingRoot ||
+    cwd;
+
+  // Bundled CLIs (and `lobu run` from anywhere) ship providers.json next to
+  // the server bundle; point the gateway at it unless the user already set the
+  // path in their env or .env.
+  const bundledProvidersPath = join(dirname(bundlePath), "providers.json");
+  const providerRegistryPath =
+    process.env.LOBU_PROVIDER_REGISTRY_PATH ||
+    envVars.LOBU_PROVIDER_REGISTRY_PATH ||
+    (existsSync(bundledProvidersPath) ? bundledProvidersPath : undefined);
+
   const childEnv: Record<string, string> = {
     ...mergedEnv,
-    LOBU_DEV_PROJECT_PATH:
-      process.env.LOBU_DEV_PROJECT_PATH || envVars.LOBU_DEV_PROJECT_PATH || cwd,
+    LOBU_DEV_PROJECT_PATH: projectPath,
+    ...(providerRegistryPath
+      ? { LOBU_PROVIDER_REGISTRY_PATH: providerRegistryPath }
+      : {}),
     PORT: String(portNum),
     GATEWAY_PORT: String(portNum),
     ...(logLevel ? { LOG_LEVEL: logLevel } : {}),
@@ -175,6 +197,45 @@ export async function devCommand(
     }
     process.exit(code ?? 0);
   });
+}
+
+/**
+ * Walk up from `startDir` looking for the Lobu monorepo workspace root: a
+ * `package.json` with a non-empty `workspaces` field AND a
+ * `packages/agent-worker/src/index.ts` underneath it. Returns the absolute
+ * path, or `null`. (Mirrors `@lobu/server`'s `findEnclosingMonorepoRoot` — kept
+ * local so the CLI doesn't take a dep on the server package.)
+ */
+export function findEnclosingMonorepoRoot(startDir: string): string | null {
+  let cur = resolve(startDir);
+  for (let i = 0; i < 64; i++) {
+    const pkgPath = join(cur, "package.json");
+    if (existsSync(pkgPath)) {
+      let hasWorkspaces = false;
+      try {
+        const pkg = JSON.parse(readFileSync(pkgPath, "utf-8")) as {
+          workspaces?: unknown;
+        };
+        hasWorkspaces =
+          pkg.workspaces != null &&
+          (Array.isArray(pkg.workspaces)
+            ? pkg.workspaces.length > 0
+            : typeof pkg.workspaces === "object");
+      } catch {
+        hasWorkspaces = false;
+      }
+      if (
+        hasWorkspaces &&
+        existsSync(join(cur, "packages/agent-worker/src/index.ts"))
+      ) {
+        return cur;
+      }
+    }
+    const parent = dirname(cur);
+    if (parent === cur) break;
+    cur = parent;
+  }
+  return null;
 }
 
 export function resolveBackendBundle(

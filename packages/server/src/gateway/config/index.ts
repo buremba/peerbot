@@ -16,6 +16,7 @@ import {
 } from "@lobu/core";
 import { config as dotenvConfig } from "dotenv";
 import type { OrchestratorConfig } from "../orchestration/base-deployment-manager.js";
+import { findEnclosingMonorepoRoot } from "../../utils/monorepo-root.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const logger = createLogger("cli-config");
@@ -296,28 +297,37 @@ function buildEmbeddedWorkerPaths(projectRoot: string): {
   // path.resolve so a relative LOBU_DEV_PROJECT_PATH still yields absolute
   // paths — workers are spawned with cwd=workspaceDir, so relative entries
   // would resolve against the workspace and fail.
-  const root = path.resolve(projectRoot);
   const explicitEntryPoint = process.env.LOBU_WORKER_ENTRYPOINT;
   const explicitBinPathEntries = process.env.LOBU_WORKER_BIN_PATHS?.split(
     path.delimiter
   ).filter(Boolean);
-  const monorepoEntryPoint = path.join(root, "packages/agent-worker/src/index.ts");
-  const monorepoBinPathEntries = [
+
+  const binPathsFor = (root: string) => [
     path.join(root, "node_modules/.bin"),
     path.join(root, "packages/agent-worker/node_modules/.bin"),
   ];
 
+  // The passed root (LOBU_DEV_PROJECT_PATH / cwd) may be a project subdir
+  // inside the monorepo — in that case the `src/index.ts` worker entry lives
+  // at the enclosing workspace root, not under the subdir. Resolve it.
+  const passedRoot = path.resolve(projectRoot);
+  const monorepoRoot =
+    existsSync(path.join(passedRoot, "packages/agent-worker/src/index.ts"))
+      ? passedRoot
+      : findEnclosingMonorepoRoot(passedRoot);
+
   if (explicitEntryPoint) {
     return {
       entryPoint: path.resolve(explicitEntryPoint),
-      binPathEntries: explicitBinPathEntries ?? monorepoBinPathEntries,
+      binPathEntries:
+        explicitBinPathEntries ?? binPathsFor(monorepoRoot ?? passedRoot),
     };
   }
 
-  if (existsSync(monorepoEntryPoint)) {
+  if (monorepoRoot) {
     return {
-      entryPoint: monorepoEntryPoint,
-      binPathEntries: monorepoBinPathEntries,
+      entryPoint: path.join(monorepoRoot, "packages/agent-worker/src/index.ts"),
+      binPathEntries: binPathsFor(monorepoRoot),
     };
   }
 
@@ -326,8 +336,17 @@ function buildEmbeddedWorkerPaths(projectRoot: string): {
       "@lobu/worker/package.json"
     );
     const workerPackageRoot = path.dirname(workerPackageJson);
+    // Prefer the ESM TypeScript source (spawned via `bun run`): the published
+    // CJS `dist/index.js` is a dead end because `@mariozechner/pi-coding-agent`
+    // only exposes an `import` condition, so a `node`-loaded `require()` of it
+    // throws ERR_PACKAGE_PATH_NOT_EXPORTED. The package ships `src/` and a
+    // `bun` exports condition for exactly this path. `bun` is a declared
+    // peerDependency of `@lobu/worker`.
+    const workerSrcEntry = path.join(workerPackageRoot, "src/index.ts");
     return {
-      entryPoint: path.join(workerPackageRoot, "dist/index.js"),
+      entryPoint: existsSync(workerSrcEntry)
+        ? workerSrcEntry
+        : path.join(workerPackageRoot, "dist/index.js"),
       binPathEntries: [
         path.join(workerPackageRoot, "node_modules/.bin"),
         path.resolve(workerPackageRoot, "..", "..", ".bin"),
@@ -335,8 +354,11 @@ function buildEmbeddedWorkerPaths(projectRoot: string): {
     };
   } catch {
     return {
-      entryPoint: monorepoEntryPoint,
-      binPathEntries: monorepoBinPathEntries,
+      entryPoint: path.join(
+        passedRoot,
+        "packages/agent-worker/src/index.ts"
+      ),
+      binPathEntries: binPathsFor(passedRoot),
     };
   }
 }

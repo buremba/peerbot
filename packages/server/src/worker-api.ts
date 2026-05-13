@@ -436,7 +436,11 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   //    profile still can't leak secrets to an arbitrary capability-matched device.
   const connectionIsDevicePinned = row.connection_device_worker_id != null;
   const deliverConnectionAuth = !!row.connection_id && (!isUserScopedWorker || connectionIsDevicePinned);
-  const { credentials, connectionCredentials, sessionState, browserUserDataDir } = deliverConnectionAuth
+  // `user_data_dir` and `cdp_url` for device-bound browser profiles flow to
+  // the worker via `sessionState.user_data_dir` / `sessionState.cdp_url`
+  // (set inside resolveExecutionAuth). No need to thread them as separate
+  // top-level fields here.
+  const { credentials, connectionCredentials, sessionState } = deliverConnectionAuth
     ? await resolveExecutionAuth({
         organizationId: row.organization_id,
         connectionId: row.connection_id!,
@@ -450,7 +454,6 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         credentials: null,
         connectionCredentials: {},
         sessionState: null,
-        browserUserDataDir: null,
       };
 
   return c.json({

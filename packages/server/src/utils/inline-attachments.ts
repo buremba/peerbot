@@ -27,6 +27,15 @@ import { getConfiguredPublicOrigin } from "./public-origin";
 import { insertEvent } from "./insert-event";
 import logger from "./logger";
 
+/**
+ * Hard cap on a single decoded attachment we'll publish. Server-side guard so
+ * a compromised or buggy worker can't force unbounded memory + artifact-store
+ * writes. Matches the Mac bridge's client-side 2MB cap for voice notes; if a
+ * future connector legitimately needs to ship something larger, push it
+ * through a multipart upload endpoint instead of inline base64.
+ */
+const MAX_INLINE_ATTACHMENT_BYTES = 2 * 1024 * 1024;
+
 interface InlineAttachment {
   kind?: string;
   filename?: string;
@@ -119,6 +128,17 @@ export async function materializeInlineAttachments<T extends StreamItemLike>(
         logger.warn(
           { item_id: item.id },
           "[inline-attachments] base64 decoded to 0 bytes — dropping attachment"
+        );
+        continue;
+      }
+      if (buffer.length > MAX_INLINE_ATTACHMENT_BYTES) {
+        logger.warn(
+          {
+            item_id: item.id,
+            size_bytes: buffer.length,
+            cap: MAX_INLINE_ATTACHMENT_BYTES,
+          },
+          "[inline-attachments] attachment exceeds server cap — dropping attachment"
         );
         continue;
       }

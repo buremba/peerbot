@@ -376,8 +376,20 @@ enum WhatsAppLocalSyncService {
     /// the sync's text-message ingest.
     private static func readAudioAttachment(relativePath: String?) -> WorkerStreamAttachment? {
         guard let relativePath, !relativePath.isEmpty else { return nil }
+        // Reject absolute paths up front — `appendingPathComponent` on a `/`
+        // -prefixed string still ends up at the root, not under mediaBaseURL.
+        guard !relativePath.hasPrefix("/") else { return nil }
         let fm = FileManager.default
-        let absoluteURL = mediaBaseURL().appendingPathComponent(relativePath)
+        // Canonicalize the media root once, then build the candidate and
+        // verify by-prefix containment. `..`, symlink escapes, and any other
+        // path-traversal trick on the (untrusted) ZMEDIALOCALPATH string land
+        // outside the prefix and get dropped.
+        let baseURL = mediaBaseURL().resolvingSymlinksInPath().standardizedFileURL
+        let absoluteURL = baseURL
+            .appendingPathComponent(relativePath)
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+        guard absoluteURL.path.hasPrefix(baseURL.path + "/") else { return nil }
         guard fm.fileExists(atPath: absoluteURL.path) else { return nil }
         let attrs = try? fm.attributesOfItem(atPath: absoluteURL.path)
         let size = (attrs?[.size] as? NSNumber)?.intValue ?? 0

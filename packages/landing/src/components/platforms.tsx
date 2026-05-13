@@ -6,20 +6,10 @@ type MessagingChannelId =
   | "teams"
   | "google-chat";
 
-export type DeliverySurfaceId = MessagingChannelId | "rest-api";
-
 type PlatformIconRenderer = (size?: number) => JSX.Element;
 
 type MessagingChannel = {
   id: MessagingChannelId;
-  label: string;
-  href: string;
-  detail: string;
-  renderIcon: PlatformIconRenderer;
-};
-
-export type DeliverySurface = {
-  id: DeliverySurfaceId;
   label: string;
   href: string;
   detail: string;
@@ -110,26 +100,6 @@ function googleChatIcon(size = 12) {
   );
 }
 
-function restApiIcon(size = 12) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      stroke-width="1.8"
-      stroke-linecap="round"
-      stroke-linejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M8 8 4 12l4 4" />
-      <path d="m16 8 4 4-4 4" />
-      <path d="m14 4-4 16" />
-    </svg>
-  );
-}
-
 export const messagingChannels: MessagingChannel[] = [
   {
     id: "slack",
@@ -174,21 +144,3 @@ export const messagingChannels: MessagingChannel[] = [
     renderIcon: googleChatIcon,
   },
 ];
-
-export const deliverySurfaces: DeliverySurface[] = [
-  ...messagingChannels,
-  {
-    id: "rest-api",
-    label: "REST API",
-    href: "/platforms/rest-api/",
-    detail: "HTTP, SSE, and integrations",
-    renderIcon: restApiIcon,
-  },
-];
-
-export function formatLabelList(labels: string[]) {
-  if (labels.length === 0) return "";
-  if (labels.length === 1) return labels[0];
-  if (labels.length === 2) return `${labels[0]} and ${labels[1]}`;
-  return `${labels.slice(0, -1).join(", ")}, and ${labels.at(-1)}`;
-}

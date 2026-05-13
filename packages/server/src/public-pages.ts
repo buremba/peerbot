@@ -7,6 +7,7 @@ import {
   listEntities,
   type RelationshipColumnSpec,
 } from './utils/entity-management';
+import { escapeHtml } from './utils/html';
 import { getConfiguredPublicOrigin } from './utils/public-origin';
 import { RESERVED_PATHS } from './utils/reserved';
 
@@ -115,15 +116,6 @@ function buildToolContext(requestUrl: string, organizationId: string): ToolConte
     requestUrl,
     baseUrl: getPublicOrigin(requestUrl),
   };
-}
-
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
 }
 
 function escapeAttribute(value: string): string {

@@ -8,7 +8,7 @@
  * 4. LLM-based content classification from watchers (via processExtractedClassifications)
  */
 
-import { type DbClient, pgBigintArray, pgTextArray } from '../db/client';
+import { type DbClient, parsePgTextArray, pgBigintArray, pgTextArray } from '../db/client';
 import type { Env } from '../index';
 import {
   generateEmbeddings,
@@ -111,36 +111,6 @@ type AttributeValues = Record<string, AttributeValue>;
 // ============================================
 // Helpers
 // ============================================
-
-function parsePostgresArray(value: string | string[] | null | undefined): string[] {
-  if (Array.isArray(value)) {
-    return value;
-  }
-
-  if (value == null || value === '' || value === '{}') {
-    return [];
-  }
-
-  let inner: string;
-
-  if (value.startsWith('{') && value.endsWith('}')) {
-    inner = value.slice(1, -1);
-  } else {
-    inner = value;
-  }
-
-  if (inner === '') {
-    return [];
-  }
-
-  return inner.split(',').map((v) => {
-    const trimmed = v.trim();
-    if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
-      return trimmed.slice(1, -1).replace(/\\"/g, '"');
-    }
-    return trimmed;
-  });
-}
 
 /**
  * Parse a JSONB column value that postgres.js may return as a string.
@@ -280,11 +250,6 @@ function normalizeValue(
   existingValues: AttributeValues,
   newEmbedding?: number[]
 ): NormalizationResult {
-  // If no existing values, it's definitely new
-  if (Object.keys(existingValues).length === 0) {
-    return { value: newValue, action: 'new' };
-  }
-
   if (!hasValidEmbedding(newEmbedding)) {
     return { value: newValue, action: existingValues[newValue] ? 'auto_merged' : 'new' };
   }
@@ -321,12 +286,7 @@ function hasValidEmbedding(embedding: unknown): embedding is number[] {
   return Array.isArray(embedding) && embedding.length > 0;
 }
 
-function ensureEmbedding(
-  _value: string,
-  config: AttributeValue,
-  workerEmbedding?: number[],
-  _isParentValue: boolean = false
-): AttributeValue {
+function ensureEmbedding(config: AttributeValue, workerEmbedding?: number[]): AttributeValue {
   if (hasValidEmbedding(workerEmbedding)) {
     return { ...config, embedding: workerEmbedding };
   }
@@ -648,7 +608,7 @@ async function updateClassifierValues(
           { value: normalized.value, hasEmbedding: !!resolvedEmbedding },
           '[ClassifierExtraction] Using resolved embedding'
         );
-        const withEmbedding = ensureEmbedding(normalized.value, newValue, resolvedEmbedding);
+        const withEmbedding = ensureEmbedding(newValue, resolvedEmbedding);
         logger.debug(
           { value: normalized.value, hasEmbedding: !!withEmbedding.embedding },
           '[ClassifierExtraction] Embedding result'
@@ -722,7 +682,7 @@ async function updateClassifierValues(
           examples: [],
         };
 
-        const withEmbedding = ensureEmbedding(normalized.value, newValue, undefined, true);
+        const withEmbedding = ensureEmbedding(newValue, undefined);
         updatedValues[normalized.value] = withEmbedding;
         hasChanges = true;
 
@@ -767,7 +727,7 @@ export async function enableClassifiersOnEntity(
   }
 
   // Parse PostgreSQL array (may come as string like "{urgency,team_routing}")
-  const currentEnabled = parsePostgresArray(entity[0].enabled_classifiers);
+  const currentEnabled = parsePgTextArray(entity[0].enabled_classifiers);
   const toAdd = classifierSlugs.filter((slug) => !currentEnabled.includes(slug));
 
   if (toAdd.length === 0) return;

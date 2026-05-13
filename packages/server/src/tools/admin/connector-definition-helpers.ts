@@ -42,17 +42,11 @@ export type ScopedConnectorDefinitionRow = {
   required_capability?: string | null;
   /**
    * `runtime` is stored as raw jsonb (the catalog extractor doesn't narrow it),
-   * so the row type stays untyped here. Consumers that want the structured
-   * shape — `ConnectorRuntimeInfo` — narrow at the use site.
+   * so the row type stays untyped here. Consumers narrow at the use site.
    */
   runtime?: Record<string, unknown> | null;
   created_at?: string;
   updated_at?: string;
-};
-
-export type ConnectorRuntimeInfo = {
-  platforms: Array<'ios' | 'android' | 'macos' | 'windows' | 'linux'>;
-  scopes?: string[];
 };
 
 function getOAuthMethods(authSchema: AuthSchema | string): OAuthAuthMethod[] {

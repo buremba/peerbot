@@ -2,25 +2,17 @@
  * Embedding Generation (local or remote)
  *
  * If EMBEDDINGS_SERVICE_URL is set, calls the HTTP embeddings service.
- * Otherwise, uses @xenova/transformers locally.
+ * Otherwise, uses @lobu/embeddings local pipeline (@xenova/transformers).
  */
 
-import { validateEmbeddingDimensions } from '@lobu/embeddings';
 import {
-  type FeatureExtractionPipeline,
-  pipeline,
-  env as transformersEnv,
-} from '@xenova/transformers';
+  DEFAULT_DIMENSIONS,
+  batchGenerateLocalEmbeddings,
+  validateEmbeddingDimensions,
+} from '@lobu/embeddings';
 
-const DEFAULT_MODEL_NAME = 'Xenova/bge-base-en-v1.5';
-const DEFAULT_DIMENSIONS = 768;
 const DEFAULT_BATCH_SIZE = 32;
 const DEFAULT_TIMEOUT_MS = 30000;
-
-transformersEnv.cacheDir = process.env.TRANSFORMERS_CACHE || '~/.cache/huggingface/transformers/';
-transformersEnv.backends.onnx.wasm.numThreads = 1;
-
-let extractorPromise: Promise<FeatureExtractionPipeline> | null = null;
 
 function getExpectedDimensions(): number {
   const raw = process.env.EMBEDDINGS_DIMENSIONS;
@@ -31,59 +23,6 @@ function getExpectedDimensions(): number {
 function getTimeoutMs(): number {
   const parsed = Number.parseInt(process.env.EMBEDDINGS_TIMEOUT_MS || '', 10);
   return Number.isFinite(parsed) ? parsed : DEFAULT_TIMEOUT_MS;
-}
-
-function getModelName(): string {
-  return process.env.EMBEDDINGS_MODEL || DEFAULT_MODEL_NAME;
-}
-
-async function getExtractor(): Promise<FeatureExtractionPipeline> {
-  if (!extractorPromise) {
-    const modelName = getModelName();
-    console.log(`[Embeddings] Loading model: ${modelName}...`);
-    const startTime = Date.now();
-
-    extractorPromise = pipeline('feature-extraction', modelName, {
-      quantized: true,
-    });
-
-    const extractor = await extractorPromise;
-    const loadTime = Date.now() - startTime;
-    console.log(`[Embeddings] Model loaded in ${loadTime}ms`);
-
-    return extractor;
-  }
-
-  return extractorPromise;
-}
-
-async function batchGenerateLocalEmbeddings(
-  texts: string[],
-  batchSize: number = DEFAULT_BATCH_SIZE
-): Promise<number[][]> {
-  if (texts.length === 0) {
-    return [];
-  }
-
-  const extractor = await getExtractor();
-  const results: number[][] = [];
-
-  for (let i = 0; i < texts.length; i += batchSize) {
-    const batch = texts.slice(i, i + batchSize);
-    const batchOutputs = await Promise.all(
-      batch.map((text) =>
-        extractor(text, {
-          pooling: 'cls',
-          normalize: true,
-        })
-      )
-    );
-
-    const batchEmbeddings = batchOutputs.map((output) => Array.from(output.data) as number[]);
-    results.push(...batchEmbeddings);
-  }
-
-  return results;
 }
 
 async function fetchEmbeddingsFromService(texts: string[]): Promise<number[][]> {

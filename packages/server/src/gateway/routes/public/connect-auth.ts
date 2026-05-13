@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { createLogger } from "@lobu/core";
 import { Hono } from "hono";
 import { getDb } from "../../../db/client.js";
+import { escapeHtml } from "../../../utils/html.js";
 import type { ExternalAuthClient } from "../../auth/external/client.js";
 import { resolvePublicUrl } from "../../utils/public-url.js";
 import {
@@ -32,15 +33,6 @@ function normalizeReturnUrl(
     return null;
   }
   return value;
-}
-
-function escapeHtml(str: string): string {
-  return str
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
 }
 
 function renderPage(title: string, message: string, tone: "success" | "error") {

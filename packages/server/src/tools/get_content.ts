@@ -9,7 +9,13 @@
 import type { ContentItem } from '@lobu/connector-sdk';
 import { getNextWatcherGranularity, inferWatcherGranularityFromSchedule } from '@lobu/connector-sdk';
 import { type Static, Type } from '@sinclair/typebox';
-import { createDbClientFromEnv, type DbClient, getDb, pgTextArray } from '../db/client';
+import {
+  createDbClientFromEnv,
+  type DbClient,
+  getDb,
+  parsePgNumberArray,
+  pgTextArray,
+} from '../db/client';
 import type { Env } from '../index';
 import {
   getNormalizedScoreContent,
@@ -506,13 +512,6 @@ function parseJson(value: unknown): any {
   return value;
 }
 
-function parseEntityIds(raw: unknown): number[] {
-  if (Array.isArray(raw)) return raw.map(Number);
-  if (typeof raw === 'string') {
-    return raw.replace(/[{}]/g, '').split(',').filter(Boolean).map(Number);
-  }
-  return [];
-}
 
 function toNumberOrUndefined(value: unknown): number | undefined {
   return value != null ? Number(value) : undefined;
@@ -1221,7 +1220,7 @@ export async function getContent(
 
       return {
         id: f.id,
-        entity_ids: parseEntityIds(f.entity_ids),
+        entity_ids: parsePgNumberArray(f.entity_ids),
         platform: f.platform,
         origin_id: f.origin_id ?? '',
         semantic_type: f.semantic_type ?? 'content',
@@ -1617,7 +1616,7 @@ async function handleWatcherMode(
     };
   }
 
-  const watcherEntityIds = parseEntityIds(watcher.entity_ids);
+  const watcherEntityIds = parsePgNumberArray(watcher.entity_ids);
   let sources: WatcherSource[];
   if (watcherSources.length > 0) {
     sources = watcherSources;

@@ -253,5 +253,4 @@ export type NetworkEntry = z.infer<typeof networkSchema>;
 export type EgressEntry = z.infer<typeof egressSchema>;
 export type ToolsEntry = z.infer<typeof toolsSchema>;
 export type WorkerEntry = z.infer<typeof workerSchema>;
-export type PreviewEntry = z.infer<typeof previewSchema>;
 export type MemoryEntry = z.infer<typeof memorySchema>;

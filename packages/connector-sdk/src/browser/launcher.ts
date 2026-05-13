@@ -7,7 +7,6 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { sdkLogger } from '../logger.js';
-import type { Env } from '../types.js';
 import { launchStealthBrowser } from './stealth.js';
 
 export interface BrowserLaunchOptions {
@@ -42,7 +41,6 @@ function addCompatibilityMethods(page: any): any {
  * Launch browser with Playwright
  */
 export async function launchBrowser(
-  _env: Env,
   options: BrowserLaunchOptions = {}
 ): Promise<EnhancedBrowser> {
   const isDebug = options.debug ?? process.env.BROWSER_DEBUG === '1';

@@ -11,22 +11,22 @@ import type { createTelegramAdapter } from "@chat-adapter/telegram";
 import type { createWhatsAppAdapter } from "@chat-adapter/whatsapp";
 
 // Derive config types from what the adapter factories actually accept
-type TelegramAdapterConfig = NonNullable<
+export type TelegramAdapterConfig = NonNullable<
   Parameters<typeof createTelegramAdapter>[0]
 > & { platform: "telegram" };
-type SlackAdapterConfig = NonNullable<
+export type SlackAdapterConfig = NonNullable<
   Parameters<typeof createSlackAdapter>[0]
 > & { platform: "slack" };
-type DiscordAdapterConfig = NonNullable<
+export type DiscordAdapterConfig = NonNullable<
   Parameters<typeof createDiscordAdapter>[0]
 > & { platform: "discord" };
-type WhatsAppAdapterConfig = NonNullable<
+export type WhatsAppAdapterConfig = NonNullable<
   Parameters<typeof createWhatsAppAdapter>[0]
 > & { platform: "whatsapp" };
-type TeamsAdapterConfig = NonNullable<
+export type TeamsAdapterConfig = NonNullable<
   Parameters<typeof createTeamsAdapter>[0]
 > & { platform: "teams" };
-type GoogleChatAdapterConfig = NonNullable<
+export type GoogleChatAdapterConfig = NonNullable<
   Parameters<typeof createGoogleChatAdapter>[0]
 > & { platform: "gchat" };
 
@@ -37,6 +37,20 @@ export type PlatformAdapterConfig =
   | WhatsAppAdapterConfig
   | TeamsAdapterConfig
   | GoogleChatAdapterConfig;
+
+/** Narrow a connection's config to the Telegram shape. */
+export function isTelegramConfig(
+  config: PlatformAdapterConfig
+): config is TelegramAdapterConfig {
+  return config.platform === "telegram";
+}
+
+/** Narrow a connection's config to the Slack shape. */
+export function isSlackConfig(
+  config: PlatformAdapterConfig
+): config is SlackAdapterConfig {
+  return config.platform === "slack";
+}
 
 export interface PlatformConnection {
   id: string;

@@ -8,9 +8,9 @@ import {
   env as transformersEnv,
 } from '@xenova/transformers';
 
-const DEFAULT_MODEL_NAME = 'Xenova/bge-base-en-v1.5';
+export const DEFAULT_MODEL_NAME = 'Xenova/bge-base-en-v1.5';
+export const DEFAULT_DIMENSIONS = 768;
 const DEFAULT_BATCH_SIZE = 32;
-const DEFAULT_DIMENSIONS = 768;
 
 transformersEnv.cacheDir = process.env.TRANSFORMERS_CACHE || '~/.cache/huggingface/transformers/';
 transformersEnv.backends.onnx.wasm.numThreads = 1;

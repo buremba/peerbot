@@ -238,7 +238,7 @@ export default class WebsiteConnector extends ConnectorRuntime {
     urls = urls.slice(0, maxPages);
 
     // Launch browser
-    const { browser } = await launchBrowser({} as any, { stealth: false });
+    const { browser } = await launchBrowser({ stealth: false });
     const events: EventEnvelope[] = [];
     const newHashes: Record<string, string> = {};
 

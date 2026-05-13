@@ -110,7 +110,7 @@ async function acquireForNetworkSync(
   }
 
   // --- Layer 2: Playwright with stored cookies ---
-  const { browser, screenshotDir } = await launchBrowser({} as never, { stealth });
+  const { browser, screenshotDir } = await launchBrowser({ stealth });
   const context = (await (browser as Browser).newContext()) as BrowserContext;
   if (cookies.length > 0) {
     await context.addCookies(cookies);

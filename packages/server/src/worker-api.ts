@@ -8,7 +8,7 @@
 import { basename } from 'node:path';
 import type { Context } from 'hono';
 import { createAuth } from './auth';
-import { getDb, pgBigintArray, pgTextArray } from './db/client';
+import { getDb, parsePgNumberArray, pgBigintArray, pgTextArray } from './db/client';
 import { emit } from './events/emitter';
 import type { Env } from './index';
 import { notifyBrowserAuthExpired } from './notifications/triggers';
@@ -38,13 +38,6 @@ import { mergeExecutionConfig, resolveExecutionAuth } from './utils/execution-co
 import { insertEvent } from './utils/insert-event';
 import logger from './utils/logger';
 import { getWorkspaceRole } from './utils/organization-access';
-
-function parseEntityIds(raw: unknown): number[] {
-  if (Array.isArray(raw)) return raw.map(Number);
-  if (typeof raw === 'string')
-    return raw.replace(/[{}]/g, '').split(',').filter(Boolean).map(Number);
-  return [];
-}
 
 const DUE_FEEDS_LOCK_KEY = 71001;
 const DUE_FEED_MATERIALIZE_COOLDOWN_MS = 5000;
@@ -899,7 +892,7 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
     }
 
     const run = runRows[0];
-    const entityIds = parseEntityIds(run.entity_ids);
+    const entityIds = parsePgNumberArray(run.entity_ids);
 
     // Auto-create dimension entities declared via eventKinds[kind].entityLinks
     // before inserting events. One query per (entityType, matchField) per

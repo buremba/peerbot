@@ -66,13 +66,6 @@ export {
   RelationshipTypeIdentityMetadata,
 } from './identity-types.js';
 export { isSourceNativeEventType, SOURCE_NATIVE_EVENT_TYPES } from './event-taxonomy.js';
-// HTTP clients
-export {
-  createAuthenticatedClient,
-  createHttpClient,
-  httpClient,
-  jsonHttpClient,
-} from './http.js';
 export {
   normalizeAuthUserId,
   normalizeEmail,
@@ -108,12 +101,9 @@ export {
 } from './watcher-time.js';
 
 // =============================================================================
-// Feed SDK
+// Browser SDK
 // =============================================================================
 
-export type { ApiSessionState } from './api-paginated.js';
-export { ApiPaginatedFeed } from './api-paginated.js';
-export { BaseFeed, RateLimitError } from './base.js';
 export type { AcquireBrowserOptions, AcquiredBrowser } from './browser/acquire.js';
 export { acquireBrowser, BrowserAuthCascadeError } from './browser/acquire.js';
 export type { CdpVersionInfo, ResolveCdpOptions } from './browser/cdp.js';
@@ -142,21 +132,6 @@ export {
 } from './browser/stealth.js';
 export type { BrowserNetworkConfig, BrowserNetworkResult } from './browser-network.js';
 export { browserNetworkSync } from './browser-network.js';
-export type {
-  BrowserFeedConfig,
-  BrowserPaginationConfig,
-  BrowserSessionState,
-  CaptchaConfig,
-  CookieConsentConfig,
-} from './browser-paginated.js';
-export { BrowserPaginatedFeed } from './browser-paginated.js';
-export type {
-  PageFetchResult,
-  PaginatedCheckpoint,
-  PaginateResult,
-  PaginationConfig,
-} from './paginated.js';
-export { PaginatedFeed } from './paginated.js';
 export type { ReactionContext, ReactionEntity } from './reaction-sdk.js';
 export type {
   Checkpoint,

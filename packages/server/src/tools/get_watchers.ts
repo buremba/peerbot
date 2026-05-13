@@ -26,12 +26,7 @@ import {
   STANDARD_IDENTITY_NAMESPACES,
   type EntityIdentityScope,
 } from '../utils/content-search';
-import {
-  daysBetween,
-  formatDateISO,
-  inferGranularity,
-  parseDateAlias,
-} from '../utils/date-aliases';
+import { formatDateISO, parseDateAlias } from '../utils/date-aliases';
 import { parseJsonObject } from '@lobu/core';
 import logger from '../utils/logger';
 import {
@@ -151,7 +146,6 @@ interface GetWatcherResult {
       content_until: string | null;
     };
     granularity_filter: string | null;
-    granularity_inferred: boolean;
     granularity_actual: string | null;
     granularity_fallback_used: boolean;
   };
@@ -397,7 +391,6 @@ export async function getWatcher(
 
   let parsedSince: string | undefined;
   let parsedUntil: string | undefined;
-  let inferredGranularity: string | undefined;
 
   if (args.content_since) {
     parsedSince = formatDateISO(parseDateAlias(args.content_since).date);
@@ -409,15 +402,7 @@ export async function getWatcher(
     parsedUntil = endOfDay.toISOString();
   }
 
-  if (!args.granularity && parsedSince && parsedUntil && !args.watcher_id) {
-    const daysDiff = daysBetween(new Date(parsedSince), new Date(parsedUntil));
-    inferredGranularity = inferGranularity(daysDiff);
-    logger.info(
-      `[get_watcher] Inferred granularity '${inferredGranularity}' from ${daysDiff}-day range (${parsedSince} to ${parsedUntil})`
-    );
-  }
-
-  const finalGranularity = args.granularity || inferredGranularity;
+  const finalGranularity = args.granularity;
 
   const whereClauses: string[] = [];
   const params: any[] = [];
@@ -1181,7 +1166,6 @@ export async function getWatcher(
         content_until: parsedUntil || null,
       },
       granularity_filter: finalGranularity || null,
-      granularity_inferred: !args.granularity && !!inferredGranularity,
       granularity_actual: actualGranularity || null,
       granularity_fallback_used: usedFallback,
     },

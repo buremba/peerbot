@@ -5,7 +5,7 @@
  */
 
 import { executeCompiledConnector } from '../../../connector-worker/src/executor/runtime';
-import { getDb } from '../db/client';
+import { getDb, parsePgNumberArray } from '../db/client';
 import { resolveConnectorCode } from '../utils/ensure-connector-installed';
 import { mergeExecutionConfig, resolveExecutionAuth } from '../utils/execution-context';
 import logger from '../utils/logger';
@@ -86,7 +86,7 @@ export async function fetchFeeds(filter?: FeedFilter): Promise<FeedRecord[]> {
   const result = await sql.unsafe(query, params);
   return result.map((row) => ({
     ...(row as FeedRecord),
-    entity_ids: parseEntityIds((row as { entity_ids: unknown }).entity_ids),
+    entity_ids: parsePgNumberArray((row as { entity_ids: unknown }).entity_ids),
   })) as FeedRecord[];
 }
 
@@ -129,14 +129,4 @@ export async function runFeed(feed: FeedRecord): Promise<{ itemCount: number }> 
 
   logger.info({ feedId: feed.id, itemCount }, 'Feed sync completed');
   return { itemCount };
-}
-
-function parseEntityIds(raw: unknown): number[] {
-  if (Array.isArray(raw)) {
-    return raw.map(Number).filter(Number.isFinite);
-  }
-  if (typeof raw === 'string') {
-    return raw.replace(/[{}]/g, '').split(',').filter(Boolean).map(Number).filter(Number.isFinite);
-  }
-  return [];
 }

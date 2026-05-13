@@ -2,26 +2,7 @@
  * HTML templates for OAuth flow
  */
 
-export function escapeHtml(value: string): string {
-  return value.replace(/[&<>"'`]/g, (char) => {
-    switch (char) {
-      case "&":
-        return "&amp;";
-      case "<":
-        return "&lt;";
-      case ">":
-        return "&gt;";
-      case '"':
-        return "&quot;";
-      case "'":
-        return "&#39;";
-      case "`":
-        return "&#96;";
-      default:
-        return char;
-    }
-  });
-}
+import { escapeHtml } from "../../utils/html.js";
 
 /**
  * Render a success page that auto-closes the tab (for in-app browsers)

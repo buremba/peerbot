@@ -122,7 +122,7 @@ function stripLabelPrefix(label: string): string {
   return match ? match[1] : label;
 }
 
-export type RecordRow = {
+type RecordRow = {
   id: string;
   name: string;
   summary: string;
@@ -150,7 +150,7 @@ function buildRecordRows(useCase: LandingUseCaseDefinition): RecordRow[] {
   });
 }
 
-export type ConnectorConnection = {
+type ConnectorConnection = {
   member: string;
   email: string;
   account: string;
@@ -158,7 +158,7 @@ export type ConnectorConnection = {
   status: "Active" | "Idle" | "Error";
 };
 
-export type ConnectorRow = {
+type ConnectorRow = {
   id: string;
   name: string;
   description: string;
@@ -266,7 +266,7 @@ function buildConnectors(useCase: LandingUseCaseDefinition): ConnectorRow[] {
   });
 }
 
-export type WatcherRow = {
+type WatcherRow = {
   name: string;
   entity: string;
   agent: string;
@@ -308,7 +308,7 @@ function buildWatcherRows(useCase: LandingUseCaseDefinition): WatcherRow[] {
   ];
 }
 
-export type AgentRow = {
+type AgentRow = {
   name: string;
   entryPoint: string;
   skills: string[];
@@ -364,7 +364,7 @@ function buildAgentRows(useCase: LandingUseCaseDefinition): AgentRow[] {
   ];
 }
 
-export type AgentInfo = {
+type AgentInfo = {
   identity: string;
   mcpEndpoint: string;
   primaryClient: string;
@@ -378,7 +378,7 @@ function buildAgentInfo(useCase: LandingUseCaseDefinition): AgentInfo {
   };
 }
 
-export type KnowledgeRow = {
+type KnowledgeRow = {
   id: string;
   title: string;
   type: string;

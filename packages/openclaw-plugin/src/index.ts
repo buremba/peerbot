@@ -439,71 +439,6 @@ function getWorkerToken(): string | null {
   return asString(process.env.WORKER_TOKEN);
 }
 
-async function gatewayDeviceAuthStart(gatewayAuthUrl: string): Promise<{
-  userCode: string;
-  verificationUri: string;
-  verificationUriComplete?: string;
-  expiresIn: number;
-}> {
-  const workerToken = getWorkerToken();
-  if (!workerToken) throw new Error('WORKER_TOKEN not set');
-
-  const response = await fetch(`${gatewayAuthUrl}/internal/device-auth/start`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${workerToken}`,
-    },
-    body: JSON.stringify({ mcpId: 'lobu' }),
-  });
-
-  if (!response.ok) {
-    const errText = await response.text();
-    throw new Error(`Gateway device auth start failed: ${errText}`);
-  }
-
-  return (await response.json()) as {
-    userCode: string;
-    verificationUri: string;
-    verificationUriComplete?: string;
-    expiresIn: number;
-  };
-}
-
-async function gatewayDeviceAuthPoll(
-  gatewayAuthUrl: string
-): Promise<{ status: string; message?: string }> {
-  const workerToken = getWorkerToken();
-  if (!workerToken) throw new Error('WORKER_TOKEN not set');
-
-  const response = await fetch(`${gatewayAuthUrl}/internal/device-auth/poll`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${workerToken}`,
-    },
-    body: JSON.stringify({ mcpId: 'lobu' }),
-  });
-
-  return (await response.json()) as { status: string; message?: string };
-}
-
-async function gatewayDeviceAuthCheck(gatewayAuthUrl: string): Promise<boolean> {
-  const workerToken = getWorkerToken();
-  if (!workerToken) return false;
-
-  try {
-    const response = await fetch(`${gatewayAuthUrl}/internal/device-auth/status?mcpId=lobu`, {
-      headers: { Authorization: `Bearer ${workerToken}` },
-    });
-    if (!response.ok) return false;
-    const data = (await response.json()) as { authenticated: boolean };
-    return !!data.authenticated;
-  } catch {
-    return false;
-  }
-}
-
 function clearSessionTokens(): void {
   sessionToken = null;
   _sessionRefreshToken = null;
@@ -1093,57 +1028,10 @@ const plugin = {
         sessionClientSecret = stored.clientSecret || null;
         sessionIssuer = stored.issuer || null;
 
-        // Proactively refresh the token — the persisted access token may be expired
-        if (_sessionRefreshToken && sessionIssuer && sessionClientId) {
-          try {
-            const body: Record<string, string> = {
-              grant_type: 'refresh_token',
-              client_id: sessionClientId,
-              refresh_token: _sessionRefreshToken,
-            };
-            if (sessionClientSecret) body.client_secret = sessionClientSecret;
-            // spawnSync imported at top-level (ESM-safe)
-            const scriptCode = [
-              'async function run() {',
-              `  const r = await fetch(${JSON.stringify(sessionIssuer + '/oauth/token')}, {`,
-              '    method: "POST",',
-              '    headers: { "Content-Type": "application/json" },',
-              `    body: ${JSON.stringify(JSON.stringify(body))},`,
-              '  });',
-              '  if (!r.ok) return;',
-              '  const d = await r.json();',
-              '  process.stdout.write(JSON.stringify({ access_token: d.access_token, refresh_token: d.refresh_token }));',
-              '}',
-              'run().catch(() => {});',
-            ].join('\n');
-            const proc = spawnSync('node', ['-e', scriptCode], {
-              timeout: 10_000,
-              stdio: ['pipe', 'pipe', 'pipe'],
-            });
-            const out = proc.stdout?.toString().trim() ?? '';
-            if (out) {
-              const tokens = JSON.parse(out) as { access_token?: string; refresh_token?: string };
-              if (tokens.access_token) {
-                sessionToken = tokens.access_token;
-                if (tokens.refresh_token) _sessionRefreshToken = tokens.refresh_token;
-                saveStoredSession(config.mcpUrl, {
-                  issuer: sessionIssuer,
-                  clientId: sessionClientId,
-                  clientSecret: sessionClientSecret,
-                  refreshToken: _sessionRefreshToken!,
-                  accessToken: sessionToken,
-                });
-                log.info('lobu: refreshed expired access token');
-              }
-            }
-          } catch (refreshErr) {
-            log.warn(
-              `lobu: token refresh failed: ${refreshErr instanceof Error ? refreshErr.message : String(refreshErr)}`
-            );
-          }
-        }
+        // The persisted access token may be expired; callMcpTool refreshes it
+        // lazily on the first 401/403, so no eager refresh is needed here.
 
-        // Auto-start worker daemon with (possibly refreshed) token
+        // Auto-start worker daemon with the persisted token
         spawnWorkerDaemon(config.mcpUrl, sessionToken, log);
       }
     }
@@ -1167,48 +1055,6 @@ const plugin = {
         },
         execute: async () => {
           try {
-            // Gateway mode: delegate to gateway device-auth endpoints
-            if (config.gatewayAuthUrl) {
-              // Check if already authenticated via gateway
-              const alreadyAuth = await gatewayDeviceAuthCheck(config.gatewayAuthUrl);
-              if (alreadyAuth) {
-                return {
-                  content: [
-                    {
-                      type: 'text',
-                      text: JSON.stringify({
-                        status: 'already_authenticated',
-                        message:
-                          "You are already authenticated with Lobu. Do NOT call lobu_login again. Proceed directly with the user's request using the available lobu tools.",
-                      }),
-                    },
-                  ],
-                  details: {},
-                };
-              }
-
-              const started = await gatewayDeviceAuthStart(config.gatewayAuthUrl);
-              return {
-                content: [
-                  {
-                    type: 'text',
-                    text: JSON.stringify({
-                      status: 'login_started',
-                      message:
-                        'Open this URL in your browser and enter the code to connect Lobu:',
-                      verification_url: started.verificationUriComplete || started.verificationUri,
-                      user_code: started.userCode,
-                      expires_in_seconds: started.expiresIn,
-                      next_step:
-                        'After the user completes login in their browser, call lobu_login_check to finish authentication.',
-                    }),
-                  },
-                ],
-                details: {},
-              };
-            }
-
-            // Standalone mode: direct device flow
             if (sessionToken) {
               return {
                 content: [
@@ -1273,64 +1119,6 @@ const plugin = {
         },
         execute: async () => {
           try {
-            // Gateway mode: poll gateway for completion
-            if (config.gatewayAuthUrl) {
-              const result = await gatewayDeviceAuthPoll(config.gatewayAuthUrl);
-
-              if (result.status === 'complete') {
-                log.info('lobu: gateway device auth completed');
-
-                // Fetch workspace instructions now that we're authenticated
-                if (!cachedWorkspaceInstructions) {
-                  fetchWorkspaceInstructions(config, log);
-                }
-
-                return {
-                  content: [
-                    {
-                      type: 'text',
-                      text: JSON.stringify({
-                        status: 'authenticated',
-                        message:
-                          'Lobu login successful! Memory tools are now available for this session.',
-                      }),
-                    },
-                  ],
-                  details: {},
-                };
-              }
-
-              if (result.status === 'pending') {
-                return {
-                  content: [
-                    {
-                      type: 'text',
-                      text: JSON.stringify({
-                        status: 'pending',
-                        message: 'Waiting for user to approve in browser...',
-                        next_step: 'Wait a few seconds, then call lobu_login_check again.',
-                      }),
-                    },
-                  ],
-                  details: {},
-                };
-              }
-
-              return {
-                content: [
-                  {
-                    type: 'text',
-                    text: JSON.stringify({
-                      status: 'error',
-                      message: result.message || 'Device auth failed',
-                    }),
-                  },
-                ],
-                details: {},
-              };
-            }
-
-            // Standalone mode: direct device flow polling
             if (!activeDeviceLogin) {
               return {
                 content: [

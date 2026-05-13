@@ -52,6 +52,45 @@ export function pgBigintArray(values: number[]): string {
   return '{' + normalized.join(',') + '}';
 }
 
+/**
+ * Parse a value that may be a JS array or a PostgreSQL array literal
+ * (`{a,b,"c d"}`) into a string array. Quoted elements are unquoted and
+ * `\"` / `\\` escapes are resolved.
+ */
+export function parsePgTextArray(
+  raw: string | string[] | null | undefined
+): string[] {
+  if (Array.isArray(raw)) return raw;
+  if (raw == null || raw === '' || raw === '{}') return [];
+  const inner =
+    raw.startsWith('{') && raw.endsWith('}') ? raw.slice(1, -1) : raw;
+  if (inner === '') return [];
+  return inner.split(',').map((v) => {
+    const trimmed = v.trim();
+    if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
+      return trimmed.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+    }
+    return trimmed;
+  });
+}
+
+/**
+ * Parse a value that may be a JS array or a PostgreSQL array literal
+ * (`{1,2,3}`) into a number array, dropping non-finite entries.
+ */
+export function parsePgNumberArray(raw: unknown): number[] {
+  if (Array.isArray(raw)) return raw.map(Number).filter(Number.isFinite);
+  if (typeof raw === 'string') {
+    return raw
+      .replace(/[{}]/g, '')
+      .split(',')
+      .filter(Boolean)
+      .map(Number)
+      .filter(Number.isFinite);
+  }
+  return [];
+}
+
 // PostgreSQL type OIDs
 const PG_OID_JSON = 114;
 const PG_OID_JSONB = 3802;

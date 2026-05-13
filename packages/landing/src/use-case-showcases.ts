@@ -2290,26 +2290,6 @@ export function getSurfaceHeroCopy(
   };
 }
 
-export const showcaseMemoryExamples = landingUseCaseShowcases.map(
-  (useCase) => useCase.memory
-);
-
-export function getLandingPrompt(showcase: LandingUseCaseShowcase) {
-  return `I want to build a Lobu agent for ${showcase.label}.\n\nPlease:\n1. Start with \`npx @lobu/cli@latest init\`.\n2. Shape the project around this workflow: ${showcase.runtime.request}\n3. After scaffolding, read AGENTS.md, lobu.toml, and the agent prompt files first.\n4. Add the right skills, connections, and the right Lobu memory model when shared memory is needed.\n5. Keep the project runnable with \`npx @lobu/cli@latest run -d\`.\n\nExplain what you change and why.`;
-}
-
-export function getSkillsPrompt(showcase: LandingUseCaseShowcase) {
-  const workspace = showcase.skills;
-
-  return `Run \`npx @lobu/cli@latest init\` to set up a new Lobu agent for ${showcase.label}. Create lobu.toml with [agents.${workspace.agentId}] pointing at ./agents/${workspace.agentId}, add IDENTITY.md, SOUL.md, and USER.md under agents/${workspace.agentId}/, and add a shared skill in skills/${workspace.skillId}/SKILL.md with nix packages, a network allowlist, and MCP servers for ${workspace.skills.join(", ")}. Keep tool policy in lobu.toml. Keep the workflow aligned with this request: ${showcase.runtime.request}`;
-}
-
-export function getMemoryPrompt(showcase: LandingUseCaseShowcase) {
-  const memory = showcase.memory;
-
-  return `Use the Agents UI to enable the Lobu skill and configure memory for ${showcase.label}. Model these entities: ${memory.entityTypes.join(", ")}. Keep the extracted memory durable, typed, and linked so the runtime can reuse it across future tasks.`;
-}
-
 const LOBU_ZONE =
   (import.meta.env.PUBLIC_LOBU_ZONE as string | undefined) || "lobu.ai";
 const LOBU_APP_OVERRIDE = (
@@ -2328,7 +2308,7 @@ function buildOrgUrl(orgSlug: string | undefined): string {
     : `https://${orgSlug}.${LOBU_ZONE}`;
 }
 
-export function getLobuOrgSlug(useCaseId?: LandingUseCaseId) {
+function getLobuOrgSlug(useCaseId?: LandingUseCaseId) {
   if (!useCaseId) return undefined;
   const def = landingUseCases[useCaseId];
   return "lobuOrg" in def ? def.lobuOrg : undefined;

@@ -69,31 +69,10 @@ function sanitizeNameHint(value: string | undefined, fallback: string): string {
 
 /**
  * Generate a consistent worker runtime ID from canonical conversation identity.
- * Overload preserved for compatibility with older callers.
  * Runtime IDs stay lowercase alphanumeric with hyphens for filesystem and
  * process-manager compatibility.
  */
-export function generateDeploymentName(
-  userId: string,
-  conversationId: string
-): string;
-export function generateDeploymentName(identity: DeploymentIdentity): string;
-export function generateDeploymentName(
-  arg1: string | DeploymentIdentity,
-  arg2?: string
-): string {
-  if (typeof arg1 === "string") {
-    const userId = arg1;
-    const conversationId = arg2 || "";
-    const shortHint = sanitizeNameHint(userId, "user");
-    const hash = createHash("sha256")
-      .update(`${userId}:${conversationId}`)
-      .digest("hex")
-      .slice(0, 12);
-    return `lobu-worker-${shortHint}-${hash}`;
-  }
-
-  const identity = arg1;
+export function generateDeploymentName(identity: DeploymentIdentity): string {
   const canonicalKey = buildCanonicalConversationKey(identity);
   const hint = sanitizeNameHint(identity.platform || identity.userId, "ctx");
   const hash = createHash("sha256")

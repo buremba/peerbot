@@ -53,6 +53,14 @@ interface RepoRef {
   repo: string;
 }
 
+interface GitHubMutationResponse {
+  id: number;
+  number: number;
+  html_url: string;
+  state: string;
+  draft?: boolean;
+}
+
 interface GitHubRepositoryLike {
   id?: number;
   full_name?: string;
@@ -166,13 +174,6 @@ function toIsoOrUndefined(value: unknown): string | undefined {
   if (!str) return undefined;
   const parsed = new Date(str);
   return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
-}
-
-function stripMarkdown(code: string): string {
-  return code
-    .replace(/```[a-zA-Z]*\n?/g, '')
-    .replace(/```/g, '')
-    .trim();
 }
 
 const REPO_PROPS = {
@@ -569,7 +570,7 @@ export default class GitHubConnector extends ConnectorRuntime {
   };
 
   async sync(ctx: SyncContext): Promise<SyncResult> {
-    const config = this.parseConfig(ctx.config);
+    const config = ctx.config as GitHubConfig;
     const repo = this.resolveRepo(config, {});
     const token = this.resolveToken(ctx.credentials?.accessToken, config);
     const contentType = (ctx.feedKey ?? 'issues') as GitHubContentType;
@@ -611,7 +612,7 @@ export default class GitHubConnector extends ConnectorRuntime {
 
   async execute(ctx: ActionContext): Promise<ActionResult> {
     try {
-      const config = this.parseConfig(ctx.config);
+      const config = ctx.config as GitHubConfig;
       const repo = this.resolveRepo(config, ctx.input);
       const token = this.resolveToken(ctx.credentials?.accessToken, config);
 
@@ -641,10 +642,6 @@ export default class GitHubConnector extends ConnectorRuntime {
         error: error instanceof Error ? error.message : String(error),
       };
     }
-  }
-
-  private parseConfig(raw: Record<string, unknown>): GitHubConfig {
-    return raw as GitHubConfig;
   }
 
   private resolveRepo(config: GitHubConfig, input: Record<string, unknown>): RepoRef {
@@ -686,7 +683,7 @@ export default class GitHubConnector extends ConnectorRuntime {
 
   private async syncContent(params: {
     repo: RepoRef;
-    contentType: GitHubContentType;
+    contentType: Exclude<GitHubContentType, 'stargazers'>;
     sinceIso: string;
     labelsFilter: string[];
     token: string | null;
@@ -705,10 +702,6 @@ export default class GitHubConnector extends ConnectorRuntime {
         return await this.syncDiscussions(repo, sinceIso, token);
       case 'discussion_comments':
         return await this.syncDiscussionComments(repo, sinceIso, token);
-      case 'stargazers':
-        return [];
-      default:
-        return [];
     }
   }
 
@@ -1327,12 +1320,7 @@ export default class GitHubConnector extends ConnectorRuntime {
       ? input.assignees.filter((value): value is string => typeof value === 'string')
       : undefined;
 
-    const issue = await this.requestJson<{
-      id: number;
-      number: number;
-      html_url: string;
-      state: string;
-    }>({
+    const issue = await this.requestJson<GitHubMutationResponse>({
       method: 'POST',
       url: `https://api.github.com/repos/${repo.owner}/${repo.repo}/issues`,
       token,
@@ -1394,12 +1382,7 @@ export default class GitHubConnector extends ConnectorRuntime {
     const issueNumber = toInt(input.issue_number, 0);
     if (!issueNumber) return { success: false, error: 'issue_number is required' };
 
-    const issue = await this.requestJson<{
-      id: number;
-      number: number;
-      html_url: string;
-      state: string;
-    }>({
+    const issue = await this.requestJson<GitHubMutationResponse>({
       method: 'PATCH',
       url: `https://api.github.com/repos/${repo.owner}/${repo.repo}/issues/${issueNumber}`,
       token,
@@ -1432,13 +1415,7 @@ export default class GitHubConnector extends ConnectorRuntime {
     const body = asString(input.body);
     const draft = typeof input.draft === 'boolean' ? input.draft : undefined;
 
-    const pr = await this.requestJson<{
-      id: number;
-      number: number;
-      html_url: string;
-      state: string;
-      draft?: boolean;
-    }>({
+    const pr = await this.requestJson<GitHubMutationResponse>({
       method: 'POST',
       url: `https://api.github.com/repos/${repo.owner}/${repo.repo}/pulls`,
       token,
@@ -1489,7 +1466,7 @@ export default class GitHubConnector extends ConnectorRuntime {
             ? mergeMethod
             : undefined,
         commit_title: commitTitle,
-        commit_message: commitMessage ? stripMarkdown(commitMessage) : undefined,
+        commit_message: commitMessage,
       },
     });
 

@@ -137,7 +137,7 @@ async function acquireViaCdp(opts: AcquireBrowserOptions): Promise<AcquiredBrows
 }
 
 async function acquireViaPlaywright(opts: AcquireBrowserOptions): Promise<AcquiredBrowser> {
-  const { browser, screenshotDir } = await launchBrowser({} as never, {
+  const { browser, screenshotDir } = await launchBrowser({
     stealth: opts.stealth ?? false,
   });
 

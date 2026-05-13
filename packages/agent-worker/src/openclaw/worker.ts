@@ -36,10 +36,7 @@ import {
   getApiKeyEnvVarForProvider,
   getProviderAuthHintFromError,
 } from "../shared/provider-auth-hints";
-import {
-  type GatewayParams,
-  generateImage,
-} from "../shared/tool-implementations";
+import type { GatewayParams } from "../shared/tool-implementations";
 import {
   createMcpAuthToolDefinitions,
   createMcpToolDefinitions,
@@ -138,29 +135,6 @@ function isRealOpenAIBaseUrl(baseUrl: string): boolean {
   } catch {
     return false;
   }
-}
-
-function isLikelyImageGenerationRequest(prompt: string): boolean {
-  const lower = prompt.toLowerCase();
-  const explicitToolInstruction =
-    lower.includes("generateimage tool") || lower.includes("use generateimage");
-  const directShortcutEnabled =
-    process.env.WORKER_ENABLE_DIRECT_IMAGE_SHORTCUT === "true";
-  return directShortcutEnabled && explicitToolInstruction;
-}
-
-function extractToolTextContent(result: {
-  content?: Array<{ type?: string; text?: string }>;
-}): string {
-  if (!Array.isArray(result.content)) return "";
-  return result.content
-    .filter(
-      (item): item is { type: string; text: string } =>
-        item?.type === "text" && typeof item.text === "string"
-    )
-    .map((item) => item.text)
-    .join("\n")
-    .trim();
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -442,34 +416,6 @@ export class OpenClawWorker implements WorkerExecutor {
         `[TIMING] Total worker startup time: ${aiStartTime - executeStartTime}ms`
       );
 
-      if (isLikelyImageGenerationRequest(userPrompt)) {
-        logger.info("Direct image-generation shortcut triggered");
-        const gatewayUrl = process.env.DISPATCHER_URL;
-        const workerToken = process.env.WORKER_TOKEN;
-        if (!gatewayUrl || !workerToken) {
-          throw new Error(
-            "DISPATCHER_URL and WORKER_TOKEN are required for image generation"
-          );
-        }
-
-        const gatewayParams: GatewayParams = {
-          gatewayUrl,
-          workerToken,
-          channelId: this.config.channelId,
-          conversationId: this.config.conversationId,
-          platform: this.config.platform,
-        };
-        const toolResult = await generateImage(gatewayParams, {
-          prompt: userPrompt,
-        });
-        const toolText =
-          extractToolTextContent(toolResult) || "Image request processed.";
-        await this.workerTransport.sendStreamDelta(toolText, false, true);
-        await this.workerTransport.signalDone();
-        logger.info("Direct image-generation shortcut completed");
-        return;
-      }
-
       let firstOutputLogged = false;
 
       let sawUploadedFileEvent = false;
@@ -616,16 +562,11 @@ export class OpenClawWorker implements WorkerExecutor {
   }
 
   async cleanup(): Promise<void> {
-    logger.info("Cleaning up worker resources...");
     logger.info("Worker cleanup completed");
   }
 
   getWorkerTransport(): WorkerTransport | null {
     return this.workerTransport;
-  }
-
-  private getWorkingDirectory(): string {
-    return this.workspaceManager.getCurrentWorkingDirectory();
   }
 
   private async maybeRunPreCompactionMemoryFlush(params: {
@@ -742,11 +683,10 @@ export class OpenClawWorker implements WorkerExecutor {
       rawOptions.toolsConfig as ToolsConfig | undefined
     )?.mcpExposure;
     const envMcpExposure = process.env.LOBU_MCP_EXPOSURE;
-    const requestedMcpExposure: "tools" | "cli" =
+    const mcpExposure: "tools" | "cli" =
       configuredMcpExposure === "cli" || envMcpExposure === "cli"
         ? "cli"
         : "tools";
-    const mcpExposure: "tools" | "cli" = requestedMcpExposure;
 
     // Fetch session context BEFORE model resolution so AGENT_DEFAULT_PROVIDER
     // is available when resolveModelRef() needs a fallback provider. Pass
@@ -755,7 +695,8 @@ export class OpenClawWorker implements WorkerExecutor {
 
     // Sync enabled skills to workspace filesystem so the agent can `cat` them.
     // Remove stale skill directories to avoid serving removed/disabled skills.
-    const skillsWorkspaceDir = this.getWorkingDirectory();
+    const skillsWorkspaceDir =
+      this.workspaceManager.getCurrentWorkingDirectory();
     const skillsRoot = path.join(skillsWorkspaceDir, ".skills");
     await fs.mkdir(skillsRoot, { recursive: true });
 
@@ -921,7 +862,7 @@ export class OpenClawWorker implements WorkerExecutor {
         }
       : resolvedModel;
 
-    const workspaceDir = this.getWorkingDirectory();
+    const workspaceDir = this.workspaceManager.getCurrentWorkingDirectory();
     await fs.mkdir(path.join(workspaceDir, ".openclaw"), { recursive: true });
 
     const sessionFile = path.join(workspaceDir, ".openclaw", "session.jsonl");
@@ -1072,9 +1013,6 @@ export class OpenClawWorker implements WorkerExecutor {
         };
       });
     }
-
-    const gatewayUrl = getOptionalEnv("DISPATCHER_URL", "");
-    const workerToken = getOptionalEnv("WORKER_TOKEN", "");
 
     // Credential injection — resolve API key from the in-memory credential store,
     // falling back to process.env only for values that were present at startup.
@@ -1558,12 +1496,10 @@ Use it when the user references past discussions or you need context.`);
           },
           ctx: pluginHookContext,
         });
-        const errorWithHint = await this.maybeBuildAuthHintMessage(
+        const errorWithHint = this.maybeBuildAuthHintMessage(
           sessionError,
           rawProvider,
-          modelId,
-          gatewayUrl,
-          workerToken
+          modelId
         );
         return {
           success: false,
@@ -1604,12 +1540,10 @@ Use it when the user references past discussions or you need context.`);
           ctx: pluginHookContext,
         });
       }
-      const errorWithHint = await this.maybeBuildAuthHintMessage(
+      const errorWithHint = this.maybeBuildAuthHintMessage(
         errorMsg,
         provider,
-        modelId,
-        gatewayUrl,
-        workerToken
+        modelId
       );
 
       return {
@@ -1758,8 +1692,7 @@ Use it when the user references past discussions or you need context.`);
 
 **Workspace paths are not accessible to users.** Paths like \`/workspace/...\` or \`/app/workspaces/...\` are internal sandbox paths. Never show them as file locations, download links, or "saved at" references. The user cannot reach them. Always use \`UploadUserFile\` instead.`;
 
-    if (files.length === 0) {
-      return `
+    const common = `
 
 ## File Generation & Output
 
@@ -1773,6 +1706,9 @@ Create and show files for any output that helps answer the user's request:
 - **Code files**: scripts, configurations, examples
 - **Images**: generated images, processed photos, screenshots.
 `;
+
+    if (files.length === 0) {
+      return common;
     }
 
     const fileListing = files
@@ -1795,20 +1731,7 @@ Create and show files for any output that helps answer the user's request:
         "\nYou can read non-image files with standard commands like `cat`, `less`, or `head`.";
     }
 
-    return `
-
-## File Generation & Output
-
-${fileOutputRules}
-
-**When to Create Files:**
-Create and show files for any output that helps answer the user's request:
-- **Charts & visualizations**: pie charts, bar graphs, plots, diagrams via \`matplotlib\`
-- **Reports & documents**: analysis reports, summaries, PDFs
-- **Data files**: CSV exports, JSON data, spreadsheets
-- **Code files**: scripts, configurations, examples
-- **Images**: generated images, processed photos, screenshots.
-
+    return `${common}
 ### User-Uploaded Files
 The user has uploaded ${files.length} file(s) for you to analyze:
 ${fileListing}
@@ -1868,16 +1791,11 @@ ${fileListing}
     return results;
   }
 
-  private async maybeBuildAuthHintMessage(
+  private maybeBuildAuthHintMessage(
     errorMessage: string,
     provider: string,
-    modelId: string,
-    gatewayUrl: string,
-    workerToken: string
-  ): Promise<string> {
-    void gatewayUrl;
-    void workerToken;
-
+    modelId: string
+  ): string {
     const authHint = getProviderAuthHintFromError(errorMessage, provider);
     if (!authHint) {
       return errorMessage;

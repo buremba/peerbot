@@ -14,6 +14,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { Readable } from "node:stream";
+import { Chat } from "chat";
 import type {
   AgentConnectionStore,
   StoredConnection,
@@ -21,6 +22,7 @@ import type {
 import { createLogger, isSecretRef } from "@lobu/core";
 import type { CoreServices, PlatformAdapter } from "../platform.js";
 import type { IFileHandler } from "../platform/file-handler.js";
+import { CommandDispatcher } from "../commands/command-dispatcher.js";
 import {
   deleteSecretsByPrefix,
   persistSecretValue,
@@ -37,13 +39,41 @@ import { createGatewayStateAdapter } from "./state-adapter.js";
 import { SlackConnectionCoordinator } from "./slack-connection-coordinator.js";
 import { SlackInstructionProvider } from "./slack-instruction-provider.js";
 import { registerSlackPlatformHandlers } from "./slack-platform-bridge.js";
-import type { MessageHandlerBridge } from "./message-handler-bridge.js";
+import { registerInteractionBridge } from "./interaction-bridge.js";
+import {
+  type MessageHandlerBridge,
+  registerMessageHandlers,
+} from "./message-handler-bridge.js";
 import {
   type ConnectionSettings,
+  isSlackConfig,
   isSecretField,
+  isTelegramConfig,
   type PlatformAdapterConfig,
   type PlatformConnection,
+  type TelegramAdapterConfig,
 } from "./types.js";
+
+/** Drain a Readable into a single Buffer. */
+async function streamToBuffer(readable: Readable): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of readable) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks);
+}
+
+/** Read `botToken` from a Telegram connection config, or undefined. */
+function telegramBotToken(config: TelegramAdapterConfig): string | undefined {
+  return typeof config.botToken === "string" ? config.botToken : undefined;
+}
+
+/** Read `apiBaseUrl` from a Telegram connection config (with default). */
+function telegramApiBase(config: TelegramAdapterConfig): string {
+  return typeof config.apiBaseUrl === "string" && config.apiBaseUrl
+    ? config.apiBaseUrl
+    : "https://api.telegram.org";
+}
 
 /** Shallow structural equality for plain config objects. */
 function configsEqual(
@@ -229,12 +259,7 @@ export class ChatInstanceManager {
   }
 
   async removeConnection(id: string): Promise<void> {
-    const instance = this.instances.get(id);
-    if (instance) {
-      instance.interactionCleanup?.();
-      await instance.cleanup?.();
-      this.instances.delete(id);
-    }
+    const instance = await this.stopInstance(id);
 
     const conversationState =
       instance?.conversationState ??
@@ -257,12 +282,7 @@ export class ChatInstanceManager {
   }
 
   async restartConnection(id: string): Promise<void> {
-    const instance = this.instances.get(id);
-    if (instance) {
-      instance.interactionCleanup?.();
-      await instance.cleanup?.();
-      this.instances.delete(id);
-    }
+    await this.stopInstance(id);
 
     const stored = await this.connectionStore.getConnection(id);
     if (!stored) throw new Error(`Connection ${id} not found`);
@@ -285,12 +305,7 @@ export class ChatInstanceManager {
   }
 
   async stopConnection(id: string): Promise<void> {
-    const instance = this.instances.get(id);
-    if (instance) {
-      instance.interactionCleanup?.();
-      await instance.cleanup?.();
-      this.instances.delete(id);
-    }
+    await this.stopInstance(id);
 
     await this.connectionStore.updateConnection(id, {
       status: "stopped",
@@ -363,12 +378,7 @@ export class ChatInstanceManager {
     connection.updatedAt = Date.now();
 
     if (needsRestart && connection.status === "active") {
-      const instance = this.instances.get(id);
-      if (instance) {
-        instance.interactionCleanup?.();
-        await instance.cleanup?.();
-        this.instances.delete(id);
-      }
+      await this.stopInstance(id);
       await this.startInstance(connection);
     } else {
       const instance = this.instances.get(id);
@@ -416,18 +426,6 @@ export class ChatInstanceManager {
       await this.createStateAdapter()
     );
     return conversationState.listHistoryChannels(connectionId);
-  }
-
-  /** Get a resolved secret value from a running connection's config. */
-  getConnectionConfigSecret(
-    connectionId: string,
-    field: string
-  ): string | undefined {
-    const instance = this.instances.get(connectionId);
-    if (!instance) return undefined;
-    const config = instance.connection.config as Record<string, unknown>;
-    const val = config[field];
-    return typeof val === "string" ? val : undefined;
   }
 
   async handleWebhook(
@@ -505,6 +503,24 @@ export class ChatInstanceManager {
 
   // --- Private ---
 
+  /**
+   * Tear down a running managed instance (interaction bridge + chat shutdown)
+   * and drop it from the registry. No-op if no instance is tracked for `id`.
+   * Returns the instance that was removed, if any, so callers can reuse its
+   * conversation-state store.
+   */
+  private async stopInstance(
+    id: string
+  ): Promise<ManagedInstance | undefined> {
+    const instance = this.instances.get(id);
+    if (instance) {
+      instance.interactionCleanup?.();
+      await instance.cleanup?.();
+      this.instances.delete(id);
+    }
+    return instance;
+  }
+
   private async startInstance(connection: PlatformConnection): Promise<void> {
     // Multi-tenant secret resolution: PostgresSecretStore.get/put route
     // by AsyncLocalStorage org context (see #516). Some callers reach
@@ -542,7 +558,6 @@ export class ChatInstanceManager {
         connection.config
       );
 
-      const { Chat } = await import("chat");
       const adapter = await this.createAdapter(connection);
       const stateAdapter = await this.createStateAdapter();
       const conversationState = new ConversationStateStore(stateAdapter);
@@ -555,13 +570,6 @@ export class ChatInstanceManager {
         logger: "warn",
       });
 
-      // Register message handlers (imported lazily to avoid circular deps)
-      const { registerMessageHandlers } = await import(
-        "./message-handler-bridge.js"
-      );
-      const { CommandDispatcher } = await import(
-        "../commands/command-dispatcher.js"
-      );
       const commandDispatcher = new CommandDispatcher({
         registry: this.services.getCommandRegistry(),
         channelBindingService: this.services.getChannelBindingService(),
@@ -581,7 +589,9 @@ export class ChatInstanceManager {
       await chat.initialize();
 
       // Set webhook URL if applicable
-      const mode = (connection.config as any).mode ?? "auto";
+      const mode = isTelegramConfig(connection.config)
+        ? (connection.config.mode ?? "auto")
+        : "auto";
       const useWebhook =
         mode === "webhook" || (mode === "auto" && !!this.publicGatewayUrl);
       if (useWebhook && this.publicGatewayUrl) {
@@ -644,9 +654,6 @@ export class ChatInstanceManager {
         cleanup,
       });
 
-      const { registerInteractionBridge } = await import(
-        "./interaction-bridge.js"
-      );
       const mcpProxy = this.services.getMcpProxy();
       const interactionCleanup = registerInteractionBridge(
         this.services.getInteractionService(),
@@ -702,15 +709,15 @@ export class ChatInstanceManager {
     connection: PlatformConnection,
     webhookUrl: string
   ): Promise<void> {
-    if (connection.platform !== "telegram") return;
+    if (!isTelegramConfig(connection.config)) return;
+    const config = connection.config;
 
-    const botToken = (connection.config as any).botToken;
-    if (!botToken || typeof botToken !== "string") return;
+    const botToken = telegramBotToken(config);
+    if (!botToken) return;
 
-    const apiBase =
-      (connection.config as any).apiBaseUrl || "https://api.telegram.org";
+    const apiBase = telegramApiBase(config);
     const body: Record<string, unknown> = { url: webhookUrl };
-    const secretToken = (connection.config as any).secretToken;
+    const secretToken = config.secretToken;
     if (typeof secretToken === "string" && secretToken.length > 0) {
       body.secret_token = secretToken;
     }
@@ -738,12 +745,11 @@ export class ChatInstanceManager {
         description: cmd.description,
       }));
 
-    if (connection.platform === "telegram") {
-      const botToken = (connection.config as any).botToken;
+    if (isTelegramConfig(connection.config)) {
+      const botToken = telegramBotToken(connection.config);
       if (!botToken) return;
 
-      const apiBase =
-        (connection.config as any).apiBaseUrl || "https://api.telegram.org";
+      const apiBase = telegramApiBase(connection.config);
       const resp = await fetch(`${apiBase}/bot${botToken}/setMyCommands`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1044,28 +1050,15 @@ export class ChatInstanceManager {
   private createTelegramFileHandler(
     connection: PlatformConnection
   ): IFileHandler | undefined {
-    const botToken = (connection.config as any).botToken;
-    if (!botToken || typeof botToken !== "string") {
-      return undefined;
-    }
+    if (!isTelegramConfig(connection.config)) return undefined;
+    const botToken = telegramBotToken(connection.config);
+    if (!botToken) return undefined;
 
-    const apiBaseUrl = String(
-      (connection.config as any).apiBaseUrl || "https://api.telegram.org"
-    ).replace(/\/$/, "");
+    const apiBaseUrl = telegramApiBase(connection.config).replace(/\/$/, "");
     const botUsername =
       typeof connection.metadata.botUsername === "string"
         ? connection.metadata.botUsername.replace(/^@/, "")
         : undefined;
-
-    const readStreamToBuffer = async (
-      fileStream: Readable
-    ): Promise<Buffer> => {
-      const chunks: Buffer[] = [];
-      for await (const chunk of fileStream) {
-        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-      }
-      return Buffer.concat(chunks);
-    };
 
     const parseTelegramTarget = (
       channelId: string,
@@ -1123,7 +1116,7 @@ export class ChatInstanceManager {
     return {
       uploadFile: async (fileStream, options) => {
         const target = parseTelegramTarget(options.channelId, options.threadTs);
-        const buffer = await readStreamToBuffer(fileStream);
+        const buffer = await streamToBuffer(fileStream);
         const form = new FormData();
         form.set("chat_id", target.chatId);
         if (target.messageThreadId) {
@@ -1158,26 +1151,60 @@ export class ChatInstanceManager {
     };
   }
 
+  /**
+   * Post a Postable (carrying a file buffer) to a thread or channel on a
+   * managed Chat instance. Shared by every Chat-SDK-backed file handler
+   * (Slack, Discord, Teams). `threadId` / `channelKey` are already the
+   * canonical platform-prefixed ids the Chat SDK expects.
+   */
+  private async postFileToChatTarget(
+    instance: ManagedInstance,
+    target: { threadId?: string; channelKey: string },
+    postable: { raw: string; files: Array<{ data: Buffer; filename: string }> }
+  ): Promise<any> {
+    const { chat } = instance;
+    const platform = instance.connection.platform;
+
+    if (target.threadId) {
+      const adapter = chat.getAdapter?.(platform);
+      const createThread = (chat as any).createThread;
+      if (!adapter || typeof createThread !== "function") {
+        throw new Error(`Chat instance has no createThread for ${platform}`);
+      }
+      // `undefined` (not `{}`) — empty object makes Chat SDK crash in
+      // handleStream reading `_currentMessage.author.userId`.
+      const thread = await createThread.call(
+        chat,
+        adapter,
+        target.threadId,
+        undefined,
+        false
+      );
+      if (!thread) {
+        throw new Error(
+          `Unable to resolve ${platform} thread ${target.threadId} for upload`
+        );
+      }
+      return thread.post(postable);
+    }
+
+    const channel = chat.channel?.(target.channelKey);
+    if (!channel) {
+      throw new Error(
+        `Unable to resolve ${platform} channel ${target.channelKey} for upload`
+      );
+    }
+    return channel.post(postable);
+  }
+
   private createSlackFileHandler(
     instance: ManagedInstance
   ): IFileHandler | undefined {
-    const botToken = (instance.connection.config as any).botToken;
-    if (!botToken || typeof botToken !== "string") {
+    if (!isSlackConfig(instance.connection.config)) return undefined;
+    if (typeof instance.connection.config.botToken !== "string") {
       return undefined;
     }
-
-    const chat = instance.chat;
     const platform = instance.connection.platform;
-
-    const readStreamToBuffer = async (
-      fileStream: Readable
-    ): Promise<Buffer> => {
-      const chunks: Buffer[] = [];
-      for await (const chunk of fileStream) {
-        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-      }
-      return Buffer.concat(chunks);
-    };
 
     // For Slack, `conversationId` is the Chat SDK's canonical `thread.id`
     // (`slack:{channel}:{parent_thread_ts}`) for group threads, or the bare
@@ -1202,49 +1229,21 @@ export class ChatInstanceManager {
       // Channel (top-level) and post a Postable carrying the file buffer.
       uploadFile: async (fileStream, options) => {
         const target = parseSlackThread(options.channelId, options.threadTs);
-        const buffer = await readStreamToBuffer(fileStream);
+        const buffer = await streamToBuffer(fileStream);
 
-        const fileUpload = {
-          data: buffer,
-          filename: options.filename,
-        } as { data: Buffer; filename: string };
-
-        const postable = options.initialComment
-          ? { raw: options.initialComment, files: [fileUpload] }
-          : { raw: "", files: [fileUpload] };
-
-        let sent: any;
-        if (target.threadTs) {
-          const adapter = chat.getAdapter?.(platform);
-          const createThread = (chat as any).createThread;
-          if (!adapter || typeof createThread !== "function") {
-            throw new Error("Chat instance has no createThread for slack");
+        const sent = await this.postFileToChatTarget(
+          instance,
+          {
+            threadId: target.threadTs
+              ? `${platform}:${target.channel}:${target.threadTs}`
+              : undefined,
+            channelKey: `${platform}:${target.channel}`,
+          },
+          {
+            raw: options.initialComment || "",
+            files: [{ data: buffer, filename: options.filename }],
           }
-          const threadId = `${platform}:${target.channel}:${target.threadTs}`;
-          // `undefined` (not `{}`) — empty object makes Chat SDK crash in
-          // handleStream reading `_currentMessage.author.userId`.
-          const thread = await createThread.call(
-            chat,
-            adapter,
-            threadId,
-            undefined,
-            false
-          );
-          if (!thread) {
-            throw new Error(
-              `Unable to resolve slack thread ${threadId} for upload`
-            );
-          }
-          sent = await thread.post(postable);
-        } else {
-          const channel = chat.channel?.(`${platform}:${target.channel}`);
-          if (!channel) {
-            throw new Error(
-              `Unable to resolve slack channel ${target.channel} for upload`
-            );
-          }
-          sent = await channel.post(postable);
-        }
+        );
 
         const uploadedFile = (sent?.attachments || sent?.files || [])[0] as
           | { id?: string; permalink?: string; name?: string; size?: number }
@@ -1266,61 +1265,22 @@ export class ChatInstanceManager {
   // Postable.files (Discord, Teams). The conversationId arriving as `threadTs`
   // is the canonical platform-prefixed thread ID (e.g. `discord:guildId:channelId`).
   private createChatSdkFileHandler(instance: ManagedInstance): IFileHandler {
-    const { chat, connection } = instance;
-    const platform = connection.platform;
-
-    const readStreamToBuffer = async (
-      fileStream: Readable
-    ): Promise<Buffer> => {
-      const chunks: Buffer[] = [];
-      for await (const chunk of fileStream) {
-        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-      }
-      return Buffer.concat(chunks);
-    };
+    const platform = instance.connection.platform;
 
     return {
       uploadFile: async (fileStream, options) => {
-        const buffer = await readStreamToBuffer(fileStream);
-        const postable = {
-          raw: options.initialComment || "",
-          files: [{ data: buffer, filename: options.filename }],
-        };
-
-        let sent: any;
-        const threadId = options.threadTs;
-
-        if (threadId) {
-          const adapter = chat.getAdapter?.(platform);
-          const createThread = (chat as any).createThread;
-          if (!adapter || typeof createThread !== "function") {
-            throw new Error(
-              `Chat instance has no createThread for ${platform}`
-            );
+        const buffer = await streamToBuffer(fileStream);
+        const sent = await this.postFileToChatTarget(
+          instance,
+          {
+            threadId: options.threadTs,
+            channelKey: `${platform}:${options.channelId}`,
+          },
+          {
+            raw: options.initialComment || "",
+            files: [{ data: buffer, filename: options.filename }],
           }
-          const thread = await createThread.call(
-            chat,
-            adapter,
-            threadId,
-            undefined,
-            false
-          );
-          if (!thread) {
-            throw new Error(
-              `Unable to resolve ${platform} thread ${threadId} for upload`
-            );
-          }
-          sent = await thread.post(postable);
-        } else {
-          const channelId = `${platform}:${options.channelId}`;
-          const channel = chat.channel?.(channelId);
-          if (!channel) {
-            throw new Error(
-              `Unable to resolve ${platform} channel ${options.channelId} for upload`
-            );
-          }
-          sent = await channel.post(postable);
-        }
+        );
 
         return {
           fileId: String(sent?.id || sent?.messageId || sent?.ts || Date.now()),
@@ -1460,85 +1420,6 @@ export class ChatInstanceManager {
       messageId,
       eventsUrl: `/api/v1/agents/${encodeURIComponent(sessionId)}/events`,
       queued: true,
-    };
-  }
-
-  async sendPlatformMessage(
-    name: string,
-    message: string,
-    options: {
-      agentId: string;
-      channelId: string;
-      conversationId?: string;
-      teamId: string;
-      files?: Array<{ buffer: Buffer; filename: string }>;
-    }
-  ): Promise<{
-    messageId: string;
-    eventsUrl?: string;
-    queued?: boolean;
-  }> {
-    if (options.files?.length) {
-      throw new Error(
-        `Platform "${name}" does not support file uploads via Chat SDK routing yet`
-      );
-    }
-
-    const connection = await this.selectConnectionForPlatform(
-      name,
-      options.channelId,
-      options.teamId
-    );
-    if (!connection) {
-      throw new Error(`No active ${name} connection is available`);
-    }
-
-    const instance = this.getInstance(connection.id);
-    if (!instance) {
-      throw new Error(`Connection ${connection.id} is not running`);
-    }
-
-    const content =
-      name === "slack" ? message : message.replace(/@me\s*/g, "").trim();
-    if (!content) {
-      throw new Error("Cannot send an empty message");
-    }
-
-    const useThread = name === "slack" && !!options.conversationId;
-
-    let sent;
-    if (useThread) {
-      const adapter = instance.chat.getAdapter?.(connection.platform);
-      const createThread = (instance.chat as any).createThread;
-      const threadId = `${connection.platform}:${options.channelId}:${options.conversationId}`;
-      // `undefined` (not `{}`) — empty object makes Chat SDK crash in
-      // handleStream reading `_currentMessage.author.userId`.
-      const thread =
-        adapter && typeof createThread === "function"
-          ? await createThread.call(
-              instance.chat,
-              adapter,
-              threadId,
-              undefined,
-              false
-            )
-          : null;
-      if (!thread) {
-        throw new Error(`Unable to resolve ${name} thread`);
-      }
-      sent = await thread.post(content);
-    } else {
-      const channel = instance.chat.channel?.(
-        `${connection.platform}:${options.channelId}`
-      );
-      if (!channel) {
-        throw new Error(`Unable to resolve ${name} channel`);
-      }
-      sent = await channel.post(content);
-    }
-
-    return {
-      messageId: String(sent?.id || sent?.messageId || sent?.ts || Date.now()),
     };
   }
 

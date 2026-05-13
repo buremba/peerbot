@@ -202,27 +202,30 @@ export function getRateLimiter(): RateLimiter {
 /**
  * Get client IP from request.
  *
- * Forwarded headers (`X-Forwarded-For`, `CF-Connecting-IP`, `X-Real-IP`) are
- * trusted ONLY when `TRUSTED_PROXY` is set — otherwise they are client-supplied
- * and a single attacker can rotate them per request to defeat IP rate limits.
- * Without a trusted proxy we fall back to the socket peer address if Bun exposed
- * it via `request.headers.get('x-bun-remote-addr')`-style hints, else 'unknown'
- * (which still rate-limits, just coarsely).
+ * When `TRUSTED_PROXY` is set, the rightmost `X-Forwarded-For` entry (the address
+ * the trusted proxy actually observed, not client-controllable) is used, falling
+ * back to `CF-Connecting-IP` / `X-Real-IP`. This is the abuse-resistant mode and
+ * operators behind a tunnel/reverse-proxy should set it.
+ *
+ * Without `TRUSTED_PROXY` we still key on the *leftmost* `X-Forwarded-For` entry
+ * as a best-effort fallback. That value is client-spoofable, but spoofing only
+ * lets an attacker evade *their own* limit (the pre-existing behavior) — far less
+ * harmful than collapsing every caller into one shared `'unknown'` bucket, which
+ * would let a single client throttle the public rate-limited endpoints (OAuth
+ * dynamic client registration, invitation preview, public-org join) for everyone.
  */
 export function getClientIP(request: Request): string {
   const trustForwarded = process.env.TRUSTED_PROXY === 'true' || process.env.TRUSTED_PROXY === '1';
-  if (trustForwarded) {
-    const xff = request.headers.get('X-Forwarded-For');
-    if (xff) {
-      // Rightmost entry is the address the trusted proxy observed; the leftmost
-      // is client-controlled. With a single trusted hop, take the last entry.
-      const parts = xff.split(',').map((p) => p.trim()).filter(Boolean);
-      if (parts.length > 0) return parts[parts.length - 1]!;
+  const xff = request.headers.get('X-Forwarded-For');
+  if (xff) {
+    const parts = xff.split(',').map((p) => p.trim()).filter(Boolean);
+    if (parts.length > 0) {
+      return trustForwarded ? parts[parts.length - 1]! : parts[0]!;
     }
-    const cf = request.headers.get('CF-Connecting-IP');
-    if (cf) return cf.trim();
-    const xreal = request.headers.get('X-Real-IP');
-    if (xreal) return xreal.trim();
   }
+  const cf = request.headers.get('CF-Connecting-IP');
+  if (cf) return cf.trim();
+  const xreal = request.headers.get('X-Real-IP');
+  if (xreal) return xreal.trim();
   return 'unknown';
 }

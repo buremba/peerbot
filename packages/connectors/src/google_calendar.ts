@@ -256,8 +256,11 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
     let nextSyncToken: string | undefined;
 
     while (true) {
+      // Always request a full page — `maxResults` is a soft cap on *stored*
+      // events, not a reason to shrink the request size (shrinking to 1 once the
+      // cap is hit would crawl a busy calendar one event per round-trip).
       const params = new URLSearchParams({
-        maxResults: String(Math.max(1, Math.min(250, maxResults - events.length))),
+        maxResults: '250',
         orderBy: 'startTime',
         singleEvents: 'true',
         timeMin: timeMin.toISOString(),
@@ -280,6 +283,7 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
 
       if (data.items) {
         for (const calEvent of data.items) {
+          if (events.length >= maxResults) break;
           const envelope = this.calendarEventToEnvelope(calEvent);
           if (envelope) events.push(envelope);
         }
@@ -290,7 +294,8 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
       // Google only returns nextSyncToken on the LAST page (no nextPageToken).
       // Must keep paginating until pageToken is exhausted, otherwise the sync
       // token is never obtained and every subsequent sync re-runs the full
-      // window from scratch. maxResults is only a soft cap on stored events.
+      // window from scratch — so we keep paging past `maxResults`, just stop
+      // appending events once the cap is reached.
       if (!pageToken) break;
     }
 

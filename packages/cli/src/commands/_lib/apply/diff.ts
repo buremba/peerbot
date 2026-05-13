@@ -169,37 +169,99 @@ function canonical(value: unknown): string {
   return JSON.stringify(value);
 }
 
+// ── Generic diff-row builder ───────────────────────────────────────────────
+
+/** One comparable field: a label plus a "did it change?" predicate. */
+interface DiffField<D, R> {
+  name: string;
+  changed: (desired: D, remote: R) => boolean;
+}
+
+/** `(a ?? "") !== (b ?? "")` — the canonical optional-string comparison. */
+function stringChanged(
+  a: string | null | undefined,
+  b: string | null | undefined
+): boolean {
+  return (a ?? "") !== (b ?? "");
+}
+
+/**
+ * The shared create / noop / update shape behind most `diffX` functions.
+ * `extras` is merged into every row (create/noop/update); `updateExtras`
+ * adds verb-specific props derived from the changed-field list (e.g.
+ * `willRestart`). `changedFields` is attached automatically on update.
+ */
+function buildDiffRow<D, R, K extends string>(opts: {
+  kind: K;
+  id: string;
+  desired: D;
+  remote: R | undefined;
+  fields: ReadonlyArray<DiffField<D, R>>;
+  extras?: Record<string, unknown>;
+  updateExtras?: (changed: string[]) => Record<string, unknown>;
+}): {
+  kind: K;
+  verb: DiffVerb;
+  id: string;
+  desired: D;
+  remote?: R;
+  changedFields?: string[];
+} & Record<string, unknown> {
+  const extras = opts.extras ?? {};
+  if (!opts.remote) {
+    return {
+      kind: opts.kind,
+      verb: "create",
+      id: opts.id,
+      desired: opts.desired,
+      ...extras,
+    };
+  }
+  const remote = opts.remote;
+  const changed = opts.fields
+    .filter((f) => f.changed(opts.desired, remote))
+    .map((f) => f.name);
+  if (changed.length === 0) {
+    return {
+      kind: opts.kind,
+      verb: "noop",
+      id: opts.id,
+      desired: opts.desired,
+      remote,
+      ...extras,
+    };
+  }
+  return {
+    kind: opts.kind,
+    verb: "update",
+    id: opts.id,
+    desired: opts.desired,
+    remote,
+    changedFields: changed,
+    ...extras,
+    ...(opts.updateExtras?.(changed) ?? {}),
+  };
+}
+
 // ── Per-resource diff ──────────────────────────────────────────────────────
 
 function diffAgent(
   desired: DesiredAgent["metadata"],
   remote: RemoteAgent | undefined
 ): AgentDiffRow {
-  if (!remote) {
-    return { kind: "agent", verb: "create", id: desired.agentId, desired };
-  }
-  const changed: string[] = [];
-  if (desired.name !== remote.name) changed.push("name");
-  if ((desired.description ?? "") !== (remote.description ?? "")) {
-    changed.push("description");
-  }
-  if (changed.length === 0) {
-    return {
-      kind: "agent",
-      verb: "noop",
-      id: desired.agentId,
-      desired,
-      remote,
-    };
-  }
-  return {
+  return buildDiffRow({
     kind: "agent",
-    verb: "update",
     id: desired.agentId,
     desired,
     remote,
-    changedFields: changed,
-  };
+    fields: [
+      { name: "name", changed: (d, r) => d.name !== r.name },
+      {
+        name: "description",
+        changed: (d, r) => stringChanged(d.description, r.description),
+      },
+    ],
+  }) as AgentDiffRow;
 }
 
 /**
@@ -282,121 +344,81 @@ function diffPlatform(
   desired: DesiredPlatform,
   remote: RemotePlatform | undefined
 ): PlatformDiffRow {
-  if (!remote) {
-    return {
-      kind: "platform",
-      verb: "create",
-      id: desired.stableId,
-      agentId,
-      desired,
-      willRestart: false,
-    };
-  }
-  const changed: string[] = [];
-  if (desired.type !== remote.platform) changed.push("type");
-  // The route handler stores `platform` inside `config` for stable-id matching,
-  // so a noop round-trip from GET will have an extra `platform` key the CLI
-  // never wrote. Strip it before diffing so an unchanged platform doesn't
-  // show as drift on every plan.
-  const remoteConfig: Record<string, unknown> = { ...(remote.config ?? {}) };
-  delete remoteConfig.platform;
-  if (!deepEqual(desired.config, remoteConfig)) changed.push("config");
-  if (changed.length === 0) {
-    return {
-      kind: "platform",
-      verb: "noop",
-      id: desired.stableId,
-      agentId,
-      desired,
-      remote,
-    };
-  }
-  return {
+  return buildDiffRow({
     kind: "platform",
-    verb: "update",
     id: desired.stableId,
-    agentId,
     desired,
     remote,
-    changedFields: changed,
-    willRestart: changed.includes("config") || changed.includes("type"),
-  };
+    extras: remote ? { agentId } : { agentId, willRestart: false },
+    fields: [
+      { name: "type", changed: (d, r) => d.type !== r.platform },
+      {
+        name: "config",
+        changed: (d, r) => {
+          // The route handler stores `platform` inside `config` for stable-id
+          // matching, so a noop round-trip from GET will have an extra
+          // `platform` key the CLI never wrote. Strip it before diffing so an
+          // unchanged platform doesn't show as drift on every plan.
+          const remoteConfig: Record<string, unknown> = { ...(r.config ?? {}) };
+          delete remoteConfig.platform;
+          return !deepEqual(d.config, remoteConfig);
+        },
+      },
+    ],
+    updateExtras: (changed) => ({
+      willRestart: changed.includes("config") || changed.includes("type"),
+    }),
+  }) as unknown as PlatformDiffRow;
 }
 
 function diffEntityType(
   desired: DesiredEntityType,
   remote: RemoteEntityType | undefined
 ): EntityTypeDiffRow {
-  if (!remote) {
-    return { kind: "entity-type", verb: "create", id: desired.slug, desired };
-  }
-  const changed: string[] = [];
-  if ((desired.name ?? "") !== (remote.name ?? "")) changed.push("name");
-  if ((desired.description ?? "") !== (remote.description ?? "")) {
-    changed.push("description");
-  }
-  if (!deepEqual(desired.required ?? [], remote.required ?? [])) {
-    changed.push("required");
-  }
-  if (!deepEqual(desired.properties, remote.properties)) {
-    changed.push("properties");
-  }
-  if (changed.length === 0) {
-    return {
-      kind: "entity-type",
-      verb: "noop",
-      id: desired.slug,
-      desired,
-      remote,
-    };
-  }
-  return {
+  return buildDiffRow({
     kind: "entity-type",
-    verb: "update",
     id: desired.slug,
     desired,
     remote,
-    changedFields: changed,
-  };
+    fields: [
+      { name: "name", changed: (d, r) => stringChanged(d.name, r.name) },
+      {
+        name: "description",
+        changed: (d, r) => stringChanged(d.description, r.description),
+      },
+      {
+        name: "required",
+        changed: (d, r) => !deepEqual(d.required ?? [], r.required ?? []),
+      },
+      {
+        name: "properties",
+        changed: (d, r) => !deepEqual(d.properties, r.properties),
+      },
+    ],
+  }) as EntityTypeDiffRow;
 }
 
 function diffRelationshipType(
   desired: DesiredRelationshipType,
   remote: RemoteRelationshipType | undefined
 ): RelationshipTypeDiffRow {
-  if (!remote) {
-    return {
-      kind: "relationship-type",
-      verb: "create",
-      id: desired.slug,
-      desired,
-    };
-  }
-  const changed: string[] = [];
-  if ((desired.name ?? "") !== (remote.name ?? "")) changed.push("name");
-  if ((desired.description ?? "") !== (remote.description ?? "")) {
-    changed.push("description");
-  }
-  if (!deepEqual(desired.rules ?? [], remote.rules ?? [])) {
-    changed.push("rules");
-  }
-  if (changed.length === 0) {
-    return {
-      kind: "relationship-type",
-      verb: "noop",
-      id: desired.slug,
-      desired,
-      remote,
-    };
-  }
-  return {
+  return buildDiffRow({
     kind: "relationship-type",
-    verb: "update",
     id: desired.slug,
     desired,
     remote,
-    changedFields: changed,
-  };
+    fields: [
+      { name: "name", changed: (d, r) => stringChanged(d.name, r.name) },
+      {
+        name: "description",
+        changed: (d, r) => stringChanged(d.description, r.description),
+      },
+      {
+        name: "rules",
+        changed: (d, r) => !deepEqual(d.rules ?? [], r.rules ?? []),
+      },
+    ],
+  }) as RelationshipTypeDiffRow;
 }
 
 /**
@@ -535,41 +557,32 @@ function diffConnection(
       `${desired.sourceFile}: connection "${desired.slug}" is bound to connector "${remote.connector_key}" remotely, but the manifest declares "${desired.connector}" — delete it manually or use a new slug`
     );
   }
-  const changed: string[] = [];
-  if ((desired.name ?? "") !== (remote.display_name ?? "")) {
-    changed.push("name");
-  }
-  if (
-    (desired.authProfileSlug ?? null) !== (remote.auth_profile_slug ?? null)
-  ) {
-    changed.push("auth");
-  }
-  if (
-    (desired.appAuthProfileSlug ?? null) !==
-    (remote.app_auth_profile_slug ?? null)
-  ) {
-    changed.push("app_auth");
-  }
-  if (!deepEqual(desired.config ?? {}, remote.config ?? {})) {
-    changed.push("config");
-  }
-  if (changed.length === 0) {
-    return {
-      kind: "connection",
-      verb: "noop",
-      id: desired.slug,
-      desired,
-      remote,
-    };
-  }
-  return {
+  return buildDiffRow({
     kind: "connection",
-    verb: "update",
     id: desired.slug,
     desired,
     remote,
-    changedFields: changed,
-  };
+    fields: [
+      {
+        name: "name",
+        changed: (d, r) => stringChanged(d.name, r.display_name),
+      },
+      {
+        name: "auth",
+        changed: (d, r) =>
+          (d.authProfileSlug ?? null) !== (r.auth_profile_slug ?? null),
+      },
+      {
+        name: "app_auth",
+        changed: (d, r) =>
+          (d.appAuthProfileSlug ?? null) !== (r.app_auth_profile_slug ?? null),
+      },
+      {
+        name: "config",
+        changed: (d, r) => !deepEqual(d.config ?? {}, r.config ?? {}),
+      },
+    ],
+  }) as ConnectionDiffRow;
 }
 
 function diffFeed(
@@ -577,37 +590,27 @@ function diffFeed(
   desired: DesiredFeed,
   remote: RemoteFeed | undefined
 ): FeedDiffRow {
-  const id = `${connectionSlug}/${desired.feedKey}`;
-  if (!remote) {
-    return {
-      kind: "feed",
-      verb: "create",
-      id,
-      connectionSlug,
-      desired,
-    };
-  }
-  const changed: string[] = [];
-  if ((desired.name ?? "") !== (remote.display_name ?? ""))
-    changed.push("name");
-  if ((desired.schedule ?? null) !== (remote.schedule ?? null)) {
-    changed.push("schedule");
-  }
-  if (!deepEqual(desired.config ?? {}, remote.config ?? {})) {
-    changed.push("config");
-  }
-  if (changed.length === 0) {
-    return { kind: "feed", verb: "noop", id, connectionSlug, desired, remote };
-  }
-  return {
+  return buildDiffRow({
     kind: "feed",
-    verb: "update",
-    id,
-    connectionSlug,
+    id: `${connectionSlug}/${desired.feedKey}`,
     desired,
     remote,
-    changedFields: changed,
-  };
+    extras: { connectionSlug },
+    fields: [
+      {
+        name: "name",
+        changed: (d, r) => stringChanged(d.name, r.display_name),
+      },
+      {
+        name: "schedule",
+        changed: (d, r) => (d.schedule ?? null) !== (r.schedule ?? null),
+      },
+      {
+        name: "config",
+        changed: (d, r) => !deepEqual(d.config ?? {}, r.config ?? {}),
+      },
+    ],
+  }) as unknown as FeedDiffRow;
 }
 
 // ── Top-level diff ─────────────────────────────────────────────────────────

@@ -118,7 +118,11 @@ import {
 } from '../utils/url-builder';
 import { getRecentFeedbackSummary } from '../utils/watcher-feedback';
 import { getAvailableOperations, getPastReactionsSummary } from '../utils/watcher-reactions';
-import { computePendingWindow, queryUncondensedWindows } from '../utils/window-utils';
+import {
+  computePendingWindow,
+  foldUnprocessedRanges,
+  queryUncondensedWindows,
+} from '../utils/window-utils';
 import type { ToolContext } from './registry';
 
 // ============================================
@@ -498,7 +502,6 @@ interface ContentRow {
   parent_context?: Record<string, unknown> | null;
   root_context?: Record<string, unknown> | null;
   client_name?: string | null;
-  cursor_fetched_count?: number | null;
 }
 
 function parseJson(value: unknown): any {
@@ -723,13 +726,8 @@ export async function getContent(
       // Direct query by content IDs - simple and fast
       logger.info(`[get_content] Filtering by ${args.content_ids.length} specific content IDs`);
 
-      // Ensure content_ids is a proper array of numbers (handle string input from JSON)
-      const contentIdsArray = Array.isArray(args.content_ids)
-        ? args.content_ids.map((id) => (typeof id === 'string' ? parseInt(id, 10) : id))
-        : String(args.content_ids)
-            .split(',')
-            .map((id) => parseInt(id.trim(), 10))
-            .filter((id) => !Number.isNaN(id));
+      // typebox validates content_ids as number[] at the tool boundary.
+      const contentIdsArray = args.content_ids;
 
       // Build parameterized IN clause for content IDs
       const idPlaceholders = contentIdsArray.map((_, i) => `$${i + 1}`).join(',');
@@ -1362,15 +1360,6 @@ interface ContentQueryParams {
   };
 }
 
-function buildContentQueryContext(params: ContentQueryParams): DataSourceContext {
-  return {
-    organizationId: params.organizationId,
-    entityIds: params.entityIds,
-    windowStart: params.window_start,
-    windowEnd: params.window_end,
-  };
-}
-
 async function queryContentData(
   sql: DbClient,
   params: ContentQueryParams
@@ -1380,7 +1369,13 @@ async function queryContentData(
   page?: { has_more: boolean; next_cursor?: { occurred_at: string; id: number } };
 }> {
   const page = params.page;
-  const results = await executeDataSources(params.sources, buildContentQueryContext(params), sql, {
+  const queryContext: DataSourceContext = {
+    organizationId: params.organizationId,
+    entityIds: params.entityIds,
+    windowStart: params.window_start,
+    windowEnd: params.window_end,
+  };
+  const results = await executeDataSources(params.sources, queryContext, sql, {
     wrapQuery: page
       ? (scopedQuery, queryParams, sourceName) => {
           if (sourceName !== page.sourceName) return scopedQuery;
@@ -1766,49 +1761,12 @@ async function handleWatcherMode(
       ),
     ]);
 
-    // Build a map of linked counts by month
-    const linkedByMonth = new Map<string, number>();
-    for (const row of monthlyLinked) {
-      const monthKey = new Date(row.month as string).toISOString().slice(0, 7);
-      linkedByMonth.set(monthKey, Number(row.linked));
-    }
+    unprocessedRanges = foldUnprocessedRanges(
+      monthlyContent as Array<{ month: string; total: number | string }>,
+      monthlyLinked as Array<{ month: string; linked: number | string }>,
+      true
+    );
 
-    // Build unprocessed ranges
-    unprocessedRanges = [];
-    for (const row of monthlyContent) {
-      const monthDate = new Date(row.month as string);
-      const monthKey = monthDate.toISOString().slice(0, 7);
-      const total = Number(row.total);
-      const linked = linkedByMonth.get(monthKey) || 0;
-      const unprocessed = total - linked;
-
-      // Calculate window boundaries for this month
-      const rangeWindowStart = new Date(monthDate);
-      const rangeWindowEnd = new Date(monthDate);
-      rangeWindowEnd.setMonth(rangeWindowEnd.getMonth() + 1);
-      rangeWindowEnd.setMilliseconds(-1); // End of last day of month
-
-      let status: UnprocessedRange['status'];
-      if (linked === 0) {
-        status = 'unprocessed';
-      } else if (unprocessed === 0) {
-        status = 'complete';
-      } else {
-        status = 'partial';
-      }
-
-      unprocessedRanges.push({
-        month: monthKey,
-        window_start: rangeWindowStart.toISOString(),
-        window_end: rangeWindowEnd.toISOString(),
-        total_content: total,
-        processed_content: linked,
-        unprocessed_content: unprocessed,
-        status,
-      });
-    }
-
-    // Filter to only show ranges with unprocessed content
     const rangesWithUnprocessed = unprocessedRanges.filter((r) => r.unprocessed_content > 0);
     if (rangesWithUnprocessed.length > 0) {
       logger.info(

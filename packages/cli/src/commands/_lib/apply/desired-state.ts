@@ -240,48 +240,46 @@ function asEnvRef(value: string): string | null {
   return match?.[1] ?? null;
 }
 
+/** Visit every string leaf in `value` (recursing arrays + plain objects). */
+function walkStrings(value: unknown, visit: (s: string) => void): void {
+  if (typeof value === "string") {
+    visit(value);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) walkStrings(item, visit);
+    return;
+  }
+  if (value && typeof value === "object") {
+    for (const v of Object.values(value as Record<string, unknown>)) {
+      walkStrings(v, visit);
+    }
+  }
+}
+
+/** Add every `$ENV` reference found among the string leaves of `value`. */
+function collectEnvRefsFrom(value: unknown, out: Set<string>): void {
+  walkStrings(value, (s) => {
+    const ref = asEnvRef(s);
+    if (ref) out.add(ref);
+  });
+}
+
 function collectEnvRefs(config: LobuTomlConfig, out: Set<string>): void {
   for (const agentConfig of Object.values(config.agents)) {
     for (const provider of agentConfig.providers) {
-      if (provider.key) {
-        const ref = asEnvRef(provider.key);
-        if (ref) out.add(ref);
-      }
-      if (provider.secret_ref) {
-        const ref = asEnvRef(provider.secret_ref);
-        if (ref) out.add(ref);
-      }
+      if (provider.key) collectEnvRefsFrom(provider.key, out);
+      if (provider.secret_ref) collectEnvRefsFrom(provider.secret_ref, out);
     }
     for (const platform of agentConfig.platforms) {
-      for (const value of Object.values(platform.config)) {
-        const ref = asEnvRef(value);
-        if (ref) out.add(ref);
-      }
+      collectEnvRefsFrom(platform.config, out);
     }
     if (agentConfig.skills.mcp) {
       for (const mcp of Object.values(agentConfig.skills.mcp)) {
-        if (mcp.headers) {
-          for (const v of Object.values(mcp.headers)) {
-            const ref = asEnvRef(v);
-            if (ref) out.add(ref);
-          }
-        }
-        if (mcp.env) {
-          for (const v of Object.values(mcp.env)) {
-            const ref = asEnvRef(v);
-            if (ref) out.add(ref);
-          }
-        }
-        if (mcp.oauth) {
-          if (mcp.oauth.client_id) {
-            const ref = asEnvRef(mcp.oauth.client_id);
-            if (ref) out.add(ref);
-          }
-          if (mcp.oauth.client_secret) {
-            const ref = asEnvRef(mcp.oauth.client_secret);
-            if (ref) out.add(ref);
-          }
-        }
+        collectEnvRefsFrom(mcp.headers, out);
+        collectEnvRefsFrom(mcp.env, out);
+        collectEnvRefsFrom(mcp.oauth?.client_id, out);
+        collectEnvRefsFrom(mcp.oauth?.client_secret, out);
       }
     }
   }

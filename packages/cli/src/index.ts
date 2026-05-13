@@ -15,6 +15,28 @@ async function getPackageVersion(): Promise<string> {
   return pkg.version ?? "0.0.0";
 }
 
+/**
+ * Options shared by most cloud subcommands. `--context` is always present;
+ * `--org` / `--json` are opt-in. Descriptions here are the canonical ones —
+ * commands needing a different wording (e.g. "Org slug override (defaults to
+ * [memory].org)") keep their own explicit `.option(...)` call.
+ */
+export interface CommonActionOpts {
+  context?: string;
+  org?: string;
+  json?: boolean;
+}
+
+function withCommonOpts(
+  cmd: Command,
+  opts: { org?: boolean; json?: boolean } = {}
+): Command {
+  cmd.option("-c, --context <name>", "Use a named context");
+  if (opts.org) cmd.option("--org <slug>", "Org slug override");
+  if (opts.json) cmd.option("--json", "Print JSON");
+  return cmd;
+}
+
 function handleCliError(error: unknown): void {
   const exitCode =
     typeof error === "object" &&
@@ -345,11 +367,12 @@ Memory:
     );
 
   // ─── login ──────────────────────────────────────────────────────────
-  program
-    .command("login")
-    .description("Authenticate with Lobu Cloud")
-    .option("--token <token>", "Use API token directly (CI/CD)")
-    .option("-c, --context <name>", "Use a named context")
+  withCommonOpts(
+    program
+      .command("login")
+      .description("Authenticate with Lobu Cloud")
+      .option("--token <token>", "Use API token directly (CI/CD)")
+  )
     .option("-f, --force", "Re-authenticate (revokes existing session)")
     .action(
       async (options: {
@@ -363,41 +386,37 @@ Memory:
     );
 
   // ─── logout ─────────────────────────────────────────────────────────
-  program
-    .command("logout")
-    .description("Clear stored credentials")
-    .option("-c, --context <name>", "Use a named context")
-    .action(async (options: { context?: string }) => {
-      const { logoutCommand } = await import("./commands/logout.js");
-      await logoutCommand(options);
-    });
+  withCommonOpts(
+    program.command("logout").description("Clear stored credentials")
+  ).action(async (options: { context?: string }) => {
+    const { logoutCommand } = await import("./commands/logout.js");
+    await logoutCommand(options);
+  });
 
   // ─── whoami ─────────────────────────────────────────────────────────
-  program
-    .command("whoami")
-    .description("Show current user and linked agent")
-    .option("-c, --context <name>", "Use a named context")
-    .action(async (options: { context?: string }) => {
-      const { whoamiCommand } = await import("./commands/whoami.js");
-      await whoamiCommand(options);
-    });
+  withCommonOpts(
+    program.command("whoami").description("Show current user and linked agent")
+  ).action(async (options: { context?: string }) => {
+    const { whoamiCommand } = await import("./commands/whoami.js");
+    await whoamiCommand(options);
+  });
 
   // ─── token ──────────────────────────────────────────────────────────
-  const token = program
-    .command("token")
-    .description("Print or create Lobu access tokens")
-    .option("-c, --context <name>", "Use a named context")
+  const token = withCommonOpts(
+    program.command("token").description("Print or create Lobu access tokens")
+  )
     .option("--raw", "Print token only (no labels)")
     .action(async (options: { context?: string; raw?: boolean }) => {
       const { tokenCommand } = await import("./commands/token.js");
       await tokenCommand(options);
     });
 
-  token
-    .command("create")
-    .description("Create an org-scoped personal access token for servers/CI")
-    .option("-c, --context <name>", "Use a named context")
-    .option("--org <slug>", "Org slug override")
+  withCommonOpts(
+    token
+      .command("create")
+      .description("Create an org-scoped personal access token for servers/CI"),
+    { org: true }
+  )
     .option("--name <name>", "Token name (default: lobu-cli-YYYY-MM-DD)")
     .option("--description <text>", "Token description")
     .option(
@@ -472,70 +491,68 @@ Memory:
     });
 
   // ─── status ─────────────────────────────────────────────────────────
-  program
-    .command("status")
-    .description("Show agent status from the active org")
-    .option("-c, --context <name>", "Use a named context")
-    .option("--org <slug>", "Org slug override")
-    .action(async (options: { context?: string; org?: string }) => {
-      const { statusCommand } = await import("./commands/status.js");
-      await statusCommand(options);
-    });
+  withCommonOpts(
+    program
+      .command("status")
+      .description("Show agent status from the active org"),
+    { org: true }
+  ).action(async (options: { context?: string; org?: string }) => {
+    const { statusCommand } = await import("./commands/status.js");
+    await statusCommand(options);
+  });
 
   // ─── org ────────────────────────────────────────────────────────────
   const org = program.command("org").description("Manage active Lobu org");
 
-  org
-    .command("list")
-    .description("List organizations available to the current login")
-    .option("-c, --context <name>", "Use a named context")
-    .action(async (options: { context?: string }) => {
-      const { orgListCommand } = await import("./commands/org.js");
-      await orgListCommand(options);
-    });
+  withCommonOpts(
+    org
+      .command("list")
+      .description("List organizations available to the current login")
+  ).action(async (options: { context?: string }) => {
+    const { orgListCommand } = await import("./commands/org.js");
+    await orgListCommand(options);
+  });
 
-  org
-    .command("current")
-    .description("Show the active org")
-    .option("-c, --context <name>", "Use a named context")
-    .action(async (options: { context?: string }) => {
-      const { orgCurrentCommand } = await import("./commands/org.js");
-      await orgCurrentCommand(options);
-    });
+  withCommonOpts(
+    org.command("current").description("Show the active org")
+  ).action(async (options: { context?: string }) => {
+    const { orgCurrentCommand } = await import("./commands/org.js");
+    await orgCurrentCommand(options);
+  });
 
-  org
-    .command("set <slug>")
-    .description("Set the active org slug")
-    .option("-c, --context <name>", "Use a named context")
-    .action(async (slug: string, options: { context?: string }) => {
-      const { orgSetCommand } = await import("./commands/org.js");
-      await orgSetCommand(slug, options);
-    });
+  withCommonOpts(
+    org.command("set <slug>").description("Set the active org slug")
+  ).action(async (slug: string, options: { context?: string }) => {
+    const { orgSetCommand } = await import("./commands/org.js");
+    await orgSetCommand(slug, options);
+  });
 
-  org
-    .command("create <slug>")
-    .description("Open the browser to create an organization (slug pre-filled)")
-    .option("-n, --name <name>", "Organization display name")
-    .option("-c, --context <name>", "Use a named context")
-    .action(
-      async (slug: string, options: { name?: string; context?: string }) => {
-        const { orgCreateCommand } = await import("./commands/org.js");
-        await orgCreateCommand(slug, options);
-      }
-    );
+  withCommonOpts(
+    org
+      .command("create <slug>")
+      .description(
+        "Open the browser to create an organization (slug pre-filled)"
+      )
+      .option("-n, --name <name>", "Organization display name")
+  ).action(
+    async (slug: string, options: { name?: string; context?: string }) => {
+      const { orgCreateCommand } = await import("./commands/org.js");
+      await orgCreateCommand(slug, options);
+    }
+  );
 
   // ─── link / unlink ──────────────────────────────────────────────────
-  program
-    .command("link")
-    .description(
-      "Bind the current directory to a (context, org). Stored at .lobu/project.json."
-    )
-    .option("-c, --context <name>", "Use a named context")
-    .option("--org <slug>", "Org slug to link (defaults to active)")
-    .action(async (options: { context?: string; org?: string }) => {
-      const { linkCommand } = await import("./commands/link.js");
-      await linkCommand(options);
-    });
+  withCommonOpts(
+    program
+      .command("link")
+      .description(
+        "Bind the current directory to a (context, org). Stored at .lobu/project.json."
+      )
+      .option("--org <slug>", "Org slug to link (defaults to active)")
+  ).action(async (options: { context?: string; org?: string }) => {
+    const { linkCommand } = await import("./commands/link.js");
+    await linkCommand(options);
+  });
 
   program
     .command("unlink")
@@ -550,54 +567,47 @@ Memory:
     .command("agent")
     .description("Manage agents via the same REST API as the web app");
 
-  agent
-    .command("list")
-    .description("List agents")
-    .option("-c, --context <name>", "Use a named context")
-    .option("--org <slug>", "Org slug override")
-    .option("--json", "Print JSON")
-    .action(
-      async (options: { context?: string; org?: string; json?: boolean }) => {
-        const { agentListCommand } = await import("./commands/agent.js");
-        await agentListCommand(options);
-      }
-    );
+  withCommonOpts(agent.command("list").description("List agents"), {
+    org: true,
+    json: true,
+  }).action(
+    async (options: { context?: string; org?: string; json?: boolean }) => {
+      const { agentListCommand } = await import("./commands/agent.js");
+      await agentListCommand(options);
+    }
+  );
 
-  agent
-    .command("get <agentId>")
-    .description("Get an agent")
-    .option("-c, --context <name>", "Use a named context")
-    .option("--org <slug>", "Org slug override")
-    .action(
-      async (agentId: string, options: { context?: string; org?: string }) => {
-        const { agentGetCommand } = await import("./commands/agent.js");
-        await agentGetCommand(agentId, options);
-      }
-    );
+  withCommonOpts(agent.command("get <agentId>").description("Get an agent"), {
+    org: true,
+  }).action(
+    async (agentId: string, options: { context?: string; org?: string }) => {
+      const { agentGetCommand } = await import("./commands/agent.js");
+      await agentGetCommand(agentId, options);
+    }
+  );
 
-  agent
-    .command("create <agentId>")
-    .description("Create an agent")
-    .option("--name <name>", "Display name")
-    .option("--description <text>", "Description")
-    .option("-c, --context <name>", "Use a named context")
-    .option("--org <slug>", "Org slug override")
-    .option("--json", "Print JSON")
-    .action(
-      async (
-        agentId: string,
-        options: {
-          name?: string;
-          description?: string;
-          context?: string;
-          org?: string;
-          json?: boolean;
-        }
-      ) => {
-        const { agentCreateCommand } = await import("./commands/agent.js");
-        await agentCreateCommand(agentId, options);
+  withCommonOpts(
+    agent
+      .command("create <agentId>")
+      .description("Create an agent")
+      .option("--name <name>", "Display name")
+      .option("--description <text>", "Description"),
+    { org: true, json: true }
+  ).action(
+    async (
+      agentId: string,
+      options: {
+        name?: string;
+        description?: string;
+        context?: string;
+        org?: string;
+        json?: boolean;
       }
-    );
+    ) => {
+      const { agentCreateCommand } = await import("./commands/agent.js");
+      await agentCreateCommand(agentId, options);
+    }
+  );
 
   agent
     .command("scaffold <agentId>")
@@ -616,87 +626,88 @@ Memory:
       }
     );
 
-  agent
-    .command("update <agentId>")
-    .description("Update agent metadata")
-    .option("--name <name>", "Display name")
-    .option("--description <text>", "Description")
-    .option("-c, --context <name>", "Use a named context")
-    .option("--org <slug>", "Org slug override")
-    .option("--json", "Print JSON")
-    .action(
-      async (
-        agentId: string,
-        options: {
-          name?: string;
-          description?: string;
-          context?: string;
-          org?: string;
-          json?: boolean;
-        }
-      ) => {
-        const { agentUpdateCommand } = await import("./commands/agent.js");
-        await agentUpdateCommand(agentId, options);
+  withCommonOpts(
+    agent
+      .command("update <agentId>")
+      .description("Update agent metadata")
+      .option("--name <name>", "Display name")
+      .option("--description <text>", "Description"),
+    { org: true, json: true }
+  ).action(
+    async (
+      agentId: string,
+      options: {
+        name?: string;
+        description?: string;
+        context?: string;
+        org?: string;
+        json?: boolean;
       }
-    );
+    ) => {
+      const { agentUpdateCommand } = await import("./commands/agent.js");
+      await agentUpdateCommand(agentId, options);
+    }
+  );
 
-  agent
-    .command("delete <agentId>")
-    .description("Delete an agent")
-    .option("--yes", "Confirm deletion")
-    .option("-c, --context <name>", "Use a named context")
-    .option("--org <slug>", "Org slug override")
-    .action(
-      async (
-        agentId: string,
-        options: { yes?: boolean; context?: string; org?: string }
-      ) => {
-        const { agentDeleteCommand } = await import("./commands/agent.js");
-        await agentDeleteCommand(agentId, options);
-      }
-    );
+  withCommonOpts(
+    agent
+      .command("delete <agentId>")
+      .description("Delete an agent")
+      .option("--yes", "Confirm deletion"),
+    { org: true }
+  ).action(
+    async (
+      agentId: string,
+      options: { yes?: boolean; context?: string; org?: string }
+    ) => {
+      const { agentDeleteCommand } = await import("./commands/agent.js");
+      await agentDeleteCommand(agentId, options);
+    }
+  );
 
   const agentConfig = agent
     .command("config")
     .description("Read or patch agent config");
 
-  agentConfig
-    .command("get <agentId>")
-    .description("Print agent config JSON")
-    .option("--output <file>", "Write JSON to a file")
-    .option("-c, --context <name>", "Use a named context")
-    .option("--org <slug>", "Org slug override")
-    .action(
-      async (
-        agentId: string,
-        options: { output?: string; context?: string; org?: string }
-      ) => {
-        const { agentConfigGetCommand } = await import("./commands/agent.js");
-        await agentConfigGetCommand(agentId, options);
-      }
-    );
+  withCommonOpts(
+    agentConfig
+      .command("get <agentId>")
+      .description("Print agent config JSON")
+      .option("--output <file>", "Write JSON to a file"),
+    { org: true }
+  ).action(
+    async (
+      agentId: string,
+      options: { output?: string; context?: string; org?: string }
+    ) => {
+      const { agentConfigGetCommand } = await import("./commands/agent.js");
+      await agentConfigGetCommand(agentId, options);
+    }
+  );
 
-  agentConfig
-    .command("patch <agentId>")
-    .description("Patch agent config from a JSON file")
-    .requiredOption("--file <file>", "JSON file with config fields to update")
-    .option("-c, --context <name>", "Use a named context")
-    .option("--org <slug>", "Org slug override")
-    .option("--json", "Print JSON")
-    .action(
-      async (
-        agentId: string,
-        options: {
-          file: string;
-          context?: string;
-          org?: string;
-          json?: boolean;
-        }
-      ) => {
-        const { agentConfigPatchCommand } = await import("./commands/agent.js");
-        await agentConfigPatchCommand(agentId, options);
+  withCommonOpts(
+    agentConfig
+      .command("patch <agentId>")
+      .description("Patch agent config from a JSON file")
+      .requiredOption(
+        "--file <file>",
+        "JSON file with config fields to update"
+      ),
+    { org: true, json: true }
+  ).action(
+    async (
+      agentId: string,
+      options: {
+        file: string;
+        context?: string;
+        org?: string;
+        json?: boolean;
       }
-    );
+    ) => {
+      const { agentConfigPatchCommand } = await import("./commands/agent.js");
+      await agentConfigPatchCommand(agentId, options);
+    }
+  );
 
   // ─── doctor ─────────────────────────────────────────────────────────
   program
@@ -745,81 +756,78 @@ Memory:
   const memoryOrg = memory
     .command("org")
     .description("Manage active organization for memory MCP");
-  memoryOrg
-    .command("current")
-    .description("Show the active org")
-    .option("-c, --context <name>", "Use a named context")
-    .action(async (options: { context?: string }) => {
-      const { memoryOrgCurrentCommand } = await import(
-        "./commands/memory/org.js"
+  withCommonOpts(
+    memoryOrg.command("current").description("Show the active org")
+  ).action(async (options: { context?: string }) => {
+    const { memoryOrgCurrentCommand } = await import(
+      "./commands/memory/org.js"
+    );
+    await memoryOrgCurrentCommand(options);
+  });
+  withCommonOpts(
+    memoryOrg.command("set <slug>").description("Set the active org slug")
+  ).action(async (slug: string, options: { context?: string }) => {
+    const { memoryOrgSetCommand } = await import("./commands/memory/org.js");
+    await memoryOrgSetCommand(slug, options);
+  });
+
+  withCommonOpts(
+    memory
+      .command("run [tool] [params]")
+      .description("Invoke an MCP tool (or list tools when called bare)")
+      .option("--url <url>", "Server URL override"),
+    { org: true }
+  ).action(
+    async (
+      tool: string | undefined,
+      params: string | undefined,
+      options: { url?: string; org?: string; context?: string }
+    ) => {
+      const { memoryRunCommand } = await import("./commands/memory/run.js");
+      await memoryRunCommand(tool, params, options);
+    }
+  );
+
+  withCommonOpts(
+    memory
+      .command("exec <script>")
+      .description("Run a TypeScript ClientSDK script via the memory MCP")
+      .option("--url <url>", "Server URL override"),
+    { org: true }
+  ).action(
+    async (
+      script: string,
+      options: { url?: string; org?: string; context?: string }
+    ) => {
+      const { memoryRunCommand } = await import("./commands/memory/run.js");
+      await memoryRunCommand("run_sdk", JSON.stringify({ script }), options);
+    }
+  );
+
+  withCommonOpts(
+    memory
+      .command("health")
+      .description("Validate Lobu login + MCP connectivity")
+      .option("--url <url>", "Server URL override"),
+    { org: true }
+  ).action(
+    async (options: { url?: string; org?: string; context?: string }) => {
+      const { memoryHealthCommand } = await import(
+        "./commands/memory/health.js"
       );
-      await memoryOrgCurrentCommand(options);
-    });
-  memoryOrg
-    .command("set <slug>")
-    .description("Set the active org slug")
-    .option("-c, --context <name>", "Use a named context")
-    .action(async (slug: string, options: { context?: string }) => {
-      const { memoryOrgSetCommand } = await import("./commands/memory/org.js");
-      await memoryOrgSetCommand(slug, options);
-    });
+      await memoryHealthCommand(options);
+    }
+  );
 
-  memory
-    .command("run [tool] [params]")
-    .description("Invoke an MCP tool (or list tools when called bare)")
-    .option("--url <url>", "Server URL override")
-    .option("--org <slug>", "Org slug override")
-    .option("-c, --context <name>", "Use a named context")
-    .action(
-      async (
-        tool: string | undefined,
-        params: string | undefined,
-        options: { url?: string; org?: string; context?: string }
-      ) => {
-        const { memoryRunCommand } = await import("./commands/memory/run.js");
-        await memoryRunCommand(tool, params, options);
-      }
-    );
-
-  memory
-    .command("exec <script>")
-    .description("Run a TypeScript ClientSDK script via the memory MCP")
-    .option("--url <url>", "Server URL override")
-    .option("--org <slug>", "Org slug override")
-    .option("-c, --context <name>", "Use a named context")
-    .action(
-      async (
-        script: string,
-        options: { url?: string; org?: string; context?: string }
-      ) => {
-        const { memoryRunCommand } = await import("./commands/memory/run.js");
-        await memoryRunCommand("run_sdk", JSON.stringify({ script }), options);
-      }
-    );
-
-  memory
-    .command("health")
-    .description("Validate Lobu login + MCP connectivity")
-    .option("--url <url>", "Server URL override")
-    .option("--org <slug>", "Org slug override")
-    .option("-c, --context <name>", "Use a named context")
-    .action(
-      async (options: { url?: string; org?: string; context?: string }) => {
-        const { memoryHealthCommand } = await import(
-          "./commands/memory/health.js"
-        );
-        await memoryHealthCommand(options);
-      }
-    );
-
-  memory
-    .command("configure")
-    .description(
-      "Write OpenClaw plugin config pointing at the active memory MCP"
-    )
-    .option("--url <url>", "Server URL override")
-    .option("--org <slug>", "Org slug override")
-    .option("-c, --context <name>", "Use a named context")
+  withCommonOpts(
+    memory
+      .command("configure")
+      .description(
+        "Write OpenClaw plugin config pointing at the active memory MCP"
+      )
+      .option("--url <url>", "Server URL override"),
+    { org: true }
+  )
     .option(
       "--config-path <path>",
       "OpenClaw config path (defaults to ~/.openclaw/openclaw.json)"

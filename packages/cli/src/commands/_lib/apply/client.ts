@@ -136,6 +136,19 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/**
+ * Read the first array-valued key from a response body. Endpoints that may
+ * return either a snake_case or camelCase collection key go through this so the
+ * `body.snake ?? body.camel ?? []` triple isn't repeated at every call site.
+ */
+function pickArray<T>(body: Record<string, unknown>, ...keys: string[]): T[] {
+  for (const key of keys) {
+    const value = body[key];
+    if (Array.isArray(value)) return value as T[];
+  }
+  return [];
+}
+
 function extractApiError(
   parsed: Record<string, unknown>,
   status: number,
@@ -381,7 +394,38 @@ export class ApplyClient {
       schema_type: "entity_type",
       action: "list",
     });
-    return body.entity_types ?? body.entityTypes ?? [];
+    return pickArray(body, "entity_types", "entityTypes");
+  }
+
+  /**
+   * The `manage_entity_schema` admin tool exposes separate `create` / `update`
+   * actions and surfaces duplicates as a structured error code rather than a
+   * 4xx. Probe with `create`; on a duplicate-named-resource code, retry with
+   * `update`.
+   */
+  private async upsertSchemaResource(
+    schemaType: "entity_type" | "relationship_type",
+    payload: Record<string, unknown>
+  ): Promise<UpsertEntityTypeResult> {
+    const url = `/api/${this.orgSlug}/manage_entity_schema`;
+    try {
+      await this.request("POST", url, {
+        schema_type: schemaType,
+        action: "create",
+        ...payload,
+      });
+      return { created: true };
+    } catch (err) {
+      if (err instanceof ApiError && isDuplicateError(err)) {
+        await this.request("POST", url, {
+          schema_type: schemaType,
+          action: "update",
+          ...payload,
+        });
+        return { updated: true };
+      }
+      throw err;
+    }
   }
 
   async upsertEntityType(entity: {
@@ -391,27 +435,7 @@ export class ApplyClient {
     required?: string[];
     properties?: Record<string, unknown>;
   }): Promise<UpsertEntityTypeResult> {
-    // The admin tool exposes separate `create` / `update` actions and surfaces
-    // duplicates as a structured error code rather than a 4xx. Probe with
-    // `create`; on a duplicate-named-resource code, retry with `update`.
-    try {
-      await this.request("POST", `/api/${this.orgSlug}/manage_entity_schema`, {
-        schema_type: "entity_type",
-        action: "create",
-        ...entity,
-      });
-      return { created: true };
-    } catch (err) {
-      if (err instanceof ApiError && isDuplicateError(err)) {
-        await this.request(
-          "POST",
-          `/api/${this.orgSlug}/manage_entity_schema`,
-          { schema_type: "entity_type", action: "update", ...entity }
-        );
-        return { updated: true };
-      }
-      throw err;
-    }
+    return this.upsertSchemaResource("entity_type", entity);
   }
 
   async listRelationshipTypes(): Promise<RemoteRelationshipType[]> {
@@ -422,7 +446,7 @@ export class ApplyClient {
       schema_type: "relationship_type",
       action: "list",
     });
-    return body.relationship_types ?? body.relationshipTypes ?? [];
+    return pickArray(body, "relationship_types", "relationshipTypes");
   }
 
   async upsertRelationshipType(rel: {
@@ -432,26 +456,10 @@ export class ApplyClient {
     rules?: Array<{ source: string; target: string }>;
   }): Promise<UpsertEntityTypeResult> {
     const { rules, ...payload } = rel;
-    let result: UpsertEntityTypeResult;
-    try {
-      await this.request("POST", `/api/${this.orgSlug}/manage_entity_schema`, {
-        schema_type: "relationship_type",
-        action: "create",
-        ...payload,
-      });
-      result = { created: true };
-    } catch (err) {
-      if (err instanceof ApiError && isDuplicateError(err)) {
-        await this.request(
-          "POST",
-          `/api/${this.orgSlug}/manage_entity_schema`,
-          { schema_type: "relationship_type", action: "update", ...payload }
-        );
-        result = { updated: true };
-      } else {
-        throw err;
-      }
-    }
+    const result = await this.upsertSchemaResource(
+      "relationship_type",
+      payload
+    );
 
     // Register rules separately via add_rule. Backend treats add_rule as
     // idempotent; duplicate-add surfaces a structured error we can swallow.

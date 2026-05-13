@@ -47,3 +47,25 @@ export async function requireExists(
     throw new Error(`${displayLabel} ${id} not found`);
   }
 }
+
+/**
+ * Tables whose `id` column is allocated via SELECT MAX(id) + 1. Whitelisted so
+ * the table name can be safely interpolated into sql.unsafe().
+ */
+const NUMERIC_ID_TABLES = ['watchers', 'watcher_windows', 'watcher_window_events', 'watcher_versions'] as const;
+
+export type NumericIdTable = (typeof NUMERIC_ID_TABLES)[number];
+
+/**
+ * Allocate the next numeric id for a whitelisted table (`COALESCE(MAX(id), 0) + 1`).
+ * Callers that need this to be race-free must hold an appropriate lock.
+ */
+export async function getNextNumericId(sql: DbClient, table: NumericIdTable): Promise<number> {
+  if (!NUMERIC_ID_TABLES.includes(table)) {
+    throw new Error(`Invalid table name: ${table}`);
+  }
+  const rows = await sql.unsafe<{ next_id: number }>(
+    `SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM ${table}`
+  );
+  return Number(rows[0]?.next_id ?? 1);
+}

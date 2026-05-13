@@ -3,13 +3,13 @@ import dns from "node:dns/promises";
 import { createLogger, verifyWorkerToken } from "@lobu/core";
 import type { Context } from "hono";
 import { Hono } from "hono";
-import type { IMessageQueue } from "../../infrastructure/queue/index.js";
 import { storePendingTool } from "./pending-tool-store.js";
 import { requiresToolApproval } from "../../permissions/approval-policy.js";
 import type { GrantStore } from "../../permissions/grant-store.js";
 import {
   getStoredCredential,
   refreshCredential,
+  startDeviceAuth,
   tryCompletePendingDeviceAuth,
 } from "../../routes/internal/device-auth.js";
 import type { WritableSecretStore } from "../../secrets/index.js";
@@ -19,6 +19,33 @@ import type { CachedMcpServer, McpTool, McpToolCache } from "./tool-cache.js";
 const logger = createLogger("mcp-proxy");
 
 const MAX_BODY_SIZE = 1024 * 1024; // 1MB
+
+/** Standard MCP `initialize` request body. */
+const INITIALIZE_BODY = JSON.stringify({
+  jsonrpc: "2.0",
+  method: "initialize",
+  params: {
+    protocolVersion: "2024-11-05",
+    capabilities: {},
+    clientInfo: { name: "lobu-gateway", version: "1.0.0" },
+  },
+  id: 0,
+});
+
+/** Standard MCP `notifications/initialized` body. */
+const INITIALIZED_NOTIFICATION_BODY = JSON.stringify({
+  jsonrpc: "2.0",
+  method: "notifications/initialized",
+});
+
+/** Payload shape surfaced to the user when an MCP upstream needs auth. */
+type AuthRequiredPayload = {
+  status: "login_required" | "pending";
+  url?: string;
+  userCode?: string;
+  message: string;
+  expiresInSeconds?: number;
+};
 
 /**
  * Parse a JSON-RPC response body that may be either a plain JSON object
@@ -213,7 +240,6 @@ export class McpProxy {
 
   constructor(
     private readonly configService: McpConfigSource,
-    _queue: IMessageQueue,
     options: {
       secretStore: WritableSecretStore;
       toolCache?: McpToolCache;
@@ -349,29 +375,15 @@ export class McpProxy {
 
     try {
       // Clear any stale session before fresh tool discovery
-      const sessionKey = this.buildSessionKey(agentId, mcpId, scopeKey);
-      await this.deleteSession(sessionKey);
+      this.deleteSession(this.buildSessionKey(agentId, mcpId, scopeKey));
 
       // Step 1: Send initialize to capture server instructions
       let instructions: string | undefined;
       try {
-        const initBody = JSON.stringify({
-          jsonrpc: "2.0",
-          method: "initialize",
-          params: {
-            protocolVersion: "2024-11-05",
-            capabilities: {},
-            clientInfo: { name: "lobu-gateway", version: "1.0.0" },
-          },
-          id: 0,
-        });
-
-        const initResponse = await this.sendUpstreamRequest(
+        const initResponse = await this.sendInitialize(
           httpServer,
           agentId,
           mcpId,
-          "POST",
-          initBody,
           scopeKey,
           workerToken
         );
@@ -409,21 +421,13 @@ export class McpProxy {
         }
 
         // Step 2: Send initialized notification (required by MCP spec)
-        const notifyBody = JSON.stringify({
-          jsonrpc: "2.0",
-          method: "notifications/initialized",
-        });
-        await this.sendUpstreamRequest(
+        await this.sendInitializedNotification(
           httpServer,
           agentId,
           mcpId,
-          "POST",
-          notifyBody,
           scopeKey,
           workerToken
-        ).catch(() => {
-          /* noop */
-        });
+        );
       } catch (initError) {
         logger.warn("MCP initialize failed (continuing with tools/list)", {
           mcpId,
@@ -569,42 +573,28 @@ export class McpProxy {
       if (cached) return c.json({ tools: cached });
     }
 
+    const directAuthToken =
+      httpServer.internal === true ? auth.token : undefined;
+
     try {
       try {
-        const initBody = JSON.stringify({
-          jsonrpc: "2.0",
-          method: "initialize",
-          params: {
-            protocolVersion: "2024-11-05",
-            capabilities: {},
-            clientInfo: { name: "lobu-gateway", version: "1.0.0" },
-          },
-          id: 0,
-        });
-        await this.sendUpstreamRequest(
+        const initResponse = await this.sendInitialize(
           httpServer,
           agentId,
           mcpId,
-          "POST",
-          initBody,
           scopeKey,
-          httpServer.internal === true ? auth.token : undefined
+          directAuthToken
         );
-        const notifyBody = JSON.stringify({
-          jsonrpc: "2.0",
-          method: "notifications/initialized",
+        await initResponse.text().catch(() => {
+          /* noop — body drained, result not needed for plain tool listing */
         });
-        await this.sendUpstreamRequest(
+        await this.sendInitializedNotification(
           httpServer,
           agentId,
           mcpId,
-          "POST",
-          notifyBody,
           scopeKey,
-          httpServer.internal === true ? auth.token : undefined
-        ).catch(() => {
-          /* noop */
-        });
+          directAuthToken
+        );
       } catch (initError) {
         logger.warn("MCP initialize failed before listing tools", {
           mcpId,
@@ -626,7 +616,7 @@ export class McpProxy {
         "POST",
         jsonRpcBody,
         scopeKey,
-        httpServer.internal === true ? auth.token : undefined
+        directAuthToken
       );
 
       const data = (await parseJsonRpcResponse(response)) as JsonRpcResponse;
@@ -697,96 +687,41 @@ export class McpProxy {
     }
 
     // Check tool approval based on annotations and grants.
-    if (this.grantStore) {
-      const { found, annotations } = await this.getToolAnnotations(
-        mcpId,
-        toolName,
-        agentId,
-        auth.tokenData,
-        auth.token
-      );
-      if (found && requiresToolApproval(annotations)) {
-        const pattern = `/mcp/${mcpId}/tools/${toolName}`;
-        const hasGrant = await this.grantStore.hasGrant(agentId, pattern);
-        if (!hasGrant) {
-          logger.info("Tool call blocked: requires approval", {
-            agentId,
-            mcpId,
-            toolName,
-            pattern,
-          });
-
-          if (this.onToolBlocked) {
-            const requestId = `ta_${randomUUID()}`;
-            await storePendingTool(
-              requestId,
-              {
-                mcpId,
-                toolName,
-                args: toolArguments,
-                agentId,
-                userId: requesterUserId,
-                channelId: auth.tokenData.channelId || "",
-                conversationId: auth.tokenData.conversationId || "",
-                teamId: auth.tokenData.teamId,
-                connectionId: auth.tokenData.connectionId,
-              },
-              this.PENDING_TOOL_TTL
-            ).catch((err: unknown) =>
-              logger.error(
-                { requestId, error: String(err) },
-                "Failed to store pending tool invocation"
-              )
-            );
-
-            await this.onToolBlocked(
-              requestId,
-              agentId,
-              requesterUserId,
-              mcpId,
-              toolName,
-              toolArguments,
-              pattern,
-              auth.tokenData.channelId || "",
-              auth.tokenData.conversationId || "",
-              auth.tokenData.teamId,
-              auth.tokenData.connectionId,
-              auth.tokenData.platform
-            ).catch((err) =>
-              logger.error(
-                { requestId, error: String(err) },
-                "onToolBlocked callback failed"
-              )
-            );
-
-            return c.json(
-              {
-                content: [
-                  {
-                    type: "text",
-                    text: "Tool call requires approval. The user has been asked to approve. Your session will end. The result will arrive as your next message.",
-                  },
-                ],
-                isError: true,
-              },
-              403
-            );
-          }
-
-          return c.json(
+    const approval = await this.evaluateToolApproval(
+      mcpId,
+      toolName,
+      toolArguments,
+      agentId,
+      auth.tokenData,
+      auth.token
+    );
+    if (approval === "blocked-notified") {
+      return c.json(
+        {
+          content: [
             {
-              content: [
-                {
-                  type: "text",
-                  text: `Tool call requires approval. Request access approval in chat for: ${mcpId} → ${toolName}`,
-                },
-              ],
-              isError: true,
+              type: "text",
+              text: "Tool call requires approval. The user has been asked to approve. Your session will end. The result will arrive as your next message.",
             },
-            403
-          );
-        }
-      }
+          ],
+          isError: true,
+        },
+        403
+      );
+    }
+    if (approval === "blocked-no-channel") {
+      return c.json(
+        {
+          content: [
+            {
+              type: "text",
+              text: `Tool call requires approval. Request access approval in chat for: ${mcpId} → ${toolName}`,
+            },
+          ],
+          isError: true,
+        },
+        403
+      );
     }
 
     try {
@@ -812,90 +747,29 @@ export class McpProxy {
       // servers (Sentry, etc.) return 401 at the transport layer, not a
       // JSON-RPC error body.
       if (response.status === 401) {
-        const wwwAuth = response.headers.get("www-authenticate");
-        // Drain body so the connection can be reused.
-        await response.body?.cancel().catch(() => {
-          /* noop */
-        });
-        const authCodeResult = await this.tryAutoAuthCodeFlow({
+        const payload = await this.handleUpstream401({
+          response,
           mcpId,
           agentId,
           userId: requesterUserId,
           scopeKey,
           httpServer,
-          wwwAuthenticate: wwwAuth,
+          wwwAuthenticate: response.headers.get("www-authenticate"),
           platform: auth.tokenData.platform,
           channelId,
           conversationId: auth.tokenData.conversationId || "",
           teamId: auth.tokenData.teamId,
           connectionId: auth.tokenData.connectionId,
+          deviceAuthFallback: true,
         });
-        if (authCodeResult) {
-          if (this.onAuthRequired) {
-            await this.onAuthRequired(
-              agentId,
-              requesterUserId,
-              mcpId,
-              authCodeResult,
-              channelId,
-              auth.tokenData.conversationId || "",
-              auth.tokenData.teamId,
-              auth.tokenData.connectionId,
-              auth.tokenData.platform
-            ).catch((err) =>
-              logger.error(
-                { mcpId, error: String(err) },
-                "onAuthRequired callback failed"
-              )
-            );
-          }
-          return c.json(
-            {
-              content: [{ type: "text", text: JSON.stringify(authCodeResult) }],
-              isError: true,
-            },
-            200
-          );
-        }
-        // Fall through to device-auth legacy fallback if auth-code flow failed.
-        const legacyAuth = await this.tryAutoDeviceAuth(
-          mcpId,
-          agentId,
-          requesterUserId
-        );
-        if (legacyAuth) {
-          if (this.onAuthRequired) {
-            await this.onAuthRequired(
-              agentId,
-              requesterUserId,
-              mcpId,
-              legacyAuth,
-              channelId,
-              auth.tokenData.conversationId || "",
-              auth.tokenData.teamId,
-              auth.tokenData.connectionId,
-              auth.tokenData.platform
-            ).catch((err) =>
-              logger.error(
-                { mcpId, error: String(err) },
-                "onAuthRequired callback failed"
-              )
-            );
-          }
-          return c.json(
-            {
-              content: [{ type: "text", text: JSON.stringify(legacyAuth) }],
-              isError: true,
-            },
-            200
-          );
-        }
         return c.json(
           {
             content: [
               {
                 type: "text",
-                text: `Authentication required for ${mcpId} but OAuth discovery failed.`,
+                text: payload
+                  ? JSON.stringify(payload)
+                  : `Authentication required for ${mcpId} but OAuth discovery failed.`,
               },
             ],
             isError: true,
@@ -956,35 +830,16 @@ export class McpProxy {
             scopeKey
           );
           if (autoAuthResult) {
-            if (this.onAuthRequired) {
-              await this.onAuthRequired(
-                agentId,
-                requesterUserId,
-                mcpId,
-                autoAuthResult,
-                auth.tokenData.channelId || "",
-                auth.tokenData.conversationId || "",
-                auth.tokenData.teamId,
-                auth.tokenData.connectionId,
-                auth.tokenData.platform
-              ).catch((err) =>
-                logger.error(
-                  { mcpId, error: String(err) },
-                  "onAuthRequired callback failed"
-                )
-              );
-            }
-            return c.json(
-              {
-                content: [
-                  {
-                    type: "text",
-                    text: JSON.stringify(autoAuthResult),
-                  },
-                ],
-                isError: true,
-              },
-              200
+            await this.fireAuthRequired(
+              agentId,
+              requesterUserId,
+              mcpId,
+              autoAuthResult,
+              auth.tokenData.channelId || "",
+              auth.tokenData.conversationId || "",
+              auth.tokenData.teamId,
+              auth.tokenData.connectionId,
+              auth.tokenData.platform
             );
           }
           return c.json(
@@ -992,7 +847,9 @@ export class McpProxy {
               content: [
                 {
                   type: "text",
-                  text: `Authentication required for ${mcpId}. Call ${mcpId}_login to authenticate.`,
+                  text: autoAuthResult
+                    ? JSON.stringify(autoAuthResult)
+                    : `Authentication required for ${mcpId}. Call ${mcpId}_login to authenticate.`,
                 },
               ],
               isError: true,
@@ -1087,7 +944,7 @@ export class McpProxy {
     }
 
     const agentId = tokenData.agentId || tokenData.userId;
-    const httpServer = await this.configService.getHttpServer(mcpId!, agentId);
+    const httpServer = await this.configService.getHttpServer(mcpId, agentId);
 
     if (!httpServer) {
       return this.sendJsonRpcError(
@@ -1114,82 +971,28 @@ export class McpProxy {
             // On trip: reuse the onToolBlocked path to return a JSON-RPC error
             // with trip.reason. Wiring deferred to the PR that registers the
             // first real pre-tool guardrail.
-            const { found, annotations } = await this.getToolAnnotations(
-              mcpId!,
+            const approval = await this.evaluateToolApproval(
+              mcpId,
               toolName,
+              toolArgs,
               agentId,
               tokenData,
               sessionToken
             );
-            if (found && requiresToolApproval(annotations)) {
-              const pattern = `/mcp/${mcpId}/tools/${toolName}`;
-              const hasGrant = await this.grantStore.hasGrant(agentId, pattern);
-              if (!hasGrant) {
-                logger.info("Tool call blocked (JSON-RPC): requires approval", {
-                  agentId,
-                  mcpId,
-                  toolName,
-                  pattern,
-                });
-
-                if (this.onToolBlocked) {
-                  const requestId = `ta_${randomUUID()}`;
-                  await storePendingTool(
-                    requestId,
+            if (approval !== "allow") {
+              return c.json({
+                jsonrpc: "2.0",
+                id: jsonRpc.id,
+                result: {
+                  content: [
                     {
-                      mcpId: mcpId!,
-                      toolName,
-                      args: toolArgs,
-                      agentId,
-                      userId: tokenData.userId,
-                      channelId: tokenData.channelId || "",
-                      conversationId: tokenData.conversationId || "",
-                      teamId: tokenData.teamId,
-                      connectionId: tokenData.connectionId,
+                      type: "text",
+                      text: "Tool call requires approval. The user has been asked to approve. Your session will end. The result will arrive as your next message.",
                     },
-                    this.PENDING_TOOL_TTL
-                  ).catch((err: unknown) =>
-                    logger.error(
-                      { requestId, error: String(err) },
-                      "Failed to store pending tool invocation"
-                    )
-                  );
-
-                  await this.onToolBlocked(
-                    requestId,
-                    agentId,
-                    tokenData.userId,
-                    mcpId!,
-                    toolName,
-                    toolArgs,
-                    pattern,
-                    tokenData.channelId || "",
-                    tokenData.conversationId || "",
-                    tokenData.teamId,
-                    tokenData.connectionId,
-                    tokenData.platform
-                  ).catch((err) =>
-                    logger.error(
-                      { requestId, error: String(err) },
-                      "onToolBlocked callback failed"
-                    )
-                  );
-                }
-
-                return c.json({
-                  jsonrpc: "2.0",
-                  id: jsonRpc.id,
-                  result: {
-                    content: [
-                      {
-                        type: "text",
-                        text: "Tool call requires approval. The user has been asked to approve. Your session will end. The result will arrive as your next message.",
-                      },
-                    ],
-                    isError: true,
-                  },
-                });
-              }
+                  ],
+                  isError: true,
+                },
+              });
             }
           }
         }
@@ -1210,7 +1013,7 @@ export class McpProxy {
         c,
         httpServer,
         agentId,
-        mcpId!,
+        mcpId,
         scopeKey,
         {
           userId: tokenData.userId,
@@ -1230,6 +1033,92 @@ export class McpProxy {
         `Failed to connect to MCP '${mcpId}': ${error instanceof Error ? error.message : "Unknown error"}`
       );
     }
+  }
+
+  /**
+   * Shared tool-approval gate used by the REST (`handleCallTool`) and JSON-RPC
+   * (`handleProxyRequest`) call paths. Resolves tool annotations, checks the
+   * grant store, and — if blocked — stores the pending invocation and fires
+   * `onToolBlocked`. Returns:
+   * - `"allow"`: not blocked (no approval needed, or a grant exists);
+   * - `"blocked-notified"`: blocked and the user was asked to approve;
+   * - `"blocked-no-channel"`: blocked but no `onToolBlocked` handler is wired,
+   *   so no approval card could be sent.
+   */
+  private async evaluateToolApproval(
+    mcpId: string,
+    toolName: string,
+    toolArgs: Record<string, unknown>,
+    agentId: string,
+    tokenData: any,
+    token: string
+  ): Promise<"allow" | "blocked-notified" | "blocked-no-channel"> {
+    if (!this.grantStore) return "allow";
+
+    const { found, annotations } = await this.getToolAnnotations(
+      mcpId,
+      toolName,
+      agentId,
+      tokenData,
+      token
+    );
+    if (!found || !requiresToolApproval(annotations)) return "allow";
+
+    const pattern = `/mcp/${mcpId}/tools/${toolName}`;
+    if (await this.grantStore.hasGrant(agentId, pattern)) return "allow";
+
+    logger.info("Tool call blocked: requires approval", {
+      agentId,
+      mcpId,
+      toolName,
+      pattern,
+    });
+
+    if (!this.onToolBlocked) return "blocked-no-channel";
+
+    const requestId = `ta_${randomUUID()}`;
+    await storePendingTool(
+      requestId,
+      {
+        mcpId,
+        toolName,
+        args: toolArgs,
+        agentId,
+        userId: tokenData.userId,
+        channelId: tokenData.channelId || "",
+        conversationId: tokenData.conversationId || "",
+        teamId: tokenData.teamId,
+        connectionId: tokenData.connectionId,
+      },
+      this.PENDING_TOOL_TTL
+    ).catch((err: unknown) =>
+      logger.error(
+        { requestId, error: String(err) },
+        "Failed to store pending tool invocation"
+      )
+    );
+
+    await this.onToolBlocked(
+      requestId,
+      agentId,
+      tokenData.userId,
+      mcpId,
+      toolName,
+      toolArgs,
+      pattern,
+      tokenData.channelId || "",
+      tokenData.conversationId || "",
+      tokenData.teamId,
+      tokenData.connectionId,
+      tokenData.platform
+    ).catch((err) =>
+      logger.error(
+        { requestId, error: String(err) },
+        "onToolBlocked callback failed"
+      )
+    );
+
+    return "blocked-notified";
   }
 
   private async getToolAnnotations(
@@ -1341,6 +1230,11 @@ export class McpProxy {
     return refreshed?.accessToken ?? null;
   }
 
+  /**
+   * Single egress point for non-streamed JSON-RPC calls to an MCP upstream.
+   * Resolves the per-scope credential, runs the SSRF guard, and tracks the
+   * upstream session id.
+   */
   private async sendUpstreamRequest(
     httpServer: HttpMcpServerConfig,
     agentId: string,
@@ -1351,7 +1245,7 @@ export class McpProxy {
     directAuthToken?: string
   ): Promise<Response> {
     const sessionKey = this.buildSessionKey(agentId, mcpId, scopeKey);
-    const sessionId = await this.getSession(sessionKey);
+    const sessionId = this.getSession(sessionKey);
 
     // Internal MCPs (lobu-memory) live in the same Lobu process and accept
     // the worker JWT directly; forcing a second OAuth login would block
@@ -1364,24 +1258,8 @@ export class McpProxy {
       if (token) credentialToken = token;
     }
 
-    if (!httpServer.internal && (await isInternalUrl(httpServer.upstreamUrl))) {
-      logger.warn("Blocked SSRF attempt to internal URL", {
-        url: httpServer.upstreamUrl,
-        mcpId,
-        agentId,
-      });
-      return new Response(
-        JSON.stringify({
-          jsonrpc: "2.0",
-          id: null,
-          error: {
-            code: -32600,
-            message: "Upstream URL resolves to a blocked internal network",
-          },
-        }),
-        { status: 403, headers: { "Content-Type": "application/json" } }
-      );
-    }
+    const ssrfBlock = await this.ssrfBlockResponse(httpServer, mcpId, agentId);
+    if (ssrfBlock) return ssrfBlock;
 
     const headers = this.buildUpstreamHeaders(
       sessionId,
@@ -1399,10 +1277,41 @@ export class McpProxy {
     // Track session
     const newSessionId = response.headers.get("Mcp-Session-Id");
     if (newSessionId) {
-      await this.setSession(sessionKey, newSessionId);
+      this.setSession(sessionKey, newSessionId);
     }
 
     return response;
+  }
+
+  /**
+   * SSRF guard: if the upstream URL resolves to an internal/reserved network
+   * (and the server isn't an embedded internal MCP), log it and return a 403
+   * JSON-RPC error response. Returns null when the request may proceed.
+   */
+  private async ssrfBlockResponse(
+    httpServer: HttpMcpServerConfig,
+    mcpId: string,
+    agentId: string
+  ): Promise<Response | null> {
+    if (httpServer.internal || !(await isInternalUrl(httpServer.upstreamUrl))) {
+      return null;
+    }
+    logger.warn("Blocked SSRF attempt to internal URL", {
+      url: httpServer.upstreamUrl,
+      mcpId,
+      agentId,
+    });
+    return new Response(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: null,
+        error: {
+          code: -32600,
+          message: "Upstream URL resolves to a blocked internal network",
+        },
+      }),
+      { status: 403, headers: { "Content-Type": "application/json" } }
+    );
   }
 
   private async forwardRequest(
@@ -1421,12 +1330,8 @@ export class McpProxy {
       workerToken?: string;
     }
   ): Promise<Response> {
-    if (!httpServer.internal && (await isInternalUrl(httpServer.upstreamUrl))) {
-      logger.warn("Blocked SSRF attempt to internal URL", {
-        url: httpServer.upstreamUrl,
-        mcpId,
-        agentId,
-      });
+    const ssrfBlock = await this.ssrfBlockResponse(httpServer, mcpId, agentId);
+    if (ssrfBlock) {
       return this.sendJsonRpcError(
         c,
         -32600,
@@ -1435,7 +1340,7 @@ export class McpProxy {
     }
 
     const sessionKey = this.buildSessionKey(agentId, mcpId, scopeKey);
-    let sessionId = await this.getSession(sessionKey);
+    let sessionId = this.getSession(sessionKey);
 
     const bodyText = await this.getRequestBodyAsText(c);
 
@@ -1464,7 +1369,7 @@ export class McpProxy {
     if (!sessionId && c.req.method === "POST") {
       try {
         await this.reinitializeSession(httpServer, agentId, mcpId, scopeKey, credentialToken);
-        sessionId = await this.getSession(sessionKey);
+        sessionId = this.getSession(sessionKey);
       } catch (error) {
         logger.warn("Pre-emptive MCP re-initialization failed", {
           mcpId,
@@ -1496,42 +1401,22 @@ export class McpProxy {
 
     // Detect HTTP 401 + WWW-Authenticate → start MCP OAuth 2.1 auth-code flow.
     if (response.status === 401 && authContext) {
-      const wwwAuth = response.headers.get("www-authenticate");
-      await response.body?.cancel().catch(() => {
-        /* noop */
-      });
-      const authCodeResult = await this.tryAutoAuthCodeFlow({
+      const payload = await this.handleUpstream401({
+        response,
         mcpId,
         agentId,
         userId: authContext.userId,
         scopeKey: scopeKey ?? authContext.userId,
         httpServer,
-        wwwAuthenticate: wwwAuth,
+        wwwAuthenticate: response.headers.get("www-authenticate"),
         platform: authContext.platform ?? "",
         channelId: authContext.channelId,
         conversationId: authContext.conversationId,
         teamId: authContext.teamId,
         connectionId: authContext.connectionId,
+        deviceAuthFallback: false,
       });
-      if (authCodeResult && this.onAuthRequired) {
-        await this.onAuthRequired(
-          agentId,
-          authContext.userId,
-          mcpId,
-          authCodeResult,
-          authContext.channelId,
-          authContext.conversationId,
-          authContext.teamId,
-          authContext.connectionId,
-          authContext.platform
-        ).catch((err) =>
-          logger.error(
-            { mcpId, error: String(err) },
-            "onAuthRequired callback failed (forward)"
-          )
-        );
-      }
-      const payload = authCodeResult ?? {
+      const finalPayload = payload ?? {
         status: "login_required" as const,
         message: `Authentication required for ${mcpId}.`,
       };
@@ -1540,7 +1425,7 @@ export class McpProxy {
           jsonrpc: "2.0",
           id: null,
           result: {
-            content: [{ type: "text", text: JSON.stringify(payload) }],
+            content: [{ type: "text", text: JSON.stringify(finalPayload) }],
             isError: true,
           },
         },
@@ -1564,7 +1449,7 @@ export class McpProxy {
       );
       try {
         await this.reinitializeSession(httpServer, agentId, mcpId, scopeKey, credentialToken);
-        sessionId = await this.getSession(sessionKey);
+        sessionId = this.getSession(sessionKey);
         const retryHeaders = this.buildUpstreamHeaders(
           sessionId,
           httpServer.headers,
@@ -1586,7 +1471,7 @@ export class McpProxy {
 
     const newSessionId = response.headers.get("Mcp-Session-Id");
     if (newSessionId) {
-      await this.setSession(sessionKey, newSessionId);
+      this.setSession(sessionKey, newSessionId);
       logger.debug("Stored MCP session ID", {
         mcpId,
         agentId,
@@ -1621,6 +1506,46 @@ export class McpProxy {
     }
   }
 
+  /** Send the MCP `initialize` request to an upstream and return the raw response. */
+  private async sendInitialize(
+    httpServer: HttpMcpServerConfig,
+    agentId: string,
+    mcpId: string,
+    scopeKey?: string,
+    directAuthToken?: string
+  ): Promise<Response> {
+    return this.sendUpstreamRequest(
+      httpServer,
+      agentId,
+      mcpId,
+      "POST",
+      INITIALIZE_BODY,
+      scopeKey,
+      directAuthToken
+    );
+  }
+
+  /** Send the MCP `notifications/initialized` notification (best-effort). */
+  private async sendInitializedNotification(
+    httpServer: HttpMcpServerConfig,
+    agentId: string,
+    mcpId: string,
+    scopeKey?: string,
+    directAuthToken?: string
+  ): Promise<void> {
+    await this.sendUpstreamRequest(
+      httpServer,
+      agentId,
+      mcpId,
+      "POST",
+      INITIALIZED_NOTIFICATION_BODY,
+      scopeKey,
+      directAuthToken
+    ).catch(() => {
+      /* noop */
+    });
+  }
+
   /**
    * Re-initialize an MCP session by sending initialize + notifications/initialized.
    * Called when upstream returns "Server not initialized" (stale session).
@@ -1633,51 +1558,123 @@ export class McpProxy {
     directAuthToken?: string
   ): Promise<void> {
     // Clear stale session
-    const sessionKey = this.buildSessionKey(agentId, mcpId, scopeKey);
-    await this.deleteSession(sessionKey);
+    this.deleteSession(this.buildSessionKey(agentId, mcpId, scopeKey));
 
-    // Send initialize
-    const initBody = JSON.stringify({
-      jsonrpc: "2.0",
-      method: "initialize",
-      params: {
-        protocolVersion: "2024-11-05",
-        capabilities: {},
-        clientInfo: { name: "lobu-gateway", version: "1.0.0" },
-      },
-      id: 0,
-    });
-
-    const initResponse = await this.sendUpstreamRequest(
+    const initResponse = await this.sendInitialize(
       httpServer,
       agentId,
       mcpId,
-      "POST",
-      initBody,
+      scopeKey,
+      directAuthToken
+    );
+    await initResponse.text(); // consume response (may be JSON or SSE-framed)
+
+    await this.sendInitializedNotification(
+      httpServer,
+      agentId,
+      mcpId,
       scopeKey,
       directAuthToken
     );
 
-    await initResponse.text(); // consume response (may be JSON or SSE-framed)
+    logger.info("Re-initialized MCP session", { mcpId, agentId });
+  }
 
-    // Send notifications/initialized
-    const notifyBody = JSON.stringify({
-      jsonrpc: "2.0",
-      method: "notifications/initialized",
-    });
-    await this.sendUpstreamRequest(
-      httpServer,
-      agentId,
-      mcpId,
-      "POST",
-      notifyBody,
-      scopeKey,
-      directAuthToken
-    ).catch(() => {
+  /**
+   * Handle an HTTP 401 from an MCP upstream: drain the response body, attempt
+   * the OAuth 2.1 auth-code flow (RFC 9728 → 8414 → 7591 discovery), and —
+   * when `deviceAuthFallback` is set — fall back to the legacy device-code
+   * flow. Fires `onAuthRequired` with whichever payload succeeds and returns
+   * it (or null when no flow could be started).
+   */
+  private async handleUpstream401(params: {
+    response?: Response;
+    mcpId: string;
+    agentId: string;
+    userId: string;
+    scopeKey: string;
+    httpServer: HttpMcpServerConfig;
+    wwwAuthenticate: string | null;
+    platform?: string;
+    channelId: string;
+    conversationId: string;
+    teamId?: string;
+    connectionId?: string;
+    deviceAuthFallback: boolean;
+  }): Promise<AuthRequiredPayload | null> {
+    // Drain the body so the connection can be reused.
+    await params.response?.body?.cancel().catch(() => {
       /* noop */
     });
 
-    logger.info("Re-initialized MCP session", { mcpId, agentId });
+    const fire = async (payload: AuthRequiredPayload) => {
+      await this.fireAuthRequired(
+        params.agentId,
+        params.userId,
+        params.mcpId,
+        payload,
+        params.channelId,
+        params.conversationId,
+        params.teamId,
+        params.connectionId,
+        params.platform
+      );
+      return payload;
+    };
+
+    const authCodeResult = await this.tryAutoAuthCodeFlow({
+      mcpId: params.mcpId,
+      agentId: params.agentId,
+      userId: params.userId,
+      scopeKey: params.scopeKey,
+      httpServer: params.httpServer,
+      wwwAuthenticate: params.wwwAuthenticate,
+      platform: params.platform ?? "",
+      channelId: params.channelId,
+      conversationId: params.conversationId,
+      teamId: params.teamId,
+      connectionId: params.connectionId,
+    });
+    if (authCodeResult) return fire(authCodeResult);
+
+    if (params.deviceAuthFallback) {
+      const legacyAuth = await this.tryAutoDeviceAuth(
+        params.mcpId,
+        params.agentId,
+        params.scopeKey
+      );
+      if (legacyAuth) return fire(legacyAuth);
+    }
+
+    return null;
+  }
+
+  /** Invoke `onAuthRequired` (if wired), swallowing/logging callback errors. */
+  private async fireAuthRequired(
+    agentId: string,
+    userId: string,
+    mcpId: string,
+    payload: AuthRequiredPayload,
+    channelId: string,
+    conversationId: string,
+    teamId: string | undefined,
+    connectionId: string | undefined,
+    platform: string | undefined
+  ): Promise<void> {
+    if (!this.onAuthRequired) return;
+    await this.onAuthRequired(
+      agentId,
+      userId,
+      mcpId,
+      payload,
+      channelId,
+      conversationId,
+      teamId,
+      connectionId,
+      platform
+    ).catch((err) =>
+      logger.error({ mcpId, error: String(err) }, "onAuthRequired callback failed")
+    );
   }
 
   /**
@@ -1695,42 +1692,20 @@ export class McpProxy {
   }): Promise<void> {
     const { mcpId, agentId, httpServer, wwwAuthenticate, scopeKey, tokenData } =
       params;
-    const userId = tokenData?.userId || scopeKey;
-    const channelId = tokenData?.channelId || "";
-    const conversationId = tokenData?.conversationId || "";
-    const platform = tokenData?.platform;
-
-    const result = await this.tryAutoAuthCodeFlow({
+    await this.handleUpstream401({
       mcpId,
       agentId,
-      userId,
+      userId: tokenData?.userId || scopeKey,
       scopeKey,
       httpServer,
       wwwAuthenticate,
-      platform: platform ?? "",
-      channelId,
-      conversationId,
+      platform: tokenData?.platform,
+      channelId: tokenData?.channelId || "",
+      conversationId: tokenData?.conversationId || "",
       teamId: tokenData?.teamId,
       connectionId: tokenData?.connectionId,
+      deviceAuthFallback: false,
     });
-    if (!result || !this.onAuthRequired) return;
-
-    await this.onAuthRequired(
-      agentId,
-      userId,
-      mcpId,
-      result,
-      channelId,
-      conversationId,
-      tokenData?.teamId,
-      tokenData?.connectionId,
-      platform
-    ).catch((err) =>
-      logger.error(
-        { mcpId, error: String(err) },
-        "onAuthRequired callback failed (discovery)"
-      )
-    );
   }
 
   /**
@@ -1834,19 +1809,9 @@ export class McpProxy {
   private async tryAutoDeviceAuth(
     mcpId: string,
     agentId: string,
-    userId: string
-  ): Promise<{
-    status: "login_required" | "pending";
-    url?: string;
-    userCode?: string;
-    message: string;
-    expiresInSeconds?: number;
-  } | null> {
+    scopeKey: string
+  ): Promise<AuthRequiredPayload | null> {
     try {
-      const { startDeviceAuth } = await import(
-        "../../routes/internal/device-auth.js"
-      );
-
       // Existing-flow detection now happens inside startDeviceAuth — it
       // reuses any non-expired pending flow already persisted in the secret
       // store and returns it instead of restarting.
@@ -1855,7 +1820,7 @@ export class McpProxy {
         this.configService as any,
         mcpId,
         agentId,
-        userId
+        scopeKey
       );
       if (!result) return null;
       const url = result.verificationUriComplete || result.verificationUri;
@@ -1876,7 +1841,7 @@ export class McpProxy {
     }
   }
 
-  private async getSession(key: string): Promise<string | null> {
+  private getSession(key: string): string | null {
     const entry = this.sessions.get(key);
     if (!entry) return null;
     if (entry.expiresAt <= Date.now()) {
@@ -1888,14 +1853,14 @@ export class McpProxy {
     return entry.sessionId;
   }
 
-  private async setSession(key: string, sessionId: string): Promise<void> {
+  private setSession(key: string, sessionId: string): void {
     this.sessions.set(key, {
       sessionId,
       expiresAt: Date.now() + this.SESSION_TTL_SECONDS * 1000,
     });
   }
 
-  private async deleteSession(key: string): Promise<void> {
+  private deleteSession(key: string): void {
     this.sessions.delete(key);
   }
 

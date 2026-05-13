@@ -4,7 +4,7 @@ import type { Server } from "node:http";
 import { createServer } from "node:http";
 import { getRequestListener } from "@hono/node-server";
 import { OpenAPIHono } from "@hono/zod-openapi";
-import { createLogger, moduleRegistry as coreModuleRegistry } from "@lobu/core";
+import { createLogger } from "@lobu/core";
 import { apiReference } from "@scalar/hono-api-reference";
 import { cors } from "hono/cors";
 import { secureHeaders } from "hono/secure-headers";
@@ -171,10 +171,6 @@ export function createGatewayApp(
     app.route("/worker", workerGateway.getApp());
     logger.debug("Worker gateway routes enabled at :8080/worker/*");
   }
-
-  const expressApp = createExpressAdapter(app);
-  coreModuleRegistry.registerEndpoints(expressApp);
-  logger.debug("Module endpoints registered");
 
   // MCP OAuth callback MUST register before the MCP proxy mount at /mcp,
   // otherwise the proxy's `/:mcpId/*` route swallows /mcp/oauth/callback.
@@ -391,169 +387,182 @@ export function createGatewayApp(
         return null;
       };
 
-      authRouter.post("/:provider/save-key", async (c: any) => {
-        try {
-          const providerId = c.req.param("provider");
-          const mod = getModelProviderModules().find(
-            (m) => m.providerId === providerId
-          );
-          if (!mod) return c.json({ error: "Unknown provider" }, 404);
-
-          const body = await c.req.json();
-          const { agentId, apiKey } = body;
-          if (!agentId || !apiKey) {
-            return c.json({ error: "Missing agentId or apiKey" }, 400);
-          }
-
-          const principal = await verifyProviderAuth(c, agentId);
-          if (!principal) {
-            return c.json({ error: "Unauthorized" }, 401);
-          }
-
-          await authProfilesManager.upsertProfile({
-            agentId,
-            userId: principal.userId,
-            provider: providerId,
-            credential: apiKey,
-            authType: "api-key",
-            label: createAuthProfileLabel(mod.providerDisplayName, apiKey),
-            makePrimary: true,
-          });
-
-          return c.json({ success: true });
-        } catch (error) {
-          logger.error("Failed to save API key", { error });
-          return c.json({ error: "Failed to save API key" }, 500);
-        }
-      });
-
-      authRouter.post("/:provider/start", async (c: any) => {
-        try {
-          const providerId = c.req.param("provider");
-          const mod = getModelProviderModules().find(
-            (m) => m.providerId === providerId
-          );
-          if (!mod) return c.json({ error: "Unknown provider" }, 404);
-
-          const supportsDeviceCode =
-            mod.authType === "device-code" ||
-            mod.supportedAuthTypes?.includes("device-code");
-          if (!supportsDeviceCode) {
-            return c.json(
-              { error: "Provider does not support device code" },
-              400
+      // Each provider-auth handler does the same envelope work: resolve the
+      // `:provider` module (404 if unknown), then a try/catch that logs and
+      // returns a 500 with `errorLabel`. Factor that out so the bodies are
+      // just the per-route logic.
+      const withProviderAndAuth =
+        (
+          errorLabel: string,
+          handler: (args: {
+            c: any;
+            mod: ReturnType<typeof getModelProviderModules>[number];
+            providerId: string;
+          }) => Promise<Response>
+        ) =>
+        async (c: any): Promise<Response> => {
+          try {
+            const providerId = c.req.param("provider");
+            const mod = getModelProviderModules().find(
+              (m) => m.providerId === providerId
             );
+            if (!mod) return c.json({ error: "Unknown provider" }, 404);
+            return await handler({ c, mod, providerId });
+          } catch (error) {
+            logger.error(errorLabel, { error });
+            return c.json({ error: errorLabel }, 500);
           }
+        };
 
-          if (typeof mod.startDeviceCode !== "function") {
-            return c.json({ error: "Device code start not implemented" }, 501);
-          }
-
-          const body = (await c.req.json().catch(() => ({}))) as {
-            agentId?: string;
-          };
-          const agentId = body.agentId?.trim();
-          if (!agentId) return c.json({ error: "Missing agentId" }, 400);
-
-          if (!(await verifyProviderAuth(c, agentId))) {
-            return c.json({ error: "Unauthorized" }, 401);
-          }
-
-          const result = await mod.startDeviceCode(agentId);
-          return c.json(result);
-        } catch (error) {
-          logger.error("Failed to start device code flow", { error });
-          return c.json({ error: "Failed to start device code flow" }, 500);
-        }
-      });
-
-      authRouter.post("/:provider/poll", async (c: any) => {
-        try {
-          const providerId = c.req.param("provider");
-          const mod = getModelProviderModules().find(
-            (m) => m.providerId === providerId
+      const requireDeviceCode = (
+        c: any,
+        mod: ReturnType<typeof getModelProviderModules>[number],
+        method: "startDeviceCode" | "pollDeviceCode"
+      ): Response | null => {
+        const supportsDeviceCode =
+          mod.authType === "device-code" ||
+          mod.supportedAuthTypes?.includes("device-code");
+        if (!supportsDeviceCode) {
+          return c.json(
+            { error: "Provider does not support device code" },
+            400
           );
-          if (!mod) return c.json({ error: "Unknown provider" }, 404);
-
-          const supportsDeviceCode =
-            mod.authType === "device-code" ||
-            mod.supportedAuthTypes?.includes("device-code");
-          if (!supportsDeviceCode) {
-            return c.json(
-              { error: "Provider does not support device code" },
-              400
-            );
-          }
-
-          if (typeof mod.pollDeviceCode !== "function") {
-            return c.json({ error: "Device code poll not implemented" }, 501);
-          }
-
-          const body = (await c.req.json().catch(() => ({}))) as {
-            agentId?: string;
-            deviceAuthId?: string;
-            userCode?: string;
-          };
-          const agentId = body.agentId?.trim();
-          const deviceAuthId = body.deviceAuthId?.trim();
-          const userCode = body.userCode?.trim();
-          if (!agentId || !deviceAuthId || !userCode) {
-            return c.json(
-              { error: "Missing agentId, deviceAuthId, or userCode" },
-              400
-            );
-          }
-
-          const principal = await verifyProviderAuth(c, agentId);
-          if (!principal) {
-            return c.json({ error: "Unauthorized" }, 401);
-          }
-
-          const result = await mod.pollDeviceCode(agentId, principal.userId, {
-            deviceAuthId,
-            userCode,
-          });
-          return c.json(result);
-        } catch (error) {
-          logger.error("Failed to poll device code flow", { error });
-          return c.json({ error: "Failed to poll device code flow" }, 500);
         }
-      });
-
-      authRouter.post("/:provider/logout", async (c: any) => {
-        try {
-          const providerId = c.req.param("provider");
-          const mod = getModelProviderModules().find(
-            (m) => m.providerId === providerId
-          );
-          if (!mod) return c.json({ error: "Unknown provider" }, 404);
-
-          const body = await c.req.json().catch(() => ({}));
-          const agentId = body.agentId || c.req.query("agentId");
-          if (!agentId) {
-            return c.json({ error: "Missing agentId" }, 400);
-          }
-
-          const principal = await verifyProviderAuth(c, agentId);
-          if (!principal) {
-            return c.json({ error: "Unauthorized" }, 401);
-          }
-
-          await authProfilesManager.deleteProviderProfiles(
-            agentId,
-            providerId,
+        if (typeof mod[method] !== "function") {
+          return c.json(
             {
-              userId: principal.userId,
-              ...(body.profileId ? { profileId: body.profileId } : {}),
-            }
+              error:
+                method === "startDeviceCode"
+                  ? "Device code start not implemented"
+                  : "Device code poll not implemented",
+            },
+            501
           );
-
-          return c.json({ success: true });
-        } catch (error) {
-          logger.error("Failed to logout", { error });
-          return c.json({ error: "Failed to logout" }, 500);
         }
-      });
+        return null;
+      };
+
+      authRouter.post(
+        "/:provider/save-key",
+        withProviderAndAuth(
+          "Failed to save API key",
+          async ({ c, mod, providerId }) => {
+            const body = await c.req.json();
+            const { agentId, apiKey } = body;
+            if (!agentId || !apiKey) {
+              return c.json({ error: "Missing agentId or apiKey" }, 400);
+            }
+
+            const principal = await verifyProviderAuth(c, agentId);
+            if (!principal) {
+              return c.json({ error: "Unauthorized" }, 401);
+            }
+
+            await authProfilesManager.upsertProfile({
+              agentId,
+              userId: principal.userId,
+              provider: providerId,
+              credential: apiKey,
+              authType: "api-key",
+              label: createAuthProfileLabel(mod.providerDisplayName, apiKey),
+              makePrimary: true,
+            });
+
+            return c.json({ success: true });
+          }
+        )
+      );
+
+      authRouter.post(
+        "/:provider/start",
+        withProviderAndAuth(
+          "Failed to start device code flow",
+          async ({ c, mod }) => {
+            const unsupported = requireDeviceCode(c, mod, "startDeviceCode");
+            if (unsupported) return unsupported;
+
+            const body = (await c.req.json().catch(() => ({}))) as {
+              agentId?: string;
+            };
+            const agentId = body.agentId?.trim();
+            if (!agentId) return c.json({ error: "Missing agentId" }, 400);
+
+            if (!(await verifyProviderAuth(c, agentId))) {
+              return c.json({ error: "Unauthorized" }, 401);
+            }
+
+            const result = await mod.startDeviceCode!(agentId);
+            return c.json(result);
+          }
+        )
+      );
+
+      authRouter.post(
+        "/:provider/poll",
+        withProviderAndAuth(
+          "Failed to poll device code flow",
+          async ({ c, mod }) => {
+            const unsupported = requireDeviceCode(c, mod, "pollDeviceCode");
+            if (unsupported) return unsupported;
+
+            const body = (await c.req.json().catch(() => ({}))) as {
+              agentId?: string;
+              deviceAuthId?: string;
+              userCode?: string;
+            };
+            const agentId = body.agentId?.trim();
+            const deviceAuthId = body.deviceAuthId?.trim();
+            const userCode = body.userCode?.trim();
+            if (!agentId || !deviceAuthId || !userCode) {
+              return c.json(
+                { error: "Missing agentId, deviceAuthId, or userCode" },
+                400
+              );
+            }
+
+            const principal = await verifyProviderAuth(c, agentId);
+            if (!principal) {
+              return c.json({ error: "Unauthorized" }, 401);
+            }
+
+            const result = await mod.pollDeviceCode!(agentId, principal.userId, {
+              deviceAuthId,
+              userCode,
+            });
+            return c.json(result);
+          }
+        )
+      );
+
+      authRouter.post(
+        "/:provider/logout",
+        withProviderAndAuth(
+          "Failed to logout",
+          async ({ c, providerId }) => {
+            const body = await c.req.json().catch(() => ({}));
+            const agentId = body.agentId || c.req.query("agentId");
+            if (!agentId) {
+              return c.json({ error: "Missing agentId" }, 400);
+            }
+
+            const principal = await verifyProviderAuth(c, agentId);
+            if (!principal) {
+              return c.json({ error: "Unauthorized" }, 401);
+            }
+
+            await authProfilesManager.deleteProviderProfiles(
+              agentId,
+              providerId,
+              {
+                userId: principal.userId,
+                ...(body.profileId ? { profileId: body.profileId } : {}),
+              }
+            );
+
+            return c.json({ success: true });
+          }
+        )
+      );
     }
 
     const agentSettingsStore = coreServices.getAgentSettingsStore();
@@ -885,202 +894,6 @@ function startGatewayServer(app: OpenAPIHono, port = 8080): Server {
   server.listen(port);
   logger.debug(`Server listening on port ${port}`);
   return server;
-}
-
-/**
- * Handle Express-style handler with Hono context
- */
-async function handleExpressHandler(c: any, handler: any): Promise<Response> {
-  const { req, res, responsePromise } = await createExpressCompatObjects(c);
-  await handler(req, res);
-  return responsePromise;
-}
-
-/**
- * Create Express-compatible request/response objects from Hono context
- */
-async function createExpressCompatObjects(c: any, overridePath?: string) {
-  let resolveResponse: (response: Response) => void;
-  const responsePromise = new Promise<Response>((resolve) => {
-    resolveResponse = resolve;
-  });
-
-  const url = new URL(c.req.url);
-  const headers: Record<string, string> = {};
-  c.req.raw.headers.forEach((value: string, key: string) => {
-    headers[key] = value;
-  });
-
-  const req: any = {
-    method: c.req.method,
-    url: c.req.url,
-    path: overridePath || url.pathname,
-    headers,
-    query: Object.fromEntries(url.searchParams),
-    params: c.req.param() || {},
-    body: null,
-    get: (name: string) => headers[name.toLowerCase()],
-    on: () => {
-      /* no-op */
-    },
-  };
-
-  let statusCode = 200;
-  const responseHeaders = new Headers();
-  let isStreaming = false;
-  let streamController: ReadableStreamDefaultController<Uint8Array> | null =
-    null;
-
-  const res: any = {
-    statusCode: 200,
-    destroyed: false,
-    writableEnded: false,
-
-    status(code: number) {
-      statusCode = code;
-      this.statusCode = code;
-      return this;
-    },
-
-    setHeader(name: string, value: string) {
-      responseHeaders.set(name, value);
-      return this;
-    },
-
-    set(name: string, value: string) {
-      responseHeaders.set(name, value);
-      return this;
-    },
-
-    json(data: any) {
-      responseHeaders.set("Content-Type", "application/json");
-      resolveResponse?.(
-        new Response(JSON.stringify(data), {
-          status: statusCode,
-          headers: responseHeaders,
-        })
-      );
-    },
-
-    send(data: any) {
-      resolveResponse?.(
-        new Response(data, {
-          status: statusCode,
-          headers: responseHeaders,
-        })
-      );
-    },
-
-    text(data: string) {
-      resolveResponse?.(
-        new Response(data, {
-          status: statusCode,
-          headers: responseHeaders,
-        })
-      );
-    },
-
-    end(data?: any) {
-      this.writableEnded = true;
-      if (isStreaming && streamController) {
-        if (data) {
-          streamController.enqueue(
-            typeof data === "string" ? new TextEncoder().encode(data) : data
-          );
-        }
-        streamController.close();
-      } else {
-        resolveResponse?.(
-          new Response(data || null, {
-            status: statusCode,
-            headers: responseHeaders,
-          })
-        );
-      }
-    },
-
-    write(chunk: any) {
-      if (!isStreaming) {
-        isStreaming = true;
-        const stream = new ReadableStream({
-          start(controller) {
-            streamController = controller;
-            if (chunk) {
-              controller.enqueue(
-                typeof chunk === "string"
-                  ? new TextEncoder().encode(chunk)
-                  : chunk
-              );
-            }
-          },
-        });
-        resolveResponse?.(
-          new Response(stream, {
-            status: statusCode,
-            headers: responseHeaders,
-          })
-        );
-      } else if (streamController) {
-        streamController.enqueue(
-          typeof chunk === "string" ? new TextEncoder().encode(chunk) : chunk
-        );
-      }
-      return true;
-    },
-
-    flushHeaders() {
-      /* no-op */
-    },
-  };
-
-  if (["POST", "PUT", "PATCH"].includes(c.req.method)) {
-    const contentType = c.req.header("content-type") || "";
-    const buffer = await c.req.raw.clone().arrayBuffer();
-    if (contentType.includes("application/json")) {
-      try {
-        req.body = JSON.parse(new TextDecoder().decode(buffer));
-      } catch {
-        req.body = buffer;
-      }
-    } else {
-      req.body = buffer;
-    }
-  }
-
-  return { req, res, responsePromise };
-}
-
-/**
- * Create Express-like adapter for compatibility with module registry
- */
-function createExpressAdapter(honoApp: any) {
-  return {
-    get: (path: string, ...handlers: any[]) => {
-      const handler = handlers[handlers.length - 1];
-      honoApp.get(path, (c: any) => handleExpressHandler(c, handler));
-    },
-    post: (path: string, ...handlers: any[]) => {
-      const handler = handlers[handlers.length - 1];
-      honoApp.post(path, (c: any) => handleExpressHandler(c, handler));
-    },
-    put: (path: string, ...handlers: any[]) => {
-      const handler = handlers[handlers.length - 1];
-      honoApp.put(path, (c: any) => handleExpressHandler(c, handler));
-    },
-    delete: (path: string, ...handlers: any[]) => {
-      const handler = handlers[handlers.length - 1];
-      honoApp.delete(path, (c: any) => handleExpressHandler(c, handler));
-    },
-    use: (pathOrHandler: any, handler?: any) => {
-      if (typeof pathOrHandler === "function") {
-        // no-op
-      } else if (handler) {
-        honoApp.all(`${pathOrHandler}/*`, (c: any) =>
-          handleExpressHandler(c, handler)
-        );
-      }
-    },
-  };
 }
 
 /**

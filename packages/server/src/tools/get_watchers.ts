@@ -39,6 +39,7 @@ import { buildWatchersUrl, type EntityInfo, getPublicWebUrl } from '../utils/url
 import {
   buildWindowsSelectClause,
   ensureNumber,
+  foldUnprocessedRanges,
   parseBigintArray,
   queryUncondensedWindows,
 } from '../utils/window-utils';
@@ -1008,39 +1009,13 @@ export async function getWatcher(
       };
     }
 
-    const unprocessedRanges: import('../types/watchers').UnprocessedRange[] = [];
-    if (args.include_pending_ranges) {
-      const linkedByMonth = new Map<string, number>();
-      for (const row of monthlyLinkedResult as Array<Record<string, unknown>>) {
-        const monthKey = new Date(row.month as string).toISOString().slice(0, 7);
-        linkedByMonth.set(monthKey, Number(row.linked));
-      }
-
-      for (const row of monthlyContentResult as Array<Record<string, unknown>>) {
-        const monthDate = new Date(row.month as string);
-        const monthKey = monthDate.toISOString().slice(0, 7);
-        const total = Number(row.total);
-        const linked = linkedByMonth.get(monthKey) || 0;
-        const unprocessed = total - linked;
-
-        const rangeStart = new Date(monthDate);
-        const rangeEnd = new Date(monthDate);
-        rangeEnd.setMonth(rangeEnd.getMonth() + 1);
-        rangeEnd.setMilliseconds(-1);
-
-        if (unprocessed > 0) {
-          unprocessedRanges.push({
-            month: monthKey,
-            window_start: rangeStart.toISOString(),
-            window_end: rangeEnd.toISOString(),
-            total_content: total,
-            processed_content: linked,
-            unprocessed_content: unprocessed,
-            status: linked === 0 ? 'unprocessed' : 'partial',
-          });
-        }
-      }
-    }
+    const unprocessedRanges = args.include_pending_ranges
+      ? foldUnprocessedRanges(
+          monthlyContentResult as Array<{ month: string; total: number | string }>,
+          monthlyLinkedResult as Array<{ month: string; linked: number | string }>,
+          false
+        )
+      : [];
 
     // Generate structured next_action for MCP clients
     const nextAction = nextWindow

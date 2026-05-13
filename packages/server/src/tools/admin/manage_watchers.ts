@@ -60,7 +60,7 @@ import { validateTemplate } from '../../watchers/renderer';
 import { validateClassifierSourcePaths, validateExtractionSchema } from '../../watchers/validator';
 import type { ToolContext } from '../registry';
 import { routeAction } from './action-router';
-import { requireExists } from './helpers/db-helpers';
+import { getNextNumericId, requireExists } from './helpers/db-helpers';
 
 // Initialize AJV for JSON Schema validation
 // removeAdditional: true strips fields like 'embedding' that workers add but aren't in the schema
@@ -152,38 +152,77 @@ function summarizeResults(results: WatcherOperationResult[]) {
   return { total: results.length, successful, failed: results.length - successful };
 }
 
-function parseJson(value: unknown): any {
+/**
+ * Coerce a maybe-stringified JSON value into a parsed value. One helper, three
+ * failure policies:
+ *  - `keep`        — non-string passes through; bad string returns the raw string.
+ *  - `throw`       — `null`/`undefined` → `undefined`; bad string throws `${label} must be valid JSON: …`.
+ *  - `{ fallback }` — `null`/`undefined` or bad string → the supplied fallback.
+ * `requireObject` (with `parseError`/`shapeError` messages) additionally rejects
+ * non-object / array results — used for `extracted_data`.
+ */
+function coerceJson(value: unknown, opts: { onError: 'keep' }): unknown;
+function coerceJson<T>(value: unknown, opts: { onError: 'throw'; label: string }): T | undefined;
+function coerceJson<T>(value: unknown, opts: { onError: { fallback: T } }): T;
+function coerceJson(
+  value: unknown,
+  opts: { requireObject: { parseError: string; shapeError: string } }
+): Record<string, unknown>;
+function coerceJson(
+  value: unknown,
+  opts: {
+    onError?: 'keep' | 'throw' | { fallback: unknown };
+    label?: string;
+    requireObject?: { parseError: string; shapeError: string };
+  }
+): unknown {
+  let parsed: unknown;
   if (typeof value === 'string') {
     try {
-      return JSON.parse(value);
-    } catch {
-      return value;
+      parsed = JSON.parse(value);
+    } catch (error) {
+      if (opts.requireObject) throw new Error(opts.requireObject.parseError);
+      if (opts.onError === 'keep') return value;
+      if (opts.onError === 'throw') {
+        throw new Error(
+          `${opts.label} must be valid JSON: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+      if (opts.onError) return opts.onError.fallback;
+      throw error;
+    }
+  } else if (value === undefined || value === null) {
+    if (opts.requireObject) {
+      // fall through to the shape check below
+    } else if (opts.onError === 'throw') {
+      return undefined;
+    } else if (opts.onError && opts.onError !== 'keep') {
+      return opts.onError.fallback;
+    }
+    parsed = value;
+  } else {
+    parsed = value;
+  }
+
+  if (opts.requireObject) {
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error(opts.requireObject.shapeError);
     }
   }
-  return value;
+  return parsed;
+}
+
+function parseJson(value: unknown): any {
+  return coerceJson(value, { onError: 'keep' });
 }
 
 function normalizeExtractedData(value: unknown): Record<string, unknown> {
-  const parsedValue =
-    typeof value === 'string'
-      ? (() => {
-          try {
-            return JSON.parse(value);
-          } catch {
-            throw new Error(
-              'extracted_data must be a valid JSON object. Received an invalid JSON string.'
-            );
-          }
-        })()
-      : value;
-
-  if (!parsedValue || typeof parsedValue !== 'object' || Array.isArray(parsedValue)) {
-    throw new Error(
-      'extracted_data must be a JSON object matching the template extraction_schema.'
-    );
-  }
-
-  return parsedValue as Record<string, unknown>;
+  return coerceJson(value, {
+    requireObject: {
+      parseError: 'extracted_data must be a valid JSON object. Received an invalid JSON string.',
+      shapeError: 'extracted_data must be a JSON object matching the template extraction_schema.',
+    },
+  });
 }
 
 function normalizeStringArray(values: unknown): string[] {
@@ -195,24 +234,6 @@ function normalizeStringArray(values: unknown): string[] {
         .filter((value) => value.length > 0)
     )
   );
-}
-
-type NumericIdTable = 'watchers' | 'watcher_windows' | 'watcher_window_events';
-
-const ALLOWED_NUMERIC_ID_TABLES = new Set<string>([
-  'watchers',
-  'watcher_windows',
-  'watcher_window_events',
-]);
-
-async function getNextNumericId(sql: DbClient, table: NumericIdTable): Promise<number> {
-  if (!ALLOWED_NUMERIC_ID_TABLES.has(table)) {
-    throw new Error(`Invalid table name: ${table}`);
-  }
-  const rows = await sql.unsafe<{ next_id: number }>(
-    `SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM ${table}`
-  );
-  return Number(rows[0]?.next_id ?? 1);
 }
 
 // ============================================
@@ -797,30 +818,46 @@ function validateWatcherConfig(input: {
   return null;
 }
 
-function parseJsonInput<T>(value: unknown, label: string): T | undefined {
-  if (value === undefined || value === null) return undefined;
-  if (typeof value === 'string') {
-    try {
-      return JSON.parse(value) as T;
-    } catch (error) {
-      throw new Error(
-        `${label} must be valid JSON: ${error instanceof Error ? error.message : String(error)}`
-      );
+/**
+ * Run the shared watcher-version validation (config shape + classifier/schema
+ * source-path compatibility) and throw a `ToolUserError` (422) on the first
+ * failure. Schedule validation is intentionally left to the caller because
+ * `create` and `create_version` surface schedule errors with different error
+ * types.
+ */
+function assertWatcherVersionConfigValid(parsed: {
+  prompt?: string;
+  extractionSchema?: unknown;
+  classifiers?: unknown[];
+  sources?: Array<{ name: string; query: string }>;
+}): void {
+  const validation = validateWatcherConfig({
+    prompt: parsed.prompt,
+    extraction_schema: parsed.extractionSchema,
+    classifiers: parsed.classifiers,
+    sources: parsed.sources,
+  });
+  if (validation) {
+    throw new ToolUserError(`Watcher validation failed: ${validation}`, 422);
+  }
+
+  if (parsed.classifiers && parsed.extractionSchema) {
+    const classifierValidation = validateClassifierSourcePaths(
+      parsed.classifiers as Array<{ slug: string; source_path?: string }>,
+      parsed.extractionSchema
+    );
+    if (classifierValidation) {
+      throw new ToolUserError(`Classifier-schema compatibility error: ${classifierValidation}`, 422);
     }
   }
-  return value as T;
+}
+
+function parseJsonInput<T>(value: unknown, label: string): T | undefined {
+  return coerceJson<T>(value, { onError: 'throw', label });
 }
 
 function normalizeStoredJsonField<T>(value: unknown, fallback: T): T {
-  if (value === null || value === undefined) return fallback;
-  if (typeof value === 'string') {
-    try {
-      return JSON.parse(value) as T;
-    } catch {
-      return fallback;
-    }
-  }
-  return value as T;
+  return coerceJson<T>(value, { onError: { fallback } });
 }
 
 function toJsonParam(sql: DbClient, value: unknown): unknown {
@@ -834,13 +871,6 @@ function toTextArrayParam(values: string[]): string {
   return (
     '{' + arr.map((v) => '"' + v.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"').join(',') + '}'
   );
-}
-
-async function getNextWatcherVersionId(sql: DbClient): Promise<number> {
-  const rows = await sql.unsafe<{ next_id: number }>(
-    'SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM watcher_versions'
-  );
-  return Number(rows[0]?.next_id ?? 1);
 }
 
 // ============================================
@@ -891,25 +921,12 @@ async function handleCreate(
       : [{ name: 'content', query: 'SELECT * FROM events ORDER BY occurred_at DESC' }];
 
   // Validate watcher config
-  const validation = validateWatcherConfig({
+  assertWatcherVersionConfigValid({
     prompt: args.prompt,
-    extraction_schema: extractionSchema,
+    extractionSchema,
     classifiers,
     sources,
   });
-  if (validation) {
-    throw new ToolUserError(`Watcher validation failed: ${validation}`, 422);
-  }
-
-  if (classifiers && extractionSchema) {
-    const classifierValidation = validateClassifierSourcePaths(
-      classifiers as Array<{ slug: string; source_path?: string }>,
-      extractionSchema
-    );
-    if (classifierValidation) {
-      throw new ToolUserError(`Classifier-schema compatibility error: ${classifierValidation}`, 422);
-    }
-  }
 
   if (args.schedule) {
     const scheduleError = validateSchedule(args.schedule);
@@ -970,7 +987,7 @@ async function handleCreate(
   }
 
   const watcherId = await getNextNumericId(sql, 'watchers');
-  const versionId = await getNextWatcherVersionId(sql);
+  const versionId = await getNextNumericId(sql, 'watcher_versions');
   const createdBy = ctx.userId ?? 'system';
 
   await sql.begin(async (tx) => {
@@ -2396,25 +2413,7 @@ async function handleCreateVersion(
     normalizeStoredJsonField(prev.classifiers, undefined as unknown[] | undefined);
 
   // Validate
-  const validation = validateWatcherConfig({
-    prompt,
-    extraction_schema: extractionSchema,
-    classifiers,
-    sources,
-  });
-  if (validation) {
-    throw new ToolUserError(`Watcher validation failed: ${validation}`, 422);
-  }
-
-  if (classifiers && extractionSchema) {
-    const classifierValidation = validateClassifierSourcePaths(
-      classifiers as Array<{ slug: string; source_path?: string }>,
-      extractionSchema
-    );
-    if (classifierValidation) {
-      throw new ToolUserError(`Classifier-schema compatibility error: ${classifierValidation}`, 422);
-    }
-  }
+  assertWatcherVersionConfigValid({ prompt, extractionSchema, classifiers, sources });
 
   if (args.schedule) {
     const scheduleError = validateSchedule(args.schedule);
@@ -2436,7 +2435,7 @@ async function handleCreateVersion(
 
     // Re-resolve the latest id and version under the lock so we don't race
     // with a call that already committed while we were computing nextVersion.
-    versionId = await getNextWatcherVersionId(tx);
+    versionId = await getNextNumericId(tx, 'watcher_versions');
     const latestRows = await tx`
       SELECT MAX(version) AS v FROM watcher_versions WHERE watcher_id = ${groupId}
     `;

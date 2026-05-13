@@ -709,7 +709,7 @@ export class CoreServices {
       throw new Error("Secret store must be initialized before MCP proxy");
     }
     const mcpToolCache = new McpToolCache();
-    this.mcpProxy = new McpProxy(this.mcpConfigService, this.queue, {
+    this.mcpProxy = new McpProxy(this.mcpConfigService, {
       secretStore: this.secretStore,
       toolCache: mcpToolCache,
       grantStore: this.grantStore,

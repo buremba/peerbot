@@ -162,76 +162,49 @@ const AgentIdParamSchema = z.object({
 // Validation Helpers
 // =============================================================================
 
-/**
- * Structured validation error. Each entry identifies the offending field path
- * (e.g. `networkConfig.allowedDomains[0]`, `mcpServers.foo.url`) plus a human
- * message. Callers format these via `formatValidationError` at the response
- * boundary so the wire representation stays a single flat string.
- */
-type ValidationError = { path: string; message: string }[];
+// Validators below short-circuit on the first failure and the public API
+// surfaces only that message as the flat `error` string — so each returns
+// `string | null` (message, or null when the value is valid).
 
-/**
- * Collapse a structured ValidationError into the flat `error` string the
- * public API contract expects. We surface the first failure's message
- * verbatim — historically these validators short-circuited on the first
- * error and callers displayed only that message, so preserving this keeps
- * the HTTP response body unchanged.
- */
-function formatValidationError(err: ValidationError): string {
-  const first = err[0];
-  if (!first) return "Validation failed";
-  return first.message;
-}
-
-function validateDomainPattern(pattern: string, path: string): ValidationError {
+function validateDomainPattern(pattern: string): string | null {
   if (!pattern || typeof pattern !== "string") {
-    return [{ path, message: "Domain pattern must be a non-empty string" }];
+    return "Domain pattern must be a non-empty string";
   }
   const trimmed = pattern.trim().toLowerCase();
   if (trimmed === "*") {
-    return [{ path, message: "Bare wildcard '*' is not allowed" }];
+    return "Bare wildcard '*' is not allowed";
   }
   if (trimmed.includes("://")) {
-    return [
-      { path, message: `Domain pattern cannot contain protocol: ${pattern}` },
-    ];
+    return `Domain pattern cannot contain protocol: ${pattern}`;
   }
   if (trimmed.includes("/")) {
-    return [
-      { path, message: `Domain pattern cannot contain path: ${pattern}` },
-    ];
+    return `Domain pattern cannot contain path: ${pattern}`;
   }
   if (trimmed.includes(":") && !trimmed.includes("[")) {
-    return [
-      { path, message: `Domain pattern cannot contain port: ${pattern}` },
-    ];
+    return `Domain pattern cannot contain port: ${pattern}`;
   }
   if (trimmed.startsWith("*.") || trimmed.startsWith(".")) {
     const domain = trimmed.startsWith("*.")
       ? trimmed.substring(2)
       : trimmed.substring(1);
     if (!domain.includes(".")) {
-      return [{ path, message: `Wildcard pattern too broad: ${pattern}` }];
+      return `Wildcard pattern too broad: ${pattern}`;
     }
   } else if (!trimmed.includes(".")) {
-    return [{ path, message: `Invalid domain pattern: ${pattern}` }];
+    return `Invalid domain pattern: ${pattern}`;
   }
-  return [];
+  return null;
 }
 
-function validateNetworkConfig(config: NetworkConfig): ValidationError {
-  const fields: Array<[string, string[] | undefined]> = [
-    ["networkConfig.allowedDomains", config.allowedDomains],
-    ["networkConfig.deniedDomains", config.deniedDomains],
-  ];
-  for (const [fieldPath, domains] of fields) {
+function validateNetworkConfig(config: NetworkConfig): string | null {
+  for (const domains of [config.allowedDomains, config.deniedDomains]) {
     if (!domains) continue;
-    for (let i = 0; i < domains.length; i++) {
-      const errors = validateDomainPattern(domains[i]!, `${fieldPath}[${i}]`);
-      if (errors.length > 0) return errors;
+    for (const domain of domains) {
+      const error = validateDomainPattern(domain!);
+      if (error) return error;
     }
   }
-  return [];
+  return null;
 }
 
 function normalizeNetworkConfig(config: NetworkConfig): NetworkConfig {
@@ -244,27 +217,16 @@ function normalizeNetworkConfig(config: NetworkConfig): NetworkConfig {
 function validateMcpServerConfig(
   id: string,
   config: McpServerConfig
-): ValidationError {
-  const basePath = `mcpServers.${id}`;
+): string | null {
   if (!config.url && !config.command) {
-    return [
-      {
-        path: basePath,
-        message: `MCP ${id}: must specify either 'url' or 'command'`,
-      },
-    ];
+    return `MCP ${id}: must specify either 'url' or 'command'`;
   }
   if (
     config.url &&
     !config.url.startsWith("http://") &&
     !config.url.startsWith("https://")
   ) {
-    return [
-      {
-        path: `${basePath}.url`,
-        message: `MCP ${id}: url must be http:// or https://`,
-      },
-    ];
+    return `MCP ${id}: url must be http:// or https://`;
   }
   if (config.command) {
     const dangerousCommands = [
@@ -279,30 +241,23 @@ function validateMcpServerConfig(
     ];
     const baseCommand = config.command.split("/").pop()?.split(" ")[0] || "";
     if (dangerousCommands.includes(baseCommand)) {
-      return [
-        {
-          path: `${basePath}.command`,
-          message: `MCP ${id}: command '${baseCommand}' is not allowed`,
-        },
-      ];
+      return `MCP ${id}: command '${baseCommand}' is not allowed`;
     }
   }
-  return [];
+  return null;
 }
 
 function validateMcpConfig(
   mcpServers: Record<string, McpServerConfig>
-): ValidationError {
+): string | null {
   for (const [id, config] of Object.entries(mcpServers)) {
     if (!/^[a-zA-Z0-9_-]+$/.test(id)) {
-      return [
-        { path: `mcpServers.${id}`, message: `MCP ID '${id}' is invalid` },
-      ];
+      return `MCP ID '${id}' is invalid`;
     }
-    const errors = validateMcpServerConfig(id, config);
-    if (errors.length > 0) return errors;
+    const error = validateMcpServerConfig(id, config);
+    if (error) return error;
   }
-  return [];
+  return null;
 }
 
 // =============================================================================
@@ -645,25 +600,19 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
 
     // Validate network config
     if (normalizedNetworkConfig) {
-      const errors = validateNetworkConfig(normalizedNetworkConfig);
-      if (errors.length > 0) {
-        return c.json(
-          { success: false, error: formatValidationError(errors) },
-          400
-        );
+      const error = validateNetworkConfig(normalizedNetworkConfig);
+      if (error) {
+        return c.json({ success: false, error }, 400);
       }
     }
 
     // Validate MCP config
     if (mcpServers) {
-      const errors = validateMcpConfig(
+      const error = validateMcpConfig(
         mcpServers as Record<string, McpServerConfig>
       );
-      if (errors.length > 0) {
-        return c.json(
-          { success: false, error: formatValidationError(errors) },
-          400
-        );
+      if (error) {
+        return c.json({ success: false, error }, 400);
       }
     }
 

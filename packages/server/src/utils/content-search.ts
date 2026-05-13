@@ -133,19 +133,16 @@ function deduplicateWithClassifications(rawRows: any[]): ContentSearchResult[] {
 
 function buildStandardParams(
   options: ContentSearchOptions & { offset?: number },
-  extra?: {
+  extra: {
     sinceDate: Date | null;
     untilDate: Date | null;
   }
 ): any[] {
-  const sinceDate = extra?.sinceDate ?? (options.since ? parseDateAlias(options.since).date : null);
-  const untilDate =
-    extra?.untilDate ?? (options.until ? toEndOfDay(parseDateAlias(options.until).date) : null);
   return [
     options.entity_id ?? null,
     options.platform ?? null,
-    sinceDate?.toISOString() ?? null,
-    untilDate?.toISOString() ?? null,
+    extra.sinceDate?.toISOString() ?? null,
+    extra.untilDate?.toISOString() ?? null,
     options.window_id ?? null,
     options.engagement_min ?? null,
     options.engagement_max ?? null,
@@ -926,6 +923,157 @@ function aggregateClassifications(
   return map;
 }
 
+/** Empty `{content, total: 0, page}` response — copy-pasted 3× in the old `listContentInternal`. */
+function emptyListResponse(args: {
+  limit: number;
+  effectiveOffset: number;
+  useDateFeed: boolean;
+  cursor: ReturnType<typeof resolveDateCursor>;
+}): ContentSearchResponse {
+  return {
+    content: [],
+    total: 0,
+    page: buildPageInfo({
+      limit: args.limit,
+      offset: args.effectiveOffset,
+      total: 0,
+      returnedCount: 0,
+      useDateFeed: args.useDateFeed,
+      cursor: args.cursor,
+    }),
+  };
+}
+
+/**
+ * Shared count + query-pair execution for both `listContentInternal` branches.
+ *
+ * The two branches differ only in how they assemble `whereExpr` (the full
+ * WHERE body, excluding the date cursor clause) and whether they need the
+ * `watcher_window_events` join (`joinSql`). Everything past the count — the
+ * empty-result short-circuit, the `candidate_set/result_set` vs `result_set`
+ * CTE pair, param indexing, dedup, and the response shape — is identical, so
+ * it lives here. The generated SQL and parameter binding are unchanged.
+ */
+async function executeListQuery(args: {
+  sql: DbClient;
+  joinSql: string;
+  whereExpr: string;
+  countParams: any[];
+  threadEntityLinkSqlForP: string | undefined;
+  needClassifications: boolean;
+  useDateFeed: boolean;
+  cursor: ReturnType<typeof resolveDateCursor>;
+  orderByForResultSet: string;
+  latestClassificationsCteSql: string;
+  mkFinalSelect: (withClassifications: boolean) => string;
+  limit: number;
+  effectiveOffset: number;
+  fetchLimit: number;
+}): Promise<ContentSearchResponse> {
+  const { sql, joinSql, whereExpr, countParams } = args;
+
+  const countResult = await sql.unsafe<{ total: number | string }>(
+    `SELECT COUNT(*) as total FROM current_event_records f
+      LEFT JOIN connections c ON c.id = f.connection_id
+      ${joinSql}
+      WHERE ${whereExpr}`,
+    countParams
+  );
+  const total = parseInt(String(countResult[0]?.total ?? '0'), 10);
+
+  // Short-circuit on empty matches. Even with the trimmed entity-link UNION,
+  // the enrichment query — recursive thread_meta + classifications +
+  // parent/root LEFT JOINs — pays a real planner cost on a large events table
+  // when run via postgres.js's extended protocol even if result_set is empty
+  // server-side. One extra round-trip on the cheap count beats that.
+  if (total === 0) {
+    return emptyListResponse({
+      limit: args.limit,
+      effectiveOffset: args.effectiveOffset,
+      useDateFeed: args.useDateFeed,
+      cursor: args.cursor,
+    });
+  }
+
+  const cursorClause = buildDateCursorClause(
+    args.cursor,
+    'f.occurred_at',
+    'f.id',
+    countParams.length + 1
+  );
+  const queryBaseParams = [...countParams, ...cursorClause.params];
+  const limitIdx = queryBaseParams.length + 1;
+  const offsetIdx = queryBaseParams.length + 2;
+  const validatedLimit = validateNumericId(args.limit, 'limit');
+  const threadMetaCteSql = buildThreadMetaCteSql('$1', 'result_set', args.threadEntityLinkSqlForP);
+  const ctes = args.needClassifications
+    ? `${threadMetaCteSql},\n      ${args.latestClassificationsCteSql}`
+    : threadMetaCteSql;
+
+  const querySQL = args.useDateFeed
+    ? `
+      WITH RECURSIVE candidate_set AS (
+        SELECT
+          f.id,
+          f.occurred_at
+        FROM current_event_records f
+        LEFT JOIN connections c ON c.id = f.connection_id
+        ${joinSql}
+        WHERE ${whereExpr}
+          ${cursorClause.sql}
+        ORDER BY ${buildDateCandidateOrderBy(args.cursor, 'f')}
+        LIMIT $${limitIdx}
+      ),
+      result_set AS (
+        SELECT
+          cs.id,
+          (SELECT COUNT(*) FROM candidate_set) as cursor_fetched_count
+        FROM candidate_set cs
+        ORDER BY ${buildDateCandidateOrderBy(args.cursor, 'cs')}
+        LIMIT ${validatedLimit}
+      ),
+      ${ctes}
+      ${args.mkFinalSelect(args.needClassifications)}`
+    : `
+      WITH RECURSIVE result_set AS (
+        SELECT
+          f.id,
+          NULL::bigint as cursor_fetched_count
+        FROM current_event_records f
+        LEFT JOIN connections c ON c.id = f.connection_id
+        ${joinSql}
+        WHERE ${whereExpr}
+        ORDER BY ${args.orderByForResultSet}
+        LIMIT $${limitIdx} OFFSET $${offsetIdx}
+      ),
+      ${ctes}
+      ${args.mkFinalSelect(args.needClassifications)}`;
+
+  const queryParams = args.useDateFeed
+    ? [...queryBaseParams, args.fetchLimit]
+    : [...queryBaseParams, args.limit, args.effectiveOffset];
+
+  const rawRows = (await sql.unsafe(querySQL, queryParams)) as any[];
+
+  const content = args.needClassifications
+    ? deduplicateWithClassifications(rawRows)
+    : (rawRows as any as ContentSearchResult[]);
+
+  return {
+    content,
+    total,
+    page: buildPageInfo({
+      limit: args.limit,
+      offset: args.effectiveOffset,
+      total,
+      returnedCount: content.length,
+      useDateFeed: args.useDateFeed,
+      cursor: args.cursor,
+      fetchedCount: rawRows[0]?.cursor_fetched_count,
+    }),
+  };
+}
+
 async function listContentInternal(
   sql: DbClient,
   options: ContentSearchOptions & { offset?: number },
@@ -957,9 +1105,10 @@ async function listContentInternal(
     'final_select'
   );
 
-  const needClassifications =
+  const needClassifications = !!(
     options.include_classifications ||
-    (options.classification_filters && options.classification_filters.length > 0);
+    (options.classification_filters && options.classification_filters.length > 0)
+  );
 
   const classificationFilters = options.classification_filters ?? [];
   const hasClassificationFilters = classificationFilters.length > 0;
@@ -1073,18 +1222,7 @@ async function listContentInternal(
       baseParams.length + 1
     );
     if (!classificationExists) {
-      return {
-        content: [],
-        total: 0,
-        page: buildPageInfo({
-          limit,
-          offset: effectiveOffset,
-          total: 0,
-          returnedCount: 0,
-          useDateFeed,
-          cursor,
-        }),
-      };
+      return emptyListResponse({ limit, effectiveOffset, useDateFeed, cursor });
     }
 
     baseConditions.push(...classificationExists.clauses);
@@ -1102,110 +1240,22 @@ async function listContentInternal(
     });
     const allFilterParams = [...filterParamsBeforeVisibility, ...visibilityClause.params];
 
-    const countResult = await sql.unsafe<{ total: number | string }>(
-      `SELECT COUNT(*) as total FROM current_event_records f LEFT JOIN connections c ON c.id = f.connection_id WHERE ${whereSql} ${excludeClause.sql} ${visibilityClause.sql}`,
-      allFilterParams
-    );
-    const total = parseInt(String(countResult[0]?.total ?? '0'), 10);
-
-    // Short-circuit on empty matches — same reasoning as the standard
-    // branch: postgres.js extended protocol pays a real planner cost on
-    // the heavy enrichment query even when server-side execution is fast.
-    if (total === 0) {
-      return {
-        content: [],
-        total: 0,
-        page: buildPageInfo({
-          limit,
-          offset: effectiveOffset,
-          total: 0,
-          returnedCount: 0,
-          useDateFeed,
-          cursor,
-        }),
-      };
-    }
-
-    const cursorClause = buildDateCursorClause(
+    return executeListQuery({
+      sql,
+      joinSql: '',
+      whereExpr: `${whereSql} ${excludeClause.sql} ${visibilityClause.sql}`,
+      countParams: allFilterParams,
+      threadEntityLinkSqlForP: threadEntityLinkSql,
+      needClassifications,
+      useDateFeed,
       cursor,
-      'f.occurred_at',
-      'f.id',
-      allFilterParams.length + 1
-    );
-    const queryBaseParams = [...allFilterParams, ...cursorClause.params];
-    const limitIndex = queryBaseParams.length + 1;
-    const offsetIndex = queryBaseParams.length + 2;
-    const validatedLimit = validateNumericId(limit, 'limit');
-    const branchThreadMetaCteSql = buildThreadMetaCteSql(
-      '$1',
-      'result_set',
-      threadEntityLinkSql
-    );
-    const ctes = needClassifications
-      ? `${branchThreadMetaCteSql},\n        ${latestClassificationsCteSql}`
-      : branchThreadMetaCteSql;
-
-    const contentQuery = useDateFeed
-      ? `
-        WITH RECURSIVE candidate_set AS (
-          SELECT
-            f.id,
-            f.occurred_at
-          FROM current_event_records f
-          LEFT JOIN connections c ON c.id = f.connection_id
-          WHERE ${whereSql}
-            ${excludeClause.sql}
-            ${visibilityClause.sql}
-            ${cursorClause.sql}
-          ORDER BY ${buildDateCandidateOrderBy(cursor, 'f')}
-          LIMIT $${limitIndex}
-        ),
-        result_set AS (
-          SELECT
-            cs.id,
-            (SELECT COUNT(*) FROM candidate_set) as cursor_fetched_count
-          FROM candidate_set cs
-          ORDER BY ${buildDateCandidateOrderBy(cursor, 'cs')}
-          LIMIT ${validatedLimit}
-        ),
-        ${ctes}
-        ${mkFinalSelect(!!needClassifications)}`
-      : `
-        WITH RECURSIVE result_set AS (
-          SELECT
-            f.id,
-            NULL::bigint as cursor_fetched_count
-          FROM current_event_records f
-          LEFT JOIN connections c ON c.id = f.connection_id
-          WHERE ${whereSql} ${excludeClause.sql} ${visibilityClause.sql}
-          ORDER BY ${orderByForResultSet}
-          LIMIT $${limitIndex} OFFSET $${offsetIndex}
-        ),
-        ${ctes}
-        ${mkFinalSelect(!!needClassifications)}`;
-
-    const allParams = useDateFeed
-      ? [...queryBaseParams, fetchLimit]
-      : [...queryBaseParams, limit, effectiveOffset];
-    const rawRows = (await sql.unsafe(contentQuery, allParams)) as any[];
-
-    const content = needClassifications
-      ? deduplicateWithClassifications(rawRows)
-      : (rawRows as any as ContentSearchResult[]);
-
-    return {
-      content,
-      total,
-      page: buildPageInfo({
-        limit,
-        offset: effectiveOffset,
-        total,
-        returnedCount: content.length,
-        useDateFeed,
-        cursor,
-        fetchedCount: rawRows[0]?.cursor_fetched_count,
-      }),
-    };
+      orderByForResultSet,
+      latestClassificationsCteSql,
+      mkFinalSelect,
+      limit,
+      effectiveOffset,
+      fetchLimit,
+    });
   }
 
   const connectionCondition = buildConnectionFilter(connectionIdsArray);
@@ -1262,130 +1312,26 @@ async function listContentInternal(
   });
   const countParams = [...paramsBeforeVisibility, ...visibilityClause.params];
 
-  const countResult = await sql.unsafe(
-    `SELECT COUNT(*) as total FROM current_event_records f
-      LEFT JOIN connections c ON c.id = f.connection_id
-      ${WINDOW_JOIN_SQL}
-      WHERE ${standardWhereSql}
-        AND ${connectionCondition}
-        ${excludeClause.sql}
-        ${visibilityClause.sql}
-        ${orgScope.sql}`,
-    countParams
-  );
-  const total = parseInt(String(countResult[0]?.total ?? '0'), 10);
-
-  // Short-circuit on empty matches. Even with the trimmed entity-link UNION,
-  // the enrichment query — recursive thread_meta + classifications +
-  // parent/root LEFT JOINs — pays a real planner cost on a 4.7GB events
-  // table when run via postgres.js's extended protocol. Empirically that's
-  // ~3-4s of the request even when result_set is empty server-side. Better
-  // to spend one extra round-trip on the cheap count and skip the heavy
-  // query entirely when total=0.
-  if (total === 0) {
-    return {
-      content: [],
-      total: 0,
-      page: buildPageInfo({
-        limit,
-        offset: effectiveOffset,
-        total: 0,
-        returnedCount: 0,
-        useDateFeed,
-        cursor,
-      }),
-    };
-  }
-
-  const standardThreadMetaCteSql = buildThreadMetaCteSql(
-    '$1',
-    'result_set',
-    standardEntityLinkSqlForP
-  );
-  const ctes = needClassifications
-    ? `${standardThreadMetaCteSql},\n      ${latestClassificationsCteSql}`
-    : standardThreadMetaCteSql;
-
-  const cursorClause = buildDateCursorClause(
+  return executeListQuery({
+    sql,
+    joinSql: WINDOW_JOIN_SQL,
+    whereExpr: `${standardWhereSql}
+          AND ${connectionCondition}
+          ${excludeClause.sql}
+          ${visibilityClause.sql}
+          ${orgScope.sql}`,
+    countParams,
+    threadEntityLinkSqlForP: standardEntityLinkSqlForP,
+    needClassifications,
+    useDateFeed,
     cursor,
-    'f.occurred_at',
-    'f.id',
-    countParams.length + 1
-  );
-  const queryBaseParams = [...countParams, ...cursorClause.params];
-  const limitIdx = queryBaseParams.length + 1;
-  const offsetIdx = queryBaseParams.length + 2;
-  const validatedLimit = validateNumericId(limit, 'limit');
-  const querySQL = useDateFeed
-    ? `
-      WITH RECURSIVE candidate_set AS (
-        SELECT
-          f.id,
-          f.occurred_at
-        FROM current_event_records f
-        LEFT JOIN connections c ON c.id = f.connection_id
-        ${WINDOW_JOIN_SQL}
-        WHERE ${standardWhereSql}
-          AND ${connectionCondition}
-          ${excludeClause.sql}
-          ${visibilityClause.sql}
-          ${orgScope.sql}
-          ${cursorClause.sql}
-        ORDER BY ${buildDateCandidateOrderBy(cursor, 'f')}
-        LIMIT $${limitIdx}
-      ),
-      result_set AS (
-        SELECT
-          cs.id,
-          (SELECT COUNT(*) FROM candidate_set) as cursor_fetched_count
-        FROM candidate_set cs
-        ORDER BY ${buildDateCandidateOrderBy(cursor, 'cs')}
-        LIMIT ${validatedLimit}
-      ),
-      ${ctes}
-      ${mkFinalSelect(!!needClassifications)}`
-    : `
-      WITH RECURSIVE result_set AS (
-        SELECT
-          f.id,
-          NULL::bigint as cursor_fetched_count
-        FROM current_event_records f
-        LEFT JOIN connections c ON c.id = f.connection_id
-        ${WINDOW_JOIN_SQL}
-        WHERE ${standardWhereSql}
-          AND ${connectionCondition}
-          ${excludeClause.sql}
-          ${visibilityClause.sql}
-          ${orgScope.sql}
-        ORDER BY ${orderByForResultSet}
-        LIMIT $${limitIdx} OFFSET $${offsetIdx}
-      ),
-      ${ctes}
-      ${mkFinalSelect(!!needClassifications)}`;
-
-  const queryParams = useDateFeed
-    ? [...queryBaseParams, fetchLimit]
-    : [...queryBaseParams, limit, effectiveOffset];
-
-  const rawRows = (await sql.unsafe(querySQL, queryParams)) as any[];
-
-  const content = needClassifications
-    ? deduplicateWithClassifications(rawRows)
-    : (rawRows as any as ContentSearchResult[]);
-
-  return {
-    content,
-    total,
-    page: buildPageInfo({
-      limit,
-      offset: effectiveOffset,
-      total,
-      returnedCount: content.length,
-      useDateFeed,
-      cursor,
-      fetchedCount: rawRows[0]?.cursor_fetched_count,
-    }),
-  };
+    orderByForResultSet,
+    latestClassificationsCteSql,
+    mkFinalSelect,
+    limit,
+    effectiveOffset,
+    fetchLimit,
+  });
 }
 
 /**

@@ -11,10 +11,82 @@ import {
   type WatcherTimeGranularity,
 } from '@lobu/connector-sdk';
 import type { DbClient } from '../db/client';
+import type { UnprocessedRange } from '../types/watchers';
 
 interface WindowDates {
   windowStart: Date;
   windowEnd: Date;
+}
+
+/** Row shape for a `DATE_TRUNC('month', ...)` aggregate of total events per month. */
+interface MonthlyTotalRow {
+  month: string | Date;
+  total: number | string;
+}
+
+/** Row shape for a `DATE_TRUNC('month', ...)` aggregate of linked events per month. */
+interface MonthlyLinkedRow {
+  month: string | Date;
+  linked: number | string;
+}
+
+/**
+ * Fold two month-bucketed aggregates — total events per month vs. events linked
+ * to a watcher's windows per month — into the `UnprocessedRange[]` histogram.
+ *
+ * Shared by `get_content` (watcher mode) and `get_watcher` (pending analysis).
+ *
+ * @param includeComplete when true, months with zero unprocessed content are
+ *   still emitted (with `status: 'complete'`). When false, only months with
+ *   unprocessed content are emitted. `get_content` passes true; `get_watcher`
+ *   passes false.
+ */
+export function foldUnprocessedRanges(
+  monthlyTotals: Iterable<MonthlyTotalRow>,
+  monthlyLinked: Iterable<MonthlyLinkedRow>,
+  includeComplete: boolean
+): UnprocessedRange[] {
+  const linkedByMonth = new Map<string, number>();
+  for (const row of monthlyLinked) {
+    const monthKey = new Date(row.month as string).toISOString().slice(0, 7);
+    linkedByMonth.set(monthKey, Number(row.linked));
+  }
+
+  const ranges: UnprocessedRange[] = [];
+  for (const row of monthlyTotals) {
+    const monthDate = new Date(row.month as string);
+    const monthKey = monthDate.toISOString().slice(0, 7);
+    const total = Number(row.total);
+    const linked = linkedByMonth.get(monthKey) || 0;
+    const unprocessed = total - linked;
+
+    if (!includeComplete && unprocessed <= 0) continue;
+
+    const rangeStart = new Date(monthDate);
+    const rangeEnd = new Date(monthDate);
+    rangeEnd.setMonth(rangeEnd.getMonth() + 1);
+    rangeEnd.setMilliseconds(-1);
+
+    let status: UnprocessedRange['status'];
+    if (linked === 0) {
+      status = 'unprocessed';
+    } else if (unprocessed === 0) {
+      status = 'complete';
+    } else {
+      status = 'partial';
+    }
+
+    ranges.push({
+      month: monthKey,
+      window_start: rangeStart.toISOString(),
+      window_end: rangeEnd.toISOString(),
+      total_content: total,
+      processed_content: linked,
+      unprocessed_content: unprocessed,
+      status,
+    });
+  }
+  return ranges;
 }
 
 /**

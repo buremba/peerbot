@@ -5,7 +5,7 @@ import type { ScopedConnectorDefinitionRow } from '../connector-definition-helpe
 
 type OperationsSummary = typeof EMPTY_SUMMARY;
 
-type ListedConnectorDefinition = Omit<ScopedConnectorDefinitionRow, 'source_path'> & {
+export type ListedConnectorDefinition = Omit<ScopedConnectorDefinitionRow, 'source_path'> & {
   source_uri: string | null;
   installed: boolean;
   installable: boolean;

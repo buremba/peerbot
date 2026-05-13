@@ -66,6 +66,7 @@ import {
   type ScopedConnectorDefinitionRow,
   toggleConnectorLoginEnabled,
   uninstallConnectorDefinition,
+  updateActiveConnectorDefinitionField,
 } from './connector-definition-helpers';
 import {
   buildOAuthConnectConfig,
@@ -80,7 +81,10 @@ import {
   resolveConnectionVisibility,
   upsertConnectorAuthProfiles,
 } from './helpers/connection-helpers';
-import { buildConnectorDefinitionList } from './helpers/connector-definition-list';
+import {
+  buildConnectorDefinitionList,
+  type ListedConnectorDefinition,
+} from './helpers/connector-definition-list';
 import { type FeedDefinition, splitConfigByFeedScope } from './helpers/feed-helpers';
 import { PaginationFields } from './schemas/common-fields';
 
@@ -336,22 +340,32 @@ export const ManageConnectionsSchema = Type.Union([
 // Result Types
 // ============================================
 
+/** Shared shape of the `*_connector*` success responses. */
+type ConnectorActionOk<A extends string, Extra = unknown> = {
+  action: A;
+  success: true;
+  connector_key: string;
+} & Extra;
+
+/** A connection row as returned by the list/get/create/update handlers. */
+type ConnectionRow = Record<string, unknown>;
+
 type ManageConnectionsResult =
   | { error: string; setup_url?: string }
-  | { action: 'list_connector_definitions'; connector_definitions: any[] }
+  | { action: 'list_connector_definitions'; connector_definitions: ListedConnectorDefinition[] }
   | {
       action: 'list';
-      connections: any[];
+      connections: ConnectionRow[];
       total: number;
       limit: number;
       offset: number;
       view_url?: string;
     }
-  | { action: 'get'; connection: any; view_url?: string }
+  | { action: 'get'; connection: ConnectionRow; view_url?: string }
   | {
       action: 'create';
-      connection: any;
-      connector: any;
+      connection: ConnectionRow;
+      connector: Record<string, unknown>;
       view_url?: string;
       auth_run_id?: number;
     }
@@ -375,7 +389,7 @@ type ManageConnectionsResult =
       auth_profile_slug?: string;
       view_url?: string;
     }
-  | { action: 'update'; connection: any }
+  | { action: 'update'; connection: ConnectionRow }
   | { action: 'delete'; deleted: true; connection_id: number; slug: string }
   | { action: 'reauthenticate'; connection_id: number; auth_run_id: number }
   | {
@@ -396,35 +410,11 @@ type ManageConnectionsResult =
       updated: boolean;
     }
   | { action: 'uninstall_connector'; uninstalled: true; connector_key: string }
-  | {
-      action: 'toggle_connector_login';
-      success: true;
-      connector_key: string;
-      login_enabled: boolean;
-    }
-  | {
-      action: 'update_connector_auth';
-      success: true;
-      connector_key: string;
-      keys_updated: string[];
-    }
-  | {
-      action: 'update_connector_default_config';
-      success: true;
-      connector_key: string;
-    }
-  | {
-      action: 'update_connector_default_repair_agent';
-      success: true;
-      connector_key: string;
-      default_repair_agent_id: string | null;
-    }
-  | {
-      action: 'set_connector_entity_link_overrides';
-      success: true;
-      connector_key: string;
-      overrides: Record<string, unknown> | null;
-    };
+  | ConnectorActionOk<'toggle_connector_login', { login_enabled: boolean }>
+  | ConnectorActionOk<'update_connector_auth', { keys_updated: string[] }>
+  | ConnectorActionOk<'update_connector_default_config'>
+  | ConnectorActionOk<'update_connector_default_repair_agent', { default_repair_agent_id: string | null }>
+  | ConnectorActionOk<'set_connector_entity_link_overrides', { overrides: Record<string, unknown> | null }>;
 
 type ConnectionsArgs = Static<typeof ManageConnectionsSchema>;
 
@@ -2118,20 +2108,13 @@ async function handleUpdateConnectorDefaultConfig(
   args: Extract<ConnectionsArgs, { action: 'update_connector_default_config' }>,
   ctx: ToolContext
 ): Promise<ManageConnectionsResult> {
-  const sql = getDb();
-  const { organizationId } = ctx;
+  const updated = await updateActiveConnectorDefinitionField(
+    args.connector_key,
+    ctx.organizationId,
+    (sql) => sql`default_connection_config = ${sql.json(args.default_connection_config)}`
+  );
 
-  const updated = await sql`
-    UPDATE connector_definitions
-    SET default_connection_config = ${sql.json(args.default_connection_config)},
-        updated_at = NOW()
-    WHERE key = ${args.connector_key}
-      AND organization_id = ${organizationId}
-      AND status = 'active'
-    RETURNING key
-  `;
-
-  if (updated.length === 0) {
+  if (!updated) {
     return { error: `Connector '${args.connector_key}' not found` };
   }
 
@@ -2146,20 +2129,13 @@ async function handleUpdateConnectorDefaultRepairAgent(
   args: Extract<ConnectionsArgs, { action: 'update_connector_default_repair_agent' }>,
   ctx: ToolContext
 ): Promise<ManageConnectionsResult> {
-  const sql = getDb();
-  const { organizationId } = ctx;
+  const updated = await updateActiveConnectorDefinitionField(
+    args.connector_key,
+    ctx.organizationId,
+    (sql) => sql`default_repair_agent_id = ${args.default_repair_agent_id}::text`
+  );
 
-  const updated = await sql`
-    UPDATE connector_definitions
-    SET default_repair_agent_id = ${args.default_repair_agent_id}::text,
-        updated_at = NOW()
-    WHERE key = ${args.connector_key}
-      AND organization_id = ${organizationId}
-      AND status = 'active'
-    RETURNING key
-  `;
-
-  if (updated.length === 0) {
+  if (!updated) {
     return { error: `Connector '${args.connector_key}' not found` };
   }
 

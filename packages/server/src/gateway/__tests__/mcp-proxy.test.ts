@@ -139,7 +139,7 @@ describe("McpProxy", () => {
       const configSource = createMockConfigSource({
         "test-mcp": TEST_SERVER,
       });
-      const proxy = new McpProxy(configSource, queue as any, {
+      const proxy = new McpProxy(configSource, {
         secretStore: createTestSecretStore(queue),
       });
       const app = proxy.getApp();
@@ -154,7 +154,7 @@ describe("McpProxy", () => {
       const configSource = createMockConfigSource({
         "test-mcp": TEST_SERVER,
       });
-      const proxy = new McpProxy(configSource, queue as any, {
+      const proxy = new McpProxy(configSource, {
         secretStore: createTestSecretStore(queue),
       });
       const app = proxy.getApp();
@@ -170,7 +170,7 @@ describe("McpProxy", () => {
       const configSource = createMockConfigSource({
         "test-mcp": TEST_SERVER,
       });
-      const proxy = new McpProxy(configSource, queue as any, {
+      const proxy = new McpProxy(configSource, {
         secretStore: createTestSecretStore(queue),
       });
       const app = proxy.getApp();
@@ -192,7 +192,7 @@ describe("McpProxy", () => {
       const configSource = createMockConfigSource({
         "test-mcp": TEST_SERVER,
       });
-      const proxy = new McpProxy(configSource, queue as any, {
+      const proxy = new McpProxy(configSource, {
         secretStore: createTestSecretStore(queue),
       });
       const app = proxy.getApp();
@@ -218,7 +218,7 @@ describe("McpProxy", () => {
       const configSource = createMockConfigSource({
         "test-mcp": TEST_SERVER,
       });
-      const proxy = new McpProxy(configSource, queue as any, {
+      const proxy = new McpProxy(configSource, {
         secretStore: createTestSecretStore(queue),
       });
       const app = proxy.getApp();
@@ -246,7 +246,7 @@ describe("McpProxy", () => {
 
     test("returns 404 for unknown MCP", async () => {
       const configSource = createMockConfigSource({});
-      const proxy = new McpProxy(configSource, queue as any, {
+      const proxy = new McpProxy(configSource, {
         secretStore: createTestSecretStore(queue),
       });
       const app = proxy.getApp();
@@ -264,7 +264,7 @@ describe("McpProxy", () => {
       const configSource = createMockConfigSource({
         "test-mcp": TEST_SERVER,
       });
-      const proxy = new McpProxy(configSource, queue as any, {
+      const proxy = new McpProxy(configSource, {
         secretStore: createTestSecretStore(queue),
       });
       const app = proxy.getApp();
@@ -287,7 +287,7 @@ describe("McpProxy", () => {
         "test-mcp": TEST_SERVER,
       });
       const toolCache = new McpToolCache();
-      const proxy = new McpProxy(configSource, queue as any, {
+      const proxy = new McpProxy(configSource, {
         secretStore: createTestSecretStore(queue),
         toolCache,
       });
@@ -334,7 +334,7 @@ describe("McpProxy", () => {
       const configSource = createMockConfigSource({
         "test-mcp": TEST_SERVER,
       });
-      const proxy = new McpProxy(configSource, queue as any, {
+      const proxy = new McpProxy(configSource, {
         secretStore: createTestSecretStore(queue),
       });
       const app = proxy.getApp();
@@ -367,7 +367,7 @@ describe("McpProxy", () => {
       const configSource = createMockConfigSource({
         "test-mcp": TEST_SERVER,
       });
-      const proxy = new McpProxy(configSource, queue as any, {
+      const proxy = new McpProxy(configSource, {
         secretStore: createTestSecretStore(queue),
       });
       const app = proxy.getApp();
@@ -387,7 +387,7 @@ describe("McpProxy", () => {
 
     test("returns 404 for unknown MCP", async () => {
       const configSource = createMockConfigSource({});
-      const proxy = new McpProxy(configSource, queue as any, {
+      const proxy = new McpProxy(configSource, {
         secretStore: createTestSecretStore(queue),
       });
       const app = proxy.getApp();
@@ -407,7 +407,7 @@ describe("McpProxy", () => {
       const configSource = createMockConfigSource({
         "test-mcp": TEST_SERVER,
       });
-      const proxy = new McpProxy(configSource, queue as any, {
+      const proxy = new McpProxy(configSource, {
         secretStore: createTestSecretStore(queue),
       });
       const app = proxy.getApp();
@@ -437,7 +437,7 @@ describe("McpProxy", () => {
       const configSource = createMockConfigSource({
         "test-mcp": TEST_SERVER,
       });
-      const proxy = new McpProxy(configSource, queue as any, {
+      const proxy = new McpProxy(configSource, {
         secretStore: createTestSecretStore(queue),
       });
       const app = proxy.getApp();
@@ -496,7 +496,7 @@ describe("McpProxy", () => {
       const configSource = createMockConfigSource(servers);
       const toolCache = new McpToolCache();
       const grantStore = new GrantStore();
-      const proxy = new McpProxy(configSource, queue as any, {
+      const proxy = new McpProxy(configSource, {
         secretStore: createTestSecretStore(queue),
         toolCache,
         grantStore,
@@ -646,7 +646,7 @@ describe("McpProxy", () => {
           upstreamUrl: "http://upstream2:9000/mcp",
         },
       });
-      const proxy = new McpProxy(configSource, queue as any, {
+      const proxy = new McpProxy(configSource, {
         secretStore: createTestSecretStore(queue),
       });
       const app = proxy.getApp();
@@ -692,7 +692,7 @@ describe("McpProxy", () => {
           upstreamUrl: "http://bad-upstream:9000/mcp",
         },
       });
-      const proxy = new McpProxy(configSource, queue as any, {
+      const proxy = new McpProxy(configSource, {
         secretStore: createTestSecretStore(queue),
       });
       const app = proxy.getApp();
@@ -735,7 +735,7 @@ describe("McpProxy", () => {
   describe("isMcpRequest", () => {
     test("returns true with x-mcp-id header", async () => {
       const configSource = createMockConfigSource({});
-      const proxy = new McpProxy(configSource, queue as any, {
+      const proxy = new McpProxy(configSource, {
         secretStore: createTestSecretStore(queue),
       });
 
@@ -757,7 +757,7 @@ describe("McpProxy", () => {
 
     test("returns false without x-mcp-id header", async () => {
       const configSource = createMockConfigSource({});
-      const proxy = new McpProxy(configSource, queue as any, {
+      const proxy = new McpProxy(configSource, {
         secretStore: createTestSecretStore(queue),
       });
 

@@ -31,6 +31,16 @@ id = "z-ai"
 model = "z-ai/glm-4.7"
 key = "$Z_AI_API_KEY"
 
+# Public Slack Preview (the hosted "Lobu Developer" workspace) — `lobu run`
+# prints a `/lobu link <code>` you redeem in that workspace, then messages there
+# route to this agent. Lets you demo the lunch flow without standing up your own
+# Slack app. `channel` surface so it works in a channel, not just a DM.
+[agents.food-ordering.preview.slack]
+enabled = true
+provider = "lobu-public"
+surfaces = ["dm", "channel"]
+code_ttl_minutes = 15
+
 [agents.food-ordering.network]
 # The chat transport (Slack) is the gateway's job, not the worker's — the worker
 # only needs to fetch playwright/chromium for the deliveroo-order skill.

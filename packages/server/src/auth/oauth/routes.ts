@@ -13,6 +13,7 @@ import { getClientIP, getRateLimiter, RateLimitPresets } from '../../utils/rate-
 import { resolveBaseUrl, safeOrigin, safeParseUrl } from '../base-url';
 import { createAuth } from '../index';
 import { requireAuth } from '../middleware';
+import { findExistingPersonalOrg } from '../personal-org-provisioning';
 import { OAuthProvider } from './provider';
 import { DEFAULT_SCOPES_STRING, filterScopeByRole } from './scopes';
 import type { AuthorizationParams, OAuthClientMetadata, TokenRequestParams } from './types';
@@ -191,7 +192,7 @@ async function resolveOrganizationForGrant(params: {
   }
 
   const memberships = await sql`
-    SELECT m."organizationId" as organization_id, o.name, o.slug
+    SELECT m."organizationId" as organization_id, m.role, o.name, o.slug
     FROM "member" m
     JOIN "organization" o ON o.id = m."organizationId"
     WHERE m."userId" = ${userId}
@@ -203,6 +204,25 @@ async function resolveOrganizationForGrant(params: {
       error: createOAuthError('access_denied', 'No organization membership found for MCP scopes'),
       status: 403,
     };
+  }
+
+  // If the user has a personal-org marker (`organization.metadata.personal_org_for_user_id`),
+  // bind device tokens to it without prompting. This matches what the
+  // device-worker auth middleware in `index.ts:602-607` resolves to anyway —
+  // skipping the consent picker just avoids a step the user almost always
+  // answers the same way. They can still bind to a different org by passing
+  // an explicit `organization_id` (UI path) or a `resource` slug (API path).
+  const personalOrg = await findExistingPersonalOrg(userId, sql);
+  if (personalOrg) {
+    const personalMember = memberships.find(
+      (m) => m.organization_id === personalOrg.id
+    );
+    if (personalMember) {
+      return {
+        organizationId: personalOrg.id,
+        memberRole: (personalMember.role as string | null) ?? null,
+      };
+    }
   }
 
   return {

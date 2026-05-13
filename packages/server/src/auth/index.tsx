@@ -30,6 +30,7 @@ import {
 } from "../utils/public-origin";
 import { TtlCache } from "../utils/ttl-cache";
 import { resolveBaseUrl, safeParseUrl } from "./base-url";
+import { findExistingPersonalOrg } from "./personal-org-provisioning";
 import {
 	getAuthConfig as getAuthConfigFromEnv,
 	getEnabledLoginProviderConfigs,
@@ -219,6 +220,42 @@ export async function createAuth(env: Env, request?: Request) {
 				allowUserToCreateOrganization: true,
 				creatorRole: "owner",
 				organizationHooks: {
+					// If a user manually creates a private org while they have no
+					// personal-org marker yet, tag it as their personal one. Without
+					// this, `personal_org_for_user_id` only gets set by the
+					// auto-provisioner in `databaseHooks.user.create.after` — anyone
+					// whose auto-provisioned org was deleted, or who manually created
+					// their first org via the UI, ends up with NULL `workerOrgIds`
+					// in the device-worker auth middleware (index.ts:602-607), so
+					// their Lobu bridge gets a 403 on every poll.
+					afterCreateOrganization: async ({
+						organization: org,
+						user,
+					}) => {
+						try {
+							if (org.visibility !== "private") return;
+							const sql = getDb();
+							const existing = await findExistingPersonalOrg(
+								user.id,
+								sql,
+							);
+							if (existing) return;
+							await sql`
+								UPDATE "organization"
+								SET metadata = jsonb_set(
+									COALESCE(metadata::jsonb, '{}'::jsonb),
+									'{personal_org_for_user_id}',
+									to_jsonb(${user.id}::text)
+								)::text
+								WHERE id = ${org.id}
+							`;
+						} catch (err) {
+							console.error(
+								"[Auth] Failed to mark created org as personal:",
+								err,
+							);
+						}
+					},
 					afterAddMember: async ({ member, user, organization: org }) => {
 						try {
 							await ensureMemberEntity({

@@ -77,6 +77,15 @@ export interface ConnectionSettings {
   allowFrom?: string[];
   allowGroups?: boolean;
   userConfigScopes?: UserConfigScope[];
+  /**
+   * Marks this connection as a hosted "Preview" workspace bot (today: Slack —
+   * the public "Lobu" workspace). When a DM/@-mention arrives for a chat that
+   * hasn't been linked to an agent yet, the message-handler replies with the
+   * linking instructions instead of running the connection's (placeholder)
+   * owning agent. The connection's `platform` determines which notice/link
+   * mechanism applies.
+   */
+  previewMode?: boolean;
 }
 
 /** Heuristic: field names matching these patterns contain secrets and must be encrypted at rest. */

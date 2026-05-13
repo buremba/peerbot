@@ -28,6 +28,23 @@ const SURFACES = new Set(['dm', 'channel']);
 
 export type SurfaceType = 'dm' | 'channel';
 
+/**
+ * Reply posted by a Slack-Preview connection when a DM/@-mention arrives for a
+ * chat that hasn't been `/lobu link`'d yet. Deterministic — no LLM agent runs
+ * for unlinked chats; this is the whole response.
+ */
+export const SLACK_PREVIEW_UNLINKED_NOTICE = [
+  "👋 This chat isn't linked to a Lobu agent yet.",
+  '',
+  'To talk to your own agent here:',
+  '1. In your agent project\'s `lobu.toml`: `[agents.<id>.preview.slack]` → `enabled = true` (add `surfaces = ["channel"]` to use it in channels too).',
+  '2. Run `lobu apply` to register the agent in Lobu Cloud.',
+  '3. Run `lobu run` — it prints a `/lobu link <code>`.',
+  '4. Send that `/lobu link <code>` here.',
+  '',
+  'After that, every message in this chat goes to your agent.',
+].join('\n');
+
 interface ClaimPayload {
   organizationId: string;
   agentId: string;

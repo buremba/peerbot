@@ -427,3 +427,74 @@ describe("MessageHandlerBridge.handleMessage — thread backfill", () => {
     expect(entries).toHaveLength(2);
   });
 });
+
+describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", () => {
+  function makePreviewHarness(opts: { binding?: { agentId: string } | null }) {
+    const state = new InMemoryStateAdapter();
+    const conversationState = new ConversationStateStore(state);
+    const connection: PlatformConnection = {
+      id: CONN_ID,
+      platform: "slack",
+      agentId: TEMPLATE_AGENT_ID,
+      config: { platform: "slack" } as any,
+      settings: { allowGroups: true, previewMode: true },
+      metadata: { botUsername: "testbot", botUserId: "U_BOT" },
+      status: "active",
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const enqueueMessage = mock(async () => undefined);
+    const channelBindingService =
+      opts.binding === undefined
+        ? undefined
+        : { getBinding: mock(async () => opts.binding) };
+    const services = {
+      getArtifactStore: () => null,
+      getPublicGatewayUrl: () => "https://gateway.example.com",
+      getChannelBindingService: () => channelBindingService,
+      getAgentMetadataStore: () => undefined,
+      getUserAgentsStore: () => undefined,
+      getTranscriptionService: () => undefined,
+      getAgentSettingsStore: () => undefined,
+      getDeclaredAgentRegistry: () => undefined,
+      getQueueProducer: () => ({ enqueueMessage }),
+    } as any;
+    const manager = {
+      has: () => true,
+      getInstance: () => ({ connection, conversationState }),
+    } as any;
+    const bridge = new MessageHandlerBridge(connection, services, manager);
+    return { bridge, enqueueMessage };
+  }
+
+  test("unlinked chat → posts /lobu link instructions, no agent run", async () => {
+    const { bridge, enqueueMessage } = makePreviewHarness({ binding: null });
+    const thread = makeThread(undefined);
+
+    await bridge.handleMessage(thread, makeMessage(), "mention");
+
+    expect(thread.post).toHaveBeenCalledTimes(1);
+    expect(String(thread.post.mock.calls[0]?.[0])).toContain("/lobu link");
+    expect(enqueueMessage).not.toHaveBeenCalled();
+  });
+
+  test("linked chat → routes to the bound agent, no notice", async () => {
+    const { bridge, enqueueMessage } = makePreviewHarness({
+      binding: { agentId: "linked-agent" },
+    });
+    const thread = makeThread(undefined);
+
+    await bridge.handleMessage(thread, makeMessage(), "mention");
+
+    expect(enqueueMessage).toHaveBeenCalledTimes(1);
+    const payload = enqueueMessage.mock.calls[0]?.[0] as any;
+    expect(payload.agentId ?? payload.platformMetadata?.agentId).toBe(
+      "linked-agent"
+    );
+    expect(
+      thread.post.mock.calls.every(
+        (c: unknown[]) => !String(c[0]).includes("/lobu link")
+      )
+    ).toBe(true);
+  });
+});

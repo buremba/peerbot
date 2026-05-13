@@ -10,6 +10,7 @@ import {
   flushTracing,
   generateTraceId,
 } from "@lobu/core";
+import { SLACK_PREVIEW_UNLINKED_NOTICE } from "../../preview/slack.js";
 import type { CommandDispatcher } from "../commands/command-dispatcher.js";
 import { createChatReply } from "../commands/command-reply-adapters.js";
 import type { ArtifactStore } from "../files/artifact-store.js";
@@ -307,6 +308,25 @@ export class MessageHandlerBridge {
       );
       return;
     }
+
+    // Preview connection (the hosted "Lobu" Slack workspace bot today): an
+    // unlinked DM/@-mention. Don't run the connection's placeholder owning
+    // agent — reply with the `/lobu link` instructions and stop here.
+    // (`/lobu link <code>` itself arrives as a slash command, not through this
+    // path, so linking still works.)
+    if (
+      resolved.source === "connection" &&
+      this.connection.settings?.previewMode === true &&
+      platform === "slack"
+    ) {
+      logger.info(
+        { platform, channelId, teamId, connectionId: this.connection.id },
+        "Preview connection: unlinked chat — replying with link instructions"
+      );
+      await thread.post(SLACK_PREVIEW_UNLINKED_NOTICE);
+      return;
+    }
+
     const agentId = resolved.agentId;
 
     // Track first-time-seen user → agent association for visibility in the

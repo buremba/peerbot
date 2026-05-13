@@ -12,6 +12,7 @@ import { mcpAuth } from '../auth/middleware';
 import { getDb } from '../db/client';
 import { OAuthClient } from '../gateway/auth/oauth/client';
 import { CLAUDE_PROVIDER } from '../gateway/auth/oauth/providers';
+import { ChannelBindingService } from '../gateway/channels/binding-service';
 import { createAuthProfileLabel } from '../gateway/auth/settings/auth-profiles-manager';
 import type { Env } from '../index';
 import { getConfiguredPublicOrigin } from '../utils/public-origin';
@@ -869,6 +870,60 @@ routes.patch('/:agentId/config', async (c) => {
   }
 
   await configStore.updateSettings(agentId, settingsUpdates);
+  return c.json({ success: true });
+});
+
+// ============================================================
+// Channel bindings (chat channels/DMs routed to this agent)
+//
+// A binding is created by `/lobu link <code>` in a hosted preview workspace,
+// by `lobu apply` (declarative connections), or by an admin. These routes let
+// the agent's owner see "where is this agent reachable" and unbind a channel.
+// Storage: `public.agent_channel_bindings` — see ChannelBindingService.
+// ============================================================
+
+const channelBindings = new ChannelBindingService();
+
+routes.get('/:agentId/channel-bindings', async (c) => {
+  const denied = requireSessionOrAdminPat(c);
+  if (denied) return denied;
+  const { agentId } = c.req.param();
+  if (!(await configStore.hasAgent(agentId))) {
+    return c.json({ error: 'Agent not found' }, 404);
+  }
+  const bindings = await channelBindings.listBindings(agentId);
+  return c.json({
+    bindings: bindings.map((b) => ({
+      platform: b.platform,
+      channelId: b.channelId,
+      teamId: b.teamId ?? null,
+      createdAt: b.createdAt,
+    })),
+  });
+});
+
+routes.delete('/:agentId/channel-bindings', async (c) => {
+  const denied = requireSessionOrAdminPat(c);
+  if (denied) return denied;
+  const { agentId } = c.req.param();
+  if (!(await configStore.hasAgent(agentId))) {
+    return c.json({ error: 'Agent not found' }, 404);
+  }
+  let body: { platform?: string; channelId?: string; teamId?: string | null };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'Invalid or missing JSON body' }, 400);
+  }
+  const platform = typeof body.platform === 'string' ? body.platform.trim() : '';
+  const channelId = typeof body.channelId === 'string' ? body.channelId.trim() : '';
+  if (!platform || !channelId) {
+    return c.json({ error: 'platform and channelId are required' }, 400);
+  }
+  const teamId =
+    typeof body.teamId === 'string' && body.teamId.trim() ? body.teamId.trim() : undefined;
+  const deleted = await channelBindings.deleteBinding(agentId, platform, channelId, teamId);
+  if (!deleted) return c.json({ error: 'Binding not found for this agent' }, 404);
   return c.json({ success: true });
 });
 

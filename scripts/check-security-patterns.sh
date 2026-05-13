@@ -27,10 +27,27 @@ cd "$REPO_ROOT"
 
 VIOLATIONS=0
 
-# Filter "security-allowed:" lines so a documented exception doesn't trip
-# the guard. Each `git grep`-style call below is piped through this.
+# Filter hits whose own line OR one of the preceding 3 source lines contains
+# `security-allowed:`. The block-level annotation is preferred for multi-line
+# template-literal concatenations where a trailing inline comment would be
+# ugly; an inline annotation on the same line works too.
 filter_allowlist() {
-  grep -v 'security-allowed:' || true
+  while IFS= read -r hit; do
+    [ -z "$hit" ] && continue
+    file="${hit%%:*}"
+    rest="${hit#*:}"
+    line="${rest%%:*}"
+    if ! [[ "$line" =~ ^[0-9]+$ ]]; then
+      echo "$hit"
+      continue
+    fi
+    start=$(( line - 3 ))
+    [ "$start" -lt 1 ] && start=1
+    if sed -n "${start},${line}p" "$file" 2>/dev/null | grep -q 'security-allowed:'; then
+      continue
+    fi
+    echo "$hit"
+  done
 }
 
 echo "[check-security-patterns] scanning…"

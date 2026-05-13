@@ -232,11 +232,18 @@ function buildScopedQuery(
       .join(', ');
   };
 
+  // security-allowed: every `${safeName}` below is a QUERYABLE_TABLE_NAMES-whitelisted
+  // identifier that's been double-quote-escaped; every `${orgP}` is a $N parameter
+  // placeholder; `sel()` / `selEntitiesJoined()` return validated column expressions.
+  // postgres.js tagged templates can't template dynamic identifiers, so these CTE
+  // skeletons are built via concatenation. Static-guard suppression applies to this
+  // whole loop body.
   for (const table of tableRefs) {
     // Escape double quotes in table name for safe identifier quoting
     const safeName = table.replace(/"/g, '""');
 
     if (table === 'entities') {
+      // security-allowed: see block comment above this for-loop
       ctes.push(
         `"${safeName}" AS (SELECT ${selEntitiesJoined('e', 'et')} ` +
           `FROM public.entities e ` +
@@ -249,6 +256,7 @@ function buildScopedQuery(
       // belong to the caller's org, OR it came in through a connection in the
       // caller's org. Mirroring that here keeps query_sql consistent with
       // what search_memory/get_content surface.
+      // security-allowed: see block comment above the for-loop
       let eventsCte =
         `"${safeName}" AS (SELECT ${sel(table, 'ev')} FROM public.current_event_records ev ` +
         `WHERE (ev.organization_id = ${orgP} ` +
@@ -285,12 +293,14 @@ function buildScopedQuery(
         `"${safeName}" AS (SELECT ${sel(table)} FROM public.connections WHERE organization_id = ${orgP})`
       );
     } else if (table === 'watchers') {
+      // security-allowed: see block comment above the for-loop
       ctes.push(
         `"${safeName}" AS (SELECT ${sel(table, 'i')} FROM public.watchers i WHERE EXISTS (` +
           'SELECT 1 FROM public.entities ent WHERE ent.id = ANY(i.entity_ids) ' +
           `AND ent.organization_id = ${orgP}))`
       );
     } else if (table === 'event_classifications') {
+      // security-allowed: see block comment above the for-loop
       ctes.push(
         `"${safeName}" AS (SELECT ${sel(table, 'ec')} FROM public.event_classifications ec WHERE EXISTS (` +
           'SELECT 1 FROM public.events ev ' +
@@ -298,6 +308,7 @@ function buildScopedQuery(
           `WHERE ev.id = ec.event_id AND ent.organization_id = ${orgP}))`
       );
     } else if (table === 'watcher_versions') {
+      // security-allowed: see block comment above the for-loop
       ctes.push(
         `"${safeName}" AS (SELECT ${sel(table, 'wv')} FROM public.watcher_versions wv ` +
           'JOIN public.watchers w ON w.id = wv.watcher_id WHERE EXISTS (' +
@@ -305,6 +316,7 @@ function buildScopedQuery(
           `AND ent.organization_id = ${orgP}))`
       );
     } else if (table === 'watcher_windows') {
+      // security-allowed: see block comment above the for-loop
       ctes.push(
         `"${safeName}" AS (SELECT ${sel(table, 'ww')} FROM public.watcher_windows ww ` +
           'JOIN public.watchers w ON w.id = ww.watcher_id WHERE EXISTS (' +
@@ -345,6 +357,7 @@ function buildScopedQuery(
       // Treat as entity_type slug — uses entities columns
       idx++;
       params.push(table);
+      // security-allowed: see block comment above the for-loop
       ctes.push(
         `"${safeName}" AS (SELECT ${selEntitiesJoined('e', 'et')} ` +
           `FROM public.entities e ` +

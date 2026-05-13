@@ -18,19 +18,25 @@ import logger from './logger';
 
 /**
  * Resolve compiled connector code at runtime.
- * If compiledCode is already available, returns it directly.
- * Otherwise, compiles from the bundled source file on disk.
+ *
+ * If the connector ships as a bundled source file on disk, that file is the
+ * source of truth — recompile from it and IGNORE any persisted `compiled_code`.
+ * A persisted artifact is only ever produced by an older server build (e.g.
+ * before `pino` was bundled instead of externalised); trusting it would shadow
+ * the up-to-date source indefinitely and break feed sync. The recompile is
+ * cheap because `compileConnectorFromFile` caches by mtime.
+ *
+ * Only connectors with no on-disk source (genuinely user-uploaded via
+ * `source_code` / `source_url`) fall back to the persisted `compiled_code`.
  */
 export async function resolveConnectorCode(
   connectorKey: string,
   compiledCode: string | null
 ): Promise<string> {
-  if (compiledCode) return compiledCode;
   const filePath = findBundledConnectorFile(connectorKey);
-  if (!filePath) {
-    throw new Error(`No compiled code for '${connectorKey}' and source not found on disk.`);
-  }
-  return compileConnectorFromFile(filePath);
+  if (filePath) return compileConnectorFromFile(filePath);
+  if (compiledCode) return compiledCode;
+  throw new Error(`No compiled code for '${connectorKey}' and source not found on disk.`);
 }
 
 export async function ensureConnectorInstalled(params: {

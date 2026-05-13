@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { basename, extname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { build, type Plugin } from 'esbuild';
+import { EXTERNAL_RUNTIME_DEPS } from '../../../connector-worker/src/runtime-deps';
 import { extractConnectorMetadata } from './connector-compiler';
 import logger from './logger';
 
@@ -126,13 +127,24 @@ function getDefaultConnectorCatalogUri(): string {
   return pathToFileURL(getDefaultConnectorCatalogDir()).toString();
 }
 
+// Bundled connector files don't appear/disappear at runtime, and this is now
+// consulted on every feed sync / worker poll — memoise the lookup.
+const bundledFileCache = new Map<string, string | null>();
+
 export function findBundledConnectorFile(key: string): string | null {
+  const cached = bundledFileCache.get(key);
+  if (cached !== undefined) return cached;
   const fileName = `${key.replace(/\./g, '_')}.ts`;
+  let found: string | null = null;
   for (const candidate of DEFAULT_CONNECTOR_DIR_CANDIDATES) {
     const filePath = resolve(candidate, fileName);
-    if (existsSync(filePath)) return filePath;
+    if (existsSync(filePath)) {
+      found = filePath;
+      break;
+    }
   }
-  return null;
+  bundledFileCache.set(key, found);
+  return found;
 }
 
 export function normalizeFileSourceUri(value: string): string | null {
@@ -187,7 +199,23 @@ export function getConfiguredConnectorCatalogUris(rawUris?: string): string[] {
   return [...normalized];
 }
 
+// Compiling a connector spawns esbuild; on the hot paths (feed sync, worker
+// poll) the same bundled .ts file is recompiled repeatedly. Cache the output
+// keyed by file mtime so a recompile only happens when the source actually
+// changes. Process restart (= deploy, = SDK rebuild) clears it, same as
+// `metadataCache` above.
+const compiledFileCache = new Map<string, { mtimeMs: number; code: string }>();
+
 export async function compileConnectorFromFile(filePath: string): Promise<string> {
+  let mtimeMs: number | null = null;
+  try {
+    mtimeMs = (await stat(filePath)).mtimeMs;
+    const cached = compiledFileCache.get(filePath);
+    if (cached && cached.mtimeMs === mtimeMs) return cached.code;
+  } catch {
+    // stat failed — fall through and let the build surface the real error.
+  }
+
   const tmpDir = await mkdtemp(join(tmpdir(), 'lobu-connector-'));
   const outPath = join(tmpDir, 'out.mjs');
 
@@ -204,19 +232,22 @@ export async function compileConnectorFromFile(filePath: string): Promise<string
         js: `import { createRequire as __createRequire } from 'module'; const require = __createRequire(import.meta.url);`,
       },
       plugins: [npmSpecifierPlugin],
-      // Must mirror EXTERNAL_RUNTIME_DEPS in packages/connector-worker/src/runtime-deps.ts.
-      // Only natives / runtime-installed deps (playwright ships browsers via
-      // `npx playwright install`) belong here. Pure JS deps (pino, link-preview-js)
-      // must be bundled — externalising them previously caused every connector
-      // run to fail with "Cannot find package 'pino'" because the worker image
-      // didn't ship them.
-      external: ['playwright', 'sharp', 'jimp'],
+      // Single source of truth: EXTERNAL_RUNTIME_DEPS in
+      // packages/connector-worker/src/runtime-deps.ts. Only natives /
+      // runtime-installed deps belong there (playwright ships browsers via
+      // `npx playwright install`). Pure JS deps (pino, link-preview-js) must be
+      // bundled — externalising them previously caused every connector run to
+      // fail with "Cannot find package 'pino'" because the worker image didn't
+      // ship them.
+      external: [...EXTERNAL_RUNTIME_DEPS],
       write: true,
       minify: false,
       sourcemap: false,
     });
 
-    return await readFile(outPath, 'utf-8');
+    const code = await readFile(outPath, 'utf-8');
+    if (mtimeMs !== null) compiledFileCache.set(filePath, { mtimeMs, code });
+    return code;
   } finally {
     await rm(tmpDir, { recursive: true, force: true });
   }

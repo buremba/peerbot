@@ -1,22 +1,5 @@
 import { getDb } from "../../db/client.js";
 
-export function getClientIp(headers: {
-  forwardedFor?: string;
-  realIp?: string;
-}): string {
-  const forwarded = headers.forwardedFor?.split(",")[0]?.trim().toLowerCase();
-  if (forwarded) {
-    return forwarded;
-  }
-
-  const realIp = headers.realIp?.trim().toLowerCase();
-  if (realIp) {
-    return realIp;
-  }
-
-  return "unknown";
-}
-
 /**
  * Extract the client IP for rate-limit / abuse-tracking purposes from the
  * inbound proxy headers. Prefers the first hop in `x-forwarded-for`, falling

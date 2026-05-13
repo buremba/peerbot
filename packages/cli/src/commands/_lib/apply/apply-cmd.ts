@@ -592,6 +592,28 @@ async function executePlan(
     );
   }
 
+  // 3b) Declarative channel bindings — reconcile after the platform upserts
+  // above so the connection rows exist. Runs for every agent/platform that
+  // declares `channels` (the server reconcile is idempotent), independent of
+  // whether the platform's config changed in this plan.
+  for (const agent of ctx.state.agents) {
+    for (const platform of agent.platforms) {
+      if (!platform.channels || platform.channels.length === 0) continue;
+      const res = await ctx.client.syncPlatformChannels(
+        agent.metadata.agentId,
+        platform.stableId,
+        platform.channels
+      );
+      const detail =
+        res.removed.length > 0
+          ? `(${res.bound.length} bound, ${res.removed.length} unbound)`
+          : `(${res.bound.length} bound)`;
+      printText(
+        `  ${chalk.cyan("↻")} ${chalk.bold("channels")} ${agent.metadata.agentId}/${platform.stableId} ${chalk.dim(detail)}`
+      );
+    }
+  }
+
   // 4) Entity types
   for (const row of rowsByKind("entity-type")) {
     if (row.kind !== "entity-type") continue;

@@ -1345,6 +1345,88 @@ routes.delete('/:agentId/platforms/:platformId', async (c) => {
   return c.json({ success: true });
 });
 
+// ── Sync declarative channel bindings ────────────────────────────────────────
+//
+// `lobu apply` POSTs the `channels` declared on a Slack platform here; we
+// reconcile `agent_channel_bindings` to match — for this agent, on the
+// teams referenced in the list. Channels bound ad-hoc (`/lobu link`) on
+// other teams/connections are untouched. Each entry is `"<teamId>/<channelId>"`.
+
+routes.post('/:agentId/platforms/:platformId/sync-channels', async (c) => {
+  const denied = requireSessionOrAdminPat(c);
+  if (denied) return denied;
+  const { agentId, platformId } = c.req.param();
+  const guard = await requireStoredPlatform(c, agentId, platformId);
+  if ('response' in guard) return guard.response;
+  if (guard.platform.platform !== 'slack') {
+    return c.json(
+      { error: 'sync-channels is only supported for Slack connections' },
+      400
+    );
+  }
+
+  let body: { channels?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'Invalid or missing JSON body' }, 400);
+  }
+  if (!Array.isArray(body.channels)) {
+    return c.json({ error: 'channels must be an array' }, 400);
+  }
+
+  // Parse "<teamId>/<channelId>" → canonical `slack:<channelId>` keyed by team.
+  const desired = new Map<string, { teamId: string; channelId: string }>();
+  for (const entry of body.channels) {
+    if (typeof entry !== 'string') {
+      return c.json({ error: 'channel entries must be strings' }, 400);
+    }
+    const m = entry.trim().match(/^([^/\s]+)\/([^/\s]+)$/);
+    if (!m) {
+      return c.json(
+        {
+          error: `invalid channel entry "${entry}" — expected "<teamId>/<channelId>" (e.g. "T0ABCDEF/C0123ABCD")`,
+        },
+        400
+      );
+    }
+    const teamId = m[1]!;
+    const channelId = m[2]!.startsWith('slack:') ? m[2]! : `slack:${m[2]}`;
+    desired.set(`${teamId} ${channelId}`, { teamId, channelId });
+  }
+  const desiredTeams = new Set([...desired.values()].map((d) => d.teamId));
+
+  const sql = getDb();
+  const existing = (await sql`
+    SELECT channel_id, team_id FROM agent_channel_bindings
+    WHERE agent_id = ${agentId} AND platform = 'slack'
+  `) as Array<{ channel_id: string; team_id: string | null }>;
+
+  const bound: string[] = [];
+  for (const { teamId, channelId } of desired.values()) {
+    await sql`
+      INSERT INTO agent_channel_bindings (agent_id, platform, channel_id, team_id, created_at)
+      VALUES (${agentId}, 'slack', ${channelId}, ${teamId}, now())
+      ON CONFLICT (platform, channel_id, team_id) DO UPDATE SET agent_id = EXCLUDED.agent_id
+    `;
+    bound.push(`${teamId}/${channelId}`);
+  }
+
+  const removed: string[] = [];
+  for (const row of existing) {
+    if (!row.team_id || !desiredTeams.has(row.team_id)) continue;
+    if (desired.has(`${row.team_id} ${row.channel_id}`)) continue;
+    await sql`
+      DELETE FROM agent_channel_bindings
+      WHERE agent_id = ${agentId} AND platform = 'slack'
+        AND channel_id = ${row.channel_id} AND team_id = ${row.team_id}
+    `;
+    removed.push(`${row.team_id}/${row.channel_id}`);
+  }
+
+  return c.json({ bound, removed });
+});
+
 // ── Start platform ───────────────────────────────────────────────────────────
 
 routes.post('/:agentId/platforms/:platformId/start', async (c) => {

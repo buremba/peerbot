@@ -182,7 +182,24 @@ Each entry connects the agent to a chat platform.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `type` | string | yes | Platform type: `telegram`, `slack`, `discord`, `whatsapp`, `teams`, `gchat` |
+| `name` | string | no | Disambiguator when an agent has multiple platforms of the same type |
 | `config` | table | yes | Platform-specific configuration (see below) |
+| `channels` | array | no | Slack only — declarative channel routing (see below) |
+
+#### Declarative channel routing (Slack)
+
+By default an agent is reachable in a Slack channel only after someone runs `/lobu link <code>` there. To route channels to the agent as config-as-code, list them on the Slack platform entry:
+
+```toml
+[[agents.x.platforms]]
+type = "slack"
+channels = ["T0ABCDEF/C0123ABCD", "T0ABCDEF/C0456WXYZ"]
+[agents.x.platforms.config]
+botToken = "$SLACK_BOT_TOKEN"
+signingSecret = "$SLACK_SIGNING_SECRET"
+```
+
+Each entry is `"<teamId>/<channelId>"` — both appear in any Slack channel URL (`https://app.slack.com/client/<teamId>/<channelId>`). `lobu apply` reconciles `agent_channel_bindings` to exactly this list for this agent on the teams referenced: listed channels get bound, ones no longer listed get unbound. Channels linked ad-hoc via `/lobu link` on other teams/connections are left alone. (Channel changes are applied during `lobu apply`; they don't appear in `lobu apply --dry-run` output.)
 
 #### Platform config by type
 

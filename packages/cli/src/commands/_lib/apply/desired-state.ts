@@ -83,6 +83,8 @@ export interface DesiredPlatform {
   name?: string;
   /** Raw config from lobu.toml — values may still contain `$VAR` references. */
   config: Record<string, string>;
+  /** Declarative channel bindings (`"<teamId>/<channelId>"`); Slack only. */
+  channels?: string[];
 }
 
 export interface DesiredEntityType {
@@ -696,6 +698,21 @@ function buildPlatforms(
       config: resolvedConfig,
     };
     if (platform.name) desired.name = platform.name;
+    if (platform.channels && platform.channels.length > 0) {
+      if (platform.type !== "slack") {
+        throw new ValidationError(
+          `agent "${agentId}" platform "${platform.type}": \`channels\` is only supported for Slack`
+        );
+      }
+      for (const entry of platform.channels) {
+        if (!/^[^/\s]+\/[^/\s]+$/.test(entry.trim())) {
+          throw new ValidationError(
+            `agent "${agentId}" Slack \`channels\` entry "${entry}" must be in "<teamId>/<channelId>" form (e.g. "T0ABCDEF/C0123ABCD")`
+          );
+        }
+      }
+      desired.channels = platform.channels.map((e) => e.trim());
+    }
     out.push(desired);
   }
   return out;

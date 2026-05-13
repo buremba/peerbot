@@ -114,6 +114,62 @@ botToken = "y"
     );
   });
 
+  test("carries Slack platform `channels` onto the desired platform", async () => {
+    const dir = mkProject(
+      `[agents.triage]
+name = "Triage"
+dir = "./agents/triage"
+
+[[agents.triage.platforms]]
+type = "slack"
+channels = ["T0ABCDEF/C0123ABCD", "T0ABCDEF/C0456WXYZ"]
+[agents.triage.platforms.config]
+botToken = "x"
+`
+    );
+    const { state } = await loadDesiredState({ cwd: dir });
+    expect(state.agents[0]!.platforms[0]!.channels).toEqual([
+      "T0ABCDEF/C0123ABCD",
+      "T0ABCDEF/C0456WXYZ",
+    ]);
+  });
+
+  test("rejects malformed Slack `channels` entries", async () => {
+    const dir = mkProject(
+      `[agents.triage]
+name = "Triage"
+dir = "./agents/triage"
+
+[[agents.triage.platforms]]
+type = "slack"
+channels = ["C0123ABCD"]
+[agents.triage.platforms.config]
+botToken = "x"
+`
+    );
+    await expect(loadDesiredState({ cwd: dir })).rejects.toThrow(
+      /<teamId>\/<channelId>/
+    );
+  });
+
+  test("rejects `channels` on a non-Slack platform", async () => {
+    const dir = mkProject(
+      `[agents.triage]
+name = "Triage"
+dir = "./agents/triage"
+
+[[agents.triage.platforms]]
+type = "telegram"
+channels = ["T0ABCDEF/C0123ABCD"]
+[agents.triage.platforms.config]
+botToken = "x"
+`
+    );
+    await expect(loadDesiredState({ cwd: dir })).rejects.toThrow(
+      /only supported for Slack/
+    );
+  });
+
   test("loads local skills and merges skill network, nix, and MCP declarations", async () => {
     const dir = mkProject(
       `[agents.triage]

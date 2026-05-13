@@ -384,6 +384,30 @@ export class ApplyClient {
     return body;
   }
 
+  /**
+   * Reconcile a platform's declarative channel bindings.
+   *
+   * Server contract:
+   *   POST /:agentId/platforms/:platformId/sync-channels
+   *   body: { channels: string[] }   // each "<teamId>/<channelId>"
+   *   response: { bound: string[], removed: string[] }
+   */
+  async syncPlatformChannels(
+    agentId: string,
+    platformId: string,
+    channels: string[]
+  ): Promise<{ bound: string[]; removed: string[] }> {
+    const { body } = await this.request<{
+      bound?: string[];
+      removed?: string[];
+    }>(
+      "POST",
+      `/api/${this.orgSlug}/agents/${encodeURIComponent(agentId)}/platforms/${encodeURIComponent(platformId)}/sync-channels`,
+      { channels }
+    );
+    return { bound: body.bound ?? [], removed: body.removed ?? [] };
+  }
+
   // ── Memory schema ─────────────────────────────────────────────────────────
 
   async listEntityTypes(): Promise<RemoteEntityType[]> {

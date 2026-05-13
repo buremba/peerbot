@@ -41,6 +41,16 @@ const platformSchema = z.object({
     .optional(),
   /** Platform-specific config (e.g. `{ botToken: "$BOT_TOKEN" }`). */
   config: z.record(z.string(), z.string()),
+  /**
+   * Declarative channel routing (Slack only, for now): chat channels this agent
+   * should be reachable in. Each entry is `"<teamId>/<channelId>"` — e.g.
+   * `"T0ABCDEF/C0123ABCD"` (both appear in any Slack channel URL). `lobu apply`
+   * reconciles `agent_channel_bindings` to exactly this list for this agent on
+   * this connection: listed channels get bound, ones no longer listed get
+   * unbound. Channels linked ad-hoc via `/lobu link` on *other* connections are
+   * left alone.
+   */
+  channels: z.array(z.string()).optional(),
 });
 
 // ── MCP Server ──────────────────────────────────────────────────────────────

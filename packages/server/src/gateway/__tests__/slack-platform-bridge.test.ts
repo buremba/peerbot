@@ -256,6 +256,28 @@ describe("Slack platform bridge", () => {
     expect(publishHomeView.mock.calls[0]![0]).toBe("U123");
   });
 
+  test("ignores a Disconnect action for an integration the agent doesn't have", async () => {
+    const h = makeHomeChat();
+    const { store, del } = fakeSecretStore();
+    registerSlackAppHome(h.chat, connection(), {
+      mcpConfigService: { getMcpStatus: mock(async () => mcpStatus) } as any,
+      secretStore: store,
+      publicGatewayUrl: "https://gw.example",
+    });
+
+    const publishHomeView = mock(async () => undefined);
+    await h.click(
+      "lobu_home_disconnect",
+      "../../other-agent/U999/github/credential",
+      "U123",
+      publishHomeView
+    );
+
+    // No secret deleted, no home re-publish — the crafted id is rejected.
+    expect(del).not.toHaveBeenCalled();
+    expect(publishHomeView).not.toHaveBeenCalled();
+  });
+
   test("Connect button mints an auth URL and re-publishes with a sign-in link", async () => {
     const h = makeHomeChat();
     startAuthCodeFlowMock.mockClear();

@@ -364,6 +364,28 @@ async function publishHome(
   }
 }
 
+/**
+ * Guard against a crafted `block_actions` payload pointing at an MCP the agent
+ * doesn't actually have configured. Connect already validates implicitly (a
+ * missing `getHttpServer` is a no-op); this keeps Disconnect from issuing a
+ * `secretStore.delete` with an attacker-supplied key string.
+ */
+async function isKnownIntegration(
+  agentId: string,
+  mcpId: string,
+  deps: SlackAppHomeDeps
+): Promise<boolean> {
+  if (HIDDEN_HOME_INTEGRATION_IDS.has(mcpId)) return false;
+  const mcpConfigService = deps.mcpConfigService;
+  if (!mcpConfigService) return false;
+  try {
+    const statuses = await mcpConfigService.getMcpStatus(agentId);
+    return statuses.some((s) => s.id === mcpId);
+  } catch {
+    return false;
+  }
+}
+
 async function startMcpConnectFlow(params: {
   connection: PlatformConnection;
   deps: SlackAppHomeDeps;
@@ -434,6 +456,15 @@ export function registerSlackAppHome(
       const userId = event.user?.userId;
       const agentId = connection.agentId;
       if (!mcpId || !userId || !agentId) return;
+      // `mcpId` comes from the (Slack-signed) button payload, but only the
+      // button labels are ours — reject anything not in the agent's config.
+      if (!(await isKnownIntegration(agentId, mcpId, deps))) {
+        logger.warn(
+          { agentId, userId, mcpId, actionId: event.actionId },
+          "Ignoring Slack home action for an unknown integration"
+        );
+        return;
+      }
 
       if (event.actionId === HOME_ACTION_DISCONNECT) {
         if (deps.secretStore) {

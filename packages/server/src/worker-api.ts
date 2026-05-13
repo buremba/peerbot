@@ -507,6 +507,11 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   // regardless of the connector's required_capability — that's how an
   // otherwise-cloud connector (Reddit, …) ends up running on a chosen device.
   const workerUserId = c.var.workerUserId;
+  // The org the device's token was issued for — the workspace the user picked on
+  // the OAuth device-authorization page. Falls back to the owner's personal
+  // workspace for tokens not bound to any org. Sets the device's home only on
+  // first registration; moving an existing device is the Devices-page action.
+  const workerTokenOrgId = c.var.organizationId ?? null;
   let deviceWorkerId: string | null = null;
   if (workerUserId) {
     try {
@@ -517,7 +522,10 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         VALUES (
           ${workerUserId}, ${worker_id}, ${platform}, ${app_version},
           ${sql.json(incomingCaps)}, ${label},
-          (SELECT id FROM organization WHERE (metadata::jsonb)->>'personal_org_for_user_id' = ${workerUserId} LIMIT 1)
+          COALESCE(
+            ${workerTokenOrgId}::text,
+            (SELECT id FROM organization WHERE (metadata::jsonb)->>'personal_org_for_user_id' = ${workerUserId} LIMIT 1)
+          )
         )
         ON CONFLICT (user_id, worker_id) DO UPDATE SET
           platform = EXCLUDED.platform,

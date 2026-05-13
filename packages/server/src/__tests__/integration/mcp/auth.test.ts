@@ -1005,5 +1005,43 @@ describe('MCP Authentication', () => {
       const body = await response.json();
       expect(body.error).toBe('access_denied');
     });
+
+    it('attaches a polling device worker to the org its token was approved for', async () => {
+      const dc = await createTestDeviceCode(deviceClient.client_id);
+
+      // User approves the device on the OAuth page, picking `org`.
+      const approveRes = await post('/oauth/device/approve', {
+        body: { user_code: dc.userCode, approved: true, organization_id: org.id },
+        cookie: sessionCookie,
+        headers: { Origin: 'http://localhost' },
+      });
+      expect(approveRes.status).toBe(200);
+
+      // The device exchanges its device code for an access token.
+      const tokenRes = await post('/oauth/token', {
+        body: {
+          grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+          device_code: dc.deviceCode,
+          client_id: deviceClient.client_id,
+          client_secret: deviceClient.client_secret,
+        },
+      });
+      expect(tokenRes.status).toBe(200);
+      const { access_token: accessToken } = (await tokenRes.json()) as { access_token: string };
+      expect(accessToken).toBeTruthy();
+
+      // First poll registers the device worker; its home is the approved org.
+      const workerId = `test-mac-${Date.now()}`;
+      const pollRes = await post('/api/workers/poll', {
+        body: { worker_id: workerId, capabilities: {} },
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      expect(pollRes.status).toBe(200);
+
+      const rows = (await getTestDb()`
+        SELECT organization_id FROM device_workers WHERE worker_id = ${workerId} LIMIT 1
+      `) as Array<{ organization_id: string | null }>;
+      expect(rows[0]?.organization_id).toBe(org.id);
+    });
   });
 });

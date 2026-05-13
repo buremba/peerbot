@@ -49,27 +49,6 @@ const STALE_SWEEP_INTERVAL_MS = 30_000;
 /** Max time to wait for in-flight handlers during graceful stop. */
 const SHUTDOWN_DRAIN_MS = 30_000;
 
-/**
- * Sentry alert dedupe. Repeated heartbeat-failure / DLQ alerts for the same
- * runs.id within DEDUPE_WINDOW_MS collapse to a single captureMessage call
- * so a single bad row doesn't spam Sentry.
- */
-const SENTRY_DEDUPE_WINDOW_MS = 5 * 60 * 1000;
-const sentryAlertedRuns = new Map<number, number>();
-
-function shouldEmitSentryAlert(runId: number): boolean {
-  const now = Date.now();
-  const last = sentryAlertedRuns.get(runId);
-  if (last && now - last < SENTRY_DEDUPE_WINDOW_MS) return false;
-  sentryAlertedRuns.set(runId, now);
-  if (sentryAlertedRuns.size > 1000) {
-    for (const [id, ts] of sentryAlertedRuns) {
-      if (now - ts > SENTRY_DEDUPE_WINDOW_MS) sentryAlertedRuns.delete(id);
-    }
-  }
-  return true;
-}
-
 function queueBreadcrumb(
   category: string,
   message: string,
@@ -699,19 +678,14 @@ export class RunsQueue implements IMessageQueue {
         AND status = 'claimed'
         AND claimed_by = ${this.claimedBy}
     `;
+    // Logged as a warning; not emitted to Sentry. Per-run terminal failures
+    // are high-volume and low-actionable (each is a separate event in Sentry,
+    // burning the org quota with no per-incident signal beyond the log).
+    // The aggregate "we have failed runs" signal belongs on a metric/dash,
+    // not in the error feed.
     logger.warn(
       `Run ${runId} failed after retries: ${message}`,
     );
-    if (shouldEmitSentryAlert(runId)) {
-      try {
-        Sentry.captureMessage(`Queue run failed after retries: ${runId}`, {
-          level: "warning",
-          extra: { runId, message },
-        });
-      } catch {
-        // ignore
-      }
-    }
   }
 
   private async scheduleRetry(

@@ -20,6 +20,7 @@ import {
   type SyncResult,
 } from '@lobu/connector-sdk';
 import {
+  getBrowserCdpUrl,
   getBrowserCookies,
   getBrowserUserDataDir,
   validateCookieNotExpired,
@@ -321,6 +322,7 @@ export default class LinkedInConnector extends ConnectorRuntime {
     const baseUrl = companyUrl.replace(/\/$/, '');
 
     const userDataDir = getBrowserUserDataDir(ctx.sessionState);
+    const cdpUrl = getBrowserCdpUrl(ctx.sessionState) ?? 'auto';
     const cookies = userDataDir
       ? []
       : getBrowserCookies(ctx.checkpoint as any, ctx.sessionState as any, 'linkedin');
@@ -331,10 +333,10 @@ export default class LinkedInConnector extends ConnectorRuntime {
     const maxScrolls = (config.max_scrolls as number) ?? (feedKey === 'jobs' ? 3 : 5);
 
     if (feedKey === 'jobs') {
-      return this.syncJobs(baseUrl, cookies, maxScrolls, checkpoint, userDataDir);
+      return this.syncJobs(baseUrl, cookies, maxScrolls, checkpoint, userDataDir, cdpUrl);
     }
 
-    return this.syncUpdates(baseUrl, cookies, maxScrolls, checkpoint, userDataDir);
+    return this.syncUpdates(baseUrl, cookies, maxScrolls, checkpoint, userDataDir, cdpUrl);
   }
 
   private async syncUpdates(
@@ -342,7 +344,8 @@ export default class LinkedInConnector extends ConnectorRuntime {
     cookies: any[],
     maxScrolls: number,
     checkpoint: LinkedInCheckpoint,
-    userDataDir: string | undefined
+    userDataDir: string | undefined,
+    cdpUrl: string | 'auto'
   ): Promise<SyncResult> {
     const postsUrl = `${baseUrl}/posts/`;
 
@@ -360,7 +363,7 @@ export default class LinkedInConnector extends ConnectorRuntime {
         navigationTimeoutMs: 20000,
       },
       url: postsUrl,
-      cdpUrl: 'auto',
+      cdpUrl,
       cookies,
       userDataDir,
       parseResponse: parseCompanyUpdates,
@@ -413,7 +416,8 @@ export default class LinkedInConnector extends ConnectorRuntime {
     cookies: any[],
     maxScrolls: number,
     checkpoint: LinkedInCheckpoint,
-    userDataDir: string | undefined
+    userDataDir: string | undefined,
+    cdpUrl: string | 'auto'
   ): Promise<SyncResult> {
     const jobsUrl = `${baseUrl}/jobs/`;
 
@@ -432,7 +436,7 @@ export default class LinkedInConnector extends ConnectorRuntime {
         navigationTimeoutMs: 20000,
       },
       url: jobsUrl,
-      cdpUrl: 'auto',
+      cdpUrl,
       cookies,
       userDataDir,
       parseResponse: parseJobListings,

@@ -29,6 +29,7 @@ import {
 	type SyncResult,
 } from "@lobu/connector-sdk";
 import {
+	getBrowserCdpUrl,
 	getBrowserCookies,
 	getBrowserUserDataDir,
 	validateCookieNotExpired,
@@ -499,6 +500,7 @@ export default class RevolutConnector extends ConnectorRuntime {
 		// Playwright path — see the auth-schema comment on why they rarely suffice
 		// for Revolut. Don't fail the sync just because there are none.
 		const userDataDir = getBrowserUserDataDir(ctx.sessionState);
+		const cdpUrl = getBrowserCdpUrl(ctx.sessionState) ?? "auto";
 		let cookies: ReturnType<typeof getBrowserCookies> = [];
 		if (!userDataDir) {
 			try {
@@ -524,7 +526,7 @@ export default class RevolutConnector extends ConnectorRuntime {
 				stealth: true,
 			},
 			url: startUrl,
-			cdpUrl: "auto",
+			cdpUrl,
 			cookies,
 			userDataDir,
 			parseResponse: (_url, json) => extractTransactionsFromResponse(json),

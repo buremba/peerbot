@@ -18,6 +18,7 @@ import {
   type SyncResult,
 } from '@lobu/connector-sdk';
 import {
+  getBrowserCdpUrl,
   getBrowserCookies,
   getBrowserUserDataDir,
   validateCookieNotExpired,
@@ -363,6 +364,7 @@ async function syncViaBrowser(
   const searchUrl = `https://x.com/search?q=${encodeURIComponent(searchQuery)}&src=typed_query&f=${searchFilter}`;
 
   const userDataDir = getBrowserUserDataDir(ctx.sessionState);
+  const cdpUrl = getBrowserCdpUrl(ctx.sessionState) ?? 'auto';
   let cookies: any[] = [];
   if (!userDataDir) {
     try {
@@ -383,7 +385,7 @@ async function syncViaBrowser(
       navigationTimeoutMs: 15000,
     },
     url: searchUrl,
-    cdpUrl: 'auto',
+    cdpUrl,
     cookies,
     userDataDir,
     parseResponse: parseBrowserSearchResponse,

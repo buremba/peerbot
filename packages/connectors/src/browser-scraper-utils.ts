@@ -47,6 +47,21 @@ export function getBrowserUserDataDir(
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
+/**
+ * Pull the device-bound CDP endpoint URL from session_state (set when the
+ * user picked "Attach via CDP" mode on their browser profile). When set,
+ * callers should pass it through as `cdpUrl` so the connector attaches to
+ * the exact running Chrome the user chose — instead of `'auto'`, which can
+ * land on the wrong browser when several debuggable Chromiums are running
+ * or a non-default port was configured.
+ */
+export function getBrowserCdpUrl(
+  sessionState: Record<string, unknown> | null | undefined
+): string | undefined {
+  const value = sessionState?.cdp_url;
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
 export function validateCookieNotExpired(
   cookies: any[],
   cookieName: string,

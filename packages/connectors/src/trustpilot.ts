@@ -15,6 +15,7 @@ import {
   type SyncResult,
 } from '@lobu/connector-sdk';
 import {
+  getBrowserCdpUrl,
   getBrowserUserDataDir,
   handleCookieConsent,
   openStealthBrowser,
@@ -101,7 +102,8 @@ export default class TrustpilotConnector extends ConnectorRuntime {
     validateUrlDomain(baseUrl, 'trustpilot.com');
 
     const userDataDir = getBrowserUserDataDir(ctx.sessionState);
-    const session = await openStealthBrowser({ cdpUrl: 'auto', userDataDir });
+    const cdpUrl = getBrowserCdpUrl(ctx.sessionState) ?? 'auto';
+    const session = await openStealthBrowser({ cdpUrl, userDataDir });
 
     return withBrowserErrorCapture(session, 'trustpilot-sync', async (page) => {
       await page.goto(baseUrl, {

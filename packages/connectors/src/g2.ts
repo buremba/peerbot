@@ -15,6 +15,7 @@ import {
   type SyncResult,
 } from '@lobu/connector-sdk';
 import {
+  getBrowserCdpUrl,
   getBrowserUserDataDir,
   handleCookieConsent,
   openStealthBrowser,
@@ -116,7 +117,8 @@ export default class G2Connector extends ConnectorRuntime {
     const allEvents: EventEnvelope[] = [];
 
     const userDataDir = getBrowserUserDataDir(ctx.sessionState);
-    const session = await openStealthBrowser({ cdpUrl: 'auto', userDataDir });
+    const cdpUrl = getBrowserCdpUrl(ctx.sessionState) ?? 'auto';
+    const session = await openStealthBrowser({ cdpUrl, userDataDir });
 
     return withBrowserErrorCapture(session, 'g2-sync', async (page) => {
       const maxPages = 5;

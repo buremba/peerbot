@@ -16,6 +16,7 @@ import {
   type SyncResult,
 } from '@lobu/connector-sdk';
 import {
+  getBrowserCdpUrl,
   getBrowserUserDataDir,
   handleCookieConsent,
   openStealthBrowser,
@@ -160,7 +161,8 @@ export default class GlassdoorConnector extends ConnectorRuntime {
     validateUrlDomain(baseUrl, 'glassdoor.com');
 
     const userDataDir = getBrowserUserDataDir(ctx.sessionState);
-    const session = await openStealthBrowser({ cdpUrl: 'auto', userDataDir });
+    const cdpUrl = getBrowserCdpUrl(ctx.sessionState) ?? 'auto';
+    const session = await openStealthBrowser({ cdpUrl, userDataDir });
 
     return withBrowserErrorCapture(session, 'glassdoor-sync', async (page) => {
       // Configure viewport and user-agent to mimic a real browser

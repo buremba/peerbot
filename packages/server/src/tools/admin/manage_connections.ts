@@ -1013,12 +1013,18 @@ async function handleCreate(
   const isDeviceBoundBrowserSession =
     authSelection?.authProfile?.profile_kind === 'browser_session' && !!profileDeviceWorkerId;
 
+  // Device-bound browser profiles can be `pending_auth` on the profile itself
+  // until the user logs in (the Mac app launches the managed Chrome) — but
+  // the cookies live on disk on the device, not server-side, so a run is
+  // perfectly capable of executing. Mark the connection active so
+  // materializeDueFeeds picks it up; the run will fail loudly if cookies
+  // are missing, which is the same as any other "logged out" case.
   const connectionStatus =
     interactiveMethod ||
     (authSelection?.authProfile?.profile_kind === 'browser_session' &&
       !isDeviceBoundBrowserSession &&
       !browserProfileUsable) ||
-    authSelection?.authProfile?.status === 'pending_auth'
+    (authSelection?.authProfile?.status === 'pending_auth' && !isDeviceBoundBrowserSession)
       ? 'pending_auth'
       : 'active';
 
@@ -1210,24 +1216,6 @@ async function handleConnect(
 
   const hasNoAuth =
     !authSelection.oauthMethod && !authSelection.envMethod && !authSelection.browserMethod;
-  const browserProfileUsable =
-    authSelection.authProfile?.profile_kind === 'browser_session'
-      ? (await getBrowserSessionReadiness(authSelection.authProfile.auth_data, args.connector_key))
-          .usable
-      : false;
-  const hasReadySelection =
-    !!authSelection.authProfile &&
-    (authSelection.authProfile.profile_kind === 'browser_session'
-      ? browserProfileUsable
-      : authSelection.authProfile.status === 'active') &&
-    (authSelection.selectedKind !== 'oauth_account' ||
-      (authSelection.appAuthProfile?.status === 'active' && !!authSelection.appAuthProfile));
-
-  const needsConnectFlow =
-    authSelection.preferredMethodType === 'oauth' &&
-    !!authSelection.oauthMethod &&
-    !hasReadySelection &&
-    !args.auth_profile_slug;
   const profileDeviceWorkerIdConnect = authSelection.authProfile?.device_worker_id ?? null;
   let effectiveDeviceWorkerIdConnect = deviceBinding.deviceWorkerId;
   if (profileDeviceWorkerIdConnect) {
@@ -1243,6 +1231,30 @@ async function handleConnect(
   const isDeviceBoundBrowserSessionConnect =
     authSelection.authProfile?.profile_kind === 'browser_session' &&
     !!profileDeviceWorkerIdConnect;
+  const browserProfileUsable =
+    authSelection.authProfile?.profile_kind === 'browser_session' &&
+    !isDeviceBoundBrowserSessionConnect
+      ? (await getBrowserSessionReadiness(authSelection.authProfile.auth_data, args.connector_key))
+          .usable
+      : false;
+  // Device-bound browser_session profiles are "ready" by virtue of the
+  // cookies being on disk on the device. `getBrowserSessionReadiness` only
+  // looks at server-side auth_data, which is empty for these — without this
+  // exemption the connect path rejects them with "select or create a browser
+  // auth profile" even when the Mac app just created one.
+  const hasReadySelection =
+    !!authSelection.authProfile &&
+    (authSelection.authProfile.profile_kind === 'browser_session'
+      ? isDeviceBoundBrowserSessionConnect || browserProfileUsable
+      : authSelection.authProfile.status === 'active') &&
+    (authSelection.selectedKind !== 'oauth_account' ||
+      (authSelection.appAuthProfile?.status === 'active' && !!authSelection.appAuthProfile));
+
+  const needsConnectFlow =
+    authSelection.preferredMethodType === 'oauth' &&
+    !!authSelection.oauthMethod &&
+    !hasReadySelection &&
+    !args.auth_profile_slug;
   const needsBrowserAuth =
     !!authSelection.browserMethod &&
     !!authSelection.authProfile &&

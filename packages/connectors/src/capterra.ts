@@ -14,6 +14,7 @@ import {
   type SyncResult,
 } from '@lobu/connector-sdk';
 import {
+  getBrowserCdpUrl,
   getBrowserUserDataDir,
   handleCookieConsent,
   openStealthBrowser,
@@ -134,7 +135,8 @@ export default class CapterraConnector extends ConnectorRuntime {
     validateUrlDomain(baseUrl, 'capterra.com');
 
     const userDataDir = getBrowserUserDataDir(ctx.sessionState);
-    const session = await openStealthBrowser({ cdpUrl: 'auto', userDataDir });
+    const cdpUrl = getBrowserCdpUrl(ctx.sessionState) ?? 'auto';
+    const session = await openStealthBrowser({ cdpUrl, userDataDir });
 
     return withBrowserErrorCapture(session, 'capterra-sync', async (page) => {
       await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });

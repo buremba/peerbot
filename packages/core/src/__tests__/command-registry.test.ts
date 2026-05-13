@@ -130,21 +130,21 @@ describe("CommandRegistry.tryHandle", () => {
 
   test("handler receives the correct context", async () => {
     const registry = new CommandRegistry();
-    let receivedCtx: CommandContext | null = null;
+    const captured: { ctx: CommandContext | null } = { ctx: null };
     registry.register({
       name: "inspect",
       description: "Inspect context",
       handler: async (ctx) => {
-        receivedCtx = ctx;
+        captured.ctx = ctx;
       },
     });
 
     const ctx = makeCtx({ userId: "u-42", channelId: "C99", args: "foo bar" });
     await registry.tryHandle("inspect", ctx);
 
-    expect(receivedCtx?.userId).toBe("u-42");
-    expect(receivedCtx?.channelId).toBe("C99");
-    expect(receivedCtx?.args).toBe("foo bar");
+    expect(captured.ctx?.userId).toBe("u-42");
+    expect(captured.ctx?.channelId).toBe("C99");
+    expect(captured.ctx?.args).toBe("foo bar");
   });
 
   test("handler error: still returns true and sends error reply", async () => {

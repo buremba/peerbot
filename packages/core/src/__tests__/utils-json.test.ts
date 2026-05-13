@@ -12,23 +12,23 @@ import { parseJsonObject, safeJsonParse, toJsonSafe } from "../utils/json";
 
 describe("safeJsonParse", () => {
   test("parses valid JSON object", () => {
-    expect(safeJsonParse('{"a":1}')).toEqual({ a: 1 });
+    expect(safeJsonParse<{ a: number }>('{"a":1}')).toEqual({ a: 1 });
   });
 
   test("parses valid JSON array", () => {
-    expect(safeJsonParse("[1,2,3]")).toEqual([1, 2, 3]);
+    expect(safeJsonParse<number[]>("[1,2,3]")).toEqual([1, 2, 3]);
   });
 
   test("parses valid JSON string value", () => {
-    expect(safeJsonParse('"hello"')).toBe("hello");
+    expect(safeJsonParse<string>('"hello"')).toBe("hello");
   });
 
   test("parses valid JSON number", () => {
-    expect(safeJsonParse("42")).toBe(42);
+    expect(safeJsonParse<number>("42")).toBe(42);
   });
 
   test("parses valid JSON boolean", () => {
-    expect(safeJsonParse("true")).toBe(true);
+    expect(safeJsonParse<boolean>("true")).toBe(true);
   });
 
   test("parses null JSON literal", () => {
@@ -67,25 +67,25 @@ describe("toJsonSafe", () => {
   });
 
   test("converts a safe BigInt to a number", () => {
-    const result = toJsonSafe({ count: BigInt(42) });
+    const result = toJsonSafe({ count: BigInt(42) }) as { count: unknown };
     expect(result.count).toBe(42);
     expect(typeof result.count).toBe("number");
   });
 
   test("converts an unsafe BigInt to a string", () => {
     const big = BigInt(Number.MAX_SAFE_INTEGER) + 1n;
-    const result = toJsonSafe({ id: big });
+    const result = toJsonSafe({ id: big }) as { id: unknown };
     expect(typeof result.id).toBe("string");
     expect(result.id).toBe(big.toString());
   });
 
   test("nested BigInt fields are converted", () => {
     const result = toJsonSafe({ nested: { x: BigInt(7) } });
-    expect((result as any).nested.x).toBe(7);
+    expect((result as { nested: { x: unknown } }).nested.x).toBe(7);
   });
 
   test("arrays with BigInt elements are converted", () => {
-    const result = toJsonSafe([BigInt(1), BigInt(2)]);
+    const result = toJsonSafe([BigInt(1), BigInt(2)]) as unknown[];
     expect(result).toEqual([1, 2]);
   });
 });

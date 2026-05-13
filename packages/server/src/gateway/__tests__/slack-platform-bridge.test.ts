@@ -43,7 +43,9 @@ describe("Slack platform bridge", () => {
     expect(tryHandle.mock.calls[0]?.[2]).toMatchObject({
       platform: "slack",
       userId: "U123",
-      channelId: "C123",
+      // Canonical `slack:<id>` form — matches the message-handler bridge's
+      // thread channel id, so getBinding lookups agree across ingress paths.
+      channelId: "slack:C123",
       teamId: "T123",
       isGroup: true,
       connectionId: "conn-1",

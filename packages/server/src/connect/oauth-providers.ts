@@ -221,8 +221,19 @@ export async function exchangeCodeForTokens(params: {
 
     const data = (await response.json()) as Record<string, unknown>;
 
+    // Some providers (notably GitHub) return HTTP 200 with an error body
+    // (e.g. `{ error: "bad_verification_code" }`) instead of a non-2xx status.
+    // Treat a missing access_token as a failed exchange.
+    if (typeof data.access_token !== 'string' || data.access_token.length === 0) {
+      logger.error(
+        { provider: params.provider, body: data },
+        'OAuth token exchange returned no access_token'
+      );
+      return null;
+    }
+
     return {
-      accessToken: data.access_token as string,
+      accessToken: data.access_token,
       refreshToken: (data.refresh_token as string) ?? null,
       expiresIn: (data.expires_in as number) ?? null,
       scope: (data.scope as string) ?? null,

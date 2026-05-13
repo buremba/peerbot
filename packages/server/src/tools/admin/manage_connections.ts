@@ -720,8 +720,8 @@ async function handleGet(
  *  - A connector that declares `required_capability` MUST be pinned to a device,
  *    and that device must currently advertise the capability.
  *  - Any other connector may optionally be pinned to a device (run-on-device).
- *  - The requester may pin a device they own, or one explicitly granted to this
- *    org via `device_worker_org_grants`.
+ *  - The requester may only pin a device they own, and only into the workspace
+ *    that device is attached to (device_workers.organization_id).
  */
 async function resolveDeviceBinding(params: {
   organizationId: string;
@@ -736,14 +736,14 @@ async function resolveDeviceBinding(params: {
   if (!deviceWorkerId) {
     if (requiredCapability) {
       return {
-        error: `Connector '${params.connector.key}' runs on a device — pass device_worker_id for a device that has granted the '${requiredCapability}' permission.`,
+        error: `Connector '${params.connector.key}' runs on a device — pass device_worker_id for one of your devices attached to this workspace that advertises the '${requiredCapability}' permission.`,
       };
     }
     return { deviceWorkerId: null };
   }
 
   const rows = (await sql`
-    SELECT dw.id, dw.user_id, dw.capabilities, dw.label
+    SELECT dw.id, dw.user_id, dw.capabilities, dw.label, dw.organization_id
     FROM device_workers dw
     WHERE dw.id = ${deviceWorkerId}
     LIMIT 1
@@ -752,25 +752,19 @@ async function resolveDeviceBinding(params: {
     user_id: string;
     capabilities: unknown;
     label: string | null;
+    organization_id: string | null;
   }>;
   const device = rows[0];
   if (!device) {
     return { error: `Device worker '${deviceWorkerId}' not found.` };
   }
-
-  const ownsDevice = !!params.userId && device.user_id === params.userId;
-  if (!ownsDevice) {
-    const granted = (await sql`
-      SELECT 1 FROM device_worker_org_grants
-      WHERE device_worker_id = ${deviceWorkerId}
-        AND organization_id = ${params.organizationId}
-      LIMIT 1
-    `) as unknown as Array<unknown>;
-    if (granted.length === 0) {
-      return {
-        error: `You don't have access to device '${device.label ?? deviceWorkerId}'. The device owner must grant it to this org first.`,
-      };
-    }
+  if (!params.userId || device.user_id !== params.userId) {
+    return { error: `You can only pin a device you own.` };
+  }
+  if (device.organization_id !== params.organizationId) {
+    return {
+      error: `Device '${device.label ?? deviceWorkerId}' isn't attached to this workspace. Re-attach it from the Devices page first.`,
+    };
   }
 
   if (requiredCapability) {

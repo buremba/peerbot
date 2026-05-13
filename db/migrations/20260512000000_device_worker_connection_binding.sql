@@ -1,29 +1,32 @@
 -- migrate:up
 
--- Make a connection's execution target explicit. Until now, device connectors
--- (connector_definitions.required_capability IS NOT NULL) reached an org only
--- by silent auto-wire into the polling user's personal org, and there was no
--- way to (a) back a connector with a member's device in a shared org, (b) pick
--- which device runs a connector, or (c) run an otherwise-cloud connector on a
--- specific device.
+-- Make a connection's execution target explicit, and give every device worker
+-- a home organization.
 --
 -- connections.device_worker_id (nullable) is the binding:
 --   NULL  -> runs on the cloud connector-worker pool (today's behavior)
 --   set   -> runs are pinned to that device worker
 -- For device-type connectors the binding is mandatory; for cloud connectors
--- it's an optional override.
+-- it's an optional override. A connection can only be pinned to a device that
+-- is attached to that connection's organization.
 --
--- device_worker_org_grants lets a device owner explicitly allow a device to
--- back connectors in a non-personal org. Org-sharing is always an explicit
--- grant, never inferred from "active org at device login".
+-- device_workers.organization_id is the device's home org — chosen at setup,
+-- defaulting to the owner's personal workspace. The device's connectors live
+-- there; re-attaching the device to a different org (a member of which the
+-- owner must be) is the only knob. There is no per-connection device→org grant.
 
--- Surrogate key for device_workers so connections / grants / UI can reference a
--- device by a single stable id. The (user_id, worker_id) primary key stays.
+-- Surrogate key for device_workers so connections / UI can reference a device
+-- by a single stable id. The (user_id, worker_id) primary key stays.
 ALTER TABLE public.device_workers
-    ADD COLUMN IF NOT EXISTS id uuid NOT NULL DEFAULT gen_random_uuid();
+    ADD COLUMN IF NOT EXISTS id uuid NOT NULL DEFAULT gen_random_uuid(),
+    ADD COLUMN IF NOT EXISTS organization_id text;
 
 CREATE UNIQUE INDEX IF NOT EXISTS device_workers_id_key
     ON public.device_workers (id);
+
+CREATE INDEX IF NOT EXISTS idx_device_workers_organization_id
+    ON public.device_workers (organization_id)
+    WHERE organization_id IS NOT NULL;
 
 ALTER TABLE public.connections
     ADD COLUMN IF NOT EXISTS device_worker_id uuid;
@@ -45,16 +48,16 @@ CREATE INDEX IF NOT EXISTS idx_connections_device_worker_id
     ON public.connections (device_worker_id)
     WHERE device_worker_id IS NOT NULL;
 
-CREATE TABLE IF NOT EXISTS public.device_worker_org_grants (
-    device_worker_id uuid NOT NULL REFERENCES public.device_workers (id) ON DELETE CASCADE,
-    organization_id text NOT NULL,
-    granted_by text NOT NULL,
-    granted_at timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (device_worker_id, organization_id)
-);
-
-CREATE INDEX IF NOT EXISTS device_worker_org_grants_org_idx
-    ON public.device_worker_org_grants (organization_id);
+-- Attach existing devices to their owner's personal workspace (no-op on a
+-- fresh database — there are no users yet; the device heartbeat sets this for
+-- new devices either way).
+UPDATE public.device_workers dw
+SET organization_id = (
+    SELECT o.id FROM public.organization o
+    WHERE (o.metadata::jsonb)->>'personal_org_for_user_id' = dw.user_id
+    LIMIT 1
+)
+WHERE dw.organization_id IS NULL;
 
 -- Backfill: existing auto-wired personal-org device connections (created_by
 -- set, no auth profile) whose owner has exactly one device get pinned to that
@@ -98,12 +101,13 @@ CREATE UNIQUE INDEX idx_connections_org_connector_device_live
 
 -- migrate:down
 
-DROP TABLE IF EXISTS public.device_worker_org_grants;
 DROP INDEX IF EXISTS public.idx_connections_org_connector_device_live;
 DROP INDEX IF EXISTS public.idx_connections_device_worker_id;
 ALTER TABLE public.connections
     DROP CONSTRAINT IF EXISTS connections_device_worker_id_fkey,
     DROP COLUMN IF EXISTS device_worker_id;
 DROP INDEX IF EXISTS public.device_workers_id_key;
+DROP INDEX IF EXISTS public.idx_device_workers_organization_id;
 ALTER TABLE public.device_workers
-    DROP COLUMN IF EXISTS id;
+    DROP COLUMN IF EXISTS id,
+    DROP COLUMN IF EXISTS organization_id;

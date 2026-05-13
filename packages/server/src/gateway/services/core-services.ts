@@ -471,6 +471,12 @@ export class CoreServices {
       runtimeCredentialResolver: this.options?.providerCredentialResolver,
       agentOwnerResolver: async (agentId) =>
         (await this.agentSettingsStore?.getMetadata(agentId))?.owner.userId,
+      agentOrgResolver: async (agentId) => {
+        const rows = (await getDb()`
+          SELECT organization_id FROM agents WHERE id = ${agentId} LIMIT 1
+        `) as Array<{ organization_id?: string }>;
+        return rows[0]?.organization_id ?? undefined;
+      },
     });
     this.transcriptionService = new TranscriptionService(
       this.authProfilesManager

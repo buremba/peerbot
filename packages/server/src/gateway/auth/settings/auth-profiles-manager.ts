@@ -1,4 +1,5 @@
 import { type AuthProfile, createLogger } from "@lobu/core";
+import { orgContext, tryGetOrgId } from "../../../lobu/stores/org-context.js";
 import type {
   ProviderCredentialContext,
   RuntimeProviderCredentialResolver,
@@ -58,6 +59,16 @@ interface AuthProfilesManagerOptions {
    * fall back to the owner's user-scoped profiles via this resolver.
    */
   agentOwnerResolver?: (agentId: string) => Promise<string | undefined>;
+  /**
+   * Resolve an agent's organization id. Credentials are stored in the
+   * org-partitioned secret store (`PostgresSecretStore`, keyed by
+   * AsyncLocalStorage org context). Agent runs triggered by a chat-platform
+   * webhook reach this manager with no org context established (the webhook
+   * route has no `:orgSlug`), so without this resolver the credential-ref read
+   * falls back to the global partition and misses the org-scoped value. When
+   * no org context is set, `listProfiles` wraps the read in this agent's org.
+   */
+  agentOrgResolver?: (agentId: string) => Promise<string | undefined>;
 }
 
 /**
@@ -84,13 +95,23 @@ export class AuthProfilesManager {
   private readonly agentOwnerResolver?: (
     agentId: string
   ) => Promise<string | undefined>;
+  private readonly agentOrgResolver?: (
+    agentId: string
+  ) => Promise<string | undefined>;
   /** Short-lived `agentId → ownerUserId` cache — owner lookups happen on the
    *  credential hot path (per proxy request), the owner rarely changes. */
   private readonly agentOwnerCache = new Map<
     string,
     { ownerUserId: string | undefined; expiresAt: number }
   >();
+  /** Short-lived `agentId → organizationId` cache — same hot path as the owner
+   *  cache; an agent doesn't change org. */
+  private readonly agentOrgCache = new Map<
+    string,
+    { organizationId: string | undefined; expiresAt: number }
+  >();
   private static readonly AGENT_OWNER_CACHE_TTL_MS = 60_000;
+  private static readonly AGENT_ORG_CACHE_TTL_MS = 60_000;
   private lazyRefreshHooks?: LazyRefreshHooks;
 
   constructor(options: AuthProfilesManagerOptions) {
@@ -100,6 +121,7 @@ export class AuthProfilesManager {
     this.secretStore = options.secretStore;
     this.runtimeCredentialResolver = options.runtimeCredentialResolver;
     this.agentOwnerResolver = options.agentOwnerResolver;
+    this.agentOrgResolver = options.agentOrgResolver;
   }
 
   /** Wired by boot after TaskScheduler is up. Until then, lazy refresh is a
@@ -215,6 +237,32 @@ export class AuthProfilesManager {
     return ownerUserId;
   }
 
+  private async resolveAgentOrgId(
+    agentId: string
+  ): Promise<string | undefined> {
+    if (!this.agentOrgResolver) return undefined;
+    const cached = this.agentOrgCache.get(agentId);
+    if (cached && cached.expiresAt > Date.now()) return cached.organizationId;
+    let organizationId: string | undefined;
+    try {
+      organizationId = await this.agentOrgResolver(agentId);
+    } catch (error) {
+      logger.warn(
+        {
+          agentId,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        "agent org resolver failed; credential reads run without org context"
+      );
+      return undefined;
+    }
+    this.agentOrgCache.set(agentId, {
+      organizationId,
+      expiresAt: Date.now() + AuthProfilesManager.AGENT_ORG_CACHE_TTL_MS,
+    });
+    return organizationId;
+  }
+
   private async listAgentOwnerProfiles(
     agentId: string,
     requestingUserId?: string
@@ -230,6 +278,26 @@ export class AuthProfilesManager {
   }
 
   async listProfiles(agentId: string, userId?: string): Promise<AuthProfile[]> {
+    // Credential refs resolve through the org-partitioned secret store. If the
+    // caller already established an org context (HTTP route, token-refresh job),
+    // honor it. Otherwise — chat-platform webhook → worker-session-prep, which
+    // has none — run the lookup inside this agent's org so the org-scoped
+    // credential is found instead of falling back to the global partition.
+    if (tryGetOrgId()) {
+      return this.listProfilesInOrgContext(agentId, userId);
+    }
+    const organizationId = await this.resolveAgentOrgId(agentId);
+    return organizationId
+      ? orgContext.run({ organizationId }, () =>
+          this.listProfilesInOrgContext(agentId, userId)
+        )
+      : this.listProfilesInOrgContext(agentId, userId);
+  }
+
+  private async listProfilesInOrgContext(
+    agentId: string,
+    userId?: string
+  ): Promise<AuthProfile[]> {
     const userProfiles = userId
       ? await this.userAuthProfiles.list(userId, agentId)
       : [];

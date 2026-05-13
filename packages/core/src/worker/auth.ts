@@ -96,7 +96,13 @@ export function verifyWorkerToken(token: string): WorkerTokenData | null {
       !Number.isNaN(parsedTtl) && parsedTtl > 0
         ? parsedTtl
         : 2 * 60 * 60 * 1000;
-    const skewMs = 30 * 1000;
+    // Clock-skew tolerance between gateway and worker; override with WORKER_TOKEN_CLOCK_SKEW_MS.
+    const parsedSkew = parseInt(
+      process.env.WORKER_TOKEN_CLOCK_SKEW_MS ?? "",
+      10
+    );
+    const skewMs =
+      !Number.isNaN(parsedSkew) && parsedSkew >= 0 ? parsedSkew : 30 * 1000;
     if (Date.now() - data.timestamp > ttl + skewMs) {
       logger.error("Worker token rejected: expired");
       return null;

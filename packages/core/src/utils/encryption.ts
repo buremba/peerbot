@@ -16,25 +16,32 @@ function getEncryptionKey(): Buffer {
     );
   }
 
-  // Try to decode as base64 first (most common format).
-  // Buffer.from with "base64" does not throw on invalid input — it silently
-  // discards non-base64 chars — so we only need a length check here.
-  const base64Buffer = Buffer.from(key, "base64");
-  if (base64Buffer.length === 32) {
-    return base64Buffer;
+  // Try to decode as base64 first (most common format). `Buffer.from(x,
+  // "base64")` silently drops non-base64 chars rather than throwing, so a
+  // typo'd key can yield a short/garbled buffer. Require canonical base64 and
+  // a clean round-trip before trusting the decoded bytes.
+  if (/^[A-Za-z0-9+/]+={0,2}$/.test(key) && key.length % 4 === 0) {
+    const base64Buffer = Buffer.from(key, "base64");
+    if (base64Buffer.length === 32 && base64Buffer.toString("base64") === key) {
+      return base64Buffer;
+    }
   }
 
-  // Try as hex (must be exactly 64 hex characters for 32 bytes)
-  if (/^[0-9a-fA-F]{64}$/.test(key)) {
+  // Try as hex (must be exactly 64 hex characters for 32 bytes), again
+  // verifying the round-trip so partially-valid input is rejected.
+  if (/^[0-9a-fA-F]+$/.test(key) && key.length % 2 === 0) {
     const hexBuffer = Buffer.from(key, "hex");
-    if (hexBuffer.length === 32) {
+    if (
+      hexBuffer.length === 32 &&
+      hexBuffer.toString("hex") === key.toLowerCase()
+    ) {
       return hexBuffer;
     }
   }
 
   throw new Error(
-    "ENCRYPTION_KEY must be a base64 or hex encoded 32-byte key. " +
-      "Generate a valid key with: openssl rand -base64 32"
+    "ENCRYPTION_KEY must be a canonical base64 or hex encoded 32-byte key. " +
+      "Generate a valid key with: openssl rand -base64 32 (or openssl rand -hex 32)"
   );
 }
 

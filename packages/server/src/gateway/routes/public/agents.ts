@@ -76,7 +76,7 @@ export function createAgentRoutes(config: AgentRoutesConfig): Hono {
 
   // POST /api/v1/agents - Create a new agent
   router.post("/", async (c) => {
-    const payload = requireSession(c);
+    const payload = await requireSession(c);
     if (payload instanceof Response) return payload;
 
     try {
@@ -167,7 +167,7 @@ export function createAgentRoutes(config: AgentRoutesConfig): Hono {
 
   // GET /api/v1/agents - List user's agents
   router.get("/", async (c) => {
-    const payload = requireSession(c);
+    const payload = await requireSession(c);
     if (payload instanceof Response) return payload;
 
     try {
@@ -200,7 +200,7 @@ export function createAgentRoutes(config: AgentRoutesConfig): Hono {
 
   // PATCH /api/v1/agents/{agentId} - Update agent name/description
   router.patch("/:agentId", async (c) => {
-    const payload = requireSession(c);
+    const payload = await requireSession(c);
     if (payload instanceof Response) return payload;
 
     const agentId = c.req.param("agentId");
@@ -258,7 +258,7 @@ export function createAgentRoutes(config: AgentRoutesConfig): Hono {
 
   // DELETE /api/v1/agents/{agentId} - Delete an agent
   router.delete("/:agentId", async (c) => {
-    const payload = requireSession(c);
+    const payload = await requireSession(c);
     if (payload instanceof Response) return payload;
 
     const agentId = c.req.param("agentId");

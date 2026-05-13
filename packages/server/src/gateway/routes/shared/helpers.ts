@@ -29,11 +29,13 @@ export function errorResponse(
  *
  * Handlers should call this and early-return when the result is a Response:
  *
- *   const session = requireSession(c);
+ *   const session = await requireSession(c);
  *   if (session instanceof Response) return session;
  */
-export function requireSession(c: Context): SettingsTokenPayload | Response {
-  const payload = verifySettingsSession(c);
+export async function requireSession(
+  c: Context
+): Promise<SettingsTokenPayload | Response> {
+  const payload = await verifySettingsSession(c);
   if (!payload) {
     return errorResponse(c, "Unauthorized", 401);
   }

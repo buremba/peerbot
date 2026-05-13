@@ -35,7 +35,7 @@ export function createChannelBindingRoutes(
   const verifyToken = createTokenVerifier(config);
 
   const verifyAuth = async (c: any, agentId: string) => {
-    return verifyToken(verifySettingsSession(c), agentId);
+    return verifyToken(await verifySettingsSession(c), agentId);
   };
 
   // GET /api/v1/agents/{agentId}/channels - List all bindings for an agent

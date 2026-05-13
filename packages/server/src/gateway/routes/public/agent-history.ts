@@ -272,7 +272,7 @@ export function createAgentHistoryRoutes(deps: {
   });
 
   async function getAuthorizedAgentId(c: Context): Promise<string | null> {
-    const session = verifySettingsSession(c);
+    const session = await verifySettingsSession(c);
     if (!session) return null;
     const agentId = c.req.param("agentId") || session.agentId || null;
     if (!agentId || !isSafeAgentId(agentId)) return null;

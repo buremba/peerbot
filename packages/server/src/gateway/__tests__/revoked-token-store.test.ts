@@ -1,4 +1,4 @@
-import { generateWorkerToken, verifyWorkerToken } from "@lobu/core";
+import { encrypt, generateWorkerToken, verifyWorkerToken } from "@lobu/core";
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { Hono } from "hono";
 import { createApiAuthMiddleware } from "../auth/api-auth-middleware.js";
@@ -6,6 +6,10 @@ import {
   getRevokedTokenStore,
   RevokedTokenStore,
 } from "../auth/revoked-token-store.js";
+import {
+  setRevokedTokenStore,
+  verifySettingsSession,
+} from "../routes/public/settings-auth.js";
 import {
   ensureEncryptionKey,
   ensurePgliteForGatewayTests,
@@ -106,5 +110,91 @@ describe("createApiAuthMiddleware — worker token revocation", () => {
       headers: { Authorization: `Bearer ${token}` },
     });
     expect(res.status).toBe(401);
+  });
+});
+
+describe("verifySettingsSession — jti revocation", () => {
+  const COOKIE_NAME = "lobu_settings_session";
+
+  function makeSessionCookie(jti: string): string {
+    const payload = {
+      userId: "user-1",
+      platform: "external",
+      exp: Date.now() + 60_000,
+      jti,
+    };
+    return encrypt(JSON.stringify(payload));
+  }
+
+  beforeAll(async () => {
+    await ensurePgliteForGatewayTests();
+  });
+
+  beforeEach(async () => {
+    await resetTestDatabase();
+    ensureEncryptionKey();
+    setRevokedTokenStore(null);
+  });
+
+  test("valid cookie with live jti returns session", async () => {
+    const jti = "live-jti-abc";
+    const cookieVal = makeSessionCookie(jti);
+
+    const app = new Hono();
+    app.get("/check", async (c) => {
+      const session = await verifySettingsSession(c);
+      return c.json({ ok: session !== null });
+    });
+
+    const res = await app.request("/check", {
+      headers: { cookie: `${COOKIE_NAME}=${cookieVal}` },
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+  });
+
+  test("valid cookie with revoked jti returns null", async () => {
+    const jti = "revoked-jti-xyz";
+    const cookieVal = makeSessionCookie(jti);
+
+    // Revoke via the process-wide singleton (same store verifySettingsSession uses).
+    await getRevokedTokenStore().revoke(jti, Date.now() + 60_000);
+
+    const app = new Hono();
+    app.get("/check", async (c) => {
+      const session = await verifySettingsSession(c);
+      return c.json({ ok: session !== null });
+    });
+
+    const res = await app.request("/check", {
+      headers: { cookie: `${COOKIE_NAME}=${cookieVal}` },
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: false });
+  });
+
+  test("injected store takes precedence over singleton", async () => {
+    const jti = "jti-custom-store";
+    const cookieVal = makeSessionCookie(jti);
+
+    // Singleton is NOT revoked.
+    // Inject a store that says everything is revoked.
+    const alwaysRevoked = new RevokedTokenStore();
+    await alwaysRevoked.revoke(jti, Date.now() + 60_000);
+    setRevokedTokenStore(alwaysRevoked);
+
+    const app = new Hono();
+    app.get("/check", async (c) => {
+      const session = await verifySettingsSession(c);
+      return c.json({ ok: session !== null });
+    });
+
+    const res = await app.request("/check", {
+      headers: { cookie: `${COOKIE_NAME}=${cookieVal}` },
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: false });
+
+    setRevokedTokenStore(null);
   });
 });

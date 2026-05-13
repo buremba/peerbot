@@ -172,7 +172,7 @@ export function createConnectAuthRoutes(config: ConnectAuthRoutesConfig): Hono {
       );
     }
 
-    const existingSession = verifySettingsSession(c);
+    const existingSession = await verifySettingsSession(c);
     if (existingSession) {
       return c.redirect(returnUrl);
     }
@@ -220,7 +220,7 @@ export function createConnectAuthRoutes(config: ConnectAuthRoutesConfig): Hono {
       );
     }
 
-    const payload = verifySettingsToken(claim);
+    const payload = await verifySettingsToken(claim);
     if (!payload) {
       return c.html(
         renderPage(

@@ -19,12 +19,10 @@ export function createApiAuthMiddleware(opts: {
 
   return async (c: Context, next: Next) => {
     // 1. Try settings session cookie when explicitly allowed.
+    // verifySettingsSession now enforces jti revocation internally.
     if (opts.allowSettingsSession) {
-      const session = verifySettingsSession(c);
+      const session = await verifySettingsSession(c);
       if (session) {
-        if (session.jti && (await revokedTokens.isRevoked(session.jti))) {
-          return c.json({ success: false, error: "Unauthorized" }, 401);
-        }
         return next();
       }
     }

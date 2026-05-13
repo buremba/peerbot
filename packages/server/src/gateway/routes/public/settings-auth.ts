@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { decrypt, encrypt } from "@lobu/core";
 import type { Context } from "hono";
 import { getCookie, setCookie } from "hono/cookie";
+import type { RevokedTokenStore } from "../../auth/revoked-token-store.js";
+import { getRevokedTokenStore } from "../../auth/revoked-token-store.js";
 import type { SettingsTokenPayload } from "../../auth/settings/token-service.js";
 
 /**
@@ -16,6 +18,7 @@ export type AuthProvider = (c: Context) => SettingsSession | null;
 const SETTINGS_SESSION_COOKIE_NAME = "lobu_settings_session";
 
 let _authProvider: AuthProvider | null = null;
+let _revokedTokenStore: RevokedTokenStore | null = null;
 
 /**
  * Set a custom auth provider for embedded mode.
@@ -24,6 +27,18 @@ let _authProvider: AuthProvider | null = null;
  */
 export function setAuthProvider(provider: AuthProvider | null): void {
   _authProvider = provider;
+}
+
+/**
+ * Inject a custom RevokedTokenStore for testing or embedded mode.
+ * When null, the process-wide singleton from getRevokedTokenStore() is used.
+ */
+export function setRevokedTokenStore(store: RevokedTokenStore | null): void {
+  _revokedTokenStore = store;
+}
+
+function getStore(): RevokedTokenStore {
+  return _revokedTokenStore ?? getRevokedTokenStore();
 }
 
 function decodeSettingsPayload(
@@ -56,33 +71,51 @@ function isSecureRequest(c: Context): boolean {
  * Verify settings session.
  * Checks injected auth provider first (for embedded mode),
  * then falls back to cookie-based session auth.
+ * Returns null if the session's jti has been revoked.
  */
-export function verifySettingsSession(c: Context): SettingsSession | null {
+export async function verifySettingsSession(
+  c: Context
+): Promise<SettingsSession | null> {
   if (_authProvider) {
     const result = _authProvider(c);
     if (result) return result;
   }
 
   const token = getCookie(c, SETTINGS_SESSION_COOKIE_NAME);
-  return decodeSettingsPayload(token);
+  const session = decodeSettingsPayload(token);
+  if (!session) return null;
+
+  if (session.jti && (await getStore().isRevoked(session.jti))) return null;
+  return session;
 }
 
-export function verifySettingsToken(
+/**
+ * Verify a standalone encrypted settings token (e.g. from a query param).
+ * Returns null if the token's jti has been revoked.
+ */
+export async function verifySettingsToken(
   token: string | null | undefined
-): SettingsSession | null {
+): Promise<SettingsSession | null> {
   if (!token) return null;
-  return decodeSettingsPayload(token);
+  const session = decodeSettingsPayload(token);
+  if (!session) return null;
+
+  if (session.jti && (await getStore().isRevoked(session.jti))) return null;
+  return session;
 }
 
 /**
  * Resolve settings auth from an injected auth provider, cookie session,
  * or a direct encrypted query token.
  */
-export function verifySettingsSessionOrToken(
+export async function verifySettingsSessionOrToken(
   c: Context,
   queryKey = "token"
-): SettingsSession | null {
-  return verifySettingsSession(c) ?? verifySettingsToken(c.req.query(queryKey));
+): Promise<SettingsSession | null> {
+  return (
+    (await verifySettingsSession(c)) ??
+    (await verifySettingsToken(c.req.query(queryKey)))
+  );
 }
 
 /**

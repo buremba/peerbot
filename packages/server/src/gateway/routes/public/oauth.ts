@@ -76,7 +76,7 @@ export function createOAuthRoutes(config: OAuthRoutesConfig): OpenAPIHono {
 
   // --- Provider login redirect (excluded from docs) ---
   app.get("/:provider/login", async (c) => {
-    const session = verifySettingsSessionOrToken(c);
+    const session = await verifySettingsSessionOrToken(c);
     const agentId = session?.agentId || c.req.query("agentId");
 
     if (!agentId) return c.json({ error: "Missing agentId" }, 400);
@@ -107,7 +107,7 @@ export function createOAuthRoutes(config: OAuthRoutesConfig): OpenAPIHono {
 
   // --- Provider code exchange ---
   app.openapi(codeExchangeRoute, async (c): Promise<any> => {
-    const session = verifySettingsSessionOrToken(c);
+    const session = await verifySettingsSessionOrToken(c);
     const agentId = session?.agentId;
     if (!session || !agentId) return c.json({ error: "Unauthorized" }, 401);
 

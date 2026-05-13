@@ -265,6 +265,23 @@ describe("HTTP Proxy Domain Filtering (unrestricted mode)", () => {
     expect(__testOnly.isBlockedIpAddress("::ffff:7f00:1")).toBe(true);
   });
 
+  test("rejects NAT64 loopback — compressed form (64:ff9b::7f00:1 → 127.0.0.1)", async () => {
+    expect(__testOnly.isBlockedIpAddress("64:ff9b::7f00:1")).toBe(true);
+  });
+
+  test("rejects NAT64 link-local — expanded form (64:ff9b:0:0:0:0:a9fe:a9fe → 169.254.169.254)", async () => {
+    // Regression: startsWith("64:ff9b::") missed this fully-expanded spelling.
+    expect(__testOnly.isBlockedIpAddress("64:ff9b:0:0:0:0:a9fe:a9fe")).toBe(
+      true
+    );
+  });
+
+  test("allows NAT64 public address — expanded form (64:ff9b:0:0:0:0:cb00:7101 → 203.0.113.1)", async () => {
+    expect(__testOnly.isBlockedIpAddress("64:ff9b:0:0:0:0:cb00:7101")).toBe(
+      false
+    );
+  });
+
   test("rejects CONNECT when hostname resolves to loopback", async () => {
     const token = createValidToken(deploymentName);
     const res = await connectRequest("localhost", 443, {

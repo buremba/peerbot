@@ -223,6 +223,48 @@ function hextetsToIpv4(high: number, low: number): string {
 }
 
 /**
+ * Expand a valid IPv6 address string into exactly 8 unsigned 16-bit hextets.
+ * Handles `::` compression and mixed dotted-quad suffixes (e.g. `::ffff:127.0.0.1`).
+ * The caller must pass a string already validated by `net.isIP() === 6`.
+ */
+function expandIpv6ToHextets(addr: string): number[] {
+  const lower = addr.toLowerCase();
+
+  // Detect and handle the embedded IPv4 dotted-quad suffix (e.g. `::ffff:127.0.0.1`).
+  // RFC 4291 §2.2 allows the last 32 bits of an IPv6 address to be written in
+  // dotted-quad form. When present, convert those 4 octets to 2 hextets first.
+  let hexPart = lower;
+  let ipv4Suffix: number[] = [];
+  const dotIdx = lower.lastIndexOf(".");
+  if (dotIdx !== -1) {
+    // The dotted-quad portion starts at the last ':' before the first dot.
+    const colonBeforeDot = lower.lastIndexOf(":", dotIdx);
+    const dotted = lower.slice(colonBeforeDot + 1);
+    hexPart = lower.slice(0, colonBeforeDot + 1); // keep the trailing ':'
+    const octets = dotted.split(".").map((o) => parseInt(o, 10));
+    // octets must be exactly 4 valid bytes (already guaranteed by net.isIP)
+    ipv4Suffix = [
+      ((octets[0]! << 8) | octets[1]!) >>> 0,
+      ((octets[2]! << 8) | octets[3]!) >>> 0,
+    ];
+    // Strip the trailing colon we left on hexPart so split works correctly
+    if (hexPart.endsWith(":") && !hexPart.endsWith("::")) {
+      hexPart = hexPart.slice(0, -1);
+    }
+  }
+
+  const halves = hexPart.split("::");
+  const left = halves[0] ? halves[0].split(":").map((h) => parseInt(h, 16)) : [];
+  const right =
+    halves.length === 2 && halves[1]
+      ? halves[1].split(":").map((h) => parseInt(h, 16))
+      : [];
+  const rightWithSuffix = [...right, ...ipv4Suffix];
+  const zeros = new Array(8 - left.length - rightWithSuffix.length).fill(0);
+  return [...left, ...zeros, ...rightWithSuffix];
+}
+
+/**
  * Single funnel for every host literal that reaches the blocklist check —
  * resolved DNS results and CONNECT/forward targets alike. Collapses the
  * forms an attacker can use to dress up an internal address as something
@@ -285,42 +327,19 @@ function normalizeIpLiteral(host: string): NormalizedHost {
   }
 
   // NAT64 well-known prefix `64:ff9b::/96` — the trailing 32 bits hold the
-  // synthesised IPv4 destination. `64:ff9b::7f00:1` ⇒ 127.0.0.1.
-  if (lower.startsWith("64:ff9b::")) {
-    const tail = lower.slice("64:ff9b::".length);
-    if (tail.length === 0) {
-      // 64:ff9b:: → embedded 0.0.0.0, which is blocked anyway.
-      return { kind: "ipv4", value: "0.0.0.0" };
-    }
-    if (tail.includes(".")) {
-      return net.isIP(tail) === 4
-        ? { kind: "ipv4", value: tail }
-        : { kind: "invalid" };
-    }
-    const parts = tail.split(":");
-    if (parts.length === 1) {
-      const low = Number.parseInt(parts[0] || "", 16);
-      if (!Number.isInteger(low) || low < 0 || low > 0xffff) {
-        return { kind: "invalid" };
-      }
-      return { kind: "ipv4", value: hextetsToIpv4(0, low) };
-    }
-    if (parts.length === 2) {
-      const high = Number.parseInt(parts[0] || "", 16);
-      const low = Number.parseInt(parts[1] || "", 16);
-      if (
-        !Number.isInteger(high) ||
-        !Number.isInteger(low) ||
-        high < 0 ||
-        high > 0xffff ||
-        low < 0 ||
-        low > 0xffff
-      ) {
-        return { kind: "invalid" };
-      }
-      return { kind: "ipv4", value: hextetsToIpv4(high, low) };
-    }
-    return { kind: "invalid" };
+  // synthesised IPv4 destination. Both compressed (`64:ff9b::a9fe:a9fe`) and
+  // expanded (`64:ff9b:0:0:0:0:a9fe:a9fe`) spellings must decode identically.
+  // Canonicalize into 8 hextets and verify the first 96 bits match the prefix.
+  const hextets = expandIpv6ToHextets(bare);
+  if (
+    hextets[0] === 0x0064 &&
+    hextets[1] === 0xff9b &&
+    hextets[2] === 0 &&
+    hextets[3] === 0 &&
+    hextets[4] === 0 &&
+    hextets[5] === 0
+  ) {
+    return { kind: "ipv4", value: hextetsToIpv4(hextets[6]!, hextets[7]!) };
   }
 
   return { kind: "ipv6", value: bare };

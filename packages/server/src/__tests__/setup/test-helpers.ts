@@ -115,11 +115,14 @@ export const del = (path: string, options?: Omit<Parameters<typeof testRequest>[
 // MCP Session Management
 // ============================================
 
+import { clearMcpSessions as clearMcpSessionsShared, mcpSessions } from './mcp-session-cache';
+
 /**
- * Cache of initialized MCP sessions keyed by (token ?? '__anonymous__').
- * Each entry stores the session ID returned by the server after initialize.
+ * Re-export so existing call sites (`import { clearMcpSessions } from
+ * './test-helpers'`) keep working; the actual cache lives in
+ * `./mcp-session-cache` to keep `test-db.ts` off the full-app import graph.
  */
-const mcpSessions = new Map<string, string>();
+export const clearMcpSessions = clearMcpSessionsShared;
 
 /**
  * Get or create an initialized MCP session for the given auth token.
@@ -189,12 +192,6 @@ async function ensureMcpSession(options?: {
   return sessionId;
 }
 
-/**
- * Clear cached MCP sessions (call between test suites if needed)
- */
-export function clearMcpSessions(): void {
-  mcpSessions.clear();
-}
 
 // ============================================
 // MCP JSON-RPC Helpers

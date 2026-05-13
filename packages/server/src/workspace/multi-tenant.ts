@@ -10,7 +10,6 @@ import { getDb, simpleQuery } from '../db/client';
 import type { Env } from '../index';
 import logger from '../utils/logger';
 import { getConfiguredPublicOrigin } from '../utils/public-origin';
-import { TtlCache } from '../utils/ttl-cache';
 import type {
   AuthConfigData,
   HonoContext,
@@ -18,12 +17,19 @@ import type {
   ResolvedOwner,
   WorkspaceProvider,
 } from './types';
+import {
+  clearMultiTenantCachesForTests as clearMultiTenantCachesForTestsShared,
+  memberRoleCache,
+  orgSlugCache,
+  ownerCache,
+  sessionCache,
+} from './multi-tenant-caches';
 
-// Caches – module-level singletons (survive across requests).
-const orgSlugCache = new TtlCache<{ id: string; visibility: string }>(60_000); // 60s
-const memberRoleCache = new TtlCache<string | null>(60_000); // 60s
-const ownerCache = new TtlCache<ResolvedOwner | null>(300_000); // 5min
-const sessionCache = new TtlCache<{ user: any; session: any } | null>(30_000); // 30s
+// Re-export the test-only cache clearer so existing imports
+// (`from '../workspace/multi-tenant'`) keep working; the cache instances
+// themselves live in `./multi-tenant-caches` to keep test cleanup off this
+// file's heavy import graph.
+export const clearMultiTenantCachesForTests = clearMultiTenantCachesForTestsShared;
 
 /**
  * Path namespaces that don't carry an org context. Authenticated requests to
@@ -117,17 +123,6 @@ export async function getOrgById(
   };
 }
 
-/**
- * Test-only: clear all multi-tenant auth caches so a freshly-reset database
- * (new org/user/token IDs) is not shadowed by TTL'd entries from the previous run.
- * Referenced from cleanupTestDatabase().
- */
-export function clearMultiTenantCachesForTests(): void {
-  orgSlugCache.clear();
-  memberRoleCache.clear();
-  ownerCache.clear();
-  sessionCache.clear();
-}
 
 export class MultiTenantProvider implements WorkspaceProvider {
   async init(): Promise<void> {

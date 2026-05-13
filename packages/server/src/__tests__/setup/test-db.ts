@@ -9,6 +9,9 @@ import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import postgres from 'postgres';
 import { listMigrationFiles, loadMigrationUpSection } from '../../db/migration-loader';
+import { clearInMemoryMcpSessionsForTests } from '../../mcp-session-state';
+import { clearMultiTenantCachesForTests } from '../../workspace/multi-tenant-caches';
+import { clearMcpSessions } from './mcp-session-cache';
 
 /**
  * Walk up from startDir looking for `db/migrations`. Falls back to cwd so the
@@ -217,15 +220,18 @@ async function ensureSeedUserIfPossible(db: postgres.Sql): Promise<void> {
  * Called between tests to ensure isolation
  */
 export async function cleanupTestDatabase(): Promise<void> {
-  // Clear cached MCP sessions so stale auth contexts don't leak between test files
-  const { clearMcpSessions } = await import('./test-helpers');
+  // All three clearers live in dedicated leaf modules so this path never
+  // statically (or dynamically) loads `test-helpers`, `mcp-handler`, or
+  // `workspace/multi-tenant` — those files transitively pull in
+  // `@lobu/connector-sdk` via the full app graph, which breaks gateway-only
+  // `bun:test` runs that don't have the workspace `dist/` built. The cache
+  // *instances* are still the same singletons read/written by production
+  // code; only the test clearer is exported from a leaf.
   clearMcpSessions();
-  const { clearInMemoryMcpSessionsForTests } = await import('../../mcp-handler');
   clearInMemoryMcpSessionsForTests();
   // Multi-tenant auth TTL caches (orgSlug/memberRole/owner/session) survive across
   // requests by design. Without this, a test that recreates the org with the same slug
   // but a different UUID gets a 403 because requests still see the stale orgId.
-  const { clearMultiTenantCachesForTests } = await import('../../workspace/multi-tenant');
   clearMultiTenantCachesForTests();
 
   const db = getTestDb();

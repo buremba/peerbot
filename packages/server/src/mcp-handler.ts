@@ -22,6 +22,10 @@ import { createDbClientFromEnv } from './db/client';
 import type { Env } from './index';
 import { agentExistsInOrganization, isValidAgentId, touchAgentLastUsed } from './lobu/stores/postgres-stores';
 import { McpSessionStore, type PersistedMcpSession } from './mcp-session-store';
+import {
+  clearInMemoryMcpSessionsForTests as clearInMemoryMcpSessionsForTestsShared,
+  mcpSessionMap,
+} from './mcp-session-state';
 import { type AuthContext, executeTool, extractAuthContext } from './tools/execute';
 import { getAllTools } from './tools/registry';
 import { formatToolResult } from './utils/markdown-formatter';
@@ -45,7 +49,9 @@ interface SessionEntry {
   lastAccessedAt: number;
 }
 
-const sessions = new Map<string, SessionEntry>();
+// Typed view over the shared raw Map in `./mcp-session-state` so the test
+// cleanup path can clear it without loading the rest of this module.
+const sessions = mcpSessionMap as Map<string, SessionEntry>;
 const mcpSessionStore = new McpSessionStore();
 
 type SessionAuthContext = AuthContext & { instructions?: string };
@@ -70,9 +76,10 @@ export async function cleanupExpiredMcpSessions(): Promise<void> {
   await mcpSessionStore.deleteExpiredSessions();
 }
 
-export function clearInMemoryMcpSessionsForTests(): void {
-  sessions.clear();
-}
+// Re-export the test-only clearer; the actual implementation lives in
+// `./mcp-session-state` so callers can clear sessions without statically
+// loading this file (and its `@lobu/connector-sdk`-dependent tool registry).
+export const clearInMemoryMcpSessionsForTests = clearInMemoryMcpSessionsForTestsShared;
 
 export async function revokeInMemoryMcpSessionsForClient(
   clientId: string,

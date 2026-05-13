@@ -38,7 +38,10 @@ import {
 import { createGatewayStateAdapter } from "./state-adapter.js";
 import { SlackConnectionCoordinator } from "./slack-connection-coordinator.js";
 import { SlackInstructionProvider } from "./slack-instruction-provider.js";
-import { registerSlackPlatformHandlers } from "./slack-platform-bridge.js";
+import {
+  registerSlackAppHome,
+  registerSlackPlatformHandlers,
+} from "./slack-platform-bridge.js";
 import { registerInteractionBridge } from "./interaction-bridge.js";
 import {
   type MessageHandlerBridge,
@@ -582,6 +585,11 @@ export class ChatInstanceManager {
         commandDispatcher
       );
       registerSlackPlatformHandlers(chat, connection, commandDispatcher);
+      registerSlackAppHome(
+        chat,
+        connection,
+        this.services.getMcpConfigService()
+      );
 
       chat.registerSingleton();
 

@@ -1,10 +1,15 @@
+import { createLogger } from "@lobu/core";
+import type { McpConfigService } from "../auth/mcp/config-service.js";
 import { createChatReply } from "../commands/command-reply-adapters.js";
 import type { CommandDispatcher } from "../commands/command-dispatcher.js";
 import type { PlatformConnection } from "./types.js";
 
+const logger = createLogger("slack-platform-bridge");
+
 const DEFAULT_SLACK_COMMAND = "/lobu";
 const DEFAULT_SLACK_TEAM_JOIN_WELCOME =
   "Mention me in a channel or send me a DM to start a thread. Use `/lobu help` to see the built-in commands.";
+const DEFAULT_SLACK_APP_NAME = "Lobu";
 
 type SlackSlashEvent = {
   text?: string;
@@ -107,6 +112,137 @@ export function registerSlackPlatformHandlers(
     if (!handled) {
       await reply(
         `Unknown /lobu subcommand: ${commandName}. Try \`/lobu help\`.`
+      );
+    }
+  });
+}
+
+type SlackAppHomeEvent = {
+  userId: string;
+  adapter?: {
+    publishHomeView?: (
+      userId: string,
+      view: Record<string, unknown>
+    ) => Promise<void>;
+  };
+};
+
+// Internal plumbing MCPs (e.g. the Lobu memory backend) — not user integrations.
+const HIDDEN_HOME_INTEGRATION_IDS = new Set(["lobu-memory"]);
+
+function humanizeIntegrationName(id: string): string {
+  return id
+    .replace(/[-_]+/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+async function buildIntegrationsBlock(
+  agentId: string,
+  mcpConfigService: McpConfigService
+): Promise<Record<string, unknown> | null> {
+  const statuses = (await mcpConfigService.getMcpStatus(agentId)).filter(
+    (s) => !HIDDEN_HOME_INTEGRATION_IDS.has(s.id)
+  );
+  if (statuses.length === 0) {
+    return {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: "*Integrations*\n_No integrations connected yet._",
+      },
+    };
+  }
+  const lines = statuses
+    .map((s) => {
+      const name = humanizeIntegrationName(s.name || s.id);
+      return s.requiresAuth ? `• ${name} — sign-in required` : `• ${name}`;
+    })
+    .join("\n");
+  return {
+    type: "section",
+    text: { type: "mrkdwn", text: `*Integrations you can use*\n${lines}` },
+  };
+}
+
+async function buildSlackHomeBlocks(
+  connection: PlatformConnection,
+  mcpConfigService?: McpConfigService
+): Promise<unknown[]> {
+  const botName =
+    (typeof connection.metadata?.botUsername === "string" &&
+      connection.metadata.botUsername) ||
+    DEFAULT_SLACK_APP_NAME;
+  const isPreview = connection.settings?.previewMode === true;
+
+  const blocks: unknown[] = [
+    {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: `*${botName}* :wave:\n\nMention me in any channel, or send me a DM, to start a thread.`,
+      },
+    },
+    { type: "divider" },
+  ];
+
+  if (!isPreview && connection.agentId && mcpConfigService) {
+    try {
+      const integrationsBlock = await buildIntegrationsBlock(
+        connection.agentId,
+        mcpConfigService
+      );
+      if (integrationsBlock) {
+        blocks.push(integrationsBlock, { type: "divider" });
+      }
+    } catch (error) {
+      logger.warn(
+        { error, agentId: connection.agentId },
+        "Failed to load integrations for Slack home tab; rendering without them"
+      );
+    }
+  }
+
+  blocks.push({
+    type: "section",
+    text: {
+      type: "mrkdwn",
+      text: isPreview
+        ? "This is a *preview* workspace. Run `lobu run`, then use `/lobu link <code>` in a channel to connect your own agent."
+        : "*Tips*\n• Mention me in a channel, or DM me directly.\n• `/lobu help` lists the built-in commands.\n• Integrations that need you to sign in will prompt you with a button right in the thread — there's nothing to set up here.",
+    },
+  });
+
+  return blocks;
+}
+
+/**
+ * Publish the Slack App Home tab whenever a user opens it. The home view is
+ * derived per-connection: the bot's display name plus the list of integrations
+ * the owning agent can use (skipped for preview workspaces and when the MCP
+ * config can't be loaded). User-facing OAuth happens in-thread via interaction
+ * buttons, so there is intentionally nothing to authorize from this surface.
+ */
+export function registerSlackAppHome(
+  chat: any,
+  connection: PlatformConnection,
+  mcpConfigService?: McpConfigService
+): void {
+  if (connection.platform !== "slack") {
+    return;
+  }
+
+  chat.onAppHomeOpened(async (event: SlackAppHomeEvent) => {
+    const publishHomeView = event.adapter?.publishHomeView;
+    if (typeof publishHomeView !== "function") {
+      return;
+    }
+    try {
+      const blocks = await buildSlackHomeBlocks(connection, mcpConfigService);
+      await publishHomeView(event.userId, { type: "home", blocks });
+    } catch (error) {
+      logger.warn(
+        { error, connectionId: connection.id, userId: event.userId },
+        "Failed to publish Slack home tab"
       );
     }
   });

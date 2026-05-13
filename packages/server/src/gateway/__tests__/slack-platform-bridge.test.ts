@@ -2,8 +2,13 @@ import { describe, expect, mock, test } from "bun:test";
 import {
   parseSlackTeamJoinEvent,
   postSlackTeamJoinWelcome,
+  registerSlackAppHome,
   registerSlackPlatformHandlers,
 } from "../connections/slack-platform-bridge.js";
+
+function blocksText(view: { blocks?: Array<Record<string, unknown>> }): string {
+  return JSON.stringify(view.blocks ?? []);
+}
 
 describe("Slack platform bridge", () => {
   test("routes /lobu slash commands through the command dispatcher", async () => {
@@ -84,6 +89,156 @@ describe("Slack platform bridge", () => {
     expect(post).toHaveBeenCalledWith(
       "Unknown /lobu subcommand: unknown. Try `/lobu help`."
     );
+  });
+
+  test("publishes a Slack home tab listing the agent's integrations", async () => {
+    let homeHandler:
+      | ((event: {
+          userId: string;
+          adapter?: {
+            publishHomeView?: (
+              userId: string,
+              view: Record<string, unknown>
+            ) => Promise<void>;
+          };
+        }) => Promise<void>)
+      | undefined;
+    const chat = {
+      onAppHomeOpened: mock((handler: typeof homeHandler) => {
+        homeHandler = handler;
+      }),
+    };
+    const mcpConfigService = {
+      getMcpStatus: mock(async () => [
+        { id: "github", name: "github", requiresAuth: true, requiresInput: false },
+        {
+          id: "google-drive",
+          name: "google-drive",
+          requiresAuth: true,
+          requiresInput: false,
+        },
+        { id: "weather", name: "weather", requiresAuth: false, requiresInput: false },
+        {
+          id: "lobu-memory",
+          name: "lobu-memory",
+          requiresAuth: false,
+          requiresInput: false,
+        },
+      ]),
+    };
+
+    registerSlackAppHome(
+      chat,
+      {
+        id: "conn-1",
+        platform: "slack",
+        agentId: "agent-7",
+        metadata: { botUsername: "Lobster" },
+        settings: {},
+      } as any,
+      mcpConfigService as any
+    );
+
+    const publishHomeView = mock(async () => undefined);
+    await homeHandler?.({ userId: "U123", adapter: { publishHomeView } });
+
+    expect(publishHomeView).toHaveBeenCalledTimes(1);
+    const [userId, view] = publishHomeView.mock.calls[0]!;
+    expect(userId).toBe("U123");
+    expect((view as { type: string }).type).toBe("home");
+    const text = blocksText(view as { blocks?: Array<Record<string, unknown>> });
+    expect(text).toContain("Lobster");
+    expect(text).toContain("Github — sign-in required");
+    expect(text).toContain("Google Drive — sign-in required");
+    expect(text).toContain("• Weather");
+    // Internal plumbing MCP is hidden from the home tab.
+    expect(text).not.toContain("Lobu Memory");
+    expect(text).toContain("/lobu help");
+  });
+
+  test("shows an empty-integrations home tab when the agent has none", async () => {
+    let homeHandler:
+      | ((event: {
+          userId: string;
+          adapter?: {
+            publishHomeView?: (
+              userId: string,
+              view: Record<string, unknown>
+            ) => Promise<void>;
+          };
+        }) => Promise<void>)
+      | undefined;
+    const chat = {
+      onAppHomeOpened: mock((handler: typeof homeHandler) => {
+        homeHandler = handler;
+      }),
+    };
+
+    registerSlackAppHome(
+      chat,
+      {
+        id: "conn-1",
+        platform: "slack",
+        agentId: "agent-7",
+        metadata: {},
+        settings: {},
+      } as any,
+      { getMcpStatus: mock(async () => []) } as any
+    );
+
+    const publishHomeView = mock(async () => undefined);
+    await homeHandler?.({ userId: "U123", adapter: { publishHomeView } });
+
+    const text = blocksText(
+      publishHomeView.mock.calls[0]![1] as {
+        blocks?: Array<Record<string, unknown>>;
+      }
+    );
+    expect(text).toContain("No integrations connected yet");
+  });
+
+  test("renders the preview-workspace home tab without touching agent settings", async () => {
+    let homeHandler:
+      | ((event: {
+          userId: string;
+          adapter?: {
+            publishHomeView?: (
+              userId: string,
+              view: Record<string, unknown>
+            ) => Promise<void>;
+          };
+        }) => Promise<void>)
+      | undefined;
+    const chat = {
+      onAppHomeOpened: mock((handler: typeof homeHandler) => {
+        homeHandler = handler;
+      }),
+    };
+    const getMcpStatus = mock(async () => []);
+
+    registerSlackAppHome(
+      chat,
+      {
+        id: "conn-1",
+        platform: "slack",
+        agentId: "placeholder",
+        metadata: {},
+        settings: { previewMode: true },
+      } as any,
+      { getMcpStatus } as any
+    );
+
+    const publishHomeView = mock(async () => undefined);
+    await homeHandler?.({ userId: "U123", adapter: { publishHomeView } });
+
+    expect(getMcpStatus).not.toHaveBeenCalled();
+    const text = blocksText(
+      publishHomeView.mock.calls[0]![1] as {
+        blocks?: Array<Record<string, unknown>>;
+      }
+    );
+    expect(text).toContain("preview");
+    expect(text).toContain("/lobu link");
   });
 
   test("parses and welcomes Slack team_join users", async () => {

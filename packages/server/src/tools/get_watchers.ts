@@ -79,7 +79,7 @@ export const GetWatcherSchema = Type.Object({
       ],
       {
         description:
-          'Filter by time granularity. If not provided, automatically infers from date range (≤14d→daily, ≤90d→weekly, ≤365d→monthly, >365d→quarterly)',
+          'Filter by time granularity (daily / weekly / monthly / quarterly). If not provided, returns windows at all granularities; when a requested granularity has no windows the query falls back to the next-finer level.',
       }
     )
   ),

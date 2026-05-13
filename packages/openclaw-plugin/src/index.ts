@@ -630,6 +630,74 @@ async function pollDeviceLogin(
   return { status: 'error', message: desc || 'Unknown error during login' };
 }
 
+/**
+ * Synchronous variant of {@link tryRefreshToken}, used at plugin `register()`
+ * time before the worker daemon is spawned. The daemon reads `WORKER_API_TOKEN`
+ * from its env once at process start, so a lazy refresh in `callMcpTool` (which
+ * only updates the in-process `sessionToken`) wouldn't reach it — we must hand
+ * the daemon a fresh token up front. Runs the refresh in a short-lived `node -e`
+ * subprocess; the OAuth params are passed via env vars, never interpolated into
+ * the script source.
+ */
+function refreshStoredTokenSync(mcpUrl: string): void {
+  if (!_sessionRefreshToken || !sessionClientId || !sessionIssuer) return;
+
+  const body: Record<string, string> = {
+    grant_type: 'refresh_token',
+    client_id: sessionClientId,
+    refresh_token: _sessionRefreshToken,
+  };
+  if (sessionClientSecret) body.client_secret = sessionClientSecret;
+
+  const script = `
+    async function run() {
+      const r = await fetch(process.env.__TOKEN_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: process.env.__TOKEN_BODY,
+      });
+      if (!r.ok) return;
+      const d = await r.json();
+      process.stdout.write(JSON.stringify({ access_token: d.access_token, refresh_token: d.refresh_token }));
+    }
+    run().catch(() => {});
+  `;
+
+  try {
+    const out = spawnSync('node', ['-e', script], {
+      timeout: 10_000,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: {
+        ...process.env,
+        __TOKEN_URL: `${sessionIssuer}/oauth/token`,
+        __TOKEN_BODY: JSON.stringify(body),
+      },
+    })
+      .stdout?.toString()
+      .trim();
+    if (!out) return;
+
+    const tokens = JSON.parse(out) as { access_token?: string; refresh_token?: string };
+    if (typeof tokens.access_token !== 'string') return;
+
+    sessionToken = tokens.access_token;
+    if (typeof tokens.refresh_token === 'string') _sessionRefreshToken = tokens.refresh_token;
+    try {
+      saveStoredSession(mcpUrl, {
+        issuer: sessionIssuer,
+        clientId: sessionClientId,
+        clientSecret: sessionClientSecret,
+        refreshToken: _sessionRefreshToken!,
+        accessToken: sessionToken,
+      });
+    } catch {
+      // Best-effort persist.
+    }
+  } catch {
+    // Best-effort refresh — fall back to the persisted (possibly stale) token.
+  }
+}
+
 async function tryRefreshToken(mcpUrl: string): Promise<boolean> {
   if (!_sessionRefreshToken || !sessionClientId || !sessionIssuer) return false;
 
@@ -1028,10 +1096,12 @@ const plugin = {
         sessionClientSecret = stored.clientSecret || null;
         sessionIssuer = stored.issuer || null;
 
-        // The persisted access token may be expired; callMcpTool refreshes it
-        // lazily on the first 401/403, so no eager refresh is needed here.
+        // The persisted access token may be expired — refresh it before
+        // spawning the daemon, which captures WORKER_API_TOKEN at process start
+        // and won't see a later lazy refresh from callMcpTool.
+        refreshStoredTokenSync(config.mcpUrl);
 
-        // Auto-start worker daemon with the persisted token
+        // Auto-start worker daemon with the (possibly refreshed) token
         spawnWorkerDaemon(config.mcpUrl, sessionToken, log);
       }
     }

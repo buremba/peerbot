@@ -149,6 +149,13 @@ type SlackActionEvent = {
 
 /** Dependencies the App Home tab needs to render status and run OAuth. */
 export interface SlackAppHomeDeps {
+  /**
+   * The initialized Slack adapter — the one with the live `@slack/web-api`
+   * client. The adapter handed to event handlers via `event.adapter` is the
+   * webhook-dispatch instance and has no `client`, so `publishHomeView` must
+   * go through this one.
+   */
+  adapter?: SlackHomeAdapter;
   mcpConfigService?: McpConfigService;
   secretStore?: WritableSecretStore;
   /** Public origin of the gateway — used to build the OAuth redirect URI. */
@@ -481,7 +488,7 @@ export function registerSlackAppHome(
   }
 
   chat.onAppHomeOpened(async (event: SlackAppHomeEvent) => {
-    await publishHome(event.adapter, {
+    await publishHome(deps.adapter ?? event.adapter, {
       connection,
       deps,
       userId: event.userId,
@@ -516,7 +523,7 @@ export function registerSlackAppHome(
             );
           }
         }
-        await publishHome(event.adapter, { connection, deps, userId });
+        await publishHome(deps.adapter ?? event.adapter, { connection, deps, userId });
         return;
       }
 
@@ -537,7 +544,7 @@ export function registerSlackAppHome(
           "Failed to start MCP OAuth flow from Slack home tab"
         );
       }
-      await publishHome(event.adapter, {
+      await publishHome(deps.adapter ?? event.adapter, {
         connection,
         deps,
         userId,

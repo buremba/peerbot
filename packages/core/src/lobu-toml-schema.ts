@@ -175,24 +175,22 @@ const workerSchema = z.object({
 
 // ── Preview ─────────────────────────────────────────────────────────────────
 
-const previewSlackSchema = z
+// Per-platform "try this agent in the hosted Lobu workspace" config — the key
+// in `[agents.<id>.preview.<platform>]` is the chat platform (slack, telegram,
+// …). `lobu run` prints a `/lobu link <code>` (`/link <code>` on Telegram) for
+// each enabled platform; redeem it by DMing the hosted bot.
+const previewPlatformSchema = z
   .object({
-    /** Enable Lobu Developer public Slack preview for this agent. */
+    /** Enable the hosted Lobu preview bot for this agent on this platform. */
     enabled: z.boolean().optional(),
-    /** Hosted preview provider. Additional providers can be added later. */
-    provider: z.literal("lobu-public").optional(),
-    /** Slack surfaces this preview code can bind (a DM with the bot, or a channel it's in). */
+    /** Surfaces a preview code can bind: a DM with the bot, or a channel it's in. */
     surfaces: z.array(z.enum(["dm", "channel"])).optional(),
-    /** Short-lived claim code TTL. Capped by the hosted preview API. */
+    /** Short-lived claim-code TTL. Capped by the hosted preview API. */
     code_ttl_minutes: z.number().int().positive().max(60).optional(),
   })
   .strict();
 
-const previewSchema = z
-  .object({
-    slack: previewSlackSchema.optional(),
-  })
-  .strict();
+const previewSchema = z.record(z.string(), previewPlatformSchema);
 
 // ── Agent ───────────────────────────────────────────────────────────────────
 

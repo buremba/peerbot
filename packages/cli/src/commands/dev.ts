@@ -107,7 +107,7 @@ export async function devCommand(
   }
 
   if (!options.quiet) {
-    await printSlackPreviewInstructions(cwd);
+    await printPreviewInstructions(cwd);
     console.log(chalk.cyan(`\n  Starting Lobu...\n`));
     console.log(chalk.dim(`  bundle:        ${bundlePath}`));
     if (hasDatabaseUrl) {
@@ -230,14 +230,22 @@ export function isPortFree(port: number): Promise<boolean> {
   });
 }
 
-async function printSlackPreviewInstructions(cwd: string): Promise<void> {
+async function printPreviewInstructions(cwd: string): Promise<void> {
   const loaded = await loadConfig(cwd);
   if (isLoadError(loaded)) return;
 
-  const enabledAgents = Object.entries(loaded.config.agents).filter(
-    ([, agent]) => agent.preview?.slack?.enabled === true
-  );
-  if (enabledAgents.length === 0) return;
+  // `agent.preview` is a record keyed by chat platform (`slack`, `telegram`, …).
+  const enabled: Array<{
+    agentId: string;
+    platform: string;
+    cfg: { surfaces?: string[]; code_ttl_minutes?: number };
+  }> = [];
+  for (const [agentId, agent] of Object.entries(loaded.config.agents)) {
+    for (const [platform, cfg] of Object.entries(agent.preview ?? {})) {
+      if (cfg?.enabled === true) enabled.push({ agentId, platform, cfg });
+    }
+  }
+  if (enabled.length === 0) return;
 
   let clientInfo: Awaited<ReturnType<typeof resolveApiClient>>;
   try {
@@ -246,47 +254,51 @@ async function printSlackPreviewInstructions(cwd: string): Promise<void> {
       context: projectLink?.context,
       org: projectLink?.org,
     });
-  } catch (error) {
+  } catch {
     console.log(
       chalk.yellow(
-        "\n  Slack Preview is enabled, but no Lobu Cloud session is available."
+        "\n  Preview is enabled, but no Lobu Cloud session is available."
       )
     );
     console.log(
       chalk.dim(
-        "  Run `lobu login`, `lobu org set <slug>`, and `lobu apply`; then restart `lobu run` to get a Slack link code.\n"
+        "  Run `lobu login`, `lobu org set <slug>`, and `lobu apply`; then restart `lobu run` to get a link code.\n"
       )
     );
     return;
   }
 
-  console.log(chalk.cyan("\n  Slack Preview"));
-  for (const [agentId, agent] of enabledAgents) {
-    const slack = agent.preview?.slack;
+  console.log(chalk.cyan("\n  Preview"));
+  for (const { agentId, platform, cfg } of enabled) {
     try {
       const claim = await clientInfo.client.post<{
         code: string;
         command: string;
-        slack_url: string;
+        join_url: string;
         expires_at: string;
         allowed_surfaces: string[];
-      }>(`/api/${clientInfo.orgSlug}/preview/slack/claims`, {
+      }>(`/api/${clientInfo.orgSlug}/preview/claims`, {
         agent_id: agentId,
-        surfaces: slack?.surfaces ?? ["dm"],
-        ttl_minutes: slack?.code_ttl_minutes ?? 15,
+        platform,
+        surfaces: cfg.surfaces ?? ["dm"],
+        ttl_minutes: cfg.code_ttl_minutes ?? 15,
       });
       console.log(chalk.dim(`  agent:        ${agentId}`));
-      console.log(chalk.dim(`  slack:        ${claim.slack_url}`));
+      console.log(chalk.dim(`  platform:     ${platform}`));
+      if (claim.join_url)
+        console.log(chalk.dim(`  join:         ${claim.join_url}`));
       console.log(chalk.dim(`  command:      ${claim.command}`));
       console.log(chalk.dim(`  expires:      ${claim.expires_at}`));
       console.log(
         chalk.dim(
-          "  In the public Lobu Developer Slack, DM @Lobu Developer with the command above."
+          `  Join the hosted Lobu ${platform} workspace and send the command above to @Lobu.`
         )
       );
     } catch (error) {
       console.log(
-        chalk.yellow(`  Could not create Slack Preview code for ${agentId}.`)
+        chalk.yellow(
+          `  Could not create a ${platform} preview code for ${agentId}.`
+        )
       );
       console.log(
         chalk.dim(

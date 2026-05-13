@@ -12,7 +12,7 @@ import type { Env } from "../../index";
 import {
   canonicalSlackChannelId,
   consumePreviewClaim,
-  createSlackPreviewClaim,
+  createPreviewClaim,
   slackSurfaceType,
 } from "../slack";
 
@@ -63,10 +63,11 @@ function orgUserContext(jsonBody: unknown): Context<{ Bindings: Env }> {
 
 async function createClaim(
   agentId: string,
-  surfaces: string[] = ["dm", "channel"]
+  surfaces: string[] = ["dm", "channel"],
+  platform = "slack"
 ): Promise<string> {
-  const res = await createSlackPreviewClaim(
-    orgUserContext({ agent_id: agentId, surfaces })
+  const res = await createPreviewClaim(
+    orgUserContext({ agent_id: agentId, platform, surfaces })
   );
   if (!isFakeResponse(res)) throw new Error("not a json response");
   expect(res.status).toBe(200);
@@ -96,13 +97,14 @@ describe("Slack Preview claims + channel bindings", () => {
   });
 
   test("claim mints a /lobu link code in oauth_states under the dedicated scope", async () => {
-    const res = await createSlackPreviewClaim(
-      orgUserContext({ agent_id: AGENT_ID, surfaces: ["dm", "channel"] })
+    const res = await createPreviewClaim(
+      orgUserContext({ agent_id: AGENT_ID, platform: "slack", surfaces: ["dm", "channel"] })
     );
     if (!isFakeResponse(res)) throw new Error("not a json response");
     expect(res.status).toBe(200);
     const code = res.body.code as string;
     expect(code).toMatch(/^demo-agent-[A-Z0-9]{6}$/);
+    expect(res.body.provider).toBe("lobu-public-slack");
     expect(res.body.command).toBe(`/lobu link ${code}`);
     expect(res.body.allowed_surfaces).toEqual(["dm", "channel"]);
 
@@ -116,11 +118,45 @@ describe("Slack Preview claims + channel bindings", () => {
   });
 
   test("claim for an agent outside the caller's org → 404", async () => {
-    const res = await createSlackPreviewClaim(
-      orgUserContext({ agent_id: "nope" })
+    const res = await createPreviewClaim(
+      orgUserContext({ agent_id: "nope", platform: "slack" })
     );
     if (!isFakeResponse(res)) throw new Error("not a json response");
     expect(res.status).toBe(404);
+  });
+
+  test("claim with an unsupported platform → 400", async () => {
+    const res = await createPreviewClaim(
+      orgUserContext({ agent_id: AGENT_ID, platform: "discord" })
+    );
+    if (!isFakeResponse(res)) throw new Error("not a json response");
+    expect(res.status).toBe(400);
+  });
+
+  test("a telegram claim mints a /link code and is consumable without a teamId", async () => {
+    const res = await createPreviewClaim(
+      orgUserContext({ agent_id: AGENT_ID, platform: "telegram", surfaces: ["dm"] })
+    );
+    if (!isFakeResponse(res)) throw new Error("not a json response");
+    expect(res.status).toBe(200);
+    const code = res.body.code as string;
+    expect(res.body.provider).toBe("lobu-public-telegram");
+    expect(res.body.command).toBe(`/link ${code}`);
+
+    const bound = await consumePreviewClaim({
+      code,
+      platform: "telegram",
+      channelId: "12345",
+      surfaceType: "dm",
+    });
+    expect(bound).toMatchObject({ status: "bound", agentId: AGENT_ID });
+
+    const sql = getDb();
+    const rows = await sql`
+      SELECT channel_id, team_id FROM agent_channel_bindings WHERE platform = 'telegram'
+    `;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ channel_id: "12345", team_id: null });
   });
 
   test("consume binds the Slack channel to the agent and is one-time-use", async () => {

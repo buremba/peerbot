@@ -778,11 +778,11 @@ export async function generateLobuToml(
   if (options.enableSlackPreview) {
     lines.push(
       "",
-      "# Public Slack Preview (Lobu Developer) — `lobu run` prints a `/lobu link <code>`",
-      "# you redeem by DMing the hosted Lobu Developer Slack bot.",
+      "# Hosted preview — `lobu run` prints a `/lobu link <code>` you redeem by",
+      "# DMing the hosted Lobu Slack bot. The block key is the chat platform;",
+      "# `[agents.<id>.preview.telegram]` works the same way (redeem with `/link <code>`).",
       `[agents.${id}.preview.slack]`,
       "enabled = true",
-      'provider = "lobu-public"',
       'surfaces = ["dm"]',
       "code_ttl_minutes = 15"
     );

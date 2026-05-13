@@ -118,7 +118,6 @@ describe("lobu init --yes", () => {
     const toml = readFileSync(join(cwd, "preview-on", "lobu.toml"), "utf-8");
     expect(toml).toContain("[agents.preview-on.preview.slack]");
     expect(toml).toContain("enabled = true");
-    expect(toml).toContain('provider = "lobu-public"');
     expect(toml).toContain('surfaces = ["dm"]');
   });
 

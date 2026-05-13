@@ -9,13 +9,15 @@ dir = "./agents/triage"
 `;
 
 describe("lobu.toml preview schema", () => {
-  test("accepts public Slack Preview config", () => {
+  test("accepts a per-platform preview block", () => {
     const parsed = parseToml(`${BASE_AGENT}
 [agents.triage.preview.slack]
 enabled = true
-provider = "lobu-public"
 surfaces = ["dm", "channel"]
 code_ttl_minutes = 15
+
+[agents.triage.preview.telegram]
+enabled = true
 `);
 
     const result = lobuConfigSchema.safeParse(parsed);
@@ -26,6 +28,7 @@ code_ttl_minutes = 15
         "dm",
         "channel",
       ]);
+      expect(result.data.agents.triage?.preview?.telegram?.enabled).toBe(true);
     }
   });
 
@@ -34,6 +37,15 @@ code_ttl_minutes = 15
 [agents.triage.preview.slack]
 enabled = true
 surfaces = ["thread"]
+`);
+    expect(lobuConfigSchema.safeParse(parsed).success).toBe(false);
+  });
+
+  test("rejects an unknown key in a preview block", () => {
+    const parsed = parseToml(`${BASE_AGENT}
+[agents.triage.preview.slack]
+enabled = true
+provider = "lobu-public"
 `);
     expect(lobuConfigSchema.safeParse(parsed).success).toBe(false);
   });

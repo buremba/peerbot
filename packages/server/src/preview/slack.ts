@@ -16,34 +16,53 @@ import logger from '../utils/logger';
 //     route through the exact same Chat SDK adapter path every other platform
 //     connection uses.
 
-const PROVIDER = 'lobu-public-slack';
-// Preview bindings are plain Slack bindings; the workspace's team_id keeps them
-// from colliding with anyone's own bot. Slack DM channel ids start with `D`.
+// Slack DM channel ids start with `D`; the canonical binding key is `slack:<id>`.
 const SLACK_PLATFORM = 'slack';
 const CLAIM_SCOPE = 'slack-preview-claim';
-const DEFAULT_SLACK_PREVIEW_URL = 'https://lobu.ai/slack/developer';
 const DEFAULT_TTL_MINUTES = 15;
 const MAX_TTL_MINUTES = 60;
 const SURFACES = new Set(['dm', 'channel']);
 
+// Hosted preview bots — the platforms a `preview.<platform>` block / claim mint
+// is allowed for, and the default "join the workspace" links.
+const PREVIEW_PLATFORMS = new Set(['slack', 'telegram']);
+const PREVIEW_JOIN_DEFAULTS: Record<string, string> = {
+  slack: 'https://lobu.ai/slack',
+  telegram: 'https://t.me/lobuaibot',
+};
+
 export type SurfaceType = 'dm' | 'channel';
 
 /**
- * Reply posted by a Slack-Preview connection when a DM/@-mention arrives for a
- * chat that hasn't been `/lobu link`'d yet. Deterministic — no LLM agent runs
- * for unlinked chats; this is the whole response.
+ * Reply posted by a `previewMode` connection when a DM/@-mention arrives for a
+ * chat that hasn't been linked yet — keyed by platform. Deterministic: no LLM
+ * runs for unlinked chats; this is the whole response. A platform without an
+ * entry here means an unlinked chat just falls through (the bridge skips it).
  */
-export const SLACK_PREVIEW_UNLINKED_NOTICE = [
-  "👋 This chat isn't linked to a Lobu agent yet.",
-  '',
-  'To talk to your own agent here:',
-  '1. In your agent project\'s `lobu.toml`: `[agents.<id>.preview.slack]` → `enabled = true` (add `surfaces = ["channel"]` to use it in channels too).',
-  '2. Run `lobu apply` to register the agent in Lobu Cloud.',
-  '3. Run `lobu run` — it prints a `/lobu link <code>`.',
-  '4. Send that `/lobu link <code>` here.',
-  '',
-  'After that, every message in this chat goes to your agent.',
-].join('\n');
+export const PREVIEW_UNLINKED_NOTICE: Record<string, string> = {
+  slack: [
+    "👋 This chat isn't linked to a Lobu agent yet.",
+    '',
+    'To talk to your own agent here:',
+    '1. In your agent project\'s `lobu.toml`: `[agents.<id>.preview.slack]` → `enabled = true` (add `surfaces = ["channel"]` to use it in channels too).',
+    '2. Run `lobu apply` to register the agent in Lobu Cloud.',
+    '3. Run `lobu run` — it prints a `/lobu link <code>`.',
+    '4. Send that `/lobu link <code>` here.',
+    '',
+    'After that, every message in this chat goes to your agent.',
+  ].join('\n'),
+  telegram: [
+    "👋 This chat isn't linked to a Lobu agent yet.",
+    '',
+    'To talk to your own agent here:',
+    '1. In your agent project\'s `lobu.toml`: `[agents.<id>.preview.telegram]` → `enabled = true`.',
+    '2. Run `lobu apply` to register the agent in Lobu Cloud.',
+    '3. Run `lobu run` — it prints a `/link <code>`.',
+    '4. Send that `/link <code>` here.',
+    '',
+    'After that, every message in this chat goes to your agent.',
+  ].join('\n'),
+};
 
 interface ClaimPayload {
   organizationId: string;
@@ -97,8 +116,19 @@ function requireOrgUser(c: Context<{ Bindings: Env }>): { organizationId: string
   return { organizationId, userId };
 }
 
-function slackPreviewUrl(): string {
-  return process.env.LOBU_DEVELOPER_SLACK_URL || DEFAULT_SLACK_PREVIEW_URL;
+// "Join the hosted workspace" link for a preview platform — overridable per
+// platform via `LOBU_PREVIEW_<PLATFORM>_URL` on the deployment.
+function previewJoinUrl(platform: string): string {
+  return (
+    process.env[`LOBU_PREVIEW_${platform.toUpperCase()}_URL`] ||
+    PREVIEW_JOIN_DEFAULTS[platform] ||
+    ''
+  );
+}
+
+/** The slash command to send to the hosted bot to redeem a code. */
+function previewLinkCommand(platform: string, code: string): string {
+  return platform === 'slack' ? `/lobu link ${code}` : `/link ${code}`;
 }
 
 /**
@@ -126,10 +156,11 @@ export function canonicalSlackChannelId(channelId: string): string {
 }
 
 /**
- * POST /api/:orgSlug/preview/slack/claims — called by `lobu run` (authenticated
- * via mcpAuth) to mint a short-lived `/lobu link` code for one of the org's agents.
+ * POST /api/:orgSlug/preview/claims — called by `lobu run` (mcpAuth) to mint a
+ * short-lived link code for one of the org's agents on a hosted preview platform.
+ * Body: `{ agent_id, platform, surfaces?, ttl_minutes? }`.
  */
-export async function createSlackPreviewClaim(c: Context<{ Bindings: Env }>) {
+export async function createPreviewClaim(c: Context<{ Bindings: Env }>) {
   const auth = requireOrgUser(c);
   if (!auth) return c.json({ error: 'Unauthorized' }, 401);
 
@@ -142,6 +173,18 @@ export async function createSlackPreviewClaim(c: Context<{ Bindings: Env }>) {
 
   const agentId = typeof body.agent_id === 'string' ? body.agent_id.trim() : '';
   if (!agentId) return c.json({ error: 'agent_id is required' }, 400);
+
+  const platform =
+    typeof body.platform === 'string' ? body.platform.trim().toLowerCase() : '';
+  if (!PREVIEW_PLATFORMS.has(platform)) {
+    return c.json(
+      {
+        error: 'Unsupported preview platform',
+        message: `platform must be one of: ${[...PREVIEW_PLATFORMS].join(', ')}`,
+      },
+      400
+    );
+  }
 
   const surfaces = normalizeSurfaces(body.surfaces);
   const ttlMinutes = normalizeTtlMinutes(body.ttl_minutes);
@@ -159,7 +202,7 @@ export async function createSlackPreviewClaim(c: Context<{ Bindings: Env }>) {
     return c.json(
       {
         error: 'Agent not found',
-        message: 'Run `lobu apply` first so Slack Preview can bind to this agent in Lobu Cloud.',
+        message: 'Run `lobu apply` first so the preview bot can bind to this agent in Lobu Cloud.',
       },
       404
     );
@@ -182,16 +225,17 @@ export async function createSlackPreviewClaim(c: Context<{ Bindings: Env }>) {
         VALUES (${codeHash(code)}, ${CLAIM_SCOPE}, ${sql.json(payload)}, ${expiresAt})
       `;
       return c.json({
-        provider: PROVIDER,
+        provider: `lobu-public-${platform}`,
+        platform,
         code,
-        command: `/lobu link ${code}`,
-        slack_url: slackPreviewUrl(),
+        command: previewLinkCommand(platform, code),
+        join_url: previewJoinUrl(platform),
         expires_at: expiresAt.toISOString(),
         allowed_surfaces: surfaces,
       });
     } catch (err: unknown) {
       if ((err as { code?: string }).code === '23505') continue;
-      logger.error({ err: errorMessage(err) }, '[SlackPreview] create claim failed');
+      logger.error({ err: errorMessage(err), platform }, '[preview] create claim failed');
       return c.json({ error: errorMessage(err) }, 500);
     }
   }

@@ -73,9 +73,16 @@ interface RawReview {
  */
 function parseDate(dateArray: unknown): string | null {
   if (!Array.isArray(dateArray)) return null;
-  const milliStr = String(dateArray[1] ?? '000');
-  const totalMs = `${dateArray[0]}${milliStr.substring(0, 3)}`;
-  return new Date(Number(totalMs)).toJSON();
+  // Compute numerically: seconds*1000 + millis. The previous string-concat
+  // approach (`${seconds}${millis}`) only worked when millis was a 3-digit
+  // zero-padded string; Google sends a plain integer, so e.g. `[s, 5]` produced
+  // a date in 1970 and `[s, 50]` a date in year ~7340.
+  const seconds = Number(dateArray[0]);
+  const millis = Number(dateArray[1] ?? 0);
+  if (!Number.isFinite(seconds) || !Number.isFinite(millis)) return null;
+  const d = new Date(seconds * 1000 + millis);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toJSON();
 }
 
 /**

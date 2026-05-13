@@ -28,18 +28,20 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getRequestListener } from '@hono/node-server';
 import { Hono } from 'hono';
+import { closeDbSingleton, probeListenNotify } from './db/client';
 import { mountViteDev } from './dev-vite';
 import type { Env } from './index';
 import { app as mainApp } from './index';
+import {
+  getLobuCoreServices,
+  initLobuGateway,
+  stopLobuGateway,
+} from './lobu/gateway';
+import { bootTaskScheduler } from './scheduled/jobs';
 import { assertExternalDepsResolvable } from '../../connector-worker/src/runtime-deps';
 import { getEnvFromProcess } from './utils/env';
 import logger from './utils/logger';
 import { initWorkspaceProvider } from './workspace';
-
-// Crash loud at boot if the runtime image is missing any connector external
-// dep, instead of letting every feed silently fail with "Missing npm
-// dependency: X" hours later.
-assertExternalDepsResolvable(createRequire(import.meta.url).resolve);
 
 // Create a wrapper app that injects environment into each request
 const app = new Hono<{ Bindings: Env }>();
@@ -58,11 +60,12 @@ if (!process.env.LOBU_DEV_PROJECT_PATH) {
   process.env.LOBU_DEV_PROJECT_PATH = PACKAGE_REPO_ROOT;
 }
 
-// Inject environment variables into Hono context
+// Inject environment variables into Hono context. The snapshot is immutable
+// post-boot and callers only read it, so assign it by reference instead of
+// spreading it onto a fresh `c.env` object on every request.
 const env = getEnvFromProcess();
 app.use('*', async (c, next) => {
-  // Set environment variables on the context
-  Object.assign(c.env, env);
+  c.env = env as Env;
   return next();
 });
 
@@ -85,7 +88,6 @@ async function main() {
   // the poll interval — not an outage. Log loudly so ops can fix the pooler
   // config, but do not refuse to boot.
   if (process.env.SKIP_LISTEN_NOTIFY_PROBE !== '1') {
-    const { probeListenNotify } = await import('./db/client');
     try {
       await probeListenNotify();
       logger.info('[DB] LISTEN/NOTIFY probe ok');
@@ -101,7 +103,6 @@ async function main() {
   await initWorkspaceProvider();
 
   // Initialize embedded Lobu gateway (requires DATABASE_URL)
-  const { initLobuGateway } = await import('./lobu/gateway');
   const lobuApp = await initLobuGateway();
   if (lobuApp) {
     app.route('/lobu', lobuApp);
@@ -114,8 +115,6 @@ async function main() {
   // token refresh, MCP DB cleanup, watcher automation, etc. — runs as a row
   // in `public.runs` (run_type='task') with cron-driven self-rescheduling.
   // Cross-pod coordination is the runs-queue claim path.
-  const { getLobuCoreServices } = await import('./lobu/gateway');
-  const { bootTaskScheduler } = await import('./scheduled/jobs');
   const taskScheduler = await bootTaskScheduler(getLobuCoreServices(), env);
 
   const port = parseInt(process.env.PORT || '8787', 10);
@@ -142,9 +141,7 @@ async function main() {
     logger.info({ signal }, 'Received shutdown signal, stopping gracefully...');
     await vite?.close();
     taskScheduler.stop();
-    const { stopLobuGateway } = await import('./lobu/gateway');
     await stopLobuGateway();
-    const { closeDbSingleton } = await import('./db/client');
     await closeDbSingleton();
     httpServer.close();
     process.exit(0);
@@ -157,6 +154,16 @@ async function main() {
 
   httpServer.listen(port, host, () => {
     logger.info({ host, port }, `Server running at http://${host}:${port}`);
+    // Crash loud if the runtime image is missing any connector external dep,
+    // instead of letting every feed silently fail with "Missing npm
+    // dependency: X" hours later. Run this after listen() so the synchronous
+    // require.resolve walk doesn't add to cold-boot/readiness latency.
+    try {
+      assertExternalDepsResolvable(createRequire(import.meta.url).resolve);
+    } catch (err) {
+      logger.error({ err }, 'Connector external dependency check failed');
+      process.exit(1);
+    }
   });
 }
 

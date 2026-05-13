@@ -274,8 +274,11 @@ export default class GmailConnector extends ConnectorRuntime {
           return d;
         })();
 
-    const afterStr = `${afterDate.getFullYear()}/${String(afterDate.getMonth() + 1).padStart(2, '0')}/${String(afterDate.getDate()).padStart(2, '0')}`;
-    const query = `after:${afterStr} label:${label}`;
+    // Gmail's `after:` accepts a Unix timestamp (epoch seconds) for second-level
+    // precision. Using `YYYY/MM/DD` (day granularity, host timezone) meant every
+    // sync within the same day re-fetched the whole day's threads as duplicates.
+    const afterEpochSeconds = Math.floor(afterDate.getTime() / 1000);
+    const query = `after:${afterEpochSeconds} label:${label}`;
 
     const events: EventEnvelope[] = [];
     let pageToken: string | undefined;

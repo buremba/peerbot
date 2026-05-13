@@ -6,7 +6,7 @@
  */
 
 import type { Checkpoint, Content, Env } from '@lobu/connector-sdk';
-import { generateEmbedding } from '../embeddings.js';
+import { batchGenerateEmbeddings, generateEmbedding } from '../embeddings.js';
 import {
   executeCompiledConnector,
   getActionOutput,
@@ -47,19 +47,15 @@ export async function executeRun(
     return executeActionRun(client, job, env, cfg);
   }
   if (job.run_type === 'watcher') {
-    // Watcher reactions now execute inline in the API process (complete_window).
-    // If a legacy pending watcher run is polled, mark it as completed to clean up.
-    // Note: stuck runs older than the poll interval will be picked up here automatically.
+    // Watcher reactions execute inline in the API process (complete_window) and
+    // the poll endpoint's run_type allowlist should never hand a watcher run to
+    // this daemon. If one slips through (deploy skew, regression), do NOT mark
+    // it success — that would stomp a live watcher run and prevent any retry.
+    // Log loudly and skip; the server's heartbeat reaper / inline path owns it.
     console.error(
-      `[executor] Cleaning up legacy watcher run ${job.run_id} — reactions now execute inline`
+      `[executor] Refusing to handle watcher run ${job.run_id} — watcher runs must not reach the connector-worker daemon`
     );
-    await client.complete({
-      run_id: job.run_id!,
-      worker_id: client.id,
-      status: 'success',
-      items_collected: 0,
-    });
-    return { itemsCollected: 0 };
+    return { itemsCollected: 0, error: 'watcher run not handled by daemon' };
   }
   if (job.run_type === 'embed_backfill') {
     return executeEmbedBackfillRun(client, job, env);
@@ -524,20 +520,27 @@ async function executeEmbedBackfillRun(
       return { itemsCollected: 0 };
     }
 
-    // Generate embeddings for each event
+    // Generate embeddings in batch — backfill runs are explicitly the
+    // "lots of events" path, so batch through the service / vectorized local
+    // pass instead of one round-trip per event.
+    const pending = events
+      .map((event) => ({
+        event_id: event.id,
+        text: [event.title, event.content].filter(Boolean).join(' ').trim(),
+      }))
+      .filter((p) => p.text.length > 0);
+
     const results: Array<{ event_id: number; embedding: number[] }> = [];
-    for (const event of events) {
-      try {
-        const textForEmbedding = [event.title, event.content].filter(Boolean).join(' ').trim();
-        if (textForEmbedding) {
-          const embedding = await generateEmbedding(textForEmbedding);
-          if (embedding) {
-            results.push({ event_id: event.id, embedding });
-          }
+    try {
+      const embeddings = await batchGenerateEmbeddings(pending.map((p) => p.text));
+      for (let i = 0; i < pending.length; i++) {
+        const embedding = embeddings[i];
+        if (embedding) {
+          results.push({ event_id: pending[i]!.event_id, embedding });
         }
-      } catch (err) {
-        console.error(`[executor] Embedding failed for event ${event.id}:`, err);
       }
+    } catch (err) {
+      console.error(`[executor] Batch embedding failed for run ${run_id}:`, err);
     }
 
     // Submit embeddings back to the API

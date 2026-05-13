@@ -11,7 +11,6 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { renderFallbackSystemContext } from './lobu-guidance.js';
-import { registerMemoryWikiCompatTools } from './memory-wiki-compat.js';
 import type {
   McpToolDefinition,
   McpToolResponse,
@@ -271,35 +270,6 @@ function asPositiveInt(value: unknown, fallback: number): number {
   return n > 0 ? n : fallback;
 }
 
-const DEFAULT_WIKI_FANOUT_TIMEOUT_MS = 30_000;
-const MIN_WIKI_FANOUT_TIMEOUT_MS = 1_000;
-const MAX_WIKI_FANOUT_TIMEOUT_MS = 90_000;
-
-function clampFanoutTimeoutMs(value: unknown): number {
-  if (typeof value !== 'number' || !Number.isFinite(value)) {
-    return DEFAULT_WIKI_FANOUT_TIMEOUT_MS;
-  }
-  if (value < MIN_WIKI_FANOUT_TIMEOUT_MS) return MIN_WIKI_FANOUT_TIMEOUT_MS;
-  if (value > MAX_WIKI_FANOUT_TIMEOUT_MS) return MAX_WIKI_FANOUT_TIMEOUT_MS;
-  return Math.floor(value);
-}
-
-function resolveMemoryWikiCompatConfig(value: unknown): {
-  enabled: boolean;
-  fanoutTimeoutMs: number;
-} {
-  if (typeof value === 'boolean') {
-    return { enabled: value, fanoutTimeoutMs: DEFAULT_WIKI_FANOUT_TIMEOUT_MS };
-  }
-  if (isRecord(value)) {
-    return {
-      enabled: asBoolean(value.enabled, false),
-      fanoutTimeoutMs: clampFanoutTimeoutMs(value.fanoutTimeoutMs),
-    };
-  }
-  return { enabled: false, fanoutTimeoutMs: DEFAULT_WIKI_FANOUT_TIMEOUT_MS };
-}
-
 function getLogger(api: Record<string, unknown>): PluginLogger {
   const logger = api.logger;
   if (
@@ -381,7 +351,6 @@ function resolvePluginConfig(api: Record<string, unknown>, pluginId: string): Re
     autoRecall: asBoolean(cfg.autoRecall, true),
     autoCapture: asBoolean(cfg.autoCapture, true),
     recallLimit: asPositiveInt(cfg.recallLimit, DEFAULT_RECALL_LIMIT),
-    memoryWikiCompat: resolveMemoryWikiCompatConfig(cfg.memoryWikiCompat),
   };
 }
 
@@ -1310,10 +1279,6 @@ const plugin = {
       registerMcpTools(config, registerTool, log);
     }
 
-    if (registerTool && config.memoryWikiCompat.enabled) {
-      registerMemoryWikiCompatTools(config, registerTool, log, callMcpTool);
-    }
-
     // Inject workspace instructions (dynamic from server) or fallback (static).
     // When autoRecall is enabled, also inject recalled memories.
     {
@@ -1363,15 +1328,28 @@ const plugin = {
       // Hard-bound the recall round-trip so it can never blow OpenClaw's hook
       // budget: abort the in-flight MCP fetch at RECALL_TIMEOUT_MS and degrade
       // to "no recall" no matter what is still pending (token command, network).
+      //
+      // OpenClaw fires both `before_prompt_build` and `before_agent_start` for
+      // a turn (often back-to-back with the same prompt text). Memoize the last
+      // (query → recallBlock) so the second event is a free cache hit instead
+      // of a second `search_memory` round-trip.
+      let lastRecallQuery: string | null = null;
+      let lastRecallBlock = '';
       const doRecall = async (query: string): Promise<string> => {
         if (!config.autoRecall || !hasAuthConfigured(config)) {
           return '';
         }
-        return runWithAbortDeadline(
+        if (query === lastRecallQuery) {
+          return lastRecallBlock;
+        }
+        const block = await runWithAbortDeadline(
           (signal) => recallOnce(query, signal),
           RECALL_TIMEOUT_MS,
           ''
         );
+        lastRecallQuery = query;
+        lastRecallBlock = block;
+        return block;
       };
       const buildPrependContext = (recallBlock: string) => ({
         prependContext: getSystemContext() + (recallBlock ? '\n' + recallBlock : ''),
@@ -1429,35 +1407,52 @@ const plugin = {
     if (config.autoCapture) {
       let lastCapturedLen = 0;
 
-      on('before_prompt_build', async (event: Record<string, unknown>) => {
+      const messageText = (m: unknown): string => {
+        if (!isRecord(m)) return '';
+        if (typeof m.content === 'string') return m.content;
+        if (Array.isArray(m.content)) {
+          return m.content
+            .filter((p: unknown) => isRecord(p) && p.type === 'text')
+            .map((p: unknown) => (isRecord(p) && typeof p.text === 'string' ? p.text : ''))
+            .join('\n');
+        }
+        return '';
+      };
+
+      // Run on `agent_end` — the turn is complete and `messages` ends with the
+      // assistant reply. (The worker's plugin-loader only honors
+      // before_agent_start / agent_end; a before_prompt_build registration was
+      // silently dropped, so autoCapture never ran inside Lobu.)
+      on('agent_end', async (event: Record<string, unknown>) => {
         if (!hasAuthConfigured(config)) return;
 
         const messages = event.messages;
         if (!Array.isArray(messages) || messages.length < 2) return;
-        // Only capture when new messages appeared since last capture
         if (messages.length <= lastCapturedLen) return;
 
-        // Find the most recent assistant+user pair (the previous turn)
-        let lastUser: string | null = null;
-        let lastAssistant: string | null = null;
+        // Find the last assistant message, then the user message immediately
+        // before it — pairing the answer with the question that prompted it
+        // (not a trailing unanswered user message with the previous reply).
+        let assistantIdx = -1;
         for (let i = messages.length - 1; i >= 0; i--) {
-          const m = messages[i];
-          if (!isRecord(m)) continue;
-          const text =
-            typeof m.content === 'string'
-              ? m.content
-              : Array.isArray(m.content)
-                ? m.content
-                    .filter((p: unknown) => isRecord(p) && p.type === 'text')
-                    .map((p: unknown) => (isRecord(p) && typeof p.text === 'string' ? p.text : ''))
-                    .join('\n')
-                : '';
-          if (!text.trim()) continue;
-          if (m.role === 'assistant' && !lastAssistant) lastAssistant = text.trim();
-          if (m.role === 'user' && !lastUser) lastUser = text.trim();
-          if (lastUser && lastAssistant) break;
+          if (isRecord(messages[i]) && (messages[i] as Record<string, unknown>).role === 'assistant') {
+            const t = messageText(messages[i]);
+            if (t.trim()) { assistantIdx = i; break; }
+          }
         }
+        if (assistantIdx < 1) return;
 
+        let userIdx = -1;
+        for (let i = assistantIdx - 1; i >= 0; i--) {
+          if (isRecord(messages[i]) && (messages[i] as Record<string, unknown>).role === 'user') {
+            const t = messageText(messages[i]);
+            if (t.trim()) { userIdx = i; break; }
+          }
+        }
+        if (userIdx < 0) return;
+
+        const lastUser = messageText(messages[userIdx]).trim();
+        const lastAssistant = messageText(messages[assistantIdx]).trim();
         if (!lastUser || !lastAssistant) return;
 
         const combined = `User: ${lastUser}\nAssistant: ${lastAssistant}`;
@@ -1466,7 +1461,7 @@ const plugin = {
         lastCapturedLen = messages.length;
         const content = combined.length > 2000 ? combined.slice(0, 2000) : combined;
 
-        // Fire-and-forget — don't block prompt build
+        // Fire-and-forget — don't block the agent_end path.
         callMcpTool(config, 'save_memory', {
           content,
           semantic_type: 'observation',

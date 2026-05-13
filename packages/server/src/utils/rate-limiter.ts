@@ -200,13 +200,32 @@ export function getRateLimiter(): RateLimiter {
 }
 
 /**
- * Get client IP from request
+ * Get client IP from request.
+ *
+ * When `TRUSTED_PROXY` is set, the rightmost `X-Forwarded-For` entry (the address
+ * the trusted proxy actually observed, not client-controllable) is used, falling
+ * back to `CF-Connecting-IP` / `X-Real-IP`. This is the abuse-resistant mode and
+ * operators behind a tunnel/reverse-proxy should set it.
+ *
+ * Without `TRUSTED_PROXY` we still key on the *leftmost* `X-Forwarded-For` entry
+ * as a best-effort fallback. That value is client-spoofable, but spoofing only
+ * lets an attacker evade *their own* limit (the pre-existing behavior) — far less
+ * harmful than collapsing every caller into one shared `'unknown'` bucket, which
+ * would let a single client throttle the public rate-limited endpoints (OAuth
+ * dynamic client registration, invitation preview, public-org join) for everyone.
  */
 export function getClientIP(request: Request): string {
-  return (
-    request.headers.get('CF-Connecting-IP') ||
-    request.headers.get('X-Forwarded-For')?.split(',')[0] ||
-    request.headers.get('X-Real-IP') ||
-    'unknown'
-  );
+  const trustForwarded = process.env.TRUSTED_PROXY === 'true' || process.env.TRUSTED_PROXY === '1';
+  const xff = request.headers.get('X-Forwarded-For');
+  if (xff) {
+    const parts = xff.split(',').map((p) => p.trim()).filter(Boolean);
+    if (parts.length > 0) {
+      return trustForwarded ? parts[parts.length - 1]! : parts[0]!;
+    }
+  }
+  const cf = request.headers.get('CF-Connecting-IP');
+  if (cf) return cf.trim();
+  const xreal = request.headers.get('X-Real-IP');
+  if (xreal) return xreal.trim();
+  return 'unknown';
 }

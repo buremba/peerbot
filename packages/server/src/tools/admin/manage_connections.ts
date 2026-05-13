@@ -531,7 +531,13 @@ async function handleList(
            dw.label AS device_label,
            dw.platform AS device_platform,
            dw.worker_id AS device_worker_handle,
+           dw.last_seen_at AS device_last_seen_at,
            (dw.id IS NOT NULL AND dw.last_seen_at > now() - interval '20 minutes') AS device_online,
+           CASE
+             WHEN c.device_worker_id IS NOT NULL
+              AND NOT (dw.id IS NOT NULL AND dw.last_seen_at > now() - interval '20 minutes')
+             THEN 'offline'
+           END AS device_status,
            (SELECT COUNT(*) FROM current_event_records e WHERE e.connection_id = c.id)::int AS event_count,
            (SELECT COUNT(*) FROM feeds f WHERE f.connection_id = c.id AND f.deleted_at IS NULL)::int AS feed_count,
            (SELECT ct.token FROM connect_tokens ct
@@ -639,7 +645,13 @@ async function handleGet(
            dw.label AS device_label,
            dw.platform AS device_platform,
            dw.worker_id AS device_worker_handle,
+           dw.last_seen_at AS device_last_seen_at,
            (dw.id IS NOT NULL AND dw.last_seen_at > now() - interval '20 minutes') AS device_online,
+           CASE
+             WHEN c.device_worker_id IS NOT NULL
+              AND NOT (dw.id IS NOT NULL AND dw.last_seen_at > now() - interval '20 minutes')
+             THEN 'offline'
+           END AS device_status,
            (SELECT COUNT(*) FROM current_event_records e WHERE e.connection_id = c.id)::int AS event_count
     FROM connections c
     LEFT JOIN LATERAL (

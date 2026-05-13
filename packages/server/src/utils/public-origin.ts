@@ -17,8 +17,24 @@ function toOrigin(value?: string | null): string | undefined {
   }
 }
 
+// PUBLIC_WEB_URL is immutable post-boot; parse it once. `null` sentinel marks
+// "computed and absent" so we don't re-parse on every auth resolution.
+const UNRESOLVED = Symbol('unresolved');
+let configuredPublicOriginCache: string | undefined | typeof UNRESOLVED =
+  UNRESOLVED;
+
 export function getConfiguredPublicOrigin(): string | undefined {
-  return toOrigin(process.env.PUBLIC_WEB_URL);
+  if (configuredPublicOriginCache !== UNRESOLVED) {
+    return configuredPublicOriginCache;
+  }
+  configuredPublicOriginCache = toOrigin(process.env.PUBLIC_WEB_URL);
+  return configuredPublicOriginCache;
+}
+
+/** Test-only: clear memoized origin/local-frontend caches. */
+export function __resetPublicOriginCachesForTests(): void {
+  configuredPublicOriginCache = UNRESOLVED;
+  localFrontendCache = undefined;
 }
 
 const APP_ROOT = path.resolve(fileURLToPath(new URL('.', import.meta.url)), '../..');

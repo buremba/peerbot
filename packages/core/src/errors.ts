@@ -71,54 +71,6 @@ export class WorkspaceError extends BaseError {
   }
 }
 
-/**
- * Error class for platform-related operations (Slack, WhatsApp, etc.)
- */
-export class PlatformError extends BaseError {
-  override readonly name = "PlatformError";
-
-  constructor(
-    public platform: string,
-    operation: string,
-    message: string,
-    cause?: Error
-  ) {
-    super(message, cause);
-    this.operation = operation;
-  }
-
-  override toJSON(): Record<string, any> {
-    return {
-      ...super.toJSON(),
-      platform: this.platform,
-    };
-  }
-}
-
-/**
- * Error class for session-related operations
- */
-export class SessionError extends BaseError {
-  readonly name = "SessionError";
-
-  constructor(
-    public sessionKey: string,
-    public code: string,
-    message: string,
-    cause?: Error
-  ) {
-    super(message, cause);
-  }
-
-  toJSON(): Record<string, any> {
-    return {
-      ...super.toJSON(),
-      sessionKey: this.sessionKey,
-      code: this.code,
-    };
-  }
-}
-
 // ErrorCode enum for orchestration operations
 export enum ErrorCode {
   DATABASE_CONNECTION_FAILED = "DATABASE_CONNECTION_FAILED",

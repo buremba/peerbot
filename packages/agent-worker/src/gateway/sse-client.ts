@@ -163,6 +163,12 @@ export class GatewayClient {
         await this.handleReconnect();
       }
     }
+    if (this.reconnectsExhausted) {
+      // Don't return normally — a caller that logs "started successfully" and
+      // then awaits forever would leave a zombie process holding its
+      // workspace/port that never receives jobs and never exits.
+      throw new Error("Gateway worker exhausted reconnect attempts");
+    }
   }
 
   private async connectAndListen(): Promise<void> {
@@ -312,9 +318,12 @@ export class GatewayClient {
     });
   }
 
+  private reconnectsExhausted = false;
+
   private async handleReconnect(): Promise<void> {
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
       logger.error("Max reconnection attempts reached, giving up");
+      this.reconnectsExhausted = true;
       this.isRunning = false;
       return;
     }

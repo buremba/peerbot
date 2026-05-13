@@ -123,6 +123,18 @@ describe("sanitizeForLogging", () => {
     expect(result.env.TOKEN).toBe("[REDACTED:6]");
   });
 
+  test("handles circular references without overflowing the stack", () => {
+    const obj: Record<string, unknown> = { name: "safe", token: "secret" };
+    obj.self = obj;
+    const nested: Record<string, unknown> = { parent: obj };
+    obj.child = nested;
+    const result = sanitizeForLogging(obj);
+    expect(result.name).toBe("safe");
+    expect(result.token).toBe("[REDACTED:6]");
+    expect(result.self).toBe("[Circular]");
+    expect(result.child.parent).toBe("[Circular]");
+  });
+
   test("handles arrays (recurses into elements)", () => {
     const arr = [{ token: "secret" }, { name: "safe" }];
     const result = sanitizeForLogging(arr);

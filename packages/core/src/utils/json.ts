@@ -22,21 +22,6 @@ export function safeJsonParse<T = unknown>(
 }
 
 /**
- * Safely stringify value to JSON
- * Returns null on stringify failure instead of throwing
- */
-export function safeJsonStringify(value: unknown): string | null {
-  try {
-    return JSON.stringify(value);
-  } catch (error) {
-    logger.error("JSON stringify failed", {
-      error: error instanceof Error ? error.message : String(error),
-    });
-    return null;
-  }
-}
-
-/**
  * Stringify a value to JSON, converting bigint values to numbers (when safe)
  * or strings. Use this when serializing query results that may contain bigint columns.
  */

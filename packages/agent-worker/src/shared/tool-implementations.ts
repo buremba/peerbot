@@ -60,11 +60,22 @@ async function gatewayFetch<T>(
     headers["Content-Type"] = "application/json";
   }
 
-  const response = await fetch(`${gw.gatewayUrl}${urlPath}`, {
-    method,
-    headers,
-    body,
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${gw.gatewayUrl}${urlPath}`, {
+      method,
+      headers,
+      body,
+      // A stalled gateway must not hang the agent turn indefinitely.
+      signal: AbortSignal.timeout(60_000),
+    });
+  } catch (err) {
+    if (err instanceof Error && err.name === "TimeoutError") {
+      logger.error(`${errorPrefix}: request timed out`);
+      return { error: textResult(`Error: ${errorPrefix} (timed out)`) };
+    }
+    throw err;
+  }
 
   if (!response.ok) {
     const errorData = await parseErrorBody(response);
@@ -881,17 +892,28 @@ export async function callMcpTool(
   args: Record<string, unknown>
 ): Promise<TextResult> {
   return withErrorHandling(`${mcpId}/${toolName}`, async () => {
-    const response = await fetch(
-      `${gw.gatewayUrl}/mcp/${mcpId}/tools/${toolName}`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${gw.workerToken}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(args),
+    let response: Response;
+    try {
+      response = await fetch(
+        `${gw.gatewayUrl}/mcp/${mcpId}/tools/${toolName}`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${gw.workerToken}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(args),
+          // Third-party MCP server on the other side — give it a generous
+          // budget but never wait forever.
+          signal: AbortSignal.timeout(120_000),
+        }
+      );
+    } catch (err) {
+      if (err instanceof Error && err.name === "TimeoutError") {
+        return textResult(`Error: MCP tool ${mcpId}/${toolName} timed out`);
       }
-    );
+      throw err;
+    }
 
     const data = (await response.json()) as {
       content?: Array<{ type: string; text: string }>;

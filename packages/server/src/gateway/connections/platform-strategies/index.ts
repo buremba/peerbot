@@ -450,15 +450,7 @@ class SlackResponseStrategy implements PlatformResponseStrategy {
   }
 }
 
-/**
- * Telegram currently uses default behavior (streaming through the Chat SDK).
- * Kept as a named subclass so future Telegram-specific tweaks have an obvious
- * home and the bridge's strategy map reads explicitly.
- */
-class TelegramResponseStrategy extends DefaultResponseStrategy {}
-
 const slackStrategy = new SlackResponseStrategy();
-const telegramStrategy = new TelegramResponseStrategy();
 const defaultStrategy = new DefaultResponseStrategy();
 
 export function getResponseStrategy(
@@ -467,8 +459,6 @@ export function getResponseStrategy(
   switch (platform) {
     case "slack":
       return slackStrategy;
-    case "telegram":
-      return telegramStrategy;
     default:
       return defaultStrategy;
   }

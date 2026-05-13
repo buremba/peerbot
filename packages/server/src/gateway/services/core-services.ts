@@ -74,7 +74,10 @@ import { SessionManager, StateAdapterSessionStore } from "./session-manager.js";
 import { SseManager } from "./sse-manager.js";
 import { WatcherRunTracker } from "../watchers/run-tracker.js";
 import { ProviderConfigResolver } from "./provider-config-resolver.js";
-import { ProviderRegistryService } from "./provider-registry-service.js";
+import {
+  ProviderRegistryService,
+  resolveProviderRegistryPath,
+} from "./provider-registry-service.js";
 import { TranscriptionService } from "./transcription-service.js";
 
 const logger = createLogger("core-services");
@@ -573,22 +576,32 @@ export class CoreServices {
     logger.debug("Bedrock provider module registered");
 
     // Initialize bundled provider registry — use injected providers if
-    // provided, else load from config/providers.json.
+    // provided, else load from the resolved providers registry path
+    // (LOBU_PROVIDER_REGISTRY_PATH → <cwd>/config/providers.json → the
+    // providers.json shipped next to the server bundle).
     const injectedProviders = this.options?.providerRegistry;
     if (injectedProviders) {
       this.providerRegistryService = new ProviderRegistryService(
         undefined,
         injectedProviders
       );
-    } else {
-      this.providerRegistryService = new ProviderRegistryService(
-        process.env.LOBU_PROVIDER_REGISTRY_PATH || "config/providers.json"
+      logger.debug(
+        `Provider registry initialized from injected providers (${injectedProviders.length})`
       );
+    } else {
+      const registryPath = resolveProviderRegistryPath();
+      this.providerRegistryService = new ProviderRegistryService(registryPath);
+      if (registryPath) {
+        logger.info(`Provider registry path: ${registryPath}`);
+      } else {
+        logger.warn(
+          "No providers registry found (set LOBU_PROVIDER_REGISTRY_PATH or run from a dir with config/providers.json) — config-driven providers will be unavailable"
+        );
+      }
     }
     this.providerConfigResolver = new ProviderConfigResolver(
       this.providerRegistryService
     );
-    logger.debug("Provider registry service initialized");
 
     this.transcriptionService?.setProviderConfigSource(() =>
       this.providerConfigResolver
@@ -599,6 +612,9 @@ export class CoreServices {
     // Register config-driven providers from the bundled providers registry
     const configProviders =
       await this.providerConfigResolver.getProviderConfigs();
+    logger.info(
+      `Provider registry loaded ${Object.keys(configProviders).length} config-driven provider(s)`
+    );
     const registeredIds = new Set(
       getModelProviderModules().map((m) => m.providerId)
     );

@@ -65,13 +65,6 @@ export function getLoginProviderScopes(
   return normalizeScopes(explicitScopes);
 }
 
-export function isSupportedLoginProvider(
-  provider: string,
-  explicitScopes?: readonly string[]
-): boolean {
-  return getLoginProviderScopes(provider, explicitScopes) !== null;
-}
-
 function getOAuthMethodsFromSchema(
   authSchema: LoginProviderConfigRow['auth_schema']
 ): OAuthMethod[] {

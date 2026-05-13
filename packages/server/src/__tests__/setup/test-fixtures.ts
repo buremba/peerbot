@@ -8,15 +8,10 @@
 import { serializeSigned } from 'hono/utils/cookie';
 import { hashClientSecret } from '../../auth/oauth/clients';
 import { generateSecureToken, hashToken } from '../../auth/oauth/utils';
-import { pgTextArray } from '../../db/client';
+import { pgBigintArray, pgTextArray } from '../../db/client';
 import { ensureUniqueConnectionSlug } from '../../utils/connections';
 import { generateSlug } from '../../utils/entity-management';
 import { getTestDb } from './test-db';
-
-/** Format a JS number array as a PostgreSQL bigint[] literal. */
-function pgBigintArray(values: number[]): string {
-  return '{' + values.map((v) => String(Math.trunc(v))).join(',') + '}';
-}
 
 const TEST_SYSTEM_ORG_ID = 'default';
 const TEST_AUTH_SECRET = 'test-auth-secret-for-testing-only';

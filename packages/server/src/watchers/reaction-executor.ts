@@ -15,6 +15,7 @@ import type { ReactionContext } from '@lobu/connector-sdk';
 import type { Env } from '../index';
 import { buildClientSDK } from '../sandbox/client-sdk';
 import { runScript } from '../sandbox/run-script';
+import { compileSource } from '../utils/compiler-core';
 import logger from '../utils/logger';
 
 const REACTION_TIMEOUT_MS = 60_000;
@@ -100,7 +101,6 @@ export async function executeReaction(options: ExecuteReactionOptions): Promise<
  * pre-validation.
  */
 export async function compileReactionScript(source: string): Promise<string> {
-  const { compileSource } = await import('../utils/compiler-core');
   // Match `runScript`'s execute-time esbuild config exactly so save-time and
   // runtime accept the same set of imports. Drift here used to externalize
   // `@lobu/reactions`, which the runtime recompile would then fail to

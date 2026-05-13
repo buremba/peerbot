@@ -13,7 +13,7 @@ import { Hono } from "hono";
 import type { UserAgentsStore } from "../../auth/user-agents-store.js";
 import type { WorkerConnectionManager } from "../../gateway/connection-manager.js";
 import { errorResponse } from "../shared/helpers.js";
-import { createTokenVerifier } from "../shared/token-verifier.js";
+import { createTokenVerifier } from "../shared/agent-ownership.js";
 import { verifySettingsSession } from "./settings-auth.js";
 
 const logger = createLogger("agent-history-routes");

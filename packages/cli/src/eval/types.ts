@@ -89,6 +89,8 @@ export interface EvalResult {
   p50LatencyMs: number;
   totalTokens: TokenUsage;
   trials: TrialResult[];
+  /** Set when the eval crashed before producing trials — counts as a failure. */
+  error?: string;
 }
 
 export interface EvalReport {

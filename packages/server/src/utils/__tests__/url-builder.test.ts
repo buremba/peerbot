@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { buildEntityUrl, getPublicWebUrl } from '../url-builder';
-import { HOSTED_UI_FALLBACK_ORIGIN } from '../public-origin';
+import {
+  HOSTED_UI_FALLBACK_ORIGIN,
+  __resetPublicOriginCachesForTests,
+} from '../public-origin';
 
 /**
  * Behavior contract for `getPublicWebUrl`:
@@ -17,6 +20,7 @@ describe('getPublicWebUrl', () => {
 
   beforeEach(() => {
     delete process.env.PUBLIC_WEB_URL;
+    __resetPublicOriginCachesForTests();
   });
 
   afterEach(() => {
@@ -25,6 +29,7 @@ describe('getPublicWebUrl', () => {
     } else {
       delete process.env.PUBLIC_WEB_URL;
     }
+    __resetPublicOriginCachesForTests();
   });
 
   it('returns explicit baseUrl when provided', () => {

@@ -1,4 +1,5 @@
 import {
+  decrypt,
   inferGrantKind,
   type AgentAccessStore,
   type AgentConfigStore,
@@ -121,23 +122,29 @@ function isRedactedSecretValue(value: unknown): value is string {
 function decryptLegacyEncryptedConfig(
   config: Record<string, any>
 ): Record<string, any> {
-  try {
-    const { decrypt } = require('@lobu/core');
-    const result = { ...config };
-    for (const [key, value] of Object.entries(result)) {
-      if (typeof value === 'string' && value.startsWith(ENC_PREFIX)) {
-        try {
-          result[key] = decrypt(value.slice(ENC_PREFIX.length));
-        } catch {
-          // Leave encrypted if decryption fails — surfaces as a
-          // resolveConfigForRuntime error at boot time.
-        }
+  // Fast path (the common case): new writes never produce `enc:v1:` values,
+  // so don't clone the object unless there's actually something to decrypt.
+  let hasEncrypted = false;
+  for (const value of Object.values(config)) {
+    if (typeof value === 'string' && value.startsWith(ENC_PREFIX)) {
+      hasEncrypted = true;
+      break;
+    }
+  }
+  if (!hasEncrypted) return config;
+
+  const result = { ...config };
+  for (const [key, value] of Object.entries(result)) {
+    if (typeof value === 'string' && value.startsWith(ENC_PREFIX)) {
+      try {
+        result[key] = decrypt(value.slice(ENC_PREFIX.length));
+      } catch {
+        // Leave encrypted if decryption fails — surfaces as a
+        // resolveConfigForRuntime error at boot time.
       }
     }
-    return result;
-  } catch {
-    return config;
   }
+  return result;
 }
 
 function rowToConnection(row: Record<string, any>): StoredConnection {
@@ -488,7 +495,18 @@ export function createPostgresAgentConnectionStore(): AgentConnectionStore {
     },
     async deleteConnection(connectionId) {
       const sql = getDb();
-      await sql`DELETE FROM agent_connections WHERE id = ${connectionId}`;
+      const orgId = tryGetOrgId();
+      if (orgId) {
+        await sql`
+          DELETE FROM agent_connections
+          USING agents a
+          WHERE agent_connections.agent_id = a.id
+            AND agent_connections.id = ${connectionId}
+            AND a.organization_id = ${orgId}
+        `;
+      } else {
+        await sql`DELETE FROM agent_connections WHERE id = ${connectionId}`;
+      }
     },
     async getChannelBinding(platform, channelId, teamId) {
       const sql = getDb();
@@ -543,16 +561,33 @@ export function createPostgresAgentConnectionStore(): AgentConnectionStore {
     },
     async listChannelBindings(agentId) {
       const sql = getDb();
-      const rows = await sql`
-        SELECT * FROM agent_channel_bindings WHERE agent_id = ${agentId}
-      `;
+      const orgId = tryGetOrgId();
+      const rows = orgId
+        ? await sql`
+            SELECT b.* FROM agent_channel_bindings b
+            JOIN agents a ON a.id = b.agent_id
+            WHERE b.agent_id = ${agentId} AND a.organization_id = ${orgId}
+          `
+        : await sql`
+            SELECT * FROM agent_channel_bindings WHERE agent_id = ${agentId}
+          `;
       return rows.map(rowToChannelBinding);
     },
     async deleteAllChannelBindings(agentId) {
       const sql = getDb();
-      const rows = await sql`
-        DELETE FROM agent_channel_bindings WHERE agent_id = ${agentId} RETURNING 1
-      `;
+      const orgId = tryGetOrgId();
+      const rows = orgId
+        ? await sql`
+            DELETE FROM agent_channel_bindings b
+            USING agents a
+            WHERE b.agent_id = a.id
+              AND b.agent_id = ${agentId}
+              AND a.organization_id = ${orgId}
+            RETURNING 1
+          `
+        : await sql`
+            DELETE FROM agent_channel_bindings WHERE agent_id = ${agentId} RETURNING 1
+          `;
       return rows.length;
     },
   };

@@ -270,7 +270,7 @@ async function fixSchemaConstraints(db: postgres.Sql): Promise<void> {
       ALTER TABLE IF EXISTS runs ADD CONSTRAINT runs_run_type_check
         CHECK (run_type IN (
           'sync','action','watcher','embed_backfill','auth',
-          'chat_message','schedule','agent_run','internal'
+          'chat_message','schedule','agent_run','internal','task'
         ));
     `);
     // connections.status needs 'pending_auth'

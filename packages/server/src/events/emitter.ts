@@ -6,8 +6,6 @@
 interface InvalidationEvent {
   /** Query keys to invalidate (e.g. ['resolve-path'], ['workspace-bootstrap']) */
   keys: string[];
-  /** Optional: specific resource that changed */
-  resource?: { type: string; id: string | number };
 }
 
 type Listener = (event: InvalidationEvent) => void;

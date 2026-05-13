@@ -260,7 +260,6 @@ async function handleSet(
 
   emit(ctx.organizationId, {
     keys: ['resolve-path', 'entity-types', 'view-template-history'],
-    resource: { type: args.resource_type, id: args.resource_id },
   });
 
   const [resolved] = await resolveUsernames([versionRow as Record<string, unknown>], 'created_by');
@@ -400,7 +399,6 @@ async function handleRollback(
 
   emit(ctx.organizationId, {
     keys: ['resolve-path', 'entity-types', 'view-template-history'],
-    resource: { type: args.resource_type, id: args.resource_id },
   });
 
   const [resolvedVersion] = await resolveUsernames(
@@ -440,7 +438,6 @@ async function handleRemoveTab(
 
   emit(ctx.organizationId, {
     keys: ['resolve-path', 'entity-types', 'view-template-history'],
-    resource: { type: args.resource_type, id: args.resource_id },
   });
 
   return {

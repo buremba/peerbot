@@ -14,8 +14,8 @@ import {
   getRequiredEnv,
   TIME,
 } from "@lobu/core";
-import { config as dotenvConfig } from "dotenv";
 import type { OrchestratorConfig } from "../orchestration/base-deployment-manager.js";
+import { findEnclosingMonorepoRoot } from "../../utils/monorepo-root.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const logger = createLogger("cli-config");
@@ -54,11 +54,6 @@ const GATEWAY_DEFAULTS = {
 const DEFAULTS = {
   ...CORE_DEFAULTS,
   ...GATEWAY_DEFAULTS,
-} as const;
-
-const DISPLAY = {
-  SEPARATOR_LENGTH: 50,
-  TOKEN_PREVIEW_LENGTH: 10,
 } as const;
 
 /** Recursively makes all properties optional */
@@ -136,33 +131,6 @@ export interface GatewayConfig {
     staleThresholdMs: number;
     protectActiveWorkers: boolean;
   };
-}
-
-export function loadEnvFile(envPath?: string): void {
-  if (process.env.NODE_ENV === "production") {
-    logger.debug("Production mode - skipping .env file");
-    return;
-  }
-
-  const envProvided = Boolean(envPath);
-  const resolvedPath = envProvided
-    ? path.resolve(process.cwd(), envPath!)
-    : path.resolve(process.cwd(), ".env");
-
-  if (existsSync(resolvedPath)) {
-    // .env is the single source of truth for dev. `override: true` so
-    // values in the file win over stale shell exports inherited from the
-    // user's environment. Production (`NODE_ENV=production`) skips this
-    // path entirely, so real deployments are unaffected.
-    dotenvConfig({ path: resolvedPath, override: true });
-    logger.debug(`Loaded environment variables from ${resolvedPath}`);
-  } else if (envProvided) {
-    logger.warn(
-      `Specified env file ${resolvedPath} was not found; continuing without it.`
-    );
-  } else {
-    logger.debug("No .env file found; relying on process environment.");
-  }
 }
 
 /**
@@ -296,28 +264,37 @@ function buildEmbeddedWorkerPaths(projectRoot: string): {
   // path.resolve so a relative LOBU_DEV_PROJECT_PATH still yields absolute
   // paths — workers are spawned with cwd=workspaceDir, so relative entries
   // would resolve against the workspace and fail.
-  const root = path.resolve(projectRoot);
   const explicitEntryPoint = process.env.LOBU_WORKER_ENTRYPOINT;
   const explicitBinPathEntries = process.env.LOBU_WORKER_BIN_PATHS?.split(
     path.delimiter
   ).filter(Boolean);
-  const monorepoEntryPoint = path.join(root, "packages/agent-worker/src/index.ts");
-  const monorepoBinPathEntries = [
+
+  const binPathsFor = (root: string) => [
     path.join(root, "node_modules/.bin"),
     path.join(root, "packages/agent-worker/node_modules/.bin"),
   ];
 
+  // The passed root (LOBU_DEV_PROJECT_PATH / cwd) may be a project subdir
+  // inside the monorepo — in that case the `src/index.ts` worker entry lives
+  // at the enclosing workspace root, not under the subdir. Resolve it.
+  const passedRoot = path.resolve(projectRoot);
+  const monorepoRoot =
+    existsSync(path.join(passedRoot, "packages/agent-worker/src/index.ts"))
+      ? passedRoot
+      : findEnclosingMonorepoRoot(passedRoot);
+
   if (explicitEntryPoint) {
     return {
       entryPoint: path.resolve(explicitEntryPoint),
-      binPathEntries: explicitBinPathEntries ?? monorepoBinPathEntries,
+      binPathEntries:
+        explicitBinPathEntries ?? binPathsFor(monorepoRoot ?? passedRoot),
     };
   }
 
-  if (existsSync(monorepoEntryPoint)) {
+  if (monorepoRoot) {
     return {
-      entryPoint: monorepoEntryPoint,
-      binPathEntries: monorepoBinPathEntries,
+      entryPoint: path.join(monorepoRoot, "packages/agent-worker/src/index.ts"),
+      binPathEntries: binPathsFor(monorepoRoot),
     };
   }
 
@@ -326,8 +303,17 @@ function buildEmbeddedWorkerPaths(projectRoot: string): {
       "@lobu/worker/package.json"
     );
     const workerPackageRoot = path.dirname(workerPackageJson);
+    // Prefer the ESM TypeScript source (spawned via `bun run`): the published
+    // CJS `dist/index.js` is a dead end because `@mariozechner/pi-coding-agent`
+    // only exposes an `import` condition, so a `node`-loaded `require()` of it
+    // throws ERR_PACKAGE_PATH_NOT_EXPORTED. The package ships `src/` and a
+    // `bun` exports condition for exactly this path. `bun` is a declared
+    // peerDependency of `@lobu/worker`.
+    const workerSrcEntry = path.join(workerPackageRoot, "src/index.ts");
     return {
-      entryPoint: path.join(workerPackageRoot, "dist/index.js"),
+      entryPoint: existsSync(workerSrcEntry)
+        ? workerSrcEntry
+        : path.join(workerPackageRoot, "dist/index.js"),
       binPathEntries: [
         path.join(workerPackageRoot, "node_modules/.bin"),
         path.resolve(workerPackageRoot, "..", "..", ".bin"),
@@ -335,8 +321,11 @@ function buildEmbeddedWorkerPaths(projectRoot: string): {
     };
   } catch {
     return {
-      entryPoint: monorepoEntryPoint,
-      binPathEntries: monorepoBinPathEntries,
+      entryPoint: path.join(
+        passedRoot,
+        "packages/agent-worker/src/index.ts"
+      ),
+      binPathEntries: binPathsFor(passedRoot),
     };
   }
 }
@@ -520,36 +509,3 @@ export function buildGatewayConfig(
   return config;
 }
 
-/**
- * Display gateway configuration (platform-agnostic parts only)
- * Platform-specific display should be handled by platform modules
- */
-export function displayGatewayConfig(config: GatewayConfig): void {
-  const separator = "=".repeat(DISPLAY.SEPARATOR_LENGTH);
-
-  console.log("Gateway Configuration:");
-  console.log(separator);
-
-  console.log("\nQueues:");
-  console.log(`  Retry Limit: ${config.queues.retryLimit}`);
-  console.log(`  Retry Delay: ${config.queues.retryDelay}s`);
-
-  console.log("\nMCP:");
-  console.log(
-    `  Public Gateway: ${config.mcp.publicGatewayUrl || "(not set)"}`
-  );
-
-  console.log("\nOrchestration:");
-  console.log(
-    `  Max Deployments: ${config.orchestration.worker.maxDeployments}`
-  );
-
-  console.log("\nHealth:");
-  console.log(`  Socket Check Interval: ${config.health.checkIntervalMs}ms`);
-  console.log(`  Socket Stale Threshold: ${config.health.staleThresholdMs}ms`);
-  console.log(
-    `  Protect Active Workers: ${config.health.protectActiveWorkers}`
-  );
-
-  console.log(`\n${separator}`);
-}

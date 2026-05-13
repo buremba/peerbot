@@ -104,9 +104,11 @@ export function setProxyEgressJudge(judge: EgressJudge): void {
 
 function getGlobalConfig(): ResolvedNetworkConfig {
   if (!globalConfig) {
+    // Pre-lowercase the env-driven pattern lists once so the per-request
+    // matcher doesn't re-lowercase every pattern on every outbound request.
     globalConfig = {
-      allowedDomains: loadAllowedDomains(),
-      deniedDomains: loadDisallowedDomains(),
+      allowedDomains: loadAllowedDomains().map((d) => d.toLowerCase()),
+      deniedDomains: loadDisallowedDomains().map((d) => d.toLowerCase()),
     };
   }
   return globalConfig;

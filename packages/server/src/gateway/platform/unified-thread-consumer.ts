@@ -4,7 +4,7 @@
  * via the PlatformRegistry, eliminating duplicate queue filtering logic.
  */
 
-import { createChildSpan, createLogger, flushTracing } from "@lobu/core";
+import { createChildSpan, createLogger } from "@lobu/core";
 import type { ChatResponseBridge } from "../connections/chat-response-bridge.js";
 import type {
   IMessageQueue,
@@ -148,7 +148,6 @@ export class UnifiedThreadResponseConsumer {
       throw error;
     } finally {
       span?.end();
-      void flushTracing();
     }
   }
 

@@ -170,11 +170,16 @@ const TOOLS: ToolDefinition[] = [
 // Helper Functions
 // ============================================
 
+// TOOLS is a module constant with no runtime mutation — index it once.
+const TOOLS_BY_NAME: Map<string, ToolDefinition> = new Map(
+  TOOLS.map((tool) => [tool.name, tool])
+);
+
 /**
  * Get tool by name
  */
 export function getTool(name: string): ToolDefinition | undefined {
-  return TOOLS.find((tool) => tool.name === name);
+  return TOOLS_BY_NAME.get(name);
 }
 
 /**
@@ -270,6 +275,11 @@ function filterSchemaForAccessLevel(
   return null;
 }
 
+// The tool registry + its schemas are static after module load, so the
+// computed tool list depends only on the three options. Memoize per option
+// tuple (a handful of distinct values in practice).
+const allToolsCache = new Map<string, ReturnType<typeof computeAllTools>>();
+
 /**
  * Get all tool definitions for MCP tools/list
  */
@@ -281,7 +291,20 @@ export function getAllTools(options?: {
   const includeInternalTools = options?.includeInternalTools ?? true;
   const publicOnly = options?.publicOnly ?? false;
   const maxAccessLevel = options?.maxAccessLevel ?? 'admin';
+  const cacheKey = `${includeInternalTools ? 1 : 0}:${publicOnly ? 1 : 0}:${maxAccessLevel}`;
+  let cached = allToolsCache.get(cacheKey);
+  if (!cached) {
+    cached = computeAllTools(includeInternalTools, publicOnly, maxAccessLevel);
+    allToolsCache.set(cacheKey, cached);
+  }
+  return cached;
+}
 
+function computeAllTools(
+  includeInternalTools: boolean,
+  publicOnly: boolean,
+  maxAccessLevel: 'read' | 'write' | 'admin'
+) {
   return TOOLS.filter((tool) => includeInternalTools || !tool.internal)
     .filter((tool) => !publicOnly || getPublicReadableActions(tool.name) !== undefined)
     .map((tool) => {

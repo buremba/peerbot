@@ -73,9 +73,24 @@ export async function retryWithBackoff<T>(
     } catch (error) {
       lastError = error as Error;
 
-      // Allow caller to abort on non-retryable errors.
-      if (shouldRetry && !shouldRetry(lastError, attempt + 1)) {
-        throw lastError;
+      // Allow caller to abort on non-retryable errors. A buggy predicate that
+      // throws must not mask the real error or skip remaining retries — log and
+      // fall back to the default (retry).
+      if (shouldRetry) {
+        let allowRetry = true;
+        try {
+          allowRetry = shouldRetry(lastError, attempt + 1);
+        } catch (predicateError) {
+          logger.warn("shouldRetry predicate threw; defaulting to retry", {
+            error:
+              predicateError instanceof Error
+                ? predicateError.message
+                : String(predicateError),
+          });
+        }
+        if (!allowRetry) {
+          throw lastError;
+        }
       }
 
       if (attempt < maxRetries) {
@@ -101,9 +116,18 @@ export async function retryWithBackoff<T>(
           finalDelay = delay;
         }
 
-        // Notify caller of retry
+        // Notify caller of retry — isolate a throwing callback.
         if (onRetry) {
-          onRetry(attempt + 1, lastError);
+          try {
+            onRetry(attempt + 1, lastError);
+          } catch (callbackError) {
+            logger.warn("onRetry callback threw", {
+              error:
+                callbackError instanceof Error
+                  ? callbackError.message
+                  : String(callbackError),
+            });
+          }
         } else {
           logger.warn(
             `Retry attempt ${attempt + 1}/${maxRetries} after ${Math.round(finalDelay)}ms`,

@@ -8,6 +8,7 @@
 import type { Env } from "../../index";
 import { manageEntity } from "../../tools/admin/manage_entity";
 import type { ToolContext } from "../../tools/registry";
+import { search } from "../../tools/search";
 import { createActionCaller } from "./action-call";
 
 export interface EntityListFilter {
@@ -125,8 +126,7 @@ export function buildEntitiesNamespace(
     listLinks(input) {
       return action("list_links", input);
     },
-    async search(query, options) {
-      const { search } = await import("../../tools/search");
+    search(query, options) {
       return search(
         { query, limit: options?.limit } as never,
         env,

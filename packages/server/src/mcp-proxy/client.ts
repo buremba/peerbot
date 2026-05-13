@@ -74,6 +74,9 @@ async function sendRequest(
   body: string,
   timeoutMs: number = FETCH_TIMEOUT_TOOL_MS
 ): Promise<JsonRpcResponse> {
+  // Re-validate on every outbound fetch — config may have been edited/imported
+  // after the creation-time probe, so "validated at write time" is not enough.
+  assertSafeUrl(upstreamUrl);
   const key = sessionKey(orgId, connectorKey);
   const mcpSessionId = sessions.get(key) ?? null;
   const headers = buildHeaders(credentials, mcpSessionId);
@@ -162,7 +165,11 @@ export async function discoverTools(
   config: McpProxyConfig,
   orgId: string
 ): Promise<DiscoveredTool[]> {
-  const cached = toolCache.get(connectorKey) ?? null;
+  // Key the cache by org too — two orgs can each define a connector with the
+  // same key but different upstream URLs / tool sets; sharing the cache leaks
+  // org A's tool catalog to org B.
+  const cacheKey = `${orgId}:${connectorKey}`;
+  const cached = toolCache.get(cacheKey) ?? null;
   if (cached) return cached;
 
   let credentials: ResolvedCredentials | null = null;
@@ -212,7 +219,7 @@ export async function discoverTools(
       upstreamUrl: config.upstream_url,
     }));
 
-    toolCache.set(connectorKey, tools);
+    toolCache.set(cacheKey, tools);
 
     logger.info(
       { connectorKey, toolCount: tools.length, prefix },

@@ -314,12 +314,40 @@ async function buildCustomCommands(
               cwd: hostCwd,
               env: envRecord as NodeJS.ProcessEnv,
               maxBuffer: 10 * 1024 * 1024,
+              // Hung binaries (credential prompts, stalled network reads,
+              // waiting on stdin) must not freeze the agent turn forever.
+              timeout: 120_000,
+              killSignal: "SIGKILL",
             },
             (error, stdout, stderr) => {
+              // A signal-killed child leaves error.code null/undefined and sets
+              // error.signal — that must NOT be reported as exit code 0.
+              const err = error as
+                | (NodeJS.ErrnoException & {
+                    signal?: NodeJS.Signals;
+                    killed?: boolean;
+                  })
+                | null;
+              let exitCode: number;
+              if (!err) {
+                exitCode = 0;
+              } else if (typeof err.code === "number") {
+                exitCode = err.code;
+              } else if (err.killed || err.signal) {
+                exitCode = 137;
+              } else {
+                exitCode = 1;
+              }
+              const timedOut =
+                !!err && (err.killed || err.signal === "SIGKILL");
               resolve({
                 stdout: stdout || "",
-                stderr: stderr || (error?.message ?? ""),
-                exitCode: error?.code ? Number(error.code) || 1 : 0,
+                stderr:
+                  stderr ||
+                  (timedOut
+                    ? `command timed out after 120s and was killed`
+                    : (err?.message ?? "")),
+                exitCode,
               });
             }
           );

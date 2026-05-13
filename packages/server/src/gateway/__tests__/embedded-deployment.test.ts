@@ -252,13 +252,19 @@ describe("EmbeddedDeploymentManager", () => {
       ).resolves.toBeUndefined();
     });
 
-    test("scaleDeployment on non-existent name does not crash", async () => {
+    test("scaleDeployment(name, 0) on non-existent name is a no-op", async () => {
       await expect(
         manager.scaleDeployment("nonexistent", 0)
       ).resolves.toBeUndefined();
+    });
+
+    test("scaleDeployment(name, 1) on non-existent name rejects so MessageConsumer can re-spawn", async () => {
+      // Silent no-op would strand the queued message forever (no worker, no
+      // error, no retry); BaseDeploymentManager.ensureDeployment catches this
+      // and falls through to spawn a fresh worker.
       await expect(
         manager.scaleDeployment("nonexistent", 1)
-      ).resolves.toBeUndefined();
+      ).rejects.toThrow(/not running/);
     });
 
     test("listDeployments returns empty when no workers exist", async () => {

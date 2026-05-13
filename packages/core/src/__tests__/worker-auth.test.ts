@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { __resetEncryptionKeyCacheForTests } from "../utils/encryption";
 import {
   generateWorkerToken,
   verifyWorkerToken,
@@ -21,6 +22,7 @@ describe("worker auth token", () => {
     }
     process.env.ENCRYPTION_KEY = TEST_KEY;
     delete process.env.WORKER_TOKEN_TTL_MS;
+    __resetEncryptionKeyCacheForTests();
   });
 
   afterEach(() => {
@@ -32,6 +34,7 @@ describe("worker auth token", () => {
         process.env[k] = v;
       }
     }
+    __resetEncryptionKeyCacheForTests();
   });
 
   test("generateWorkerToken returns a non-empty string", () => {
@@ -149,11 +152,13 @@ describe("worker auth token", () => {
   test("verifyWorkerToken returns null without ENCRYPTION_KEY", () => {
     const token = generateWorkerToken("u", "c", "d", { channelId: "ch" });
     delete process.env.ENCRYPTION_KEY;
+    __resetEncryptionKeyCacheForTests();
     expect(verifyWorkerToken(token)).toBeNull();
   });
 
   test("generateWorkerToken throws without ENCRYPTION_KEY", () => {
     delete process.env.ENCRYPTION_KEY;
+    __resetEncryptionKeyCacheForTests();
     expect(() =>
       generateWorkerToken("u", "c", "d", { channelId: "ch" })
     ).toThrow();
@@ -163,6 +168,7 @@ describe("worker auth token", () => {
     const token = generateWorkerToken("u", "c", "d", { channelId: "ch" });
     process.env.ENCRYPTION_KEY =
       "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
+    __resetEncryptionKeyCacheForTests();
     expect(verifyWorkerToken(token)).toBeNull();
   });
 });
@@ -178,6 +184,7 @@ describe("worker auth token: explicit expiry", () => {
     }
     process.env.ENCRYPTION_KEY = TEST_KEY;
     delete process.env.WORKER_TOKEN_TTL_MS;
+    __resetEncryptionKeyCacheForTests();
   });
 
   afterEach(() => {
@@ -189,6 +196,7 @@ describe("worker auth token: explicit expiry", () => {
         process.env[k] = v;
       }
     }
+    __resetEncryptionKeyCacheForTests();
   });
 
   test("token with ancient timestamp is rejected as expired", async () => {

@@ -191,12 +191,25 @@ export async function evalCommand(
         );
         process.exit(1);
       }
-      console.error(chalk.red(`\n  Eval "${def.name}" failed: ${msg}\n`));
+      console.error(chalk.red(`\n  Eval "${def.name}" crashed: ${msg}\n`));
+      // Record a synthetic failed result so the crash counts toward total/failed
+      // instead of silently disappearing from the report (false CI green).
+      results.push({
+        name: def.name,
+        passRate: 0,
+        avgScore: 0,
+        p50LatencyMs: 0,
+        totalTokens: {},
+        trials: [],
+        error: msg,
+      });
     }
   }
 
   // Build report
-  const passedEvals = results.filter((r) => r.passRate >= 0.8).length;
+  const passedEvals = results.filter(
+    (r) => r.passRate >= 0.8 && !r.error
+  ).length;
 
   const report: EvalReport = {
     agent: agentId,

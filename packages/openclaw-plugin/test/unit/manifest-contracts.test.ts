@@ -3,7 +3,6 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { KNOWN_MCP_TOOL_NAMES, LOGIN_TOOL_NAMES } from '../../src/index.js';
-import { MEMORY_WIKI_COMPAT_TOOL_NAMES } from '../../src/memory-wiki-compat.js';
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const manifest = JSON.parse(
@@ -15,7 +14,6 @@ const manifest = JSON.parse(
 const expectedTools = [
   ...LOGIN_TOOL_NAMES,
   ...[...KNOWN_MCP_TOOL_NAMES].map((name) => `lobu_${name}`),
-  ...MEMORY_WIKI_COMPAT_TOOL_NAMES,
 ];
 
 describe('openclaw.plugin.json contracts.tools', () => {

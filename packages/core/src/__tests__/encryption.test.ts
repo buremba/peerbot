@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { decrypt, encrypt } from "../utils/encryption";
+import {
+  __resetEncryptionKeyCacheForTests,
+  decrypt,
+  encrypt,
+} from "../utils/encryption";
 
 describe("encryption", () => {
   let originalKey: string | undefined;
@@ -9,6 +13,7 @@ describe("encryption", () => {
     // 32-byte hex key
     process.env.ENCRYPTION_KEY =
       "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    __resetEncryptionKeyCacheForTests();
   });
 
   afterEach(() => {
@@ -17,6 +22,7 @@ describe("encryption", () => {
     } else {
       delete process.env.ENCRYPTION_KEY;
     }
+    __resetEncryptionKeyCacheForTests();
   });
 
   test("encrypt/decrypt round-trip preserves plaintext", () => {

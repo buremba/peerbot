@@ -19,6 +19,9 @@
 		B1000000000000000000000B /* LocalDirectorySyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000B /* LocalDirectorySyncService.swift */; };
 		B1000000000000000000000C /* LocalLobuRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000C /* LocalLobuRunner.swift */; };
 		B1000000000000000000000D /* HealthKitSyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000D /* HealthKitSyncService.swift */; };
+		B1000000000000000000000E /* WhatsAppLocalSyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000E /* WhatsAppLocalSyncService.swift */; };
+		B1000000000000000000000F /* LobuUpdater.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000F /* LobuUpdater.swift */; };
+		B93000000000000000000001 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = B92000000000000000000001 /* Sparkle */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -33,6 +36,8 @@
 		B2000000000000000000000B /* LocalDirectorySyncService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalDirectorySyncService.swift; sourceTree = "<group>"; };
 		B2000000000000000000000C /* LocalLobuRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalLobuRunner.swift; sourceTree = "<group>"; };
 		B2000000000000000000000D /* HealthKitSyncService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthKitSyncService.swift; sourceTree = "<group>"; };
+		B2000000000000000000000E /* WhatsAppLocalSyncService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhatsAppLocalSyncService.swift; sourceTree = "<group>"; };
+		B2000000000000000000000F /* LobuUpdater.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LobuUpdater.swift; sourceTree = "<group>"; };
 		B20000000000000000000010 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		B20000000000000000000011 /* Lobu.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Lobu.entitlements; sourceTree = "<group>"; };
 		B2000000000000000000000A /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -44,6 +49,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				B93000000000000000000001 /* Sparkle in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -72,6 +78,8 @@
 				B2000000000000000000000B /* LocalDirectorySyncService.swift */,
 				B2000000000000000000000C /* LocalLobuRunner.swift */,
 				B2000000000000000000000D /* HealthKitSyncService.swift */,
+				B2000000000000000000000E /* WhatsAppLocalSyncService.swift */,
+				B2000000000000000000000F /* LobuUpdater.swift */,
 				B2000000000000000000000A /* Assets.xcassets */,
 				B20000000000000000000010 /* Info.plist */,
 				B20000000000000000000011 /* Lobu.entitlements */,
@@ -103,6 +111,9 @@
 			dependencies = (
 			);
 			name = Lobu;
+			packageProductDependencies = (
+				B92000000000000000000001 /* Sparkle */,
+			);
 			productName = Lobu;
 			productReference = B20000000000000000000012 /* Lobu.app */;
 			productType = "com.apple.product-type.application";
@@ -131,6 +142,9 @@
 				Base,
 			);
 			mainGroup = B40000000000000000000001;
+			packageReferences = (
+				B91000000000000000000001 /* XCRemoteSwiftPackageReference "Sparkle" */,
+			);
 			productRefGroup = B40000000000000000000003 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -139,6 +153,25 @@
 			);
 		};
 /* End PBXProject section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		B91000000000000000000001 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sparkle-project/Sparkle";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.6.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		B92000000000000000000001 /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B91000000000000000000001 /* XCRemoteSwiftPackageReference "Sparkle" */;
+			productName = Sparkle;
+		};
+/* End XCSwiftPackageProductDependency section */
 
 /* Begin PBXResourcesBuildPhase section */
 		B80000000000000000000001 /* Resources */ = {
@@ -167,6 +200,8 @@
 				B1000000000000000000000B /* LocalDirectorySyncService.swift in Sources */,
 				B1000000000000000000000C /* LocalLobuRunner.swift in Sources */,
 				B1000000000000000000000D /* HealthKitSyncService.swift in Sources */,
+				B1000000000000000000000E /* WhatsAppLocalSyncService.swift in Sources */,
+				B1000000000000000000000F /* LobuUpdater.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

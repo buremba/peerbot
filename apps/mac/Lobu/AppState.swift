@@ -13,6 +13,7 @@ struct RecentJob: Codable {
         case "apple.screen_time": return "Screen Time"
         case "local.directory":   return "Local folder"
         case "apple.health":      return "Apple Health"
+        case "whatsapp.local":    return "WhatsApp (this Mac)"
         default:                  return connectorKey
         }
     }
@@ -78,6 +79,19 @@ final class AppState: ObservableObject {
     @Published var lastPollDate: Date?
     @Published var lastPollSuccess: Bool = true
     @Published var recentJobs: [RecentJob] = []
+    @Published var notifications: [LobuNotification] = []
+    @Published var unreadCount: Int = 0
+    @Published var recentRuns: [LobuRun] = []
+    @Published var connections: [LobuConnection] = []
+    @Published var searchQuery: String = ""
+    @Published var searchResults: [LobuSearchHit] = []
+    @Published var isSearching: Bool = false
+    private var searchTask: Task<Void, Never>?
+    @Published var latestVersion: String?
+    @Published var updateAvailable: Bool = false
+    @Published var syncPaused: Bool = UserDefaults.standard.bool(forKey: "lobu.syncPaused") {
+        didSet { UserDefaults.standard.set(syncPaused, forKey: "lobu.syncPaused") }
+    }
 
     // Integrations state
     @Published var hasFDA: Bool = false
@@ -127,7 +141,24 @@ final class AppState: ObservableObject {
         } else {
             startAutoPollIfSignedIn()
         }
+        // Mirror Sparkle's observable state so MenuBarContent only depends on
+        // AppState. The updater itself owns scheduling + the actual update flow.
+        updater.$updateAvailable
+            .receive(on: DispatchQueue.main)
+            .assign(to: \.updateAvailable, on: self)
+            .store(in: &updaterCancellables)
+        updater.$latestVersion
+            .receive(on: DispatchQueue.main)
+            .assign(to: \.latestVersion, on: self)
+            .store(in: &updaterCancellables)
     }
+
+    private let updater = LobuUpdater.shared
+    private var updaterCancellables = Set<AnyCancellable>()
+
+    /// Triggered by the "Update to vX.Y.Z" menu row — hands off to Sparkle's
+    /// standard user driver (download, EdDSA-verify, relaunch).
+    func triggerUpdateCheck() { updater.checkForUpdates() }
 
     var displayName: String {
         credentials?.displayName ?? "Not signed in"
@@ -135,9 +166,8 @@ final class AppState: ObservableObject {
 
     var activeOrgName: String? {
         guard let info = credentials?.userInfo else { return nil }
-        let slug = info.organization_slug
-        guard let chosenSlug = slug, !chosenSlug.isEmpty else {
-            return info.organizations.first?.name
+        guard let chosenSlug = info.organization_slug, !chosenSlug.isEmpty else {
+            return nil
         }
         if let match = info.organizations.first(where: { $0.slug == chosenSlug }) {
             return match.name
@@ -171,6 +201,7 @@ final class AppState: ObservableObject {
 
     var connectionStatusLabel: String {
         guard credentials != nil else { return "Sign in to connect" }
+        if syncPaused { return "Paused" }
         guard let lastPoll = lastPollDate else { return "Connecting…" }
         if !lastPollSuccess { return "Sync failed — see details" }
         let secs = Int(-lastPoll.timeIntervalSinceNow)
@@ -190,6 +221,10 @@ final class AppState: ObservableObject {
         if hasFDA { caps["screentime"] = true }
         if !localFolderBookmarks.isEmpty { caps["local_directory"] = true }
         if hasHealthKit && healthKitAvailable { caps["healthkit"] = true }
+        // Reading another app's Group Container requires Full Disk Access — the
+        // same TCC grant Screen Time already needs. Gate the capability so the
+        // worker doesn't claim runs it will only fail with a permission error.
+        if hasFDA && WhatsAppLocalSyncService.isAvailable() { caps["whatsapp_local"] = true }
         return caps
     }
 
@@ -233,7 +268,7 @@ final class AppState: ObservableObject {
                     try credentialStore.save(saved)
                     credentials = saved
                     loginCode = nil
-                    setStatus("Signed in.")
+                    setStatus("")
                     startAutoPollIfSignedIn()
                     return
                 }
@@ -252,7 +287,7 @@ final class AppState: ObservableObject {
         lastPollDate = nil
         lastPollSuccess = true
         if serverMode == .local { stopLocalLobu() }
-        setStatus("Signed out.")
+        setStatus("")
     }
 
     // MARK: - Connect (mode-aware sign-in) --------------------------------------
@@ -325,8 +360,17 @@ final class AppState: ObservableObject {
 
     // MARK: - Auto-poll ---------------------------------------------------------
 
+    func togglePauseSync() {
+        syncPaused.toggle()
+        if syncPaused {
+            stopAutoPoll()
+        } else {
+            startAutoPollIfSignedIn()
+        }
+    }
+
     private func startAutoPollIfSignedIn() {
-        guard credentials != nil, pollTimer == nil else { return }
+        guard credentials != nil, !syncPaused, pollTimer == nil else { return }
         pollTimer = Timer.scheduledTimer(withTimeInterval: Self.autoPollInterval, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self, !self.isSyncing else { return }
@@ -352,7 +396,7 @@ final class AppState: ObservableObject {
     private static let maxJobsPerPass = 25
 
     func syncNow() async {
-        guard !isSyncing else { return }
+        guard !isSyncing, !syncPaused else { return }
         isSyncing = true
         defer { isSyncing = false }
         refreshFDAStatus()
@@ -389,12 +433,94 @@ final class AppState: ObservableObject {
                         : "Synced \(handled) jobs (last: \(lastJob.displayLabel))."
                 )
             } else {
-                setStatus("Connected. Waiting for sync jobs.")
+                setStatus("")
             }
+            await refreshNotifications()
         } catch {
             lastPollDate = Date()
             lastPollSuccess = false
             setStatus(error.localizedDescription)
+        }
+    }
+
+    // MARK: - Notifications -----------------------------------------------------
+
+    /// Pulls the user's recent notifications, recent agent runs, and the
+    /// connector health list from the org-scoped REST API. Silently no-ops when
+    /// we don't yet know the org slug (e.g. the token wasn't issued with
+    /// `mcp:read` so /userinfo has no organization).
+    func refreshNotifications() async {
+        guard let credentials, let info = credentials.userInfo,
+              let slug = info.organization_slug, !slug.isEmpty else { return }
+        let client = WorkerClient(baseURL: credentials.baseURL, accessToken: credentials.accessToken)
+        do {
+            async let listTask = client.listNotifications(orgSlug: slug, limit: 10)
+            async let countTask = client.getUnreadCount(orgSlug: slug)
+            async let runsTask = client.listRuns(orgSlug: slug, limit: 8)
+            async let connectionsTask = client.listConnections(orgSlug: slug)
+            let (list, count, runs, conns) = try await (listTask, countTask, runsTask, connectionsTask)
+            notifications = list.notifications
+            unreadCount = count
+            recentRuns = runs.runs
+            connections = conns.connections
+        } catch {
+            NSLog("[Lobu] feed fetch failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Debounced search. Cancels any in-flight task and schedules a new one
+    /// after 300ms. Clears results when the query is empty.
+    func updateSearch(_ query: String) {
+        searchQuery = query
+        searchTask?.cancel()
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            searchResults = []
+            isSearching = false
+            return
+        }
+        guard let credentials, let info = credentials.userInfo,
+              let slug = info.organization_slug, !slug.isEmpty else { return }
+        let client = WorkerClient(baseURL: credentials.baseURL, accessToken: credentials.accessToken)
+        searchTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(300))
+            if Task.isCancelled { return }
+            self?.isSearching = true
+            do {
+                let response = try await client.searchKnowledge(orgSlug: slug, query: trimmed, limit: 5)
+                if Task.isCancelled { return }
+                self?.searchResults = response.items
+            } catch {
+                NSLog("[Lobu] search failed: \(error.localizedDescription)")
+                if !Task.isCancelled { self?.searchResults = [] }
+            }
+            self?.isSearching = false
+        }
+    }
+
+    /// Returns the most recent server-side run for a given connector_key, used
+    /// for the green/red health dot on integration rows.
+    func lastRunStatus(forConnectorKey key: String) -> String? {
+        recentRuns.first(where: { $0.connector_key == key })?.status
+    }
+
+    /// Returns the most recent server-side connection status for a connector,
+    /// used as the fallback when no runs have happened yet.
+    func connectionStatus(forConnectorKey key: String) -> String? {
+        connections.first(where: { $0.connector_key == key })?.status
+    }
+
+    func markNotificationRead(_ notification: LobuNotification) async {
+        guard let credentials, let info = credentials.userInfo,
+              let slug = info.organization_slug, !slug.isEmpty else { return }
+        let client = WorkerClient(baseURL: credentials.baseURL, accessToken: credentials.accessToken)
+        // Optimistic update so the badge clears immediately.
+        if let idx = notifications.firstIndex(where: { $0.id == notification.id }), !notifications[idx].is_read {
+            unreadCount = max(0, unreadCount - 1)
+        }
+        do { try await client.markNotificationRead(orgSlug: slug, id: notification.id) } catch {
+            NSLog("[Lobu] markRead failed: \(error.localizedDescription)")
+            await refreshNotifications()
         }
     }
 
@@ -561,6 +687,10 @@ enum SyncDispatcher {
                 checkpoint = out.checkpoint
             case "apple.health":
                 let out = try await HealthKitSyncService.runHealth(job: job)
+                items = out.items
+                checkpoint = out.checkpoint
+            case "whatsapp.local":
+                let out = try WhatsAppLocalSyncService.runWhatsAppLocal(job: job)
                 items = out.items
                 checkpoint = out.checkpoint
             default:

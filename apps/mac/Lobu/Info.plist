@@ -39,5 +39,15 @@
 	<string>Lobu needs read access to your home folder to read the Screen Time database at ~/Library/Application Support/Knowledge/knowledgeC.db.</string>
 	<key>NSHealthShareUsageDescription</key>
 	<string>Lobu reads your Apple Health activity (steps, distance, active energy, workouts, resting heart rate) so you can query and search it from your Lobu workspace.</string>
+	<key>SUFeedURL</key>
+	<string>https://lobu-ai.github.io/lobu/appcast.xml</string>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUEnableInstallerLauncherService</key>
+	<true/>
+	<key>SUAutomaticallyUpdate</key>
+	<true/>
+	<key>SUPublicEDKey</key>
+	<string>mhwdq5zv5btlyfJFC/fKAB71fTE96/HUbhJgUMW3/qw=</string>
 </dict>
 </plist>

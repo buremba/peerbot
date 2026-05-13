@@ -17,12 +17,20 @@ struct LobuApp: App {
             //
             // Dimmed until the user signs in, so the menu bar gives a quiet
             // "nothing connected yet" cue without an extra badge.
-            Image("MenuBarIcon")
-                .renderingMode(.template)
-                .opacity(state.credentials == nil ? 0.4 : 1)
-                .accessibilityLabel(
-                    state.credentials == nil ? "Lobu — not signed in" : "Lobu"
-                )
+            HStack(spacing: 2) {
+                Image("MenuBarIcon")
+                    .renderingMode(.template)
+                    .opacity(state.credentials == nil ? 0.4 : 1)
+                if state.unreadCount > 0 {
+                    Text("\(state.unreadCount)")
+                        .font(.system(size: 10, weight: .semibold))
+                }
+            }
+            .accessibilityLabel(
+                state.credentials == nil ? "Lobu — not signed in"
+                : state.unreadCount > 0 ? "Lobu — \(state.unreadCount) unread"
+                : "Lobu"
+            )
         }
         .menuBarExtraStyle(.window)
     }

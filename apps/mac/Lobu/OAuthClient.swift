@@ -51,6 +51,7 @@ struct OAuthUserInfo: Codable, Equatable {
     let sub: String
     let email: String
     let name: String?
+    let picture: String?
     let organization_slug: String?
     let organizations: [Organization]
 }
@@ -85,7 +86,7 @@ enum OAuthClientError: LocalizedError {
 }
 
 final class OAuthClient {
-    static let scope = "device_worker:run profile:read"
+    static let scope = "device_worker:run profile:read mcp:read"
 
     private let baseURL: URL
     private let session: URLSession

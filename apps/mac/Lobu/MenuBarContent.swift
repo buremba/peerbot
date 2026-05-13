@@ -1,43 +1,55 @@
 import AppKit
 import SwiftUI
 
-/// The popover shown when the user clicks the menu bar icon.
-/// Layout (top → bottom):
-///   1. Status line
-///   2. Recent jobs (last 3–5)
-///   3. Integrations section (Screen Time + Local folders)
-///   4. Account (name, Open Lobu, Sign out)
-///   5. Quit
-///
-/// The menu-bar glyph already identifies the app, so the popover skips a
-/// redundant logo/title header and opens straight at the status line.
+/// The popover shown when the user clicks the menu bar icon. Layout (top → bottom):
+///   1. Header — "Lobu" title with sync toggle, status line below
+///   2. User row — avatar + name + email (signed in only)
+///   3. Search bar — small TextField; results take over the body when active
+///   4. Inbox — unread + recent notifications
+///   5. Recent runs — agent runs across the org
+///   6. Sign-in section — only when signed out
+///   7. Integrations — collapsible disclosure (with per-row health dots)
+///   8. Footer — Open Lobu / Sign out / Quit / Updates
 struct MenuBarContent: View {
     @ObservedObject var state: AppState
+    @State private var integrationsExpanded = false
+    @State private var accountExpanded = false
+    @FocusState private var searchFocused: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            statusRow
-            if !state.status.isEmpty {
-                statusMessageRow
-            }
+        VStack(alignment: .leading, spacing: 0) {
+            header
+            sectionDivider
+
             if state.credentials == nil {
                 signInSection
             } else {
-                if !state.recentJobs.isEmpty {
+                userRow
+                sectionDivider
+                searchBar
+                if !state.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     sectionDivider
-                    recentJobsSection
+                    searchResultsSection
+                } else {
+                    if !state.notifications.isEmpty {
+                        sectionDivider
+                        notificationsSection
+                    }
+                    if !state.recentRuns.isEmpty {
+                        sectionDivider
+                        recentRunsSection
+                    }
+                    sectionDivider
+                    integrationsDisclosure
                 }
-                sectionDivider
-                integrationsSection
-                sectionDivider
-                accountSection
             }
+
             sectionDivider
             footerRow
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 8)
-        .frame(width: 320)
+        .frame(width: 340)
     }
 
     private var sectionDivider: some View {
@@ -45,52 +57,358 @@ struct MenuBarContent: View {
     }
 
     // -------------------------------------------------------------------------
-    // MARK: 1. Status line
+    // MARK: 1. Header
     // -------------------------------------------------------------------------
 
-    private var statusRow: some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(statusColor)
-                .frame(width: 7, height: 7)
-            Text(state.connectionStatusLabel)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Spacer()
-            if state.isSyncing {
-                ProgressView().controlSize(.mini)
-            } else if state.credentials != nil {
-                Button("Sync now") { Task { await state.syncNow() } }
-                    .buttonStyle(.plain)
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text("Lobu")
+                    .font(.headline)
+                Spacer()
+                if state.credentials != nil {
+                    Toggle("", isOn: Binding(
+                        get: { !state.syncPaused },
+                        set: { _ in state.togglePauseSync() }
+                    ))
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                }
+            }
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(statusColor)
+                    .frame(width: 6, height: 6)
+                Text(state.connectionStatusLabel)
                     .font(.caption)
-                    .disabled(state.isSyncing)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if state.isSyncing {
+                    ProgressView().controlSize(.mini)
+                } else if state.credentials != nil && !state.syncPaused {
+                    Button("Sync now") { Task { await state.syncNow() } }
+                        .buttonStyle(.plain)
+                        .font(.caption)
+                        .disabled(state.isSyncing)
+                }
+            }
+            if !state.status.isEmpty {
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: state.lastPollSuccess ? "info.circle" : "exclamationmark.triangle.fill")
+                        .font(.caption2)
+                        .foregroundStyle(state.lastPollSuccess ? Color.secondary : Color.orange)
+                        .frame(width: 12)
+                    Text(state.status)
+                        .font(.caption2)
+                        .foregroundStyle(state.lastPollSuccess ? Color.secondary : Color.primary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.top, 2)
             }
         }
-        .menuRow()
-    }
-
-    private var statusMessageRow: some View {
-        HStack(alignment: .top, spacing: 6) {
-            Image(systemName: state.lastPollSuccess ? "info.circle" : "exclamationmark.triangle.fill")
-                .font(.caption2)
-                .foregroundStyle(state.lastPollSuccess ? Color.secondary : Color.orange)
-                .frame(width: 12)
-            Text(state.status)
-                .font(.caption2)
-                .foregroundStyle(state.lastPollSuccess ? Color.secondary : Color.primary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .menuRow(interactive: false)
+        .padding(.horizontal, 6)
+        .padding(.top, 2)
     }
 
     private var statusColor: Color {
         guard state.credentials != nil else { return .gray }
+        if state.syncPaused { return .gray }
         guard state.lastPollDate != nil else { return .yellow }
         return state.lastPollSuccess ? .green : .red
     }
 
     // -------------------------------------------------------------------------
-    // MARK: Sign-in section (when not signed in)
+    // MARK: 2. User row
+    // -------------------------------------------------------------------------
+
+    private var userRow: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) { accountExpanded.toggle() }
+            } label: {
+                HStack(spacing: 10) {
+                    avatar
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(state.displayName).font(.callout).fontWeight(.medium)
+                        if let email = state.credentials?.userInfo?.email, email != state.displayName {
+                            Text(email).font(.caption2).foregroundStyle(.secondary)
+                        }
+                        if let orgName = state.activeOrgName {
+                            Text(orgName).font(.caption2).foregroundStyle(.secondary)
+                        }
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(accountExpanded ? 90 : 0))
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .modifier(NativeRowHover())
+            if accountExpanded {
+                nativeMenuRow(title: "Sign out") { state.signOut() }
+                    .padding(.leading, 36)
+            }
+        }
+    }
+
+    private var avatar: some View {
+        let initials = state.displayName.split(separator: " ").prefix(2)
+            .compactMap { $0.first }.map { String($0) }.joined().uppercased()
+        let url = state.credentials?.userInfo?.picture.flatMap { URL(string: $0) }
+        return ZStack {
+            Circle().fill(Color.secondary.opacity(0.2))
+            if let url {
+                AsyncImage(url: url) { phase in
+                    if let image = phase.image {
+                        image.resizable().scaledToFill()
+                    } else {
+                        Text(initials.isEmpty ? "?" : initials)
+                            .font(.caption2).fontWeight(.semibold)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .clipShape(Circle())
+            } else {
+                Text(initials.isEmpty ? "?" : initials)
+                    .font(.caption2).fontWeight(.semibold)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: 32, height: 32)
+    }
+
+    // -------------------------------------------------------------------------
+    // MARK: Search
+    // -------------------------------------------------------------------------
+
+    private var searchBar: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            TextField("Search Lobu memory…", text: Binding(
+                get: { state.searchQuery },
+                set: { state.updateSearch($0) }
+            ))
+            .textFieldStyle(.plain)
+            .font(.caption)
+            .focused($searchFocused)
+            if !state.searchQuery.isEmpty {
+                Button { state.updateSearch("") } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+                .buttonStyle(.plain)
+            }
+            if state.isSearching {
+                ProgressView().controlSize(.mini)
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(Color.secondary.opacity(0.12))
+        )
+        .padding(.horizontal, 6)
+    }
+
+    private var searchResultsSection: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            sectionLabel("Results")
+            if state.searchResults.isEmpty && !state.isSearching {
+                Text("No matches.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .menuRow(interactive: false)
+            }
+            ForEach(state.searchResults) { hit in
+                Button {
+                    if let urlString = hit.url, let url = URL(string: urlString) {
+                        NSWorkspace.shared.open(url)
+                    }
+                } label: {
+                    VStack(alignment: .leading, spacing: 1) {
+                        if let title = hit.title, !title.isEmpty {
+                            Text(title).font(.caption).fontWeight(.medium).lineLimit(1)
+                        }
+                        if let snippet = hit.snippet, !snippet.isEmpty {
+                            Text(snippet).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+                        }
+                        if let entity = hit.entity_name {
+                            Text(entity).font(.caption2).foregroundStyle(.tertiary)
+                        }
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .menuRow()
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // MARK: Notifications
+    // -------------------------------------------------------------------------
+
+    private var notificationsSection: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 6) {
+                Text("INBOX")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .fontWeight(.semibold)
+                    .tracking(0.4)
+                if state.unreadCount > 0 {
+                    Text("\(state.unreadCount)")
+                        .font(.caption2)
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(Capsule().fill(Color.red))
+                }
+                Spacer()
+            }
+            .padding(.horizontal, 6)
+            .padding(.bottom, 1)
+            ForEach(state.notifications.prefix(5)) { notification in
+                Button { handleNotificationTap(notification) } label: {
+                    HStack(alignment: .top, spacing: 8) {
+                        Circle()
+                            .fill(notification.is_read ? Color.clear : Color.accentColor)
+                            .frame(width: 6, height: 6)
+                            .padding(.top, 5)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(notification.title)
+                                .font(.caption)
+                                .fontWeight(notification.is_read ? .regular : .medium)
+                                .lineLimit(1)
+                            if let body = notification.body, !body.isEmpty {
+                                Text(body)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                            }
+                        }
+                        Spacer()
+                        Text(relativeTime(notification.created_at))
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .menuRow()
+            }
+        }
+    }
+
+    private func handleNotificationTap(_ notification: LobuNotification) {
+        Task { await state.markNotificationRead(notification) }
+        if let urlString = notification.resource_url, let url = URL(string: urlString) {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    private static let iso8601: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+
+    private static let iso8601NoFraction: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        return f
+    }()
+
+    private func relativeTime(_ iso: String) -> String {
+        let date = Self.iso8601.date(from: iso) ?? Self.iso8601NoFraction.date(from: iso)
+        guard let date else { return "" }
+        let secs = Int(-date.timeIntervalSinceNow)
+        if secs < 60 { return "\(secs)s" }
+        let mins = secs / 60
+        if mins < 60 { return "\(mins)m" }
+        let hrs = mins / 60
+        if hrs < 24 { return "\(hrs)h" }
+        return "\(hrs / 24)d"
+    }
+
+    // -------------------------------------------------------------------------
+    // MARK: 3. Recent agent runs (org-wide)
+    // -------------------------------------------------------------------------
+
+    private var recentRunsSection: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            sectionLabel("Recent activity")
+            ForEach(state.recentRuns.prefix(5)) { run in
+                Button { openRun(run) } label: {
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(runStatusColor(run.status))
+                            .frame(width: 6, height: 6)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(runDisplayLabel(run)).font(.caption).lineLimit(1)
+                            if let err = run.error_message, !err.isEmpty {
+                                Text(err)
+                                    .font(.caption2)
+                                    .foregroundStyle(.orange)
+                                    .lineLimit(1)
+                            }
+                        }
+                        Spacer()
+                        if let ts = run.completed_at ?? run.created_at {
+                            Text(relativeTime(ts))
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .menuRow()
+            }
+        }
+    }
+
+    private func runDisplayLabel(_ run: LobuRun) -> String {
+        if let op = run.operation_key, !op.isEmpty {
+            if let conn = run.connector_key, !conn.isEmpty { return "\(conn) · \(op)" }
+            return op
+        }
+        return run.connector_key ?? "run #\(run.id)"
+    }
+
+    private func runStatusColor(_ status: String?) -> Color {
+        switch status {
+        case "completed", "success": return .green
+        case "failed", "error":      return .red
+        case "running":              return .yellow
+        case "pending":              return .gray
+        default:                     return .secondary
+        }
+    }
+
+    private func openRun(_ run: LobuRun) {
+        guard let slug = state.credentials?.userInfo?.organization_slug, !slug.isEmpty else { return }
+        var base = state.baseURL
+        while base.hasSuffix("/") { base.removeLast() }
+        if let url = URL(string: "\(base)/\(slug)/runs/\(run.id)") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // MARK: 4. Sign-in
     // -------------------------------------------------------------------------
 
     private var signInSection: some View {
@@ -114,10 +432,12 @@ struct MenuBarContent: View {
                 .padding(.horizontal, 6)
 
             Button(connectButtonTitle) { Task { await state.connect() } }
-                .buttonStyle(.plain)
-                .font(.caption)
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .frame(maxWidth: .infinity)
                 .disabled(connectDisabled)
-                .menuRow()
+                .padding(.horizontal, 6)
+                .padding(.top, 2)
 
             if let code = state.loginCode {
                 HStack {
@@ -154,10 +474,6 @@ struct MenuBarContent: View {
             }
         case .local:
             VStack(alignment: .leading, spacing: 3) {
-                Text("Starts `lobu run` at ~/lobu — local PGlite, no Docker or setup.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
                 switch state.localLobuStatus {
                 case .cliMissing:
                     Text("Install the Lobu CLI first: npm i -g @lobu/cli")
@@ -205,52 +521,61 @@ struct MenuBarContent: View {
     }
 
     // -------------------------------------------------------------------------
-    // MARK: 2. Recent jobs
+    // MARK: 5. Integrations (collapsible)
     // -------------------------------------------------------------------------
 
-    private var recentJobsSection: some View {
+    private var integrationsDisclosure: some View {
         VStack(alignment: .leading, spacing: 2) {
-            sectionLabel("Recent jobs")
-            ForEach(Array(state.recentJobs.prefix(5).enumerated()), id: \.offset) { _, job in
-                Button {
-                    if let url = state.recentJobURL(job) { NSWorkspace.shared.open(url) }
-                } label: {
-                    HStack(spacing: 0) {
-                        Text(job.displayLabel).font(.caption)
-                        Text(" · \(job.itemsStreamed) items")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Text(job.timeAgoString)
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                        Image(systemName: "chevron.right")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                            .padding(.leading, 4)
-                    }
-                }
-                .buttonStyle(.plain)
-                .menuRow()
+            disclosureHeader(title: "Integrations", expanded: $integrationsExpanded)
+            if integrationsExpanded {
+                screenTimeRow
+                localFolderRows
+                healthKitRow
+                whatsAppLocalRow
             }
         }
     }
 
-    // -------------------------------------------------------------------------
-    // MARK: 3. Integrations
-    // -------------------------------------------------------------------------
-
-    private var integrationsSection: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            sectionLabel("Integrations")
-            screenTimeRow
-            localFolderRows
-            healthKitRow
+    private var whatsAppLocalRow: some View {
+        HStack(spacing: 8) {
+            connectorHealthDot(forKey: "whatsapp.local")
+            Image(systemName: "message.fill")
+                .foregroundStyle(.green)
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("WhatsApp").font(.caption)
+                if !WhatsAppLocalSyncService.isAvailable() {
+                    Text("Install WhatsApp Desktop to enable.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                } else if !state.hasFDA {
+                    Text("Reads from WhatsApp Desktop. Needs Full Disk Access.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                } else {
+                    Text("Reads messages directly from WhatsApp Desktop.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+            if !WhatsAppLocalSyncService.isAvailable() {
+                Text("Not installed").font(.caption).foregroundStyle(.secondary)
+            } else if state.hasFDA {
+                Label("Granted", systemImage: "checkmark.circle.fill")
+                    .labelStyle(.iconOnly)
+                    .foregroundStyle(.green)
+                    .font(.caption)
+            } else {
+                Label("FDA needed", systemImage: "exclamationmark.triangle.fill")
+                    .labelStyle(.iconOnly)
+                    .foregroundStyle(.orange)
+                    .font(.caption)
+            }
         }
+        .menuRow()
     }
 
     private var healthKitRow: some View {
         HStack(spacing: 8) {
+            connectorHealthDot(forKey: "apple.health")
             Image(systemName: "heart.fill")
                 .foregroundStyle(.pink)
                 .frame(width: 18)
@@ -283,6 +608,7 @@ struct MenuBarContent: View {
     private var screenTimeRow: some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 8) {
+                connectorHealthDot(forKey: "apple.screen_time")
                 Image(systemName: "clock.fill")
                     .foregroundStyle(.purple)
                     .frame(width: 18)
@@ -323,6 +649,7 @@ struct MenuBarContent: View {
     private var localFolderRows: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 8) {
+                connectorHealthDot(forKey: "local.directory")
                 Image(systemName: "folder.fill")
                     .foregroundStyle(.blue)
                     .frame(width: 18)
@@ -367,62 +694,10 @@ struct MenuBarContent: View {
     }
 
     // -------------------------------------------------------------------------
-    // MARK: 4. Account
+    // MARK: 6. Footer
     // -------------------------------------------------------------------------
 
-    private var accountSection: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            sectionLabel("Account")
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Signed in as \(state.displayName)").font(.caption)
-                    if let orgName = state.activeOrgName {
-                        Text(orgName).font(.caption2).foregroundStyle(.secondary)
-                    }
-                }
-                Spacer()
-            }
-            .menuRow(interactive: false)
-            if state.serverMode == .local {
-                HStack(spacing: 8) {
-                    Text("Local Lobu").font(.caption2).foregroundStyle(.secondary)
-                    Spacer()
-                    switch state.localLobuStatus {
-                    case .running:
-                        Text("running").font(.caption2).foregroundStyle(.secondary)
-                        Button("Stop") { state.stopLocalLobu() }.buttonStyle(.plain).font(.caption2)
-                    case .starting:
-                        ProgressView().controlSize(.mini)
-                    default:
-                        Text("stopped").font(.caption2).foregroundStyle(.secondary)
-                        Button("Start") { Task { await state.startLocalLobu() } }
-                            .buttonStyle(.plain).font(.caption2)
-                    }
-                }
-                .menuRow(interactive: false)
-            }
-            HStack(spacing: 10) {
-                Button("Open Lobu \u{2197}") {
-                    if let url = URL(string: state.baseURL) { NSWorkspace.shared.open(url) }
-                }
-                .buttonStyle(.plain)
-                .font(.caption)
-                Spacer()
-                Button("Sign out", role: .destructive) { state.signOut() }
-                    .buttonStyle(.plain)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-            }
-            .menuRow()
-        }
-    }
-
-    // -------------------------------------------------------------------------
-    // MARK: Footer
-    // -------------------------------------------------------------------------
-
-    /// Where new builds are published by the `mac-release` CI job (one DMG per
-    /// Lobu release). "Check for updates" just opens this page.
+    /// Where new builds are published by the `mac-release` CI job.
     private static let releasesURL = URL(string: "https://github.com/lobu-ai/lobu/releases/latest")!
 
     private var appVersion: String {
@@ -431,30 +706,116 @@ struct MenuBarContent: View {
     }
 
     private var footerRow: some View {
-        HStack(spacing: 10) {
-            Button("Quit Lobu") {
+        VStack(alignment: .leading, spacing: 0) {
+            if state.credentials != nil {
+                nativeMenuRow(
+                    title: "Open Lobu",
+                    accessory: .externalLink,
+                    shortcut: "⌘O"
+                ) {
+                    if let url = URL(string: state.baseURL) { NSWorkspace.shared.open(url) }
+                }
+                .keyboardShortcut("o", modifiers: .command)
+            }
+            nativeMenuRow(title: "Quit Lobu", shortcut: "⌘Q") {
                 state.stopLocalLobu()
                 NSApplication.shared.terminate(nil)
             }
-                .buttonStyle(.plain)
-                .font(.caption)
-            Button("Check for Updates \u{2197}") {
-                NSWorkspace.shared.open(Self.releasesURL)
-            }
-                .buttonStyle(.plain)
-                .font(.caption)
-            Spacer()
-            Text(appVersion)
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-                .lineLimit(1)
+            .keyboardShortcut("q", modifiers: .command)
+            updateStatusRow
         }
-        .menuRow()
+    }
+
+    @ViewBuilder
+    private var updateStatusRow: some View {
+        if state.updateAvailable, let latest = state.latestVersion {
+            nativeMenuRow(title: "Update to v\(latest)") {
+                state.triggerUpdateCheck()
+            }
+        } else {
+            HStack(spacing: 6) {
+                Text(appVersion.isEmpty ? "—" : appVersion)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Text("·")
+                    .font(.callout)
+                    .foregroundStyle(.tertiary)
+                Text(state.latestVersion == nil ? "Checking…" : "Up to date")
+                    .font(.callout)
+                    .foregroundStyle(.tertiary)
+                Spacer()
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private enum RowAccessory { case none, externalLink, chevron }
+
+    @ViewBuilder
+    private func nativeMenuRow(
+        title: String,
+        titleColor: Color = .primary,
+        accessory: RowAccessory = .none,
+        shortcut: String? = nil,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Text(title)
+                    .font(.callout)
+                    .foregroundStyle(titleColor)
+                switch accessory {
+                case .externalLink:
+                    Image(systemName: "arrow.up.right")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                case .chevron:
+                    Image(systemName: "chevron.right")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                case .none:
+                    EmptyView()
+                }
+                Spacer()
+                if let shortcut {
+                    Text(shortcut)
+                        .font(.callout)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .modifier(NativeRowHover())
     }
 
     // -------------------------------------------------------------------------
     // MARK: Helpers
     // -------------------------------------------------------------------------
+
+    /// 6-pt dot reflecting the most recent server-side run status for a
+    /// connector (green = success, red = failed, yellow = running, gray when
+    /// unknown). Falls back to the connection's own status when no run yet.
+    @ViewBuilder
+    private func connectorHealthDot(forKey key: String) -> some View {
+        let raw = state.lastRunStatus(forConnectorKey: key) ?? state.connectionStatus(forConnectorKey: key)
+        let color: Color = {
+            switch raw {
+            case "completed", "success", "active": return .green
+            case "failed", "error", "revoked":     return .red
+            case "running", "pending":             return .yellow
+            case "paused":                         return .gray
+            default:                               return .clear
+            }
+        }()
+        Circle().fill(color).frame(width: 6, height: 6)
+    }
 
     private func sectionLabel(_ text: String) -> some View {
         Text(text.uppercased())
@@ -464,6 +825,29 @@ struct MenuBarContent: View {
             .tracking(0.4)
             .padding(.horizontal, 6)
             .padding(.bottom, 1)
+    }
+
+    private func disclosureHeader(title: String, expanded: Binding<Bool>) -> some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.15)) { expanded.wrappedValue.toggle() }
+        } label: {
+            HStack {
+                Text(title.uppercased())
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .fontWeight(.semibold)
+                    .tracking(0.4)
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .rotationEffect(.degrees(expanded.wrappedValue ? 90 : 0))
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 6)
+        .padding(.bottom, 1)
     }
 
     private func openFolderPanel() {
@@ -482,6 +866,18 @@ struct MenuBarContent: View {
 // -----------------------------------------------------------------------------
 // MARK: Native-feeling row highlight
 // -----------------------------------------------------------------------------
+
+private struct NativeRowHover: ViewModifier {
+    @State private var hovering = false
+    func body(content: Content) -> some View {
+        content
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(hovering ? Color.accentColor.opacity(0.85) : Color.clear)
+            )
+            .onHover { hovering = $0 }
+    }
+}
 
 private struct MenuRowStyle: ViewModifier {
     let interactive: Bool

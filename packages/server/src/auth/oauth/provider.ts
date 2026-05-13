@@ -397,6 +397,7 @@ export class OAuthProvider {
     sub: string;
     email: string;
     name: string | null;
+    picture: string | null;
     organization_slug: string | null;
     organizations: { id: string; slug: string; name: string }[];
   } | null> {
@@ -408,18 +409,29 @@ export class OAuthProvider {
     }
 
     const result = await this.sql`
-      SELECT id, email, name FROM "user" WHERE id = ${authInfo.userId}
+      SELECT id, email, name, image FROM "user" WHERE id = ${authInfo.userId}
     `;
 
     if (result.length === 0) return null;
 
-    // Return the token-bound org (if any) and the full list of orgs
+    // Return the token-bound org (if any) and the full list of orgs. For
+    // tokens with no org binding — e.g. `device_worker:run` issued via the
+    // device-flow consent, which skips org resolution — fall back to the
+    // user's personal org, matching where the worker upload path actually
+    // delivers data (see worker-api.ts:184).
     let organizationSlug: string | null = null;
     if (authInfo.organizationId) {
       const orgResult = await this.sql`
         SELECT slug FROM "organization" WHERE id = ${authInfo.organizationId} LIMIT 1
       `;
       organizationSlug = (orgResult[0]?.slug as string) ?? null;
+    } else {
+      const personalOrg = await this.sql`
+        SELECT slug FROM "organization"
+        WHERE (metadata::jsonb)->>'personal_org_for_user_id' = ${authInfo.userId}
+        LIMIT 1
+      `;
+      organizationSlug = (personalOrg[0]?.slug as string) ?? null;
     }
 
     const orgs = await this.sql`
@@ -430,11 +442,17 @@ export class OAuthProvider {
       ORDER BY o.name ASC
     `;
 
-    const user = result[0] as { id: string; email: string; name: string | null };
+    const user = result[0] as {
+      id: string;
+      email: string;
+      name: string | null;
+      image: string | null;
+    };
     return {
       sub: user.id,
       email: user.email,
       name: user.name,
+      picture: user.image,
       organization_slug: organizationSlug,
       organizations: orgs.map((o) => ({
         id: o.id as string,

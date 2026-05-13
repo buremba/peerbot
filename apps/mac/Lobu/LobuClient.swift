@@ -72,6 +72,68 @@ enum AnyJSONValue: Decodable {
     }
 }
 
+struct LobuNotification: Decodable, Identifiable, Equatable {
+    let id: Int
+    let type: String
+    let title: String
+    let body: String?
+    let resource_url: String?
+    let is_read: Bool
+    let created_at: String
+}
+
+struct LobuNotificationsResponse: Decodable {
+    let notifications: [LobuNotification]
+    let nextCursor: Int?
+}
+
+struct LobuRun: Decodable, Identifiable, Equatable {
+    let id: Int
+    let connection_id: Int?
+    let connector_key: String?
+    let operation_key: String?
+    let status: String?
+    let approval_status: String?
+    let error_message: String?
+    let created_at: String?
+    let completed_at: String?
+}
+
+struct LobuRunsResponse: Decodable {
+    let runs: [LobuRun]
+    let total: Int?
+}
+
+struct LobuConnection: Decodable, Identifiable, Equatable {
+    let id: Int
+    let connector_key: String?
+    let connector_name: String?
+    let name: String?
+    let status: String?
+    let event_count: Int?
+}
+
+struct LobuConnectionsResponse: Decodable {
+    let connections: [LobuConnection]
+}
+
+struct LobuSearchHit: Decodable, Identifiable, Equatable {
+    let event_id: Int?
+    let title: String?
+    let snippet: String?
+    let url: String?
+    let entity_name: String?
+
+    var id: Int { event_id ?? 0 }
+}
+
+struct LobuSearchResponse: Decodable {
+    let hits: [LobuSearchHit]?
+    let results: [LobuSearchHit]?
+
+    var items: [LobuSearchHit] { hits ?? results ?? [] }
+}
+
 struct WorkerStreamItem: Encodable {
     let id: String
     let title: String?
@@ -185,6 +247,72 @@ final class WorkerClient {
                        items_collected: itemsCollected, error_message: error,
                        checkpoint: (checkpoint?.isEmpty ?? true) ? nil : checkpoint)
         )
+    }
+
+    // MARK: REST — org-scoped endpoints (require mcp:read scope on the token)
+
+    func listNotifications(orgSlug: String, limit: Int = 10, unreadOnly: Bool = false) async throws -> LobuNotificationsResponse {
+        var components = URLComponents(string: "\(baseURL.trimmedTrailingSlash())/api/\(orgSlug)/notifications")!
+        components.queryItems = [
+            URLQueryItem(name: "limit", value: String(limit)),
+            URLQueryItem(name: "unread_only", value: unreadOnly ? "true" : "false"),
+        ]
+        let data = try await getRaw(url: components.url!, path: "/notifications")
+        return try decoder.decode(LobuNotificationsResponse.self, from: data)
+    }
+
+    func getUnreadCount(orgSlug: String) async throws -> Int {
+        let url = URL(string: "\(baseURL.trimmedTrailingSlash())/api/\(orgSlug)/notifications/unread-count")!
+        let data = try await getRaw(url: url, path: "/notifications/unread-count")
+        struct Response: Decodable { let count: Int }
+        return try decoder.decode(Response.self, from: data).count
+    }
+
+    func listRuns(orgSlug: String, limit: Int = 10) async throws -> LobuRunsResponse {
+        var components = URLComponents(string: "\(baseURL.trimmedTrailingSlash())/api/\(orgSlug)/runs")!
+        components.queryItems = [URLQueryItem(name: "limit", value: String(limit))]
+        let data = try await getRaw(url: components.url!, path: "/runs")
+        return try decoder.decode(LobuRunsResponse.self, from: data)
+    }
+
+    func listConnections(orgSlug: String) async throws -> LobuConnectionsResponse {
+        let url = URL(string: "\(baseURL.trimmedTrailingSlash())/api/\(orgSlug)/connections")!
+        let data = try await getRaw(url: url, path: "/connections")
+        return try decoder.decode(LobuConnectionsResponse.self, from: data)
+    }
+
+    func searchKnowledge(orgSlug: String, query: String, limit: Int = 5) async throws -> LobuSearchResponse {
+        var components = URLComponents(string: "\(baseURL.trimmedTrailingSlash())/api/\(orgSlug)/knowledge/search")!
+        components.queryItems = [
+            URLQueryItem(name: "q", value: query),
+            URLQueryItem(name: "limit", value: String(limit)),
+        ]
+        let data = try await getRaw(url: components.url!, path: "/knowledge/search")
+        return try decoder.decode(LobuSearchResponse.self, from: data)
+    }
+
+    func markNotificationRead(orgSlug: String, id: Int) async throws {
+        let url = URL(string: "\(baseURL.trimmedTrailingSlash())/api/\(orgSlug)/notifications/\(id)/read")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "PATCH"
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        let (_, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw WorkerClientError.http("/notifications/\(id)/read", (response as? HTTPURLResponse)?.statusCode ?? 0, "")
+        }
+    }
+
+    private func getRaw(url: URL, path: String) async throws -> Data {
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+        guard (200..<300).contains(http.statusCode) else {
+            throw WorkerClientError.http(path, http.statusCode, String(data: data, encoding: .utf8) ?? "<binary>")
+        }
+        return data
     }
 
     private func post<T: Encodable>(_ path: String, body: T) async throws -> Data {

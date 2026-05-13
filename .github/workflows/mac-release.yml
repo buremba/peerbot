@@ -2,7 +2,8 @@ name: mac-release
 
 # Builds and ships Lobu for Mac, then attaches Lobu.dmg to the existing
 # `lobu-v<version>` GitHub Release (so releases/latest/download/Lobu.dmg always
-# resolves) and writes the Homebrew cask to lobu-ai/homebrew-tap.
+# resolves) and signs an entry into the Sparkle appcast so installed apps can
+# auto-update.
 #
 # Two modes, picked automatically from whether the Developer ID cert secret is
 # set — adding the secrets is the *only* thing needed to flip from stopgap to
@@ -23,11 +24,15 @@ name: mac-release
 #   APPLE_ID                Apple ID email used for notarization
 #   APPLE_APP_PASSWORD      app-specific password for that Apple ID
 #
-# The cask push uses HOMEBREW_TAP_DEPLOY_KEY — the private half of a write
-# deploy key on lobu-ai/homebrew-tap (scoped to just that repo, not a PAT). It
-# always runs; if the secret is missing the job fails loudly. No provisioning
-# profile is required — the app ships only standard entitlements (the HealthKit
-# entitlement is disabled; see apps/mac/Lobu/Lobu.entitlements).
+# No provisioning profile is required — the app ships only standard
+# entitlements (the HealthKit entitlement is disabled; see
+# apps/mac/Lobu/Lobu.entitlements).
+#
+# Sparkle auto-updates: `SPARKLE_ED_PRIVATE_KEY` (64-byte base64 of seed||pub)
+# is required. The job signs Lobu.dmg with `sign_update` and pushes a new
+# <item> into appcast.xml on the gh-pages branch (served at
+# https://lobu-ai.github.io/lobu/appcast.xml — that URL is in Info.plist as
+# SUFeedURL). Public key is in Info.plist:SUPublicEDKey.
 
 on:
   workflow_dispatch:
@@ -129,10 +134,6 @@ jobs:
             --wait
           xcrun stapler staple "$RUNNER_TEMP/Lobu.dmg"
 
-      - name: Checksum
-        id: sum
-        run: echo "sha256=$(shasum -a 256 "$RUNNER_TEMP/Lobu.dmg" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
-
       - name: Attach DMG to the release
         uses: softprops/action-gh-release@v2
         with:
@@ -140,35 +141,55 @@ jobs:
           files: ${{ runner.temp }}/Lobu.dmg
           fail_on_unmatched_files: true
 
-      - name: Publish Homebrew cask
+      - name: Sign update with Sparkle and publish appcast
         env:
-          DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
         run: |
-          if [ -z "$DEPLOY_KEY" ]; then
-            echo "::error::HOMEBREW_TAP_DEPLOY_KEY is not set — add the private half of a write deploy key for lobu-ai/homebrew-tap as that secret."
+          if [ -z "$SPARKLE_ED_PRIVATE_KEY" ]; then
+            echo "::error::SPARKLE_ED_PRIVATE_KEY not set — add the 64-byte base64 Sparkle Ed25519 private key as a repo secret."
             exit 1
           fi
           VERSION="${{ steps.v.outputs.version }}"
-          SHA="${{ steps.sum.outputs.sha256 }}"
-          mkdir -p ~/.ssh
-          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/tap_key
-          chmod 600 ~/.ssh/tap_key
-          ssh-keyscan -t ed25519,rsa github.com >> ~/.ssh/known_hosts 2>/dev/null
-          export GIT_SSH_COMMAND="ssh -i ~/.ssh/tap_key -o IdentitiesOnly=yes"
-          git clone git@github.com:lobu-ai/homebrew-tap.git tap
-          mkdir -p tap/Casks
-          # build the cask from the template: strip the leading doc comment,
-          # fill version/sha, and keep/drop the caveats block per signing mode.
-          sed '/^cask "lobu" do$/,$!d' apps/mac/homebrew/lobu.rb.tmpl > tap/Casks/lobu.rb
-          if [ "${{ steps.mode.outputs.signed }}" = "true" ]; then
-            sed -i '' '/# @CAVEATS_START@/,/# @CAVEATS_END@/d' tap/Casks/lobu.rb
-          else
-            sed -i '' '/# @CAVEATS_START@/d;/# @CAVEATS_END@/d' tap/Casks/lobu.rb
-          fi
-          sed -i '' "s|@VERSION@|$VERSION|g;s|@SHA256@|$SHA|g" tap/Casks/lobu.rb
-          cd tap
+          DMG="$RUNNER_TEMP/Lobu.dmg"
+
+          # Fetch Sparkle's binary tools (sign_update). The SPM artifact bundle
+          # ships them under `bin/`, but the Sparkle GitHub release tarball is
+          # the easier source from CI.
+          SPARKLE_VERSION="2.9.1"
+          curl -fsSL -o "$RUNNER_TEMP/sparkle.tar.xz" \
+            "https://github.com/sparkle-project/Sparkle/releases/download/${SPARKLE_VERSION}/Sparkle-${SPARKLE_VERSION}.tar.xz"
+          mkdir -p "$RUNNER_TEMP/sparkle" && tar -xJf "$RUNNER_TEMP/sparkle.tar.xz" -C "$RUNNER_TEMP/sparkle"
+          SIGN_UPDATE="$RUNNER_TEMP/sparkle/bin/sign_update"
+          test -x "$SIGN_UPDATE" || { echo "::error::sign_update missing from Sparkle archive"; exit 1; }
+
+          # sign_update prints: sparkle:edSignature="..." length="..."
+          KEY_FILE="$RUNNER_TEMP/sparkle_ed_private.b64"
+          printf '%s' "$SPARKLE_ED_PRIVATE_KEY" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          SIGN_OUTPUT=$("$SIGN_UPDATE" -f "$KEY_FILE" "$DMG")
+          rm -f "$KEY_FILE"
+          echo "sign_update output: $SIGN_OUTPUT"
+          ED_SIG=$(echo "$SIGN_OUTPUT" | sed -E 's/.*sparkle:edSignature="([^"]+)".*/\1/')
+          LENGTH=$(echo "$SIGN_OUTPUT" | sed -E 's/.*length="([^"]+)".*/\1/')
+          test -n "$ED_SIG" && test -n "$LENGTH" || { echo "::error::failed to parse sign_update output"; exit 1; }
+
+          # Clone gh-pages, append the new <item>, push back.
+          git clone --depth 1 --branch gh-pages \
+            "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" \
+            "$RUNNER_TEMP/ghpages"
+          python3 apps/mac/sparkle/update-appcast.py "$RUNNER_TEMP/ghpages/appcast.xml" \
+            --version "$VERSION" \
+            --build "$VERSION" \
+            --dmg-url "https://github.com/${{ github.repository }}/releases/download/lobu-v${VERSION}/Lobu.dmg" \
+            --signature "$ED_SIG" \
+            --length "$LENGTH" \
+            --release-notes "https://github.com/${{ github.repository }}/releases/tag/lobu-v${VERSION}" \
+            --min-system-version 14.0
+
+          cd "$RUNNER_TEMP/ghpages"
           git config user.name "lobu-bot"
           git config user.email "bot@lobu.ai"
-          git add Casks/lobu.rb
-          git diff --cached --quiet || git commit -m "lobu ${VERSION}"
-          git push origin HEAD:refs/heads/main
+          git add appcast.xml
+          git diff --cached --quiet || git commit -m "appcast: lobu ${VERSION}"
+          git push origin gh-pages
+

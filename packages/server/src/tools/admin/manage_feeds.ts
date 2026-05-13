@@ -155,6 +155,16 @@ async function handleListFeeds(
   let query = sql`
     SELECT f.*, c.connector_key, c.display_name AS connection_name,
            c.status AS connection_status,
+           c.device_worker_id,
+           dw.label AS device_label,
+           dw.platform AS device_platform,
+           dw.last_seen_at AS device_last_seen_at,
+           (dw.id IS NOT NULL AND dw.last_seen_at > now() - interval '20 minutes') AS device_online,
+           CASE
+             WHEN c.device_worker_id IS NOT NULL
+              AND NOT (dw.id IS NOT NULL AND dw.last_seen_at > now() - interval '20 minutes')
+             THEN 'offline'
+           END AS device_status,
            cd.name AS connector_name,
            ap.profile_kind AS auth_profile_kind,
            ap.status AS auth_profile_status,
@@ -167,6 +177,7 @@ async function handleListFeeds(
            (SELECT COUNT(*) FROM current_event_records e WHERE e.connection_id = f.connection_id AND e.feed_key = f.feed_key)::int AS event_count
     FROM feeds f
     JOIN connections c ON c.id = f.connection_id
+    LEFT JOIN device_workers dw ON dw.id = c.device_worker_id
     LEFT JOIN LATERAL (
       SELECT name
       FROM connector_definitions

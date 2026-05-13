@@ -20,7 +20,9 @@ function makeCtx(overrides?: Partial<CommandContext>): CommandContext {
     channelId: "C1",
     args: "",
     platform: "slack",
-    reply: mock(async () => {}),
+    reply: mock(async () => {
+      /* noop */
+    }),
     ...overrides,
   };
 }
@@ -33,7 +35,9 @@ describe("CommandRegistry.register / get / getAll", () => {
     const cmd: CommandDefinition = {
       name: "help",
       description: "Show help",
-      handler: async () => {},
+      handler: async () => {
+        /* noop */
+      },
     };
     registry.register(cmd);
     expect(registry.get("help")).toBe(cmd);
@@ -49,12 +53,16 @@ describe("CommandRegistry.register / get / getAll", () => {
     const a: CommandDefinition = {
       name: "a",
       description: "A",
-      handler: async () => {},
+      handler: async () => {
+        /* noop */
+      },
     };
     const b: CommandDefinition = {
       name: "b",
       description: "B",
-      handler: async () => {},
+      handler: async () => {
+        /* noop */
+      },
     };
     registry.register(a);
     registry.register(b);
@@ -73,12 +81,16 @@ describe("CommandRegistry.register / get / getAll", () => {
     const first: CommandDefinition = {
       name: "ping",
       description: "v1",
-      handler: async () => {},
+      handler: async () => {
+        /* noop */
+      },
     };
     const second: CommandDefinition = {
       name: "ping",
       description: "v2",
-      handler: async () => {},
+      handler: async () => {
+        /* noop */
+      },
     };
     registry.register(first);
     registry.register(second);
@@ -99,7 +111,9 @@ describe("CommandRegistry.tryHandle", () => {
 
   test("returns true and calls handler for registered command", async () => {
     const registry = new CommandRegistry();
-    const handlerFn = mock(async () => {});
+    const handlerFn = mock(async () => {
+      /* noop */
+    });
     registry.register({
       name: "ping",
       description: "Ping",
@@ -143,7 +157,9 @@ describe("CommandRegistry.tryHandle", () => {
       },
     });
 
-    const replyFn = mock(async () => {});
+    const replyFn = mock(async () => {
+      /* noop */
+    });
     const ctx = makeCtx({ reply: replyFn });
     const handled = await registry.tryHandle("boom", ctx);
 
@@ -157,7 +173,9 @@ describe("CommandRegistry.tryHandle", () => {
 
   test("reply is NOT called when handler succeeds", async () => {
     const registry = new CommandRegistry();
-    const replyFn = mock(async () => {});
+    const replyFn = mock(async () => {
+      /* noop */
+    });
     registry.register({
       name: "ok",
       description: "OK",
@@ -181,7 +199,9 @@ describe("CommandRegistry.tryHandle", () => {
     r1.register({
       name: "shared",
       description: "In r1",
-      handler: async () => {},
+      handler: async () => {
+        /* noop */
+      },
     });
 
     expect(r1.get("shared")).toBeDefined();

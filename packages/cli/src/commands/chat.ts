@@ -436,6 +436,7 @@ async function streamResponse(
               `${JSON.stringify({ event: currentEvent, ...data })}\n`
             );
             if (currentEvent === "complete" || currentEvent === "error") {
+              if (currentEvent === "error") process.exitCode = 1;
               controller.abort();
               return;
             }
@@ -569,6 +570,9 @@ async function streamResponse(
               await writeStderr(
                 chalk.red(`\n  Agent error: ${String(data.error)}\n`)
               );
+              // Surface the failure to the shell — a script wrapping `lobu chat`
+              // must not see exit 0 when the agent run errored.
+              process.exitCode = 1;
               controller.abort();
               return;
           }

@@ -14,6 +14,7 @@ import { createWatcherRun, type WatcherRunPayload } from '../utils/queue-helpers
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from '../utils/run-statuses';
 import { computePendingWindow } from '../utils/window-utils';
 import { resolveWatcherRunsByMessageIds } from './run-completion';
+import { nextRunAt } from '../utils/cron';
 
 type WatcherRunStatus =
   | 'pending'
@@ -219,14 +220,49 @@ async function markWatcherRunFailedIdempotent(
   runId: number,
   message: string
 ): Promise<void> {
-  await sql`
+  const failedRows = await sql`
     UPDATE runs
     SET status = 'failed',
         completed_at = current_timestamp,
         error_message = ${message}
     WHERE id = ${runId}
-      AND status IN ('running', 'claimed')
+      AND status IN ('running', 'claimed', 'pending')
+    RETURNING watcher_id
   `;
+  // Advance next_run_at on terminal failure too — otherwise a permanently
+  // broken watcher re-materializes + re-dispatches a fresh agent run every
+  // single minute forever (token/worker burn). Mirrors the feeds model: a
+  // failed run still moves the schedule forward by its normal cadence.
+  await advanceWatcherScheduleAfterTerminalFailure(sql, failedRows[0]?.watcher_id as number | undefined);
+}
+
+async function advanceWatcherScheduleAfterTerminalFailure(
+  sql: DbClient,
+  watcherId: number | undefined
+): Promise<void> {
+  if (watcherId === undefined || watcherId === null) return;
+  try {
+    const rows = await sql`
+      SELECT schedule, next_run_at
+      FROM watchers
+      WHERE id = ${watcherId}
+      LIMIT 1
+    `;
+    const schedule = (rows[0]?.schedule as string | null) ?? null;
+    if (!schedule) return;
+    const currentNextRunAt = (rows[0]?.next_run_at as string | null) ?? null;
+    const base = currentNextRunAt
+      ? new Date(Math.max(Date.now(), new Date(currentNextRunAt).getTime()))
+      : new Date();
+    await sql`
+      UPDATE watchers
+      SET next_run_at = ${nextRunAt(schedule, base)}::timestamptz,
+          updated_at = NOW()
+      WHERE id = ${watcherId}
+    `;
+  } catch (err) {
+    logger.warn(`[watchers] failed to advance next_run_at after terminal failure: ${err}`);
+  }
 }
 
 export async function getWatcherRunInfo(
@@ -462,6 +498,9 @@ export async function materializeDueWatcherRuns(
         { error, watcherId: watcher.id },
         '[watcher-automation] Failed to materialize due watcher run'
       );
+      // Don't leave next_run_at in the past — that would re-select this watcher
+      // on every 60s tick. Push it forward per the watcher's cron schedule.
+      await advanceWatcherScheduleAfterTerminalFailure(sql, watcher.id);
     }
   }
 

@@ -495,7 +495,18 @@ export function createPostgresAgentConnectionStore(): AgentConnectionStore {
     },
     async deleteConnection(connectionId) {
       const sql = getDb();
-      await sql`DELETE FROM agent_connections WHERE id = ${connectionId}`;
+      const orgId = tryGetOrgId();
+      if (orgId) {
+        await sql`
+          DELETE FROM agent_connections
+          USING agents a
+          WHERE agent_connections.agent_id = a.id
+            AND agent_connections.id = ${connectionId}
+            AND a.organization_id = ${orgId}
+        `;
+      } else {
+        await sql`DELETE FROM agent_connections WHERE id = ${connectionId}`;
+      }
     },
     async getChannelBinding(platform, channelId, teamId) {
       const sql = getDb();
@@ -550,16 +561,33 @@ export function createPostgresAgentConnectionStore(): AgentConnectionStore {
     },
     async listChannelBindings(agentId) {
       const sql = getDb();
-      const rows = await sql`
-        SELECT * FROM agent_channel_bindings WHERE agent_id = ${agentId}
-      `;
+      const orgId = tryGetOrgId();
+      const rows = orgId
+        ? await sql`
+            SELECT b.* FROM agent_channel_bindings b
+            JOIN agents a ON a.id = b.agent_id
+            WHERE b.agent_id = ${agentId} AND a.organization_id = ${orgId}
+          `
+        : await sql`
+            SELECT * FROM agent_channel_bindings WHERE agent_id = ${agentId}
+          `;
       return rows.map(rowToChannelBinding);
     },
     async deleteAllChannelBindings(agentId) {
       const sql = getDb();
-      const rows = await sql`
-        DELETE FROM agent_channel_bindings WHERE agent_id = ${agentId} RETURNING 1
-      `;
+      const orgId = tryGetOrgId();
+      const rows = orgId
+        ? await sql`
+            DELETE FROM agent_channel_bindings b
+            USING agents a
+            WHERE b.agent_id = a.id
+              AND b.agent_id = ${agentId}
+              AND a.organization_id = ${orgId}
+            RETURNING 1
+          `
+        : await sql`
+            DELETE FROM agent_channel_bindings WHERE agent_id = ${agentId} RETURNING 1
+          `;
       return rows.length;
     },
   };

@@ -114,7 +114,8 @@ async function findCurrentEventByOrigin(
            e.metadata, e.score, e.origin_parent_id, e.interaction_type, e.interaction_status,
            e.interaction_input_schema, e.interaction_input, e.interaction_output, e.interaction_error
     FROM events e
-    WHERE e.connection_id = ${params.connectionId}
+    WHERE e.organization_id = ${params.organizationId}
+      AND e.connection_id = ${params.connectionId}
       AND e.origin_id = ${params.originId}
       AND NOT EXISTS (
         SELECT 1 FROM events newer WHERE newer.supersedes_event_id = e.id
@@ -158,9 +159,12 @@ function isSemanticallyEqual(
   );
 }
 
-async function upsertEmbedding(eventId: number, embedding?: number[] | null): Promise<void> {
+async function upsertEmbedding(
+  eventId: number,
+  embedding: number[] | null | undefined,
+  sql: ReturnType<typeof getDb> = getDb()
+): Promise<void> {
   if (!embedding || embedding.length === 0) return;
-  const sql = getDb();
   const vectorLiteral = `[${embedding.join(',')}]`;
   await sql`
     INSERT INTO event_embeddings (event_id, embedding)
@@ -208,7 +212,7 @@ export async function insertEvent(
     const existing = await findCurrentEventByOrigin(sql, params);
     if (existing) {
       if (isSemanticallyEqual(existing, params)) {
-        await upsertEmbedding(existing.id, params.embedding);
+        await upsertEmbedding(existing.id, params.embedding, sql);
         const existingRows = await sql`
           SELECT id, entity_ids, origin_id, title, semantic_type, created_at
           FROM events
@@ -281,7 +285,7 @@ export async function insertEvent(
   }
 
   const inserted = result[0] as InsertedEvent;
-  await upsertEmbedding(inserted.id, params.embedding);
+  await upsertEmbedding(inserted.id, params.embedding, sql);
   return inserted;
 }
 

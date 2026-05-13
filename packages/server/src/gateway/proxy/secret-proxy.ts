@@ -330,10 +330,14 @@ export class SecretProxy {
           "Proxy request authenticated by non-placeholder token; agentId binding skipped"
         );
       } else {
+        // No auth header at all but the URL names an agent — refuse rather than
+        // forward upstream using that agent's credential. An unauthenticated
+        // caller must never be able to spend another agent's provider quota.
         logger.warn(
           { urlAgentId },
-          "Proxy request has no auth header — agentId binding cannot be verified"
+          "Rejecting proxy request: names an agent but carries no auth header"
         );
+        return c.json({ error: "Unauthorized" }, 401);
       }
     }
 

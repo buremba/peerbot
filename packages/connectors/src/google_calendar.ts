@@ -257,7 +257,7 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
 
     while (true) {
       const params = new URLSearchParams({
-        maxResults: String(Math.min(250, maxResults - events.length)),
+        maxResults: String(Math.max(1, Math.min(250, maxResults - events.length))),
         orderBy: 'startTime',
         singleEvents: 'true',
         timeMin: timeMin.toISOString(),
@@ -287,7 +287,11 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
 
       nextSyncToken = data.nextSyncToken;
       pageToken = data.nextPageToken;
-      if (!pageToken || events.length >= maxResults) break;
+      // Google only returns nextSyncToken on the LAST page (no nextPageToken).
+      // Must keep paginating until pageToken is exhausted, otherwise the sync
+      // token is never obtained and every subsequent sync re-runs the full
+      // window from scratch. maxResults is only a soft cap on stored events.
+      if (!pageToken) break;
     }
 
     return this.buildResult(events, nextSyncToken, events.length);
@@ -343,7 +347,7 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
 
     while (true) {
       const params = new URLSearchParams({
-        maxResults: String(Math.min(250, maxResults - events.length)),
+        maxResults: String(Math.max(1, Math.min(250, maxResults - events.length))),
         syncToken,
       });
       if (pageToken) {
@@ -375,7 +379,8 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
 
       nextSyncToken = data.nextSyncToken;
       pageToken = data.nextPageToken;
-      if (!pageToken || events.length >= maxResults) break;
+      // Paginate until exhausted so we capture the trailing nextSyncToken.
+      if (!pageToken) break;
     }
 
     return { events, nextSyncToken };

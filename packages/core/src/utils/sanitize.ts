@@ -97,10 +97,18 @@ function isSensitiveKey(
 function sanitizeInner(
   obj: any,
   additionalLowered: readonly string[],
-  depth: number
+  depth: number,
+  seen: WeakSet<object>
 ): any {
   if (!obj || typeof obj !== "object") return obj;
   if (depth >= MAX_SANITIZE_DEPTH) return obj;
+  // Cycle guard: object graphs with back-references (Express req/res, error
+  // .cause chains, ORM rows) would otherwise recurse forever. Depth cap above
+  // already bounds stack depth, but returning "[Circular]" gives a more useful
+  // log line and avoids cloning the same subtree N times for a graph with
+  // multiple paths to the same node.
+  if (seen.has(obj as object)) return "[Circular]";
+  seen.add(obj as object);
 
   const sanitized = Array.isArray(obj) ? [...obj] : { ...obj };
 
@@ -111,7 +119,7 @@ function sanitizeInner(
         sanitized[key] = `[REDACTED:${value.length}]`;
       }
     } else if (value && typeof value === "object") {
-      sanitized[key] = sanitizeInner(value, additionalLowered, depth + 1);
+      sanitized[key] = sanitizeInner(value, additionalLowered, depth + 1, seen);
     }
   }
 
@@ -126,7 +134,7 @@ export function sanitizeForLogging(
     return obj;
   }
   const additionalLowered = additionalSensitiveKeys.map((k) => k.toLowerCase());
-  return sanitizeInner(obj, additionalLowered, 0);
+  return sanitizeInner(obj, additionalLowered, 0, new WeakSet());
 }
 
 /**

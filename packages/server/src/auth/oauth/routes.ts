@@ -17,6 +17,7 @@ import { OAuthProvider } from './provider';
 import { DEFAULT_SCOPES_STRING, filterScopeByRole } from './scopes';
 import type { AuthorizationParams, OAuthClientMetadata, TokenRequestParams } from './types';
 import { createOAuthError, validateRedirectUri } from './utils';
+import { getConfiguredPublicOrigin } from '../../utils/public-origin';
 
 const oauthRoutes = new Hono<{ Bindings: Env }>();
 
@@ -278,8 +279,11 @@ oauthRoutes.get('/.well-known/oauth-authorization-server', (c) => {
 oauthRoutes.post('/oauth/register', async (c) => {
   const provider = getProvider(c);
 
-  // Rate limit client registrations
-  if (c.env.RATE_LIMIT_ENABLED === 'true') {
+  // Rate limit client registrations. DCR is an unauthenticated, abuse-prone
+  // endpoint (each registration persists a scrypt'd secret row), so the limiter
+  // is ON by default — opt out only with RATE_LIMIT_ENABLED='false'. The check
+  // is pure in-memory and synchronous; if it somehow throws we fail CLOSED here.
+  if (c.env.RATE_LIMIT_ENABLED !== 'false') {
     try {
       const rateLimiter = getRateLimiter();
       const clientIP = getClientIP(c.req.raw);
@@ -293,7 +297,7 @@ oauthRoutes.post('/oauth/register', async (c) => {
       }
     } catch (err) {
       console.warn('[OAuth] Rate limit check failed:', err);
-      // Fail open - allow request if rate limiting fails
+      return c.json(createOAuthError('server_error', 'Registration temporarily unavailable'), 503);
     }
   }
 
@@ -416,10 +420,21 @@ oauthRoutes.get('/oauth/authorize', async (c) => {
 
   const client = clientResult;
 
-  // Auto-approve for profile:read-only requests (no MCP scopes)
-  // This skips the consent page for trusted first-party identity flows
+  // Auto-approve for profile:read-only requests (no MCP scopes), but ONLY when
+  // the redirect target is on our own canonical origin. Dynamic client
+  // registration lets anyone register a client with an arbitrary HTTPS
+  // redirect_uri; silently auto-approving profile:read for such a client would
+  // hand a logged-in user's email/name/org list to an attacker-controlled
+  // callback with no consent prompt. So: first-party origin → skip consent;
+  // anything else → fall through to the consent page.
+  const canonicalOrigin = getConfiguredPublicOrigin();
+  const redirectOrigin = safeOrigin(params.redirect_uri);
+  const isFirstPartyRedirect =
+    !!canonicalOrigin && !!redirectOrigin && redirectOrigin === canonicalOrigin;
   const isProfileOnly =
-    !requestedHasMcpScopes && requestedScopes.every((s) => s === 'profile:read');
+    !requestedHasMcpScopes &&
+    requestedScopes.every((s) => s === 'profile:read') &&
+    isFirstPartyRedirect;
 
   if (isProfileOnly) {
     // Check if user has an active session

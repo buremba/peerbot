@@ -84,23 +84,30 @@ async function acquireForNetworkSync(
       const { chromium } = await import(/* @vite-ignore */ playwrightModule);
       const browser: Browser = await chromium.connectOverCDP(wsUrl);
 
-      // Use the default context (user's session) — don't create a new context
-      // which crashes on browsers with many tabs
-      const context = browser.contexts()[0] as BrowserContext;
-      if (!context) throw new Error('Chrome has no browser context');
+      try {
+        // Use the default context (user's session) — don't create a new context
+        // which crashes on browsers with many tabs
+        const context = browser.contexts()[0] as BrowserContext;
+        if (!context) throw new Error('Chrome has no browser context');
 
-      const page = await context.newPage();
+        const page = await context.newPage();
 
-      sdkLogger.info({ wsUrl }, '[BrowserNetwork] Connected via CDP');
+        sdkLogger.info({ wsUrl }, '[BrowserNetwork] Connected via CDP');
 
-      return {
-        browser,
-        context,
-        page,
-        backend: 'cdp',
-        ownsBrowser: false,
-        screenshotDir: '/tmp/feed-screenshots',
-      };
+        return {
+          browser,
+          context,
+          page,
+          backend: 'cdp',
+          ownsBrowser: false,
+          screenshotDir: '/tmp/feed-screenshots',
+        };
+      } catch (innerErr) {
+        // Partial setup after connectOverCDP — close the CDP connection before
+        // falling through to the Playwright branch so it isn't left dangling.
+        await browser.close().catch(() => {});
+        throw innerErr;
+      }
     } catch (err: any) {
       sdkLogger.info(
         { error: err.message },
@@ -111,21 +118,26 @@ async function acquireForNetworkSync(
 
   // --- Layer 2: Playwright with stored cookies ---
   const { browser, screenshotDir } = await launchBrowser({ stealth });
-  const context = (await (browser as Browser).newContext()) as BrowserContext;
-  if (cookies.length > 0) {
-    await context.addCookies(cookies);
-    sdkLogger.info({ count: cookies.length }, '[BrowserNetwork] Loaded persisted cookies');
-  }
-  const page = await context.newPage();
+  try {
+    const context = (await (browser as Browser).newContext()) as BrowserContext;
+    if (cookies.length > 0) {
+      await context.addCookies(cookies);
+      sdkLogger.info({ count: cookies.length }, '[BrowserNetwork] Loaded persisted cookies');
+    }
+    const page = await context.newPage();
 
-  return {
-    browser: browser as Browser,
-    context,
-    page,
-    backend: 'playwright',
-    ownsBrowser: true,
-    screenshotDir,
-  };
+    return {
+      browser: browser as Browser,
+      context,
+      page,
+      backend: 'playwright',
+      ownsBrowser: true,
+      screenshotDir,
+    };
+  } catch (err) {
+    await (browser as Browser).close().catch(() => {});
+    throw err;
+  }
 }
 
 // ---------------------------------------------------------------------------

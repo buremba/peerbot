@@ -419,6 +419,13 @@ export async function runScript(
             throw new Error(`Unknown SDK method: '${path}'`);
           }
           const access = METHOD_METADATA[path]?.access ?? "unknown";
+          // Belt-and-suspenders: in read mode the guest-side manifest already
+          // drops non-read methods, but enforce it here too so a future
+          // namespace refactor (e.g. class instances) can't silently re-expose
+          // the write surface to a read-only script.
+          if (sdkMode === "read" && access !== "read") {
+            throw new Error(`Forbidden: SDK method '${path}' is not allowed in read mode`);
+          }
           const trace: SdkCallTraceEntry = {
             path,
             orgPath,

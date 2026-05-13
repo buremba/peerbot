@@ -1376,6 +1376,11 @@ Use it when the user references past discussions or you need context.`);
                 clearInterval(heartbeatTimer);
                 heartbeatTimer = null;
               }
+              // Unblock any in-flight prompt turn FIRST — disposing the session
+              // without resolving `turnDone` leaves `runPromptTurn` (and the
+              // outer `runAISession`) wedged on `await turnDone` until the
+              // deployment manager force-kills the worker.
+              resolveTurnDone?.();
               if (session) {
                 session.dispose();
               }

@@ -58,19 +58,39 @@ export class CdpPage {
       });
     };
 
-    const { targetId } = await sendBrowser('Target.createTarget', { url: 'about:blank' });
-    const { sessionId } = await sendBrowser('Target.attachToTarget', {
-      targetId,
-      flatten: true,
-    });
+    let createdTargetId: string | undefined;
+    try {
+      const { targetId } = await sendBrowser('Target.createTarget', { url: 'about:blank' });
+      createdTargetId = targetId;
+      const { sessionId } = await sendBrowser('Target.attachToTarget', {
+        targetId,
+        flatten: true,
+      });
 
-    const page = new CdpPage(ws, sessionId, targetId);
-    await page.send('Page.enable');
-    await page.send('Runtime.enable');
-    await page.send('DOM.enable');
+      const page = new CdpPage(ws, sessionId, targetId);
+      await page.send('Page.enable');
+      await page.send('Runtime.enable');
+      await page.send('DOM.enable');
 
-    sdkLogger.info({ targetId }, '[CdpPage] Created tab');
-    return page;
+      sdkLogger.info({ targetId }, '[CdpPage] Created tab');
+      return page;
+    } catch (err) {
+      // Setup failed after the socket opened — close the target (if created)
+      // and the WebSocket so we don't leak the connection on the host.
+      if (createdTargetId) {
+        try {
+          await sendBrowser('Target.closeTarget', { targetId: createdTargetId });
+        } catch {
+          /* best-effort */
+        }
+      }
+      try {
+        ws.close();
+      } catch {
+        /* best-effort */
+      }
+      throw err;
+    }
   }
 
   private send(method: string, params: Record<string, unknown> = {}): Promise<any> {
@@ -97,7 +117,6 @@ export class CdpPage {
 
     // Wait for load event
     await new Promise<void>((resolve) => {
-      const timer = setTimeout(() => resolve(), timeout);
       const handler = (event: MessageEvent) => {
         const data = JSON.parse(event.data as string);
         if (data.method === 'Page.loadEventFired' && data.sessionId === this.sessionId) {
@@ -106,6 +125,12 @@ export class CdpPage {
           resolve();
         }
       };
+      const timer = setTimeout(() => {
+        // On timeout, detach the listener so it doesn't stay attached for the
+        // life of the (long-lived) CDP session parsing every subsequent frame.
+        this.ws.removeEventListener('message', handler);
+        resolve();
+      }, timeout);
       this.ws.addEventListener('message', handler);
     });
   }

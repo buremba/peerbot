@@ -9,17 +9,19 @@ import logger from '../utils/logger';
 export async function getLobuServiceToken(organizationId?: string): Promise<string | null> {
   const sql = getDb();
 
-  try {
-    const orgFilter =
-      typeof organizationId === 'string' && organizationId.trim().length > 0
-        ? sql`AND m."organizationId" = ${organizationId}`
-        : sql``;
+  // Fail closed without an org — picking "any owner/admin from any org" would
+  // mint a token acting as a random tenant's admin (cross-tenant authority leak).
+  if (typeof organizationId !== 'string' || organizationId.trim().length === 0) {
+    logger.warn('[lobu] getLobuServiceToken called without an organizationId — refusing');
+    return null;
+  }
 
+  try {
     const [user] = await sql`
       SELECT m."userId" as user_id, m."organizationId" as org_id
       FROM member m
       WHERE m.role IN ('owner', 'admin')
-      ${orgFilter}
+        AND m."organizationId" = ${organizationId}
       LIMIT 1
     `;
 

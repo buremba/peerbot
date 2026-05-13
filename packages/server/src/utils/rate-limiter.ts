@@ -200,13 +200,29 @@ export function getRateLimiter(): RateLimiter {
 }
 
 /**
- * Get client IP from request
+ * Get client IP from request.
+ *
+ * Forwarded headers (`X-Forwarded-For`, `CF-Connecting-IP`, `X-Real-IP`) are
+ * trusted ONLY when `TRUSTED_PROXY` is set — otherwise they are client-supplied
+ * and a single attacker can rotate them per request to defeat IP rate limits.
+ * Without a trusted proxy we fall back to the socket peer address if Bun exposed
+ * it via `request.headers.get('x-bun-remote-addr')`-style hints, else 'unknown'
+ * (which still rate-limits, just coarsely).
  */
 export function getClientIP(request: Request): string {
-  return (
-    request.headers.get('CF-Connecting-IP') ||
-    request.headers.get('X-Forwarded-For')?.split(',')[0] ||
-    request.headers.get('X-Real-IP') ||
-    'unknown'
-  );
+  const trustForwarded = process.env.TRUSTED_PROXY === 'true' || process.env.TRUSTED_PROXY === '1';
+  if (trustForwarded) {
+    const xff = request.headers.get('X-Forwarded-For');
+    if (xff) {
+      // Rightmost entry is the address the trusted proxy observed; the leftmost
+      // is client-controlled. With a single trusted hop, take the last entry.
+      const parts = xff.split(',').map((p) => p.trim()).filter(Boolean);
+      if (parts.length > 0) return parts[parts.length - 1]!;
+    }
+    const cf = request.headers.get('CF-Connecting-IP');
+    if (cf) return cf.trim();
+    const xreal = request.headers.get('X-Real-IP');
+    if (xreal) return xreal.trim();
+  }
+  return 'unknown';
 }

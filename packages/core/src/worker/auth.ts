@@ -98,6 +98,13 @@ export function verifyWorkerToken(token: string): WorkerTokenData | null {
       logger.error("Worker token rejected: expired");
       return null;
     }
+    // Also reject tokens whose timestamp is implausibly in the future — a
+    // forward skew larger than the tolerance would otherwise grant an
+    // effectively unbounded validity window.
+    if (data.timestamp - Date.now() > skewMs) {
+      logger.error("Worker token rejected: timestamp in the future");
+      return null;
+    }
 
     return data;
   } catch (error) {

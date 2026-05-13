@@ -317,8 +317,16 @@ export abstract class BaseDeploymentManager {
       if (existingDeployment) {
         // Scale up the existing deployment. Provider config is now delivered
         // dynamically via session context, so no need to recreate.
-        await this.scaleDeployment(deploymentName, 1);
-        return;
+        try {
+          await this.scaleDeployment(deploymentName, 1);
+          return;
+        } catch (scaleErr) {
+          // The "existing" deployment is actually dead (stale snapshot / just
+          // exited) — fall through to spawn a fresh one instead of returning.
+          logger.warn(
+            `scaleDeployment(${deploymentName}, 1) failed (${scaleErr instanceof Error ? scaleErr.message : String(scaleErr)}); re-spawning`
+          );
+        }
       }
 
       // Check if we would exceed max deployments limit

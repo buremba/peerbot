@@ -9,7 +9,15 @@
  * This file is imported as the very first line in server.ts.
  */
 
+import dotenv from 'dotenv';
 import * as Sentry from '@sentry/node';
+
+// .env is the single source of truth for secrets. This module reads SENTRY_DSN
+// (and ENVIRONMENT / SENTRY_RELEASE) at load time and is imported before any
+// other module — so it must load .env itself, or Sentry would be silently
+// disabled in any deployment that keeps the DSN in .env. dotenv.config() is
+// idempotent (it doesn't override already-set vars), so a later call is fine.
+dotenv.config();
 
 const dsn = process.env.SENTRY_DSN;
 

@@ -31,8 +31,13 @@ async function getExtractor(): Promise<FeatureExtractionPipeline> {
     console.log(`[EmbeddingsService] Loading model: ${modelName}...`);
     const startTime = Date.now();
 
+    // Don't cache a rejected promise — a transient model-load failure would
+    // otherwise permanently brick the embeddings backend until process restart.
     extractorPromise = pipeline('feature-extraction', modelName, {
       quantized: true,
+    }).catch((err) => {
+      extractorPromise = null;
+      throw err;
     });
 
     const extractor = await extractorPromise;

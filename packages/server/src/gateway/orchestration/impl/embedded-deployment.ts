@@ -414,8 +414,13 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
       await this.killWorker(entry, deploymentName);
       logger.info(`Stopped embedded worker ${deploymentName}`);
     } else if (replicas === 1 && !entry) {
-      logger.warn(
-        `Cannot scale up ${deploymentName} — use ensureDeployment to re-spawn`
+      // The worker process is gone (crashed, or exited between a stale
+      // listDeployments() snapshot and this call). Throwing here lets the
+      // MessageConsumer's catch path re-create the deployment so the message
+      // already queued for it actually gets drained — silently no-op'ing would
+      // strand that message forever (no worker, no error, no retry).
+      throw new Error(
+        `Embedded worker ${deploymentName} is not running — must re-create`
       );
     }
   }

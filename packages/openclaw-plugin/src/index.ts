@@ -1407,35 +1407,52 @@ const plugin = {
     if (config.autoCapture) {
       let lastCapturedLen = 0;
 
-      on('before_prompt_build', async (event: Record<string, unknown>) => {
+      const messageText = (m: unknown): string => {
+        if (!isRecord(m)) return '';
+        if (typeof m.content === 'string') return m.content;
+        if (Array.isArray(m.content)) {
+          return m.content
+            .filter((p: unknown) => isRecord(p) && p.type === 'text')
+            .map((p: unknown) => (isRecord(p) && typeof p.text === 'string' ? p.text : ''))
+            .join('\n');
+        }
+        return '';
+      };
+
+      // Run on `agent_end` — the turn is complete and `messages` ends with the
+      // assistant reply. (The worker's plugin-loader only honors
+      // before_agent_start / agent_end; a before_prompt_build registration was
+      // silently dropped, so autoCapture never ran inside Lobu.)
+      on('agent_end', async (event: Record<string, unknown>) => {
         if (!hasAuthConfigured(config)) return;
 
         const messages = event.messages;
         if (!Array.isArray(messages) || messages.length < 2) return;
-        // Only capture when new messages appeared since last capture
         if (messages.length <= lastCapturedLen) return;
 
-        // Find the most recent assistant+user pair (the previous turn)
-        let lastUser: string | null = null;
-        let lastAssistant: string | null = null;
+        // Find the last assistant message, then the user message immediately
+        // before it — pairing the answer with the question that prompted it
+        // (not a trailing unanswered user message with the previous reply).
+        let assistantIdx = -1;
         for (let i = messages.length - 1; i >= 0; i--) {
-          const m = messages[i];
-          if (!isRecord(m)) continue;
-          const text =
-            typeof m.content === 'string'
-              ? m.content
-              : Array.isArray(m.content)
-                ? m.content
-                    .filter((p: unknown) => isRecord(p) && p.type === 'text')
-                    .map((p: unknown) => (isRecord(p) && typeof p.text === 'string' ? p.text : ''))
-                    .join('\n')
-                : '';
-          if (!text.trim()) continue;
-          if (m.role === 'assistant' && !lastAssistant) lastAssistant = text.trim();
-          if (m.role === 'user' && !lastUser) lastUser = text.trim();
-          if (lastUser && lastAssistant) break;
+          if (isRecord(messages[i]) && (messages[i] as Record<string, unknown>).role === 'assistant') {
+            const t = messageText(messages[i]);
+            if (t.trim()) { assistantIdx = i; break; }
+          }
         }
+        if (assistantIdx < 1) return;
 
+        let userIdx = -1;
+        for (let i = assistantIdx - 1; i >= 0; i--) {
+          if (isRecord(messages[i]) && (messages[i] as Record<string, unknown>).role === 'user') {
+            const t = messageText(messages[i]);
+            if (t.trim()) { userIdx = i; break; }
+          }
+        }
+        if (userIdx < 0) return;
+
+        const lastUser = messageText(messages[userIdx]).trim();
+        const lastAssistant = messageText(messages[assistantIdx]).trim();
         if (!lastUser || !lastAssistant) return;
 
         const combined = `User: ${lastUser}\nAssistant: ${lastAssistant}`;
@@ -1444,7 +1461,7 @@ const plugin = {
         lastCapturedLen = messages.length;
         const content = combined.length > 2000 ? combined.slice(0, 2000) : combined;
 
-        // Fire-and-forget — don't block prompt build
+        // Fire-and-forget — don't block the agent_end path.
         callMcpTool(config, 'save_memory', {
           content,
           semantic_type: 'observation',

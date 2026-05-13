@@ -141,26 +141,32 @@ async function acquireViaPlaywright(opts: AcquireBrowserOptions): Promise<Acquir
     stealth: opts.stealth ?? false,
   });
 
-  const context = (await (browser as Browser).newContext()) as BrowserContext;
-  if (opts.cookies.length > 0) {
-    await context.addCookies(opts.cookies);
+  try {
+    const context = (await (browser as Browser).newContext()) as BrowserContext;
+    if (opts.cookies.length > 0) {
+      await context.addCookies(opts.cookies);
+    }
+
+    sdkLogger.info(
+      { cookies: opts.cookies.length },
+      '[BrowserAcquire] Launched Playwright with stored cookies'
+    );
+
+    const page = await context.newPage();
+
+    return {
+      browser: browser as Browser,
+      context,
+      page,
+      cdpPage: null,
+      cdpWsUrl: null,
+      backend: 'playwright',
+      ownsBrowser: true,
+      screenshotDir,
+    };
+  } catch (err) {
+    // newContext/addCookies/newPage threw — don't leak the launched browser.
+    await (browser as Browser).close().catch(() => {});
+    throw err;
   }
-
-  sdkLogger.info(
-    { cookies: opts.cookies.length },
-    '[BrowserAcquire] Launched Playwright with stored cookies'
-  );
-
-  const page = await context.newPage();
-
-  return {
-    browser: browser as Browser,
-    context,
-    page,
-    cdpPage: null,
-    cdpWsUrl: null,
-    backend: 'playwright',
-    ownsBrowser: true,
-    screenshotDir,
-  };
 }

@@ -157,16 +157,11 @@ async function loadConfigDrivenProviderCatalog(): Promise<CatalogProvider[]> {
         ];
       })
       .filter((provider) => Boolean(provider.providerId));
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      return [];
-    }
+  } catch {
+    // Missing/invalid config file → no config-driven providers; the fallback
+    // catalog still applies.
     return [];
   }
-}
-
-async function buildSkillsCatalogResponse(installedSkills: SkillConfig[]) {
-  return { catalog: [], installedSkills };
 }
 
 function normalizeRuntimeProvider(provider: any, models: ProviderModelOption[]): CatalogProvider {
@@ -192,12 +187,21 @@ function getClaudeOAuthRuntime() {
   };
 }
 
-// Wrap handler with org context
-function withOrg(c: any, fn: () => Promise<Response>): Promise<Response> {
+// ── Route-level middleware ───────────────────────────────────────────────────
+//
+// Every agent route is org-scoped: it requires a valid auth context (`mcpAuth`)
+// and runs inside an `orgContext` keyed on the caller's organization. Both used
+// to be repeated per handler (`routes.get('/', mcpAuth, …)` plus a
+// `withOrg(c, …)` wrapper); they're applied once here. Registered before any
+// route handler below so they wrap all of them.
+
+routes.use('*', mcpAuth);
+
+routes.use('*', (c, next) => {
   const orgId = c.get('organizationId');
-  if (!orgId) return Promise.resolve(c.json({ error: 'Organization required' }, 401));
-  return orgContext.run({ organizationId: orgId }, fn);
-}
+  if (!orgId) return c.json({ error: 'Organization required' }, 401);
+  return orgContext.run({ organizationId: orgId }, next);
+});
 
 /**
  * Admin-tier auth gate.
@@ -349,526 +353,502 @@ function hasFreshCredential(profiles: AuthProfile[]): boolean {
 
 // ── List agents ──────────────────────────────────────────────────────────────
 
-routes.get('/', mcpAuth, async (c) => {
-  return withOrg(c, async () => {
-    const agents = await configStore.listAgents();
+routes.get('/', async (c) => {
+  const agents = await configStore.listAgents();
 
-    // Count connections per agent
-    const sql = getDb();
-    const orgId = c.get('organizationId')!;
-    const connCounts = await sql`
-      SELECT c.agent_id, count(*)::int as count
-      FROM agent_connections c
-      JOIN agents a ON a.id = c.agent_id
-      WHERE a.organization_id = ${orgId}
-      GROUP BY c.agent_id
-    `;
-    const countMap = new Map(connCounts.map((r: any) => [r.agent_id, r.count]));
+  // Count connections per agent
+  const sql = getDb();
+  const orgId = c.get('organizationId')!;
+  const connCounts = await sql`
+    SELECT c.agent_id, count(*)::int as count
+    FROM agent_connections c
+    JOIN agents a ON a.id = c.agent_id
+    WHERE a.organization_id = ${orgId}
+    GROUP BY c.agent_id
+  `;
+  const countMap = new Map(connCounts.map((r: any) => [r.agent_id, r.count]));
 
-    const activeConnCounts = await sql`
-      SELECT c.agent_id, count(*)::int as count
-      FROM agent_connections c
-      JOIN agents a ON a.id = c.agent_id
-      WHERE a.organization_id = ${orgId}
-        AND c.status = 'active'
-      GROUP BY c.agent_id
-    `;
-    const activeCountMap = new Map(activeConnCounts.map((r: any) => [r.agent_id, r.count]));
+  const activeConnCounts = await sql`
+    SELECT c.agent_id, count(*)::int as count
+    FROM agent_connections c
+    JOIN agents a ON a.id = c.agent_id
+    WHERE a.organization_id = ${orgId}
+      AND c.status = 'active'
+    GROUP BY c.agent_id
+  `;
+  const activeCountMap = new Map(activeConnCounts.map((r: any) => [r.agent_id, r.count]));
 
-    const clientCountMap = new Map<string, Set<string>>();
-    const runtimeClientCounts = await countRuntimeMessagingClientsByAgent(orgId);
-    for (const [agentId, runtimeIds] of runtimeClientCounts.entries()) {
-      let ids = clientCountMap.get(agentId);
-      if (!ids) {
-        ids = new Set<string>();
-        clientCountMap.set(agentId, ids);
-      }
-      for (const clientId of runtimeIds) ids.add(clientId);
+  const clientCountMap = new Map<string, Set<string>>();
+  const runtimeClientCounts = await countRuntimeMessagingClientsByAgent(orgId);
+  for (const [agentId, runtimeIds] of runtimeClientCounts.entries()) {
+    let ids = clientCountMap.get(agentId);
+    if (!ids) {
+      ids = new Set<string>();
+      clientCountMap.set(agentId, ids);
     }
+    for (const clientId of runtimeIds) ids.add(clientId);
+  }
 
-    // Watchers owned by each agent (active only).
-    const watcherCounts = await sql`
-      SELECT agent_id, count(*)::int as count
-      FROM watchers
-      WHERE organization_id = ${orgId} AND status = 'active' AND agent_id IS NOT NULL
-      GROUP BY agent_id
-    `;
-    const watcherCountMap = new Map(watcherCounts.map((r: any) => [r.agent_id, r.count]));
+  // Watchers owned by each agent (active only).
+  const watcherCounts = await sql`
+    SELECT agent_id, count(*)::int as count
+    FROM watchers
+    WHERE organization_id = ${orgId} AND status = 'active' AND agent_id IS NOT NULL
+    GROUP BY agent_id
+  `;
+  const watcherCountMap = new Map(watcherCounts.map((r: any) => [r.agent_id, r.count]));
 
-    // Distinct end-users per agent across messaging platforms.
-    const userCounts = await sql`
-      SELECT u.agent_id, count(DISTINCT (u.platform, u.user_id))::int as count
-      FROM agent_users u
-      JOIN agents a ON a.id = u.agent_id
-      WHERE a.organization_id = ${orgId}
-      GROUP BY u.agent_id
-    `;
-    const userCountMap = new Map(userCounts.map((r: any) => [r.agent_id, r.count]));
+  // Distinct end-users per agent across messaging platforms.
+  const userCounts = await sql`
+    SELECT u.agent_id, count(DISTINCT (u.platform, u.user_id))::int as count
+    FROM agent_users u
+    JOIN agents a ON a.id = u.agent_id
+    WHERE a.organization_id = ${orgId}
+    GROUP BY u.agent_id
+  `;
+  const userCountMap = new Map(userCounts.map((r: any) => [r.agent_id, r.count]));
 
-    // Distinct connection platforms per agent.
-    const platformRows = await sql`
-      SELECT c.agent_id, array_agg(DISTINCT c.platform) as platforms
-      FROM agent_connections c
-      JOIN agents a ON a.id = c.agent_id
-      WHERE a.organization_id = ${orgId}
-      GROUP BY c.agent_id
-    `;
-    const platformsMap = new Map(platformRows.map((r: any) => [r.agent_id, (r.platforms ?? []) as string[]]));
+  // Distinct connection platforms per agent.
+  const platformRows = await sql`
+    SELECT c.agent_id, array_agg(DISTINCT c.platform) as platforms
+    FROM agent_connections c
+    JOIN agents a ON a.id = c.agent_id
+    WHERE a.organization_id = ${orgId}
+    GROUP BY c.agent_id
+  `;
+  const platformsMap = new Map(platformRows.map((r: any) => [r.agent_id, (r.platforms ?? []) as string[]]));
 
-    // Provider ids per agent, from the agent row's installed_providers list
-    // (the canonical "which providers does this agent have" set).
-    const providerRows = await sql`
-      SELECT id, installed_providers
-      FROM agents
-      WHERE organization_id = ${orgId}
-    `;
-    const providersMap = new Map<string, string[]>();
-    for (const r of providerRows) {
-      const set = new Set<string>();
-      for (const p of ((r as any).installed_providers ?? []) as any[]) {
-        const id = p?.providerId ?? p?.provider;
-        if (id) set.add(String(id));
-      }
-      providersMap.set((r as any).id, [...set]);
+  // Provider ids per agent, from the agent row's installed_providers list
+  // (the canonical "which providers does this agent have" set).
+  const providerRows = await sql`
+    SELECT id, installed_providers
+    FROM agents
+    WHERE organization_id = ${orgId}
+  `;
+  const providersMap = new Map<string, string[]>();
+  for (const r of providerRows) {
+    const set = new Set<string>();
+    for (const p of ((r as any).installed_providers ?? []) as any[]) {
+      const id = p?.providerId ?? p?.provider;
+      if (id) set.add(String(id));
     }
+    providersMap.set((r as any).id, [...set]);
+  }
 
-    return c.json({
-      agents: agents.map((a) => ({
-        ...a,
-        connectionCount: countMap.get(a.agentId) ?? 0,
-        activeConnectionCount: activeCountMap.get(a.agentId) ?? 0,
-        clientCount: clientCountMap.get(a.agentId)?.size ?? 0,
-        watcherCount: watcherCountMap.get(a.agentId) ?? 0,
-        userCount: userCountMap.get(a.agentId) ?? 0,
-        platforms: platformsMap.get(a.agentId) ?? [],
-        providers: providersMap.get(a.agentId) ?? [],
-        status: (activeCountMap.get(a.agentId) ?? 0) > 0 ? 'active' : 'idle',
-      })),
-    });
+  return c.json({
+    agents: agents.map((a) => ({
+      ...a,
+      connectionCount: countMap.get(a.agentId) ?? 0,
+      activeConnectionCount: activeCountMap.get(a.agentId) ?? 0,
+      clientCount: clientCountMap.get(a.agentId)?.size ?? 0,
+      watcherCount: watcherCountMap.get(a.agentId) ?? 0,
+      userCount: userCountMap.get(a.agentId) ?? 0,
+      platforms: platformsMap.get(a.agentId) ?? [],
+      providers: providersMap.get(a.agentId) ?? [],
+      status: (activeCountMap.get(a.agentId) ?? 0) > 0 ? 'active' : 'idle',
+    })),
   });
 });
 
 // ── Create agent ─────────────────────────────────────────────────────────────
 
-routes.post('/', mcpAuth, async (c) => {
+routes.post('/', async (c) => {
   const denied = requireSessionOrAdminPat(c);
   if (denied) return denied;
-  return withOrg(c, async () => {
-    const body = await c.req.json<{
-      agentId: string;
-      name: string;
-      description?: string;
-    }>();
-    const user = c.get('user');
-    if (!user) return c.json({ error: 'Authentication required' }, 401);
+  const body = await c.req.json<{
+    agentId: string;
+    name: string;
+    description?: string;
+  }>();
+  const user = c.get('user');
+  if (!user) return c.json({ error: 'Authentication required' }, 401);
 
-    const { agentId, name, description } = body;
-    if (!agentId || !name) return c.json({ error: 'agentId and name are required' }, 400);
+  const { agentId, name, description } = body;
+  if (!agentId || !name) return c.json({ error: 'agentId and name are required' }, 400);
 
-    // Validate agentId format
-    if (!AGENT_ID_PATTERN.test(agentId)) {
+  // Validate agentId format
+  if (!AGENT_ID_PATTERN.test(agentId)) {
+    return c.json(
+      {
+        error:
+          'agentId must be 3-60 lowercase alphanumeric chars with hyphens, starting with a letter',
+      },
+      400
+    );
+  }
+
+  const orgId = c.get('organizationId') as string;
+
+  // Atomic create + auto-inject. Two concurrent `lobu apply` runs from the
+  // same operator can both reach this endpoint with the same agentId. The
+  // previous version did INSERT-then-saveSettings as two separate writes:
+  // a "loser" returning 200 in the idempotent branch could see the row
+  // before the winner's saveSettings landed, then immediately PATCH
+  // `mcpServers` with operator config — only for the winner's deferred
+  // saveSettings to clobber it moments later. Folding `mcp_servers` into
+  // the same INSERT statement closes that gap: the row + auto-injected
+  // MCP server land atomically and the loser's idempotent 200 already
+  // reflects fully-initialized state.
+  const sql = getDb();
+  const now = new Date();
+  const orgSlug = c.req.param('orgSlug');
+  const publicUrl =
+    getConfiguredPublicOrigin() || `http://localhost:${process.env.PORT || '8787'}`;
+  const ownerMcpServers = {
+    'lobu-memory': { url: `${publicUrl}/mcp/${orgSlug}`, type: 'streamable-http' },
+  };
+  const ownerPreApprovedTools = ['/mcp/lobu-memory/tools/*'];
+  const inserted = await sql`
+    INSERT INTO agents (
+      id, organization_id, name, description, owner_platform, owner_user_id,
+      mcp_servers, pre_approved_tools, created_at, updated_at
+    )
+    VALUES (
+      ${agentId}, ${orgId}, ${name}, ${description ?? null},
+      'lobu', ${user.id},
+      ${sql.json(ownerMcpServers)}, ${sql.json(ownerPreApprovedTools)}, ${now}, ${now}
+    )
+    ON CONFLICT (id) DO NOTHING
+    RETURNING id
+  `;
+
+  if (inserted.length === 0) {
+    // Another writer (or a previous apply cycle) already owns this id.
+    // If they're in this org → idempotent 200. If another org → 409.
+    const existingOrgId = await getAgentOrganizationId(agentId);
+    if (existingOrgId === orgId) {
+      const existing = await configStore.getMetadata(agentId);
+      if (!existing) {
+        return c.json({ error: 'Agent metadata missing' }, 500);
+      }
       return c.json(
         {
-          error:
-            'agentId must be 3-60 lowercase alphanumeric chars with hyphens, starting with a letter',
+          agentId,
+          name: existing.name,
+          description: existing.description,
         },
-        400
+        200
       );
     }
+    return c.json({ error: 'Agent ID already exists in another organization' }, 409);
+  }
 
-    const orgId = c.get('organizationId') as string;
-
-    // Atomic create + auto-inject. Two concurrent `lobu apply` runs from the
-    // same operator can both reach this endpoint with the same agentId. The
-    // previous version did INSERT-then-saveSettings as two separate writes:
-    // a "loser" returning 200 in the idempotent branch could see the row
-    // before the winner's saveSettings landed, then immediately PATCH
-    // `mcpServers` with operator config — only for the winner's deferred
-    // saveSettings to clobber it moments later. Folding `mcp_servers` into
-    // the same INSERT statement closes that gap: the row + auto-injected
-    // MCP server land atomically and the loser's idempotent 200 already
-    // reflects fully-initialized state.
-    const sql = getDb();
-    const now = new Date();
-    const orgSlug = c.req.param('orgSlug');
-    const publicUrl =
-      getConfiguredPublicOrigin() || `http://localhost:${process.env.PORT || '8787'}`;
-    const ownerMcpServers = {
-      'lobu-memory': { url: `${publicUrl}/mcp/${orgSlug}`, type: 'streamable-http' },
-    };
-    const ownerPreApprovedTools = ['/mcp/lobu-memory/tools/*'];
-    const inserted = await sql`
-      INSERT INTO agents (
-        id, organization_id, name, description, owner_platform, owner_user_id,
-        mcp_servers, pre_approved_tools, created_at, updated_at
-      )
-      VALUES (
-        ${agentId}, ${orgId}, ${name}, ${description ?? null},
-        'lobu', ${user.id},
-        ${sql.json(ownerMcpServers)}, ${sql.json(ownerPreApprovedTools)}, ${now}, ${now}
-      )
-      ON CONFLICT (id) DO NOTHING
-      RETURNING id
-    `;
-
-    if (inserted.length === 0) {
-      // Another writer (or a previous apply cycle) already owns this id.
-      // If they're in this org → idempotent 200. If another org → 409.
-      const existingOrgId = await getAgentOrganizationId(agentId);
-      if (existingOrgId === orgId) {
-        const existing = await configStore.getMetadata(agentId);
-        if (!existing) {
-          return c.json({ error: 'Agent metadata missing' }, 500);
-        }
-        return c.json(
-          {
-            agentId,
-            name: existing.name,
-            description: existing.description,
-          },
-          200
-        );
-      }
-      return c.json({ error: 'Agent ID already exists in another organization' }, 409);
-    }
-
-    return c.json({ agentId, name, description }, 201);
-  });
+  return c.json({ agentId, name, description }, 201);
 });
 
 // ── Get agent detail ─────────────────────────────────────────────────────────
 
-routes.get('/:agentId', mcpAuth, async (c) => {
-  return withOrg(c, async () => {
-    const { agentId } = c.req.param();
-    const metadata = await configStore.getMetadata(agentId);
-    if (!metadata) return c.json({ error: 'Agent not found' }, 404);
+routes.get('/:agentId', async (c) => {
+  const { agentId } = c.req.param();
+  const metadata = await configStore.getMetadata(agentId);
+  if (!metadata) return c.json({ error: 'Agent not found' }, 404);
 
-    const settings = await configStore.getSettings(agentId);
-    const sql = getDb();
-    const organizationId = c.get('organizationId') as string;
-    const [connectionStats] = await sql`
-      SELECT
-        count(*)::int as connection_count,
-        count(*) FILTER (WHERE status = 'active')::int as active_connection_count
-      FROM agent_connections
-      WHERE agent_id = ${agentId}
-    `;
-    const clientIds = new Set<string>();
-    const runtimeClientCounts = await countRuntimeMessagingClientsByAgent(organizationId);
-    for (const runtimeClientId of runtimeClientCounts.get(agentId) ?? []) {
-      clientIds.add(runtimeClientId);
-    }
+  const settings = await configStore.getSettings(agentId);
+  const sql = getDb();
+  const organizationId = c.get('organizationId') as string;
+  const [connectionStats] = await sql`
+    SELECT
+      count(*)::int as connection_count,
+      count(*) FILTER (WHERE status = 'active')::int as active_connection_count
+    FROM agent_connections
+    WHERE agent_id = ${agentId}
+  `;
+  const clientIds = new Set<string>();
+  const runtimeClientCounts = await countRuntimeMessagingClientsByAgent(organizationId);
+  for (const runtimeClientId of runtimeClientCounts.get(agentId) ?? []) {
+    clientIds.add(runtimeClientId);
+  }
 
-    return c.json({
-      ...metadata,
-      settings,
-      connectionCount: connectionStats?.connection_count ?? 0,
-      activeConnectionCount: connectionStats?.active_connection_count ?? 0,
-      clientCount: clientIds.size,
-      status: (connectionStats?.active_connection_count ?? 0) > 0 ? 'active' : 'idle',
-    });
+  return c.json({
+    ...metadata,
+    settings,
+    connectionCount: connectionStats?.connection_count ?? 0,
+    activeConnectionCount: connectionStats?.active_connection_count ?? 0,
+    clientCount: clientIds.size,
+    status: (connectionStats?.active_connection_count ?? 0) > 0 ? 'active' : 'idle',
   });
 });
 
 // ── Update agent metadata ────────────────────────────────────────────────────
 
-routes.patch('/:agentId', mcpAuth, async (c) => {
+routes.patch('/:agentId', async (c) => {
   const denied = requireSessionOrAdminPat(c);
   if (denied) return denied;
-  return withOrg(c, async () => {
-    const { agentId } = c.req.param();
-    const body = await c.req.json<{ name?: string; description?: string }>();
+  const { agentId } = c.req.param();
+  const body = await c.req.json<{ name?: string; description?: string }>();
 
-    if (!(await configStore.hasAgent(agentId))) {
-      return c.json({ error: 'Agent not found' }, 404);
-    }
+  if (!(await configStore.hasAgent(agentId))) {
+    return c.json({ error: 'Agent not found' }, 404);
+  }
 
-    await configStore.updateMetadata(agentId, body);
-    return c.json({ success: true });
-  });
+  await configStore.updateMetadata(agentId, body);
+  return c.json({ success: true });
 });
 
 // ── Delete agent ─────────────────────────────────────────────────────────────
 
-routes.delete('/:agentId', mcpAuth, async (c) => {
+routes.delete('/:agentId', async (c) => {
   const denied = requireSessionOrAdminPat(c);
   if (denied) return denied;
-  return withOrg(c, async () => {
-    const { agentId } = c.req.param();
+  const { agentId } = c.req.param();
 
-    if (!(await configStore.hasAgent(agentId))) {
-      return c.json({ error: 'Agent not found' }, 404);
-    }
+  if (!(await configStore.hasAgent(agentId))) {
+    return c.json({ error: 'Agent not found' }, 404);
+  }
 
-    // Cascade handled by FK ON DELETE CASCADE
-    await configStore.deleteMetadata(agentId);
-    return c.json({ success: true });
-  });
+  // Cascade handled by FK ON DELETE CASCADE
+  await configStore.deleteMetadata(agentId);
+  return c.json({ success: true });
 });
 
 // ── Get agent config (settings) ──────────────────────────────────────────────
 
-routes.get('/:agentId/config', mcpAuth, async (c) => {
-  return withOrg(c, async () => {
-    const { agentId } = c.req.param();
-    const settings = await configStore.getSettings(agentId);
-    if (!settings) return c.json({ error: 'Agent not found' }, 404);
+routes.get('/:agentId/config', async (c) => {
+  const { agentId } = c.req.param();
+  const settings = await configStore.getSettings(agentId);
+  if (!settings) return c.json({ error: 'Agent not found' }, 404);
 
-    // `configStore` doesn't carry auth profiles (they live in
-    // `user_auth_profiles`, keyed by the requesting user). Merge the caller's
-    // sanitized profiles in so the agent settings UI can show which providers
-    // already have a credential connected.
-    const user = c.get('user');
-    const authProfilesManager = getLobuCoreServices()?.getAuthProfilesManager?.();
-    const authProfiles =
-      user?.id && authProfilesManager
-        ? (await authProfilesManager.getUserAuthProfileStore().list(user.id, agentId)).map(
-            sanitizeAuthProfileForClient
-          )
-        : [];
+  // `configStore` doesn't carry auth profiles (they live in
+  // `user_auth_profiles`, keyed by the requesting user). Merge the caller's
+  // sanitized profiles in so the agent settings UI can show which providers
+  // already have a credential connected.
+  const user = c.get('user');
+  const authProfilesManager = getLobuCoreServices()?.getAuthProfilesManager?.();
+  const authProfiles =
+    user?.id && authProfilesManager
+      ? (await authProfilesManager.getUserAuthProfileStore().list(user.id, agentId)).map(
+          sanitizeAuthProfileForClient
+        )
+      : [];
 
-    return c.json({ ...settings, authProfiles });
-  });
+  return c.json({ ...settings, authProfiles });
 });
 
 // ── Get provider catalog and model options ───────────────────────────────────
 
-routes.get('/:agentId/config/providers/catalog', mcpAuth, async (c) => {
-  return withOrg(c, async () => {
-    const { agentId } = c.req.param();
-    const settings = await configStore.getSettings(agentId);
-    if (!settings) return c.json({ error: 'Agent not found' }, 404);
+routes.get('/:agentId/config/providers/catalog', async (c) => {
+  const { agentId } = c.req.param();
+  const settings = await configStore.getSettings(agentId);
+  if (!settings) return c.json({ error: 'Agent not found' }, 404);
 
-    const user = c.get('user');
-    const installedProviders = settings.installedProviders ?? [];
-    const installedIds = new Set(installedProviders.map((provider) => provider.providerId));
+  const user = c.get('user');
+  const installedProviders = settings.installedProviders ?? [];
+  const installedIds = new Set(installedProviders.map((provider) => provider.providerId));
 
-    const coreServices = getLobuCoreServices();
-    const providerCatalogService = coreServices?.getProviderCatalogService?.();
-    const catalogProviders = providerCatalogService?.listCatalogProviders?.() ?? [];
+  const coreServices = getLobuCoreServices();
+  const providerCatalogService = coreServices?.getProviderCatalogService?.();
+  const catalogProviders = providerCatalogService?.listCatalogProviders?.() ?? [];
 
-    const runtimeModels = Object.fromEntries(
-      await Promise.all(
-        catalogProviders.map(async (provider: any) => {
-          try {
-            if (typeof provider?.getModelOptions !== 'function' || !user?.id) {
-              return [provider.providerId, []];
-            }
-            const options = await provider.getModelOptions(agentId, user.id);
-            return [provider.providerId, Array.isArray(options) ? options : []];
-          } catch {
+  const runtimeModels = Object.fromEntries(
+    await Promise.all(
+      catalogProviders.map(async (provider: any) => {
+        try {
+          if (typeof provider?.getModelOptions !== 'function' || !user?.id) {
             return [provider.providerId, []];
           }
-        })
-      )
-    );
-    const runtimeCatalog = catalogProviders.map((provider: any) =>
-      normalizeRuntimeProvider(provider, runtimeModels[provider.providerId] ?? [])
-    );
-    const fallbackCatalog = mergeCatalogProviders(
-      FALLBACK_PROVIDER_CATALOG,
-      await loadConfigDrivenProviderCatalog()
-    );
-    const mergedCatalog = mergeCatalogProviders(runtimeCatalog, fallbackCatalog);
-    const models = Object.fromEntries(
-      mergedCatalog.map((provider) => [provider.providerId, provider.models])
-    );
-    const catalog = mergedCatalog.map(({ models: _models, ...provider }) => ({
-      ...provider,
-      installed: installedIds.has(provider.providerId),
-    }));
+          const options = await provider.getModelOptions(agentId, user.id);
+          return [provider.providerId, Array.isArray(options) ? options : []];
+        } catch {
+          return [provider.providerId, []];
+        }
+      })
+    )
+  );
+  const runtimeCatalog = catalogProviders.map((provider: any) =>
+    normalizeRuntimeProvider(provider, runtimeModels[provider.providerId] ?? [])
+  );
+  const fallbackCatalog = mergeCatalogProviders(
+    FALLBACK_PROVIDER_CATALOG,
+    await loadConfigDrivenProviderCatalog()
+  );
+  const mergedCatalog = mergeCatalogProviders(runtimeCatalog, fallbackCatalog);
+  const models = Object.fromEntries(
+    mergedCatalog.map((provider) => [provider.providerId, provider.models])
+  );
+  const catalog = mergedCatalog.map(({ models: _models, ...provider }) => ({
+    ...provider,
+    installed: installedIds.has(provider.providerId),
+  }));
 
-    return c.json({
-      catalog,
-      installedProviders,
-      models,
-    });
+  return c.json({
+    catalog,
+    installedProviders,
+    models,
   });
 });
 
 // ── Get skills catalog ───────────────────────────────────────────────────────
 
-routes.get('/config/skills/catalog', mcpAuth, async (c) => {
-  return withOrg(c, async () => {
-    return c.json(await buildSkillsCatalogResponse([]));
-  });
+routes.get('/config/skills/catalog', async (c) => {
+  return c.json({ catalog: [], installedSkills: [] });
 });
 
-routes.get('/:agentId/config/skills/catalog', mcpAuth, async (c) => {
-  return withOrg(c, async () => {
-    const { agentId } = c.req.param();
-    const settings = await configStore.getSettings(agentId);
-    if (!settings) return c.json({ error: 'Agent not found' }, 404);
+routes.get('/:agentId/config/skills/catalog', async (c) => {
+  const { agentId } = c.req.param();
+  const settings = await configStore.getSettings(agentId);
+  if (!settings) return c.json({ error: 'Agent not found' }, 404);
 
-    const installedSkills: SkillConfig[] = settings.skillsConfig?.skills ?? [];
-    return c.json(await buildSkillsCatalogResponse(installedSkills));
-  });
+  const installedSkills: SkillConfig[] = settings.skillsConfig?.skills ?? [];
+  return c.json({ catalog: [], installedSkills });
 });
 
 // ── Start provider OAuth login ───────────────────────────────────────────────
 
-routes.get('/:agentId/providers/:providerId/oauth/start', mcpAuth, async (c) => {
+routes.get('/:agentId/providers/:providerId/oauth/start', async (c) => {
   const denied = requireSessionOrAdminPat(c);
   if (denied) return denied;
-  return withOrg(c, async () => {
-    const { agentId, providerId } = c.req.param();
-    const user = c.get('user');
-    if (!user) return c.json({ error: 'Authentication required' }, 401);
+  const { agentId, providerId } = c.req.param();
+  const user = c.get('user');
+  if (!user) return c.json({ error: 'Authentication required' }, 401);
 
-    if (!(await configStore.hasAgent(agentId))) {
-      return c.json({ error: 'Agent not found' }, 404);
-    }
+  if (!(await configStore.hasAgent(agentId))) {
+    return c.json({ error: 'Agent not found' }, 404);
+  }
 
-    if (providerId !== 'claude') {
-      return c.json({ error: 'OAuth start is not supported for this provider' }, 400);
-    }
+  if (providerId !== 'claude') {
+    return c.json({ error: 'OAuth start is not supported for this provider' }, 400);
+  }
 
-    const coreServices = getLobuCoreServices();
-    const oauthStateStore = coreServices?.getOAuthStateStore?.();
-    if (!oauthStateStore) {
-      return c.json({ error: 'Embedded Lobu auth is not available' }, 503);
-    }
+  const coreServices = getLobuCoreServices();
+  const oauthStateStore = coreServices?.getOAuthStateStore?.();
+  if (!oauthStateStore) {
+    return c.json({ error: 'Embedded Lobu auth is not available' }, 503);
+  }
 
-    const { oauthClient } = getClaudeOAuthRuntime();
-    const codeVerifier = oauthClient.generateCodeVerifier();
-    const state = await oauthStateStore.create({
-      userId: user.id,
-      agentId,
-      codeVerifier,
-      context: { platform: 'web', channelId: agentId },
-    });
-
-    return c.redirect(oauthClient.buildAuthUrl(state, codeVerifier));
+  const { oauthClient } = getClaudeOAuthRuntime();
+  const codeVerifier = oauthClient.generateCodeVerifier();
+  const state = await oauthStateStore.create({
+    userId: user.id,
+    agentId,
+    codeVerifier,
+    context: { platform: 'web', channelId: agentId },
   });
+
+  return c.redirect(oauthClient.buildAuthUrl(state, codeVerifier));
 });
 
 // ── Complete provider OAuth login ────────────────────────────────────────────
 
-routes.post('/:agentId/providers/:providerId/oauth/code', mcpAuth, async (c) => {
+routes.post('/:agentId/providers/:providerId/oauth/code', async (c) => {
   const denied = requireSessionOrAdminPat(c);
   if (denied) return denied;
-  return withOrg(c, async () => {
-    const { agentId, providerId } = c.req.param();
-    const user = c.get('user');
-    if (!user) return c.json({ error: 'Authentication required' }, 401);
+  const { agentId, providerId } = c.req.param();
+  const user = c.get('user');
+  if (!user) return c.json({ error: 'Authentication required' }, 401);
 
-    if (!(await configStore.hasAgent(agentId))) {
-      return c.json({ error: 'Agent not found' }, 404);
-    }
+  if (!(await configStore.hasAgent(agentId))) {
+    return c.json({ error: 'Agent not found' }, 404);
+  }
 
-    if (providerId !== 'claude') {
-      return c.json({ error: 'OAuth code exchange is not supported for this provider' }, 400);
-    }
+  if (providerId !== 'claude') {
+    return c.json({ error: 'OAuth code exchange is not supported for this provider' }, 400);
+  }
 
-    const body = (await c.req.json<{ code?: string }>().catch(() => ({}))) as { code?: string };
-    const input = body.code?.trim();
-    if (!input) return c.json({ error: 'Missing OAuth code' }, 400);
+  const body = (await c.req.json<{ code?: string }>().catch(() => ({}))) as { code?: string };
+  const input = body.code?.trim();
+  if (!input) return c.json({ error: 'Missing OAuth code' }, 400);
 
-    const parts = input.split('#');
-    if (parts.length !== 2 || !parts[0] || !parts[1]) {
-      return c.json({ error: 'OAuth code must be in code#state format' }, 400);
-    }
+  const parts = input.split('#');
+  if (parts.length !== 2 || !parts[0] || !parts[1]) {
+    return c.json({ error: 'OAuth code must be in code#state format' }, 400);
+  }
 
-    const coreServices = getLobuCoreServices();
-    const authProfilesManager = coreServices?.getAuthProfilesManager?.();
-    const oauthStateStore = coreServices?.getOAuthStateStore?.();
-    if (!authProfilesManager || !oauthStateStore) {
-      return c.json({ error: 'Embedded Lobu auth is not available' }, 503);
-    }
+  const coreServices = getLobuCoreServices();
+  const authProfilesManager = coreServices?.getAuthProfilesManager?.();
+  const oauthStateStore = coreServices?.getOAuthStateStore?.();
+  if (!authProfilesManager || !oauthStateStore) {
+    return c.json({ error: 'Embedded Lobu auth is not available' }, 503);
+  }
 
-    const stateData = await oauthStateStore.consume(parts[1].trim());
-    if (!stateData) {
-      return c.json({ error: 'OAuth state expired or is invalid' }, 400);
-    }
+  const stateData = await oauthStateStore.consume(parts[1].trim());
+  if (!stateData) {
+    return c.json({ error: 'OAuth state expired or is invalid' }, 400);
+  }
 
-    if (stateData.agentId !== agentId || stateData.userId !== user.id) {
-      return c.json({ error: 'OAuth state does not match this agent session' }, 403);
-    }
-    const { oauthClient, createAuthProfileLabel } = getClaudeOAuthRuntime();
+  if (stateData.agentId !== agentId || stateData.userId !== user.id) {
+    return c.json({ error: 'OAuth state does not match this agent session' }, 403);
+  }
+  const { oauthClient, createAuthProfileLabel } = getClaudeOAuthRuntime();
 
-    try {
-      const credentials = await oauthClient.exchangeCodeForToken(
-        parts[0].trim(),
-        stateData.codeVerifier,
-        'https://console.anthropic.com/oauth/code/callback',
-        parts[1].trim()
-      );
+  try {
+    const credentials = await oauthClient.exchangeCodeForToken(
+      parts[0].trim(),
+      stateData.codeVerifier,
+      'https://console.anthropic.com/oauth/code/callback',
+      parts[1].trim()
+    );
 
-      await authProfilesManager.upsertProfile({
-        agentId,
-        provider: providerId,
-        credential: credentials.accessToken,
-        authType: 'oauth',
-        label: createAuthProfileLabel('Claude', credentials.accessToken),
-        metadata: {
-          refreshToken: credentials.refreshToken,
-          expiresAt: credentials.expiresAt,
-        },
-        makePrimary: true,
-      });
+    await authProfilesManager.upsertProfile({
+      agentId,
+      provider: providerId,
+      credential: credentials.accessToken,
+      authType: 'oauth',
+      label: createAuthProfileLabel('Claude', credentials.accessToken),
+      metadata: {
+        refreshToken: credentials.refreshToken,
+        expiresAt: credentials.expiresAt,
+      },
+      makePrimary: true,
+    });
 
-      return c.json({ success: true });
-    } catch (error) {
-      return c.json(
-        {
-          error: error instanceof Error ? error.message : 'OAuth exchange failed',
-        },
-        400
-      );
-    }
-  });
+    return c.json({ success: true });
+  } catch (error) {
+    return c.json(
+      {
+        error: error instanceof Error ? error.message : 'OAuth exchange failed',
+      },
+      400
+    );
+  }
 });
 
 // ── Update agent config (settings) ───────────────────────────────────────────
 
-routes.patch('/:agentId/config', mcpAuth, async (c) => {
+routes.patch('/:agentId/config', async (c) => {
   const denied = requireSessionOrAdminPat(c);
   if (denied) return denied;
-  return withOrg(c, async () => {
-    const { agentId } = c.req.param();
-    const updates = await c.req.json();
+  const { agentId } = c.req.param();
+  const updates = await c.req.json();
 
-    if (!(await configStore.hasAgent(agentId))) {
-      return c.json({ error: 'Agent not found' }, 404);
-    }
+  if (!(await configStore.hasAgent(agentId))) {
+    return c.json({ error: 'Agent not found' }, 404);
+  }
 
-    // Auth profiles aren't part of the agent settings row — they're
-    // user-scoped and live in `user_auth_profiles` with secrets in the secret
-    // store. Pull them out of the settings patch and persist them through the
-    // proper path; otherwise an api-key typed into the UI is silently dropped.
-    const { authProfiles, ...settingsUpdates } = updates as {
-      authProfiles?: AuthProfile[];
-    } & Record<string, unknown>;
-    if (Array.isArray(authProfiles)) {
-      const user = c.get('user');
-      if (!user?.id) {
-        // Admin-PAT callers (`lobu apply`) manage declared-agent credentials
-        // out of band; reject only if they actually tried to set one here.
-        if (hasFreshCredential(authProfiles)) {
-          return c.json(
-            { error: 'Setting agent auth profiles requires a web session' },
-            403
-          );
-        }
-      } else {
-        try {
-          await reconcileAgentAuthProfiles(agentId, user.id, authProfiles);
-        } catch (error) {
-          return c.json(
-            {
-              error:
-                error instanceof Error ? error.message : 'Failed to persist auth profiles',
-            },
-            503
-          );
-        }
+  // Auth profiles aren't part of the agent settings row — they're
+  // user-scoped and live in `user_auth_profiles` with secrets in the secret
+  // store. Pull them out of the settings patch and persist them through the
+  // proper path; otherwise an api-key typed into the UI is silently dropped.
+  const { authProfiles, ...settingsUpdates } = updates as {
+    authProfiles?: AuthProfile[];
+  } & Record<string, unknown>;
+  if (Array.isArray(authProfiles)) {
+    const user = c.get('user');
+    if (!user?.id) {
+      // Admin-PAT callers (`lobu apply`) manage declared-agent credentials
+      // out of band; reject only if they actually tried to set one here.
+      if (hasFreshCredential(authProfiles)) {
+        return c.json(
+          { error: 'Setting agent auth profiles requires a web session' },
+          403
+        );
+      }
+    } else {
+      try {
+        await reconcileAgentAuthProfiles(agentId, user.id, authProfiles);
+      } catch (error) {
+        return c.json(
+          {
+            error:
+              error instanceof Error ? error.message : 'Failed to persist auth profiles',
+          },
+          503
+        );
       }
     }
+  }
 
-    await configStore.updateSettings(agentId, settingsUpdates);
-    return c.json({ success: true });
-  });
+  await configStore.updateSettings(agentId, settingsUpdates);
+  return c.json({ success: true });
 });
 
 // ============================================================
@@ -881,77 +861,73 @@ routes.patch('/:agentId/config', mcpAuth, async (c) => {
 
 // ── List platforms ───────────────────────────────────────────────────────────
 
-routes.get('/:agentId/platforms', mcpAuth, async (c) => {
-  return withOrg(c, async () => {
-    const { agentId } = c.req.param();
-    if (!(await configStore.hasAgent(agentId))) {
-      return c.json({ error: 'Agent not found' }, 404);
-    }
-    const chatManager = getChatInstanceManager();
-    let platforms = await connectionStore.listConnections({
-      agentId,
-    });
-
-    if (chatManager) {
-      try {
-        const runtimePlatforms = await chatManager.listConnections({
-          agentId,
-        });
-        if (runtimePlatforms.length > 0) {
-          platforms = runtimePlatforms;
-        }
-      } catch {
-        // Fall back to PostgreSQL snapshot.
-      }
-    }
-
-    return c.json({ platforms });
+routes.get('/:agentId/platforms', async (c) => {
+  const { agentId } = c.req.param();
+  if (!(await configStore.hasAgent(agentId))) {
+    return c.json({ error: 'Agent not found' }, 404);
+  }
+  const chatManager = getChatInstanceManager();
+  let platforms = await connectionStore.listConnections({
+    agentId,
   });
+
+  if (chatManager) {
+    try {
+      const runtimePlatforms = await chatManager.listConnections({
+        agentId,
+      });
+      if (runtimePlatforms.length > 0) {
+        platforms = runtimePlatforms;
+      }
+    } catch {
+      // Fall back to PostgreSQL snapshot.
+    }
+  }
+
+  return c.json({ platforms });
 });
 
 // ── Create platform ──────────────────────────────────────────────────────────
 
-routes.post('/:agentId/platforms', mcpAuth, async (c) => {
+routes.post('/:agentId/platforms', async (c) => {
   const denied = requireSessionOrAdminPat(c);
   if (denied) return denied;
-  return withOrg(c, async () => {
-    const { agentId } = c.req.param();
-    if (!(await configStore.hasAgent(agentId))) {
-      return c.json({ error: 'Agent not found' }, 404);
+  const { agentId } = c.req.param();
+  if (!(await configStore.hasAgent(agentId))) {
+    return c.json({ error: 'Agent not found' }, 404);
+  }
+
+  const body = await c.req.json<{
+    platform: string;
+    config?: Record<string, unknown>;
+    settings?: { allowFrom?: string[]; allowGroups?: boolean };
+  }>();
+  const { platform, config = {}, settings = {} } = body;
+  if (!platform) return c.json({ error: 'platform is required' }, 400);
+
+  const chatManager = getChatInstanceManager();
+  if (chatManager) {
+    try {
+      const created = await chatManager.addConnection(
+        platform,
+        agentId,
+        { platform, ...config },
+        { allowGroups: true, ...settings }
+      );
+      return c.json({ platform: created }, 201);
+    } catch (error: any) {
+      return c.json({ error: error.message || 'Failed to create platform' }, 400);
     }
+  }
 
-    const body = await c.req.json<{
-      platform: string;
-      config?: Record<string, unknown>;
-      settings?: { allowFrom?: string[]; allowGroups?: boolean };
-    }>();
-    const { platform, config = {}, settings = {} } = body;
-    if (!platform) return c.json({ error: 'platform is required' }, 400);
-
-    const chatManager = getChatInstanceManager();
-    if (chatManager) {
-      try {
-        const created = await chatManager.addConnection(
-          platform,
-          agentId,
-          { platform, ...config },
-          { allowGroups: true, ...settings }
-        );
-        return c.json({ platform: created }, 201);
-      } catch (error: any) {
-        return c.json({ error: error.message || 'Failed to create platform' }, 400);
-      }
-    }
-
-    // No ChatInstanceManager — refuse the write rather than persist
-    // plaintext secrets directly. Secret normalization (`secret://` ref
-    // indirection) lives on the manager; bypassing it would leak bot
-    // tokens into the agent_connections.config JSON.
-    return c.json(
-      { error: 'platform manager unavailable — retry once startup completes' },
-      503
-    );
-  });
+  // No ChatInstanceManager — refuse the write rather than persist
+  // plaintext secrets directly. Secret normalization (`secret://` ref
+  // indirection) lives on the manager; bypassing it would leak bot
+  // tokens into the agent_connections.config JSON.
+  return c.json(
+    { error: 'platform manager unavailable — retry once startup completes' },
+    503
+  );
 });
 
 // ── Upsert platform by stable ID ─────────────────────────────────────────────
@@ -1052,168 +1028,166 @@ async function withStablePlatformLock<T>(stableId: string, fn: () => Promise<T>)
   return (await work) as T;
 }
 
-routes.put('/:agentId/platforms/by-stable-id/:stableId', mcpAuth, async (c) => {
+routes.put('/:agentId/platforms/by-stable-id/:stableId', async (c) => {
   const denied = requireSessionOrAdminPat(c);
   if (denied) return denied;
-  return withOrg(c, async () => {
-    const { agentId, stableId } = c.req.param();
-    if (!(await configStore.hasAgent(agentId))) {
-      return c.json({ error: 'Agent not found' }, 404);
+  const { agentId, stableId } = c.req.param();
+  if (!(await configStore.hasAgent(agentId))) {
+    return c.json({ error: 'Agent not found' }, 404);
+  }
+
+  const body = await c.req.json<{
+    platform: string;
+    config?: Record<string, unknown>;
+    settings?: { allowFrom?: string[]; allowGroups?: boolean };
+  }>();
+  const { platform, config = {}, settings = {} } = body;
+  if (!platform) return c.json({ error: 'platform is required' }, 400);
+
+  // Serialize concurrent PUTs for the same stable ID. The PR-466 atomic-claim
+  // INSERT (below) is sufficient when ChatInstanceManager is unavailable —
+  // both PUTs see a row exists and converge on the update path. With a real
+  // manager, a "loser" can still re-read the just-created row mid-
+  // `addConnection` and call `updateConnection` against a half-initialized
+  // state — potentially double-spawning the chat instance or fighting the
+  // first writer. The lock keyed on the caller-supplied stable ID
+  // queues subsequent PUTs at the chain entry; they only proceed after the
+  // first one's manager-side work has fully committed.
+  return await withStablePlatformLock(stableId, async () => {
+    let existing = await connectionStore.getConnection(stableId);
+    if (existing && existing.agentId && existing.agentId !== agentId) {
+      return c.json(
+        { error: 'Stable ID already used by a different agent' },
+        409
+      );
     }
 
-    const body = await c.req.json<{
-      platform: string;
-      config?: Record<string, unknown>;
-      settings?: { allowFrom?: string[]; allowGroups?: boolean };
-    }>();
-    const { platform, config = {}, settings = {} } = body;
-    if (!platform) return c.json({ error: 'platform is required' }, 400);
+    const chatManager = getChatInstanceManager();
 
-    // Serialize concurrent PUTs for the same stable ID. The PR-466 atomic-claim
-    // INSERT (below) is sufficient when ChatInstanceManager is unavailable —
-    // both PUTs see a row exists and converge on the update path. With a real
-    // manager, a "loser" can still re-read the just-created row mid-
-    // `addConnection` and call `updateConnection` against a half-initialized
-    // state — potentially double-spawning the chat instance or fighting the
-    // first writer. The lock keyed on the caller-supplied stable ID
-    // queues subsequent PUTs at the chain entry; they only proceed after the
-    // first one's manager-side work has fully committed.
-    return await withStablePlatformLock(stableId, async () => {
-      let existing = await connectionStore.getConnection(stableId);
-      if (existing && existing.agentId && existing.agentId !== agentId) {
+    if (!existing) {
+      // Atomic claim. The advisory lock above already serializes concurrent
+      // PUTs for this stableId in-process, but ON CONFLICT DO NOTHING is
+      // kept as defense-in-depth against any caller that bypasses this
+      // route (e.g. a previous apply cycle that crashed between INSERT and
+      // the manager call).
+      const sql = getDb();
+      const claimNow = new Date();
+      const claimed = await sql`
+        INSERT INTO agent_connections (
+          id, agent_id, platform, config, settings, metadata, status, created_at, updated_at
+        )
+        VALUES (
+          ${stableId}, ${agentId}, ${platform},
+          ${sql.json({})}, ${sql.json({})}, ${sql.json({})},
+          'stopped', ${claimNow}, ${claimNow}
+        )
+        ON CONFLICT (id) DO NOTHING
+        RETURNING id
+      `;
+
+      if (claimed.length > 0) {
+        // We won the create race. Run the full create flow; both the manager
+        // and fallback paths re-write the row via saveConnection (ON CONFLICT
+        // DO UPDATE), so updating our placeholder is the same path they'd
+        // take on a freshly-inserted row.
+        if (chatManager) {
+          try {
+            const created = await chatManager.addConnection(
+              platform,
+              agentId,
+              { platform, ...config },
+              { allowGroups: true, ...settings },
+              {},
+              stableId
+            );
+            return c.json({ platform: created }, 201);
+          } catch (error: any) {
+            // Roll back the placeholder so a retry doesn't see a half-baked
+            // row that fails the `existing.agentId` check inconsistently.
+            try {
+              await connectionStore.deleteConnection(stableId);
+            } catch {
+              // best-effort
+            }
+            return c.json({ error: error.message || 'Failed to create platform' }, 400);
+          }
+        }
+
+        // No ChatInstanceManager — same reasoning as the POST handler:
+        // refuse the write so plaintext secrets aren't persisted into
+        // agent_connections.config bypassing secret-ref normalization.
+        return c.json(
+          { error: 'platform manager unavailable — retry once startup completes' },
+          503
+        );
+      }
+
+      // Lost the create race — someone else inserted the row between our
+      // initial read and INSERT. With the advisory lock held we shouldn't
+      // reach this in the same-process case, but keep the re-read as
+      // defense-in-depth against multi-host writers that bypass the route.
+      const reread = await connectionStore.getConnection(stableId);
+      if (!reread) {
+        return c.json({ error: 'Platform vanished after conflict' }, 500);
+      }
+      if (reread.agentId && reread.agentId !== agentId) {
         return c.json(
           { error: 'Stable ID already used by a different agent' },
           409
         );
       }
+      existing = reread;
+    }
 
-      const chatManager = getChatInstanceManager();
+    // Update path. `existing` is guaranteed non-null at this point — either we
+    // saw it on the first read, or we re-read after losing the create race.
+    const current = existing;
 
-      if (!existing) {
-        // Atomic claim. The advisory lock above already serializes concurrent
-        // PUTs for this stableId in-process, but ON CONFLICT DO NOTHING is
-        // kept as defense-in-depth against any caller that bypasses this
-        // route (e.g. a previous apply cycle that crashed between INSERT and
-        // the manager call).
-        const sql = getDb();
-        const claimNow = new Date();
-        const claimed = await sql`
-          INSERT INTO agent_connections (
-            id, agent_id, platform, config, settings, metadata, status, created_at, updated_at
-          )
-          VALUES (
-            ${stableId}, ${agentId}, ${platform},
-            ${sql.json({})}, ${sql.json({})}, ${sql.json({})},
-            'stopped', ${claimNow}, ${claimNow}
-          )
-          ON CONFLICT (id) DO NOTHING
-          RETURNING id
-        `;
+    // Compute the merged config the way ChatInstanceManager.updateConnection
+    // does: skip `***...` placeholders so a sanitized round-trip from the
+    // GET endpoint doesn't trigger a spurious "changed" classification.
+    const previousConfig = (current.config ?? {}) as Record<string, unknown>;
+    const submittedConfig = { platform, ...config } as Record<string, unknown>;
+    const merged: Record<string, unknown> = { ...previousConfig };
+    for (const [key, value] of Object.entries(submittedConfig)) {
+      if (typeof value === 'string' && value.startsWith('***')) continue;
+      merged[key] = value;
+    }
+    merged.platform = platform;
 
-        if (claimed.length > 0) {
-          // We won the create race. Run the full create flow; both the manager
-          // and fallback paths re-write the row via saveConnection (ON CONFLICT
-          // DO UPDATE), so updating our placeholder is the same path they'd
-          // take on a freshly-inserted row.
-          if (chatManager) {
-            try {
-              const created = await chatManager.addConnection(
-                platform,
-                agentId,
-                { platform, ...config },
-                { allowGroups: true, ...settings },
-                {},
-                stableId
-              );
-              return c.json({ platform: created }, 201);
-            } catch (error: any) {
-              // Roll back the placeholder so a retry doesn't see a half-baked
-              // row that fails the `existing.agentId` check inconsistently.
-              try {
-                await connectionStore.deleteConnection(stableId);
-              } catch {
-                // best-effort
-              }
-              return c.json({ error: error.message || 'Failed to create platform' }, 400);
-            }
-          }
+    const configChanged = !configsShallowEqual(merged, previousConfig);
+    // Settings (allowFrom, allowGroups, etc.) are persisted alongside the
+    // platform config and are part of "did anything change?" — a
+    // settings-only update must trigger willRestart, not be silently noop'd.
+    const previousSettings = (current.settings ?? {}) as Record<string, unknown>;
+    const mergedSettings = { allowGroups: true, ...settings } as Record<string, unknown>;
+    const settingsChanged = !configsShallowEqual(mergedSettings, previousSettings);
 
-          // No ChatInstanceManager — same reasoning as the POST handler:
-          // refuse the write so plaintext secrets aren't persisted into
-          // agent_connections.config bypassing secret-ref normalization.
-          return c.json(
-            { error: 'platform manager unavailable — retry once startup completes' },
-            503
-          );
-        }
+    if (!configChanged && !settingsChanged) {
+      return c.json({ noop: true, platform: current }, 200);
+    }
 
-        // Lost the create race — someone else inserted the row between our
-        // initial read and INSERT. With the advisory lock held we shouldn't
-        // reach this in the same-process case, but keep the re-read as
-        // defense-in-depth against multi-host writers that bypass the route.
-        const reread = await connectionStore.getConnection(stableId);
-        if (!reread) {
-          return c.json({ error: 'Platform vanished after conflict' }, 500);
-        }
-        if (reread.agentId && reread.agentId !== agentId) {
-          return c.json(
-            { error: 'Stable ID already used by a different agent' },
-            409
-          );
-        }
-        existing = reread;
+    if (chatManager) {
+      try {
+        const updated = await chatManager.updateConnection(stableId, {
+          config: { platform, ...config },
+          settings: { allowGroups: true, ...settings },
+        });
+        return c.json(
+          { updated: true, willRestart: true, platform: updated },
+          200
+        );
+      } catch (error: any) {
+        return c.json({ error: error.message || 'Failed to update platform' }, 400);
       }
+    }
 
-      // Update path. `existing` is guaranteed non-null at this point — either we
-      // saw it on the first read, or we re-read after losing the create race.
-      const current = existing;
-
-      // Compute the merged config the way ChatInstanceManager.updateConnection
-      // does: skip `***...` placeholders so a sanitized round-trip from the
-      // GET endpoint doesn't trigger a spurious "changed" classification.
-      const previousConfig = (current.config ?? {}) as Record<string, unknown>;
-      const submittedConfig = { platform, ...config } as Record<string, unknown>;
-      const merged: Record<string, unknown> = { ...previousConfig };
-      for (const [key, value] of Object.entries(submittedConfig)) {
-        if (typeof value === 'string' && value.startsWith('***')) continue;
-        merged[key] = value;
-      }
-      merged.platform = platform;
-
-      const configChanged = !configsShallowEqual(merged, previousConfig);
-      // Settings (allowFrom, allowGroups, etc.) are persisted alongside the
-      // platform config and are part of "did anything change?" — a
-      // settings-only update must trigger willRestart, not be silently noop'd.
-      const previousSettings = (current.settings ?? {}) as Record<string, unknown>;
-      const mergedSettings = { allowGroups: true, ...settings } as Record<string, unknown>;
-      const settingsChanged = !configsShallowEqual(mergedSettings, previousSettings);
-
-      if (!configChanged && !settingsChanged) {
-        return c.json({ noop: true, platform: current }, 200);
-      }
-
-      if (chatManager) {
-        try {
-          const updated = await chatManager.updateConnection(stableId, {
-            config: { platform, ...config },
-            settings: { allowGroups: true, ...settings },
-          });
-          return c.json(
-            { updated: true, willRestart: true, platform: updated },
-            200
-          );
-        } catch (error: any) {
-          return c.json({ error: error.message || 'Failed to update platform' }, 400);
-        }
-      }
-
-      // No ChatInstanceManager — refuse rather than persist plaintext
-      // secrets directly into agent_connections.config.
-      return c.json(
-        { error: 'platform manager unavailable — retry once startup completes' },
-        503
-      );
-    });
+    // No ChatInstanceManager — refuse rather than persist plaintext
+    // secrets directly into agent_connections.config.
+    return c.json(
+      { error: 'platform manager unavailable — retry once startup completes' },
+      503
+    );
   });
 });
 
@@ -1243,129 +1217,129 @@ async function getStoredPlatformForAgent(agentId: string, platformId: string) {
   return platform;
 }
 
-routes.get('/:agentId/platforms/:platformId', mcpAuth, async (c) => {
-  return withOrg(c, async () => {
-    const { agentId, platformId } = c.req.param();
-    if (!(await configStore.hasAgent(agentId))) {
-      return c.json({ error: 'Agent not found' }, 404);
+type StoredPlatform = NonNullable<Awaited<ReturnType<typeof getStoredPlatformForAgent>>>;
+
+/**
+ * Shared preamble for the single-platform routes (GET / DELETE / start / stop):
+ * 404 if the agent doesn't exist, 404 if the platform doesn't exist or belongs
+ * to a different agent, otherwise the stored platform row. Returns either the
+ * row (under `platform`) or the `Response` the caller should return.
+ */
+async function requireStoredPlatform(
+  c: any,
+  agentId: string,
+  platformId: string
+): Promise<{ platform: StoredPlatform } | { response: Response }> {
+  if (!(await configStore.hasAgent(agentId))) {
+    return { response: c.json({ error: 'Agent not found' }, 404) };
+  }
+  const platform = await getStoredPlatformForAgent(agentId, platformId);
+  if (!platform) return { response: c.json({ error: 'Platform not found' }, 404) };
+  return { platform };
+}
+
+/**
+ * Shared body for `POST .../start` and `.../stop`: drive the chat manager (when
+ * present) and confirm the runtime row still belongs to this agent; otherwise
+ * fall back to flipping the stored connection's status directly.
+ */
+async function changePlatformRunState(
+  c: any,
+  agentId: string,
+  platformId: string,
+  managerAction: 'restartConnection' | 'stopConnection',
+  fallbackStatus: 'active' | 'stopped'
+): Promise<Response> {
+  const guard = await requireStoredPlatform(c, agentId, platformId);
+  if ('response' in guard) return guard.response;
+
+  const chatManager = getChatInstanceManager();
+  if (chatManager) {
+    await chatManager[managerAction](platformId);
+    const runtimePlatform = await chatManager.getConnection(platformId);
+    if (runtimePlatform && platformBelongsToAgent(runtimePlatform, agentId)) {
+      return c.json({ success: true, platform: runtimePlatform });
     }
+  }
 
-    const storedPlatform = await getStoredPlatformForAgent(agentId, platformId);
-    if (!storedPlatform) return c.json({ error: 'Platform not found' }, 404);
-
-    const chatManager = getChatInstanceManager();
-    if (chatManager) {
-      try {
-        const runtimePlatform = await chatManager.getConnection(platformId);
-        if (runtimePlatform && platformBelongsToAgent(runtimePlatform, agentId)) {
-          return c.json(runtimePlatform);
-        }
-      } catch {
-        // Fall back to the org-scoped PostgreSQL snapshot.
-      }
-    }
-
-    return c.json(storedPlatform);
+  await connectionStore.updateConnection(platformId, { status: fallbackStatus });
+  return c.json({
+    success: true,
+    platform: await connectionStore.getConnection(platformId),
   });
+}
+
+routes.get('/:agentId/platforms/:platformId', async (c) => {
+  const { agentId, platformId } = c.req.param();
+  const guard = await requireStoredPlatform(c, agentId, platformId);
+  if ('response' in guard) return guard.response;
+  const storedPlatform = guard.platform;
+
+  const chatManager = getChatInstanceManager();
+  if (chatManager) {
+    try {
+      const runtimePlatform = await chatManager.getConnection(platformId);
+      if (runtimePlatform && platformBelongsToAgent(runtimePlatform, agentId)) {
+        return c.json(runtimePlatform);
+      }
+    } catch {
+      // Fall back to the org-scoped PostgreSQL snapshot.
+    }
+  }
+
+  return c.json(storedPlatform);
 });
 
 // ── Delete platform ──────────────────────────────────────────────────────────
 
-routes.delete('/:agentId/platforms/:platformId', mcpAuth, async (c) => {
+routes.delete('/:agentId/platforms/:platformId', async (c) => {
   const denied = requireSessionOrAdminPat(c);
   if (denied) return denied;
-  return withOrg(c, async () => {
-    const { agentId, platformId } = c.req.param();
-    if (!(await configStore.hasAgent(agentId))) {
-      return c.json({ error: 'Agent not found' }, 404);
-    }
-    const platform = await getStoredPlatformForAgent(agentId, platformId);
-    if (!platform) return c.json({ error: 'Platform not found' }, 404);
+  const { agentId, platformId } = c.req.param();
+  const guard = await requireStoredPlatform(c, agentId, platformId);
+  if ('response' in guard) return guard.response;
 
-    const chatManager = getChatInstanceManager();
-    if (chatManager) {
-      // Manager handles the safe cascade (history → secrets → row).
-      // Surface its failure to the caller instead of forcing the row
-      // deletion ourselves — orphaning history/secrets without an
-      // anchoring row is worse than a 500 the caller can retry.
-      try {
-        await chatManager.removeConnection(platformId);
-      } catch (error: any) {
-        return c.json(
-          { error: error.message || 'Failed to remove platform' },
-          500
-        );
-      }
-      return c.json({ success: true });
+  const chatManager = getChatInstanceManager();
+  if (chatManager) {
+    // Manager handles the safe cascade (history → secrets → row).
+    // Surface its failure to the caller instead of forcing the row
+    // deletion ourselves — orphaning history/secrets without an
+    // anchoring row is worse than a 500 the caller can retry.
+    try {
+      await chatManager.removeConnection(platformId);
+    } catch (error: any) {
+      return c.json(
+        { error: error.message || 'Failed to remove platform' },
+        500
+      );
     }
-
-    // No manager — direct row delete is the only option. Any history
-    // rows pinned to this connection id will be cleaned up by the
-    // standard sweep; no secrets to clean since the no-manager path
-    // never persists any (writes were refused above).
-    await connectionStore.deleteConnection(platformId);
     return c.json({ success: true });
-  });
+  }
+
+  // No manager — direct row delete is the only option. Any history
+  // rows pinned to this connection id will be cleaned up by the
+  // standard sweep; no secrets to clean since the no-manager path
+  // never persists any (writes were refused above).
+  await connectionStore.deleteConnection(platformId);
+  return c.json({ success: true });
 });
 
 // ── Start platform ───────────────────────────────────────────────────────────
 
-routes.post('/:agentId/platforms/:platformId/start', mcpAuth, async (c) => {
+routes.post('/:agentId/platforms/:platformId/start', async (c) => {
   const denied = requireSessionOrAdminPat(c);
   if (denied) return denied;
-  return withOrg(c, async () => {
-    const { agentId, platformId } = c.req.param();
-    if (!(await configStore.hasAgent(agentId))) {
-      return c.json({ error: 'Agent not found' }, 404);
-    }
-    const chatManager = getChatInstanceManager();
-    const platform = await getStoredPlatformForAgent(agentId, platformId);
-    if (!platform) return c.json({ error: 'Platform not found' }, 404);
-
-    if (chatManager) {
-      await chatManager.restartConnection(platformId);
-      const runtimePlatform = await chatManager.getConnection(platformId);
-      if (runtimePlatform && platformBelongsToAgent(runtimePlatform, agentId)) {
-        return c.json({ success: true, platform: runtimePlatform });
-      }
-    }
-
-    await connectionStore.updateConnection(platformId, { status: 'active' });
-    return c.json({
-      success: true,
-      platform: await connectionStore.getConnection(platformId),
-    });
-  });
+  const { agentId, platformId } = c.req.param();
+  return changePlatformRunState(c, agentId, platformId, 'restartConnection', 'active');
 });
 
 // ── Stop platform ────────────────────────────────────────────────────────────
 
-routes.post('/:agentId/platforms/:platformId/stop', mcpAuth, async (c) => {
+routes.post('/:agentId/platforms/:platformId/stop', async (c) => {
   const denied = requireSessionOrAdminPat(c);
   if (denied) return denied;
-  return withOrg(c, async () => {
-    const { agentId, platformId } = c.req.param();
-    if (!(await configStore.hasAgent(agentId))) {
-      return c.json({ error: 'Agent not found' }, 404);
-    }
-    const chatManager = getChatInstanceManager();
-    const platform = await getStoredPlatformForAgent(agentId, platformId);
-    if (!platform) return c.json({ error: 'Platform not found' }, 404);
-
-    if (chatManager) {
-      await chatManager.stopConnection(platformId);
-      const runtimePlatform = await chatManager.getConnection(platformId);
-      if (runtimePlatform && platformBelongsToAgent(runtimePlatform, agentId)) {
-        return c.json({ success: true, platform: runtimePlatform });
-      }
-    }
-
-    await connectionStore.updateConnection(platformId, { status: 'stopped' });
-    return c.json({
-      success: true,
-      platform: await connectionStore.getConnection(platformId),
-    });
-  });
+  const { agentId, platformId } = c.req.param();
+  return changePlatformRunState(c, agentId, platformId, 'stopConnection', 'stopped');
 });
 
 export { routes as agentRoutes };

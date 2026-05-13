@@ -12,7 +12,6 @@ import { DataModelSection } from "./DataModelSection";
 import { FeatureBlock } from "./FeatureBlock";
 import {
   HostingGraphic,
-  LogoStrip,
   PlatformsGraphic,
   SharedMemoryGraphic,
   SkillsGraphic,

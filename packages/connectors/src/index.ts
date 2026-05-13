@@ -23,5 +23,6 @@ export * from './spotify.ts';
 export * from './trustpilot.ts';
 export * from './website.ts';
 export * from './whatsapp.ts';
+export * from './whatsapp_local.ts';
 export * from './x.ts';
 export * from './youtube.ts';

@@ -27,6 +27,22 @@ import { orgContext } from './stores/org-context';
 
 const routes = new Hono<{ Bindings: Env }>();
 
+/**
+ * Coerce an `array_agg` result into a real `string[]`. With the `::text` cast
+ * the driver returns a JS array, but if some schema still hands back a raw
+ * Postgres array literal (`'{telegram,slack}'`) we parse it rather than letting
+ * a string leak to the UI, where `.map` would throw.
+ */
+function toStringArray(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map(String);
+  if (typeof value === 'string') {
+    const inner = value.replace(/^\{/, '').replace(/\}$/, '').trim();
+    if (!inner) return [];
+    return inner.split(',').map((s) => s.replace(/^"|"$/g, '').trim());
+  }
+  return [];
+}
+
 const configStore = createPostgresAgentConfigStore();
 const connectionStore = createPostgresAgentConnectionStore();
 
@@ -408,15 +424,20 @@ routes.get('/', async (c) => {
   `;
   const userCountMap = new Map(userCounts.map((r: any) => [r.agent_id, r.count]));
 
-  // Distinct connection platforms per agent.
+  // Distinct connection platforms per agent. Cast to text so the driver always
+  // returns a JS array — array_agg over an enum/varchar column can come back as
+  // a raw `'{telegram,slack}'` string when postgres.js has no array parser for
+  // the element OID, which then blows up `.map` in the UI.
   const platformRows = await sql`
-    SELECT c.agent_id, array_agg(DISTINCT c.platform) as platforms
+    SELECT c.agent_id, array_agg(DISTINCT c.platform::text) as platforms
     FROM agent_connections c
     JOIN agents a ON a.id = c.agent_id
     WHERE a.organization_id = ${orgId}
     GROUP BY c.agent_id
   `;
-  const platformsMap = new Map(platformRows.map((r: any) => [r.agent_id, (r.platforms ?? []) as string[]]));
+  const platformsMap = new Map(
+    platformRows.map((r: any) => [r.agent_id, toStringArray(r.platforms)])
+  );
 
   // Provider ids per agent, from the agent row's installed_providers list
   // (the canonical "which providers does this agent have" set).

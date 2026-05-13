@@ -86,3 +86,4 @@ packages/*/~/
 # Cleaned up on success; can leak when a run or test is killed.
 .connector-child-*.mjs
 **/.connector-child-*.mjs
+.claude/scheduled_tasks.lock

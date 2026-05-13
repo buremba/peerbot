@@ -470,8 +470,17 @@ const EMBEDDED_SCHEMA_PATCHES: EmbeddedSchemaPatch[] = [
         ADD COLUMN IF NOT EXISTS id uuid NOT NULL DEFAULT gen_random_uuid()
       `);
       await sql.unsafe(`
+        ALTER TABLE public.device_workers
+        ADD COLUMN IF NOT EXISTS organization_id text
+      `);
+      await sql.unsafe(`
         CREATE UNIQUE INDEX IF NOT EXISTS device_workers_id_key
         ON public.device_workers (id)
+      `);
+      await sql.unsafe(`
+        CREATE INDEX IF NOT EXISTS idx_device_workers_organization_id
+        ON public.device_workers (organization_id)
+        WHERE organization_id IS NOT NULL
       `);
       await sql.unsafe(`
         ALTER TABLE public.connections
@@ -501,19 +510,8 @@ const EMBEDDED_SCHEMA_PATCHES: EmbeddedSchemaPatch[] = [
         ON public.connections (organization_id, connector_key, device_worker_id)
         WHERE deleted_at IS NULL AND device_worker_id IS NOT NULL
       `);
-      await sql.unsafe(`
-        CREATE TABLE IF NOT EXISTS public.device_worker_org_grants (
-          device_worker_id uuid NOT NULL REFERENCES public.device_workers (id) ON DELETE CASCADE,
-          organization_id text NOT NULL,
-          granted_by text NOT NULL,
-          granted_at timestamptz NOT NULL DEFAULT now(),
-          PRIMARY KEY (device_worker_id, organization_id)
-        )
-      `);
-      await sql.unsafe(`
-        CREATE INDEX IF NOT EXISTS device_worker_org_grants_org_idx
-        ON public.device_worker_org_grants (organization_id)
-      `);
+      // Older embedded DBs may have the dropped device_worker_org_grants table.
+      await sql.unsafe(`DROP TABLE IF EXISTS public.device_worker_org_grants`);
     },
   },
 ];

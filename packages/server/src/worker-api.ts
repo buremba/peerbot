@@ -8,7 +8,6 @@
 import { basename } from 'node:path';
 import type { Context } from 'hono';
 import { createAuth } from './auth';
-import { findExistingPersonalOrg } from './auth/personal-org-provisioning';
 import { getDb, pgBigintArray, pgTextArray } from './db/client';
 import { emit } from './events/emitter';
 import type { Env } from './index';
@@ -346,19 +345,20 @@ async function reconcileDeviceCapabilities(userId: string): Promise<void> {
   }
   if (deviceConnectors.length === 0) return;
 
-  // deviceId → capabilities it currently advertises (fresh devices only). Used
-  // both to decide which connectors to wire and which device to pin them to.
-  const deviceCaps = new Map<string, Set<string>>();
+  // deviceId → { capabilities it advertises, org it's attached to } (fresh
+  // devices only). A device connector is wired into the device's org; a user
+  // with devices in two orgs auto-wires the connector into each.
+  const deviceCaps = new Map<string, { caps: Set<string>; orgId: string | null }>();
   try {
     const rows = (await sql`
-      SELECT id, capabilities
+      SELECT id, capabilities, organization_id
       FROM device_workers
       WHERE user_id = ${userId}
         AND last_seen_at > now() - ${DEVICE_WORKER_FRESH_INTERVAL}::interval
-    `) as unknown as Array<{ id: string; capabilities: unknown }>;
+    `) as unknown as Array<{ id: string; capabilities: unknown; organization_id: string | null }>;
     for (const r of rows) {
       const caps = Array.isArray(r.capabilities) ? (r.capabilities as string[]) : [];
-      deviceCaps.set(r.id, new Set(caps));
+      deviceCaps.set(r.id, { caps: new Set(caps), orgId: r.organization_id });
     }
   } catch (err) {
     logger.warn(
@@ -367,81 +367,28 @@ async function reconcileDeviceCapabilities(userId: string): Promise<void> {
     );
     return;
   }
-  const devicesWithCapability = (capability: string): string[] =>
-    [...deviceCaps.entries()].filter(([, caps]) => caps.has(capability)).map(([id]) => id);
 
-  const personalOrg = await findExistingPersonalOrg(userId, sql).catch(() => null);
-  if (!personalOrg) {
-    logger.warn({ userId }, '[device-connectors] No personal org found for user');
-    return;
-  }
+  const orgsWithDevices = [
+    ...new Set(
+      [...deviceCaps.values()].map((d) => d.orgId).filter((o): o is string => Boolean(o))
+    ),
+  ];
+  if (orgsWithDevices.length === 0) return;
+  const devicesWithCapabilityInOrg = (capability: string, orgId: string): string[] =>
+    [...deviceCaps.entries()]
+      .filter(([, d]) => d.orgId === orgId && d.caps.has(capability))
+      .map(([id]) => id);
 
   await Promise.allSettled(
-    deviceConnectors.map((dc) => {
-      const matchingDeviceIds = devicesWithCapability(dc.requiredCapability);
-      return matchingDeviceIds.length > 0
-        ? ensureDeviceConnectorWired(
-            userId,
-            personalOrg.id,
-            dc.key,
-            dc.feedKeys,
-            matchingDeviceIds
-          )
-        : pauseStaleDeviceFeeds(userId, personalOrg.id, dc.key);
-    })
+    deviceConnectors.flatMap((dc) =>
+      orgsWithDevices.map((orgId) => {
+        const matchingDeviceIds = devicesWithCapabilityInOrg(dc.requiredCapability, orgId);
+        return matchingDeviceIds.length > 0
+          ? ensureDeviceConnectorWired(userId, orgId, dc.key, dc.feedKeys, matchingDeviceIds)
+          : pauseStaleDeviceFeeds(userId, orgId, dc.key);
+      })
+    )
   );
-}
-
-/**
- * Drop this user's device→org grants for orgs they're no longer a member of, and
- * un-pin + pause the connections those grants backed (same effect as the owner
- * explicitly revoking the grant via `DELETE /api/me/device-grants`). Membership
- * changes happen in Better Auth without a hook into the gateway, so this runs
- * opportunistically on every user-scoped poll. Best-effort; never throws.
- */
-async function reconcileStaleDeviceGrants(userId: string): Promise<void> {
-  const sql = getDb();
-  try {
-    await sql.begin(async (tx) => {
-      const stale = (await tx`
-        DELETE FROM device_worker_org_grants g
-        WHERE g.device_worker_id IN (SELECT id FROM device_workers WHERE user_id = ${userId})
-          AND NOT EXISTS (
-            SELECT 1 FROM "member" m
-            WHERE m."userId" = ${userId} AND m."organizationId" = g.organization_id
-          )
-        RETURNING g.device_worker_id, g.organization_id
-      `) as unknown as Array<{ device_worker_id: string; organization_id: string }>;
-      if (stale.length === 0) return;
-      for (const { device_worker_id, organization_id } of stale) {
-        const affected = (await tx`
-          UPDATE connections
-          SET device_worker_id = NULL,
-              status = 'paused',
-              error_message = 'Device access to this organization was revoked',
-              updated_at = NOW()
-          WHERE device_worker_id = ${device_worker_id} AND organization_id = ${organization_id}
-          RETURNING id
-        `) as unknown as Array<{ id: number }>;
-        const ids = affected.map((r) => r.id);
-        if (ids.length > 0) {
-          await tx`
-            UPDATE feeds SET status = 'paused', updated_at = NOW()
-            WHERE connection_id = ANY(${pgBigintArray(ids)}::bigint[]) AND deleted_at IS NULL AND status = 'active'
-          `;
-        }
-      }
-      logger.info(
-        { userId, grants: stale.length },
-        '[device-connectors] Reconciled stale device→org grants'
-      );
-    });
-  } catch (err) {
-    logger.warn(
-      { userId, err: errorMessage(err) },
-      '[device-connectors] Failed to reconcile stale device→org grants'
-    );
-  }
 }
 
 /**
@@ -566,16 +513,18 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
       const incomingCaps = advertisedCapabilities;
 
       const upserted = (await sql`
-        INSERT INTO device_workers (user_id, worker_id, platform, app_version, capabilities, label)
+        INSERT INTO device_workers (user_id, worker_id, platform, app_version, capabilities, label, organization_id)
         VALUES (
           ${workerUserId}, ${worker_id}, ${platform}, ${app_version},
-          ${sql.json(incomingCaps)}, ${label}
+          ${sql.json(incomingCaps)}, ${label},
+          (SELECT id FROM organization WHERE (metadata::jsonb)->>'personal_org_for_user_id' = ${workerUserId} LIMIT 1)
         )
         ON CONFLICT (user_id, worker_id) DO UPDATE SET
           platform = EXCLUDED.platform,
           app_version = EXCLUDED.app_version,
           capabilities = EXCLUDED.capabilities,
           label = COALESCE(EXCLUDED.label, device_workers.label),
+          organization_id = COALESCE(device_workers.organization_id, EXCLUDED.organization_id),
           last_seen_at = now()
         RETURNING id
       `) as unknown as Array<{ id: string }>;
@@ -587,9 +536,6 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
       // the ones that have gone away. The just-upserted row above is already
       // visible to this query, so the polling device's capabilities count.
       await reconcileDeviceCapabilities(workerUserId);
-      // Membership changes (leaving an org) happen outside the gateway; drop any
-      // now-orphaned device→org grants and pause the connections they backed.
-      await reconcileStaleDeviceGrants(workerUserId);
     } catch (err) {
       logger.error(
         { worker_id, err: errorMessage(err) },
@@ -660,8 +606,8 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
             -- ... or any connection explicitly pinned to THIS device (this is
             --     "run the Reddit connector on my Mac"). Still: a device-only
             --     connector needs the capability currently advertised, and the
-            --     pin only counts in an org this worker can see or that the
-            --     device owner has granted the device to.
+            --     pin only counts in an org this worker can see (which includes
+            --     the org the device is attached to).
             OR (
               ${isUserScopedWorker}
               AND ${deviceWorkerId}::uuid IS NOT NULL
@@ -670,14 +616,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
                 cd.required_capability IS NULL
                 OR cd.required_capability = ANY(${pgTextArray(advertisedCapabilities)}::text[])
               )
-              AND (
-                r.organization_id = ANY(${pgTextArray(orgScopeIds)}::text[])
-                OR EXISTS (
-                  SELECT 1 FROM device_worker_org_grants g
-                  WHERE g.device_worker_id = ${deviceWorkerId}::uuid
-                    AND g.organization_id = r.organization_id
-                )
-              )
+              AND r.organization_id = ANY(${pgTextArray(orgScopeIds)}::text[])
             )
           )
         ORDER BY
@@ -1848,8 +1787,9 @@ export async function completeActionRun(c: Context<{ Bindings: Env }>) {
  * GET /api/me/devices
  *
  * Returns the calling user's registered device workers, each with its surrogate
- * id (used as `device_worker_id` when pinning a connection), the orgs the user
- * has granted it to, and how many connections are pinned to it.
+ * id (used as `device_worker_id` when pinning a connection), the workspace the
+ * device is attached to, how many connections are pinned to it (and how many of
+ * those are erroring), and when its feeds last synced.
  * Requires session / PAT / OAuth authentication (mcpAuth).
  */
 export async function listDeviceWorkers(c: Context<{ Bindings: Env }>) {
@@ -1869,15 +1809,18 @@ export async function listDeviceWorkers(c: Context<{ Bindings: Env }>) {
         dw.label,
         dw.last_seen_at,
         (dw.last_seen_at > now() - interval '20 minutes') AS online,
-        -- jsonb_agg (not array_agg): postgres.js runs with fetch_types:false and
-        -- leaves a text[] result column as the raw literal string "{a,b}"; jsonb
-        -- arrays are parsed to JS arrays by the db client's value transform.
+        dw.organization_id,
+        o.name AS organization_name,
+        o.slug AS organization_slug,
+        (SELECT count(*) FROM connections cn WHERE cn.device_worker_id = dw.id AND cn.deleted_at IS NULL)::int AS connector_count,
+        (SELECT count(*) FROM connections cn WHERE cn.device_worker_id = dw.id AND cn.deleted_at IS NULL AND cn.status = 'error')::int AS connector_error_count,
         (
-          SELECT COALESCE(jsonb_agg(g.organization_id), '[]'::jsonb)
-          FROM device_worker_org_grants g WHERE g.device_worker_id = dw.id
-        ) AS granted_org_ids,
-        (SELECT count(*) FROM connections cn WHERE cn.device_worker_id = dw.id AND cn.deleted_at IS NULL)::int AS connector_count
+          SELECT max(f.last_sync_at) FROM feeds f
+          JOIN connections cn ON cn.id = f.connection_id
+          WHERE cn.device_worker_id = dw.id AND f.deleted_at IS NULL
+        ) AS last_sync_at
       FROM device_workers dw
+      LEFT JOIN organization o ON o.id = dw.organization_id
       WHERE dw.user_id = ${userId}
       ORDER BY dw.last_seen_at DESC
     `) as unknown as Array<{
@@ -1889,8 +1832,12 @@ export async function listDeviceWorkers(c: Context<{ Bindings: Env }>) {
       label: string | null;
       last_seen_at: string;
       online: boolean;
-      granted_org_ids: string[];
+      organization_id: string | null;
+      organization_name: string | null;
+      organization_slug: string | null;
       connector_count: number;
+      connector_error_count: number;
+      last_sync_at: string | null;
     }>;
     return c.json({
       devices: rows.map((r) => ({
@@ -1902,8 +1849,12 @@ export async function listDeviceWorkers(c: Context<{ Bindings: Env }>) {
         label: r.label,
         last_seen_at: r.last_seen_at,
         online: r.online,
-        granted_org_ids: Array.isArray(r.granted_org_ids) ? r.granted_org_ids : [],
+        organization_id: r.organization_id,
+        organization_name: r.organization_name,
+        organization_slug: r.organization_slug,
         connector_count: r.connector_count ?? 0,
+        connector_error_count: r.connector_error_count ?? 0,
+        last_sync_at: r.last_sync_at,
       })),
     });
   } catch (err: unknown) {
@@ -1913,64 +1864,50 @@ export async function listDeviceWorkers(c: Context<{ Bindings: Env }>) {
 }
 
 /**
- * POST /api/me/device-grants  { device_worker_id, organization_id }
- * DELETE /api/me/device-grants { device_worker_id, organization_id }
+ * PATCH /api/me/devices/:id  { organization_id }
  *
- * Lets a device owner allow (or stop allowing) one of their devices to back
- * connectors in an org they're a member of. Org-sharing is always explicit.
+ * Re-attach one of the caller's devices to a different workspace they belong to.
+ * A device's connectors live in its workspace; moving the device un-pins and
+ * pauses the connections (and their feeds) it backed in the previous one.
  */
-export async function setDeviceOrgGrant(c: Context<{ Bindings: Env }>, grant: boolean) {
+export async function updateDeviceWorkerOrg(c: Context<{ Bindings: Env }>) {
   const userId = c.var.user?.id;
   if (!userId) {
     return c.json({ error: 'Unauthorized' }, 401);
   }
-  let deviceWorkerId: string;
+  const deviceWorkerId = (c.req.param('id') ?? '').trim();
+  if (!deviceWorkerId) {
+    return c.json({ error: 'device id is required' }, 400);
+  }
   let organizationId: string;
   try {
-    const body = await c.req.json<{ device_worker_id?: string; organization_id?: string }>();
-    deviceWorkerId = (body.device_worker_id ?? '').trim();
+    const body = await c.req.json<{ organization_id?: string }>();
     organizationId = (body.organization_id ?? '').trim();
-    if (!deviceWorkerId || !organizationId) {
-      return c.json({ error: 'device_worker_id and organization_id are required' }, 400);
+    if (!organizationId) {
+      return c.json({ error: 'organization_id is required' }, 400);
     }
   } catch {
     return c.json({ error: 'Invalid or missing JSON body' }, 400);
   }
   try {
     const sql = getDb();
-    const owned = (await sql`
-      SELECT 1 FROM device_workers WHERE id = ${deviceWorkerId} AND user_id = ${userId} LIMIT 1
-    `) as unknown as Array<unknown>;
-    if (owned.length === 0) {
-      return c.json({ error: 'Device not found or not owned by you' }, 404);
-    }
     const role = await getWorkspaceRole(sql, organizationId, userId);
     if (!role) {
-      return c.json({ error: 'You are not a member of that organization' }, 403);
+      return c.json({ error: 'You are not a member of that workspace' }, 403);
     }
-    if (grant) {
-      await sql`
-        INSERT INTO device_worker_org_grants (device_worker_id, organization_id, granted_by)
-        VALUES (${deviceWorkerId}, ${organizationId}, ${userId})
-        ON CONFLICT (device_worker_id, organization_id) DO NOTHING
-      `;
-    } else {
-      await sql.begin(async (tx) => {
-        await tx`
-          DELETE FROM device_worker_org_grants
-          WHERE device_worker_id = ${deviceWorkerId} AND organization_id = ${organizationId}
-        `;
-        // Un-pin and pause connections in that org that were backed by this
-        // device — they can't run anywhere now; the owner re-pins (or
-        // re-grants) to bring them back. Personal-org auto-wired connections
-        // are unpinned and unaffected.
+    const updated = await sql.begin(async (tx) => {
+      const owned = (await tx`
+        SELECT organization_id FROM device_workers WHERE id = ${deviceWorkerId} AND user_id = ${userId} LIMIT 1
+      `) as unknown as Array<{ organization_id: string | null }>;
+      if (owned.length === 0) return false;
+      if (owned[0].organization_id !== organizationId) {
         const affected = (await tx`
           UPDATE connections
           SET device_worker_id = NULL,
               status = 'paused',
-              error_message = 'Device access to this organization was revoked',
+              error_message = 'Device was moved to another workspace',
               updated_at = NOW()
-          WHERE device_worker_id = ${deviceWorkerId} AND organization_id = ${organizationId}
+          WHERE device_worker_id = ${deviceWorkerId}
           RETURNING id
         `) as unknown as Array<{ id: number }>;
         const ids = affected.map((r) => r.id);
@@ -1980,11 +1917,72 @@ export async function setDeviceOrgGrant(c: Context<{ Bindings: Env }>, grant: bo
             WHERE connection_id = ANY(${pgBigintArray(ids)}::bigint[]) AND deleted_at IS NULL AND status = 'active'
           `;
         }
-      });
+        await tx`UPDATE device_workers SET organization_id = ${organizationId} WHERE id = ${deviceWorkerId}`;
+      }
+      return true;
+    });
+    if (!updated) {
+      return c.json({ error: 'Device not found or not owned by you' }, 404);
     }
     return c.json({ ok: true });
   } catch (err: unknown) {
-    logger.error({ error: errorMessage(err) }, '[setDeviceOrgGrant] Error');
+    logger.error({ error: errorMessage(err) }, '[updateDeviceWorkerOrg] Error');
+    return c.json({ error: errorMessage(err) }, 500);
+  }
+}
+
+/**
+ * DELETE /api/me/devices/:id
+ *
+ * Permanently forgets one of the caller's registered devices. Connections
+ * pinned to it are un-pinned and paused — they can't run anywhere without the
+ * device — and their active feeds are paused. If the device app is still
+ * running it re-registers on its next heartbeat as a fresh device.
+ */
+export async function deleteDeviceWorker(c: Context<{ Bindings: Env }>) {
+  const userId = c.var.user?.id;
+  if (!userId) {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
+  const deviceWorkerId = (c.req.param('id') ?? '').trim();
+  if (!deviceWorkerId) {
+    return c.json({ error: 'device id is required' }, 400);
+  }
+  try {
+    const sql = getDb();
+    const deleted = await sql.begin(async (tx) => {
+      const owned = (await tx`
+        SELECT 1 FROM device_workers WHERE id = ${deviceWorkerId} AND user_id = ${userId} LIMIT 1
+      `) as unknown as Array<unknown>;
+      if (owned.length === 0) return false;
+      // Un-pin and pause every connection backed by this device — a device
+      // connector can't run anywhere without it; the owner re-pins to a new
+      // device (or removes the connection) to bring it back.
+      const affected = (await tx`
+        UPDATE connections
+        SET device_worker_id = NULL,
+            status = 'paused',
+            error_message = 'Device was removed',
+            updated_at = NOW()
+        WHERE device_worker_id = ${deviceWorkerId}
+        RETURNING id
+      `) as unknown as Array<{ id: number }>;
+      const ids = affected.map((r) => r.id);
+      if (ids.length > 0) {
+        await tx`
+          UPDATE feeds SET status = 'paused', updated_at = NOW()
+          WHERE connection_id = ANY(${pgBigintArray(ids)}::bigint[]) AND deleted_at IS NULL AND status = 'active'
+        `;
+      }
+      await tx`DELETE FROM device_workers WHERE id = ${deviceWorkerId} AND user_id = ${userId}`;
+      return true;
+    });
+    if (!deleted) {
+      return c.json({ error: 'Device not found or not owned by you' }, 404);
+    }
+    return c.json({ ok: true });
+  } catch (err: unknown) {
+    logger.error({ error: errorMessage(err) }, '[deleteDeviceWorker] Error');
     return c.json({ error: errorMessage(err) }, 500);
   }
 }

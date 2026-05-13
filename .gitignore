@@ -86,3 +86,6 @@ packages/*/~/
 # Cleaned up on success; can leak when a run or test is killed.
 .connector-child-*.mjs
 **/.connector-child-*.mjs
+
+# Embedded PGlite dev data (make dev without DATABASE_URL)
+.lobu-dev/

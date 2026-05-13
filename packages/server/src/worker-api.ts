@@ -1741,7 +1741,7 @@ export async function listMyDeviceAuthProfiles(c: Context<{ Bindings: Env }>) {
     const sql = getDb();
     const rows = (await sql`
       SELECT id, slug, display_name, connector_key, profile_kind, status,
-             browser_kind, user_data_dir, created_at, updated_at
+             browser_kind, user_data_dir, cdp_url, created_at, updated_at
       FROM auth_profiles
       WHERE device_worker_id = ${device!.id}
         AND profile_kind = 'browser_session'
@@ -1978,6 +1978,30 @@ export async function createMyDeviceFeed(c: Context<{ Bindings: Env }>) {
   if (error || !connection) return error!;
   try {
     const sql = getDb();
+    // Idempotent on (connection_id, feed_key, config->>'folder_id'): two
+    // concurrent reconciles must not produce duplicate feeds for the same
+    // folder. We probe with a SELECT first, then INSERT; race window is
+    // narrowed by the surrounding worker poll cadence. Stronger guarantee
+    // would be a partial unique index — feed key namespaces vary by
+    // connector so we leave that as a follow-up.
+    const folderIdInConfig =
+      typeof (body.config as Record<string, unknown> | undefined)?.folder_id === 'string'
+        ? ((body.config as Record<string, unknown>).folder_id as string)
+        : null;
+    if (folderIdInConfig) {
+      const existing = (await sql`
+        SELECT id, feed_key, display_name, status, config, created_at
+        FROM feeds
+        WHERE connection_id = ${connection.id}
+          AND feed_key = ${feedKey}
+          AND config->>'folder_id' = ${folderIdInConfig}
+          AND deleted_at IS NULL
+        LIMIT 1
+      `) as unknown as Array<Record<string, unknown>>;
+      if (existing.length > 0) {
+        return c.json({ feed: existing[0] });
+      }
+    }
     const inserted = (await sql`
       INSERT INTO feeds (
         organization_id, connection_id, feed_key, display_name, status, config, next_run_at

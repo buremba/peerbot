@@ -450,13 +450,12 @@ final class AppState: ObservableObject {
         refreshFDAStatus()
         do {
             // Make sure each local folder has a matching server-side feed
-            // before we start claiming runs. Cheap if everything's already
-            // in sync; creates missing feeds when the user added a folder
-            // since the last poll. Safe to skip on failure — runs only get
-            // materialized for feeds the server already knows about.
-            if !localFolders.isEmpty {
-                await reconcileFolderFeeds()
-            }
+            // before we start claiming runs. Always runs (even with no
+            // local folders) so orphaned server feeds get cleaned up when
+            // the user removed their last folder before its feed id was
+            // learned, and so a best-effort delete that failed on remove
+            // gets retried.
+            await reconcileFolderFeeds()
 
             var handled = 0
             var lastJob: RecentJob?

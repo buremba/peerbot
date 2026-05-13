@@ -138,15 +138,29 @@ enum BrowserProfileManager {
 
     /// Open Chrome (or matching browser) at `url` pointed at the managed
     /// --user-data-dir so the user can complete an interactive login that
-    /// writes cookies into the profile dir. Returns after launch (login is
-    /// async; the UI polls profile status by checking the on-disk Cookies file).
-    static func launchManaged(browser: InstalledBrowser, managedDir: URL, openingURL url: URL) throws {
+    /// writes cookies into the profile dir. Throws if the OS reports the
+    /// launch failed — callers should surface to the user instead of
+    /// silently leaving the profile in `pending_auth` forever.
+    static func launchManaged(browser: InstalledBrowser, managedDir: URL, openingURL url: URL) async throws {
         let config = NSWorkspace.OpenConfiguration()
         config.arguments = ["--user-data-dir=\(managedDir.path)", url.absoluteString]
         config.activates = true
         let target = browser.applicationURL
-        // Synchronous-by-completion-handler launch; we don't need to await it.
-        NSWorkspace.shared.openApplication(at: target, configuration: config) { _, _ in }
+        _ = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<NSRunningApplication, Error>) in
+            NSWorkspace.shared.openApplication(at: target, configuration: config) { running, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else if let running {
+                    continuation.resume(returning: running)
+                } else {
+                    continuation.resume(throwing: NSError(
+                        domain: "Lobu.BrowserProfileManager",
+                        code: 1,
+                        userInfo: [NSLocalizedDescriptionKey: "Browser failed to launch"]
+                    ))
+                }
+            }
+        }
     }
 
     static func removeManagedProfile(at path: URL) {

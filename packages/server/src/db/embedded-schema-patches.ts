@@ -350,6 +350,25 @@ export const EMBEDDED_SCHEMA_PATCHES: EmbeddedSchemaPatch[] = [
         ALTER TABLE public.auth_profiles
         ADD COLUMN IF NOT EXISTS cdp_url text
       `);
+      await sql.unsafe(`
+        DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint WHERE conname = 'auth_profiles_device_browser_path_xor'
+          ) THEN
+            ALTER TABLE public.auth_profiles
+              ADD CONSTRAINT auth_profiles_device_browser_path_xor
+              CHECK (
+                device_worker_id IS NULL
+                OR profile_kind <> 'browser_session'
+                OR (
+                  (user_data_dir IS NOT NULL AND cdp_url IS NULL)
+                  OR (user_data_dir IS NULL AND cdp_url IS NOT NULL)
+                )
+              );
+          END IF;
+        END $$;
+      `);
     },
   },
 ];

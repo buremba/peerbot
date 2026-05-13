@@ -1006,6 +1006,27 @@ async function handleCreate(
       };
     }
   }
+  // Inheriting the device from the profile means we need to re-check the
+  // per-device duplicate-connection guard — the earlier check ran against the
+  // user's explicit `deviceWorkerId` (which may have been null). Without this
+  // pass we'd skip the guard for device-bound profiles and hit the partial
+  // unique index `idx_connections_org_connector_device_live` as a primary
+  // exception instead of a clean error.
+  if (effectiveDeviceWorkerId && effectiveDeviceWorkerId !== deviceBinding.deviceWorkerId) {
+    const dup = (await sql`
+      SELECT id FROM connections
+      WHERE organization_id = ${organizationId}
+        AND connector_key = ${args.connector_key}
+        AND device_worker_id = ${effectiveDeviceWorkerId}
+        AND deleted_at IS NULL
+      LIMIT 1
+    `) as unknown as Array<{ id: number }>;
+    if (dup.length > 0) {
+      return {
+        error: `A ${connector.name} connection (id: ${dup[0].id}) is already assigned to that device in this org.`,
+      };
+    }
+  }
   // For device-bound profiles, browser cookies live on disk in the profile's
   // user_data_dir. The server's auth_data is empty, so the readiness probe
   // returns unusable — but the connection is fine to mark active, since the
@@ -1231,6 +1252,25 @@ async function handleConnect(
   const isDeviceBoundBrowserSessionConnect =
     authSelection.authProfile?.profile_kind === 'browser_session' &&
     !!profileDeviceWorkerIdConnect;
+  // Same guard as create-path: when the profile contributed a device we
+  // didn't already check against, re-run the duplicate-connection check now
+  // so the partial unique index never decides the outcome with a raw error.
+  if (effectiveDeviceWorkerIdConnect && effectiveDeviceWorkerIdConnect !== deviceBinding.deviceWorkerId) {
+    const dup = (await sql`
+      SELECT id FROM connections
+      WHERE organization_id = ${organizationId}
+        AND connector_key = ${args.connector_key}
+        AND device_worker_id = ${effectiveDeviceWorkerIdConnect}
+        AND deleted_at IS NULL
+      LIMIT 1
+    `) as unknown as Array<{ id: number }>;
+    if (dup.length > 0) {
+      return {
+        error: `A ${connector.name} connection (id: ${dup[0].id}) is already assigned to that device in this org.`,
+        setup_url: setupUrl,
+      };
+    }
+  }
   const browserProfileUsable =
     authSelection.authProfile?.profile_kind === 'browser_session' &&
     !isDeviceBoundBrowserSessionConnect

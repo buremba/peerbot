@@ -163,25 +163,32 @@ async function acquireViaPersistent(opts: AcquireBrowserOptions): Promise<Acquir
     headless: !isDebug,
     args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
   })) as BrowserContext;
-  if (opts.cookies.length > 0) {
-    await context.addCookies(opts.cookies);
+  try {
+    if (opts.cookies.length > 0) {
+      await context.addCookies(opts.cookies);
+    }
+    const pages = context.pages();
+    const page = pages.length > 0 ? pages[0] : await context.newPage();
+    sdkLogger.info(
+      { userDataDir: opts.userDataDir, cookies: opts.cookies.length },
+      '[BrowserAcquire] Launched Playwright with persistent --user-data-dir'
+    );
+    return {
+      browser: context.browser() ?? null,
+      context,
+      page,
+      cdpPage: null,
+      cdpWsUrl: null,
+      backend: 'playwright',
+      ownsBrowser: true,
+      screenshotDir,
+    };
+  } catch (err) {
+    // addCookies / newPage failed — close the persistent context so we
+    // don't leak a long-lived Chromium process holding the profile lock.
+    await context.close().catch(() => {});
+    throw err;
   }
-  const pages = context.pages();
-  const page = pages.length > 0 ? pages[0] : await context.newPage();
-  sdkLogger.info(
-    { userDataDir: opts.userDataDir, cookies: opts.cookies.length },
-    '[BrowserAcquire] Launched Playwright with persistent --user-data-dir'
-  );
-  return {
-    browser: context.browser() ?? null,
-    context,
-    page,
-    cdpPage: null,
-    cdpWsUrl: null,
-    backend: 'playwright',
-    ownsBrowser: true,
-    screenshotDir,
-  };
 }
 
 async function acquireViaPlaywright(opts: AcquireBrowserOptions): Promise<AcquiredBrowser> {

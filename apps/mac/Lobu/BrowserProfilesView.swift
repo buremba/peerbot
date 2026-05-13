@@ -14,7 +14,6 @@ final class BrowserProfilesHub: ObservableObject {
     func loadIfNeeded(state: AppState) async {
         guard !loaded else { return }
         await reload(state: state)
-        loaded = true
     }
 
     func reload(state: AppState) async {
@@ -28,6 +27,9 @@ final class BrowserProfilesHub: ObservableObject {
             let workerId = LobuWorkerIdentity.current()
             profiles = try await client.listMyBrowserAuthProfiles(workerId: workerId)
             loadError = nil
+            // Only mark as loaded on a successful fetch — otherwise the next
+            // popover open silently shows an empty list instead of retrying.
+            loaded = true
         } catch {
             loadError = error.localizedDescription
         }
@@ -144,7 +146,15 @@ struct SingleBrowserRow: View {
     private func openManagedChrome(dirPath: String, connectorKey: String) {
         let dir = URL(fileURLWithPath: dirPath)
         let landing = landingURL(for: connectorKey)
-        try? BrowserProfileManager.launchManaged(browser: browser, managedDir: dir, openingURL: landing)
+        Task { @MainActor in
+            do {
+                try await BrowserProfileManager.launchManaged(
+                    browser: browser, managedDir: dir, openingURL: landing
+                )
+            } catch {
+                hub.loadError = "Could not launch \(browser.kind.displayName): \(error.localizedDescription)"
+            }
+        }
     }
 
     private func landingURL(for connectorKey: String) -> URL {
@@ -314,14 +324,22 @@ struct CreateBrowserProfileInlineForm: View {
             case .copy:
                 guard let source = selectedSourceProfile else { return }
                 let target = try BrowserProfileManager.materializeManagedProfile(from: source, named: displayName)
-                profile = try await client.createMyBrowserAuthProfile(
-                    workerId: workerId,
-                    connectorKey: connectorKey,
-                    displayName: displayName,
-                    browserKind: browser.kind.rawValue,
-                    userDataDir: target.path,
-                    cdpUrl: nil
-                )
+                do {
+                    profile = try await client.createMyBrowserAuthProfile(
+                        workerId: workerId,
+                        connectorKey: connectorKey,
+                        displayName: displayName,
+                        browserKind: browser.kind.rawValue,
+                        userDataDir: target.path,
+                        cdpUrl: nil
+                    )
+                } catch {
+                    // Server refused: clean up the managed --user-data-dir we
+                    // just materialized so the user isn't stuck with an
+                    // orphan profile dir on disk after a failed save.
+                    BrowserProfileManager.removeManagedProfile(at: target)
+                    throw error
+                }
             case .cdp:
                 guard let port = parsedCdpPort else {
                     error = "Enter a CDP port (e.g. 9222), or use Copy mode."

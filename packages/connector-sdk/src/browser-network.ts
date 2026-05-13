@@ -83,23 +83,30 @@ async function acquireForNetworkSync(
       headless: !isDebug,
       args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
     })) as BrowserContext;
-    if (cookies.length > 0) {
-      await context.addCookies(cookies);
+    try {
+      if (cookies.length > 0) {
+        await context.addCookies(cookies);
+      }
+      const pages = context.pages();
+      const page = pages.length > 0 ? pages[0] : await context.newPage();
+      sdkLogger.info(
+        { userDataDir, cookies: cookies.length },
+        '[BrowserNetwork] Launched with persistent --user-data-dir'
+      );
+      return {
+        browser: (context.browser() ?? null) as unknown as Browser,
+        context,
+        page,
+        backend: 'playwright',
+        ownsBrowser: true,
+        screenshotDir,
+      };
+    } catch (err) {
+      // addCookies / newPage failed — close the persistent context so we
+      // don't leak a long-lived Chromium process holding the profile lock.
+      await context.close().catch(() => {});
+      throw err;
     }
-    const pages = context.pages();
-    const page = pages.length > 0 ? pages[0] : await context.newPage();
-    sdkLogger.info(
-      { userDataDir, cookies: cookies.length },
-      '[BrowserNetwork] Launched with persistent --user-data-dir'
-    );
-    return {
-      browser: (context.browser() ?? null) as unknown as Browser,
-      context,
-      page,
-      backend: 'playwright',
-      ownsBrowser: true,
-      screenshotDir,
-    };
   }
   // --- Layer 1: CDP via Playwright connectOverCDP ---
   if (cdpUrl !== null && cdpUrl !== undefined) {

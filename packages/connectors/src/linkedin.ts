@@ -322,11 +322,17 @@ export default class LinkedInConnector extends ConnectorRuntime {
     const baseUrl = companyUrl.replace(/\/$/, '');
 
     const userDataDir = getBrowserUserDataDir(ctx.sessionState);
-    const cdpUrl = getBrowserCdpUrl(ctx.sessionState) ?? 'auto';
-    const cookies = userDataDir
+    const cdpUrlFromSession = getBrowserCdpUrl(ctx.sessionState);
+    const cdpUrl = cdpUrlFromSession ?? 'auto';
+    // No need to require cookies when the device tells us to attach directly
+    // (managed --user-data-dir on disk, or an explicit CDP endpoint pointed
+    // at the user's running Chrome). The cookie cascade is only the fallback
+    // for the cloud/auto path.
+    const skipServerCookies = !!userDataDir || !!cdpUrlFromSession;
+    const cookies = skipServerCookies
       ? []
       : getBrowserCookies(ctx.checkpoint as any, ctx.sessionState as any, 'linkedin');
-    if (!userDataDir) {
+    if (!skipServerCookies) {
       validateCookieNotExpired(cookies, 'li_at', 'linkedin');
     }
 

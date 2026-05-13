@@ -252,6 +252,7 @@ CREATE TABLE public.auth_profiles (
     user_data_dir text,
     cdp_url text,
     CONSTRAINT auth_profiles_browser_kind_check CHECK (((browser_kind IS NULL) OR (browser_kind = ANY (ARRAY['chrome'::text, 'brave'::text, 'arc'::text, 'edge'::text])))),
+    CONSTRAINT auth_profiles_device_browser_path_xor CHECK (((device_worker_id IS NULL) OR (profile_kind <> 'browser_session'::text) OR (((user_data_dir IS NOT NULL) AND (cdp_url IS NULL)) OR ((user_data_dir IS NULL) AND (cdp_url IS NOT NULL))))),
     CONSTRAINT auth_profiles_profile_kind_check CHECK ((profile_kind = ANY (ARRAY['env'::text, 'oauth_app'::text, 'oauth_account'::text, 'browser_session'::text, 'interactive'::text]))),
     CONSTRAINT auth_profiles_status_check CHECK ((status = ANY (ARRAY['active'::text, 'pending_auth'::text, 'error'::text, 'revoked'::text])))
 );

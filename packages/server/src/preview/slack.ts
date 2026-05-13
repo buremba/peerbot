@@ -230,6 +230,35 @@ export type ConsumeClaimResult =
   | { status: 'not_found' }
   | { status: 'surface_not_allowed'; surfaceType: SurfaceType };
 
+// `agent_channel_bindings` upsert — last link for this chat wins. `ON CONFLICT`
+// can't target a NULL `team_id`, so for platforms without a workspace concept
+// (team_id null) we delete-then-insert instead. `tx` is a `sql` or a `sql.begin`
+// transaction handle.
+async function upsertBinding(
+  tx: ReturnType<typeof getDb>,
+  platform: string,
+  channelId: string,
+  teamId: string | undefined,
+  agentId: string
+): Promise<void> {
+  if (teamId) {
+    await tx`
+      INSERT INTO agent_channel_bindings (agent_id, platform, channel_id, team_id, created_at)
+      VALUES (${agentId}, ${platform}, ${channelId}, ${teamId}, now())
+      ON CONFLICT (platform, channel_id, team_id) DO UPDATE SET agent_id = EXCLUDED.agent_id
+    `;
+  } else {
+    await tx`
+      DELETE FROM agent_channel_bindings
+      WHERE platform = ${platform} AND channel_id = ${channelId} AND team_id IS NULL
+    `;
+    await tx`
+      INSERT INTO agent_channel_bindings (agent_id, platform, channel_id, team_id, created_at)
+      VALUES (${agentId}, ${platform}, ${channelId}, NULL, now())
+    `;
+  }
+}
+
 /**
  * Consume a `/lobu link` (a.k.a. `/link`) code and bind the originating chat to
  * the agent the code was minted for. One-time use; last link for a surface wins
@@ -239,7 +268,9 @@ export type ConsumeClaimResult =
  * Platform-agnostic: the caller supplies the `platform`, the canonical
  * `channelId` form that platform's message handler looks bindings up by (for
  * Slack: `canonicalSlackChannelId`), the workspace/`teamId` if the platform has
- * one, and the resolved `surfaceType` (dm vs channel).
+ * one, the resolved `surfaceType` (dm vs channel), and — when available — the
+ * sender's platform user id, which is recorded against the code-minter's Lobu
+ * account in `chat_user_identities` so later links can skip the code.
  */
 export async function consumePreviewClaim(args: {
   code: string;
@@ -248,8 +279,10 @@ export async function consumePreviewClaim(args: {
   teamId?: string;
   channelId: string;
   surfaceType: SurfaceType;
+  /** Sender's platform user id (e.g. Slack `U…`), if known. */
+  platformUserId?: string;
 }): Promise<ConsumeClaimResult> {
-  const { code, platform, teamId, channelId, surfaceType } = args;
+  const { code, platform, teamId, channelId, surfaceType, platformUserId } = args;
   const sql = getDb();
 
   return sql.begin(async (tx) => {
@@ -266,23 +299,17 @@ export async function consumePreviewClaim(args: {
       return { status: 'surface_not_allowed' as const, surfaceType };
     }
 
-    // Upsert the binding — last link for this chat wins. `ON CONFLICT` can't
-    // target a NULL `team_id`, so for platforms without a workspace concept
-    // (team_id null) we delete-then-insert inside the tx instead.
-    if (teamId) {
+    await upsertBinding(tx, platform, channelId, teamId, claim.agentId);
+
+    // The code was minted by an authenticated `lobu run`, so the sender is the
+    // same Lobu user. Record the chat-platform → Lobu-user link so they can
+    // re-bind chats with `/lobu link <agentId>` without a fresh code.
+    if (claim.createdBy && platformUserId) {
       await tx`
-        INSERT INTO agent_channel_bindings (agent_id, platform, channel_id, team_id, created_at)
-        VALUES (${claim.agentId}, ${platform}, ${channelId}, ${teamId}, now())
-        ON CONFLICT (platform, channel_id, team_id) DO UPDATE SET agent_id = EXCLUDED.agent_id
-      `;
-    } else {
-      await tx`
-        DELETE FROM agent_channel_bindings
-        WHERE platform = ${platform} AND channel_id = ${channelId} AND team_id IS NULL
-      `;
-      await tx`
-        INSERT INTO agent_channel_bindings (agent_id, platform, channel_id, team_id, created_at)
-        VALUES (${claim.agentId}, ${platform}, ${channelId}, NULL, now())
+        INSERT INTO chat_user_identities (platform, team_id, platform_user_id, lobu_user_id, updated_at)
+        VALUES (${platform}, ${teamId ?? ''}, ${platformUserId}, ${claim.createdBy}, now())
+        ON CONFLICT (platform, team_id, platform_user_id)
+          DO UPDATE SET lobu_user_id = EXCLUDED.lobu_user_id, updated_at = now()
       `;
     }
 
@@ -452,4 +479,48 @@ export async function previewUnlinkedNotice(
     '',
     `Run \`lobu apply\` then \`lobu run\` to get a \`${linkCommand(platform)} <code>\`, and send it here.`,
   ].join('\n');
+}
+
+/** The Lobu user id a chat-platform user has linked to, or null. */
+export async function resolveChatUserIdentity(
+  platform: string,
+  teamId: string | undefined,
+  platformUserId: string
+): Promise<string | null> {
+  const rows = await getDb()<{ lobu_user_id: string }>`
+    SELECT lobu_user_id FROM chat_user_identities
+    WHERE platform = ${platform} AND team_id = ${teamId ?? ''} AND platform_user_id = ${platformUserId}
+    LIMIT 1
+  `;
+  return rows[0]?.lobu_user_id ?? null;
+}
+
+export type BindForOwnerResult =
+  | { status: 'bound' }
+  | { status: 'forbidden' };
+
+/**
+ * Re-bind a chat to one of the caller's agents by id, without a code — only
+ * works after the caller has linked at least once (so we know their Lobu user)
+ * and only for agents in an org they're a member of.
+ */
+export async function bindChatToAgentForOwner(args: {
+  platform: string;
+  teamId?: string;
+  channelId: string;
+  agentId: string;
+  lobuUserId: string;
+}): Promise<BindForOwnerResult> {
+  const { platform, teamId, channelId, agentId, lobuUserId } = args;
+  const sql = getDb();
+  const owned = await sql<{ one: number }>`
+    SELECT 1 AS one
+    FROM agents a
+    JOIN "member" m ON m."organizationId" = a.organization_id
+    WHERE a.id = ${agentId} AND m."userId" = ${lobuUserId}
+    LIMIT 1
+  `;
+  if (owned.length === 0) return { status: 'forbidden' };
+  await sql.begin((tx) => upsertBinding(tx, platform, channelId, teamId, agentId));
+  return { status: 'bound' };
 }

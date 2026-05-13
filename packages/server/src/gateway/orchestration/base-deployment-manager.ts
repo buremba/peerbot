@@ -28,8 +28,20 @@ export type { MessagePayload };
 
 const logger = createLogger("orchestrator");
 
-/** TTL applied to non-provider secret env var placeholders. */
-const SECRET_PLACEHOLDER_TTL_SECONDS = 7 * 24 * 60 * 60;
+/**
+ * TTL applied to non-provider secret env var placeholders. Mappings are
+ * cascade-deleted on deployment teardown; this only bounds how long an
+ * orphaned mapping (pod crash, agent deleted mid-day) survives. 24h default,
+ * overridable via `SECRET_PLACEHOLDER_TTL_MS`.
+ */
+const SECRET_PLACEHOLDER_TTL_SECONDS = (() => {
+  const raw = process.env.SECRET_PLACEHOLDER_TTL_MS;
+  if (raw) {
+    const ms = Number(raw);
+    if (Number.isFinite(ms) && ms > 0) return Math.floor(ms / 1000);
+  }
+  return 24 * 60 * 60;
+})();
 
 /**
  * Maximum number of agents tracked in the grant-sync LRU. Oldest entry is
@@ -738,7 +750,8 @@ export abstract class BaseDeploymentManager {
             agentId,
             key,
             secretRef,
-            deploymentName
+            deploymentName,
+            SECRET_PLACEHOLDER_TTL_SECONDS
           );
           envVars[key] = placeholder;
           hasSecrets = true;
@@ -964,7 +977,7 @@ export abstract class BaseDeploymentManager {
       // Cascade-delete the underlying non-provider secrets written by
       // `injectSecretPlaceholders` under `deployments/{deploymentName}/`.
       // Without this, the placeholder mappings are gone but the backing
-      // secret entries linger until their 7-day TTL expires (and AWS SM
+      // secret entries linger until their TTL expires (and AWS SM
       // entries would leak forever).
       if (this.secretStore) {
         try {

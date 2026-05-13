@@ -5,10 +5,94 @@ import type { AuthProfilesManager } from "../auth/settings/auth-profiles-manager
 import type { ProviderCredentialContext } from "../embedded.js";
 import type { ProviderUpstreamConfig } from "../modules/module-system.js";
 import type { SecretStore } from "../secrets/index.js";
+import { getClientIp } from "../utils/rate-limiter.js";
 
 const logger = createLogger("secret-proxy");
 
 const PLACEHOLDER_PREFIX = "lobu_secret_";
+
+/**
+ * Default TTL for orphaned placeholder→secret mappings. Mappings are
+ * cascade-deleted on deployment teardown (`deleteSecretMappings`); this TTL
+ * only bounds how long a mapping survives if teardown never runs (worker pod
+ * crash, agent deleted mid-day). 24h instead of the old ~7 days narrows the
+ * window an orphaned `lobu_secret_<uuid>` stays live. Configurable via
+ * `SECRET_PLACEHOLDER_TTL_MS`.
+ */
+function defaultPlaceholderTtlSeconds(): number {
+  const raw = process.env.SECRET_PLACEHOLDER_TTL_MS;
+  if (raw) {
+    const ms = Number(raw);
+    if (Number.isFinite(ms) && ms > 0) return Math.floor(ms / 1000);
+  }
+  return 24 * 60 * 60;
+}
+
+/**
+ * Per-source cap on *failed* placeholder resolutions. A compromised worker can
+ * probe the proxy with bogus `lobu_secret_<uuid>` tokens; without a cap each
+ * miss is logged, so it doubles as a log-spam vector. Once a source exceeds
+ * the threshold within the window, further resolutions hard-fail and we log
+ * the throttle once instead of per-attempt. Only failures count — legitimate
+ * high-throughput valid lookups are never throttled.
+ */
+const RESOLVE_FAILURE_THRESHOLD = 20;
+const RESOLVE_FAILURE_WINDOW_MS = 5 * 60 * 1000;
+
+interface FailureBucket {
+  count: number;
+  windowStartMs: number;
+  throttledLogged: boolean;
+}
+
+class ResolutionFailureLimiter {
+  private readonly buckets = new Map<string, FailureBucket>();
+
+  /** Returns true if the source is currently throttled (over threshold). */
+  isThrottled(source: string): boolean {
+    const bucket = this.buckets.get(source);
+    if (!bucket) return false;
+    if (Date.now() - bucket.windowStartMs >= RESOLVE_FAILURE_WINDOW_MS) {
+      this.buckets.delete(source);
+      return false;
+    }
+    return bucket.count >= RESOLVE_FAILURE_THRESHOLD;
+  }
+
+  /**
+   * Record a failed resolution for a source. Returns whether the caller
+   * should log this particular failure (true the first time the threshold is
+   * crossed — the "source throttled" line — and for every failure below it;
+   * false once we've already logged the throttle for this window).
+   */
+  recordFailure(source: string): { shouldLog: boolean; nowThrottled: boolean } {
+    const now = Date.now();
+    let bucket = this.buckets.get(source);
+    if (!bucket || now - bucket.windowStartMs >= RESOLVE_FAILURE_WINDOW_MS) {
+      bucket = { count: 0, windowStartMs: now, throttledLogged: false };
+      this.buckets.set(source, bucket);
+    }
+    bucket.count += 1;
+    const nowThrottled = bucket.count >= RESOLVE_FAILURE_THRESHOLD;
+    if (nowThrottled) {
+      if (bucket.throttledLogged) return { shouldLog: false, nowThrottled };
+      bucket.throttledLogged = true;
+      return { shouldLog: true, nowThrottled };
+    }
+    return { shouldLog: true, nowThrottled };
+  }
+
+  /** Record a successful resolution — clears the source's failure bucket. */
+  recordSuccess(source: string): void {
+    this.buckets.delete(source);
+  }
+
+  reset(): void {
+    this.buckets.clear();
+  }
+}
+
+const resolutionFailureLimiter = new ResolutionFailureLimiter();
 
 /**
  * In-memory placeholder→SecretMapping cache. Per-pod by design: workers are
@@ -231,9 +315,17 @@ export class SecretProxy {
   /**
    * If the value contains a UUID placeholder prefix, resolve the real secret.
    * Returns the value unchanged if it's not a recognized pattern.
+   *
+   * `source` identifies the caller (best available identity: bound agentId or
+   * remote address) for per-source failed-resolution rate limiting.
    */
-  private async swap(value: string): Promise<string> {
+  private async swap(value: string, source: string): Promise<string> {
     if (value.includes(PLACEHOLDER_PREFIX)) {
+      if (resolutionFailureLimiter.isThrottled(source)) {
+        // Source has burned through its failure budget — hard-fail without
+        // touching the cache or logging another line.
+        return "";
+      }
       const resolved = await this.resolveSecret(value);
       if (!resolved) {
         // Fail closed: forwarding the literal placeholder upstream would
@@ -241,9 +333,21 @@ export class SecretProxy {
         // logs / user-facing messages), giving an attacker a stable handle
         // to enumerate. An empty string fails the auth check upstream
         // without exposing the ref.
-        logger.warn("Failed to resolve secret placeholder");
+        const { shouldLog, nowThrottled } =
+          resolutionFailureLimiter.recordFailure(source);
+        if (shouldLog) {
+          if (nowThrottled) {
+            logger.warn(
+              { source },
+              "Throttling placeholder resolution for source after repeated failures"
+            );
+          } else {
+            logger.warn({ source }, "Failed to resolve secret placeholder");
+          }
+        }
         return "";
       }
+      resolutionFailureLimiter.recordSuccess(source);
       return resolved;
     }
 
@@ -419,9 +523,15 @@ export class SecretProxy {
       // Legacy path: swap UUID placeholders in auth headers (non-provider secrets).
       // Read the originals from the request because we strip them from the
       // forwarded headers map above.
+      const source =
+        urlAgentId ??
+        getClientIp({
+          forwardedFor: c.req.header("x-forwarded-for"),
+          realIp: c.req.header("x-real-ip"),
+        });
       const apiKey = c.req.header("x-api-key");
       if (apiKey) {
-        headers["x-api-key"] = await this.swap(apiKey);
+        headers["x-api-key"] = await this.swap(apiKey, source);
       }
 
       const auth =
@@ -429,7 +539,7 @@ export class SecretProxy {
       if (auth) {
         const parts = auth.split(" ");
         if (parts.length === 2 && parts[0]?.toLowerCase() === "bearer") {
-          const swapped = await this.swap(parts[1]!);
+          const swapped = await this.swap(parts[1]!, source);
           headers.authorization = `Bearer ${swapped}`;
         }
       }
@@ -499,7 +609,7 @@ export class SecretProxy {
 export function storeSecretMapping(
   uuid: string,
   mapping: SecretMapping,
-  ttlSeconds: number = 7 * 24 * 60 * 60 // 7 days default
+  ttlSeconds: number = defaultPlaceholderTtlSeconds()
 ): void {
   placeholderCache.set(uuid, mapping, ttlSeconds);
 }
@@ -533,7 +643,8 @@ export function generatePlaceholder(
   return `${PLACEHOLDER_PREFIX}${uuid}`;
 }
 
-/** Test-only: drop every placeholder. */
+/** Test-only: drop every placeholder and reset the failure limiter. */
 export function __resetPlaceholderCacheForTests(): void {
   (placeholderCache as unknown as { entries: Map<string, unknown> }).entries.clear();
+  resolutionFailureLimiter.reset();
 }

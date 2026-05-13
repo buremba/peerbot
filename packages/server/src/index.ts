@@ -524,6 +524,10 @@ import {
   completeAuthRun,
   completeEmbeddings,
   completeWorkerJob,
+  createMyDeviceAuthProfile,
+  createMyDeviceFeed,
+  deleteMyDeviceAuthProfile,
+  deleteMyDeviceFeed,
   emitAuthArtifact,
   fetchEventsForEmbedding,
   getActiveAuthRun,
@@ -531,6 +535,9 @@ import {
   heartbeat,
   deleteDeviceWorker,
   listDeviceWorkers,
+  listBrowserConnectors,
+  listMyDeviceAuthProfiles,
+  listMyDeviceFeeds,
   updateDeviceWorkerOrg,
   pollAuthSignal,
   pollWorkerJob,
@@ -582,7 +589,15 @@ app.use('/api/workers/*', async (c, next) => {
         '/api/workers/complete',
       ]);
       const requestPath = new URL(c.req.url).pathname;
-      if (!allowedPathsForUserWorker.has(requestPath)) {
+      const isAuthProfileSubpath = requestPath.startsWith('/api/workers/me/auth-profiles');
+      const isFeedSubpath = requestPath.startsWith('/api/workers/me/feeds');
+      const isBrowserConnectorsPath = requestPath === '/api/workers/me/browser-connectors';
+      if (
+        !allowedPathsForUserWorker.has(requestPath) &&
+        !isAuthProfileSubpath &&
+        !isFeedSubpath &&
+        !isBrowserConnectorsPath
+      ) {
         return c.json({ error: 'Endpoint not available to user-scoped workers' }, 403);
       }
       const scopes = c.var.mcpAuthInfo?.scopes ?? [];
@@ -633,6 +648,13 @@ app.post('/api/workers/fetch-events', fetchEventsForEmbedding);
 app.post('/api/workers/emit-auth-artifact', emitAuthArtifact);
 app.post('/api/workers/poll-auth-signal', pollAuthSignal);
 app.post('/api/workers/complete-auth', completeAuthRun);
+app.get('/api/workers/me/auth-profiles', listMyDeviceAuthProfiles);
+app.post('/api/workers/me/auth-profiles', createMyDeviceAuthProfile);
+app.delete('/api/workers/me/auth-profiles/:id', deleteMyDeviceAuthProfile);
+app.get('/api/workers/me/feeds', listMyDeviceFeeds);
+app.post('/api/workers/me/feeds', createMyDeviceFeed);
+app.delete('/api/workers/me/feeds/:id', deleteMyDeviceFeed);
+app.get('/api/workers/me/browser-connectors', listBrowserConnectors);
 // Device worker registry. Authenticated (mcpAuth); returns the calling user's
 // devices. Lives under /api/me/ so the workspace resolver treats it as
 // user-scoped (no org slug in the URL).

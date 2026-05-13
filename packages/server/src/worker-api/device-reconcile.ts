@@ -130,9 +130,17 @@ async function ensureDeviceConnectorWired(
     const compiledCode = await compileConnectorFromFile(filePath);
     const metadata = await extractConnectorMetadata(compiledCode);
     if (!metadata.key || !metadata.name || !metadata.version) return;
-    const feedsSchema = metadata.feeds as Record<string, { configSchema?: unknown }> | null;
-    const feedKeys = feedsSchema ? Object.keys(feedsSchema) : [];
-    if (feedKeys.length === 0) return;
+    const feedsSchema = metadata.feeds as Record<
+      string,
+      { configSchema?: unknown; userManaged?: boolean }
+    > | null;
+    // Skip feeds the connector marks `userManaged` — they need per-instance
+    // config (e.g. local.directory.files needs a folder_id per folder) that
+    // auto-wire can't supply. The Mac app creates them explicitly via
+    // /api/workers/me/feeds once it has the folder bookmark.
+    const feedKeys = feedsSchema
+      ? Object.keys(feedsSchema).filter((k) => !feedsSchema[k]?.userManaged)
+      : [];
 
     let connectionId: number | undefined;
     await sql.begin(async (tx) => {

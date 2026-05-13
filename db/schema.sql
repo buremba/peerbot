@@ -247,6 +247,11 @@ CREATE TABLE public.auth_profiles (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    device_worker_id uuid,
+    browser_kind text,
+    user_data_dir text,
+    cdp_url text,
+    CONSTRAINT auth_profiles_browser_kind_check CHECK (((browser_kind IS NULL) OR (browser_kind = ANY (ARRAY['chrome'::text, 'brave'::text, 'arc'::text, 'edge'::text])))),
     CONSTRAINT auth_profiles_profile_kind_check CHECK ((profile_kind = ANY (ARRAY['env'::text, 'oauth_app'::text, 'oauth_account'::text, 'browser_session'::text, 'interactive'::text]))),
     CONSTRAINT auth_profiles_status_check CHECK ((status = ANY (ARRAY['active'::text, 'pending_auth'::text, 'error'::text, 'revoked'::text])))
 );
@@ -2818,6 +2823,12 @@ CREATE INDEX agents_organization_id_idx ON public.agents USING btree (organizati
 CREATE INDEX auth_profiles_connector_kind_idx ON public.auth_profiles USING btree (organization_id, connector_key, profile_kind, status);
 
 --
+-- Name: auth_profiles_device_worker_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX auth_profiles_device_worker_idx ON public.auth_profiles USING btree (device_worker_id) WHERE (device_worker_id IS NOT NULL);
+
+--
 -- Name: auth_profiles_org_slug_unique; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -4079,6 +4090,13 @@ ALTER TABLE ONLY public.auth_profiles
     ADD CONSTRAINT auth_profiles_account_id_fkey FOREIGN KEY (account_id) REFERENCES public.account(id) ON DELETE SET NULL;
 
 --
+-- Name: auth_profiles auth_profiles_device_worker_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.auth_profiles
+    ADD CONSTRAINT auth_profiles_device_worker_id_fkey FOREIGN KEY (device_worker_id) REFERENCES public.device_workers(id) ON DELETE CASCADE;
+
+--
 -- Name: auth_profiles auth_profiles_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -4871,4 +4889,6 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20260510220000'),
     ('20260512000000'),
     ('20260512131703'),
-    ('20260513000000');
+    ('20260513000000'),
+    ('20260513120000'),
+    ('20260513150000');

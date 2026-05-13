@@ -315,6 +315,184 @@ final class WorkerClient {
         return data
     }
 
+    // MARK: - Browser auth profiles (device-bound)
+
+    struct BrowserAuthProfile: Decodable, Identifiable, Equatable {
+        let id: Int
+        let slug: String
+        let display_name: String
+        let connector_key: String
+        let profile_kind: String
+        let status: String
+        let browser_kind: String?
+        let user_data_dir: String?
+        let cdp_url: String?
+        let created_at: String?
+        let updated_at: String?
+    }
+
+    private struct BrowserAuthProfilesList: Decodable {
+        let profiles: [BrowserAuthProfile]
+    }
+
+    private struct BrowserAuthProfileEnvelope: Decodable {
+        let profile: BrowserAuthProfile
+    }
+
+    func listMyBrowserAuthProfiles(workerId: String) async throws -> [BrowserAuthProfile] {
+        guard var components = URLComponents(string: "\(baseURL.trimmedTrailingSlash())/api/workers/me/auth-profiles") else {
+            throw URLError(.badURL)
+        }
+        components.queryItems = [URLQueryItem(name: "worker_id", value: workerId)]
+        guard let url = components.url else { throw URLError(.badURL) }
+        let data = try await getRaw(url: url, path: "/api/workers/me/auth-profiles")
+        let list = try decoder.decode(BrowserAuthProfilesList.self, from: data)
+        return list.profiles
+    }
+
+    func createMyBrowserAuthProfile(
+        workerId: String,
+        connectorKey: String,
+        displayName: String,
+        browserKind: String,
+        userDataDir: String?,
+        cdpUrl: String?
+    ) async throws -> BrowserAuthProfile {
+        struct Body: Encodable {
+            let worker_id: String
+            let connector_key: String
+            let display_name: String
+            let browser_kind: String
+            let user_data_dir: String?
+            let cdp_url: String?
+        }
+        let data = try await post(
+            "/api/workers/me/auth-profiles",
+            body: Body(
+                worker_id: workerId,
+                connector_key: connectorKey,
+                display_name: displayName,
+                browser_kind: browserKind,
+                user_data_dir: userDataDir,
+                cdp_url: cdpUrl
+            )
+        )
+        let envelope = try decoder.decode(BrowserAuthProfileEnvelope.self, from: data)
+        return envelope.profile
+    }
+
+    func deleteMyBrowserAuthProfile(workerId: String, profileId: Int) async throws {
+        struct Body: Encodable { let worker_id: String }
+        guard let url = URL(string: "\(baseURL.trimmedTrailingSlash())/api/workers/me/auth-profiles/\(profileId)") else {
+            throw URLError(.badURL)
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "DELETE"
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try encoder.encode(Body(worker_id: workerId))
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            throw WorkerClientError.http("/api/workers/me/auth-profiles/\(profileId)", code, String(data: data, encoding: .utf8) ?? "")
+        }
+    }
+
+    // MARK: - Device feeds
+
+    struct DeviceFeed: Decodable {
+        let id: Int
+        let feed_key: String?
+        let display_name: String?
+        let status: String?
+        let config: [String: AnyJSONValue]?
+    }
+
+    struct DeviceFeedsResponse: Decodable {
+        let connection_id: Int?
+        let organization_id: String?
+        let feeds: [DeviceFeed]
+    }
+
+    func listMyDeviceFeeds(workerId: String, connectorKey: String) async throws -> DeviceFeedsResponse {
+        guard var components = URLComponents(string: "\(baseURL.trimmedTrailingSlash())/api/workers/me/feeds") else {
+            throw URLError(.badURL)
+        }
+        components.queryItems = [
+            URLQueryItem(name: "worker_id", value: workerId),
+            URLQueryItem(name: "connector_key", value: connectorKey),
+        ]
+        guard let url = components.url else { throw URLError(.badURL) }
+        let data = try await getRaw(url: url, path: "/api/workers/me/feeds")
+        return try decoder.decode(DeviceFeedsResponse.self, from: data)
+    }
+
+    func createMyDeviceFeed(
+        workerId: String,
+        connectorKey: String,
+        feedKey: String,
+        displayName: String,
+        config: [String: AnyEncodable]
+    ) async throws -> DeviceFeed {
+        struct Body: Encodable {
+            let worker_id: String
+            let connector_key: String
+            let feed_key: String
+            let display_name: String
+            let config: [String: AnyEncodable]
+        }
+        struct Envelope: Decodable { let feed: DeviceFeed }
+        let data = try await post(
+            "/api/workers/me/feeds",
+            body: Body(
+                worker_id: workerId,
+                connector_key: connectorKey,
+                feed_key: feedKey,
+                display_name: displayName,
+                config: config
+            )
+        )
+        return try decoder.decode(Envelope.self, from: data).feed
+    }
+
+    struct BrowserConnectorOption: Decodable, Identifiable, Equatable, Hashable {
+        let key: String
+        let name: String
+        let favicon_domain: String?
+        var id: String { key }
+    }
+
+    private struct BrowserConnectorsResponse: Decodable {
+        let connectors: [BrowserConnectorOption]
+    }
+
+    func listBrowserConnectors(workerId: String) async throws -> [BrowserConnectorOption] {
+        guard var components = URLComponents(string: "\(baseURL.trimmedTrailingSlash())/api/workers/me/browser-connectors") else {
+            throw URLError(.badURL)
+        }
+        components.queryItems = [URLQueryItem(name: "worker_id", value: workerId)]
+        guard let url = components.url else { throw URLError(.badURL) }
+        let data = try await getRaw(url: url, path: "/api/workers/me/browser-connectors")
+        return try decoder.decode(BrowserConnectorsResponse.self, from: data).connectors
+    }
+
+    func deleteMyDeviceFeed(workerId: String, connectorKey: String, feedId: Int) async throws {
+        struct Body: Encodable { let worker_id: String; let connector_key: String }
+        guard let url = URL(string: "\(baseURL.trimmedTrailingSlash())/api/workers/me/feeds/\(feedId)") else {
+            throw URLError(.badURL)
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "DELETE"
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try encoder.encode(Body(worker_id: workerId, connector_key: connectorKey))
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            throw WorkerClientError.http("/api/workers/me/feeds/\(feedId)", code, String(data: data, encoding: .utf8) ?? "")
+        }
+    }
+
     private func post<T: Encodable>(_ path: String, body: T) async throws -> Data {
         guard let url = URL(string: "\(baseURL.trimmedTrailingSlash())\(path)") else { throw URLError(.badURL) }
         var request = URLRequest(url: url)

@@ -388,9 +388,14 @@ export async function getBundledDeviceConnectors(): Promise<BundledDeviceConnect
     .map((d) => ({
       key: d.key,
       requiredCapability: d.required_capability as string,
+      // Exclude `userManaged` feeds — they require per-instance config the
+      // auto-wire flow can't supply (e.g. local.directory.files needs a
+      // folder_id from the Mac app). The Mac app creates them explicitly.
       feedKeys:
         d.feeds_schema && typeof d.feeds_schema === 'object' && !Array.isArray(d.feeds_schema)
-          ? Object.keys(d.feeds_schema)
+          ? Object.entries(d.feeds_schema as Record<string, { userManaged?: boolean }>)
+              .filter(([, def]) => !def?.userManaged)
+              .map(([key]) => key)
           : [],
     }));
 }

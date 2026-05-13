@@ -290,4 +290,66 @@ export const EMBEDDED_SCHEMA_PATCHES: EmbeddedSchemaPatch[] = [
       await sql.unsafe(`DROP TABLE IF EXISTS public.device_worker_org_grants`);
     },
   },
+  {
+    // Mirrors db/migrations/20260513120000_auth_profiles_device_binding.sql.
+    // Lets a 'browser_session' auth_profile live on a device worker (cookies on
+    // disk in user_data_dir, auth_data empty) instead of in server-side
+    // auth_data jsonb.
+    id: 'auth-profiles-device-binding',
+    apply: async (sql) => {
+      await sql.unsafe(`
+        ALTER TABLE public.auth_profiles
+        ADD COLUMN IF NOT EXISTS device_worker_id uuid
+      `);
+      await sql.unsafe(`
+        ALTER TABLE public.auth_profiles
+        ADD COLUMN IF NOT EXISTS browser_kind text
+      `);
+      await sql.unsafe(`
+        ALTER TABLE public.auth_profiles
+        ADD COLUMN IF NOT EXISTS user_data_dir text
+      `);
+      await sql.unsafe(`
+        DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint WHERE conname = 'auth_profiles_device_worker_id_fkey'
+          ) THEN
+            ALTER TABLE public.auth_profiles
+              ADD CONSTRAINT auth_profiles_device_worker_id_fkey
+              FOREIGN KEY (device_worker_id)
+              REFERENCES public.device_workers (id)
+              ON DELETE CASCADE;
+          END IF;
+        END $$;
+      `);
+      await sql.unsafe(`
+        DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint WHERE conname = 'auth_profiles_browser_kind_check'
+          ) THEN
+            ALTER TABLE public.auth_profiles
+              ADD CONSTRAINT auth_profiles_browser_kind_check
+              CHECK (browser_kind IS NULL OR browser_kind = ANY (ARRAY['chrome','brave','arc','edge']));
+          END IF;
+        END $$;
+      `);
+      await sql.unsafe(`
+        CREATE INDEX IF NOT EXISTS auth_profiles_device_worker_idx
+        ON public.auth_profiles (device_worker_id)
+        WHERE device_worker_id IS NOT NULL
+      `);
+    },
+  },
+  {
+    // Mirrors db/migrations/20260513150000_auth_profiles_cdp_url.sql
+    id: 'auth-profiles-cdp-url',
+    apply: async (sql) => {
+      await sql.unsafe(`
+        ALTER TABLE public.auth_profiles
+        ADD COLUMN IF NOT EXISTS cdp_url text
+      `);
+    },
+  },
 ];

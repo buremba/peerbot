@@ -506,6 +506,10 @@ export function serializeAuthProfile(authProfile: AuthProfileRow): Record<string
     created_by: authProfile.created_by,
     created_at: authProfile.created_at,
     updated_at: authProfile.updated_at,
+    device_worker_id: authProfile.device_worker_id,
+    browser_kind: authProfile.browser_kind,
+    user_data_dir: authProfile.user_data_dir,
+    cdp_url: authProfile.cdp_url,
     ...(authProfile.profile_kind === 'oauth_account'
       ? {
           requested_scopes: readRequestedScopesFromAuthData(authProfile.auth_data),
@@ -516,6 +520,7 @@ export function serializeAuthProfile(authProfile: AuthProfileRow): Record<string
     ...(authProfile.profile_kind === 'browser_session'
       ? {
           has_auth_data:
+            !!authProfile.device_worker_id ||
             !!browserSummary?.cdp_url ||
             browserSessionIsUsable(authProfile.auth_data, authProfile.connector_key),
         }

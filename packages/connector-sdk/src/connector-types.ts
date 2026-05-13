@@ -183,6 +183,14 @@ export interface FeedDefinition {
   displayNameTemplate?: string;
   /** JSON Schema for feed-specific config */
   configSchema?: Record<string, unknown>;
+  /**
+   * When true, auto-wire (device-reconcile + bundled-connector install) skips
+   * this feed — every feed instance is created explicitly by the user (or by
+   * the device worker on their behalf). Use this for feeds whose configSchema
+   * has required fields that can only be supplied by an external actor, e.g.
+   * `local.directory.files` needs a per-folder `folder_id` from the Mac app.
+   */
+  userManaged?: boolean;
   /** Event kinds this feed produces, keyed by kind slug */
   eventKinds?: Record<
     string,

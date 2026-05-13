@@ -13,7 +13,12 @@ import type { Env } from './index';
 import { notifyBrowserAuthExpired } from './notifications/triggers';
 import { materializeDueFeeds } from './scheduled/check-due-feeds';
 import { supersedeActionEvent } from './tools/admin/manage_operations';
-import { getAuthProfileById, getBrowserSessionReadiness } from './utils/auth-profiles';
+import {
+  type BrowserKind,
+  createAuthProfile,
+  getAuthProfileById,
+  getBrowserSessionReadiness,
+} from './utils/auth-profiles';
 import {
   maybeCloseRepairThread,
   maybeOpenOrAppendRepairThread,
@@ -431,7 +436,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   //    profile still can't leak secrets to an arbitrary capability-matched device.
   const connectionIsDevicePinned = row.connection_device_worker_id != null;
   const deliverConnectionAuth = !!row.connection_id && (!isUserScopedWorker || connectionIsDevicePinned);
-  const { credentials, connectionCredentials, sessionState } = deliverConnectionAuth
+  const { credentials, connectionCredentials, sessionState, browserUserDataDir } = deliverConnectionAuth
     ? await resolveExecutionAuth({
         organizationId: row.organization_id,
         connectionId: row.connection_id!,
@@ -445,6 +450,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         credentials: null,
         connectionCredentials: {},
         sessionState: null,
+        browserUserDataDir: null,
       };
 
   return c.json({
@@ -1686,6 +1692,393 @@ export async function deleteDeviceWorker(c: Context<{ Bindings: Env }>) {
     return c.json({ ok: true });
   } catch (err: unknown) {
     logger.error({ error: errorMessage(err) }, '[deleteDeviceWorker] Error');
+    return c.json({ error: errorMessage(err) }, 500);
+  }
+}
+
+const BROWSER_KIND_SET: ReadonlySet<BrowserKind> = new Set(['chrome', 'brave', 'arc', 'edge']);
+
+async function resolveDeviceWorkerForRequest(
+  c: Context<{ Bindings: Env }>,
+  workerId: string
+): Promise<{ device: { id: string; organization_id: string } | null; error?: Response }> {
+  const userId = c.var.workerUserId;
+  if (!userId) {
+    return { device: null, error: c.json({ error: 'Unauthorized' }, 401) };
+  }
+  const sql = getDb();
+  const rows = (await sql`
+    SELECT id, organization_id
+    FROM device_workers
+    WHERE user_id = ${userId} AND worker_id = ${workerId}
+    LIMIT 1
+  `) as unknown as Array<{ id: string; organization_id: string | null }>;
+  const row = rows[0];
+  if (!row) {
+    return { device: null, error: c.json({ error: 'Device not registered yet — poll first' }, 404) };
+  }
+  if (!row.organization_id) {
+    return { device: null, error: c.json({ error: 'Device has no organization attached' }, 409) };
+  }
+  return { device: { id: row.id, organization_id: row.organization_id } };
+}
+
+/**
+ * GET /api/workers/me/auth-profiles?worker_id=...
+ *
+ * List the browser-session auth profiles owned by this device worker. The Mac
+ * app uses this to reconcile its local --user-data-dir directories against
+ * server state after each poll.
+ */
+export async function listMyDeviceAuthProfiles(c: Context<{ Bindings: Env }>) {
+  const workerId = (c.req.query('worker_id') ?? '').trim();
+  if (!workerId) {
+    return c.json({ error: 'worker_id query param is required' }, 400);
+  }
+  const { device, error } = await resolveDeviceWorkerForRequest(c, workerId);
+  if (error) return error;
+  try {
+    const sql = getDb();
+    const rows = (await sql`
+      SELECT id, slug, display_name, connector_key, profile_kind, status,
+             browser_kind, user_data_dir, created_at, updated_at
+      FROM auth_profiles
+      WHERE device_worker_id = ${device!.id}
+        AND profile_kind = 'browser_session'
+      ORDER BY created_at DESC
+    `) as unknown as Array<Record<string, unknown>>;
+    return c.json({ profiles: rows });
+  } catch (err) {
+    logger.error({ error: errorMessage(err) }, '[listMyDeviceAuthProfiles] Error');
+    return c.json({ error: errorMessage(err) }, 500);
+  }
+}
+
+/**
+ * POST /api/workers/me/auth-profiles
+ *
+ * Body: { worker_id, connector_key, display_name, browser_kind, user_data_dir }
+ *
+ * Create a browser-session auth profile bound to this device. Cookies stay on
+ * the device — server's auth_data is empty.
+ */
+export async function createMyDeviceAuthProfile(c: Context<{ Bindings: Env }>) {
+  let body: {
+    worker_id?: string;
+    connector_key?: string;
+    display_name?: string;
+    browser_kind?: string;
+    user_data_dir?: string;
+    cdp_url?: string;
+  };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'Invalid JSON body' }, 400);
+  }
+  const workerId = (body.worker_id ?? '').trim();
+  const connectorKey = (body.connector_key ?? '').trim();
+  const displayName = (body.display_name ?? '').trim();
+  const browserKind = (body.browser_kind ?? '').trim() as BrowserKind;
+  const userDataDir = (body.user_data_dir ?? '').trim();
+  const cdpUrl = (body.cdp_url ?? '').trim();
+  if (!workerId || !connectorKey || !displayName || !browserKind) {
+    return c.json({ error: 'worker_id, connector_key, display_name, browser_kind are required' }, 400);
+  }
+  if (!BROWSER_KIND_SET.has(browserKind)) {
+    return c.json({ error: `browser_kind must be one of: ${[...BROWSER_KIND_SET].join(', ')}` }, 400);
+  }
+  // Exactly one of (user_data_dir, cdp_url) — copy vs attach modes are
+  // mutually exclusive for a device-bound profile.
+  if (!userDataDir && !cdpUrl) {
+    return c.json({ error: 'exactly one of user_data_dir (copy mode) or cdp_url (attach mode) is required' }, 400);
+  }
+  if (userDataDir && cdpUrl) {
+    return c.json({ error: 'user_data_dir and cdp_url are mutually exclusive' }, 400);
+  }
+  const { device, error } = await resolveDeviceWorkerForRequest(c, workerId);
+  if (error) return error;
+  try {
+    const profile = await createAuthProfile({
+      organizationId: device!.organization_id,
+      connectorKey,
+      displayName,
+      profileKind: 'browser_session',
+      status: 'pending_auth',
+      createdBy: c.var.workerUserId,
+      deviceWorkerId: device!.id,
+      browserKind,
+      userDataDir: userDataDir || null,
+      cdpUrl: cdpUrl || null,
+    });
+    return c.json({ profile });
+  } catch (err) {
+    logger.error({ error: errorMessage(err) }, '[createMyDeviceAuthProfile] Error');
+    return c.json({ error: errorMessage(err) }, 500);
+  }
+}
+
+/**
+ * DELETE /api/workers/me/auth-profiles/:id  { worker_id }
+ *
+ * Soft-revoke an auth profile owned by this device. Connections referencing
+ * this profile keep their auth_profile_id (the slug surfaces in the UI as
+ * "auth revoked, reconnect"), matching the existing convention.
+ */
+export async function deleteMyDeviceAuthProfile(c: Context<{ Bindings: Env }>) {
+  const profileId = Number((c.req.param('id') ?? '').trim());
+  if (!Number.isFinite(profileId)) {
+    return c.json({ error: 'invalid profile id' }, 400);
+  }
+  let body: { worker_id?: string };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'Invalid JSON body' }, 400);
+  }
+  const workerId = (body.worker_id ?? '').trim();
+  if (!workerId) {
+    return c.json({ error: 'worker_id is required' }, 400);
+  }
+  const { device, error } = await resolveDeviceWorkerForRequest(c, workerId);
+  if (error) return error;
+  try {
+    const sql = getDb();
+    const updated = (await sql`
+      UPDATE auth_profiles
+      SET status = 'revoked', updated_at = now()
+      WHERE id = ${profileId}
+        AND device_worker_id = ${device!.id}
+        AND profile_kind = 'browser_session'
+      RETURNING id
+    `) as unknown as Array<{ id: number }>;
+    if (updated.length === 0) {
+      return c.json({ error: 'Profile not found on this device' }, 404);
+    }
+    return c.json({ ok: true });
+  } catch (err) {
+    logger.error({ error: errorMessage(err) }, '[deleteMyDeviceAuthProfile] Error');
+    return c.json({ error: errorMessage(err) }, 500);
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Device-scoped feed CRUD
+// -----------------------------------------------------------------------------
+//
+// The Mac app uses these to create / list / delete feeds on its auto-wired
+// device connection (e.g. one feed per local folder for `local.directory`).
+// Scope = (this device's user, this device's auto-wired connection for the
+// given connector_key). Server never sees the security-scoped bookmark — just
+// the metadata the Mac app posts in the feed config.
+
+async function resolveDeviceConnection(
+  c: Context<{ Bindings: Env }>,
+  workerId: string,
+  connectorKey: string
+): Promise<{
+  device: { id: string; organization_id: string } | null;
+  connection: { id: number } | null;
+  error?: Response;
+}> {
+  const { device, error } = await resolveDeviceWorkerForRequest(c, workerId);
+  if (error || !device) return { device: null, connection: null, error };
+  const sql = getDb();
+  // The user-scoped device worker auto-wires a single connection for the
+  // connector in its home org (see device-reconcile.ts). Match on
+  // (user, connector, org) — user_id link via device_workers.created_by — to
+  // find that row. Either pinned to this device or unpinned with no other
+  // pin owner.
+  const rows = (await sql`
+    SELECT c.id
+    FROM connections c
+    JOIN device_workers dw ON dw.user_id = c.created_by
+    WHERE dw.id = ${device.id}
+      AND c.connector_key = ${connectorKey}
+      AND c.organization_id = ${device.organization_id}
+      AND c.deleted_at IS NULL
+      AND (c.device_worker_id IS NULL OR c.device_worker_id = ${device.id}::uuid)
+    ORDER BY c.created_at ASC
+    LIMIT 1
+  `) as unknown as Array<{ id: number }>;
+  const row = rows[0];
+  if (!row) {
+    return {
+      device,
+      connection: null,
+      error: c.json(
+        {
+          error: `No connection wired yet for connector '${connectorKey}'. The device must advertise the capability via /api/workers/poll once first so auto-wire creates it.`,
+        },
+        404
+      ),
+    };
+  }
+  return { device, connection: { id: row.id } };
+}
+
+/**
+ * GET /api/workers/me/feeds?worker_id=...&connector_key=...
+ */
+export async function listMyDeviceFeeds(c: Context<{ Bindings: Env }>) {
+  const workerId = (c.req.query('worker_id') ?? '').trim();
+  const connectorKey = (c.req.query('connector_key') ?? '').trim();
+  if (!workerId || !connectorKey) {
+    return c.json({ error: 'worker_id and connector_key are required' }, 400);
+  }
+  const { device, connection, error } = await resolveDeviceConnection(c, workerId, connectorKey);
+  if (error || !connection) return error ?? c.json({ feeds: [] });
+  try {
+    const sql = getDb();
+    const rows = (await sql`
+      SELECT id, feed_key, display_name, status, config, schedule, next_run_at,
+             last_sync_at, created_at, updated_at
+      FROM feeds
+      WHERE connection_id = ${connection.id}
+        AND deleted_at IS NULL
+      ORDER BY created_at ASC
+    `) as unknown as Array<Record<string, unknown>>;
+    return c.json({ connection_id: connection.id, organization_id: device!.organization_id, feeds: rows });
+  } catch (err) {
+    logger.error({ error: errorMessage(err) }, '[listMyDeviceFeeds] Error');
+    return c.json({ error: errorMessage(err) }, 500);
+  }
+}
+
+/**
+ * POST /api/workers/me/feeds
+ *
+ * Body: { worker_id, connector_key, feed_key, display_name, config }
+ *
+ * Creates a feed on this device's auto-wired connection. Config is whatever
+ * the connector's feed definition declares (e.g. {folder_id, display_name}
+ * for local.directory.files).
+ */
+export async function createMyDeviceFeed(c: Context<{ Bindings: Env }>) {
+  let body: {
+    worker_id?: string;
+    connector_key?: string;
+    feed_key?: string;
+    display_name?: string;
+    config?: Record<string, unknown>;
+  };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'Invalid JSON body' }, 400);
+  }
+  const workerId = (body.worker_id ?? '').trim();
+  const connectorKey = (body.connector_key ?? '').trim();
+  const feedKey = (body.feed_key ?? '').trim();
+  const displayName = (body.display_name ?? '').trim();
+  if (!workerId || !connectorKey || !feedKey || !displayName) {
+    return c.json({ error: 'worker_id, connector_key, feed_key, display_name are required' }, 400);
+  }
+  const { device, connection, error } = await resolveDeviceConnection(c, workerId, connectorKey);
+  if (error || !connection) return error!;
+  try {
+    const sql = getDb();
+    const inserted = (await sql`
+      INSERT INTO feeds (
+        organization_id, connection_id, feed_key, display_name, status, config, next_run_at
+      ) VALUES (
+        ${device!.organization_id}, ${connection.id}, ${feedKey}, ${displayName}, 'active',
+        ${body.config ? sql.json(body.config) : null},
+        NOW()
+      )
+      RETURNING id, feed_key, display_name, status, config, created_at
+    `) as unknown as Array<Record<string, unknown>>;
+    return c.json({ feed: inserted[0] });
+  } catch (err) {
+    logger.error({ error: errorMessage(err) }, '[createMyDeviceFeed] Error');
+    return c.json({ error: errorMessage(err) }, 500);
+  }
+}
+
+/**
+ * DELETE /api/workers/me/feeds/:id  { worker_id, connector_key }
+ *
+ * Soft-deletes the feed (deleted_at = now()) — matches existing manage_feeds
+ * convention. The feed must belong to this device's connection for the given
+ * connector.
+ */
+export async function deleteMyDeviceFeed(c: Context<{ Bindings: Env }>) {
+  const feedId = Number((c.req.param('id') ?? '').trim());
+  if (!Number.isFinite(feedId)) {
+    return c.json({ error: 'invalid feed id' }, 400);
+  }
+  let body: { worker_id?: string; connector_key?: string };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'Invalid JSON body' }, 400);
+  }
+  const workerId = (body.worker_id ?? '').trim();
+  const connectorKey = (body.connector_key ?? '').trim();
+  if (!workerId || !connectorKey) {
+    return c.json({ error: 'worker_id and connector_key are required' }, 400);
+  }
+  const { connection, error } = await resolveDeviceConnection(c, workerId, connectorKey);
+  if (error || !connection) return error!;
+  try {
+    const sql = getDb();
+    const updated = (await sql`
+      UPDATE feeds
+      SET deleted_at = NOW(), updated_at = NOW(), status = 'paused'
+      WHERE id = ${feedId}
+        AND connection_id = ${connection.id}
+        AND deleted_at IS NULL
+      RETURNING id
+    `) as unknown as Array<{ id: number }>;
+    if (updated.length === 0) {
+      return c.json({ error: 'Feed not found on this device' }, 404);
+    }
+    return c.json({ ok: true });
+  } catch (err) {
+    logger.error({ error: errorMessage(err) }, '[deleteMyDeviceFeed] Error');
+    return c.json({ error: errorMessage(err) }, 500);
+  }
+}
+
+/**
+ * GET /api/workers/me/browser-connectors?worker_id=...
+ *
+ * Returns connectors whose auth_schema declares a `browser` method, scoped to
+ * the device's home organization. The Mac app uses this to populate the
+ * "Connector" picker when creating a browser auth profile — keeps the picker
+ * in sync with whatever connectors are installed in the user's org.
+ */
+export async function listBrowserConnectors(c: Context<{ Bindings: Env }>) {
+  const workerId = (c.req.query('worker_id') ?? '').trim();
+  if (!workerId) {
+    return c.json({ error: 'worker_id is required' }, 400);
+  }
+  const { device, error } = await resolveDeviceWorkerForRequest(c, workerId);
+  if (error || !device) return error ?? c.json({ connectors: [] });
+  try {
+    const sql = getDb();
+    const rows = (await sql`
+      SELECT DISTINCT ON (key) key, name, favicon_domain
+      FROM connector_definitions
+      WHERE organization_id = ${device.organization_id}
+        AND status = 'active'
+        AND auth_schema IS NOT NULL
+        AND jsonb_typeof(auth_schema::jsonb -> 'methods') = 'array'
+        AND EXISTS (
+          SELECT 1 FROM jsonb_array_elements(auth_schema::jsonb -> 'methods') m
+          WHERE m->>'type' = 'browser'
+        )
+      ORDER BY key, updated_at DESC
+    `) as unknown as Array<{ key: string; name: string; favicon_domain: string | null }>;
+    return c.json({
+      connectors: rows.map((r) => ({
+        key: r.key,
+        name: r.name,
+        favicon_domain: r.favicon_domain,
+      })),
+    });
+  } catch (err) {
+    logger.error({ error: errorMessage(err) }, '[listBrowserConnectors] Error');
     return c.json({ error: errorMessage(err) }, 500);
   }
 }

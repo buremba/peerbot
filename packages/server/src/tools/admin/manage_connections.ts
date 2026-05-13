@@ -993,9 +993,30 @@ async function handleCreate(
     interactiveAuthProfileId = profile.id;
   }
 
+  // Device-bound browser auth profiles live on a specific Mac. Pin the
+  // connection there automatically; reject mismatches.
+  let effectiveDeviceWorkerId = deviceBinding.deviceWorkerId;
+  const profileDeviceWorkerId = authSelection?.authProfile?.device_worker_id ?? null;
+  if (profileDeviceWorkerId) {
+    if (!effectiveDeviceWorkerId) {
+      effectiveDeviceWorkerId = profileDeviceWorkerId;
+    } else if (effectiveDeviceWorkerId !== profileDeviceWorkerId) {
+      return {
+        error: `Auth profile '${authSelection!.authProfile!.slug}' lives on a different device than the one selected; pick that device or a different profile.`,
+      };
+    }
+  }
+  // For device-bound profiles, browser cookies live on disk in the profile's
+  // user_data_dir. The server's auth_data is empty, so the readiness probe
+  // returns unusable — but the connection is fine to mark active, since the
+  // Mac app handles auth status independently.
+  const isDeviceBoundBrowserSession =
+    authSelection?.authProfile?.profile_kind === 'browser_session' && !!profileDeviceWorkerId;
+
   const connectionStatus =
     interactiveMethod ||
     (authSelection?.authProfile?.profile_kind === 'browser_session' &&
+      !isDeviceBoundBrowserSession &&
       !browserProfileUsable) ||
     authSelection?.authProfile?.status === 'pending_auth'
       ? 'pending_auth'
@@ -1032,7 +1053,7 @@ async function handleCreate(
           ${splitConfig.connectionConfig ? sql.json(splitConfig.connectionConfig) : null},
           ${effectiveCreatedBy},
           ${visibility},
-          ${deviceBinding.deviceWorkerId}
+          ${effectiveDeviceWorkerId}
         )
         RETURNING *
       `,
@@ -1207,10 +1228,26 @@ async function handleConnect(
     !!authSelection.oauthMethod &&
     !hasReadySelection &&
     !args.auth_profile_slug;
+  const profileDeviceWorkerIdConnect = authSelection.authProfile?.device_worker_id ?? null;
+  let effectiveDeviceWorkerIdConnect = deviceBinding.deviceWorkerId;
+  if (profileDeviceWorkerIdConnect) {
+    if (!effectiveDeviceWorkerIdConnect) {
+      effectiveDeviceWorkerIdConnect = profileDeviceWorkerIdConnect;
+    } else if (effectiveDeviceWorkerIdConnect !== profileDeviceWorkerIdConnect) {
+      return {
+        error: `Auth profile '${authSelection.authProfile!.slug}' lives on a different device than the one selected; pick that device or a different profile.`,
+        setup_url: setupUrl,
+      };
+    }
+  }
+  const isDeviceBoundBrowserSessionConnect =
+    authSelection.authProfile?.profile_kind === 'browser_session' &&
+    !!profileDeviceWorkerIdConnect;
   const needsBrowserAuth =
     !!authSelection.browserMethod &&
     !!authSelection.authProfile &&
     authSelection.authProfile.profile_kind === 'browser_session' &&
+    !isDeviceBoundBrowserSessionConnect &&
     !browserProfileUsable;
   const connectionStatus = needsConnectFlow || needsBrowserAuth ? 'pending_auth' : 'active';
 
@@ -1293,7 +1330,7 @@ async function handleConnect(
           ${splitConfig.connectionConfig ? sql.json(splitConfig.connectionConfig) : null},
           ${userId},
           ${connectVisibility},
-          ${deviceBinding.deviceWorkerId}
+          ${effectiveDeviceWorkerIdConnect}
         )
         RETURNING *
       `,
@@ -1537,8 +1574,28 @@ async function handleUpdate(
   const effectiveSelectedAuthProfile = hasAuthProfileArg
     ? authSelection.authProfile
     : currentAuthProfile;
+
+  // Device-bound browser profile auto-pins the connection's device.
+  const updateProfileDeviceWorkerId = effectiveSelectedAuthProfile?.device_worker_id ?? null;
+  if (updateProfileDeviceWorkerId) {
+    if (!hasDeviceWorkerArg) {
+      // Caller didn't touch device pin — adopt the profile's device.
+      nextDeviceWorkerId = updateProfileDeviceWorkerId;
+    } else if (nextDeviceWorkerId && nextDeviceWorkerId !== updateProfileDeviceWorkerId) {
+      return {
+        error: `Auth profile '${effectiveSelectedAuthProfile!.slug}' lives on a different device than the one selected; pick that device or a different profile.`,
+      };
+    } else if (!nextDeviceWorkerId) {
+      nextDeviceWorkerId = updateProfileDeviceWorkerId;
+    }
+  }
+  const isDeviceBoundBrowserSessionUpdate =
+    effectiveSelectedAuthProfile?.profile_kind === 'browser_session' &&
+    !!updateProfileDeviceWorkerId;
+
   const browserProfileUsable =
-    effectiveSelectedAuthProfile?.profile_kind === 'browser_session'
+    effectiveSelectedAuthProfile?.profile_kind === 'browser_session' &&
+    !isDeviceBoundBrowserSessionUpdate
       ? (
           await getBrowserSessionReadiness(
             effectiveSelectedAuthProfile.auth_data,
@@ -1549,9 +1606,11 @@ async function handleUpdate(
   const effectiveStatus =
     args.status ??
     (effectiveSelectedAuthProfile?.profile_kind === 'browser_session'
-      ? browserProfileUsable
+      ? isDeviceBoundBrowserSessionUpdate
         ? 'active'
-        : 'pending_auth'
+        : browserProfileUsable
+          ? 'active'
+          : 'pending_auth'
       : null);
   const splitConfig = splitConfigByFeedScope(
     args.config ?? null,
@@ -1618,7 +1677,7 @@ async function handleUpdate(
     throw err;
   }
 
-  if (hasDeviceWorkerArg) {
+  if (hasDeviceWorkerArg || (updateProfileDeviceWorkerId && !hasDeviceWorkerArg)) {
     await sql`
       UPDATE connections
       SET device_worker_id = ${nextDeviceWorkerId}, updated_at = NOW()

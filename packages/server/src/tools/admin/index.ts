@@ -21,6 +21,7 @@ import { ManageConnectionsSchema, manageConnections } from './manage_connections
 import { ManageEntitySchema, manageEntity } from './manage_entity';
 import { ManageEntitySchemaSchema, manageEntitySchema } from './manage_entity_schema';
 import { ManageFeedsSchema, manageFeeds } from './manage_feeds';
+import { NotifySchema, notify } from './notify';
 import { ManageOperationsSchema, manageOperations } from './manage_operations';
 import { ManageViewTemplatesSchema, manageViewTemplates } from './manage_view_templates';
 import {
@@ -84,6 +85,13 @@ const ENTRIES: InternalToolEntry[] = [
     schema: ManageOperationsSchema,
     handler: manageOperations,
     annotations: { destructiveHint: false, openWorldHint: true },
+  },
+  {
+    name: 'notify',
+    description: 'Send a notification to org users (admins / all / specific user ids).',
+    schema: NotifySchema,
+    handler: notify,
+    annotations: { destructiveHint: false },
   },
   {
     name: 'manage_watchers',

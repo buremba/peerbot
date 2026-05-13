@@ -37,10 +37,25 @@ export default class LocalDirectoryConnector extends ConnectorRuntime {
       files: {
         key: 'files',
         name: 'Files',
-        description: 'Text files from the configured local folder.',
+        description: 'Text files from one local folder on the user\'s Mac. One feed per folder — folder_id is an opaque stable id minted by the Mac app (the security-scoped bookmark is held device-side; the server never sees the absolute path).',
+        userManaged: true,
         configSchema: {
           type: 'object',
-          properties: {},
+          required: ['folder_id', 'display_name'],
+          properties: {
+            folder_id: {
+              type: 'string',
+              minLength: 8,
+              maxLength: 64,
+              description: 'Opaque stable id (UUID) minted on the Mac. Maps to a security-scoped bookmark stored locally on the device.',
+            },
+            display_name: {
+              type: 'string',
+              minLength: 1,
+              maxLength: 200,
+              description: 'Folder name shown in the UI (e.g., "Documents"). Not used to locate the folder — the device resolves folder_id to its bookmark.',
+            },
+          },
         },
         eventKinds: {
           file_document: {

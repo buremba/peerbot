@@ -35,6 +35,13 @@ export interface AcquireBrowserOptions {
   authDomains: string[];
   /** Use stealth/anti-detection mode for Playwright launch (default: false). */
   stealth?: boolean;
+  /**
+   * Persistent --user-data-dir for device-bound browser profiles. When set,
+   * Playwright launches via launchPersistentContext so cookies/localStorage
+   * are read from (and written to) this directory. CDP is skipped — the
+   * profile dir is the source of truth.
+   */
+  userDataDir?: string;
 }
 
 export interface AcquiredBrowser {
@@ -86,6 +93,17 @@ export class BrowserAuthCascadeError extends Error {
 export async function acquireBrowser(opts: AcquireBrowserOptions): Promise<AcquiredBrowser> {
   const attempts: Array<{ layer: string; error: string }> = [];
 
+  // --- Persistent profile path: cookies live in --user-data-dir ---
+  // Skip CDP entirely — the profile dir is authoritative for cookies/state.
+  if (opts.userDataDir) {
+    try {
+      return await acquireViaPersistent(opts);
+    } catch (err: any) {
+      attempts.push({ layer: 'Playwright persistent', error: err.message });
+      throw new BrowserAuthCascadeError(attempts);
+    }
+  }
+
   // --- Layer 1: CDP ---
   if (opts.cdpUrl !== null && opts.cdpUrl !== undefined) {
     try {
@@ -133,6 +151,36 @@ async function acquireViaCdp(opts: AcquireBrowserOptions): Promise<AcquiredBrows
     backend: 'cdp',
     ownsBrowser: false,
     screenshotDir: '/tmp/feed-screenshots',
+  };
+}
+
+async function acquireViaPersistent(opts: AcquireBrowserOptions): Promise<AcquiredBrowser> {
+  const playwrightModule = 'playwright';
+  const { chromium } = await import(/* @vite-ignore */ playwrightModule);
+  const isDebug = process.env.BROWSER_DEBUG === '1';
+  const screenshotDir = process.env.BROWSER_SCREENSHOT_DIR ?? '/tmp/feed-screenshots';
+  const context = (await chromium.launchPersistentContext(opts.userDataDir!, {
+    headless: !isDebug,
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+  })) as BrowserContext;
+  if (opts.cookies.length > 0) {
+    await context.addCookies(opts.cookies);
+  }
+  const pages = context.pages();
+  const page = pages.length > 0 ? pages[0] : await context.newPage();
+  sdkLogger.info(
+    { userDataDir: opts.userDataDir, cookies: opts.cookies.length },
+    '[BrowserAcquire] Launched Playwright with persistent --user-data-dir'
+  );
+  return {
+    browser: context.browser() ?? null,
+    context,
+    page,
+    cdpPage: null,
+    cdpWsUrl: null,
+    backend: 'playwright',
+    ownsBrowser: true,
+    screenshotDir,
   };
 }
 

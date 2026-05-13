@@ -1,5 +1,33 @@
 import Combine
+import CryptoKit
 import Foundation
+
+// MARK: - Local folder ---------------------------------------------------------
+
+/// One local folder the user has added as a sync source. The opaque
+/// `folderId` is the link between this Mac and the server-side feed (it
+/// lands in `feeds.config.folder_id`); the security-scoped `bookmark` stays
+/// on disk. `feedId` is `nil` until reconcileFolderFeeds() has created the
+/// feed on the server (typically after the next poll auto-wires the
+/// connection).
+///
+/// `folderId` is **deterministic** — `SHA256(bookmark).prefix(6).hex` (12 hex
+/// chars, same shape as the legacy `folderKey` used in `origin_id`s). Two
+/// consequences: (a) migrating a pre-feed user keeps the same id their old
+/// events used, so deduplication just works and there's no re-ingest storm;
+/// (b) a user who removes + re-adds the same folder gets event continuity
+/// instead of a duplicate history.
+struct LocalFolder: Codable, Hashable, Identifiable {
+    let folderId: String
+    let bookmark: Data
+    let displayName: String
+    var feedId: Int?
+    var id: String { folderId }
+
+    static func folderId(for bookmark: Data) -> String {
+        SHA256.hash(data: bookmark).prefix(6).map { String(format: "%02x", $0) }.joined()
+    }
+}
 
 // MARK: - Recent job record --------------------------------------------------
 
@@ -95,10 +123,26 @@ final class AppState: ObservableObject {
 
     // Integrations state
     @Published var hasFDA: Bool = false
-    @Published var localFolderBookmarks: [Data] = []
+    /// One per local folder the user has added. The security-scoped bookmark
+    /// stays on this Mac; only the display name + opaque folder id flow up to
+    /// the server (one feed per folder).
+    @Published var localFolders: [LocalFolder] = []
     /// True once the user has been through the Apple Health permission sheet
     /// (mirrored from UserDefaults — HealthKit hides actual READ-grant status).
     @Published var hasHealthKit: Bool = HealthKitSyncService.hasBeenRequested
+
+    /// Per-integration soft-disable flags. macOS permissions (FDA, HealthKit)
+    /// are coarse — revoking FDA kills three integrations at once. These
+    /// give the user a per-integration off switch without touching OS perms.
+    @Published var screenTimeDisabled: Bool = UserDefaults.standard.bool(forKey: "lobu.screenTimeDisabled") {
+        didSet { UserDefaults.standard.set(screenTimeDisabled, forKey: "lobu.screenTimeDisabled") }
+    }
+    @Published var whatsAppDisabled: Bool = UserDefaults.standard.bool(forKey: "lobu.whatsAppDisabled") {
+        didSet { UserDefaults.standard.set(whatsAppDisabled, forKey: "lobu.whatsAppDisabled") }
+    }
+    @Published var healthKitDisabled: Bool = UserDefaults.standard.bool(forKey: "lobu.healthKitDisabled") {
+        didSet { UserDefaults.standard.set(healthKitDisabled, forKey: "lobu.healthKitDisabled") }
+    }
 
     @Published var baseURL: String = {
         UserDefaults.standard.string(forKey: "lobuBaseURL")
@@ -218,13 +262,17 @@ final class AppState: ObservableObject {
 
     var currentCapabilities: [String: Bool] {
         var caps: [String: Bool] = [:]
-        if hasFDA { caps["screentime"] = true }
-        if !localFolderBookmarks.isEmpty { caps["local_directory"] = true }
-        if hasHealthKit && healthKitAvailable { caps["healthkit"] = true }
+        if hasFDA && !screenTimeDisabled { caps["screentime"] = true }
+        if !localFolders.isEmpty { caps["local_directory"] = true }
+        if hasHealthKit && healthKitAvailable && !healthKitDisabled { caps["healthkit"] = true }
         // Reading another app's Group Container requires Full Disk Access — the
         // same TCC grant Screen Time already needs. Gate the capability so the
         // worker doesn't claim runs it will only fail with a permission error.
-        if hasFDA && WhatsAppLocalSyncService.isAvailable() { caps["whatsapp_local"] = true }
+        if hasFDA && WhatsAppLocalSyncService.isAvailable() && !whatsAppDisabled { caps["whatsapp_local"] = true }
+        // Advertise `browser` whenever at least one supported browser is
+        // installed locally — Mac becomes eligible to host browser_session
+        // auth profiles with cookies on disk (no fleet credentials).
+        if BrowserProfileManager.hasAnyInstalledBrowser() { caps["browser"] = true }
         return caps
     }
 
@@ -401,6 +449,15 @@ final class AppState: ObservableObject {
         defer { isSyncing = false }
         refreshFDAStatus()
         do {
+            // Make sure each local folder has a matching server-side feed
+            // before we start claiming runs. Cheap if everything's already
+            // in sync; creates missing feeds when the user added a folder
+            // since the last poll. Safe to skip on failure — runs only get
+            // materialized for feeds the server already knows about.
+            if !localFolders.isEmpty {
+                await reconcileFolderFeeds()
+            }
+
             var handled = 0
             var lastJob: RecentJob?
             // Drain the queue: keep claiming until the server has nothing left,
@@ -444,6 +501,13 @@ final class AppState: ObservableObject {
     }
 
     // MARK: - Notifications -----------------------------------------------------
+
+    /// Authenticated WorkerClient for the signed-in user, or nil if not yet
+    /// signed in. Caller should treat nil as "show a sign-in hint".
+    func workerClient() -> WorkerClient? {
+        guard let credentials else { return nil }
+        return WorkerClient(baseURL: credentials.baseURL, accessToken: credentials.accessToken)
+    }
 
     /// Pulls the user's recent notifications, recent agent runs, and the
     /// connector health list from the org-scoped REST API. Silently no-ops when
@@ -538,38 +602,149 @@ final class AppState: ObservableObject {
         }
     }
 
-    // MARK: - Local folder bookmarks -------------------------------------------
+    // MARK: - Local folders -----------------------------------------------------
+    //
+    // Each folder is a server-side feed of the `local.directory` connector,
+    // identified by an opaque `folderId` we mint on this Mac. The security-
+    // scoped bookmark + Lobu-minted UUID live here in UserDefaults; the
+    // server only sees `{folder_id, display_name}` as the feed config. Feed
+    // creation happens via /api/workers/me/feeds — see reconcileFolderFeeds()
+    // below, which runs after each poll once the connection is auto-wired.
 
     func addFolderBookmark(url: URL) {
-        guard (try? url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)) != nil else { return }
         do {
-            let bookmark = try url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
-            localFolderBookmarks.append(bookmark)
-            persistBookmarks()
+            let bookmark = try url.bookmarkData(
+                options: .withSecurityScope,
+                includingResourceValuesForKeys: nil,
+                relativeTo: nil
+            )
+            let folderId = LocalFolder.folderId(for: bookmark)
+            // Re-adding a folder we already track? Just no-op — the feed (and
+            // its event history) already exist server-side; keep continuity.
+            if localFolders.contains(where: { $0.folderId == folderId }) {
+                setStatus("Folder is already added.")
+                return
+            }
+            let folder = LocalFolder(
+                folderId: folderId,
+                bookmark: bookmark,
+                displayName: url.lastPathComponent,
+                feedId: nil
+            )
+            localFolders.append(folder)
+            persistFolders()
             setStatus("Folder added. Lobu will sync supported text files from it.")
+            // Reconcile on the next poll cycle; the connection may not be
+            // auto-wired yet on first add. We don't try to call the server
+            // synchronously here.
         } catch {
             setStatus("Could not bookmark folder: \(error.localizedDescription)")
         }
     }
 
     func removeFolderBookmark(at index: Int) {
-        guard localFolderBookmarks.indices.contains(index) else { return }
-        localFolderBookmarks.remove(at: index)
-        persistBookmarks()
+        guard localFolders.indices.contains(index) else { return }
+        let removed = localFolders.remove(at: index)
+        persistFolders()
         setStatus("Folder removed.")
+        // Delete the server-side feed if we knew about it. Best-effort —
+        // failure here just leaves an orphan feed the next reconcile will
+        // catch (it won't have a matching local folder).
+        if let feedId = removed.feedId {
+            Task { await deleteFolderFeed(feedId: feedId) }
+        }
     }
 
-    private func persistBookmarks() {
-        UserDefaults.standard.set(localFolderBookmarks, forKey: Self.folderBookmarksKey)
+    private func persistFolders() {
+        if let data = try? JSONEncoder().encode(localFolders) {
+            UserDefaults.standard.set(data, forKey: Self.folderBookmarksKey)
+        }
     }
 
-    /// Resolve a bookmark to a display URL (best-effort; not security-scoped access).
+    /// Resolve a folder's bookmark to a display URL (best-effort; not security-scoped access).
     func resolvedURLForBookmark(at index: Int) -> URL? {
-        guard localFolderBookmarks.indices.contains(index) else { return nil }
+        guard localFolders.indices.contains(index) else { return nil }
         var isStale = false
-        return try? URL(resolvingBookmarkData: localFolderBookmarks[index],
-                        options: .withSecurityScope, relativeTo: nil,
-                        bookmarkDataIsStale: &isStale)
+        return try? URL(
+            resolvingBookmarkData: localFolders[index].bookmark,
+            options: .withSecurityScope, relativeTo: nil,
+            bookmarkDataIsStale: &isStale
+        )
+    }
+
+    /// After every successful poll, reconcile our local folder list with the
+    /// server's feed list. Local-only folders → create a feed. Server-only
+    /// feeds (folder removed on this Mac while offline, say) → delete on
+    /// server. Best-effort; never throws into the poll loop.
+    func reconcileFolderFeeds() async {
+        guard let client = workerClient() else { return }
+        let workerId = LobuWorkerIdentity.current()
+        do {
+            let serverFeeds = try await client.listMyDeviceFeeds(
+                workerId: workerId, connectorKey: "local.directory"
+            )
+            // Pre-feed-refactor orphans: auto-wire used to create a default
+            // `files` feed with NULL config the first time the device
+            // advertised `local_directory`. Those have no folder_id and would
+            // generate failing runs forever — clean them up unconditionally.
+            for feed in serverFeeds.feeds where feed.feed_key == "files" && feed.config?["folder_id"]?.stringValue == nil {
+                _ = try? await client.deleteMyDeviceFeed(
+                    workerId: workerId,
+                    connectorKey: "local.directory",
+                    feedId: feed.id
+                )
+            }
+            let serverByFolderId = Dictionary(uniqueKeysWithValues: serverFeeds.feeds.compactMap {
+                feed -> (String, WorkerClient.DeviceFeed)? in
+                guard let fid = feed.config?["folder_id"]?.stringValue else { return nil }
+                return (fid, feed)
+            })
+            // Local → server: create missing feeds, repair feedId mappings.
+            var changed = false
+            for i in localFolders.indices {
+                let folder = localFolders[i]
+                if let serverFeed = serverByFolderId[folder.folderId] {
+                    if folder.feedId != serverFeed.id {
+                        localFolders[i].feedId = serverFeed.id
+                        changed = true
+                    }
+                } else {
+                    if let created = try? await client.createMyDeviceFeed(
+                        workerId: workerId,
+                        connectorKey: "local.directory",
+                        feedKey: "files",
+                        displayName: folder.displayName,
+                        config: [
+                            "folder_id": AnyEncodable(folder.folderId),
+                            "display_name": AnyEncodable(folder.displayName),
+                        ]
+                    ) {
+                        localFolders[i].feedId = created.id
+                        changed = true
+                    }
+                }
+            }
+            // Server → local: drop feeds whose folder_id we no longer hold.
+            let localIds = Set(localFolders.map(\.folderId))
+            for (fid, feed) in serverByFolderId where !localIds.contains(fid) {
+                _ = try? await client.deleteMyDeviceFeed(
+                    workerId: workerId,
+                    connectorKey: "local.directory",
+                    feedId: feed.id
+                )
+            }
+            if changed { persistFolders() }
+        } catch {
+            NSLog("[Lobu] reconcileFolderFeeds failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func deleteFolderFeed(feedId: Int) async {
+        guard let client = workerClient() else { return }
+        let workerId = LobuWorkerIdentity.current()
+        _ = try? await client.deleteMyDeviceFeed(
+            workerId: workerId, connectorKey: "local.directory", feedId: feedId
+        )
     }
 
     // MARK: - Apple Health ------------------------------------------------------
@@ -617,8 +792,33 @@ final class AppState: ObservableObject {
                 persistRecentJobs()
             }
         }
-        if let bookmarks = UserDefaults.standard.array(forKey: Self.folderBookmarksKey) as? [Data] {
-            localFolderBookmarks = bookmarks
+        // New format: [LocalFolder] persisted as JSON.
+        if let json = UserDefaults.standard.data(forKey: Self.folderBookmarksKey),
+           let folders = try? JSONDecoder().decode([LocalFolder].self, from: json) {
+            localFolders = folders
+        } else if let legacy = UserDefaults.standard.array(forKey: Self.folderBookmarksKey) as? [Data] {
+            // Pre-feed format: bare [Data] bookmarks. Migrate by minting a
+            // folder id per bookmark and resolving the display name from the
+            // current URL. Feeds are created lazily by reconcileFolderFeeds()
+            // once the connection is auto-wired.
+            var migrated: [LocalFolder] = []
+            for bookmark in legacy {
+                var isStale = false
+                let resolved = try? URL(
+                    resolvingBookmarkData: bookmark,
+                    options: .withSecurityScope, relativeTo: nil,
+                    bookmarkDataIsStale: &isStale
+                )
+                let name = resolved?.lastPathComponent ?? "Folder"
+                migrated.append(LocalFolder(
+                    folderId: LocalFolder.folderId(for: bookmark),
+                    bookmark: bookmark,
+                    displayName: name,
+                    feedId: nil
+                ))
+            }
+            localFolders = migrated
+            persistFolders()
         }
     }
 

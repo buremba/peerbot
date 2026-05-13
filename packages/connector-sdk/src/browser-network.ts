@@ -70,8 +70,37 @@ interface NetworkBrowser {
 async function acquireForNetworkSync(
   cdpUrl: string | 'auto' | null | undefined,
   cookies: Cookie[],
-  stealth: boolean
+  stealth: boolean,
+  userDataDir: string | undefined
 ): Promise<NetworkBrowser> {
+  // --- Persistent profile path: cookies live on disk ---
+  if (userDataDir) {
+    const playwrightModule = 'playwright';
+    const { chromium } = await import(/* @vite-ignore */ playwrightModule);
+    const isDebug = process.env.BROWSER_DEBUG === '1';
+    const screenshotDir = process.env.BROWSER_SCREENSHOT_DIR ?? '/tmp/feed-screenshots';
+    const context = (await chromium.launchPersistentContext(userDataDir, {
+      headless: !isDebug,
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+    })) as BrowserContext;
+    if (cookies.length > 0) {
+      await context.addCookies(cookies);
+    }
+    const pages = context.pages();
+    const page = pages.length > 0 ? pages[0] : await context.newPage();
+    sdkLogger.info(
+      { userDataDir, cookies: cookies.length },
+      '[BrowserNetwork] Launched with persistent --user-data-dir'
+    );
+    return {
+      browser: (context.browser() ?? null) as unknown as Browser,
+      context,
+      page,
+      backend: 'playwright',
+      ownsBrowser: true,
+      screenshotDir,
+    };
+  }
   // --- Layer 1: CDP via Playwright connectOverCDP ---
   if (cdpUrl !== null && cdpUrl !== undefined) {
     try {
@@ -157,6 +186,12 @@ export async function browserNetworkSync<TItem>(opts: {
    * When set, CDP is tried first; if unavailable, falls back to Playwright + cookies.
    */
   cdpUrl?: string | 'auto' | null;
+  /**
+   * Device-bound managed --user-data-dir. When set, Playwright launches via
+   * launchPersistentContext and CDP is skipped — cookies live on disk in this
+   * profile dir.
+   */
+  userDataDir?: string;
 }): Promise<BrowserNetworkResult<TItem>> {
   const cfg = { ...DEFAULT_CONFIG, ...opts.config };
   const items: TItem[] = [];
@@ -169,9 +204,10 @@ export async function browserNetworkSync<TItem>(opts: {
   const matchesUrl = (url: string) => matchers.some((re) => re.test(url));
 
   const acquired = await acquireForNetworkSync(
-    opts.cdpUrl ?? null,
+    opts.userDataDir ? null : (opts.cdpUrl ?? null),
     opts.cookies,
-    cfg.stealth ?? false
+    cfg.stealth ?? false,
+    opts.userDataDir
   );
 
   const { context, page, backend, ownsBrowser, browser, screenshotDir } = acquired;

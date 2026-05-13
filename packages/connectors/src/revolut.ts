@@ -30,6 +30,7 @@ import {
 } from "@lobu/connector-sdk";
 import {
 	getBrowserCookies,
+	getBrowserUserDataDir,
 	validateCookieNotExpired,
 } from "./browser-scraper-utils";
 
@@ -497,16 +498,19 @@ export default class RevolutConnector extends ConnectorRuntime {
 		// session). Stored cookies are only a best-effort fallback for the
 		// Playwright path — see the auth-schema comment on why they rarely suffice
 		// for Revolut. Don't fail the sync just because there are none.
+		const userDataDir = getBrowserUserDataDir(ctx.sessionState);
 		let cookies: ReturnType<typeof getBrowserCookies> = [];
-		try {
-			cookies = getBrowserCookies(
-				ctx.checkpoint as Record<string, unknown> | null,
-				ctx.sessionState,
-				"revolut",
-			);
-			validateCookieNotExpired(cookies, "credentials", "revolut");
-		} catch {
-			cookies = [];
+		if (!userDataDir) {
+			try {
+				cookies = getBrowserCookies(
+					ctx.checkpoint as Record<string, unknown> | null,
+					ctx.sessionState,
+					"revolut",
+				);
+				validateCookieNotExpired(cookies, "credentials", "revolut");
+			} catch {
+				cookies = [];
+			}
 		}
 
 		const result = await browserNetworkSync<RevolutTransaction>({
@@ -522,6 +526,7 @@ export default class RevolutConnector extends ConnectorRuntime {
 			url: startUrl,
 			cdpUrl: "auto",
 			cookies,
+			userDataDir,
 			parseResponse: (_url, json) => extractTransactionsFromResponse(json),
 			checkAuth: async (page) => isLoggedIn(page.url()),
 		});

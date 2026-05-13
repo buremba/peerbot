@@ -14,6 +14,7 @@ struct MenuBarContent: View {
     @ObservedObject var state: AppState
     @State private var integrationsExpanded = false
     @State private var accountExpanded = false
+    @StateObject private var browserHub = BrowserProfilesHub()
     @FocusState private var searchFocused: Bool
 
     var body: some View {
@@ -62,9 +63,12 @@ struct MenuBarContent: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 2) {
-            HStack {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text("Lobu")
                     .font(.headline)
+                Text(Host.current().localizedName ?? "This Mac")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 Spacer()
                 if state.credentials != nil {
                     Toggle("", isOn: Binding(
@@ -314,7 +318,16 @@ struct MenuBarContent: View {
 
     private func handleNotificationTap(_ notification: LobuNotification) {
         Task { await state.markNotificationRead(notification) }
+        // Prefer the notification's own URL; otherwise drop the user into the
+        // org's notifications page on the web so a click *always* takes them
+        // somewhere visible.
         if let urlString = notification.resource_url, let url = URL(string: urlString) {
+            NSWorkspace.shared.open(url)
+            return
+        }
+        let orgSlug = state.credentials?.userInfo?.organization_slug
+        let fallback = orgSlug.map { "\(state.baseURL)/\($0)/notifications" } ?? state.baseURL
+        if let url = URL(string: fallback) {
             NSWorkspace.shared.open(url)
         }
     }
@@ -528,128 +541,178 @@ struct MenuBarContent: View {
         VStack(alignment: .leading, spacing: 2) {
             disclosureHeader(title: "Integrations", expanded: $integrationsExpanded)
             if integrationsExpanded {
-                screenTimeRow
+                ForEach(BrowserProfileManager.installedBrowsers()) { browser in
+                    SingleBrowserRow(state: state, browser: browser, hub: browserHub)
+                }
                 localFolderRows
+                screenTimeRow
                 healthKitRow
                 whatsAppLocalRow
             }
         }
-    }
-
-    private var whatsAppLocalRow: some View {
-        HStack(spacing: 8) {
-            connectorHealthDot(forKey: "whatsapp.local")
-            Image(systemName: "message.fill")
-                .foregroundStyle(.green)
-                .frame(width: 18)
-            VStack(alignment: .leading, spacing: 1) {
-                Text("WhatsApp").font(.caption)
-                if !WhatsAppLocalSyncService.isAvailable() {
-                    Text("Install WhatsApp Desktop to enable.")
-                        .font(.caption2).foregroundStyle(.secondary)
-                } else if !state.hasFDA {
-                    Text("Reads from WhatsApp Desktop. Needs Full Disk Access.")
-                        .font(.caption2).foregroundStyle(.secondary)
-                } else {
-                    Text("Reads messages directly from WhatsApp Desktop.")
-                        .font(.caption2).foregroundStyle(.secondary)
-                }
-            }
-            Spacer()
-            if !WhatsAppLocalSyncService.isAvailable() {
-                Text("Not installed").font(.caption).foregroundStyle(.secondary)
-            } else if state.hasFDA {
-                Label("Granted", systemImage: "checkmark.circle.fill")
-                    .labelStyle(.iconOnly)
-                    .foregroundStyle(.green)
-                    .font(.caption)
-            } else {
-                Label("FDA needed", systemImage: "exclamationmark.triangle.fill")
-                    .labelStyle(.iconOnly)
-                    .foregroundStyle(.orange)
-                    .font(.caption)
-            }
-        }
-        .menuRow()
+        .task { await browserHub.loadIfNeeded(state: state) }
     }
 
     private var healthKitRow: some View {
-        HStack(spacing: 8) {
-            connectorHealthDot(forKey: "apple.health")
-            Image(systemName: "heart.fill")
-                .foregroundStyle(.pink)
-                .frame(width: 18)
-            VStack(alignment: .leading, spacing: 1) {
-                Text("Apple Health").font(.caption)
+        let enabled = state.healthKitAvailable && state.hasHealthKit && !state.healthKitDisabled
+        return VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 8) {
+                Image(systemName: "heart.fill")
+                    .foregroundStyle(.pink)
+                    .frame(width: 18)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Apple Health").font(.caption)
+                    if !state.healthKitAvailable {
+                        Text("Not available on this Mac.")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    } else {
+                        Text("Daily activity + workouts, synced via iCloud Health.")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
                 if !state.healthKitAvailable {
-                    Text("Not available on this Mac.")
-                        .font(.caption2).foregroundStyle(.secondary)
-                } else if !state.hasHealthKit {
-                    Text("Daily activity + workouts, synced from iPhone via iCloud Health.")
-                        .font(.caption2).foregroundStyle(.secondary)
+                    Text("Unavailable").font(.caption2).foregroundStyle(.secondary)
+                } else if !enabled {
+                    Button(action: {
+                        if state.hasHealthKit { state.healthKitDisabled = false }
+                        else { Task { await state.requestHealthKitAccess() } }
+                    }) {
+                        HStack(spacing: 2) {
+                            Image(systemName: "plus").font(.caption2)
+                            Text("Add").font(.caption)
+                        }
+                        .foregroundStyle(.blue)
+                    }
+                    .buttonStyle(.plain)
                 }
             }
-            Spacer()
-            if !state.healthKitAvailable {
-                EmptyView()
-            } else if state.hasHealthKit {
-                Label("Requested", systemImage: "checkmark.circle.fill")
-                    .labelStyle(.iconOnly)
-                    .foregroundStyle(.green)
-                    .font(.caption)
-            } else {
-                Button("Grant access") { Task { await state.requestHealthKitAccess() } }
-                    .buttonStyle(.plain).font(.caption).foregroundStyle(.orange)
+            .menuRow()
+            if enabled {
+                integrationSourceRow(
+                    path: "iCloud Health",
+                    onRemove: { state.healthKitDisabled = true }
+                )
             }
         }
-        .menuRow()
     }
 
     private var screenTimeRow: some View {
-        VStack(alignment: .leading, spacing: 3) {
+        let enabled = state.hasFDA && !state.screenTimeDisabled
+        return VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 8) {
-                connectorHealthDot(forKey: "apple.screen_time")
                 Image(systemName: "clock.fill")
                     .foregroundStyle(.purple)
                     .frame(width: 18)
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Screen Time").font(.caption)
                     if !state.hasFDA {
-                        Text("Enable Full Disk Access, then recheck.")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
+                        Text("Per-app usage. Needs Full Disk Access.")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    } else {
+                        Text("Per-app usage, synced from your Mac.")
+                            .font(.caption2).foregroundStyle(.secondary)
                     }
                 }
                 Spacer()
-                if state.hasFDA {
-                    Label("Granted", systemImage: "checkmark.circle.fill")
-                        .labelStyle(.iconOnly)
-                        .foregroundStyle(.green)
-                        .font(.caption)
-                } else {
-                    HStack(spacing: 8) {
-                        Button("Settings") {
-                            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") {
-                                NSWorkspace.shared.open(url)
-                            }
+                if !enabled {
+                    Button(action: { if state.hasFDA { state.screenTimeDisabled = false } else { openFDASettings() } }) {
+                        HStack(spacing: 2) {
+                            Image(systemName: "plus").font(.caption2)
+                            Text("Add").font(.caption)
                         }
-                        .buttonStyle(.plain)
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                        Button("Recheck") { state.refreshFDAStatus() }
-                            .buttonStyle(.plain)
-                            .font(.caption)
+                        .foregroundStyle(.blue)
                     }
+                    .buttonStyle(.plain)
                 }
             }
+            .menuRow()
+            if enabled {
+                integrationSourceRow(
+                    path: "~/Library/Application Support/Knowledge/",
+                    onRemove: { state.screenTimeDisabled = true }
+                )
+            }
         }
+    }
+
+    private var whatsAppLocalRow: some View {
+        let available = WhatsAppLocalSyncService.isAvailable()
+        let enabled = state.hasFDA && available && !state.whatsAppDisabled
+        return VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 8) {
+                Image(systemName: "message.fill")
+                    .foregroundStyle(.green)
+                    .frame(width: 18)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("WhatsApp").font(.caption)
+                    if !available {
+                        Text("Install WhatsApp Desktop to enable.")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    } else if !state.hasFDA {
+                        Text("Reads from WhatsApp Desktop. Needs Full Disk Access.")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    } else {
+                        Text("Reads messages directly from WhatsApp Desktop.")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+                if !available {
+                    Text("Not installed").font(.caption2).foregroundStyle(.secondary)
+                } else if !enabled {
+                    Button(action: { if state.hasFDA { state.whatsAppDisabled = false } else { openFDASettings() } }) {
+                        HStack(spacing: 2) {
+                            Image(systemName: "plus").font(.caption2)
+                            Text("Add").font(.caption)
+                        }
+                        .foregroundStyle(.blue)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .menuRow()
+            if enabled {
+                integrationSourceRow(
+                    path: "~/Library/Group Containers/group.net.whatsapp.WhatsAppMac.shared/",
+                    onRemove: { state.whatsAppDisabled = true }
+                )
+            }
+        }
+    }
+
+    private func integrationSourceRow(path: String, onRemove: @escaping () -> Void) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: "folder")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .frame(width: 18)
+            Text(path)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer()
+            Button(action: onRemove) {
+                Image(systemName: "xmark")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.leading, 26)
         .menuRow()
+    }
+
+    private func openFDASettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") {
+            NSWorkspace.shared.open(url)
+        }
     }
 
     private var localFolderRows: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 8) {
-                connectorHealthDot(forKey: "local.directory")
                 Image(systemName: "folder.fill")
                     .foregroundStyle(.blue)
                     .frame(width: 18)
@@ -660,35 +723,46 @@ struct MenuBarContent: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button("Add folder…") { openFolderPanel() }
-                    .buttonStyle(.plain)
-                    .font(.caption)
+                Button(action: { openFolderPanel() }) {
+                    HStack(spacing: 2) {
+                        Image(systemName: "plus").font(.caption2)
+                        Text("Add").font(.caption)
+                    }
+                    .foregroundStyle(.blue)
+                }
+                .buttonStyle(.plain)
             }
             .menuRow()
-            ForEach(Array(state.localFolderBookmarks.enumerated()), id: \.offset) { idx, _ in
-                if let url = state.resolvedURLForBookmark(at: idx) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "folder")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .frame(width: 18)
-                        Text(url.path.replacingOccurrences(of: NSHomeDirectory(), with: "~"))
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        Spacer()
-                        Button {
-                            state.removeFolderBookmark(at: idx)
-                        } label: {
-                            Image(systemName: "xmark")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                        .buttonStyle(.plain)
+            ForEach(Array(state.localFolders.enumerated()), id: \.element.folderId) { idx, folder in
+                let path = state.resolvedURLForBookmark(at: idx)?
+                    .path.replacingOccurrences(of: NSHomeDirectory(), with: "~")
+                    ?? folder.displayName
+                HStack(spacing: 4) {
+                    Image(systemName: "folder")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 18)
+                    Text(path)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    if folder.feedId == nil {
+                        Text("(syncing…)")
+                            .font(.caption2).foregroundStyle(.secondary)
                     }
-                    .menuRow()
+                    Spacer()
+                    Button {
+                        state.removeFolderBookmark(at: idx)
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
                 }
+                .padding(.leading, 26)
+                .menuRow()
             }
         }
     }

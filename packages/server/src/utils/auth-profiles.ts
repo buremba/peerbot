@@ -9,6 +9,8 @@ export type AuthProfileKind =
   | 'interactive';
 export type AuthProfileStatus = 'active' | 'pending_auth' | 'error' | 'revoked';
 
+export type BrowserKind = 'chrome' | 'brave' | 'arc' | 'edge';
+
 export interface AuthProfileRow {
   id: number;
   organization_id: string;
@@ -23,6 +25,10 @@ export interface AuthProfileRow {
   created_by: string | null;
   created_at: string;
   updated_at: string;
+  device_worker_id: string | null;
+  browser_kind: BrowserKind | null;
+  user_data_dir: string | null;
+  cdp_url: string | null;
 }
 
 interface BrowserSessionSummary {
@@ -234,7 +240,8 @@ export async function ensureUniqueAuthProfileSlug(params: {
 const AUTH_PROFILE_COLUMNS = `
   id, organization_id, slug, display_name, connector_key,
   profile_kind, status, auth_data, account_id, provider,
-  created_by, created_at, updated_at
+  created_by, created_at, updated_at,
+  device_worker_id, browser_kind, user_data_dir, cdp_url
 ` as const;
 
 export async function listAuthProfiles(params: {
@@ -309,6 +316,10 @@ export async function createAuthProfile(params: {
   provider?: string | null;
   status?: AuthProfileStatus;
   createdBy?: string | null;
+  deviceWorkerId?: string | null;
+  browserKind?: BrowserKind | null;
+  userDataDir?: string | null;
+  cdpUrl?: string | null;
 }): Promise<AuthProfileRow> {
   const sql = getDb();
   const slug = await ensureUniqueAuthProfileSlug({
@@ -327,7 +338,11 @@ export async function createAuthProfile(params: {
       auth_data,
       account_id,
       provider,
-      created_by
+      created_by,
+      device_worker_id,
+      browser_kind,
+      user_data_dir,
+      cdp_url
     ) VALUES (
       ${params.organizationId},
       ${slug},
@@ -338,7 +353,11 @@ export async function createAuthProfile(params: {
       ${sql.json(normalizeAuthData(params.profileKind, params.authData ?? {}))},
       ${params.accountId ?? null},
       ${params.provider ? params.provider.toLowerCase() : null},
-      ${params.createdBy ?? null}
+      ${params.createdBy ?? null},
+      ${params.deviceWorkerId ?? null},
+      ${params.browserKind ?? null},
+      ${params.userDataDir ?? null},
+      ${params.cdpUrl ?? null}
     )
     RETURNING ${sql.unsafe(AUTH_PROFILE_COLUMNS)}
   `;

@@ -19,6 +19,7 @@ interface ResolvedExecutionAuth {
   credentials: ExecutionOAuthCredentials | null;
   connectionCredentials: Record<string, string>;
   sessionState: Record<string, unknown> | null;
+  browserUserDataDir: string | null;
 }
 
 interface ResolveExecutionAuthParams {
@@ -85,15 +86,32 @@ export async function resolveExecutionAuth(
       authProfile?.profile_kind === 'env' ? (authProfile.auth_data ?? {}) : {}
     ),
   };
-  const sessionState =
+  let sessionState =
     authProfile?.profile_kind === 'browser_session' || authProfile?.profile_kind === 'interactive'
       ? ((authProfile.auth_data as Record<string, unknown>) ?? null)
       : null;
+
+  // Device-bound browser profiles either:
+  //   user_data_dir → managed Chrome with isolated cookies; or
+  //   cdp_url       → attach to a running Chrome via remote debugging port.
+  // Cookies stay on the device in both cases; the server never holds them.
+  let browserUserDataDir: string | null = null;
+  if (authProfile?.profile_kind === 'browser_session' && authProfile.device_worker_id) {
+    browserUserDataDir = authProfile.user_data_dir ?? null;
+    const cdpUrl = authProfile.cdp_url ?? null;
+    if (browserUserDataDir) {
+      sessionState = { ...(sessionState ?? {}), user_data_dir: browserUserDataDir };
+    }
+    if (cdpUrl) {
+      sessionState = { ...(sessionState ?? {}), cdp_url: cdpUrl };
+    }
+  }
 
   return {
     credentials,
     connectionCredentials,
     sessionState,
+    browserUserDataDir,
   };
 }
 

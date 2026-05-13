@@ -24,12 +24,27 @@ export function getBrowserCookies(
 ): any[] {
   const sessionCookies = (sessionState?.cookies as any[]) ?? [];
   const cookies = (checkpoint as any)?.cookies ?? sessionCookies;
-  if (!cookies || cookies.length === 0) {
+  // Device-bound browser profiles ship cookies via --user-data-dir on disk
+  // rather than this jsonb blob; the persistent context loads them itself.
+  if ((!cookies || cookies.length === 0) && !sessionState?.user_data_dir) {
     throw new Error(
       `No browser cookies found. Run: lobu memory browser-auth --connector ${connectorKey} --auth-profile-slug <SLUG>`
     );
   }
-  return cookies;
+  return cookies ?? [];
+}
+
+/**
+ * Pull the device-bound managed --user-data-dir from session_state, if the
+ * connection's auth profile is owned by a device worker. When set, callers
+ * should pass it to openStealthBrowser instead of relying on the cookies/CDP
+ * cascade — Chrome reads cookies from that profile dir directly.
+ */
+export function getBrowserUserDataDir(
+  sessionState: Record<string, unknown> | null | undefined
+): string | undefined {
+  const value = sessionState?.user_data_dir;
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
 export function validateCookieNotExpired(
@@ -103,12 +118,14 @@ export async function openStealthBrowser(opts?: {
   cdpUrl?: string | 'auto' | null;
   cookies?: Cookie[];
   authDomains?: string[];
+  userDataDir?: string;
 }): Promise<BrowserSession> {
   const acquired = await acquireBrowser({
-    cdpUrl: opts?.cdpUrl ?? null,
+    cdpUrl: opts?.userDataDir ? null : (opts?.cdpUrl ?? null),
     cookies: opts?.cookies ?? [],
     authDomains: opts?.authDomains ?? [],
     stealth: true,
+    userDataDir: opts?.userDataDir,
   });
 
   const page = acquired.cdpPage ?? acquired.page;

@@ -17,7 +17,11 @@ import {
   type SyncContext,
   type SyncResult,
 } from '@lobu/connector-sdk';
-import { getBrowserCookies, validateCookieNotExpired } from './browser-scraper-utils';
+import {
+  getBrowserCookies,
+  getBrowserUserDataDir,
+  validateCookieNotExpired,
+} from './browser-scraper-utils';
 
 interface XCheckpoint {
   last_tweet_id?: string;
@@ -358,12 +362,15 @@ async function syncViaBrowser(
   const searchFilter = (config.search_filter as string) ?? 'live';
   const searchUrl = `https://x.com/search?q=${encodeURIComponent(searchQuery)}&src=typed_query&f=${searchFilter}`;
 
+  const userDataDir = getBrowserUserDataDir(ctx.sessionState);
   let cookies: any[] = [];
-  try {
-    cookies = getBrowserCookies(ctx.checkpoint as any, ctx.sessionState as any, 'x');
-    validateCookieNotExpired(cookies, 'auth_token', 'x');
-  } catch {
-    // No stored cookies — CDP will be the only path
+  if (!userDataDir) {
+    try {
+      cookies = getBrowserCookies(ctx.checkpoint as any, ctx.sessionState as any, 'x');
+      validateCookieNotExpired(cookies, 'auth_token', 'x');
+    } catch {
+      // No stored cookies — CDP will be the only path
+    }
   }
 
   const result = await browserNetworkSync<XTweet>({
@@ -378,6 +385,7 @@ async function syncViaBrowser(
     url: searchUrl,
     cdpUrl: 'auto',
     cookies,
+    userDataDir,
     parseResponse: parseBrowserSearchResponse,
     checkAuth: async (page) => {
       const url = page.url();

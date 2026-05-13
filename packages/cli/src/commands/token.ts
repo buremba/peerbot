@@ -1,4 +1,5 @@
 import chalk from "chalk";
+import postgres from "postgres";
 import { getToken, resolveContext } from "../internal/index.js";
 import { resolveApiClient } from "../internal/api-client.js";
 
@@ -96,4 +97,69 @@ export async function tokenCreateCommand(
 
 function defaultTokenName(): string {
   return `lobu-cli-${new Date().toISOString().slice(0, 10)}`;
+}
+
+/**
+ * Revoke a token by its `jti`. Inserts a row into `public.revoked_tokens`
+ * (created on demand) — the gateway's RevokedTokenStore checks this on every
+ * worker-token / settings-cookie verification, so the token is dead within
+ * one cache TTL (≤60s).
+ */
+export async function tokenRevokeCommand(
+  jti: string,
+  options: { expiresAt?: string }
+): Promise<void> {
+  jti = jti.trim();
+  if (!jti) {
+    console.error(chalk.red("\n  Missing <jti>.\n"));
+    process.exitCode = 1;
+    return;
+  }
+
+  const databaseUrl = process.env.DATABASE_URL?.trim();
+  if (!databaseUrl) {
+    console.error(
+      chalk.red(
+        "\n  DATABASE_URL is not set. Run this from the same environment as the gateway.\n"
+      )
+    );
+    process.exitCode = 1;
+    return;
+  }
+
+  let expiresAt: Date;
+  if (options.expiresAt) {
+    expiresAt = new Date(options.expiresAt);
+    if (Number.isNaN(expiresAt.getTime())) {
+      console.error(chalk.red("\n  --expires-at must be a valid ISO date.\n"));
+      process.exitCode = 1;
+      return;
+    }
+  } else {
+    expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+  }
+
+  const sql = postgres(databaseUrl, { max: 1 });
+  try {
+    await sql.unsafe(`
+      CREATE TABLE IF NOT EXISTS public.revoked_tokens (
+        jti text PRIMARY KEY,
+        expires_at timestamptz NOT NULL
+      )
+    `);
+    await sql`
+      INSERT INTO public.revoked_tokens (jti, expires_at)
+      VALUES (${jti}, ${expiresAt})
+      ON CONFLICT (jti) DO UPDATE SET expires_at = GREATEST(public.revoked_tokens.expires_at, EXCLUDED.expires_at)
+    `;
+  } finally {
+    await sql.end({ timeout: 5 });
+  }
+
+  console.log(chalk.cyan("\n  Token revoked"));
+  console.log(chalk.dim(`  jti:     ${jti}`));
+  console.log(chalk.dim(`  expires: ${expiresAt.toISOString()}`));
+  console.log(
+    chalk.dim("  Effective within ~60s (gateway revocation cache TTL).\n")
+  );
 }

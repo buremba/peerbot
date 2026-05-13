@@ -512,7 +512,7 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
     const bearer = tokenFromHeader(c);
 
     // 1. Settings session cookie (or injected auth provider for embedded mode).
-    const settingsSession = verifySettingsSession(c);
+    const settingsSession = await verifySettingsSession(c);
     if (settingsSession) {
       const access = await verifyOwnedAgentAccess(
         settingsSession,

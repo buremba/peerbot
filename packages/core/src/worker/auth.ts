@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { createLogger } from "../logger";
 import { decrypt, encrypt } from "../utils/encryption";
 
@@ -20,6 +21,7 @@ export interface WorkerTokenData {
   platform?: string;
   sessionKey?: string;
   traceId?: string; // Trace ID for end-to-end observability
+  jti?: string; // Unique token ID — enables targeted revocation
 }
 
 /**
@@ -57,6 +59,7 @@ export function generateWorkerToken(
     platform: options.platform,
     sessionKey: options.sessionKey,
     traceId: options.traceId, // Trace ID for observability
+    jti: randomUUID(), // Unique token ID for targeted revocation
   };
 
   // Encrypt the payload

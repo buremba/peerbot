@@ -2,6 +2,7 @@ import { verifyWorkerToken } from "@lobu/core";
 import type { Context, Next } from "hono";
 import { verifySettingsSession } from "../routes/public/settings-auth.js";
 import type { ExternalAuthClient } from "./external/client.js";
+import { getRevokedTokenStore } from "./revoked-token-store.js";
 
 export const TOKEN_EXPIRATION_MS = 24 * 60 * 60 * 1000;
 
@@ -14,9 +15,17 @@ export function createApiAuthMiddleware(opts: {
   allowWorkerToken?: boolean;
   allowSettingsSession?: boolean;
 }) {
+  const revokedTokens = getRevokedTokenStore();
+
   return async (c: Context, next: Next) => {
     // 1. Try settings session cookie when explicitly allowed.
-    if (opts.allowSettingsSession && verifySettingsSession(c)) return next();
+    // verifySettingsSession now enforces jti revocation internally.
+    if (opts.allowSettingsSession) {
+      const session = await verifySettingsSession(c);
+      if (session) {
+        return next();
+      }
+    }
 
     const authHeader = c.req.header("Authorization");
     if (!authHeader?.startsWith("Bearer ")) {
@@ -40,6 +49,9 @@ export function createApiAuthMiddleware(opts: {
       if (workerData) {
         const tokenAge = Date.now() - workerData.timestamp;
         if (tokenAge <= TOKEN_EXPIRATION_MS) {
+          if (workerData.jti && (await revokedTokens.isRevoked(workerData.jti))) {
+            return c.json({ success: false, error: "Unauthorized" }, 401);
+          }
           return next();
         }
       }

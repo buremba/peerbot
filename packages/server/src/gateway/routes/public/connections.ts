@@ -470,7 +470,7 @@ export function createConnectionCrudRoutes(
   app.get("/internal/connections", listAllConnections);
 
   app.openapi(ListConnectionsRoute, async (c): Promise<any> => {
-    const session = verifySettingsSession(c);
+    const session = await verifySettingsSession(c);
     if (!session) {
       return c.json({ error: "Unauthorized" }, 401);
     }
@@ -505,7 +505,7 @@ export function createConnectionCrudRoutes(
   });
 
   app.openapi(GetConnectionRoute, async (c): Promise<any> => {
-    const session = verifySettingsSession(c);
+    const session = await verifySettingsSession(c);
     if (!session) {
       return c.json({ error: "Unauthorized" }, 401);
     }

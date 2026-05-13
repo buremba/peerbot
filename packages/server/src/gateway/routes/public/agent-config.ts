@@ -351,7 +351,7 @@ export function createAgentConfigRoutes(
 
   app.openapi(getConfigRoute, async (c): Promise<any> => {
     const agentId = c.req.param("agentId") || "";
-    const payload = await verifyToken(verifySettingsSessionOrToken(c), agentId);
+    const payload = await verifyToken(await verifySettingsSessionOrToken(c), agentId);
     if (!payload) return errorResponse(c, "Unauthorized", 401);
     const providerModels = await collectProviderModelOptions(
       agentId,
@@ -372,7 +372,7 @@ export function createAgentConfigRoutes(
   // GET /providers/catalog
   app.get("/providers/catalog", async (c): Promise<any> => {
     const agentId = c.req.param("agentId") || "";
-    const payload = await verifyToken(verifySettingsSessionOrToken(c), agentId);
+    const payload = await verifyToken(await verifySettingsSessionOrToken(c), agentId);
     if (!payload) return errorResponse(c, "Unauthorized", 401);
 
     if (!config.providerCatalogService) {
@@ -406,7 +406,7 @@ export function createAgentConfigRoutes(
     app.get("/grants", async (c) => {
       const agentId = c.req.param("agentId") || "";
       const payload = await verifyToken(
-        verifySettingsSessionOrToken(c),
+        await verifySettingsSessionOrToken(c),
         agentId
       );
       if (!payload) return errorResponse(c, "Unauthorized", 401);

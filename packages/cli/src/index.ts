@@ -452,6 +452,18 @@ Memory:
       }
     );
 
+  token
+    .command("revoke <jti>")
+    .description("Revoke a worker/settings token by its jti (kill switch)")
+    .option(
+      "--expires-at <iso>",
+      "Original token expiry (ISO 8601); the revocation row is GC'd past it. Defaults to 24h from now."
+    )
+    .action(async (jti: string, options: { expiresAt?: string }) => {
+      const { tokenRevokeCommand } = await import("./commands/token.js");
+      await tokenRevokeCommand(jti, options);
+    });
+
   // ─── context ────────────────────────────────────────────────────────
   const context = program
     .command("context")

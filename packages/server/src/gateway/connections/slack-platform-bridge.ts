@@ -343,6 +343,28 @@ async function loadIntegrationStatusesScoped(
   return result;
 }
 
+/** Extract something useful out of a Slack `WebAPIPlatformError` (or anything). */
+function errorDetail(error: unknown): Record<string, unknown> {
+  if (error instanceof Error) {
+    const data = (error as { data?: unknown }).data;
+    return {
+      message: error.message,
+      ...(data && typeof data === "object" ? { slack: data } : {}),
+    };
+  }
+  return { message: String(error) };
+}
+
+const HOME_FALLBACK_BLOCKS: unknown[] = [
+  {
+    type: "section",
+    text: {
+      type: "mrkdwn",
+      text: "*Lobu* :wave:\n\nMention me in any channel, or send me a DM, to start a thread. Use `/lobu help` for the built-in commands.",
+    },
+  },
+];
+
 async function publishHome(
   adapter: SlackHomeAdapter | undefined,
   params: HomeViewParams
@@ -355,12 +377,29 @@ async function publishHome(
   } catch (error) {
     logger.warn(
       {
-        error,
+        error: errorDetail(error),
         connectionId: params.connection.id,
         userId: params.userId,
       },
-      "Failed to publish Slack home tab"
+      "Failed to publish Slack home tab; falling back to a minimal view"
     );
+    // The rich view failed (likely Block Kit validation). Don't leave the user
+    // staring at a stale cached view — publish a plain text-only home tab.
+    try {
+      await publishHomeView(params.userId, {
+        type: "home",
+        blocks: HOME_FALLBACK_BLOCKS,
+      });
+    } catch (fallbackError) {
+      logger.warn(
+        {
+          error: errorDetail(fallbackError),
+          connectionId: params.connection.id,
+          userId: params.userId,
+        },
+        "Failed to publish fallback Slack home tab"
+      );
+    }
   }
 }
 

@@ -334,6 +334,25 @@ describe("Slack platform bridge", () => {
     expect(view.blocks.some((b) => b.type === "header")).toBe(false);
   });
 
+  test("falls back to a minimal home view if the rich view is rejected", async () => {
+    const h = makeHomeChat();
+    registerSlackAppHome(h.chat, connection(), {});
+    let calls = 0;
+    const publishHomeView = mock(async () => {
+      calls += 1;
+      if (calls === 1) throw new Error("invalid_blocks");
+    });
+    await h.open("U123", publishHomeView);
+    expect(publishHomeView).toHaveBeenCalledTimes(2);
+    const fallback = publishHomeView.mock.calls[1]![1] as {
+      type: string;
+      blocks: Array<Record<string, unknown>>;
+    };
+    expect(fallback.type).toBe("home");
+    expect(fallback.blocks.length).toBe(1);
+    expect(blocksText(fallback)).toContain("/lobu help");
+  });
+
   test("renders the preview-workspace home tab without touching the MCP config", async () => {
     const h = makeHomeChat();
     const getMcpStatus = mock(async () => mcpStatus);

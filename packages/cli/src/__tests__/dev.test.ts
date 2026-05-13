@@ -10,7 +10,10 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { resolveBackendBundle } from "../commands/dev";
+import {
+  findEnclosingMonorepoRoot,
+  resolveBackendBundle,
+} from "../commands/dev";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "..", "..", "..", "..");
@@ -108,6 +111,39 @@ describe("lobu run backend bundle resolution", () => {
     for (const name of ["playwright", "sharp", "jimp"]) {
       expect(cliRuntimeDeps[name]).toBeDefined();
     }
+  });
+
+  test("findEnclosingMonorepoRoot walks up from a project subdir", () => {
+    const root = mkdtempSync(join(tmpdir(), "lobu-cli-monorepo-"));
+    tempDirs.push(root);
+    writeFileSync(
+      join(root, "package.json"),
+      JSON.stringify({ name: "root", workspaces: ["packages/*"] })
+    );
+    mkdirSync(join(root, "packages", "agent-worker", "src"), {
+      recursive: true,
+    });
+    writeFileSync(
+      join(root, "packages", "agent-worker", "src", "index.ts"),
+      "// worker"
+    );
+    const subdir = join(root, "examples", "office-bot");
+    mkdirSync(subdir, { recursive: true });
+
+    expect(findEnclosingMonorepoRoot(subdir)).toBe(root);
+    expect(findEnclosingMonorepoRoot(root)).toBe(root);
+
+    const lone = mkdtempSync(join(tmpdir(), "lobu-cli-lone-"));
+    tempDirs.push(lone);
+    expect(findEnclosingMonorepoRoot(lone)).toBeNull();
+  });
+
+  test("findEnclosingMonorepoRoot resolves this repo's root", () => {
+    const found = findEnclosingMonorepoRoot(here);
+    expect(found).not.toBeNull();
+    expect(
+      existsSync(join(found!, "packages", "agent-worker", "src", "index.ts"))
+    ).toBe(true);
   });
 
   test("CLI build copies local runtime assets for installed lobu run", () => {

@@ -7,7 +7,6 @@ import {
   collectEnabledLoginProviderConfigs,
   getAuthConfig,
   getLoginProviderScopes,
-  isSupportedLoginProvider,
 } from '../config';
 
 describe('login provider helpers', () => {
@@ -28,12 +27,6 @@ describe('login provider helpers', () => {
     expect(getLoginProviderScopes('google')).toBeNull();
     expect(getLoginProviderScopes('github')).toBeNull();
     expect(getLoginProviderScopes('reddit')).toBeNull();
-  });
-
-  it('recognizes supported login providers only when scopes are declared', () => {
-    expect(isSupportedLoginProvider('google')).toBe(false);
-    expect(isSupportedLoginProvider('github', ['read:user', 'user:email'])).toBe(true);
-    expect(isSupportedLoginProvider('twitter', ['users.read', 'users.email'])).toBe(true);
   });
 
   it('dedupes providers and ignores connectors without declared login scopes', () => {

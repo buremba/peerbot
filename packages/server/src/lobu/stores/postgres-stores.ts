@@ -1,4 +1,5 @@
 import {
+  decrypt,
   inferGrantKind,
   type AgentAccessStore,
   type AgentConfigStore,
@@ -121,23 +122,18 @@ function isRedactedSecretValue(value: unknown): value is string {
 function decryptLegacyEncryptedConfig(
   config: Record<string, any>
 ): Record<string, any> {
-  try {
-    const { decrypt } = require('@lobu/core');
-    const result = { ...config };
-    for (const [key, value] of Object.entries(result)) {
-      if (typeof value === 'string' && value.startsWith(ENC_PREFIX)) {
-        try {
-          result[key] = decrypt(value.slice(ENC_PREFIX.length));
-        } catch {
-          // Leave encrypted if decryption fails — surfaces as a
-          // resolveConfigForRuntime error at boot time.
-        }
+  const result = { ...config };
+  for (const [key, value] of Object.entries(result)) {
+    if (typeof value === 'string' && value.startsWith(ENC_PREFIX)) {
+      try {
+        result[key] = decrypt(value.slice(ENC_PREFIX.length));
+      } catch {
+        // Leave encrypted if decryption fails — surfaces as a
+        // resolveConfigForRuntime error at boot time.
       }
     }
-    return result;
-  } catch {
-    return config;
   }
+  return result;
 }
 
 function rowToConnection(row: Record<string, any>): StoredConnection {

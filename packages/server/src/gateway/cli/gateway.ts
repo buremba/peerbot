@@ -1,8 +1,5 @@
 #!/usr/bin/env bun
 
-import type { Server } from "node:http";
-import { createServer } from "node:http";
-import { getRequestListener } from "@hono/node-server";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { createLogger } from "@lobu/core";
 import { apiReference } from "@scalar/hono-api-reference";
@@ -49,8 +46,6 @@ import { createSlackRoutes } from "../routes/public/slack.js";
 
 const logger = createLogger("gateway-startup");
 
-let httpServer: Server | null = null;
-
 interface CreateGatewayAppOptions {
   secretProxy: any;
   workerGateway: any;
@@ -67,8 +62,8 @@ interface CreateGatewayAppOptions {
 
 /**
  * Create the Hono app with all gateway routes.
- * Returns the app without starting an HTTP server — the caller can mount it
- * on their own server (embedded mode) or pass it to `startGatewayServer()`.
+ * Returns the app without starting an HTTP server — the caller mounts it on its
+ * own server (embedded mode; see `src/server.ts` / `src/lobu/gateway.ts`).
  */
 export function createGatewayApp(
   options: CreateGatewayAppOptions
@@ -882,147 +877,4 @@ Agents can be configured with custom MCP (Model Context Protocol) servers:
   logger.debug("API docs enabled at /api/docs");
 
   return app;
-}
-
-/**
- * Start an HTTP server for the gateway Hono app.
- * Used in standalone mode. In embedded mode, the host creates its own server.
- */
-function startGatewayServer(app: OpenAPIHono, port = 8080): Server {
-  const honoListener = getRequestListener(app.fetch);
-  const server = createServer(honoListener);
-  server.listen(port);
-  logger.debug(`Server listening on port ${port}`);
-  return server;
-}
-
-/**
- * Start the gateway with the provided configuration
- */
-export async function startGateway(config: GatewayConfig): Promise<void> {
-  logger.info("Starting Lobu Gateway");
-
-  const { startFilteringProxy } = await import("../proxy/proxy-manager.js");
-  await startFilteringProxy();
-
-  const { Orchestrator } = await import("../orchestration/index.js");
-  const { Gateway } = await import("../gateway-main.js");
-
-  logger.debug("Creating orchestrator");
-  const orchestrator = new Orchestrator(config.orchestration);
-  await orchestrator.start();
-  logger.debug("Orchestrator started");
-
-  const gateway = new Gateway(config);
-
-  const { ApiPlatform } = await import("../api/platform.js");
-  const apiPlatform = new ApiPlatform();
-  gateway.registerPlatform(apiPlatform);
-  logger.debug("API platform registered");
-
-  await gateway.start();
-  logger.debug("Gateway started");
-
-  // Get core services
-  const coreServices = gateway.getCoreServices();
-
-  // Wire grant store to HTTP proxy for domain grant checks
-  const grantStore = coreServices.getGrantStore();
-  if (grantStore) {
-    const { setProxyGrantStore } = await import("../proxy/http-proxy.js");
-    setProxyGrantStore(grantStore);
-    logger.debug("Grant store connected to HTTP proxy");
-  }
-
-  // Wire policy store + egress judge into the HTTP proxy for judged-domain
-  // rules declared by skills or agent config.
-  const policyStore = coreServices.getPolicyStore();
-  if (policyStore) {
-    const { setProxyPolicyStore } = await import("../proxy/http-proxy.js");
-    setProxyPolicyStore(policyStore);
-    logger.debug("Policy store connected to HTTP proxy");
-  }
-
-  await orchestrator.injectCoreServices(
-    coreServices.getSecretStore(),
-    coreServices.getProviderCatalogService(),
-    coreServices.getGrantStore() ?? undefined,
-    coreServices.getPolicyStore() ?? undefined
-  );
-  logger.debug("Orchestrator configured with core services");
-
-  // Note: file-based reload + connection-seeding has been removed —
-  // lobu.toml is no longer read at gateway boot. Agents and connections
-  // enter Postgres via `lobu apply` (CLI) or the web UI.
-
-  const { ChatInstanceManager } = await import(
-    "../connections/chat-instance-manager.js"
-  );
-  const { ChatResponseBridge } = await import(
-    "../connections/chat-response-bridge.js"
-  );
-  const chatInstanceManager = new ChatInstanceManager();
-  try {
-    await chatInstanceManager.initialize(coreServices);
-
-    for (const adapter of chatInstanceManager.createPlatformAdapters()) {
-      gateway.registerPlatform(adapter);
-    }
-    logger.debug("ChatInstanceManager initialized");
-
-    const unifiedConsumer = gateway.getUnifiedConsumer();
-    if (unifiedConsumer) {
-      const chatResponseBridge = new ChatResponseBridge(chatInstanceManager);
-      unifiedConsumer.setChatResponseBridge(chatResponseBridge);
-      logger.debug("ChatResponseBridge wired to unified thread consumer");
-    }
-  } catch (error) {
-    logger.warn(
-      { error: String(error) },
-      "ChatInstanceManager initialization failed — connections feature disabled"
-    );
-  }
-
-  if (!httpServer) {
-    const app = createGatewayApp({
-      secretProxy: coreServices.getSecretProxy(),
-      workerGateway: coreServices.getWorkerGateway(),
-      mcpProxy: coreServices.getMcpProxy(),
-      interactionService: coreServices.getInteractionService(),
-      platformRegistry: gateway.getPlatformRegistry(),
-      coreServices,
-      chatInstanceManager,
-    });
-    httpServer = startGatewayServer(app);
-  }
-
-  logger.info("Lobu Gateway is running!");
-
-  const cleanup = async () => {
-    logger.info("Shutting down gateway...");
-
-    // Hard deadline: force exit after 30s if graceful shutdown stalls
-    const hardDeadline = setTimeout(() => {
-      logger.error("Graceful shutdown timed out after 30s, forcing exit");
-      process.exit(1);
-    }, 30_000);
-    hardDeadline.unref();
-
-    await chatInstanceManager.shutdown();
-    await orchestrator.stop();
-    await gateway.stop();
-    if (httpServer) {
-      httpServer.close();
-    }
-    logger.info("Gateway shutdown complete");
-    process.exit(0);
-  };
-
-  process.on("SIGINT", cleanup);
-  process.on("SIGTERM", cleanup);
-
-  process.on("SIGUSR1", () => {
-    const status = gateway.getStatus();
-    logger.info("Health check:", JSON.stringify(status, null, 2));
-  });
 }

@@ -28,9 +28,16 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getRequestListener } from '@hono/node-server';
 import { Hono } from 'hono';
+import { closeDbSingleton, probeListenNotify } from './db/client';
 import { mountViteDev } from './dev-vite';
 import type { Env } from './index';
 import { app as mainApp } from './index';
+import {
+  getLobuCoreServices,
+  initLobuGateway,
+  stopLobuGateway,
+} from './lobu/gateway';
+import { bootTaskScheduler } from './scheduled/jobs';
 import { assertExternalDepsResolvable } from '../../connector-worker/src/runtime-deps';
 import { getEnvFromProcess } from './utils/env';
 import logger from './utils/logger';
@@ -85,7 +92,6 @@ async function main() {
   // the poll interval — not an outage. Log loudly so ops can fix the pooler
   // config, but do not refuse to boot.
   if (process.env.SKIP_LISTEN_NOTIFY_PROBE !== '1') {
-    const { probeListenNotify } = await import('./db/client');
     try {
       await probeListenNotify();
       logger.info('[DB] LISTEN/NOTIFY probe ok');
@@ -101,7 +107,6 @@ async function main() {
   await initWorkspaceProvider();
 
   // Initialize embedded Lobu gateway (requires DATABASE_URL)
-  const { initLobuGateway } = await import('./lobu/gateway');
   const lobuApp = await initLobuGateway();
   if (lobuApp) {
     app.route('/lobu', lobuApp);
@@ -114,8 +119,6 @@ async function main() {
   // token refresh, MCP DB cleanup, watcher automation, etc. — runs as a row
   // in `public.runs` (run_type='task') with cron-driven self-rescheduling.
   // Cross-pod coordination is the runs-queue claim path.
-  const { getLobuCoreServices } = await import('./lobu/gateway');
-  const { bootTaskScheduler } = await import('./scheduled/jobs');
   const taskScheduler = await bootTaskScheduler(getLobuCoreServices(), env);
 
   const port = parseInt(process.env.PORT || '8787', 10);
@@ -142,9 +145,7 @@ async function main() {
     logger.info({ signal }, 'Received shutdown signal, stopping gracefully...');
     await vite?.close();
     taskScheduler.stop();
-    const { stopLobuGateway } = await import('./lobu/gateway');
     await stopLobuGateway();
-    const { closeDbSingleton } = await import('./db/client');
     await closeDbSingleton();
     httpServer.close();
     process.exit(0);

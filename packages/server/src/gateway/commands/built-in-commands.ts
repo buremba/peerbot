@@ -1,10 +1,12 @@
 import type { CommandContext, CommandRegistry } from "@lobu/core";
 import {
+  bindChatToAgentForOwner,
   bindChatToPreviewAgent,
   canonicalSlackChannelId,
   consumePreviewClaim,
   listPreviewAgents,
   previewAgentMenu,
+  resolveChatUserIdentity,
 } from "../../preview/slack.js";
 import type { AgentSettingsStore } from "../auth/settings/agent-settings-store.js";
 import {
@@ -159,13 +161,13 @@ export function registerBuiltInCommands(
   registry.register({
     name: "link",
     description:
-      "Link this chat to a Lobu agent using a code from `lobu run` (Slack Preview)",
+      "Link this chat to a Lobu agent — `<code>` from `lobu run`, or `<agentId>` once you've linked here before",
     handler: async (ctx: CommandContext) => {
-      const code = ctx.args.trim();
+      const arg = ctx.args.trim();
       const cmd = ctx.platform === "slack" ? "/lobu link" : "/link";
-      if (!code) {
+      if (!arg) {
         await ctx.reply(
-          `Usage: \`${cmd} <code>\` — get a code by running \`lobu run\` on a Preview-enabled agent.`
+          `Usage: \`${cmd} <code>\` — get a code by running \`lobu run\` on a Preview-enabled agent. (Once you've linked here once, \`${cmd} <agentId>\` works too.)`
         );
         return;
       }
@@ -177,11 +179,12 @@ export function registerBuiltInCommands(
           ? canonicalSlackChannelId(ctx.channelId)
           : ctx.channelId;
       const result = await consumePreviewClaim({
-        code,
+        code: arg,
         platform: ctx.platform,
         teamId: ctx.teamId,
         channelId,
         surfaceType,
+        platformUserId: ctx.userId,
       });
       switch (result.status) {
         case "bound":
@@ -189,16 +192,43 @@ export function registerBuiltInCommands(
             `Linked this chat to agent \`${result.agentId}\`. Say hi — I'll reply here from now on.`
           );
           return;
-        case "not_found":
-          await ctx.reply(
-            "That link code is invalid or expired. Run `lobu run` again to get a fresh one."
-          );
-          return;
         case "surface_not_allowed":
           await ctx.reply(
             `This code can't be used in a ${result.surfaceType === "dm" ? "DM" : "channel"}. Check the agent's \`preview.${ctx.platform}.surfaces\` setting.`
           );
           return;
+        case "not_found": {
+          // Not a valid code — but if this user has linked here before, treat
+          // the arg as an agent id and re-bind directly (no fresh code needed).
+          const lobuUserId = await resolveChatUserIdentity(
+            ctx.platform,
+            ctx.teamId,
+            ctx.userId
+          );
+          if (lobuUserId) {
+            const bound = await bindChatToAgentForOwner({
+              platform: ctx.platform,
+              teamId: ctx.teamId,
+              channelId,
+              agentId: arg,
+              lobuUserId,
+            });
+            if (bound.status === "bound") {
+              await ctx.reply(
+                `Linked this chat to agent \`${arg}\`. Say hi — I'll reply here from now on.`
+              );
+              return;
+            }
+            await ctx.reply(
+              `No agent \`${arg}\` you can manage in your orgs. Either run \`lobu apply\` to register it, or paste a fresh \`/lobu link <code>\` from \`lobu run\`.`
+            );
+            return;
+          }
+          await ctx.reply(
+            "That link code is invalid or expired. Run `lobu run` again to get a fresh one."
+          );
+          return;
+        }
       }
     },
   });

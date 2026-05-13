@@ -3,19 +3,23 @@ import type { Context } from "hono";
 import { beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { cleanupTestDatabase } from "../../__tests__/setup/test-db.js";
 import {
+  addUserToOrganization,
   createTestAgent,
   createTestOrganization,
+  createTestUser,
 } from "../../__tests__/setup/test-fixtures.js";
 import { getDb } from "../../db/client.js";
 import { registerBuiltInCommands } from "../../gateway/commands/built-in-commands.js";
 import type { Env } from "../../index";
 import {
+  bindChatToAgentForOwner,
   bindChatToPreviewAgent,
   canonicalSlackChannelId,
   consumePreviewClaim,
   createPreviewClaim,
   listPreviewAgents,
   previewAgentMenu,
+  resolveChatUserIdentity,
   slackSurfaceType,
 } from "../slack";
 
@@ -24,7 +28,9 @@ const OTHER_AGENT_ID = "other-agent";
 const TEAM_ID = "T_DEVELOPER";
 
 let ORG_ID = "";
-const USER_ID = "user-slack-preview";
+// A real `user` row — `consumePreviewClaim` records `chat_user_identities`
+// (FK → "user"), so the claim's `createdBy` must be an actual user.
+let USER_ID = "";
 
 // The `link` command computes platform/surface/canonical-channel from the
 // command context before calling `consumePreviewClaim`; mirror that here so the
@@ -85,6 +91,9 @@ describe("Slack Preview claims + channel bindings", () => {
       slug: "slack-preview-org",
     });
     ORG_ID = org.id;
+    const user = await createTestUser({ email: "slack-preview@test.example.com" });
+    USER_ID = user.id;
+    await addUserToOrganization(USER_ID, ORG_ID);
     await createTestAgent({ organizationId: ORG_ID, agentId: AGENT_ID, name: "Demo" });
     await createTestAgent({
       organizationId: ORG_ID,
@@ -96,6 +105,7 @@ describe("Slack Preview claims + channel bindings", () => {
   beforeEach(async () => {
     const sql = getDb();
     await sql`DELETE FROM agent_channel_bindings`;
+    await sql`DELETE FROM chat_user_identities`;
     await sql`DELETE FROM oauth_states WHERE scope = 'slack-preview-claim'`;
   });
 
@@ -295,7 +305,9 @@ describe("Slack Preview claims + channel bindings", () => {
     `;
     expect((rows[0] as { agent_id: string }).agent_id).toBe(AGENT_ID);
 
-    // A bad code via the command surfaces the friendly error, no throw.
+    // After a successful link this user's identity is recorded, so a non-code
+    // arg is treated as an agent id — an unknown one surfaces the friendly
+    // "no agent" message, no throw.
     const replies2: string[] = [];
     await registry.tryHandle("link", {
       userId: "U1",
@@ -308,7 +320,7 @@ describe("Slack Preview claims + channel bindings", () => {
         replies2.push(text);
       },
     });
-    expect(replies2.join("\n")).toMatch(/invalid or expired/i);
+    expect(replies2.join("\n")).toMatch(/no agent `demo-agent-BADBAD`/i);
   });
 });
 
@@ -478,5 +490,156 @@ describe("Public preview — /lobu try a demo agent", () => {
     expect(previewAgentMenu("telegram", [
       { agentId: DEMO_A, name: "Food Ordering", description: null },
     ])).toContain(`/try ${DEMO_A}`);
+  });
+});
+
+describe("chat-user identity + codeless re-link by agent id", () => {
+  const ID_TEAM = "T_IDENTITY";
+  const ID_AGENT = "owned-agent";
+  let idOrgId = "";
+  let lobuUserId = "";
+  const SLACK_USER = "U_IDENTITY";
+
+  function ownerContext(jsonBody: unknown): Context<{ Bindings: Env }> {
+    return {
+      var: { organizationId: idOrgId, session: { userId: lobuUserId } },
+      req: { json: async () => jsonBody, header: () => undefined },
+      json: (body: Record<string, unknown>, status = 200): FakeResponse => ({
+        status,
+        body,
+      }),
+    } as unknown as Context<{ Bindings: Env }>;
+  }
+
+  beforeAll(async () => {
+    await cleanupTestDatabase();
+    const org = await createTestOrganization({ name: "Identity Org", slug: "identity-org" });
+    idOrgId = org.id;
+    const user = await createTestUser({ email: "identity@test.example.com" });
+    lobuUserId = user.id;
+    await addUserToOrganization(lobuUserId, idOrgId);
+    await createTestAgent({ organizationId: idOrgId, agentId: ID_AGENT, name: "Owned" });
+    await createTestAgent({ organizationId: idOrgId, agentId: "second-agent", name: "Second" });
+  });
+
+  beforeEach(async () => {
+    const sql = getDb();
+    await sql`DELETE FROM agent_channel_bindings`;
+    await sql`DELETE FROM chat_user_identities`;
+    await sql`DELETE FROM oauth_states WHERE scope = 'slack-preview-claim'`;
+  });
+
+  async function mintAndConsume(agentId: string, channelId: string) {
+    const res = await createPreviewClaim(
+      ownerContext({ agent_id: agentId, platform: "slack", surfaces: ["dm"] })
+    );
+    if (!isFakeResponse(res)) throw new Error("not a json response");
+    expect(res.status).toBe(200);
+    const code = res.body.code as string;
+    return consumePreviewClaim({
+      code,
+      platform: "slack",
+      teamId: ID_TEAM,
+      channelId: canonicalSlackChannelId(channelId),
+      surfaceType: "dm",
+      platformUserId: SLACK_USER,
+    });
+  }
+
+  test("consuming a code records the chat-user → Lobu-user identity", async () => {
+    const bound = await mintAndConsume(ID_AGENT, "D900");
+    expect(bound).toMatchObject({ status: "bound", agentId: ID_AGENT });
+
+    const rows = await getDb()`
+      SELECT lobu_user_id FROM chat_user_identities
+      WHERE platform = 'slack' AND team_id = ${ID_TEAM} AND platform_user_id = ${SLACK_USER}
+    `;
+    expect(rows).toHaveLength(1);
+    expect((rows[0] as { lobu_user_id: string }).lobu_user_id).toBe(lobuUserId);
+
+    expect(await resolveChatUserIdentity("slack", ID_TEAM, SLACK_USER)).toBe(lobuUserId);
+    expect(await resolveChatUserIdentity("slack", ID_TEAM, "U_NOBODY")).toBeNull();
+  });
+
+  test("bindChatToAgentForOwner re-binds to an agent in the user's org, refuses others", async () => {
+    expect(
+      await bindChatToAgentForOwner({
+        platform: "slack",
+        teamId: ID_TEAM,
+        channelId: canonicalSlackChannelId("D901"),
+        agentId: "second-agent",
+        lobuUserId,
+      })
+    ).toEqual({ status: "bound" });
+    const rows = await getDb()`
+      SELECT agent_id FROM agent_channel_bindings WHERE channel_id = 'slack:D901' AND team_id = ${ID_TEAM}
+    `;
+    expect((rows[0] as { agent_id: string }).agent_id).toBe("second-agent");
+
+    expect(
+      await bindChatToAgentForOwner({
+        platform: "slack",
+        teamId: ID_TEAM,
+        channelId: canonicalSlackChannelId("D902"),
+        agentId: "agent-in-another-org",
+        lobuUserId,
+      })
+    ).toEqual({ status: "forbidden" });
+  });
+
+  test("/lobu link <agentId> re-binds without a code once the user has linked here", async () => {
+    // First, a real link establishes the identity.
+    await mintAndConsume(ID_AGENT, "D903");
+
+    const registry = new CommandRegistry();
+    registerBuiltInCommands(registry, { agentSettingsStore: {} as never });
+
+    const replies: string[] = [];
+    await registry.tryHandle("link", {
+      userId: SLACK_USER,
+      channelId: "D903",
+      teamId: ID_TEAM,
+      isGroup: false,
+      platform: "slack",
+      args: "second-agent",
+      reply: async (text: string) => {
+        replies.push(text);
+      },
+    });
+    expect(replies.join("\n")).toContain("`second-agent`");
+    const rows = await getDb()`
+      SELECT agent_id FROM agent_channel_bindings WHERE channel_id = 'slack:D903' AND team_id = ${ID_TEAM}
+    `;
+    expect((rows[0] as { agent_id: string }).agent_id).toBe("second-agent");
+
+    // An unknown agent id surfaces the friendly error, no throw.
+    const replies2: string[] = [];
+    await registry.tryHandle("link", {
+      userId: SLACK_USER,
+      channelId: "D903",
+      teamId: ID_TEAM,
+      isGroup: false,
+      platform: "slack",
+      args: "agent-in-another-org",
+      reply: async (text: string) => {
+        replies2.push(text);
+      },
+    });
+    expect(replies2.join("\n")).toMatch(/no agent `agent-in-another-org`/i);
+
+    // A user who has never linked here just gets the "invalid code" message.
+    const replies3: string[] = [];
+    await registry.tryHandle("link", {
+      userId: "U_STRANGER",
+      channelId: "D999",
+      teamId: ID_TEAM,
+      isGroup: false,
+      platform: "slack",
+      args: "second-agent",
+      reply: async (text: string) => {
+        replies3.push(text);
+      },
+    });
+    expect(replies3.join("\n")).toMatch(/invalid or expired/i);
   });
 });

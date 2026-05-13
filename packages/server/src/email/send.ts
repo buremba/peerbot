@@ -19,17 +19,14 @@ export interface TransactionalEmailResult {
   id: string | null;
 }
 
-const DEV_FALLBACK_FROM: Record<EmailCategory, string> = {
-  auth: 'Lobu <onboarding@resend.dev>',
-  invite: 'Lobu <onboarding@resend.dev>',
-};
+const DEV_FALLBACK_FROM = 'Lobu <onboarding@resend.dev>';
 
 function resolveFrom(env: Env, category: EmailCategory, override?: string): string | null {
   if (override) return override;
   const configured = category === 'auth' ? env.EMAIL_FROM_AUTH : env.EMAIL_FROM_INVITES;
   if (configured) return configured;
   const runtimeNodeEnv = env.NODE_ENV || process.env.NODE_ENV || 'development';
-  if (runtimeNodeEnv !== 'production') return DEV_FALLBACK_FROM[category];
+  if (runtimeNodeEnv !== 'production') return DEV_FALLBACK_FROM;
   return null;
 }
 

@@ -1,4 +1,7 @@
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type {
   ProviderConfigEntry,
   ProviderRegistryEntry,
@@ -7,6 +10,37 @@ import type {
 import { createLogger } from "@lobu/core";
 
 const logger = createLogger("provider-registry-service");
+
+/**
+ * Resolve the path/URL of the bundled providers registry.
+ *
+ * Tries, first-that-exists:
+ *  1. `LOBU_PROVIDER_REGISTRY_PATH` — always wins. `http(s)://` URLs pass
+ *     through untouched (loadConfig fetches them).
+ *  2. `<cwd>/config/providers.json` — preserves the historical behavior of
+ *     invoking the gateway from the monorepo root.
+ *  3. Bundle-relative `providers.json` — sits next to `server.bundle.mjs` /
+ *     `start-local.bundle.mjs` (also copied into `packages/cli/dist/`).
+ *
+ * No fuzzy ancestor walk-up: a project subdir resolves to the bundled file,
+ * which is the correct default for both published CLIs and `lobu run`.
+ */
+export function resolveProviderRegistryPath(): string | undefined {
+  const explicit = process.env.LOBU_PROVIDER_REGISTRY_PATH?.trim();
+  if (explicit) return explicit;
+
+  const cwdPath = path.resolve(process.cwd(), "config/providers.json");
+  if (existsSync(cwdPath)) return cwdPath;
+
+  const bundleDir = path.dirname(fileURLToPath(import.meta.url));
+  // From the bundled server: dist/server.bundle.mjs → dist/providers.json.
+  // From source (tsc dist): dist/gateway/services → walk up to dist, then to
+  // the package root where the monorepo config dir is reachable via repo root.
+  const bundleSibling = path.join(bundleDir, "providers.json");
+  if (existsSync(bundleSibling)) return bundleSibling;
+
+  return undefined;
+}
 
 const ENV_SUBSTITUTION_BLOCKLIST = new Set([
   "ENCRYPTION_KEY",

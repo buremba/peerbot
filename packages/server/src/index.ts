@@ -71,6 +71,7 @@ import {
   getConfiguredPublicOrigin,
   getSubdomainZone,
 } from './utils/public-origin';
+import { getSchedulerHealth } from './scheduled/scheduler-health';
 import { getClientIP, getRateLimiter, RateLimitPresets } from './utils/rate-limiter';
 import { getRuntimeInfo } from './utils/runtime-info';
 import { getWorkspaceProvider } from './workspace';
@@ -402,7 +403,6 @@ app.get('/health', (c) => {
  */
 app.get('/health/scheduler', async (c) => {
   try {
-    const { getSchedulerHealth } = await import('./scheduled/scheduler-health');
     const health = await getSchedulerHealth(c.env);
     return c.json(health, health.healthy ? 200 : 503);
   } catch (error) {

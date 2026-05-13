@@ -1485,7 +1485,30 @@ export async function listDeviceWorkers(c: Context<{ Bindings: Env }>) {
           SELECT max(f.last_sync_at) FROM feeds f
           JOIN connections cn ON cn.id = f.connection_id
           WHERE cn.device_worker_id = dw.id AND f.deleted_at IS NULL
-        ) AS last_sync_at
+        ) AS last_sync_at,
+        (
+          SELECT coalesce(
+            json_agg(
+              json_build_object(
+                'connection_id', cn.id,
+                'connector_key', cn.connector_key,
+                'display_name', coalesce(cd.name, cn.connector_key),
+                'status', cn.status,
+                'organization_slug', cno.slug
+              )
+              ORDER BY cn.created_at
+            ),
+            '[]'::json
+          )
+          FROM connections cn
+          LEFT JOIN organization cno ON cno.id = cn.organization_id
+          LEFT JOIN LATERAL (
+            SELECT name FROM connector_definitions
+            WHERE key = cn.connector_key AND status = 'active' AND organization_id = cn.organization_id
+            ORDER BY updated_at DESC LIMIT 1
+          ) cd ON TRUE
+          WHERE cn.device_worker_id = dw.id AND cn.deleted_at IS NULL
+        ) AS connectors
       FROM device_workers dw
       LEFT JOIN organization o ON o.id = dw.organization_id
       WHERE dw.user_id = ${userId}
@@ -1505,6 +1528,13 @@ export async function listDeviceWorkers(c: Context<{ Bindings: Env }>) {
       connector_count: number;
       connector_error_count: number;
       last_sync_at: string | null;
+      connectors: Array<{
+        connection_id: number;
+        connector_key: string;
+        display_name: string;
+        status: string;
+        organization_slug: string | null;
+      }>;
     }>;
     return c.json({
       devices: rows.map((r) => ({
@@ -1522,6 +1552,7 @@ export async function listDeviceWorkers(c: Context<{ Bindings: Env }>) {
         connector_count: r.connector_count ?? 0,
         connector_error_count: r.connector_error_count ?? 0,
         last_sync_at: r.last_sync_at,
+        connectors: Array.isArray(r.connectors) ? r.connectors : [],
       })),
     });
   } catch (err: unknown) {

@@ -160,9 +160,20 @@ export function createSlackRoutes(manager: ChatInstanceManager): Hono {
 
   router.post("/slack/events", async (c) => {
     // Reject webhooks whose timestamp is outside Slack's 5-minute window.
-    // The Chat SDK adapter does its own signature check, but enforcing the
-    // freshness window at the edge defends against replay of an intercepted
-    // (still-signed) payload regardless of what the adapter does.
+    //
+    // HMAC signature verification proper happens downstream in the Chat SDK
+    // Slack adapter — `@chat-adapter/slack`'s `SlackAdapter.handleWebhook()`
+    // recomputes `v0={HMAC-SHA256(signingSecret, "v0:{ts}:{rawBody}")}` and
+    // `timingSafeEqual`s it against `x-slack-signature`, returning a 401 on
+    // mismatch (see `verifySignature`). Every path out of this route reaches
+    // that adapter: `manager.handleSlackAppWebhook` → `SlackConnection
+    // Coordinator.handleAppWebhook` → `forwardWebhook` → `ChatInstanceManager
+    // .handleWebhook` → `chat.webhooks.slack` (the adapter), or the OAuth
+    // fallback chat that calls `adapter.handleWebhook` directly.
+    //
+    // Enforcing the freshness window here as well is cheap defense-in-depth:
+    // it rejects replays of an intercepted (still-signed) payload before any
+    // body parsing, independent of the adapter.
     const tsHeader = c.req.header("x-slack-request-timestamp");
     if (tsHeader) {
       const ts = Number(tsHeader);

@@ -440,6 +440,19 @@ export class ChatInstanceManager {
       return new Response("Connection not found", { status: 404 });
     }
 
+    // Inbound webhook authentication is performed by the platform's Chat SDK
+    // adapter, which owns the per-platform secret and the documented scheme:
+    //   - slack    → HMAC-SHA256 over `v0:{ts}:{rawBody}` vs `x-slack-signature`
+    //                (`@chat-adapter/slack` `verifySignature`, 401 on mismatch)
+    //   - telegram → constant-time compare of `x-telegram-bot-api-secret-token`
+    //                to the configured `secretToken` (`@chat-adapter/telegram`)
+    //   - discord  → Ed25519 verify of `x-signature-ed25519` /
+    //                `x-signature-timestamp` with the app public key
+    //   - whatsapp → HMAC-SHA256 over the raw body vs `x-hub-signature-256`
+    //                using the Meta app secret
+    //   - teams    → Bot Framework bearer-JWT validation in `bridgeAdapter`
+    // Each adapter returns 401/403 on failure, so a forged payload never
+    // reaches the message pipeline below.
     const { platform } = instance.connection;
     const webhookHandler = instance.chat.webhooks?.[platform];
     if (!webhookHandler) {

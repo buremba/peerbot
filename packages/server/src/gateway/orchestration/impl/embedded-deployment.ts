@@ -174,6 +174,70 @@ function buildShellCommand(command: string, args: string[]): string {
   return [command, ...args].map(shellQuote).join(" ");
 }
 
+/**
+ * Nix attribute namespaces that hold per-language package sets. A skill may
+ * reference a leaf inside one of these (e.g. `python3Packages.requests`); both
+ * the namespace and the leaf are validated and the result is re-emitted as an
+ * explicit `pkgs.<...>` reference — the raw string is never handed to nix.
+ */
+const NIX_PACKAGE_NAMESPACES = new Set([
+  "python3Packages",
+  "python311Packages",
+  "python312Packages",
+  "nodePackages",
+  "perlPackages",
+  "rubyPackages",
+  "haskellPackages",
+  "rPackages",
+  "ocamlPackages",
+  "luaPackages",
+]);
+
+const NIX_LEAF_RE = /^[a-z0-9_][a-z0-9_-]*$/;
+const NIX_ATTR_LEAF_RE = /^[a-zA-Z0-9_][a-zA-Z0-9_-]*$/;
+
+/**
+ * Validate a skill-declared Nix package name and return a safe Nix attribute
+ * reference (`pkgs.<name>`). `nix-shell -p` evaluates each argument as a Nix
+ * *expression*, so a bare string like `pkgs.fetchurl; builtins.exec ...` or
+ * `import ./evil.nix` would run code at evaluation time. We never forward the
+ * raw string: it must be a strict leaf identifier (`^[a-z0-9_][a-z0-9_-]*$`) or a
+ * `<known-namespace>.<leaf>` attr path, and it is re-emitted as an explicit
+ * `pkgs.<...>` attribute reference.
+ */
+export function nixPackageAttrRef(pkg: string): string {
+  // Defence in depth: reject obvious shell/Nix metacharacters up front.
+  if (/[\s;&|`$(){}<>'"\\!*?#]/.test(pkg)) {
+    throw new OrchestratorError(
+      ErrorCode.DEPLOYMENT_CREATE_FAILED,
+      `Invalid nix package name: ${pkg}`
+    );
+  }
+  const dot = pkg.indexOf(".");
+  if (dot === -1) {
+    if (!NIX_LEAF_RE.test(pkg)) {
+      throw new OrchestratorError(
+        ErrorCode.DEPLOYMENT_CREATE_FAILED,
+        `Invalid nix package name: ${pkg}`
+      );
+    }
+    return `pkgs.${pkg}`;
+  }
+  const namespace = pkg.slice(0, dot);
+  const leaf = pkg.slice(dot + 1);
+  if (
+    !NIX_PACKAGE_NAMESPACES.has(namespace) ||
+    leaf.includes(".") ||
+    !NIX_ATTR_LEAF_RE.test(leaf)
+  ) {
+    throw new OrchestratorError(
+      ErrorCode.DEPLOYMENT_CREATE_FAILED,
+      `Invalid nix package name: ${pkg}`
+    );
+  }
+  return `pkgs.${namespace}.${leaf}`;
+}
+
 export class EmbeddedDeploymentManager extends BaseDeploymentManager {
   private workers: Map<string, EmbeddedWorkerEntry> = new Map();
 
@@ -294,23 +358,20 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
     let spawnArgs: string[];
 
     if (nixPackages.length > 0) {
-      // Each entry is passed to `nix-shell -p`, which evaluates it as a Nix
-      // expression — `pkgs.foo; rm -rf /` would execute as a shell side
-      // effect. Restrict to bare attribute names; operators that need a
-      // richer expression should pre-build the shell.
-      for (const pkg of nixPackages) {
-        if (!/^[A-Za-z0-9._-]+$/.test(pkg)) {
-          throw new OrchestratorError(
-            ErrorCode.DEPLOYMENT_CREATE_FAILED,
-            `Invalid nix package name: ${pkg}`
-          );
-        }
-      }
-      // Wrap in nix-shell so nix binaries are on PATH.
+      // `nix-shell -p <arg>` evaluates each <arg> as a Nix *expression*, so a
+      // bare package string like `pkgs.fetchurl; builtins.exec …` or
+      // `import ./evil.nix` would run code at evaluation time. Never forward
+      // the raw skill string: validate it to a strict leaf (or known
+      // `<namespace>.<leaf>`) identifier and re-emit an explicit `pkgs.<name>`
+      // attribute reference instead.
+      const packageRefs = nixPackages.map(nixPackageAttrRef);
+      // Wrap in nix-shell so nix binaries are on PATH. `-E` takes a single
+      // expression that resolves to the build inputs; `pkgs` is bound to the
+      // nixpkgs set via a `let` and every ref was validated above.
       command = "nix-shell";
       spawnArgs = [
-        "-p",
-        ...nixPackages,
+        "-E",
+        `let pkgs = import <nixpkgs> {}; in pkgs.mkShell { buildInputs = [ ${packageRefs.join(" ")} ]; }`,
         "--run",
         buildShellCommand(workerInvocation.command, workerInvocation.args),
       ];

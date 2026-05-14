@@ -8,6 +8,7 @@
 
 import { fork } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ExecutionHooks, FeedSyncResult, SyncContext, SyncExecutor } from './interface.js';
@@ -139,6 +140,21 @@ export class SubprocessExecutor implements SyncExecutor {
         // loader.mjs invokes module.register('./cjs/index.cjs') with a parent
         // URL that Bun's resolver treats as empty. Skip --import tsx on Bun.
         if (!isBun) execArgv.unshift('--import', 'tsx');
+      } else if (!existsSync(childRunnerPath)) {
+        // Bundled runtime: this module is bundled into another package's
+        // dist (e.g. packages/server/dist/server.bundle.mjs), so __dirname
+        // is the bundle's directory rather than the sibling executor dir.
+        // child-runner.js lives in connector-worker's own dist — resolve it
+        // through Node's module resolver instead of by path arithmetic.
+        try {
+          const requireFromHere = createRequire(import.meta.url);
+          childRunnerPath = requireFromHere.resolve(
+            '@lobu/connector-worker/executor/child-runner'
+          );
+        } catch {
+          // Fall through with the original join() path; fork() will surface
+          // the missing-file error on the next tick.
+        }
       }
 
       // Node subprocess execution is process isolation, not a security sandbox.

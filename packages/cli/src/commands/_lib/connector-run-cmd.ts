@@ -69,6 +69,12 @@ interface ResolvedAuthProfile {
     source_browser_root?: string | null;
     source_browser?: string | null;
     mode?: string | null;
+    /** Per-profile opt-in to CDP attach. When true and the user's Chrome
+     * is exposing remote debugging, the connector subprocess attaches
+     * via the live CDP socket; otherwise it sticks to mirror cookies.
+     * Default false — Lobu doesn't probe the user's browser process
+     * without explicit consent, even when DevToolsActivePort is there. */
+    allow_cdp_attach?: boolean;
   };
 }
 
@@ -355,14 +361,24 @@ export async function connectorRun(
       "@lobu/connector-sdk/browser-devtools-active-port"
     );
 
-    // Layer 1: DevToolsActivePort. Read it first so we know whether to
-    // even bother decrypting cookies (the CDP path doesn't need them).
-    const activePort = await readDevToolsActivePort(mirrorBrowserRoot);
-    if (activePort) {
-      printText(
-        `Detected Chrome CDP at ${activePort.wsUrl} (via DevToolsActivePort).`
-      );
-      sessionState.cdp_url = activePort.wsUrl;
+    // Layer 1: DevToolsActivePort — *only* when the user explicitly
+    // opted into CDP for this profile. Otherwise we never probe their
+    // Chrome's debug surface, even if M144 is enabled for other tools.
+    // Default-off matches the "no surprise dialogs" UX: the only way
+    // Lobu attaches to a live Chrome is if the user checked the box at
+    // profile-create time.
+    if (profile.auth_data?.allow_cdp_attach === true) {
+      const activePort = await readDevToolsActivePort(mirrorBrowserRoot);
+      if (activePort) {
+        printText(
+          `Detected Chrome CDP at ${activePort.wsUrl} (via DevToolsActivePort).`
+        );
+        sessionState.cdp_url = activePort.wsUrl;
+      } else {
+        printText(
+          "CDP attach allowed for this profile, but Chrome isn't exposing remote debugging — falling back to mirror cookies."
+        );
+      }
     }
 
     // Layer 2: cookies. Always acquire — even if CDP attach succeeds,

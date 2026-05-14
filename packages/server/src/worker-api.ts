@@ -1798,6 +1798,11 @@ export async function createMyDeviceAuthProfile(c: Context<{ Bindings: Env }>) {
       source_browser_root?: string;
       source_browser?: string;
       mode?: string;
+      /** Opt-in per profile. When true and DevToolsActivePort exists at
+       * sync time, the connector subprocess attaches via CDP to the
+       * user's running Chrome. Default false — Lobu only touches the
+       * user's browser process when explicitly granted. */
+      allow_cdp_attach?: boolean;
     };
   };
   try {
@@ -1897,6 +1902,11 @@ export async function createMyDeviceAuthProfile(c: Context<{ Bindings: Env }>) {
           source_profile_dir: mirrorSourceDir,
           source_browser_root: mirrorBrowserRoot,
           source_browser: mirrorSourceBrowser || 'chrome',
+          // Strict opt-in. Anything other than explicit `true` becomes
+          // `false` — including missing field on an existing row that the
+          // Mac app hasn't migrated yet. Keeps Lobu from touching the
+          // user's Chrome unless they actively checked the box.
+          allow_cdp_attach: body.auth_data?.allow_cdp_attach === true,
         }
       : {};
     // Mirror profiles are usable as soon as cookies live in the user's

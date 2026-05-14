@@ -354,6 +354,7 @@ final class WorkerClient {
         let source_profile_dir: String?
         let source_browser_root: String?
         let source_browser: String?
+        let allow_cdp_attach: Bool?
     }
 
     struct BrowserAuthProfile: Decodable, Identifiable, Equatable {
@@ -395,6 +396,7 @@ final class WorkerClient {
         let source_browser_root: String
         let source_browser: String
         let mode: String
+        let allow_cdp_attach: Bool
     }
 
     func createMyBrowserAuthProfile(

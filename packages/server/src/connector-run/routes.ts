@@ -66,6 +66,7 @@ export async function restGetAuthProfileForRun(c: Context<{ Bindings: Env }>) {
         source_browser_root: authData.source_browser_root ?? null,
         source_browser: authData.source_browser ?? null,
         mode: authData.mode ?? null,
+        allow_cdp_attach: authData.allow_cdp_attach === true,
       },
     },
   });

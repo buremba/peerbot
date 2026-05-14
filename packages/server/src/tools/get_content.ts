@@ -843,14 +843,20 @@ export async function getContent(
         queryParams.push(...effectiveConnectionIds);
       }
       if (args.feed_ids && args.feed_ids.length > 0) {
-        const placeholders = args.feed_ids.map(() => `$${paramIndex++}`).join(',');
-        conditions.push(`e.feed_id IN (${placeholders})`);
-        queryParams.push(...args.feed_ids);
+        const validFeedIds = args.feed_ids.filter((id) => Number.isInteger(id));
+        if (validFeedIds.length > 0) {
+          const placeholders = validFeedIds.map(() => `$${paramIndex++}`).join(',');
+          conditions.push(`e.feed_id IN (${placeholders})`);
+          queryParams.push(...validFeedIds);
+        }
       }
       if (args.run_ids && args.run_ids.length > 0) {
-        const placeholders = args.run_ids.map(() => `$${paramIndex++}`).join(',');
-        conditions.push(`e.run_id IN (${placeholders})`);
-        queryParams.push(...args.run_ids);
+        const validRunIds = args.run_ids.filter((id) => Number.isInteger(id));
+        if (validRunIds.length > 0) {
+          const placeholders = validRunIds.map(() => `$${paramIndex++}`).join(',');
+          conditions.push(`e.run_id IN (${placeholders})`);
+          queryParams.push(...validRunIds);
+        }
       }
       if (effectivePlatform) {
         conditions.push(`COALESCE(e.connector_key, c.connector_key) = $${paramIndex}`);

@@ -113,7 +113,8 @@ CREATE TABLE public.agent_channel_bindings (
     platform text NOT NULL,
     channel_id text NOT NULL,
     team_id text,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    organization_id text
 );
 
 --
@@ -131,6 +132,7 @@ CREATE TABLE public.agent_connections (
     error_message text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    organization_id text,
     CONSTRAINT agent_connections_status_check CHECK ((status = ANY (ARRAY['active'::text, 'stopped'::text, 'error'::text])))
 );
 
@@ -144,7 +146,8 @@ CREATE TABLE public.agent_grants (
     pattern text NOT NULL,
     expires_at timestamp with time zone,
     granted_at timestamp with time zone DEFAULT now() NOT NULL,
-    denied boolean DEFAULT false
+    denied boolean DEFAULT false,
+    organization_id text
 );
 
 --
@@ -187,7 +190,8 @@ CREATE TABLE public.agent_users (
     agent_id text NOT NULL,
     platform text NOT NULL,
     user_id text NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    organization_id text
 );
 
 --
@@ -1104,7 +1108,8 @@ CREATE TABLE public.grants (
     pattern text NOT NULL,
     expires_at timestamp with time zone,
     granted_at timestamp with time zone DEFAULT now() NOT NULL,
-    denied boolean DEFAULT false NOT NULL
+    denied boolean DEFAULT false NOT NULL,
+    organization_id text
 );
 
 --
@@ -1561,7 +1566,7 @@ CREATE TABLE public.scheduled_jobs (
 --
 
 CREATE TABLE public.schema_migrations (
-    version character varying(128) NOT NULL
+    version character varying NOT NULL
 );
 
 --
@@ -2237,6 +2242,13 @@ ALTER TABLE ONLY public.agent_users
     ADD CONSTRAINT agent_users_pkey PRIMARY KEY (agent_id, platform, user_id);
 
 --
+-- Name: agents agents_organization_id_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.agents
+    ADD CONSTRAINT agents_organization_id_id_key UNIQUE (organization_id, id);
+
+--
 -- Name: agents agents_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2778,10 +2790,22 @@ CREATE INDEX agent_channel_bindings_agent_id_idx ON public.agent_channel_binding
 CREATE UNIQUE INDEX agent_channel_bindings_no_team_unique ON public.agent_channel_bindings USING btree (platform, channel_id) WHERE (team_id IS NULL);
 
 --
+-- Name: agent_channel_bindings_org_agent_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX agent_channel_bindings_org_agent_idx ON public.agent_channel_bindings USING btree (organization_id, agent_id);
+
+--
 -- Name: agent_connections_agent_id_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX agent_connections_agent_id_idx ON public.agent_connections USING btree (agent_id);
+
+--
+-- Name: agent_connections_org_agent_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX agent_connections_org_agent_idx ON public.agent_connections USING btree (organization_id, agent_id);
 
 --
 -- Name: agent_connections_platform_idx; Type: INDEX; Schema: public; Owner: -
@@ -2794,6 +2818,12 @@ CREATE INDEX agent_connections_platform_idx ON public.agent_connections USING bt
 --
 
 CREATE INDEX agent_grants_agent_id_idx ON public.agent_grants USING btree (agent_id);
+
+--
+-- Name: agent_grants_org_agent_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX agent_grants_org_agent_idx ON public.agent_grants USING btree (organization_id, agent_id);
 
 --
 -- Name: agent_secrets_expires_at_idx; Type: INDEX; Schema: public; Owner: -
@@ -2812,6 +2842,12 @@ CREATE INDEX agent_secrets_name_prefix_idx ON public.agent_secrets USING btree (
 --
 
 CREATE INDEX agent_secrets_org_id_idx ON public.agent_secrets USING btree (organization_id);
+
+--
+-- Name: agent_users_org_agent_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX agent_users_org_agent_idx ON public.agent_users USING btree (organization_id, agent_id);
 
 --
 -- Name: agents_organization_id_idx; Type: INDEX; Schema: public; Owner: -
@@ -2902,6 +2938,12 @@ CREATE INDEX grants_agent_id_idx ON public.grants USING btree (agent_id);
 --
 
 CREATE INDEX grants_expires_at_idx ON public.grants USING btree (expires_at) WHERE (expires_at IS NOT NULL);
+
+--
+-- Name: grants_org_agent_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX grants_org_agent_idx ON public.grants USING btree (organization_id, agent_id);
 
 --
 -- Name: idx_cc_classifier_version_id; Type: INDEX; Schema: public; Owner: -
@@ -4952,4 +4994,5 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20260514000000'),
     ('20260514120000'),
     ('20260514130000'),
-    ('20260514160000');
+    ('20260514160000'),
+    ('20260515120000');

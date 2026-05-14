@@ -180,12 +180,15 @@ struct CreateBrowserProfileInlineForm: View {
     var onCreated: (WorkerClient.BrowserAuthProfile) -> Void
     var onCancel: () -> Void
 
-    enum Mode: String, CaseIterable, Hashable { case copy, cdp }
+    // Two-mode model. `.managed` creates a *blank* Chrome profile that Lobu
+    // owns end-to-end — the user logs into the sites they want scraped, no
+    // sync with their real Chrome (and no Google session collision). `.cdp`
+    // attaches to a Chrome the user runs themselves with
+    // --remote-debugging-port — gives connectors full access to the user's
+    // live session, at the cost of the user keeping that Chrome running.
+    enum Mode: String, CaseIterable, Hashable { case managed, cdp }
 
-    @State private var sourceProfiles: [InstalledBrowserProfile] = []
-    @State private var selectedSourceProfile: InstalledBrowserProfile?
-    @State private var displayName: String = ""
-    @State private var mode: Mode = .copy
+    @State private var mode: Mode = .managed
     @State private var cdpPortText: String = ""
     @State private var detectedCdpUrl: String?
     @State private var saving: Bool = false
@@ -194,20 +197,20 @@ struct CreateBrowserProfileInlineForm: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Picker("", selection: $mode) {
-                Text("Copy profile").tag(Mode.copy)
-                Text("Attach via CDP").tag(Mode.cdp)
+                Text("Create Lobu Chrome").tag(Mode.managed)
+                Text("Use my Chrome (CDP)").tag(Mode.cdp)
             }
-            .pickerStyle(.segmented).controlSize(.mini).font(.caption2)
-            HStack(spacing: 4) {
-                if mode == .copy {
-                    Picker("", selection: $selectedSourceProfile) {
-                        ForEach(sourceProfiles) { p in
-                            Text(p.displayName).tag(Optional(p))
-                        }
-                    }
-                    .labelsHidden().font(.caption2).controlSize(.mini)
-                    .disabled(sourceProfiles.isEmpty)
-                } else {
+            .pickerStyle(.radioGroup)
+            .horizontalRadioGroupLayout()
+            .labelsHidden()
+            .font(.caption2)
+            if mode == .managed {
+                Text("A fresh \(browser.kind.displayName) profile only Lobu uses. After create, log into the sites you want scraped — connectors reuse that session.")
+                    .font(.caption2).foregroundStyle(.secondary)
+            } else {
+                Text("Attach to a Chrome you're running with --remote-debugging-port. Quit Chrome, then run: open -na \"Google Chrome\" --args --remote-debugging-port=9222")
+                    .font(.caption2).foregroundStyle(.secondary)
+                HStack(spacing: 4) {
                     TextField("port (e.g. 9222)", text: $cdpPortText)
                         .textFieldStyle(.roundedBorder).controlSize(.mini).font(.caption2)
                         .frame(maxWidth: 100)
@@ -219,18 +222,16 @@ struct CreateBrowserProfileInlineForm: View {
                                     cdpPortText = String(port)
                                 }
                             } else {
-                                error = "No running Chrome with --remote-debugging-port detected. Falls back to Copy mode if you submit without a port."
+                                error = "No Chrome found listening on --remote-debugging-port. Quit Chrome and relaunch with the flag."
                             }
                         }
                     }
                     .buttonStyle(.plain).font(.caption2).foregroundStyle(.blue)
                 }
+                if let url = detectedCdpUrl {
+                    Text("Detected: \(url)").font(.caption2).foregroundStyle(.green)
+                }
             }
-            if mode == .cdp, let url = detectedCdpUrl {
-                Text("Detected: \(url)").font(.caption2).foregroundStyle(.green)
-            }
-            TextField("Name (e.g. Work Chrome)", text: $displayName)
-                .textFieldStyle(.roundedBorder).controlSize(.mini).font(.caption2)
             if let error {
                 Text(error).font(.caption2).foregroundStyle(.red)
             }
@@ -238,23 +239,18 @@ struct CreateBrowserProfileInlineForm: View {
                 Button("Cancel", action: onCancel)
                     .buttonStyle(.plain).font(.caption2).foregroundStyle(.secondary)
                 Spacer()
-                Button(mode == .copy ? "Create (copy)" : "Create (attach)") {
+                Button(mode == .managed ? "Create + open" : "Attach") {
                     Task { await create() }
                 }
                     .buttonStyle(.plain).font(.caption2).foregroundStyle(.blue)
                     .disabled(saving || !canSubmit)
             }
         }
-        .onAppear {
-            sourceProfiles = BrowserProfileManager.sourceProfiles(for: browser)
-            selectedSourceProfile = sourceProfiles.first
-        }
     }
 
     private var canSubmit: Bool {
-        if displayName.trimmingCharacters(in: .whitespaces).isEmpty { return false }
         switch mode {
-        case .copy: return selectedSourceProfile != nil
+        case .managed: return true
         case .cdp: return parsedCdpPort != nil
         }
     }
@@ -276,11 +272,15 @@ struct CreateBrowserProfileInlineForm: View {
         defer { saving = false }
         do {
             let workerId = LobuWorkerIdentity.current()
+            // Server requires display_name; auto-name based on mode + browser
+            // (the user can't tell two managed Lobu Chromes apart from a name
+            // anyway, and the create form no longer asks for one).
+            let displayName: String
             let profile: WorkerClient.BrowserAuthProfile
             switch mode {
-            case .copy:
-                guard let source = selectedSourceProfile else { return }
-                let target = try BrowserProfileManager.materializeManagedProfile(from: source, named: displayName)
+            case .managed:
+                displayName = "\(browser.kind.displayName) (Lobu)"
+                let target = try BrowserProfileManager.createBlankManagedProfile(browser: browser, named: displayName)
                 do {
                     profile = try await client.createMyBrowserAuthProfile(
                         workerId: workerId,
@@ -291,16 +291,29 @@ struct CreateBrowserProfileInlineForm: View {
                     )
                 } catch {
                     // Server refused: clean up the managed --user-data-dir we
-                    // just materialized so the user isn't stuck with an
-                    // orphan profile dir on disk after a failed save.
+                    // just created so the user isn't stuck with an orphan
+                    // profile dir on disk after a failed save.
                     BrowserProfileManager.removeManagedProfile(at: target)
                     throw error
                 }
+                // Open the blank Chrome immediately so the user can log into
+                // the sites they care about right away.
+                do {
+                    try await BrowserProfileManager.launchManaged(
+                        browser: browser,
+                        managedDir: target,
+                        openingURL: URL(string: "about:blank")!
+                    )
+                } catch {
+                    // Launch failure isn't fatal — the profile row exists.
+                    // The user can click "Open" later from the row.
+                }
             case .cdp:
                 guard let port = parsedCdpPort else {
-                    error = "Enter a CDP port (e.g. 9222), or use Copy mode."
+                    error = "Enter a port (e.g. 9222)."
                     return
                 }
+                displayName = "\(browser.kind.displayName) (CDP :\(port))"
                 let cdpUrl = "http://127.0.0.1:\(port)"
                 profile = try await client.createMyBrowserAuthProfile(
                     workerId: workerId,

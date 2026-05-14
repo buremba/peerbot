@@ -14,6 +14,10 @@
 import type { Browser, BrowserContext, Cookie, Page, Response } from 'playwright';
 import { resolveCdpUrl } from './browser/cdp.js';
 import { captureErrorArtifacts, launchBrowser } from './browser/launcher.js';
+import {
+  launchManagedChromeDarwin,
+  shouldUseManagedChromeShim,
+} from './browser/managed-chrome.js';
 import { sdkLogger } from './logger.js';
 
 export interface BrowserNetworkConfig {
@@ -65,6 +69,9 @@ interface NetworkBrowser {
   backend: 'cdp' | 'playwright';
   ownsBrowser: boolean;
   screenshotDir: string;
+  /** Extra cleanup for paths that pre-launch resources outside Playwright
+   * (the macOS managed-Chrome shim). Called in the outer `finally`. */
+  extraDispose?: () => Promise<void>;
 }
 
 async function acquireForNetworkSync(
@@ -74,7 +81,21 @@ async function acquireForNetworkSync(
   userDataDir: string | undefined
 ): Promise<NetworkBrowser> {
   // --- Persistent profile path: cookies live on disk ---
-  if (userDataDir) {
+  // On macOS we can't `launchPersistentContext` against a user_data_dir
+  // directly — macOS TCC gates keychain access by the process tree's root
+  // identity, and Playwright as a child of Node never gets Chrome's
+  // keychain key. Pre-launch Chrome top-level via `open -na`, then fall
+  // through to the CDP-attach branch below. Only safe against blank
+  // managed profiles (never signed into Google); see managed-chrome.ts.
+  let managedDispose: (() => Promise<void>) | undefined;
+  if (userDataDir && shouldUseManagedChromeShim() && !cdpUrl) {
+    const managed = await launchManagedChromeDarwin({ userDataDir });
+    cdpUrl = managed.cdpUrl;
+    managedDispose = managed.close;
+  }
+  // Non-macOS (or explicit cdpUrl): keep the original direct-launch path.
+  // Linux/Windows have no keychain gate; Chromium reads the dir fine.
+  if (userDataDir && !shouldUseManagedChromeShim() && !cdpUrl) {
     const playwrightModule = 'playwright';
     const { chromium } = await import(/* @vite-ignore */ playwrightModule);
     const isDebug = process.env.BROWSER_DEBUG === '1';
@@ -135,13 +156,15 @@ async function acquireForNetworkSync(
           context,
           page,
           backend: 'cdp',
-          ownsBrowser: false,
+          // When we pre-launched a managed Chrome on macOS, *we* own it.
+          // For a normal CDP-attach to the user's Chrome we don't.
+          ownsBrowser: managedDispose !== undefined,
           screenshotDir: '/tmp/feed-screenshots',
+          extraDispose: managedDispose,
         };
       } catch (innerErr) {
-        // Partial setup after connectOverCDP — close the CDP connection before
-        // falling through to the Playwright branch so it isn't left dangling.
         await browser.close().catch(() => {});
+        if (managedDispose) await managedDispose().catch(() => {});
         throw innerErr;
       }
     } catch (err: any) {
@@ -217,7 +240,8 @@ export async function browserNetworkSync<TItem>(opts: {
     opts.userDataDir
   );
 
-  const { context, page, backend, ownsBrowser, browser, screenshotDir } = acquired;
+  const { context, page, backend, ownsBrowser, browser, screenshotDir, extraDispose } =
+    acquired;
 
   try {
     // Accumulates promises from async response handlers between drain points
@@ -306,14 +330,18 @@ export async function browserNetworkSync<TItem>(opts: {
     }
     throw error;
   } finally {
-    // CDP: only close our tab, not the user's context or browser.
-    // Playwright: close context and browser (we own them).
+    // CDP-attach to user's Chrome: only close our tab.
+    // Playwright (or managed-Chrome CDP): close context + browser (we own them).
     if (ownsBrowser) {
       await context.close().catch(() => {});
       await browser.close().catch(() => {});
     } else {
       await page.close().catch(() => {});
     }
+    // Tear down the pre-launched managed Chrome on macOS. Playwright's
+    // browser.close() above only severed the CDP connection; the Chrome
+    // process we started via `open -na` keeps running until we kill it.
+    if (extraDispose) await extraDispose().catch(() => {});
   }
 }
 

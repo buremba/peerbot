@@ -122,17 +122,23 @@ enum BrowserProfileManager {
             .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
     }
 
-    /// Materialize a managed --user-data-dir by copying the user's source
-    /// profile. Returns the absolute path to give to the server (and to
-    /// Playwright's launchPersistentContext at run time).
-    static func materializeManagedProfile(from source: InstalledBrowserProfile, named name: String) throws -> URL {
-        let dirName = "\(source.browser.kind.rawValue)-\(slugify(name))-\(UUID().uuidString.prefix(8))"
+    /// Create a managed --user-data-dir as a *blank* Chrome profile dir.
+    /// Returns the absolute path to give to the server.
+    ///
+    /// Earlier versions copied the user's source profile (Default / Profile 1
+    /// / etc.) here so the managed Chrome inherited their cookies. That
+    /// turned out to be unsafe on macOS: Google's session-conflict
+    /// heuristic interprets "two Chromes signed into the same account" as
+    /// a hijack and force-logs out the user's real Chrome. Blank profiles
+    /// don't have that problem — the user logs into the specific sites
+    /// they want Lobu to scrape, no Google account on the Lobu side.
+    ///
+    /// The dir starts truly empty; Chrome populates it on first launch.
+    static func createBlankManagedProfile(browser: InstalledBrowser, named name: String) throws -> URL {
+        let dirName = "\(browser.kind.rawValue)-\(slugify(name))-\(UUID().uuidString.prefix(8))"
         let target = managedRoot.appendingPathComponent(dirName, isDirectory: true)
         try FileManager.default.createDirectory(at: managedRoot, withIntermediateDirectories: true)
-        // Copy the full source profile dir. For a fresh-blank profile, callers
-        // can skip this and just createDirectory(target) — but most users want
-        // to inherit their existing cookies.
-        try FileManager.default.copyItem(at: source.sourcePath, to: target)
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
         return target
     }
 

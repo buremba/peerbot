@@ -135,7 +135,7 @@ export default class GmailConnector extends ConnectorRuntime {
             },
             entityLinks: [
               {
-                entityType: '$member',
+                entityType: 'person',
                 autoCreate: true,
                 titlePath: 'metadata.from_name',
                 identities: [{ namespace: IDENTITY.EMAIL, eventPath: 'metadata.from_email' }],

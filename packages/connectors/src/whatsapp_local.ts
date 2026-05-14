@@ -90,7 +90,7 @@ export default class WhatsAppLocalConnector extends ConnectorRuntime {
             },
             entityLinks: [
               {
-                entityType: '$member',
+                entityType: 'person',
                 autoCreate: true,
                 titlePath: 'metadata.push_name',
                 identities: [

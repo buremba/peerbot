@@ -6,7 +6,7 @@
 # narrow so the agent's context stays funnel-only:
 #   - github       → lobu-ai/lobu  (stars, issues, PRs, comments)
 #   - x            → @lobu mentions + replies to your Lobu threads
-#   - hackernews   → search "lobu" / "openclaw"
+#   - hackernews   → search "lobu"
 #   - producthunt  → the launch / "lobu"
 #   - website (optional) → lobu.ai + competitor changelogs (onyx, dust, glean)
 

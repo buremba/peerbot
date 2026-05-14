@@ -105,6 +105,7 @@
         "ora": "^8.0.1",
         "pino": "^10.1.0",
         "playwright": "npm:patchright@^1.57.0",
+        "playwright-vanilla": "npm:playwright@^1.60.0",
         "postgres": "^3.4.7",
         "react": "^19.2.5",
         "resend": "^6.6.0",
@@ -137,9 +138,11 @@
       },
       "peerDependencies": {
         "playwright": "npm:patchright@^1.57.0",
+        "playwright-vanilla": "npm:playwright@^1.60.0",
       },
       "optionalPeers": [
         "playwright",
+        "playwright-vanilla",
       ],
     },
     "packages/connector-worker": {
@@ -155,6 +158,7 @@
         "@xenova/transformers": "^2.17.2",
         "jimp": "^1.6.0",
         "playwright": "npm:patchright@^1.57.0",
+        "playwright-vanilla": "npm:playwright@^1.60.0",
         "sharp": "^0.34.4",
       },
       "devDependencies": {
@@ -170,6 +174,7 @@
         "@lobu/connector-sdk": "workspace:*",
         "baileys": "7.0.0-rc.9",
         "playwright": "npm:patchright@^1.57.0",
+        "playwright-vanilla": "npm:playwright@^1.60.0",
         "turndown": "7.2.2",
       },
       "devDependencies": {
@@ -3182,6 +3187,10 @@
     "platform": ["platform@1.3.6", "", {}, "sha512-fnWVljUchTro6RiCFvCXBbNhJc2NijN7oIQxbwsyL0buWJPG85v81ehlHI9fXrJsMNgTofEoWIQeClKpgxFLrg=="],
 
     "playwright": ["patchright@1.59.4", "", { "dependencies": { "patchright-core": "v1.59.4" }, "optionalDependencies": { "fsevents": "2.3.2" }, "bin": { "patchright": "cli.js" } }, "sha512-RDZ40tBZHZtTAMoUoct/IpMA1wrozPZGU2RFk8NIDEndOEBbLxS0dH2fRLiwsNrgXgjZGA/3krrTlzK+uFGgoQ=="],
+
+    "playwright-core": ["playwright-core@1.60.0", "", { "bin": { "playwright-core": "cli.js" } }, "sha512-9bW6zvX/m0lEbgTKJ6YppOKx8H3VOPBMOCFh2irXFOT4BbHgrx5hPjwJYLT40Lu+4qtD36qKc/Hn56StUW57IA=="],
+
+    "playwright-vanilla": ["playwright@1.60.0", "", { "dependencies": { "playwright-core": "1.60.0" }, "optionalDependencies": { "fsevents": "2.3.2" }, "bin": { "playwright": "cli.js" } }, "sha512-hheHdokM8cdqCb0lcE3s+zT4t4W+vvjpGxsZlDnikarzx8tSzMebh3UiFtgqwFwnTnjYQcsyMF8ei2mCO/tpeA=="],
 
     "pngjs": ["pngjs@7.0.0", "", {}, "sha512-LKWqWJRhstyYo9pGvgor/ivk2w94eSjE3RGVuzLGlr3NmD8bf7RcYGze1mNdEHRP6TRP6rMuDHk5t44hnTRyow=="],
 

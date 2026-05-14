@@ -82,6 +82,7 @@
     "ora": "^8.0.1",
     "pino": "^10.1.0",
     "playwright": "npm:patchright@^1.57.0",
+    "playwright-vanilla": "npm:playwright@^1.60.0",
     "postgres": "^3.4.7",
     "react": "^19.2.5",
     "resend": "^6.6.0",

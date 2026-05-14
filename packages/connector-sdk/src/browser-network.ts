@@ -127,8 +127,16 @@ async function acquireForNetworkSync(
         preferRealBrowser: true,
       });
 
-      const playwrightModule = 'playwright';
-      const { chromium } = await import(/* @vite-ignore */ playwrightModule);
+      // Use vanilla Playwright for CDP attach. Patchright's FrameSession
+      // initialization walks the entire frame tree on connect and throws
+      // "Frame was detached" the moment it hits a stale frame in any of
+      // the user's other tabs — which is a near-certainty on a real
+      // Chrome (we hit it deterministically with 42 open tabs). Vanilla
+      // Playwright is tolerant. The stealth patches patchright provides
+      // are irrelevant here: this is the user's real browser, the
+      // strongest possible cloak.
+      const vanillaPwModule = 'playwright-vanilla';
+      const { chromium } = await import(/* @vite-ignore */ vanillaPwModule);
       const browser: Browser = await chromium.connectOverCDP(wsUrl);
 
       try {

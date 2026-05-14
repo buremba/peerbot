@@ -43,10 +43,14 @@
     "ky": "^1.14.0"
   },
   "peerDependencies": {
-    "playwright": "npm:patchright@^1.57.0"
+    "playwright": "npm:patchright@^1.57.0",
+    "playwright-vanilla": "npm:playwright@^1.60.0"
   },
   "peerDependenciesMeta": {
     "playwright": {
+      "optional": true
+    },
+    "playwright-vanilla": {
       "optional": true
     }
   },

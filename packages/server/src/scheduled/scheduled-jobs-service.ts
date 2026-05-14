@@ -16,7 +16,7 @@
  * stops duplicates. Self-healing.
  */
 
-import { getDb, pgTextArray } from '../db/client';
+import { getDb } from '../db/client';
 import { nextRunAt as nextCronTickAt } from '../utils/cron';
 import logger from '../utils/logger';
 import type { TaskScheduler } from './task-scheduler';

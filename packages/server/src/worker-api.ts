@@ -1777,15 +1777,16 @@ export async function listMyDeviceAuthProfiles(c: Context<{ Bindings: Env }>) {
 /**
  * POST /api/workers/me/auth-profiles
  *
- * Body: { worker_id, connector_key, display_name, browser_kind, user_data_dir }
+ * Body: { worker_id, display_name, browser_kind, user_data_dir | cdp_url }
  *
  * Create a browser-session auth profile bound to this device. Cookies stay on
- * the device — server's auth_data is empty.
+ * the device — server's auth_data is empty. A browser session is a
+ * device-scoped resource: any connection pinned to this device can use it,
+ * regardless of connector.
  */
 export async function createMyDeviceAuthProfile(c: Context<{ Bindings: Env }>) {
   let body: {
     worker_id?: string;
-    connector_key?: string;
     display_name?: string;
     browser_kind?: string;
     user_data_dir?: string;
@@ -1797,13 +1798,12 @@ export async function createMyDeviceAuthProfile(c: Context<{ Bindings: Env }>) {
     return c.json({ error: 'Invalid JSON body' }, 400);
   }
   const workerId = (body.worker_id ?? '').trim();
-  const connectorKey = (body.connector_key ?? '').trim();
   const displayName = (body.display_name ?? '').trim();
   const browserKind = (body.browser_kind ?? '').trim() as BrowserKind;
   const userDataDir = (body.user_data_dir ?? '').trim();
   const cdpUrl = (body.cdp_url ?? '').trim();
-  if (!workerId || !connectorKey || !displayName || !browserKind) {
-    return c.json({ error: 'worker_id, connector_key, display_name, browser_kind are required' }, 400);
+  if (!workerId || !displayName || !browserKind) {
+    return c.json({ error: 'worker_id, display_name, browser_kind are required' }, 400);
   }
   if (!BROWSER_KIND_SET.has(browserKind)) {
     return c.json({ error: `browser_kind must be one of: ${[...BROWSER_KIND_SET].join(', ')}` }, 400);
@@ -1821,7 +1821,7 @@ export async function createMyDeviceAuthProfile(c: Context<{ Bindings: Env }>) {
   try {
     const profile = await createAuthProfile({
       organizationId: device!.organization_id,
-      connectorKey,
+      connectorKey: null,
       displayName,
       profileKind: 'browser_session',
       status: 'pending_auth',
@@ -2084,45 +2084,3 @@ export async function deleteMyDeviceFeed(c: Context<{ Bindings: Env }>) {
   }
 }
 
-/**
- * GET /api/workers/me/browser-connectors?worker_id=...
- *
- * Returns connectors whose auth_schema declares a `browser` method, scoped to
- * the device's home organization. The Mac app uses this to populate the
- * "Connector" picker when creating a browser auth profile — keeps the picker
- * in sync with whatever connectors are installed in the user's org.
- */
-export async function listBrowserConnectors(c: Context<{ Bindings: Env }>) {
-  const workerId = (c.req.query('worker_id') ?? '').trim();
-  if (!workerId) {
-    return c.json({ error: 'worker_id is required' }, 400);
-  }
-  const { device, error } = await resolveDeviceWorkerForRequest(c, workerId);
-  if (error || !device) return error ?? c.json({ connectors: [] });
-  try {
-    const sql = getDb();
-    const rows = (await sql`
-      SELECT DISTINCT ON (key) key, name, favicon_domain
-      FROM connector_definitions
-      WHERE organization_id = ${device.organization_id}
-        AND status = 'active'
-        AND auth_schema IS NOT NULL
-        AND jsonb_typeof(auth_schema::jsonb -> 'methods') = 'array'
-        AND EXISTS (
-          SELECT 1 FROM jsonb_array_elements(auth_schema::jsonb -> 'methods') m
-          WHERE m->>'type' = 'browser'
-        )
-      ORDER BY key, updated_at DESC
-    `) as unknown as Array<{ key: string; name: string; favicon_domain: string | null }>;
-    return c.json({
-      connectors: rows.map((r) => ({
-        key: r.key,
-        name: r.name,
-        favicon_domain: r.favicon_domain,
-      })),
-    });
-  } catch (err) {
-    logger.error({ error: errorMessage(err) }, '[listBrowserConnectors] Error');
-    return c.json({ error: errorMessage(err) }, 500);
-  }
-}

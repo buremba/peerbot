@@ -16,7 +16,7 @@ export interface AuthProfileRow {
   organization_id: string;
   slug: string;
   display_name: string;
-  connector_key: string;
+  connector_key: string | null;
   profile_kind: AuthProfileKind;
   status: AuthProfileStatus;
   auth_data: Record<string, unknown>;
@@ -253,7 +253,9 @@ export async function listAuthProfiles(params: {
   const sql = getDb();
 
   // oauth_app profiles are provider-scoped — include them when filtering by connector_key
-  // if the connector has an OAuth provider
+  // if the connector has an OAuth provider.
+  // browser_session profiles are device-scoped resources; their connector_key is
+  // optional, so they always show up regardless of the connector filter.
   const rows = await sql`
     SELECT ${sql.unsafe(AUTH_PROFILE_COLUMNS)}
     FROM auth_profiles
@@ -263,9 +265,10 @@ export async function listAuthProfiles(params: {
       AND (
         ${params.connectorKey ?? null}::text IS NULL
         OR connector_key = ${params.connectorKey ?? null}
+        OR profile_kind = 'browser_session'
         OR (profile_kind = 'oauth_app' AND ${params.provider ?? null}::text IS NOT NULL AND lower(provider) = lower(${params.provider ?? null}))
       )
-    ORDER BY connector_key ASC, profile_kind ASC, display_name ASC, slug ASC
+    ORDER BY connector_key ASC NULLS LAST, profile_kind ASC, display_name ASC, slug ASC
   `;
 
   return rows as unknown as AuthProfileRow[];
@@ -307,7 +310,7 @@ export async function getAuthProfileById(
 
 export async function createAuthProfile(params: {
   organizationId: string;
-  connectorKey: string;
+  connectorKey: string | null;
   displayName: string;
   slug?: string | null;
   profileKind: AuthProfileKind;
@@ -347,7 +350,7 @@ export async function createAuthProfile(params: {
       ${params.organizationId},
       ${slug},
       ${params.displayName},
-      ${params.connectorKey},
+      ${params.connectorKey ?? null},
       ${params.profileKind},
       ${params.status ?? 'active'},
       ${sql.json(normalizeAuthData(params.profileKind, params.authData ?? {}))},
@@ -430,6 +433,7 @@ export async function getPrimaryAuthProfileForKind(params: {
   connectorKey: string;
   profileKind: AuthProfileKind;
   provider?: string | null;
+  deviceWorkerId?: string | null;
 }): Promise<AuthProfileRow | null> {
   const sql = getDb();
 
@@ -445,6 +449,36 @@ export async function getPrimaryAuthProfileForKind(params: {
           OR lower(provider) = lower(${params.provider})
         )
       ORDER BY
+        CASE WHEN connector_key = ${params.connectorKey} THEN 0 ELSE 1 END,
+        updated_at DESC,
+        id DESC
+      LIMIT 1
+    `;
+
+    return rows.length > 0 ? (rows[0] as AuthProfileRow) : null;
+  }
+
+  // browser_session is device-scoped, not connector-scoped: any active profile
+  // on the connection's device can serve any connector run pinned to that
+  // device. One CDP attach holds cookies for every site in that Chrome; a
+  // managed user-data-dir can be authenticated against multiple sites by the
+  // user. Connector_key on the profile, when set, is just a legacy hint —
+  // never a gate.
+  if (params.profileKind === 'browser_session') {
+    const deviceWorkerId = params.deviceWorkerId ?? null;
+    const rows = await sql`
+      SELECT ${sql.unsafe(AUTH_PROFILE_COLUMNS)}
+      FROM auth_profiles
+      WHERE organization_id = ${params.organizationId}
+        AND profile_kind = 'browser_session'
+        AND status = 'active'
+        AND (
+          ${deviceWorkerId}::uuid IS NULL
+          OR device_worker_id = ${deviceWorkerId}::uuid
+          OR device_worker_id IS NULL
+        )
+      ORDER BY
+        CASE WHEN device_worker_id = ${deviceWorkerId}::uuid THEN 0 ELSE 1 END,
         CASE WHEN connector_key = ${params.connectorKey} THEN 0 ELSE 1 END,
         updated_at DESC,
         id DESC
@@ -478,10 +512,12 @@ export async function resolveAuthProfileSlugToId(params: {
   const profile = await getAuthProfileBySlug(params.organizationId, params.slug.trim());
   if (!profile) return null;
   if (params.expectedKind && profile.profile_kind !== params.expectedKind) return null;
-  // oauth_app profiles are provider-scoped, so skip connector_key check for them
+  // oauth_app profiles are provider-scoped, and browser_session profiles are
+  // device-scoped; both opt out of the per-connector slug check.
   if (
     params.connectorKey &&
     profile.profile_kind !== 'oauth_app' &&
+    profile.profile_kind !== 'browser_session' &&
     profile.connector_key !== params.connectorKey
   )
     return null;

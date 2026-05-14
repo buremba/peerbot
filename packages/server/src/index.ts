@@ -535,7 +535,6 @@ import {
   heartbeat,
   deleteDeviceWorker,
   listDeviceWorkers,
-  listBrowserConnectors,
   listMyDeviceAuthProfiles,
   listMyDeviceFeeds,
   updateDeviceWorkerOrg,
@@ -591,12 +590,10 @@ app.use('/api/workers/*', async (c, next) => {
       const requestPath = new URL(c.req.url).pathname;
       const isAuthProfileSubpath = requestPath.startsWith('/api/workers/me/auth-profiles');
       const isFeedSubpath = requestPath.startsWith('/api/workers/me/feeds');
-      const isBrowserConnectorsPath = requestPath === '/api/workers/me/browser-connectors';
       if (
         !allowedPathsForUserWorker.has(requestPath) &&
         !isAuthProfileSubpath &&
-        !isFeedSubpath &&
-        !isBrowserConnectorsPath
+        !isFeedSubpath
       ) {
         return c.json({ error: 'Endpoint not available to user-scoped workers' }, 403);
       }
@@ -654,7 +651,6 @@ app.delete('/api/workers/me/auth-profiles/:id', deleteMyDeviceAuthProfile);
 app.get('/api/workers/me/feeds', listMyDeviceFeeds);
 app.post('/api/workers/me/feeds', createMyDeviceFeed);
 app.delete('/api/workers/me/feeds/:id', deleteMyDeviceFeed);
-app.get('/api/workers/me/browser-connectors', listBrowserConnectors);
 // Device worker registry. Authenticated (mcpAuth); returns the calling user's
 // devices. Lives under /api/me/ so the workspace resolver treats it as
 // user-scoped (no org slug in the URL).

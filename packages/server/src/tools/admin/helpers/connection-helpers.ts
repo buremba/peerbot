@@ -416,6 +416,7 @@ export async function resolveConnectionAuthSelection(params: {
     | undefined;
   authProfileSlug?: string | null;
   appAuthProfileSlug?: string | null;
+  deviceWorkerId?: string | null;
 }): Promise<AuthSelectionResult> {
   const { organizationId, connectorKey } = params;
   const oauthMethod = getOAuthMethods(params.authSchema)[0] ?? null;
@@ -439,6 +440,7 @@ export async function resolveConnectionAuthSelection(params: {
           organizationId,
           connectorKey,
           profileKind: 'browser_session',
+          deviceWorkerId: params.deviceWorkerId ?? null,
         })
       : null) ??
     (preferredMethodType === 'oauth' && oauthMethod

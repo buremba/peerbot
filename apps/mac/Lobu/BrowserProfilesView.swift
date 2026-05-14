@@ -116,13 +116,13 @@ struct SingleBrowserRow: View {
         HStack(alignment: .center, spacing: 6) {
             VStack(alignment: .leading, spacing: 0) {
                 Text(profile.display_name).font(.caption)
-                Text("\(profile.connector_key) · \(profile.status)")
+                Text(profile.status)
                     .font(.caption2).foregroundStyle(.secondary)
             }
             Spacer()
             if profile.status == "pending_auth", let dir = profile.user_data_dir {
-                Button("Log in") {
-                    openManagedChrome(dirPath: dir, connectorKey: profile.connector_key)
+                Button("Open") {
+                    openManagedChrome(dirPath: dir)
                 }
                 .buttonStyle(.plain).font(.caption2).foregroundStyle(.orange)
             }
@@ -143,9 +143,9 @@ struct SingleBrowserRow: View {
         .padding(.vertical, 1)
     }
 
-    private func openManagedChrome(dirPath: String, connectorKey: String) {
+    private func openManagedChrome(dirPath: String) {
         let dir = URL(fileURLWithPath: dirPath)
-        let landing = landingURL(for: connectorKey)
+        let landing = URL(string: "about:blank")!
         Task { @MainActor in
             do {
                 try await BrowserProfileManager.launchManaged(
@@ -155,19 +155,6 @@ struct SingleBrowserRow: View {
                 hub.loadError = "Could not launch \(browser.kind.displayName): \(error.localizedDescription)"
             }
         }
-    }
-
-    private func landingURL(for connectorKey: String) -> URL {
-        let map: [String: String] = [
-            "capterra": "https://www.capterra.com/",
-            "g2": "https://www.g2.com/",
-            "glassdoor": "https://www.glassdoor.com/",
-            "trustpilot": "https://www.trustpilot.com/",
-            "linkedin": "https://www.linkedin.com/login",
-            "x": "https://x.com/login",
-            "revolut": "https://app.revolut.com/",
-        ]
-        return URL(string: map[connectorKey] ?? "about:blank")!
     }
 
     @MainActor
@@ -197,8 +184,6 @@ struct CreateBrowserProfileInlineForm: View {
 
     @State private var sourceProfiles: [InstalledBrowserProfile] = []
     @State private var selectedSourceProfile: InstalledBrowserProfile?
-    @State private var connectorOptions: [WorkerClient.BrowserConnectorOption] = []
-    @State private var connectorKey: String = ""
     @State private var displayName: String = ""
     @State private var mode: Mode = .copy
     @State private var cdpPortText: String = ""
@@ -240,17 +225,6 @@ struct CreateBrowserProfileInlineForm: View {
                     }
                     .buttonStyle(.plain).font(.caption2).foregroundStyle(.blue)
                 }
-                Picker("", selection: $connectorKey) {
-                    if connectorOptions.isEmpty {
-                        Text("Loading…").tag("")
-                    } else {
-                        ForEach(connectorOptions) { c in
-                            Text(c.name).tag(c.key)
-                        }
-                    }
-                }
-                .labelsHidden().font(.caption2).controlSize(.mini)
-                .disabled(connectorOptions.isEmpty)
             }
             if mode == .cdp, let url = detectedCdpUrl {
                 Text("Detected: \(url)").font(.caption2).foregroundStyle(.green)
@@ -274,28 +248,11 @@ struct CreateBrowserProfileInlineForm: View {
         .onAppear {
             sourceProfiles = BrowserProfileManager.sourceProfiles(for: browser)
             selectedSourceProfile = sourceProfiles.first
-            Task { await loadConnectorOptions() }
-        }
-    }
-
-    @MainActor
-    private func loadConnectorOptions() async {
-        guard let client = state.workerClient() else { return }
-        do {
-            let workerId = LobuWorkerIdentity.current()
-            let options = try await client.listBrowserConnectors(workerId: workerId)
-            connectorOptions = options
-            if connectorKey.isEmpty, let first = options.first?.key {
-                connectorKey = first
-            }
-        } catch {
-            self.error = "Could not load connectors: \(error.localizedDescription)"
         }
     }
 
     private var canSubmit: Bool {
         if displayName.trimmingCharacters(in: .whitespaces).isEmpty { return false }
-        if connectorKey.isEmpty { return false }
         switch mode {
         case .copy: return selectedSourceProfile != nil
         case .cdp: return parsedCdpPort != nil
@@ -327,7 +284,6 @@ struct CreateBrowserProfileInlineForm: View {
                 do {
                     profile = try await client.createMyBrowserAuthProfile(
                         workerId: workerId,
-                        connectorKey: connectorKey,
                         displayName: displayName,
                         browserKind: browser.kind.rawValue,
                         userDataDir: target.path,
@@ -348,7 +304,6 @@ struct CreateBrowserProfileInlineForm: View {
                 let cdpUrl = "http://127.0.0.1:\(port)"
                 profile = try await client.createMyBrowserAuthProfile(
                     workerId: workerId,
-                    connectorKey: connectorKey,
                     displayName: displayName,
                     browserKind: browser.kind.rawValue,
                     userDataDir: nil,

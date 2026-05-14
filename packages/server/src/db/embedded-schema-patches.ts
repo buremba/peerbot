@@ -491,4 +491,31 @@ export const EMBEDDED_SCHEMA_PATCHES: EmbeddedSchemaPatch[] = [
       `);
     },
   },
+  {
+    // Mirrors db/migrations/20260514120000_auth_profiles_connector_key_nullable.sql.
+    // Drops NOT NULL on auth_profiles.connector_key so browser_session profiles
+    // (a device-bound resource) no longer require a per-connector binding.
+    id: 'auth-profiles-connector-key-nullable',
+    apply: async (sql) => {
+      await sql.unsafe(`
+        ALTER TABLE public.auth_profiles
+        ALTER COLUMN connector_key DROP NOT NULL
+      `);
+      await sql.unsafe(`
+        DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint WHERE conname = 'auth_profiles_connector_key_required'
+          ) THEN
+            ALTER TABLE public.auth_profiles
+              ADD CONSTRAINT auth_profiles_connector_key_required
+              CHECK (
+                connector_key IS NOT NULL
+                OR profile_kind = 'browser_session'
+              );
+          END IF;
+        END $$;
+      `);
+    },
+  },
 ];

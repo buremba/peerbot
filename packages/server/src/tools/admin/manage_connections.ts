@@ -881,6 +881,7 @@ async function handleCreate(
         authSchema: connector.auth_schema,
         authProfileSlug: args.auth_profile_slug,
         appAuthProfileSlug: args.app_auth_profile_slug,
+        deviceWorkerId: deviceBinding.deviceWorkerId,
       });
 
   if (authSelection) {
@@ -1233,6 +1234,7 @@ async function handleConnect(
     authSchema: connector.auth_schema,
     authProfileSlug: args.auth_profile_slug,
     appAuthProfileSlug: args.app_auth_profile_slug,
+    deviceWorkerId: deviceBinding.deviceWorkerId,
   });
 
   const hasNoAuth =
@@ -1585,6 +1587,7 @@ async function handleUpdate(
     authSchema: existing.auth_schema,
     authProfileSlug: args.auth_profile_slug,
     appAuthProfileSlug: args.app_auth_profile_slug,
+    deviceWorkerId: nextDeviceWorkerId,
   });
 
   if (args.auth_profile_slug && !authSelection.authProfile) {

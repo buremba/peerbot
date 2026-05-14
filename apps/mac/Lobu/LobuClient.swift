@@ -353,7 +353,7 @@ final class WorkerClient {
         let id: Int
         let slug: String
         let display_name: String
-        let connector_key: String
+        let connector_key: String?
         let profile_kind: String
         let status: String
         let browser_kind: String?
@@ -384,7 +384,6 @@ final class WorkerClient {
 
     func createMyBrowserAuthProfile(
         workerId: String,
-        connectorKey: String,
         displayName: String,
         browserKind: String,
         userDataDir: String?,
@@ -392,7 +391,6 @@ final class WorkerClient {
     ) async throws -> BrowserAuthProfile {
         struct Body: Encodable {
             let worker_id: String
-            let connector_key: String
             let display_name: String
             let browser_kind: String
             let user_data_dir: String?
@@ -402,7 +400,6 @@ final class WorkerClient {
             "/api/workers/me/auth-profiles",
             body: Body(
                 worker_id: workerId,
-                connector_key: connectorKey,
                 display_name: displayName,
                 browser_kind: browserKind,
                 user_data_dir: userDataDir,
@@ -485,27 +482,6 @@ final class WorkerClient {
             )
         )
         return try decoder.decode(Envelope.self, from: data).feed
-    }
-
-    struct BrowserConnectorOption: Decodable, Identifiable, Equatable, Hashable {
-        let key: String
-        let name: String
-        let favicon_domain: String?
-        var id: String { key }
-    }
-
-    private struct BrowserConnectorsResponse: Decodable {
-        let connectors: [BrowserConnectorOption]
-    }
-
-    func listBrowserConnectors(workerId: String) async throws -> [BrowserConnectorOption] {
-        guard var components = URLComponents(string: "\(baseURL.trimmedTrailingSlash())/api/workers/me/browser-connectors") else {
-            throw URLError(.badURL)
-        }
-        components.queryItems = [URLQueryItem(name: "worker_id", value: workerId)]
-        guard let url = components.url else { throw URLError(.badURL) }
-        let data = try await getRaw(url: url, path: "/api/workers/me/browser-connectors")
-        return try decoder.decode(BrowserConnectorsResponse.self, from: data).connectors
     }
 
     func deleteMyDeviceFeed(workerId: String, connectorKey: String, feedId: Int) async throws {

@@ -73,7 +73,12 @@ const TestAuthProfileAction = Type.Object({
 
 const CreateAuthProfileAction = Type.Object({
   action: Type.Literal('create_auth_profile'),
-  connector_key: Type.String({ description: 'Connector key (e.g. x, google.gmail)' }),
+  connector_key: Type.Optional(
+    Type.String({
+      description:
+        'Connector key (e.g. x, google.gmail). Required for env/oauth profiles; optional for browser_session (device-scoped resource).',
+    })
+  ),
   profile_kind: Type.Union([
     Type.Literal('env'),
     Type.Literal('oauth_app'),
@@ -401,19 +406,35 @@ async function handleCreateAuthProfile(
   args: Extract<AuthProfilesArgs, { action: 'create_auth_profile' }>,
   ctx: ToolContext
 ): Promise<ManageAuthProfilesResult> {
-  const connector = await getScopedConnectorDefinition({
-    organizationId: ctx.organizationId,
-    connectorKey: args.connector_key,
-  });
+  // browser_session profiles are device-scoped; connector_key is optional
+  // (only used as a hint to look up a default cdp_url). Other kinds remain
+  // per-connector and require it.
+  const connector = args.connector_key
+    ? await getScopedConnectorDefinition({
+        organizationId: ctx.organizationId,
+        connectorKey: args.connector_key,
+      })
+    : null;
 
-  if (!connector) {
+  if (args.connector_key && !connector) {
     return { error: `Connector '${args.connector_key}' not found or not active` };
   }
+
+  // Handle browser_session up front — it's the only kind that may skip
+  // connector_key entirely. Everything below assumes a connector context.
+  if (args.profile_kind === 'browser_session') {
+    return handleCreateBrowserSessionProfile(args, ctx, connector);
+  }
+
+  if (!args.connector_key || !connector) {
+    return { error: `connector_key is required for ${args.profile_kind} auth profiles` };
+  }
+  const connectorKey: string = args.connector_key;
 
   if (args.profile_kind === 'oauth_account') {
     const oauthMethod = getOAuthMethods(connector.auth_schema)[0];
     if (!oauthMethod) {
-      return { error: `Connector '${args.connector_key}' does not support OAuth account profiles` };
+      return { error: `Connector '${connectorKey}' does not support OAuth account profiles` };
     }
 
     const displayName =
@@ -426,7 +447,7 @@ async function handleCreateAuthProfile(
       ? await getAuthProfileBySlug(ctx.organizationId, normalizeAuthProfileSlug(args.slug, displayName))
       : null;
     if (existing) {
-      if (existing.profile_kind !== 'oauth_account' || existing.connector_key !== args.connector_key) {
+      if (existing.profile_kind !== 'oauth_account' || existing.connector_key !== connectorKey) {
         return {
           error: `Auth profile '${existing.slug}' already exists with a different kind/connector (${existing.profile_kind} / ${existing.connector_key}) — use a new slug`,
         };
@@ -437,7 +458,7 @@ async function handleCreateAuthProfile(
       const requestedScopes = resolveRequestedOAuthScopes(oauthMethod, args.requested_scopes);
       const connectToken = await createConnectToken({
         organizationId: ctx.organizationId,
-        connectorKey: args.connector_key,
+        connectorKey,
         authType: 'oauth',
         authProfileId: existing.id,
         authConfig: {
@@ -459,7 +480,7 @@ async function handleCreateAuthProfile(
     // callback flips it to `active` once the user finishes authorization.
     const authProfile = await createAuthProfile({
       organizationId: ctx.organizationId,
-      connectorKey: args.connector_key,
+      connectorKey,
       displayName,
       slug: args.slug,
       profileKind: 'oauth_account',
@@ -474,7 +495,7 @@ async function handleCreateAuthProfile(
     try {
       connectToken = await createConnectToken({
         organizationId: ctx.organizationId,
-        connectorKey: args.connector_key,
+        connectorKey,
         authType: 'oauth',
         authProfileId: authProfile.id,
         authConfig: {
@@ -497,41 +518,6 @@ async function handleCreateAuthProfile(
       connect_url: `${getConnectBaseUrl(ctx)}/connect/${connectToken.token}/oauth/start`,
       connect_token: connectToken.token,
     };
-  }
-
-  if (args.profile_kind === 'browser_session') {
-    const browserMethod = getBrowserMethods(connector.auth_schema)[0];
-    if (!browserMethod) {
-      return { error: `Connector '${args.connector_key}' does not support browser auth profiles` };
-    }
-
-    const authData =
-      browserMethod.capture === 'cdp'
-        ? {
-            cdp_url:
-              typeof args.auth_data?.cdp_url === 'string' &&
-              args.auth_data.cdp_url.trim().length > 0
-                ? args.auth_data.cdp_url.trim()
-                : browserMethod.defaultCdpUrl || 'auto',
-          }
-        : ((args.auth_data as Record<string, unknown> | undefined) ?? {});
-    const browserSessionReady =
-      browserMethod.capture === 'cdp'
-        ? (await getBrowserSessionReadiness(authData, args.connector_key)).usable
-        : false;
-
-    const authProfile = await createAuthProfile({
-      organizationId: ctx.organizationId,
-      connectorKey: args.connector_key,
-      displayName: args.display_name,
-      slug: args.slug,
-      profileKind: 'browser_session',
-      authData,
-      status: browserSessionReady ? 'active' : 'pending_auth',
-      createdBy: ctx.userId ?? 'api',
-    });
-
-    return { action: 'create_auth_profile', auth_profile: serializeAuthProfile(authProfile) };
   }
 
   const credentials = normalizeAuthValues(args.credentials ?? {});
@@ -562,12 +548,54 @@ async function handleCreateAuthProfile(
 
   const authProfile = await createAuthProfile({
     organizationId: ctx.organizationId,
-    connectorKey: args.connector_key,
+    connectorKey,
     displayName: args.display_name,
     slug: args.slug,
     profileKind: args.profile_kind,
     authData: credentials,
     provider,
+    createdBy: ctx.userId ?? 'api',
+  });
+
+  return { action: 'create_auth_profile', auth_profile: serializeAuthProfile(authProfile) };
+}
+
+async function handleCreateBrowserSessionProfile(
+  args: Extract<AuthProfilesArgs, { action: 'create_auth_profile' }>,
+  ctx: ToolContext,
+  connector: Awaited<ReturnType<typeof getScopedConnectorDefinition>>
+): Promise<ManageAuthProfilesResult> {
+  // browser_session profiles are device-scoped resources — connector_key, if
+  // provided, is just a hint for picking a default cdp_url from a known
+  // connector's browser method. The stored profile is not connector-bound.
+  const browserMethod = connector
+    ? (getBrowserMethods(connector.auth_schema)[0] ?? null)
+    : null;
+  const captureMode = browserMethod?.capture ?? 'cdp';
+
+  const authData =
+    captureMode === 'cdp'
+      ? {
+          cdp_url:
+            typeof args.auth_data?.cdp_url === 'string' &&
+            args.auth_data.cdp_url.trim().length > 0
+              ? args.auth_data.cdp_url.trim()
+              : browserMethod?.defaultCdpUrl || 'auto',
+        }
+      : ((args.auth_data as Record<string, unknown> | undefined) ?? {});
+  const browserSessionReady =
+    captureMode === 'cdp'
+      ? (await getBrowserSessionReadiness(authData, null)).usable
+      : false;
+
+  const authProfile = await createAuthProfile({
+    organizationId: ctx.organizationId,
+    connectorKey: null,
+    displayName: args.display_name,
+    slug: args.slug,
+    profileKind: 'browser_session',
+    authData,
+    status: browserSessionReady ? 'active' : 'pending_auth',
     createdBy: ctx.userId ?? 'api',
   });
 

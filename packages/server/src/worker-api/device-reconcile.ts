@@ -92,7 +92,7 @@ async function ensureDeviceConnectorWired(
       LEFT JOIN connections c
         ON c.organization_id = cd.organization_id
        AND c.connector_key = cd.key
-       AND c.created_by = ${userId}
+       AND c.auth_profile_id IS NULL
        AND c.deleted_at IS NULL
       LEFT JOIN feeds f
         ON f.connection_id = c.id
@@ -162,16 +162,30 @@ async function ensureDeviceConnectorWired(
         },
       });
 
-      // 3. Reuse or create the connection (no-auth, active, private).
+      // 3. Reuse or create the connection (no-auth, active, private). Match on
+      //    (org, connector, no auth_profile) — the device-connector identity —
+      //    rather than created_by, so orphan rows (created_by IS NULL, or
+      //    created by a different user/token) get adopted and self-healed
+      //    instead of stranded behind a slug-collision insert.
       const existingConn = (await tx`
-        SELECT id FROM connections
+        SELECT id, created_by FROM connections
         WHERE organization_id = ${organizationId}
           AND connector_key = ${connectorKey}
-          AND created_by = ${userId}
+          AND auth_profile_id IS NULL
           AND deleted_at IS NULL
+        ORDER BY id ASC
         LIMIT 1
-      `) as unknown as Array<{ id: number }>;
+      `) as unknown as Array<{ id: number; created_by: string | null }>;
       connectionId = existingConn[0]?.id;
+      if (connectionId && existingConn[0].created_by == null) {
+        // Backfill ownership so future per-user queries (e.g. /api/me/devices)
+        // attribute the connection to the user whose poll wired it.
+        await tx`
+          UPDATE connections
+          SET created_by = ${userId}, updated_at = NOW()
+          WHERE id = ${connectionId} AND created_by IS NULL
+        `;
+      }
       if (!connectionId) {
         // Stable slug for `lobu apply` diffing — same generation path as
         // manage_connections. No insert-retry here: this whole block runs

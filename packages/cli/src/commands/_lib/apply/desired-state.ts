@@ -986,6 +986,24 @@ function parseConnectionDoc(
         `${file}: connection "${slug}" \`config\` must be an object`
       );
     }
+    // action_modes is keyed by operation_key and each value must be one of
+    // 'disabled' | 'approval' | 'auto'. The server tolerates unknown values
+    // (falls back to the connector default), so a typo like 'auto-approve'
+    // would silently degrade. Fail fast at apply time instead.
+    if (raw.config.action_modes !== undefined) {
+      if (!isRecord(raw.config.action_modes)) {
+        throw new ValidationError(
+          `${file}: connection "${slug}" \`config.action_modes\` must be an object mapping operation keys to one of: disabled, approval, auto`
+        );
+      }
+      for (const [opKey, mode] of Object.entries(raw.config.action_modes)) {
+        if (mode !== "disabled" && mode !== "approval" && mode !== "auto") {
+          throw new ValidationError(
+            `${file}: connection "${slug}" \`config.action_modes.${opKey}\` must be one of: disabled, approval, auto (got ${JSON.stringify(mode)})`
+          );
+        }
+      }
+    }
     out.config = raw.config;
   }
   if (raw.feeds !== undefined) {

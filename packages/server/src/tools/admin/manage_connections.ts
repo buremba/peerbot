@@ -298,7 +298,7 @@ const UpdateConnectorDefaultConfigAction = Type.Object({
   action: Type.Literal('update_connector_default_config'),
   connector_key: Type.String({ description: 'Connector key' }),
   default_connection_config: Type.Record(Type.String(), Type.Any(), {
-    description: 'Default connection config (auto_approve_actions, require_approval_actions, etc.)',
+    description: 'Default connection config (action_modes, etc.)',
   }),
 });
 

@@ -1,6 +1,7 @@
 import { getDb } from '../db/client';
 import { discoverTools } from '../mcp-proxy/client';
 import type { DiscoveredTool, McpProxyConfig } from '../mcp-proxy/types';
+import { filterOperationsByActionModes } from './action-modes';
 import type { AvailableOperation, OperationAnnotations, OperationDescriptor } from './types';
 
 type ConnectorRow = {
@@ -509,11 +510,29 @@ export async function listOperations(params: {
   offset: number;
 }> {
   const connectors = await getConnectorsForListing(params);
-  const operations = (
+  let operations = (
     await Promise.all(
       connectors.map((connector) => buildConnectorOperations(connector, params.organizationId))
     )
   ).flat();
+
+  // When listing for a specific connection, hide ops the user has marked
+  // 'disabled' in connection.config.action_modes. This is the surface the
+  // worker sees via manage_operations.list_available; disabled actions must
+  // never reach the agent.
+  if (params.connectionId) {
+    const sql = getDb();
+    const configRows = await sql`
+      SELECT config FROM connections
+      WHERE id = ${params.connectionId}
+        AND organization_id = ${params.organizationId}
+        AND deleted_at IS NULL
+      LIMIT 1
+    `;
+    const config = (configRows[0] as { config: Record<string, unknown> | null } | undefined)
+      ?.config ?? null;
+    operations = filterOperationsByActionModes(operations, config);
+  }
 
   const filtered = operations.filter((operation) => {
     if (params.kind && operation.kind !== params.kind) return false;

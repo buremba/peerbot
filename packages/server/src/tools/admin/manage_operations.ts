@@ -12,6 +12,7 @@ import type { Env } from '../../index';
 import { callTool as callProxyTool } from '../../mcp-proxy/client';
 import { resolveCredentialsByConnectionId } from '../../mcp-proxy/credential-resolver';
 import { notifyActionApprovalNeeded } from '../../notifications/triggers';
+import { resolveActionMode } from '../../operations/action-modes';
 import { getOperationForConnection, listOperations } from '../../operations/catalog';
 import type { AvailableOperation, OperationDescriptor } from '../../operations/types';
 import { resolveConnectorCode } from '../../utils/ensure-connector-installed';
@@ -452,18 +453,13 @@ async function handleExecute(
   }
 
   const input = args.input ?? {};
-  const connConfig = (connection.config ?? {}) as Record<string, unknown>;
-  const autoApproveOperations = connConfig.auto_approve_actions;
-  const autoApproveList = Array.isArray(autoApproveOperations)
-    ? autoApproveOperations.filter((value): value is string => typeof value === 'string')
-    : [];
-  const requireApprovalOverrides = connConfig.require_approval_actions;
-  const requireApprovalList = Array.isArray(requireApprovalOverrides)
-    ? requireApprovalOverrides.filter((value): value is string => typeof value === 'string')
-    : [];
-  const shouldQueue =
-    (operation.requires_approval || requireApprovalList.includes(operation.operation_key)) &&
-    !autoApproveList.includes(operation.operation_key);
+  const mode = resolveActionMode(operation, connection.config);
+  if (mode === 'disabled') {
+    return {
+      error: `Operation '${operation.operation_key}' is disabled on this connection.`,
+    };
+  }
+  const shouldQueue = mode === 'approval';
 
   const runId = await createConnectorOperationRun({
     organizationId: ctx.organizationId,

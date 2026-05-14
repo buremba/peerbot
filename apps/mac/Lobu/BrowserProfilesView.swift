@@ -61,6 +61,12 @@ struct SingleBrowserRow: View {
         hub.profiles.filter { $0.browser_kind == browser.kind.rawValue }
     }
 
+    /// True once the user has any managed profile for this browser. We cap
+    /// at one: multi-profile UX would re-introduce the "which profile is
+    /// this connector using?" guessing game we just got rid of. Extending
+    /// to N is a future feature; for now, one Lobu Chrome per browser kind.
+    private var hasProfile: Bool { !myProfiles.isEmpty }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 8) {
@@ -69,20 +75,20 @@ struct SingleBrowserRow: View {
                     .frame(width: 18)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(browser.kind.displayName).font(.caption)
-                    if myProfiles.isEmpty {
-                        Text("No profiles yet. Cookies stay on this Mac.")
-                            .font(.caption2).foregroundStyle(.secondary)
-                    } else {
-                        Text("\(myProfiles.count) profile\(myProfiles.count == 1 ? "" : "s")")
+                    if !hasProfile {
+                        Text("Cookies stay on this Mac.")
                             .font(.caption2).foregroundStyle(.secondary)
                     }
                 }
                 Spacer()
-                if !showCreateForm {
+                // Add button only appears when no profile exists yet. Once
+                // one is created, the row collapses to "Open" + trash so
+                // the user can't accidentally pile up duplicate profiles.
+                if !showCreateForm && !hasProfile {
                     Button(action: { showCreateForm = true }) {
                         HStack(spacing: 2) {
                             Image(systemName: "plus").font(.caption2)
-                            Text("Add").font(.caption)
+                            Text("Set up").font(.caption)
                         }
                         .foregroundStyle(.blue)
                     }
@@ -120,11 +126,14 @@ struct SingleBrowserRow: View {
                     .font(.caption2).foregroundStyle(.secondary)
             }
             Spacer()
-            if profile.status == "pending_auth", let dir = profile.user_data_dir {
+            // Open is always available: cookies expire over time, so re-
+            // launching the managed Chrome to log into a stale site is a
+            // routine action — not gated on a status flag.
+            if let dir = profile.user_data_dir {
                 Button("Open") {
                     openManagedChrome(dirPath: dir)
                 }
-                .buttonStyle(.plain).font(.caption2).foregroundStyle(.orange)
+                .buttonStyle(.plain).font(.caption2).foregroundStyle(.blue)
             }
             if confirmingDeleteId == profile.id {
                 Button("Confirm", role: .destructive) {
@@ -174,64 +183,26 @@ struct SingleBrowserRow: View {
     }
 }
 
+/// Single-mode create form. The old radio (Copy / Attach-via-CDP) is gone:
+/// copy was unsafe (Google session conflict on the user's real Chrome) and
+/// CDP-attach to the user's Chrome added friction (relaunch with a flag, or
+/// the per-sync M144 permission dialog) without solving any problem the
+/// managed Lobu Chrome doesn't. The remaining flow is the only sane one:
+/// mint a blank profile dir, register the auth profile, open Chrome at the
+/// dir so the user can log into the sites they care about.
 struct CreateBrowserProfileInlineForm: View {
     @ObservedObject var state: AppState
     let browser: InstalledBrowser
     var onCreated: (WorkerClient.BrowserAuthProfile) -> Void
     var onCancel: () -> Void
 
-    // Two-mode model. `.managed` creates a *blank* Chrome profile that Lobu
-    // owns end-to-end — the user logs into the sites they want scraped, no
-    // sync with their real Chrome (and no Google session collision). `.cdp`
-    // attaches to a Chrome the user runs themselves with
-    // --remote-debugging-port — gives connectors full access to the user's
-    // live session, at the cost of the user keeping that Chrome running.
-    enum Mode: String, CaseIterable, Hashable { case managed, cdp }
-
-    @State private var mode: Mode = .managed
-    @State private var cdpPortText: String = ""
-    @State private var detectedCdpUrl: String?
     @State private var saving: Bool = false
     @State private var error: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Picker("", selection: $mode) {
-                Text("Create Lobu Chrome").tag(Mode.managed)
-                Text("Use my Chrome (CDP)").tag(Mode.cdp)
-            }
-            .pickerStyle(.radioGroup)
-            .horizontalRadioGroupLayout()
-            .labelsHidden()
-            .font(.caption2)
-            if mode == .managed {
-                Text("A fresh \(browser.kind.displayName) profile only Lobu uses. After create, log into the sites you want scraped — connectors reuse that session.")
-                    .font(.caption2).foregroundStyle(.secondary)
-            } else {
-                Text("Attach to a Chrome you're running with --remote-debugging-port. Quit Chrome, then run: open -na \"Google Chrome\" --args --remote-debugging-port=9222")
-                    .font(.caption2).foregroundStyle(.secondary)
-                HStack(spacing: 4) {
-                    TextField("port (e.g. 9222)", text: $cdpPortText)
-                        .textFieldStyle(.roundedBorder).controlSize(.mini).font(.caption2)
-                        .frame(maxWidth: 100)
-                    Button("Detect") {
-                        Task {
-                            if let url = await BrowserProfileManager.autoDetectCdpUrl() {
-                                detectedCdpUrl = url
-                                if let port = URL(string: url)?.port {
-                                    cdpPortText = String(port)
-                                }
-                            } else {
-                                error = "No Chrome found listening on --remote-debugging-port. Quit Chrome and relaunch with the flag."
-                            }
-                        }
-                    }
-                    .buttonStyle(.plain).font(.caption2).foregroundStyle(.blue)
-                }
-                if let url = detectedCdpUrl {
-                    Text("Detected: \(url)").font(.caption2).foregroundStyle(.green)
-                }
-            }
+            Text("Lobu opens a fresh \(browser.kind.displayName) window — log into the sites you want scraped there. Connectors reuse that session.")
+                .font(.caption2).foregroundStyle(.secondary)
             if let error {
                 Text(error).font(.caption2).foregroundStyle(.red)
             }
@@ -239,26 +210,13 @@ struct CreateBrowserProfileInlineForm: View {
                 Button("Cancel", action: onCancel)
                     .buttonStyle(.plain).font(.caption2).foregroundStyle(.secondary)
                 Spacer()
-                Button(mode == .managed ? "Create + open" : "Attach") {
+                Button("Create + open") {
                     Task { await create() }
                 }
                     .buttonStyle(.plain).font(.caption2).foregroundStyle(.blue)
-                    .disabled(saving || !canSubmit)
+                    .disabled(saving)
             }
         }
-    }
-
-    private var canSubmit: Bool {
-        switch mode {
-        case .managed: return true
-        case .cdp: return parsedCdpPort != nil
-        }
-    }
-
-    private var parsedCdpPort: Int? {
-        let trimmed = cdpPortText.trimmingCharacters(in: .whitespaces)
-        guard let port = Int(trimmed), port > 0, port < 65536 else { return nil }
-        return port
     }
 
     @MainActor
@@ -272,57 +230,32 @@ struct CreateBrowserProfileInlineForm: View {
         defer { saving = false }
         do {
             let workerId = LobuWorkerIdentity.current()
-            // Server requires display_name; auto-name based on mode + browser
-            // (the user can't tell two managed Lobu Chromes apart from a name
-            // anyway, and the create form no longer asks for one).
-            let displayName: String
+            let displayName = "\(browser.kind.displayName) (Lobu)"
+            let target = try BrowserProfileManager.createBlankManagedProfile(browser: browser, named: displayName)
             let profile: WorkerClient.BrowserAuthProfile
-            switch mode {
-            case .managed:
-                displayName = "\(browser.kind.displayName) (Lobu)"
-                let target = try BrowserProfileManager.createBlankManagedProfile(browser: browser, named: displayName)
-                do {
-                    profile = try await client.createMyBrowserAuthProfile(
-                        workerId: workerId,
-                        displayName: displayName,
-                        browserKind: browser.kind.rawValue,
-                        userDataDir: target.path,
-                        cdpUrl: nil
-                    )
-                } catch {
-                    // Server refused: clean up the managed --user-data-dir we
-                    // just created so the user isn't stuck with an orphan
-                    // profile dir on disk after a failed save.
-                    BrowserProfileManager.removeManagedProfile(at: target)
-                    throw error
-                }
-                // Open the blank Chrome immediately so the user can log into
-                // the sites they care about right away.
-                do {
-                    try await BrowserProfileManager.launchManaged(
-                        browser: browser,
-                        managedDir: target,
-                        openingURL: URL(string: "about:blank")!
-                    )
-                } catch {
-                    // Launch failure isn't fatal — the profile row exists.
-                    // The user can click "Open" later from the row.
-                }
-            case .cdp:
-                guard let port = parsedCdpPort else {
-                    error = "Enter a port (e.g. 9222)."
-                    return
-                }
-                displayName = "\(browser.kind.displayName) (CDP :\(port))"
-                let cdpUrl = "http://127.0.0.1:\(port)"
+            do {
                 profile = try await client.createMyBrowserAuthProfile(
                     workerId: workerId,
                     displayName: displayName,
                     browserKind: browser.kind.rawValue,
-                    userDataDir: nil,
-                    cdpUrl: cdpUrl
+                    userDataDir: target.path,
+                    cdpUrl: nil
                 )
+            } catch {
+                // Server refused: clean up the managed --user-data-dir we
+                // just created so the user isn't stuck with an orphan
+                // profile dir on disk after a failed save.
+                BrowserProfileManager.removeManagedProfile(at: target)
+                throw error
             }
+            // Open the blank Chrome immediately so the user can start logging
+            // into sites. Launch failure isn't fatal — the profile exists
+            // and the user can click "Open" later from the row.
+            try? await BrowserProfileManager.launchManaged(
+                browser: browser,
+                managedDir: target,
+                openingURL: URL(string: "about:blank")!
+            )
             onCreated(profile)
         } catch let createError {
             error = createError.localizedDescription

@@ -17,3 +17,16 @@ ALTER TABLE auth_profiles
     OR user_data_dir IS NULL
     OR cdp_url IS NULL
   );
+
+-- migrate:down
+ALTER TABLE auth_profiles
+  DROP CONSTRAINT IF EXISTS auth_profiles_device_browser_path_mutex;
+
+ALTER TABLE auth_profiles
+  ADD CONSTRAINT auth_profiles_device_browser_path_xor
+  CHECK (
+    device_worker_id IS NULL
+    OR profile_kind <> 'browser_session'
+    OR ((user_data_dir IS NOT NULL) AND (cdp_url IS NULL))
+    OR ((user_data_dir IS NULL) AND (cdp_url IS NOT NULL))
+  );

@@ -1829,7 +1829,22 @@ export async function createMyDeviceAuthProfile(c: Context<{ Bindings: Env }>) {
   //     auth_data.source_profile_dir + source_browser_root set; cdp_url may
   //     pin a port the user wants the connector to attach to.
   //   - Pure CDP attach: cdp_url only, no mirror fields.
-  const isMirror = mirrorSourceDir.length > 0 && mirrorBrowserRoot.length > 0;
+  const hasMirrorSourceDir = mirrorSourceDir.length > 0;
+  const hasMirrorBrowserRoot = mirrorBrowserRoot.length > 0;
+  // Reject partial mirror metadata loudly. Without this check, a request
+  // that supplies only source_profile_dir (no source_browser_root) plus a
+  // cdp_url would pass as "pure CDP attach" and silently drop the mirror
+  // intent. The caller meant mirror but the row would never apply it.
+  if (hasMirrorSourceDir !== hasMirrorBrowserRoot) {
+    return c.json(
+      {
+        error:
+          'mirror mode requires both auth_data.source_profile_dir and auth_data.source_browser_root',
+      },
+      400
+    );
+  }
+  const isMirror = hasMirrorSourceDir && hasMirrorBrowserRoot;
   if (!isMirror && cdpUrl.length === 0) {
     return c.json(
       {

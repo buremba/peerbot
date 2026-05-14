@@ -26,11 +26,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { printText } from "../memory/_lib/output.js";
 
-import {
-  getUsableToken,
-  resolveOrg,
-  resolveServerUrl,
-} from "../memory/_lib/openclaw-auth.js";
+import { resolveContext } from "../../internal/context.js";
+import { getUsableToken, resolveOrg } from "../memory/_lib/openclaw-auth.js";
 import {
   compileConnectorFromFile,
   findBundledConnectorFile,
@@ -88,11 +85,13 @@ interface ResolvedFeed {
   checkpoint: Record<string, unknown> | null;
 }
 
-// The new connector-run REST routes live on the main app (mounted at `/`),
-// not under the Agent API (`/lobu`) or the MCP path. Collapse the resolved
-// server URL to just its origin so we can append `/api/<orgSlug>/...`.
-function apiBaseFrom(serverUrl: string): string {
-  const { origin } = new URL(serverUrl);
+// The connector-run REST routes live on the main app (mounted at `/`),
+// not under the Agent API (`/lobu`) or the MCP path. We resolve the
+// app origin from the context's agent API URL — *not* the memory MCP
+// URL, which historically defaulted to lobu.ai/mcp and pointed the
+// connector-run client at the marketing site (404).
+function apiBaseFrom(agentApiUrl: string): string {
+  const { origin } = new URL(agentApiUrl);
   return origin;
 }
 
@@ -160,18 +159,34 @@ export async function connectorRun(
 ): Promise<void> {
   ensurePlaywrightAvailable();
 
-  // Resolve API endpoint + auth via the same path the rest of the CLI uses.
-  // LOBU_API_TOKEN short-circuits the credential store — useful for testing
-  // against a dev backend you haven't `lobu login`'d into.
-  const baseMcpUrl = await resolveServerUrl(args.url, args.context);
+  // Resolve API endpoint + auth from the chosen context. The agent API URL
+  // (e.g. https://app.lobu.ai/api/v1) shares an origin with the connector-run
+  // REST routes — unlike the memory MCP URL, which historically defaulted to
+  // lobu.ai/mcp and pointed this client at the marketing site.
+  //
+  // --url is an explicit override (for testing); LOBU_API_TOKEN short-circuits
+  // the credential store.
+  const ctx = await resolveContext(args.context);
+  const explicitUrl = args.url?.trim();
+  const apiBase = explicitUrl
+    ? new URL(explicitUrl).origin
+    : apiBaseFrom(ctx.apiUrl);
+
   const envToken = process.env.LOBU_API_TOKEN?.trim();
   let token: string;
   let resolvedContextName: string | undefined;
   if (envToken) {
     token = envToken;
-    resolvedContextName = args.context;
+    resolvedContextName = ctx.name;
+  } else if (explicitUrl) {
+    // Refuse to silently forward the context's stored credentials to a URL the
+    // user typed on the command line — that's how tokens leak to the wrong
+    // backend. Pair --url with LOBU_API_TOKEN explicitly.
+    throw new Error(
+      "--url requires LOBU_API_TOKEN to be set (refuse to forward stored credentials to an explicit override)."
+    );
   } else {
-    const tokenInfo = await getUsableToken(baseMcpUrl, args.context);
+    const tokenInfo = await getUsableToken(undefined, ctx.name);
     if (!tokenInfo) {
       throw new Error(
         "Not logged in. Run `lobu login` first (or set LOBU_API_TOKEN; or pass --context <name>)."
@@ -186,7 +201,6 @@ export async function connectorRun(
       "No active org. Run `lobu org use <slug>` or pass --org <slug>."
     );
   }
-  const apiBase = apiBaseFrom(baseMcpUrl);
 
   // Resolve auth profile and (optionally) feed in parallel.
   let feed: ResolvedFeed | null = null;

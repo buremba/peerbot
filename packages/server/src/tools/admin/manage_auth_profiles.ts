@@ -629,11 +629,13 @@ async function handleUpdateAuthProfile(
   if (
     authProfile.profile_kind === 'oauth_account' &&
     authProfileProvider &&
-    args.requested_scopes
+    args.requested_scopes &&
+    authProfile.connector_key
   ) {
+    const profileConnectorKey = authProfile.connector_key;
     const connector = await getScopedConnectorDefinition({
       organizationId: ctx.organizationId,
-      connectorKey: authProfile.connector_key,
+      connectorKey: profileConnectorKey,
     });
     const oauthMethod = connector
       ? getOAuthMethods(connector.auth_schema).find((m) => m.provider === authProfileProvider)
@@ -653,10 +655,16 @@ async function handleUpdateAuthProfile(
     }
   }
 
-  if (args.reconnect && authProfile.profile_kind === 'oauth_account' && authProfileProvider) {
+  if (
+    args.reconnect &&
+    authProfile.profile_kind === 'oauth_account' &&
+    authProfileProvider &&
+    authProfile.connector_key
+  ) {
+    const profileConnectorKey = authProfile.connector_key;
     const connector = await getScopedConnectorDefinition({
       organizationId: ctx.organizationId,
-      connectorKey: authProfile.connector_key,
+      connectorKey: profileConnectorKey,
     });
     const oauthMethod = connector
       ? getOAuthMethods(connector.auth_schema).find((m) => m.provider === authProfileProvider)
@@ -682,7 +690,7 @@ async function handleUpdateAuthProfile(
       const connectToken = await createConnectToken({
         organizationId: ctx.organizationId,
         authProfileId: authProfile.id,
-        connectorKey: authProfile.connector_key,
+        connectorKey: profileConnectorKey,
         authType: 'oauth',
         authConfig: {
           ...buildOAuthConnectConfig(oauthMethod, requestedScopes),

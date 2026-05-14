@@ -640,6 +640,7 @@ describe("WORKER_ENV_* env-var passthrough", () => {
   });
 
   test("DATABASE_URL is not forwarded to workers", async () => {
+    const prev = process.env.DATABASE_URL;
     process.env.DATABASE_URL = "postgres://secret:password@host/db";
     const mgr = makeManager();
     const mkdirSpy = spyOn(fs, "mkdirSync").mockReturnValue(undefined);
@@ -653,7 +654,8 @@ describe("WORKER_ENV_* env-var passthrough", () => {
       expect(spawnOpts?.env?.DATABASE_URL).toBeUndefined();
     } finally {
       mkdirSpy.mockRestore();
-      delete process.env.DATABASE_URL;
+      if (prev === undefined) delete process.env.DATABASE_URL;
+      else process.env.DATABASE_URL = prev;
     }
   });
 });

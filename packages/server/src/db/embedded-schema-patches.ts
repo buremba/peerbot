@@ -436,4 +436,59 @@ export const EMBEDDED_SCHEMA_PATCHES: EmbeddedSchemaPatch[] = [
       }
     },
   },
+  {
+    // Mirrors db/migrations/20260514000000_scheduled_jobs.sql.
+    id: 'scheduled-jobs',
+    apply: async (sql) => {
+      await sql.unsafe(`
+        CREATE TABLE IF NOT EXISTS public.scheduled_jobs (
+          id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+          organization_id text NOT NULL REFERENCES public.organization(id) ON DELETE CASCADE,
+          action_type text NOT NULL,
+          action_args jsonb NOT NULL,
+          cron text,
+          next_run_at timestamp with time zone NOT NULL,
+          last_fired_at timestamp with time zone,
+          last_fired_run_id bigint,
+          paused boolean NOT NULL DEFAULT false,
+          description text NOT NULL,
+          created_by_user text,
+          created_by_agent text,
+          source_run_id bigint,
+          source_event_id bigint,
+          source_thread_id text,
+          created_at timestamp with time zone NOT NULL DEFAULT now(),
+          updated_at timestamp with time zone NOT NULL DEFAULT now(),
+          CONSTRAINT scheduled_jobs_attribution_check CHECK (
+            created_by_user IS NOT NULL OR created_by_agent IS NOT NULL
+          )
+        )
+      `);
+      await sql.unsafe(`
+        DO $$
+        BEGIN
+          IF EXISTS (SELECT 1 FROM pg_class WHERE relname = 'agents' AND relkind = 'r')
+             AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'scheduled_jobs_agent_fkey') THEN
+            ALTER TABLE public.scheduled_jobs
+              ADD CONSTRAINT scheduled_jobs_agent_fkey
+              FOREIGN KEY (created_by_agent) REFERENCES public.agents(id) ON DELETE CASCADE;
+          END IF;
+        END$$;
+      `);
+      await sql.unsafe(`
+        CREATE INDEX IF NOT EXISTS idx_scheduled_jobs_due
+          ON public.scheduled_jobs (next_run_at) WHERE NOT paused
+      `);
+      await sql.unsafe(`
+        CREATE INDEX IF NOT EXISTS idx_scheduled_jobs_org_agent
+          ON public.scheduled_jobs (organization_id, created_by_agent)
+          WHERE created_by_agent IS NOT NULL
+      `);
+      await sql.unsafe(`
+        CREATE INDEX IF NOT EXISTS idx_scheduled_jobs_org_user
+          ON public.scheduled_jobs (organization_id, created_by_user)
+          WHERE created_by_user IS NOT NULL
+      `);
+    },
+  },
 ];

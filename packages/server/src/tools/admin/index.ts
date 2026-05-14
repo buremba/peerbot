@@ -23,6 +23,7 @@ import { ManageEntitySchemaSchema, manageEntitySchema } from './manage_entity_sc
 import { ManageFeedsSchema, manageFeeds } from './manage_feeds';
 import { NotifySchema, notify } from './notify';
 import { ManageOperationsSchema, manageOperations } from './manage_operations';
+import { ManageSchedulesSchema, manageSchedules } from './manage_schedules';
 import { ManageViewTemplatesSchema, manageViewTemplates } from './manage_view_templates';
 import {
   ListWatchersSchema,
@@ -91,6 +92,14 @@ const ENTRIES: InternalToolEntry[] = [
     description: 'Send a notification to org users (admins / all / specific user ids).',
     schema: NotifySchema,
     handler: notify,
+    annotations: { destructiveHint: false },
+  },
+  {
+    name: 'manage_schedules',
+    description:
+      'Create / list / pause / cancel recurring or one-shot scheduled jobs. Supports send_notification and wake_agent action types. Per-row attribution lets you trace what scheduled it and from where.',
+    schema: ManageSchedulesSchema,
+    handler: manageSchedules,
     annotations: { destructiveHint: false },
   },
   {

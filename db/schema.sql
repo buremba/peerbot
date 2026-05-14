@@ -1531,6 +1531,31 @@ CREATE SEQUENCE public.runs_id_seq
 ALTER SEQUENCE public.runs_id_seq OWNED BY public.runs.id;
 
 --
+-- Name: scheduled_jobs; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.scheduled_jobs (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    organization_id text NOT NULL,
+    action_type text NOT NULL,
+    action_args jsonb NOT NULL,
+    cron text,
+    next_run_at timestamp with time zone NOT NULL,
+    last_fired_at timestamp with time zone,
+    last_fired_run_id bigint,
+    paused boolean DEFAULT false NOT NULL,
+    description text NOT NULL,
+    created_by_user text,
+    created_by_agent text,
+    source_run_id bigint,
+    source_event_id bigint,
+    source_thread_id text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT scheduled_jobs_attribution_check CHECK (((created_by_user IS NOT NULL) OR (created_by_agent IS NOT NULL)))
+);
+
+--
 -- Name: schema_migrations; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2610,6 +2635,13 @@ ALTER TABLE ONLY public.runs
     ADD CONSTRAINT runs_pkey PRIMARY KEY (id);
 
 --
+-- Name: scheduled_jobs scheduled_jobs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.scheduled_jobs
+    ADD CONSTRAINT scheduled_jobs_pkey PRIMARY KEY (id);
+
+--
 -- Name: schema_migrations schema_migrations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3613,6 +3645,24 @@ CREATE INDEX idx_runs_type ON public.runs USING btree (run_type);
 --
 
 CREATE INDEX idx_runs_watcher_id ON public.runs USING btree (watcher_id) WHERE (watcher_id IS NOT NULL);
+
+--
+-- Name: idx_scheduled_jobs_due; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_scheduled_jobs_due ON public.scheduled_jobs USING btree (next_run_at) WHERE (NOT paused);
+
+--
+-- Name: idx_scheduled_jobs_org_agent; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_scheduled_jobs_org_agent ON public.scheduled_jobs USING btree (organization_id, created_by_agent) WHERE (created_by_agent IS NOT NULL);
+
+--
+-- Name: idx_scheduled_jobs_org_user; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_scheduled_jobs_org_user ON public.scheduled_jobs USING btree (organization_id, created_by_user) WHERE (created_by_user IS NOT NULL);
 
 --
 -- Name: idx_view_template_versions_resource; Type: INDEX; Schema: public; Owner: -
@@ -4725,6 +4775,34 @@ ALTER TABLE ONLY public.runs
     ADD CONSTRAINT runs_window_id_fkey FOREIGN KEY (window_id) REFERENCES public.watcher_windows(id) ON DELETE SET NULL;
 
 --
+-- Name: scheduled_jobs scheduled_jobs_agent_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.scheduled_jobs
+    ADD CONSTRAINT scheduled_jobs_agent_fkey FOREIGN KEY (created_by_agent) REFERENCES public.agents(id) ON DELETE CASCADE;
+
+--
+-- Name: scheduled_jobs scheduled_jobs_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.scheduled_jobs
+    ADD CONSTRAINT scheduled_jobs_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organization(id) ON DELETE CASCADE;
+
+--
+-- Name: scheduled_jobs scheduled_jobs_source_event_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.scheduled_jobs
+    ADD CONSTRAINT scheduled_jobs_source_event_fkey FOREIGN KEY (source_event_id) REFERENCES public.events(id) ON DELETE SET NULL;
+
+--
+-- Name: scheduled_jobs scheduled_jobs_source_run_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.scheduled_jobs
+    ADD CONSTRAINT scheduled_jobs_source_run_fkey FOREIGN KEY (source_run_id) REFERENCES public.runs(id) ON DELETE SET NULL;
+
+--
 -- Name: session session_activeOrganizationId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -4869,4 +4947,5 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20260513000000'),
     ('20260513120000'),
     ('20260513150000'),
-    ('20260513200000');
+    ('20260513200000'),
+    ('20260514000000');

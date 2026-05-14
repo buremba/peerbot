@@ -1761,10 +1761,12 @@ export async function listMyDeviceAuthProfiles(c: Context<{ Bindings: Env }>) {
     const sql = getDb();
     const rows = (await sql`
       SELECT id, slug, display_name, connector_key, profile_kind, status,
-             browser_kind, user_data_dir, cdp_url, created_at, updated_at
+             browser_kind, user_data_dir, cdp_url, auth_data,
+             created_at, updated_at
       FROM auth_profiles
       WHERE device_worker_id = ${device!.id}
         AND profile_kind = 'browser_session'
+        AND status <> 'revoked'
       ORDER BY created_at DESC
     `) as unknown as Array<Record<string, unknown>>;
     return c.json({ profiles: rows });
@@ -1791,6 +1793,12 @@ export async function createMyDeviceAuthProfile(c: Context<{ Bindings: Env }>) {
     browser_kind?: string;
     user_data_dir?: string;
     cdp_url?: string;
+    auth_data?: {
+      source_profile_dir?: string;
+      source_browser_root?: string;
+      source_browser?: string;
+      mode?: string;
+    };
   };
   try {
     body = await c.req.json();
@@ -1802,34 +1810,132 @@ export async function createMyDeviceAuthProfile(c: Context<{ Bindings: Env }>) {
   const browserKind = (body.browser_kind ?? '').trim() as BrowserKind;
   const userDataDir = (body.user_data_dir ?? '').trim();
   const cdpUrl = (body.cdp_url ?? '').trim();
+  const mirrorSourceDir = (body.auth_data?.source_profile_dir ?? '').trim();
+  const mirrorBrowserRoot = (body.auth_data?.source_browser_root ?? '').trim();
+  const mirrorSourceBrowser = (body.auth_data?.source_browser ?? '').trim();
   if (!workerId || !displayName || !browserKind) {
     return c.json({ error: 'worker_id, display_name, browser_kind are required' }, 400);
   }
   if (!BROWSER_KIND_SET.has(browserKind)) {
     return c.json({ error: `browser_kind must be one of: ${[...BROWSER_KIND_SET].join(', ')}` }, 400);
   }
-  // Exactly one of (user_data_dir, cdp_url) — copy vs attach modes are
-  // mutually exclusive for a device-bound profile.
-  if (!userDataDir && !cdpUrl) {
-    return c.json({ error: 'exactly one of user_data_dir (copy mode) or cdp_url (attach mode) is required' }, 400);
+  // Valid shapes for a browser_session profile:
+  //   - Mirror mode (optionally with CDP fallback): auth_data.source_*
+  //     present; cdp_url optional. At sync time the connector tries CDP
+  //     first if cdp_url is set, falls back to mirrored cookies.
+  //   - Pure CDP attach: cdp_url only, no mirror fields, no user_data_dir.
+  //   - Legacy managed: user_data_dir only.
+  // user_data_dir cannot combine with anything else (legacy single-purpose).
+  const isMirror = mirrorSourceDir.length > 0 && mirrorBrowserRoot.length > 0;
+  if (userDataDir.length > 0 && (isMirror || cdpUrl.length > 0)) {
+    return c.json(
+      {
+        error:
+          'legacy user_data_dir cannot combine with mirror or cdp_url — pick one model',
+      },
+      400
+    );
   }
-  if (userDataDir && cdpUrl) {
-    return c.json({ error: 'user_data_dir and cdp_url are mutually exclusive' }, 400);
+  if (!isMirror && cdpUrl.length === 0 && userDataDir.length === 0) {
+    return c.json(
+      {
+        error:
+          'browser_session needs one of: auth_data.source_profile_dir (mirror), cdp_url (attach), or user_data_dir (legacy)',
+      },
+      400
+    );
   }
   const { device, error } = await resolveDeviceWorkerForRequest(c, workerId);
   if (error) return error;
   try {
+    // Idempotency key:
+    //   - Mirror mode: (org, device, browser_kind, auth_data.source_profile_dir)
+    //   - CDP/legacy:  (org, device, browser_kind) — only one of these per
+    //     device since they describe Lobu-owned or device-owned Chrome
+    //     state, not per-profile state.
+    // This lets the user mirror multiple Chrome profiles (Default + Work)
+    // on the same Mac without collisions, while a re-add of the same source
+    // profile updates the existing row instead of erroring.
+    const sql = getDb();
+    const existingRows = isMirror
+      ? ((await sql`
+          SELECT id, organization_id, slug, display_name, connector_key,
+                 profile_kind, status, auth_data, account_id, provider,
+                 created_by, created_at, updated_at,
+                 device_worker_id, browser_kind, user_data_dir, cdp_url
+          FROM auth_profiles
+          WHERE organization_id = ${device!.organization_id}
+            AND device_worker_id = ${device!.id}
+            AND profile_kind = 'browser_session'
+            AND browser_kind = ${browserKind}
+            AND auth_data->>'source_profile_dir' = ${mirrorSourceDir}
+            AND status <> 'revoked'
+          ORDER BY created_at ASC
+          LIMIT 1
+        `) as unknown as Array<Record<string, unknown>>)
+      : ((await sql`
+          SELECT id, organization_id, slug, display_name, connector_key,
+                 profile_kind, status, auth_data, account_id, provider,
+                 created_by, created_at, updated_at,
+                 device_worker_id, browser_kind, user_data_dir, cdp_url
+          FROM auth_profiles
+          WHERE organization_id = ${device!.organization_id}
+            AND device_worker_id = ${device!.id}
+            AND profile_kind = 'browser_session'
+            AND browser_kind = ${browserKind}
+            AND (auth_data->>'source_profile_dir') IS NULL
+            AND status <> 'revoked'
+          ORDER BY created_at ASC
+          LIMIT 1
+        `) as unknown as Array<Record<string, unknown>>);
+    // For mirror mode, the non-secret config lives in auth_data so we don't
+    // pollute the column surface with mirror-specific fields. The Mac app
+    // re-decrypts cookies at sync time, so we never write a cookie blob.
+    const newAuthData = isMirror
+      ? {
+          mode: 'mirror',
+          source_profile_dir: mirrorSourceDir,
+          source_browser_root: mirrorBrowserRoot,
+          source_browser: mirrorSourceBrowser || 'chrome',
+        }
+      : {};
+    // Mirror profiles are usable as soon as cookies live in the user's
+    // Chrome (they already do — we just decrypt at sync time). Legacy
+    // managed Chromes ditto. Only CDP-attach is pending until first run.
+    const initialStatus = cdpUrl && !userDataDir && !isMirror ? 'pending_auth' : 'active';
+    if (existingRows.length > 0) {
+      const existing = existingRows[0]!;
+      // Refresh the volatile fields so the caller (Mac app on relaunch) can
+      // update the auth shape if the user re-picked a source profile or
+      // moved between mirror/cdp/legacy modes.
+      const updated = (await sql`
+        UPDATE auth_profiles
+        SET user_data_dir = ${userDataDir || null},
+            cdp_url = ${cdpUrl || null},
+            display_name = ${displayName},
+            auth_data = ${sql.json(newAuthData)},
+            status = ${initialStatus},
+            updated_at = now()
+        WHERE id = ${existing.id as number}
+        RETURNING id, organization_id, slug, display_name, connector_key,
+                  profile_kind, status, auth_data, account_id, provider,
+                  created_by, created_at, updated_at,
+                  device_worker_id, browser_kind, user_data_dir, cdp_url
+      `) as unknown as Array<Record<string, unknown>>;
+      return c.json({ profile: updated[0] ?? existing });
+    }
     const profile = await createAuthProfile({
       organizationId: device!.organization_id,
       connectorKey: null,
       displayName,
       profileKind: 'browser_session',
-      status: 'pending_auth',
+      status: initialStatus,
       createdBy: c.var.workerUserId,
       deviceWorkerId: device!.id,
       browserKind,
       userDataDir: userDataDir || null,
       cdpUrl: cdpUrl || null,
+      authData: newAuthData,
     });
     return c.json({ profile });
   } catch (err) {

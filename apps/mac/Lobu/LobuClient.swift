@@ -349,6 +349,13 @@ final class WorkerClient {
 
     // MARK: - Browser auth profiles (device-bound)
 
+    struct BrowserAuthData: Decodable, Equatable {
+        let mode: String?
+        let source_profile_dir: String?
+        let source_browser_root: String?
+        let source_browser: String?
+    }
+
     struct BrowserAuthProfile: Decodable, Identifiable, Equatable {
         let id: Int
         let slug: String
@@ -359,6 +366,7 @@ final class WorkerClient {
         let browser_kind: String?
         let user_data_dir: String?
         let cdp_url: String?
+        let auth_data: BrowserAuthData?
         let created_at: String?
         let updated_at: String?
     }
@@ -382,12 +390,20 @@ final class WorkerClient {
         return list.profiles
     }
 
+    struct BrowserAuthProfileMirrorConfig: Encodable {
+        let source_profile_dir: String
+        let source_browser_root: String
+        let source_browser: String
+        let mode: String
+    }
+
     func createMyBrowserAuthProfile(
         workerId: String,
         displayName: String,
         browserKind: String,
         userDataDir: String?,
-        cdpUrl: String?
+        cdpUrl: String?,
+        mirror: BrowserAuthProfileMirrorConfig?
     ) async throws -> BrowserAuthProfile {
         struct Body: Encodable {
             let worker_id: String
@@ -395,6 +411,7 @@ final class WorkerClient {
             let browser_kind: String
             let user_data_dir: String?
             let cdp_url: String?
+            let auth_data: BrowserAuthProfileMirrorConfig?
         }
         let data = try await post(
             "/api/workers/me/auth-profiles",
@@ -403,7 +420,8 @@ final class WorkerClient {
                 display_name: displayName,
                 browser_kind: browserKind,
                 user_data_dir: userDataDir,
-                cdp_url: cdpUrl
+                cdp_url: cdpUrl,
+                auth_data: mirror
             )
         )
         let envelope = try decoder.decode(BrowserAuthProfileEnvelope.self, from: data)

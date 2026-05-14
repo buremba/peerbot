@@ -122,68 +122,159 @@ enum BrowserProfileManager {
             .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
     }
 
-    /// Create a managed --user-data-dir as a *blank* Chrome profile dir.
-    /// Returns the absolute path to give to the server.
+    /// Probe localhost for a Chrome (or Chromium-family) instance exposing
+    /// CDP. Three discovery paths, in order:
+    ///   1. `lsof` — every TCP port the running Chrome process is
+    ///      listening on. This is what catches Chrome's M144 "Allow remote
+    ///      debugging for this browser instance" toggle: the port opens
+    ///      internally and doesn't show up in argv at all (so ps misses
+    ///      it). lsof inspects the actual socket table.
+    ///   2. `ps` — argv-scraped `--remote-debugging-port=<N>` for users
+    ///      who launched Chrome with the flag explicitly.
+    ///   3. The conventional 9222-9225 range.
     ///
-    /// Earlier versions copied the user's source profile (Default / Profile 1
-    /// / etc.) here so the managed Chrome inherited their cookies. That
-    /// turned out to be unsafe on macOS: Google's session-conflict
-    /// heuristic interprets "two Chromes signed into the same account" as
-    /// a hijack and force-logs out the user's real Chrome. Blank profiles
-    /// don't have that problem — the user logs into the specific sites
-    /// they want Lobu to scrape, no Google account on the Lobu side.
-    ///
-    /// The dir starts truly empty; Chrome populates it on first launch.
-    static func createBlankManagedProfile(browser: InstalledBrowser, named name: String) throws -> URL {
-        let dirName = "\(browser.kind.rawValue)-\(slugify(name))-\(UUID().uuidString.prefix(8))"
-        let target = managedRoot.appendingPathComponent(dirName, isDirectory: true)
-        try FileManager.default.createDirectory(at: managedRoot, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
-        return target
-    }
-
-    /// Open Chrome (or matching browser) at `url` pointed at the managed
-    /// --user-data-dir so the user can complete an interactive login that
-    /// writes cookies into the profile dir. Throws if the OS reports the
-    /// launch failed — callers should surface to the user instead of
-    /// silently leaving the profile in `pending_auth` forever.
-    static func launchManaged(browser: InstalledBrowser, managedDir: URL, openingURL url: URL) async throws {
-        let config = NSWorkspace.OpenConfiguration()
-        config.arguments = ["--user-data-dir=\(managedDir.path)", url.absoluteString]
-        config.activates = true
-        let target = browser.applicationURL
-        _ = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<NSRunningApplication, Error>) in
-            NSWorkspace.shared.openApplication(at: target, configuration: config) { running, error in
-                if let error {
-                    continuation.resume(throwing: error)
-                } else if let running {
-                    continuation.resume(returning: running)
-                } else {
-                    continuation.resume(throwing: NSError(
-                        domain: "Lobu.BrowserProfileManager",
-                        code: 1,
-                        userInfo: [NSLocalizedDescriptionKey: "Browser failed to launch"]
-                    ))
-                }
-            }
+    /// Returns the URL of the first responder on `/json/version`. When
+    /// `matchUserDataRoot` is set, the `ps` path is filtered to Chrome
+    /// processes using that user-data root; the `lsof` path is filtered
+    /// to Chrome processes that match the browser binary path.
+    static func autoDetectCdpUrl(matchUserDataRoot: URL? = nil) async -> String? {
+        var candidates: [Int] = []
+        var seen: Set<Int> = []
+        for port in await detectCdpPortsFromLsof() {
+            if seen.insert(port).inserted { candidates.append(port) }
         }
-    }
-
-    static func removeManagedProfile(at path: URL) {
-        try? FileManager.default.removeItem(at: path)
-    }
-
-    /// Probe localhost for a Chrome (or any Chromium-family browser) running
-    /// with `--remote-debugging-port`. Returns the discovered URL, or nil if
-    /// nothing's listening. The default Chrome port is 9222; we also try a few
-    /// neighbouring ports the user might've picked.
-    static func autoDetectCdpUrl() async -> String? {
+        for port in await detectCdpPortsFromPs(matchUserDataRoot: matchUserDataRoot) {
+            if seen.insert(port).inserted { candidates.append(port) }
+        }
         for port in [9222, 9223, 9224, 9225] {
+            if seen.insert(port).inserted { candidates.append(port) }
+        }
+        for port in candidates {
             if await isCdpReachable(port: port) {
                 return "http://127.0.0.1:\(port)"
             }
         }
         return nil
+    }
+
+    /// Ask `lsof` which TCP ports the main Google Chrome process is
+    /// listening on. Catches the M144 UI-toggle path (port opened
+    /// internally, not in argv) that the ps-based scrape misses.
+    ///
+    /// Output is filtered to Chrome's top-level binary — Helper / GPU
+    /// subprocesses don't own listening sockets we care about. Returns
+    /// ports in lsof's natural order (no aliveness check yet — caller
+    /// probes `/json/version`).
+    private static func detectCdpPortsFromLsof() async -> [Int] {
+        // Find the top-level Chrome PIDs first; lsof per-PID is cheaper
+        // than scanning every process on the box.
+        let pids = await topLevelChromePids()
+        guard !pids.isEmpty else { return [] }
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+        task.arguments = ["-nP", "-iTCP", "-sTCP:LISTEN", "-a", "-p", pids.joined(separator: ",")]
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = Pipe()
+        do { try task.run() } catch { return [] }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        task.waitUntilExit()
+        guard let output = String(data: data, encoding: .utf8) else { return [] }
+        // lsof rows look like: "Google   99621 user  131u IPv4 0x... 0t0 TCP 127.0.0.1:51697 (LISTEN)"
+        // — pull the port after the colon in the NAME column.
+        let portRegex = try? NSRegularExpression(pattern: #"127\.0\.0\.1:(\d+)\s+\(LISTEN\)"#)
+        var ports: [Int] = []
+        var seen: Set<Int> = []
+        for line in output.split(separator: "\n") {
+            let lineStr = String(line)
+            let range = NSRange(lineStr.startIndex..., in: lineStr)
+            guard let match = portRegex?.firstMatch(in: lineStr, range: range),
+                  let portRange = Range(match.range(at: 1), in: lineStr),
+                  let port = Int(lineStr[portRange]) else { continue }
+            if seen.insert(port).inserted { ports.append(port) }
+        }
+        return ports
+    }
+
+    /// Top-level Chrome process PIDs (no Helper / GPU children) as
+    /// strings, for passing into `lsof -p`.
+    private static func topLevelChromePids() async -> [String] {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/bin/ps")
+        task.arguments = ["-axo", "pid,command"]
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = Pipe()
+        do { try task.run() } catch { return [] }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        task.waitUntilExit()
+        guard let output = String(data: data, encoding: .utf8) else { return [] }
+        var pids: [String] = []
+        for line in output.split(separator: "\n") {
+            let lineStr = String(line)
+            if !lineStr.contains("Google Chrome.app/Contents/MacOS/Google Chrome") { continue }
+            if lineStr.contains("Helper") { continue }
+            let parts = lineStr.trimmingCharacters(in: .whitespaces).split(separator: " ", maxSplits: 1)
+            if let pidStr = parts.first { pids.append(String(pidStr)) }
+        }
+        return pids
+    }
+
+    /// Walk `ps` output for `--remote-debugging-port=<N>` Chrome processes.
+    /// Filters on the optional user-data-root match when provided. Returns
+    /// the unique ports in launch order (most-recently-launched first is
+    /// approximated by reverse insertion).
+    private static func detectCdpPortsFromPs(matchUserDataRoot: URL?) async -> [Int] {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/bin/ps")
+        task.arguments = ["-axo", "command"]
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = Pipe()
+        do {
+            try task.run()
+        } catch {
+            return []
+        }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        task.waitUntilExit()
+        guard let output = String(data: data, encoding: .utf8) else { return [] }
+        var ports: [Int] = []
+        var seen: Set<Int> = []
+        let portRegex = try? NSRegularExpression(pattern: #"--remote-debugging-port=(\d+)"#)
+        let dataDirRegex = try? NSRegularExpression(pattern: #"--user-data-dir=([^\s]+)"#)
+        for line in output.split(separator: "\n") {
+            // Filter to the top-level Chrome process (Helper / GPU subprocesses
+            // inherit the flags from the parent and would spam duplicates).
+            let lineStr = String(line)
+            if !lineStr.contains("Contents/MacOS/Google Chrome") { continue }
+            if lineStr.contains("Helper") { continue }
+            let range = NSRange(lineStr.startIndex..., in: lineStr)
+            guard let portMatch = portRegex?.firstMatch(in: lineStr, range: range),
+                  let portRange = Range(portMatch.range(at: 1), in: lineStr),
+                  let port = Int(lineStr[portRange]) else { continue }
+            if let needle = matchUserDataRoot {
+                guard let dirMatch = dataDirRegex?.firstMatch(in: lineStr, range: range),
+                      let dirRange = Range(dirMatch.range(at: 1), in: lineStr) else {
+                    // No --user-data-dir means Chrome is on its default root,
+                    // which IS the needle for Google Chrome's default install.
+                    if !lineStr.contains("--user-data-dir=") {
+                        // Default root match — accept.
+                    } else {
+                        continue
+                    }
+                    if seen.insert(port).inserted { ports.append(port) }
+                    continue
+                }
+                let dirStr = String(lineStr[dirRange])
+                if URL(fileURLWithPath: dirStr).standardizedFileURL.path == needle.standardizedFileURL.path {
+                    if seen.insert(port).inserted { ports.append(port) }
+                }
+                continue
+            }
+            if seen.insert(port).inserted { ports.append(port) }
+        }
+        return ports
     }
 
     static func isCdpReachable(port: Int) async -> Bool {

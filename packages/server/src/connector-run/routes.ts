@@ -42,10 +42,13 @@ export async function restGetAuthProfileForRun(c: Context<{ Bindings: Env }>) {
   const profile = await getAuthProfileBySlug(auth.organizationId, slug);
   if (!profile) return c.json({ error: `Auth profile '${slug}' not found` }, 404);
 
-  // Only the read-only fields the CLI's local executor consumes. auth_data
-  // (the cookie blob for legacy CLI captures) is deliberately omitted — the
-  // CLI's `connector run` path drives Playwright against user_data_dir or
-  // cdp_url, both of which already point at on-device resources.
+  // Pass through the read-only fields the CLI's local executor consumes,
+  // plus the mirror-mode fields nested in auth_data (source_profile_dir,
+  // source_browser_root, source_browser). Sensitive auth_data subkeys (the
+  // cookie blob from legacy CLI captures) are filtered out — the CLI's
+  // mirror path re-decrypts locally from the user's Chrome rather than
+  // trusting a server-side cookie copy.
+  const authData = (profile.auth_data ?? {}) as Record<string, unknown>;
   return c.json({
     profile: {
       id: profile.id,
@@ -58,6 +61,12 @@ export async function restGetAuthProfileForRun(c: Context<{ Bindings: Env }>) {
       user_data_dir: profile.user_data_dir,
       cdp_url: profile.cdp_url,
       device_worker_id: profile.device_worker_id,
+      auth_data: {
+        source_profile_dir: authData.source_profile_dir ?? null,
+        source_browser_root: authData.source_browser_root ?? null,
+        source_browser: authData.source_browser ?? null,
+        mode: authData.mode ?? null,
+      },
     },
   });
 }

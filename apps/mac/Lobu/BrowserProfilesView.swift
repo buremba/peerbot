@@ -44,28 +44,38 @@ final class BrowserProfilesHub: ObservableObject {
     }
 }
 
-/// One row per installed browser, rendered inline in the Integrations
-/// disclosure. Each row shows the browser, its existing profiles, and an
-/// inline create form — the user picks a source profile + connector + name
-/// without leaving the menu bar. Mode defaults to "Copy profile" (managed
-/// --user-data-dir, cookies isolated from the user's real browsing).
+/// One row per installed browser, with each of the user's source Chrome
+/// profiles rendered inline as its own selectable row (mirrors how the
+/// "Local folder" integration lists configured paths inline). Each profile
+/// row has a per-profile optional CDP port input + Add/Remove button.
+///
+/// This pattern replaces the older "Set up → inline create form" flow —
+/// users see all their available Chrome profiles at once and can mirror
+/// any subset without expanding any sub-form. The CDP port field is
+/// auto-detected at view appear time from `ps`, so a Chrome already
+/// running with `--remote-debugging-port` pre-fills the input.
 struct SingleBrowserRow: View {
     @ObservedObject var state: AppState
     let browser: InstalledBrowser
     @ObservedObject var hub: BrowserProfilesHub
 
-    @State private var showCreateForm: Bool = false
+    @State private var sourceProfiles: [InstalledBrowserProfile] = []
+    @State private var portByDir: [String: String] = [:]
+    @State private var savingDir: String?
     @State private var confirmingDeleteId: Int?
+    @State private var autodetectedPort: String?
 
     private var myProfiles: [WorkerClient.BrowserAuthProfile] {
         hub.profiles.filter { $0.browser_kind == browser.kind.rawValue }
     }
 
-    /// True once the user has any managed profile for this browser. We cap
-    /// at one: multi-profile UX would re-introduce the "which profile is
-    /// this connector using?" guessing game we just got rid of. Extending
-    /// to N is a future feature; for now, one Lobu Chrome per browser kind.
-    private var hasProfile: Bool { !myProfiles.isEmpty }
+    private func mirroredProfile(for source: InstalledBrowserProfile)
+        -> WorkerClient.BrowserAuthProfile?
+    {
+        myProfiles.first {
+            $0.auth_data?.source_profile_dir == source.directoryName
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -75,75 +85,80 @@ struct SingleBrowserRow: View {
                     .frame(width: 18)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(browser.kind.displayName).font(.caption)
-                    if !hasProfile {
-                        Text("Cookies stay on this Mac.")
-                            .font(.caption2).foregroundStyle(.secondary)
-                    }
+                    Text("Cookies stay on this Mac. Connectors run headless.")
+                        .font(.caption2).foregroundStyle(.secondary)
                 }
                 Spacer()
-                // Add button only appears when no profile exists yet. Once
-                // one is created, the row collapses to "Open" + trash so
-                // the user can't accidentally pile up duplicate profiles.
-                if !showCreateForm && !hasProfile {
-                    Button(action: { showCreateForm = true }) {
-                        HStack(spacing: 2) {
-                            Image(systemName: "plus").font(.caption2)
-                            Text("Set up").font(.caption)
-                        }
-                        .foregroundStyle(.blue)
-                    }
-                    .buttonStyle(.plain)
-                }
             }
             .padding(.vertical, 4)
             .padding(.horizontal, 6)
 
-            ForEach(myProfiles) { profile in
-                profileRow(profile).padding(.leading, 32).padding(.trailing, 6)
+            ForEach(sourceProfiles) { src in
+                sourceProfileRow(src)
+                    .padding(.leading, 32).padding(.trailing, 6)
             }
-
-            if showCreateForm {
-                CreateBrowserProfileInlineForm(
-                    state: state,
-                    browser: browser,
-                    onCreated: { newProfile in
-                        hub.add(newProfile)
-                        showCreateForm = false
-                    },
-                    onCancel: { showCreateForm = false }
-                )
-                .padding(.leading, 32).padding(.trailing, 6).padding(.bottom, 4)
+            if sourceProfiles.isEmpty {
+                Text("No \(browser.kind.displayName) profiles found on this Mac.")
+                    .font(.caption2).foregroundStyle(.secondary)
+                    .padding(.leading, 32).padding(.bottom, 4)
+            }
+        }
+        .task {
+            sourceProfiles = BrowserProfileManager.sourceProfiles(for: browser)
+            // Auto-detect any Chrome already exposing CDP, scoped to this
+            // browser's user-data root so we don't pre-fill Brave's port
+            // into Chrome's rows.
+            if let url = await BrowserProfileManager.autoDetectCdpUrl(
+                matchUserDataRoot: browser.userDataRoot
+            ),
+                let port = URL(string: url)?.port
+            {
+                autodetectedPort = String(port)
             }
         }
     }
 
     @ViewBuilder
-    private func profileRow(_ profile: WorkerClient.BrowserAuthProfile) -> some View {
+    private func sourceProfileRow(_ source: InstalledBrowserProfile) -> some View {
+        let mirrored = mirroredProfile(for: source)
+        let isMirrored = mirrored != nil
         HStack(alignment: .center, spacing: 6) {
             VStack(alignment: .leading, spacing: 0) {
-                Text(profile.display_name).font(.caption)
-                Text(profile.status)
-                    .font(.caption2).foregroundStyle(.secondary)
+                Text(source.displayName).font(.caption)
+                if isMirrored {
+                    Text(mirroredStatus(mirrored!))
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
             }
             Spacer()
-            // Open is always available: cookies expire over time, so re-
-            // launching the managed Chrome to log into a stale site is a
-            // routine action — not gated on a status flag.
-            if let dir = profile.user_data_dir {
-                Button("Open") {
-                    openManagedChrome(dirPath: dir)
+            if !isMirrored {
+                TextField(
+                    autodetectedPort ?? "CDP port",
+                    text: Binding(
+                        get: { portByDir[source.directoryName] ?? "" },
+                        set: { portByDir[source.directoryName] = $0 }
+                    )
+                )
+                .textFieldStyle(.roundedBorder).controlSize(.mini).font(.caption2)
+                .frame(maxWidth: 70)
+                Button(action: { Task { await mirror(source) } }) {
+                    HStack(spacing: 2) {
+                        Image(systemName: "plus").font(.caption2)
+                        Text("Mirror").font(.caption)
+                    }
+                    .foregroundStyle(.blue)
                 }
-                .buttonStyle(.plain).font(.caption2).foregroundStyle(.blue)
-            }
-            if confirmingDeleteId == profile.id {
+                .buttonStyle(.plain)
+                .disabled(savingDir == source.directoryName)
+            } else if let m = mirrored, confirmingDeleteId == m.id {
                 Button("Confirm", role: .destructive) {
-                    Task { await delete(profile) }
+                    Task { await delete(m) }
                 }
                 .buttonStyle(.plain).font(.caption2).foregroundStyle(.red)
                 Button("Cancel") { confirmingDeleteId = nil }
                     .buttonStyle(.plain).font(.caption2).foregroundStyle(.secondary)
-            } else {
-                Button(action: { confirmingDeleteId = profile.id }) {
+            } else if let m = mirrored {
+                Button(action: { confirmingDeleteId = m.id }) {
                     Image(systemName: "trash").font(.caption2)
                 }
                 .buttonStyle(.plain).foregroundStyle(.secondary)
@@ -152,17 +167,54 @@ struct SingleBrowserRow: View {
         .padding(.vertical, 1)
     }
 
-    private func openManagedChrome(dirPath: String) {
-        let dir = URL(fileURLWithPath: dirPath)
-        let landing = URL(string: "about:blank")!
-        Task { @MainActor in
-            do {
-                try await BrowserProfileManager.launchManaged(
-                    browser: browser, managedDir: dir, openingURL: landing
+    private func mirroredStatus(_ p: WorkerClient.BrowserAuthProfile) -> String {
+        if let cdp = p.cdp_url, !cdp.isEmpty,
+           let port = URL(string: cdp)?.port
+        {
+            return "mirrored · CDP :\(port)"
+        }
+        if let dir = p.user_data_dir, !dir.isEmpty {
+            return "legacy · \(dir)"
+        }
+        return "mirrored"
+    }
+
+    @MainActor
+    private func mirror(_ source: InstalledBrowserProfile) async {
+        guard let client = state.workerClient() else {
+            hub.loadError = "Sign in first."
+            return
+        }
+        savingDir = source.directoryName
+        defer { savingDir = nil }
+        let portRaw = (portByDir[source.directoryName] ?? autodetectedPort ?? "")
+            .trimmingCharacters(in: .whitespaces)
+        let parsedPort: Int? = {
+            guard !portRaw.isEmpty, let port = Int(portRaw), port > 0, port < 65536
+            else { return nil }
+            return port
+        }()
+        let cdpUrl: String? = parsedPort.map { "http://127.0.0.1:\($0)" }
+        do {
+            let workerId = LobuWorkerIdentity.current()
+            let displayName = "\(browser.kind.displayName) — \(source.displayName)"
+            let profile = try await client.createMyBrowserAuthProfile(
+                workerId: workerId,
+                displayName: displayName,
+                browserKind: browser.kind.rawValue,
+                userDataDir: nil,
+                cdpUrl: cdpUrl,
+                mirror: WorkerClient.BrowserAuthProfileMirrorConfig(
+                    source_profile_dir: source.directoryName,
+                    source_browser_root: browser.userDataRoot.path,
+                    source_browser: browser.kind.rawValue,
+                    mode: "mirror"
                 )
-            } catch {
-                hub.loadError = "Could not launch \(browser.kind.displayName): \(error.localizedDescription)"
-            }
+            )
+            hub.add(profile)
+            portByDir[source.directoryName] = ""
+        } catch {
+            hub.loadError = error.localizedDescription
         }
     }
 
@@ -172,93 +224,10 @@ struct SingleBrowserRow: View {
         let workerId = LobuWorkerIdentity.current()
         do {
             try await client.deleteMyBrowserAuthProfile(workerId: workerId, profileId: profile.id)
-            if let dir = profile.user_data_dir {
-                BrowserProfileManager.removeManagedProfile(at: URL(fileURLWithPath: dir))
-            }
             hub.remove(profile)
             confirmingDeleteId = nil
         } catch {
             hub.loadError = error.localizedDescription
-        }
-    }
-}
-
-/// Single-mode create form. The old radio (Copy / Attach-via-CDP) is gone:
-/// copy was unsafe (Google session conflict on the user's real Chrome) and
-/// CDP-attach to the user's Chrome added friction (relaunch with a flag, or
-/// the per-sync M144 permission dialog) without solving any problem the
-/// managed Lobu Chrome doesn't. The remaining flow is the only sane one:
-/// mint a blank profile dir, register the auth profile, open Chrome at the
-/// dir so the user can log into the sites they care about.
-struct CreateBrowserProfileInlineForm: View {
-    @ObservedObject var state: AppState
-    let browser: InstalledBrowser
-    var onCreated: (WorkerClient.BrowserAuthProfile) -> Void
-    var onCancel: () -> Void
-
-    @State private var saving: Bool = false
-    @State private var error: String?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Lobu opens a fresh \(browser.kind.displayName) window — log into the sites you want scraped there. Connectors reuse that session.")
-                .font(.caption2).foregroundStyle(.secondary)
-            if let error {
-                Text(error).font(.caption2).foregroundStyle(.red)
-            }
-            HStack(spacing: 6) {
-                Button("Cancel", action: onCancel)
-                    .buttonStyle(.plain).font(.caption2).foregroundStyle(.secondary)
-                Spacer()
-                Button("Create + open") {
-                    Task { await create() }
-                }
-                    .buttonStyle(.plain).font(.caption2).foregroundStyle(.blue)
-                    .disabled(saving)
-            }
-        }
-    }
-
-    @MainActor
-    private func create() async {
-        guard let client = state.workerClient() else {
-            error = "Sign in first."
-            return
-        }
-        saving = true
-        error = nil
-        defer { saving = false }
-        do {
-            let workerId = LobuWorkerIdentity.current()
-            let displayName = "\(browser.kind.displayName) (Lobu)"
-            let target = try BrowserProfileManager.createBlankManagedProfile(browser: browser, named: displayName)
-            let profile: WorkerClient.BrowserAuthProfile
-            do {
-                profile = try await client.createMyBrowserAuthProfile(
-                    workerId: workerId,
-                    displayName: displayName,
-                    browserKind: browser.kind.rawValue,
-                    userDataDir: target.path,
-                    cdpUrl: nil
-                )
-            } catch {
-                // Server refused: clean up the managed --user-data-dir we
-                // just created so the user isn't stuck with an orphan
-                // profile dir on disk after a failed save.
-                BrowserProfileManager.removeManagedProfile(at: target)
-                throw error
-            }
-            // Open the blank Chrome immediately so the user can start logging
-            // into sites. Launch failure isn't fatal — the profile exists
-            // and the user can click "Open" later from the row.
-            try? await BrowserProfileManager.launchManaged(
-                browser: browser,
-                managedDir: target,
-                openingURL: URL(string: "about:blank")!
-            )
-            onCreated(profile)
-        } catch let createError {
-            error = createError.localizedDescription
         }
     }
 }

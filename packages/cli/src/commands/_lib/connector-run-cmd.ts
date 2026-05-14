@@ -61,6 +61,15 @@ interface ResolvedAuthProfile {
   user_data_dir: string | null;
   cdp_url: string | null;
   device_worker_id: string | null;
+  /** Mirror-mode fields. When source_profile_dir is set, the connector
+   * subprocess decrypts cookies from the user's Chrome locally instead of
+   * launching anything. See packages/connector-sdk/src/browser/mirror-cookies.ts. */
+  auth_data?: {
+    source_profile_dir?: string | null;
+    source_browser_root?: string | null;
+    source_browser?: string | null;
+    mode?: string | null;
+  };
 }
 
 interface ResolvedFeed {
@@ -104,15 +113,6 @@ function ensurePlaywrightAvailable(): void {
       "Playwright is not installed. `lobu connector run` drives browser_session profiles via Playwright. Install: `bunx playwright install chromium`"
     );
   }
-}
-
-function detectChromeBinary(): string | null {
-  const candidates = [
-    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    "/usr/bin/google-chrome",
-    "/usr/bin/google-chrome-stable",
-  ];
-  return candidates.find((p) => existsSync(p)) ?? null;
 }
 
 function parseJsonFlag(
@@ -233,24 +233,34 @@ export async function connectorRun(
     );
   }
 
-  // For copy mode, user_data_dir must exist on this machine. The profile is
-  // device-bound; if you're running on a different Mac the path won't
-  // resolve. Fail with a clear error instead of letting Playwright crash.
-  if (profile.user_data_dir && !existsSync(profile.user_data_dir)) {
+  // Three auth shapes are valid for a browser_session profile in v1:
+  //   1. Mirror mode (auth_data.source_profile_dir set): we'll decrypt
+  //      cookies from the user's Chrome via keychain at run time. The
+  //      source dir must exist on this machine.
+  //   2. CDP attach (cdp_url set, no source_profile_dir): the user has
+  //      relaunched their Chrome with --remote-debugging-port; we attach.
+  //   3. Legacy user_data_dir (no auth_data.*): leftover from the older
+  //      "Lobu Chrome" model — still honored for back-compat but flagged.
+  const mirrorSourceDir = profile.auth_data?.source_profile_dir;
+  const mirrorBrowserRoot = profile.auth_data?.source_browser_root;
+  const mirrorSourceBrowser = profile.auth_data?.source_browser ?? "chrome";
+  if (mirrorSourceDir && mirrorBrowserRoot) {
+    const sourceProfilePath = `${mirrorBrowserRoot}/${mirrorSourceDir}`;
+    if (!existsSync(sourceProfilePath)) {
+      throw new Error(
+        `Source Chrome profile not found at ${sourceProfilePath}.\n` +
+          `The profile may have been deleted or renamed in your Chrome — re-pick in the Lobu menu bar.`
+      );
+    }
+  } else if (profile.user_data_dir && !existsSync(profile.user_data_dir)) {
+    // Legacy user_data_dir path missing on this machine — device drift.
     throw new Error(
-      `Managed Chrome profile directory is missing on this machine: ${profile.user_data_dir}\n` +
-        `This profile is bound to a different device (device_worker_id=${profile.device_worker_id ?? "?"}). ` +
-        `Run \`lobu connector run\` on the Mac that owns the profile, or recreate it here.`
+      `Legacy managed Chrome dir is missing on this machine: ${profile.user_data_dir}\n` +
+        `This profile predates mirror mode and is bound to a different device. ` +
+        `Recreate the auth profile in Lobu using mirror mode.`
     );
   }
-
-  const chromeBinary = profile.user_data_dir ? detectChromeBinary() : null;
-  if (profile.user_data_dir && !chromeBinary) {
-    throw new Error(
-      "Google Chrome not found at /Applications or /usr/bin. Install Chrome to use copy-mode browser profiles."
-    );
-  }
-  if (profile.cdp_url && !profile.user_data_dir) {
+  if (profile.cdp_url && !mirrorSourceDir) {
     printText(
       `Profile uses CDP at ${profile.cdp_url} — make sure that Chrome is running with --remote-debugging-port.`
     );
@@ -290,9 +300,16 @@ export async function connectorRun(
     const summary = {
       connector_key: connectorKey,
       auth_profile: profile.slug,
-      user_data_dir: profile.user_data_dir,
+      mode: mirrorSourceDir ? "mirror" : profile.cdp_url ? "cdp" : "legacy",
+      mirror: mirrorSourceDir
+        ? {
+            source_profile_dir: mirrorSourceDir,
+            source_browser_root: mirrorBrowserRoot,
+            source_browser: mirrorSourceBrowser,
+          }
+        : null,
       cdp_url: profile.cdp_url,
-      chrome_binary: chromeBinary,
+      legacy_user_data_dir: profile.user_data_dir,
       profile_status: profile.status,
       feed_id: feed?.id,
       checkpoint: checkpoint ?? null,
@@ -315,8 +332,56 @@ export async function connectorRun(
   const compiledCode = await compileConnectorFromFile(sourcePath);
 
   // Build the SyncContext shape that executeCompiledConnector expects.
-  // sessionState carries the only credentials a browser_session needs.
+  // For mirror profiles we layer two acquisition paths:
+  //   1. DevToolsActivePort lookup against the source Chrome's
+  //      user-data root. If the file is there, Chrome is exposing a
+  //      live CDP WebSocket — either the user toggled the M144 setting
+  //      at chrome://inspect/#remote-debugging, or they launched Chrome
+  //      with --remote-debugging-port. Either way, we attach via CDP and
+  //      run inside the user's actual Chrome session. Best fidelity for
+  //      fingerprint-pinned sites (Revolut etc.).
+  //   2. Keychain-decrypted cookies. If Chrome isn't exposing CDP, the
+  //      connector subprocess falls back to headless Playwright with
+  //      these cookies injected via addCookies. Covers ~90% of sites.
+  //
+  // The connector subprocess's browser-network.ts tries CDP first when
+  // cdp_url is explicitly set, falls through to cookies on failure.
   const sessionState: Record<string, unknown> = {};
+  if (mirrorSourceDir && mirrorBrowserRoot) {
+    const { acquireMirroredCookies } = await import(
+      "@lobu/connector-sdk/browser-mirror"
+    );
+    const { readDevToolsActivePort } = await import(
+      "@lobu/connector-sdk/browser-devtools-active-port"
+    );
+
+    // Layer 1: DevToolsActivePort. Read it first so we know whether to
+    // even bother decrypting cookies (the CDP path doesn't need them).
+    const activePort = await readDevToolsActivePort(mirrorBrowserRoot);
+    if (activePort) {
+      printText(
+        `Detected Chrome CDP at ${activePort.wsUrl} (via DevToolsActivePort).`
+      );
+      sessionState.cdp_url = activePort.wsUrl;
+    }
+
+    // Layer 2: cookies. Always acquire — even if CDP attach succeeds,
+    // the cookies are a free fallback in case the CDP socket drops
+    // mid-sync. Cheap to skip on CDP success in practice.
+    printText(`Acquiring cookies from ${mirrorBrowserRoot}/${mirrorSourceDir}...`);
+    const acquired = await acquireMirroredCookies({
+      sourceBrowser: mirrorSourceBrowser,
+      userDataRoot: mirrorBrowserRoot,
+      sourceProfileDir: mirrorSourceDir,
+    });
+    printText(
+      `  Kept ${acquired.cookies.length} cookies (skipped ${acquired.skipped_google_count} Google-account cookies, ${acquired.total_decrypted_count} total).`
+    );
+    sessionState.cookies = acquired.cookies;
+  }
+  // Explicit cdp_url / user_data_dir on the row override anything above:
+  // legacy escape hatch for users who hand-configured a specific port,
+  // or for profile rows still on the older managed-Chrome model.
   if (profile.user_data_dir) sessionState.user_data_dir = profile.user_data_dir;
   if (profile.cdp_url) sessionState.cdp_url = profile.cdp_url;
 

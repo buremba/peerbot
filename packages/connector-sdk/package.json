@@ -15,6 +15,18 @@
         "types": "./dist/index.d.ts",
         "default": "./dist/index.js"
       }
+    },
+    "./browser-mirror": {
+      "import": {
+        "types": "./dist/browser/mirror-cookies.d.ts",
+        "default": "./dist/browser/mirror-cookies.js"
+      }
+    },
+    "./browser-devtools-active-port": {
+      "import": {
+        "types": "./dist/browser/devtools-active-port.d.ts",
+        "default": "./dist/browser/devtools-active-port.js"
+      }
     }
   },
   "files": [

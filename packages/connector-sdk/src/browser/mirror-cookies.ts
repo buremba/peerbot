@@ -55,15 +55,6 @@ const GOOGLE_ACCOUNT_DOMAINS_DENY_LIST = new Set([
   'googleapis.com',
 ]);
 
-function isGoogleAccountDomain(host: string): boolean {
-  const normalized = host.replace(/^\./, '').toLowerCase();
-  if (GOOGLE_ACCOUNT_DOMAINS_DENY_LIST.has(normalized)) return true;
-  for (const denied of GOOGLE_ACCOUNT_DOMAINS_DENY_LIST) {
-    if (normalized.endsWith(`.${denied}`)) return true;
-  }
-  return false;
-}
-
 /** Map auth_data.source_browser → (Application Support relative path, Keychain service/account).
  * We only fully support Chrome in v1; the others are stubbed for the future
  * but always return null on the keychain lookup path. */
@@ -84,13 +75,38 @@ function browserConfig(sourceBrowser: string): {
   }
 }
 
-export interface MirrorCookieAcquireParams {
+export interface DecryptChromeCookiesParams {
   /** "chrome" / "brave" / "arc" / "edge". v1 only honors "chrome". */
-  sourceBrowser: string;
+  sourceBrowser?: string;
   /** Absolute path to Chrome's user-data root (the dir that contains
    * "Default", "Profile 1", etc. plus Local State). */
   userDataRoot: string;
   /** Subdir name of the source profile, e.g. "Default" or "Profile 1". */
+  sourceProfileDir: string;
+  /** Optional allow-list of host domains. When set, only cookies whose
+   * host_key matches one of these (exact, leading-dot, or wildcard
+   * subdomain) are returned. Empty = keep all. Used by `lobu memory
+   * browser-auth` to scope captures to a specific connector. */
+  allowDomains?: string[];
+  /** Optional deny-list of host domains. Cookies whose host_key matches
+   * any of these are dropped. Used by mirror mode to skip Google-account
+   * cookies (avoids Google's session-conflict logout). */
+  denyDomains?: Set<string>;
+}
+
+export interface DecryptChromeCookiesResult {
+  cookies: Cookie[];
+  /** How many cookies decrypted successfully before filtering. */
+  total_decrypted: number;
+  /** How many cookies got dropped by the deny-list. */
+  denied: number;
+  /** How many cookies got dropped by the allow-list (or by validation). */
+  filtered: number;
+}
+
+export interface MirrorCookieAcquireParams {
+  sourceBrowser: string;
+  userDataRoot: string;
   sourceProfileDir: string;
 }
 
@@ -101,19 +117,55 @@ export interface MirrorCookieAcquireResult {
 }
 
 /**
- * Acquire mirrored cookies for the given Chrome profile, with the
- * Google-domain deny list applied. Throws on unsupported platforms /
- * inaccessible keychain.
+ * Mirror-mode wrapper: decrypt the profile's cookies, filter out the
+ * Google-account deny-list. Used by `lobu connector run` so the connector
+ * subprocess can run authenticated against a user's Chrome state without
+ * launching anything.
  */
 export async function acquireMirroredCookies(
   params: MirrorCookieAcquireParams
 ): Promise<MirrorCookieAcquireResult> {
+  const result = await decryptChromeCookiesMacOS({
+    sourceBrowser: params.sourceBrowser,
+    userDataRoot: params.userDataRoot,
+    sourceProfileDir: params.sourceProfileDir,
+    denyDomains: new Set(GOOGLE_ACCOUNT_DOMAINS_DENY_LIST),
+  });
+  sdkLogger.info(
+    {
+      userDataRoot: params.userDataRoot,
+      sourceProfileDir: params.sourceProfileDir,
+      totalDecryptedCount: result.total_decrypted,
+      skippedGoogleCount: result.denied,
+      keptCount: result.cookies.length,
+    },
+    '[MirrorCookies] Acquired'
+  );
+  return {
+    cookies: result.cookies,
+    skipped_google_count: result.denied,
+    total_decrypted_count: result.total_decrypted,
+  };
+}
+
+/**
+ * Decrypt cookies from a macOS Chrome profile's SQLite store via the
+ * Keychain entry. Generic primitive consumed by both mirror mode (with
+ * the Google deny-list) and the CLI's `lobu memory browser-auth` capture
+ * flow (with a connector-scoped allow-list). Replaces the older
+ * `extractCookiesMacOS` that used to live in
+ * `packages/cli/src/commands/memory/_lib/browser-auth-cmd.ts` — that
+ * file now imports this.
+ */
+export async function decryptChromeCookiesMacOS(
+  params: DecryptChromeCookiesParams
+): Promise<DecryptChromeCookiesResult> {
   if (process.platform !== 'darwin') {
     throw new Error(
       `Mirror cookie acquisition is currently macOS-only (process.platform=${process.platform}). Linux/Windows pending.`
     );
   }
-  const cfg = browserConfig(params.sourceBrowser);
+  const cfg = browserConfig(params.sourceBrowser ?? 'chrome');
   if (!cfg) {
     throw new Error(
       `Mirror mode does not yet support source_browser='${params.sourceBrowser}' (v1 is Chrome only).`
@@ -187,10 +239,14 @@ export async function acquireMirroredCookies(
     db.close();
 
     const cookies: Cookie[] = [];
-    let skippedGoogleCount = 0;
-    let totalDecryptedCount = 0;
+    let totalDecrypted = 0;
+    let denied = 0;
+    let filtered = 0;
     const chromeEpochOffset = 11644473600n;
     const iv = Buffer.alloc(16, ' ');
+    const allowSet = params.allowDomains?.length
+      ? buildAllowMatcher(params.allowDomains)
+      : null;
 
     for (const row of rows) {
       const raw = row.encrypted_value;
@@ -213,24 +269,36 @@ export async function acquireMirroredCookies(
         }
       }
       if (!value && !row.name) continue;
-      totalDecryptedCount += 1;
+      totalDecrypted += 1;
 
-      if (isGoogleAccountDomain(row.host_key)) {
-        skippedGoogleCount += 1;
+      // Deny-list (e.g. Google account domains for mirror mode) wins over
+      // allow-list — keeps callers from accidentally allowing something
+      // the deny-list intended to skip.
+      if (params.denyDomains && matchesDomainSet(row.host_key, params.denyDomains)) {
+        denied += 1;
+        continue;
+      }
+      if (allowSet && !allowSet(row.host_key)) {
+        filtered += 1;
         continue;
       }
 
-      // Playwright's addCookies is fail-fast on any invalid entry. The
-      // user's Chrome contains thousands of cookies and a handful decrypt
-      // to garbage (pre-M80 cookies that don't carry the modern 32-byte
-      // SHA256(host_key) prefix, or legacy v10 entries with a different
-      // layout). Reject anything whose decrypted value has non-printable
-      // bytes — those are clearly metadata leaking through, not a real
-      // cookie value. We lose maybe 10-20 of 3000+; well below the noise
-      // floor.
-      if (!row.name || row.name.length === 0) continue;
-      if (!row.host_key || row.host_key.length === 0) continue;
-      if (!isLikelyCookieValue(value)) continue;
+      // Playwright's addCookies is fail-fast on any invalid entry. A
+      // handful of cookies decrypt to garbage (pre-M80 layout, legacy
+      // v10 variants); reject anything with non-printable bytes since
+      // those are clearly metadata leaking through, not a real value.
+      if (!row.name || row.name.length === 0) {
+        filtered += 1;
+        continue;
+      }
+      if (!row.host_key || row.host_key.length === 0) {
+        filtered += 1;
+        continue;
+      }
+      if (!isLikelyCookieValue(value)) {
+        filtered += 1;
+        continue;
+      }
       const cookiePath = row.path && row.path.length > 0 ? row.path : '/';
 
       const expiresUtc = BigInt(row.expires_utc_text ?? '0');
@@ -239,18 +307,11 @@ export async function acquireMirroredCookies(
 
       // Chrome's `samesite` is -1 (unspecified) | 0 (None) | 1 (Lax) | 2
       // (Strict). Playwright requires exactly one of the three named
-      // values, so collapse "unspecified" to Lax (the modern Chrome
-      // default for cookies that didn't declare a SameSite attribute).
+      // values; collapse "unspecified" to Lax (the modern Chrome
+      // default). "None" requires Secure — promote insecure-None to Lax
+      // so the addCookies batch stays valid.
       const sameSite: Cookie['sameSite'] =
-        row.samesite === 0
-          ? 'None'
-          : row.samesite === 2
-            ? 'Strict'
-            : 'Lax';
-
-      // Playwright requires "None" cookies to also be Secure. Chrome
-      // sometimes stores legacy non-secure SameSite=None cookies; promote
-      // them to Lax to keep the batch valid.
+        row.samesite === 0 ? 'None' : row.samesite === 2 ? 'Strict' : 'Lax';
       const finalSameSite: Cookie['sameSite'] =
         sameSite === 'None' && row.is_secure !== 1 ? 'Lax' : sameSite;
 
@@ -265,22 +326,7 @@ export async function acquireMirroredCookies(
         sameSite: finalSameSite,
       });
     }
-
-    sdkLogger.info(
-      {
-        userDataRoot: params.userDataRoot,
-        sourceProfileDir: params.sourceProfileDir,
-        totalDecryptedCount,
-        skippedGoogleCount,
-        keptCount: cookies.length,
-      },
-      '[MirrorCookies] Acquired'
-    );
-    return {
-      cookies,
-      skipped_google_count: skippedGoogleCount,
-      total_decrypted_count: totalDecryptedCount,
-    };
+    return { cookies, total_decrypted: totalDecrypted, denied, filtered };
   } finally {
     try {
       rmSync(tmpDir, { recursive: true, force: true });
@@ -299,6 +345,34 @@ export async function acquireMirroredCookies(
 function extractCookieValue(buf: Buffer): string {
   if (buf.length <= 32) return buf.toString('utf-8');
   return buf.slice(32).toString('utf-8');
+}
+
+/** Build a host-matching predicate for an allow-list. Mirrors the SQL
+ * the old CLI helper used: exact host match, leading-dot variant, or
+ * subdomain wildcard. */
+function buildAllowMatcher(domains: string[]): (host: string) => boolean {
+  const patterns = domains.map((d) => {
+    const clean = d.replace(/^\./, '').toLowerCase();
+    return { exact: clean, dotted: `.${clean}`, suffix: `.${clean}` };
+  });
+  return (host: string) => {
+    const normalized = host.toLowerCase();
+    for (const p of patterns) {
+      if (normalized === p.exact) return true;
+      if (normalized === p.dotted) return true;
+      if (normalized.endsWith(p.suffix)) return true;
+    }
+    return false;
+  };
+}
+
+function matchesDomainSet(host: string, deny: Set<string>): boolean {
+  const normalized = host.replace(/^\./, '').toLowerCase();
+  if (deny.has(normalized)) return true;
+  for (const denied of deny) {
+    if (normalized.endsWith(`.${denied}`)) return true;
+  }
+  return false;
 }
 
 /** Real cookie values are printable ASCII (the Set-Cookie wire format

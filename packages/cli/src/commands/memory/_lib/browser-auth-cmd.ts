@@ -6,7 +6,7 @@
  * directly using the Keychain encryption key. On Linux, uses headless Chrome via CDP.
  */
 
-import { execSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import {
   copyFileSync,
   existsSync,
@@ -142,176 +142,25 @@ async function extractCookies(
   domains: string[]
 ): Promise<any[]> {
   if (process.platform === "darwin") {
-    return extractCookiesMacOS(profileDir, chromeProfileDir, domains);
-  }
-  return extractCookiesCDP(chromeBinary, profileDir, chromeProfileDir, domains);
-}
-
-/** Browser brands and their Keychain entries */
-const BROWSER_KEYCHAIN: { service: string; account: string }[] = [
-  { service: "Chrome Safe Storage", account: "Chrome" },
-  { service: "Chromium Safe Storage", account: "Chromium" },
-  { service: "Brave Safe Storage", account: "Brave" },
-  { service: "Microsoft Edge Safe Storage", account: "Microsoft Edge" },
-];
-
-/**
- * macOS: Decrypt Chrome cookies directly from the SQLite store using the
- * Keychain encryption key. This avoids launching a separate Chrome process
- * which can't decrypt cookies from a copied profile.
- */
-async function extractCookiesMacOS(
-  profileDir: string,
-  chromeProfileDir: string,
-  domains: string[]
-): Promise<any[]> {
-  const { pbkdf2Sync, createDecipheriv } = await import("node:crypto");
-  const { DatabaseSync } = await import("node:sqlite");
-
-  const cookiePath = join(profileDir, chromeProfileDir, "Cookies");
-  if (!existsSync(cookiePath)) {
-    throw new Error(
-      `No Cookies file found in Chrome profile: ${chromeProfileDir}`
+    // Single source of truth lives in the connector SDK so the connector
+    // subprocess (mirror mode) and this CLI capture flow share one
+    // decryption codepath. The SDK helper takes an `allowDomains` list
+    // and returns Playwright-ready Cookie[]; we just pass through.
+    const { decryptChromeCookiesMacOS } = await import(
+      "@lobu/connector-sdk/browser-mirror"
     );
-  }
-
-  // Copy to temp file to avoid locking issues with running Chrome
-  const tmpDir = mkdtempSync(join(tmpdir(), "lobu-auth-"));
-  const tmpCookiePath = join(tmpDir, "Cookies");
-  copyFileSync(cookiePath, tmpCookiePath);
-  const journalSrc = join(profileDir, chromeProfileDir, "Cookies-journal");
-  if (existsSync(journalSrc)) {
-    copyFileSync(journalSrc, join(tmpDir, "Cookies-journal"));
-  }
-
-  try {
-    // Try each browser brand's Keychain entry
     printText(
       "macOS will ask to access your browser's cookie encryption key.\n" +
         'A system dialog from "security" will appear — click "Always Allow" to avoid future prompts.'
     );
-    let keychainKey: string | null = null;
-    for (const { service, account } of BROWSER_KEYCHAIN) {
-      try {
-        keychainKey = execSync(
-          `security find-generic-password -w -s "${service}" -a "${account}"`,
-          { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }
-        ).trim();
-        if (keychainKey) break;
-      } catch {
-        // Try next brand
-      }
-    }
-    if (!keychainKey) {
-      throw new Error(
-        "Could not read browser encryption key from macOS Keychain.\n" +
-          'If a system dialog appeared, click "Always Allow" and retry.\n' +
-          "If no dialog appeared, your Keychain may be locked — run: security unlock-keychain"
-      );
-    }
-
-    const derivedKey = pbkdf2Sync(keychainKey, "saltysalt", 1003, 16, "sha1");
-
-    // Build domain filter for SQL
-    const domainClauses = domains
-      .map((d) => {
-        const clean = d.replace(/^\./, "");
-        return `host_key = '.${clean}' OR host_key = '${clean}' OR host_key LIKE '%.${clean}'`;
-      })
-      .join(" OR ");
-
-    const db = new DatabaseSync(tmpCookiePath, { readOnly: true });
-    const rows = db
-      .prepare(
-        `SELECT name, host_key, path, encrypted_value, CAST(expires_utc AS TEXT) as expires_utc_text, is_httponly, is_secure, samesite
-       FROM cookies WHERE ${domainClauses}`
-      )
-      .all() as any[];
-    db.close();
-
-    const cookies: any[] = [];
-    const chromeEpochOffset = 11644473600n;
-    const iv = Buffer.alloc(16, " ");
-
-    for (const row of rows) {
-      // node:sqlite returns BLOBs as Uint8Array, convert to Buffer for crypto ops
-      const raw = row.encrypted_value;
-      const encrypted =
-        raw instanceof Buffer ? raw : Buffer.from(raw as Uint8Array);
-      let value = "";
-
-      if (encrypted && encrypted.length > 3) {
-        const version = encrypted.slice(0, 3).toString("utf-8");
-        if (version === "v10" || version === "v11") {
-          const ciphertext = encrypted.slice(3);
-          try {
-            const decipher = createDecipheriv("aes-128-cbc", derivedKey, iv);
-            const dec = Buffer.concat([
-              decipher.update(ciphertext),
-              decipher.final(),
-            ]);
-            // Chrome prepends metadata bytes before the actual cookie value.
-            // Find the boundary: scan from the end for the longest valid printable suffix.
-            value = extractPrintableSuffix(dec);
-          } catch {
-            continue;
-          }
-        } else {
-          value = encrypted.toString("utf-8");
-        }
-      }
-
-      if (!value && !row.name) continue;
-
-      // Chrome stores expiry as microseconds since 1601-01-01
-      const expiresUtc = BigInt(row.expires_utc_text ?? "0");
-      const expiresUnix =
-        expiresUtc > 0n
-          ? Number(expiresUtc / 1000000n - chromeEpochOffset)
-          : -1;
-
-      cookies.push({
-        name: row.name,
-        value,
-        domain: row.host_key,
-        path: row.path ?? "/",
-        expires: expiresUnix,
-        httpOnly: row.is_httponly === 1,
-        secure: row.is_secure === 1,
-        sameSite:
-          row.samesite === 0 ? "None" : row.samesite === 1 ? "Lax" : "Strict",
-      });
-    }
-
-    return cookies;
-  } finally {
-    try {
-      rmSync(tmpDir, { recursive: true, force: true });
-    } catch {
-      /* ignore */
-    }
+    const result = await decryptChromeCookiesMacOS({
+      userDataRoot: profileDir,
+      sourceProfileDir: chromeProfileDir,
+      allowDomains: domains,
+    });
+    return result.cookies;
   }
-}
-
-/**
- * Chrome prepends opaque metadata bytes to the plaintext before encrypting.
- * Rather than hardcoding the prefix length (which varies by Chrome version),
- * find the actual cookie value by scanning from the end for the longest run
- * of printable ASCII + common cookie characters.
- */
-function extractPrintableSuffix(buf: Buffer): string {
-  // Cookie values are printable ASCII (0x20-0x7E). Metadata bytes are typically
-  // control chars or high bytes. Scan backwards to find where the value starts.
-  let boundary = buf.length;
-  for (let i = buf.length - 1; i >= 0; i--) {
-    const b = buf[i]!;
-    if (b >= 0x20 && b <= 0x7e) {
-      boundary = i;
-    } else {
-      break;
-    }
-  }
-  return buf.slice(boundary).toString("utf-8");
+  return extractCookiesCDP(chromeBinary, profileDir, chromeProfileDir, domains);
 }
 
 /**

@@ -7,7 +7,7 @@
  * used to require creating a real connections row + a feed + triggering it,
  * and even then events would commit. This command runs the same compiled
  * connector code the server runs, against the same SessionState shape, but
- * locally on the user's Mac (where the user_data_dir lives) and dumps the
+ * locally on the user's Mac (where the source Chrome profile lives) and dumps the
  * would-be events + would-be-next-checkpoint to stdout and a run artifact.
  *
  * Scope (v1): browser_session profiles only. OAuth / env / interactive
@@ -58,7 +58,6 @@ interface ResolvedAuthProfile {
   profile_kind: string;
   status: string;
   browser_kind: string | null;
-  user_data_dir: string | null;
   cdp_url: string | null;
   device_worker_id: string | null;
   /** Mirror-mode fields. When source_profile_dir is set, the connector
@@ -239,14 +238,12 @@ export async function connectorRun(
     );
   }
 
-  // Three auth shapes are valid for a browser_session profile in v1:
-  //   1. Mirror mode (auth_data.source_profile_dir set): we'll decrypt
-  //      cookies from the user's Chrome via keychain at run time. The
-  //      source dir must exist on this machine.
-  //   2. CDP attach (cdp_url set, no source_profile_dir): the user has
-  //      relaunched their Chrome with --remote-debugging-port; we attach.
-  //   3. Legacy user_data_dir (no auth_data.*): leftover from the older
-  //      "Lobu Chrome" model — still honored for back-compat but flagged.
+  // Two auth shapes for a browser_session profile:
+  //   1. Mirror mode (auth_data.source_profile_dir set): decrypt cookies
+  //      from the user's Chrome via keychain at sync time. The source
+  //      dir must exist on this machine.
+  //   2. CDP attach (cdp_url set, no source_profile_dir): the user is
+  //      running Chrome with --remote-debugging-port and we attach.
   const mirrorSourceDir = profile.auth_data?.source_profile_dir;
   const mirrorBrowserRoot = profile.auth_data?.source_browser_root;
   const mirrorSourceBrowser = profile.auth_data?.source_browser ?? "chrome";
@@ -258,13 +255,6 @@ export async function connectorRun(
           `The profile may have been deleted or renamed in your Chrome — re-pick in the Lobu menu bar.`
       );
     }
-  } else if (profile.user_data_dir && !existsSync(profile.user_data_dir)) {
-    // Legacy user_data_dir path missing on this machine — device drift.
-    throw new Error(
-      `Legacy managed Chrome dir is missing on this machine: ${profile.user_data_dir}\n` +
-        `This profile predates mirror mode and is bound to a different device. ` +
-        `Recreate the auth profile in Lobu using mirror mode.`
-    );
   }
   if (profile.cdp_url && !mirrorSourceDir) {
     printText(
@@ -306,7 +296,7 @@ export async function connectorRun(
     const summary = {
       connector_key: connectorKey,
       auth_profile: profile.slug,
-      mode: mirrorSourceDir ? "mirror" : profile.cdp_url ? "cdp" : "legacy",
+      mode: mirrorSourceDir ? "mirror" : "cdp",
       mirror: mirrorSourceDir
         ? {
             source_profile_dir: mirrorSourceDir,
@@ -315,7 +305,6 @@ export async function connectorRun(
           }
         : null,
       cdp_url: profile.cdp_url,
-      legacy_user_data_dir: profile.user_data_dir,
       profile_status: profile.status,
       feed_id: feed?.id,
       checkpoint: checkpoint ?? null,
@@ -397,10 +386,8 @@ export async function connectorRun(
     );
     sessionState.cookies = acquired.cookies;
   }
-  // Explicit cdp_url / user_data_dir on the row override anything above:
-  // legacy escape hatch for users who hand-configured a specific port,
-  // or for profile rows still on the older managed-Chrome model.
-  if (profile.user_data_dir) sessionState.user_data_dir = profile.user_data_dir;
+  // Explicit cdp_url on the profile row overrides DevToolsActivePort
+  // auto-discovery — the user pinned a specific port at create time.
   if (profile.cdp_url) sessionState.cdp_url = profile.cdp_url;
 
   // Lazy-import the worker so the CLI startup doesn't pay this cost for

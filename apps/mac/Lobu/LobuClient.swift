@@ -365,7 +365,6 @@ final class WorkerClient {
         let profile_kind: String
         let status: String
         let browser_kind: String?
-        let user_data_dir: String?
         let cdp_url: String?
         let auth_data: BrowserAuthData?
         let created_at: String?
@@ -403,7 +402,6 @@ final class WorkerClient {
         workerId: String,
         displayName: String,
         browserKind: String,
-        userDataDir: String?,
         cdpUrl: String?,
         mirror: BrowserAuthProfileMirrorConfig?
     ) async throws -> BrowserAuthProfile {
@@ -411,7 +409,6 @@ final class WorkerClient {
             let worker_id: String
             let display_name: String
             let browser_kind: String
-            let user_data_dir: String?
             let cdp_url: String?
             let auth_data: BrowserAuthProfileMirrorConfig?
         }
@@ -421,7 +418,6 @@ final class WorkerClient {
                 worker_id: workerId,
                 display_name: displayName,
                 browser_kind: browserKind,
-                user_data_dir: userDataDir,
                 cdp_url: cdpUrl,
                 auth_data: mirror
             )

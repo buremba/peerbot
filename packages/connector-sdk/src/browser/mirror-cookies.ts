@@ -1,36 +1,10 @@
 /**
- * Mirror mode: decrypt cookies from a user-owned Chrome profile so the
- * connector subprocess can run authenticated against them in a headless
- * Patchright Chromium, without ever launching the user's actual Chrome
- * (or a Lobu-managed one).
- *
- * Architecture context:
- *   - The user picks one of their installed Chrome profiles in the Lobu
- *     menu bar ("Default", "Profile 1", etc.). The auth_profile row stores
- *     the selection in auth_data.source_profile_dir (e.g. "Default") plus
- *     auth_data.source_browser_root (e.g.
- *     ~/Library/Application Support/Google/Chrome).
- *   - At sync time, the connector subprocess decrypts cookies from
- *     <source_browser_root>/<source_profile_dir>/Cookies via the macOS
- *     keychain entry "Chrome Safe Storage", filters out Google-account
- *     domains (so a Lobu sync can't trigger Google's session-conflict
- *     logout on the user's real Chrome), and returns Cookie[] suitable for
- *     Playwright's BrowserContext.addCookies.
- *   - No Chrome instance is launched as part of this. Patchright in the
- *     connector subprocess starts a fresh headless Chromium, accepts the
- *     injected cookies, and runs.
- *
- * Compared to the earlier "managed Chrome" attempts: no NSWorkspace
- * launching, no TCC keychain dance for Patchright, no Google session
- * conflict — cookies are decrypted in the calling process (which inherits
- * its parent's TCC identity, so the Mac app's "Always Allow" survives),
- * and the Lobu-side Chrome that would have collided with Google never
- * exists.
- *
- * Linux/Windows: this helper currently returns an empty cookie list with
- * a "platform not supported" reason. Their cookie stores aren't keychain-
- * encrypted the same way (Linux uses a fixed `peanuts` constant or
- * libsecret; Windows uses DPAPI), and we wire those paths in a follow-up.
+ * Decrypt cookies from a user-owned Chrome profile and inject them into a
+ * headless connector subprocess — the "mirror" model. The user picks a
+ * Chrome profile in the Lobu menu bar; at sync time we decrypt cookies
+ * via the macOS Keychain, drop Google-account domains (to avoid Google's
+ * session-conflict logout on the user's real Chrome), and hand a
+ * Playwright-ready Cookie[] to the runner. macOS only in v1.
  */
 
 import { execSync } from 'node:child_process';

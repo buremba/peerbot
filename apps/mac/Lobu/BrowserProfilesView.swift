@@ -213,9 +213,6 @@ struct SingleBrowserRow: View {
     }
 
     private func mirroredStatus(_ p: WorkerClient.BrowserAuthProfile) -> String {
-        if let dir = p.user_data_dir, !dir.isEmpty {
-            return "legacy · \(dir)"
-        }
         let allowed = p.auth_data?.allow_cdp_attach == true
         if allowed && detectedCdpPort != nil {
             return "mirrored · uses live Chrome"
@@ -262,7 +259,6 @@ struct SingleBrowserRow: View {
                 workerId: workerId,
                 displayName: displayName,
                 browserKind: browser.kind.rawValue,
-                userDataDir: nil,
                 cdpUrl: cdpUrl,
                 mirror: WorkerClient.BrowserAuthProfileMirrorConfig(
                     source_profile_dir: source.directoryName,

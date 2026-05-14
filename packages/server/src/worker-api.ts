@@ -1779,19 +1779,20 @@ export async function listMyDeviceAuthProfiles(c: Context<{ Bindings: Env }>) {
 /**
  * POST /api/workers/me/auth-profiles
  *
- * Body: { worker_id, display_name, browser_kind, user_data_dir | cdp_url }
+ * Body: { worker_id, display_name, browser_kind, cdp_url?, auth_data? }
  *
- * Create a browser-session auth profile bound to this device. Cookies stay on
- * the device — server's auth_data is empty. A browser session is a
- * device-scoped resource: any connection pinned to this device can use it,
- * regardless of connector.
+ * Create a browser-session auth profile bound to this device. The two
+ * supported shapes are mirror (auth_data.source_profile_dir, cookies
+ * decrypted on the device at sync time) and CDP attach (cdp_url, Lobu
+ * connects to a Chrome the user is running with remote debugging).
+ * Cookies stay on the device; server's auth_data carries only the
+ * non-secret pointer to the source profile.
  */
 export async function createMyDeviceAuthProfile(c: Context<{ Bindings: Env }>) {
   let body: {
     worker_id?: string;
     display_name?: string;
     browser_kind?: string;
-    user_data_dir?: string;
     cdp_url?: string;
     auth_data?: {
       source_profile_dir?: string;
@@ -1813,7 +1814,6 @@ export async function createMyDeviceAuthProfile(c: Context<{ Bindings: Env }>) {
   const workerId = (body.worker_id ?? '').trim();
   const displayName = (body.display_name ?? '').trim();
   const browserKind = (body.browser_kind ?? '').trim() as BrowserKind;
-  const userDataDir = (body.user_data_dir ?? '').trim();
   const cdpUrl = (body.cdp_url ?? '').trim();
   const mirrorSourceDir = (body.auth_data?.source_profile_dir ?? '').trim();
   const mirrorBrowserRoot = (body.auth_data?.source_browser_root ?? '').trim();
@@ -1824,28 +1824,17 @@ export async function createMyDeviceAuthProfile(c: Context<{ Bindings: Env }>) {
   if (!BROWSER_KIND_SET.has(browserKind)) {
     return c.json({ error: `browser_kind must be one of: ${[...BROWSER_KIND_SET].join(', ')}` }, 400);
   }
-  // Valid shapes for a browser_session profile:
-  //   - Mirror mode (optionally with CDP fallback): auth_data.source_*
-  //     present; cdp_url optional. At sync time the connector tries CDP
-  //     first if cdp_url is set, falls back to mirrored cookies.
-  //   - Pure CDP attach: cdp_url only, no mirror fields, no user_data_dir.
-  //   - Legacy managed: user_data_dir only.
-  // user_data_dir cannot combine with anything else (legacy single-purpose).
+  // Two valid shapes for a browser_session profile:
+  //   - Mirror mode (optionally with CDP override on auth_data.allow_cdp_attach):
+  //     auth_data.source_profile_dir + source_browser_root set; cdp_url may
+  //     pin a port the user wants the connector to attach to.
+  //   - Pure CDP attach: cdp_url only, no mirror fields.
   const isMirror = mirrorSourceDir.length > 0 && mirrorBrowserRoot.length > 0;
-  if (userDataDir.length > 0 && (isMirror || cdpUrl.length > 0)) {
+  if (!isMirror && cdpUrl.length === 0) {
     return c.json(
       {
         error:
-          'legacy user_data_dir cannot combine with mirror or cdp_url — pick one model',
-      },
-      400
-    );
-  }
-  if (!isMirror && cdpUrl.length === 0 && userDataDir.length === 0) {
-    return c.json(
-      {
-        error:
-          'browser_session needs one of: auth_data.source_profile_dir (mirror), cdp_url (attach), or user_data_dir (legacy)',
+          'browser_session needs auth_data.source_profile_dir (mirror) or cdp_url (attach)',
       },
       400
     );
@@ -1909,18 +1898,17 @@ export async function createMyDeviceAuthProfile(c: Context<{ Bindings: Env }>) {
           allow_cdp_attach: body.auth_data?.allow_cdp_attach === true,
         }
       : {};
-    // Mirror profiles are usable as soon as cookies live in the user's
-    // Chrome (they already do — we just decrypt at sync time). Legacy
-    // managed Chromes ditto. Only CDP-attach is pending until first run.
-    const initialStatus = cdpUrl && !userDataDir && !isMirror ? 'pending_auth' : 'active';
+    // Mirror profiles are usable immediately (cookies live in the
+    // user's Chrome already). Pure CDP attach is pending until first run.
+    const initialStatus = !isMirror && cdpUrl ? 'pending_auth' : 'active';
     if (existingRows.length > 0) {
       const existing = existingRows[0]!;
-      // Refresh the volatile fields so the caller (Mac app on relaunch) can
-      // update the auth shape if the user re-picked a source profile or
-      // moved between mirror/cdp/legacy modes.
+      // Refresh the volatile fields on re-mirror so the user can switch
+      // a profile between cookies-only and live-Chrome by re-clicking
+      // Mirror with a different checkbox state.
       const updated = (await sql`
         UPDATE auth_profiles
-        SET user_data_dir = ${userDataDir || null},
+        SET user_data_dir = NULL,
             cdp_url = ${cdpUrl || null},
             display_name = ${displayName},
             auth_data = ${sql.json(newAuthData)},
@@ -1943,7 +1931,7 @@ export async function createMyDeviceAuthProfile(c: Context<{ Bindings: Env }>) {
       createdBy: c.var.workerUserId,
       deviceWorkerId: device!.id,
       browserKind,
-      userDataDir: userDataDir || null,
+      userDataDir: null,
       cdpUrl: cdpUrl || null,
       authData: newAuthData,
     });

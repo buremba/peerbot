@@ -43,11 +43,10 @@ export async function restGetAuthProfileForRun(c: Context<{ Bindings: Env }>) {
   if (!profile) return c.json({ error: `Auth profile '${slug}' not found` }, 404);
 
   // Pass through the read-only fields the CLI's local executor consumes,
-  // plus the mirror-mode fields nested in auth_data (source_profile_dir,
-  // source_browser_root, source_browser). Sensitive auth_data subkeys (the
-  // cookie blob from legacy CLI captures) are filtered out — the CLI's
-  // mirror path re-decrypts locally from the user's Chrome rather than
-  // trusting a server-side cookie copy.
+  // plus the mirror-mode fields nested in auth_data. Sensitive auth_data
+  // subkeys (cookie blobs from legacy CLI captures) are filtered out —
+  // the CLI's mirror path re-decrypts locally rather than trusting a
+  // server-side copy.
   const authData = (profile.auth_data ?? {}) as Record<string, unknown>;
   return c.json({
     profile: {
@@ -58,7 +57,6 @@ export async function restGetAuthProfileForRun(c: Context<{ Bindings: Env }>) {
       profile_kind: profile.profile_kind,
       status: profile.status,
       browser_kind: profile.browser_kind,
-      user_data_dir: profile.user_data_dir,
       cdp_url: profile.cdp_url,
       device_worker_id: profile.device_worker_id,
       auth_data: {

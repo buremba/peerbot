@@ -58,7 +58,6 @@ struct InstalledBrowserProfile: Identifiable, Hashable {
     let directoryName: String
     let displayName: String
     var id: String { "\(browser.kind.rawValue)/\(directoryName)" }
-    var sourcePath: URL { browser.userDataRoot.appendingPathComponent(directoryName) }
 }
 
 /// Discovers installed Chromium-family browsers + their profiles, and owns
@@ -153,23 +152,4 @@ enum BrowserProfileManager {
         return port
     }
 
-    private static func slugify(_ value: String) -> String {
-        let lowered = value.lowercased()
-        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyz0123456789-")
-        let mapped = lowered.unicodeScalars.map { allowed.contains($0) ? Character($0) : "-" }
-        let joined = String(mapped)
-        // Collapse runs of '-' for a tidy slug.
-        var result = ""
-        var lastWasDash = false
-        for ch in joined {
-            if ch == "-" {
-                if lastWasDash { continue }
-                lastWasDash = true
-            } else {
-                lastWasDash = false
-            }
-            result.append(ch)
-        }
-        return result.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
-    }
 }

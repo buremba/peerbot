@@ -47,25 +47,15 @@ describeIfSubmodule('getMcpInstallTargets', () => {
       value: `codex mcp add lobu --url ${mcpUrl}`,
     });
 
+    // openclaw's four install steps were consolidated into a single chained
+    // command for tile-grid parity with the other CLI targets (#118).
     expect(openclaw?.actions).toContainEqual({
       type: 'command',
-      label: 'Install plugin',
-      value: 'openclaw plugins install @lobu/openclaw-plugin',
-    });
-    expect(openclaw?.actions).toContainEqual({
-      type: 'command',
-      label: 'Log in to Lobu',
-      value: 'lobu login',
-    });
-    expect(openclaw?.actions).toContainEqual({
-      type: 'command',
-      label: 'Write plugin config',
-      value: `lobu memory configure --url ${mcpUrl}`,
-    });
-    expect(openclaw?.actions).toContainEqual({
-      type: 'command',
-      label: 'Verify connectivity',
-      value: `lobu memory health --url ${mcpUrl}`,
+      label: 'Install and configure',
+      value: `openclaw plugins install @lobu/openclaw-plugin
+lobu login
+lobu memory configure --url ${mcpUrl}
+lobu memory health --url ${mcpUrl}`,
     });
   });
 

@@ -15,7 +15,15 @@
       "import": "./dist/embeddings.js",
       "types": "./dist/embeddings.d.ts"
     },
-    "./executor/child-runner": "./dist/executor/child-runner.js"
+    "./executor/child-runner": "./dist/executor/child-runner.js",
+    "./executor/runtime": {
+      "import": "./dist/executor/runtime.js",
+      "types": "./dist/executor/runtime.d.ts"
+    },
+    "./executor/interface": {
+      "import": "./dist/executor/interface.js",
+      "types": "./dist/executor/interface.d.ts"
+    }
   },
   "files": [
     "dist",

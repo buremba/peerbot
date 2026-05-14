@@ -721,6 +721,44 @@ Memory:
     }
   );
 
+  // ─── connector ──────────────────────────────────────────────────────
+  const connector = program
+    .command("connector")
+    .description(
+      "Run connectors locally against an auth profile (no feed required)"
+    );
+  connector
+    .command("run [connector_key]")
+    .description(
+      "Execute a connector locally; events stream to stdout, nothing is persisted"
+    )
+    .option(
+      "--auth-profile <slug>",
+      "Auth profile slug (browser_session only in v1)"
+    )
+    .option(
+      "--config <json>",
+      'Feed config as JSON object (e.g. \'{"start_url":"https://..."}\')'
+    )
+    .option(
+      "--checkpoint-from-feed <id>",
+      "Borrow checkpoint state from this feed id"
+    )
+    .option(
+      "--from-feed <id>",
+      "Resolve connector + auth + config + checkpoint from this feed id"
+    )
+    .option("--max-items <n>", "Cap pagination to this many items")
+    .option("--check", "Resolve + validate without executing the connector")
+    .option("--json", "Emit machine-readable JSON to stdout (artifact-shaped)")
+    .option("-c, --context <name>", "Use a named context")
+    .option("--url <url>", "Server URL override")
+    .option("--org <slug>", "Org slug override")
+    .action(async (connectorKey: string | undefined, options) => {
+      const { connectorRunCommand } = await import("./commands/connector.js");
+      await connectorRunCommand(connectorKey, options);
+    });
+
   // ─── doctor ─────────────────────────────────────────────────────────
   program
     .command("doctor")

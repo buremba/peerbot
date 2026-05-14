@@ -25,6 +25,7 @@ import { connectRoutes } from './connect/routes';
 import { getDb } from './db/client';
 import * as invalidationEmitter from './events/emitter';
 import { isExcludedSpaPath } from './http/spa-route-filter';
+import { restGetAuthProfileForRun, restGetFeedForRun } from './connector-run/routes';
 import { agentRoutes } from './lobu/agent-routes';
 import { clientRoutes, platformSchemaRoutes } from './lobu/client-routes';
 import { isLobuGatewayRunning } from './lobu/gateway';
@@ -758,6 +759,9 @@ app.get('/api/organizations', async (c) => {
 app.post('/api/:orgSlug/preview/claims', mcpAuth, createPreviewClaim);
 
 // Notifications
+app.get('/api/:orgSlug/connector-run/auth-profile/:slug', mcpAuth, restGetAuthProfileForRun);
+app.get('/api/:orgSlug/connector-run/feed/:id', mcpAuth, restGetFeedForRun);
+
 app.get('/api/:orgSlug/notifications', mcpAuth, restListNotifications);
 app.get('/api/:orgSlug/notifications/unread-count', mcpAuth, restGetUnreadCount);
 app.patch('/api/:orgSlug/notifications/:id/read', mcpAuth, restMarkAsRead);

@@ -42,6 +42,7 @@
     "@hono/zod-openapi": "^1.2.1",
     "@inquirer/prompts": "^7.10.1",
     "@lobu/connector-sdk": "workspace:*",
+    "@lobu/connector-worker": "workspace:*",
     "@lobu/core": "workspace:*",
     "@lobu/embeddings": "workspace:*",
     "@lobu/worker": "workspace:*",

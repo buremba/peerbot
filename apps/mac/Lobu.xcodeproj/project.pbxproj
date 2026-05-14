@@ -23,6 +23,7 @@
 		B1000000000000000000000F /* LobuUpdater.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000F /* LobuUpdater.swift */; };
 		B10000000000000000000010 /* BrowserProfileManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000009 /* BrowserProfileManager.swift */; };
 		B10000000000000000000011 /* BrowserProfilesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000013 /* BrowserProfilesView.swift */; };
+		B10000000000000000000014 /* PhotosSyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000014 /* PhotosSyncService.swift */; };
 		B93000000000000000000001 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = B92000000000000000000001 /* Sparkle */; };
 /* End PBXBuildFile section */
 
@@ -42,6 +43,7 @@
 		B2000000000000000000000F /* LobuUpdater.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LobuUpdater.swift; sourceTree = "<group>"; };
 		B20000000000000000000009 /* BrowserProfileManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserProfileManager.swift; sourceTree = "<group>"; };
 		B20000000000000000000013 /* BrowserProfilesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserProfilesView.swift; sourceTree = "<group>"; };
+		B20000000000000000000014 /* PhotosSyncService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotosSyncService.swift; sourceTree = "<group>"; };
 		B20000000000000000000010 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		B20000000000000000000011 /* Lobu.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Lobu.entitlements; sourceTree = "<group>"; };
 		B2000000000000000000000A /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -82,6 +84,7 @@
 				B2000000000000000000000B /* LocalDirectorySyncService.swift */,
 				B2000000000000000000000C /* LocalLobuRunner.swift */,
 				B2000000000000000000000D /* HealthKitSyncService.swift */,
+				B20000000000000000000014 /* PhotosSyncService.swift */,
 				B2000000000000000000000E /* WhatsAppLocalSyncService.swift */,
 				B2000000000000000000000F /* LobuUpdater.swift */,
 				B20000000000000000000009 /* BrowserProfileManager.swift */,
@@ -206,6 +209,7 @@
 				B1000000000000000000000B /* LocalDirectorySyncService.swift in Sources */,
 				B1000000000000000000000C /* LocalLobuRunner.swift in Sources */,
 				B1000000000000000000000D /* HealthKitSyncService.swift in Sources */,
+				B10000000000000000000014 /* PhotosSyncService.swift in Sources */,
 				B1000000000000000000000E /* WhatsAppLocalSyncService.swift in Sources */,
 				B1000000000000000000000F /* LobuUpdater.swift in Sources */,
 				B10000000000000000000010 /* BrowserProfileManager.swift in Sources */,

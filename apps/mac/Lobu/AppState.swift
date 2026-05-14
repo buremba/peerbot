@@ -41,6 +41,7 @@ struct RecentJob: Codable {
         case "apple.screen_time": return "Screen Time"
         case "local.directory":   return "Local folder"
         case "apple.health":      return "Apple Health"
+        case "apple.photos":      return "Apple Photos"
         case "whatsapp.local":    return "WhatsApp (this Mac)"
         default:                  return connectorKey
         }
@@ -130,6 +131,11 @@ final class AppState: ObservableObject {
     /// True once the user has been through the Apple Health permission sheet
     /// (mirrored from UserDefaults — HealthKit hides actual READ-grant status).
     @Published var hasHealthKit: Bool = HealthKitSyncService.hasBeenRequested
+    /// True once the user has granted Photos library access. Unlike HealthKit,
+    /// PhotoKit exposes the real authorization status — `hasPhotos` is just a
+    /// cached read of `PhotosSyncService.isAuthorized` so the UI doesn't have
+    /// to call into the framework on every render.
+    @Published var hasPhotos: Bool = PhotosSyncService.isAuthorized
 
     /// Per-integration soft-disable flags. macOS permissions (FDA, HealthKit)
     /// are coarse — revoking FDA kills three integrations at once. These
@@ -142,6 +148,9 @@ final class AppState: ObservableObject {
     }
     @Published var healthKitDisabled: Bool = UserDefaults.standard.bool(forKey: "lobu.healthKitDisabled") {
         didSet { UserDefaults.standard.set(healthKitDisabled, forKey: "lobu.healthKitDisabled") }
+    }
+    @Published var photosDisabled: Bool = UserDefaults.standard.bool(forKey: "lobu.photosDisabled") {
+        didSet { UserDefaults.standard.set(photosDisabled, forKey: "lobu.photosDisabled") }
     }
 
     @Published var baseURL: String = {
@@ -265,6 +274,7 @@ final class AppState: ObservableObject {
         if hasFDA && !screenTimeDisabled { caps["screentime"] = true }
         if !localFolders.isEmpty { caps["local_directory"] = true }
         if hasHealthKit && healthKitAvailable && !healthKitDisabled { caps["healthkit"] = true }
+        if hasPhotos && !photosDisabled { caps["photos"] = true }
         // Reading another app's Group Container requires Full Disk Access — the
         // same TCC grant Screen Time already needs. Gate the capability so the
         // worker doesn't claim runs it will only fail with a permission error.
@@ -763,6 +773,23 @@ final class AppState: ObservableObject {
         }
     }
 
+    // MARK: - Apple Photos ------------------------------------------------------
+
+    /// Open the system Photos permission sheet. PhotoKit returns the real
+    /// authorization status post-prompt (unlike HealthKit), so `hasPhotos` is
+    /// trusted not just speculative — a deny here means the user has to flip
+    /// the toggle in System Settings → Privacy & Security → Photos before the
+    /// `photos` capability gets advertised on the next poll.
+    func requestPhotosAccess() async {
+        await PhotosSyncService.requestAuthorization()
+        hasPhotos = PhotosSyncService.isAuthorized
+        if hasPhotos {
+            setStatus("Apple Photos access granted.")
+        } else {
+            setStatus("Apple Photos access denied. Enable it in System Settings to sync.")
+        }
+    }
+
     // MARK: - Full Disk Access -------------------------------------------------
 
     func refreshFDAStatus() {
@@ -886,6 +913,10 @@ enum SyncDispatcher {
                 checkpoint = out.checkpoint
             case "apple.health":
                 let out = try await HealthKitSyncService.runHealth(job: job)
+                items = out.items
+                checkpoint = out.checkpoint
+            case "apple.photos":
+                let out = try await PhotosSyncService.runPhotos(job: job)
                 items = out.items
                 checkpoint = out.checkpoint
             case "whatsapp.local":

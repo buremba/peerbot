@@ -1,4 +1,5 @@
 export * from './apple_health.ts';
+export * from './apple_photos.ts';
 export * from './apple_screen_time.ts';
 export * from './local_directory.ts';
 export * from './browser-scraper-utils.ts';
@@ -9,7 +10,6 @@ export * from './glassdoor.ts';
 export * from './gmaps.ts';
 export * from './google_calendar.ts';
 export * from './google_gmail.ts';
-export * from './google_photos.ts';
 export * from './google_play.ts';
 export * from './hackernews.ts';
 export * from './ios_appstore.ts';

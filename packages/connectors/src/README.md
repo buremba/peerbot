@@ -520,7 +520,6 @@ This means edits to `.ts` files in `connectors/` take effect on the next sync wi
 | `github` | oauth/env_keys | issues, PRs, comments, discussions | create/close/reopen issues, PRs |
 | `glassdoor` | none | reviews | - |
 | `gmaps` | env_keys | reviews | - |
-| `google_photos` | browser (CDP) | photos | - |
 | `google_play` | none | reviews | - |
 | `hackernews` | none | stories, comments | - |
 | `ios_appstore` | none | reviews | - |

@@ -547,6 +547,7 @@ struct MenuBarContent: View {
                 localFolderRows
                 screenTimeRow
                 healthKitRow
+                photosRow
                 whatsAppLocalRow
             }
         }
@@ -592,6 +593,43 @@ struct MenuBarContent: View {
                 integrationSourceRow(
                     path: "iCloud Health",
                     onRemove: { state.healthKitDisabled = true }
+                )
+            }
+        }
+    }
+
+    private var photosRow: some View {
+        let enabled = state.hasPhotos && !state.photosDisabled
+        return VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 8) {
+                Image(systemName: "photo.fill")
+                    .foregroundStyle(.orange)
+                    .frame(width: 18)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Apple Photos").font(.caption)
+                    Text("Library metadata: dates, location, albums.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+                Spacer()
+                if !enabled {
+                    Button(action: {
+                        if state.hasPhotos { state.photosDisabled = false }
+                        else { Task { await state.requestPhotosAccess() } }
+                    }) {
+                        HStack(spacing: 2) {
+                            Image(systemName: "plus").font(.caption2)
+                            Text("Add").font(.caption)
+                        }
+                        .foregroundStyle(.blue)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .menuRow()
+            if enabled {
+                integrationSourceRow(
+                    path: "Photos library",
+                    onRemove: { state.photosDisabled = true }
                 )
             }
         }

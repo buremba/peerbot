@@ -518,4 +518,48 @@ export const EMBEDDED_SCHEMA_PATCHES: EmbeddedSchemaPatch[] = [
       `);
     },
   },
+  {
+    // Mirrors db/migrations/20260515120000_agents_per_org_pk.sql — phase A only.
+    // Adds organization_id (NULLABLE) to the 5 FK-holding child tables, backfills
+    // from agents, adds a parallel UNIQUE (organization_id, id) on agents, and
+    // creates composite indexes for upcoming org-scoped queries. The PK swap
+    // and FK composite migration ship in a later phase once the storage
+    // interfaces are plumbed with organization_id everywhere.
+    id: 'agents-per-org-pk-phase-a',
+    apply: async (sql) => {
+      for (const t of [
+        'agent_grants',
+        'agent_connections',
+        'agent_users',
+        'agent_channel_bindings',
+        'grants',
+      ]) {
+        await sql.unsafe(`
+          ALTER TABLE public.${t}
+          ADD COLUMN IF NOT EXISTS organization_id text
+        `);
+        await sql.unsafe(`
+          UPDATE public.${t} c
+          SET organization_id = a.organization_id
+          FROM public.agents a
+          WHERE c.agent_id = a.id AND c.organization_id IS NULL
+        `);
+        await sql.unsafe(`
+          CREATE INDEX IF NOT EXISTS ${t}_org_agent_idx
+          ON public.${t} (organization_id, agent_id)
+        `);
+      }
+      await sql.unsafe(`
+        DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint WHERE conname = 'agents_organization_id_id_key'
+          ) THEN
+            ALTER TABLE public.agents
+              ADD CONSTRAINT agents_organization_id_id_key UNIQUE (organization_id, id);
+          END IF;
+        END$$;
+      `);
+    },
+  },
 ];

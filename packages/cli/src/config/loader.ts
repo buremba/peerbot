@@ -36,7 +36,7 @@ export async function loadConfig(cwd: string): Promise<LoadResult | LoadError> {
     parsed = parseToml(raw) as Record<string, unknown>;
   } catch (err) {
     return {
-      error: `Invalid TOML syntax in ${CONFIG_FILENAME}`,
+      error: `Invalid TOML syntax in ${configPath}`,
       details: [err instanceof Error ? err.message : String(err)],
     };
   }
@@ -46,7 +46,7 @@ export async function loadConfig(cwd: string): Promise<LoadResult | LoadError> {
     const details = result.error.issues.map(
       (issue) => `${issue.path.join(".")}: ${issue.message}`
     );
-    return { error: `Invalid ${CONFIG_FILENAME}`, details };
+    return { error: `Invalid ${configPath}`, details };
   }
 
   return { config: result.data, path: configPath };

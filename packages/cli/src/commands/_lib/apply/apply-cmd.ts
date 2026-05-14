@@ -2,6 +2,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import chalk from "chalk";
 import { resolveContext } from "../../../internal/context.js";
+import { parseEnvContent } from "../../../internal/env-file.js";
 import { loadProjectLink } from "../../../internal/project-link.js";
 import { CONFIG_FILENAME } from "../../../config/loader.js";
 import { ApiError, ValidationError } from "../../memory/_lib/errors.js";
@@ -87,6 +88,26 @@ function checkRequiredSecrets(state: DesiredState): { missing: string[] } {
     (name) => process.env[name] === undefined || process.env[name] === ""
   );
   return { missing };
+}
+
+/**
+ * Merge `.env` values from the project dir into `process.env` (without
+ * overriding values already set in the shell). Quietly noop if the file
+ * doesn't exist or can't be parsed — `checkRequiredSecrets` will surface a
+ * clear "Missing required secret" error downstream.
+ */
+async function loadProjectEnvFile(cwd: string): Promise<void> {
+  const envPath = join(cwd, ".env");
+  let raw: string;
+  try {
+    raw = await readFile(envPath, "utf-8");
+  } catch {
+    return;
+  }
+  const vars = parseEnvContent(raw);
+  for (const [key, value] of Object.entries(vars)) {
+    if (process.env[key] === undefined) process.env[key] = value;
+  }
 }
 
 // ── source_url: confirmed-before-fetch, https-only, bounded fetch ──────────
@@ -808,6 +829,12 @@ function slugToTitle(slug: string): string {
 export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
   const cwd = opts.cwd ?? process.cwd();
   const fetchImpl = opts.fetchImpl ?? fetch;
+
+  // Auto-load `.env` from the project dir so $VAR refs in lobu.toml resolve
+  // without the user having to `set -a; source .env; set +a`. Mirrors what
+  // `lobu dev` does. Existing process.env values win (don't clobber the shell).
+  await loadProjectEnvFile(cwd);
+
   const { state, configPath } = await loadDesiredState({
     cwd,
     ...(opts.only ? { only: opts.only } : {}),

@@ -37,7 +37,6 @@ key = "$Z_AI_API_KEY"
 # Slack app. `channel` surface so it works in a channel, not just a DM.
 [agents.food-ordering.preview.slack]
 enabled = true
-provider = "lobu-public"
 surfaces = ["dm", "channel"]
 code_ttl_minutes = 15
 
@@ -69,8 +68,8 @@ fail closed and deny with a reason.
 
 [memory]
 enabled = true
-org = "office-bot"
-name = "Office Bot"
+org = "lobu-team"
+name = "Lobu Team"
 description = "Office-ops agents — first up: the weekday lunch order"
 models = "./models"
 data = "./data"

@@ -119,7 +119,7 @@ function parseJsonFlag(
   raw: string | undefined,
   flagName: string
 ): Record<string, unknown> {
-  if (!raw || !raw.trim()) return {};
+  if (!raw?.trim()) return {};
   try {
     const value = JSON.parse(raw);
     if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -368,7 +368,9 @@ export async function connectorRun(
     // Layer 2: cookies. Always acquire — even if CDP attach succeeds,
     // the cookies are a free fallback in case the CDP socket drops
     // mid-sync. Cheap to skip on CDP success in practice.
-    printText(`Acquiring cookies from ${mirrorBrowserRoot}/${mirrorSourceDir}...`);
+    printText(
+      `Acquiring cookies from ${mirrorBrowserRoot}/${mirrorSourceDir}...`
+    );
     const acquired = await acquireMirroredCookies({
       sourceBrowser: mirrorSourceBrowser,
       userDataRoot: mirrorBrowserRoot,

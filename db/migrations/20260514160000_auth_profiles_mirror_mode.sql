@@ -1,3 +1,4 @@
+-- migrate:up
 -- Relax the device-binding XOR constraint to allow mirror mode (where
 -- neither user_data_dir nor cdp_url is set on the row — the source dir
 -- info lives in auth_data.source_profile_dir / source_browser_root).

@@ -23,7 +23,7 @@ interface NormalizedScoreFilters {
   exclude_watcher_id?: number; // Exclude content already in any window for this watcher
   classification_filters?: Array<{ classifier_slug: string; value: string }>;
   classification_source?: 'user' | 'embedding' | 'llm';
-  semantic_type?: string;
+  semantic_type?: string | string[];
   interaction_status?: 'pending' | 'approved' | 'rejected' | 'completed' | 'failed';
   /**
    * Connection-visibility scope. Folds into the WHERE so events from
@@ -162,8 +162,11 @@ function buildFilterConditionsAndJoins(
   }
 
   if (filters?.semantic_type) {
-    params.push(filters.semantic_type);
-    filterConditions.push(`f.semantic_type = $${paramIndex++}`);
+    const types = Array.isArray(filters.semantic_type)
+      ? filters.semantic_type
+      : [filters.semantic_type];
+    params.push(`{${types.map((t) => `"${t.replace(/"/g, '\\"')}"`).join(',')}}`);
+    filterConditions.push(`f.semantic_type = ANY($${paramIndex++}::text[])`);
   }
 
   if (filters?.interaction_status) {

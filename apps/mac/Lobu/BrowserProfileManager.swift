@@ -123,21 +123,32 @@ enum BrowserProfileManager {
     }
 
     /// Probe localhost for a Chrome (or Chromium-family) instance exposing
-    /// CDP. Three discovery paths, in order:
-    ///   1. `lsof` — every TCP port the running Chrome process is
-    ///      listening on. This is what catches Chrome's M144 "Allow remote
-    ///      debugging for this browser instance" toggle: the port opens
-    ///      internally and doesn't show up in argv at all (so ps misses
-    ///      it). lsof inspects the actual socket table.
-    ///   2. `ps` — argv-scraped `--remote-debugging-port=<N>` for users
-    ///      who launched Chrome with the flag explicitly.
-    ///   3. The conventional 9222-9225 range.
+    /// CDP. Four discovery paths, in priority order:
+    ///   1. `<matchUserDataRoot>/DevToolsActivePort` — the file Chrome
+    ///      writes when *either* the M144 toggle is enabled OR Chrome was
+    ///      launched with `--remote-debugging-port=<N>`. Always trusted
+    ///      when present because both modes produce a working WebSocket
+    ///      endpoint, even though M144 also disables HTTP `/json/version`
+    ///      discovery. Auto-fill of this port is what makes the picker
+    ///      pre-populate without the user knowing the port number.
+    ///   2. `lsof` — every TCP port the top-level Chrome process is
+    ///      listening on. Catches user-launched Chrome with a debug port
+    ///      even if matchUserDataRoot wasn't passed.
+    ///   3. `ps` — argv-scraped `--remote-debugging-port=<N>`.
+    ///   4. The conventional 9222–9225 range.
     ///
-    /// Returns the URL of the first responder on `/json/version`. When
-    /// `matchUserDataRoot` is set, the `ps` path is filtered to Chrome
-    /// processes using that user-data root; the `lsof` path is filtered
-    /// to Chrome processes that match the browser binary path.
+    /// For paths 2–4 we additionally probe `/json/version` to confirm
+    /// it's a real CDP listener. Path 1 skips that check (the M144
+    /// listener intentionally 404s `/json/version` but still serves the
+    /// WebSocket endpoint named in the file). The Mac UI just shows the
+    /// port; the connector subprocess reads DevToolsActivePort itself at
+    /// sync time to get the full ws:// URL.
     static func autoDetectCdpUrl(matchUserDataRoot: URL? = nil) async -> String? {
+        if let root = matchUserDataRoot,
+           let port = readDevToolsActivePort(at: root)
+        {
+            return "http://127.0.0.1:\(port)"
+        }
         var candidates: [Int] = []
         var seen: Set<Int> = []
         for port in await detectCdpPortsFromLsof() {
@@ -155,6 +166,24 @@ enum BrowserProfileManager {
             }
         }
         return nil
+    }
+
+    /// Read `<root>/DevToolsActivePort` and return the port number if the
+    /// file is present and well-formed. The file is two lines: port +
+    /// WebSocket path. We only need the port for menu-bar pre-fill — the
+    /// connector subprocess re-reads the full file at sync time to get
+    /// the ws:// path.
+    private static func readDevToolsActivePort(at userDataRoot: URL) -> Int? {
+        let path = userDataRoot.appendingPathComponent("DevToolsActivePort")
+        guard FileManager.default.fileExists(atPath: path.path),
+              let contents = try? String(contentsOf: path, encoding: .utf8)
+        else { return nil }
+        let lines = contents.split(separator: "\n", omittingEmptySubsequences: true)
+        guard let first = lines.first,
+              let port = Int(first.trimmingCharacters(in: .whitespaces)),
+              port > 0, port < 65536
+        else { return nil }
+        return port
     }
 
     /// Ask `lsof` which TCP ports the main Google Chrome process is

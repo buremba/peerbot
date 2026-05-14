@@ -60,10 +60,13 @@ struct SingleBrowserRow: View {
     @ObservedObject var hub: BrowserProfilesHub
 
     @State private var sourceProfiles: [InstalledBrowserProfile] = []
-    @State private var portByDir: [String: String] = [:]
     @State private var savingDir: String?
     @State private var confirmingDeleteId: Int?
-    @State private var autodetectedPort: String?
+    /// Detected CDP port via DevToolsActivePort + ps + lsof on view appear.
+    /// Surfaced as a one-liner under the browser header so the user can see
+    /// "Lobu will use my live Chrome if available" without any input. nil if
+    /// Chrome isn't exposing debug (M144 toggle off + no --remote-debugging-port).
+    @State private var detectedCdpPort: Int?
 
     private var myProfiles: [WorkerClient.BrowserAuthProfile] {
         hub.profiles.filter { $0.browser_kind == browser.kind.rawValue }
@@ -85,7 +88,7 @@ struct SingleBrowserRow: View {
                     .frame(width: 18)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(browser.kind.displayName).font(.caption)
-                    Text("Cookies stay on this Mac. Connectors run headless.")
+                    Text(headerStatus())
                         .font(.caption2).foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -105,17 +108,28 @@ struct SingleBrowserRow: View {
         }
         .task {
             sourceProfiles = BrowserProfileManager.sourceProfiles(for: browser)
-            // Auto-detect any Chrome already exposing CDP, scoped to this
-            // browser's user-data root so we don't pre-fill Brave's port
-            // into Chrome's rows.
+            // Detect Chrome's live CDP listener once per view appear. The
+            // result is informational — the connector subprocess re-reads
+            // DevToolsActivePort at sync time, so a state change after the
+            // menu bar opens still works. We surface the port only to
+            // confirm "yes, your Chrome is reachable" to the user.
             if let url = await BrowserProfileManager.autoDetectCdpUrl(
                 matchUserDataRoot: browser.userDataRoot
             ),
                 let port = URL(string: url)?.port
             {
-                autodetectedPort = String(port)
+                detectedCdpPort = port
             }
         }
+    }
+
+    private func headerStatus() -> String {
+        if let port = detectedCdpPort {
+            return
+                "Live CDP detected on :\(port). Lobu will use it when scraping; mirror cookies as fallback."
+        }
+        return
+            "Cookies mirrored on this Mac. Enable remote debugging at chrome://inspect to also allow CDP attach."
     }
 
     @ViewBuilder
@@ -132,15 +146,6 @@ struct SingleBrowserRow: View {
             }
             Spacer()
             if !isMirrored {
-                TextField(
-                    autodetectedPort ?? "CDP port",
-                    text: Binding(
-                        get: { portByDir[source.directoryName] ?? "" },
-                        set: { portByDir[source.directoryName] = $0 }
-                    )
-                )
-                .textFieldStyle(.roundedBorder).controlSize(.mini).font(.caption2)
-                .frame(maxWidth: 70)
                 Button(action: { Task { await mirror(source) } }) {
                     HStack(spacing: 2) {
                         Image(systemName: "plus").font(.caption2)
@@ -168,13 +173,11 @@ struct SingleBrowserRow: View {
     }
 
     private func mirroredStatus(_ p: WorkerClient.BrowserAuthProfile) -> String {
-        if let cdp = p.cdp_url, !cdp.isEmpty,
-           let port = URL(string: cdp)?.port
-        {
-            return "mirrored · CDP :\(port)"
-        }
         if let dir = p.user_data_dir, !dir.isEmpty {
             return "legacy · \(dir)"
+        }
+        if detectedCdpPort != nil {
+            return "mirrored · CDP available"
         }
         return "mirrored"
     }
@@ -187,14 +190,9 @@ struct SingleBrowserRow: View {
         }
         savingDir = source.directoryName
         defer { savingDir = nil }
-        let portRaw = (portByDir[source.directoryName] ?? autodetectedPort ?? "")
-            .trimmingCharacters(in: .whitespaces)
-        let parsedPort: Int? = {
-            guard !portRaw.isEmpty, let port = Int(portRaw), port > 0, port < 65536
-            else { return nil }
-            return port
-        }()
-        let cdpUrl: String? = parsedPort.map { "http://127.0.0.1:\($0)" }
+        // No per-row port: the connector subprocess auto-detects CDP at sync
+        // time via DevToolsActivePort. Mirror profiles always store mirror
+        // metadata only; cdp_url stays NULL on the row.
         do {
             let workerId = LobuWorkerIdentity.current()
             let displayName = "\(browser.kind.displayName) — \(source.displayName)"
@@ -203,7 +201,7 @@ struct SingleBrowserRow: View {
                 displayName: displayName,
                 browserKind: browser.kind.rawValue,
                 userDataDir: nil,
-                cdpUrl: cdpUrl,
+                cdpUrl: nil,
                 mirror: WorkerClient.BrowserAuthProfileMirrorConfig(
                     source_profile_dir: source.directoryName,
                     source_browser_root: browser.userDataRoot.path,
@@ -212,7 +210,6 @@ struct SingleBrowserRow: View {
                 )
             )
             hub.add(profile)
-            portByDir[source.directoryName] = ""
         } catch {
             hub.loadError = error.localizedDescription
         }

@@ -164,6 +164,7 @@ export default class WhatsAppConnector extends ConnectorRuntime {
             metadataSchema: {
               type: 'object',
               properties: {
+                source: { type: 'string', const: 'whatsapp' },
                 chat_jid: { type: 'string' },
                 is_group: { type: 'boolean' },
                 from_me: { type: 'boolean' },
@@ -1001,6 +1002,13 @@ export function toEvent(
     occurred_at: occurredAt,
     origin_parent_id: chatJid,
     metadata: {
+      // Mirror the bridge's `source` field so consumers can tell which
+      // transport delivered an event when the same message arrives via both
+      // (QR-paired socket and the local Mac archive). Origin id alignment
+      // (both connectors emit the bare WhatsApp stanza id) makes the gateway
+      // dedupe on insert; `source` records which side produced the row that
+      // survived.
+      source: 'whatsapp',
       chat_jid: chatJid,
       is_group: isGroup,
       from_me: fromMe,

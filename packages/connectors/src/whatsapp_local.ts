@@ -69,6 +69,7 @@ export default class WhatsAppLocalConnector extends ConnectorRuntime {
             metadataSchema: {
               type: 'object',
               properties: {
+                source: { type: 'string', const: 'whatsapp_local' },
                 chat_jid: { type: 'string' },
                 is_group: { type: 'boolean' },
                 from_me: { type: 'boolean' },
@@ -79,6 +80,12 @@ export default class WhatsAppLocalConnector extends ConnectorRuntime {
                 media_type: { type: 'string' },
                 quoted_id: { type: 'string' },
                 is_forwarded: { type: 'boolean' },
+                is_starred: { type: 'boolean' },
+                is_system_event: { type: 'boolean' },
+                voice_note_skipped: {
+                  type: 'string',
+                  enum: ['not_downloaded', 'too_large', 'empty', 'read_error', 'invalid_path'],
+                },
               },
             },
             entityLinks: [

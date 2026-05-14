@@ -1,4 +1,6 @@
+import AVFoundation
 import Foundation
+import OSLog
 import SQLite3
 
 /// Reads new messages from WhatsApp Desktop's on-device archive at
@@ -79,8 +81,17 @@ enum WhatsAppLocalSyncService {
         let chatFilter = job.config?["chat_filter"]?.stringValue ?? "all"
         let lastPK = job.checkpoint?["last_pk"]?.intValue ?? 0
 
+        // Sweep stale snapshot dirs from prior crashed runs before claiming a
+        // new one. The defer below cleans the happy path; a hard kill mid-sync
+        // (OOM, force-quit, panic) leaves `lobu-whatsapp-<uuid>/` behind in
+        // tmp, which accumulates over time. Anything older than an hour is
+        // safe to remove — no live sync runs that long.
+        sweepStaleSnapshotDirs()
+
         let snapshotDir = try makeSnapshotDir()
         defer { try? FileManager.default.removeItem(at: snapshotDir) }
+
+        var schemaSurvey = SchemaSurvey()
 
         let snapshotURL = snapshotDir.appendingPathComponent("ChatStorage.sqlite")
         try copySQLiteFamily(from: sourceURL, to: snapshotURL)
@@ -103,6 +114,16 @@ enum WhatsAppLocalSyncService {
         // group-member row (group). ZPUSHNAME on ZWAMESSAGE is a base64-encoded
         // protobuf and unsafe to surface as text, so we lean on ZPARTNERNAME and
         // ZWAGROUPMEMBER.ZCONTACTNAME (the same strings WA Desktop's UI shows).
+        // ZSTARRED is the only non-baseline column we surface — it's a stable,
+        // user-visible signal ("starred messages" in WA UI). Reactions, edits,
+        // and revoke (delete-for-everyone) events are NOT exposed as columns
+        // on the WA Desktop schema observed in the wild (Desktop versions
+        // through late 2025): the underlying tables are ZWAMESSAGE +
+        // ZWAMESSAGEINFO (receipt BLOB) + ZWAMEDIAITEM, with no ZWAREACTION /
+        // ZEDITED* / ZREVOKED columns. Likely they live inside the protobuf
+        // BLOB ZWAMESSAGEINFO.ZRECEIPTINFO or simply aren't persisted client-
+        // side. The QR-paired `whatsapp` connector (Baileys) is the path for
+        // those today — see the gap-tracking comment in `unfamiliarSchema`.
         let sql = """
         SELECT
           m.Z_PK,
@@ -113,6 +134,8 @@ enum WhatsAppLocalSyncService {
           m.ZMESSAGETYPE,
           m.ZGROUPEVENTTYPE,
           m.ZSTANZAID,
+          m.ZSTARRED,
+          m.ZFLAGS,
           c.ZCONTACTJID,
           c.ZPARTNERNAME,
           c.ZSESSIONTYPE,
@@ -156,15 +179,19 @@ enum WhatsAppLocalSyncService {
             // stable across schemas, but it's no longer a system-event signal
             // — see the `isSystemEvent` line below.
             let stanzaId = cString(stmt, 7)
-            let chatJID = cString(stmt, 8)
-            let partnerName = cString(stmt, 9)
-            let sessionType = Int(sqlite3_column_int(stmt, 10))
-            let groupInfoPK = Int(sqlite3_column_int64(stmt, 11))
-            let groupMemberJID = cString(stmt, 12)
-            let groupMemberName = cString(stmt, 13)
-            let groupMemberFirstName = cString(stmt, 14)
-            let mediaTitle = cString(stmt, 15)
-            let mediaPath = cString(stmt, 16)
+            let isStarred = sqlite3_column_int(stmt, 8) != 0
+            let zflags = sqlite3_column_int64(stmt, 9)
+            let chatJID = cString(stmt, 10)
+            let partnerName = cString(stmt, 11)
+            let sessionType = Int(sqlite3_column_int(stmt, 12))
+            let groupInfoPK = Int(sqlite3_column_int64(stmt, 13))
+            let groupMemberJID = cString(stmt, 14)
+            let groupMemberName = cString(stmt, 15)
+            let groupMemberFirstName = cString(stmt, 16)
+            let mediaTitle = cString(stmt, 17)
+            let mediaPath = cString(stmt, 18)
+
+            schemaSurvey.observe(messageType: msgType, flags: zflags)
 
             highestPK = max(highestPK, pk)
 
@@ -224,7 +251,15 @@ enum WhatsAppLocalSyncService {
                 pushName: pushName
             )
 
-            let originId = "whatsapp-local:\(stanzaId ?? "pk-\(pk)")"
+            // Stanza id is the WhatsApp wire-level message id; the QR-paired
+            // `whatsapp` connector uses the same string as its origin_id, so
+            // emitting it bare here lets the gateway's onConflictUpdate dedup
+            // a message that arrives via both transports. Rows without a
+            // stanza id (rare stub rows) are dropped — falling back to a
+            // synthetic `pk-N` would defeat dedup and pollute origin history
+            // with per-Mac-only ids.
+            guard let stanzaId, !stanzaId.isEmpty else { continue }
+            let originId = stanzaId
 
             var metadata: [String: AnyEncodable] = [
                 "source": AnyEncodable("whatsapp_local"),
@@ -238,15 +273,21 @@ enum WhatsAppLocalSyncService {
             if let pushName { metadata["push_name"] = AnyEncodable(pushName) }
             if let toJID, isFromMe { metadata["participant"] = AnyEncodable(toJID) }
             if let mediaType { metadata["media_type"] = AnyEncodable(mediaType) }
-            if let mediaPath { metadata["media_local_path"] = AnyEncodable(mediaPath) }
+            if isStarred { metadata["is_starred"] = AnyEncodable(true) }
             if isSystemEvent { metadata["is_system_event"] = AnyEncodable(true) }
 
             // Audio-only attachment ingest. Other media types still get a
             // labeled placeholder ([image], [video], etc.) but we don't ship
             // their bytes — non-audio is a separate feature.
-            let attachments: [WorkerStreamAttachment]? = (mediaType == "audio")
-                ? readAudioAttachment(relativePath: mediaPath).map { [$0] }
-                : nil
+            var attachments: [WorkerStreamAttachment]? = nil
+            if mediaType == "audio" {
+                let audioResult = readAudioAttachment(relativePath: mediaPath)
+                if let attachment = audioResult.attachment {
+                    attachments = [attachment]
+                } else if let skipReason = audioResult.skipReason {
+                    metadata["voice_note_skipped"] = AnyEncodable(skipReason)
+                }
+            }
 
             items.append(
                 WorkerStreamItem(
@@ -263,6 +304,8 @@ enum WhatsAppLocalSyncService {
                 )
             )
         }
+
+        schemaSurvey.report(emittedItems: items.count)
 
         let checkpoint: [String: AnyEncodable] = ["last_pk": AnyEncodable(highestPK)]
         return Output(items: items, checkpoint: checkpoint)
@@ -343,6 +386,11 @@ enum WhatsAppLocalSyncService {
 
     private static func makePayloadText(text: String?, msgType: Int, mediaTitle: String?, isSystem: Bool) -> String {
         if let text, !text.isEmpty { return text }
+        // For image/video rows (ZMESSAGETYPE 1/2) WhatsApp Desktop stores the
+        // caption in `ZWAMEDIAITEM.ZTITLE`, NOT `ZWAMESSAGE.ZTEXT` — verified
+        // against a live install. For URL/document rows (7/8) the same column
+        // is the link/file title. Either way, surfacing it as payload_text
+        // gives the agent something usable instead of `[image]`.
         if let mediaTitle { return mediaTitle }
         // Media-type label wins over the system-event fallback so a media row
         // never collapses to `[system event]`. The transcription pipeline
@@ -368,17 +416,31 @@ enum WhatsAppLocalSyncService {
         return chatLabel
     }
 
+    /// Result of attempting to inline an audio file. `attachment` is the
+    /// successfully read payload; `skipReason` is set instead when we
+    /// deliberately dropped the file so the caller can stamp it on the event
+    /// metadata. Both nil means "no audio path to begin with" (treat as
+    /// silently absent).
+    struct AudioResult {
+        let attachment: WorkerStreamAttachment?
+        let skipReason: String?
+    }
+
     /// Resolve a WhatsApp Desktop voice-note path on disk and read it as a
-    /// base64-encoded attachment. Returns nil for missing files (WhatsApp
-    /// Desktop downloads media on-demand — a row without a played-back voice
-    /// note has no file at the path), oversized files, or read errors. Any
-    /// failure is silent: voice-note ingest is best-effort and never blocks
-    /// the sync's text-message ingest.
-    private static func readAudioAttachment(relativePath: String?) -> WorkerStreamAttachment? {
-        guard let relativePath, !relativePath.isEmpty else { return nil }
+    /// base64-encoded attachment. WhatsApp Desktop downloads media on-demand,
+    /// so missing files are normal (the user hasn't played it back yet) and
+    /// reported via `skipReason: "not_downloaded"`. Oversized files and read
+    /// errors are also surfaced so the agent isn't left staring at a
+    /// `[voice note]` placeholder with no explanation.
+    private static func readAudioAttachment(relativePath: String?) -> AudioResult {
+        guard let relativePath, !relativePath.isEmpty else {
+            return AudioResult(attachment: nil, skipReason: nil)
+        }
         // Reject absolute paths up front — `appendingPathComponent` on a `/`
         // -prefixed string still ends up at the root, not under mediaBaseURL.
-        guard !relativePath.hasPrefix("/") else { return nil }
+        guard !relativePath.hasPrefix("/") else {
+            return AudioResult(attachment: nil, skipReason: "invalid_path")
+        }
         let fm = FileManager.default
         // Canonicalize the media root once, then build the candidate and
         // verify by-prefix containment. `..`, symlink escapes, and any other
@@ -389,22 +451,65 @@ enum WhatsAppLocalSyncService {
             .appendingPathComponent(relativePath)
             .resolvingSymlinksInPath()
             .standardizedFileURL
-        guard absoluteURL.path.hasPrefix(baseURL.path + "/") else { return nil }
-        guard fm.fileExists(atPath: absoluteURL.path) else { return nil }
+        guard absoluteURL.path.hasPrefix(baseURL.path + "/") else {
+            return AudioResult(attachment: nil, skipReason: "invalid_path")
+        }
+        guard fm.fileExists(atPath: absoluteURL.path) else {
+            return AudioResult(attachment: nil, skipReason: "not_downloaded")
+        }
         let attrs = try? fm.attributesOfItem(atPath: absoluteURL.path)
         let size = (attrs?[.size] as? NSNumber)?.intValue ?? 0
-        if size <= 0 || size > maxAudioAttachmentBytes { return nil }
-        guard let data = try? Data(contentsOf: absoluteURL) else { return nil }
+        if size <= 0 {
+            return AudioResult(attachment: nil, skipReason: "empty")
+        }
+        if size > maxAudioAttachmentBytes {
+            return AudioResult(attachment: nil, skipReason: "too_large")
+        }
+        guard let data = try? Data(contentsOf: absoluteURL) else {
+            return AudioResult(attachment: nil, skipReason: "read_error")
+        }
         let filename = absoluteURL.lastPathComponent
         let mime = mimeTypeForExtension(absoluteURL.pathExtension.lowercased())
-        return WorkerStreamAttachment(
+        let durationMs = probeAudioDurationMs(at: absoluteURL)
+        let attachment = WorkerStreamAttachment(
             kind: "audio",
             filename: filename,
             mime_type: mime,
             data: data.base64EncodedString(),
             size_bytes: size,
-            duration_ms: nil
+            duration_ms: durationMs
         )
+        return AudioResult(attachment: attachment, skipReason: nil)
+    }
+
+    /// Best-effort audio-duration probe via AVFoundation. Returns nil if the
+    /// asset can't be loaded or the duration is indefinite — duration is
+    /// informational, so a failure here never blocks ingest.
+    private static func probeAudioDurationMs(at url: URL) -> Int? {
+        let asset = AVURLAsset(url: url)
+        let cm = asset.duration
+        guard cm.isValid, !cm.isIndefinite, cm.timescale != 0 else { return nil }
+        let seconds = CMTimeGetSeconds(cm)
+        guard seconds.isFinite, seconds > 0 else { return nil }
+        return Int((seconds * 1000.0).rounded())
+    }
+
+    /// Remove `lobu-whatsapp-*` snapshot directories older than an hour from
+    /// tmp. Cheap (a single readdir + stat), runs once per sync; covers leaks
+    /// from a hard-kill mid-sync where the `defer` cleanup didn't run.
+    private static func sweepStaleSnapshotDirs() {
+        let fm = FileManager.default
+        let tmp = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        guard let entries = try? fm.contentsOfDirectory(at: tmp,
+                                                       includingPropertiesForKeys: [.contentModificationDateKey],
+                                                       options: [.skipsHiddenFiles]) else { return }
+        let cutoff = Date().addingTimeInterval(-60 * 60)
+        for entry in entries where entry.lastPathComponent.hasPrefix("lobu-whatsapp-") {
+            let modified = (try? entry.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+            if let modified, modified < cutoff {
+                try? fm.removeItem(at: entry)
+            }
+        }
     }
 
     private static func mimeTypeForExtension(_ ext: String) -> String {
@@ -430,5 +535,54 @@ enum WhatsAppLocalSyncService {
         guard suffix == "s.whatsapp.net" else { return nil }
         let digits = jid[..<at]
         return digits.allSatisfy(\.isNumber) ? String(digits) : nil
+    }
+
+    /// Per-sync diagnostics: tracks which ZMESSAGETYPE values and ZFLAGS bit
+    /// patterns we encountered that we don't yet have a meaning for, then
+    /// logs a single summary line at the end. The point is to give us a way
+    /// to iterate on schema understanding (e.g. spotting a new message type
+    /// that shows up after a WA Desktop update) without having to attach a
+    /// debugger or query the live DB by hand. We do NOT change emission
+    /// behavior based on what we see — that would couple ingest semantics to
+    /// undocumented bits.
+    private struct SchemaSurvey {
+        // The ZMESSAGETYPE values we currently understand (text + media kinds
+        // surfaced by `mediaTypeName` plus the system-event sentinel).
+        private static let knownTypes: Set<Int> = [
+            0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 13, 14, 15,
+        ]
+        // Bits we recognize in ZFLAGS today. 0x01000000 is set on virtually
+        // every row (presence/status); other bits are uncharted territory.
+        private static let knownFlagBits: Int64 = 0x01000000
+
+        private var unknownTypes: [Int: Int] = [:]
+        private var unknownFlagMasks: [Int64: Int] = [:]
+
+        mutating func observe(messageType: Int, flags: Int64) {
+            if !Self.knownTypes.contains(messageType) {
+                unknownTypes[messageType, default: 0] += 1
+            }
+            let unknownBits = flags & ~Self.knownFlagBits
+            if unknownBits != 0 {
+                unknownFlagMasks[unknownBits, default: 0] += 1
+            }
+        }
+
+        func report(emittedItems: Int) {
+            guard !unknownTypes.isEmpty || !unknownFlagMasks.isEmpty else { return }
+            let logger = Logger(subsystem: "ai.lobu.mac", category: "whatsapp.local")
+            let typeSummary = unknownTypes
+                .sorted { $0.key < $1.key }
+                .map { "\($0.key)=\($0.value)" }
+                .joined(separator: ",")
+            let flagSummary = unknownFlagMasks
+                .sorted { $0.value > $1.value }
+                .prefix(5)
+                .map { String(format: "0x%llx=%d", $0.key, $0.value) }
+                .joined(separator: ",")
+            logger.info(
+                "wa.local schema-survey: emitted=\(emittedItems, privacy: .public) unknown_types=[\(typeSummary, privacy: .public)] unknown_flag_masks=[\(flagSummary, privacy: .public)]"
+            )
+        }
     }
 }

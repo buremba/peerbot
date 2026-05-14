@@ -301,10 +301,16 @@ export const GetContentSchema = Type.Object({
     })
   ),
   semantic_type: Type.Optional(
-    Type.String({
-      description:
-        'Filter by semantic type (e.g. note, summary, decision, observation). Matches the semantic_type set via save_memory.',
-    })
+    Type.Union(
+      [
+        Type.String(),
+        Type.Array(Type.String(), { minItems: 1 }),
+      ],
+      {
+        description:
+          'Filter by semantic type. Pass a single value (e.g. "note") or an array (e.g. ["note","summary"]) to match any. Matches the semantic_type set via save_memory.',
+      }
+    )
   ),
   interaction_status: Type.Optional(
     Type.Union(
@@ -866,8 +872,11 @@ export async function getContent(
         paramIndex += 1;
       }
       if (args.semantic_type) {
-        conditions.push(`e.semantic_type = $${paramIndex}`);
-        queryParams.push(args.semantic_type);
+        const types = Array.isArray(args.semantic_type)
+          ? args.semantic_type
+          : [args.semantic_type];
+        conditions.push(`e.semantic_type = ANY($${paramIndex}::text[])`);
+        queryParams.push(pgTextArray(types));
         paramIndex += 1;
       }
       if (args.interaction_status) {

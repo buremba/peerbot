@@ -147,7 +147,15 @@ function buildStandardParams(
     options.engagement_min ?? null,
     options.engagement_max ?? null,
     options.classification_source ?? null,
-    options.semantic_type ?? null,
+    // Slot $9 binds a Postgres `text[]` literal (e.g. `'{note,summary}'`); the
+    // standard WHERE template uses `= ANY($9::text[])`, covering single- and
+    // multi-type callers with one predicate. We hand-format the literal because
+    // `sql.unsafe(...)` binding doesn't auto-cast JS arrays.
+    options.semantic_type
+      ? pgTextArray(
+          Array.isArray(options.semantic_type) ? options.semantic_type : [options.semantic_type]
+        )
+      : null,
     options.interaction_status ?? null,
   ];
 }
@@ -324,7 +332,7 @@ function buildStandardWhereSql(entityLinkSql: string): string {
             WHERE lc_source.event_id = f.id
               AND lc_source.source = $8::text
           ))
-          AND ($9::text IS NULL OR f.semantic_type = $9::text)
+          AND ($9::text[] IS NULL OR f.semantic_type = ANY($9::text[]))
           AND ($10::text IS NULL OR f.interaction_status = $10::text)`;
 }
 
@@ -459,7 +467,7 @@ interface ContentSearchOptions {
   min_similarity?: number; // 0.0 - 1.0, default: 0.6
   limit?: number; // default: 50, max: 100
   content_ids?: number[]; // Filter to specific content IDs
-  semantic_type?: string; // Filter by semantic type (e.g. note, summary, decision)
+  semantic_type?: string | string[]; // Filter by semantic type — single value or array (matches any)
   interaction_status?: 'pending' | 'approved' | 'rejected' | 'completed' | 'failed';
 
   // Classification options (only JOINs when needed)
@@ -1207,8 +1215,13 @@ async function listContentInternal(
       baseConditions.push(`f.score <= $${baseParams.length}`);
     }
     if (options.semantic_type) {
-      baseParams.push(options.semantic_type);
-      baseConditions.push(`f.semantic_type = $${baseParams.length}`);
+      // Match any of the requested types — single-string callers get wrapped
+      // into a one-element Postgres array literal so the same predicate fits.
+      const types = Array.isArray(options.semantic_type)
+        ? options.semantic_type
+        : [options.semantic_type];
+      baseParams.push(pgTextArray(types));
+      baseConditions.push(`f.semantic_type = ANY($${baseParams.length}::text[])`);
     }
     if (options.interaction_status) {
       baseParams.push(options.interaction_status);
@@ -1538,7 +1551,7 @@ async function searchContentBySingleQuery(
           AND ($6::int IS NULL OR iwf.window_id = $6::int)
           AND ($7::numeric IS NULL OR f.score >= $7::numeric)
           AND ($8::numeric IS NULL OR f.score <= $8::numeric)
-          AND ($9::text IS NULL OR f.semantic_type = $9::text)
+          AND ($9::text[] IS NULL OR f.semantic_type = ANY($9::text[]))
           AND ($10::text IS NULL OR f.interaction_status = $10::text)
           ${excludeClause.sql}
           ${visibilityClause.sql}
@@ -1782,7 +1795,13 @@ async function searchContentBySingleQuery(
     options.window_id ?? null,
     options.engagement_min ?? null,
     options.engagement_max ?? null,
-    options.semantic_type ?? null,
+    // Same Postgres `text[]` literal wrap as buildStandardParams — slot $9 in
+    // the search template is `= ANY($9::text[])`.
+    options.semantic_type
+      ? pgTextArray(
+          Array.isArray(options.semantic_type) ? options.semantic_type : [options.semantic_type]
+        )
+      : null,
     options.interaction_status ?? null,
     ...orgScope.params,
     ...excludeClause.params,

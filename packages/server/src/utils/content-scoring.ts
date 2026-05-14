@@ -1,5 +1,9 @@
 import { getDb } from '../db/client';
-import { buildClassificationFilterSQL } from './content-query-filters';
+import {
+  buildClassificationFilterSQL,
+  buildFeedFilter,
+  buildRunFilter,
+} from './content-query-filters';
 import {
   buildConnectionVisibilityClause,
   buildEntityLinkUnion,
@@ -13,6 +17,8 @@ import { validateAndFormatIds, validateNumericId } from './sql-validation';
 
 interface NormalizedScoreFilters {
   connection_ids?: number[];
+  feed_ids?: number[];
+  run_ids?: number[];
   platform?: string;
   since?: Date;
   until?: Date;
@@ -117,6 +123,12 @@ function buildFilterConditionsAndJoins(
   if (filters?.connection_ids && filters.connection_ids.length > 0) {
     const validatedIds = validateAndFormatIds(filters.connection_ids, 'connection_ids');
     filterConditions.push(`f.connection_id IN (${validatedIds})`);
+  }
+  if (filters?.feed_ids && filters.feed_ids.length > 0) {
+    filterConditions.push(buildFeedFilter(filters.feed_ids, 'f'));
+  }
+  if (filters?.run_ids && filters.run_ids.length > 0) {
+    filterConditions.push(buildRunFilter(filters.run_ids, 'f'));
   }
 
   if (filters?.platform) {

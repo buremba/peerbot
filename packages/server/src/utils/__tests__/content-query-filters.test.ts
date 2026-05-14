@@ -8,7 +8,9 @@ import {
   buildConnectionFilter,
   buildDateFilterSQL,
   buildEngagementFilterSQL,
+  buildFeedFilter,
   buildOrderByClause,
+  buildRunFilter,
   groupClassificationFilters,
 } from '../content-query-filters';
 
@@ -122,6 +124,25 @@ describe('buildConnectionFilter', () => {
 
   it('should use custom table alias', () => {
     expect(buildConnectionFilter([1], 'e')).toBe('e.connection_id IN (1)');
+  });
+});
+
+describe('buildFeedFilter', () => {
+  it('builds an IN clause on feed_id', () => {
+    expect(buildFeedFilter([7, 8])).toBe('f.feed_id IN (7,8)');
+  });
+  it('returns 1=1 for empty/null', () => {
+    expect(buildFeedFilter(null)).toBe('1=1');
+    expect(buildFeedFilter([])).toBe('1=1');
+  });
+});
+
+describe('buildRunFilter', () => {
+  it('builds an IN clause on run_id', () => {
+    expect(buildRunFilter([42], 'e')).toBe('e.run_id IN (42)');
+  });
+  it('returns 1=1 for empty/null', () => {
+    expect(buildRunFilter(null)).toBe('1=1');
   });
 });
 

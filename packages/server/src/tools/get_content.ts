@@ -159,6 +159,16 @@ export const GetContentSchema = Type.Object({
       description: 'Connection IDs to filter by',
     })
   ),
+  feed_ids: Type.Optional(
+    Type.Array(Type.Number(), {
+      description: 'Feed IDs to filter by (events.feed_id)',
+    })
+  ),
+  run_ids: Type.Optional(
+    Type.Array(Type.Number(), {
+      description: 'Run IDs to filter by (events.run_id — the run that produced the event)',
+    })
+  ),
   platforms: Type.Optional(
     Type.Array(Type.String(), {
       description: 'Platform types to filter by (reddit, trustpilot, etc.)',
@@ -832,6 +842,16 @@ export async function getContent(
         conditions.push(`e.connection_id IN (${placeholders})`);
         queryParams.push(...effectiveConnectionIds);
       }
+      if (args.feed_ids && args.feed_ids.length > 0) {
+        const placeholders = args.feed_ids.map(() => `$${paramIndex++}`).join(',');
+        conditions.push(`e.feed_id IN (${placeholders})`);
+        queryParams.push(...args.feed_ids);
+      }
+      if (args.run_ids && args.run_ids.length > 0) {
+        const placeholders = args.run_ids.map(() => `$${paramIndex++}`).join(',');
+        conditions.push(`e.run_id IN (${placeholders})`);
+        queryParams.push(...args.run_ids);
+      }
       if (effectivePlatform) {
         conditions.push(`COALESCE(e.connector_key, c.connector_key) = $${paramIndex}`);
         queryParams.push(effectivePlatform);
@@ -941,6 +961,8 @@ export async function getContent(
 
       const filters: Parameters<typeof getNormalizedScoreContent>[3] = {
         ...(effectiveConnectionIds?.length && { connection_ids: effectiveConnectionIds }),
+        ...(args.feed_ids?.length && { feed_ids: args.feed_ids }),
+        ...(args.run_ids?.length && { run_ids: args.run_ids }),
         ...(effectivePlatform && { platform: effectivePlatform }),
         ...(sinceDate && { since: sinceDate }),
         ...(untilDate && { until: untilDate }),
@@ -977,6 +999,8 @@ export async function getContent(
           entity_id: args.entity_id,
           organization_id: !args.entity_id ? ctx.organizationId : undefined,
           connection_ids: effectiveConnectionIds,
+          feed_ids: args.feed_ids,
+          run_ids: args.run_ids,
           visibility_scope: visibilityScope,
           window_id: args.window_id,
           exclude_watcher_id: args.exclude_watcher_id,

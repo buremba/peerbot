@@ -154,39 +154,51 @@ export function buildClassificationFilterSQL(
 }
 
 // ============================================
-// Connection Filter Utilities
+// Id-IN Filter Utilities
 // ============================================
 
 /**
- * Build connection ID filter condition.
+ * Build an `<alias>.<column> IN (...)` filter from an integer array.
  *
- * This is needed because postgres.js with fetch_types: false
- * doesn't properly serialize JavaScript arrays to PostgreSQL arrays.
- * Using IN clause with joined IDs avoids this issue.
+ * postgres.js with `fetch_types: false` doesn't serialize JS arrays to PG arrays
+ * cleanly, so we emit a literal `IN (1,2,3)` clause. Inputs are filtered to
+ * safe integers to avoid SQL injection.
  *
- * @param connectionIds - Array of connection IDs or null
- * @param tableAlias - Table alias for connection_id column (default: 'f')
- * @returns SQL condition string like "f.connection_id IN (1,2,3)" or "1=1"
+ * Returns `'1=1'` when no ids are supplied so the caller can splice the result
+ * into a `WHERE ... AND <clause>` without conditional logic.
  */
-export function buildConnectionFilter(
-  connectionIds: number[] | null | undefined,
+function buildIdInFilter(
+  ids: number[] | null | undefined,
+  column: 'connection_id' | 'feed_id' | 'run_id',
   tableAlias: string = 'f'
 ): string {
-  if (!connectionIds || connectionIds.length === 0) {
-    // Use 1=1 instead of TRUE to avoid postgres.js treating it as a column identifier
-    return '1=1';
-  }
-
-  // Ensure all values are valid numbers to prevent SQL injection
-  const safeIds = connectionIds.filter(
+  if (!ids || ids.length === 0) return '1=1';
+  const safeIds = ids.filter(
     (n) => typeof n === 'number' && !Number.isNaN(n) && Number.isInteger(n)
   );
+  if (safeIds.length === 0) return '1=1';
+  return `${tableAlias}.${column} IN (${safeIds.join(',')})`;
+}
 
-  if (safeIds.length === 0) {
-    return '1=1';
-  }
+export function buildConnectionFilter(
+  ids: number[] | null | undefined,
+  tableAlias: string = 'f'
+): string {
+  return buildIdInFilter(ids, 'connection_id', tableAlias);
+}
 
-  return `${tableAlias}.connection_id IN (${safeIds.join(',')})`;
+export function buildFeedFilter(
+  ids: number[] | null | undefined,
+  tableAlias: string = 'f'
+): string {
+  return buildIdInFilter(ids, 'feed_id', tableAlias);
+}
+
+export function buildRunFilter(
+  ids: number[] | null | undefined,
+  tableAlias: string = 'f'
+): string {
+  return buildIdInFilter(ids, 'run_id', tableAlias);
 }
 
 // ============================================

@@ -274,6 +274,15 @@ export async function restToolProxy(
  * - before_occurred_at / before_id (optional): Fetch the next older chronological slice
  * - after_occurred_at / after_id (optional): Fetch the next newer chronological slice
  */
+function parseIdListParam(raw: string | undefined): number[] | undefined {
+  if (!raw) return undefined;
+  const ids = raw
+    .split(',')
+    .map((id) => safeParseInt(id.trim(), { min: 1 }))
+    .filter((id): id is number => id !== undefined);
+  return ids.length > 0 ? ids : undefined;
+}
+
 export async function restSearchKnowledge(c: Context<{ Bindings: Env }>) {
   try {
     const query = c.req.query('query');
@@ -286,7 +295,11 @@ export async function restSearchKnowledge(c: Context<{ Bindings: Env }>) {
     const params = {
       query,
       entity_id: safeParseInt(c.req.query('entity_id'), { min: 1 }),
-      connection_ids: connectionId ? [connectionId] : undefined,
+      connection_ids:
+        parseIdListParam(c.req.query('connection_ids')) ??
+        (connectionId ? [connectionId] : undefined),
+      feed_ids: parseIdListParam(c.req.query('feed_ids')),
+      run_ids: parseIdListParam(c.req.query('run_ids')),
       platform: c.req.query('platform'),
       platforms: platforms
         ? platforms
@@ -327,7 +340,11 @@ export async function publicRestSearchKnowledge(c: Context<{ Bindings: Env }>) {
     const params = {
       query: query?.trim() || undefined,
       entity_id: safeParseInt(c.req.query('entity_id'), { min: 1 }),
-      connection_ids: connectionId ? [connectionId] : undefined,
+      connection_ids:
+        parseIdListParam(c.req.query('connection_ids')) ??
+        (connectionId ? [connectionId] : undefined),
+      feed_ids: parseIdListParam(c.req.query('feed_ids')),
+      run_ids: parseIdListParam(c.req.query('run_ids')),
       platform: c.req.query('platform'),
       platforms: platforms
         ? platforms

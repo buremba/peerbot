@@ -10,7 +10,9 @@ import { type DbClient, getDb, pgTextArray } from '../db/client';
 import type { Env } from '../index';
 import {
   buildConnectionFilter,
+  buildFeedFilter,
   buildOrderByClause,
+  buildRunFilter,
   type ClassificationFilter,
   groupClassificationFilters,
 } from './content-query-filters';
@@ -447,6 +449,8 @@ interface ContentSearchOptions {
   organization_id?: string; // Required when entity_id is omitted (org-wide mode)
 
   connection_ids?: number[]; // Array of connection IDs to filter by
+  feed_ids?: number[]; // Array of feed IDs to filter by
+  run_ids?: number[]; // Array of run IDs (events.run_id) to filter by
   /**
    * Connection-visibility scope. When set, the SQL WHERE clause inlines a
    * subquery that hides events from private connections the caller cannot
@@ -1099,6 +1103,10 @@ async function listContentInternal(
   const untilDate = options.until ? toEndOfDay(parseDateAlias(options.until).date) : null;
   const connectionIdsArray =
     options.connection_ids && options.connection_ids.length > 0 ? options.connection_ids : null;
+  const feedIdsArray =
+    options.feed_ids && options.feed_ids.length > 0 ? options.feed_ids : null;
+  const runIdsArray =
+    options.run_ids && options.run_ids.length > 0 ? options.run_ids : null;
 
   const orderByForResultSet = buildOrderByClause(
     options.sort_by,
@@ -1145,6 +1153,8 @@ async function listContentInternal(
   if (hasClassificationFilters && filtersBySlug) {
     const classifierVersionIds = await resolveClassifierVersionIds(sql, filtersBySlug, entityId);
     const connectionFilterClause = buildConnectionFilter(connectionIdsArray);
+    const feedFilterClause = buildFeedFilter(feedIdsArray);
+    const runFilterClause = buildRunFilter(runIdsArray);
 
     const baseConditions: string[] = [];
     const baseParams: any[] = [];
@@ -1187,6 +1197,8 @@ async function listContentInternal(
     }
 
     baseConditions.push(connectionFilterClause);
+    baseConditions.push(feedFilterClause);
+    baseConditions.push(runFilterClause);
 
     if (options.platform) {
       baseParams.push(options.platform);
@@ -1272,6 +1284,8 @@ async function listContentInternal(
   }
 
   const connectionCondition = buildConnectionFilter(connectionIdsArray);
+  const feedCondition = buildFeedFilter(feedIdsArray);
+  const runCondition = buildRunFilter(runIdsArray);
   const standardParams = buildStandardParams(options, { sinceDate, untilDate });
 
   // Build the entity-link UNION fragment once so both list and count emit
@@ -1330,6 +1344,8 @@ async function listContentInternal(
     joinSql: WINDOW_JOIN_SQL,
     whereExpr: `${standardWhereSql}
           AND ${connectionCondition}
+          AND ${feedCondition}
+          AND ${runCondition}
           ${excludeClause.sql}
           ${visibilityClause.sql}
           ${orgScope.sql}`,
@@ -1475,12 +1491,18 @@ async function searchContentBySingleQuery(
   const untilDate = options.until ? toEndOfDay(parseDateAlias(options.until).date) : null;
   const connectionIdsArray =
     options.connection_ids && options.connection_ids.length > 0 ? options.connection_ids : null;
+  const feedIdsArray =
+    options.feed_ids && options.feed_ids.length > 0 ? options.feed_ids : null;
+  const runIdsArray =
+    options.run_ids && options.run_ids.length > 0 ? options.run_ids : null;
 
   const needClassifications =
     options.include_classifications ||
     (options.classification_filters && options.classification_filters.length > 0);
 
   const connectionCondition = buildConnectionFilter(connectionIdsArray);
+  const feedCondition = buildFeedFilter(feedIdsArray);
+  const runCondition = buildRunFilter(runIdsArray);
 
   // Pre-fetch the entity's identity claims so the entity-link UNION trims
   // unused namespaces. Search path benefits even more than the chronological
@@ -1545,6 +1567,8 @@ async function searchContentBySingleQuery(
 
   const standardFiltersSQL = `($2::bigint IS NULL OR ${searchEntityLinkSql})
           AND ${connectionCondition}
+          AND ${feedCondition}
+          AND ${runCondition}
           AND ($3::text IS NULL OR f.connector_key = $3::text)
           AND ($4::timestamptz IS NULL OR f.occurred_at >= $4::timestamptz)
           AND ($5::timestamptz IS NULL OR f.occurred_at <= $5::timestamptz)

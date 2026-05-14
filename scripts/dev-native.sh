@@ -31,12 +31,29 @@ command -v bun >/dev/null || { echo "bun is required: curl -fsSL https://bun.sh/
 # call-site gate in packages/server/src/sandbox/run-script.ts only surfaces
 # this when an agent invokes the sandbox; we fail fast here so `make dev`
 # itself refuses to boot under an unsupported Node major.
-node_major=$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || true)
-if [ -z "$node_major" ] || [ "$node_major" -lt 22 ] || [ "$node_major" -ge 25 ]; then
+node_supported() {
+  local bin=$1
+  [ -x "$bin" ] || return 1
+  local major
+  major=$("$bin" -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo "")
+  [ -n "$major" ] && [ "$major" -ge 22 ] && [ "$major" -lt 25 ]
+}
+
+if ! node_supported "$(command -v node || true)"; then
+  for candidate in /opt/homebrew/opt/node@22/bin /opt/homebrew/opt/node@23/bin /opt/homebrew/opt/node@24/bin /usr/local/opt/node@22/bin /usr/local/opt/node@23/bin /usr/local/opt/node@24/bin; do
+    if node_supported "$candidate/node"; then
+      echo "↪︎  Using $($candidate/node -v) from $candidate (system node is unsupported)"
+      export PATH="$candidate:$PATH"
+      break
+    fi
+  done
+fi
+
+if ! node_supported "$(command -v node || true)"; then
   current=$(node -v 2>/dev/null || echo 'unknown')
   echo "❌ Unsupported Node.js runtime: $current (required: 22.x–24.x)"
   echo "   isolated-vm has no Node 25+ build yet — see https://github.com/laverdet/isolated-vm/issues/553"
-  echo "   Quick fix on macOS: brew install node@22 && PATH=/opt/homebrew/opt/node@22/bin:\$PATH make dev"
+  echo "   Quick fix on macOS: brew install node@22 (this script auto-detects Homebrew node@22-24)"
   echo "   Or use a version manager (nvm, fnm, mise, asdf, volta) that honours .nvmrc / .node-version."
   exit 1
 fi

@@ -253,7 +253,7 @@ CREATE TABLE public.auth_profiles (
     cdp_url text,
     CONSTRAINT auth_profiles_browser_kind_check CHECK (((browser_kind IS NULL) OR (browser_kind = ANY (ARRAY['chrome'::text, 'brave'::text, 'arc'::text, 'edge'::text])))),
     CONSTRAINT auth_profiles_connector_key_required CHECK (((connector_key IS NOT NULL) OR (profile_kind = 'browser_session'::text))),
-    CONSTRAINT auth_profiles_device_browser_path_xor CHECK (((device_worker_id IS NULL) OR (profile_kind <> 'browser_session'::text) OR (((user_data_dir IS NOT NULL) AND (cdp_url IS NULL)) OR ((user_data_dir IS NULL) AND (cdp_url IS NOT NULL))))),
+    CONSTRAINT auth_profiles_device_browser_path_mutex CHECK (((device_worker_id IS NULL) OR (profile_kind <> 'browser_session'::text) OR (user_data_dir IS NULL) OR (cdp_url IS NULL))),
     CONSTRAINT auth_profiles_profile_kind_check CHECK ((profile_kind = ANY (ARRAY['env'::text, 'oauth_app'::text, 'oauth_account'::text, 'browser_session'::text, 'interactive'::text]))),
     CONSTRAINT auth_profiles_status_check CHECK ((status = ANY (ARRAY['active'::text, 'pending_auth'::text, 'error'::text, 'revoked'::text])))
 );
@@ -4950,4 +4950,5 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20260513150000'),
     ('20260513200000'),
     ('20260514000000'),
-    ('20260514120000');
+    ('20260514120000'),
+    ('20260514160000');

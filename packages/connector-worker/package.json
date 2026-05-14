@@ -14,7 +14,8 @@
     "./embeddings": {
       "import": "./dist/embeddings.js",
       "types": "./dist/embeddings.d.ts"
-    }
+    },
+    "./executor/child-runner": "./dist/executor/child-runner.js"
   },
   "files": [
     "dist",

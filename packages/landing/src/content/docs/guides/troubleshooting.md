@@ -58,7 +58,7 @@ curl -v http://localhost:8118
 
 ## Platform connection issues
 
-Platform connections are usually configured from the **Connections** UI or the `/api/v1/connections` API.
+Platform connections are usually configured from the **Connectors** UI or the `/api/v1/connections` API.
 
 **Slack**: Reconnect or reinstall the workspace after adding scopes. If you use Slack OAuth install flows on a self-hosted gateway, also verify `SLACK_CLIENT_ID` and `SLACK_CLIENT_SECRET` on the gateway.
 

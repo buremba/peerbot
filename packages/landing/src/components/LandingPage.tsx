@@ -16,7 +16,6 @@ import { LatestBlogPosts, type LatestBlogPost } from "./LatestBlogPosts";
 
 export function LandingPage(props: {
   defaultUseCaseId?: LandingUseCaseId;
-  linkTabsToCampaigns?: boolean;
   heroCopy?: SurfaceHeroCopy;
   latestPosts?: LatestBlogPost[];
 }) {
@@ -53,8 +52,6 @@ export function LandingPage(props: {
           useCaseId={activeUseCaseId}
         />
       </section>
-
-      {/* <LogoStrip /> */}
 
       <section
         id="memory"

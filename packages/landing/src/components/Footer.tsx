@@ -11,10 +11,8 @@ const COLUMNS: FooterColumn[] = [
     links: [
       { label: "Memory", href: "/#memory" },
       { label: "Skills", href: "/#skills" },
-      { label: "Watchers", href: "/#autonomous" },
-      { label: "Platforms", href: "/#platforms" },
-      { label: "Self-host", href: "/#hosting" },
       { label: "Architecture", href: "/guides/architecture/" },
+      { label: "MCP", href: "/mcp/" },
     ],
   },
   {

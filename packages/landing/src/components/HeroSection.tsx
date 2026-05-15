@@ -38,12 +38,7 @@ const ArrowRightIcon = () => (
 
 const GITHUB_URL = "https://github.com/lobu-ai/lobu";
 
-export type HeroStageId =
-  | "model"
-  | "integrate"
-  | "watch"
-  | "connect"
-  | "knowledge";
+export type HeroStageId = "model" | "integrate" | "connect" | "knowledge";
 
 const STAGE_TABS: Array<{ id: HeroStageId; label: string; index: number }> = [
   { id: "integrate", label: "Connect systems", index: 1 },

@@ -19,7 +19,7 @@ const latestPosts = await getLatestPosts(3);
   >
     <Nav client:load currentPath={Astro.url.pathname} />
     <main class="relative z-[1]">
-      <LandingPage client:load linkTabsToCampaigns latestPosts={latestPosts} />
+      <LandingPage client:load latestPosts={latestPosts} />
     </main>
     <Footer />
   </div>

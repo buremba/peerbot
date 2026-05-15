@@ -1282,6 +1282,45 @@ function AgentsPillSection({
   );
 }
 
+function MenuIcon({ size = 16 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      aria-hidden="true"
+    >
+      <line x1="3" y1="6" x2="21" y2="6" />
+      <line x1="3" y1="12" x2="21" y2="12" />
+      <line x1="3" y1="18" x2="21" y2="18" />
+    </svg>
+  );
+}
+
+function CloseIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      aria-hidden="true"
+    >
+      <line x1="18" y1="6" x2="6" y2="18" />
+      <line x1="6" y1="6" x2="18" y2="18" />
+    </svg>
+  );
+}
+
 function Sidebar({
   activeNav,
   onStageChange,
@@ -1289,6 +1328,8 @@ function Sidebar({
   connections,
   agents,
   watchers,
+  mobileOpen,
+  onMobileClose,
 }: {
   activeNav: NavStage;
   onStageChange?: (stage: HeroStageId) => void;
@@ -1296,38 +1337,52 @@ function Sidebar({
   connections: SidebarConnection[];
   agents: SidebarAgent[];
   watchers: SidebarWatcher[];
+  mobileOpen?: boolean;
+  onMobileClose?: () => void;
 }) {
   const pill = pillForStage(activeNav);
   const handlePillChange = (next: Pill) => {
     if (next === "connections") onStageChange?.("integrate");
     else if (next === "agents") onStageChange?.("connect");
     else onStageChange?.("model");
+    onMobileClose?.();
   };
 
-  return (
-    <aside
-      class="hidden md:flex flex-col"
-      style={{
-        background: "var(--color-page-surface-dim)",
-        borderRight: "1px solid var(--color-page-border)",
-        width: "248px",
-        minWidth: "248px",
-      }}
-    >
-      <PillRow pill={pill} onPillChange={handlePillChange} inboxBadge={3} />
+  // Wrap onStageChange to auto-close the mobile drawer when an item is chosen.
+  const wrappedOnStageChange = onStageChange
+    ? (s: HeroStageId) => {
+        onStageChange(s);
+        onMobileClose?.();
+      }
+    : undefined;
+
+  const sidebarBody = (
+    <>
+      <div class="flex items-center justify-between md:block">
+        <PillRow pill={pill} onPillChange={handlePillChange} inboxBadge={3} />
+        <button
+          type="button"
+          onClick={onMobileClose}
+          aria-label="Close menu"
+          class="mr-2 md:hidden inline-flex h-7 w-7 items-center justify-center rounded-md"
+          style={{ color: "var(--color-page-text-muted)" }}
+        >
+          <CloseIcon />
+        </button>
+      </div>
       <div class="flex-1">
         {pill === "home" ? (
           <MemoryPillSection
             entities={entities}
             activeNav={activeNav}
-            onStageChange={onStageChange}
+            onStageChange={wrappedOnStageChange}
           />
         ) : null}
         {pill === "connections" ? (
           <ConnectorsPillSection
             connections={connections}
             activeNav={activeNav}
-            onStageChange={onStageChange}
+            onStageChange={wrappedOnStageChange}
           />
         ) : null}
         {pill === "agents" ? (
@@ -1335,11 +1390,50 @@ function Sidebar({
             agents={agents}
             watchers={watchers}
             activeNav={activeNav}
-            onStageChange={onStageChange}
+            onStageChange={wrappedOnStageChange}
           />
         ) : null}
       </div>
-    </aside>
+    </>
+  );
+
+  return (
+    <>
+      {/* Desktop sidebar — grid column 1 */}
+      <aside
+        class="hidden md:flex flex-col"
+        style={{
+          background: "var(--color-page-surface-dim)",
+          borderRight: "1px solid var(--color-page-border)",
+          width: "248px",
+          minWidth: "248px",
+        }}
+      >
+        {sidebarBody}
+      </aside>
+
+      {/* Mobile drawer + backdrop */}
+      {mobileOpen ? (
+        <>
+          <div
+            class="md:hidden absolute inset-0 z-10"
+            style={{ background: "rgba(0,0,0,0.4)" }}
+            onClick={onMobileClose}
+            aria-hidden="true"
+          />
+          <aside
+            class="md:hidden absolute inset-y-0 left-0 z-20 flex flex-col"
+            style={{
+              background: "var(--color-page-surface-dim)",
+              borderRight: "1px solid var(--color-page-border)",
+              width: "248px",
+            }}
+          >
+            {sidebarBody}
+          </aside>
+        </>
+      ) : null}
+    </>
   );
 }
 
@@ -1368,6 +1462,7 @@ function AppShell({
   rightPanel?: ComponentChildren;
   onStageChange?: (stage: HeroStageId) => void;
 }) {
+  const [mobileOpen, setMobileOpen] = useState(false);
   return (
     <div
       class="max-w-[72rem] mx-auto rounded-2xl overflow-hidden grid grid-cols-1 md:grid-cols-[248px_1fr] relative bg-[var(--color-page-surface)]"
@@ -1383,9 +1478,31 @@ function AppShell({
         connections={connections}
         agents={agents}
         watchers={watchers}
+        mobileOpen={mobileOpen}
+        onMobileClose={() => setMobileOpen(false)}
       />
 
       <div class="relative flex flex-col min-h-0 overflow-hidden">
+        <div
+          class="md:hidden flex items-center gap-2 px-3 py-2"
+          style={{ borderBottom: "1px solid var(--color-page-border)" }}
+        >
+          <button
+            type="button"
+            onClick={() => setMobileOpen(true)}
+            aria-label="Open menu"
+            class="inline-flex h-8 w-8 items-center justify-center rounded-md"
+            style={{ color: "var(--color-page-text)" }}
+          >
+            <MenuIcon />
+          </button>
+          <span
+            class="text-[12px] font-medium"
+            style={{ color: "var(--color-page-text-muted)" }}
+          >
+            lobu-prod
+          </span>
+        </div>
         {pageTitle ? (
           <div
             class="px-4 pt-3 pb-3"

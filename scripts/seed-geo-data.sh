@@ -46,7 +46,10 @@ case "${GEO_PLACES_SOURCE}" in
         ;;
 esac
 
-WORKDIR="$(mktemp -d -t lobu-geo-seed)"
+# GNU mktemp (Linux) requires at least 3 X's in the template; BSD mktemp
+# (macOS) accepts a bare prefix. Use the GNU-compatible form so this works
+# in both dev shells and an in-cluster debian seed pod.
+WORKDIR="$(mktemp -d -t lobu-geo-seed.XXXXXXXXXX)"
 trap 'rm -rf "${WORKDIR}"' EXIT
 
 echo "==> seed-geo-data: working in ${WORKDIR}"

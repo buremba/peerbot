@@ -66,9 +66,17 @@ else
     BUILD_ACTION="${BUILD_ACTION} --load"
 fi
 
+# --provenance=false + --sbom=false: buildx defaults to attaching SLSA
+# provenance to multi-arch pushes, which adds "unknown/unknown" platform
+# entries to the OCI index. Some containerd versions (incl. the one CNPG
+# pods on Hetzner ride on) pick the attestation manifest instead of the
+# real amd64/arm64 image and the pod then dies with `exec format error`.
+# We don't consume provenance, so strip it.
 docker buildx build \
     --build-arg "CNPG_VERSION=${CNPG_VERSION}" \
     --build-arg "CNPG_BASE=${CNPG_BASE}" \
+    --provenance=false \
+    --sbom=false \
     -t "${IMAGE}" \
     ${BUILD_ACTION} \
     .

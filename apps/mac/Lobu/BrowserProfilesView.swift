@@ -75,6 +75,12 @@ struct SingleBrowserRow: View {
     /// via DevToolsActivePort at sync time"; non-empty pins a specific
     /// port for unusual Chrome launches.
     @State private var cdpPortText: String = ""
+    /// Whether the un-mirrored source profiles list is expanded.
+    /// Mirrored profiles are always visible (they're active integrations);
+    /// the unmirrored ones are hidden by default since they're "available
+    /// to add" — Chrome typically has 3-10+ system/sign-in profiles and
+    /// rendering them all inline drowns out everything else in the menu.
+    @State private var expanded: Bool = false
 
     private var myProfiles: [WorkerClient.BrowserAuthProfile] {
         hub.profiles.filter { $0.browser_kind == browser.kind.rawValue }
@@ -89,50 +95,95 @@ struct SingleBrowserRow: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        // Split into "mirrored" (active integrations — always visible) and
+        // "unmirrored" (available-to-add — hidden behind the disclosure).
+        let mirroredSources = sourceProfiles.filter { mirroredProfile(for: $0) != nil }
+        let unmirroredSources = sourceProfiles.filter { mirroredProfile(for: $0) == nil }
+
+        return VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 8) {
                 Image(systemName: "globe")
                     .foregroundStyle(.blue)
                     .frame(width: 18)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(browser.kind.displayName).font(.caption)
-                    Text(headerStatus())
-                        .font(.caption2).foregroundStyle(.secondary)
+                    Text(headerStatus(
+                        mirroredCount: mirroredSources.count,
+                        totalCount: sourceProfiles.count
+                    ))
+                    .font(.caption2).foregroundStyle(.secondary)
                 }
                 Spacer()
-                // Single browser-level CDP control: port input +
-                // checkbox. One Chrome process = one CDP server, so this
-                // applies to every profile under this browser. Hidden
-                // entirely when DevToolsActivePort hasn't found a live
-                // listener — there's nothing meaningful to attach to.
-                if detectedCdpPort != nil {
-                    TextField(
-                        detectedCdpPort.map(String.init) ?? "port",
-                        text: $cdpPortText
-                    )
-                    .textFieldStyle(.roundedBorder)
-                    .controlSize(.mini).font(.caption2)
-                    .frame(maxWidth: 60)
-                    Toggle("Use my Chrome", isOn: $allowCdp)
-                        .toggleStyle(.checkbox)
-                        .controlSize(.mini).font(.caption2)
-                        .help(
-                            "Run connectors inside your real Chrome (best for sites like Revolut that pin sessions to a browser fingerprint). Off = Lobu only reads cookies, never touches the live browser process."
-                        )
+                // Disclosure chevron. Always shown so the CDP controls
+                // (live behind the disclosure) remain reachable; the only
+                // case where we hide it is when there is literally nothing
+                // to show under the disclosure either.
+                let hasExpandableContent =
+                    !unmirroredSources.isEmpty
+                    || sourceProfiles.isEmpty
+                    || detectedCdpPort != nil
+                if hasExpandableContent {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
+                    } label: {
+                        Image(systemName: "chevron.right")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                            .rotationEffect(.degrees(expanded ? 90 : 0))
+                            .frame(width: 12, height: 12)
+                    }
+                    .buttonStyle(.plain)
+                    .help(expanded ? "Hide other profiles" : "Show options")
                 }
             }
             .padding(.vertical, 4)
             .padding(.horizontal, 6)
 
-            ForEach(sourceProfiles) { src in
+            // Active integrations — always visible.
+            ForEach(mirroredSources) { src in
                 sourceProfileRow(src)
                     .padding(.leading, 32).padding(.trailing, 6)
             }
-            if sourceProfiles.isEmpty {
-                Text("No \(browser.kind.displayName) profiles found on this Mac.")
-                    .font(.caption2).foregroundStyle(.secondary)
-                    .padding(.leading, 32).padding(.bottom, 4)
+
+            // Available-to-add profiles + browser-level CDP controls +
+            // empty-state — only when expanded.
+            if expanded {
+                // Browser-level CDP control. One Chrome process = one CDP
+                // server, so this applies to every profile under this
+                // browser. Hidden when DevToolsActivePort hasn't found a
+                // live listener — there's nothing meaningful to attach to.
+                if detectedCdpPort != nil {
+                    HStack(spacing: 6) {
+                        Toggle("Use my Chrome", isOn: $allowCdp)
+                            .toggleStyle(.checkbox)
+                            .controlSize(.mini).font(.caption2)
+                            .help(
+                                "Run connectors inside your real Chrome (best for sites like Revolut that pin sessions to a browser fingerprint). Off = Lobu only reads cookies, never touches the live browser process."
+                            )
+                        Spacer()
+                        Text("Port").font(.caption2).foregroundStyle(.secondary)
+                        TextField(
+                            detectedCdpPort.map(String.init) ?? "port",
+                            text: $cdpPortText
+                        )
+                        .textFieldStyle(.roundedBorder)
+                        .controlSize(.mini).font(.caption2)
+                        .frame(maxWidth: 60)
+                    }
+                    .padding(.leading, 32).padding(.trailing, 6).padding(.bottom, 2)
+                }
+
+                ForEach(unmirroredSources) { src in
+                    sourceProfileRow(src)
+                        .padding(.leading, 32).padding(.trailing, 6)
+                }
+                if sourceProfiles.isEmpty {
+                    Text("No \(browser.kind.displayName) profiles found on this Mac.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .padding(.leading, 32).padding(.bottom, 4)
+                }
             }
+
             // Surface any save / fetch failure inline so the user sees
             // what's wrong instead of "I clicked Mirror and nothing
             // happened." Stays as long as hub.loadError is non-nil; the
@@ -163,7 +214,14 @@ struct SingleBrowserRow: View {
         }
     }
 
-    private func headerStatus() -> String {
+    private func headerStatus(mirroredCount: Int, totalCount: Int) -> String {
+        // When the user already has profiles mirrored, the count is the
+        // most useful summary — the descriptive blurbs belong on the
+        // first run / discovery experience, not on the steady-state UI.
+        if totalCount > 0 {
+            let suffix = totalCount == 1 ? "profile" : "profiles"
+            return "\(mirroredCount) of \(totalCount) \(suffix) mirrored"
+        }
         if detectedCdpPort != nil {
             return
                 "Your Chrome is reachable. Check 'Use my Chrome' to let Lobu run inside it for sites that need a live session."

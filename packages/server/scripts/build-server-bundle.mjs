@@ -22,6 +22,7 @@
  */
 
 import esbuild from 'esbuild';
+import { cpSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -82,3 +83,14 @@ async function buildBundle(entryPoint, outfile) {
 
 await buildBundle('src/server.ts', 'dist/server.bundle.mjs');
 await buildBundle('src/start-local.ts', 'dist/start-local.bundle.mjs');
+
+const connectorsSrc = join(pkgDir, '..', 'connectors', 'src');
+const connectorsDest = join(pkgDir, 'dist', 'connectors');
+if (existsSync(connectorsSrc)) {
+  if (existsSync(connectorsDest)) {
+    rmSync(connectorsDest, { recursive: true, force: true });
+  }
+  mkdirSync(dirname(connectorsDest), { recursive: true });
+  cpSync(connectorsSrc, connectorsDest, { recursive: true });
+  console.log(`\n=== copied connectors: ${connectorsDest}`);
+}

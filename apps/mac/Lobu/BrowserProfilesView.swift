@@ -154,13 +154,6 @@ struct SingleBrowserRow: View {
                 // live listener — there's nothing meaningful to attach to.
                 if detectedCdpPort != nil {
                     HStack(spacing: 6) {
-                        Toggle("Use my Chrome", isOn: $allowCdp)
-                            .toggleStyle(.checkbox)
-                            .controlSize(.mini).font(.caption2)
-                            .help(
-                                "Run connectors inside your real Chrome (best for sites like Revolut that pin sessions to a browser fingerprint). Off = Lobu only reads cookies, never touches the live browser process."
-                            )
-                        Spacer()
                         Text("Port").font(.caption2).foregroundStyle(.secondary)
                         TextField(
                             detectedCdpPort.map(String.init) ?? "port",
@@ -169,6 +162,13 @@ struct SingleBrowserRow: View {
                         .textFieldStyle(.roundedBorder)
                         .controlSize(.mini).font(.caption2)
                         .frame(maxWidth: 60)
+                        Spacer()
+                        Toggle("Use my Chrome", isOn: $allowCdp)
+                            .toggleStyle(.checkbox)
+                            .controlSize(.mini).font(.caption2)
+                            .help(
+                                "Run connectors inside your real Chrome (best for sites like Revolut that pin sessions to a browser fingerprint). Off = Lobu only reads cookies, never touches the live browser process."
+                            )
                     }
                     .padding(.leading, 32).padding(.trailing, 6).padding(.bottom, 2)
                 }

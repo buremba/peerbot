@@ -1,6 +1,6 @@
 # Development Makefile for Lobu
 
-.PHONY: help setup build test eval clean dev build-packages ensure-submodule clean-workers test-unit test-integration test-e2e
+.PHONY: help setup build test eval clean dev build-packages ensure-submodule clean-workers test-unit test-integration test-e2e typecheck
 
 # Default target
 help:
@@ -14,6 +14,18 @@ help:
 	@echo "  make test-e2e                              - Boot the dev server + run openclaw-plugin e2e against it"
 	@echo "  make eval                                  - Run agent evals"
 	@echo "  make clean-workers                         - Stop any running embedded worker subprocesses"
+	@echo "  make typecheck                             - Strict typecheck (same as Dockerfile) for server + web"
+
+# Strict typecheck — mirrors the Dockerfile so local matches CI. Catches
+# what `build-packages` (relaxed, bundler-only) misses.
+typecheck:
+	@echo "🔎 Strict typecheck: packages/server..."
+	@( cd packages/server && bunx tsc --noEmit ) || exit $$?
+	@if [ -d packages/web/src ]; then \
+		echo "🔎 Strict typecheck: packages/web..."; \
+		( cd packages/web && bunx tsc -b --noEmit ) || exit $$?; \
+	fi
+	@echo "✅ Typecheck clean."
 
 # Build all TypeScript packages in dependency order
 build-packages:

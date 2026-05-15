@@ -8,6 +8,7 @@
 import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import type { DbClient } from '../../db/client';
 import { pgTextArray } from '../../db/client';
+import { recordLifecycleEvent } from '../../utils/insert-event';
 import type { OAuthClient, OAuthClientMetadata, StoredOAuthClient } from './types';
 import { generateClientId, generateClientSecret } from './utils';
 
@@ -157,6 +158,17 @@ export class OAuthClientsStore {
       )
     `;
 
+    if (organizationId) {
+      recordLifecycleEvent({
+        organizationId,
+        entityType: 'client',
+        op: 'created',
+        entityId: clientId,
+        summary: `Connected app "${metadata.client_name || clientId}" registered`,
+        extra: { user_id: userId ?? null },
+      });
+    }
+
     return {
       ...metadata,
       client_id: clientId,
@@ -207,9 +219,24 @@ export class OAuthClientsStore {
   async deleteClient(clientId: string): Promise<boolean> {
     const result = await this.sql`
       DELETE FROM oauth_clients WHERE id = ${clientId}
-      RETURNING id
+      RETURNING id, organization_id, client_name
     `;
-    return result.length > 0;
+    if (result.length === 0) return false;
+    const row = result[0] as {
+      id: string;
+      organization_id: string | null;
+      client_name: string | null;
+    };
+    if (row.organization_id) {
+      recordLifecycleEvent({
+        organizationId: row.organization_id,
+        entityType: 'client',
+        op: 'deleted',
+        entityId: clientId,
+        summary: `Connected app "${row.client_name || clientId}" removed`,
+      });
+    }
+    return true;
   }
 
   /**

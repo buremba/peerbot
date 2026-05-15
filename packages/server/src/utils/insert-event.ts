@@ -348,18 +348,17 @@ export function recordChangeEvent(params: ChangeEventParams): void {
 // Lifecycle Event (entity create / update / delete)
 // ============================================
 
-export type LifecycleEntityType =
-  | 'agent'
-  | 'connection'
-  | 'watcher'
-  | 'device'
-  | 'member';
-
 export type LifecycleOp = 'created' | 'updated' | 'deleted';
 
 interface LifecycleEventParams {
   organizationId: string;
-  entityType: LifecycleEntityType;
+  /**
+   * Entity-type slug used by dashboard SQL to pivot lifecycle rows
+   * (`metadata->>'entity_type'`). Kept as a free-form string so new entity
+   * types can emit without touching this file — keep slugs short, lowercase,
+   * singular: `agent`, `connection`, `watcher`, `device`, `member`, `client`.
+   */
+  entityType: string;
   op: LifecycleOp;
   entityId: string | number;
   /** Human-readable summary (e.g. "Agent 'Marketing' created"). */

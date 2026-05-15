@@ -58,9 +58,9 @@ export function LandingPage(props: {
         class="relative px-4 sm:px-6 max-w-[72rem] mx-auto pt-10"
       >
         <FeatureBlock
-          eyebrow="Memory that grows itself"
-          title="Source-backed context, kept fresh automatically."
-          description="Connect sources once. Lobu turns them into typed memory that agents can search and cite. Watchers run on a schedule to extract new signal and write back."
+          eyebrow="Memory"
+          title="Source-backed context, kept fresh."
+          description="Connect a source once. Lobu types it into memory agents can search and cite. Watchers refresh it on schedule."
           ctaLabel="Read the memory guide"
           ctaHref="/getting-started/memory/"
           graphic={<SharedMemoryGraphic />}
@@ -72,9 +72,9 @@ export function LandingPage(props: {
         class="relative px-4 sm:px-6 max-w-[72rem] mx-auto pt-10"
       >
         <FeatureBlock
-          eyebrow="One backend, every surface"
-          title="Add tools without glue code. Reach users where they already are."
-          description="Skills bundle instructions, tools, packages, and network access. The same agent runs in Slack, Telegram, REST, MCP clients, and ChatGPT — no per-platform plumbing."
+          eyebrow="Skills"
+          title="One agent, every surface."
+          description="Bundle tools, packages, and network access into a skill. The same agent runs in Slack, Telegram, REST, MCP, and ChatGPT — no per-platform plumbing."
           ctaLabel="Explore skills"
           ctaHref="/getting-started/skills/"
           graphic={<SkillsGraphic />}

@@ -6,6 +6,10 @@
  */
 
 import { getDb } from '../db/client';
+import {
+  lookupGeoEnrichment,
+  mergeEnrichedMetadata,
+} from './geo-enrichment';
 import logger from './logger';
 
 // ============================================
@@ -202,6 +206,17 @@ export async function insertEvent(
   options?: { onConflictUpdate?: boolean; sql?: ReturnType<typeof getDb> }
 ): Promise<InsertedEvent> {
   const sql = options?.sql ?? getDb();
+
+  // Reverse-geocode lat/lng → city / admin1 / country once per event,
+  // before insert. Silent no-op when the connector hasn't supplied
+  // coordinates, when PostGIS / geo_places aren't seeded, or when the
+  // nearest place is too far (ocean / desert). Connector-supplied
+  // place_name etc. are preserved — enrichment only fills gaps.
+  const enrichment = await lookupGeoEnrichment(params.metadata, { sql });
+  const enrichedMetadata = mergeEnrichedMetadata(params.metadata, enrichment);
+  if (enrichedMetadata !== params.metadata) {
+    params = { ...params, metadata: enrichedMetadata };
+  }
 
   const entityIdsValue = params.entityIds.length > 0 ? `{${params.entityIds.join(',')}}` : null;
   let supersedesEventId = params.supersedesEventId ?? null;

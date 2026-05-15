@@ -33,7 +33,7 @@ All chat platforms (Telegram, Slack, Discord, WhatsApp, Teams) run through Chat 
 
 #### Orchestration
 - **Embedded-only deployment.** Gateway, workers, embeddings, and the Lobu memory backend run in a single Node process (`lobu run`, or `bun run dev` in the monorepo). Workers spawn as `child_process.spawn` subprocesses on the same host; on Linux the spawn path uses `systemd-run --user --scope` for cgroup limits + IPAddressDeny + capability drops. There is no Docker or Kubernetes deployment manager.
-- Postgres (with pgvector) is the only user-provided external. The Node process connects out via `DATABASE_URL`. Runtime state — queues, chat connection rows, grant cache, MCP proxy sessions — lives in dedicated Postgres tables.
+- Postgres (with `pgvector`; optionally `postgis` for geo enrichment) is the only user-provided external. The Node process connects out via `DATABASE_URL`. Runtime state — queues, chat connection rows, grant cache, MCP proxy sessions — lives in dedicated Postgres tables.
 - Workers are sandboxed and **never see real credentials**. The gateway's `secret-proxy` swaps `lobu_secret_<uuid>` placeholders for real keys at egress; workers receive only the placeholders.
 
 #### MCP
@@ -125,7 +125,9 @@ When the user pivots mid-session, the default failure mode is piling unrelated w
 
 ## Development
 
-Prerequisites: Bun, Node.js **22.x–24.x** (`.nvmrc` and `.node-version` pin `22`), and a reachable Postgres (with pgvector) via `DATABASE_URL`. Node 25+ is rejected at boot — `isolated-vm` (used by `query_sdk` / `run_sdk`) has no Node 25+ build yet (upstream: [`laverdet/isolated-vm#553`](https://github.com/laverdet/isolated-vm/issues/553)).
+Prerequisites: Bun, Node.js **22.x–24.x** (`.nvmrc` and `.node-version` pin `22`), and a reachable Postgres (with `pgvector`) via `DATABASE_URL`. Node 25+ is rejected at boot — `isolated-vm` (used by `query_sdk` / `run_sdk`) has no Node 25+ build yet (upstream: [`laverdet/isolated-vm#553`](https://github.com/laverdet/isolated-vm/issues/553)).
+
+Optional: `postgis` for reverse-geocoding events with lat/lng (currently used by `apple.photos`). Install once (`CREATE EXTENSION postgis;`, requires superuser the first time) and run `scripts/seed-geo-data.sh` to populate the geo reference tables from GeoNames. Without `postgis` the migration becomes a no-op and runtime enrichment silently skips — events keep their raw `latitude`/`longitude` and just don't get `country` / `admin1` / `place_name` filled.
 
 ```bash
 ./scripts/setup-dev.sh   # first-time setup (builds packages, checks bun)

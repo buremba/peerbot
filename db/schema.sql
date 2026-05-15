@@ -500,6 +500,7 @@ CREATE TABLE public.events (
     interaction_error text,
     supersedes_event_id bigint,
     content_length integer GENERATED ALWAYS AS (COALESCE(length(payload_text), 0)) STORED,
+    search_tsv tsvector GENERATED ALWAYS AS ((setweight(to_tsvector('english'::regconfig, COALESCE(title, ''::text)), 'A'::"char") || setweight(to_tsvector('english'::regconfig, COALESCE(payload_text, ''::text)), 'B'::"char"))) STORED,
     CONSTRAINT events_interaction_status_check CHECK ((interaction_status = ANY (ARRAY['pending'::text, 'approved'::text, 'rejected'::text, 'completed'::text, 'failed'::text]))),
     CONSTRAINT events_interaction_type_check CHECK ((interaction_type = ANY (ARRAY['none'::text, 'approval'::text]))),
     CONSTRAINT events_payload_type_check CHECK ((payload_type = ANY (ARRAY['text'::text, 'markdown'::text, 'json_template'::text, 'media'::text, 'empty'::text]))),
@@ -3407,12 +3408,6 @@ CREATE INDEX idx_events_entity_ids_occurred_at ON public.events USING btree ((en
 CREATE INDEX idx_events_feed_id ON public.events USING btree (feed_id);
 
 --
--- Name: idx_events_fulltext; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_events_fulltext ON public.events USING gin (to_tsvector('english'::regconfig, COALESCE(payload_text, ''::text)));
-
---
 -- Name: idx_events_identity_fact_account; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3423,6 +3418,12 @@ CREATE INDEX idx_events_identity_fact_account ON public.events USING btree (conn
 --
 
 CREATE INDEX idx_events_identity_fact_lookup ON public.events USING btree (organization_id, ((metadata ->> 'namespace'::text)), ((metadata ->> 'normalizedValue'::text))) WHERE (semantic_type = 'identity_fact'::text);
+
+--
+-- Name: idx_events_lifecycle_changes; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_events_lifecycle_changes ON public.events USING btree (organization_id, created_at) WHERE ((semantic_type = 'change'::text) AND ((metadata ->> 'category'::text) = 'lifecycle'::text));
 
 --
 -- Name: idx_events_metadata_auth_user_id; Type: INDEX; Schema: public; Owner: -
@@ -3495,6 +3496,12 @@ CREATE INDEX idx_events_raw_content_trgm ON public.events USING gin (payload_tex
 --
 
 CREATE INDEX idx_events_run_id ON public.events USING btree (run_id);
+
+--
+-- Name: idx_events_search_tsv; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_events_search_tsv ON public.events USING gin (search_tsv);
 
 --
 -- Name: idx_events_semantic_type; Type: INDEX; Schema: public; Owner: -
@@ -4991,4 +4998,6 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20260515120000'),
     ('20260515150000'),
     ('20260515160000'),
-    ('20260516120000');
+    ('20260516120000'),
+    ('20260516200000'),
+    ('20260516200100');

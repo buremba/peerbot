@@ -1383,7 +1383,12 @@ async function listContentInternal(
  * ```
  */
 function buildSearchDocumentExpr(alias: string): string {
-  return `setweight(to_tsvector('english', COALESCE(${alias}.title, '')), 'A') || setweight(to_tsvector('english', COALESCE(${alias}.payload_text, '')), 'B')`;
+  // Reads the GENERATED STORED `search_tsv` column populated by the events
+  // table — same shape (title weighted A, payload_text weighted B) the
+  // expression used to compute inline, but precomputed at row insert so
+  // retrieval (@@) and ranking (ts_rank_cd) hit the same indexed value
+  // without rebuilding the vector per matched row.
+  return `${alias}.search_tsv`;
 }
 
 const STOPWORDS = [
@@ -1715,7 +1720,7 @@ async function searchContentBySingleQuery(
           FROM events ce
           JOIN current_event_records f ON f.id = ce.id
           ${candidateFilterJoins}
-          WHERE to_tsvector('english', COALESCE(ce.payload_text, '')) @@ to_tsquery('english', $${tsqueryParamIdx})
+          WHERE ce.search_tsv @@ to_tsquery('english', $${tsqueryParamIdx})
             AND ${standardFiltersSQL}
           LIMIT ${CANDIDATE_VECTOR_LIMIT}`);
       // trigram GIN — preserves the payload substring match (exact strings, ids).

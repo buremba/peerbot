@@ -1,3 +1,5 @@
+-- migrate:up
+
 -- =============================================================================
 -- Geo enrichment: reverse-geocode lat/lng → country / admin1 / place at the
 -- gateway, once, for every event with coordinates. Used by `apple.photos`
@@ -191,3 +193,13 @@ BEGIN
     $fn$;
 END
 $migration$;
+
+-- migrate:down
+
+DROP FUNCTION IF EXISTS geo_lookup(double precision, double precision);
+DROP TABLE IF EXISTS geo_places;
+DROP TABLE IF EXISTS geo_admin1;
+DROP TABLE IF EXISTS geo_countries;
+-- Intentionally do NOT DROP EXTENSION postgis. The extension may be
+-- shared by other tables / future migrations on the same Postgres
+-- instance; rolling back this migration shouldn't take that down.

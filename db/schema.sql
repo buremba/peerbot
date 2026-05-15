@@ -588,6 +588,7 @@ CREATE VIEW public.current_event_records AS
     e.created_at,
     e.origin_parent_id,
     COALESCE(length(e.payload_text), 0) AS content_length,
+    e.search_tsv,
     e.origin_type,
     e.connector_key,
     e.connection_id,

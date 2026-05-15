@@ -1742,7 +1742,7 @@ async function searchContentBySingleQuery(
   }
 
   const nonDateFilteredIdsCteSql = `filtered_ids AS (
-        SELECT f.id, f.score, f.occurred_at, f.title, f.payload_text, f.embedding
+        SELECT f.id, f.score, f.occurred_at, f.title, f.payload_text, f.embedding, f.search_tsv
         FROM current_event_records f
         ${useCandidatePath ? 'JOIN search_candidates sc ON sc.id = f.id' : ''}
         LEFT JOIN connections c ON c.id = f.connection_id
@@ -1756,7 +1756,7 @@ async function searchContentBySingleQuery(
   const querySQL = useDateFeed
     ? `
       WITH RECURSIVE filtered_ids AS (
-        SELECT f.id, f.score, f.occurred_at, f.title, f.payload_text, f.embedding
+        SELECT f.id, f.score, f.occurred_at, f.title, f.payload_text, f.embedding, f.search_tsv
         FROM current_event_records f
         LEFT JOIN connections c ON c.id = f.connection_id
         LEFT JOIN watcher_window_events iwf

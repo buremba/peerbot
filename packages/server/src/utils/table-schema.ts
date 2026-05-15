@@ -77,6 +77,7 @@ export const QUERYABLE_SCHEMA = {
         'run_id',
         'semantic_type',
         'content_length',
+        'search_tsv',
         'client_id',
         'created_by',
         'interaction_type',

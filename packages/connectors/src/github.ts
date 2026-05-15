@@ -208,6 +208,7 @@ export default class GitHubConnector extends ConnectorRuntime {
     name: 'GitHub',
     description: 'Collects GitHub issues/discussions and executes repo actions.',
     version: '1.2.0',
+    faviconDomain: 'github.com',
     authSchema: {
       methods: [
         {

@@ -79,6 +79,7 @@ export default class RedditConnector extends ConnectorRuntime {
     name: 'Reddit',
     description: 'Fetches posts and comments from Reddit subreddits or search queries.',
     version: '1.0.0',
+    faviconDomain: 'reddit.com',
     authSchema: {
       methods: [
         {

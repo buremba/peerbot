@@ -19,7 +19,6 @@ import { type Static, Type } from '@sinclair/typebox';
 import { getDb } from '../../db/client';
 import { validateAndScopeQuery } from '../../utils/execute-data-sources';
 import logger from '../../utils/logger';
-import { raceAbort } from '../../utils/race-abort';
 import type { ToolContext } from '../registry';
 
 export const MetricSeriesSchema = Type.Object({
@@ -52,18 +51,13 @@ export async function metricSeries(
   const { sql: scopedSql, params } = validateAndScopeQuery(args.sql, orgId);
   const db = getDb();
 
-  const exec = (async () => {
-    // Postgres statement timeout for this connection only.
-    await db`SET LOCAL statement_timeout = ${STATEMENT_TIMEOUT_MS}`;
-    return db.unsafe(scopedSql, params as unknown[]);
-  })();
-
+  // Run inside a transaction so SET LOCAL applies for the user query only.
   let rows: Record<string, unknown>[];
   try {
-    rows = (await raceAbort(exec, STATEMENT_TIMEOUT_MS, 'metric_series')) as Record<
-      string,
-      unknown
-    >[];
+    rows = (await db.begin(async (tx) => {
+      await tx`SET LOCAL statement_timeout = ${STATEMENT_TIMEOUT_MS}`;
+      return tx.unsafe(scopedSql, params as unknown[]);
+    })) as Record<string, unknown>[];
   } catch (err) {
     logger.warn({ err, orgId }, '[metric_series] query failed');
     throw err;

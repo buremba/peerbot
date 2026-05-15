@@ -1072,14 +1072,16 @@ async function handleCreate(
 
   logger.info(`[manage_watchers] Created watcher ${watcherId} with slug '${args.slug}'`);
 
-  recordLifecycleEvent({
-    organizationId,
-    entityType: 'watcher',
-    op: 'created',
-    entityId: watcherId,
-    summary: `Watcher "${args.name ?? args.slug}" created`,
-    extra: { slug: args.slug, agent_id: args.agent_id ?? null },
-  });
+  if (organizationId) {
+    recordLifecycleEvent({
+      organizationId,
+      entityType: 'watcher',
+      op: 'created',
+      entityId: watcherId,
+      summary: `Watcher "${args.name ?? args.slug}" created`,
+      extra: { slug: args.slug, agent_id: args.agent_id ?? null },
+    });
+  }
 
   return {
     action: 'create',

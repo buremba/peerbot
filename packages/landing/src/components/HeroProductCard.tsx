@@ -1123,6 +1123,27 @@ function ConnectorsPillSection({
 type SidebarAgent = { name: string };
 type SidebarWatcher = { name: string };
 
+function AgentTabLink({
+  icon,
+  label,
+}: {
+  icon: ComponentChildren;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      class="flex w-full items-center gap-2 rounded-md px-2 py-1 text-[12px] text-left transition-colors hover:bg-[rgba(0,0,0,0.04)]"
+      style={{ color: "var(--color-page-text-muted)" }}
+    >
+      <span class="flex h-3.5 w-3.5 shrink-0 items-center justify-center">
+        {icon}
+      </span>
+      <span class="min-w-0 flex-1 truncate">{label}</span>
+    </button>
+  );
+}
+
 function AgentSubGroup({
   label,
   icon,
@@ -1212,65 +1233,21 @@ function AgentsPillSection({
                     }))}
                     active={activeNav === "watchers"}
                   />
-                  <AgentSubGroup
+                  <AgentTabLink
+                    icon={<KeyIcon size={11} />}
                     label="Providers"
-                    icon={<KeyIcon size={10} />}
-                    items={[
-                      {
-                        name: "Anthropic",
-                        leading: (
-                          <BrandLogo name="claude" size={12} radius={2} />
-                        ),
-                      },
-                      {
-                        name: "OpenAI",
-                        leading: (
-                          <BrandLogo name="chatgpt" size={12} radius={2} />
-                        ),
-                      },
-                      {
-                        name: "Google",
-                        leading: (
-                          <span
-                            class="inline-flex h-3 w-3 rounded text-[7px] items-center justify-center font-bold text-white"
-                            style={{ background: "#4285F4" }}
-                            aria-hidden="true"
-                          >
-                            G
-                          </span>
-                        ),
-                      },
-                    ]}
                   />
-                  <AgentSubGroup
+                  <AgentTabLink
+                    icon={<CodeIcon size={11} />}
                     label="Skills"
-                    icon={<CodeIcon size={10} />}
-                    items={[
-                      { name: "deal-research" },
-                      { name: "founder-signals" },
-                      { name: "memory-recall" },
-                    ]}
                   />
-                  <AgentSubGroup
+                  <AgentTabLink
+                    icon={<LobuRightWing size={11} />}
                     label="Channels"
-                    icon={<LobuRightWing size={10} />}
-                    items={[
-                      {
-                        name: "Slack #vc-deals",
-                        leading: (
-                          <BrandLogo name="slack" size={12} radius={2} />
-                        ),
-                      },
-                      {
-                        name: "REST API",
-                        leading: <StatusDot tone="green" />,
-                      },
-                    ]}
                   />
-                  <AgentSubGroup
+                  <AgentTabLink
+                    icon={<HardDriveIcon size={11} />}
                     label="Settings"
-                    icon={<HardDriveIcon size={10} />}
-                    items={[{ name: "Identity" }, { name: "Run policy" }]}
                   />
                 </div>
               ) : null}
@@ -1333,7 +1310,7 @@ function Sidebar({
       }}
     >
       <PillRow pill={pill} onPillChange={handlePillChange} inboxBadge={3} />
-      <div class="flex-1 overflow-y-auto">
+      <div class="flex-1">
         {pill === "home" ? (
           <MemoryPillSection
             entities={entities}
@@ -1392,8 +1369,6 @@ function AppShell({
       style={{
         border: "1px solid var(--color-page-border)",
         boxShadow: "0 8px 28px rgba(0,0,0,0.06)",
-        height: "560px",
-        gridTemplateRows: "minmax(0, 1fr)",
       }}
     >
       <Sidebar
@@ -1439,7 +1414,7 @@ function AppShell({
             </div>
           </div>
         ) : null}
-        <div class="flex-1 px-4 py-3 overflow-y-auto min-h-0">{children}</div>
+        <div class="flex-1 px-4 py-3">{children}</div>
         {rightPanel}
       </div>
     </div>
@@ -3558,7 +3533,6 @@ function ActionField({
 
 /* ------------------------------ tab 4: connect ------------------------------ */
 
-
 function WatcherDetail({ watchers }: { watchers: WatcherRow[] }) {
   // Sidebar already lists every watcher under the active agent, so the
   // content pane only renders the currently-selected one — matches v2
@@ -3846,7 +3820,6 @@ const DEFAULT_AGENT_ROWS: AgentRow[] = [
     status: "Paused",
   },
 ];
-
 
 /* ------------------------------ entry ------------------------------ */
 

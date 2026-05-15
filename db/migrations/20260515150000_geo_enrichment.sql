@@ -181,7 +181,10 @@ BEGIN
                 n.geonameid                                         AS place_id,
                 n.country_code                                      AS country_code,
                 c.name                                              AS country_name,
-                n.country_code || '.' || COALESCE(n.admin1_code, '') AS admin1_code,
+                CASE
+                    WHEN n.admin1_code IS NULL OR n.admin1_code = '' THEN NULL
+                    ELSE n.country_code || '.' || n.admin1_code
+                END                                                AS admin1_code,
                 a.name                                              AS admin1_name,
                 n.timezone                                          AS timezone,
                 n.population                                        AS population,

@@ -130,7 +130,16 @@ export async function lookupGeoEnrichment(
   if (!coords) return null;
 
   const sql = options?.sql ?? getDb();
-  const maxKm = options?.maxDistanceKm ?? 500;
+  // Sanitise the override: anything that's not a finite, non-negative
+  // number (NaN, Infinity, accidental negatives) falls back to the
+  // 500 km default rather than silently disabling the gate.
+  const maxKmCandidate = options?.maxDistanceKm;
+  const maxKm =
+    typeof maxKmCandidate === 'number' &&
+    Number.isFinite(maxKmCandidate) &&
+    maxKmCandidate >= 0
+      ? maxKmCandidate
+      : 500;
 
   if (enrichmentAvailable === undefined) {
     enrichmentAvailable = await probeAvailability(sql);

@@ -33,20 +33,19 @@ import { createTestOrganization } from '../setup/test-fixtures';
 // so the function IS available there. Probe once at module load and
 // gate the whole suite — unit tests in utils/__tests__/geo-enrichment
 // already cover the fail-open behaviour with stubs.
-const hasGeoSchema = await (async (): Promise<boolean> => {
-  try {
-    const rows = (await getTestDb()`
-      SELECT EXISTS (
-        SELECT 1 FROM pg_proc p
-        JOIN pg_namespace n ON n.oid = p.pronamespace
-        WHERE p.proname = 'geo_lookup' AND n.nspname = 'public'
-      ) AS yes
-    `) as Array<{ yes: boolean }>;
-    return !!rows[0]?.yes;
-  } catch {
-    return false;
-  }
-})();
+//
+// The probe deliberately does NOT swallow query errors: a real DB
+// connection / setup failure should fail the run, not silently skip
+// the suite. Only the boolean result of the EXISTS query gates the
+// suite.
+const probeRows = (await getTestDb()`
+  SELECT EXISTS (
+    SELECT 1 FROM pg_proc p
+    JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE p.proname = 'geo_lookup' AND n.nspname = 'public'
+  ) AS yes
+`) as Array<{ yes: boolean }>;
+const hasGeoSchema = !!probeRows[0]?.yes;
 
 const FIXTURES = {
   countries: [

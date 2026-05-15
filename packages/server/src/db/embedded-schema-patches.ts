@@ -549,17 +549,23 @@ export const EMBEDDED_SCHEMA_PATCHES: EmbeddedSchemaPatch[] = [
           ON public.${t} (organization_id, agent_id)
         `);
       }
-      await sql.unsafe(`
-        DO $$
-        BEGIN
-          IF NOT EXISTS (
-            SELECT 1 FROM pg_constraint WHERE conname = 'agents_organization_id_id_key'
-          ) THEN
-            ALTER TABLE public.agents
-              ADD CONSTRAINT agents_organization_id_id_key UNIQUE (organization_id, id);
-          END IF;
-        END$$;
-      `);
+      // Note: an earlier revision of this patch added a parallel UNIQUE
+      // (organization_id, id) on agents. It was reverted in
+      // db/migrations/20260515160000_drop_agents_org_id_unique.sql because
+      // it broke `ON CONFLICT (id) DO NOTHING/UPDATE` callers — Postgres
+      // can violate the new constraint before reaching the PK conflict,
+      // and ON CONFLICT (id) only suppresses the named constraint. The
+      // PK on (id) already enforces global uniqueness. Phase C of the
+      // per-org PK migration will swap the PK directly.
+    },
+  },
+  {
+    // Mirrors db/migrations/20260515160000_drop_agents_org_id_unique.sql.
+    id: 'drop-agents-org-id-unique',
+    apply: async (sql) => {
+      await sql.unsafe(
+        `ALTER TABLE public.agents DROP CONSTRAINT IF EXISTS agents_organization_id_id_key`
+      );
     },
   },
 ];

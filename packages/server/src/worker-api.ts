@@ -36,7 +36,7 @@ import {
   materializeInlineAttachments,
   triggerAudioTranscriptions,
 } from './utils/inline-attachments';
-import { insertEvent } from './utils/insert-event';
+import { insertEvent, recordLifecycleEvent } from './utils/insert-event';
 import logger from './utils/logger';
 import { getWorkspaceRole } from './utils/organization-access';
 
@@ -186,6 +186,9 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     try {
       const incomingCaps = advertisedCapabilities;
 
+      // `xmax = 0` on the RETURNING row distinguishes a brand-new device
+      // registration from a routine poll-update so we only emit the
+      // `device:created` lifecycle event once per device.
       const upserted = (await sql`
         INSERT INTO device_workers (user_id, worker_id, platform, app_version, capabilities, label, organization_id)
         VALUES (
@@ -203,9 +206,19 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
           label = COALESCE(EXCLUDED.label, device_workers.label),
           organization_id = COALESCE(device_workers.organization_id, EXCLUDED.organization_id),
           last_seen_at = now()
-        RETURNING id
-      `) as unknown as Array<{ id: string }>;
+        RETURNING id, organization_id, (xmax = 0) AS inserted
+      `) as unknown as Array<{ id: string; organization_id: string | null; inserted: boolean }>;
       deviceWorkerId = upserted[0]?.id ?? null;
+      if (upserted[0]?.inserted && upserted[0]?.organization_id) {
+        recordLifecycleEvent({
+          organizationId: upserted[0].organization_id,
+          entityType: 'device',
+          op: 'created',
+          entityId: upserted[0].id,
+          summary: `Device "${label ?? worker_id}" registered`,
+          extra: { platform, worker_id, app_version },
+        });
+      }
 
       // Reconcile this user's device connectors against the capabilities their
       // whole fleet currently advertises: auto-wire / re-activate the ones that
@@ -1681,9 +1694,15 @@ export async function deleteDeviceWorker(c: Context<{ Bindings: Env }>) {
     const sql = getDb();
     const deleted = await sql.begin(async (tx) => {
       const owned = (await tx`
-        SELECT 1 FROM device_workers WHERE id = ${deviceWorkerId} AND user_id = ${userId} LIMIT 1
-      `) as unknown as Array<unknown>;
-      if (owned.length === 0) return false;
+        SELECT organization_id, label, worker_id FROM device_workers
+        WHERE id = ${deviceWorkerId} AND user_id = ${userId}
+        LIMIT 1
+      `) as unknown as Array<{
+        organization_id: string | null;
+        label: string | null;
+        worker_id: string;
+      }>;
+      if (owned.length === 0) return null;
       // Un-pin and pause every connection backed by this device — a device
       // connector can't run anywhere without it; the owner re-pins to a new
       // device (or removes the connection) to bring it back.
@@ -1704,10 +1723,19 @@ export async function deleteDeviceWorker(c: Context<{ Bindings: Env }>) {
         `;
       }
       await tx`DELETE FROM device_workers WHERE id = ${deviceWorkerId} AND user_id = ${userId}`;
-      return true;
+      return owned[0];
     });
     if (!deleted) {
       return c.json({ error: 'Device not found or not owned by you' }, 404);
+    }
+    if (deleted.organization_id) {
+      recordLifecycleEvent({
+        organizationId: deleted.organization_id,
+        entityType: 'device',
+        op: 'deleted',
+        entityId: deviceWorkerId,
+        summary: `Device "${deleted.label ?? deleted.worker_id}" removed`,
+      });
     }
     return c.json({ ok: true });
   } catch (err: unknown) {

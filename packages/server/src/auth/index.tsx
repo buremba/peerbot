@@ -28,6 +28,7 @@ import {
 	getConfiguredPublicOrigin,
 	normalizeHost,
 } from "../utils/public-origin";
+import { recordLifecycleEvent } from "../utils/insert-event";
 import { TtlCache } from "../utils/ttl-cache";
 import { resolveBaseUrl, safeParseUrl } from "./base-url";
 import { findExistingPersonalOrg } from "./personal-org-provisioning";
@@ -270,6 +271,14 @@ export async function createAuth(env: Env, request?: Request) {
 								"../workspace/multi-tenant"
 							);
 							invalidateMembershipRoleCache(org.id, user.id);
+								recordLifecycleEvent({
+									organizationId: org.id,
+									entityType: "member",
+									op: "created",
+									entityId: member.id,
+									summary: `Member "${user.name || user.email}" added`,
+									extra: { user_id: user.id, role: member.role },
+								});
 						} catch (err) {
 							console.error(
 								"[Auth] Failed to create $member entity after addMember:",
@@ -308,6 +317,13 @@ export async function createAuth(env: Env, request?: Request) {
 					afterRemoveMember: async ({ user, organization: org }) => {
 						try {
 							await deleteMemberEntity(org.id, user.email);
+								recordLifecycleEvent({
+									organizationId: org.id,
+									entityType: "member",
+									op: "deleted",
+									entityId: user.id,
+									summary: `Member "${user.name || user.email}" removed`,
+								});
 							const { invalidateMembershipRoleCache } = await import(
 								"../workspace/multi-tenant"
 							);

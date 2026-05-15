@@ -920,7 +920,111 @@ type SidebarConnection = {
   feedCount?: number;
 };
 
-function ConnectorTinyMark({ name }: { name: string }) {
+// Brand mark registry. Paths are simplified silhouettes of each vendor's
+// SimpleIcons mark (single-color, viewBox 0 0 24 24) so we can re-tint via
+// the brand color background. The fallback (BrandLetter) handles names we
+// don't have a mark for.
+const BRAND_REGISTRY: Record<string, { color: string; path: string }> = {
+  github: {
+    color: "#181717",
+    path:
+      "M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.111.82-.261.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12",
+  },
+  linkedin: {
+    color: "#0A66C2",
+    path:
+      "M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 01-2.063-2.065 2.063 2.063 0 112.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.226.792 24 1.771 24h20.451C23.2 24 24 23.226 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z",
+  },
+  slack: {
+    color: "#4A154B",
+    path:
+      "M5.042 15.165a2.528 2.528 0 0 1-2.52 2.523A2.528 2.528 0 0 1 0 15.165a2.527 2.527 0 0 1 2.522-2.52h2.52v2.52zm1.271 0a2.527 2.527 0 0 1 2.521-2.52 2.527 2.527 0 0 1 2.521 2.52v6.313A2.528 2.528 0 0 1 8.834 24a2.528 2.528 0 0 1-2.521-2.522v-6.313zM8.834 5.042a2.528 2.528 0 0 1-2.521-2.52A2.528 2.528 0 0 1 8.834 0a2.528 2.528 0 0 1 2.521 2.522v2.52H8.834zm0 1.271a2.527 2.527 0 0 1 2.521 2.521 2.527 2.527 0 0 1-2.521 2.521H2.522A2.527 2.527 0 0 1 0 8.834a2.527 2.527 0 0 1 2.522-2.521h6.312zm10.122 2.521a2.528 2.528 0 0 1 2.522-2.521A2.528 2.528 0 0 1 24 8.834a2.528 2.528 0 0 1-2.522 2.521h-2.522V8.834zm-1.268 0a2.527 2.527 0 0 1-2.523 2.521 2.527 2.527 0 0 1-2.52-2.521V2.522A2.527 2.527 0 0 1 15.165 0a2.528 2.528 0 0 1 2.523 2.522v6.312zm-2.523 10.122a2.528 2.528 0 0 1 2.523 2.522A2.528 2.528 0 0 1 15.165 24a2.527 2.527 0 0 1-2.52-2.522v-2.522h2.52zm0-1.268a2.527 2.527 0 0 1-2.52-2.523 2.526 2.526 0 0 1 2.52-2.52h6.313A2.527 2.527 0 0 1 24 15.165a2.528 2.528 0 0 1-2.522 2.523h-6.313z",
+  },
+  gmail: {
+    color: "#EA4335",
+    path:
+      "M24 5.457v13.909c0 .904-.732 1.636-1.636 1.636h-3.819V11.73L12 16.64l-6.545-4.91v9.273H1.636A1.636 1.636 0 0 1 0 19.366V5.457c0-2.023 2.309-3.178 3.927-1.964L5.455 4.64 12 9.548l6.545-4.91 1.528-1.145C21.69 2.28 24 3.434 24 5.457z",
+  },
+  stripe: {
+    color: "#635BFF",
+    path:
+      "M13.479 9.883c-1.626-.604-2.512-1.067-2.512-1.803 0-.622.511-.977 1.422-.977 1.668 0 3.379.642 4.558 1.22l.666-4.111c-.935-.446-2.847-1.177-5.49-1.177-1.87 0-3.425.489-4.536 1.401-1.155.954-1.757 2.334-1.757 4.005 0 3.027 1.847 4.328 4.855 5.42 1.937.696 2.587 1.192 2.587 1.954 0 .74-.629 1.158-1.77 1.158-1.396 0-3.741-.69-5.323-1.585L5.5 19.612c1.305.74 3.722 1.5 6.245 1.5 1.977 0 3.629-.464 4.752-1.358 1.262-.985 1.915-2.432 1.915-4.155 0-3.105-1.89-4.392-4.933-5.516z",
+  },
+  hubspot: {
+    color: "#FF7A59",
+    path:
+      "M18.164 7.93V5.084a2.198 2.198 0 0 0 1.27-1.985v-.067A2.2 2.2 0 0 0 17.238.832h-.067a2.2 2.2 0 0 0-2.198 2.2v.067a2.196 2.196 0 0 0 1.27 1.985V7.93a6.226 6.226 0 0 0-2.957 1.296L5.512 3.917c.027-.103.045-.21.045-.319A1.717 1.717 0 1 0 4.598 4.91l7.69 5.99a6.255 6.255 0 0 0-.939 3.31c0 1.27.382 2.452 1.04 3.444l-2.341 2.34a2.005 2.005 0 0 0-.585-.097 2.05 2.05 0 1 0 2.052 2.05c0-.205-.039-.405-.094-.594l2.314-2.314a6.27 6.27 0 1 0 4.43-11.108zm-1.107 9.397a3.22 3.22 0 1 1 0-6.44 3.22 3.22 0 0 1 0 6.44z",
+  },
+  notion: {
+    color: "#111111",
+    path:
+      "M4.459 4.208c.746.606 1.026.56 2.428.466l13.215-.793c.28 0 .047-.28-.046-.326L17.86 1.968c-.42-.326-.981-.7-2.055-.607L3.01 2.295c-.466.046-.56.28-.374.466zm.793 3.08v13.904c0 .747.373 1.027 1.214.98l14.523-.84c.841-.046.935-.56.935-1.167V6.354c0-.606-.233-.933-.748-.887l-15.177.887c-.56.047-.747.327-.747.933zm14.337.745c.093.42 0 .84-.42.888l-.7.14v10.264c-.608.327-1.168.514-1.635.514-.748 0-.935-.234-1.495-.933l-4.577-7.186v6.952L12.21 19s0 .84-1.168.84l-3.222.186c-.093-.186 0-.653.327-.746l.84-.233V9.854L7.822 9.76c-.094-.42.14-1.026.793-1.073l3.456-.233 4.764 7.279v-6.44l-1.215-.139c-.093-.514.28-.887.747-.933z",
+  },
+  discord: {
+    color: "#5865F2",
+    path:
+      "M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418Z",
+  },
+  telegram: {
+    color: "#26A5E4",
+    path:
+      "M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.464.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z",
+  },
+  whatsapp: {
+    color: "#25D366",
+    path:
+      "M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 0 1-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 0 1-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 0 1 2.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0 0 12.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 0 0 5.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893A11.821 11.821 0 0 0 20.465 3.488",
+  },
+  crunchbase: {
+    color: "#146AFF",
+    path:
+      "M21.6 0H2.4A2.41 2.41 0 0 0 0 2.4v19.2A2.41 2.41 0 0 0 2.4 24h19.2a2.41 2.41 0 0 0 2.4-2.4V2.4A2.41 2.41 0 0 0 21.6 0zM9.7 16.8c-.7 0-1.4-.17-2-.5v.4H6V5.06h1.7v3.7a4.04 4.04 0 0 1 2-.55c2.39 0 4.32 1.94 4.32 4.3 0 2.37-1.93 4.3-4.32 4.3zm6.9-.5c-.6.33-1.3.5-2 .5-2.37 0-4.3-1.93-4.3-4.3 0-2.36 1.93-4.3 4.3-4.3 1.43 0 2.74.7 3.54 1.83l-1.43.95a2.6 2.6 0 0 0-4.7 1.52 2.6 2.6 0 0 0 4.7 1.5l1.43.97a4.27 4.27 0 0 1-1.54 1.33zM9.7 10.04A2.6 2.6 0 0 0 7.1 12.6a2.6 2.6 0 0 0 5.2 0 2.6 2.6 0 0 0-2.6-2.55z",
+  },
+  linear: {
+    color: "#5E6AD2",
+    path:
+      "M.403 13.795A12.131 12.131 0 0 0 10.203 23.6L.403 13.795zM.182 10.103l13.715 13.714a12.18 12.18 0 0 0 3.137-1.21L1.392 6.966a12.18 12.18 0 0 0-1.21 3.137zm3.135-5.836a12.16 12.16 0 0 1 1.51-1.84L21.572 19.17a12.137 12.137 0 0 1-1.84 1.51L3.317 4.267zM6.682 1.43A12.12 12.12 0 0 1 12 0c6.626 0 12 5.374 12 12 0 1.872-.428 3.643-1.193 5.22L6.682 1.43Z",
+  },
+  zoom: {
+    color: "#0B5CFF",
+    path:
+      "M24 12C24 5.4 18.6 0 12 0S0 5.4 0 12s5.4 12 12 12 12-5.4 12-12zM4.4 6.2h7.1c1.7 0 3.1 1.4 3.1 3.1v5.5H7.5c-1.7 0-3.1-1.4-3.1-3.1V6.2zm15.2 9.4l-3-2.6V7.2l3-2.6c.4-.3 1.1 0 1.1.6v10.8c0 .6-.7.9-1.1.6z",
+  },
+  // chat / mcp clients
+  openclaw: {
+    color: "#F97316",
+    path:
+      "M12 2 4 6v6c0 4.5 3.5 8.5 8 10 4.5-1.5 8-5.5 8-10V6l-8-4zm0 2.2 6 3v4.8c0 3.5-2.8 6.8-6 7.9-3.2-1.1-6-4.4-6-7.9V7.2l6-3z",
+  },
+  chatgpt: {
+    color: "#10A37F",
+    path:
+      "M22.282 9.821a5.985 5.985 0 0 0-.516-4.91 6.046 6.046 0 0 0-6.51-2.9A6.065 6.065 0 0 0 4.981 4.18a5.985 5.985 0 0 0-3.998 2.9 6.046 6.046 0 0 0 .743 7.097 5.98 5.98 0 0 0 .51 4.911 6.05 6.05 0 0 0 6.515 2.9A5.98 5.98 0 0 0 13.26 24a6.056 6.056 0 0 0 5.772-4.206 5.99 5.99 0 0 0 3.997-2.9 6.056 6.056 0 0 0-.747-7.073zM13.26 22.43a4.476 4.476 0 0 1-2.876-1.04l.141-.081 4.779-2.758a.795.795 0 0 0 .392-.681v-6.737l2.02 1.168a.071.071 0 0 1 .038.052v5.583a4.504 4.504 0 0 1-4.494 4.494zM3.6 18.304a4.47 4.47 0 0 1-.535-3.014l.142.085 4.783 2.759a.771.771 0 0 0 .78 0l5.843-3.369v2.332a.08.08 0 0 1-.033.062L9.74 19.95a4.5 4.5 0 0 1-6.14-1.646zM2.34 7.896a4.485 4.485 0 0 1 2.366-1.973V11.6a.766.766 0 0 0 .388.676l5.815 3.355-2.02 1.168a.076.076 0 0 1-.071 0l-4.83-2.786A4.504 4.504 0 0 1 2.34 7.872zm16.597 3.855l-5.833-3.387L15.119 7.2a.076.076 0 0 1 .071 0l4.83 2.791a4.494 4.494 0 0 1-.676 8.105v-5.678a.79.79 0 0 0-.407-.667zm2.01-3.023l-.141-.085-4.774-2.782a.776.776 0 0 0-.785 0L9.409 9.23V6.897a.066.066 0 0 1 .028-.061l4.83-2.787a4.5 4.5 0 0 1 6.68 4.66zm-12.64 4.135l-2.02-1.164a.08.08 0 0 1-.038-.057V6.075a4.5 4.5 0 0 1 7.375-3.453l-.142.08-4.778 2.758a.795.795 0 0 0-.393.681zm1.097-2.365l2.602-1.5 2.607 1.5v2.999l-2.597 1.5-2.607-1.5z",
+  },
+  claude: {
+    color: "#D97757",
+    path:
+      "M4.709 15.955l4.72-2.647.079-.23-.079-.128H9.2l-.79-.048-2.698-.073-2.34-.097-2.265-.122-.571-.121L0 11.784l.055-.352.48-.321.686.06 1.52.103 2.278.158 1.652.097 2.449.255h.389l.055-.157-.134-.098-.103-.097-2.358-1.6-2.552-1.687-1.336-.972-.724-.491-.364-.462-.158-1.008.656-.722.881.06.225.061.892.686 1.908 1.477 2.491 1.834.365.304.146-.103.018-.073-.164-.274-1.355-2.446-1.446-2.49-.644-1.032-.17-.619a2.97 2.97 0 0 1-.104-.729L6.283.134 6.696 0l.996.134.42.364.62 1.418 1.002 2.228 1.555 3.03.456.898.243.832.091.255h.158V9.01l.128-1.706.237-2.095.23-2.695.08-.76.376-.91.747-.492.584.28.48.685-.067.444-.286 1.851-.559 2.903-.364 1.942h.212l.243-.242.985-1.306 1.652-2.064.73-.82.85-.904.547-.431h1.033l.76 1.129-.34 1.166-1.064 1.347-.881 1.142-1.264 1.7-.79 1.36.073.11.188-.02 2.856-.606 1.543-.28 1.841-.315.833.388.091.395-.328.807-1.969.486-2.309.462-3.439.813-.042.03.049.061 1.549.146.662.036h1.622l3.02.225.79.522.474.638-.079.485-1.215.62-1.64-.389-3.829-.91-1.312-.329h-.182v.11l1.093 1.068 2.006 1.81 2.509 2.33.127.578-.322.455-.34-.049-2.2-1.657-.85-.747-1.926-1.62h-.128v.17l.444.649 2.345 3.521.122 1.08-.17.353-.608.213-.668-.122-1.374-1.926-1.415-2.167-1.142-1.943-.14.08-.674 7.254-.316.37-.729.28-.607-.461-.322-.747.322-1.476.388-1.924.316-1.53.286-1.9.17-.632-.012-.042-.14.018-1.434 1.967-2.18 2.945-1.726 1.845-.413.164-.716-.37.067-.662.4-.59 2.388-3.036 1.44-1.882.93-1.087-.006-.158h-.054L4.132 18.56l-1.13.146-.487-.456.061-.746.231-.243 1.908-1.312-.006.006z",
+  },
+  cursor: {
+    color: "#000000",
+    path:
+      "M11.925 24l10.425-6-10.425-6L1.5 18l10.425 6zM22.35 6L11.925 0 1.5 6v12l10.425-6L22.35 6z",
+  },
+};
+
+function brandKey(name: string): string | null {
+  const k = name.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (!k) return null;
+  if (k in BRAND_REGISTRY) return k;
+  // suffix matches (e.g. "Crunchbase API" -> "crunchbase")
+  for (const key of Object.keys(BRAND_REGISTRY)) {
+    if (k.startsWith(key) || k.includes(key)) return key;
+  }
+  return null;
+}
+
+function BrandLetter({ name }: { name: string }) {
   const initial = name.charAt(0).toUpperCase() || "?";
   let hash = 0;
   for (let i = 0; i < name.length; i++)
@@ -928,13 +1032,57 @@ function ConnectorTinyMark({ name }: { name: string }) {
   const hue = Math.abs(hash) % 360;
   return (
     <span
-      class="inline-flex h-4 w-4 items-center justify-center rounded text-[9px] font-semibold text-white"
-      style={{ background: `hsl(${hue} 55% 50%)` }}
+      class="inline-flex items-center justify-center rounded text-[9px] font-semibold text-white"
+      style={{ width: "100%", height: "100%", background: `hsl(${hue} 55% 50%)` }}
       aria-hidden="true"
     >
       {initial}
     </span>
   );
+}
+
+function BrandLogo({
+  name,
+  size = 16,
+  radius = 3,
+}: {
+  name: string;
+  size?: number;
+  radius?: number;
+}) {
+  const key = brandKey(name);
+  const brand = key ? BRAND_REGISTRY[key] : null;
+  return (
+    <span
+      class="inline-flex items-center justify-center shrink-0"
+      style={{
+        width: `${size}px`,
+        height: `${size}px`,
+        borderRadius: `${radius}px`,
+        background: brand ? brand.color : "transparent",
+        overflow: "hidden",
+      }}
+      aria-hidden="true"
+    >
+      {brand ? (
+        <svg
+          width={Math.round(size * 0.7)}
+          height={Math.round(size * 0.7)}
+          viewBox="0 0 24 24"
+          fill="white"
+          aria-hidden="true"
+        >
+          <path d={brand.path} />
+        </svg>
+      ) : (
+        <BrandLetter name={name} />
+      )}
+    </span>
+  );
+}
+
+function ConnectorTinyMark({ name }: { name: string }) {
+  return <BrandLogo name={name} size={16} radius={3} />;
 }
 
 function ConnectorsPillSection({
@@ -985,6 +1133,49 @@ function ConnectorsPillSection({
 type SidebarAgent = { name: string };
 type SidebarWatcher = { name: string };
 
+function AgentSubGroup({
+  label,
+  icon,
+  items,
+  active,
+}: {
+  label: string;
+  icon: ComponentChildren;
+  items: Array<{ name: string; leading?: ComponentChildren }>;
+  active?: boolean;
+}) {
+  return (
+    <div class="flex flex-col gap-0.5 pt-1">
+      <div
+        class="flex items-center gap-1.5 px-1 text-[10px] font-semibold uppercase tracking-wider"
+        style={{
+          color: active
+            ? "var(--color-page-text)"
+            : "var(--color-page-text-muted)",
+        }}
+      >
+        <span style={{ opacity: 0.8 }}>{icon}</span>
+        <span>{label}</span>
+      </div>
+      {items.map((it) => (
+        <button
+          key={it.name}
+          type="button"
+          class="flex w-full items-center gap-2 rounded-md px-2 py-1 text-[12px] text-left transition-colors hover:bg-[rgba(0,0,0,0.04)]"
+          style={{ color: "var(--color-page-text)" }}
+        >
+          {it.leading ? (
+            <span class="flex h-4 w-4 shrink-0 items-center justify-center">
+              {it.leading}
+            </span>
+          ) : null}
+          <span class="min-w-0 flex-1 truncate">{it.name}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function AgentsPillSection({
   agents,
   watchers,
@@ -996,8 +1187,9 @@ function AgentsPillSection({
   activeNav: NavStage;
   onStageChange?: (stage: HeroStageId) => void;
 }) {
-  // First agent is the "selected" one in the demo, so its watchers expand
-  // beneath it on a left-bordered indent — matches v2 agents-section.
+  // First agent is the "selected" one in the demo. Its detail page renders
+  // a Watchers / Providers / Skills / Channels / Settings stack so the
+  // sidebar mirrors the same set of nested rows with sample items.
   return (
     <div class="flex flex-col">
       <SectionHeader icon={<LobuRightWing size={12} />} label="Agents" />
@@ -1021,21 +1213,72 @@ function AgentsPillSection({
                     borderLeft: "1px solid var(--color-page-border)",
                   }}
                 >
-                  <div
-                    class="flex items-center gap-1.5 px-1 pt-1 text-[10px] font-semibold uppercase tracking-wider"
-                    style={{ color: "var(--color-page-text-muted)" }}
-                  >
-                    <WatchersIcon size={10} />
-                    <span>Watchers</span>
-                  </div>
-                  {watchers.map((w) => (
-                    <SidebarRow
-                      key={w.name}
-                      onClick={() => onStageChange?.("connect")}
-                      leading={<StatusDot tone="green" />}
-                      label={w.name}
-                    />
-                  ))}
+                  <AgentSubGroup
+                    label="Watchers"
+                    icon={<WatchersIcon size={10} />}
+                    items={watchers.map((w) => ({
+                      name: w.name,
+                      leading: <StatusDot tone="green" />,
+                    }))}
+                    active={activeNav === "watchers"}
+                  />
+                  <AgentSubGroup
+                    label="Providers"
+                    icon={<KeyIcon size={10} />}
+                    items={[
+                      {
+                        name: "Anthropic",
+                        leading: <BrandLogo name="claude" size={12} radius={2} />,
+                      },
+                      {
+                        name: "OpenAI",
+                        leading: <BrandLogo name="chatgpt" size={12} radius={2} />,
+                      },
+                      {
+                        name: "Google",
+                        leading: (
+                          <span
+                            class="inline-flex h-3 w-3 rounded text-[7px] items-center justify-center font-bold text-white"
+                            style={{ background: "#4285F4" }}
+                            aria-hidden="true"
+                          >
+                            G
+                          </span>
+                        ),
+                      },
+                    ]}
+                  />
+                  <AgentSubGroup
+                    label="Skills"
+                    icon={<CodeIcon size={10} />}
+                    items={[
+                      { name: "deal-research" },
+                      { name: "founder-signals" },
+                      { name: "memory-recall" },
+                    ]}
+                  />
+                  <AgentSubGroup
+                    label="Channels"
+                    icon={<LobuRightWing size={10} />}
+                    items={[
+                      {
+                        name: "Slack #vc-deals",
+                        leading: <BrandLogo name="slack" size={12} radius={2} />,
+                      },
+                      {
+                        name: "REST API",
+                        leading: <StatusDot tone="green" />,
+                      },
+                    ]}
+                  />
+                  <AgentSubGroup
+                    label="Settings"
+                    icon={<HardDriveIcon size={10} />}
+                    items={[
+                      { name: "Identity" },
+                      { name: "Run policy" },
+                    ]}
+                  />
                 </div>
               ) : null}
             </div>
@@ -1048,10 +1291,17 @@ function AgentsPillSection({
       />
       <div class="flex flex-col gap-0.5 px-2 pb-2">
         <SidebarRow
-          leading={<StatusDot tone="green" />}
+          leading={<BrandLogo name="claude" size={12} radius={2} />}
           label="Claude Desktop"
         />
-        <SidebarRow leading={<StatusDot tone="green" />} label="OpenClaw" />
+        <SidebarRow
+          leading={<BrandLogo name="openclaw" size={12} radius={2} />}
+          label="OpenClaw"
+        />
+        <SidebarRow
+          leading={<BrandLogo name="cursor" size={12} radius={2} />}
+          label="Cursor"
+        />
       </div>
     </div>
   );
@@ -2161,30 +2411,18 @@ function DeviceTargetCard({
 }
 
 function ConnectorCatalogTile({
-  initial,
   name,
   category,
 }: {
-  initial: string;
   name: string;
   category: string;
 }) {
-  let hash = 0;
-  for (let i = 0; i < name.length; i++)
-    hash = (hash * 31 + name.charCodeAt(i)) | 0;
-  const hue = Math.abs(hash) % 360;
   return (
     <div
       class="flex items-center gap-2 rounded-md p-2 bg-[var(--color-page-surface)]"
       style={{ border: "1px solid var(--color-page-border)" }}
     >
-      <span
-        class="inline-flex h-7 w-7 items-center justify-center rounded text-[12px] font-semibold text-white"
-        style={{ background: `hsl(${hue} 55% 50%)` }}
-        aria-hidden="true"
-      >
-        {initial}
-      </span>
+      <BrandLogo name={name} size={26} radius={4} />
       <div class="min-w-0">
         <div
           class="text-[12px] font-medium truncate"
@@ -2306,18 +2544,23 @@ function ConnectorsLanding({
     },
   ];
 
-  const catalogTiles = connectorRows.slice(0, 8).map((c) => ({
-    initial: c.name.charAt(0).toUpperCase(),
-    name: c.name,
-    category: c.description,
-  }));
+  const catalogTiles: Array<{ name: string; category: string }> = connectorRows
+    .slice(0, 8)
+    .map((c) => ({
+      name: c.name,
+      category: c.description,
+    }));
+  const fallbacks: Array<{ name: string; category: string }> = [
+    { name: "Slack", category: "Chat" },
+    { name: "GitHub", category: "Code" },
+    { name: "Linear", category: "Issues" },
+    { name: "Notion", category: "Docs" },
+    { name: "Gmail", category: "Email" },
+    { name: "Stripe", category: "Payments" },
+    { name: "HubSpot", category: "CRM" },
+    { name: "LinkedIn", category: "People" },
+  ];
   while (catalogTiles.length < 8) {
-    const fallbacks = [
-      { initial: "S", name: "Slack", category: "Chat" },
-      { initial: "G", name: "GitHub", category: "Code" },
-      { initial: "L", name: "Linear", category: "Issues" },
-      { initial: "N", name: "Notion", category: "Docs" },
-    ];
     catalogTiles.push(fallbacks[catalogTiles.length % fallbacks.length]);
   }
 
@@ -3357,7 +3600,7 @@ function DeployChannelGroup({
         {items.map((item) => (
           <span
             key={item.label}
-            class="inline-flex items-center rounded-md px-2 py-1 text-[11px] font-medium"
+            class="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-medium"
             style={{
               background: item.active
                 ? "rgba(var(--color-tg-accent-rgb), 0.08)"
@@ -3368,6 +3611,7 @@ function DeployChannelGroup({
               color: "var(--color-page-text)",
             }}
           >
+            <BrandLogo name={item.label} size={12} radius={2} />
             {item.label}
           </span>
         ))}
@@ -3630,6 +3874,246 @@ function ChannelsTab({ info }: { info: AgentInfo }) {
   );
 }
 
+function WatcherDetail({ watchers }: { watchers: WatcherRow[] }) {
+  const [selectedIdx, setSelectedIdx] = useState(0);
+  const selected = watchers[selectedIdx] ?? watchers[0];
+  if (!selected) return null;
+
+  const runs: Array<{
+    when: string;
+    status: "success" | "running" | "skipped" | "error";
+    note: string;
+  }> = [
+    {
+      when: "Just now",
+      status: "success",
+      note: `Wrote 14 new ${selected.entity} updates to memory`,
+    },
+    {
+      when: "12m ago",
+      status: "success",
+      note: `Wrote 3 new ${selected.entity} updates to memory`,
+    },
+    {
+      when: "1h ago",
+      status: "skipped",
+      note: "No new events since last run",
+    },
+    {
+      when: "2h ago",
+      status: "success",
+      note: `Wrote 22 ${selected.entity} updates · 4 superseded by newer rows`,
+    },
+    {
+      when: "5h ago",
+      status: "error",
+      note: "Upstream rate-limited — retried via fallback provider",
+    },
+  ];
+
+  return (
+    <div class="grid grid-cols-1 md:grid-cols-[1fr_1.4fr] gap-3">
+      {/* List of watchers */}
+      <div
+        class="rounded-lg overflow-hidden bg-[var(--color-page-surface)]"
+        style={{ border: "1px solid var(--color-page-border)" }}
+      >
+        <div
+          class="px-3 py-2 text-[11px] font-medium uppercase tracking-wider"
+          style={{
+            color: "var(--color-page-text-muted)",
+            borderBottom: "1px solid var(--color-page-border)",
+          }}
+        >
+          {watchers.length} watchers
+        </div>
+        <ul class="flex flex-col">
+          {watchers.map((w, i) => {
+            const active = i === selectedIdx;
+            return (
+              <li
+                key={w.name}
+                style={{
+                  borderBottom:
+                    i === watchers.length - 1
+                      ? undefined
+                      : "1px solid var(--color-page-border)",
+                }}
+              >
+                <button
+                  type="button"
+                  onClick={() => setSelectedIdx(i)}
+                  class="w-full text-left px-3 py-2 transition-colors hover:bg-[color:var(--color-page-surface-dim)]"
+                  style={{
+                    background: active
+                      ? "var(--color-page-surface-dim)"
+                      : "transparent",
+                  }}
+                >
+                  <div class="flex items-center gap-2">
+                    <StatusDot
+                      tone={w.status === "Active" ? "green" : "muted"}
+                    />
+                    <span
+                      class="text-[13px] font-medium truncate"
+                      style={{
+                        color: "var(--color-page-text)",
+                        fontWeight: active ? 600 : 500,
+                      }}
+                    >
+                      {w.name}
+                    </span>
+                  </div>
+                  <div
+                    class="mt-0.5 text-[11px] truncate"
+                    style={{ color: "var(--color-page-text-muted)" }}
+                  >
+                    {w.entity} · {w.schedule}
+                  </div>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+
+      {/* Selected watcher detail */}
+      <div
+        class="rounded-lg overflow-hidden bg-[var(--color-page-surface)] flex flex-col"
+        style={{ border: "1px solid var(--color-page-border)" }}
+      >
+        <div
+          class="flex items-center justify-between gap-2 px-3 py-2"
+          style={{ borderBottom: "1px solid var(--color-page-border)" }}
+        >
+          <div class="flex items-center gap-2 min-w-0">
+            <StatusDot tone={selected.status === "Active" ? "green" : "muted"} />
+            <span
+              class="text-[13px] font-semibold truncate"
+              style={{ color: "var(--color-page-text)" }}
+            >
+              {selected.name}
+            </span>
+            <Badge
+              label={selected.status}
+              tone={selected.status === "Active" ? "green" : "muted"}
+            />
+          </div>
+          <span
+            class="text-[11px] tabular-nums"
+            style={{ color: "var(--color-page-text-muted)" }}
+          >
+            {selected.schedule}
+          </span>
+        </div>
+
+        <div class="grid grid-cols-3 gap-3 px-3 py-2.5">
+          <div>
+            <div
+              class="text-[10px] uppercase tracking-wider"
+              style={{ color: "var(--color-page-text-muted)" }}
+            >
+              Entity
+            </div>
+            <div
+              class="text-[12px] mt-0.5"
+              style={{ color: "var(--color-page-text)" }}
+            >
+              {entityEmoji(selected.entity)} {selected.entity}
+            </div>
+          </div>
+          <div>
+            <div
+              class="text-[10px] uppercase tracking-wider"
+              style={{ color: "var(--color-page-text-muted)" }}
+            >
+              Owner agent
+            </div>
+            <div
+              class="text-[12px] mt-0.5"
+              style={{ color: "var(--color-page-text)" }}
+            >
+              {selected.agent}
+            </div>
+          </div>
+          <div>
+            <div
+              class="text-[10px] uppercase tracking-wider"
+              style={{ color: "var(--color-page-text-muted)" }}
+            >
+              Last run
+            </div>
+            <div
+              class="text-[12px] mt-0.5"
+              style={{ color: "var(--color-page-text)" }}
+            >
+              {selected.last}
+            </div>
+          </div>
+        </div>
+
+        <div
+          class="px-3 py-2 text-[11px] font-medium uppercase tracking-wider"
+          style={{
+            color: "var(--color-page-text-muted)",
+            borderTop: "1px solid var(--color-page-border)",
+            borderBottom: "1px solid var(--color-page-border)",
+          }}
+        >
+          Run timeline
+        </div>
+
+        <ol class="flex flex-col px-3 py-2 gap-2 overflow-y-auto">
+          {runs.map((r, i) => {
+            const tone =
+              r.status === "success"
+                ? "green"
+                : r.status === "running"
+                  ? "amber"
+                  : r.status === "error"
+                    ? "muted"
+                    : "muted";
+            return (
+              <li key={i} class="flex items-start gap-2">
+                <span class="mt-1.5">
+                  <StatusDot tone={tone as "green" | "amber" | "muted"} />
+                </span>
+                <div class="min-w-0 flex-1">
+                  <div class="flex items-center justify-between gap-2">
+                    <span
+                      class="text-[12px] font-medium capitalize"
+                      style={{
+                        color:
+                          r.status === "error"
+                            ? "#b91c1c"
+                            : "var(--color-page-text)",
+                      }}
+                    >
+                      {r.status}
+                    </span>
+                    <span
+                      class="text-[11px] tabular-nums"
+                      style={{ color: "var(--color-page-text-muted)" }}
+                    >
+                      {r.when}
+                    </span>
+                  </div>
+                  <p
+                    class="text-[11px] leading-snug"
+                    style={{ color: "var(--color-page-text-muted)" }}
+                  >
+                    {r.note}
+                  </p>
+                </div>
+              </li>
+            );
+          })}
+        </ol>
+      </div>
+    </div>
+  );
+}
+
 function AgentsConnect({
   info,
   agents,
@@ -3677,7 +4161,7 @@ function AgentsConnect({
         </div>
         <AgentDetailTabs active={tab} onChange={setTab} />
         <div>
-          {tab === "watchers" ? <WatchersTable rows={watchers} /> : null}
+          {tab === "watchers" ? <WatcherDetail watchers={watchers} /> : null}
           {tab === "providers" ? <ProvidersTab /> : null}
           {tab === "skills" ? <SkillsTab /> : null}
           {tab === "channels" ? <ChannelsTab info={info} /> : null}
@@ -3814,18 +4298,10 @@ function AlwaysOnAgentsTable({ rows }: { rows: AgentRow[] }) {
                     background: "var(--color-page-surface-dim)",
                     color: "var(--color-page-text)",
                     border: "1px solid var(--color-page-border)",
+                    opacity: ch.tone === "green" ? 1 : 0.6,
                   }}
                 >
-                  <span
-                    class="inline-block w-1 h-1 rounded-full"
-                    style={{
-                      background:
-                        ch.tone === "green"
-                          ? "rgb(16,185,129)"
-                          : "rgba(0,0,0,0.3)",
-                    }}
-                    aria-hidden="true"
-                  />
+                  <BrandLogo name={ch.name} size={12} radius={2} />
                   {ch.name}
                 </span>
               ))}

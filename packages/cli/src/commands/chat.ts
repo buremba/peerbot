@@ -75,11 +75,16 @@ export async function chatCommand(
   let gatewayUrl: string;
   if (options.gateway) {
     gatewayUrl = options.gateway;
-  } else if (options.context) {
-    const ctx = await resolveContext(options.context);
-    gatewayUrl = apiBaseFromContextUrl(ctx.apiUrl);
   } else {
-    gatewayUrl = await resolveGatewayUrl({ cwd });
+    // Prefer an explicit `--context` over the active context, but fall back
+    // to the active context before defaulting to a local `lobu run`. Without
+    // this, `lobu chat` against a remote-context-set CLI silently sent every
+    // request to localhost:8787 — failing with `fetch failed` if no local
+    // gateway was running, or worse, hitting the wrong instance.
+    const ctx = await resolveContext(options.context).catch(() => null);
+    gatewayUrl = ctx
+      ? apiBaseFromContextUrl(ctx.apiUrl)
+      : await resolveGatewayUrl({ cwd });
   }
   // The Agent API lives under `<origin>/lobu` on every Lobu deployment; the
   // context apiUrl and `.env` PORT only give the origin.

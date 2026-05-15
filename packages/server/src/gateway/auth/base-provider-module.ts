@@ -17,21 +17,31 @@ const logger = createLogger("base-provider-module");
 /**
  * Look up the org-shared API key for this provider. Used as the second-tier
  * fallback after per-user `auth_profiles` and before deployment-wide
- * `process.env`. Returns null when no org context is set, no row exists, or
- * the ciphertext fails to decrypt — every miss path is silent so the caller
- * can keep walking the resolution chain.
+ * `process.env`. Returns null when no row exists or the ciphertext fails to
+ * decrypt — every miss path is silent so the caller can keep walking the
+ * resolution chain.
+ *
+ * Org id is derived from the agent row (joined through `agents`) rather than
+ * `tryGetOrgId()`. The worker-spawn code path that calls `buildEnvVars` runs
+ * outside the org-routing middleware's AsyncLocalStorage scope, so the ALS
+ * helper returns null there. Joining via `agents.id` is correct as long as
+ * agent IDs are globally unique — which they are today (the per-org PK swap
+ * ships in the Phase B/C refactor).
  */
 async function readOrgSharedProviderKey(
+  agentId: string,
   providerId: string
 ): Promise<string | null> {
-  const orgId = tryGetOrgId();
-  if (!orgId) return null;
   const sql = getDb();
+  const orgFromContext = tryGetOrgId();
   const rows = (await sql`
-    SELECT ciphertext FROM agent_secrets
-    WHERE organization_id = ${orgId}
-      AND name = ${providerOrgSecretName(providerId)}
-      AND (expires_at IS NULL OR expires_at > now())
+    SELECT s.ciphertext
+    FROM agent_secrets s
+    JOIN agents a ON a.organization_id = s.organization_id
+    WHERE a.id = ${agentId}
+      AND s.name = ${providerOrgSecretName(providerId)}
+      AND (s.expires_at IS NULL OR s.expires_at > now())
+      AND (${orgFromContext}::text IS NULL OR s.organization_id = ${orgFromContext})
     LIMIT 1
   `) as Array<{ ciphertext: string }>;
   const ciphertext = rows[0]?.ciphertext;
@@ -243,7 +253,7 @@ export abstract class BaseProviderModule
       } else {
         // No per-user auth profile — fall back to the org-shared API key
         // declared via `lobu apply` (`provider:<id>:apiKey` in agent_secrets).
-        const orgKey = await readOrgSharedProviderKey(this.providerId);
+        const orgKey = await readOrgSharedProviderKey(agentId, this.providerId);
         if (orgKey) {
           logger.info(
             `Injecting ${credVar} for agent ${agentId} (${this.providerId}) from org-shared secret`
@@ -278,7 +288,7 @@ export abstract class BaseProviderModule
     if (credential) {
       return credential;
     }
-    const orgKey = await readOrgSharedProviderKey(this.providerId);
+    const orgKey = await readOrgSharedProviderKey(agentId, this.providerId);
     if (orgKey) return orgKey;
     const sysVar =
       this.providerConfig.systemEnvVarName ||

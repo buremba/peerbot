@@ -587,14 +587,24 @@ async function executePlan(
         row.changedFields ? `(${row.changedFields.join(", ")})` : undefined
       )
     );
-    // 2b) Provider API keys — pushed as org-shared `agent_secrets` rows so
-    // the worker can inject them at runtime without a per-user auth profile.
-    // Idempotent (PUT); same value → 200, different value → rotation. Not in
-    // the plan/diff because the value lives only in the operator's env at
-    // apply time; we push it every run and let the server upsert.
+  }
+
+  // 2b) Provider API keys — pushed as org-shared `agent_secrets` rows so the
+  // worker can inject them at runtime without a per-user auth profile. Idempotent
+  // (PUT); same value → 200, different value → rotation. Walk all desired agents
+  // (not just those with a settings diff) — the secret value isn't part of the
+  // settings JSON, so a row can need a key even when settings are noop (e.g.
+  // first apply after the gateway picked up support, or a key rotation).
+  for (const desired of ctx.state.agents) {
     for (const { providerId, value } of desired.providerKeys) {
-      await ctx.client.setProviderApiKey(row.id, providerId, value);
-      printText(chalk.dim(`  ↻ provider-key ${row.id}/${providerId}`));
+      await ctx.client.setProviderApiKey(
+        desired.metadata.agentId,
+        providerId,
+        value
+      );
+      printText(
+        chalk.dim(`  ↻ provider-key ${desired.metadata.agentId}/${providerId}`)
+      );
     }
   }
 

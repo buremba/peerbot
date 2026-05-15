@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import CryptoKit
 import Foundation
@@ -777,17 +778,40 @@ final class AppState: ObservableObject {
 
     /// Open the system Photos permission sheet. PhotoKit returns the real
     /// authorization status post-prompt (unlike HealthKit), so `hasPhotos` is
-    /// trusted not just speculative — a deny here means the user has to flip
-    /// the toggle in System Settings → Privacy & Security → Photos before the
-    /// `photos` capability gets advertised on the next poll.
+    /// trusted not just speculative. When TCC has a cached `.denied` decision
+    /// the framework refuses to re-prompt — `.blocked` means we deep-link the
+    /// user straight to System Settings → Privacy & Security → Photos instead
+    /// of just showing them a tooltip telling them to find it themselves.
     func requestPhotosAccess() async {
-        await PhotosSyncService.requestAuthorization()
+        // The Photos prompt is a system-modal sheet. For an LSUIElement app
+        // it appears with no owning window if we don't first promote to a
+        // regular activation policy — clicks did nothing because the sheet
+        // rendered behind the menu-bar popover host and got dismissed when
+        // the popover closed. Promote → request → drop back to accessory.
+        let priorPolicy = NSApp.activationPolicy()
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+        let outcome = await PhotosSyncService.requestAuthorization()
+        NSApp.setActivationPolicy(priorPolicy)
         hasPhotos = PhotosSyncService.isAuthorized
-        if hasPhotos {
+        switch outcome {
+        case .granted:
             setStatus("Apple Photos access granted.")
-        } else {
-            setStatus("Apple Photos access denied. Enable it in System Settings to sync.")
+        case .prompted:
+            setStatus("Apple Photos access declined. Click Add again to retry.")
+        case .blocked:
+            setStatus("Opening System Settings → Privacy → Photos…")
+            openPhotosPrivacyPane()
         }
+    }
+
+    /// Deep-link to the macOS Privacy & Security → Photos pane. macOS 13+
+    /// uses the `x-apple.systempreferences:` scheme; earlier we'd build a
+    /// `Privacy_PhotosLibrary` anchor URL but only the newer scheme survives
+    /// on Ventura+ where this app actually runs.
+    private func openPhotosPrivacyPane() {
+        let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Photos")!
+        NSWorkspace.shared.open(url)
     }
 
     // MARK: - Full Disk Access -------------------------------------------------

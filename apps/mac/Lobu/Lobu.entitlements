@@ -9,6 +9,15 @@
 	<key>com.apple.security.files.user-selected.read-only</key>
 	<true/>
 	<!--
+	  Photos library access. The Hardened Runtime (enabled by Xcode signing
+	  defaults) gates Photos behind this entitlement even for unsandboxed
+	  apps — without it, tccd silently denies the request before the prompt
+	  sheet ever appears, and the app never shows up in System Settings →
+	  Privacy → Photos.
+	-->
+	<key>com.apple.security.personal-information.photos-library</key>
+	<true/>
+	<!--
 	  HealthKit is intentionally disabled here, not removed. The
 	  `com.apple.developer.healthkit` entitlement is "restricted" — notarized
 	  Developer ID builds only accept it with an embedded provisioning profile

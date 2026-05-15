@@ -69,12 +69,32 @@ enum PhotosSyncService {
         }
     }
 
-    /// Open the Photos permission sheet. The completion only tells us the
-    /// final status — `denied`/`restricted` mean future runs will throw
-    /// `unauthorized` until the user changes it in System Settings.
-    static func requestAuthorization() async {
-        _ = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
+    /// Outcome of `requestAuthorization()`:
+    /// - `.granted` — the user said yes (or had previously said yes).
+    /// - `.prompted` — the system sheet was shown but the user declined or
+    ///   dismissed it. Calling again will re-prompt the next time TCC is
+    ///   cleared, but not from the app itself.
+    /// - `.blocked` — the bundle's TCC entry is already `.denied`/`.restricted`
+    ///   so `requestAuthorization` returns without showing UI. The caller
+    ///   should open System Settings → Privacy → Photos directly.
+    enum AuthRequestOutcome { case granted, prompted, blocked }
+
+    /// Open the Photos permission sheet — but only when there's actually a
+    /// sheet to show. If TCC has a cached `.denied` decision, the system
+    /// API silently returns without prompting; we report `.blocked` so the
+    /// caller can deep-link the user to System Settings instead of leaving
+    /// them tapping a button that does nothing.
+    static func requestAuthorization() async -> AuthRequestOutcome {
+        let priorStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        if priorStatus == .denied || priorStatus == .restricted {
+            return .blocked
+        }
+        let newStatus = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
         UserDefaults.standard.set(true, forKey: userDefaultsKey)
+        switch newStatus {
+        case .authorized, .limited: return .granted
+        default: return .prompted
+        }
     }
 
     static func runPhotos(job: WorkerJob) async throws -> PhotosOutput {
@@ -85,15 +105,18 @@ enum PhotosSyncService {
         let includeScreenshots = job.config?["include_screenshots"].flatMap(boolValue) ?? true
         let includeVideos = job.config?["include_videos"].flatMap(boolValue) ?? false
 
-        // Sliding window: previous-checkpoint - 1 day (catches late iCloud
-        // sync writes that bump modificationDate after the originating run)
-        // OR backfillDays back from now, whichever is older.
+        // Sliding window: on the first run (no checkpoint) we query back
+        // `backfillDays` from now. On incremental runs we query from
+        // `last_sync_at - 1 day` so late-arriving iCloud writes that bump
+        // modificationDate after the originating run still get picked up —
+        // BUT never further back than `backfillStart`, otherwise a single
+        // wide checkpoint reset would cost a full re-scan on every poll.
         let overlapSeconds: TimeInterval = 24 * 3600
         let backfillStart = Date().addingTimeInterval(-Double(backfillDays) * 24 * 3600)
         let incrementalStart = (job.checkpoint?["last_sync_at"]?.intValue).map {
             Date(timeIntervalSince1970: TimeInterval($0) - overlapSeconds)
         }
-        let queryStart = min(backfillStart, incrementalStart ?? Date.distantFuture)
+        let queryStart = max(backfillStart, incrementalStart ?? backfillStart)
 
         let items: [WorkerStreamItem]
         switch job.feed_key {

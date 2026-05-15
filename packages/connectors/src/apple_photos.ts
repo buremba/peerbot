@@ -95,7 +95,14 @@ export default class ApplePhotosConnector extends ConnectorRuntime {
         eventKinds: {
           photo: {
             description:
-              'A single photo (or video, if enabled) from the user\'s Apple Photos library.',
+              'A single photo (or video, if enabled) from the user\'s Apple Photos library. ' +
+              'v1 (this PR) populates: asset_local_id, media_type, media_subtypes, ' +
+              'date_taken, date_modified, width, height, duration_s, latitude/longitude/altitude_m, ' +
+              'albums, is_favorite, is_hidden — everything PhotoKit\'s public API exposes. ' +
+              'v2 will add: asset_cloud_id, place_name (reverse geocoding), people, ' +
+              'keywords, caption, ocr_text — all of which require direct reads against ' +
+              'the Photos.sqlite bundle (FDA + schema-pinned, osxphotos-style). ' +
+              'Schema allows nulls so v1 events validate cleanly.',
             metadataSchema: {
               type: 'object',
               required: ['source', 'origin_id', 'asset_local_id'],

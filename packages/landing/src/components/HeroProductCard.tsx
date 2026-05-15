@@ -1601,10 +1601,7 @@ const DEFAULT_RECORD_ROWS: RecordRow[] = [
 
 function MembersTable({ rows }: { rows: RecordRow[] }) {
   return (
-    <div
-      class="rounded-lg overflow-hidden bg-[var(--color-page-surface)]"
-      style={{ border: "1px solid var(--color-page-border)" }}
-    >
+    <div class="rounded-lg overflow-hidden">
       <div
         class="grid text-[11px] font-medium tracking-wider uppercase px-3 py-2"
         style={{
@@ -1692,17 +1689,11 @@ function EntitySchemaSummary({
   emoji: string;
 }) {
   return (
-    <div
-      class="rounded-lg bg-[var(--color-page-surface)] p-3"
-      style={{ border: "1px solid var(--color-page-border)" }}
-    >
+    <div class="p-1">
       <div class="flex flex-wrap items-start gap-3">
         <span
           class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-[15px]"
-          style={{
-            background: "var(--color-page-surface-dim)",
-            border: "1px solid var(--color-page-border)",
-          }}
+          style={{ background: "var(--color-page-surface-dim)" }}
           aria-hidden="true"
         >
           {emoji}
@@ -2449,7 +2440,12 @@ function BrandTile({
   }
   if (onClick) {
     return (
-      <button type="button" onClick={onClick} class={`${cls} text-left`} style={style}>
+      <button
+        type="button"
+        onClick={onClick}
+        class={`${cls} text-left`}
+        style={style}
+      >
         {inner}
       </button>
     );
@@ -3737,16 +3733,12 @@ function WatcherDetail({ watchers }: { watchers: WatcherRow[] }) {
           >
             {selected.name}
           </span>
-          <Badge
-            label={selected.status}
-            tone={selected.status === "Active" ? "green" : "muted"}
-          />
         </div>
         <span
           class="text-[11px] tabular-nums"
           style={{ color: "var(--color-page-text-muted)" }}
         >
-          {selected.schedule}
+          {selected.schedule} · next in 47m
         </span>
       </div>
 
@@ -3974,10 +3966,9 @@ function AgentsConnect({
             class="text-[12px]"
             style={{ color: "var(--color-page-text-muted)" }}
           >
-            Always-on
+            Next run in 47m
           </p>
         </div>
-        <Badge label="Active" tone="green" />
       </div>
       <WatcherDetail watchers={watchers} />
       <BringYourOwnAgentCard />

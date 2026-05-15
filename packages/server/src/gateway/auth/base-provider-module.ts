@@ -1,5 +1,8 @@
-import { createLogger } from "@lobu/core";
+import { createLogger, decrypt } from "@lobu/core";
 import { Hono } from "hono";
+import { getDb } from "../../db/client.js";
+import { tryGetOrgId } from "../../lobu/stores/org-context.js";
+import { providerOrgSecretName } from "../../lobu/stores/provider-secrets.js";
 import type { ProviderCredentialContext } from "../embedded.js";
 import {
   BaseModule,
@@ -10,6 +13,38 @@ import { resolveEnv } from "./mcp/string-substitution.js";
 import type { AuthProfilesManager } from "./settings/auth-profiles-manager.js";
 
 const logger = createLogger("base-provider-module");
+
+/**
+ * Look up the org-shared API key for this provider. Used as the second-tier
+ * fallback after per-user `auth_profiles` and before deployment-wide
+ * `process.env`. Returns null when no org context is set, no row exists, or
+ * the ciphertext fails to decrypt — every miss path is silent so the caller
+ * can keep walking the resolution chain.
+ */
+async function readOrgSharedProviderKey(
+  providerId: string
+): Promise<string | null> {
+  const orgId = tryGetOrgId();
+  if (!orgId) return null;
+  const sql = getDb();
+  const rows = (await sql`
+    SELECT ciphertext FROM agent_secrets
+    WHERE organization_id = ${orgId}
+      AND name = ${providerOrgSecretName(providerId)}
+      AND (expires_at IS NULL OR expires_at > now())
+    LIMIT 1
+  `) as Array<{ ciphertext: string }>;
+  const ciphertext = rows[0]?.ciphertext;
+  if (!ciphertext) return null;
+  try {
+    return decrypt(ciphertext);
+  } catch (error) {
+    logger.warn(
+      `Failed to decrypt org-shared key for provider ${providerId}: ${error instanceof Error ? error.message : String(error)}`
+    );
+    return null;
+  }
+}
 
 interface BaseProviderConfig {
   providerId: string;
@@ -205,6 +240,16 @@ export abstract class BaseProviderModule
           `Injecting ${credVar} for agent ${agentId} (${this.providerId})`
         );
         envVars[credVar] = credential;
+      } else {
+        // No per-user auth profile — fall back to the org-shared API key
+        // declared via `lobu apply` (`provider:<id>:apiKey` in agent_secrets).
+        const orgKey = await readOrgSharedProviderKey(this.providerId);
+        if (orgKey) {
+          logger.info(
+            `Injecting ${credVar} for agent ${agentId} (${this.providerId}) from org-shared secret`
+          );
+          envVars[credVar] = orgKey;
+        }
       }
     }
     return envVars;
@@ -233,6 +278,8 @@ export abstract class BaseProviderModule
     if (credential) {
       return credential;
     }
+    const orgKey = await readOrgSharedProviderKey(this.providerId);
+    if (orgKey) return orgKey;
     const sysVar =
       this.providerConfig.systemEnvVarName ||
       this.providerConfig.credentialEnvVarName;

@@ -6,10 +6,11 @@
 
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import type { AuthProfile, SkillConfig } from '@lobu/core';
+import { encrypt, type AuthProfile, type SkillConfig } from '@lobu/core';
 import { Hono } from 'hono';
 import { mcpAuth } from '../auth/middleware';
 import { getDb } from '../db/client';
+import { providerOrgSecretName } from './stores/provider-secrets';
 import { OAuthClient } from '../gateway/auth/oauth/client';
 import { CLAUDE_PROVIDER } from '../gateway/auth/oauth/providers';
 import { ChannelBindingService } from '../gateway/channels/binding-service';
@@ -822,6 +823,56 @@ routes.post('/:agentId/providers/:providerId/oauth/code', async (c) => {
       400
     );
   }
+});
+
+// ── Set the org-shared API key for a provider ────────────────────────────────
+//
+// Writes (or rotates) the org-wide API key declared via `lobu apply` from
+// `[[agents.<id>.providers]] key = "$VAR"`. The key lands in `agent_secrets`
+// under `provider:<id>:apiKey`, scoped to the org. The worker's credential
+// resolution (base-provider-module.ts) checks per-user `auth_profiles` first,
+// then this row, then `process.env` — so per-user BYOK still wins.
+//
+// `:agentId` is in the path so the auth/admin gate matches the rest of this
+// router; the secret itself is org-scoped, not per-agent (one z-ai key for the
+// whole org). PUT is idempotent; same name overwrites.
+
+routes.put('/:agentId/providers/:providerId/api-key', async (c) => {
+  const denied = requireSessionOrAdminPat(c);
+  if (denied) return denied;
+  const { agentId, providerId } = c.req.param();
+
+  if (!(await configStore.hasAgent(agentId))) {
+    return c.json({ error: 'Agent not found' }, 404);
+  }
+
+  let body: { value?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'Invalid or missing JSON body' }, 400);
+  }
+  const value = typeof body.value === 'string' ? body.value : '';
+  if (!value) {
+    return c.json({ error: 'Body must include a non-empty `value` string' }, 400);
+  }
+
+  const ciphertext = encrypt(value);
+  const name = providerOrgSecretName(providerId);
+  const orgId = await getAgentOrganizationId(agentId);
+  if (!orgId) {
+    return c.json({ error: 'Agent has no organization' }, 500);
+  }
+
+  const sql = getDb();
+  await sql`
+    INSERT INTO agent_secrets (organization_id, name, ciphertext, created_at, updated_at)
+    VALUES (${orgId}, ${name}, ${ciphertext}, now(), now())
+    ON CONFLICT (organization_id, name) DO UPDATE SET
+      ciphertext = EXCLUDED.ciphertext,
+      updated_at = now()
+  `;
+  return c.json({ success: true, name });
 });
 
 // ── Update agent config (settings) ───────────────────────────────────────────

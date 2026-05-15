@@ -193,6 +193,13 @@ export interface DesiredAgent {
    */
   settings: Partial<AgentSettings>;
   platforms: DesiredPlatform[];
+  /**
+   * Provider API keys resolved from `[[providers]] key = "$VAR"` in lobu.toml
+   * that need to be pushed into `agent_secrets` after the settings PATCH.
+   * Empty when no provider declared a `key` (or all keys are empty/unset).
+   * The actual secret value lives only in process memory; never serialized.
+   */
+  providerKeys: { providerId: string; value: string }[];
 }
 
 export interface DesiredState {
@@ -1674,12 +1681,24 @@ export async function loadDesiredState(
     ]);
     const settings = buildAgentSettings(agentConfig, markdown, skillFiles);
     const platforms = buildPlatforms(agentId, agentConfig, env);
+    // Resolve `[[providers]] key = "$VAR"` against the apply env. The
+    // required-secrets gate in apply-cmd already failed loudly if any $VAR
+    // is unset, so a missing value here means the operator omitted `key`
+    // entirely (BYOK / web-UI flow); silently skip those.
+    const providerKeys: { providerId: string; value: string }[] = [];
+    for (const provider of agentConfig.providers) {
+      if (!provider.key) continue;
+      const ref = asEnvRef(provider.key);
+      const resolved = ref ? env[ref] : provider.key;
+      if (!resolved) continue;
+      providerKeys.push({ providerId: provider.id, value: resolved });
+    }
     const metadata: DesiredAgentMetadata = {
       agentId,
       name: agentConfig.name,
     };
     if (agentConfig.description) metadata.description = agentConfig.description;
-    agents.push({ metadata, settings, platforms });
+    agents.push({ metadata, settings, platforms, providerKeys });
   }
 
   const { entityTypes, relationshipTypes, watchers } = await loadMemoryModels(

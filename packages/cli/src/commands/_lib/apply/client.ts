@@ -351,6 +351,22 @@ export class ApplyClient {
     );
   }
 
+  /**
+   * Set (or rotate) the org-shared API key for a provider. Idempotent.
+   * Lands in `agent_secrets` under `provider:<id>:apiKey`, scoped to the org.
+   */
+  async setProviderApiKey(
+    agentId: string,
+    providerId: string,
+    value: string
+  ): Promise<void> {
+    await this.request(
+      "PUT",
+      `/api/${this.orgSlug}/agents/${encodeURIComponent(agentId)}/providers/${encodeURIComponent(providerId)}/api-key`,
+      { value }
+    );
+  }
+
   // ── Platforms ─────────────────────────────────────────────────────────────
 
   async listPlatforms(agentId: string): Promise<RemotePlatform[]> {

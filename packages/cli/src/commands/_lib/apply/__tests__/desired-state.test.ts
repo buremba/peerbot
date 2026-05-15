@@ -37,6 +37,32 @@ describe("loadDesiredState", () => {
     return dir;
   }
 
+  test("resolves provider $VAR keys onto DesiredAgent.providerKeys", async () => {
+    const dir = mkProject(
+      `[agents.triage]
+name = "Triage"
+dir = "./agents/triage"
+
+[[agents.triage.providers]]
+id = "anthropic"
+key = "$ANTHROPIC_API_KEY"
+
+[[agents.triage.providers]]
+id = "openai"
+# Intentionally no key — operator wires via UI / per-user auth profile.
+`
+    );
+    const { state } = await loadDesiredState({
+      cwd: dir,
+      env: { ANTHROPIC_API_KEY: "sk-anth-real-value" },
+    });
+    expect(state.agents[0]!.providerKeys).toEqual([
+      { providerId: "anthropic", value: "sk-anth-real-value" },
+    ]);
+    // Sanity: settings still record both providers as installed.
+    expect(state.agents[0]!.settings.installedProviders).toHaveLength(2);
+  });
+
   test("collects $VAR references from platforms + providers", async () => {
     const dir = mkProject(
       `[agents.triage]

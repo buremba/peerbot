@@ -517,14 +517,17 @@ export async function bindChatToAgentForOwner(args: {
 }): Promise<BindForOwnerResult> {
   const { platform, teamId, channelId, agentId, lobuUserId } = args;
   const sql = getDb();
-  const owned = await sql<{ one: number }>`
-    SELECT 1 AS one
+  const owned = await sql<{ organization_id: string }>`
+    SELECT a.organization_id
     FROM agents a
     JOIN "member" m ON m."organizationId" = a.organization_id
     WHERE a.id = ${agentId} AND m."userId" = ${lobuUserId}
     LIMIT 1
   `;
   if (owned.length === 0) return { status: 'forbidden' };
-  await sql.begin((tx) => upsertBinding(tx, platform, channelId, teamId, agentId));
+  const organizationId = owned[0].organization_id;
+  await sql.begin((tx) =>
+    upsertBinding(tx, platform, channelId, teamId, agentId, organizationId)
+  );
   return { status: 'bound' };
 }

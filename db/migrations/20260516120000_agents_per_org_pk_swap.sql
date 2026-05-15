@@ -13,8 +13,6 @@
 -- composite PK + FKs, and widens the per-(agent,kind,pattern) uniques on
 -- agent_users / agent_grants / grants with organization_id.
 
-BEGIN;
-
 -- ── 0. Set NOT NULL on the columns Phase A backfilled.
 -- Backfill defensively in case any rows snuck in NULL (e.g. embedded PGlite
 -- installs that bypassed the dbmate runner during a partial state).
@@ -83,15 +81,11 @@ ALTER TABLE public.scheduled_jobs
   ADD CONSTRAINT scheduled_jobs_org_agent_fkey
   FOREIGN KEY (organization_id, created_by_agent) REFERENCES public.agents(organization_id, id) ON DELETE CASCADE;
 
-COMMIT;
-
 -- migrate:down
 -- Reverse the swap. NOTE: this WILL FAIL if two orgs ended up sharing an
 -- agent ID after this migration shipped (the previous PK on (id) requires
 -- global uniqueness). That's by design — this migration's whole purpose is
 -- to allow per-org agent IDs that the old PK forbids.
-
-BEGIN;
 
 ALTER TABLE public.scheduled_jobs         DROP CONSTRAINT IF EXISTS scheduled_jobs_org_agent_fkey;
 ALTER TABLE public.grants                 DROP CONSTRAINT IF EXISTS grants_org_agent_fkey;
@@ -129,5 +123,3 @@ ALTER TABLE public.agent_channel_bindings ALTER COLUMN organization_id DROP NOT 
 ALTER TABLE public.agent_users            ALTER COLUMN organization_id DROP NOT NULL;
 ALTER TABLE public.agent_connections      ALTER COLUMN organization_id DROP NOT NULL;
 ALTER TABLE public.agent_grants           ALTER COLUMN organization_id DROP NOT NULL;
-
-COMMIT;

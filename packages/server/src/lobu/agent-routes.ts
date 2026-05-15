@@ -530,29 +530,26 @@ routes.post('/', async (c) => {
       'lobu', ${user.id},
       ${sql.json(ownerMcpServers)}, ${sql.json(ownerPreApprovedTools)}, ${now}, ${now}
     )
-    ON CONFLICT (id) DO NOTHING
+    ON CONFLICT (organization_id, id) DO NOTHING
     RETURNING id
   `;
 
   if (inserted.length === 0) {
-    // Another writer (or a previous apply cycle) already owns this id.
-    // If they're in this org → idempotent 200. If another org → 409.
-    const existingOrgId = await getAgentOrganizationId(agentId);
-    if (existingOrgId === orgId) {
-      const existing = await configStore.getMetadata(agentId);
-      if (!existing) {
-        return c.json({ error: 'Agent metadata missing' }, 500);
-      }
-      return c.json(
-        {
-          agentId,
-          name: existing.name,
-          description: existing.description,
-        },
-        200
-      );
+    // Another writer (or a previous apply cycle) already owns this id in
+    // *this* org. Return idempotent 200 with the existing row's metadata.
+    // Cross-org collisions are no longer possible — the PK is per-org now.
+    const existing = await configStore.getMetadata(agentId);
+    if (!existing) {
+      return c.json({ error: 'Agent metadata missing' }, 500);
     }
-    return c.json({ error: 'Agent ID already exists in another organization' }, 409);
+    return c.json(
+      {
+        agentId,
+        name: existing.name,
+        description: existing.description,
+      },
+      200
+    );
   }
 
   return c.json({ agentId, name, description }, 201);
@@ -573,7 +570,7 @@ routes.get('/:agentId', async (c) => {
       count(*)::int as connection_count,
       count(*) FILTER (WHERE status = 'active')::int as active_connection_count
     FROM agent_connections
-    WHERE agent_id = ${agentId}
+    WHERE agent_id = ${agentId} AND organization_id = ${organizationId}
   `;
   const clientIds = new Set<string>();
   const runtimeClientCounts = await countRuntimeMessagingClientsByAgent(organizationId);
@@ -858,9 +855,9 @@ routes.put('/:agentId/providers/:providerId/api-key', async (c) => {
 
   const ciphertext = encrypt(value);
   const name = providerOrgSecretName(providerId);
-  const orgId = await getAgentOrganizationId(agentId);
+  const orgId = (c.get('organizationId') as string | undefined) ?? null;
   if (!orgId) {
-    return c.json({ error: 'Agent has no organization' }, 500);
+    return c.json({ error: 'Organization context not available' }, 500);
   }
 
   const sql = getDb();

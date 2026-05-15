@@ -25,6 +25,7 @@ import {
   listAuthProfiles,
   normalizeAuthProfileSlug,
   normalizeAuthValues,
+  revokeOAuthAppProfileAtomic,
   setDefaultAuthProfileForConnector,
   summarizeBrowserSessionAuthData,
   updateAuthProfile,
@@ -667,17 +668,29 @@ async function handleUpdateAuthProfile(
 ): Promise<ManageAuthProfilesResult> {
   // Mirror create gating: only oauth_account profiles are member-editable.
   // env / oauth_app / browser_session are org-shared credentials — admin only.
+  // For oauth_account, non-admins can only touch a profile they created — the
+  // slug alone shouldn't let one member rotate another member's tokens.
   const existingForRoleCheck = await getAuthProfileBySlug(
     ctx.organizationId,
     args.auth_profile_slug
   );
-  if (existingForRoleCheck && existingForRoleCheck.profile_kind !== 'oauth_account') {
+  if (existingForRoleCheck) {
     const role = ctx.userId
       ? await getWorkspaceRole(getDb(), ctx.organizationId, ctx.userId)
       : null;
-    if (role !== 'admin' && role !== 'owner') {
+    const callerIsAdmin = role === 'admin' || role === 'owner';
+    if (existingForRoleCheck.profile_kind !== 'oauth_account' && !callerIsAdmin) {
       return {
         error: `Only admins can modify ${existingForRoleCheck.profile_kind} auth profiles.`,
+      };
+    }
+    if (
+      !callerIsAdmin &&
+      existingForRoleCheck.profile_kind === 'oauth_account' &&
+      existingForRoleCheck.created_by !== ctx.userId
+    ) {
+      return {
+        error: `You can only update OAuth account profiles you created. Ask an admin if you need to manage another member's profile.`,
       };
     }
   }
@@ -807,19 +820,20 @@ async function handleUpdateAuthProfile(
   // Cascade for oauth_app: admins flipping an app profile to revoked/error
   // need dependent connections to surface as broken (instead of silently
   // continuing to point at a profile whose creds the gateway can no longer
-  // resolve).
+  // resolve). For the revoke/error case we re-do the status flip inside a
+  // transaction together with the cascade + default-clear so there's no
+  // window where connections still reference the revoked profile (the prior
+  // updateAuthProfile call above already wrote status, but its tx is now
+  // closed — this overwrite is idempotent and lands the full state change
+  // atomically).
   if (authProfile.profile_kind === 'oauth_app') {
     if (authProfile.status === 'revoked' || authProfile.status === 'error') {
-      await syncConnectionsForOAuthAppProfile(ctx.organizationId, authProfile.id, false);
-      // A revoked profile must not also be flagged as the connector default.
-      if (authProfile.is_default_for_connector && authProfile.connector_key) {
-        await setDefaultAuthProfileForConnector({
-          organizationId: ctx.organizationId,
-          connectorKey: authProfile.connector_key,
-          slug: null,
-        });
-        authProfile = { ...authProfile, is_default_for_connector: false };
-      }
+      const atomic = await revokeOAuthAppProfileAtomic({
+        organizationId: ctx.organizationId,
+        profileId: authProfile.id,
+        nextStatus: authProfile.status,
+      });
+      if (atomic) authProfile = atomic;
     } else if (authProfile.status === 'active') {
       await syncConnectionsForOAuthAppProfile(ctx.organizationId, authProfile.id, true);
     }

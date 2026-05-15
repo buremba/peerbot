@@ -965,6 +965,19 @@ async function handleCreate(
         error: `Selected app auth profile '${authSelection.appAuthProfile.slug}' is not active.`,
       };
     }
+    // Even when the slug is omitted, non-admins can only fall through to the
+    // admin-pinned default for this exact connector. The resolver may
+    // otherwise return a recency-picked provider-wide row, which would let a
+    // member silently use an OAuth client the admin never blessed.
+    if (
+      !callerIsAdmin &&
+      (!authSelection.appAuthProfile.is_default_for_connector ||
+        authSelection.appAuthProfile.connector_key !== args.connector_key)
+    ) {
+      return {
+        error: `No default OAuth app configured for this connector. Ask an admin to pin a ${authSelection.oauthMethod?.provider ?? args.connector_key} app as the default in /oauth-apps.`,
+      };
+    }
   }
 
   const displayName = await resolveConnectionDisplayName({

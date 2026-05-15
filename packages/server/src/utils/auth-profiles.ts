@@ -509,6 +509,47 @@ export async function getPrimaryAuthProfileForKind(params: {
 }
 
 /**
+ * Atomically transition an oauth_app profile to a "broken" status (revoked or
+ * error) while also flipping every connection that minted tokens against it
+ * to pending_auth and clearing the connector default flag if set. Running
+ * these three statements in one transaction prevents the window where a
+ * connection still references a revoked profile, and is the only safe
+ * substitute for the missing FK-level cascade.
+ */
+export async function revokeOAuthAppProfileAtomic(params: {
+  organizationId: string;
+  profileId: number;
+  nextStatus: 'revoked' | 'error';
+}): Promise<AuthProfileRow | null> {
+  const sql = getDb();
+  return sql.begin(async (tx) => {
+    const profileRows = await tx`
+      UPDATE auth_profiles
+      SET status = ${params.nextStatus},
+          is_default_for_connector = false,
+          updated_at = NOW()
+      WHERE organization_id = ${params.organizationId}
+        AND id = ${params.profileId}
+        AND profile_kind = 'oauth_app'
+      RETURNING ${tx.unsafe(AUTH_PROFILE_COLUMNS)}
+    `;
+
+    if (profileRows.length === 0) return null;
+
+    await tx`
+      UPDATE connections
+      SET status = 'pending_auth',
+          updated_at = NOW()
+      WHERE organization_id = ${params.organizationId}
+        AND app_auth_profile_id = ${params.profileId}
+        AND deleted_at IS NULL
+    `;
+
+    return profileRows[0] as AuthProfileRow;
+  }) as Promise<AuthProfileRow | null>;
+}
+
+/**
  * Pin one oauth_app profile as the org default for its connector_key. Clears
  * the flag on any sibling profile for the same (org, connector_key) first so
  * the partial unique index never trips.

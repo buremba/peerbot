@@ -356,8 +356,8 @@ describe("Public preview — /lobu try a demo agent", () => {
 
     const sql = getDb();
     await sql`
-      INSERT INTO agent_connections (id, agent_id, platform, config, settings, metadata, status, created_at, updated_at)
-      VALUES (${PREVIEW_CONN}, ${CONCIERGE}, 'slack', ${sql.json({ platform: "slack" })},
+      INSERT INTO agent_connections (id, organization_id, agent_id, platform, config, settings, metadata, status, created_at, updated_at)
+      VALUES (${PREVIEW_CONN}, ${PREVIEW_ORG}, ${CONCIERGE}, 'slack', ${sql.json({ platform: "slack" })},
               ${sql.json({ previewMode: true })}, ${sql.json({})}, 'active', now(), now())
     `;
   });

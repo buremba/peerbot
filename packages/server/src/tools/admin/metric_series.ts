@@ -52,10 +52,12 @@ export async function metricSeries(
   const db = getDb();
 
   // Run inside a transaction so SET LOCAL applies for the user query only.
+  // `SET LOCAL` doesn't accept prepared parameters, so the timeout literal is
+  // interpolated directly (safe — it's a module-level number).
   let rows: Record<string, unknown>[];
   try {
     rows = (await db.begin(async (tx) => {
-      await tx`SET LOCAL statement_timeout = ${STATEMENT_TIMEOUT_MS}`;
+      await tx.unsafe(`SET LOCAL statement_timeout = ${STATEMENT_TIMEOUT_MS}`);
       return tx.unsafe(scopedSql, params as unknown[]);
     })) as Record<string, unknown>[];
   } catch (err) {

@@ -2381,101 +2381,142 @@ function ExternalIcon({ size = 11 }: { size?: number }) {
   );
 }
 
-function DeviceTargetCard({
+function BrandTile({
   icon,
+  iconBg,
   name,
-  description,
-  action,
+  subtitle,
+  trailing,
+  onClick,
+  href,
 }: {
   icon: ComponentChildren;
+  iconBg: string;
   name: string;
-  description: string;
-  action: DeviceAction;
+  subtitle: string;
+  trailing?: ComponentChildren;
+  onClick?: () => void;
+  href?: string;
 }) {
-  const [copied, setCopied] = useState(false);
-  const handleCopy = async () => {
-    if (
-      action.kind !== "copy" ||
-      typeof navigator === "undefined" ||
-      !navigator.clipboard
-    )
-      return;
-    try {
-      await navigator.clipboard.writeText(action.command);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-      // noop
-    }
-  };
-
-  let cta: ComponentChildren;
-  if (action.kind === "link") {
-    cta = (
-      <a
-        href={action.href}
-        target="_blank"
-        rel="noopener noreferrer"
-        class="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium transition-opacity hover:opacity-90"
-        style={{
-          background: "var(--color-page-bg-inverted)",
-          color: "var(--color-page-text-inverted)",
-        }}
-      >
-        {action.label}
-        <ExternalIcon />
-      </a>
-    );
-  } else if (action.kind === "copy") {
-    cta = (
-      <button
-        type="button"
-        onClick={handleCopy}
-        class="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium transition-colors hover:bg-[var(--color-page-surface-dim)]"
-        style={{
-          background: "var(--color-page-surface)",
-          color: "var(--color-page-text)",
-        }}
-      >
-        {copied ? <CheckIcon /> : <CopyIcon />}
-        {copied ? "Copied" : action.label}
-      </button>
-    );
-  } else {
-    cta = (
+  const inner = (
+    <>
       <span
-        class="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium"
-        style={{
-          background: "var(--color-page-surface)",
-          color: "var(--color-page-text-muted)",
-        }}
+        class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded text-white"
+        style={{ background: iconBg }}
+        aria-hidden="true"
       >
-        {action.label}
+        {icon}
       </span>
-    );
-  }
-  return (
-    <div
-      class="flex h-full flex-col gap-2 rounded-lg p-3"
-      style={{ background: "var(--color-page-surface-dim)" }}
-    >
-      <div class="flex items-center gap-2">
-        <span style={{ color: "var(--color-page-text-muted)" }}>{icon}</span>
-        <span
-          class="text-[13px] font-medium"
+      <div class="min-w-0 flex-1">
+        <div
+          class="text-[12px] font-medium truncate"
           style={{ color: "var(--color-page-text)" }}
         >
           {name}
-        </span>
+        </div>
+        <div
+          class="text-[10px] truncate"
+          style={{ color: "var(--color-page-text-muted)" }}
+        >
+          {subtitle}
+        </div>
       </div>
-      <p
-        class="text-[11px] leading-relaxed"
-        style={{ color: "var(--color-page-text-muted)" }}
+      {trailing ? (
+        <span
+          class="shrink-0"
+          style={{ color: "var(--color-page-text-muted)" }}
+        >
+          {trailing}
+        </span>
+      ) : null}
+    </>
+  );
+  const cls =
+    "flex items-center gap-2 rounded-md p-2 transition-colors hover:bg-[var(--color-page-surface)]";
+  const style = { background: "var(--color-page-surface-dim)" };
+  if (href) {
+    return (
+      <a
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        class={cls}
+        style={style}
       >
-        {description}
-      </p>
-      <div class="mt-auto pt-1">{cta}</div>
+        {inner}
+      </a>
+    );
+  }
+  if (onClick) {
+    return (
+      <button type="button" onClick={onClick} class={`${cls} text-left`} style={style}>
+        {inner}
+      </button>
+    );
+  }
+  return (
+    <div class={cls} style={style}>
+      {inner}
     </div>
+  );
+}
+
+function DeviceTargetCard({
+  icon,
+  iconBg,
+  name,
+  subtitle,
+  action,
+}: {
+  icon: ComponentChildren;
+  iconBg: string;
+  name: string;
+  subtitle: string;
+  action: DeviceAction;
+}) {
+  const [copied, setCopied] = useState(false);
+  if (action.kind === "link") {
+    return (
+      <BrandTile
+        icon={icon}
+        iconBg={iconBg}
+        name={name}
+        subtitle={subtitle}
+        trailing={<ExternalIcon size={12} />}
+        href={action.href}
+      />
+    );
+  }
+  if (action.kind === "copy") {
+    const handleCopy = async () => {
+      if (typeof navigator === "undefined" || !navigator.clipboard) return;
+      try {
+        await navigator.clipboard.writeText(action.command);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      } catch {
+        // noop
+      }
+    };
+    return (
+      <BrandTile
+        icon={icon}
+        iconBg={iconBg}
+        name={name}
+        subtitle={subtitle}
+        trailing={copied ? <CheckIcon size={12} /> : <CopyIcon size={12} />}
+        onClick={handleCopy}
+      />
+    );
+  }
+  return (
+    <BrandTile
+      icon={icon}
+      iconBg={iconBg}
+      name={name}
+      subtitle={subtitle}
+      trailing={<StatusDot tone="green" />}
+    />
   );
 }
 
@@ -2557,25 +2598,26 @@ function ConnectorsLanding({
 
   const deviceTargets: Array<{
     icon: ComponentChildren;
+    iconBg: string;
     name: string;
-    description: string;
+    subtitle: string;
     action: DeviceAction;
   }> = [
     {
       icon: (
         <svg
           aria-hidden="true"
-          width={14}
-          height={14}
+          width={12}
+          height={12}
           viewBox="0 0 24 24"
           fill="currentColor"
         >
           <path d="M17.05 20.28c-.98.95-2.05.88-3.08.4-1.09-.5-2.08-.52-3.24 0-1.44.62-2.2.44-3.06-.4C2.79 15.25 3.51 7.59 9.05 7.31c1.35.07 2.29.74 3.08.8 1.18-.24 2.31-.93 3.57-.84 1.51.12 2.65.72 3.4 1.8-3.12 1.87-2.38 5.98.48 7.13-.57 1.5-1.31 2.99-2.54 4.08zM12.03 7.25c-.15-2.23 1.66-4.07 3.74-4.25.29 2.58-2.34 4.5-3.74 4.25z" />
         </svg>
       ),
+      iconBg: "#111111",
       name: "macOS",
-      description:
-        "Menu bar app. Syncs local folders, Screen Time, browser history.",
+      subtitle: "Menu bar app · .dmg",
       action: {
         kind: "link",
         label: "Download .dmg",
@@ -2583,24 +2625,34 @@ function ConnectorsLanding({
       },
     },
     {
-      icon: <TerminalIcon />,
+      icon: <TerminalIcon size={12} />,
+      iconBg: "#1F2937",
       name: "CLI",
-      description:
-        "Authenticates local tools (Claude Code, Cursor, MCP clients) against this workspace.",
+      subtitle: "npm i -g @lobu/cli",
       action: { kind: "copy", label: "Install + log in", command: cliCommand },
     },
     {
-      icon: <CloudIcon />,
+      icon: (
+        <svg
+          aria-hidden="true"
+          width={12}
+          height={12}
+          viewBox="0 0 24 24"
+          fill="currentColor"
+        >
+          <path d="M13.983 11.078h2.119a.186.186 0 0 0 .186-.185V9.006a.186.186 0 0 0-.186-.186h-2.119a.185.185 0 0 0-.185.185v1.888c0 .102.083.185.185.185m-2.954-5.43h2.118a.186.186 0 0 0 .186-.186V3.574a.186.186 0 0 0-.186-.185h-2.118a.185.185 0 0 0-.185.185v1.888c0 .102.082.185.185.186m0 2.715h2.118a.187.187 0 0 0 .186-.186V6.29a.186.186 0 0 0-.186-.185h-2.118a.185.185 0 0 0-.185.185v1.887c0 .102.082.185.185.186m-2.93 0h2.12a.186.186 0 0 0 .184-.186V6.29a.185.185 0 0 0-.185-.185H8.1a.185.185 0 0 0-.185.185v1.887c0 .102.083.185.185.186m-2.964 0h2.119a.186.186 0 0 0 .185-.186V6.29a.185.185 0 0 0-.185-.185H5.136a.186.186 0 0 0-.186.185v1.887c0 .102.084.185.186.186m5.893 2.715h2.118a.186.186 0 0 0 .186-.185V9.006a.186.186 0 0 0-.186-.186h-2.118a.185.185 0 0 0-.185.185v1.888c0 .102.082.185.185.185m-2.93 0h2.12a.185.185 0 0 0 .184-.185V9.006a.185.185 0 0 0-.184-.186h-2.12a.185.185 0 0 0-.184.185v1.888c0 .102.083.185.185.185m-2.964 0h2.119a.185.185 0 0 0 .185-.185V9.006a.185.185 0 0 0-.184-.186h-2.12a.186.186 0 0 0-.186.186v1.887c0 .102.084.185.186.185m-2.92 0h2.12a.185.185 0 0 0 .184-.185V9.006a.185.185 0 0 0-.184-.186h-2.12a.185.185 0 0 0-.184.185v1.888c0 .102.082.185.185.185M23.763 9.89c-.065-.051-.672-.51-1.954-.51-.338.001-.676.03-1.01.087-.248-1.7-1.653-2.53-1.716-2.566l-.344-.199-.226.327c-.284.438-.49.922-.612 1.43-.23.97-.09 1.882.403 2.661-.595.332-1.55.413-1.744.42H.751a.751.751 0 0 0-.75.748 11.376 11.376 0 0 0 .692 4.062c.545 1.428 1.355 2.48 2.41 3.124 1.18.723 3.1 1.137 5.275 1.137a16.094 16.094 0 0 0 2.913-.262 12.27 12.27 0 0 0 3.805-1.38c.965-.582 1.832-1.31 2.572-2.161 1.236-1.418 1.974-3.012 2.521-4.426h.097c1.71 0 2.616-.823 2.65-1.74l.005-.184Z" />
+        </svg>
+      ),
+      iconBg: "#2496ED",
       name: "Docker",
-      description:
-        "Self-hosted bridge in a container. Run on a server or VPS for always-on connectors.",
+      subtitle: "Self-hosted bridge",
       action: { kind: "copy", label: "Run command", command: dockerCommand },
     },
     {
-      icon: <CloudIcon />,
+      icon: <CloudIcon size={12} />,
+      iconBg: "#0EA5E9",
       name: "Serverless",
-      description:
-        "Lobu hosts the bridge. Connectors run in sandboxed cloud workers — no install.",
+      subtitle: "Free in beta",
       action: { kind: "status", label: "Free in beta" },
     },
   ];
@@ -2668,8 +2720,9 @@ function ConnectorsLanding({
             <DeviceTargetCard
               key={t.name}
               icon={t.icon}
+              iconBg={t.iconBg}
               name={t.name}
-              description={t.description}
+              subtitle={t.subtitle}
               action={t.action}
             />
           ))}

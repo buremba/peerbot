@@ -5,18 +5,6 @@ import {
   type SurfaceHeroCopy,
 } from "../use-case-showcases";
 
-const GitHubIcon = () => (
-  <svg
-    width="14"
-    height="14"
-    viewBox="0 0 24 24"
-    fill="currentColor"
-    aria-hidden="true"
-  >
-    <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z" />
-  </svg>
-);
-
 const ArrowRightIcon = () => (
   <svg
     width="12"
@@ -36,14 +24,91 @@ const ArrowRightIcon = () => (
   </svg>
 );
 
-const GITHUB_URL = "https://github.com/lobu-ai/lobu";
+const SETUP_PROMPT = `Build me a working Lobu app end-to-end. Lobu is an open-source multi-tenant backend for AI agents (memory, watchers, connectors, chat platforms, MCP).
+
+Repo: https://github.com/lobu-ai/lobu
+Docs: https://lobu.ai/getting-started/
+Skills guide: https://lobu.ai/getting-started/skills/
+
+Phase 1 — Environment
+1. Verify Node 22–24 and Postgres+pgvector are available; install if missing.
+2. Clone https://github.com/lobu-ai/lobu, run \`bun install\`, copy \`.env.example\` to \`.env\` and fill in DATABASE_URL + an ANTHROPIC_API_KEY (or OPENAI_API_KEY).
+3. Run \`make dev\` to boot the embedded gateway + workers on :8787. Confirm the web UI loads.
+
+Phase 2 — Install the Lobu starter skill
+4. Install the starter skill into your own agent runtime (Claude Code / Cursor / OpenClaw / ChatGPT — whichever you are). Follow the install steps in the skills guide. The skill teaches you the lobu.toml + SKILL.md shape so you can scaffold projects correctly.
+
+Phase 3 — Interview me
+5. Now interview me. Ask short, concrete questions one at a time:
+   - What is the agent for? (the job-to-be-done in one sentence)
+   - Who uses it? (single user, my team, or end-customers each with their own data)
+   - What does it need to remember? (we'll turn this into 1–3 entity types)
+   - Where does the data come from? (Slack, Gmail, GitHub, Linear, Notion, a CSV, a local folder, an API — pick 1 to start)
+   - Where do people talk to it? (Slack, Telegram, web chat, MCP-only)
+   - What should it do on a schedule, if anything? (1 watcher max for v1)
+
+Phase 4 — Scaffold and run
+6. Based on my answers, generate the project: one agent, the entity types, one connector, one watcher on a sensible schedule, and one chat-channel binding. Use the workspace I created in Phase 1.
+7. Boot the agent locally, send a test message via the channel, confirm the agent replies and the watcher fires. Show me the memory event that was written.
+8. Hand me a short README with the next 3 things I should customise.
+
+Rules: pause at every real decision (connector choice, model provider, OAuth flow, schedule cadence) and ask me. Don't fake credentials — if a real OAuth or API key is needed, walk me through getting it. Cite docs links instead of guessing.`;
+
+function CopyPromptButton() {
+  const [copied, setCopied] = useState(false);
+  const handleClick = async () => {
+    if (typeof navigator === "undefined" || !navigator.clipboard) return;
+    try {
+      await navigator.clipboard.writeText(SETUP_PROMPT);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // noop
+    }
+  };
+  return (
+    <button
+      type="button"
+      onClick={handleClick}
+      class="inline-flex items-center gap-2 text-[14px] font-medium px-5 h-10 rounded-lg transition-colors hover:bg-[color:var(--color-page-surface-dim)]"
+      style={{
+        color: "var(--color-page-text)",
+        background: "var(--color-page-surface)",
+        border: "1px solid var(--color-page-border)",
+      }}
+      aria-label="Copy a setup prompt for your AI agent"
+    >
+      <svg
+        width="14"
+        height="14"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        aria-hidden="true"
+      >
+        {copied ? (
+          <polyline points="20 6 9 17 4 12" />
+        ) : (
+          <>
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+          </>
+        )}
+      </svg>
+      {copied ? "Copied — paste into your agent" : "Copy setup prompt"}
+    </button>
+  );
+}
 
 export type HeroStageId = "model" | "integrate" | "connect" | "knowledge";
 
-const STAGE_TABS: Array<{ id: HeroStageId; label: string; index: number }> = [
-  { id: "integrate", label: "Connect systems", index: 1 },
-  { id: "model", label: "Build context", index: 2 },
-  { id: "connect", label: "Deploy agents", index: 3 },
+const STAGE_TABS: Array<{ id: HeroStageId; label: string }> = [
+  { id: "integrate", label: "Connectors" },
+  { id: "model", label: "Memory" },
+  { id: "connect", label: "Agents" },
 ];
 
 const TAB_CYCLE_MS = 5000;
@@ -61,9 +126,23 @@ export function HeroSection(props: {
   const activeStage = props.activeStage ?? "model";
   const autoAdvance = props.autoAdvance ?? true;
   const [cycleSeed, setCycleSeed] = useState(0);
+  // Auto-advance is disruptive on narrow viewports — scrolling into the
+  // preview triggers the next tab to flip out from under the reader.
+  // Gate the cycle on the md breakpoint, matching the responsive design.
+  const [isDesktop, setIsDesktop] = useState(() => {
+    if (typeof window === "undefined") return true;
+    return window.matchMedia("(min-width: 768px)").matches;
+  });
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const mq = window.matchMedia("(min-width: 768px)");
+    const handler = (e: MediaQueryListEvent) => setIsDesktop(e.matches);
+    mq.addEventListener("change", handler);
+    return () => mq.removeEventListener("change", handler);
+  }, []);
 
   useEffect(() => {
-    if (!autoAdvance) return;
+    if (!autoAdvance || !isDesktop) return;
     const idx = STAGE_TABS.findIndex((s) => s.id === activeStage);
     if (idx === -1) return;
     const t = setTimeout(() => {
@@ -72,7 +151,7 @@ export function HeroSection(props: {
       setCycleSeed((s) => s + 1);
     }, TAB_CYCLE_MS);
     return () => clearTimeout(t);
-  }, [activeStage, cycleSeed, autoAdvance]);
+  }, [activeStage, cycleSeed, autoAdvance, isDesktop]);
 
   const handleTabClick = (id: HeroStageId) => {
     props.onStopAutoAdvance?.();
@@ -137,20 +216,7 @@ export function HeroSection(props: {
           >
             Start building
           </a>
-          <a
-            href={GITHUB_URL}
-            target="_blank"
-            rel="noopener noreferrer"
-            class="inline-flex items-center gap-2 text-[14px] font-medium px-5 h-10 rounded-lg transition-colors hover:bg-[color:var(--color-page-surface-dim)]"
-            style={{
-              color: "var(--color-page-text)",
-              background: "var(--color-page-surface)",
-              border: "1px solid var(--color-page-border)",
-            }}
-          >
-            <GitHubIcon />
-            View on GitHub
-          </a>
+          <CopyPromptButton />
         </div>
       </div>
 
@@ -200,12 +266,6 @@ export function HeroSection(props: {
                     />
                   )
                 ) : null}
-                <span
-                  style={{
-                    color: "var(--color-page-text-muted)",
-                    opacity: 0.55,
-                  }}
-                >{`${tab.index}.`}</span>
                 <span>{tab.label}</span>
               </button>
             );

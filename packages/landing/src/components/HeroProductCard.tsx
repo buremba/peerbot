@@ -247,19 +247,33 @@ function buildConnectors(useCase: LandingUseCaseDefinition): ConnectorRow[] {
       connections,
     };
   });
-  const fromDomains = domains.slice(0, 3).map((domain, i) => {
-    const slug = domain.replace(/^\*\.|^api\./, "").split(".")[0];
-    return {
-      id: `domain-${i}`,
-      name: brandName(slug),
-      description: domain,
-      status: "Connected" as const,
-      connections: buildSampleConnections(slug, 1),
-    };
-  });
+  const fromDomains = domains
+    .map((domain, i) => {
+      // Generated data uses both glob and leading-dot wildcards
+      // (*.example.com, .example.com) plus the bare host. Normalise all
+      // three shapes to the registrable hostname before slugging.
+      const host = domain.replace(/^\*\.|^api\.|^\./, "");
+      const slug = host.split(".")[0];
+      return {
+        id: `domain-${i}`,
+        slug,
+        name: brandName(slug),
+        description: host,
+        status: "Connected" as const,
+        connections: buildSampleConnections(slug, 1),
+      };
+    })
+    .filter((d) => d.slug.length > 0)
+    .slice(0, 3);
   const seen = new Set<string>();
   return [...fromChips, ...fromDomains].filter((c) => {
-    const key = c.name.toLowerCase();
+    // Dedupe by brand key when the name resolves to one we know about
+    // (so 'github.com' and '.githubusercontent.com' collapse into a single
+    // GitHub row instead of GitHub + 'Githubusercontent'); otherwise fall
+    // back to a lowercase name match.
+    const brand = brandKey(c.name);
+    const key = brand ?? c.name.toLowerCase();
+    if (!key) return false;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;

@@ -129,6 +129,8 @@ Prerequisites: Bun, Node.js **22.x–24.x** (`.nvmrc` and `.node-version` pin `2
 
 Optional: `postgis` for reverse-geocoding events with lat/lng (currently used by `apple.photos`). Install once (`CREATE EXTENSION postgis;`, requires superuser the first time) and run `scripts/seed-geo-data.sh` to populate the geo reference tables from GeoNames. Without `postgis` the migration becomes a no-op and runtime enrichment silently skips — events keep their raw `latitude`/`longitude` and just don't get `country` / `admin1` / `place_name` filled.
 
+For CloudNativePG clusters specifically, the stock `ghcr.io/cloudnative-pg/postgresql` image doesn't include `postgis` and CNPG hasn't published a postgis variant for PG 18+ yet. `db/postgis/Dockerfile` + `scripts/build-postgis-image.sh` bake `postgresql-N-postgis-3` on top of the base CNPG image and push to a registry (`ghcr.io/lobu-ai/postgres-postgis:<pg>-postgis-3` by default). Point the CNPG `Cluster.spec.imageName` at the result; CNPG rolls the pod, then `CREATE EXTENSION postgis;` as the `postgres` superuser inside the pod (`kubectl exec -n <ns> <cluster>-1 -c postgres -- psql -U postgres -d <db> -c '...'`) finalises it. When CNPG ships an official PG 18 postgis variant, drop the custom image and switch back.
+
 ```bash
 ./scripts/setup-dev.sh   # first-time setup (builds packages, checks bun)
 make dev                  # boots embedded gateway + workers + Vite HMR on :8787

@@ -451,7 +451,13 @@ describe("cross-agent JWT isolation", () => {
     await toolCache.set("shared-mcp", [{ name: "delete_everything" }], "agent2");
 
     // Grant only to agent1
-    await grantStore.grant("agent1", "/mcp/shared-mcp/tools/delete_everything", null);
+    await grantStore.grant(
+      "agent1",
+      "/mcp/shared-mcp/tools/delete_everything",
+      null,
+      undefined,
+      "test-org"
+    );
 
     successFetch({
       jsonrpc: "2.0",
@@ -618,7 +624,13 @@ describe("tool approval — onToolBlocked and wildcard grants", () => {
     );
 
     // Wildcard grant for the whole server
-    await grantStore.grant("agent1", "/mcp/gh-mcp/tools/*", null);
+    await grantStore.grant(
+      "agent1",
+      "/mcp/gh-mcp/tools/*",
+      null,
+      undefined,
+      "test-org"
+    );
 
     const configSource = createConfigSource({
       "gh-mcp": { id: "gh-mcp", upstreamUrl: "http://gh.example.com/mcp" },

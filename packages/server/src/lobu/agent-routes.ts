@@ -1195,12 +1195,13 @@ routes.put('/:agentId/platforms/by-stable-id/:stableId', async (c) => {
       // the manager call).
       const sql = getDb();
       const claimNow = new Date();
+      const claimOrgId = c.get('organizationId') as string;
       const claimed = await sql`
         INSERT INTO agent_connections (
-          id, agent_id, platform, config, settings, metadata, status, created_at, updated_at
+          id, organization_id, agent_id, platform, config, settings, metadata, status, created_at, updated_at
         )
         VALUES (
-          ${stableId}, ${agentId}, ${platform},
+          ${stableId}, ${claimOrgId}, ${agentId}, ${platform},
           ${sql.json({})}, ${sql.json({})}, ${sql.json({})},
           'stopped', ${claimNow}, ${claimNow}
         )

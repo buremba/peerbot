@@ -60,6 +60,7 @@ function buildPayload(overrides: Partial<MessagePayload>): MessagePayload {
     channelId: "ch",
     teamId: "t",
     agentId: "agent-1",
+    organizationId: "test-org",
     botId: "b",
     platform: "slack",
     messageText: "hi",

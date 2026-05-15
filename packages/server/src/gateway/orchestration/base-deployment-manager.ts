@@ -541,11 +541,13 @@ export abstract class BaseDeploymentManager {
       return;
     }
 
+    const orgId = messageData.organizationId;
+
     // Revoke patterns that were previously granted but are no longer
     // present in the current config.
     for (const pattern of previous) {
       if (!nextPatterns.has(pattern)) {
-        await this.grantStore.revoke(agentId, pattern);
+        await this.grantStore.revoke(agentId, pattern, orgId);
       }
     }
 
@@ -553,7 +555,7 @@ export abstract class BaseDeploymentManager {
     // idempotent, but skipping them saves writes.
     for (const pattern of nextPatterns) {
       if (!previous.has(pattern)) {
-        await this.grantStore.grant(agentId, pattern, null);
+        await this.grantStore.grant(agentId, pattern, null, undefined, orgId);
       }
     }
 

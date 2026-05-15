@@ -169,7 +169,7 @@ async function seedAgent(orgId: string, agentId: string): Promise<void> {
   await sql`
     INSERT INTO agents (id, organization_id, name)
     VALUES (${agentId}, ${orgId}, ${agentId})
-    ON CONFLICT (id) DO NOTHING
+    ON CONFLICT (organization_id, id) DO NOTHING
   `;
 }
 
@@ -264,21 +264,36 @@ describe('POST /agents — idempotent same-org create', () => {
     });
   });
 
-  test('cross-org collision still returns 409', async () => {
+  test('cross-org create succeeds — agent ids are per-org-unique', async () => {
+    // Post-Phase-C the agents PK is (organization_id, id), so two orgs can
+    // own an agent with the same id without colliding. Pre-seed an agent in
+    // org-b, then create the same id under org-a — it should succeed
+    // independently. Closes the multi-month-old footgun where a stale
+    // `food-ordering` in one org silently blocked another org from using
+    // the same name.
     const app = await importAgentRoutes();
 
-    // Pre-seed an agent in org-b so the org-a POST collides cross-org.
     await seedAgent(ORG_B, 'shared-id');
 
     authStash.organizationId = ORG_A;
     const response = await app.request('/', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ agentId: 'shared-id', name: 'Should Fail' }),
+      body: JSON.stringify({ agentId: 'shared-id', name: 'Org A copy' }),
     });
-    expect(response.status).toBe(409);
+    expect(response.status).toBe(201);
     const body = (await response.json()) as any;
-    expect(body.error).toContain('another organization');
+    expect(body.agentId).toBe('shared-id');
+    expect(body.name).toBe('Org A copy');
+
+    // Both orgs now have their own row — no leak from one to the other.
+    const { getDb } = await import('../../db/client.js');
+    const sql = getDb();
+    const rows = await sql`
+      SELECT organization_id, name FROM agents WHERE id = 'shared-id'
+      ORDER BY organization_id
+    `;
+    expect(rows).toHaveLength(2);
   });
 });
 
@@ -538,7 +553,7 @@ describe('concurrent-apply race fixes', () => {
     });
 
     // Both requests fire before either response — exercises the
-    // ON CONFLICT (id) DO NOTHING claim path.
+    // ON CONFLICT (organization_id, id) DO NOTHING claim path.
     const [r1, r2] = await Promise.all([
       app.request('/', {
         method: 'POST',

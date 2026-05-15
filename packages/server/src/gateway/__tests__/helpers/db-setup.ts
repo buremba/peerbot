@@ -105,7 +105,7 @@ export async function seedAgentRow(
       ${agentId}, ${orgId}, ${options.name ?? agentId},
       ${options.ownerPlatform ?? null}, ${options.ownerUserId ?? null}
     )
-    ON CONFLICT (id) DO NOTHING
+    ON CONFLICT (organization_id, id) DO NOTHING
   `;
   return orgId;
 }

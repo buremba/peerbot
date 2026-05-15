@@ -17,6 +17,32 @@ export interface DevOptions {
   quiet?: boolean;
   verbose?: boolean;
   logLevel?: string;
+  /**
+   * Acknowledge that `lobu run` is about to point at a shared/non-local
+   * Postgres inherited from the shell. Required when the project's own .env
+   * doesn't pin DATABASE_URL — protects against the silent footgun of running
+   * "local dev" against a teammate's tailnet DB or, worse, prod.
+   */
+  unsafeSharedDb?: boolean;
+}
+
+/**
+ * Treat any DATABASE_URL whose host isn't loopback as "shared". The check
+ * is intentionally crude — anything resolvable from the network counts,
+ * including tailnet (`*.ts.net`), private IPs, and prod hostnames.
+ *
+ * Exported for unit tests; the safety gate in `devCommand` is the consumer.
+ */
+export function isSharedDatabaseUrl(databaseUrl: string): boolean {
+  try {
+    const url = new URL(databaseUrl);
+    // `new URL("postgres://[::1]:5432/x").hostname` returns `[::1]` with the
+    // brackets, so strip them before comparing.
+    const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+    return host !== "localhost" && host !== "127.0.0.1" && host !== "::1";
+  } catch {
+    return false;
+  }
 }
 
 type BackendBundleKind = "postgres" | "pglite";
@@ -45,6 +71,57 @@ export async function devCommand(
 
   const mergedEnv = { ...envVars, ...(process.env as Record<string, string>) };
   const hasDatabaseUrl = Boolean(mergedEnv.DATABASE_URL?.trim());
+
+  // Refuse to boot against a shared/non-local DATABASE_URL that came from the
+  // parent shell rather than the project's own .env — a common footgun where
+  // "local lobu run" silently writes into prod / a teammate's tailnet DB.
+  // The project pinning its own DATABASE_URL is treated as explicit consent.
+  if (
+    hasDatabaseUrl &&
+    !envVars.DATABASE_URL?.trim() &&
+    isSharedDatabaseUrl(mergedEnv.DATABASE_URL!) &&
+    !options.unsafeSharedDb
+  ) {
+    spinner.fail("DATABASE_URL inherited from shell points at a shared DB");
+    console.error(
+      chalk.red(
+        `\n  Refusing to start: DATABASE_URL=${redactUrl(mergedEnv.DATABASE_URL!)}\n`
+      )
+    );
+    console.error(
+      chalk.dim(
+        `  This URL is set in your shell environment, not in ${envPath}.`
+      )
+    );
+    console.error(
+      chalk.dim(
+        "  Its host isn't loopback — likely a teammate's tailnet DB or prod."
+      )
+    );
+    console.error(
+      chalk.dim(
+        "  Local dev runs against this DB silently mutate shared data and"
+      )
+    );
+    console.error(
+      chalk.dim("  let prod workers race local-dev runs (see AGENTS.md).\n")
+    );
+    console.error(chalk.dim("  Fix one of:"));
+    console.error(
+      chalk.dim(
+        `    • pin a project-local DB in ${envPath} (e.g. postgres://localhost/<project>_dev)`
+      )
+    );
+    console.error(
+      chalk.dim("    • unset DATABASE_URL in this shell (PGlite will be used)")
+    );
+    console.error(
+      chalk.dim(
+        "    • pass --unsafe-shared-db if you really mean to share this DB\n"
+      )
+    );
+    process.exit(1);
+  }
   const bundleKind: BackendBundleKind = hasDatabaseUrl ? "postgres" : "pglite";
   const bundlePath = resolveBackendBundle(undefined, bundleKind);
   if (!bundlePath) {

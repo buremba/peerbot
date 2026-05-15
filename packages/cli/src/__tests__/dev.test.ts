@@ -12,6 +12,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   findEnclosingMonorepoRoot,
+  isSharedDatabaseUrl,
   resolveBackendBundle,
 } from "../commands/dev";
 
@@ -144,6 +145,31 @@ describe("lobu run backend bundle resolution", () => {
     expect(
       existsSync(join(found!, "packages", "agent-worker", "src", "index.ts"))
     ).toBe(true);
+  });
+
+  test("isSharedDatabaseUrl flags non-loopback hosts only", () => {
+    // Loopback variants are NOT shared.
+    expect(isSharedDatabaseUrl("postgres://user@localhost:5432/db")).toBe(
+      false
+    );
+    expect(isSharedDatabaseUrl("postgres://user@127.0.0.1:5432/db")).toBe(
+      false
+    );
+    expect(isSharedDatabaseUrl("postgres://user@[::1]:5432/db")).toBe(false);
+
+    // Tailnet, prod, private LAN — all shared.
+    expect(
+      isSharedDatabaseUrl(
+        "postgres://u:p@summaries-db.brill-kanyu.ts.net:5432/owletto"
+      )
+    ).toBe(true);
+    expect(isSharedDatabaseUrl("postgres://u:p@db.example.com:5432/prod")).toBe(
+      true
+    );
+    expect(isSharedDatabaseUrl("postgres://u:p@10.0.0.5:5432/dev")).toBe(true);
+
+    // Garbage URL → not "shared" (the boot path will fail elsewhere).
+    expect(isSharedDatabaseUrl("not-a-url")).toBe(false);
   });
 
   test("CLI build copies local runtime assets for installed lobu run", () => {

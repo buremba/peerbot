@@ -189,6 +189,8 @@ Local dev Telegram bot: `@clawdotfreebot`. Production: `@lobuaibot`.
 
 For any UI verification that needs a signed-in session (anything past the auth wall), use the `agent-browser` CLI with a session cookie minted from the DB. The user's regular Chrome doesn't expose a remote-debug port, so `--auto-connect` will land on a wrong tab; mint a cookie instead.
 
+**Scope of this recipe.** The forged session cookie authenticates the **web admin REST mounted at `/`** (`/api/auth/*`, `/api/<orgSlug>/...`, the SPA — anything `lobu apply` and the web app talk to). It does **NOT** authenticate the **public Agent API at `/lobu`** (`/lobu/api/v1/agents/*`, `/lobu/api/v1/agents/<id>/sessions`) — that path expects a JWT bearer token from the OAuth device flow (`lobu login`) or a PAT. If `/lobu/api/v1/agents` returns `401 Unauthorized` despite a valid cookie, that's why; switch to `lobu chat` / `lobu token` to talk to the Agent API.
+
 **Pick a target.** Local dev backend (with prod DB attached over Tailscale) is reachable at `https://buraks-macbook-pro-1.brill-kanyu.ts.net:8443` — use this when you only need to verify behavior end-to-end without a fresh prod deploy. For prod itself use `https://app.lobu.ai`.
 
 **Grab the secret + a session token.**

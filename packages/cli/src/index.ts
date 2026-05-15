@@ -354,12 +354,17 @@ Memory:
     .option("--quiet", "Suppress startup banner; raise log level to warn")
     .option("--verbose", "Lower log level to debug")
     .option("--log-level <level>", "Forwarded as LOG_LEVEL to the bundle")
+    .option(
+      "--unsafe-shared-db",
+      "Allow running against a non-loopback DATABASE_URL inherited from the shell"
+    )
     .action(
       async (options: {
         port?: string;
         quiet?: boolean;
         verbose?: boolean;
         logLevel?: string;
+        unsafeSharedDb?: boolean;
       }) => {
         const { devCommand } = await import("./commands/dev.js");
         await devCommand(process.cwd(), options);

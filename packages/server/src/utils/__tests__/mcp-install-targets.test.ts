@@ -26,12 +26,14 @@ describeIfSubmodule('getMcpInstallTargets', () => {
     const targets = getMcpInstallTargets(mcpUrl);
 
     expect(targets.map((target) => target.id)).toEqual([
+      'skills',
       'codex',
       'chatgpt',
       'claude-desktop',
       'claude-code',
       'gemini-cli',
       'cursor',
+      'lobu-cli',
       'openclaw',
     ]);
   });

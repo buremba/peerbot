@@ -1237,10 +1237,7 @@ function AgentsPillSection({
                     icon={<KeyIcon size={11} />}
                     label="Providers"
                   />
-                  <AgentTabLink
-                    icon={<CodeIcon size={11} />}
-                    label="Skills"
-                  />
+                  <AgentTabLink icon={<CodeIcon size={11} />} label="Skills" />
                   <AgentTabLink
                     icon={<LobuRightWing size={11} />}
                     label="Channels"
@@ -2314,6 +2311,68 @@ function KeyIcon({ size = 14 }: { size?: number }) {
   );
 }
 
+type DeviceAction =
+  | { kind: "link"; label: string; href: string }
+  | { kind: "copy"; label: string; command: string }
+  | { kind: "status"; label: string };
+
+function CopyIcon({ size = 11 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+    </svg>
+  );
+}
+
+function CheckIcon({ size = 11 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2.5"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      aria-hidden="true"
+    >
+      <polyline points="20 6 9 17 4 12" />
+    </svg>
+  );
+}
+
+function ExternalIcon({ size = 11 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+      <polyline points="15 3 21 3 21 9" />
+      <line x1="10" y1="14" x2="21" y2="3" />
+    </svg>
+  );
+}
+
 function DeviceTargetCard({
   icon,
   name,
@@ -2323,10 +2382,65 @@ function DeviceTargetCard({
   icon: ComponentChildren;
   name: string;
   description: string;
-  action: { label: string; tone?: "primary" | "ghost" | "muted" };
+  action: DeviceAction;
 }) {
-  const isPrimary = action.tone === "primary";
-  const isMuted = action.tone === "muted";
+  const [copied, setCopied] = useState(false);
+  const handleCopy = async () => {
+    if (action.kind !== "copy" || typeof navigator === "undefined" || !navigator.clipboard) return;
+    try {
+      await navigator.clipboard.writeText(action.command);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // noop
+    }
+  };
+
+  let cta: ComponentChildren;
+  if (action.kind === "link") {
+    cta = (
+      <a
+        href={action.href}
+        target="_blank"
+        rel="noopener noreferrer"
+        class="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium transition-opacity hover:opacity-90"
+        style={{
+          background: "var(--color-page-bg-inverted)",
+          color: "var(--color-page-text-inverted)",
+        }}
+      >
+        {action.label}
+        <ExternalIcon />
+      </a>
+    );
+  } else if (action.kind === "copy") {
+    cta = (
+      <button
+        type="button"
+        onClick={handleCopy}
+        class="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium transition-colors hover:bg-[var(--color-page-surface-dim)]"
+        style={{
+          background: "var(--color-page-surface)",
+          color: "var(--color-page-text)",
+        }}
+      >
+        {copied ? <CheckIcon /> : <CopyIcon />}
+        {copied ? "Copied" : action.label}
+      </button>
+    );
+  } else {
+    cta = (
+      <span
+        class="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium"
+        style={{
+          background: "var(--color-page-surface)",
+          color: "var(--color-page-text-muted)",
+        }}
+      >
+        {action.label}
+      </span>
+    );
+  }
   return (
     <div
       class="flex h-full flex-col gap-2 rounded-lg p-3"
@@ -2347,23 +2461,7 @@ function DeviceTargetCard({
       >
         {description}
       </p>
-      <div class="mt-auto pt-1">
-        <span
-          class="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium"
-          style={{
-            background: isPrimary
-              ? "var(--color-page-bg-inverted)"
-              : "var(--color-page-surface)",
-            color: isPrimary
-              ? "var(--color-page-text-inverted)"
-              : isMuted
-                ? "var(--color-page-text-muted)"
-                : "var(--color-page-text)",
-          }}
-        >
-          {action.label}
-        </span>
-      </div>
+      <div class="mt-auto pt-1">{cta}</div>
     </div>
   );
 }
@@ -2438,7 +2536,18 @@ function ConnectorsLanding({
     },
   ];
 
-  const deviceTargets = [
+  const cliCommand = "npm i -g @lobu/cli\nlobu login";
+  const dockerCommand = `docker run -d --name lobu-bridge \\
+  -v lobu-state:/var/lib/lobu \\
+  -e LOBU_WORKSPACE_URL=<workspace-url> \\
+  ghcr.io/lobu-ai/lobu-bridge:latest`;
+
+  const deviceTargets: Array<{
+    icon: ComponentChildren;
+    name: string;
+    description: string;
+    action: DeviceAction;
+  }> = [
     {
       icon: (
         <svg
@@ -2454,28 +2563,32 @@ function ConnectorsLanding({
       name: "macOS",
       description:
         "Menu bar app. Syncs local folders, Screen Time, browser history.",
-      action: { label: "Download .dmg", tone: "primary" as const },
+      action: {
+        kind: "link",
+        label: "Download .dmg",
+        href: "https://github.com/lobu-ai/lobu/releases/latest/download/Lobu.dmg",
+      },
     },
     {
       icon: <TerminalIcon />,
       name: "CLI",
       description:
         "Authenticates local tools (Claude Code, Cursor, MCP clients) against this workspace.",
-      action: { label: "Install + log in", tone: "ghost" as const },
+      action: { kind: "copy", label: "Install + log in", command: cliCommand },
     },
     {
       icon: <CloudIcon />,
       name: "Docker",
       description:
         "Self-hosted bridge in a container. Run on a server or VPS for always-on connectors.",
-      action: { label: "Run command", tone: "ghost" as const },
+      action: { kind: "copy", label: "Run command", command: dockerCommand },
     },
     {
       icon: <CloudIcon />,
       name: "Serverless",
       description:
         "Lobu hosts the bridge. Connectors run in sandboxed cloud workers — no install.",
-      action: { label: "Free in beta", tone: "muted" as const },
+      action: { kind: "status", label: "Free in beta" },
     },
   ];
 
@@ -3541,35 +3654,68 @@ function WatcherDetail({ watchers }: { watchers: WatcherRow[] }) {
   const selected = watchers[0];
   if (!selected) return null;
 
+  type MemoryWrite = {
+    entityType: string;
+    title: string;
+    body: string;
+    source: string;
+    sourceBrand: string;
+  };
   const runs: Array<{
     when: string;
     status: "success" | "running" | "skipped" | "error";
-    note: string;
+    summary: string;
+    writes?: MemoryWrite[];
   }> = [
     {
       when: "Just now",
       status: "success",
-      note: `Wrote 14 new ${selected.entity} updates to memory`,
+      summary: "Wrote 3 memory events",
+      writes: [
+        {
+          entityType: "Company",
+          title: "Lovable",
+          body: "Raised $200M Series C led by a16z, valuation $1.8B. Headcount up 40% in 60 days.",
+          source: "TechCrunch",
+          sourceBrand: "chatgpt",
+        },
+        {
+          entityType: "Founder",
+          title: "Anton Osika",
+          body: "Hired 8 engineers in October — 4 ex-Stripe, 2 ex-OpenAI. Public on LinkedIn.",
+          source: "LinkedIn",
+          sourceBrand: "linkedin",
+        },
+      ],
     },
     {
       when: "12m ago",
       status: "success",
-      note: `Wrote 3 new ${selected.entity} updates to memory`,
+      summary: "Wrote 1 memory event",
+      writes: [
+        {
+          entityType: "Company",
+          title: "Anysphere",
+          body: "Cursor parent secured $900M from Thrive Capital. Pre-money $9B.",
+          source: "Crunchbase",
+          sourceBrand: "crunchbase",
+        },
+      ],
     },
     {
       when: "1h ago",
       status: "skipped",
-      note: "No new events since last run",
+      summary: "No new events since last run",
     },
     {
       when: "2h ago",
       status: "success",
-      note: `Wrote 22 ${selected.entity} updates · 4 superseded by newer rows`,
+      summary: "Wrote 22 events · 4 superseded older rows",
     },
     {
       when: "5h ago",
       status: "error",
-      note: "Upstream rate-limited — retried via fallback provider",
+      summary: "LinkedIn rate-limited — retried via fallback (succeeded)",
     },
   ];
 
@@ -3649,7 +3795,7 @@ function WatcherDetail({ watchers }: { watchers: WatcherRow[] }) {
         Run timeline
       </div>
 
-      <ol class="flex flex-col gap-2">
+      <ol class="flex flex-col gap-3">
         {runs.map((r, i) => {
           const tone =
             r.status === "success"
@@ -3664,32 +3810,74 @@ function WatcherDetail({ watchers }: { watchers: WatcherRow[] }) {
               <span class="mt-1.5">
                 <StatusDot tone={tone as "green" | "amber" | "muted"} />
               </span>
-              <div class="min-w-0 flex-1">
+              <div class="min-w-0 flex-1 flex flex-col gap-1.5">
                 <div class="flex items-center justify-between gap-2">
-                  <span
-                    class="text-[12px] font-medium capitalize"
-                    style={{
-                      color:
-                        r.status === "error"
-                          ? "#b91c1c"
-                          : "var(--color-page-text)",
-                    }}
-                  >
-                    {r.status}
+                  <span class="flex items-center gap-2 min-w-0">
+                    <span
+                      class="text-[12px] font-medium capitalize"
+                      style={{
+                        color:
+                          r.status === "error"
+                            ? "#b91c1c"
+                            : "var(--color-page-text)",
+                      }}
+                    >
+                      {r.status}
+                    </span>
+                    <span
+                      class="text-[11px] truncate"
+                      style={{ color: "var(--color-page-text-muted)" }}
+                    >
+                      {r.summary}
+                    </span>
                   </span>
                   <span
-                    class="text-[11px] tabular-nums"
+                    class="text-[11px] tabular-nums shrink-0"
                     style={{ color: "var(--color-page-text-muted)" }}
                   >
                     {r.when}
                   </span>
                 </div>
-                <p
-                  class="text-[11px] leading-snug"
-                  style={{ color: "var(--color-page-text-muted)" }}
-                >
-                  {r.note}
-                </p>
+                {r.writes && r.writes.length > 0 ? (
+                  <div class="flex flex-col gap-1.5">
+                    {r.writes.map((w, wi) => (
+                      <div
+                        key={wi}
+                        class="rounded-md p-2.5 flex flex-col gap-1"
+                        style={{
+                          background: "var(--color-page-surface-dim)",
+                        }}
+                      >
+                        <div class="flex items-center gap-2 min-w-0">
+                          <span
+                            class="text-[12px] font-semibold truncate"
+                            style={{ color: "var(--color-page-text)" }}
+                          >
+                            {entityEmoji(w.entityType)} {w.title}
+                          </span>
+                          <Badge label={w.entityType} tone="amber" />
+                        </div>
+                        <p
+                          class="text-[11px] leading-snug"
+                          style={{ color: "var(--color-page-text)" }}
+                        >
+                          {w.body}
+                        </p>
+                        <div
+                          class="flex items-center gap-1.5 text-[10px]"
+                          style={{ color: "var(--color-page-text-muted)" }}
+                        >
+                          <BrandLogo
+                            name={w.sourceBrand}
+                            size={12}
+                            radius={2}
+                          />
+                          <span>Source: {w.source}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
               </div>
             </li>
           );

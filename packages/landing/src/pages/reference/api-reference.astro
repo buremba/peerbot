@@ -28,10 +28,8 @@ for (const origin of specOrigins) {
 
 const config = JSON.stringify({
   ...(spec ? { content: spec } : { url: `${resolvedOrigin}/openapi.json` }),
-  theme: "default",
+  theme: "none",
   layout: "modern",
-  darkMode: false,
-  forceDarkModeState: "light",
   defaultHttpClient: { targetKey: "js", clientKey: "fetch" },
   servers: [{ url: resolvedOrigin, description: "Lobu API" }],
 });
@@ -53,11 +51,73 @@ const config = JSON.stringify({
 </StarlightPage>
 
 <style is:global>
-  .scalar-app {
-    --scalar-color-2: #4b5563;
-    --scalar-color-3: #4b5563;
-    --scalar-sidebar-color-2: #4b5563;
-    --scalar-color-accent: #c2410c;
+  /* Map Scalar tokens onto the tweakcn Retro palette (light + dark via [data-theme]).
+     !important on the custom properties beats Scalar's own .scalar-app rules
+     which load from the CDN bundle after this <style> block. */
+  html .scalar-app {
+    --scalar-font:
+      "Manrope", ui-sans-serif, system-ui, -apple-system, sans-serif !important;
+    --scalar-font-code:
+      "JetBrains Mono", ui-monospace, SFMono-Regular, Consolas, monospace !important;
+    --scalar-radius: 0.4rem !important;
+    --scalar-radius-lg: 0.55rem !important;
+    --scalar-radius-xl: 0.75rem !important;
+
+    /* Light defaults */
+    --scalar-color-1: oklch(0.1804 0.0154 57.0973) !important;
+    --scalar-color-2: oklch(0.2793 0.0199 50.1480) !important;
+    --scalar-color-3: oklch(0.4806 0.0254 51.1528) !important;
+    --scalar-color-accent: oklch(0.7006 0.1891 46.5400) !important;
+    --scalar-background-1: oklch(0.9808 0.0079 73.7452) !important;
+    --scalar-background-2: oklch(0.9724 0.0096 72.6627) !important;
+    --scalar-background-3: oklch(0.9439 0.0148 70.8848) !important;
+    --scalar-background-accent: oklch(0.7006 0.1891 46.5400 / 0.12) !important;
+    --scalar-border-color: oklch(0.8900 0.0196 72.5571) !important;
+
+    --scalar-sidebar-background-1: oklch(0.9550 0.0179 64.9320) !important;
+    --scalar-sidebar-color-1: oklch(0.2198 0.0188 47.8469) !important;
+    --scalar-sidebar-color-2: oklch(0.4806 0.0254 51.1528) !important;
+    --scalar-sidebar-border-color: oklch(0.8607 0.0222 69.7490) !important;
+    --scalar-sidebar-item-hover-background: oklch(0.9196 0.0225 67.5425) !important;
+    --scalar-sidebar-item-hover-color: oklch(0.1804 0.0154 57.0973) !important;
+    --scalar-sidebar-item-active-background: oklch(0.7006 0.1891 46.5400 / 0.12) !important;
+    --scalar-sidebar-color-active: oklch(0.7006 0.1891 46.5400) !important;
+    --scalar-sidebar-search-background: oklch(0.9724 0.0096 72.6627) !important;
+    --scalar-sidebar-search-color: oklch(0.4806 0.0254 51.1528) !important;
+    --scalar-sidebar-search-border-color: oklch(0.8900 0.0196 72.5571) !important;
+
+    /* HTTP method pill bg tints */
+    --scalar-color-green: oklch(0.55 0.15 152) !important;
+    --scalar-color-red: oklch(0.6368 0.2078 25.3313) !important;
+    --scalar-color-yellow: oklch(0.78 0.16 84) !important;
+    --scalar-color-blue: oklch(0.6128 0.1392 239.5160) !important;
+    --scalar-color-orange: oklch(0.7006 0.1891 46.5400) !important;
+    --scalar-color-purple: oklch(0.5790 0.1499 295.1422) !important;
+  }
+
+  /* Dark — mirrors .dark in packages/web/src/index.css */
+  html[data-theme="dark"] .scalar-app {
+    --scalar-color-1: oklch(0.9206 0.0042 56.3709) !important;
+    --scalar-color-2: oklch(0.8500 0.0040 50) !important;
+    --scalar-color-3: oklch(0.7200 0.0080 50) !important;
+    --scalar-color-accent: oklch(0.7006 0.1891 46.5400) !important;
+    --scalar-background-1: oklch(0.1700 0.0040 50) !important;
+    --scalar-background-2: oklch(0.2250 0.0050 50) !important;
+    --scalar-background-3: oklch(0.2750 0.0070 50) !important;
+    --scalar-background-accent: oklch(0.7006 0.1891 46.5400 / 0.18) !important;
+    --scalar-border-color: oklch(0.3400 0.0080 50) !important;
+
+    --scalar-sidebar-background-1: oklch(0.1700 0.0040 50) !important;
+    --scalar-sidebar-color-1: oklch(0.8500 0.0040 50) !important;
+    --scalar-sidebar-color-2: oklch(0.7200 0.0080 50) !important;
+    --scalar-sidebar-border-color: oklch(0.3400 0.0080 50) !important;
+    --scalar-sidebar-item-hover-background: oklch(0.2300 0.0060 50) !important;
+    --scalar-sidebar-item-hover-color: oklch(0.9500 0.0030 50) !important;
+    --scalar-sidebar-item-active-background: oklch(0.7006 0.1891 46.5400 / 0.18) !important;
+    --scalar-sidebar-color-active: oklch(0.7006 0.1891 46.5400) !important;
+    --scalar-sidebar-search-background: oklch(0.1500 0.0040 50) !important;
+    --scalar-sidebar-search-color: oklch(0.7200 0.0080 50) !important;
+    --scalar-sidebar-search-border-color: oklch(0.3400 0.0080 50) !important;
   }
 
   /* Let the Scalar component take the full viewport width */

@@ -1,76 +1,79 @@
+/* tweakcn "Retro" palette mapped onto Starlight tokens. Keep in sync with
+   packages/web/src/index.css and packages/landing/src/styles/theme-tokens.ts. */
 :root {
-  --sl-color-bg: #ffffff;
-  --sl-color-bg-nav: #ffffff;
-  --sl-color-bg-sidebar: #fafafa;
-  --sl-color-hairline: rgba(0, 0, 0, 0.08);
-  --sl-color-hairline-light: rgba(0, 0, 0, 0.05);
-  --sl-color-text: #0b0b0d;
-  --sl-color-text-accent: #b45309;
-  --sl-color-text-invert: #ffffff;
-  --sl-color-white: #0b0b0d;
-  --sl-color-gray-1: #1f2937;
-  --sl-color-gray-2: #374151;
-  --sl-color-gray-3: #6b7280;
-  --sl-color-gray-4: rgba(0, 0, 0, 0.08);
-  --sl-color-gray-5: #f5f5f7;
-  --sl-color-gray-6: #fafafa;
-  --sl-color-gray-7: #f5f5f7;
-  --sl-color-black: #ffffff;
-  --sl-color-accent-low: rgba(194, 65, 12, 0.12);
-  --sl-color-accent: #c2410c;
-  --sl-color-accent-high: #9a3412;
+  --sl-color-bg: oklch(0.9808 0.0079 73.7452);
+  --sl-color-bg-nav: oklch(0.9808 0.0079 73.7452);
+  --sl-color-bg-sidebar: oklch(0.9550 0.0179 64.9320);
+  --sl-color-hairline: oklch(0.8900 0.0196 72.5571);
+  --sl-color-hairline-light: oklch(0.8900 0.0196 72.5571 / 0.5);
+  --sl-color-text: oklch(0.1804 0.0154 57.0973);
+  --sl-color-text-accent: oklch(0.5500 0.1700 46);
+  --sl-color-text-invert: oklch(0.9808 0.0079 73.7452);
+  --sl-color-white: oklch(0.1804 0.0154 57.0973);
+  --sl-color-gray-1: oklch(0.2793 0.0199 50.1480);
+  --sl-color-gray-2: oklch(0.3500 0.0180 50);
+  --sl-color-gray-3: oklch(0.4806 0.0254 51.1528);
+  --sl-color-gray-4: oklch(0.8900 0.0196 72.5571);
+  --sl-color-gray-5: oklch(0.9439 0.0148 70.8848);
+  --sl-color-gray-6: oklch(0.9550 0.0179 64.9320);
+  --sl-color-gray-7: oklch(0.9409 0.0187 75.3198);
+  --sl-color-black: oklch(0.9808 0.0079 73.7452);
+  --sl-color-accent-low: oklch(0.7006 0.1891 46.5400 / 0.12);
+  --sl-color-accent: oklch(0.7006 0.1891 46.5400);
+  --sl-color-accent-high: oklch(0.5500 0.1700 46);
   --sl-font:
-    "Inter", "Inter Fallback", system-ui, -apple-system, sans-serif;
+    "Manrope", ui-sans-serif, system-ui, -apple-system, sans-serif;
   --sl-font-mono:
-    ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+    "JetBrains Mono", ui-monospace, SFMono-Regular, Consolas, "Liberation Mono",
+    Menlo, monospace;
 }
 
-/* Dark mode overrides for Starlight docs */
+/* Dark mode overrides for Starlight docs (mirrors .dark in web/src/index.css) */
 :root[data-theme="dark"] {
-  --sl-color-bg: #0a0a0b;
-  --sl-color-bg-nav: #0a0a0b;
-  --sl-color-bg-sidebar: #111113;
-  --sl-color-hairline: rgba(255, 255, 255, 0.08);
-  --sl-color-hairline-light: rgba(255, 255, 255, 0.05);
-  --sl-color-text: #f0f0f2;
-  --sl-color-text-accent: #f59e0b;
-  --sl-color-text-invert: #0a0a0b;
-  --sl-color-white: #f0f0f2;
-  --sl-color-gray-1: #d1d5db;
-  --sl-color-gray-2: #9ca3af;
-  --sl-color-gray-3: #6b7280;
-  --sl-color-gray-4: rgba(255, 255, 255, 0.08);
-  --sl-color-gray-5: #1c1c1f;
-  --sl-color-gray-6: #111113;
-  --sl-color-gray-7: #1c1c1f;
-  --sl-color-black: #0a0a0b;
-  --sl-color-accent-low: rgba(194, 65, 12, 0.18);
-  --sl-color-accent: #ea580c;
-  --sl-color-accent-high: #fb923c;
+  --sl-color-bg: oklch(0.1700 0.0040 50);
+  --sl-color-bg-nav: oklch(0.1700 0.0040 50);
+  --sl-color-bg-sidebar: oklch(0.1700 0.0040 50);
+  --sl-color-hairline: oklch(0.3400 0.0080 50);
+  --sl-color-hairline-light: oklch(0.3400 0.0080 50 / 0.5);
+  --sl-color-text: oklch(0.9206 0.0042 56.3709);
+  --sl-color-text-accent: oklch(0.7006 0.1891 46.5400);
+  --sl-color-text-invert: oklch(0.1700 0.0040 50);
+  --sl-color-white: oklch(0.9206 0.0042 56.3709);
+  --sl-color-gray-1: oklch(0.8500 0.0040 50);
+  --sl-color-gray-2: oklch(0.7800 0.0060 50);
+  --sl-color-gray-3: oklch(0.7200 0.0080 50);
+  --sl-color-gray-4: oklch(0.3400 0.0080 50);
+  --sl-color-gray-5: oklch(0.2300 0.0060 50);
+  --sl-color-gray-6: oklch(0.2000 0.0050 50);
+  --sl-color-gray-7: oklch(0.2750 0.0070 50);
+  --sl-color-black: oklch(0.1700 0.0040 50);
+  --sl-color-accent-low: oklch(0.7006 0.1891 46.5400 / 0.18);
+  --sl-color-accent: oklch(0.7006 0.1891 46.5400);
+  --sl-color-accent-high: oklch(0.7502 0.1596 46.6701);
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --sl-color-bg: #0a0a0b;
-    --sl-color-bg-nav: #0a0a0b;
-    --sl-color-bg-sidebar: #111113;
-    --sl-color-hairline: rgba(255, 255, 255, 0.08);
-    --sl-color-hairline-light: rgba(255, 255, 255, 0.05);
-    --sl-color-text: #f0f0f2;
-    --sl-color-text-accent: #f59e0b;
-    --sl-color-text-invert: #0a0a0b;
-    --sl-color-white: #f0f0f2;
-    --sl-color-gray-1: #d1d5db;
-    --sl-color-gray-2: #9ca3af;
-    --sl-color-gray-3: #6b7280;
-    --sl-color-gray-4: rgba(255, 255, 255, 0.08);
-    --sl-color-gray-5: #1c1c1f;
-    --sl-color-gray-6: #111113;
-    --sl-color-gray-7: #1c1c1f;
-    --sl-color-black: #0a0a0b;
-    --sl-color-accent-low: rgba(194, 65, 12, 0.18);
-    --sl-color-accent: #ea580c;
-    --sl-color-accent-high: #fb923c;
+    --sl-color-bg: oklch(0.1700 0.0040 50);
+    --sl-color-bg-nav: oklch(0.1700 0.0040 50);
+    --sl-color-bg-sidebar: oklch(0.1700 0.0040 50);
+    --sl-color-hairline: oklch(0.3400 0.0080 50);
+    --sl-color-hairline-light: oklch(0.3400 0.0080 50 / 0.5);
+    --sl-color-text: oklch(0.9206 0.0042 56.3709);
+    --sl-color-text-accent: oklch(0.7006 0.1891 46.5400);
+    --sl-color-text-invert: oklch(0.1700 0.0040 50);
+    --sl-color-white: oklch(0.9206 0.0042 56.3709);
+    --sl-color-gray-1: oklch(0.8500 0.0040 50);
+    --sl-color-gray-2: oklch(0.7800 0.0060 50);
+    --sl-color-gray-3: oklch(0.7200 0.0080 50);
+    --sl-color-gray-4: oklch(0.3400 0.0080 50);
+    --sl-color-gray-5: oklch(0.2300 0.0060 50);
+    --sl-color-gray-6: oklch(0.2000 0.0050 50);
+    --sl-color-gray-7: oklch(0.2750 0.0070 50);
+    --sl-color-black: oklch(0.1700 0.0040 50);
+    --sl-color-accent-low: oklch(0.7006 0.1891 46.5400 / 0.18);
+    --sl-color-accent: oklch(0.7006 0.1891 46.5400);
+    --sl-color-accent-high: oklch(0.7502 0.1596 46.6701);
   }
 }
 
@@ -124,8 +127,8 @@ button.chat-action-btn {
 
 button.chat-action-btn:hover {
   transform: translateY(-1px) scale(1.04);
-  box-shadow: 0 2px 14px var(--chat-btn-glow, rgba(194, 65, 12, 0.4));
-  background-color: var(--chat-btn-glow, rgba(194, 65, 12, 0.12)) !important;
+  box-shadow: 0 2px 14px var(--chat-btn-glow, rgba(224, 121, 56, 0.4));
+  background-color: var(--chat-btn-glow, rgba(224, 121, 56, 0.12)) !important;
 }
 
 /* Hide Starlight's own footer — our Footer component replaces it */

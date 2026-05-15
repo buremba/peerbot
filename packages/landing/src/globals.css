@@ -1,5 +1,8 @@
 @import "tailwindcss";
 
+/* tweakcn "Retro" theme fonts */
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@200..800&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&display=swap');
+
 /* Scan gateway settings components so their Tailwind classes are generated */
 @source "../../gateway/src/routes/public/settings-page/**/*.tsx";
 
@@ -10,30 +13,30 @@
  * element.style — winning over every CSS rule including @layer theme.
  */
 @theme {
-  --font-sans: "Inter", "Inter Fallback", system-ui, -apple-system, sans-serif;
-  --font-display:
-    "Inter Tight", "Inter", "Inter Fallback", system-ui, -apple-system,
-    sans-serif;
+  --font-sans: "Manrope", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-serif: "Instrument Serif", ui-serif, serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  --font-display: "Manrope", ui-sans-serif, system-ui, -apple-system, sans-serif;
 
-  --color-page-bg: #ffffff;
-  --color-page-bg-elevated: #fafafa;
-  --color-page-bg-overlay: rgba(255, 255, 255, 0.85);
-  --color-page-surface: #ffffff;
-  --color-page-surface-dim: #f5f5f7;
-  --color-page-border: rgba(0, 0, 0, 0.08);
-  --color-page-border-active: rgba(0, 0, 0, 0.16);
-  --color-page-text: #0b0b0d;
-  --color-page-text-muted: #6b7280;
+  --color-page-bg: oklch(0.9808 0.0079 73.7452);
+  --color-page-bg-elevated: oklch(0.9724 0.0096 72.6627);
+  --color-page-bg-overlay: oklch(0.9808 0.0079 73.7452 / 0.85);
+  --color-page-surface: oklch(0.9724 0.0096 72.6627);
+  --color-page-surface-dim: oklch(0.9439 0.0148 70.8848);
+  --color-page-border: oklch(0.8900 0.0196 72.5571);
+  --color-page-border-active: oklch(0.7006 0.1891 46.5400 / 0.45);
+  --color-page-text: oklch(0.1804 0.0154 57.0973);
+  --color-page-text-muted: oklch(0.4806 0.0254 51.1528);
 
-  --color-tg-bg: rgb(33, 33, 33);
-  --color-tg-bg-secondary: rgb(15, 15, 15);
-  --color-tg-bubble-out: #c2410c;
-  --color-tg-bubble-in: rgb(33, 33, 33);
-  --color-tg-accent: #c2410c;
-  --color-tg-accent-rgb: 194, 65, 12;
-  --color-tg-border: rgb(48, 48, 48);
-  --color-tg-text: white;
-  --color-tg-meta: rgba(255, 255, 255, 0.533);
+  --color-tg-bg: oklch(0.2606 0.0040 84.5838);
+  --color-tg-bg-secondary: oklch(0.2007 0.0101 52.8852);
+  --color-tg-bubble-out: oklch(0.7006 0.1891 46.5400);
+  --color-tg-bubble-in: oklch(0.2606 0.0040 84.5838);
+  --color-tg-accent: oklch(0.7006 0.1891 46.5400);
+  --color-tg-accent-rgb: 224, 121, 56;
+  --color-tg-border: oklch(0.2701 0.0106 48.3077);
+  --color-tg-text: oklch(0.9206 0.0042 56.3709);
+  --color-tg-meta: oklch(0.9206 0.0042 56.3709 / 0.55);
 }
 
 button {
@@ -43,8 +46,7 @@ button {
 html {
   background-color: var(--color-page-bg);
   color: var(--color-page-text);
-  font-family: "Inter", "Inter Fallback", system-ui, -apple-system, sans-serif;
-  font-feature-settings: "ss01", "cv11";
+  font-family: "Manrope", ui-sans-serif, system-ui, -apple-system, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -57,8 +59,7 @@ h1,
 h2,
 h3,
 .font-display {
-  font-family: "Inter Tight", "Inter", "Inter Fallback", system-ui,
-    -apple-system, sans-serif;
+  font-family: "Manrope", ui-sans-serif, system-ui, -apple-system, sans-serif;
   letter-spacing: -0.02em;
 }
 
@@ -161,8 +162,8 @@ button.chat-action-btn {
 
 button.chat-action-btn:hover {
   transform: translateY(-1px) scale(1.04);
-  box-shadow: 0 2px 14px var(--chat-btn-glow, rgba(194, 65, 12, 0.4));
-  background-color: var(--chat-btn-glow, rgba(194, 65, 12, 0.12)) !important;
+  box-shadow: 0 2px 14px var(--chat-btn-glow, rgba(224, 121, 56, 0.4));
+  background-color: var(--chat-btn-glow, rgba(224, 121, 56, 0.12)) !important;
 }
 
 /* Schedule dialog */
@@ -302,7 +303,7 @@ button.chat-action-btn:hover {
 }
 
 .blog-prose blockquote {
-  border-left: 3px solid rgba(194, 65, 12, 0.45);
+  border-left: 3px solid rgba(224, 121, 56, 0.45);
   padding: 0.125rem 0 0.125rem 1rem;
   color: var(--color-page-prose-blockquote);
 }

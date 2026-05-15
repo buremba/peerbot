@@ -3170,48 +3170,41 @@ function ExternalLinkIcon() {
   );
 }
 
-const KNOWLEDGE_CHIPS: { slug: string; values: string[]; active?: string }[] = [
-  {
-    slug: "Feed",
-    values: ["All", "Slack #ops", "Gmail inbox", "Linear bugs"],
-    active: "All",
-  },
-  {
-    slug: "Connection",
-    values: ["All", "Crunchbase", "LinkedIn", "Stripe"],
-    active: "All",
-  },
-  {
-    slug: "Run",
-    values: ["All runs", "Last hour", "Today"],
-    active: "All runs",
-  },
-];
+
+function KnowledgeSearchInput() {
+  return (
+    <div
+      class="flex items-center gap-2 rounded-md px-2.5 py-1.5"
+      style={{ background: "var(--color-page-surface-dim)" }}
+    >
+      <SearchIcon size={12} />
+      <input
+        type="text"
+        placeholder="Search knowledge..."
+        class="flex-1 bg-transparent text-[12px] outline-none"
+        style={{ color: "var(--color-page-text)" }}
+      />
+    </div>
+  );
+}
 
 function KnowledgeFeed({ rows }: { rows?: KnowledgeRow[] }) {
   const useDynamic = rows && rows.length > 0;
+  const items = useDynamic
+    ? rows.slice(0, 2).map((row) => (
+        <UseCaseKnowledgeCard key={row.id} row={row} />
+      ))
+    : KNOWLEDGE_ITEMS.slice(0, 2).map((item) =>
+        item.kind === "action" ? (
+          <KnowledgeActionCard key={item.id} item={item} />
+        ) : (
+          <KnowledgeCard key={item.id} item={item} />
+        )
+      );
   return (
     <div class="flex flex-col gap-3">
-      <KnowledgeFilterBar />
-      <div
-        class="text-[12px]"
-        style={{ color: "var(--color-page-text-muted)" }}
-      >
-        {useDynamic
-          ? `${rows.length} items · sorted by recency`
-          : "1,284 items · sorted by recency"}
-      </div>
-      <div class="flex flex-col gap-3">
-        {useDynamic
-          ? rows.map((row) => <UseCaseKnowledgeCard key={row.id} row={row} />)
-          : KNOWLEDGE_ITEMS.map((item) =>
-              item.kind === "action" ? (
-                <KnowledgeActionCard key={item.id} item={item} />
-              ) : (
-                <KnowledgeCard key={item.id} item={item} />
-              )
-            )}
-      </div>
+      <KnowledgeSearchInput />
+      <div class="flex flex-col gap-3">{items}</div>
     </div>
   );
 }
@@ -3309,56 +3302,6 @@ function UseCaseKnowledgeCard({ row }: { row: KnowledgeRow }) {
   );
 }
 
-function KnowledgeFilterBar() {
-  return (
-    <div
-      class="rounded-lg bg-[var(--color-page-surface)] px-3 py-2 flex flex-wrap items-center gap-x-3 gap-y-1.5"
-      style={{ border: "1px solid var(--color-page-border)" }}
-    >
-      {KNOWLEDGE_CHIPS.map((group, gi) => (
-        <div
-          key={group.slug}
-          class="flex items-center gap-1.5"
-          style={{
-            paddingLeft: gi === 0 ? 0 : 8,
-            borderLeft:
-              gi === 0 ? undefined : "1px solid var(--color-page-border)",
-          }}
-        >
-          <span
-            class="text-[11px] font-medium uppercase tracking-wider shrink-0"
-            style={{ color: "var(--color-page-text-muted)" }}
-          >
-            {group.slug}
-          </span>
-          {group.values.map((v) => {
-            const isActive = group.active === v;
-            return (
-              <span
-                key={v}
-                class="inline-flex items-center px-2 py-0.5 rounded text-[11px]"
-                style={{
-                  background: isActive
-                    ? "var(--color-page-bg-inverted)"
-                    : "var(--color-page-surface)",
-                  color: isActive
-                    ? "var(--color-page-text-inverted)"
-                    : "var(--color-page-text)",
-                  border: isActive
-                    ? "1px solid var(--color-page-text)"
-                    : "1px solid var(--color-page-border)",
-                  fontWeight: isActive ? 600 : 500,
-                }}
-              >
-                {v}
-              </span>
-            );
-          })}
-        </div>
-      ))}
-    </div>
-  );
-}
 
 function KnowledgeCard({ item }: { item: KnowledgeMemoryItem }) {
   return (

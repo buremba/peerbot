@@ -42,6 +42,15 @@ describe("ENCRYPTION_KEY validation", () => {
     expect(decrypt(enc)).toBe("base64 secret");
   });
 
+  test("valid 32-byte URL-safe base64 key round-trips encrypt/decrypt", () => {
+    // Historical keys were sometimes generated with `openssl rand -base64 32 |
+    // tr +/ -_` and stored in URL-safe form (alphabet [A-Za-z0-9_-], no
+    // padding). Same 32 bytes — must be accepted.
+    process.env.ENCRYPTION_KEY = Buffer.alloc(32, 99).toString("base64url");
+    const enc = encrypt("urlsafe secret");
+    expect(decrypt(enc)).toBe("urlsafe secret");
+  });
+
   test("valid 64-char hex key round-trips encrypt/decrypt", () => {
     process.env.ENCRYPTION_KEY =
       "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";

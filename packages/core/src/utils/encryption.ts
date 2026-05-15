@@ -34,6 +34,21 @@ function getEncryptionKey(): Buffer {
     }
   }
 
+  // Try as URL-safe base64 (alphabet [A-Za-z0-9_-], no padding). Historically
+  // some keys were generated as `openssl rand -base64 32 | tr +/ -_` and stored
+  // in this form; same 32 bytes, just a different alphabet. Apply the same
+  // round-trip check so typos still get rejected.
+  if (/^[A-Za-z0-9_-]+$/.test(key)) {
+    const urlsafeBuffer = Buffer.from(key, "base64url");
+    if (
+      urlsafeBuffer.length === 32 &&
+      urlsafeBuffer.toString("base64url") === key
+    ) {
+      cachedKey = urlsafeBuffer;
+      return urlsafeBuffer;
+    }
+  }
+
   // Try as hex (must be exactly 64 hex characters for 32 bytes), again
   // verifying the round-trip so partially-valid input is rejected.
   if (/^[0-9a-fA-F]+$/.test(key) && key.length % 2 === 0) {

@@ -1566,7 +1566,7 @@ CREATE TABLE public.scheduled_jobs (
 --
 
 CREATE TABLE public.schema_migrations (
-    version character varying NOT NULL
+    version character varying(128) NOT NULL
 );
 
 --

@@ -492,72 +492,6 @@ function BotIcon({ size = 14 }: { size?: number }) {
   );
 }
 
-function UsersIcon({ size = 14 }: { size?: number }) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      aria-hidden="true"
-    >
-      <circle cx="9" cy="8" r="3.2" stroke="currentColor" stroke-width="1.6" />
-      <path
-        d="M3 19c0-3 2.7-5 6-5s6 2 6 5M16 13a3 3 0 1 0 0-6"
-        stroke="currentColor"
-        stroke-width="1.6"
-        stroke-linecap="round"
-      />
-      <path
-        d="M21 19c0-2.4-1.7-4.2-4-4.8"
-        stroke="currentColor"
-        stroke-width="1.6"
-        stroke-linecap="round"
-      />
-    </svg>
-  );
-}
-
-function ConnectorsIcon({ size = 14 }: { size?: number }) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      aria-hidden="true"
-    >
-      <path
-        d="M13.8 10.2a4 4 0 0 0-5.6 0l-4 4a4 4 0 1 0 5.6 5.7l1.1-1.1m-.7-4.9a4 4 0 0 0 5.6 0l4-4a4 4 0 0 0-5.6-5.7l-1.1 1.1"
-        stroke="currentColor"
-        stroke-width="1.6"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-      />
-    </svg>
-  );
-}
-
-function KnowledgeIcon({ size = 14 }: { size?: number }) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      aria-hidden="true"
-    >
-      <path
-        d="M19 11H5m14 0a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-6a2 2 0 0 1 2-2m14 0V9a2 2 0 0 0-2-2M5 11V9a2 2 0 0 1 2-2m0 0V5a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v2M7 7h10"
-        stroke="currentColor"
-        stroke-width="1.6"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-      />
-    </svg>
-  );
-}
-
 function WatchersIcon({ size = 14 }: { size?: number }) {
   return (
     <svg
@@ -637,251 +571,548 @@ const DEFAULT_ENTITIES: EntityNavItem[] = [
 
 /* ------------------------------ shell ------------------------------ */
 
-function Sidebar({
-  activeNav,
-  editMode,
-  onStageChange,
-  entities,
-}: {
-  activeNav: "members" | "connectors" | "watchers" | "agents" | "knowledge";
-  editMode?: boolean;
-  onStageChange?: (stage: HeroStageId) => void;
-  entities: EntityNavItem[];
-}) {
-  const sidebarBg = "var(--color-page-surface-dim)";
-  const fg = "var(--color-page-text)";
-  const fgMuted = "var(--color-page-text-muted)";
-  const fgFaint = "var(--color-page-text-muted)";
-  const accentBg = "var(--color-page-surface-dim)";
+type NavStage = "members" | "connectors" | "watchers" | "agents" | "knowledge";
+type Pill = "connections" | "home" | "agents";
 
-  function NavRow({
-    icon,
-    label,
-    count,
-    active,
-    onClick,
-  }: {
-    icon: ComponentChildren;
-    label: string;
-    count?: number;
-    active?: boolean;
-    onClick?: () => void;
-  }) {
-    const interactive = Boolean(onClick);
-    return (
-      <button
-        type="button"
-        onClick={onClick}
-        disabled={!interactive}
-        class="flex items-center gap-2 px-3 py-1.5 rounded-md text-[13px] w-full text-left transition-colors hover:bg-[rgba(0,0,0,0.04)] disabled:cursor-default disabled:hover:bg-transparent"
+function pillForStage(stage: NavStage): Pill {
+  if (stage === "connectors") return "connections";
+  if (stage === "agents" || stage === "watchers") return "agents";
+  return "home";
+}
+
+function LobuLeftWing({ size = 14 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 221 420.701311"
+      fill="currentColor"
+      preserveAspectRatio="xMaxYMid meet"
+      aria-hidden="true"
+    >
+      <g transform="translate(-10.239564,430.701311) scale(0.1,-0.1)">
+        <path d="M1949 4276 c-84 -30 -223 -120 -291 -189 -29 -29 -186 -190 -348 -357 -162 -168 -466 -480 -675 -695 -209 -214 -398 -417 -420 -450 -83 -125 -120 -265 -111 -413 7 -113 26 -184 77 -283 51 -97 115 -168 865 -950 171 -178 380 -397 465 -487 160 -170 242 -238 345 -290 65 -33 164 -62 209 -62 l28 0 -6 228 c-7 297 -31 434 -106 612 -70 164 -128 237 -437 553 -302 309 -353 373 -401 505 -45 123 -42 283 7 414 37 99 90 164 391 478 160 168 313 337 339 375 151 224 197 403 207 808 l6 227 -39 0 c-22 0 -69 -11 -105 -24z" />
+      </g>
+    </svg>
+  );
+}
+
+function LobuRightWing({ size = 14 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="221 0 221.163213 420.701311"
+      fill="currentColor"
+      preserveAspectRatio="xMinYMid meet"
+      aria-hidden="true"
+    >
+      <g transform="translate(-10.239564,430.701311) scale(0.1,-0.1)">
+        <path d="M2510 4271 c-4 -278 9 -467 40 -604 29 -131 95 -276 178 -392 51 -71 81 -103 462 -491 190 -193 220 -229 258 -300 57 -111 75 -194 69 -314 -6 -109 -34 -205 -87 -296 -24 -41 -133 -158 -356 -384 -349 -354 -384 -398 -455 -574 -72 -179 -108 -388 -112 -641 -1 -90 2 -167 6 -171 11 -12 141 13 200 38 109 45 209 121 342 259 72 74 231 238 355 364 124 127 334 342 465 480 132 137 294 306 360 375 146 151 172 184 218 276 57 112 71 174 71 304 0 131 -21 217 -80 331 -45 86 -87 132 -543 599 -669 685 -974 990 -1036 1034 -103 74 -205 119 -304 135 l-51 8 0 -36z" />
+      </g>
+    </svg>
+  );
+}
+
+function DatabaseIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      aria-hidden="true"
+    >
+      <ellipse cx="12" cy="5" rx="9" ry="3" />
+      <path d="M3 5v14a9 3 0 0 0 18 0V5" />
+      <path d="M3 12a9 3 0 0 0 18 0" />
+    </svg>
+  );
+}
+
+function HardDriveIcon({ size = 12 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      aria-hidden="true"
+    >
+      <line x1="22" y1="12" x2="2" y2="12" />
+      <path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" />
+    </svg>
+  );
+}
+
+function CableIcon({ size = 12 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M4 9a2 2 0 0 1-2-2V5h6v2a2 2 0 0 1-2 2Z" />
+      <path d="M3 5V3" />
+      <path d="M7 5V3" />
+      <path d="M19 21a2 2 0 0 1-2-2v-2h6v2a2 2 0 0 1-2 2Z" />
+      <path d="M21 21v-2" />
+      <path d="M17 21v-2" />
+      <path d="M5 9v3a4 4 0 0 0 4 4h6a4 4 0 0 1 4 4v0" />
+    </svg>
+  );
+}
+
+function RssIcon({ size = 12 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M4 11a9 9 0 0 1 9 9" />
+      <path d="M4 4a16 16 0 0 1 16 16" />
+      <circle cx="5" cy="19" r="1" />
+    </svg>
+  );
+}
+
+function PillButton({
+  active,
+  icon,
+  label,
+  onClick,
+}: {
+  active: boolean;
+  icon: ComponentChildren;
+  label: string;
+  onClick?: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      class={`group relative flex h-8 items-center gap-1.5 rounded-full text-[13px] transition-all duration-200 ${
+        active ? "px-2.5" : "w-8 justify-center px-0"
+      }`}
+      style={{
+        background: active ? "var(--color-page-surface-dim)" : "transparent",
+        color: active
+          ? "var(--color-page-text)"
+          : "var(--color-page-text-muted)",
+      }}
+      aria-pressed={active}
+    >
+      <span class="h-3.5 w-3.5 shrink-0 flex items-center justify-center">
+        {icon}
+      </span>
+      <span
+        class="overflow-hidden whitespace-nowrap transition-[max-width,opacity] duration-200"
         style={{
-          color: active ? fg : fgMuted,
-          background: active ? accentBg : "transparent",
+          maxWidth: active ? "8rem" : "0",
+          opacity: active ? 1 : 0,
+          paddingRight: active ? "0.125rem" : "0",
           fontWeight: active ? 600 : 500,
-          cursor: interactive ? "pointer" : "default",
         }}
       >
-        <span style={{ color: active ? fg : fgMuted }}>{icon}</span>
-        <span class="flex-1 truncate">{label}</span>
-        {count != null ? (
-          <span class="text-[11px] tabular-nums" style={{ color: fgFaint }}>
-            {count}
-          </span>
-        ) : null}
-      </button>
-    );
-  }
+        {label}
+      </span>
+    </button>
+  );
+}
+
+function SearchPillButton({ badge }: { badge?: number }) {
+  return (
+    <button
+      type="button"
+      class="relative flex h-8 w-8 items-center justify-center rounded-full transition-colors"
+      style={{ color: "var(--color-page-text-muted)" }}
+      aria-label="Search (⌘K)"
+    >
+      <SearchIcon size={14} />
+      {badge ? (
+        <span
+          class="absolute -right-0.5 -top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full px-1 text-[10px] font-semibold leading-none text-white"
+          style={{ background: "var(--color-tg-accent)" }}
+        >
+          {badge}
+        </span>
+      ) : null}
+    </button>
+  );
+}
+
+function PillRow({
+  pill,
+  onPillChange,
+  inboxBadge,
+}: {
+  pill: Pill;
+  onPillChange?: (next: Pill) => void;
+  inboxBadge?: number;
+}) {
+  return (
+    <div class="flex items-center gap-1 px-2 py-2">
+      <PillButton
+        active={pill === "connections"}
+        icon={<LobuLeftWing size={14} />}
+        label="Connectors"
+        onClick={() => onPillChange?.("connections")}
+      />
+      <PillButton
+        active={pill === "home"}
+        icon={<DatabaseIcon size={14} />}
+        label="Memory"
+        onClick={() => onPillChange?.("home")}
+      />
+      <PillButton
+        active={pill === "agents"}
+        icon={<LobuRightWing size={14} />}
+        label="Agents"
+        onClick={() => onPillChange?.("agents")}
+      />
+      <div class="ml-auto">
+        <SearchPillButton badge={inboxBadge} />
+      </div>
+    </div>
+  );
+}
+
+function SectionHeader({
+  icon,
+  label,
+}: {
+  icon: ComponentChildren;
+  label: string;
+}) {
+  return (
+    <div
+      class="flex items-center gap-1.5 px-3 pb-1 pt-3 text-[11px] font-semibold uppercase tracking-wider"
+      style={{ color: "var(--color-page-text-muted)" }}
+    >
+      <span class="opacity-70">{icon}</span>
+      <span>{label}</span>
+    </div>
+  );
+}
+
+function SidebarRow({
+  active,
+  onClick,
+  leading,
+  label,
+  count,
+  muted,
+}: {
+  active?: boolean;
+  onClick?: () => void;
+  leading: ComponentChildren;
+  label: string;
+  count?: number | string;
+  muted?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      class="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-[13px] text-left transition-colors hover:bg-[rgba(0,0,0,0.04)]"
+      style={{
+        background: active ? "var(--color-page-surface-dim)" : "transparent",
+        color: active
+          ? "var(--color-page-text)"
+          : muted
+            ? "var(--color-page-text-muted)"
+            : "var(--color-page-text)",
+        fontWeight: active ? 600 : 500,
+      }}
+    >
+      <span class="flex h-4 w-4 shrink-0 items-center justify-center">
+        {leading}
+      </span>
+      <span class="min-w-0 flex-1 truncate">{label}</span>
+      {count != null ? (
+        <span
+          class="text-[11px] tabular-nums"
+          style={{ color: "var(--color-page-text-muted)" }}
+        >
+          {count}
+        </span>
+      ) : null}
+    </button>
+  );
+}
+
+function StatusDot({ tone }: { tone: "green" | "amber" | "muted" }) {
+  const bg =
+    tone === "green" ? "#22c55e" : tone === "amber" ? "#f59e0b" : "#9ca3af";
+  return (
+    <span
+      class="block h-1.5 w-1.5 rounded-full"
+      style={{ background: bg }}
+      aria-hidden="true"
+    />
+  );
+}
+
+function MemoryPillSection({
+  entities,
+  activeNav,
+  onStageChange,
+}: {
+  entities: EntityNavItem[];
+  activeNav: NavStage;
+  onStageChange?: (stage: HeroStageId) => void;
+}) {
+  return (
+    <div class="flex flex-col">
+      <SectionHeader icon={<DatabaseIcon size={12} />} label="Entities" />
+      <div class="flex flex-col gap-0.5 px-2">
+        {entities.map((item) => (
+          <SidebarRow
+            key={item.label}
+            active={activeNav === "members" && item.active}
+            onClick={() => onStageChange?.("model")}
+            leading={<span class="text-[13px]">{item.emoji}</span>}
+            label={item.label}
+            count={item.count}
+          />
+        ))}
+      </div>
+      <SectionHeader icon={<RssIcon size={12} />} label="Events" />
+      <div class="flex flex-col gap-0.5 px-2 pb-2">
+        <SidebarRow
+          active={activeNav === "knowledge"}
+          onClick={() => onStageChange?.("knowledge")}
+          leading={<RssIcon size={12} />}
+          label="All knowledge"
+          count={1284}
+        />
+      </div>
+    </div>
+  );
+}
+
+type SidebarConnection = {
+  label: string;
+  connectorName: string;
+  initial: string;
+  status: "active" | "pending";
+  feedCount?: number;
+};
+
+function ConnectorTinyMark({ name }: { name: string }) {
+  const initial = name.charAt(0).toUpperCase() || "?";
+  let hash = 0;
+  for (let i = 0; i < name.length; i++)
+    hash = (hash * 31 + name.charCodeAt(i)) | 0;
+  const hue = Math.abs(hash) % 360;
+  return (
+    <span
+      class="inline-flex h-4 w-4 items-center justify-center rounded text-[9px] font-semibold text-white"
+      style={{ background: `hsl(${hue} 55% 50%)` }}
+      aria-hidden="true"
+    >
+      {initial}
+    </span>
+  );
+}
+
+function ConnectorsPillSection({
+  connections,
+  activeNav,
+  onStageChange,
+}: {
+  connections: SidebarConnection[];
+  activeNav: NavStage;
+  onStageChange?: (stage: HeroStageId) => void;
+}) {
+  return (
+    <div class="flex flex-col">
+      <SectionHeader icon={<CableIcon size={12} />} label="Connections" />
+      <div class="flex flex-col gap-0.5 px-2">
+        {connections.map((c, i) => (
+          <SidebarRow
+            key={`${c.connectorName}-${c.label}-${i}`}
+            active={activeNav === "connectors" && i === 0}
+            onClick={() => onStageChange?.("integrate")}
+            leading={
+              <span class="flex items-center gap-1.5">
+                <StatusDot tone={c.status === "active" ? "green" : "amber"} />
+                <ConnectorTinyMark name={c.connectorName} />
+              </span>
+            }
+            label={c.label}
+            count={c.feedCount}
+          />
+        ))}
+      </div>
+      <SectionHeader icon={<HardDriveIcon size={12} />} label="Devices" />
+      <div class="flex flex-col gap-0.5 px-2 pb-2">
+        <SidebarRow
+          leading={<StatusDot tone="green" />}
+          label="Burak's MacBook Pro"
+        />
+        <SidebarRow
+          leading={<StatusDot tone="muted" />}
+          label="ops-runner-01"
+          muted
+        />
+      </div>
+    </div>
+  );
+}
+
+type SidebarAgent = { name: string };
+type SidebarWatcher = { name: string };
+
+function AgentsPillSection({
+  agents,
+  watchers,
+  activeNav,
+  onStageChange,
+}: {
+  agents: SidebarAgent[];
+  watchers: SidebarWatcher[];
+  activeNav: NavStage;
+  onStageChange?: (stage: HeroStageId) => void;
+}) {
+  // First agent is the "selected" one in the demo, so its watchers expand
+  // beneath it on a left-bordered indent — matches v2 agents-section.
+  return (
+    <div class="flex flex-col">
+      <SectionHeader icon={<LobuRightWing size={12} />} label="Agents" />
+      <div class="flex flex-col gap-0.5 px-2">
+        {agents.map((a, i) => {
+          const isSelected = i === 0;
+          const isActive =
+            (activeNav === "agents" || activeNav === "watchers") && isSelected;
+          return (
+            <div key={a.name} class="flex flex-col">
+              <SidebarRow
+                active={isActive}
+                onClick={() => onStageChange?.("connect")}
+                leading={<BotIcon size={12} />}
+                label={a.name}
+              />
+              {isSelected ? (
+                <div
+                  class="ml-3 mt-0.5 flex flex-col gap-0.5 px-2 pb-1"
+                  style={{
+                    borderLeft: "1px solid var(--color-page-border)",
+                  }}
+                >
+                  <div
+                    class="flex items-center gap-1.5 px-1 pt-1 text-[10px] font-semibold uppercase tracking-wider"
+                    style={{ color: "var(--color-page-text-muted)" }}
+                  >
+                    <WatchersIcon size={10} />
+                    <span>Watchers</span>
+                  </div>
+                  {watchers.map((w) => (
+                    <SidebarRow
+                      key={w.name}
+                      onClick={() => onStageChange?.("connect")}
+                      leading={<StatusDot tone="green" />}
+                      label={w.name}
+                    />
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+      <SectionHeader
+        icon={<HardDriveIcon size={12} />}
+        label="Connected apps"
+      />
+      <div class="flex flex-col gap-0.5 px-2 pb-2">
+        <SidebarRow
+          leading={<StatusDot tone="green" />}
+          label="Claude Desktop"
+        />
+        <SidebarRow leading={<StatusDot tone="green" />} label="OpenClaw" />
+      </div>
+    </div>
+  );
+}
+
+function Sidebar({
+  activeNav,
+  onStageChange,
+  entities,
+  connections,
+  agents,
+  watchers,
+}: {
+  activeNav: NavStage;
+  onStageChange?: (stage: HeroStageId) => void;
+  entities: EntityNavItem[];
+  connections: SidebarConnection[];
+  agents: SidebarAgent[];
+  watchers: SidebarWatcher[];
+}) {
+  const pill = pillForStage(activeNav);
+  const handlePillChange = (next: Pill) => {
+    if (next === "connections") onStageChange?.("integrate");
+    else if (next === "agents") onStageChange?.("connect");
+    else onStageChange?.("model");
+  };
 
   return (
     <aside
       class="hidden md:flex flex-col"
       style={{
-        background: sidebarBg,
+        background: "var(--color-page-surface-dim)",
         borderRight: "1px solid var(--color-page-border)",
-        width: "232px",
-        minWidth: "232px",
+        width: "248px",
+        minWidth: "248px",
       }}
     >
-      {/* Header (h-14) */}
-      <div
-        class="flex items-center justify-between px-2"
-        style={{
-          height: "56px",
-          borderBottom: "1px solid var(--color-page-border)",
-        }}
-      >
-        <div
-          class="flex items-center gap-2 px-1.5 py-1 rounded-md"
-          style={{ color: fg }}
-        >
-          <span
-            class="inline-flex items-center justify-center w-5 h-5 rounded text-[11px] font-bold text-white"
-            style={{ background: "var(--color-tg-accent)" }}
-            aria-hidden="true"
-          >
-            L
-          </span>
-          <span class="text-[13px] font-semibold">lobu-prod</span>
-          <span style={{ color: fgFaint }}>
-            <ChevronDownSmall />
-          </span>
-        </div>
-        <div
-          class="inline-flex items-center gap-1 px-2 h-6 rounded-md text-[11px]"
-          style={{
-            background: "rgba(0,0,0,0.04)",
-            color: fgMuted,
-          }}
-        >
-          <SearchIcon size={11} />
-          <span class="font-mono">⌘K</span>
-        </div>
-      </div>
-
-      {/* Nav */}
-      <div class="flex-1 px-2 py-3 flex flex-col gap-3 overflow-hidden">
-        <div>
-          <NavRow icon={<SparklesIcon />} label="Dashboard" />
-        </div>
-
-        {/* Entities section */}
-        <div>
-          <div class="flex items-center justify-between px-3 py-1 mb-0.5">
-            <div
-              class="text-[11px] font-medium uppercase tracking-wider"
-              style={{ color: fgMuted }}
-            >
-              Entities
-            </div>
-            <span
-              class="inline-flex items-center justify-center w-3.5 h-3.5"
-              style={{ color: editMode ? fg : fgFaint }}
-              aria-hidden="true"
-            >
-              <PencilIcon size={10} />
-            </span>
-          </div>
-          <ul class="flex flex-col gap-0.5">
-            {entities.map((item) => (
-              <li key={item.label} class="flex items-center group">
-                <button
-                  type="button"
-                  onClick={() => onStageChange?.("model")}
-                  class="flex items-center gap-2 px-3 py-1.5 rounded-md text-[13px] flex-1 min-w-0 text-left transition-colors hover:bg-[rgba(0,0,0,0.04)]"
-                  style={{
-                    color: item.active ? fg : fgMuted,
-                    background: item.active ? accentBg : "transparent",
-                    fontWeight: item.active ? 600 : 500,
-                    cursor: "pointer",
-                  }}
-                >
-                  <span class="w-5 text-center text-[13px]" aria-hidden="true">
-                    {item.emoji}
-                  </span>
-                  <span class="flex-1 truncate">{item.label}</span>
-                  {!editMode ? (
-                    <span
-                      class="text-[11px] tabular-nums"
-                      style={{ color: fgFaint }}
-                    >
-                      {item.count}
-                    </span>
-                  ) : null}
-                </button>
-                {editMode ? (
-                  <span
-                    class="shrink-0 p-1 mr-1 rounded"
-                    style={{ color: fgFaint }}
-                    aria-hidden="true"
-                  >
-                    <PencilIcon size={11} />
-                  </span>
-                ) : null}
-              </li>
-            ))}
-            <li
-              class="flex items-center gap-2 px-3 py-1.5 text-[13px]"
-              style={{
-                color: fgMuted,
-                visibility: editMode ? "visible" : "hidden",
-              }}
-              aria-hidden={!editMode}
-            >
-              <PlusIcon size={12} />
-              <span>Add entity type</span>
-            </li>
-          </ul>
-        </div>
-
-        {/* Divider + section nav */}
-        <div
-          class="mx-3"
-          style={{
-            borderTop: "1px solid var(--color-page-border)",
-            height: "1px",
-          }}
-        />
-        <ul class="flex flex-col gap-0.5">
-          <li>
-            <NavRow
-              icon={<ConnectorsIcon />}
-              label="Connectors"
-              count={42}
-              active={activeNav === "connectors"}
-              onClick={() => onStageChange?.("integrate")}
-            />
-          </li>
-          <li>
-            <NavRow
-              icon={<KnowledgeIcon />}
-              label="Knowledge"
-              count={1284}
-              active={activeNav === "knowledge"}
-              onClick={() => onStageChange?.("knowledge")}
-            />
-          </li>
-          <li>
-            <NavRow
-              icon={<WatchersIcon />}
-              label="Watchers"
-              count={9}
-              active={activeNav === "watchers"}
-              onClick={() => onStageChange?.("watch")}
-            />
-          </li>
-          <li>
-            <NavRow
-              icon={<BotIcon />}
-              label="Agents"
-              active={activeNav === "agents"}
-              onClick={() => onStageChange?.("connect")}
-            />
-          </li>
-        </ul>
-      </div>
-      {/* User footer */}
-      <div
-        class="px-3 py-3 flex items-center gap-2"
-        style={{ borderTop: "1px solid var(--color-page-border)" }}
-      >
-        <div
-          class="h-7 w-7 rounded-full flex items-center justify-center text-[11px] font-semibold"
-          style={{ background: "rgba(0,0,0,0.08)", color: fg }}
-          aria-hidden="true"
-        >
-          B
-        </div>
-        <div class="flex-1 min-w-0">
-          <div class="text-[12px] font-medium truncate" style={{ color: fg }}>
-            Emre
-          </div>
-          <div class="text-[11px] truncate" style={{ color: fgMuted }}>
-            emre@lobu.ai
-          </div>
-        </div>
-        <span style={{ color: fgFaint }}>
-          <ChevronDownSmall />
-        </span>
+      <PillRow pill={pill} onPillChange={handlePillChange} inboxBadge={3} />
+      <div class="flex-1 overflow-y-auto">
+        {pill === "home" ? (
+          <MemoryPillSection
+            entities={entities}
+            activeNav={activeNav}
+            onStageChange={onStageChange}
+          />
+        ) : null}
+        {pill === "connections" ? (
+          <ConnectorsPillSection
+            connections={connections}
+            activeNav={activeNav}
+            onStageChange={onStageChange}
+          />
+        ) : null}
+        {pill === "agents" ? (
+          <AgentsPillSection
+            agents={agents}
+            watchers={watchers}
+            activeNav={activeNav}
+            onStageChange={onStageChange}
+          />
+        ) : null}
       </div>
     </aside>
   );
@@ -889,7 +1120,6 @@ function Sidebar({
 
 function AppShell({
   activeNav,
-  editMode,
   pageTitle,
   pageSubtitle,
   toolbar,
@@ -897,10 +1127,15 @@ function AppShell({
   rightPanel,
   onStageChange,
   entities,
+  connections,
+  agents,
+  watchers,
 }: {
-  activeNav: "members" | "connectors" | "watchers" | "agents" | "knowledge";
-  editMode?: boolean;
+  activeNav: NavStage;
   entities: EntityNavItem[];
+  connections: SidebarConnection[];
+  agents: SidebarAgent[];
+  watchers: SidebarWatcher[];
   pageTitle: string;
   pageSubtitle?: string;
   toolbar?: ComponentChildren;
@@ -910,39 +1145,33 @@ function AppShell({
 }) {
   return (
     <div
-      class="max-w-[72rem] mx-auto rounded-2xl overflow-hidden grid grid-cols-1 md:grid-cols-[232px_1fr] relative bg-[var(--color-page-surface)]"
+      class="max-w-[72rem] mx-auto rounded-2xl overflow-hidden grid grid-cols-1 md:grid-cols-[248px_1fr] relative bg-[var(--color-page-surface)]"
       style={{
         border: "1px solid var(--color-page-border)",
         boxShadow: "0 8px 28px rgba(0,0,0,0.06)",
-        height: "640px",
+        height: "560px",
         gridTemplateRows: "minmax(0, 1fr)",
       }}
     >
       <Sidebar
         activeNav={activeNav}
-        editMode={editMode}
         onStageChange={onStageChange}
         entities={entities}
+        connections={connections}
+        agents={agents}
+        watchers={watchers}
       />
 
       <div class="relative flex flex-col min-h-0 overflow-hidden">
         {/* Breadcrumb + page header */}
         <div
-          class="px-6 pt-5 pb-4"
+          class="px-4 pt-3 pb-3"
           style={{ borderBottom: "1px solid var(--color-page-border)" }}
         >
-          <div
-            class="flex items-center gap-1 text-[12px] mb-1"
-            style={{ color: "var(--color-page-text-muted)" }}
-          >
-            <span>lobu-prod</span>
-            <span aria-hidden="true">/</span>
-            <span style={{ color: "var(--color-page-text)" }}>{pageTitle}</span>
-          </div>
           <div class="flex flex-wrap items-center gap-3">
-            <div class="flex flex-col">
+            <div class="flex flex-col min-w-0">
               <h3
-                class="font-display text-[20px] font-semibold leading-tight"
+                class="font-display text-[16px] font-semibold leading-tight"
                 style={{
                   color: "var(--color-page-text)",
                   letterSpacing: "-0.01em",
@@ -952,7 +1181,7 @@ function AppShell({
               </h3>
               {pageSubtitle ? (
                 <p
-                  class="text-[12px] mt-0.5"
+                  class="text-[11px] mt-0.5 leading-snug"
                   style={{ color: "var(--color-page-text-muted)" }}
                 >
                   {pageSubtitle}
@@ -966,7 +1195,7 @@ function AppShell({
             ) : null}
           </div>
         </div>
-        <div class="flex-1 px-6 py-5 overflow-y-auto min-h-0">{children}</div>
+        <div class="flex-1 px-4 py-3 overflow-y-auto min-h-0">{children}</div>
         {rightPanel}
       </div>
     </div>
@@ -1624,12 +1853,490 @@ function ConnectionsRows({ connector }: { connector: ConnectorRow }) {
   );
 }
 
+function StatsStripCard({ stats }: { stats: Array<{ label: string; value: number }> }) {
+  return (
+    <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+      {stats.map((s) => (
+        <div
+          key={s.label}
+          class="rounded-lg px-3 py-2.5 bg-[var(--color-page-surface)]"
+          style={{ border: "1px solid var(--color-page-border)" }}
+        >
+          <div
+            class="text-[11px]"
+            style={{ color: "var(--color-page-text-muted)" }}
+          >
+            {s.label}
+          </div>
+          <div
+            class="mt-0.5 text-[22px] font-semibold leading-none"
+            style={{ color: "var(--color-page-text)" }}
+          >
+            {s.value}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function FeatureGridLite({
+  items,
+}: {
+  items: Array<{ icon: ComponentChildren; title: string; body: string }>;
+}) {
+  return (
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
+      {items.map((it) => (
+        <div
+          key={it.title}
+          class="rounded-lg p-3 flex flex-col gap-1.5 bg-[var(--color-page-surface)]"
+          style={{ border: "1px solid var(--color-page-border)" }}
+        >
+          <span
+            class="inline-flex h-5 w-5 items-center justify-center"
+            style={{ color: "var(--color-page-text-muted)" }}
+          >
+            {it.icon}
+          </span>
+          <span
+            class="text-[12px] font-medium"
+            style={{ color: "var(--color-page-text)" }}
+          >
+            {it.title}
+          </span>
+          <p
+            class="text-[11px] leading-relaxed"
+            style={{ color: "var(--color-page-text-muted)" }}
+          >
+            {it.body}
+          </p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function FolderIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+    </svg>
+  );
+}
+
+function ShieldIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+      <path d="m9 12 2 2 4-4" />
+    </svg>
+  );
+}
+
+function BellIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" />
+      <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" />
+    </svg>
+  );
+}
+
+function CloudIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M17.5 19a4.5 4.5 0 1 0 0-9h-1.8A7 7 0 1 0 4 16.9" />
+    </svg>
+  );
+}
+
+function TerminalIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <polyline points="4 17 10 11 4 5" />
+      <line x1="12" y1="19" x2="20" y2="19" />
+    </svg>
+  );
+}
+
+function CodeIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <polyline points="16 18 22 12 16 6" />
+      <polyline points="8 6 2 12 8 18" />
+    </svg>
+  );
+}
+
+function LibraryIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="m16 6 4 14" />
+      <path d="M12 6v14" />
+      <path d="M8 8v12" />
+      <path d="M4 4v16" />
+    </svg>
+  );
+}
+
+function PlugIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M12 22v-5" />
+      <path d="M9 8V2" />
+      <path d="M15 8V2" />
+      <path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z" />
+    </svg>
+  );
+}
+
+function KeyIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <circle cx="7.5" cy="15.5" r="5.5" />
+      <path d="m21 2-9.6 9.6" />
+      <path d="m15.5 7.5 3 3L22 7l-3-3" />
+    </svg>
+  );
+}
+
+function DeviceTargetCard({
+  icon,
+  name,
+  description,
+  action,
+}: {
+  icon: ComponentChildren;
+  name: string;
+  description: string;
+  action: { label: string; tone?: "primary" | "ghost" | "muted" };
+}) {
+  const palette =
+    action.tone === "primary"
+      ? {
+          bg: "var(--color-page-bg-inverted)",
+          color: "var(--color-page-text-inverted)",
+          border: "var(--color-page-bg-inverted)",
+        }
+      : action.tone === "muted"
+        ? {
+            bg: "var(--color-page-surface)",
+            color: "var(--color-page-text-muted)",
+            border: "var(--color-page-border)",
+          }
+        : {
+            bg: "var(--color-page-surface)",
+            color: "var(--color-page-text)",
+            border: "var(--color-page-border)",
+          };
+  return (
+    <div
+      class="flex h-full flex-col gap-2 rounded-lg p-3 bg-[var(--color-page-surface)]"
+      style={{ border: "1px solid var(--color-page-border)" }}
+    >
+      <div class="flex items-center gap-2">
+        <span style={{ color: "var(--color-page-text-muted)" }}>{icon}</span>
+        <span
+          class="text-[13px] font-medium"
+          style={{ color: "var(--color-page-text)" }}
+        >
+          {name}
+        </span>
+      </div>
+      <p
+        class="text-[11px] leading-relaxed"
+        style={{ color: "var(--color-page-text-muted)" }}
+      >
+        {description}
+      </p>
+      <div class="mt-auto pt-1">
+        <span
+          class="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium"
+          style={{
+            background: palette.bg,
+            color: palette.color,
+            border: `1px solid ${palette.border}`,
+          }}
+        >
+          {action.label}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function ConnectorCatalogTile({
+  initial,
+  name,
+  category,
+}: {
+  initial: string;
+  name: string;
+  category: string;
+}) {
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) hash = (hash * 31 + name.charCodeAt(i)) | 0;
+  const hue = Math.abs(hash) % 360;
+  return (
+    <div
+      class="flex items-center gap-2 rounded-md p-2 bg-[var(--color-page-surface)]"
+      style={{ border: "1px solid var(--color-page-border)" }}
+    >
+      <span
+        class="inline-flex h-7 w-7 items-center justify-center rounded text-[12px] font-semibold text-white"
+        style={{ background: `hsl(${hue} 55% 50%)` }}
+        aria-hidden="true"
+      >
+        {initial}
+      </span>
+      <div class="min-w-0">
+        <div
+          class="text-[12px] font-medium truncate"
+          style={{ color: "var(--color-page-text)" }}
+        >
+          {name}
+        </div>
+        <div
+          class="text-[10px]"
+          style={{ color: "var(--color-page-text-muted)" }}
+        >
+          {category}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ConnectorsLanding({ connectorRows }: { connectorRows: ConnectorRow[] }) {
+  const totalConnections = connectorRows.reduce(
+    (acc, c) => acc + c.connections.length,
+    0
+  );
+  const stats = [
+    { label: "Connectors", value: connectorRows.length },
+    { label: "Connections", value: totalConnections },
+    { label: "Feeds", value: totalConnections * 3 },
+    { label: "Devices", value: 2 },
+  ];
+
+  const deviceBenefits = [
+    {
+      icon: <FolderIcon />,
+      title: "Local data into memory",
+      body: "Files, Screen Time, browser history — sources that only live on your machine.",
+    },
+    {
+      icon: <ShieldIcon />,
+      title: "Secure browser auth",
+      body: "Cookies and tokens stay on-device. Lobu's servers never see them.",
+    },
+    {
+      icon: <BellIcon />,
+      title: "Local notifications",
+      body: "Chat events, watcher triggers, and tool calls in your menu bar.",
+    },
+    {
+      icon: <HardDriveIcon size={14} />,
+      title: "Hybrid execution",
+      body: "Pin sensitive workloads to your device. Everything else runs serverless.",
+    },
+  ];
+
+  const deviceTargets = [
+    {
+      icon: (
+        <svg
+          aria-hidden="true"
+          width={14}
+          height={14}
+          viewBox="0 0 24 24"
+          fill="currentColor"
+        >
+          <path d="M17.05 20.28c-.98.95-2.05.88-3.08.4-1.09-.5-2.08-.52-3.24 0-1.44.62-2.2.44-3.06-.4C2.79 15.25 3.51 7.59 9.05 7.31c1.35.07 2.29.74 3.08.8 1.18-.24 2.31-.93 3.57-.84 1.51.12 2.65.72 3.4 1.8-3.12 1.87-2.38 5.98.48 7.13-.57 1.5-1.31 2.99-2.54 4.08zM12.03 7.25c-.15-2.23 1.66-4.07 3.74-4.25.29 2.58-2.34 4.5-3.74 4.25z" />
+        </svg>
+      ),
+      name: "macOS",
+      description:
+        "Menu bar app. Syncs local folders, Screen Time, browser history.",
+      action: { label: "Download .dmg", tone: "primary" as const },
+    },
+    {
+      icon: <TerminalIcon />,
+      name: "CLI",
+      description:
+        "Authenticates local tools (Claude Code, Cursor, MCP clients) against this workspace.",
+      action: { label: "Install + log in", tone: "ghost" as const },
+    },
+    {
+      icon: <CloudIcon />,
+      name: "Docker",
+      description:
+        "Self-hosted bridge in a container. Run on a server or VPS for always-on connectors.",
+      action: { label: "Run command", tone: "ghost" as const },
+    },
+    {
+      icon: <CloudIcon />,
+      name: "Serverless",
+      description:
+        "Lobu hosts the bridge. Connectors run in sandboxed cloud workers — no install.",
+      action: { label: "Free in beta", tone: "muted" as const },
+    },
+  ];
+
+  const connectionPaths = [
+    {
+      icon: <LibraryIcon />,
+      title: "Pick from the catalog",
+      body: "50+ built-in connectors. OAuth, API key, or browser session.",
+    },
+    {
+      icon: <PlugIcon />,
+      title: "Bring your own MCP server",
+      body: "Point Lobu at any MCP endpoint. Tools wire into memory automatically.",
+    },
+    {
+      icon: <CodeIcon />,
+      title: "Let your agent write one",
+      body: "Lobu runs agent-authored TypeScript connectors serverlessly — no hosting.",
+    },
+    {
+      icon: <KeyIcon />,
+      title: "Any auth shape",
+      body: "API key, OAuth, browser session, or none. Credentials stay where you choose.",
+    },
+  ];
+
+  const catalogTiles = connectorRows.slice(0, 8).map((c) => ({
+    initial: c.name.charAt(0).toUpperCase(),
+    name: c.name,
+    category: c.description,
+  }));
+  while (catalogTiles.length < 8) {
+    const fallbacks = [
+      { initial: "S", name: "Slack", category: "Chat" },
+      { initial: "G", name: "GitHub", category: "Code" },
+      { initial: "L", name: "Linear", category: "Issues" },
+      { initial: "N", name: "Notion", category: "Docs" },
+    ];
+    catalogTiles.push(fallbacks[catalogTiles.length % fallbacks.length]);
+  }
+
+  return (
+    <div class="flex flex-col gap-4">
+      <StatsStripCard stats={stats} />
+
+      <div
+        class="rounded-lg bg-[var(--color-page-surface)] flex flex-col gap-3 p-4"
+        style={{ border: "1px solid var(--color-page-border)" }}
+      >
+        <div class="flex items-center gap-2.5">
+          <HardDriveIcon size={16} />
+          <h4
+            class="text-[14px] font-semibold leading-none"
+            style={{ color: "var(--color-page-text)" }}
+          >
+            Devices
+          </h4>
+        </div>
+        <FeatureGridLite items={deviceBenefits} />
+        <div class="grid grid-cols-2 lg:grid-cols-4 gap-2">
+          {deviceTargets.map((t) => (
+            <DeviceTargetCard
+              key={t.name}
+              icon={t.icon}
+              name={t.name}
+              description={t.description}
+              action={t.action}
+            />
+          ))}
+        </div>
+      </div>
+
+      <div
+        class="rounded-lg bg-[var(--color-page-surface)] flex flex-col gap-3 p-4"
+        style={{ border: "1px solid var(--color-page-border)" }}
+      >
+        <div class="flex items-center gap-2.5">
+          <CableIcon size={16} />
+          <h4
+            class="text-[14px] font-semibold leading-none"
+            style={{ color: "var(--color-page-text)" }}
+          >
+            Connections
+          </h4>
+        </div>
+        <FeatureGridLite items={connectionPaths} />
+        <div class="grid grid-cols-2 lg:grid-cols-4 gap-2">
+          {catalogTiles.map((t, i) => (
+            <ConnectorCatalogTile key={`${t.name}-${i}`} {...t} />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+type ActionMode = "auto" | "approval" | "disabled";
+
+function ActionModeChips({ mode }: { mode: ActionMode }) {
+  const items: Array<{
+    id: ActionMode;
+    label: string;
+    tone: "green" | "amber" | "muted";
+  }> = [
+    { id: "auto", label: "Auto", tone: "green" },
+    { id: "approval", label: "Approval", tone: "amber" },
+    { id: "disabled", label: "Disabled", tone: "muted" },
+  ];
+  return (
+    <span
+      class="inline-flex rounded-md overflow-hidden"
+      style={{ border: "1px solid var(--color-page-border)" }}
+    >
+      {items.map((item) => {
+        const active = item.id === mode;
+        const palette =
+          item.tone === "green"
+            ? { bg: "rgba(16,185,129,0.18)", fg: "#047857" }
+            : item.tone === "amber"
+              ? { bg: "rgba(245,158,11,0.18)", fg: "#b45309" }
+              : { bg: "rgba(0,0,0,0.05)", fg: "var(--color-page-text-muted)" };
+        return (
+          <span
+            key={item.id}
+            class="px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider"
+            style={{
+              background: active ? palette.bg : "transparent",
+              color: active ? palette.fg : "var(--color-page-text-muted)",
+              opacity: active ? 1 : 0.6,
+            }}
+          >
+            {item.label}
+          </span>
+        );
+      })}
+    </span>
+  );
+}
+
 function ConnectorsTable({ connectors }: { connectors: ConnectorRow[] }) {
   const firstWithConnections = connectors.find((c) => c.connections.length > 0);
   const [openId, setOpenId] = useState<string | null>(
     firstWithConnections?.id ?? null
   );
-  const cols = "1.6fr 1.6fr 0.8fr 0.7fr";
+  const cols = "1.5fr 1.6fr 0.9fr 0.7fr";
+
+  function modeFor(c: ConnectorRow, idx: number): ActionMode {
+    if (c.connections.length === 0) return "disabled";
+    return idx % 3 === 1 ? "approval" : "auto";
+  }
+
+  function runOnFor(c: ConnectorRow, idx: number): string {
+    if (c.connections.length === 0) return "—";
+    const devices = ["Any device", "Burak's MacBook", "ops-runner-01"];
+    return devices[idx % devices.length];
+  }
 
   return (
     <div
@@ -1645,14 +2352,16 @@ function ConnectorsTable({ connectors }: { connectors: ConnectorRow[] }) {
         }}
       >
         <span>Connector</span>
-        <span>Description</span>
-        <span>Connections</span>
+        <span>Action mode</span>
+        <span>Run on</span>
         <span class="text-right">Status</span>
       </div>
       {connectors.map((c, i) => {
         const open = openId === c.id;
         const isLast = i === connectors.length - 1;
         const hasConnections = c.connections.length > 0;
+        const mode = modeFor(c, i);
+        const runOn = runOnFor(c, i);
         return (
           <div
             key={c.id}
@@ -1676,21 +2385,28 @@ function ConnectorsTable({ connectors }: { connectors: ConnectorRow[] }) {
                 <span style={{ color: "var(--color-page-text-muted)" }}>
                   <ChevronRightSmall open={open} />
                 </span>
-                <span class="truncate">{c.name}</span>
+                <span class="flex flex-col min-w-0">
+                  <span class="truncate">{c.name}</span>
+                  {hasConnections ? (
+                    <span
+                      class="text-[11px] truncate"
+                      style={{ color: "var(--color-page-text-muted)" }}
+                    >
+                      {c.connections.length} connection
+                      {c.connections.length === 1 ? "" : "s"}
+                    </span>
+                  ) : null}
+                </span>
+              </span>
+              <span>
+                <ActionModeChips mode={mode} />
               </span>
               <span
-                class="truncate"
+                class="flex items-center gap-1.5 text-[12px] truncate"
                 style={{ color: "var(--color-page-text-muted)" }}
               >
-                {c.description}
-              </span>
-              <span
-                class="tabular-nums"
-                style={{ color: "var(--color-page-text)" }}
-              >
-                {hasConnections
-                  ? `${c.connections.length} member${c.connections.length === 1 ? "" : "s"}`
-                  : "—"}
+                <HardDriveIcon size={11} />
+                <span class="truncate">{runOn}</span>
               </span>
               <span class="flex justify-end">
                 {hasConnections ? (
@@ -2018,12 +2734,20 @@ function ExternalLinkIcon() {
 
 const KNOWLEDGE_CHIPS: { slug: string; values: string[]; active?: string }[] = [
   {
-    slug: "Topic",
-    values: ["billing", "release", "bug", "false-positive"],
-    active: "billing",
+    slug: "Feed",
+    values: ["All", "Slack #ops", "Gmail inbox", "Linear bugs"],
+    active: "All",
   },
-  { slug: "Source", values: ["Slack", "Gmail", "Linear", "GitHub"] },
-  { slug: "Review", values: ["needs-review", "approved"] },
+  {
+    slug: "Connection",
+    values: ["All", "Crunchbase", "LinkedIn", "Stripe"],
+    active: "All",
+  },
+  {
+    slug: "Run",
+    values: ["All runs", "Last hour", "Today"],
+    active: "All runs",
+  },
 ];
 
 function KnowledgeFeed({ rows }: { rows?: KnowledgeRow[] }) {
@@ -2553,13 +3277,205 @@ function DeployChannelGroup({
   );
 }
 
-function AgentsConnect({
-  info,
-  agents,
+type AgentDetailTab = "watchers" | "providers" | "skills" | "channels";
+
+function AgentDetailTabs({
+  active,
+  onChange,
 }: {
-  info: AgentInfo;
-  agents: AgentRow[];
+  active: AgentDetailTab;
+  onChange: (next: AgentDetailTab) => void;
 }) {
+  const tabs: Array<{ id: AgentDetailTab; label: string }> = [
+    { id: "watchers", label: "Watchers" },
+    { id: "providers", label: "Providers" },
+    { id: "skills", label: "Skills" },
+    { id: "channels", label: "Channels" },
+  ];
+  return (
+    <div
+      class="flex items-center gap-1"
+      style={{ borderBottom: "1px solid var(--color-page-border)" }}
+    >
+      {tabs.map((t) => {
+        const isActive = t.id === active;
+        return (
+          <button
+            key={t.id}
+            type="button"
+            onClick={() => onChange(t.id)}
+            class="relative px-3 py-2 text-[13px] transition-colors hover:bg-[color:var(--color-page-surface-dim)]"
+            style={{
+              color: isActive
+                ? "var(--color-page-text)"
+                : "var(--color-page-text-muted)",
+              fontWeight: isActive ? 600 : 500,
+              cursor: "pointer",
+            }}
+            aria-selected={isActive}
+            role="tab"
+          >
+            {t.label}
+            {isActive ? (
+              <span
+                class="absolute left-0 right-0 -bottom-px h-[2px]"
+                style={{ background: "var(--color-page-text)" }}
+                aria-hidden="true"
+              />
+            ) : null}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function ProvidersTab() {
+  const providers = [
+    {
+      name: "Anthropic",
+      model: "claude-sonnet-4-6",
+      status: "active",
+      keyMask: "sk-ant-•••••rj9",
+    },
+    {
+      name: "OpenAI",
+      model: "gpt-5",
+      status: "active",
+      keyMask: "sk-•••••2c1",
+    },
+    {
+      name: "Google",
+      model: "gemini-3-pro",
+      status: "fallback",
+      keyMask: "AIzaSy•••••8Pq",
+    },
+  ];
+  return (
+    <div
+      class="rounded-lg overflow-hidden bg-[var(--color-page-surface)]"
+      style={{ border: "1px solid var(--color-page-border)" }}
+    >
+      <div
+        class="grid text-[11px] font-medium uppercase tracking-wider px-3 py-2"
+        style={{
+          gridTemplateColumns: "0.8fr 1.2fr 1fr 0.8fr",
+          color: "var(--color-page-text-muted)",
+          borderBottom: "1px solid var(--color-page-border)",
+        }}
+      >
+        <span>Provider</span>
+        <span>Model</span>
+        <span>Key</span>
+        <span class="text-right">Status</span>
+      </div>
+      {providers.map((p, i) => (
+        <div
+          key={p.name}
+          class="grid items-center px-3 py-2.5 text-[13px]"
+          style={{
+            gridTemplateColumns: "0.8fr 1.2fr 1fr 0.8fr",
+            color: "var(--color-page-text)",
+            borderBottom:
+              i === providers.length - 1
+                ? undefined
+                : "1px solid var(--color-page-border)",
+          }}
+        >
+          <span class="font-medium">{p.name}</span>
+          <span
+            class="font-mono text-[12px]"
+            style={{ color: "var(--color-page-text-muted)" }}
+          >
+            {p.model}
+          </span>
+          <span
+            class="font-mono text-[12px] truncate"
+            style={{ color: "var(--color-page-text-muted)" }}
+          >
+            {p.keyMask}
+          </span>
+          <span class="flex justify-end">
+            <Badge
+              label={p.status === "active" ? "Active" : "Fallback"}
+              tone={p.status === "active" ? "green" : "muted"}
+            />
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function SkillsTab() {
+  const skills = [
+    {
+      slug: "deal-research",
+      desc: "Pull funding rounds + filings from connected sources",
+      net: ["crunchbase.com", "*.linkedin.com"],
+    },
+    {
+      slug: "founder-signals",
+      desc: "Score founders by recent activity and team growth",
+      net: ["api.github.com", "*.linkedin.com"],
+    },
+    {
+      slug: "memory-recall",
+      desc: "Read typed memory + cite source events",
+      net: [],
+    },
+  ];
+  return (
+    <div class="flex flex-col gap-2">
+      {skills.map((s) => (
+        <div
+          key={s.slug}
+          class="rounded-lg bg-[var(--color-page-surface)] px-3 py-2.5"
+          style={{ border: "1px solid var(--color-page-border)" }}
+        >
+          <div class="flex items-center justify-between gap-3">
+            <span
+              class="font-mono text-[13px] font-medium"
+              style={{ color: "var(--color-page-text)" }}
+            >
+              {s.slug}
+            </span>
+            <Badge label="Enabled" tone="green" />
+          </div>
+          <p
+            class="mt-1 text-[12px]"
+            style={{ color: "var(--color-page-text-muted)" }}
+          >
+            {s.desc}
+          </p>
+          {s.net.length > 0 ? (
+            <div
+              class="mt-2 flex flex-wrap items-center gap-1.5 text-[11px]"
+              style={{ color: "var(--color-page-text-muted)" }}
+            >
+              <span class="uppercase tracking-wider">Network</span>
+              {s.net.map((d) => (
+                <span
+                  key={d}
+                  class="inline-flex items-center px-1.5 py-0.5 rounded font-mono"
+                  style={{
+                    background: "var(--color-page-surface-dim)",
+                    border: "1px solid var(--color-page-border)",
+                    color: "var(--color-page-text)",
+                  }}
+                >
+                  {d}
+                </span>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ChannelsTab({ info }: { info: AgentInfo }) {
   const mcpClients = [
     { label: "OpenClaw", active: true },
     { label: "Claude" },
@@ -2574,70 +3490,36 @@ function AgentsConnect({
     { label: "Teams" },
     { label: "REST API" },
   ];
-
   return (
-    <div class="flex flex-col gap-4">
+    <div class="flex flex-col gap-3">
       <div
-        class="rounded-2xl bg-[var(--color-page-surface)] p-4"
-        style={{ border: "1px solid var(--color-page-border)" }}
+        class="flex min-w-0 items-center gap-2 rounded-md px-3 py-2 font-mono text-[12px]"
+        style={{
+          background: "var(--color-page-surface-dim)",
+          color: "var(--color-page-text)",
+          border: "1px solid var(--color-page-border)",
+        }}
       >
-        <div class="flex flex-col gap-4 lg:flex-row lg:items-center">
-          <div class="flex min-w-0 flex-1 items-start gap-3">
-            <span style={{ color: "var(--color-page-text)" }}>
-              <SparklesIcon size={18} />
-            </span>
-            <div class="min-w-0">
-              <h4
-                class="text-[15px] font-semibold"
-                style={{ color: "var(--color-page-text)" }}
-              >
-                Deploy agents everywhere users work
-              </h4>
-              <p
-                class="mt-1 text-[12px] leading-relaxed"
-                style={{ color: "var(--color-page-text-muted)" }}
-              >
-                One Lobu backend reaches MCP clients, chat platforms, and
-                always-on workers with the same memory and credentials.
-              </p>
-            </div>
-          </div>
-          <div class="flex items-center gap-2 shrink-0">
-            <PrimaryButton label={info.primaryClient} active />
-            <GhostButton label="Slack" />
-            <GhostButton label="ChatGPT" />
-          </div>
-        </div>
-        <div
-          class="mt-4 flex min-w-0 items-center gap-2 rounded-md px-3 py-2 font-mono text-[12px]"
+        <span
+          class="text-[10px] font-sans uppercase tracking-wider"
+          style={{ color: "var(--color-page-text-muted)" }}
+        >
+          MCP
+        </span>
+        <span class="flex-1 truncate">{info.mcpEndpoint}</span>
+        <span
+          class="inline-flex h-6 items-center rounded px-2 text-[11px] font-medium"
           style={{
-            background: "var(--color-page-surface-dim)",
+            background: "var(--color-page-surface)",
             color: "var(--color-page-text)",
             border: "1px solid var(--color-page-border)",
           }}
         >
-          <span
-            class="text-[10px] font-sans uppercase tracking-wider"
-            style={{ color: "var(--color-page-text-muted)" }}
-          >
-            MCP
-          </span>
-          <span class="flex-1 truncate">{info.mcpEndpoint}</span>
-          <span
-            class="inline-flex h-6 items-center rounded px-2 text-[11px] font-medium"
-            style={{
-              background: "var(--color-page-surface)",
-              color: "var(--color-page-text)",
-              border: "1px solid var(--color-page-border)",
-            }}
-          >
-            Copy
-          </span>
-        </div>
+          Copy
+        </span>
       </div>
-
       <div
-        class="rounded-2xl bg-[var(--color-page-surface)] p-4"
+        class="rounded-lg bg-[var(--color-page-surface)] p-3"
         style={{ border: "1px solid var(--color-page-border)" }}
       >
         <div class="flex flex-col gap-3 xl:flex-row xl:items-center xl:gap-8">
@@ -2645,7 +3527,63 @@ function AgentsConnect({
           <DeployChannelGroup title="Chat/API" items={chatChannels} />
         </div>
       </div>
+    </div>
+  );
+}
 
+function AgentsConnect({
+  info,
+  agents,
+  watchers,
+}: {
+  info: AgentInfo;
+  agents: AgentRow[];
+  watchers: WatcherRow[];
+}) {
+  const [tab, setTab] = useState<AgentDetailTab>("watchers");
+  const selectedAgent = agents[0];
+  return (
+    <div class="flex flex-col gap-4">
+      <div
+        class="rounded-2xl bg-[var(--color-page-surface)] p-4 flex flex-col gap-3"
+        style={{ border: "1px solid var(--color-page-border)" }}
+      >
+        <div class="flex items-center gap-3">
+          <span
+            class="inline-flex h-8 w-8 items-center justify-center rounded-md"
+            style={{
+              background: "var(--color-page-surface-dim)",
+              color: "var(--color-page-text)",
+              border: "1px solid var(--color-page-border)",
+            }}
+          >
+            <BotIcon size={16} />
+          </span>
+          <div class="min-w-0 flex-1">
+            <h4
+              class="text-[15px] font-semibold"
+              style={{ color: "var(--color-page-text)" }}
+            >
+              {selectedAgent?.name ?? info.identity}
+            </h4>
+            <p
+              class="text-[12px]"
+              style={{ color: "var(--color-page-text-muted)" }}
+            >
+              Always-on · runs from {info.primaryClient}, Slack, and the REST
+              API
+            </p>
+          </div>
+          <Badge label="Active" tone="green" />
+        </div>
+        <AgentDetailTabs active={tab} onChange={setTab} />
+        <div>
+          {tab === "watchers" ? <WatchersTable rows={watchers} /> : null}
+          {tab === "providers" ? <ProvidersTab /> : null}
+          {tab === "skills" ? <SkillsTab /> : null}
+          {tab === "channels" ? <ChannelsTab info={info} /> : null}
+        </div>
+      </div>
       <AlwaysOnAgentsTable rows={agents.slice(0, 3)} />
     </div>
   );
@@ -2713,75 +3651,116 @@ function AlwaysOnAgentsTable({ rows }: { rows: AgentRow[] }) {
       <div
         class="grid text-[11px] font-medium tracking-wider uppercase px-5 py-2"
         style={{
-          gridTemplateColumns: "1.4fr 1.2fr 1.6fr 0.8fr 0.8fr",
+          gridTemplateColumns: "1.4fr 1.4fr 1.4fr 0.8fr 0.8fr",
           color: "var(--color-page-text-muted)",
           borderBottom: "1px solid var(--color-page-border)",
         }}
       >
         <span>Name</span>
-        <span>Entry point</span>
+        <span>Channels</span>
         <span>Skills</span>
         <span>Status</span>
         <span class="text-right">Last run</span>
       </div>
-      {rows.map((row, i) => (
-        <div
-          key={row.name}
-          class="grid items-center px-5 py-2.5 text-[13px]"
-          style={{
-            gridTemplateColumns: "1.4fr 1.2fr 1.6fr 0.8fr 0.8fr",
-            color: "var(--color-page-text)",
-            borderBottom:
-              i === rows.length - 1
-                ? undefined
-                : "1px solid var(--color-page-border)",
-          }}
-        >
-          <span class="flex items-center gap-2 font-medium">
-            <span
-              class="inline-block w-1.5 h-1.5 rounded-full"
-              style={{
-                background:
-                  row.status === "Active"
-                    ? "rgb(16,185,129)"
-                    : "rgba(0,0,0,0.25)",
-              }}
-              aria-hidden="true"
-            />
-            {row.name}
-          </span>
-          <span style={{ color: "var(--color-page-text-muted)" }}>
-            {row.entryPoint}
-          </span>
-          <span class="flex flex-wrap items-center gap-1">
-            {row.skills.map((s) => (
-              <span
-                key={s}
-                class="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-mono"
-                style={{
-                  background: "var(--color-page-surface-dim)",
-                  color: "var(--color-page-text)",
-                  border: "1px solid var(--color-page-border)",
-                }}
-              >
-                {s}
-              </span>
-            ))}
-          </span>
-          <span>
-            <Badge
-              label={row.status}
-              tone={row.status === "Active" ? "green" : "muted"}
-            />
-          </span>
-          <span
-            class="text-right tabular-nums text-[12px]"
-            style={{ color: "var(--color-page-text-muted)" }}
+      {rows.map((row, i) => {
+        // Pretend the agent is wired to its entryPoint plus a secondary
+        // channel — visualises v2 channel-bindings (one agent, many platforms).
+        const secondary =
+          row.entryPoint === "Slack"
+            ? "REST"
+            : row.entryPoint === "Telegram"
+              ? "MCP"
+              : row.entryPoint === "ChatGPT"
+                ? "Slack"
+                : "Slack";
+        const channels: Array<{ name: string; tone: "green" | "muted" }> = [
+          {
+            name: row.entryPoint,
+            tone: row.status === "Active" ? "green" : "muted",
+          },
+          { name: secondary, tone: "muted" },
+        ];
+        return (
+          <div
+            key={row.name}
+            class="grid items-center px-5 py-2.5 text-[13px]"
+            style={{
+              gridTemplateColumns: "1.4fr 1.4fr 1.4fr 0.8fr 0.8fr",
+              color: "var(--color-page-text)",
+              borderBottom:
+                i === rows.length - 1
+                  ? undefined
+                  : "1px solid var(--color-page-border)",
+            }}
           >
-            {row.last}
-          </span>
-        </div>
-      ))}
+            <span class="flex items-center gap-2 font-medium">
+              <span
+                class="inline-block w-1.5 h-1.5 rounded-full"
+                style={{
+                  background:
+                    row.status === "Active"
+                      ? "rgb(16,185,129)"
+                      : "rgba(0,0,0,0.25)",
+                }}
+                aria-hidden="true"
+              />
+              {row.name}
+            </span>
+            <span class="flex flex-wrap items-center gap-1">
+              {channels.map((ch) => (
+                <span
+                  key={ch.name}
+                  class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px]"
+                  style={{
+                    background: "var(--color-page-surface-dim)",
+                    color: "var(--color-page-text)",
+                    border: "1px solid var(--color-page-border)",
+                  }}
+                >
+                  <span
+                    class="inline-block w-1 h-1 rounded-full"
+                    style={{
+                      background:
+                        ch.tone === "green"
+                          ? "rgb(16,185,129)"
+                          : "rgba(0,0,0,0.3)",
+                    }}
+                    aria-hidden="true"
+                  />
+                  {ch.name}
+                </span>
+              ))}
+            </span>
+            <span class="flex flex-wrap items-center gap-1">
+              {row.skills.map((s) => (
+                <span
+                  key={s}
+                  class="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-mono"
+                  style={{
+                    background: "var(--color-page-surface-dim)",
+                    color: "var(--color-page-text)",
+                    border: "1px solid var(--color-page-border)",
+                  }}
+                >
+                  {s}
+                </span>
+              ))}
+            </span>
+            <span>
+              <Badge
+                label={row.status}
+                tone={row.status === "Active" ? "green" : "muted"}
+              />
+            </span>
+            <span
+              class="text-right tabular-nums text-[12px]"
+              style={{ color: "var(--color-page-text-muted)" }}
+            >
+              {row.last}
+            </span>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -2806,8 +3785,6 @@ export function HeroProductCard({
   const primaryEntity = entities[0]?.label ?? "Members";
   const primaryEntitySingular = useCase?.model.entities[0] ?? "Member";
   const useCaseLabel = useCase?.label ?? "your team";
-  const watcherName = useCase?.memory.watcher.name ?? "Active watchers";
-  const watcherSchedule = useCase?.memory.watcher.schedule ?? "On schedule";
 
   const recordRows: RecordRow[] = useCase
     ? buildRecordRows(useCase)
@@ -2832,12 +3809,46 @@ export function HeroProductCard({
         primaryClient: "Claude",
       };
 
+  // Flatten connectorRows (one row per connector with N nested connections)
+  // into the v2 sidebar shape (one row per individual connection).
+  const sidebarConnections: SidebarConnection[] = connectorRows
+    .flatMap((c): SidebarConnection[] =>
+      c.connections.length > 0
+        ? c.connections.map((conn) => ({
+            label: conn.member,
+            connectorName: c.name,
+            initial: c.name.charAt(0).toUpperCase(),
+            status: c.status === "Connected" ? "active" : "pending",
+          }))
+        : [
+            {
+              label: c.name,
+              connectorName: c.name,
+              initial: c.name.charAt(0).toUpperCase(),
+              status: c.status === "Connected" ? "active" : "pending",
+            },
+          ]
+    )
+    .slice(0, 6);
+  const sidebarAgents: SidebarAgent[] = agentRows
+    .slice(0, 4)
+    .map((a) => ({ name: a.name }));
+  const sidebarWatchers: SidebarWatcher[] = watcherRows
+    .slice(0, 3)
+    .map((w) => ({ name: w.name }));
+
+  const shellProps = {
+    entities,
+    connections: sidebarConnections,
+    agents: sidebarAgents,
+    watchers: sidebarWatchers,
+  };
+
   if (stage === "model") {
     return (
       <AppShell
         activeNav="members"
-        editMode
-        entities={entities}
+        {...shellProps}
         pageTitle={primaryEntity}
         pageSubtitle={`${recordRows.length} records · ${useCaseLabel} memory`}
         toolbar={
@@ -2868,45 +3879,12 @@ export function HeroProductCard({
     return (
       <AppShell
         activeNav="connectors"
-        entities={entities}
+        {...shellProps}
         pageTitle="Connectors"
-        pageSubtitle={`Plug Lobu Memory into the systems your ${useCaseLabel.toLowerCase()} team already runs`}
-        toolbar={
-          <>
-            <SearchInput />
-            <PrimaryButton
-              label="Add Connector"
-              icon={<PlusIcon size={12} />}
-            />
-          </>
-        }
+        pageSubtitle="Pull data into Lobu's memory and expose tools to agents. Pick from the catalog, bring your own MCP server, or write one in TypeScript — in Lobu's cloud or on one of your devices."
         onStageChange={onStageChange}
       >
-        <ConnectorsTable connectors={connectorRows} />
-      </AppShell>
-    );
-  }
-
-  if (stage === "watch") {
-    return (
-      <AppShell
-        activeNav="watchers"
-        entities={entities}
-        pageTitle="Watchers"
-        pageSubtitle={`${watcherName} · ${watcherSchedule.toLowerCase()}`}
-        toolbar={
-          <>
-            <SearchInput />
-            <GhostButton label="All · Active · Inactive" />
-            <PrimaryButton
-              label="Create Watcher"
-              icon={<PlusIcon size={12} />}
-            />
-          </>
-        }
-        onStageChange={onStageChange}
-      >
-        <WatchersTable rows={watcherRows} />
+        <ConnectorsLanding connectorRows={connectorRows} />
       </AppShell>
     );
   }
@@ -2915,7 +3893,7 @@ export function HeroProductCard({
     return (
       <AppShell
         activeNav="knowledge"
-        entities={entities}
+        {...shellProps}
         pageTitle="Knowledge"
         pageSubtitle={`Items collected by your ${useCaseLabel.toLowerCase()} watchers and connectors`}
         toolbar={
@@ -2936,13 +3914,17 @@ export function HeroProductCard({
   return (
     <AppShell
       activeNav="agents"
-      entities={entities}
+      {...shellProps}
       pageTitle="Agents"
       pageSubtitle={`Connect MCP clients or run always-on ${primaryEntitySingular.toLowerCase()} agents`}
       toolbar={<SearchInput />}
       onStageChange={onStageChange}
     >
-      <AgentsConnect info={agentInfo} agents={agentRows} />
+      <AgentsConnect
+        info={agentInfo}
+        agents={agentRows}
+        watchers={watcherRows}
+      />
     </AppShell>
   );
 }

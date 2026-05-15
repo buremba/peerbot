@@ -46,10 +46,9 @@ export type HeroStageId =
   | "knowledge";
 
 const STAGE_TABS: Array<{ id: HeroStageId; label: string; index: number }> = [
-  { id: "model", label: "Model data", index: 1 },
-  { id: "integrate", label: "Connect systems", index: 2 },
-  { id: "watch", label: "Monitor signals", index: 3 },
-  { id: "connect", label: "Deploy agents", index: 4 },
+  { id: "integrate", label: "Connect systems", index: 1 },
+  { id: "model", label: "Build context", index: 2 },
+  { id: "connect", label: "Deploy agents", index: 3 },
 ];
 
 const TAB_CYCLE_MS = 5000;

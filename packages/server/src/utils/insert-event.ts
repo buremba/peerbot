@@ -343,3 +343,68 @@ export function recordChangeEvent(params: ChangeEventParams): void {
     logger.warn({ err, title: params.title }, 'Failed to record change event');
   });
 }
+
+// ============================================
+// Lifecycle Event (entity create / update / delete)
+// ============================================
+
+export type LifecycleEntityType =
+  | 'agent'
+  | 'connection'
+  | 'watcher'
+  | 'device'
+  | 'member';
+
+export type LifecycleOp = 'created' | 'updated' | 'deleted';
+
+interface LifecycleEventParams {
+  organizationId: string;
+  entityType: LifecycleEntityType;
+  op: LifecycleOp;
+  entityId: string | number;
+  /** Human-readable summary (e.g. "Agent 'Marketing' created"). */
+  summary: string;
+  /** Optional extra metadata merged under `metadata.extra`. */
+  extra?: Record<string, unknown>;
+  createdBy?: string | null;
+}
+
+/**
+ * Record an entity-lifecycle change as a `semantic_type='change'` event.
+ * Used by the metric_series SQL to compute cumulative counts (agents,
+ * connections, …) and the dashboard sparklines. Fire-and-forget.
+ *
+ * Metadata shape (queryable via `metadata->>'category'`, etc.):
+ *   {
+ *     "category": "lifecycle",
+ *     "entity_type": "connection",
+ *     "op": "created",
+ *     "entity_id": "...",
+ *     "extra": { ... }    // optional
+ *   }
+ */
+export function recordLifecycleEvent(params: LifecycleEventParams): void {
+  const externalId = `lifecycle_${params.entityType}_${params.op}_${params.entityId}_${Date.now()}`;
+
+  insertEvent({
+    entityIds: [],
+    organizationId: params.organizationId,
+    originId: externalId,
+    title: params.summary,
+    semanticType: 'change',
+    originType: `${params.entityType}_${params.op}`,
+    metadata: {
+      category: 'lifecycle',
+      entity_type: params.entityType,
+      op: params.op,
+      entity_id: String(params.entityId),
+      ...(params.extra ? { extra: params.extra } : {}),
+    },
+    createdBy: params.createdBy ?? null,
+  }).catch((err) => {
+    logger.warn(
+      { err, entityType: params.entityType, op: params.op },
+      '[insert-event] failed to record lifecycle event'
+    );
+  });
+}

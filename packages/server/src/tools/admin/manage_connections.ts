@@ -48,7 +48,7 @@ import {
 } from '../../utils/connections';
 import { ensureConnectorInstalled } from '../../utils/ensure-connector-installed';
 import { applyEntityLinkOverrides } from '../../utils/entity-link-overrides';
-import { recordChangeEvent } from '../../utils/insert-event';
+import { recordChangeEvent, recordLifecycleEvent } from '../../utils/insert-event';
 import logger from '../../utils/logger';
 import { syncOAuthConnectionsForAuthProfile } from '../../utils/oauth-connection-state';
 import { getWorkspaceRole } from '../../utils/organization-access';
@@ -1104,6 +1104,15 @@ async function handleCreate(
     'Connection created'
   );
 
+  recordLifecycleEvent({
+    organizationId,
+    entityType: 'connection',
+    op: 'created',
+    entityId: inserted[0].id,
+    summary: `Connection "${displayName}" created`,
+    extra: { connector_key: args.connector_key, slug: inserted[0].slug },
+  });
+
   return {
     action: 'create',
     connection: enrichWithAuthProfiles(
@@ -1408,6 +1417,15 @@ async function handleConnect(
     },
     'Connection created via connect flow'
   );
+
+  recordLifecycleEvent({
+    organizationId,
+    entityType: 'connection',
+    op: 'created',
+    entityId: connection.id,
+    summary: `Connection "${connectDisplayName}" created`,
+    extra: { connector_key: args.connector_key, slug: connection.slug, via: 'connect' },
+  });
 
   // If active immediately, return simple result
   if (!needsConnectFlow && !needsBrowserAuth) {
@@ -1828,6 +1846,14 @@ async function handleDelete(
       slug: conn.slug,
       display_name: conn.display_name,
     },
+  });
+  recordLifecycleEvent({
+    organizationId,
+    entityType: 'connection',
+    op: 'deleted',
+    entityId: args.connection_id,
+    summary: `Connection "${connName}" deleted`,
+    extra: { connector_key: conn.connector_key, slug: conn.slug },
   });
 
   return {

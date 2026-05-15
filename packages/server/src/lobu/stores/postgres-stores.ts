@@ -11,6 +11,7 @@ import {
   type StoredConnection,
 } from '@lobu/core';
 import { getDb } from '../../db/client';
+import { recordLifecycleEvent } from '../../utils/insert-event';
 import { getOrgId, tryGetOrgId } from './org-context';
 
 export const AGENT_ID_PATTERN = /^[a-z][a-z0-9-]{2,59}$/;
@@ -288,7 +289,9 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
       // The PK is (organization_id, id) — UPSERT on the composite key. Two
       // orgs can independently own an agent with the same id; the conflict
       // path here only triggers for re-saves within the *same* org.
-      await sql`
+      // `xmax = 0` on the returning row distinguishes a fresh INSERT from
+      // a CONFLICT UPDATE so we can emit the right lifecycle event.
+      const rows = await sql`
         INSERT INTO agents (id, organization_id, name, description, owner_platform, owner_user_id,
                             is_workspace_agent, workspace_id, created_at)
         VALUES (
@@ -306,7 +309,18 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
           workspace_id = EXCLUDED.workspace_id,
           last_used_at = ${metadata.lastUsedAt ? new Date(metadata.lastUsedAt) : null},
           updated_at = ${now}
+        RETURNING (xmax = 0) AS inserted
       `;
+      const inserted = rows[0]?.inserted === true;
+      recordLifecycleEvent({
+        organizationId: orgId,
+        entityType: 'agent',
+        op: inserted ? 'created' : 'updated',
+        entityId: agentId,
+        summary: inserted
+          ? `Agent "${metadata.name}" created`
+          : `Agent "${metadata.name}" updated`,
+      });
     },
     async updateMetadata(agentId, updates) {
       const existing = await store.getMetadata(agentId);
@@ -316,7 +330,20 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
     async deleteMetadata(agentId) {
       const sql = getDb();
       const orgId = getOrgId();
-      await sql`DELETE FROM agents WHERE id = ${agentId} AND organization_id = ${orgId}`;
+      const rows = await sql`
+        DELETE FROM agents
+        WHERE id = ${agentId} AND organization_id = ${orgId}
+        RETURNING name
+      `;
+      if (rows.length > 0) {
+        recordLifecycleEvent({
+          organizationId: orgId,
+          entityType: 'agent',
+          op: 'deleted',
+          entityId: agentId,
+          summary: `Agent "${rows[0].name ?? agentId}" deleted`,
+        });
+      }
     },
     async hasAgent(agentId) {
       const sql = getDb();

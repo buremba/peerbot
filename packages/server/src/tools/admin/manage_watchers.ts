@@ -25,7 +25,7 @@ import type { ComponentReferenceDocumentation } from '../../types/templates';
 import { entityLinkMatchSql } from '../../utils/content-search';
 import { ToolUserError } from '../../utils/errors';
 import { nextRunAt, validateSchedule } from '../../utils/cron';
-import { recordChangeEvent } from '../../utils/insert-event';
+import { recordChangeEvent, recordLifecycleEvent } from '../../utils/insert-event';
 import { verifyWindowToken } from '../../utils/jwt';
 import logger from '../../utils/logger';
 import {
@@ -1072,6 +1072,15 @@ async function handleCreate(
 
   logger.info(`[manage_watchers] Created watcher ${watcherId} with slug '${args.slug}'`);
 
+  recordLifecycleEvent({
+    organizationId,
+    entityType: 'watcher',
+    op: 'created',
+    entityId: watcherId,
+    summary: `Watcher "${args.name ?? args.slug}" created`,
+    extra: { slug: args.slug, agent_id: args.agent_id ?? null },
+  });
+
   return {
     action: 'create',
     watcher_id: String(watcherId),
@@ -1172,6 +1181,15 @@ async function handleCreateFromVersion(
     `;
 
     created.push({ watcher_id: String(watcherId), entity_id: entityId, name: watcherName });
+
+    recordLifecycleEvent({
+      organizationId,
+      entityType: 'watcher',
+      op: 'created',
+      entityId: watcherId,
+      summary: `Watcher "${watcherName}" created`,
+      extra: { slug: watcherSlug, via: 'create_from_version' },
+    });
   }
 
   return { action: 'create_from_version', created };
@@ -2133,6 +2151,15 @@ async function handleDelete(args: ManageWatchersArgs): Promise<{
               watcher_id: watcherId,
               watcher_name: watcher.name,
             },
+          });
+        }
+        if (watcher.organization_id) {
+          recordLifecycleEvent({
+            organizationId: watcher.organization_id as string,
+            entityType: 'watcher',
+            op: 'deleted',
+            entityId: watcherId,
+            summary: `Watcher "${watcher.name || watcherId}" archived`,
           });
         }
 

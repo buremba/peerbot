@@ -8,6 +8,7 @@
 import { getPublicReadableActions, getRequiredAccessLevel } from '../auth/tool-access';
 import type { Env } from '../index';
 import { INTERNAL_REST_TOOLS } from './admin';
+import { MetricSeriesSchema, metricSeries } from './admin/metric_series';
 import { QuerySqlSchema, querySql } from './admin/query_sql';
 import { ListOrganizationsSchema } from './organizations';
 import { ResolvePathSchema, resolvePath } from './resolve_path';
@@ -143,6 +144,15 @@ const TOOLS: ToolDefinition[] = [
     inputSchema: QuerySqlSchema,
     annotations: READ_ONLY,
     handler: querySql,
+  },
+  {
+    name: 'metric_series',
+    description:
+      'Run a read-only time-series SQL for dashboard sparklines. Caller passes a single SELECT returning a bucket column + N numeric stat columns; the same validator/auto-scoper that powers `query_sql` injects `$1 = organization_id`. Returns `{ columns, rows }` for direct frontend consumption.',
+    inputSchema: MetricSeriesSchema,
+    annotations: READ_ONLY,
+    internal: true,
+    handler: metricSeries,
   },
   {
     name: 'run_sdk',

@@ -540,7 +540,9 @@ describe("McpProxy", () => {
       await grantStore.grant(
         "agent1",
         "/mcp/test-mcp/tools/dangerous_tool",
-        null
+        null,
+        undefined,
+        "test-org"
       );
 
       mockUpstreamFetch({

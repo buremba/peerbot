@@ -453,6 +453,7 @@ export abstract class BaseDeploymentManager {
     messageData: MessagePayload
   ): Promise<void> {
     const agentId = messageData.agentId;
+    const orgId = messageData.organizationId;
 
     // Sync networkConfig.allowedDomains to grant store
     if (
@@ -461,7 +462,7 @@ export abstract class BaseDeploymentManager {
       messageData.networkConfig?.allowedDomains?.length
     ) {
       for (const domain of messageData.networkConfig.allowedDomains) {
-        await this.grantStore.grant(agentId, domain, null);
+        await this.grantStore.grant(agentId, domain, null, undefined, orgId);
       }
       logger.info(
         `Synced network config domains as grants for ${deploymentName}: ${messageData.networkConfig.allowedDomains.join(", ")}`
@@ -471,7 +472,7 @@ export abstract class BaseDeploymentManager {
     // Sync operator-pre-approved MCP tool patterns to grant store
     if (this.grantStore && agentId && messageData.preApprovedTools?.length) {
       for (const pattern of messageData.preApprovedTools) {
-        await this.grantStore.grant(agentId, pattern, null);
+        await this.grantStore.grant(agentId, pattern, null, undefined, orgId);
       }
       logger.info(
         `Synced pre-approved tool patterns as grants for ${deploymentName}: ${messageData.preApprovedTools.join(", ")}`
@@ -493,7 +494,7 @@ export abstract class BaseDeploymentManager {
         "releases.nixos.org",
       ];
       for (const domain of NIX_DOMAINS) {
-        await this.grantStore.grant(agentId, domain, null);
+        await this.grantStore.grant(agentId, domain, null, undefined, orgId);
       }
       logger.info(
         `Added Nix cache domains as grants for ${deploymentName}: ${NIX_DOMAINS.join(", ")}`
@@ -966,8 +967,9 @@ export abstract class BaseDeploymentManager {
     );
     if (hasCliBackendProviders && this.grantStore && agentId) {
       const NPM_DOMAINS = ["registry.npmjs.org", "registry.npmmirror.com"];
+      const orgId = validated.organizationId;
       for (const domain of NPM_DOMAINS) {
-        await this.grantStore.grant(agentId, domain, null);
+        await this.grantStore.grant(agentId, domain, null, undefined, orgId);
       }
       logger.info(
         `Added npm registry domains as grants for ${deploymentName}: ${NPM_DOMAINS.join(", ")}`

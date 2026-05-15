@@ -67,6 +67,7 @@ fail closed and deny with a reason.
 """
 
 [memory]
+organization_id = "UdNAH1bb3csC842vhOgxAHVcfX4tYU5A"
 enabled = true
 org = "lobu-team"
 name = "Lobu Team"

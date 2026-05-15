@@ -679,7 +679,13 @@ export function registerActionHandlers(
       if (decision === "deny") {
         if (grantStore) {
           await grantStore
-            .grant(pending.agentId, pattern, null, true)
+            .grant(
+              pending.agentId,
+              pattern,
+              null,
+              true,
+              connection.organizationId
+            )
             .catch(() => undefined);
         }
         try {
@@ -697,7 +703,13 @@ export function registerActionHandlers(
 
       if (grantStore) {
         try {
-          await grantStore.grant(pending.agentId, pattern, expiresAt);
+          await grantStore.grant(
+            pending.agentId,
+            pattern,
+            expiresAt,
+            undefined,
+            connection.organizationId
+          );
           logger.info(
             {
               requestId,

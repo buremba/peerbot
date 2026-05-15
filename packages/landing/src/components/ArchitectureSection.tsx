@@ -7,18 +7,8 @@ export function ArchitectureSection(props: {
   return (
     <section
       id="architecture"
-      class="relative px-4 sm:px-6 max-w-[72rem] mx-auto"
+      class="relative px-4 sm:px-6 max-w-[72rem] mx-auto pt-10"
     >
-      <div
-        class="flex items-center justify-between text-[11px] font-semibold tracking-[0.14em] uppercase pt-6 pb-3"
-        style={{ color: "var(--color-page-text-muted)" }}
-      >
-        <span>
-          <span class="opacity-60">[06]</span> <span>Architecture</span>
-        </span>
-        <span class="opacity-70">/ Gateway ↔ Workers</span>
-      </div>
-
       <div
         class="rounded-2xl overflow-hidden dotted-bg"
         style={{

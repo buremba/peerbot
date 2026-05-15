@@ -1278,24 +1278,6 @@ function AgentsPillSection({
           );
         })}
       </div>
-      <SectionHeader
-        icon={<HardDriveIcon size={12} />}
-        label="Connected apps"
-      />
-      <div class="flex flex-col gap-0.5 px-2 pb-2">
-        <SidebarRow
-          leading={<BrandLogo name="claude" size={12} radius={2} />}
-          label="Claude Desktop"
-        />
-        <SidebarRow
-          leading={<BrandLogo name="openclaw" size={12} radius={2} />}
-          label="OpenClaw"
-        />
-        <SidebarRow
-          leading={<BrandLogo name="cursor" size={12} radius={2} />}
-          label="Cursor"
-        />
-      </div>
     </div>
   );
 }
@@ -3170,7 +3152,6 @@ function ExternalLinkIcon() {
   );
 }
 
-
 function KnowledgeSearchInput() {
   return (
     <div
@@ -3191,9 +3172,9 @@ function KnowledgeSearchInput() {
 function KnowledgeFeed({ rows }: { rows?: KnowledgeRow[] }) {
   const useDynamic = rows && rows.length > 0;
   const items = useDynamic
-    ? rows.slice(0, 2).map((row) => (
-        <UseCaseKnowledgeCard key={row.id} row={row} />
-      ))
+    ? rows
+        .slice(0, 2)
+        .map((row) => <UseCaseKnowledgeCard key={row.id} row={row} />)
     : KNOWLEDGE_ITEMS.slice(0, 2).map((item) =>
         item.kind === "action" ? (
           <KnowledgeActionCard key={item.id} item={item} />
@@ -3301,7 +3282,6 @@ function UseCaseKnowledgeCard({ row }: { row: KnowledgeRow }) {
     </article>
   );
 }
-
 
 function KnowledgeCard({ item }: { item: KnowledgeMemoryItem }) {
   return (
@@ -4029,25 +4009,19 @@ export function HeroProductCard({
 
   // Flatten connectorRows (one row per connector with N nested connections)
   // into the v2 sidebar shape (one row per individual connection).
+  // One row per connector (not per sub-connection) so the sidebar reflects
+  // the use case's actual integrations — Crunchbase / LinkedIn for VC,
+  // GitHub / Linear for engineering, etc. — instead of always showing the
+  // same sample member names.
   const sidebarConnections: SidebarConnection[] = connectorRows
-    .flatMap((c): SidebarConnection[] =>
-      c.connections.length > 0
-        ? c.connections.map((conn) => ({
-            label: conn.member,
-            connectorName: c.name,
-            initial: c.name.charAt(0).toUpperCase(),
-            status: c.status === "Connected" ? "active" : "pending",
-          }))
-        : [
-            {
-              label: c.name,
-              connectorName: c.name,
-              initial: c.name.charAt(0).toUpperCase(),
-              status: c.status === "Connected" ? "active" : "pending",
-            },
-          ]
-    )
-    .slice(0, 6);
+    .slice(0, 6)
+    .map((c) => ({
+      label: c.name,
+      connectorName: c.name,
+      initial: c.name.charAt(0).toUpperCase(),
+      status: c.status === "Connected" ? "active" : "pending",
+      feedCount: c.connections.length > 0 ? c.connections.length : undefined,
+    }));
   const sidebarAgents: SidebarAgent[] = agentRows
     .slice(0, 4)
     .map((a) => ({ name: a.name }));

@@ -8,13 +8,8 @@ import {
 } from "../use-case-showcases";
 import { ArchitectureSection } from "./ArchitectureSection";
 import { CTA } from "./CTA";
-import { DataModelSection } from "./DataModelSection";
 import { FeatureBlock } from "./FeatureBlock";
-import {
-  HostingGraphic,
-  SharedMemoryGraphic,
-  SkillsGraphic,
-} from "./FeatureGraphics";
+import { SharedMemoryGraphic, SkillsGraphic } from "./FeatureGraphics";
 import { HeroProductCard } from "./HeroProductCard";
 import { HeroSection, type HeroStageId } from "./HeroSection";
 import { LatestBlogPosts, type LatestBlogPost } from "./LatestBlogPosts";
@@ -90,25 +85,7 @@ export function LandingPage(props: {
         />
       </section>
 
-      <section
-        id="hosting"
-        class="relative px-4 sm:px-6 max-w-[72rem] mx-auto pt-10"
-      >
-        <FeatureBlock
-          eyebrow="Self-host or managed"
-          title="Keep data and credentials under control."
-          description="Run the open-source engine on your infrastructure or use Lobu Cloud. Workers stay isolated and never receive raw secrets."
-          ctaLabel="Self-host guide"
-          ctaHref="/getting-started/"
-          graphic={<HostingGraphic />}
-        />
-      </section>
-
       <ArchitectureSection activeUseCaseId={activeUseCaseId} />
-
-      <div class="py-20" id="data-model">
-        <DataModelSection useCaseId={activeUseCaseId} />
-      </div>
 
       <CTA startUrl={startUrl} />
 

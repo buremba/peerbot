@@ -30,6 +30,7 @@ import {
   updateAuthProfile,
 } from '../../utils/auth-profiles';
 import { createConnectToken } from '../../utils/connect-tokens';
+import { getWorkspaceRole } from '../../utils/organization-access';
 import type { ToolContext } from '../registry';
 import { routeAction } from './action-router';
 import { getScopedConnectorDefinition } from './connector-definition-helpers';
@@ -450,6 +451,20 @@ async function handleCreateAuthProfile(
   args: Extract<AuthProfilesArgs, { action: 'create_auth_profile' }>,
   ctx: ToolContext
 ): Promise<ManageAuthProfilesResult> {
+  // Only oauth_account profiles are user-personal; every other kind is an
+  // org-shared credential (env keys, OAuth app client_id/secret, browser
+  // session, interactive). Gate non-personal kinds on admin role.
+  if (args.profile_kind !== 'oauth_account') {
+    const role = ctx.userId
+      ? await getWorkspaceRole(getDb(), ctx.organizationId, ctx.userId)
+      : null;
+    if (role !== 'admin' && role !== 'owner') {
+      return {
+        error: `Only admins can create ${args.profile_kind} auth profiles. Ask an organization owner or admin to configure these credentials.`,
+      };
+    }
+  }
+
   // browser_session profiles are device-scoped; connector_key is optional
   // (only used as a hint to look up a default cdp_url). Other kinds remain
   // per-connector and require it.
@@ -650,6 +665,23 @@ async function handleUpdateAuthProfile(
   args: Extract<AuthProfilesArgs, { action: 'update_auth_profile' }>,
   ctx: ToolContext
 ): Promise<ManageAuthProfilesResult> {
+  // Mirror create gating: only oauth_account profiles are member-editable.
+  // env / oauth_app / browser_session are org-shared credentials — admin only.
+  const existingForRoleCheck = await getAuthProfileBySlug(
+    ctx.organizationId,
+    args.auth_profile_slug
+  );
+  if (existingForRoleCheck && existingForRoleCheck.profile_kind !== 'oauth_account') {
+    const role = ctx.userId
+      ? await getWorkspaceRole(getDb(), ctx.organizationId, ctx.userId)
+      : null;
+    if (role !== 'admin' && role !== 'owner') {
+      return {
+        error: `Only admins can modify ${existingForRoleCheck.profile_kind} auth profiles.`,
+      };
+    }
+  }
+
   let authProfile = await updateAuthProfile({
     organizationId: ctx.organizationId,
     slug: args.auth_profile_slug,

@@ -32,6 +32,7 @@ import {
 import {
   createAuthProfile,
   getAuthProfileById,
+  getAuthProfileBySlug,
   getBrowserSessionReadiness,
   getPrimaryAuthProfileForKind,
   normalizeAuthValues,
@@ -789,14 +790,35 @@ async function handleCreate(
   const sql = getDb();
   const { organizationId, userId } = ctx;
 
+  // Resolve caller role once — we use it for created_by overrides, explicit
+  // app_auth_profile picks, and member-friendly error messages downstream.
+  const callerRole = userId ? await getWorkspaceRole(sql, organizationId, userId) : null;
+  const callerIsAdmin = callerRole === 'admin' || callerRole === 'owner';
+
   // Resolve effective owner — admins can create connections on behalf of other users
   let effectiveCreatedBy = userId;
   if (args.created_by && args.created_by !== userId) {
-    const callerRole = await getWorkspaceRole(sql, organizationId, userId!);
-    if (callerRole !== 'admin' && callerRole !== 'owner') {
+    if (!callerIsAdmin) {
       return { error: 'Only admins can create connections for other users.' };
     }
     effectiveCreatedBy = args.created_by;
+  }
+
+  // Non-admins must accept the org-default app profile — they can't pick or
+  // bring an alternate OAuth client. If they explicitly pass a slug, it has
+  // to match the admin-pinned default for the connector.
+  if (!callerIsAdmin && args.app_auth_profile_slug) {
+    const picked = await getAuthProfileBySlug(organizationId, args.app_auth_profile_slug);
+    if (!picked || picked.profile_kind !== 'oauth_app') {
+      return { error: `App auth profile '${args.app_auth_profile_slug}' not found` };
+    }
+    const pinnedAsDefault =
+      picked.is_default_for_connector && picked.connector_key === args.connector_key;
+    if (!pinnedAsDefault) {
+      return {
+        error: `Only admins can override the OAuth app profile. Ask an admin to pin '${args.app_auth_profile_slug}' as the default for this connector, or omit app_auth_profile_slug to use the org default.`,
+      };
+    }
   }
 
   // Ensure connector is installed from bundled catalog if needed
@@ -933,7 +955,9 @@ async function handleCreate(
   if (authSelection?.selectedKind === 'oauth_account') {
     if (!authSelection.appAuthProfile) {
       return {
-        error: 'Select or create an OAuth app profile before creating the connection.',
+        error: callerIsAdmin
+          ? 'Select or create an OAuth app profile before creating the connection.'
+          : `No OAuth app credentials configured for this connector. Ask an admin to set up the ${authSelection.oauthMethod?.provider ?? args.connector_key} app in /oauth-apps first.`,
       };
     }
     if (authSelection.appAuthProfile.status !== 'active') {

@@ -13,6 +13,7 @@
 import { PGlite } from '@electric-sql/pglite';
 import { pg_trgm } from '@electric-sql/pglite/contrib/pg_trgm';
 import { vector } from '@electric-sql/pglite/vector';
+import { postgis } from '@electric-sql/pglite-postgis';
 import { PGLiteSocketServer } from '@electric-sql/pglite-socket';
 
 function readPositiveIntEnv(name: string, fallback: number): number {
@@ -47,7 +48,13 @@ export async function startPgliteBackend(): Promise<PgliteBackend> {
 
   const db = await PGlite.create({
     // No dataDir → purely in-memory; tests are hermetic and leave no trace.
-    extensions: { vector, pg_trgm },
+    // postgis is an experimental WASM bundle (@electric-sql/pglite-postgis,
+    // v0.0.7 at time of writing). We register it here so the
+    // geo-enrichment migration runs the full path under test instead of
+    // tripping the DO-block fallback that production self-hosters
+    // without PostGIS depend on. Keeps unit + integration coverage
+    // aligned with what prod actually executes.
+    extensions: { vector, pg_trgm, postgis },
   });
 
   const socketServer = new PGLiteSocketServer({

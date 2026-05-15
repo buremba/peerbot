@@ -287,6 +287,7 @@
       },
       "devDependencies": {
         "@electric-sql/pglite": "^0.4.3",
+        "@electric-sql/pglite-postgis": "^0.0.7",
         "@electric-sql/pglite-socket": "^0.1.3",
         "@types/react": "^19.2.14",
         "@vitest/coverage-v8": "^2.1.8",
@@ -677,6 +678,8 @@
     "@discordjs/ws": ["@discordjs/ws@1.2.3", "", { "dependencies": { "@discordjs/collection": "^2.1.0", "@discordjs/rest": "^2.5.1", "@discordjs/util": "^1.1.0", "@sapphire/async-queue": "^1.5.2", "@types/ws": "^8.5.10", "@vladfrangu/async_event_emitter": "^2.2.4", "discord-api-types": "^0.38.1", "tslib": "^2.6.2", "ws": "^8.17.0" } }, "sha512-wPlQDxEmlDg5IxhJPuxXr3Vy9AjYq5xCvFWGJyD7w7Np8ZGu+Mc+97LCoEc/+AYCo2IDpKioiH0/c/mj5ZR9Uw=="],
 
     "@electric-sql/pglite": ["@electric-sql/pglite@0.4.4", "", {}, "sha512-g/6CWAJ4XOkObWCWAQ2IReZD8VvsDy3poRHSKvpRR2F96F8WJ3HVbjpso3gN7l0q6QPPgvxSSpl/qo5k8a7mkQ=="],
+
+    "@electric-sql/pglite-postgis": ["@electric-sql/pglite-postgis@0.0.7", "", { "peerDependencies": { "@electric-sql/pglite": "0.4.5" } }, "sha512-qWbWD3WG+PL0gBQ2YzvK0RI7C0i+VPxEpGWb8cT99x1x7kujCtfTCL2gRxFWmh5rqjoZTyY69HkcXphQH4bTNA=="],
 
     "@electric-sql/pglite-socket": ["@electric-sql/pglite-socket@0.1.4", "", { "peerDependencies": { "@electric-sql/pglite": "0.4.4" }, "bin": { "pglite-server": "dist/scripts/server.js" } }, "sha512-2LuMFxJPE2FbjWDrWpylWwhZ5uT03rQfBLM7g2AdZmiG3JjC8sbYFkFR4ZeoqVcn22wKzpJTXFV22mQ+s4Oueg=="],
 

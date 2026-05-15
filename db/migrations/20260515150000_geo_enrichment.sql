@@ -36,8 +36,9 @@
 
 DO $migration$
 BEGIN
-    -- Try to install PostGIS. If it's not available on this host (PGlite,
-    -- managed Postgres without the extension, etc.), bail out cleanly.
+    -- Try to install PostGIS. If it's not available on this host (PGlite
+    -- without the postgis extension registered, managed Postgres without
+    -- the extension, etc.), bail out cleanly.
     BEGIN
         CREATE EXTENSION IF NOT EXISTS postgis;
     EXCEPTION
@@ -47,6 +48,21 @@ BEGIN
                 SQLERRM;
             RETURN;
     END;
+
+    -- spatial_ref_sys row for SRID 4326 (WGS-84). Real PostGIS installs
+    -- bundle ~8000 standard projections; the pglite-postgis WASM build
+    -- ships an empty table to keep the bundle small. Inserting the one
+    -- row we use makes nearest-neighbour queries work everywhere; the
+    -- ON CONFLICT skips on prod where the row already exists.
+    INSERT INTO spatial_ref_sys (srid, auth_name, auth_srid, srtext, proj4text)
+    VALUES (
+        4326,
+        'EPSG',
+        4326,
+        'GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563,AUTHORITY["EPSG","7030"]],AUTHORITY["EPSG","6326"]],PRIMEM["Greenwich",0,AUTHORITY["EPSG","8901"]],UNIT["degree",0.0174532925199433,AUTHORITY["EPSG","9122"]],AUTHORITY["EPSG","4326"]]',
+        '+proj=longlat +datum=WGS84 +no_defs'
+    )
+    ON CONFLICT (srid) DO NOTHING;
 
     -- Everything below this point assumes PostGIS is loaded. EXECUTE-wrapping
     -- the DDL keeps the SQL parser from choking on `geography(POINT, 4326)`

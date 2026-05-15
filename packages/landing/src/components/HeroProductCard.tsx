@@ -1406,38 +1406,39 @@ function AppShell({
       />
 
       <div class="relative flex flex-col min-h-0 overflow-hidden">
-        {/* Breadcrumb + page header */}
-        <div
-          class="px-4 pt-3 pb-3"
-          style={{ borderBottom: "1px solid var(--color-page-border)" }}
-        >
-          <div class="flex flex-wrap items-center gap-3">
-            <div class="flex flex-col min-w-0">
-              <h3
-                class="font-display text-[16px] font-semibold leading-tight"
-                style={{
-                  color: "var(--color-page-text)",
-                  letterSpacing: "-0.01em",
-                }}
-              >
-                {pageTitle}
-              </h3>
-              {pageSubtitle ? (
-                <p
-                  class="text-[11px] mt-0.5 leading-snug"
-                  style={{ color: "var(--color-page-text-muted)" }}
+        {pageTitle ? (
+          <div
+            class="px-4 pt-3 pb-3"
+            style={{ borderBottom: "1px solid var(--color-page-border)" }}
+          >
+            <div class="flex flex-wrap items-center gap-3">
+              <div class="flex flex-col min-w-0">
+                <h3
+                  class="font-display text-[16px] font-semibold leading-tight"
+                  style={{
+                    color: "var(--color-page-text)",
+                    letterSpacing: "-0.01em",
+                  }}
                 >
-                  {pageSubtitle}
-                </p>
+                  {pageTitle}
+                </h3>
+                {pageSubtitle ? (
+                  <p
+                    class="text-[11px] mt-0.5 leading-snug"
+                    style={{ color: "var(--color-page-text-muted)" }}
+                  >
+                    {pageSubtitle}
+                  </p>
+                ) : null}
+              </div>
+              {toolbar ? (
+                <div class="ml-auto hidden max-w-full flex-wrap items-center justify-end gap-2 sm:flex">
+                  {toolbar}
+                </div>
               ) : null}
             </div>
-            {toolbar ? (
-              <div class="ml-auto hidden max-w-full flex-wrap items-center justify-end gap-2 sm:flex">
-                {toolbar}
-              </div>
-            ) : null}
           </div>
-        </div>
+        ) : null}
         <div class="flex-1 px-4 py-3 overflow-y-auto min-h-0">{children}</div>
         {rightPanel}
       </div>
@@ -2102,12 +2103,12 @@ function StatsStripCard({
   stats: Array<{ label: string; value: number }>;
 }) {
   return (
-    <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+    <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
       {stats.map((s) => (
         <div
           key={s.label}
-          class="rounded-lg px-3 py-2.5 bg-[var(--color-page-surface)]"
-          style={{ border: "1px solid var(--color-page-border)" }}
+          class="rounded-lg px-3 py-2"
+          style={{ background: "var(--color-page-surface-dim)" }}
         >
           <div
             class="text-[11px]"
@@ -2116,7 +2117,7 @@ function StatsStripCard({
             {s.label}
           </div>
           <div
-            class="mt-0.5 text-[22px] font-semibold leading-none"
+            class="mt-0.5 text-[20px] font-semibold leading-none"
             style={{ color: "var(--color-page-text)" }}
           >
             {s.value}
@@ -2137,8 +2138,8 @@ function FeatureGridLite({
       {items.map((it) => (
         <div
           key={it.title}
-          class="rounded-lg p-3 flex flex-col gap-1.5 bg-[var(--color-page-surface)]"
-          style={{ border: "1px solid var(--color-page-border)" }}
+          class="rounded-lg p-3 flex flex-col gap-1.5"
+          style={{ background: "var(--color-page-surface-dim)" }}
         >
           <span
             class="inline-flex h-5 w-5 items-center justify-center"
@@ -2349,28 +2350,12 @@ function DeviceTargetCard({
   description: string;
   action: { label: string; tone?: "primary" | "ghost" | "muted" };
 }) {
-  const palette =
-    action.tone === "primary"
-      ? {
-          bg: "var(--color-page-bg-inverted)",
-          color: "var(--color-page-text-inverted)",
-          border: "var(--color-page-bg-inverted)",
-        }
-      : action.tone === "muted"
-        ? {
-            bg: "var(--color-page-surface)",
-            color: "var(--color-page-text-muted)",
-            border: "var(--color-page-border)",
-          }
-        : {
-            bg: "var(--color-page-surface)",
-            color: "var(--color-page-text)",
-            border: "var(--color-page-border)",
-          };
+  const isPrimary = action.tone === "primary";
+  const isMuted = action.tone === "muted";
   return (
     <div
-      class="flex h-full flex-col gap-2 rounded-lg p-3 bg-[var(--color-page-surface)]"
-      style={{ border: "1px solid var(--color-page-border)" }}
+      class="flex h-full flex-col gap-2 rounded-lg p-3"
+      style={{ background: "var(--color-page-surface-dim)" }}
     >
       <div class="flex items-center gap-2">
         <span style={{ color: "var(--color-page-text-muted)" }}>{icon}</span>
@@ -2391,9 +2376,14 @@ function DeviceTargetCard({
         <span
           class="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium"
           style={{
-            background: palette.bg,
-            color: palette.color,
-            border: `1px solid ${palette.border}`,
+            background: isPrimary
+              ? "var(--color-page-bg-inverted)"
+              : "var(--color-page-surface)",
+            color: isPrimary
+              ? "var(--color-page-text-inverted)"
+              : isMuted
+                ? "var(--color-page-text-muted)"
+                : "var(--color-page-text)",
           }}
         >
           {action.label}
@@ -2412,8 +2402,8 @@ function ConnectorCatalogTile({
 }) {
   return (
     <div
-      class="flex items-center gap-2 rounded-md p-2 bg-[var(--color-page-surface)]"
-      style={{ border: "1px solid var(--color-page-border)" }}
+      class="flex items-center gap-2 rounded-md p-2"
+      style={{ background: "var(--color-page-surface-dim)" }}
     >
       <BrandLogo name={name} size={26} radius={4} />
       <div class="min-w-0">
@@ -2561,14 +2551,11 @@ function ConnectorsLanding({
     <div class="flex flex-col gap-4">
       <StatsStripCard stats={stats} />
 
-      <div
-        class="rounded-lg bg-[var(--color-page-surface)] flex flex-col gap-3 p-4"
-        style={{ border: "1px solid var(--color-page-border)" }}
-      >
-        <div class="flex items-center gap-2.5">
-          <HardDriveIcon size={16} />
+      <div class="flex flex-col gap-2">
+        <div class="flex items-center gap-2">
+          <HardDriveIcon size={14} />
           <h4
-            class="text-[14px] font-semibold leading-none"
+            class="text-[13px] font-semibold leading-none"
             style={{ color: "var(--color-page-text)" }}
           >
             Devices
@@ -2588,14 +2575,11 @@ function ConnectorsLanding({
         </div>
       </div>
 
-      <div
-        class="rounded-lg bg-[var(--color-page-surface)] flex flex-col gap-3 p-4"
-        style={{ border: "1px solid var(--color-page-border)" }}
-      >
-        <div class="flex items-center gap-2.5">
-          <CableIcon size={16} />
+      <div class="flex flex-col gap-2 pt-2">
+        <div class="flex items-center gap-2">
+          <CableIcon size={14} />
           <h4
-            class="text-[14px] font-semibold leading-none"
+            class="text-[13px] font-semibold leading-none"
             style={{ color: "var(--color-page-text)" }}
           >
             Connections
@@ -3574,298 +3558,6 @@ function ActionField({
 
 /* ------------------------------ tab 4: connect ------------------------------ */
 
-function DeployChannelGroup({
-  title,
-  items,
-}: {
-  title: string;
-  items: Array<{ label: string; active?: boolean }>;
-}) {
-  return (
-    <div class="flex min-w-0 items-center gap-2">
-      <span
-        class="shrink-0 text-[10px] font-semibold uppercase tracking-wider"
-        style={{ color: "var(--color-page-text-muted)" }}
-      >
-        {title}
-      </span>
-      <div class="flex min-w-0 flex-wrap gap-1.5 lg:flex-nowrap">
-        {items.map((item) => (
-          <span
-            key={item.label}
-            class="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-medium"
-            style={{
-              background: item.active
-                ? "rgba(var(--color-tg-accent-rgb), 0.08)"
-                : "var(--color-page-surface-dim)",
-              border: item.active
-                ? "1px solid rgba(var(--color-tg-accent-rgb), 0.25)"
-                : "1px solid var(--color-page-border)",
-              color: "var(--color-page-text)",
-            }}
-          >
-            <BrandLogo name={item.label} size={12} radius={2} />
-            {item.label}
-          </span>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-type AgentDetailTab = "watchers" | "providers" | "skills" | "channels";
-
-function AgentDetailTabs({
-  active,
-  onChange,
-}: {
-  active: AgentDetailTab;
-  onChange: (next: AgentDetailTab) => void;
-}) {
-  const tabs: Array<{ id: AgentDetailTab; label: string }> = [
-    { id: "watchers", label: "Watchers" },
-    { id: "providers", label: "Providers" },
-    { id: "skills", label: "Skills" },
-    { id: "channels", label: "Channels" },
-  ];
-  return (
-    <div
-      class="flex items-center gap-1"
-      style={{ borderBottom: "1px solid var(--color-page-border)" }}
-    >
-      {tabs.map((t) => {
-        const isActive = t.id === active;
-        return (
-          <button
-            key={t.id}
-            type="button"
-            onClick={() => onChange(t.id)}
-            class="relative px-3 py-2 text-[13px] transition-colors hover:bg-[color:var(--color-page-surface-dim)]"
-            style={{
-              color: isActive
-                ? "var(--color-page-text)"
-                : "var(--color-page-text-muted)",
-              fontWeight: isActive ? 600 : 500,
-              cursor: "pointer",
-            }}
-            aria-selected={isActive}
-            role="tab"
-          >
-            {t.label}
-            {isActive ? (
-              <span
-                class="absolute left-0 right-0 -bottom-px h-[2px]"
-                style={{ background: "var(--color-page-text)" }}
-                aria-hidden="true"
-              />
-            ) : null}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
-function ProvidersTab() {
-  const providers = [
-    {
-      name: "Anthropic",
-      model: "claude-sonnet-4-6",
-      status: "active",
-      keyMask: "sk-ant-•••••rj9",
-    },
-    {
-      name: "OpenAI",
-      model: "gpt-5",
-      status: "active",
-      keyMask: "sk-•••••2c1",
-    },
-    {
-      name: "Google",
-      model: "gemini-3-pro",
-      status: "fallback",
-      keyMask: "AIzaSy•••••8Pq",
-    },
-  ];
-  return (
-    <div
-      class="rounded-lg overflow-hidden bg-[var(--color-page-surface)]"
-      style={{ border: "1px solid var(--color-page-border)" }}
-    >
-      <div
-        class="grid text-[11px] font-medium uppercase tracking-wider px-3 py-2"
-        style={{
-          gridTemplateColumns: "0.8fr 1.2fr 1fr 0.8fr",
-          color: "var(--color-page-text-muted)",
-          borderBottom: "1px solid var(--color-page-border)",
-        }}
-      >
-        <span>Provider</span>
-        <span>Model</span>
-        <span>Key</span>
-        <span class="text-right">Status</span>
-      </div>
-      {providers.map((p, i) => (
-        <div
-          key={p.name}
-          class="grid items-center px-3 py-2.5 text-[13px]"
-          style={{
-            gridTemplateColumns: "0.8fr 1.2fr 1fr 0.8fr",
-            color: "var(--color-page-text)",
-            borderBottom:
-              i === providers.length - 1
-                ? undefined
-                : "1px solid var(--color-page-border)",
-          }}
-        >
-          <span class="font-medium">{p.name}</span>
-          <span
-            class="font-mono text-[12px]"
-            style={{ color: "var(--color-page-text-muted)" }}
-          >
-            {p.model}
-          </span>
-          <span
-            class="font-mono text-[12px] truncate"
-            style={{ color: "var(--color-page-text-muted)" }}
-          >
-            {p.keyMask}
-          </span>
-          <span class="flex justify-end">
-            <Badge
-              label={p.status === "active" ? "Active" : "Fallback"}
-              tone={p.status === "active" ? "green" : "muted"}
-            />
-          </span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function SkillsTab() {
-  const skills = [
-    {
-      slug: "deal-research",
-      desc: "Pull funding rounds + filings from connected sources",
-      net: ["crunchbase.com", "*.linkedin.com"],
-    },
-    {
-      slug: "founder-signals",
-      desc: "Score founders by recent activity and team growth",
-      net: ["api.github.com", "*.linkedin.com"],
-    },
-    {
-      slug: "memory-recall",
-      desc: "Read typed memory + cite source events",
-      net: [],
-    },
-  ];
-  return (
-    <div class="flex flex-col gap-2">
-      {skills.map((s) => (
-        <div
-          key={s.slug}
-          class="rounded-lg bg-[var(--color-page-surface)] px-3 py-2.5"
-          style={{ border: "1px solid var(--color-page-border)" }}
-        >
-          <div class="flex items-center justify-between gap-3">
-            <span
-              class="font-mono text-[13px] font-medium"
-              style={{ color: "var(--color-page-text)" }}
-            >
-              {s.slug}
-            </span>
-            <Badge label="Enabled" tone="green" />
-          </div>
-          <p
-            class="mt-1 text-[12px]"
-            style={{ color: "var(--color-page-text-muted)" }}
-          >
-            {s.desc}
-          </p>
-          {s.net.length > 0 ? (
-            <div
-              class="mt-2 flex flex-wrap items-center gap-1.5 text-[11px]"
-              style={{ color: "var(--color-page-text-muted)" }}
-            >
-              <span class="uppercase tracking-wider">Network</span>
-              {s.net.map((d) => (
-                <span
-                  key={d}
-                  class="inline-flex items-center px-1.5 py-0.5 rounded font-mono"
-                  style={{
-                    background: "var(--color-page-surface-dim)",
-                    border: "1px solid var(--color-page-border)",
-                    color: "var(--color-page-text)",
-                  }}
-                >
-                  {d}
-                </span>
-              ))}
-            </div>
-          ) : null}
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function ChannelsTab({ info }: { info: AgentInfo }) {
-  const mcpClients = [
-    { label: "OpenClaw", active: true },
-    { label: "Claude" },
-    { label: "ChatGPT" },
-    { label: "Any MCP client" },
-  ];
-  const chatChannels = [
-    { label: "Slack", active: true },
-    { label: "Telegram" },
-    { label: "Discord" },
-    { label: "WhatsApp" },
-    { label: "Teams" },
-    { label: "REST API" },
-  ];
-  return (
-    <div class="flex flex-col gap-3">
-      <div
-        class="flex min-w-0 items-center gap-2 rounded-md px-3 py-2 font-mono text-[12px]"
-        style={{
-          background: "var(--color-page-surface-dim)",
-          color: "var(--color-page-text)",
-          border: "1px solid var(--color-page-border)",
-        }}
-      >
-        <span
-          class="text-[10px] font-sans uppercase tracking-wider"
-          style={{ color: "var(--color-page-text-muted)" }}
-        >
-          MCP
-        </span>
-        <span class="flex-1 truncate">{info.mcpEndpoint}</span>
-        <span
-          class="inline-flex h-6 items-center rounded px-2 text-[11px] font-medium"
-          style={{
-            background: "var(--color-page-surface)",
-            color: "var(--color-page-text)",
-            border: "1px solid var(--color-page-border)",
-          }}
-        >
-          Copy
-        </span>
-      </div>
-      <div
-        class="rounded-lg bg-[var(--color-page-surface)] p-3"
-        style={{ border: "1px solid var(--color-page-border)" }}
-      >
-        <div class="flex flex-col gap-3 xl:flex-row xl:items-center xl:gap-8">
-          <DeployChannelGroup title="MCP" items={mcpClients} />
-          <DeployChannelGroup title="Chat/API" items={chatChannels} />
-        </div>
-      </div>
-    </div>
-  );
-}
 
 function WatcherDetail({ watchers }: { watchers: WatcherRow[] }) {
   // Sidebar already lists every watcher under the active agent, so the
@@ -3908,145 +3600,180 @@ function WatcherDetail({ watchers }: { watchers: WatcherRow[] }) {
   ];
 
   return (
-    <div
-      class="rounded-lg overflow-hidden bg-[var(--color-page-surface)] flex flex-col"
-      style={{ border: "1px solid var(--color-page-border)" }}
-    >
-        <div
-          class="flex items-center justify-between gap-2 px-3 py-2"
-          style={{ borderBottom: "1px solid var(--color-page-border)" }}
-        >
-          <div class="flex items-center gap-2 min-w-0">
-            <StatusDot
-              tone={selected.status === "Active" ? "green" : "muted"}
-            />
-            <span
-              class="text-[13px] font-semibold truncate"
-              style={{ color: "var(--color-page-text)" }}
-            >
-              {selected.name}
-            </span>
-            <Badge
-              label={selected.status}
-              tone={selected.status === "Active" ? "green" : "muted"}
-            />
-          </div>
+    <div class="flex flex-col gap-3">
+      <div class="flex items-center justify-between gap-2">
+        <div class="flex items-center gap-2 min-w-0">
+          <StatusDot tone={selected.status === "Active" ? "green" : "muted"} />
           <span
-            class="text-[11px] tabular-nums"
+            class="text-[14px] font-semibold truncate"
+            style={{ color: "var(--color-page-text)" }}
+          >
+            {selected.name}
+          </span>
+          <Badge
+            label={selected.status}
+            tone={selected.status === "Active" ? "green" : "muted"}
+          />
+        </div>
+        <span
+          class="text-[11px] tabular-nums"
+          style={{ color: "var(--color-page-text-muted)" }}
+        >
+          {selected.schedule}
+        </span>
+      </div>
+
+      <div class="grid grid-cols-3 gap-3">
+        <div>
+          <div
+            class="text-[10px] uppercase tracking-wider"
             style={{ color: "var(--color-page-text-muted)" }}
           >
-            {selected.schedule}
-          </span>
-        </div>
-
-        <div class="grid grid-cols-3 gap-3 px-3 py-2.5">
-          <div>
-            <div
-              class="text-[10px] uppercase tracking-wider"
-              style={{ color: "var(--color-page-text-muted)" }}
-            >
-              Entity
-            </div>
-            <div
-              class="text-[12px] mt-0.5"
-              style={{ color: "var(--color-page-text)" }}
-            >
-              {entityEmoji(selected.entity)} {selected.entity}
-            </div>
+            Entity
           </div>
-          <div>
-            <div
-              class="text-[10px] uppercase tracking-wider"
-              style={{ color: "var(--color-page-text-muted)" }}
-            >
-              Owner agent
-            </div>
-            <div
-              class="text-[12px] mt-0.5"
-              style={{ color: "var(--color-page-text)" }}
-            >
-              {selected.agent}
-            </div>
-          </div>
-          <div>
-            <div
-              class="text-[10px] uppercase tracking-wider"
-              style={{ color: "var(--color-page-text-muted)" }}
-            >
-              Last run
-            </div>
-            <div
-              class="text-[12px] mt-0.5"
-              style={{ color: "var(--color-page-text)" }}
-            >
-              {selected.last}
-            </div>
+          <div
+            class="text-[12px] mt-0.5"
+            style={{ color: "var(--color-page-text)" }}
+          >
+            {entityEmoji(selected.entity)} {selected.entity}
           </div>
         </div>
-
-        <div
-          class="px-3 py-2 text-[11px] font-medium uppercase tracking-wider"
-          style={{
-            color: "var(--color-page-text-muted)",
-            borderTop: "1px solid var(--color-page-border)",
-            borderBottom: "1px solid var(--color-page-border)",
-          }}
-        >
-          Run timeline
+        <div>
+          <div
+            class="text-[10px] uppercase tracking-wider"
+            style={{ color: "var(--color-page-text-muted)" }}
+          >
+            Owner agent
+          </div>
+          <div
+            class="text-[12px] mt-0.5"
+            style={{ color: "var(--color-page-text)" }}
+          >
+            {selected.agent}
+          </div>
         </div>
+        <div>
+          <div
+            class="text-[10px] uppercase tracking-wider"
+            style={{ color: "var(--color-page-text-muted)" }}
+          >
+            Last run
+          </div>
+          <div
+            class="text-[12px] mt-0.5"
+            style={{ color: "var(--color-page-text)" }}
+          >
+            {selected.last}
+          </div>
+        </div>
+      </div>
 
-        <ol class="flex flex-col px-3 py-2 gap-2 overflow-y-auto">
-          {runs.map((r, i) => {
-            const tone =
-              r.status === "success"
-                ? "green"
-                : r.status === "running"
-                  ? "amber"
-                  : r.status === "error"
-                    ? "muted"
-                    : "muted";
-            return (
-              <li key={i} class="flex items-start gap-2">
-                <span class="mt-1.5">
-                  <StatusDot tone={tone as "green" | "amber" | "muted"} />
-                </span>
-                <div class="min-w-0 flex-1">
-                  <div class="flex items-center justify-between gap-2">
-                    <span
-                      class="text-[12px] font-medium capitalize"
-                      style={{
-                        color:
-                          r.status === "error"
-                            ? "#b91c1c"
-                            : "var(--color-page-text)",
-                      }}
-                    >
-                      {r.status}
-                    </span>
-                    <span
-                      class="text-[11px] tabular-nums"
-                      style={{ color: "var(--color-page-text-muted)" }}
-                    >
-                      {r.when}
-                    </span>
-                  </div>
-                  <p
-                    class="text-[11px] leading-snug"
+      <div
+        class="text-[10px] font-semibold uppercase tracking-wider pt-2"
+        style={{ color: "var(--color-page-text-muted)" }}
+      >
+        Run timeline
+      </div>
+
+      <ol class="flex flex-col gap-2">
+        {runs.map((r, i) => {
+          const tone =
+            r.status === "success"
+              ? "green"
+              : r.status === "running"
+                ? "amber"
+                : r.status === "error"
+                  ? "muted"
+                  : "muted";
+          return (
+            <li key={i} class="flex items-start gap-2">
+              <span class="mt-1.5">
+                <StatusDot tone={tone as "green" | "amber" | "muted"} />
+              </span>
+              <div class="min-w-0 flex-1">
+                <div class="flex items-center justify-between gap-2">
+                  <span
+                    class="text-[12px] font-medium capitalize"
+                    style={{
+                      color:
+                        r.status === "error"
+                          ? "#b91c1c"
+                          : "var(--color-page-text)",
+                    }}
+                  >
+                    {r.status}
+                  </span>
+                  <span
+                    class="text-[11px] tabular-nums"
                     style={{ color: "var(--color-page-text-muted)" }}
                   >
-                    {r.note}
-                  </p>
+                    {r.when}
+                  </span>
                 </div>
-              </li>
-            );
-          })}
-        </ol>
+                <p
+                  class="text-[11px] leading-snug"
+                  style={{ color: "var(--color-page-text-muted)" }}
+                >
+                  {r.note}
+                </p>
+              </div>
+            </li>
+          );
+        })}
+      </ol>
+    </div>
+  );
+}
+
+function BringYourOwnAgentCard() {
+  const clients: Array<{ name: string; brand: string }> = [
+    { name: "Cursor", brand: "cursor" },
+    { name: "Claude Code", brand: "claude" },
+    { name: "ChatGPT", brand: "chatgpt" },
+    { name: "OpenClaw", brand: "openclaw" },
+  ];
+  return (
+    <div class="flex flex-col gap-2 pt-2">
+      <div class="flex items-center gap-2">
+        <PlugIcon size={14} />
+        <h4
+          class="text-[13px] font-semibold leading-none"
+          style={{ color: "var(--color-page-text)" }}
+        >
+          Bring your own agent
+        </h4>
+      </div>
+      <p
+        class="text-[12px] leading-relaxed"
+        style={{ color: "var(--color-page-text-muted)" }}
+      >
+        Hook up Cursor, Claude Code, ChatGPT, Codex, or any MCP-capable app.
+        Same memory and connections as Lobu-hosted agents.
+      </p>
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
+        {clients.map((c) => (
+          <div
+            key={c.name}
+            class="flex items-center gap-2 rounded-md p-2"
+            style={{ background: "var(--color-page-surface-dim)" }}
+          >
+            <BrandLogo name={c.brand} size={20} radius={4} />
+            <div class="min-w-0 flex-1">
+              <div
+                class="text-[12px] font-medium truncate"
+                style={{ color: "var(--color-page-text)" }}
+              >
+                {c.name}
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
 
 function AgentsConnect({
-  info,
   agents,
   watchers,
 }: {
@@ -4054,51 +3781,37 @@ function AgentsConnect({
   agents: AgentRow[];
   watchers: WatcherRow[];
 }) {
-  const [tab, setTab] = useState<AgentDetailTab>("watchers");
   const selectedAgent = agents[0];
   return (
-    <div class="flex flex-col gap-4">
-      <div
-        class="rounded-2xl bg-[var(--color-page-surface)] p-4 flex flex-col gap-3"
-        style={{ border: "1px solid var(--color-page-border)" }}
-      >
-        <div class="flex items-center gap-3">
-          <span
-            class="inline-flex h-8 w-8 items-center justify-center rounded-md"
-            style={{
-              background: "var(--color-page-surface-dim)",
-              color: "var(--color-page-text)",
-              border: "1px solid var(--color-page-border)",
-            }}
+    <div class="flex flex-col gap-3">
+      <div class="flex items-center gap-3">
+        <span
+          class="inline-flex h-8 w-8 items-center justify-center rounded-md"
+          style={{
+            background: "var(--color-page-surface-dim)",
+            color: "var(--color-page-text)",
+          }}
+        >
+          <BotIcon size={16} />
+        </span>
+        <div class="min-w-0 flex-1">
+          <h4
+            class="text-[15px] font-semibold leading-tight"
+            style={{ color: "var(--color-page-text)" }}
           >
-            <BotIcon size={16} />
-          </span>
-          <div class="min-w-0 flex-1">
-            <h4
-              class="text-[15px] font-semibold"
-              style={{ color: "var(--color-page-text)" }}
-            >
-              {selectedAgent?.name ?? info.identity}
-            </h4>
-            <p
-              class="text-[12px]"
-              style={{ color: "var(--color-page-text-muted)" }}
-            >
-              Always-on · runs from {info.primaryClient}, Slack, and the REST
-              API
-            </p>
-          </div>
-          <Badge label="Active" tone="green" />
+            {selectedAgent?.name ?? "Agent"}
+          </h4>
+          <p
+            class="text-[12px]"
+            style={{ color: "var(--color-page-text-muted)" }}
+          >
+            Always-on
+          </p>
         </div>
-        <AgentDetailTabs active={tab} onChange={setTab} />
-        <div>
-          {tab === "watchers" ? <WatcherDetail watchers={watchers} /> : null}
-          {tab === "providers" ? <ProvidersTab /> : null}
-          {tab === "skills" ? <SkillsTab /> : null}
-          {tab === "channels" ? <ChannelsTab info={info} /> : null}
-        </div>
+        <Badge label="Active" tone="green" />
       </div>
-      <AlwaysOnAgentsTable rows={agents.slice(0, 3)} />
+      <WatcherDetail watchers={watchers} />
+      <BringYourOwnAgentCard />
     </div>
   );
 }
@@ -4134,142 +3847,6 @@ const DEFAULT_AGENT_ROWS: AgentRow[] = [
   },
 ];
 
-function AlwaysOnAgentsTable({ rows }: { rows: AgentRow[] }) {
-  return (
-    <div
-      class="rounded-2xl bg-[var(--color-page-surface)] overflow-hidden"
-      style={{ border: "1px solid var(--color-page-border)" }}
-    >
-      <div
-        class="flex items-center gap-2 px-5 py-4"
-        style={{ borderBottom: "1px solid var(--color-page-border)" }}
-      >
-        <BotIcon size={16} />
-        <h4
-          class="text-[14px] font-semibold"
-          style={{ color: "var(--color-page-text)" }}
-        >
-          Always-on agents
-        </h4>
-        <span
-          class="text-[12px]"
-          style={{ color: "var(--color-page-text-muted)" }}
-        >
-          Run from MCP clients, chat platforms, or schedules
-        </span>
-        <span class="ml-auto inline-flex items-center gap-1.5">
-          <SearchInput />
-          <PrimaryButton label="Create" icon={<PlusIcon size={12} />} />
-        </span>
-      </div>
-      <div
-        class="grid text-[11px] font-medium tracking-wider uppercase px-5 py-2"
-        style={{
-          gridTemplateColumns: "1.4fr 1.4fr 1.4fr 0.8fr 0.8fr",
-          color: "var(--color-page-text-muted)",
-          borderBottom: "1px solid var(--color-page-border)",
-        }}
-      >
-        <span>Name</span>
-        <span>Channels</span>
-        <span>Skills</span>
-        <span>Status</span>
-        <span class="text-right">Last run</span>
-      </div>
-      {rows.map((row, i) => {
-        // Pretend the agent is wired to its entryPoint plus a secondary
-        // channel — visualises v2 channel-bindings (one agent, many platforms).
-        const secondary =
-          row.entryPoint === "Slack"
-            ? "REST"
-            : row.entryPoint === "Telegram"
-              ? "MCP"
-              : row.entryPoint === "ChatGPT"
-                ? "Slack"
-                : "Slack";
-        const channels: Array<{ name: string; tone: "green" | "muted" }> = [
-          {
-            name: row.entryPoint,
-            tone: row.status === "Active" ? "green" : "muted",
-          },
-          { name: secondary, tone: "muted" },
-        ];
-        return (
-          <div
-            key={row.name}
-            class="grid items-center px-5 py-2.5 text-[13px]"
-            style={{
-              gridTemplateColumns: "1.4fr 1.4fr 1.4fr 0.8fr 0.8fr",
-              color: "var(--color-page-text)",
-              borderBottom:
-                i === rows.length - 1
-                  ? undefined
-                  : "1px solid var(--color-page-border)",
-            }}
-          >
-            <span class="flex items-center gap-2 font-medium">
-              <span
-                class="inline-block w-1.5 h-1.5 rounded-full"
-                style={{
-                  background:
-                    row.status === "Active"
-                      ? "rgb(16,185,129)"
-                      : "rgba(0,0,0,0.25)",
-                }}
-                aria-hidden="true"
-              />
-              {row.name}
-            </span>
-            <span class="flex flex-wrap items-center gap-1">
-              {channels.map((ch) => (
-                <span
-                  key={ch.name}
-                  class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px]"
-                  style={{
-                    background: "var(--color-page-surface-dim)",
-                    color: "var(--color-page-text)",
-                    border: "1px solid var(--color-page-border)",
-                    opacity: ch.tone === "green" ? 1 : 0.6,
-                  }}
-                >
-                  <BrandLogo name={ch.name} size={12} radius={2} />
-                  {ch.name}
-                </span>
-              ))}
-            </span>
-            <span class="flex flex-wrap items-center gap-1">
-              {row.skills.map((s) => (
-                <span
-                  key={s}
-                  class="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-mono"
-                  style={{
-                    background: "var(--color-page-surface-dim)",
-                    color: "var(--color-page-text)",
-                    border: "1px solid var(--color-page-border)",
-                  }}
-                >
-                  {s}
-                </span>
-              ))}
-            </span>
-            <span>
-              <Badge
-                label={row.status}
-                tone={row.status === "Active" ? "green" : "muted"}
-              />
-            </span>
-            <span
-              class="text-right tabular-nums text-[12px]"
-              style={{ color: "var(--color-page-text-muted)" }}
-            >
-              {row.last}
-            </span>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
 
 /* ------------------------------ entry ------------------------------ */
 
@@ -4355,19 +3932,7 @@ export function HeroProductCard({
       <AppShell
         activeNav="members"
         {...shellProps}
-        pageTitle={primaryEntity}
-        pageSubtitle={`${recordRows.length} records · ${useCaseLabel} memory`}
-        toolbar={
-          <>
-            <SearchInput />
-            <PrimaryButton
-              label="Edit"
-              active
-              icon={<PencilIcon size={11} />}
-            />
-            <PrimaryButton label="New" icon={<PlusIcon size={12} />} />
-          </>
-        }
+        pageTitle=""
         onStageChange={onStageChange}
       >
         <div class="flex flex-col gap-4">
@@ -4386,8 +3951,7 @@ export function HeroProductCard({
       <AppShell
         activeNav="connectors"
         {...shellProps}
-        pageTitle="Connectors"
-        pageSubtitle="Pull data into Lobu's memory and expose tools to agents. Pick from the catalog, bring your own MCP server, or write one in TypeScript — in Lobu's cloud or on one of your devices."
+        pageTitle=""
         onStageChange={onStageChange}
       >
         <ConnectorsLanding connectorRows={connectorRows} />
@@ -4400,15 +3964,7 @@ export function HeroProductCard({
       <AppShell
         activeNav="knowledge"
         {...shellProps}
-        pageTitle="Knowledge"
-        pageSubtitle={`Items collected by your ${useCaseLabel.toLowerCase()} watchers and connectors`}
-        toolbar={
-          <>
-            <SearchInput />
-            <GhostButton label="All sources" />
-            <PrimaryButton label="Filter" icon={<PlusIcon size={12} />} />
-          </>
-        }
+        pageTitle=""
         onStageChange={onStageChange}
       >
         <KnowledgeFeed rows={knowledgeRows} />
@@ -4421,9 +3977,7 @@ export function HeroProductCard({
     <AppShell
       activeNav="agents"
       {...shellProps}
-      pageTitle="Agents"
-      pageSubtitle={`Connect MCP clients or run always-on ${primaryEntitySingular.toLowerCase()} agents`}
-      toolbar={<SearchInput />}
+      pageTitle=""
       onStageChange={onStageChange}
     >
       <AgentsConnect

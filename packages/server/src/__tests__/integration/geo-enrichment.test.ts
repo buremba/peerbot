@@ -26,6 +26,28 @@ import { insertEvent } from '../../utils/insert-event';
 import { getTestDb } from '../setup/test-db';
 import { createTestOrganization } from '../setup/test-fixtures';
 
+// PostGIS isn't installable on every test backend — real-Postgres CI
+// runners run with a plain Postgres image, so the geo migration's DO
+// block bails out and `geo_lookup` never gets created. PGlite is
+// configured with @electric-sql/pglite-postgis (see pglite-backend.ts),
+// so the function IS available there. Probe once at module load and
+// gate the whole suite — unit tests in utils/__tests__/geo-enrichment
+// already cover the fail-open behaviour with stubs.
+const hasGeoSchema = await (async (): Promise<boolean> => {
+  try {
+    const rows = (await getTestDb()`
+      SELECT EXISTS (
+        SELECT 1 FROM pg_proc p
+        JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE p.proname = 'geo_lookup' AND n.nspname = 'public'
+      ) AS yes
+    `) as Array<{ yes: boolean }>;
+    return !!rows[0]?.yes;
+  } catch {
+    return false;
+  }
+})();
+
 const FIXTURES = {
   countries: [
     { code: 'IT', code3: 'ITA', name: 'Italy', continent: 'EU' },
@@ -124,7 +146,7 @@ async function seedFixture(): Promise<void> {
   }
 }
 
-describe('geo enrichment (integration)', () => {
+describe.runIf(hasGeoSchema)('geo enrichment (integration)', () => {
   // Deliberately NOT calling cleanupTestDatabase(): that helper TRUNCATEs
   // every table in public schema, including `spatial_ref_sys` — wiping the
   // 8500 SRS rows pglite-postgis populates at CREATE EXTENSION time. Once

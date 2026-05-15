@@ -34,17 +34,6 @@ export async function agentExistsInOrganization(
   return rows.length > 0;
 }
 
-export async function getAgentOrganizationId(agentId: string): Promise<string | null> {
-  const sql = getDb();
-  const rows = await sql`
-    SELECT organization_id
-    FROM agents
-    WHERE id = ${agentId}
-    LIMIT 1
-  `;
-  return rows.length > 0 ? (rows[0].organization_id as string) : null;
-}
-
 export async function touchAgentLastUsed(organizationId: string, agentId: string): Promise<void> {
   const sql = getDb();
   await sql`
@@ -152,6 +141,7 @@ function rowToConnection(row: Record<string, any>): StoredConnection {
     id: row.id,
     platform: row.platform,
     agentId: row.agent_id ?? undefined,
+    organizationId: row.organization_id ?? undefined,
     config: decryptLegacyEncryptedConfig(row.config ?? {}),
     settings: row.settings ?? {},
     metadata: row.metadata ?? {},
@@ -295,7 +285,10 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
       const sql = getDb();
       const orgId = getOrgId();
       const now = new Date();
-      const rows = await sql`
+      // The PK is (organization_id, id) — UPSERT on the composite key. Two
+      // orgs can independently own an agent with the same id; the conflict
+      // path here only triggers for re-saves within the *same* org.
+      await sql`
         INSERT INTO agents (id, organization_id, name, description, owner_platform, owner_user_id,
                             is_workspace_agent, workspace_id, created_at)
         VALUES (
@@ -304,7 +297,7 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
           ${metadata.isWorkspaceAgent ?? false}, ${metadata.workspaceId ?? null},
           ${metadata.createdAt ? new Date(metadata.createdAt) : now}
         )
-        ON CONFLICT (id) DO UPDATE SET
+        ON CONFLICT (organization_id, id) DO UPDATE SET
           name = EXCLUDED.name,
           description = EXCLUDED.description,
           owner_platform = EXCLUDED.owner_platform,
@@ -313,12 +306,7 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
           workspace_id = EXCLUDED.workspace_id,
           last_used_at = ${metadata.lastUsedAt ? new Date(metadata.lastUsedAt) : null},
           updated_at = ${now}
-        WHERE agents.organization_id = EXCLUDED.organization_id
-        RETURNING organization_id
       `;
-      if (rows.length === 0) {
-        throw new Error(`Agent '${agentId}' already exists in another organization.`);
-      }
     },
     async updateMetadata(agentId, updates) {
       const existing = await store.getMetadata(agentId);
@@ -362,13 +350,12 @@ export function createPostgresAgentConnectionStore(): AgentConnectionStore {
       const orgId = tryGetOrgId();
       const rows = orgId
         ? await sql`
-            SELECT c.* FROM agent_connections c
-            JOIN agents a ON a.id = c.agent_id
-            WHERE c.id = ${connectionId} AND a.organization_id = ${orgId}
+            SELECT * FROM agent_connections
+            WHERE id = ${connectionId} AND organization_id = ${orgId}
           `
         : await sql`
-            SELECT c.* FROM agent_connections c
-            WHERE c.id = ${connectionId}
+            SELECT * FROM agent_connections
+            WHERE id = ${connectionId}
           `;
       if (rows.length === 0) return null;
       return rowToConnection(rows[0]);
@@ -380,72 +367,69 @@ export function createPostgresAgentConnectionStore(): AgentConnectionStore {
       if (filter?.agentId && filter?.platform) {
         const rows = orgId
           ? await sql`
-              SELECT c.* FROM agent_connections c
-              JOIN agents a ON a.id = c.agent_id
-              WHERE a.organization_id = ${orgId}
-                AND c.agent_id = ${filter.agentId}
-                AND c.platform = ${filter.platform}
-              ORDER BY c.created_at DESC
+              SELECT * FROM agent_connections
+              WHERE organization_id = ${orgId}
+                AND agent_id = ${filter.agentId}
+                AND platform = ${filter.platform}
+              ORDER BY created_at DESC
             `
           : await sql`
-              SELECT c.* FROM agent_connections c
-              WHERE c.agent_id = ${filter.agentId}
-                AND c.platform = ${filter.platform}
-              ORDER BY c.created_at DESC
+              SELECT * FROM agent_connections
+              WHERE agent_id = ${filter.agentId}
+                AND platform = ${filter.platform}
+              ORDER BY created_at DESC
             `;
         return rows.map(rowToConnection);
       }
       if (filter?.agentId) {
         const rows = orgId
           ? await sql`
-              SELECT c.* FROM agent_connections c
-              JOIN agents a ON a.id = c.agent_id
-              WHERE a.organization_id = ${orgId} AND c.agent_id = ${filter.agentId}
-              ORDER BY c.created_at DESC
+              SELECT * FROM agent_connections
+              WHERE organization_id = ${orgId} AND agent_id = ${filter.agentId}
+              ORDER BY created_at DESC
             `
           : await sql`
-              SELECT c.* FROM agent_connections c
-              WHERE c.agent_id = ${filter.agentId}
-              ORDER BY c.created_at DESC
+              SELECT * FROM agent_connections
+              WHERE agent_id = ${filter.agentId}
+              ORDER BY created_at DESC
             `;
         return rows.map(rowToConnection);
       }
       if (filter?.platform) {
         const rows = orgId
           ? await sql`
-              SELECT c.* FROM agent_connections c
-              JOIN agents a ON a.id = c.agent_id
-              WHERE a.organization_id = ${orgId} AND c.platform = ${filter.platform}
-              ORDER BY c.created_at DESC
+              SELECT * FROM agent_connections
+              WHERE organization_id = ${orgId} AND platform = ${filter.platform}
+              ORDER BY created_at DESC
             `
           : await sql`
-              SELECT c.* FROM agent_connections c
-              WHERE c.platform = ${filter.platform}
-              ORDER BY c.created_at DESC
+              SELECT * FROM agent_connections
+              WHERE platform = ${filter.platform}
+              ORDER BY created_at DESC
             `;
         return rows.map(rowToConnection);
       }
 
       const rows = orgId
         ? await sql`
-            SELECT c.* FROM agent_connections c
-            JOIN agents a ON a.id = c.agent_id
-            WHERE a.organization_id = ${orgId}
-            ORDER BY c.created_at DESC
+            SELECT * FROM agent_connections
+            WHERE organization_id = ${orgId}
+            ORDER BY created_at DESC
           `
         : await sql`
-            SELECT c.* FROM agent_connections c
-            ORDER BY c.created_at DESC
+            SELECT * FROM agent_connections
+            ORDER BY created_at DESC
           `;
       return rows.map(rowToConnection);
     },
     async saveConnection(connection) {
       const sql = getDb();
+      const orgId = getOrgId();
       const configToPersist = { ...connection.config };
       const existingRows = await sql`
         SELECT config
         FROM agent_connections
-        WHERE id = ${connection.id}
+        WHERE id = ${connection.id} AND organization_id = ${orgId}
         LIMIT 1
       `;
       const existingConfig =
@@ -471,9 +455,9 @@ export function createPostgresAgentConnectionStore(): AgentConnectionStore {
 
       const now = new Date();
       await sql`
-        INSERT INTO agent_connections (id, agent_id, platform, config, settings, metadata, status, error_message, created_at, updated_at)
+        INSERT INTO agent_connections (id, organization_id, agent_id, platform, config, settings, metadata, status, error_message, created_at, updated_at)
         VALUES (
-          ${connection.id}, ${connection.agentId ?? null}, ${connection.platform},
+          ${connection.id}, ${orgId}, ${connection.agentId ?? null}, ${connection.platform},
           ${sql.json(configToPersist)}, ${sql.json(connection.settings)}, ${sql.json(connection.metadata)},
           ${connection.status}, ${connection.errorMessage ?? null}, ${now}, ${now}
         )
@@ -499,10 +483,7 @@ export function createPostgresAgentConnectionStore(): AgentConnectionStore {
       if (orgId) {
         await sql`
           DELETE FROM agent_connections
-          USING agents a
-          WHERE agent_connections.agent_id = a.id
-            AND agent_connections.id = ${connectionId}
-            AND a.organization_id = ${orgId}
+          WHERE id = ${connectionId} AND organization_id = ${orgId}
         `;
       } else {
         await sql`DELETE FROM agent_connections WHERE id = ${connectionId}`;
@@ -510,63 +491,95 @@ export function createPostgresAgentConnectionStore(): AgentConnectionStore {
     },
     async getChannelBinding(platform, channelId, teamId) {
       const sql = getDb();
+      const orgId = tryGetOrgId();
       const rows = teamId
-        ? await sql`
-            SELECT * FROM agent_channel_bindings
-            WHERE platform = ${platform} AND channel_id = ${channelId} AND team_id = ${teamId}
-          `
-        : await sql`
-            SELECT * FROM agent_channel_bindings
-            WHERE platform = ${platform} AND channel_id = ${channelId} AND team_id IS NULL
-          `;
+        ? orgId
+          ? await sql`
+              SELECT * FROM agent_channel_bindings
+              WHERE organization_id = ${orgId}
+                AND platform = ${platform} AND channel_id = ${channelId} AND team_id = ${teamId}
+            `
+          : await sql`
+              SELECT * FROM agent_channel_bindings
+              WHERE platform = ${platform} AND channel_id = ${channelId} AND team_id = ${teamId}
+            `
+        : orgId
+          ? await sql`
+              SELECT * FROM agent_channel_bindings
+              WHERE organization_id = ${orgId}
+                AND platform = ${platform} AND channel_id = ${channelId} AND team_id IS NULL
+            `
+          : await sql`
+              SELECT * FROM agent_channel_bindings
+              WHERE platform = ${platform} AND channel_id = ${channelId} AND team_id IS NULL
+            `;
       if (rows.length === 0) return null;
       return rowToChannelBinding(rows[0]);
     },
     async createChannelBinding(binding) {
       const sql = getDb();
+      const orgId = getOrgId();
       if (binding.teamId) {
         await sql`
-          INSERT INTO agent_channel_bindings (agent_id, platform, channel_id, team_id, created_at)
-          VALUES (${binding.agentId}, ${binding.platform}, ${binding.channelId}, ${binding.teamId}, now())
+          INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id, created_at)
+          VALUES (${orgId}, ${binding.agentId}, ${binding.platform}, ${binding.channelId}, ${binding.teamId}, now())
           ON CONFLICT (platform, channel_id, team_id) DO UPDATE SET
-            agent_id = EXCLUDED.agent_id
+            agent_id = EXCLUDED.agent_id,
+            organization_id = EXCLUDED.organization_id
         `;
       } else {
         // PG treats NULL as distinct under the (platform, channel_id, team_id)
         // UNIQUE; the team_id IS NULL branch upserts via the partial unique
         // index agent_channel_bindings_no_team_unique.
         await sql`
-          INSERT INTO agent_channel_bindings (agent_id, platform, channel_id, team_id, created_at)
-          VALUES (${binding.agentId}, ${binding.platform}, ${binding.channelId}, NULL, now())
+          INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id, created_at)
+          VALUES (${orgId}, ${binding.agentId}, ${binding.platform}, ${binding.channelId}, NULL, now())
           ON CONFLICT (platform, channel_id)
             WHERE team_id IS NULL
-            DO UPDATE SET agent_id = EXCLUDED.agent_id
+            DO UPDATE SET agent_id = EXCLUDED.agent_id,
+              organization_id = EXCLUDED.organization_id
         `;
       }
     },
     async deleteChannelBinding(platform, channelId, teamId) {
       const sql = getDb();
+      const orgId = tryGetOrgId();
       if (teamId) {
-        await sql`
-          DELETE FROM agent_channel_bindings
-          WHERE platform = ${platform} AND channel_id = ${channelId} AND team_id = ${teamId}
-        `;
+        if (orgId) {
+          await sql`
+            DELETE FROM agent_channel_bindings
+            WHERE organization_id = ${orgId}
+              AND platform = ${platform} AND channel_id = ${channelId} AND team_id = ${teamId}
+          `;
+        } else {
+          await sql`
+            DELETE FROM agent_channel_bindings
+            WHERE platform = ${platform} AND channel_id = ${channelId} AND team_id = ${teamId}
+          `;
+        }
         return;
       }
 
-      await sql`
-        DELETE FROM agent_channel_bindings
-        WHERE platform = ${platform} AND channel_id = ${channelId} AND team_id IS NULL
-      `;
+      if (orgId) {
+        await sql`
+          DELETE FROM agent_channel_bindings
+          WHERE organization_id = ${orgId}
+            AND platform = ${platform} AND channel_id = ${channelId} AND team_id IS NULL
+        `;
+      } else {
+        await sql`
+          DELETE FROM agent_channel_bindings
+          WHERE platform = ${platform} AND channel_id = ${channelId} AND team_id IS NULL
+        `;
+      }
     },
     async listChannelBindings(agentId) {
       const sql = getDb();
       const orgId = tryGetOrgId();
       const rows = orgId
         ? await sql`
-            SELECT b.* FROM agent_channel_bindings b
-            JOIN agents a ON a.id = b.agent_id
-            WHERE b.agent_id = ${agentId} AND a.organization_id = ${orgId}
+            SELECT * FROM agent_channel_bindings
+            WHERE agent_id = ${agentId} AND organization_id = ${orgId}
           `
         : await sql`
             SELECT * FROM agent_channel_bindings WHERE agent_id = ${agentId}
@@ -578,11 +591,8 @@ export function createPostgresAgentConnectionStore(): AgentConnectionStore {
       const orgId = tryGetOrgId();
       const rows = orgId
         ? await sql`
-            DELETE FROM agent_channel_bindings b
-            USING agents a
-            WHERE b.agent_id = a.id
-              AND b.agent_id = ${agentId}
-              AND a.organization_id = ${orgId}
+            DELETE FROM agent_channel_bindings
+            WHERE agent_id = ${agentId} AND organization_id = ${orgId}
             RETURNING 1
           `
         : await sql`
@@ -597,11 +607,12 @@ export function createPostgresAgentAccessStore(): AgentAccessStore {
   return {
     async grant(agentId, pattern, expiresAt, denied) {
       const sql = getDb();
+      const orgId = getOrgId();
       const exp = expiresAt ? new Date(expiresAt) : null;
       await sql`
-        INSERT INTO agent_grants (agent_id, pattern, expires_at, granted_at, denied)
-        VALUES (${agentId}, ${pattern}, ${exp}, now(), ${denied ?? false})
-        ON CONFLICT (agent_id, pattern) DO UPDATE SET
+        INSERT INTO agent_grants (organization_id, agent_id, pattern, expires_at, granted_at, denied)
+        VALUES (${orgId}, ${agentId}, ${pattern}, ${exp}, now(), ${denied ?? false})
+        ON CONFLICT (organization_id, agent_id, pattern) DO UPDATE SET
           expires_at = EXCLUDED.expires_at,
           granted_at = EXCLUDED.granted_at,
           denied = EXCLUDED.denied
@@ -609,78 +620,148 @@ export function createPostgresAgentAccessStore(): AgentAccessStore {
     },
     async hasGrant(agentId, pattern) {
       const sql = getDb();
-      const exact = await sql`
-        SELECT 1 FROM agent_grants
-        WHERE agent_id = ${agentId} AND pattern = ${pattern}
-          AND denied IS NOT TRUE
-          AND (expires_at IS NULL OR expires_at > now())
-        LIMIT 1
-      `;
+      const orgId = tryGetOrgId();
+      const exact = orgId
+        ? await sql`
+            SELECT 1 FROM agent_grants
+            WHERE organization_id = ${orgId}
+              AND agent_id = ${agentId} AND pattern = ${pattern}
+              AND denied IS NOT TRUE
+              AND (expires_at IS NULL OR expires_at > now())
+            LIMIT 1
+          `
+        : await sql`
+            SELECT 1 FROM agent_grants
+            WHERE agent_id = ${agentId} AND pattern = ${pattern}
+              AND denied IS NOT TRUE
+              AND (expires_at IS NULL OR expires_at > now())
+            LIMIT 1
+          `;
       if (exact.length > 0) return true;
 
-      const grants = await sql`
-        SELECT pattern FROM agent_grants
-        WHERE agent_id = ${agentId}
-          AND denied IS NOT TRUE
-          AND (expires_at IS NULL OR expires_at > now())
-      `;
+      const grants = orgId
+        ? await sql`
+            SELECT pattern FROM agent_grants
+            WHERE organization_id = ${orgId}
+              AND agent_id = ${agentId}
+              AND denied IS NOT TRUE
+              AND (expires_at IS NULL OR expires_at > now())
+          `
+        : await sql`
+            SELECT pattern FROM agent_grants
+            WHERE agent_id = ${agentId}
+              AND denied IS NOT TRUE
+              AND (expires_at IS NULL OR expires_at > now())
+          `;
       return grants.some((g: any) => wildcardMatch(g.pattern, pattern));
     },
     async isDenied(agentId, pattern) {
       const sql = getDb();
-      const rows = await sql`
-        SELECT 1 FROM agent_grants
-        WHERE agent_id = ${agentId} AND pattern = ${pattern}
-          AND denied = TRUE
-          AND (expires_at IS NULL OR expires_at > now())
-        LIMIT 1
-      `;
+      const orgId = tryGetOrgId();
+      const rows = orgId
+        ? await sql`
+            SELECT 1 FROM agent_grants
+            WHERE organization_id = ${orgId}
+              AND agent_id = ${agentId} AND pattern = ${pattern}
+              AND denied = TRUE
+              AND (expires_at IS NULL OR expires_at > now())
+            LIMIT 1
+          `
+        : await sql`
+            SELECT 1 FROM agent_grants
+            WHERE agent_id = ${agentId} AND pattern = ${pattern}
+              AND denied = TRUE
+              AND (expires_at IS NULL OR expires_at > now())
+            LIMIT 1
+          `;
       return rows.length > 0;
     },
     async listGrants(agentId) {
       const sql = getDb();
-      const rows = await sql`
-        SELECT pattern, expires_at, granted_at, denied
-        FROM agent_grants
-        WHERE agent_id = ${agentId}
-        ORDER BY granted_at DESC
-      `;
+      const orgId = tryGetOrgId();
+      const rows = orgId
+        ? await sql`
+            SELECT pattern, expires_at, granted_at, denied
+            FROM agent_grants
+            WHERE organization_id = ${orgId} AND agent_id = ${agentId}
+            ORDER BY granted_at DESC
+          `
+        : await sql`
+            SELECT pattern, expires_at, granted_at, denied
+            FROM agent_grants
+            WHERE agent_id = ${agentId}
+            ORDER BY granted_at DESC
+          `;
       return rows.map(rowToGrant);
     },
     async revokeGrant(agentId, pattern) {
       const sql = getDb();
-      await sql`
-        DELETE FROM agent_grants WHERE agent_id = ${agentId} AND pattern = ${pattern}
-      `;
+      const orgId = tryGetOrgId();
+      if (orgId) {
+        await sql`
+          DELETE FROM agent_grants
+          WHERE organization_id = ${orgId}
+            AND agent_id = ${agentId} AND pattern = ${pattern}
+        `;
+      } else {
+        await sql`
+          DELETE FROM agent_grants WHERE agent_id = ${agentId} AND pattern = ${pattern}
+        `;
+      }
     },
     async addUserAgent(platform, userId, agentId) {
       const sql = getDb();
+      const orgId = getOrgId();
       await sql`
-        INSERT INTO agent_users (agent_id, platform, user_id, created_at)
-        VALUES (${agentId}, ${platform}, ${userId}, now())
-        ON CONFLICT (agent_id, platform, user_id) DO NOTHING
+        INSERT INTO agent_users (organization_id, agent_id, platform, user_id, created_at)
+        VALUES (${orgId}, ${agentId}, ${platform}, ${userId}, now())
+        ON CONFLICT (organization_id, agent_id, platform, user_id) DO NOTHING
       `;
     },
     async removeUserAgent(platform, userId, agentId) {
       const sql = getDb();
-      await sql`
-        DELETE FROM agent_users WHERE agent_id = ${agentId} AND platform = ${platform} AND user_id = ${userId}
-      `;
+      const orgId = tryGetOrgId();
+      if (orgId) {
+        await sql`
+          DELETE FROM agent_users
+          WHERE organization_id = ${orgId}
+            AND agent_id = ${agentId} AND platform = ${platform} AND user_id = ${userId}
+        `;
+      } else {
+        await sql`
+          DELETE FROM agent_users WHERE agent_id = ${agentId} AND platform = ${platform} AND user_id = ${userId}
+        `;
+      }
     },
     async listUserAgents(platform, userId) {
       const sql = getDb();
-      const rows = await sql`
-        SELECT agent_id FROM agent_users WHERE platform = ${platform} AND user_id = ${userId}
-      `;
+      const orgId = tryGetOrgId();
+      const rows = orgId
+        ? await sql`
+            SELECT agent_id FROM agent_users
+            WHERE organization_id = ${orgId}
+              AND platform = ${platform} AND user_id = ${userId}
+          `
+        : await sql`
+            SELECT agent_id FROM agent_users WHERE platform = ${platform} AND user_id = ${userId}
+          `;
       return rows.map((r: any) => r.agent_id);
     },
     async ownsAgent(platform, userId, agentId) {
       const sql = getDb();
-      const rows = await sql`
-        SELECT 1 FROM agent_users
-        WHERE agent_id = ${agentId} AND platform = ${platform} AND user_id = ${userId}
-        LIMIT 1
-      `;
+      const orgId = tryGetOrgId();
+      const rows = orgId
+        ? await sql`
+            SELECT 1 FROM agent_users
+            WHERE organization_id = ${orgId}
+              AND agent_id = ${agentId} AND platform = ${platform} AND user_id = ${userId}
+            LIMIT 1
+          `
+        : await sql`
+            SELECT 1 FROM agent_users
+            WHERE agent_id = ${agentId} AND platform = ${platform} AND user_id = ${userId}
+            LIMIT 1
+          `;
       return rows.length > 0;
     },
   };

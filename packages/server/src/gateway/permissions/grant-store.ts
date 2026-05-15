@@ -6,6 +6,7 @@ import {
   type GrantKind,
 } from "@lobu/core";
 import { getDb, pgTextArray } from "../../db/client.js";
+import { tryGetOrgId } from "../../lobu/stores/org-context.js";
 
 const logger = createLogger("grant-store");
 
@@ -53,17 +54,24 @@ export class GrantStore {
     agentId: string,
     pattern: string,
     expiresAt: number | null,
-    denied?: boolean
+    denied?: boolean,
+    organizationId?: string
   ): Promise<void> {
     pattern = normalizeDomainPattern(pattern);
     const kind = inferGrantKind(pattern);
     const expiresAtTs = expiresAt === null ? null : new Date(expiresAt);
+    const orgId = organizationId ?? tryGetOrgId();
+    if (!orgId) {
+      throw new Error(
+        "GrantStore.grant requires organizationId (explicit or via orgContext)"
+      );
+    }
 
     const sql = getDb();
     await sql`
-      INSERT INTO grants (agent_id, kind, pattern, expires_at, granted_at, denied)
-      VALUES (${agentId}, ${kind}, ${pattern}, ${expiresAtTs}, now(), ${denied ?? false})
-      ON CONFLICT (agent_id, kind, pattern) DO UPDATE SET
+      INSERT INTO grants (organization_id, agent_id, kind, pattern, expires_at, granted_at, denied)
+      VALUES (${orgId}, ${agentId}, ${kind}, ${pattern}, ${expiresAtTs}, now(), ${denied ?? false})
+      ON CONFLICT (organization_id, agent_id, kind, pattern) DO UPDATE SET
         expires_at = EXCLUDED.expires_at,
         granted_at = EXCLUDED.granted_at,
         denied = EXCLUDED.denied
@@ -76,9 +84,14 @@ export class GrantStore {
    * Checks exact match first, then wildcard parents.
    * Returns false if the matched grant has `denied: true`.
    */
-  async hasGrant(agentId: string, pattern: string): Promise<boolean> {
+  async hasGrant(
+    agentId: string,
+    pattern: string,
+    organizationId?: string
+  ): Promise<boolean> {
     pattern = normalizeDomainPattern(pattern);
     const kind = inferGrantKind(pattern);
+    const orgId = organizationId ?? tryGetOrgId();
 
     // Build the candidate pattern set (exact + wildcards) and look them
     // up in a single query.
@@ -106,14 +119,24 @@ export class GrantStore {
 
     const sql = getDb();
     try {
-      const rows = await sql<GrantRow>`
-        SELECT pattern, granted_at, expires_at, denied
-        FROM grants
-        WHERE agent_id = ${agentId}
-          AND kind = ${kind}
-          AND pattern = ANY(${pgTextArray(candidates)}::text[])
-          AND (expires_at IS NULL OR expires_at > now())
-      `;
+      const rows = orgId
+        ? await sql<GrantRow>`
+            SELECT pattern, granted_at, expires_at, denied
+            FROM grants
+            WHERE organization_id = ${orgId}
+              AND agent_id = ${agentId}
+              AND kind = ${kind}
+              AND pattern = ANY(${pgTextArray(candidates)}::text[])
+              AND (expires_at IS NULL OR expires_at > now())
+          `
+        : await sql<GrantRow>`
+            SELECT pattern, granted_at, expires_at, denied
+            FROM grants
+            WHERE agent_id = ${agentId}
+              AND kind = ${kind}
+              AND pattern = ANY(${pgTextArray(candidates)}::text[])
+              AND (expires_at IS NULL OR expires_at > now())
+          `;
 
       if (rows.length === 0) return false;
 
@@ -137,23 +160,40 @@ export class GrantStore {
   /**
    * Check if a pattern is explicitly denied for an agent.
    */
-  async isDenied(agentId: string, pattern: string): Promise<boolean> {
+  async isDenied(
+    agentId: string,
+    pattern: string,
+    organizationId?: string
+  ): Promise<boolean> {
     pattern = normalizeDomainPattern(pattern);
     const kind = inferGrantKind(pattern);
     const candidates = getDomainGrantCandidates(pattern);
+    const orgId = organizationId ?? tryGetOrgId();
 
     const sql = getDb();
     try {
-      const rows = await sql<{ denied: boolean }>`
-        SELECT denied
-        FROM grants
-        WHERE agent_id = ${agentId}
-          AND kind = ${kind}
-          AND pattern = ANY(${pgTextArray(candidates)}::text[])
-          AND (expires_at IS NULL OR expires_at > now())
-          AND denied = true
-        LIMIT 1
-      `;
+      const rows = orgId
+        ? await sql<{ denied: boolean }>`
+            SELECT denied
+            FROM grants
+            WHERE organization_id = ${orgId}
+              AND agent_id = ${agentId}
+              AND kind = ${kind}
+              AND pattern = ANY(${pgTextArray(candidates)}::text[])
+              AND (expires_at IS NULL OR expires_at > now())
+              AND denied = true
+            LIMIT 1
+          `
+        : await sql<{ denied: boolean }>`
+            SELECT denied
+            FROM grants
+            WHERE agent_id = ${agentId}
+              AND kind = ${kind}
+              AND pattern = ANY(${pgTextArray(candidates)}::text[])
+              AND (expires_at IS NULL OR expires_at > now())
+              AND denied = true
+            LIMIT 1
+          `;
       return rows.length > 0;
     } catch (error) {
       logger.error("Failed to check denied grant", {
@@ -168,16 +208,26 @@ export class GrantStore {
   /**
    * List all active grants for an agent.
    */
-  async listGrants(agentId: string): Promise<Grant[]> {
+  async listGrants(agentId: string, organizationId?: string): Promise<Grant[]> {
     const sql = getDb();
+    const orgId = organizationId ?? tryGetOrgId();
     try {
-      const rows = await sql<GrantRow>`
-        SELECT pattern, kind, granted_at, expires_at, denied
-        FROM grants
-        WHERE agent_id = ${agentId}
-          AND (expires_at IS NULL OR expires_at > now())
-        ORDER BY granted_at DESC
-      `;
+      const rows = orgId
+        ? await sql<GrantRow>`
+            SELECT pattern, kind, granted_at, expires_at, denied
+            FROM grants
+            WHERE organization_id = ${orgId}
+              AND agent_id = ${agentId}
+              AND (expires_at IS NULL OR expires_at > now())
+            ORDER BY granted_at DESC
+          `
+        : await sql<GrantRow>`
+            SELECT pattern, kind, granted_at, expires_at, denied
+            FROM grants
+            WHERE agent_id = ${agentId}
+              AND (expires_at IS NULL OR expires_at > now())
+            ORDER BY granted_at DESC
+          `;
 
       return rows.map((row) => ({
         pattern: row.pattern,
@@ -195,16 +245,31 @@ export class GrantStore {
   /**
    * Revoke a grant for an agent.
    */
-  async revoke(agentId: string, pattern: string): Promise<void> {
+  async revoke(
+    agentId: string,
+    pattern: string,
+    organizationId?: string
+  ): Promise<void> {
     const candidates = getDomainGrantCandidates(pattern);
     const kind = inferGrantKind(pattern);
+    const orgId = organizationId ?? tryGetOrgId();
     const sql = getDb();
-    await sql`
-      DELETE FROM grants
-      WHERE agent_id = ${agentId}
-        AND kind = ${kind}
-        AND pattern = ANY(${pgTextArray(candidates)}::text[])
-    `;
+    if (orgId) {
+      await sql`
+        DELETE FROM grants
+        WHERE organization_id = ${orgId}
+          AND agent_id = ${agentId}
+          AND kind = ${kind}
+          AND pattern = ANY(${pgTextArray(candidates)}::text[])
+      `;
+    } else {
+      await sql`
+        DELETE FROM grants
+        WHERE agent_id = ${agentId}
+          AND kind = ${kind}
+          AND pattern = ANY(${pgTextArray(candidates)}::text[])
+      `;
+    }
     logger.info("Revoked grant", { agentId, pattern });
   }
 }

@@ -114,7 +114,7 @@ CREATE TABLE public.agent_channel_bindings (
     channel_id text NOT NULL,
     team_id text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    organization_id text
+    organization_id text NOT NULL
 );
 
 --
@@ -132,7 +132,7 @@ CREATE TABLE public.agent_connections (
     error_message text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    organization_id text,
+    organization_id text NOT NULL,
     CONSTRAINT agent_connections_status_check CHECK ((status = ANY (ARRAY['active'::text, 'stopped'::text, 'error'::text])))
 );
 
@@ -147,7 +147,7 @@ CREATE TABLE public.agent_grants (
     expires_at timestamp with time zone,
     granted_at timestamp with time zone DEFAULT now() NOT NULL,
     denied boolean DEFAULT false,
-    organization_id text
+    organization_id text NOT NULL
 );
 
 --
@@ -191,7 +191,7 @@ CREATE TABLE public.agent_users (
     platform text NOT NULL,
     user_id text NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    organization_id text
+    organization_id text NOT NULL
 );
 
 --
@@ -1109,7 +1109,7 @@ CREATE TABLE public.grants (
     expires_at timestamp with time zone,
     granted_at timestamp with time zone DEFAULT now() NOT NULL,
     denied boolean DEFAULT false NOT NULL,
-    organization_id text
+    organization_id text NOT NULL
 );
 
 --
@@ -2214,11 +2214,11 @@ ALTER TABLE ONLY public.agent_connections
     ADD CONSTRAINT agent_connections_pkey PRIMARY KEY (id);
 
 --
--- Name: agent_grants agent_grants_agent_id_pattern_key; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: agent_grants agent_grants_org_agent_pattern_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.agent_grants
-    ADD CONSTRAINT agent_grants_agent_id_pattern_key UNIQUE (agent_id, pattern);
+    ADD CONSTRAINT agent_grants_org_agent_pattern_key UNIQUE (organization_id, agent_id, pattern);
 
 --
 -- Name: agent_grants agent_grants_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -2239,14 +2239,14 @@ ALTER TABLE ONLY public.agent_secrets
 --
 
 ALTER TABLE ONLY public.agent_users
-    ADD CONSTRAINT agent_users_pkey PRIMARY KEY (agent_id, platform, user_id);
+    ADD CONSTRAINT agent_users_pkey PRIMARY KEY (organization_id, agent_id, platform, user_id);
 
 --
 -- Name: agents agents_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.agents
-    ADD CONSTRAINT agents_pkey PRIMARY KEY (id);
+    ADD CONSTRAINT agents_pkey PRIMARY KEY (organization_id, id);
 
 --
 -- Name: auth_profiles auth_profiles_org_id_unique; Type: CONSTRAINT; Schema: public; Owner: -
@@ -2421,7 +2421,7 @@ ALTER TABLE ONLY public.feeds
 --
 
 ALTER TABLE ONLY public.grants
-    ADD CONSTRAINT grants_pkey PRIMARY KEY (agent_id, kind, pattern);
+    ADD CONSTRAINT grants_pkey PRIMARY KEY (organization_id, agent_id, kind, pattern);
 
 --
 -- Name: watcher_versions insight_template_versions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -4104,32 +4104,32 @@ ALTER TABLE ONLY public.account
     ADD CONSTRAINT "account_userId_fkey" FOREIGN KEY ("userId") REFERENCES public."user"(id) ON DELETE CASCADE;
 
 --
--- Name: agent_channel_bindings agent_channel_bindings_agent_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: agent_channel_bindings agent_channel_bindings_org_agent_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.agent_channel_bindings
-    ADD CONSTRAINT agent_channel_bindings_agent_id_fkey FOREIGN KEY (agent_id) REFERENCES public.agents(id) ON DELETE CASCADE;
+    ADD CONSTRAINT agent_channel_bindings_org_agent_fkey FOREIGN KEY (organization_id, agent_id) REFERENCES public.agents(organization_id, id) ON DELETE CASCADE;
 
 --
--- Name: agent_connections agent_connections_agent_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: agent_connections agent_connections_org_agent_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.agent_connections
-    ADD CONSTRAINT agent_connections_agent_id_fkey FOREIGN KEY (agent_id) REFERENCES public.agents(id) ON DELETE CASCADE;
+    ADD CONSTRAINT agent_connections_org_agent_fkey FOREIGN KEY (organization_id, agent_id) REFERENCES public.agents(organization_id, id) ON DELETE CASCADE;
 
 --
--- Name: agent_grants agent_grants_agent_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: agent_grants agent_grants_org_agent_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.agent_grants
-    ADD CONSTRAINT agent_grants_agent_id_fkey FOREIGN KEY (agent_id) REFERENCES public.agents(id) ON DELETE CASCADE;
+    ADD CONSTRAINT agent_grants_org_agent_fkey FOREIGN KEY (organization_id, agent_id) REFERENCES public.agents(organization_id, id) ON DELETE CASCADE;
 
 --
--- Name: agent_users agent_users_agent_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: agent_users agent_users_org_agent_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.agent_users
-    ADD CONSTRAINT agent_users_agent_id_fkey FOREIGN KEY (agent_id) REFERENCES public.agents(id) ON DELETE CASCADE;
+    ADD CONSTRAINT agent_users_org_agent_fkey FOREIGN KEY (organization_id, agent_id) REFERENCES public.agents(organization_id, id) ON DELETE CASCADE;
 
 --
 -- Name: agents agents_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
@@ -4545,11 +4545,11 @@ ALTER TABLE ONLY public.event_classifiers
     ADD CONSTRAINT fk_event_classifiers_insight FOREIGN KEY (watcher_id) REFERENCES public.watchers(id) ON DELETE SET NULL;
 
 --
--- Name: grants grants_agent_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: grants grants_org_agent_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.grants
-    ADD CONSTRAINT grants_agent_id_fkey FOREIGN KEY (agent_id) REFERENCES public.agents(id) ON DELETE CASCADE;
+    ADD CONSTRAINT grants_org_agent_fkey FOREIGN KEY (organization_id, agent_id) REFERENCES public.agents(organization_id, id) ON DELETE CASCADE;
 
 --
 -- Name: watcher_versions insight_template_versions_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
@@ -4811,11 +4811,11 @@ ALTER TABLE ONLY public.runs
     ADD CONSTRAINT runs_window_id_fkey FOREIGN KEY (window_id) REFERENCES public.watcher_windows(id) ON DELETE SET NULL;
 
 --
--- Name: scheduled_jobs scheduled_jobs_agent_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: scheduled_jobs scheduled_jobs_org_agent_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.scheduled_jobs
-    ADD CONSTRAINT scheduled_jobs_agent_fkey FOREIGN KEY (created_by_agent) REFERENCES public.agents(id) ON DELETE CASCADE;
+    ADD CONSTRAINT scheduled_jobs_org_agent_fkey FOREIGN KEY (organization_id, created_by_agent) REFERENCES public.agents(organization_id, id) ON DELETE CASCADE;
 
 --
 -- Name: scheduled_jobs scheduled_jobs_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
@@ -4990,4 +4990,5 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20260514160000'),
     ('20260515120000'),
     ('20260515150000'),
-    ('20260515160000');
+    ('20260515160000'),
+    ('20260516120000');

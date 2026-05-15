@@ -331,9 +331,14 @@ export class MessageHandlerBridge {
     // admin API. Idempotent — agent_users has a (agent_id, platform, user_id)
     // unique constraint.
     const userAgentsStore = this.services.getUserAgentsStore();
-    if (userAgentsStore) {
+    if (userAgentsStore && this.connection.organizationId) {
       try {
-        await userAgentsStore.addAgent(platform, userId, agentId);
+        await userAgentsStore.addAgent(
+          platform,
+          userId,
+          agentId,
+          this.connection.organizationId
+        );
       } catch (error) {
         logger.warn(
           { agentId, userId, error: String(error) },
@@ -528,6 +533,7 @@ export class MessageHandlerBridge {
         conversationId,
         teamId: isGroup ? channelId : platform,
         agentId,
+        organizationId: this.connection.organizationId,
         messageId,
         messageText,
         channelId,

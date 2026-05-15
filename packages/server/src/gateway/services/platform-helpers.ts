@@ -194,6 +194,7 @@ export function buildMessagePayload(params: {
   conversationId: string;
   teamId: string;
   agentId: string;
+  organizationId?: string;
   messageId: string;
   messageText: string;
   channelId: string;
@@ -216,6 +217,7 @@ export function buildMessagePayload(params: {
     conversationId: params.conversationId,
     teamId: params.teamId,
     agentId: params.agentId,
+    organizationId: params.organizationId,
     messageId: params.messageId,
     messageText: params.messageText,
     channelId: params.channelId,

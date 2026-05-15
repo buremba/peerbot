@@ -804,6 +804,7 @@ export abstract class BaseDeploymentManager {
         typeof platformMetadata?.connectionId === "string"
           ? platformMetadata.connectionId
           : undefined,
+      organizationId: validated.organizationId,
     };
 
     const workerToken = generateWorkerToken(

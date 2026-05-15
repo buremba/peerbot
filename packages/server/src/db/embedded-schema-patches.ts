@@ -568,4 +568,133 @@ export const EMBEDDED_SCHEMA_PATCHES: EmbeddedSchemaPatch[] = [
       );
     },
   },
+  {
+    // Mirrors db/migrations/20260516120000_agents_per_org_pk_swap.sql.
+    // Detects whether the swap has already happened by reading the current
+    // PK definition on `agents`; skips silently when the composite PK is
+    // already in place.
+    id: 'agents-per-org-pk-phase-c',
+    apply: async (sql) => {
+      const pkDef = (await sql.unsafe(`
+        SELECT pg_get_constraintdef(c.oid) AS def
+        FROM pg_constraint c
+        JOIN pg_class t ON t.oid = c.conrelid
+        JOIN pg_namespace n ON n.oid = t.relnamespace
+        WHERE n.nspname = 'public'
+          AND t.relname = 'agents'
+          AND c.contype = 'p'
+        LIMIT 1
+      `)) as Array<{ def: string }>;
+      const def = pkDef[0]?.def ?? '';
+      if (def.includes('organization_id') && def.includes('id')) {
+        // Composite PK already in place — nothing to do.
+        return;
+      }
+
+      // Backfill any stragglers and drop orphans.
+      for (const t of [
+        'agent_grants',
+        'agent_connections',
+        'agent_users',
+        'agent_channel_bindings',
+        'grants',
+      ]) {
+        await sql.unsafe(`
+          UPDATE public.${t} c
+          SET organization_id = a.organization_id
+          FROM public.agents a
+          WHERE c.organization_id IS NULL AND c.agent_id = a.id
+        `);
+        await sql.unsafe(`
+          DELETE FROM public.${t} WHERE organization_id IS NULL
+        `);
+        await sql.unsafe(`
+          ALTER TABLE public.${t} ALTER COLUMN organization_id SET NOT NULL
+        `);
+      }
+
+      // Drop legacy single-column FKs.
+      await sql.unsafe(
+        `ALTER TABLE public.agent_grants           DROP CONSTRAINT IF EXISTS agent_grants_agent_id_fkey`
+      );
+      await sql.unsafe(
+        `ALTER TABLE public.agent_connections      DROP CONSTRAINT IF EXISTS agent_connections_agent_id_fkey`
+      );
+      await sql.unsafe(
+        `ALTER TABLE public.agent_users            DROP CONSTRAINT IF EXISTS agent_users_agent_id_fkey`
+      );
+      await sql.unsafe(
+        `ALTER TABLE public.agent_channel_bindings DROP CONSTRAINT IF EXISTS agent_channel_bindings_agent_id_fkey`
+      );
+      await sql.unsafe(
+        `ALTER TABLE public.grants                 DROP CONSTRAINT IF EXISTS grants_agent_id_fkey`
+      );
+      await sql.unsafe(
+        `ALTER TABLE public.scheduled_jobs         DROP CONSTRAINT IF EXISTS scheduled_jobs_agent_fkey`
+      );
+
+      // Drop legacy uniques/PKs scoped to bare agent_id.
+      await sql.unsafe(
+        `ALTER TABLE public.agent_grants DROP CONSTRAINT IF EXISTS agent_grants_agent_id_pattern_key`
+      );
+      await sql.unsafe(
+        `ALTER TABLE public.agent_users  DROP CONSTRAINT IF EXISTS agent_users_pkey`
+      );
+      await sql.unsafe(
+        `ALTER TABLE public.grants       DROP CONSTRAINT IF EXISTS grants_pkey`
+      );
+
+      // Swap PK on agents.
+      await sql.unsafe(`ALTER TABLE public.agents DROP CONSTRAINT IF EXISTS agents_pkey`);
+      await sql.unsafe(
+        `ALTER TABLE public.agents ADD CONSTRAINT agents_pkey PRIMARY KEY (organization_id, id)`
+      );
+
+      // Re-add per-org-scoped uniques.
+      await sql.unsafe(`
+        ALTER TABLE public.agent_grants
+          ADD CONSTRAINT agent_grants_org_agent_pattern_key UNIQUE (organization_id, agent_id, pattern)
+      `);
+      await sql.unsafe(`
+        ALTER TABLE public.agent_users
+          ADD CONSTRAINT agent_users_pkey PRIMARY KEY (organization_id, agent_id, platform, user_id)
+      `);
+      await sql.unsafe(`
+        ALTER TABLE public.grants
+          ADD CONSTRAINT grants_pkey PRIMARY KEY (organization_id, agent_id, kind, pattern)
+      `);
+
+      // Re-add composite FKs into agents(organization_id, id).
+      await sql.unsafe(`
+        ALTER TABLE public.agent_grants
+          ADD CONSTRAINT agent_grants_org_agent_fkey
+          FOREIGN KEY (organization_id, agent_id) REFERENCES public.agents(organization_id, id) ON DELETE CASCADE
+      `);
+      await sql.unsafe(`
+        ALTER TABLE public.agent_connections
+          ADD CONSTRAINT agent_connections_org_agent_fkey
+          FOREIGN KEY (organization_id, agent_id) REFERENCES public.agents(organization_id, id) ON DELETE CASCADE
+      `);
+      await sql.unsafe(`
+        ALTER TABLE public.agent_users
+          ADD CONSTRAINT agent_users_org_agent_fkey
+          FOREIGN KEY (organization_id, agent_id) REFERENCES public.agents(organization_id, id) ON DELETE CASCADE
+      `);
+      await sql.unsafe(`
+        ALTER TABLE public.agent_channel_bindings
+          ADD CONSTRAINT agent_channel_bindings_org_agent_fkey
+          FOREIGN KEY (organization_id, agent_id) REFERENCES public.agents(organization_id, id) ON DELETE CASCADE
+      `);
+      await sql.unsafe(`
+        ALTER TABLE public.grants
+          ADD CONSTRAINT grants_org_agent_fkey
+          FOREIGN KEY (organization_id, agent_id) REFERENCES public.agents(organization_id, id) ON DELETE CASCADE
+      `);
+      await sql.unsafe(`
+        ALTER TABLE public.scheduled_jobs
+          ADD CONSTRAINT scheduled_jobs_org_agent_fkey
+          FOREIGN KEY (organization_id, created_by_agent) REFERENCES public.agents(organization_id, id) ON DELETE CASCADE
+      `);
+    },
+  },
 ];

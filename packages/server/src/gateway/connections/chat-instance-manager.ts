@@ -30,7 +30,6 @@ import {
 } from "../secrets/index.js";
 import { resolveAgentOptions } from "../services/platform-helpers.js";
 import { orgContext, tryGetOrgId } from "../../lobu/stores/org-context.js";
-import { getAgentOrganizationId } from "../../lobu/stores/postgres-stores.js";
 import {
   ConversationStateStore,
   type HistoryEntry,
@@ -215,11 +214,13 @@ export class ChatInstanceManager {
 
     const id = stableId ?? randomUUID().replace(/-/g, "").slice(0, 16);
     const now = Date.now();
+    const organizationId = tryGetOrgId() ?? undefined;
 
     const connection: PlatformConnection = {
       id,
       platform,
       ...(agentId ? { agentId } : {}),
+      ...(organizationId ? { organizationId } : {}),
       config,
       settings: settings ?? { allowGroups: true },
       metadata,
@@ -547,15 +548,14 @@ export class ChatInstanceManager {
     // owning org keeps per-org secret refs resolvable from every entry
     // point — no caller has to remember.
     const callerOrgId = tryGetOrgId();
-    if (!callerOrgId && connection.agentId) {
-      const organizationId = await getAgentOrganizationId(
-        connection.agentId
+    if (!callerOrgId && connection.organizationId) {
+      // Connection rows now carry their owning org id directly — use it
+      // to set up the AsyncLocalStorage scope before resolving any
+      // org-scoped secret refs.
+      return orgContext.run(
+        { organizationId: connection.organizationId },
+        () => this.startInstanceUnscoped(connection)
       );
-      if (organizationId) {
-        return orgContext.run({ organizationId }, () =>
-          this.startInstanceUnscoped(connection)
-        );
-      }
     }
     return this.startInstanceUnscoped(connection);
   }
@@ -1554,6 +1554,7 @@ function storedToPlatform(stored: StoredConnection): PlatformConnection {
     updatedAt: stored.updatedAt,
   };
   if (stored.agentId) out.agentId = stored.agentId;
+  if (stored.organizationId) out.organizationId = stored.organizationId;
   if (stored.errorMessage) out.errorMessage = stored.errorMessage;
   return out;
 }

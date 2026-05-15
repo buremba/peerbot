@@ -56,6 +56,12 @@ export interface PlatformConnection {
   id: string;
   platform: string;
   agentId?: string;
+  /**
+   * Organization id this connection belongs to. Mirrors
+   * `agent_connections.organization_id`. Optional in the type for
+   * back-compat with in-memory tests; required at the storage layer.
+   */
+  organizationId?: string;
   config: PlatformAdapterConfig;
   settings: ConnectionSettings;
   metadata: Record<string, any>;

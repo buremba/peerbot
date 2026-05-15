@@ -23,7 +23,6 @@ import {
   AGENT_ID_PATTERN,
   createPostgresAgentConfigStore,
   createPostgresAgentConnectionStore,
-  getAgentOrganizationId,
 } from './stores/postgres-stores';
 import { orgContext } from './stores/org-context';
 

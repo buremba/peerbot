@@ -239,13 +239,16 @@ async function upsertBinding(
   platform: string,
   channelId: string,
   teamId: string | undefined,
-  agentId: string
+  agentId: string,
+  organizationId: string
 ): Promise<void> {
   if (teamId) {
     await tx`
-      INSERT INTO agent_channel_bindings (agent_id, platform, channel_id, team_id, created_at)
-      VALUES (${agentId}, ${platform}, ${channelId}, ${teamId}, now())
-      ON CONFLICT (platform, channel_id, team_id) DO UPDATE SET agent_id = EXCLUDED.agent_id
+      INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id, created_at)
+      VALUES (${organizationId}, ${agentId}, ${platform}, ${channelId}, ${teamId}, now())
+      ON CONFLICT (platform, channel_id, team_id) DO UPDATE SET
+        agent_id = EXCLUDED.agent_id,
+        organization_id = EXCLUDED.organization_id
     `;
   } else {
     await tx`
@@ -253,8 +256,8 @@ async function upsertBinding(
       WHERE platform = ${platform} AND channel_id = ${channelId} AND team_id IS NULL
     `;
     await tx`
-      INSERT INTO agent_channel_bindings (agent_id, platform, channel_id, team_id, created_at)
-      VALUES (${agentId}, ${platform}, ${channelId}, NULL, now())
+      INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id, created_at)
+      VALUES (${organizationId}, ${agentId}, ${platform}, ${channelId}, NULL, now())
     `;
   }
 }
@@ -299,7 +302,7 @@ export async function consumePreviewClaim(args: {
       return { status: 'surface_not_allowed' as const, surfaceType };
     }
 
-    await upsertBinding(tx, platform, channelId, teamId, claim.agentId);
+    await upsertBinding(tx, platform, channelId, teamId, claim.agentId, claim.organizationId);
 
     // The code was minted by an authenticated `lobu run`, so the sender is the
     // same Lobu user. Record the chat-platform → Lobu-user link so they can
@@ -346,10 +349,9 @@ async function resolvePreviewConnectionOrg(
 ): Promise<{ organizationId: string; owningAgentId: string } | null> {
   const sql = getDb();
   const rows = (await sql`
-    SELECT a.organization_id, c.agent_id
-    FROM agent_connections c
-    JOIN agents a ON a.id = c.agent_id
-    WHERE c.id = ${connectionId}
+    SELECT organization_id, agent_id
+    FROM agent_connections
+    WHERE id = ${connectionId}
     LIMIT 1
   `) as Array<{ organization_id: string | null; agent_id: string | null }>;
   const row = rows[0];
@@ -423,9 +425,11 @@ export async function bindChatToPreviewAgent(args: {
   const { platform, teamId, channelId } = args;
   if (teamId) {
     await sql`
-      INSERT INTO agent_channel_bindings (agent_id, platform, channel_id, team_id, created_at)
-      VALUES (${target.id}, ${platform}, ${channelId}, ${teamId}, now())
-      ON CONFLICT (platform, channel_id, team_id) DO UPDATE SET agent_id = EXCLUDED.agent_id
+      INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id, created_at)
+      VALUES (${org.organizationId}, ${target.id}, ${platform}, ${channelId}, ${teamId}, now())
+      ON CONFLICT (platform, channel_id, team_id) DO UPDATE SET
+        agent_id = EXCLUDED.agent_id,
+        organization_id = EXCLUDED.organization_id
     `;
   } else {
     await sql`
@@ -433,8 +437,8 @@ export async function bindChatToPreviewAgent(args: {
       WHERE platform = ${platform} AND channel_id = ${channelId} AND team_id IS NULL
     `;
     await sql`
-      INSERT INTO agent_channel_bindings (agent_id, platform, channel_id, team_id, created_at)
-      VALUES (${target.id}, ${platform}, ${channelId}, NULL, now())
+      INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id, created_at)
+      VALUES (${org.organizationId}, ${target.id}, ${platform}, ${channelId}, NULL, now())
     `;
   }
   return { status: 'bound', agentId: target.id };

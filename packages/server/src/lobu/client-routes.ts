@@ -301,8 +301,9 @@ async function listMessagingClients(options: {
       au.created_at,
       a.name AS agent_name
     FROM agent_users au
-    JOIN agents a ON a.id = au.agent_id
-    WHERE a.organization_id = ${options.organizationId}
+    JOIN agents a
+      ON a.organization_id = au.organization_id AND a.id = au.agent_id
+    WHERE au.organization_id = ${options.organizationId}
       ${options.agentId ? sql`AND au.agent_id = ${options.agentId}` : sql``}
     ORDER BY au.created_at DESC
   `) as Array<{

@@ -30,6 +30,10 @@ export interface MessagePayload {
   channelId: string; // Platform channel ID
   teamId: string; // Team/workspace ID (required for all platforms)
   agentId: string; // Agent/session ID for isolation (universal identifier)
+  // Organization id of the agent. Plumbed through so child queries (grants,
+  // user-agents, channel-bindings, secrets) can scope by org — agent ids
+  // are per-org-unique, so `agent_id = ?` alone is ambiguous.
+  organizationId?: string;
 
   // Bot & platform info (passed through to worker)
   botId: string; // Bot identifier

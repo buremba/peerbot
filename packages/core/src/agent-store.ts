@@ -107,6 +107,12 @@ export interface StoredConnection {
   id: string;
   platform: string;
   agentId?: string;
+  /**
+   * Organization id this connection belongs to. Optional in the type for
+   * back-compat with in-memory tests, but required at the storage layer
+   * (`agent_connections.organization_id` is NOT NULL post-Phase-C).
+   */
+  organizationId?: string;
   config: Record<string, any>;
   settings: ConnectionSettings;
   metadata: Record<string, any>;

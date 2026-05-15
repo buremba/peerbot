@@ -29,6 +29,7 @@ export interface AuthProfileRow {
   browser_kind: BrowserKind | null;
   user_data_dir: string | null;
   cdp_url: string | null;
+  is_default_for_connector: boolean;
 }
 
 interface BrowserSessionSummary {
@@ -241,7 +242,8 @@ const AUTH_PROFILE_COLUMNS = `
   id, organization_id, slug, display_name, connector_key,
   profile_kind, status, auth_data, account_id, provider,
   created_by, created_at, updated_at,
-  device_worker_id, browser_kind, user_data_dir, cdp_url
+  device_worker_id, browser_kind, user_data_dir, cdp_url,
+  is_default_for_connector
 ` as const;
 
 export async function listAuthProfiles(params: {
@@ -438,6 +440,9 @@ export async function getPrimaryAuthProfileForKind(params: {
   const sql = getDb();
 
   if (params.profileKind === 'oauth_app' && params.provider) {
+    // Admins pin a default via is_default_for_connector; that's the strongest
+    // preference. After that, prefer a profile bound to this specific
+    // connector_key over a provider-only match, then fall back to recency.
     const rows = await sql`
       SELECT ${sql.unsafe(AUTH_PROFILE_COLUMNS)}
       FROM auth_profiles
@@ -449,6 +454,7 @@ export async function getPrimaryAuthProfileForKind(params: {
           OR lower(provider) = lower(${params.provider})
         )
       ORDER BY
+        CASE WHEN is_default_for_connector AND connector_key = ${params.connectorKey} THEN 0 ELSE 1 END,
         CASE WHEN connector_key = ${params.connectorKey} THEN 0 ELSE 1 END,
         updated_at DESC,
         id DESC
@@ -500,6 +506,48 @@ export async function getPrimaryAuthProfileForKind(params: {
   `;
 
   return rows.length > 0 ? (rows[0] as AuthProfileRow) : null;
+}
+
+/**
+ * Pin one oauth_app profile as the org default for its connector_key. Clears
+ * the flag on any sibling profile for the same (org, connector_key) first so
+ * the partial unique index never trips.
+ *
+ * Pass `slug: null` to clear the default for the connector entirely (no
+ * profile pinned). Returns the row that ended up flagged, or null on clear.
+ */
+export async function setDefaultAuthProfileForConnector(params: {
+  organizationId: string;
+  connectorKey: string;
+  slug: string | null;
+}): Promise<AuthProfileRow | null> {
+  const sql = getDb();
+
+  return sql.begin(async (tx) => {
+    await tx`
+      UPDATE auth_profiles
+      SET is_default_for_connector = false,
+          updated_at = NOW()
+      WHERE organization_id = ${params.organizationId}
+        AND connector_key = ${params.connectorKey}
+        AND profile_kind = 'oauth_app'
+        AND is_default_for_connector
+    `;
+
+    if (params.slug === null) return null;
+
+    const rows = await tx`
+      UPDATE auth_profiles
+      SET is_default_for_connector = true,
+          updated_at = NOW()
+      WHERE organization_id = ${params.organizationId}
+        AND slug = ${params.slug}
+        AND profile_kind = 'oauth_app'
+      RETURNING ${tx.unsafe(AUTH_PROFILE_COLUMNS)}
+    `;
+
+    return rows.length > 0 ? (rows[0] as AuthProfileRow) : null;
+  }) as Promise<AuthProfileRow | null>;
 }
 
 export async function resolveAuthProfileSlugToId(params: {

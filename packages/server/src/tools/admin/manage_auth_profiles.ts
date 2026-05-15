@@ -25,6 +25,7 @@ import {
   listAuthProfiles,
   normalizeAuthProfileSlug,
   normalizeAuthValues,
+  setDefaultAuthProfileForConnector,
   summarizeBrowserSessionAuthData,
   updateAuthProfile,
 } from '../../utils/auth-profiles';
@@ -135,6 +136,14 @@ const DeleteAuthProfileAction = Type.Object({
   ),
 });
 
+const SetDefaultAuthProfileAction = Type.Object({
+  action: Type.Literal('set_default_auth_profile'),
+  connector_key: Type.String({ description: 'Connector key to pin the default for' }),
+  auth_profile_slug: Type.Union([Type.String(), Type.Null()], {
+    description: 'OAuth app profile slug to pin as the org default, or null to clear.',
+  }),
+});
+
 export const ManageAuthProfilesSchema = Type.Union([
   ListAuthProfilesAction,
   GetAuthProfileAction,
@@ -142,6 +151,7 @@ export const ManageAuthProfilesSchema = Type.Union([
   CreateAuthProfileAction,
   UpdateAuthProfileAction,
   DeleteAuthProfileAction,
+  SetDefaultAuthProfileAction,
 ]);
 
 // ============================================
@@ -171,7 +181,12 @@ type ManageAuthProfilesResult =
       connect_token?: string;
     }
   | { action: 'update_auth_profile'; auth_profile: any; connect_url?: string }
-  | { action: 'delete_auth_profile'; deleted: true; auth_profile_slug: string };
+  | { action: 'delete_auth_profile'; deleted: true; auth_profile_slug: string }
+  | {
+      action: 'set_default_auth_profile';
+      connector_key: string;
+      auth_profile: any | null;
+    };
 
 type AuthProfilesArgs = Static<typeof ManageAuthProfilesSchema>;
 
@@ -210,6 +225,11 @@ export async function manageAuthProfiles(
     delete_auth_profile: () =>
       handleDeleteAuthProfile(
         args as Extract<AuthProfilesArgs, { action: 'delete_auth_profile' }>,
+        ctx
+      ),
+    set_default_auth_profile: () =>
+      handleSetDefaultAuthProfile(
+        args as Extract<AuthProfilesArgs, { action: 'set_default_auth_profile' }>,
         ctx
       ),
   });
@@ -370,6 +390,30 @@ async function handleTestAuthProfile(
       ? `Auth profile '${authProfile.slug}' configured`
       : `Auth profile '${authProfile.slug}' has no credentials`,
   };
+}
+
+/**
+ * When an oauth_app profile is revoked/errored, any connection that mints
+ * tokens against it can no longer authenticate. Flip those connections to
+ * pending_auth so the UI surfaces the breakage; the admin re-pins or rotates
+ * the app, then operators re-authorize the connection.
+ */
+async function syncConnectionsForOAuthAppProfile(
+  organizationId: string,
+  authProfileId: number,
+  active: boolean
+): Promise<void> {
+  const sql = getDb();
+  const nextConnectionStatus = active ? 'active' : 'pending_auth';
+
+  await sql`
+    UPDATE connections
+    SET status = ${nextConnectionStatus},
+        updated_at = NOW()
+    WHERE organization_id = ${organizationId}
+      AND app_auth_profile_id = ${authProfileId}
+      AND deleted_at IS NULL
+  `;
 }
 
 async function syncConnectionsForBrowserAuthProfile(
@@ -728,6 +772,27 @@ async function handleUpdateAuthProfile(
     );
   }
 
+  // Cascade for oauth_app: admins flipping an app profile to revoked/error
+  // need dependent connections to surface as broken (instead of silently
+  // continuing to point at a profile whose creds the gateway can no longer
+  // resolve).
+  if (authProfile.profile_kind === 'oauth_app') {
+    if (authProfile.status === 'revoked' || authProfile.status === 'error') {
+      await syncConnectionsForOAuthAppProfile(ctx.organizationId, authProfile.id, false);
+      // A revoked profile must not also be flagged as the connector default.
+      if (authProfile.is_default_for_connector && authProfile.connector_key) {
+        await setDefaultAuthProfileForConnector({
+          organizationId: ctx.organizationId,
+          connectorKey: authProfile.connector_key,
+          slug: null,
+        });
+        authProfile = { ...authProfile, is_default_for_connector: false };
+      }
+    } else if (authProfile.status === 'active') {
+      await syncConnectionsForOAuthAppProfile(ctx.organizationId, authProfile.id, true);
+    }
+  }
+
   return { action: 'update_auth_profile', auth_profile: serializeAuthProfile(authProfile) };
 }
 
@@ -769,6 +834,12 @@ async function handleDeleteAuthProfile(
     await syncConnectionsForBrowserAuthProfile(ctx.organizationId, existing.id, false);
   }
 
+  // Same for oauth_app: connection.app_auth_profile_id has ON DELETE SET NULL,
+  // so silent breakage if we don't flip the connection status first.
+  if (existing.profile_kind === 'oauth_app') {
+    await syncConnectionsForOAuthAppProfile(ctx.organizationId, existing.id, false);
+  }
+
   const deleted = await deleteAuthProfile(ctx.organizationId, args.auth_profile_slug);
   if (!deleted) {
     return { error: `Failed to delete auth profile '${args.auth_profile_slug}'` };
@@ -778,5 +849,44 @@ async function handleDeleteAuthProfile(
     action: 'delete_auth_profile',
     deleted: true,
     auth_profile_slug: args.auth_profile_slug,
+  };
+}
+
+async function handleSetDefaultAuthProfile(
+  args: Extract<AuthProfilesArgs, { action: 'set_default_auth_profile' }>,
+  ctx: ToolContext
+): Promise<ManageAuthProfilesResult> {
+  if (args.auth_profile_slug !== null) {
+    const target = await getAuthProfileBySlug(ctx.organizationId, args.auth_profile_slug);
+    if (!target) {
+      return { error: `Auth profile '${args.auth_profile_slug}' not found` };
+    }
+    if (target.profile_kind !== 'oauth_app') {
+      return {
+        error: `Auth profile '${args.auth_profile_slug}' is a ${target.profile_kind} profile; only oauth_app profiles can be pinned as connector defaults.`,
+      };
+    }
+    if (target.connector_key !== args.connector_key) {
+      return {
+        error: `Auth profile '${args.auth_profile_slug}' is bound to connector '${target.connector_key}', not '${args.connector_key}'.`,
+      };
+    }
+    if (target.status !== 'active') {
+      return {
+        error: `Auth profile '${args.auth_profile_slug}' is ${target.status}; only active profiles can be pinned as the default.`,
+      };
+    }
+  }
+
+  const pinned = await setDefaultAuthProfileForConnector({
+    organizationId: ctx.organizationId,
+    connectorKey: args.connector_key,
+    slug: args.auth_profile_slug,
+  });
+
+  return {
+    action: 'set_default_auth_profile',
+    connector_key: args.connector_key,
+    auth_profile: pinned ? serializeAuthProfile(pinned) : null,
   };
 }

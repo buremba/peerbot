@@ -49,6 +49,7 @@ const OWNER_ADMIN_ACTIONS: Record<string, Set<string>> = {
     'create_auth_profile',
     'update_auth_profile',
     'delete_auth_profile',
+    'set_default_auth_profile',
   ]),
   manage_operations: new Set(['execute', 'approve', 'reject']),
   manage_watchers: new Set([

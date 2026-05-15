@@ -512,6 +512,7 @@ export function serializeAuthProfile(authProfile: AuthProfileRow): Record<string
     browser_kind: authProfile.browser_kind,
     user_data_dir: authProfile.user_data_dir,
     cdp_url: authProfile.cdp_url,
+    is_default_for_connector: authProfile.is_default_for_connector,
     ...(authProfile.profile_kind === 'oauth_account'
       ? {
           requested_scopes: readRequestedScopesFromAuthData(authProfile.auth_data),

@@ -60,9 +60,9 @@ Pace ~10k rows per batch with a sleep between batches; each batch is its own tra
 
 ### `CREATE INDEX` on a large table
 
-Plain `CREATE INDEX` takes `ACCESS EXCLUSIVE` on the table for the duration of the build. On `events` that's measured in seconds, not subseconds.
+Plain `CREATE INDEX` takes a `SHARE` lock on the table — reads still work, but **writes block** for the duration of the build. On `events` that's seconds of stalled INSERTs.
 
-**Safe pattern:** `CREATE INDEX CONCURRENTLY`. It does multiple passes but only takes `SHARE UPDATE EXCLUSIVE` so reads + writes continue.
+**Safe pattern:** `CREATE INDEX CONCURRENTLY`. Multiple passes, but only takes `SHARE UPDATE EXCLUSIVE` so reads + writes continue.
 
 ```sql
 -- CONCURRENTLY does not run inside a transaction. dbmate runs each .sql
@@ -74,6 +74,17 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_events_search_tsv
 ```
 
 If the migration *must* be one file with the column-add too, the column-add stays in a normal transaction-wrapped migration and the index is a follow-up `transaction:false` migration.
+
+**`CONCURRENTLY` + `IF NOT EXISTS` trap:** if a previous `CREATE INDEX CONCURRENTLY` failed mid-build (timeout, deadlock, connection dropped), Postgres leaves an **invalid** index behind. The index *name* exists, so the next `CREATE INDEX CONCURRENTLY IF NOT EXISTS` skips the rebuild — and now your "successful" deploy is using a half-built index that the planner refuses to read from. Before retrying, check:
+
+```sql
+SELECT i.relname, x.indisvalid
+  FROM pg_class i
+  JOIN pg_index x ON x.indexrelid = i.oid
+ WHERE i.relname = 'idx_events_search_tsv';
+```
+
+If `indisvalid = false`, drop it with `DROP INDEX CONCURRENTLY idx_events_search_tsv;` (also `transaction:false`) and retry the create.
 
 ### `ALTER TABLE ... ALTER COLUMN ... SET NOT NULL`
 
@@ -93,7 +104,13 @@ ALTER TABLE events DROP CONSTRAINT events_title_not_null;
 
 A single `DELETE FROM connections WHERE id IN (...)` triggers an internal `UPDATE events SET connection_id = NULL WHERE connection_id IN (...)`. For a connection with 92k events that's a 13s blocking UPDATE — visible to ops as "the admin action hung the API."
 
-**Safe pattern:** keep cascades for *small* parent tables only. For parents that fan out to events, watcher_window_events, or anything else 100k+ rows wide, manage the dependent nulling in application code with batched UPDATEs (e.g. 1k rows per loop, sleep between).
+**Safe pattern:** keep cascades for *small* parent tables only. For parents that fan out to events, watcher_window_events, or anything else 100k+ rows wide:
+
+1. Make sure the **child FK column is indexed** (e.g. `idx_events_connection_id`) — without it, the cascade falls back to a seq scan and the UPDATE goes from 13s to minutes.
+2. Manage the dependent nulling in application code with batched UPDATEs (e.g. 1k rows per loop, sleep between).
+3. Run the parent `DELETE` only **after** the child rows are already nulled/orphaned — the cascade then has nothing to do and the delete is fast.
+
+Indexing alone helps the cascade, but it doesn't eliminate the per-row WAL write; batching before the delete is what keeps the API responsive.
 
 ### Bare `DROP INDEX`
 
@@ -123,7 +140,9 @@ psql "$DB" -tAc "SELECT max(version) FROM schema_migrations"
 psql "$DB" -tAc "SELECT 1 FROM information_schema.columns WHERE table_name='<table>' AND column_name='<col>'"
 ```
 
-If a migration left no `schema_migrations` row, the safe recovery is to apply it manually with the cap lifted:
+If a migration left no `schema_migrations` row, the safe recovery is to apply it manually with the cap lifted. Two paths depending on whether the migration uses `CONCURRENTLY`:
+
+**Standard migration (no CONCURRENTLY):** one transaction with the timeouts lifted.
 
 ```sh
 psql "$DB" -v ON_ERROR_STOP=1 <<'SQL'
@@ -131,6 +150,26 @@ BEGIN;
 SET LOCAL statement_timeout = 0;
 SET LOCAL lock_timeout = 0;
 -- paste the migrate:up section here
+INSERT INTO public.schema_migrations(version) VALUES ('<UTC-yyyymmddHHMMSS>');
+COMMIT;
+SQL
+```
+
+**`transaction:false` migration (any `CREATE/DROP INDEX CONCURRENTLY` or `REINDEX CONCURRENTLY`):** these can't run inside `BEGIN`. Use session-level `SET` and run statements one at a time. Verify success between each, then record the migration:
+
+```sh
+psql "$DB" <<'SQL'
+SET statement_timeout = 0;
+SET lock_timeout = 0;
+
+-- one statement at a time, no BEGIN
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_foo ON bar (baz);
+-- verify the index is valid before continuing:
+SELECT indisvalid FROM pg_index WHERE indexrelid = 'idx_foo'::regclass;
+-- if false: DROP INDEX CONCURRENTLY idx_foo; and rerun the create above.
+
+-- once everything is healthy, record the migration in its own tiny txn:
+BEGIN;
 INSERT INTO public.schema_migrations(version) VALUES ('<UTC-yyyymmddHHMMSS>');
 COMMIT;
 SQL

@@ -94,12 +94,27 @@ export function compareSchemaVersions(
  * Boot-time assertion: throws if the database is behind the image's
  * migrations directory. Call once during server startup, before opening the
  * HTTP listener.
+ *
+ * Fails closed in production: if `migrationsDir` can't be listed (bad path,
+ * missing copy in the image, wrong volume mount), `NODE_ENV=production`
+ * treats that as a deployment defect and throws. In dev a missing/empty
+ * directory degrades to a warning — so `bun run dev` from a worktree that
+ * doesn't have `db/` checked out still boots.
  */
 export async function assertSchemaUpToDate(
   sql: DbClient,
   options: { migrationsDir: string }
 ): Promise<void> {
   const expected = readExpectedSchemaVersion(options.migrationsDir);
+
+  if (expected === null && process.env.NODE_ENV === 'production') {
+    const msg =
+      `[schema-check] migrations directory ${options.migrationsDir} is empty or unreadable in a ` +
+      `production build — the image is missing db/migrations. Refusing to start.`;
+    logger.error({ migrationsDir: options.migrationsDir }, msg);
+    throw new Error(msg);
+  }
+
   const applied = await readAppliedSchemaVersion(sql);
   const result = compareSchemaVersions(expected, applied);
 

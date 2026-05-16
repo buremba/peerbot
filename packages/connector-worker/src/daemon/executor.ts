@@ -6,6 +6,7 @@
  */
 
 import type { Checkpoint, Content, Env } from '@lobu/connector-sdk';
+import { compileConnectorFromFile } from '../compile-connector.js';
 import { batchGenerateEmbeddings, generateEmbedding } from '../embeddings.js';
 import {
   executeCompiledConnector,
@@ -14,6 +15,24 @@ import {
 } from '../executor/runtime.js';
 import { SubprocessExecutor } from '../executor/subprocess.js';
 import type { ContentItem, ExecutorClient, PollResponse } from './client.js';
+
+/**
+ * Get the executable compiled code for a job.
+ *
+ * The gateway now prefers shipping `connector_source_path` (a bytes-cheap
+ * filesystem path) for fleet workers instead of an inline ~13 MB
+ * `compiled_code` blob — see worker-api.ts handler comment + lobu#771
+ * postmortem. This helper compiles from the path when present, falling
+ * back to the inline blob for device workers and DB-only user-uploaded
+ * connectors that don't have an on-disk source.
+ */
+async function resolveJobCode(job: PollResponse): Promise<string | null> {
+  if (job.compiled_code) return job.compiled_code;
+  if (job.connector_source_path) {
+    return await compileConnectorFromFile(job.connector_source_path);
+  }
+  return null;
+}
 
 export interface ExecutorConfig {
   batchSize: number;
@@ -86,13 +105,13 @@ async function executeSyncRun(
     config: feedConfig,
     checkpoint,
     credentials,
-    compiled_code,
   } = job;
 
   if (!run_id || !connector_key) {
     throw new Error('Invalid run: missing run_id or connector_key');
   }
 
+  const compiled_code = await resolveJobCode(job);
   if (!compiled_code) {
     throw new Error(
       `Run ${run_id} (${connector_key}): No compiled code available. ` +
@@ -280,12 +299,13 @@ async function executeActionRun(
     timeoutMs: cfg.timeoutMs,
     maxOldSpaceSize: cfg.maxOldSpaceSize,
   });
-  const { run_id, connector_key, action_key, action_input, credentials, compiled_code } = job;
+  const { run_id, connector_key, action_key, action_input, credentials } = job;
 
   if (!run_id || !connector_key || !action_key) {
     throw new Error('Invalid action run: missing run_id, connector_key, or action_key');
   }
 
+  const compiled_code = await resolveJobCode(job);
   if (!compiled_code) {
     throw new Error(`Action run ${run_id}: No compiled code available.`);
   }
@@ -350,11 +370,12 @@ async function executeAuthRun(
     timeoutMs: 0,
     maxOldSpaceSize: cfg.maxOldSpaceSize,
   });
-  const { run_id, connector_key, compiled_code, previous_credentials } = job;
+  const { run_id, connector_key, previous_credentials } = job;
 
   if (!run_id || !connector_key) {
     throw new Error('Invalid auth run: missing run_id or connector_key');
   }
+  const compiled_code = await resolveJobCode(job);
   if (!compiled_code) {
     throw new Error(`Auth run ${run_id}: No compiled code available.`);
   }

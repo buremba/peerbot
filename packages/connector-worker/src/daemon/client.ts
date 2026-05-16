@@ -85,8 +85,21 @@ export interface PollResponse {
   connection_id?: number;
   /** Feed ID (for sync runs) */
   feed_id?: number;
-  /** Compiled connector code */
+  /**
+   * Compiled connector code, shipped inline. Used for device workers and
+   * DB-only user-uploaded connectors. Fleet workers should receive
+   * `connector_source_path` instead and compile locally to keep the
+   * gateway's poll responses small.
+   */
   compiled_code?: string;
+  /**
+   * Absolute path to the connector's `.ts` source on the worker's local
+   * filesystem (gateway-resolved via `findBundledConnectorFile`). The
+   * worker compiles from this path on demand and caches the result. Sent
+   * for fleet workers when the connector ships in the image; mutually
+   * exclusive with `compiled_code` for any given poll response.
+   */
+  connector_source_path?: string;
   /** Connection session state (browser cookies, etc.) */
   session_state?: Record<string, unknown>;
   /** Connector version */

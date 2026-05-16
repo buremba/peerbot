@@ -27,6 +27,7 @@ import { captureServerError } from './sentry';
 import { autoLinkEvent } from './utils/auto-linker';
 import { nextRunAt as nextRunAtFromCron } from './utils/cron';
 import { reconcileDeviceCapabilities } from './worker-api/device-reconcile';
+import { findBundledConnectorFile } from './utils/connector-catalog';
 import { resolveConnectorCode } from './utils/ensure-connector-installed';
 import { applyEntityLinks } from './utils/entity-link-upsert';
 import { errorMessage } from './utils/errors';
@@ -422,24 +423,39 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     auth_profile_auth_data: Record<string, unknown> | null;
   };
 
+  // Connector code delivery:
+  //   - Fleet workers (server pods, embedded mode) share the host filesystem
+  //     with the gateway. When `findBundledConnectorFile` returns a path, the
+  //     worker can compile from it locally — no need for the gateway to esbuild
+  //     a ~13 MB bundle into every poll response and hold it in cache. Was the
+  //     dominant gateway-heap occupant in lobu#771 (29 cached bundles ~ 384 MB).
+  //   - Device workers (Lobu Mac Bridge, etc.) don't have the bundled
+  //     connectors directory. Same for DB-only user-uploaded connectors that
+  //     never had an on-disk source. Both fall back to shipping `compiled_code`.
   let compiledCode: string | undefined;
+  let connectorSourcePath: string | undefined;
   if (row.connector_key) {
-    try {
-      compiledCode = await resolveConnectorCode(row.connector_key, row.compiled_code);
-    } catch (err) {
-      const message = errorMessage(err);
-      await sql`
-        UPDATE runs
-        SET status = 'failed',
-            completed_at = current_timestamp,
-            error_message = ${message}
-        WHERE id = ${row.run_id}
-      `;
-      logger.error(
-        { run_id: row.run_id, connector_key: row.connector_key, err },
-        'Failed to resolve connector code for claimed worker run'
-      );
-      return c.json({ next_poll_seconds: 1, skipped_run_id: row.run_id, error: message });
+    const localPath = !isUserScopedWorker ? findBundledConnectorFile(row.connector_key) : null;
+    if (localPath) {
+      connectorSourcePath = localPath;
+    } else {
+      try {
+        compiledCode = await resolveConnectorCode(row.connector_key, row.compiled_code);
+      } catch (err) {
+        const message = errorMessage(err);
+        await sql`
+          UPDATE runs
+          SET status = 'failed',
+              completed_at = current_timestamp,
+              error_message = ${message}
+          WHERE id = ${row.run_id}
+        `;
+        logger.error(
+          { run_id: row.run_id, connector_key: row.connector_key, err },
+          'Failed to resolve connector code for claimed worker run'
+        );
+        return c.json({ next_poll_seconds: 1, skipped_run_id: row.run_id, error: message });
+      }
     }
   }
 
@@ -488,6 +504,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     connection_credentials:
       Object.keys(connectionCredentials).length > 0 ? connectionCredentials : undefined,
     compiled_code: compiledCode,
+    connector_source_path: connectorSourcePath,
     session_state: sessionState ?? undefined,
     action_key: row.action_key ?? undefined,
     action_input: (row as any).approved_input ?? row.action_input ?? undefined,

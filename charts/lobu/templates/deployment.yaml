@@ -7,20 +7,37 @@ metadata:
     app.kubernetes.io/component: api
 spec:
   replicas: {{ .Values.app.replicaCount }}
-  {{- with .Values.app.strategy }}
+  {{- /*
+  Deploy strategy resolution:
+    1. Explicit `app.strategy` override always wins.
+    2. Else: workspaces is RWO-only AND enabled → Recreate (RWO PVC
+       can't be mounted by two pods, so RollingUpdate would deadlock
+       at PVC attach). Operators with RWX storage (accessModes
+       contains ReadWriteMany) get the rolling path automatically —
+       set `app.workspaces.accessModes: [ReadWriteMany]` and a
+       suitable `storageClassName`.
+    3. Else (workspaces disabled or RWX) → RollingUpdate with
+       maxSurge: 1, maxUnavailable: 0. With replicaCount > 1 this
+       is true blue/green: new pod must be ready before old one
+       terminates → zero "no available server" window. With
+       replicaCount: 1 there's still a brief overlap (new pod
+       starts, becomes ready, old pod terminates) but no gap.
+  */}}
+  {{- $rwxConfigured := has "ReadWriteMany" (.Values.app.workspaces.accessModes | default (list)) }}
+  {{- if .Values.app.strategy }}
   strategy:
-    {{- toYaml . | nindent 4 }}
-  {{- else }}
-  {{- if .Values.app.workspaces.enabled }}
-  # The workspaces PVC is RWO so we can't have two pods mount it at once;
-  # default to Recreate to avoid scheduling conflicts. Single-replica
-  # operators see a brief (~30s) "no available server" window on every
-  # deploy as a result. To eliminate it, set RWX storage on workspaces
-  # (or move workspaces off this deployment entirely) and override
-  # `app.strategy` to RollingUpdate via values. See PR #773 discussion.
+    {{- toYaml .Values.app.strategy | nindent 4 }}
+  {{- else if and .Values.app.workspaces.enabled (not $rwxConfigured) }}
+  # workspaces PVC is RWO — see comment above.
   strategy:
     type: Recreate
-  {{- end }}
+  {{- else }}
+  # workspaces is RWX (or disabled) — safe to roll.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   {{- end }}
   selector:
     matchLabels:

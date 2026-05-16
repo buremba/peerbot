@@ -65,7 +65,26 @@ app:
     NODE_ENV: production
 
   # Persistent workspaces volume. Embedded agent workers store session and
-  # workspace state below /app/workspaces.
+  # workspace state below /app/workspaces (watcher run scratch, agent panel
+  # sessions, etc.).
+  #
+  # Deploy-strategy interaction: with `accessModes: [ReadWriteOnce]` (the
+  # default), only one pod can mount this volume at a time, so the chart
+  # forces `strategy: Recreate` — every rollout has a ~30s "no available
+  # server" window between old-pod-down and new-pod-up.
+  #
+  # To get zero-downtime rolling deploys (true blue/green):
+  #   1. Switch storage class to one that supports RWX (NFS, EFS, CephFS,
+  #      Longhorn-RWX, etc.).
+  #   2. Set `accessModes: [ReadWriteMany]` here.
+  #   3. Bump `app.replicaCount` to 2+.
+  #   4. (Optional) set `app.preStopDelaySeconds` to ~15 so Service
+  #      endpoint deregistration + downstream LB cache flush happens
+  #      before SIGTERM hits the draining pod.
+  # The chart auto-switches strategy to RollingUpdate (maxSurge: 1,
+  # maxUnavailable: 0) when RWX is configured. Concurrent gateway pods on
+  # RWX are safe because /app/workspaces paths are keyed by (agent, run)
+  # tuples and the runs queue uses FOR UPDATE SKIP LOCKED for claims.
   workspaces:
     enabled: true
     size: 20Gi

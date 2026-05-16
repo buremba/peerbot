@@ -35,6 +35,23 @@ app:
   podAnnotations: {}
   podSecurityContext: {}
   securityContext: {}
+  # Seconds the preStop hook sleeps before SIGTERM is sent. Gives Service
+  # endpoint deregistration + downstream LB cache time to notice the pod
+  # is going away, so in-flight requests during the deregistration lag
+  # still hit a live process.
+  #
+  # Default 0 (preStop hook NOT emitted). Set to ~15 only when running
+  # with `app.strategy.type: RollingUpdate` and replicaCount > 1.
+  # Under the default Recreate strategy (workspaces PVC is RWO), the
+  # new pod doesn't start until the old one terminates, so adding a
+  # preStop sleep would EXTEND the no-available-server window — the
+  # opposite of what we want.
+  preStopDelaySeconds: 0
+  # Total time k8s waits for the pod to stop before SIGKILL. Must be
+  # > preStopDelaySeconds + actual shutdown time. The gateway's graceful
+  # shutdown closes the HTTP server, stops the task scheduler, drains the
+  # DB pool — empirically ~5s.
+  terminationGracePeriodSeconds: 45
 
   resources:
     requests:

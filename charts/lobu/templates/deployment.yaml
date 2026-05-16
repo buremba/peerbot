@@ -12,6 +12,12 @@ spec:
     {{- toYaml . | nindent 4 }}
   {{- else }}
   {{- if .Values.app.workspaces.enabled }}
+  # The workspaces PVC is RWO so we can't have two pods mount it at once;
+  # default to Recreate to avoid scheduling conflicts. Single-replica
+  # operators see a brief (~30s) "no available server" window on every
+  # deploy as a result. To eliminate it, set RWX storage on workspaces
+  # (or move workspaces off this deployment entirely) and override
+  # `app.strategy` to RollingUpdate via values. See PR #773 discussion.
   strategy:
     type: Recreate
   {{- end }}
@@ -36,6 +42,12 @@ spec:
       securityContext:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      # Grace period must exceed preStopDelaySeconds + reasonable shutdown
+      # time for the gateway (graceful_shutdown in server.ts cleans up
+      # task scheduler, embedded gateway, DB pool, HTTP server). Default
+      # k8s grace period is 30s; bump so the preStop sleep doesn't eat
+      # the whole window.
+      terminationGracePeriodSeconds: {{ .Values.app.terminationGracePeriodSeconds | default 45 }}
       containers:
         - name: app
           image: {{ include "lobu.appImage" . }}
@@ -93,6 +105,24 @@ spec:
           envFrom:
             - secretRef:
                 name: {{ $secretName }}
+          {{- end }}
+          {{- /*
+          PreStop hook is only useful under RollingUpdate (the new pod is
+          already serving, so deregistering the old pod via Service
+          endpoint removal + giving downstream caches time to notice it
+          shrinks the "old pod kept getting traffic during drain" window).
+          Under `Recreate` (the workspaces-RWO default), the new pod
+          doesn't start until the old one fully terminates — adding a
+          preStop sleep would EXTEND the no-available-server window by
+          its duration. We only emit the hook when preStopDelaySeconds
+          is explicitly > 0; ops repos using RollingUpdate set it,
+          Recreate-mode deploys leave it at the default 0.
+          */ -}}
+          {{- if gt (int (.Values.app.preStopDelaySeconds | default 0)) 0 }}
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep {{ .Values.app.preStopDelaySeconds }}"]
           {{- end }}
           # Readiness probes the DB too (/health/ready does SELECT 1).
           # Failing readiness pulls the pod out of the Service endpoint set

@@ -1,3 +1,4 @@
+import * as Sentry from '@sentry/node';
 import pino from 'pino';
 
 /**
@@ -22,9 +23,6 @@ const getLogLevel = (): pino.Level => {
   return 'debug';
 };
 
-/**
- * Create a Pino logger instance
- */
 // pino's default error serializer only fires for the `err` key, so
 // `logger.error({ error }, '...')` silently logs `error: {}` (Error's own
 // fields are non-enumerable). Register the same serializer on the `error`
@@ -33,20 +31,121 @@ const getLogLevel = (): pino.Level => {
 // and hid `column "events.search_tsv" does not exist`.
 const errSerializer = pino.stdSerializers.err;
 
-const logger = pino({
-  level: getLogLevel(),
-  browser: {
-    asObject: false,
+/**
+ * Sentry forwarding for logger.error() and logger.fatal().
+ *
+ * Prior to this hook, `logger.error(...)` only wrote to stdout. The Sentry
+ * capture middleware in server.ts:85-113 only fires on HTTP 500 responses,
+ * so error-logged failures inside background jobs (CheckDueFeeds, runs
+ * queue, scheduled tasks) were invisible to monitoring. The 2026-05-16
+ * audit found ~1914 errors / 5 min in stdout with zero Sentry issues.
+ *
+ * In-process dedupe: repeating errors are common (e.g. an orphan feed
+ * fails every 1-min CheckDueFeeds tick). We fingerprint by
+ * (msg, err.type, top stack frame) and only forward once per
+ * SENTRY_DEDUPE_WINDOW_MS per fingerprint. Sentry has its own grouping
+ * but every captureException still incurs an HTTP call + cost; this
+ * cuts the load without losing signal.
+ */
+const SENTRY_DEDUPE_WINDOW_MS = 60_000;
+const SENTRY_DEDUPE_MAX_ENTRIES = 1000;
+const sentryDedupe: Map<string, number> = new Map();
+
+function fingerprintAndCapture(parsed: Record<string, unknown>): void {
+  const level = parsed.level;
+  if (level !== 'error' && level !== 'fatal') return;
+
+  // Caller already captured this to Sentry (see server.ts onError +
+  // 500-response middleware). Skip to avoid duplicate events.
+  if (parsed.sentryReported === true) return;
+
+  const msg = typeof parsed.msg === 'string' ? parsed.msg : 'logger.error';
+  // pino.stdSerializers.err normalises both `err` and `error` (see serializers
+  // config below) to objects with `type` / `message` / `stack`.
+  const errObj =
+    (parsed.err as { type?: string; message?: string; stack?: string } | undefined) ??
+    (parsed.error as { type?: string; message?: string; stack?: string } | undefined);
+
+  // Include err.message in the fingerprint — pre-fix, "(msg, err.type,
+  // top stack frame)" grouped distinct errors raised from the same
+  // catch site (same Error type, same wrapping log line). One legit
+  // incident could be masked by a noisy unrelated one within the 60s
+  // window. err.message disambiguates them.
+  const errType = errObj?.type ?? '';
+  const errMessage = errObj?.message ?? '';
+  const stackTop = (errObj?.stack ?? '').split('\n')[1]?.trim() ?? '';
+  const fingerprint = `${msg}|${errType}|${errMessage}|${stackTop}`;
+
+  const now = Date.now();
+  const last = sentryDedupe.get(fingerprint);
+  if (last !== undefined && now - last < SENTRY_DEDUPE_WINDOW_MS) return;
+  sentryDedupe.set(fingerprint, now);
+
+  // Bound the dedupe map so a long-running pod doesn't grow it without limit.
+  if (sentryDedupe.size > SENTRY_DEDUPE_MAX_ENTRIES) {
+    const oldest = sentryDedupe.keys().next().value;
+    if (oldest !== undefined) sentryDedupe.delete(oldest);
+  }
+
+  try {
+    if (errObj?.message) {
+      // Reconstruct an Error so Sentry's grouping works on the stack.
+      const reconstructed = new Error(errObj.message);
+      if (errObj.stack) reconstructed.stack = errObj.stack;
+      Sentry.captureException(reconstructed, {
+        extra: parsed,
+        tags: { source: 'pino', level: String(level) },
+      });
+    } else {
+      Sentry.captureMessage(msg, {
+        level: level === 'fatal' ? 'fatal' : 'error',
+        extra: parsed,
+        tags: { source: 'pino' },
+      });
+    }
+  } catch {
+    // Sentry not initialised (test envs) or transient SDK failure — never
+    // crash the logger over telemetry.
+  }
+}
+
+/**
+ * pino destination that mirrors lines to stdout AND inspects each line for
+ * Sentry forwarding. Sync write is intentional: pino's default stdout path
+ * is sync too, and the JSON.parse + dedupe lookup is sub-microsecond.
+ */
+const sentryAwareStream: pino.DestinationStream = {
+  write(line: string): void {
+    process.stdout.write(line);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      return;
+    }
+    if (parsed && typeof parsed === 'object') {
+      fingerprintAndCapture(parsed as Record<string, unknown>);
+    }
   },
-  formatters: {
-    level: (label) => {
-      return { level: label };
+};
+
+const logger = pino(
+  {
+    level: getLogLevel(),
+    browser: {
+      asObject: false,
+    },
+    formatters: {
+      level: (label) => {
+        return { level: label };
+      },
+    },
+    serializers: {
+      err: errSerializer,
+      error: errSerializer,
     },
   },
-  serializers: {
-    err: errSerializer,
-    error: errSerializer,
-  },
-});
+  sentryAwareStream
+);
 
 export default logger;

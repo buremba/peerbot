@@ -131,7 +131,11 @@ app.onError((err, c) => {
     });
     markSentryReported(c);
   }
-  logger.error({ err, path: c.req.path }, 'Unhandled error in HTTP handler');
+  // sentryReported:true tells the pino → Sentry forwarder in logger.ts
+  // to skip — Sentry already has this exception via the explicit
+  // captureException above. Without the marker, we'd send the same
+  // event twice.
+  logger.error({ err, path: c.req.path, sentryReported: true }, 'Unhandled error in HTTP handler');
   return c.json({ error: 'Internal server error' }, 500);
 });
 

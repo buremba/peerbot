@@ -166,6 +166,32 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   // which means a bridge with no granted capabilities claims *nothing* instead
   // of hijacking-and-failing arbitrary embedded-server connector runs (e.g. hackernews).
   const isUserScopedWorker = c.var.workerAuthMode === 'user';
+  // Platform binding: once a (user_id, worker_id) row has set its platform,
+  // subsequent polls cannot change it. Without this lock a chrome-extension
+  // PAT could post `platform: "macos"` and unlock the macOS allowlist —
+  // the gateway's capability authorization would otherwise believe the
+  // self-reported platform. We read the stored platform first, reject
+  // mismatches, and use the stored value for authorization.
+  let effectivePlatform: string | null = platform;
+  if (isUserScopedWorker && c.var.workerUserId && worker_id) {
+    const existing = (await sql`
+      SELECT platform FROM device_workers
+      WHERE user_id = ${c.var.workerUserId} AND worker_id = ${worker_id}
+      LIMIT 1
+    `) as unknown as Array<{ platform: string | null }>;
+    if (existing.length > 0 && existing[0].platform) {
+      if (platform && platform !== existing[0].platform) {
+        return c.json(
+          {
+            error: 'platform_mismatch',
+            error_description: `worker is bound to platform '${existing[0].platform}'`,
+          },
+          403
+        );
+      }
+      effectivePlatform = existing[0].platform;
+    }
+  }
   // For user-scoped (device) workers, authorize the advertised capability set
   // against the platform-specific allowlist in @lobu/core. Anything outside
   // the allowlist for the device's reported platform is silently dropped —
@@ -173,11 +199,11 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   // `browser.debugger`, etc. Trusted-fleet workers (no platform) skip this.
   let authorizedCapabilities = advertisedCapabilities;
   if (isUserScopedWorker) {
-    const auth = authorizeCapabilities(platform, advertisedCapabilities);
+    const auth = authorizeCapabilities(effectivePlatform, advertisedCapabilities);
     authorizedCapabilities = auth.authorized;
     if (auth.dropped.length > 0) {
       logger.warn(
-        { worker_id, platform, dropped: auth.dropped },
+        { worker_id, platform: effectivePlatform, dropped: auth.dropped },
         '[pollWorkerJob] dropped capabilities not allowed for platform'
       );
     }
@@ -219,7 +245,12 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
           )
         )
         ON CONFLICT (user_id, worker_id) DO UPDATE SET
-          platform = EXCLUDED.platform,
+          -- platform is set-once: COALESCE preserves the original value,
+          -- so a compromised PAT can't re-platform a Chrome worker into a
+          -- macOS one to unlock OS capabilities. The mismatch check above
+          -- already rejects deliberate attempts; this is defense-in-depth
+          -- against a race between the SELECT and the UPSERT.
+          platform = COALESCE(device_workers.platform, EXCLUDED.platform),
           app_version = EXCLUDED.app_version,
           capabilities = EXCLUDED.capabilities,
           label = COALESCE(EXCLUDED.label, device_workers.label),
@@ -1719,6 +1750,16 @@ export async function mintDeviceChildToken(c: Context<{ Bindings: Env }>) {
       `device:${platform}:${workerId.slice(0, 8)}`,
       { scope: 'device_worker:run', description: label ?? undefined }
     );
+    // Pre-create the device_workers row with platform set. The next poll
+    // call from the child sees this row, can't change platform (poll's
+    // ON CONFLICT preserves it via COALESCE + a SELECT-then-reject check),
+    // and the gateway's capability authorization uses the stored platform
+    // rather than whatever the bearer self-reports.
+    await sql`
+      INSERT INTO device_workers (user_id, worker_id, platform, capabilities, organization_id)
+      VALUES (${userId}, ${workerId}, ${platform}, ${sql.json([])}, ${organizationId})
+      ON CONFLICT (user_id, worker_id) DO NOTHING
+    `;
 
     const gatewayUrl = new URL(c.req.url).origin;
     return c.json({

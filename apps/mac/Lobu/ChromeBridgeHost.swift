@@ -227,6 +227,13 @@ private enum NativeMessagingLoop {
 
     // MARK: framing
 
+    /// Chrome's native-messaging spec caps host→browser messages at 1 MB
+    /// and browser→host at 4 GB, but our host only handles a tiny
+    /// `{op, platform, label?}` request. Reject anything over 64 KB —
+    /// keeps a buggy or compromised extension from making the host hang or
+    /// memory-pressure on a malicious length header.
+    private static let maxFramePayloadBytes = 64 * 1024
+
     /// Read one length-prefixed JSON frame from stdin. Accumulates every
     /// chunk `availableData` returns into a single buffer — that call
     /// consumes the bytes, so a "peek 4" approach loses anything that
@@ -240,6 +247,7 @@ private enum NativeMessagingLoop {
             buf.append(chunk)
         }
         let length = buf.prefix(4).withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }
+        if Int(length) > maxFramePayloadBytes { return nil }
         let payloadEnd = 4 + Int(length)
         while buf.count < payloadEnd {
             let chunk = fh.availableData

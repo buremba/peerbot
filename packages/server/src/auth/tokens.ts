@@ -33,6 +33,13 @@ export class PersonalAccessTokenService {
       description?: string;
       scope?: string;
       expiresInDays?: number;
+      /**
+       * Bind the PAT to a specific device_workers.worker_id. The
+       * worker-poll handler will reject requests whose body posts a
+       * different worker_id. Used by /api/me/devices/mint-child-token to
+       * pin sibling-device tokens to the worker_id minted for them.
+       */
+      workerId?: string;
     }
   ): Promise<PATCreateResponse> {
     const token = generatePAT();
@@ -46,7 +53,7 @@ export class PersonalAccessTokenService {
     const result = await this.sql`
       INSERT INTO personal_access_tokens (
         token_hash, token_prefix, user_id, organization_id,
-        name, description, scope, expires_at
+        name, description, scope, expires_at, worker_id
       ) VALUES (
         ${tokenHash},
         ${tokenPrefix},
@@ -55,7 +62,8 @@ export class PersonalAccessTokenService {
         ${name},
         ${options?.description || null},
         ${options?.scope || null},
-        ${expiresAt}
+        ${expiresAt},
+        ${options?.workerId || null}
       )
       RETURNING id, created_at
     `;
@@ -111,6 +119,7 @@ export class PersonalAccessTokenService {
         ? Math.floor(new Date(pat.expires_at).getTime() / 1000)
         : Number.MAX_SAFE_INTEGER,
       tokenType: 'pat',
+      workerId: (pat as unknown as { worker_id?: string | null }).worker_id ?? null,
     };
   }
 

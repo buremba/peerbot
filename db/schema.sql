@@ -1434,7 +1434,8 @@ CREATE TABLE public.personal_access_tokens (
     last_used_at timestamp with time zone,
     revoked_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    worker_id text
 );
 
 --
@@ -3996,6 +3997,13 @@ CREATE INDEX personal_access_tokens_active_idx ON public.personal_access_tokens 
 --
 
 CREATE INDEX personal_access_tokens_organization_id_idx ON public.personal_access_tokens USING btree (organization_id);
+
+
+--
+-- Name: idx_personal_access_tokens_worker_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_personal_access_tokens_worker_id ON public.personal_access_tokens USING btree (worker_id) WHERE (worker_id IS NOT NULL);
 
 --
 -- Name: personal_access_tokens_token_hash_idx; Type: INDEX; Schema: public; Owner: -

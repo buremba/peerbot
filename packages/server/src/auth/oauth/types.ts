@@ -207,6 +207,14 @@ export interface AuthInfo {
   expiresAt: number; // Unix timestamp
   resource?: string;
   tokenType: 'access_token' | 'pat';
+  /**
+   * Optional binding to a specific device_workers.worker_id. Set on PATs
+   * minted via /api/me/devices/mint-child-token; the worker-poll handler
+   * rejects the request if the body's `worker_id` doesn't match this
+   * value. NULL means "no binding" — the caller picks its own worker id
+   * (Mac/iOS bridges register theirs on first poll).
+   */
+  workerId?: string | null;
 }
 
 // ============================================

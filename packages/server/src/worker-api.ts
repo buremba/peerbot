@@ -166,6 +166,21 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   // which means a bridge with no granted capabilities claims *nothing* instead
   // of hijacking-and-failing arbitrary embedded-server connector runs (e.g. hackernews).
   const isUserScopedWorker = c.var.workerAuthMode === 'user';
+  // Worker-id binding: when the caller's PAT was minted via
+  // /api/me/devices/mint-child-token, its row in personal_access_tokens
+  // carries a non-NULL `worker_id`. The poll body must use the same id —
+  // otherwise the caller could escape platform binding by registering
+  // arbitrary fresh worker_ids and picking their own platform on each.
+  const boundWorkerId = c.var.mcpAuthInfo?.workerId ?? null;
+  if (boundWorkerId && worker_id && boundWorkerId !== worker_id) {
+    return c.json(
+      {
+        error: 'worker_id_mismatch',
+        error_description: `this token is bound to worker_id '${boundWorkerId}'`,
+      },
+      403
+    );
+  }
   // Platform binding: once a (user_id, worker_id) row has set its platform,
   // subsequent polls cannot change it. Without this lock a chrome-extension
   // PAT could post `platform: "macos"` and unlock the macOS allowlist —
@@ -1748,7 +1763,11 @@ export async function mintDeviceChildToken(c: Context<{ Bindings: Env }>) {
       userId,
       organizationId,
       `device:${platform}:${workerId.slice(0, 8)}`,
-      { scope: 'device_worker:run', description: label ?? undefined }
+      {
+        scope: 'device_worker:run',
+        description: label ?? undefined,
+        workerId,
+      }
     );
     // Pre-create the device_workers row with platform set. The next poll
     // call from the child sees this row, can't change platform (poll's

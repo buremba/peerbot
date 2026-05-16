@@ -5,6 +5,7 @@
  * Updated for V1 integration platform: runs-based job model.
  */
 
+import { authorizeCapabilities } from '@lobu/core';
 import type { Context } from 'hono';
 import { createAuth } from './auth';
 import { getDb, parsePgNumberArray, pgBigintArray, pgTextArray } from './db/client';
@@ -163,9 +164,25 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   // which means a bridge with no granted capabilities claims *nothing* instead
   // of hijacking-and-failing arbitrary embedded-server connector runs (e.g. hackernews).
   const isUserScopedWorker = c.var.workerAuthMode === 'user';
+  // For user-scoped (device) workers, authorize the advertised capability set
+  // against the platform-specific allowlist in @lobu/core. Anything outside
+  // the allowlist for the device's reported platform is silently dropped —
+  // a chrome-extension can't claim `os.shell`, an iOS bridge can't claim
+  // `browser.debugger`, etc. Trusted-fleet workers (no platform) skip this.
+  let authorizedCapabilities = advertisedCapabilities;
+  if (isUserScopedWorker) {
+    const auth = authorizeCapabilities(platform, advertisedCapabilities);
+    authorizedCapabilities = auth.authorized;
+    if (auth.dropped.length > 0) {
+      logger.warn(
+        { worker_id, platform, dropped: auth.dropped },
+        '[pollWorkerJob] dropped capabilities not allowed for platform'
+      );
+    }
+  }
   const capabilityMatchSet = isUserScopedWorker
-    ? advertisedCapabilities
-    : [''].concat(advertisedCapabilities);
+    ? authorizedCapabilities
+    : [''].concat(authorizedCapabilities);
 
   // Device-worker registry: upsert device_workers row for user-scoped workers
   // so /api/me/devices can enumerate them. Also ensure advertised capability
@@ -184,7 +201,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   let deviceWorkerId: string | null = null;
   if (workerUserId) {
     try {
-      const incomingCaps = advertisedCapabilities;
+      const incomingCaps = authorizedCapabilities;
 
       // `xmax = 0` on the RETURNING row distinguishes a brand-new device
       // registration from a routine poll-update so we only emit the

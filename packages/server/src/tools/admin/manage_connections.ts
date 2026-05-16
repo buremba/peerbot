@@ -539,7 +539,13 @@ async function handleList(
               AND NOT (dw.id IS NOT NULL AND dw.last_seen_at > now() - interval '20 minutes')
              THEN 'offline'
            END AS device_status,
-           (SELECT COUNT(*) FROM current_event_records e WHERE e.connection_id = c.id)::int AS event_count,
+           -- event_count intentionally omitted from list responses: the
+           -- per-row correlated count via current_event_records does a
+           -- supersedes anti-join over the events table and was the dominant
+           -- cost in this query (1303ms mean → 2.3ms without it; see the
+           -- post-incident perf brainstorm). For the per-connection detail
+           -- page, handleGet below still computes it — that path is a single
+           -- row and costs ~1.2ms.
            (SELECT COUNT(*) FROM feeds f WHERE f.connection_id = c.id AND f.deleted_at IS NULL)::int AS feed_count,
            (SELECT ct.token FROM connect_tokens ct
             WHERE ct.connection_id = c.id AND ct.status = 'pending' AND ct.expires_at > NOW()

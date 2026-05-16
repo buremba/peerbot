@@ -112,6 +112,8 @@ A single `DELETE FROM connections WHERE id IN (...)` triggers an internal `UPDAT
 
 Indexing alone helps the cascade, but it doesn't eliminate the per-row WAL write; batching before the delete is what keeps the API responsive.
 
+**Lobu-specific policy:** **connections are never hard-deleted in prod.** Setting `connections.deleted_at` is the final state. The `events_connection_id_fkey ... ON DELETE SET NULL` cascade exists in the schema for completeness, but actually invoking it (`DELETE FROM connections WHERE deleted_at IS NOT NULL`) blocks the API for ~13s per connection at current scale — the 2026-05-16 `pg_stat_statements` showed exactly this pattern at rank #8 (5 calls × 13.4s each). Soft-deleted connections cost ~50 bytes apiece in the `connections` table; the occasional accumulation isn't worth the recurring stall. The connection-creation rollback path in `tools/admin/manage_connections.ts` (which only deletes never-activated rows that have no events yet) is the only acceptable use of `DELETE FROM connections`.
+
 ### Bare `DROP INDEX`
 
 Takes `ACCESS EXCLUSIVE`. Use `DROP INDEX CONCURRENTLY` (also `transaction:false`).

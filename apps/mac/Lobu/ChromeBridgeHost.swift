@@ -93,6 +93,11 @@ enum ChromeBridgeHost {
 
 // MARK: - Native-messaging stdin/stdout loop --------------------------------
 
+private struct BridgeError: Error {
+    let message: String
+    init(_ message: String) { self.message = message }
+}
+
 private enum NativeMessagingLoop {
     /// Returns the process exit code.
     static func run() -> Int32 {
@@ -116,8 +121,8 @@ private enum NativeMessagingLoop {
             switch result {
             case .success(let payload):
                 writeFrame(output, payload)
-            case .failure(let message):
-                sendError(output, message)
+            case .failure(let err):
+                sendError(output, err.message)
             }
         default:
             sendError(output, "unknown_op")
@@ -130,13 +135,13 @@ private enum NativeMessagingLoop {
     /// Calls POST /api/me/devices/mint-child-token using the Mac app's
     /// stored OAuth credentials. Synchronous — native-messaging hosts are
     /// short-lived stdio children, not long-running processes.
-    private static func mintChildToken(platform: String) -> Result<[String: Any], String> {
+    private static func mintChildToken(platform: String) -> Result<[String: Any], BridgeError> {
         // Credentials are written by AppState's signin flow into the
         // KeychainTokenStore. Read them back from the same OS keychain item.
         // (Keeping this self-contained vs. importing AppState avoids dragging
         // SwiftUI into the host subprocess.)
         guard let creds = OwlettoBridgeCredentials.load() else {
-            return .failure("mac_not_signed_in")
+            return .failure(BridgeError("mac_not_signed_in"))
         }
 
         let url = creds.baseURL.appendingPathComponent("/api/me/devices/mint-child-token")
@@ -161,9 +166,11 @@ private enum NativeMessagingLoop {
         }.resume()
         sem.wait()
 
-        if let err = responseError { return .failure("network: \(err.localizedDescription)") }
+        if let err = responseError {
+            return .failure(BridgeError("network: \(err.localizedDescription)"))
+        }
         guard (200..<300).contains(responseStatus), let data = responseData else {
-            return .failure("gateway_status_\(responseStatus)")
+            return .failure(BridgeError("gateway_status_\(responseStatus)"))
         }
         guard
             let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -171,7 +178,7 @@ private enum NativeMessagingLoop {
             let token = obj["access_token"] as? String,
             let gatewayUrl = obj["gateway_url"] as? String
         else {
-            return .failure("malformed_gateway_response")
+            return .failure(BridgeError("malformed_gateway_response"))
         }
         return .success([
             "gateway_url": gatewayUrl,
@@ -232,7 +239,7 @@ private struct OwlettoBridgeCredentials {
     let accessToken: String
 
     static func load() -> OwlettoBridgeCredentials? {
-        let store = KeychainTokenStore()
+        let store = KeychainCredentialStore()
         guard
             let creds = store.load(),
             let url = URL(string: creds.baseURL)

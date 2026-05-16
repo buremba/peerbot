@@ -304,11 +304,15 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
               AND con.device_worker_id IS NULL
             )
             -- (B) user-scoped device worker: an unpinned capability-matched
-            --     device connector in an org this worker can see ...
+            --     device connector in an org this worker can see. Capability
+            --     match goes through the authorized set — a chrome-extension
+            --     claiming os.shell is dropped server-side (see
+            --     @lobu/core/capabilities), and that dropped string MUST NOT
+            --     match a connectors required_capability here either.
             OR (
               ${isUserScopedWorker}
               AND cd.required_capability IS NOT NULL
-              AND cd.required_capability = ANY(${pgTextArray(advertisedCapabilities)}::text[])
+              AND cd.required_capability = ANY(${pgTextArray(authorizedCapabilities)}::text[])
               AND con.device_worker_id IS NULL
               AND r.organization_id = ANY(${pgTextArray(orgScopeIds)}::text[])
             )
@@ -323,7 +327,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
               AND con.device_worker_id = ${deviceWorkerId}::uuid
               AND (
                 cd.required_capability IS NULL
-                OR cd.required_capability = ANY(${pgTextArray(advertisedCapabilities)}::text[])
+                OR cd.required_capability = ANY(${pgTextArray(authorizedCapabilities)}::text[])
               )
               AND r.organization_id = ANY(${pgTextArray(orgScopeIds)}::text[])
             )
@@ -1662,6 +1666,19 @@ export async function mintDeviceChildToken(c: Context<{ Bindings: Env }>) {
   const userId = c.var.user?.id;
   if (!userId) {
     return c.json({ error: 'Unauthorized' }, 401);
+  }
+  // The caller must already hold a device-worker bearer — i.e. a session
+  // that itself was minted for running on a device (the Mac bridge's
+  // signed-in OAuth token, or a previously-issued child PAT). A plain
+  // browser/web session shouldn't be allowed to silently escalate into a
+  // device worker; if a user wants to pair Chrome from a browser they go
+  // through the OAuth device-authorization flow, not this endpoint.
+  const callerScopes = c.var.mcpAuthInfo?.scopes ?? [];
+  if (!callerScopes.includes('device_worker:run')) {
+    return c.json(
+      { error: 'insufficient_scope', required: 'device_worker:run' },
+      403
+    );
   }
 
   let body: { platform?: string; label?: string };

@@ -77,6 +77,31 @@
   product surface entirely.
 - **Multi-window orchestration UI.** Group/ungroup tabs, snap windows.
 
+## Known follow-ups (security review)
+
+- **Native host argv check is necessary but not sufficient.** Any local
+  process running as the same user can exec the Mac binary with
+  `chrome-extension://…` as `argv[1]` and ask for a child token. Chrome's
+  `allowed_origins` only guards `connectNative` — not the binary's own
+  surface. Mitigations to evaluate: (a) extension-side nonce stored in
+  `chrome.storage.session` proven via a follow-up native-messaging round,
+  (b) require an in-app UI confirmation in the Mac app for each new pair,
+  (c) bind the minted PAT to the extension ID via a server-side check at
+  first poll.
+- **Worker tokens not yet bound to `worker_id`.** The mint endpoint
+  returns a fresh `worker_id` + PAT, but `/api/workers/poll` accepts any
+  `worker_id` posted by a valid bearer. A leaked child PAT can impersonate
+  arbitrary `worker_id`s under the same user. Add a `worker_id` claim to
+  the PAT (or a separate `device_worker_tokens` row) and enforce it in
+  worker-auth.
+- **Extension advertises capabilities ahead of executors.** `manifest.json`
+  declares `scripting` + `debugger` at install time and
+  `DEFAULT_CAPABILITIES` includes them, but `executeRun()` only handles
+  `chrome.tabs`. A connector that requires `browser.scripting` or
+  `browser.debugger` would be claimed and immediately fail. Either drop
+  the advertised set to `["browser.tabs"]` until the executors land, OR
+  ship per-cap executors before declaring them.
+
 ## Known risks
 
 - **Web Store review on `debugger`.** Chrome scrutinizes this; have a clear

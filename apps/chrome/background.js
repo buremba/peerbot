@@ -161,7 +161,7 @@ async function executeRun(run, workerId, token, gatewayUrl) {
       run_id,
       worker_id: workerId,
       status: "failed",
-      error: `Owletto for Chrome v0.1 only handles 'chrome.tabs' runs; got '${connector_key}'`,
+      error_message: `Owletto for Chrome v0.1 only handles 'chrome.tabs' runs; got '${connector_key}'`,
     });
     return;
   }
@@ -203,7 +203,7 @@ async function executeRun(run, workerId, token, gatewayUrl) {
       run_id,
       worker_id: workerId,
       status: "success",
-      items_count: items.length,
+      items_collected: items.length,
     });
     console.log("[owletto] completed run", { run_id, items: items.length });
   } catch (err) {
@@ -213,7 +213,7 @@ async function executeRun(run, workerId, token, gatewayUrl) {
         run_id,
         worker_id: workerId,
         status: "failed",
-        error: err instanceof Error ? err.message : String(err),
+        error_message: err instanceof Error ? err.message : String(err),
       });
     } catch {}
   }

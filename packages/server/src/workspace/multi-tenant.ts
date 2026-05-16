@@ -104,6 +104,52 @@ export async function getCachedOrgBySlug(
   return record;
 }
 
+/// Cache the no-auth user/org lookup. The values can't change while the
+/// server is alive: bootstrap-user/org are seeded once by `ensureBootstrapPat`
+/// and live forever. Clearing the cache requires a server restart.
+let noAuthUserCache: NoAuthUser | null = null;
+
+interface NoAuthUser {
+  userId: string;
+  organizationId: string;
+  user: { id: string; email: string; name: string; username: string };
+}
+
+/// Resolve the single local user attributed to every request in no-auth
+/// mode. Pulls the bootstrap-user row that `ensureBootstrapPat` writes and
+/// the personal org it owns. Returns `null` when the row doesn't exist yet
+/// (server boot race between HTTP listen and ensureBootstrapPat's await).
+async function getNoAuthUser(
+  sql: ReturnType<typeof getDb>
+): Promise<NoAuthUser | null> {
+  if (noAuthUserCache) return noAuthUserCache;
+  const rows = await simpleQuery(sql`
+    SELECT
+      u.id    AS user_id,
+      u.email AS email,
+      u.name  AS name,
+      u.username AS username,
+      m."organizationId" AS organization_id
+    FROM "user" u
+    JOIN "member" m ON m."userId" = u.id AND m.role IN ('owner', 'admin')
+    WHERE u.id = 'bootstrap-user'
+    LIMIT 1
+  `);
+  if (rows.length === 0) return null;
+  const row = rows[0];
+  noAuthUserCache = {
+    userId: row.user_id as string,
+    organizationId: row.organization_id as string,
+    user: {
+      id: row.user_id as string,
+      email: (row.email as string) ?? '',
+      name: (row.name as string) ?? '',
+      username: (row.username as string) ?? '',
+    },
+  };
+  return noAuthUserCache;
+}
+
 /**
  * Direct org lookup by id. Uncached — ids are a fallback path for the sandbox's
  * `.org(slugOrId)` accessor, so the TTL cache hit rate would be near-zero.
@@ -254,6 +300,55 @@ export class MultiTenantProvider implements WorkspaceProvider {
       if (overrides.session !== undefined) c.set('session', overrides.session as any);
       if (overrides.authSource !== undefined) c.set('authSource', overrides.authSource);
       return next();
+    }
+
+    // ─── No-auth (personal/local) mode ──────────────────────────────────────
+    // When LOBU_NO_AUTH=1 (set by the macOS menu bar's LocalLobuRunner), the
+    // server is bound to 127.0.0.1 only and treats every request as the
+    // single local user that `ensureBootstrapPat()` created on first boot.
+    // No bearer, no cookie, no OAuth — the entire point is to remove that
+    // ceremony for personal use on this Mac.
+    if (process.env.LOBU_NO_AUTH === '1') {
+      const noAuthUser = await getNoAuthUser(sql);
+      if (!noAuthUser) {
+        return c.json(
+          {
+            error: 'server_not_ready',
+            error_description:
+              'No-auth mode is enabled but the local user has not been provisioned yet. Retry shortly.',
+          },
+          503
+        );
+      }
+      // If a slug was supplied in the URL it must match the local user's org.
+      // No-auth mode is single-org by definition — refusing other slugs makes
+      // misconfiguration loud instead of silently attributing cross-org data.
+      if (requestedOrgId && requestedOrgId !== noAuthUser.organizationId) {
+        return c.json(
+          {
+            error: 'forbidden',
+            error_description:
+              'No-auth mode is single-org; the URL slug must match the local user organization.',
+          },
+          403
+        );
+      }
+      await setContextAndContinue({
+        mcpAuthInfo: {
+          userId: noAuthUser.userId,
+          organizationId: noAuthUser.organizationId,
+          clientId: 'lobu-no-auth',
+          scopes: ['mcp:read', 'mcp:write', 'mcp:admin'],
+          expiresAt: Math.floor(Date.now() / 1000) + 60 * 60,
+          tokenType: 'pat',
+        },
+        mcpIsAuthenticated: true,
+        organizationId: noAuthUser.organizationId,
+        memberRole: 'owner',
+        user: noAuthUser.user,
+        authSource: 'session',
+      });
+      return undefined;
     }
 
     // 1) Embedded worker direct-auth for the in-process lobu-memory MCP.

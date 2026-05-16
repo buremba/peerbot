@@ -72,6 +72,10 @@ final class LocalLobuRunner {
         proc.currentDirectoryURL = projectDir
         var env = ProcessInfo.processInfo.environment
         env["LOBU_DATA_DIR"] = projectDir.appendingPathComponent("data").path
+        // No-auth mode: server attributes every request to the local user
+        // without an OAuth flow, a token, or a sign-in screen. Personal-use
+        // model — see docs/plans/personal-mode-auth.md for the threat model.
+        env["LOBU_NO_AUTH"] = "1"
         proc.environment = env
         proc.standardInput = FileHandle.nullDevice  // no TTY — any prompt gets EOF and fails fast
 

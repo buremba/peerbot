@@ -71,6 +71,11 @@ function isTruthyEnv(name: string): boolean {
   return /^(1|true|yes|on)$/i.test(process.env[name]?.trim() ?? '');
 }
 
+function isLoopbackHost(host: string | undefined | null): boolean {
+  const h = host?.toLowerCase()?.replace(/^\[|\]$/g, '');
+  return h === '127.0.0.1' || h === 'localhost' || h === '::1';
+}
+
 async function main() {
   mkdirSync(DATA_DIR, { recursive: true });
 
@@ -189,9 +194,32 @@ async function main() {
 
   // ─── Listen ──────────────────────────────────────────────────
 
+  // No-auth mode is loopback-only by design. Refuse to listen on anything
+  // other than 127.0.0.1 / ::1 — both via the configured HOST (early fail)
+  // and via a post-listen `server.address()` check that catches surprises
+  // (DNS resolution, hostname aliasing, etc.).
+  const noAuth = process.env.LOBU_NO_AUTH === '1';
+  if (noAuth && !isLoopbackHost(HOST)) {
+    logger.error(
+      { host: HOST },
+      'LOBU_NO_AUTH=1 requires loopback bind (127.0.0.1 or ::1). Refusing to start.'
+    );
+    process.exit(1);
+  }
   httpServer.listen(PORT, HOST, () => {
+    if (noAuth) {
+      const addr = httpServer.address();
+      if (typeof addr === 'object' && addr && !isLoopbackHost(addr.address)) {
+        logger.error(
+          { address: addr.address },
+          'LOBU_NO_AUTH=1 server bound to a non-loopback address after listen() — refusing to serve.'
+        );
+        process.exit(1);
+      }
+    }
     logger.info(`Lobu running at http://${HOST}:${PORT}`);
     logger.info(`Data: ${DATA_DIR}`);
+    if (noAuth) logger.info('No-auth mode active (LOBU_NO_AUTH=1) — every request attributed to local user');
   });
 
   // ─── Bootstrap PAT ───────────────────────────────────────────

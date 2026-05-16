@@ -6,7 +6,7 @@
  */
 
 import type { Checkpoint, Content, Env } from '@lobu/connector-sdk';
-import { compileConnectorFromFile } from '../compile-connector.js';
+import { compileConnectorFromFile, findBundledConnectorFile } from '../compile-connector.js';
 import { batchGenerateEmbeddings, generateEmbedding } from '../embeddings.js';
 import {
   executeCompiledConnector,
@@ -17,21 +17,47 @@ import { SubprocessExecutor } from '../executor/subprocess.js';
 import type { ContentItem, ExecutorClient, PollResponse } from './client.js';
 
 /**
- * Get the executable compiled code for a job.
+ * Resolve the executable compiled code for a job.
  *
- * The gateway now prefers shipping `connector_source_path` (a bytes-cheap
- * filesystem path) for fleet workers instead of an inline ~13 MB
- * `compiled_code` blob — see worker-api.ts handler comment + lobu#771
- * postmortem. This helper compiles from the path when present, falling
- * back to the inline blob for device workers and DB-only user-uploaded
- * connectors that don't have an on-disk source.
+ * The gateway prefers omitting `compiled_code` for fleet workers and
+ * relying on this side to find + compile the source locally from
+ * `connector_key`. This saves the ~13 MB inline blob in poll responses
+ * (lobu#771 postmortem trail; lobu#772 perf fix). Device workers and
+ * DB-only user-uploaded connectors still receive `compiled_code`
+ * directly — they don't have the connector source on disk.
+ *
+ * Gateway and worker images have different paths to the bundled source,
+ * so the gateway sends only `connector_key` and each side resolves it
+ * against its own filesystem.
+ *
+ * Returns `{ code }` on success or `{ error }` on failure. Callers must
+ * surface the error to the gateway via `client.complete*` rather than
+ * throwing — the daemon-level catch only logs, leaving runs stuck
+ * `running` until stale-run reaping.
  */
-async function resolveJobCode(job: PollResponse): Promise<string | null> {
-  if (job.compiled_code) return job.compiled_code;
-  if (job.connector_source_path) {
-    return await compileConnectorFromFile(job.connector_source_path);
+type JobCodeResult = { ok: true; code: string } | { ok: false; error: string };
+
+async function resolveJobCode(job: PollResponse): Promise<JobCodeResult> {
+  if (job.compiled_code) return { ok: true, code: job.compiled_code };
+  if (!job.connector_key) {
+    return { ok: false, error: 'No compiled_code and no connector_key — gateway sent neither.' };
   }
-  return null;
+  const localPath = findBundledConnectorFile(job.connector_key);
+  if (!localPath) {
+    return {
+      ok: false,
+      error:
+        `connector_key '${job.connector_key}' did not resolve to a local source file. ` +
+        `Either the connector isn't bundled in this worker image, or the key is malformed.`,
+    };
+  }
+  try {
+    const code = await compileConnectorFromFile(localPath);
+    return { ok: true, code };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { ok: false, error: `esbuild failed for '${job.connector_key}' (${localPath}): ${msg}` };
+  }
 }
 
 export interface ExecutorConfig {
@@ -111,13 +137,20 @@ async function executeSyncRun(
     throw new Error('Invalid run: missing run_id or connector_key');
   }
 
-  const compiled_code = await resolveJobCode(job);
-  if (!compiled_code) {
-    throw new Error(
-      `Run ${run_id} (${connector_key}): No compiled code available. ` +
-        'Ensure the connector has a compiled version.'
-    );
+  const codeResult = await resolveJobCode(job);
+  if (!codeResult.ok) {
+    const errorMessage = `Run ${run_id} (${connector_key}): ${codeResult.error}`;
+    console.error('[executor]', errorMessage);
+    await client.complete({
+      run_id,
+      worker_id: client.id,
+      status: 'failed',
+      error_message: errorMessage,
+      items_collected: 0,
+    });
+    return { itemsCollected: 0, error: errorMessage };
   }
+  const compiled_code = codeResult.code;
 
   console.error(`[executor] Starting sync run ${run_id} (${connector_key}/${feed_key})`);
 
@@ -305,10 +338,19 @@ async function executeActionRun(
     throw new Error('Invalid action run: missing run_id, connector_key, or action_key');
   }
 
-  const compiled_code = await resolveJobCode(job);
-  if (!compiled_code) {
-    throw new Error(`Action run ${run_id}: No compiled code available.`);
+  const codeResult = await resolveJobCode(job);
+  if (!codeResult.ok) {
+    const errorMessage = `Action run ${run_id} (${connector_key}): ${codeResult.error}`;
+    console.error('[executor]', errorMessage);
+    await client.completeAction({
+      run_id,
+      worker_id: client.id,
+      status: 'failed',
+      error_message: errorMessage,
+    });
+    return { itemsCollected: 0, error: errorMessage };
   }
+  const compiled_code = codeResult.code;
 
   console.error(`[executor] Starting action run ${run_id} (${connector_key}/${action_key})`);
 
@@ -375,10 +417,19 @@ async function executeAuthRun(
   if (!run_id || !connector_key) {
     throw new Error('Invalid auth run: missing run_id or connector_key');
   }
-  const compiled_code = await resolveJobCode(job);
-  if (!compiled_code) {
-    throw new Error(`Auth run ${run_id}: No compiled code available.`);
+  const codeResult = await resolveJobCode(job);
+  if (!codeResult.ok) {
+    const errorMessage = `Auth run ${run_id} (${connector_key}): ${codeResult.error}`;
+    console.error('[executor]', errorMessage);
+    await client.completeAuth({
+      run_id,
+      worker_id: client.id,
+      status: 'failed',
+      error_message: errorMessage,
+    });
+    return { itemsCollected: 0, error: errorMessage };
   }
+  const compiled_code = codeResult.code;
 
   console.error(`[executor] Starting auth run ${run_id} (${connector_key})`);
 

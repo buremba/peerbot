@@ -87,19 +87,15 @@ export interface PollResponse {
   feed_id?: number;
   /**
    * Compiled connector code, shipped inline. Used for device workers and
-   * DB-only user-uploaded connectors. Fleet workers should receive
-   * `connector_source_path` instead and compile locally to keep the
-   * gateway's poll responses small.
+   * DB-only user-uploaded connectors that don't have the connector source
+   * on disk. Fleet workers receive a bare `connector_key` only (no
+   * inline code) and resolve + compile the source from their own
+   * filesystem to keep poll responses small — see worker-api.ts handler
+   * comment + lobu#772 review for why we send the key and not an absolute
+   * path (gateway and worker images have different paths to the same
+   * sources).
    */
   compiled_code?: string;
-  /**
-   * Absolute path to the connector's `.ts` source on the worker's local
-   * filesystem (gateway-resolved via `findBundledConnectorFile`). The
-   * worker compiles from this path on demand and caches the result. Sent
-   * for fleet workers when the connector ships in the image; mutually
-   * exclusive with `compiled_code` for any given poll response.
-   */
-  connector_source_path?: string;
   /** Connection session state (browser cookies, etc.) */
   session_state?: Record<string, unknown>;
   /** Connector version */

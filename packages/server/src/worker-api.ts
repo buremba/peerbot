@@ -424,38 +424,43 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   };
 
   // Connector code delivery:
-  //   - Fleet workers (server pods, embedded mode) share the host filesystem
-  //     with the gateway. When `findBundledConnectorFile` returns a path, the
-  //     worker can compile from it locally — no need for the gateway to esbuild
-  //     a ~13 MB bundle into every poll response and hold it in cache. Was the
-  //     dominant gateway-heap occupant in lobu#771 (29 cached bundles ~ 384 MB).
-  //   - Device workers (Lobu Mac Bridge, etc.) don't have the bundled
-  //     connectors directory. Same for DB-only user-uploaded connectors that
-  //     never had an on-disk source. Both fall back to shipping `compiled_code`.
+  //   - Fleet workers (server pods, embedded mode) ship the same bundled
+  //     connector .ts sources in their image. The gateway omits
+  //     `compiled_code` from the response — the worker resolves
+  //     `connector_key` against its own filesystem and compiles locally,
+  //     keeping its own LRU-capped cache. Cuts gateway poll responses
+  //     from ~13 MB to ~kB and stops the gateway-side cache from being
+  //     the dominant heap occupant (lobu#771 postmortem trail; 29 cached
+  //     bundles totalled ~384 MB).
+  //   - Device workers (Lobu Mac Bridge) and DB-only user-uploaded
+  //     connectors don't have the source on disk; they still get
+  //     `compiled_code` shipped inline. We check the gateway-local
+  //     `findBundledConnectorFile` (different filesystem layout from the
+  //     worker image — see worker-side resolver in
+  //     connector-worker/src/compile-connector.ts) to decide whether the
+  //     fleet path applies.
   let compiledCode: string | undefined;
-  let connectorSourcePath: string | undefined;
-  if (row.connector_key) {
-    const localPath = !isUserScopedWorker ? findBundledConnectorFile(row.connector_key) : null;
-    if (localPath) {
-      connectorSourcePath = localPath;
-    } else {
-      try {
-        compiledCode = await resolveConnectorCode(row.connector_key, row.compiled_code);
-      } catch (err) {
-        const message = errorMessage(err);
-        await sql`
-          UPDATE runs
-          SET status = 'failed',
-              completed_at = current_timestamp,
-              error_message = ${message}
-          WHERE id = ${row.run_id}
-        `;
-        logger.error(
-          { run_id: row.run_id, connector_key: row.connector_key, err },
-          'Failed to resolve connector code for claimed worker run'
-        );
-        return c.json({ next_poll_seconds: 1, skipped_run_id: row.run_id, error: message });
-      }
+  const gatewayHasLocalSource = row.connector_key
+    ? findBundledConnectorFile(row.connector_key) !== null
+    : false;
+  const workerWillResolveLocally = !isUserScopedWorker && gatewayHasLocalSource;
+  if (row.connector_key && !workerWillResolveLocally) {
+    try {
+      compiledCode = await resolveConnectorCode(row.connector_key, row.compiled_code);
+    } catch (err) {
+      const message = errorMessage(err);
+      await sql`
+        UPDATE runs
+        SET status = 'failed',
+            completed_at = current_timestamp,
+            error_message = ${message}
+        WHERE id = ${row.run_id}
+      `;
+      logger.error(
+        { run_id: row.run_id, connector_key: row.connector_key, err },
+        'Failed to resolve connector code for claimed worker run'
+      );
+      return c.json({ next_poll_seconds: 1, skipped_run_id: row.run_id, error: message });
     }
   }
 
@@ -504,7 +509,6 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     connection_credentials:
       Object.keys(connectionCredentials).length > 0 ? connectionCredentials : undefined,
     compiled_code: compiledCode,
-    connector_source_path: connectorSourcePath,
     session_state: sessionState ?? undefined,
     action_key: row.action_key ?? undefined,
     action_input: (row as any).approved_input ?? row.action_input ?? undefined,

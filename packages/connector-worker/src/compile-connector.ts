@@ -21,13 +21,50 @@
  * a runtime dep on the server package's bundle layout.
  */
 
-import { readFile } from 'node:fs/promises';
-import { mkdtemp, rm, stat } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { build, type Plugin } from 'esbuild';
 import { EXTERNAL_RUNTIME_DEPS } from './runtime-deps.js';
+
+// Worker-side resolver for the bundled connectors directory. The gateway's
+// `findBundledConnectorFile` resolves to paths that exist in the gateway
+// image (e.g. /app/packages/server/dist/connectors); those paths do not
+// exist in the worker image, which has the sources at
+// /app/packages/connectors. Each side resolves locally instead of trusting
+// gateway-supplied absolute paths.
+const HERE = fileURLToPath(new URL('.', import.meta.url));
+const WORKER_CONNECTOR_DIR_CANDIDATES = [
+  resolve(HERE, '../../../connectors/src'),
+  resolve(HERE, '../../../connectors/dist'),
+  resolve(HERE, '../../connectors/src'),
+  resolve(HERE, '../../connectors/dist'),
+  resolve(HERE, '../connectors/src'),
+  resolve(process.cwd(), 'packages/connectors/src'),
+  resolve(process.cwd(), 'connectors'),
+];
+
+// Strict regex for connector_key: lowercase letters/digits, optional dots
+// for namespacing, underscores for word separators. Defense-in-depth even
+// though keys come from a trusted DB column — we're about to use the value
+// to construct a filesystem path.
+const CONNECTOR_KEY_RE = /^[a-z][a-z0-9]*(?:[._][a-z0-9]+)*$/;
+
+export function findBundledConnectorFile(key: string): string | null {
+  if (!CONNECTOR_KEY_RE.test(key)) return null;
+  const fileName = `${key.replace(/\./g, '_')}.ts`;
+  for (const candidate of WORKER_CONNECTOR_DIR_CANDIDATES) {
+    const filePath = resolve(candidate, fileName);
+    // Belt-and-braces: assert the resolved path stays under the candidate
+    // dir even though CONNECTOR_KEY_RE already forbids the dangerous chars.
+    if (!filePath.startsWith(`${candidate}/`)) continue;
+    if (existsSync(filePath)) return filePath;
+  }
+  return null;
+}
 
 const require_ = createRequire(import.meta.url);
 const SDK_ENTRY = require_.resolve('@lobu/connector-sdk');

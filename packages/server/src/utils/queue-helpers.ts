@@ -93,7 +93,20 @@ async function createSyncRunWithClient(sql: DbClient, feedId: number): Promise<n
       LIMIT 1
     `;
     if (defRows.length === 0) {
-      throw new Error(`No active connector definition found for '${feed.connector_key}'.`);
+      // An orphan feed: the connector was archived/uninstalled in this org
+      // but the feed wasn't soft-deleted. Pre-fix this threw an Error on
+      // every CheckDueFeeds tick (1 / min), producing ~380 error logs / min
+      // for 33 feeds. Treat as expected idle: warn once and skip. The
+      // initial backfill is in migration 20260517020000.
+      logger.warn(
+        {
+          feedId,
+          connector_key: feed.connector_key,
+          organization_id: feed.organization_id,
+        },
+        '[queue] Skipping feed — no active connector_definition for (connector_key, org). Treating as orphan.'
+      );
+      return null;
     }
     connectorVersion = (defRows[0] as { version: string }).version;
   }

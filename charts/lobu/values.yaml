@@ -35,6 +35,16 @@ app:
   podAnnotations: {}
   podSecurityContext: {}
   securityContext: {}
+  # Seconds the preStop hook sleeps before SIGTERM is sent. Gives Service
+  # endpoints + downstream load balancers time to deregister the pod, so
+  # in-flight requests routed during deregistration's propagation lag
+  # still hit a process that's alive. 15s covers Cloudflare LB + kube-proxy.
+  preStopDelaySeconds: 15
+  # Total time k8s waits for the pod to stop before SIGKILL. Must be
+  # > preStopDelaySeconds + actual shutdown time. The gateway's graceful
+  # shutdown closes the HTTP server, stops the task scheduler, drains the
+  # DB pool — empirically ~5s.
+  terminationGracePeriodSeconds: 45
 
   resources:
     requests:

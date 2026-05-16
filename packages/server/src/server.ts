@@ -26,6 +26,7 @@ import http from 'node:http';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import v8 from 'node:v8';
 import { getRequestListener } from '@hono/node-server';
 import { Hono } from 'hono';
 import { closeDbSingleton, probeListenNotify } from './db/client';
@@ -212,6 +213,25 @@ async function main() {
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
+
+  // SIGUSR2 → V8 heap snapshot. Blocks the event loop for ~seconds (size of
+  // heap), so only trigger via an explicit `kubectl exec` when investigating
+  // a leak — not from any automated source. Writes to /tmp so it can be
+  // copied out with `kubectl cp <pod>:/tmp/<file> .heapsnapshot`, then opened
+  // in Chrome DevTools → Memory → Load.
+  process.on('SIGUSR2', () => {
+    const snapshotPath = `/tmp/lobu-${process.pid}-${Date.now()}.heapsnapshot`;
+    logger.warn(
+      { path: snapshotPath },
+      '[heap] SIGUSR2 received — writing heap snapshot (blocks event loop)'
+    );
+    try {
+      v8.writeHeapSnapshot(snapshotPath);
+      logger.warn({ path: snapshotPath }, '[heap] snapshot written');
+    } catch (err) {
+      logger.error({ err }, '[heap] writeHeapSnapshot failed');
+    }
+  });
 
   // Start HTTP server
   logger.info({ port }, 'Starting server');

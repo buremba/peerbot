@@ -467,7 +467,7 @@ ALTER SEQUENCE public.connector_versions_id_seq OWNED BY public.connector_versio
 --
 
 CREATE TABLE public.events (
-    id bigint CONSTRAINT event_id_not_null NOT NULL,
+    id bigint NOT NULL,
     organization_id text NOT NULL,
     entity_ids bigint[],
     origin_id text,
@@ -1200,7 +1200,7 @@ CREATE TABLE public.member (
 --
 
 CREATE TABLE public.migration_20260315300000_entity_type_org_backfill (
-    entity_type_id integer CONSTRAINT migration_20260315300000_entity_type_or_entity_type_id_not_null NOT NULL
+    entity_type_id integer NOT NULL
 );
 
 --
@@ -1208,7 +1208,7 @@ CREATE TABLE public.migration_20260315300000_entity_type_org_backfill (
 --
 
 CREATE TABLE public.migration_20260316100000_created_entity_types (
-    entity_type_id integer CONSTRAINT migration_20260316100000_created_entity_entity_type_id_not_null NOT NULL
+    entity_type_id integer NOT NULL
 );
 
 --
@@ -1216,14 +1216,14 @@ CREATE TABLE public.migration_20260316100000_created_entity_types (
 --
 
 CREATE TABLE public.migration_20260316100000_deleted_default_entity_types (
-    id integer CONSTRAINT migration_20260316100000_deleted_default_entity_typ_id_not_null NOT NULL,
-    slug text CONSTRAINT migration_20260316100000_deleted_default_entity_t_slug_not_null NOT NULL,
-    name text CONSTRAINT migration_20260316100000_deleted_default_entity_t_name_not_null NOT NULL,
+    id integer NOT NULL,
+    slug text NOT NULL,
+    name text NOT NULL,
     description text,
     icon text,
     color text,
     metadata_schema jsonb,
-    organization_id text CONSTRAINT migration_20260316100000_deleted_defau_organization_id_not_null NOT NULL,
+    organization_id text NOT NULL,
     created_by text,
     updated_by text,
     deleted_at timestamp with time zone,
@@ -1569,7 +1569,7 @@ CREATE TABLE public.scheduled_jobs (
 --
 
 CREATE TABLE public.schema_migrations (
-    version character varying NOT NULL
+    version character varying(128) NOT NULL
 );
 
 --
@@ -1751,20 +1751,20 @@ ALTER SEQUENCE public.watcher_reactions_id_seq OWNED BY public.watcher_reactions
 --
 
 CREATE TABLE public.watcher_versions (
-    id integer CONSTRAINT insight_template_versions_id_not_null NOT NULL,
-    version integer CONSTRAINT insight_template_versions_version_not_null NOT NULL,
-    name text CONSTRAINT insight_template_versions_name_not_null NOT NULL,
+    id integer NOT NULL,
+    version integer NOT NULL,
+    name text NOT NULL,
     description text,
     change_notes text,
-    created_by text CONSTRAINT insight_template_versions_created_by_not_null NOT NULL,
+    created_by text NOT NULL,
     created_at timestamp with time zone DEFAULT now(),
     keying_config jsonb,
     json_template jsonb,
-    prompt text CONSTRAINT insight_template_versions_prompt_not_null NOT NULL,
-    extraction_schema jsonb CONSTRAINT insight_template_versions_extraction_schema_not_null NOT NULL,
+    prompt text NOT NULL,
+    extraction_schema jsonb NOT NULL,
     classifiers jsonb,
-    required_source_types text[] DEFAULT '{}'::text[] CONSTRAINT insight_template_versions_required_source_types_not_null NOT NULL,
-    recommended_source_types text[] DEFAULT '{}'::text[] CONSTRAINT insight_template_versions_recommended_source_types_not_null NOT NULL,
+    required_source_types text[] DEFAULT '{}'::text[] NOT NULL,
+    recommended_source_types text[] DEFAULT '{}'::text[] NOT NULL,
     reactions_guidance text,
     condensation_prompt text,
     condensation_window_count integer DEFAULT 4,
@@ -1848,9 +1848,9 @@ ALTER SEQUENCE public.watcher_template_versions_id_seq OWNED BY public.watcher_v
 --
 
 CREATE TABLE public.watcher_window_events (
-    id bigint CONSTRAINT insight_window_content_id_not_null NOT NULL,
-    window_id bigint CONSTRAINT insight_window_content_window_id_not_null NOT NULL,
-    event_id bigint CONSTRAINT insight_window_content_content_id_not_null NOT NULL,
+    id bigint NOT NULL,
+    window_id bigint NOT NULL,
+    event_id bigint NOT NULL,
     created_at timestamp with time zone DEFAULT now()
 );
 
@@ -1911,14 +1911,14 @@ ALTER SEQUENCE public.watcher_window_field_feedback_id_seq OWNED BY public.watch
 --
 
 CREATE TABLE public.watcher_windows (
-    id integer CONSTRAINT insight_windows_id_not_null NOT NULL,
-    watcher_id integer CONSTRAINT insight_windows_insight_id_not_null NOT NULL,
+    id integer NOT NULL,
+    watcher_id integer NOT NULL,
     parent_window_id integer,
-    granularity text CONSTRAINT insight_windows_granularity_not_null NOT NULL,
-    window_start timestamp with time zone CONSTRAINT insight_windows_window_start_not_null NOT NULL,
-    window_end timestamp with time zone CONSTRAINT insight_windows_window_end_not_null NOT NULL,
-    content_analyzed integer CONSTRAINT insight_windows_content_analyzed_not_null NOT NULL,
-    extracted_data jsonb CONSTRAINT insight_windows_extracted_data_not_null NOT NULL,
+    granularity text NOT NULL,
+    window_start timestamp with time zone NOT NULL,
+    window_end timestamp with time zone NOT NULL,
+    content_analyzed integer NOT NULL,
+    extracted_data jsonb NOT NULL,
     model_used text,
     execution_time_ms integer,
     is_rollup boolean DEFAULT false,
@@ -1971,13 +1971,13 @@ ALTER SEQUENCE public.watcher_windows_id_seq OWNED BY public.watcher_windows.id;
 --
 
 CREATE TABLE public.watchers (
-    id integer CONSTRAINT insights_id_not_null NOT NULL,
+    id integer NOT NULL,
     model_config jsonb DEFAULT '{}'::jsonb,
     status text DEFAULT 'active'::text NOT NULL,
     created_at timestamp with time zone DEFAULT now(),
     updated_at timestamp with time zone DEFAULT now(),
     sources jsonb DEFAULT '[]'::jsonb,
-    created_by text CONSTRAINT insights_created_by_not_null NOT NULL,
+    created_by text NOT NULL,
     entity_ids bigint[],
     reaction_script text,
     reaction_script_compiled text,
@@ -3392,6 +3392,12 @@ CREATE INDEX idx_events_created_at ON public.events USING btree (created_at);
 CREATE INDEX idx_events_created_by ON public.events USING btree (created_by) WHERE (created_by IS NOT NULL);
 
 --
+-- Name: idx_events_embedding; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_events_embedding ON public.event_embeddings USING ivfflat (embedding public.vector_cosine_ops) WITH (lists='1000');
+
+--
 -- Name: idx_events_entity_ids; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3474,6 +3480,24 @@ CREATE INDEX idx_events_missing_embedding_backfill ON public.events USING btree 
 --
 
 CREATE INDEX idx_events_organization_id ON public.events USING btree (organization_id) WHERE (organization_id IS NOT NULL);
+
+--
+-- Name: idx_events_raw_content_trgm; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_events_raw_content_trgm ON public.events USING gin (payload_text public.gin_trgm_ops);
+
+--
+-- Name: idx_events_run_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_events_run_id ON public.events USING btree (run_id);
+
+--
+-- Name: idx_events_search_tsv; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_events_search_tsv ON public.events USING gin (search_tsv);
 
 --
 -- Name: idx_events_semantic_type; Type: INDEX; Schema: public; Owner: -

@@ -387,7 +387,9 @@ app.use('/*', async (c, next) => {
 });
 
 /**
- * Health check endpoint
+ * Liveness probe — process is up. Cheap, dependency-free; failing this
+ * signals "restart the pod." Don't add DB or downstream checks here, or a
+ * transient pooler hiccup will cause a CrashLoop.
  */
 app.get('/health', (c) => {
   return c.json({
@@ -396,6 +398,24 @@ app.get('/health', (c) => {
     timestamp: new Date().toISOString(),
     ...getRuntimeInfo(c.env),
   });
+});
+
+/**
+ * Readiness probe — process is up AND can talk to the database. Failing
+ * this drops the pod from the Service's endpoint set without restarting
+ * it, which is the right semantic for transient DB unavailability.
+ */
+app.get('/health/ready', async (c) => {
+  try {
+    const sql = getDb();
+    await sql`SELECT 1`;
+    return c.json({ status: 'ok', service: 'lobu-api' });
+  } catch (error) {
+    return c.json(
+      { status: 'unready', service: 'lobu-api', error: errorMessage(error) },
+      503
+    );
+  }
 });
 
 /**

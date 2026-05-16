@@ -28,7 +28,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getRequestListener } from '@hono/node-server';
 import { Hono } from 'hono';
-import { closeDbSingleton, probeListenNotify } from './db/client';
+import { closeDbSingleton, getDb, probeListenNotify } from './db/client';
 import { mountViteDev } from './dev-vite';
 import type { Env } from './index';
 import { app as mainApp } from './index';
@@ -43,6 +43,7 @@ import { assertExternalDepsResolvable } from '../../connector-worker/src/runtime
 import { isSentryReported, markSentryReported } from './sentry';
 import { getEnvFromProcess } from './utils/env';
 import logger from './utils/logger';
+import { assertSchemaUpToDate } from './utils/schema-version-check';
 import { initWorkspaceProvider } from './workspace';
 
 // Create a wrapper app that injects environment into each request
@@ -144,6 +145,19 @@ async function main() {
     );
   }
   process.env.DATABASE_URL = databaseUrl;
+
+  // Refuse to boot if the image expects a migration the database hasn't
+  // applied. Skippable via SKIP_SCHEMA_VERSION_CHECK=1 for emergency
+  // forward-flight (e.g. rolling back to an older image whose migrations
+  // dir is a strict prefix of what's already applied). See
+  // utils/schema-version-check.ts for the 2026-05-16 incident this guards.
+  if (process.env.SKIP_SCHEMA_VERSION_CHECK !== '1') {
+    const migrationsDir =
+      process.env.LOBU_MIGRATIONS_DIR?.trim() || path.join(PACKAGE_REPO_ROOT, 'db', 'migrations');
+    await assertSchemaUpToDate(getDb(), { migrationsDir });
+  } else {
+    logger.warn('[schema-check] SKIP_SCHEMA_VERSION_CHECK=1 — skipping boot-time assertion');
+  }
 
   // Verify LISTEN/NOTIFY actually delivers. This is a *detector*, not a gate:
   // the runs-queue has a 200ms SKIP-LOCKED poll fallback that keeps the queue

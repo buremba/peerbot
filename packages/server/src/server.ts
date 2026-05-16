@@ -26,9 +26,10 @@ import http from 'node:http';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import v8 from 'node:v8';
 import { getRequestListener } from '@hono/node-server';
 import { Hono } from 'hono';
-import { closeDbSingleton, probeListenNotify } from './db/client';
+import { closeDbSingleton, getDb, probeListenNotify } from './db/client';
 import { mountViteDev } from './dev-vite';
 import type { Env } from './index';
 import { app as mainApp } from './index';
@@ -43,6 +44,7 @@ import { assertExternalDepsResolvable } from '../../connector-worker/src/runtime
 import { isSentryReported, markSentryReported } from './sentry';
 import { getEnvFromProcess } from './utils/env';
 import logger from './utils/logger';
+import { assertSchemaUpToDate } from './utils/schema-version-check';
 import { initWorkspaceProvider } from './workspace';
 
 // Create a wrapper app that injects environment into each request
@@ -145,6 +147,19 @@ async function main() {
   }
   process.env.DATABASE_URL = databaseUrl;
 
+  // Refuse to boot if the image expects a migration the database hasn't
+  // applied. Skippable via SKIP_SCHEMA_VERSION_CHECK=1 for emergency
+  // forward-flight (e.g. rolling back to an older image whose migrations
+  // dir is a strict prefix of what's already applied). See
+  // utils/schema-version-check.ts for the 2026-05-16 incident this guards.
+  if (process.env.SKIP_SCHEMA_VERSION_CHECK !== '1') {
+    const migrationsDir =
+      process.env.LOBU_MIGRATIONS_DIR?.trim() || path.join(PACKAGE_REPO_ROOT, 'db', 'migrations');
+    await assertSchemaUpToDate(getDb(), { migrationsDir });
+  } else {
+    logger.warn('[schema-check] SKIP_SCHEMA_VERSION_CHECK=1 — skipping boot-time assertion');
+  }
+
   // Verify LISTEN/NOTIFY actually delivers. This is a *detector*, not a gate:
   // the runs-queue has a 200ms SKIP-LOCKED poll fallback that keeps the queue
   // correct even when LISTEN is silently dropped (transaction-mode pgbouncer,
@@ -212,6 +227,50 @@ async function main() {
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
+
+  // SIGUSR2 → V8 heap snapshot. Off by default because snapshots contain
+  // in-memory secrets (DB URL, OAuth tokens, secret-proxy cache) and
+  // workers spawn as the same Linux UID. Operator opts in by setting
+  // ALLOW_HEAP_SNAPSHOT=1 on the pod, sends `kubectl exec ... kill -USR2 1`,
+  // copies the file out, then unsets the env / rolls the pod.
+  //
+  // Blocks the event loop for ~seconds (proportional to heap size) and
+  // requires ~heap-size extra memory while writing. Don't trigger from a
+  // pod close to the cgroup limit or it will OOM mid-snapshot. Trigger
+  // also blocks /health/ready (DB SELECT 1) — drain via Service first if
+  // multi-replica.
+  //
+  // Single-flight + fixed filename: subsequent signals while a snapshot is
+  // in progress are ignored, and the path is `/tmp/lobu.heapsnapshot`
+  // (overwritten each time) so a stuck-on flag can't fill the tmpfs.
+  if (process.env.ALLOW_HEAP_SNAPSHOT === '1') {
+    const SNAPSHOT_PATH = '/tmp/lobu.heapsnapshot';
+    let inProgress = false;
+    process.on('SIGUSR2', () => {
+      if (inProgress) {
+        logger.warn('[heap] SIGUSR2 ignored — snapshot already in progress');
+        return;
+      }
+      inProgress = true;
+      logger.warn(
+        { path: SNAPSHOT_PATH },
+        '[heap] SIGUSR2 received — writing heap snapshot (blocks event loop)'
+      );
+      try {
+        v8.writeHeapSnapshot(SNAPSHOT_PATH);
+        logger.warn({ path: SNAPSHOT_PATH }, '[heap] snapshot written');
+      } catch (err) {
+        logger.error({ err }, '[heap] writeHeapSnapshot failed');
+      } finally {
+        inProgress = false;
+      }
+    });
+    logger.warn(
+      '[heap] ALLOW_HEAP_SNAPSHOT=1 — SIGUSR2 will write heap dumps to ' +
+        SNAPSHOT_PATH +
+        '. Unset and roll the pod when done; snapshots contain secrets.'
+    );
+  }
 
   // Start HTTP server
   logger.info({ port }, 'Starting server');

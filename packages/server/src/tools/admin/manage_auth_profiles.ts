@@ -25,10 +25,13 @@ import {
   listAuthProfiles,
   normalizeAuthProfileSlug,
   normalizeAuthValues,
+  revokeOAuthAppProfileAtomic,
+  setDefaultAuthProfileForConnector,
   summarizeBrowserSessionAuthData,
   updateAuthProfile,
 } from '../../utils/auth-profiles';
 import { createConnectToken } from '../../utils/connect-tokens';
+import { getWorkspaceRole } from '../../utils/organization-access';
 import type { ToolContext } from '../registry';
 import { routeAction } from './action-router';
 import { getScopedConnectorDefinition } from './connector-definition-helpers';
@@ -135,6 +138,14 @@ const DeleteAuthProfileAction = Type.Object({
   ),
 });
 
+const SetDefaultAuthProfileAction = Type.Object({
+  action: Type.Literal('set_default_auth_profile'),
+  connector_key: Type.String({ description: 'Connector key to pin the default for' }),
+  auth_profile_slug: Type.Union([Type.String(), Type.Null()], {
+    description: 'OAuth app profile slug to pin as the org default, or null to clear.',
+  }),
+});
+
 export const ManageAuthProfilesSchema = Type.Union([
   ListAuthProfilesAction,
   GetAuthProfileAction,
@@ -142,6 +153,7 @@ export const ManageAuthProfilesSchema = Type.Union([
   CreateAuthProfileAction,
   UpdateAuthProfileAction,
   DeleteAuthProfileAction,
+  SetDefaultAuthProfileAction,
 ]);
 
 // ============================================
@@ -171,7 +183,12 @@ type ManageAuthProfilesResult =
       connect_token?: string;
     }
   | { action: 'update_auth_profile'; auth_profile: any; connect_url?: string }
-  | { action: 'delete_auth_profile'; deleted: true; auth_profile_slug: string };
+  | { action: 'delete_auth_profile'; deleted: true; auth_profile_slug: string }
+  | {
+      action: 'set_default_auth_profile';
+      connector_key: string;
+      auth_profile: any | null;
+    };
 
 type AuthProfilesArgs = Static<typeof ManageAuthProfilesSchema>;
 
@@ -210,6 +227,11 @@ export async function manageAuthProfiles(
     delete_auth_profile: () =>
       handleDeleteAuthProfile(
         args as Extract<AuthProfilesArgs, { action: 'delete_auth_profile' }>,
+        ctx
+      ),
+    set_default_auth_profile: () =>
+      handleSetDefaultAuthProfile(
+        args as Extract<AuthProfilesArgs, { action: 'set_default_auth_profile' }>,
         ctx
       ),
   });
@@ -372,6 +394,30 @@ async function handleTestAuthProfile(
   };
 }
 
+/**
+ * When an oauth_app profile is revoked/errored, any connection that mints
+ * tokens against it can no longer authenticate. Flip those connections to
+ * pending_auth so the UI surfaces the breakage; the admin re-pins or rotates
+ * the app, then operators re-authorize the connection.
+ */
+async function syncConnectionsForOAuthAppProfile(
+  organizationId: string,
+  authProfileId: number,
+  active: boolean
+): Promise<void> {
+  const sql = getDb();
+  const nextConnectionStatus = active ? 'active' : 'pending_auth';
+
+  await sql`
+    UPDATE connections
+    SET status = ${nextConnectionStatus},
+        updated_at = NOW()
+    WHERE organization_id = ${organizationId}
+      AND app_auth_profile_id = ${authProfileId}
+      AND deleted_at IS NULL
+  `;
+}
+
 async function syncConnectionsForBrowserAuthProfile(
   organizationId: string,
   authProfileId: number,
@@ -406,6 +452,20 @@ async function handleCreateAuthProfile(
   args: Extract<AuthProfilesArgs, { action: 'create_auth_profile' }>,
   ctx: ToolContext
 ): Promise<ManageAuthProfilesResult> {
+  // Only oauth_account profiles are user-personal; every other kind is an
+  // org-shared credential (env keys, OAuth app client_id/secret, browser
+  // session, interactive). Gate non-personal kinds on admin role.
+  if (args.profile_kind !== 'oauth_account') {
+    const role = ctx.userId
+      ? await getWorkspaceRole(getDb(), ctx.organizationId, ctx.userId)
+      : null;
+    if (role !== 'admin' && role !== 'owner') {
+      return {
+        error: `Only admins can create ${args.profile_kind} auth profiles. Ask an organization owner or admin to configure these credentials.`,
+      };
+    }
+  }
+
   // browser_session profiles are device-scoped; connector_key is optional
   // (only used as a hint to look up a default cdp_url). Other kinds remain
   // per-connector and require it.
@@ -450,6 +510,19 @@ async function handleCreateAuthProfile(
       if (existing.profile_kind !== 'oauth_account' || existing.connector_key !== connectorKey) {
         return {
           error: `Auth profile '${existing.slug}' already exists with a different kind/connector (${existing.profile_kind} / ${existing.connector_key}) — use a new slug`,
+        };
+      }
+      // Non-admins reusing an existing oauth_account slug must own it —
+      // otherwise a member who knows another member's pending profile slug
+      // could mint a fresh connect token for it and complete OAuth into a
+      // profile already referenced by someone else's connections.
+      const role = ctx.userId
+        ? await getWorkspaceRole(getDb(), ctx.organizationId, ctx.userId)
+        : null;
+      const callerIsAdmin = role === 'admin' || role === 'owner';
+      if (!callerIsAdmin && existing.created_by !== ctx.userId) {
+        return {
+          error: `Auth profile '${existing.slug}' belongs to another user. Choose a different slug.`,
         };
       }
       if (existing.status === 'active') {
@@ -606,6 +679,35 @@ async function handleUpdateAuthProfile(
   args: Extract<AuthProfilesArgs, { action: 'update_auth_profile' }>,
   ctx: ToolContext
 ): Promise<ManageAuthProfilesResult> {
+  // Mirror create gating: only oauth_account profiles are member-editable.
+  // env / oauth_app / browser_session are org-shared credentials — admin only.
+  // For oauth_account, non-admins can only touch a profile they created — the
+  // slug alone shouldn't let one member rotate another member's tokens.
+  const existingForRoleCheck = await getAuthProfileBySlug(
+    ctx.organizationId,
+    args.auth_profile_slug
+  );
+  if (existingForRoleCheck) {
+    const role = ctx.userId
+      ? await getWorkspaceRole(getDb(), ctx.organizationId, ctx.userId)
+      : null;
+    const callerIsAdmin = role === 'admin' || role === 'owner';
+    if (existingForRoleCheck.profile_kind !== 'oauth_account' && !callerIsAdmin) {
+      return {
+        error: `Only admins can modify ${existingForRoleCheck.profile_kind} auth profiles.`,
+      };
+    }
+    if (
+      !callerIsAdmin &&
+      existingForRoleCheck.profile_kind === 'oauth_account' &&
+      existingForRoleCheck.created_by !== ctx.userId
+    ) {
+      return {
+        error: `You can only update OAuth account profiles you created. Ask an admin if you need to manage another member's profile.`,
+      };
+    }
+  }
+
   let authProfile = await updateAuthProfile({
     organizationId: ctx.organizationId,
     slug: args.auth_profile_slug,
@@ -728,6 +830,28 @@ async function handleUpdateAuthProfile(
     );
   }
 
+  // Cascade for oauth_app: admins flipping an app profile to revoked/error
+  // need dependent connections to surface as broken (instead of silently
+  // continuing to point at a profile whose creds the gateway can no longer
+  // resolve). For the revoke/error case we re-do the status flip inside a
+  // transaction together with the cascade + default-clear so there's no
+  // window where connections still reference the revoked profile (the prior
+  // updateAuthProfile call above already wrote status, but its tx is now
+  // closed — this overwrite is idempotent and lands the full state change
+  // atomically).
+  if (authProfile.profile_kind === 'oauth_app') {
+    if (authProfile.status === 'revoked' || authProfile.status === 'error') {
+      const atomic = await revokeOAuthAppProfileAtomic({
+        organizationId: ctx.organizationId,
+        profileId: authProfile.id,
+        nextStatus: authProfile.status,
+      });
+      if (atomic) authProfile = atomic;
+    } else if (authProfile.status === 'active') {
+      await syncConnectionsForOAuthAppProfile(ctx.organizationId, authProfile.id, true);
+    }
+  }
+
   return { action: 'update_auth_profile', auth_profile: serializeAuthProfile(authProfile) };
 }
 
@@ -757,19 +881,85 @@ async function handleDeleteAuthProfile(
     };
   }
 
-  // Clean up connect tokens referencing this profile
-  await sql`
-    UPDATE connect_tokens
-    SET auth_profile_id = NULL
-    WHERE auth_profile_id = ${existing.id}
-  `;
+  // Sync + delete must happen atomically: between flipping dependent
+  // connections to `pending_auth` and the DELETE, a concurrent
+  // `manage_connections.create` could insert a new connection referencing
+  // this profile. The FK `ON DELETE SET NULL` would then leave that
+  // connection active with `app_auth_profile_id = NULL`. Lock the profile
+  // row up front (`FOR UPDATE` conflicts with the FK insert's FOR KEY SHARE
+  // lock, so concurrent inserts block until we commit and then fail FK).
+  const deleted = await sql.begin(async (tx) => {
+    const lockRows = await tx`
+      SELECT id FROM auth_profiles
+      WHERE organization_id = ${ctx.organizationId}
+        AND id = ${existing.id}
+      FOR UPDATE
+    `;
+    if (lockRows.length === 0) return null;
 
-  // Pause browser-backed connections BEFORE deleting (ON DELETE SET NULL would orphan them)
-  if (existing.profile_kind === 'browser_session') {
-    await syncConnectionsForBrowserAuthProfile(ctx.organizationId, existing.id, false);
-  }
+    await tx`
+      UPDATE connect_tokens
+      SET auth_profile_id = NULL
+      WHERE auth_profile_id = ${existing.id}
+    `;
 
-  const deleted = await deleteAuthProfile(ctx.organizationId, args.auth_profile_slug);
+    if (existing.profile_kind === 'browser_session') {
+      // Pause dependent connections + their feeds (mirrors
+      // syncConnectionsForBrowserAuthProfile, inlined for tx locality).
+      await tx`
+        UPDATE connections
+        SET status = 'pending_auth', updated_at = NOW()
+        WHERE organization_id = ${ctx.organizationId}
+          AND auth_profile_id = ${existing.id}
+      `;
+      await tx`
+        UPDATE feeds f
+        SET status = 'paused',
+            next_run_at = NULL,
+            updated_at = NOW()
+        FROM connections c
+        WHERE f.connection_id = c.id
+          AND c.organization_id = ${ctx.organizationId}
+          AND c.auth_profile_id = ${existing.id}
+      `;
+    }
+
+    if (existing.profile_kind === 'oauth_app') {
+      await tx`
+        UPDATE connections
+        SET status = 'pending_auth', updated_at = NOW()
+        WHERE organization_id = ${ctx.organizationId}
+          AND app_auth_profile_id = ${existing.id}
+          AND deleted_at IS NULL
+      `;
+    }
+
+    // Explicitly null the FK columns before delete. The FK is composite
+    // `(organization_id, *_auth_profile_id) ON DELETE SET NULL`; without a
+    // SET NULL column list, Postgres would attempt to null organization_id
+    // too (NOT NULL → constraint violation). Setting only the profile-id
+    // column here avoids that and matches the intended semantic.
+    await tx`
+      UPDATE connections
+      SET auth_profile_id = NULL, updated_at = NOW()
+      WHERE organization_id = ${ctx.organizationId}
+        AND auth_profile_id = ${existing.id}
+    `;
+    await tx`
+      UPDATE connections
+      SET app_auth_profile_id = NULL, updated_at = NOW()
+      WHERE organization_id = ${ctx.organizationId}
+        AND app_auth_profile_id = ${existing.id}
+    `;
+
+    const deletedRows = await tx`
+      DELETE FROM auth_profiles
+      WHERE organization_id = ${ctx.organizationId}
+        AND id = ${existing.id}
+      RETURNING id
+    `;
+    return deletedRows.length > 0 ? deletedRows[0] : null;
+  });
   if (!deleted) {
     return { error: `Failed to delete auth profile '${args.auth_profile_slug}'` };
   }
@@ -778,5 +968,44 @@ async function handleDeleteAuthProfile(
     action: 'delete_auth_profile',
     deleted: true,
     auth_profile_slug: args.auth_profile_slug,
+  };
+}
+
+async function handleSetDefaultAuthProfile(
+  args: Extract<AuthProfilesArgs, { action: 'set_default_auth_profile' }>,
+  ctx: ToolContext
+): Promise<ManageAuthProfilesResult> {
+  if (args.auth_profile_slug !== null) {
+    const target = await getAuthProfileBySlug(ctx.organizationId, args.auth_profile_slug);
+    if (!target) {
+      return { error: `Auth profile '${args.auth_profile_slug}' not found` };
+    }
+    if (target.profile_kind !== 'oauth_app') {
+      return {
+        error: `Auth profile '${args.auth_profile_slug}' is a ${target.profile_kind} profile; only oauth_app profiles can be pinned as connector defaults.`,
+      };
+    }
+    if (target.connector_key !== args.connector_key) {
+      return {
+        error: `Auth profile '${args.auth_profile_slug}' is bound to connector '${target.connector_key}', not '${args.connector_key}'.`,
+      };
+    }
+    if (target.status !== 'active') {
+      return {
+        error: `Auth profile '${args.auth_profile_slug}' is ${target.status}; only active profiles can be pinned as the default.`,
+      };
+    }
+  }
+
+  const pinned = await setDefaultAuthProfileForConnector({
+    organizationId: ctx.organizationId,
+    connectorKey: args.connector_key,
+    slug: args.auth_profile_slug,
+  });
+
+  return {
+    action: 'set_default_auth_profile',
+    connector_key: args.connector_key,
+    auth_profile: pinned ? serializeAuthProfile(pinned) : null,
   };
 }

@@ -29,6 +29,7 @@ import { captureServerError } from './sentry';
 import { autoLinkEvent } from './utils/auto-linker';
 import { nextRunAt as nextRunAtFromCron } from './utils/cron';
 import { reconcileDeviceCapabilities } from './worker-api/device-reconcile';
+import { findBundledConnectorFile } from './utils/connector-catalog';
 import { resolveConnectorCode } from './utils/ensure-connector-installed';
 import { applyEntityLinks } from './utils/entity-link-upsert';
 import { errorMessage } from './utils/errors';
@@ -440,8 +441,28 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     auth_profile_auth_data: Record<string, unknown> | null;
   };
 
+  // Connector code delivery:
+  //   - Fleet workers (server pods, embedded mode) ship the same bundled
+  //     connector .ts sources in their image. The gateway omits
+  //     `compiled_code` from the response — the worker resolves
+  //     `connector_key` against its own filesystem and compiles locally,
+  //     keeping its own LRU-capped cache. Cuts gateway poll responses
+  //     from ~13 MB to ~kB and stops the gateway-side cache from being
+  //     the dominant heap occupant (lobu#771 postmortem trail; 29 cached
+  //     bundles totalled ~384 MB).
+  //   - Device workers (Lobu Mac Bridge) and DB-only user-uploaded
+  //     connectors don't have the source on disk; they still get
+  //     `compiled_code` shipped inline. We check the gateway-local
+  //     `findBundledConnectorFile` (different filesystem layout from the
+  //     worker image — see worker-side resolver in
+  //     connector-worker/src/compile-connector.ts) to decide whether the
+  //     fleet path applies.
   let compiledCode: string | undefined;
-  if (row.connector_key) {
+  const gatewayHasLocalSource = row.connector_key
+    ? findBundledConnectorFile(row.connector_key) !== null
+    : false;
+  const workerWillResolveLocally = !isUserScopedWorker && gatewayHasLocalSource;
+  if (row.connector_key && !workerWillResolveLocally) {
     try {
       compiledCode = await resolveConnectorCode(row.connector_key, row.compiled_code);
     } catch (err) {

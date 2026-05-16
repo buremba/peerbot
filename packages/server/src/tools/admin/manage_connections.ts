@@ -32,6 +32,7 @@ import {
 import {
   createAuthProfile,
   getAuthProfileById,
+  getAuthProfileBySlug,
   getBrowserSessionReadiness,
   getPrimaryAuthProfileForKind,
   normalizeAuthValues,
@@ -538,7 +539,13 @@ async function handleList(
               AND NOT (dw.id IS NOT NULL AND dw.last_seen_at > now() - interval '20 minutes')
              THEN 'offline'
            END AS device_status,
-           (SELECT COUNT(*) FROM current_event_records e WHERE e.connection_id = c.id)::int AS event_count,
+           -- event_count intentionally omitted from list responses: the
+           -- per-row correlated count via current_event_records does a
+           -- supersedes anti-join over the events table and was the dominant
+           -- cost in this query (1303ms mean → 2.3ms without it; see the
+           -- post-incident perf brainstorm). For the per-connection detail
+           -- page, handleGet below still computes it — that path is a single
+           -- row and costs ~1.2ms.
            (SELECT COUNT(*) FROM feeds f WHERE f.connection_id = c.id AND f.deleted_at IS NULL)::int AS feed_count,
            (SELECT ct.token FROM connect_tokens ct
             WHERE ct.connection_id = c.id AND ct.status = 'pending' AND ct.expires_at > NOW()
@@ -789,14 +796,46 @@ async function handleCreate(
   const sql = getDb();
   const { organizationId, userId } = ctx;
 
+  // Resolve caller role once — we use it for created_by overrides, explicit
+  // app_auth_profile picks, and member-friendly error messages downstream.
+  const callerRole = userId ? await getWorkspaceRole(sql, organizationId, userId) : null;
+  const callerIsAdmin = callerRole === 'admin' || callerRole === 'owner';
+
   // Resolve effective owner — admins can create connections on behalf of other users
   let effectiveCreatedBy = userId;
   if (args.created_by && args.created_by !== userId) {
-    const callerRole = await getWorkspaceRole(sql, organizationId, userId!);
-    if (callerRole !== 'admin' && callerRole !== 'owner') {
+    if (!callerIsAdmin) {
       return { error: 'Only admins can create connections for other users.' };
     }
     effectiveCreatedBy = args.created_by;
+  }
+
+  // `entity_link_overrides` writes to `connector_definitions` for the entire
+  // org. Even though `create` is now member-write, that mutation must stay
+  // admin-only — otherwise a member could change connector-level entity
+  // mapping while ostensibly installing their own connection.
+  if (!callerIsAdmin && args.entity_link_overrides !== undefined) {
+    return {
+      error:
+        'Only admins can change connector entity-link overrides. Omit `entity_link_overrides`, or ask an admin to update them via `set_connector_entity_link_overrides`.',
+    };
+  }
+
+  // Non-admins must accept the org-default app profile — they can't pick or
+  // bring an alternate OAuth client. If they explicitly pass a slug, it has
+  // to match the admin-pinned default for the connector.
+  if (!callerIsAdmin && args.app_auth_profile_slug) {
+    const picked = await getAuthProfileBySlug(organizationId, args.app_auth_profile_slug);
+    if (!picked || picked.profile_kind !== 'oauth_app') {
+      return { error: `App auth profile '${args.app_auth_profile_slug}' not found` };
+    }
+    const pinnedAsDefault =
+      picked.is_default_for_connector && picked.connector_key === args.connector_key;
+    if (!pinnedAsDefault) {
+      return {
+        error: `Only admins can override the OAuth app profile. Ask an admin to pin '${args.app_auth_profile_slug}' as the default for this connector, or omit app_auth_profile_slug to use the org default.`,
+      };
+    }
   }
 
   // Ensure connector is installed from bundled catalog if needed
@@ -930,15 +969,53 @@ async function handleCreate(
     };
   }
 
+  // Non-admin members can only bind a connection to a runtime auth profile
+  // they own. `env` profiles are admin-managed org-shared credentials —
+  // members must never bind to them. `oauth_account` and `browser_session`
+  // profiles are member-creatable but still per-user, so a member can't
+  // hijack another member's grant by passing their slug.
+  if (authSelection?.authProfile && !callerIsAdmin) {
+    const profile = authSelection.authProfile;
+    if (profile.profile_kind === 'env') {
+      return {
+        error:
+          'Only admins can use env-credential auth profiles. Ask an admin to install this connection.',
+      };
+    }
+    if (
+      (profile.profile_kind === 'oauth_account' || profile.profile_kind === 'browser_session') &&
+      profile.created_by !== ctx.userId
+    ) {
+      return {
+        error: `Auth profile '${profile.slug}' belongs to another user. Create your own profile (action: 'create_auth_profile') and use its slug instead.`,
+      };
+    }
+  }
+
   if (authSelection?.selectedKind === 'oauth_account') {
     if (!authSelection.appAuthProfile) {
       return {
-        error: 'Select or create an OAuth app profile before creating the connection.',
+        error: callerIsAdmin
+          ? 'Select or create an OAuth app profile before creating the connection.'
+          : `No OAuth app credentials configured for this connector. Ask an admin to set up the ${authSelection.oauthMethod?.provider ?? args.connector_key} app in /oauth-apps first.`,
       };
     }
     if (authSelection.appAuthProfile.status !== 'active') {
       return {
         error: `Selected app auth profile '${authSelection.appAuthProfile.slug}' is not active.`,
+      };
+    }
+    // Even when the slug is omitted, non-admins can only fall through to the
+    // admin-pinned default for this exact connector. The resolver may
+    // otherwise return a recency-picked provider-wide row, which would let a
+    // member silently use an OAuth client the admin never blessed.
+    if (
+      !callerIsAdmin &&
+      (!authSelection.appAuthProfile.is_default_for_connector ||
+        authSelection.appAuthProfile.connector_key !== args.connector_key)
+    ) {
+      return {
+        error: `No default OAuth app configured for this connector. Ask an admin to pin a ${authSelection.oauthMethod?.provider ?? args.connector_key} app as the default in /oauth-apps.`,
       };
     }
   }
@@ -1881,6 +1958,7 @@ async function handleReauthenticate(
       c.status AS connection_status,
       c.connector_key,
       c.auth_profile_id,
+      c.created_by AS connection_created_by,
       ap.profile_kind,
       ap.status AS auth_profile_status
     FROM connections c
@@ -1900,9 +1978,20 @@ async function handleReauthenticate(
     connection_status: string;
     connector_key: string;
     auth_profile_id: number | null;
+    connection_created_by: string | null;
     profile_kind: string | null;
     auth_profile_status: string | null;
   };
+
+  // `reauthenticate` flips the connection + its interactive profile to
+  // `pending_auth` and kicks off an auth run — that has to be the connection
+  // owner or an admin/owner. Without this gate, any org member could disrupt
+  // (or hijack the pairing of) another member's interactive connection.
+  const callerRole = await getWorkspaceRole(sql, organizationId, ctx.userId);
+  const callerIsAdmin = callerRole === 'admin' || callerRole === 'owner';
+  if (!callerIsAdmin && row.connection_created_by !== ctx.userId) {
+    return { error: 'You can only re-authenticate connections you created.' };
+  }
 
   if (!row.auth_profile_id || row.profile_kind !== 'interactive') {
     return { error: 'Connection does not use an interactive auth profile' };

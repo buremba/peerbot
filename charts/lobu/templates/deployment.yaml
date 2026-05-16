@@ -94,9 +94,14 @@ spec:
             - secretRef:
                 name: {{ $secretName }}
           {{- end }}
+          # Readiness probes the DB too (/health/ready does SELECT 1).
+          # Failing readiness pulls the pod out of the Service endpoint set
+          # without restarting it — right semantic for a transient DB blip.
+          # Liveness stays on /health (process-up only) so a pooler hiccup
+          # doesn't trigger CrashLoopBackOff.
           readinessProbe:
             httpGet:
-              path: /health
+              path: /health/ready
               port: http
             initialDelaySeconds: {{ .Values.healthCheck.readinessProbe.initialDelaySeconds }}
             periodSeconds: {{ .Values.healthCheck.readinessProbe.periodSeconds }}

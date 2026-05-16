@@ -85,7 +85,16 @@ export interface PollResponse {
   connection_id?: number;
   /** Feed ID (for sync runs) */
   feed_id?: number;
-  /** Compiled connector code */
+  /**
+   * Compiled connector code, shipped inline. Used for device workers and
+   * DB-only user-uploaded connectors that don't have the connector source
+   * on disk. Fleet workers receive a bare `connector_key` only (no
+   * inline code) and resolve + compile the source from their own
+   * filesystem to keep poll responses small — see worker-api.ts handler
+   * comment + lobu#772 review for why we send the key and not an absolute
+   * path (gateway and worker images have different paths to the same
+   * sources).
+   */
   compiled_code?: string;
   /** Connection session state (browser cookies, etc.) */
   session_state?: Record<string, unknown>;

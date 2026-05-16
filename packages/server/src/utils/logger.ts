@@ -25,6 +25,14 @@ const getLogLevel = (): pino.Level => {
 /**
  * Create a Pino logger instance
  */
+// pino's default error serializer only fires for the `err` key, so
+// `logger.error({ error }, '...')` silently logs `error: {}` (Error's own
+// fields are non-enumerable). Register the same serializer on the `error`
+// key too so either spelling produces a real stack/message. Found during
+// the 2026-05-16 prod outage where every queue failure logged `error: {}`
+// and hid `column "events.search_tsv" does not exist`.
+const errSerializer = pino.stdSerializers.err;
+
 const logger = pino({
   level: getLogLevel(),
   browser: {
@@ -34,6 +42,10 @@ const logger = pino({
     level: (label) => {
       return { level: label };
     },
+  },
+  serializers: {
+    err: errSerializer,
+    error: errSerializer,
   },
 });
 

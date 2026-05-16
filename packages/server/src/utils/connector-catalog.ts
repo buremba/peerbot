@@ -202,16 +202,38 @@ export function getConfiguredConnectorCatalogUris(rawUris?: string): string[] {
 // Compiling a connector spawns esbuild; on the hot paths (feed sync, worker
 // poll) the same bundled .ts file is recompiled repeatedly. Cache the output
 // keyed by file mtime so a recompile only happens when the source actually
-// changes. Process restart (= deploy, = SDK rebuild) clears it, same as
-// `metadataCache` above.
+// changes. Process restart (= deploy, = SDK rebuild) clears it.
+//
+// LRU-capped: each entry is the full compiled bundle (~13 MB today, smaller
+// once non-essential transitive deps are externalized — see
+// EXTERNAL_RUNTIME_DEPS). Before the cap, prod was seeing the cache hold
+// every connector's bundle indefinitely (~29 × 13 MB = 384 MB resident, the
+// dominant heap occupant under the 1 GiB pod limit; see lobu#771 postmortem
+// for the heap-snapshot trail). The cap keeps the cache to the working set
+// of recently-used connectors and lets V8 reclaim the rest.
+const COMPILED_FILE_CACHE_MAX = 8;
 const compiledFileCache = new Map<string, { mtimeMs: number; code: string }>();
+
+function touchCacheEntry(filePath: string, entry: { mtimeMs: number; code: string }): void {
+  compiledFileCache.delete(filePath);
+  compiledFileCache.set(filePath, entry);
+  while (compiledFileCache.size > COMPILED_FILE_CACHE_MAX) {
+    const oldest = compiledFileCache.keys().next().value;
+    if (oldest === undefined) break;
+    compiledFileCache.delete(oldest);
+  }
+}
 
 export async function compileConnectorFromFile(filePath: string): Promise<string> {
   let mtimeMs: number | null = null;
   try {
     mtimeMs = (await stat(filePath)).mtimeMs;
     const cached = compiledFileCache.get(filePath);
-    if (cached && cached.mtimeMs === mtimeMs) return cached.code;
+    if (cached && cached.mtimeMs === mtimeMs) {
+      // Move to end of insertion order = mark as most-recently-used.
+      touchCacheEntry(filePath, cached);
+      return cached.code;
+    }
   } catch {
     // stat failed — fall through and let the build surface the real error.
   }
@@ -246,7 +268,7 @@ export async function compileConnectorFromFile(filePath: string): Promise<string
     });
 
     const code = await readFile(outPath, 'utf-8');
-    if (mtimeMs !== null) compiledFileCache.set(filePath, { mtimeMs, code });
+    if (mtimeMs !== null) touchCacheEntry(filePath, { mtimeMs, code });
     return code;
   } finally {
     await rm(tmpDir, { recursive: true, force: true });

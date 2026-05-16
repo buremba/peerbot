@@ -22,17 +22,32 @@ const MEMBER_WRITE_ACTIONS: Record<string, Set<string> | null> = {
   // via SDK namespace wrappers from inside `run_sdk`, and `routeAction` consults
   // these tables to fire the same per-action access decisions.
   manage_entity: new Set(['create', 'update', 'link', 'unlink', 'update_link']),
+  // Members can install connections that bind to their own OAuth account
+  // grant. The handler gates `app_auth_profile_slug` overrides against the
+  // org default + caller role, so members can't pick a non-default app
+  // profile.
+  manage_connections: new Set(['create', 'reauthenticate']),
+  // Members create / reconnect their own oauth_account profile. The handler
+  // gates `profile_kind` against role so env / oauth_app / browser_session
+  // stay admin-only.
+  manage_auth_profiles: new Set([
+    'create_auth_profile',
+    'update_auth_profile',
+    'test_auth_profile',
+    'get_auth_profile',
+  ]),
 };
 
 const OWNER_ADMIN_ACTIONS: Record<string, Set<string>> = {
   manage_entity: new Set(['delete']),
   manage_entity_schema: new Set(['create', 'update', 'delete', 'add_rule', 'remove_rule']),
   manage_connections: new Set([
-    'create',
+    // `create` and `reauthenticate` are in MEMBER_WRITE_ACTIONS — members
+    // install their own connections (handler enforces app_auth_profile slug
+    // override + role gates).
     'update',
     'delete',
     'connect',
-    'reauthenticate',
     'test',
     'install_connector',
     'uninstall_connector',
@@ -44,11 +59,13 @@ const OWNER_ADMIN_ACTIONS: Record<string, Set<string>> = {
   ]),
   manage_feeds: new Set(['create_feed', 'update_feed', 'delete_feed', 'trigger_feed']),
   manage_auth_profiles: new Set([
+    // `create_auth_profile` and `update_auth_profile` are in
+    // MEMBER_WRITE_ACTIONS — the handler enforces oauth_account-only access
+    // for non-admins so members can't create org-shared credentials.
     'get_auth_profile',
     'test_auth_profile',
-    'create_auth_profile',
-    'update_auth_profile',
     'delete_auth_profile',
+    'set_default_auth_profile',
   ]),
   manage_operations: new Set(['execute', 'approve', 'reject']),
   manage_watchers: new Set([

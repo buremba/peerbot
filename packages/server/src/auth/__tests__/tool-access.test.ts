@@ -55,7 +55,18 @@ describe('requiresOwnerAdmin', () => {
     expect(
       requiresOwnerAdmin('manage_connections', { action: 'update_connector_default_config' }, false)
     ).toBe(true);
+  });
+
+  it('should allow members to create + reauthenticate their own connections', () => {
+    // `manage_connections.create` and `reauthenticate` are member-write; the
+    // handler enforces app_auth_profile_slug must match the org default for
+    // non-admins, so non-admins can't bring an alternate OAuth client.
+    expect(requiresOwnerAdmin('manage_connections', { action: 'create' }, false)).toBe(false);
+    expect(requiresMemberWrite('manage_connections', { action: 'create' }, false)).toBe(true);
     expect(requiresOwnerAdmin('manage_connections', { action: 'reauthenticate' }, false)).toBe(
+      false
+    );
+    expect(requiresMemberWrite('manage_connections', { action: 'reauthenticate' }, false)).toBe(
       true
     );
   });
@@ -68,10 +79,28 @@ describe('requiresOwnerAdmin', () => {
       requiresOwnerAdmin('manage_auth_profiles', { action: 'test_auth_profile' }, false)
     ).toBe(true);
     expect(
-      requiresOwnerAdmin('manage_auth_profiles', { action: 'create_auth_profile' }, false)
+      requiresOwnerAdmin('manage_auth_profiles', { action: 'delete_auth_profile' }, false)
     ).toBe(true);
     expect(
-      requiresOwnerAdmin('manage_auth_profiles', { action: 'delete_auth_profile' }, false)
+      requiresOwnerAdmin('manage_auth_profiles', { action: 'set_default_auth_profile' }, false)
+    ).toBe(true);
+  });
+
+  it('should allow members to create their own oauth_account profile', () => {
+    // create_auth_profile / update_auth_profile are member-write at the
+    // policy layer; the handler gates by profile_kind so non-oauth_account
+    // kinds (env, oauth_app, browser_session) stay admin-only.
+    expect(
+      requiresOwnerAdmin('manage_auth_profiles', { action: 'create_auth_profile' }, false)
+    ).toBe(false);
+    expect(
+      requiresMemberWrite('manage_auth_profiles', { action: 'create_auth_profile' }, false)
+    ).toBe(true);
+    expect(
+      requiresOwnerAdmin('manage_auth_profiles', { action: 'update_auth_profile' }, false)
+    ).toBe(false);
+    expect(
+      requiresMemberWrite('manage_auth_profiles', { action: 'update_auth_profile' }, false)
     ).toBe(true);
   });
 

@@ -176,11 +176,22 @@ final class AppState: ObservableObject {
         }
     }() { didSet { UserDefaults.standard.set(serverMode.rawValue, forKey: "lobuServerMode") } }
     /// URL the user is pointing the menu bar at (text field next to Connect).
-    /// Persisted so it survives restarts. Defaults to localhost so a fresh
-    /// install offers the safest path — we'll auto-start the embedded server
-    /// when they click Connect. Editable to a Lobu Cloud / self-hosted URL.
-    @Published var customServerDraft: String = UserDefaults.standard.string(forKey: "lobuCustomServerURL")
-        ?? "http://localhost:8787" {
+    /// Persisted so it survives restarts. Default depends on the stored mode:
+    /// fresh installs and ex-`.local` users get `localhost`; ex-`.cloud` users
+    /// get the Lobu Cloud URL so the merge doesn't silently strand them on
+    /// local mode. Editable to anything http(s).
+    @Published var customServerDraft: String = {
+        if let stored = UserDefaults.standard.string(forKey: "lobuCustomServerURL"),
+           !stored.isEmpty {
+            return stored
+        }
+        // No stored URL → derive from the old serverMode value if present.
+        switch UserDefaults.standard.string(forKey: "lobuServerMode") {
+        case "cloud":  return "https://app.lobu.ai"
+        case "custom", "remote": return "https://app.lobu.ai"
+        default:       return "http://localhost:8787"
+        }
+    }() {
         didSet { UserDefaults.standard.set(customServerDraft, forKey: "lobuCustomServerURL") }
     }
     /// Result of the last reachability probe of `customServerDraft` — nil = not checked yet.
@@ -365,28 +376,54 @@ final class AppState: ObservableObject {
         setStatus("")
     }
 
-    // MARK: - Connect (mode-aware sign-in) --------------------------------------
+    // MARK: - Connect (URL-driven sign-in) --------------------------------------
 
-    /// The sign-in screen's primary action. Resolves the gateway URL for the
-    /// chosen mode (Cloud / self-hosted / a local `lobu run` we start here),
-    /// then runs the OAuth device flow against it.
+    /// The connection card's primary action. Auto-starts the embedded server
+    /// when the URL points at the loopback port we manage; otherwise just
+    /// runs OAuth against the typed URL.
     func connect() async {
         let raw = customServerDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         let urlString = raw.isEmpty ? cloudURL : raw
-        guard let url = URL(string: urlString), url.scheme != nil else {
-            setStatus("Enter a server URL (e.g. http://localhost:8787).")
+        guard let url = URL(string: urlString),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https"
+        else {
+            setStatus("Enter an http(s) URL (e.g. http://localhost:8787).")
             return
         }
-        // Localhost URLs imply the embedded server — start it for the user so
-        // they don't have to know about `lobu run`. Non-local hosts just connect.
-        let isLocal = url.host.map { $0 == "localhost" || $0 == "127.0.0.1" } ?? false
-        serverMode = isLocal ? .local : .remote
-        if isLocal && !localLobuStatus.isRunning {
+        // Auto-start the embedded server ONLY when the URL is the exact one we
+        // know how to manage (host + port). A user pointing at localhost:9999
+        // is connecting to their own thing — we shouldn't start :8787 alongside.
+        if shouldAutoStartLocal(for: url) && !localLobuStatus.isRunning {
             await startLocalLobu()
             guard localLobuStatus.isRunning else { return }
         }
+        serverMode = AppState.isLoopback(url) ? .local : .remote
         setBaseURL(urlString)
         await signIn()
+    }
+
+    /// True iff this URL is the embedded server URL the menu bar manages.
+    /// Auto-start only fires for an exact host:port match — typing a different
+    /// loopback port means "connect to my own thing," not "spawn yours alongside."
+    private func shouldAutoStartLocal(for url: URL) -> Bool {
+        guard let runnerURL = URL(string: LocalLobuRunner.baseURL) else { return false }
+        return url.host == runnerURL.host && (url.port ?? defaultPort(for: url)) == runnerURL.port
+    }
+
+    private func defaultPort(for url: URL) -> Int? {
+        switch url.scheme?.lowercased() {
+        case "http":  return 80
+        case "https": return 443
+        default:      return nil
+        }
+    }
+
+    /// Host-parse-based loopback check shared between connect() and the
+    /// connection card's button title so they can't disagree on the same URL.
+    static func isLoopback(_ url: URL) -> Bool {
+        guard let host = url.host?.lowercased() else { return false }
+        return host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "[::1]"
     }
 
     /// Start (or reconnect to) the bridge-managed `lobu run`. Idempotent: if it's

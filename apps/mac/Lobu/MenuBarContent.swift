@@ -462,8 +462,9 @@ struct MenuBarContent: View {
 
     private var connectButtonTitle: String {
         if state.isLoggingIn { return "Waiting for approval…" }
-        let url = state.customServerDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        let isLocal = url.contains("localhost") || url.contains("127.0.0.1")
+        let raw = state.customServerDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let url = URL(string: raw)
+        let isLocal = url.map(AppState.isLoopback) ?? false
         if isLocal && !state.localLobuStatus.isRunning {
             return "Start & sign in"
         }
@@ -764,10 +765,13 @@ struct MenuBarContent: View {
             for vault in vaults {
                 let mirrored = isVaultMirrored(vault)
                 let readable = vault.isReadable
-                // Annotate unreadable vaults inline so the user sees why the
-                // toggle won't take. Still clickable so they get the status
-                // message explaining the FDA path.
-                let title = readable ? vault.displayName : "\(vault.displayName)  (needs Full Disk Access)"
+                // Show the full path (collapsed to ~) so the user can verify
+                // what they'd actually sync — vault names alone are too easy
+                // to mistake for an innocuous folder when obsidian.json points
+                // elsewhere.
+                let path = vault.url.path.replacingOccurrences(of: NSHomeDirectory(), with: "~")
+                let suffix = readable ? "" : "  (needs Full Disk Access)"
+                let title = "\(vault.displayName) — \(path)\(suffix)"
                 let item = ClosureMenuItem(
                     title: title,
                     state: mirrored ? .on : .off

@@ -41,6 +41,14 @@ final class LocalLobuRunner {
     static let baseURL = "http://localhost:\(port)"
 
     private(set) var process: Process?
+    /// True iff `start()` actually spawned the server this session (vs.
+    /// adopting one that was already listening). The no-auth credential path
+    /// uses this to refuse adoption when something else owns the port — a
+    /// malicious squatter or someone else's `lobu run` would otherwise
+    /// receive our synthesised "Authorization: Bearer noauth" header and
+    /// could log it before returning a 401. We're sending a dummy value
+    /// today, but the principle still holds.
+    private(set) var spawnedThisSession: Bool = false
     private let projectDir: URL
     private let logFile: URL
 
@@ -76,6 +84,10 @@ final class LocalLobuRunner {
         // without an OAuth flow, a token, or a sign-in screen. Personal-use
         // model — see docs/plans/personal-mode-auth.md for the threat model.
         env["LOBU_NO_AUTH"] = "1"
+        // The server hard-fails to start with LOBU_NO_AUTH=1 on a non-loopback
+        // bind. start-local.ts defaults HOST to 0.0.0.0, so we must pin it
+        // explicitly here — otherwise the runner just crashes on boot.
+        env["HOST"] = "127.0.0.1"
         proc.environment = env
         proc.standardInput = FileHandle.nullDevice  // no TTY — any prompt gets EOF and fails fast
 
@@ -89,6 +101,7 @@ final class LocalLobuRunner {
         do {
             try proc.run()
             process = proc
+            spawnedThisSession = true
             NSLog("[LocalLobuRunner] started \(lobu) run --port \(Self.port) (pid=\(proc.processIdentifier)) log=\(logFile.path)")
         } catch {
             throw RunnerError.spawn(error)
@@ -97,6 +110,7 @@ final class LocalLobuRunner {
         for _ in 0..<45 {
             if proc.isRunning == false {
                 process = nil
+                spawnedThisSession = false
                 throw RunnerError.exitedEarly(logPath: logFile.path)
             }
             if await Self.isLobuReachable(Self.baseURL) { return Self.baseURL }
@@ -104,13 +118,19 @@ final class LocalLobuRunner {
         }
         proc.terminate()
         process = nil
+        spawnedThisSession = false
         throw RunnerError.notReady(logPath: logFile.path)
     }
 
     func stop() {
-        guard let proc = process, proc.isRunning else { process = nil; return }
+        guard let proc = process, proc.isRunning else {
+            process = nil
+            spawnedThisSession = false
+            return
+        }
         proc.terminate()
         process = nil
+        spawnedThisSession = false
         NSLog("[LocalLobuRunner] stopped local Lobu")
     }
 

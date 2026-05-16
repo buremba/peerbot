@@ -44,6 +44,7 @@ import { assertExternalDepsResolvable } from '../../connector-worker/src/runtime
 import { isSentryReported, markSentryReported } from './sentry';
 import { getEnvFromProcess } from './utils/env';
 import logger from './utils/logger';
+import { isLoopbackHost } from './utils/loopback';
 import { assertSchemaUpToDate } from './utils/schema-version-check';
 import { initWorkspaceProvider } from './workspace';
 
@@ -279,7 +280,32 @@ async function main() {
   // Start HTTP server
   logger.info({ port }, 'Starting server');
 
+  // No-auth mode is a single-user, loopback-only personal mode (see
+  // docs/plans/personal-mode-auth.md). It must NEVER be active on a
+  // production deployment behind any kind of public bind. Refuse to start
+  // if the operator accidentally sets it. Both pre-listen (host arg) and
+  // post-listen (server.address()) checks catch DNS / hostname surprises.
+  const noAuth = process.env.LOBU_NO_AUTH === '1';
+  if (noAuth && !isLoopbackHost(host)) {
+    logger.error(
+      { host },
+      'LOBU_NO_AUTH=1 requires loopback bind (127.0.0.0/8 or ::1). Refusing to start.'
+    );
+    process.exit(1);
+  }
+
   httpServer.listen(port, host, () => {
+    if (noAuth) {
+      const addr = httpServer.address();
+      if (typeof addr === 'object' && addr && !isLoopbackHost(addr.address)) {
+        logger.error(
+          { address: addr.address },
+          'LOBU_NO_AUTH=1 server bound to a non-loopback address after listen() — refusing to serve.'
+        );
+        process.exit(1);
+      }
+      logger.info('No-auth mode active (LOBU_NO_AUTH=1) — every request attributed to local user');
+    }
     logger.info({ host, port }, `Server running at http://${host}:${port}`);
     // Crash loud if the runtime image is missing any connector external dep,
     // instead of letting every feed silently fail with "Missing npm

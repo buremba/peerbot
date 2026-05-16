@@ -410,7 +410,13 @@ final class AppState: ObservableObject {
         serverMode = autoStart ? .local : .remote
         setBaseURL(urlString)
 
-        if autoStart {
+        // Only adopt no-auth credentials when WE spawned the server this
+        // session. If LocalLobuRunner.start() adopted a pre-existing
+        // process (orphan from a previous run, developer's `lobu run`, or
+        // worst case a malicious squatter on :8787), we don't own the port
+        // — sending any header to it could leak. Fall through to OAuth in
+        // those cases.
+        if autoStart, localRunner.spawnedThisSession {
             adoptLocalCredentials(baseURL: urlString)
             startAutoPollIfSignedIn()
             return

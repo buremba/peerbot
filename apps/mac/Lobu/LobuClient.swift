@@ -328,6 +328,7 @@ final class WorkerClient {
         var request = URLRequest(url: url)
         request.httpMethod = "PATCH"
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("menubar", forHTTPHeaderField: "X-Lobu-Client")
         let (_, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw WorkerClientError.http("/notifications/\(id)/read", (response as? HTTPURLResponse)?.statusCode ?? 0, "")
@@ -338,6 +339,7 @@ final class WorkerClient {
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("menubar", forHTTPHeaderField: "X-Lobu-Client")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
@@ -434,6 +436,7 @@ final class WorkerClient {
         var request = URLRequest(url: url)
         request.httpMethod = "DELETE"
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("menubar", forHTTPHeaderField: "X-Lobu-Client")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try encoder.encode(Body(worker_id: workerId))
         let (data, response) = try await session.data(for: request)
@@ -508,6 +511,7 @@ final class WorkerClient {
         var request = URLRequest(url: url)
         request.httpMethod = "DELETE"
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("menubar", forHTTPHeaderField: "X-Lobu-Client")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try encoder.encode(Body(worker_id: workerId, connector_key: connectorKey))
         let (data, response) = try await session.data(for: request)
@@ -522,6 +526,7 @@ final class WorkerClient {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("menubar", forHTTPHeaderField: "X-Lobu-Client")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try encoder.encode(body)
         let (data, response) = try await session.data(for: request)

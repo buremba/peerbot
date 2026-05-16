@@ -104,6 +104,13 @@ export async function getCachedOrgBySlug(
   return record;
 }
 
+/// Bootstrap identity constants — must match the constants in
+/// `packages/server/src/start-local.ts` (BOOTSTRAP_USER_ID + BOOTSTRAP_ORG_ID).
+/// Duplicated here intentionally to avoid an import cycle with the local-only
+/// entrypoint. If you change either side, change both.
+const NO_AUTH_USER_ID = 'bootstrap-user';
+const NO_AUTH_ORG_ID = 'org-bootstrap-dev';
+
 /// Cache the no-auth user/org lookup. The values can't change while the
 /// server is alive: bootstrap-user/org are seeded once by `ensureBootstrapPat`
 /// and live forever. Clearing the cache requires a server restart.
@@ -116,9 +123,13 @@ interface NoAuthUser {
 }
 
 /// Resolve the single local user attributed to every request in no-auth
-/// mode. Pulls the bootstrap-user row that `ensureBootstrapPat` writes and
-/// the personal org it owns. Returns `null` when the row doesn't exist yet
-/// (server boot race between HTTP listen and ensureBootstrapPat's await).
+/// mode. Pulls the bootstrap-user row + the bootstrap-org membership by
+/// **id pair**, not "first admin LIMIT 1" — if the bootstrap user ever
+/// has multiple memberships (e.g. someone manually added them to another
+/// org for testing) we still want the personal org, deterministically.
+/// Returns `null` only when the row truly doesn't exist (server boot race
+/// between HTTP listen and ensureBootstrapPat's await — `start-local.ts`
+/// now runs the bootstrap BEFORE listen() to close that race).
 async function getNoAuthUser(
   sql: ReturnType<typeof getDb>
 ): Promise<NoAuthUser | null> {
@@ -128,18 +139,19 @@ async function getNoAuthUser(
       u.id    AS user_id,
       u.email AS email,
       u.name  AS name,
-      u.username AS username,
-      m."organizationId" AS organization_id
+      u.username AS username
     FROM "user" u
-    JOIN "member" m ON m."userId" = u.id AND m.role IN ('owner', 'admin')
-    WHERE u.id = 'bootstrap-user'
+    JOIN "member" m ON m."userId" = u.id
+    WHERE u.id = ${NO_AUTH_USER_ID}
+      AND m."organizationId" = ${NO_AUTH_ORG_ID}
+      AND m.role IN ('owner', 'admin')
     LIMIT 1
   `);
   if (rows.length === 0) return null;
   const row = rows[0];
   noAuthUserCache = {
     userId: row.user_id as string,
-    organizationId: row.organization_id as string,
+    organizationId: NO_AUTH_ORG_ID,
     user: {
       id: row.user_id as string,
       email: (row.email as string) ?? '',

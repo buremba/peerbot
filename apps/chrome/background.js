@@ -130,11 +130,100 @@ async function pollOnce() {
       await openPairing();
       return;
     }
-    // Run-claim body is consumed by the v2 run executor.
-    await res.json().catch(() => null);
+    const body = await res.json().catch(() => null);
+    if (body?.run_id) {
+      void executeRun(body, workerId, token);
+    }
   } catch (err) {
     console.warn("[owletto] poll failed", err);
   }
+}
+
+// Minimal run executor — handles the chrome.tabs connector end-to-end and
+// fails any other claimed run with a clear marker so the gateway doesn't
+// keep retrying us. Real-deal execution (heartbeat, multi-batch streaming,
+// action runs, error classification) is in SCOPE.md's v2 backlog.
+async function executeRun(run, workerId, token) {
+  const { run_id, connector_key } = run;
+  console.log("[owletto] claimed run", { run_id, connector_key });
+
+  if (connector_key !== "chrome.tabs") {
+    await postJson(`${GATEWAY_URL}/api/workers/complete`, token, {
+      run_id,
+      worker_id: workerId,
+      status: "failed",
+      error: `Owletto for Chrome v0.1 only handles 'chrome.tabs' runs; got '${connector_key}'`,
+    });
+    return;
+  }
+
+  try {
+    const tabs = await chrome.tabs.query({});
+    const now = new Date().toISOString();
+    const items = tabs
+      .filter((t) => typeof t.url === "string" && t.url.length > 0)
+      .map((t) => ({
+        id: `tab-${t.id}`,
+        title: t.title ?? t.url,
+        payload_type: "text",
+        payload_text: t.title ? `${t.title}\n${t.url}` : t.url,
+        occurred_at: now,
+        source_url: t.url,
+        origin_type: "tab_snapshot",
+        semantic_type: "tab_snapshot",
+        metadata: {
+          source: "chrome_tabs",
+          origin_id: `tab-${t.id}`,
+          url: t.url,
+          title: t.title,
+          window_id: t.windowId,
+          active: t.active,
+        },
+      }));
+
+    if (items.length > 0) {
+      await postJson(`${GATEWAY_URL}/api/workers/stream`, token, {
+        type: "batch",
+        run_id,
+        worker_id: workerId,
+        items,
+      });
+    }
+
+    await postJson(`${GATEWAY_URL}/api/workers/complete`, token, {
+      run_id,
+      worker_id: workerId,
+      status: "success",
+      items_count: items.length,
+    });
+    console.log("[owletto] completed run", { run_id, items: items.length });
+  } catch (err) {
+    console.error("[owletto] run failed", err);
+    try {
+      await postJson(`${GATEWAY_URL}/api/workers/complete`, token, {
+        run_id,
+        worker_id: workerId,
+        status: "failed",
+        error: err instanceof Error ? err.message : String(err),
+      });
+    } catch {}
+  }
+}
+
+async function postJson(url, token, body) {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`${url} → ${res.status} ${text.slice(0, 200)}`);
+  }
+  return res.json().catch(() => null);
 }
 
 async function computeAdvertisedCapabilities() {

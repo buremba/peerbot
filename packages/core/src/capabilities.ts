@@ -59,7 +59,7 @@ export interface CapabilityAuthorizationResult {
 // this so trusted fleet workers never reach here.
 export function authorizeCapabilities(
   platform: string | null | undefined,
-  declared: readonly string[],
+  declared: readonly string[]
 ): CapabilityAuthorizationResult {
   const allowed = platform ? PLATFORM_ALLOWLIST[platform] : undefined;
   if (!allowed) {

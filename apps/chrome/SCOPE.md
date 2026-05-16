@@ -4,6 +4,11 @@
 
 - **OAuth device-authorization pairing.** Same RFC 8628 flow the Mac app uses
   (`apps/mac/Lobu/OAuthClient.swift`). No new gateway endpoint required.
+- **`chrome.tabs` connector.** Minimal end-to-end demo: lists the tabs
+  currently open in the paired Chrome profile as `tab_snapshot` events. Single
+  batch per run, no heartbeat. Cloud-side definition in
+  `packages/connectors/src/chrome_tabs.ts`; extension-side executor in
+  `apps/chrome/background.js:executeRun`.
 - **Per-Chrome-profile device.** Each Chrome profile is its own paired device
   in the gateway, with its own scoped token and connection-pinning eligibility
   (`connections.device_worker_id`).
@@ -26,6 +31,20 @@
 
 ## Backlog (v2+)
 
+- **Real run executor.** The v1 executor handles a single connector
+  (`chrome.tabs`), one batch per run, no heartbeat or partial-progress
+  reporting, no action runs, no checkpointing. v2 needs:
+  * Heartbeat loop (`/api/workers/heartbeat`) so long-running streams don't
+    get reclaimed.
+  * Multi-batch streaming for connectors that emit > N items.
+  * Action-run dispatch (`action_key` + `action_input` → `/api/workers/complete-action`).
+  * Checkpointing for incremental sync.
+  * Error classification (transient vs. terminal) and retry hints.
+- **Connectors using debugger / scripting capabilities.** With the v1
+  `browser.scripting` and `browser.debugger` caps already advertised, the
+  natural next connectors are `chrome.page_text` (active-tab DOM scrape),
+  `chrome.page_screenshot`, and `chrome.fill_form`. Each needs its own
+  definition file and executor branch.
 - **Native-messaging SSO with the Mac bridge.** When the Owletto Mac app is
   installed, skip the device-code typing step by minting a scoped child
   worker token through `chrome.runtime.connectNative`. Adds one

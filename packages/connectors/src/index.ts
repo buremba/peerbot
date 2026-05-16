@@ -4,6 +4,7 @@ export * from './apple_screen_time.ts';
 export * from './local_directory.ts';
 export * from './browser-scraper-utils.ts';
 export * from './capterra.ts';
+export * from './chrome_tabs.ts';
 export * from './g2.ts';
 export * from './github.ts';
 export * from './glassdoor.ts';

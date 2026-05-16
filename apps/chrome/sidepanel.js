@@ -20,6 +20,15 @@ pairBtn.addEventListener("click", async () => {
   await chrome.tabs.create({ url: chrome.runtime.getURL("pairing.html") });
 });
 
+document
+  .getElementById("manage-permissions")
+  .addEventListener("click", async (ev) => {
+    ev.preventDefault();
+    await chrome.tabs.create({
+      url: chrome.runtime.getURL("permissions.html"),
+    });
+  });
+
 (async () => {
   const stored = await chrome.storage.local.get([
     STORAGE_KEYS.workerId,

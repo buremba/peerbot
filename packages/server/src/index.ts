@@ -312,9 +312,15 @@ app.use('/*', async (c, next) => {
           .filter((entry) => isValidFrameAncestor(entry))
           .join(' ')
       : 'https://lobu.ai https://*.lobu.ai';
+    // /embedded is the Chrome-extension sidepanel target — it must be framable
+    // from any chrome-extension:// origin. Other routes keep the default
+    // 'self' + lobu.ai allowlist so the rest of the app can't be embedded by
+    // arbitrary extensions.
+    const path = new URL(c.req.url).pathname;
+    const extensionAllowed = path === '/embedded' ? ' chrome-extension:' : '';
     c.header(
       'Content-Security-Policy',
-      `frame-ancestors 'self' ${frameAncestors}`
+      `frame-ancestors 'self' ${frameAncestors}${extensionAllowed}`
     );
   }
 

@@ -96,15 +96,26 @@ async function createSyncRunWithClient(sql: DbClient, feedId: number): Promise<n
       // An orphan feed: the connector was archived/uninstalled in this org
       // but the feed wasn't soft-deleted. Pre-fix this threw an Error on
       // every CheckDueFeeds tick (1 / min), producing ~380 error logs / min
-      // for 33 feeds. Treat as expected idle: warn once and skip. The
-      // initial backfill is in migration 20260517020000.
+      // for 33 feeds. Soft-delete the feed in-place so it stops appearing
+      // in CheckDueFeeds — otherwise warning + returning null would just
+      // produce a warn-level repeat at the same cadence forever, and a
+      // large enough orphan set could fill the CheckDueFeeds LIMIT 100
+      // and starve legitimate feeds.
+      //
+      // Operators can recover by clearing `deleted_at` after reinstalling
+      // the connector definition.
+      await sql`
+        UPDATE feeds
+        SET deleted_at = current_timestamp
+        WHERE id = ${feedId}
+      `;
       logger.warn(
         {
           feedId,
           connector_key: feed.connector_key,
           organization_id: feed.organization_id,
         },
-        '[queue] Skipping feed — no active connector_definition for (connector_key, org). Treating as orphan.'
+        '[queue] Soft-deleted orphan feed — no active connector_definition for (connector_key, org).'
       );
       return null;
     }

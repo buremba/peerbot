@@ -14,11 +14,18 @@
 -- so future orphans don't spam logs either. This migration is the one-time
 -- cleanup of the existing data.
 --
--- Conservative criteria — only soft-delete when:
+-- Conservative criteria — match exactly the set CheckDueFeeds processes
+-- (so we only soft-delete feeds that actually produce the error stream).
 --   - feed has no pinned_version (= would have looked up connector_definitions)
 --   - feed.deleted_at IS NULL (still considered active)
---   - the connection is still active (not already deleted)
+--   - feed.status = 'active' (CheckDueFeeds filters on this — see
+--     packages/server/src/scheduled/check-due-feeds.ts:36-43)
+--   - connection.deleted_at IS NULL AND connection.status = 'active' (same)
 --   - NO active connector_definition exists for that (key, organization) pair
+--
+-- Feeds in paused / pending_auth / error / revoked states are left alone
+-- — operators may be mid-recovery on them and they don't contribute to
+-- the error spam (CheckDueFeeds skips them anyway).
 --
 -- The same feed remains recoverable: clearing `deleted_at` + reinstalling
 -- the connector definition for the org restores it.
@@ -29,7 +36,9 @@ FROM public.connections c
 WHERE f.connection_id = c.id
   AND f.deleted_at IS NULL
   AND f.pinned_version IS NULL
+  AND f.status = 'active'
   AND c.deleted_at IS NULL
+  AND c.status = 'active'
   AND NOT EXISTS (
     SELECT 1
     FROM public.connector_definitions cd

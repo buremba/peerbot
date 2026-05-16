@@ -106,20 +106,24 @@ spec:
             - secretRef:
                 name: {{ $secretName }}
           {{- end }}
-          # PreStop hook: when k8s decides to terminate this pod (rollout,
-          # eviction, node drain), it does THREE things in parallel:
-          #   1. Remove the pod's endpoints from any Service it's a member of
-          #   2. Run the preStop hook (this sleep)
-          #   3. After preStop completes (or grace period elapses), send SIGTERM
-          # The sleep here makes (1) and (3) effectively sequential — Service
-          # endpoints stop pointing at this pod ~immediately, the sleep gives
-          # downstream caches (Cloudflare LB, kube-proxy, ingress controller)
-          # time to notice the removal before the process is asked to die.
-          # Cuts the "no available server" window for in-flight requests.
+          {{- /*
+          PreStop hook is only useful under RollingUpdate (the new pod is
+          already serving, so deregistering the old pod via Service
+          endpoint removal + giving downstream caches time to notice it
+          shrinks the "old pod kept getting traffic during drain" window).
+          Under `Recreate` (the workspaces-RWO default), the new pod
+          doesn't start until the old one fully terminates — adding a
+          preStop sleep would EXTEND the no-available-server window by
+          its duration. We only emit the hook when preStopDelaySeconds
+          is explicitly > 0; ops repos using RollingUpdate set it,
+          Recreate-mode deploys leave it at the default 0.
+          */ -}}
+          {{- if gt (int (.Values.app.preStopDelaySeconds | default 0)) 0 }}
           lifecycle:
             preStop:
               exec:
-                command: ["sh", "-c", "sleep {{ .Values.app.preStopDelaySeconds | default 15 }}"]
+                command: ["sh", "-c", "sleep {{ .Values.app.preStopDelaySeconds }}"]
+          {{- end }}
           # Readiness probes the DB too (/health/ready does SELECT 1).
           # Failing readiness pulls the pod out of the Service endpoint set
           # without restarting it — right semantic for a transient DB blip.

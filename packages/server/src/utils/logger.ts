@@ -55,6 +55,10 @@ function fingerprintAndCapture(parsed: Record<string, unknown>): void {
   const level = parsed.level;
   if (level !== 'error' && level !== 'fatal') return;
 
+  // Caller already captured this to Sentry (see server.ts onError +
+  // 500-response middleware). Skip to avoid duplicate events.
+  if (parsed.sentryReported === true) return;
+
   const msg = typeof parsed.msg === 'string' ? parsed.msg : 'logger.error';
   // pino.stdSerializers.err normalises both `err` and `error` (see serializers
   // config below) to objects with `type` / `message` / `stack`.
@@ -62,9 +66,15 @@ function fingerprintAndCapture(parsed: Record<string, unknown>): void {
     (parsed.err as { type?: string; message?: string; stack?: string } | undefined) ??
     (parsed.error as { type?: string; message?: string; stack?: string } | undefined);
 
+  // Include err.message in the fingerprint — pre-fix, "(msg, err.type,
+  // top stack frame)" grouped distinct errors raised from the same
+  // catch site (same Error type, same wrapping log line). One legit
+  // incident could be masked by a noisy unrelated one within the 60s
+  // window. err.message disambiguates them.
   const errType = errObj?.type ?? '';
+  const errMessage = errObj?.message ?? '';
   const stackTop = (errObj?.stack ?? '').split('\n')[1]?.trim() ?? '';
-  const fingerprint = `${msg}|${errType}|${stackTop}`;
+  const fingerprint = `${msg}|${errType}|${errMessage}|${stackTop}`;
 
   const now = Date.now();
   const last = sentryDedupe.get(fingerprint);

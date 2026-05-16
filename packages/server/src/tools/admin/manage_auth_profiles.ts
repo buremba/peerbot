@@ -512,6 +512,19 @@ async function handleCreateAuthProfile(
           error: `Auth profile '${existing.slug}' already exists with a different kind/connector (${existing.profile_kind} / ${existing.connector_key}) — use a new slug`,
         };
       }
+      // Non-admins reusing an existing oauth_account slug must own it —
+      // otherwise a member who knows another member's pending profile slug
+      // could mint a fresh connect token for it and complete OAuth into a
+      // profile already referenced by someone else's connections.
+      const role = ctx.userId
+        ? await getWorkspaceRole(getDb(), ctx.organizationId, ctx.userId)
+        : null;
+      const callerIsAdmin = role === 'admin' || role === 'owner';
+      if (!callerIsAdmin && existing.created_by !== ctx.userId) {
+        return {
+          error: `Auth profile '${existing.slug}' belongs to another user. Choose a different slug.`,
+        };
+      }
       if (existing.status === 'active') {
         return { action: 'create_auth_profile', auth_profile: serializeAuthProfile(existing) };
       }
@@ -868,25 +881,56 @@ async function handleDeleteAuthProfile(
     };
   }
 
-  // Clean up connect tokens referencing this profile
-  await sql`
-    UPDATE connect_tokens
-    SET auth_profile_id = NULL
-    WHERE auth_profile_id = ${existing.id}
-  `;
+  // Sync + delete must happen atomically: between flipping dependent
+  // connections to `pending_auth` and the DELETE, a concurrent
+  // `manage_connections.create` could insert a new connection referencing
+  // this profile. The FK `ON DELETE SET NULL` would then leave that
+  // connection active with `app_auth_profile_id = NULL`. Lock the profile
+  // row up front (`FOR UPDATE` conflicts with the FK insert's FOR KEY SHARE
+  // lock, so concurrent inserts block until we commit and then fail FK).
+  const deleted = await sql.begin(async (tx) => {
+    const lockRows = await tx`
+      SELECT id FROM auth_profiles
+      WHERE organization_id = ${ctx.organizationId}
+        AND id = ${existing.id}
+      FOR UPDATE
+    `;
+    if (lockRows.length === 0) return null;
 
-  // Pause browser-backed connections BEFORE deleting (ON DELETE SET NULL would orphan them)
-  if (existing.profile_kind === 'browser_session') {
-    await syncConnectionsForBrowserAuthProfile(ctx.organizationId, existing.id, false);
-  }
+    await tx`
+      UPDATE connect_tokens
+      SET auth_profile_id = NULL
+      WHERE auth_profile_id = ${existing.id}
+    `;
 
-  // Same for oauth_app: connection.app_auth_profile_id has ON DELETE SET NULL,
-  // so silent breakage if we don't flip the connection status first.
-  if (existing.profile_kind === 'oauth_app') {
-    await syncConnectionsForOAuthAppProfile(ctx.organizationId, existing.id, false);
-  }
+    if (existing.profile_kind === 'browser_session') {
+      await tx`
+        UPDATE connections
+        SET status = 'pending_auth', updated_at = NOW()
+        WHERE organization_id = ${ctx.organizationId}
+          AND auth_profile_id = ${existing.id}
+          AND deleted_at IS NULL
+      `;
+    }
 
-  const deleted = await deleteAuthProfile(ctx.organizationId, args.auth_profile_slug);
+    if (existing.profile_kind === 'oauth_app') {
+      await tx`
+        UPDATE connections
+        SET status = 'pending_auth', updated_at = NOW()
+        WHERE organization_id = ${ctx.organizationId}
+          AND app_auth_profile_id = ${existing.id}
+          AND deleted_at IS NULL
+      `;
+    }
+
+    const deletedRows = await tx`
+      DELETE FROM auth_profiles
+      WHERE organization_id = ${ctx.organizationId}
+        AND id = ${existing.id}
+      RETURNING id
+    `;
+    return deletedRows.length > 0 ? deletedRows[0] : null;
+  });
   if (!deleted) {
     return { error: `Failed to delete auth profile '${args.auth_profile_slug}'` };
   }

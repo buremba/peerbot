@@ -804,6 +804,17 @@ async function handleCreate(
     effectiveCreatedBy = args.created_by;
   }
 
+  // `entity_link_overrides` writes to `connector_definitions` for the entire
+  // org. Even though `create` is now member-write, that mutation must stay
+  // admin-only — otherwise a member could change connector-level entity
+  // mapping while ostensibly installing their own connection.
+  if (!callerIsAdmin && args.entity_link_overrides !== undefined) {
+    return {
+      error:
+        'Only admins can change connector entity-link overrides. Omit `entity_link_overrides`, or ask an admin to update them via `set_connector_entity_link_overrides`.',
+    };
+  }
+
   // Non-admins must accept the org-default app profile — they can't pick or
   // bring an alternate OAuth client. If they explicitly pass a slug, it has
   // to match the admin-pinned default for the connector.
@@ -950,6 +961,29 @@ async function handleCreate(
           : ' — must be active'
       }.`,
     };
+  }
+
+  // Non-admin members can only bind a connection to a runtime auth profile
+  // they own. `env` profiles are admin-managed org-shared credentials —
+  // members must never bind to them. `oauth_account` and `browser_session`
+  // profiles are member-creatable but still per-user, so a member can't
+  // hijack another member's grant by passing their slug.
+  if (authSelection?.authProfile && !callerIsAdmin) {
+    const profile = authSelection.authProfile;
+    if (profile.profile_kind === 'env') {
+      return {
+        error:
+          'Only admins can use env-credential auth profiles. Ask an admin to install this connection.',
+      };
+    }
+    if (
+      (profile.profile_kind === 'oauth_account' || profile.profile_kind === 'browser_session') &&
+      profile.created_by !== ctx.userId
+    ) {
+      return {
+        error: `Auth profile '${profile.slug}' belongs to another user. Create your own profile (action: 'create_auth_profile') and use its slug instead.`,
+      };
+    }
   }
 
   if (authSelection?.selectedKind === 'oauth_account') {
@@ -1918,6 +1952,7 @@ async function handleReauthenticate(
       c.status AS connection_status,
       c.connector_key,
       c.auth_profile_id,
+      c.created_by AS connection_created_by,
       ap.profile_kind,
       ap.status AS auth_profile_status
     FROM connections c
@@ -1937,9 +1972,20 @@ async function handleReauthenticate(
     connection_status: string;
     connector_key: string;
     auth_profile_id: number | null;
+    connection_created_by: string | null;
     profile_kind: string | null;
     auth_profile_status: string | null;
   };
+
+  // `reauthenticate` flips the connection + its interactive profile to
+  // `pending_auth` and kicks off an auth run — that has to be the connection
+  // owner or an admin/owner. Without this gate, any org member could disrupt
+  // (or hijack the pairing of) another member's interactive connection.
+  const callerRole = await getWorkspaceRole(sql, organizationId, ctx.userId);
+  const callerIsAdmin = callerRole === 'admin' || callerRole === 'owner';
+  if (!callerIsAdmin && row.connection_created_by !== ctx.userId) {
+    return { error: 'You can only re-authenticate connections you created.' };
+  }
 
   if (!row.auth_profile_id || row.profile_kind !== 'interactive') {
     return { error: 'Connection does not use an interactive auth profile' };

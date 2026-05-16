@@ -33,12 +33,24 @@ enum ChromeBridgeHost {
     /// `chrome.runtime.connectNative()` argument.
     static let hostName = "ai.owletto.bridge"
 
-    /// If the binary was invoked with `--owletto-bridge`, run a single
-    /// native-messaging request cycle on stdin/stdout and exit. Otherwise
-    /// returns immediately so the normal app launch can proceed.
+    /// If the binary was launched as a Chrome native-messaging child, run a
+    /// single request cycle on stdin/stdout and exit. Otherwise returns
+    /// immediately so the normal app launch can proceed.
+    ///
+    /// Detection: Chrome always passes the calling extension's origin
+    /// (`chrome-extension://<id>/`) as `argv[1]`. A normal `open Lobu.app`
+    /// launch never produces that signature. Keeping the trigger this way
+    /// means we don't need a wrapper script — Chrome's native-messaging spec
+    /// doesn't allow arguments in `manifest.path`, so a custom `--flag`
+    /// approach doesn't work.
     static func runHostIfRequested() {
-        guard CommandLine.arguments.contains("--owletto-bridge") else { return }
+        let args = CommandLine.arguments
+        guard args.count >= 2, args[1].hasPrefix("chrome-extension://") else {
+            return
+        }
+        FileHandle.standardError.write("[bridge] runHostIfRequested entry\n".data(using: .utf8)!)
         let exitCode = NativeMessagingLoop.run()
+        FileHandle.standardError.write("[bridge] runHostIfRequested exit=\(exitCode)\n".data(using: .utf8)!)
         exit(exitCode)
     }
 
@@ -56,7 +68,7 @@ enum ChromeBridgeHost {
         let manifest: [String: Any] = [
             "name": hostName,
             "description": "Owletto Mac bridge — Chrome native-messaging host",
-            "path": executablePath + " --owletto-bridge",
+            "path": executablePath,
             "type": "stdio",
             "allowed_origins": origins,
         ]
@@ -103,10 +115,12 @@ private enum NativeMessagingLoop {
     static func run() -> Int32 {
         let input = FileHandle.standardInput
         let output = FileHandle.standardOutput
+        debug("readFrame:start")
         guard let frame = readFrame(input) else {
             sendError(output, "missing_request_frame")
             return 1
         }
+        debug("readFrame:done(\(frame.count))")
         guard
             let req = try? JSONSerialization.jsonObject(with: frame) as? [String: Any],
             let op = req["op"] as? String
@@ -114,10 +128,13 @@ private enum NativeMessagingLoop {
             sendError(output, "malformed_request")
             return 1
         }
+        debug("op=\(op)")
         switch op {
         case "pair":
             let platform = (req["platform"] as? String) ?? "chrome-extension"
+            debug("mintChildToken:start")
             let result = mintChildToken(platform: platform)
+            debug("mintChildToken:done")
             switch result {
             case .success(let payload):
                 writeFrame(output, payload)
@@ -130,19 +147,21 @@ private enum NativeMessagingLoop {
         return 0
     }
 
+    private static func debug(_ message: String) {
+        FileHandle.standardError.write("[bridge] \(message)\n".data(using: .utf8)!)
+    }
+
     // MARK: child-token mint over HTTPS
 
     /// Calls POST /api/me/devices/mint-child-token using the Mac app's
     /// stored OAuth credentials. Synchronous — native-messaging hosts are
     /// short-lived stdio children, not long-running processes.
     private static func mintChildToken(platform: String) -> Result<[String: Any], BridgeError> {
-        // Credentials are written by AppState's signin flow into the
-        // KeychainTokenStore. Read them back from the same OS keychain item.
-        // (Keeping this self-contained vs. importing AppState avoids dragging
-        // SwiftUI into the host subprocess.)
+        debug("mintChildToken:loadingCreds")
         guard let creds = OwlettoBridgeCredentials.load() else {
             return .failure(BridgeError("mac_not_signed_in"))
         }
+        debug("mintChildToken:credsLoaded(\(creds.baseURL.absoluteString))")
 
         let url = creds.baseURL.appendingPathComponent("/api/me/devices/mint-child-token")
         var request = URLRequest(url: url)
@@ -154,17 +173,30 @@ private enum NativeMessagingLoop {
             withJSONObject: ["platform": platform]
         )
 
+        // URLSession.shared delivers completion handlers on the main queue
+        // by default. The bridge runs synchronously on the main thread, so
+        // a sem.wait() on URLSession.shared deadlocks (the completion
+        // handler never gets to fire). A dedicated session with its own
+        // delegate queue side-steps that.
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 10
+        let queue = OperationQueue()
+        let session = URLSession(configuration: config, delegate: nil, delegateQueue: queue)
+        debug("urlsession:dispatch")
         let sem = DispatchSemaphore(value: 0)
         var responseData: Data?
         var responseStatus: Int = 0
         var responseError: Error?
-        URLSession.shared.dataTask(with: request) { data, response, err in
+        session.dataTask(with: request) { data, response, err in
             responseData = data
             if let http = response as? HTTPURLResponse { responseStatus = http.statusCode }
             responseError = err
             sem.signal()
         }.resume()
+        debug("urlsession:waiting")
         sem.wait()
+        debug("urlsession:returned status=\(responseStatus)")
+        session.finishTasksAndInvalidate()
 
         if let err = responseError {
             return .failure(BridgeError("network: \(err.localizedDescription)"))
@@ -189,29 +221,26 @@ private enum NativeMessagingLoop {
 
     // MARK: framing
 
+    /// Read one length-prefixed JSON frame from stdin. Accumulates every
+    /// chunk `availableData` returns into a single buffer — that call
+    /// consumes the bytes, so a "peek 4" approach loses anything that
+    /// arrived in the same chunk after the length header. (Chrome usually
+    /// writes the whole frame in one go.)
     private static func readFrame(_ fh: FileHandle) -> Data? {
-        let header = fh.availableData.prefix(4)
-        let lenData: Data
-        if header.count == 4 {
-            lenData = Data(header)
-        } else {
-            // availableData can return less than 4 — loop to fill.
-            var buf = Data(header)
-            while buf.count < 4 {
-                let chunk = fh.availableData
-                if chunk.isEmpty { return nil }
-                buf.append(chunk)
-            }
-            lenData = buf.prefix(4)
-        }
-        let len = lenData.withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }
-        var payload = Data()
-        while payload.count < Int(len) {
+        var buf = Data()
+        while buf.count < 4 {
             let chunk = fh.availableData
             if chunk.isEmpty { return nil }
-            payload.append(chunk)
+            buf.append(chunk)
         }
-        return payload.prefix(Int(len))
+        let length = buf.prefix(4).withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }
+        let payloadEnd = 4 + Int(length)
+        while buf.count < payloadEnd {
+            let chunk = fh.availableData
+            if chunk.isEmpty { return nil }
+            buf.append(chunk)
+        }
+        return buf.subdata(in: 4..<payloadEnd)
     }
 
     private static func writeFrame(_ fh: FileHandle, _ payload: [String: Any]) {
@@ -239,6 +268,18 @@ private struct OwlettoBridgeCredentials {
     let accessToken: String
 
     static func load() -> OwlettoBridgeCredentials? {
+        #if DEBUG
+        // Dev escape hatch: env vars bypass keychain so we can exercise the
+        // bridge from an ad-hoc-signed binary without going through the
+        // TCC keychain prompt. Production builds (RELEASE) never read these.
+        if
+            let baseURLString = ProcessInfo.processInfo.environment["LOBU_BRIDGE_TEST_BASE_URL"],
+            let token = ProcessInfo.processInfo.environment["LOBU_BRIDGE_TEST_TOKEN"],
+            let url = URL(string: baseURLString)
+        {
+            return OwlettoBridgeCredentials(baseURL: url, accessToken: token)
+        }
+        #endif
         let store = KeychainCredentialStore()
         guard
             let creds = store.load(),

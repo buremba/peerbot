@@ -904,12 +904,23 @@ async function handleDeleteAuthProfile(
     `;
 
     if (existing.profile_kind === 'browser_session') {
+      // Pause dependent connections + their feeds (mirrors
+      // syncConnectionsForBrowserAuthProfile, inlined for tx locality).
       await tx`
         UPDATE connections
         SET status = 'pending_auth', updated_at = NOW()
         WHERE organization_id = ${ctx.organizationId}
           AND auth_profile_id = ${existing.id}
-          AND deleted_at IS NULL
+      `;
+      await tx`
+        UPDATE feeds f
+        SET status = 'paused',
+            next_run_at = NULL,
+            updated_at = NOW()
+        FROM connections c
+        WHERE f.connection_id = c.id
+          AND c.organization_id = ${ctx.organizationId}
+          AND c.auth_profile_id = ${existing.id}
       `;
     }
 
@@ -922,6 +933,24 @@ async function handleDeleteAuthProfile(
           AND deleted_at IS NULL
       `;
     }
+
+    // Explicitly null the FK columns before delete. The FK is composite
+    // `(organization_id, *_auth_profile_id) ON DELETE SET NULL`; without a
+    // SET NULL column list, Postgres would attempt to null organization_id
+    // too (NOT NULL → constraint violation). Setting only the profile-id
+    // column here avoids that and matches the intended semantic.
+    await tx`
+      UPDATE connections
+      SET auth_profile_id = NULL, updated_at = NOW()
+      WHERE organization_id = ${ctx.organizationId}
+        AND auth_profile_id = ${existing.id}
+    `;
+    await tx`
+      UPDATE connections
+      SET app_auth_profile_id = NULL, updated_at = NOW()
+      WHERE organization_id = ${ctx.organizationId}
+        AND app_auth_profile_id = ${existing.id}
+    `;
 
     const deletedRows = await tx`
       DELETE FROM auth_profiles

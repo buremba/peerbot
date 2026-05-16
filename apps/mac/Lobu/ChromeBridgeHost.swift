@@ -48,9 +48,13 @@ enum ChromeBridgeHost {
         guard args.count >= 2, args[1].hasPrefix("chrome-extension://") else {
             return
         }
+        #if DEBUG
         FileHandle.standardError.write("[bridge] runHostIfRequested entry\n".data(using: .utf8)!)
+        #endif
         let exitCode = NativeMessagingLoop.run()
+        #if DEBUG
         FileHandle.standardError.write("[bridge] runHostIfRequested exit=\(exitCode)\n".data(using: .utf8)!)
+        #endif
         exit(exitCode)
     }
 
@@ -148,7 +152,9 @@ private enum NativeMessagingLoop {
     }
 
     private static func debug(_ message: String) {
+        #if DEBUG
         FileHandle.standardError.write("[bridge] \(message)\n".data(using: .utf8)!)
+        #endif
     }
 
     // MARK: child-token mint over HTTPS

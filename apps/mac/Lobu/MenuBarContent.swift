@@ -463,9 +463,11 @@ struct MenuBarContent: View {
     private var connectButtonTitle: String {
         if state.isLoggingIn { return "Waiting for approval…" }
         let raw = state.customServerDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        let url = URL(string: raw)
-        let isLocal = url.map(AppState.isLoopback) ?? false
-        if isLocal && !state.localLobuStatus.isRunning {
+        // "Start & sign in" exactly when connect() would auto-start the runner.
+        // Anything else (other loopback ports, https-on-localhost, remote URLs)
+        // is just a plain "Sign in" because we won't spawn the runner.
+        let willStartRunner = URL(string: raw).map(AppState.matchesManagedRunner) ?? false
+        if willStartRunner && !state.localLobuStatus.isRunning {
             return "Start & sign in"
         }
         return "Sign in"
@@ -657,6 +659,18 @@ struct MenuBarContent: View {
         }
     }
 
+    /// Collapse the user's home directory to `~`, but only when it actually
+    /// prefixes the path as a directory boundary. Plain substring replacement
+    /// would mangle `/Users/burakemre.backup/foo` into `~.backup/foo`.
+    private func abbreviatedHomePath(_ path: String) -> String {
+        let home = NSHomeDirectory()
+        if path == home { return "~" }
+        if path.hasPrefix(home + "/") {
+            return "~" + path.dropFirst(home.count)
+        }
+        return path
+    }
+
     private var localFolderRows: some View {
         Button(action: showLocalFolderMenu) {
             HStack(spacing: 8) {
@@ -768,8 +782,9 @@ struct MenuBarContent: View {
                 // Show the full path (collapsed to ~) so the user can verify
                 // what they'd actually sync — vault names alone are too easy
                 // to mistake for an innocuous folder when obsidian.json points
-                // elsewhere.
-                let path = vault.url.path.replacingOccurrences(of: NSHomeDirectory(), with: "~")
+                // elsewhere. Prefix-only replacement so `/Users/x.backup/...`
+                // doesn't get mangled into `~.backup/...`.
+                let path = abbreviatedHomePath(vault.url.path)
                 let suffix = readable ? "" : "  (needs Full Disk Access)"
                 let title = "\(vault.displayName) — \(path)\(suffix)"
                 let item = ClosureMenuItem(
@@ -798,8 +813,8 @@ struct MenuBarContent: View {
         if !state.localFolders.isEmpty {
             menu.addItem(NSMenuItem.separator())
             for (idx, folder) in state.localFolders.enumerated() {
-                let path = state.resolvedURLForBookmark(at: idx)?
-                    .path.replacingOccurrences(of: NSHomeDirectory(), with: "~")
+                let path = state.resolvedURLForBookmark(at: idx)
+                    .map { abbreviatedHomePath($0.path) }
                     ?? folder.displayName
                 menu.addItem(ClosureMenuItem(title: path, state: .on) { [state] in
                     state.removeFolderBookmark(at: idx)

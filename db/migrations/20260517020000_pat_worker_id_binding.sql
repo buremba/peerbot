@@ -1,3 +1,5 @@
+-- migrate:up
+
 -- Bind PATs minted via /api/me/devices/mint-child-token to a specific
 -- worker_id. Without this, a chrome-extension child PAT could post any
 -- worker_id at /api/workers/poll and register a new device_workers row
@@ -18,3 +20,8 @@ CREATE INDEX IF NOT EXISTS idx_personal_access_tokens_worker_id
 
 COMMENT ON COLUMN public.personal_access_tokens.worker_id IS
   'Optional binding to a specific device_workers.worker_id. Set by /api/me/devices/mint-child-token. When non-NULL, /api/workers/poll requires the request body''s worker_id to match.';
+
+-- migrate:down
+
+DROP INDEX IF EXISTS public.idx_personal_access_tokens_worker_id;
+ALTER TABLE public.personal_access_tokens DROP COLUMN IF EXISTS worker_id;

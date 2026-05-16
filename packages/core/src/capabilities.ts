@@ -41,12 +41,11 @@ export const IOS_CAPABILITIES = [
   "ios.files",
 ] as const;
 
-// Capabilities the existing Mac bridge advertises today (apps/mac/Lobu/
-// AppState.swift). Kept here so the macos allowlist matches what the
-// bridge actually claims — without them an updated gateway would silently
-// drop `screentime`/`local_directory`/`whatsapp_local` from a Mac poll and
-// stop matching those connectors to their device.
-export const LEGACY_MAC_CAPABILITIES = [
+// Capabilities the Mac bridge advertises (apps/mac/Lobu/AppState.swift).
+// One entry per Mac connector that runs on-device — adding a new Mac
+// connector means adding its capability string here so the gateway lets
+// the device claim its runs.
+export const MAC_DEVICE_CAPABILITIES = [
   "screentime",
   "local_directory",
   "healthkit",
@@ -58,7 +57,7 @@ const PLATFORM_ALLOWLIST: Record<string, readonly string[]> = {
   macos: [
     ...OS_CAPABILITIES,
     ...BROWSER_CAPABILITIES,
-    ...LEGACY_MAC_CAPABILITIES,
+    ...MAC_DEVICE_CAPABILITIES,
   ],
   ios: IOS_CAPABILITIES,
   "chrome-extension": BROWSER_CAPABILITIES,

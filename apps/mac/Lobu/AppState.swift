@@ -77,10 +77,15 @@ private struct PersistedRecentJob: Decodable {
 // MARK: - Connect mode --------------------------------------------------------
 
 /// Which Lobu the bridge talks to. Chosen on the sign-in screen, persisted.
+/// Where the menu bar is pointing the gateway at. **Derived from the URL** the
+/// user typed (`connect()` parses it), not a picker selection — there is no
+/// signed-out picker anymore. Kept as a typed mode because several runtime
+/// paths (auto-restart of the local runner, stop-on-quit) only fire in `.local`.
 enum ServerMode: String, CaseIterable {
-    case cloud   // app.lobu.ai
-    case custom  // a self-hosted URL the user enters
-    case local   // a `lobu run` the bridge starts on this Mac (project at ~/lobu)
+    /// A `lobu run` the menu bar started on this Mac (URL is loopback).
+    case local
+    /// Any non-loopback URL — Lobu Cloud, self-hosted, tailscale, etc.
+    case remote
 }
 
 /// State of the bridge-managed local `lobu run` (only meaningful in `.local` mode).
@@ -161,10 +166,38 @@ final class AppState: ObservableObject {
 
     // Sign-in screen state.
     @Published var serverMode: ServerMode = {
-        ServerMode(rawValue: UserDefaults.standard.string(forKey: "lobuServerMode") ?? "") ?? .cloud
+        // Migrate the old "cloud" / "custom" values to the merged "remote" mode
+        // so existing installs don't get bounced back to a default they didn't
+        // choose. `.local` stays as-is.
+        switch UserDefaults.standard.string(forKey: "lobuServerMode") {
+        case "local": return .local
+        case "cloud", "custom", "remote": return .remote
+        default: return .local
+        }
     }() { didSet { UserDefaults.standard.set(serverMode.rawValue, forKey: "lobuServerMode") } }
-    /// Draft URL for `.custom` mode (the text field). Persisted so it survives restarts.
-    @Published var customServerDraft: String = UserDefaults.standard.string(forKey: "lobuCustomServerURL") ?? "" {
+    /// URL the user is pointing the menu bar at (text field next to Connect).
+    /// Persisted so it survives restarts. Default cascade:
+    ///   1. `lobuCustomServerURL` if non-empty (the canonical field today).
+    ///   2. `lobuBaseURL` if non-empty (legacy field used before the merge —
+    ///      ex-custom users persisted the URL here).
+    ///   3. The Lobu Cloud URL if the old `lobuServerMode` was `"cloud"` /
+    ///      `"custom"` / `"remote"`, so ex-cloud users aren't silently
+    ///      pointed at localhost on first launch after the merge.
+    ///   4. Otherwise `http://localhost:8787` (fresh install / ex-local).
+    @Published var customServerDraft: String = {
+        if let stored = UserDefaults.standard.string(forKey: "lobuCustomServerURL"),
+           !stored.isEmpty {
+            return stored
+        }
+        if let legacy = UserDefaults.standard.string(forKey: "lobuBaseURL"),
+           !legacy.isEmpty {
+            return legacy
+        }
+        switch UserDefaults.standard.string(forKey: "lobuServerMode") {
+        case "cloud", "custom", "remote": return "https://app.lobu.ai"
+        default:                          return "http://localhost:8787"
+        }
+    }() {
         didSet { UserDefaults.standard.set(customServerDraft, forKey: "lobuCustomServerURL") }
     }
     /// Result of the last reachability probe of `customServerDraft` — nil = not checked yet.
@@ -349,28 +382,68 @@ final class AppState: ObservableObject {
         setStatus("")
     }
 
-    // MARK: - Connect (mode-aware sign-in) --------------------------------------
+    // MARK: - Connect (URL-driven sign-in) --------------------------------------
 
-    /// The sign-in screen's primary action. Resolves the gateway URL for the
-    /// chosen mode (Cloud / self-hosted / a local `lobu run` we start here),
-    /// then runs the OAuth device flow against it.
+    /// The connection card's primary action. Auto-starts the embedded server
+    /// when the URL is the exact one our runner manages; otherwise just OAuths
+    /// against the typed URL.
     func connect() async {
-        switch serverMode {
-        case .cloud:
-            setBaseURL(cloudURL)
-            await signIn()
-        case .custom:
-            let url = customServerDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !url.isEmpty, URL(string: url)?.scheme != nil else {
-                setStatus("Enter a server URL (e.g. http://localhost:8787).")
-                return
-            }
-            setBaseURL(url)
-            await signIn()  // discover() failure now names the URL
-        case .local:
+        let raw = customServerDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let urlString = raw.isEmpty ? cloudURL : raw
+        guard let url = URL(string: urlString),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              let host = url.host, !host.isEmpty
+        else {
+            setStatus("Enter an http(s) URL with a host (e.g. http://localhost:8787).")
+            return
+        }
+        let autoStart = AppState.matchesManagedRunner(url)
+        if autoStart && !localLobuStatus.isRunning {
             await startLocalLobu()
-            guard localLobuStatus.isRunning else { return }  // start failed — error already shown
-            await signIn()
+            guard localLobuStatus.isRunning else { return }
+        }
+        // serverMode = .local ONLY when this URL is the runner we manage. Other
+        // loopback URLs (someone else's localhost dev server, custom ports) get
+        // .remote so we don't auto-spawn our runner on next launch.
+        serverMode = autoStart ? .local : .remote
+        setBaseURL(urlString)
+        await signIn()
+    }
+
+    /// True iff this URL targets the embedded server the menu bar manages.
+    /// Requires an exact scheme + host + effective-port match against
+    /// `LocalLobuRunner.baseURL`. Treats `localhost`, `127.0.0.1`, `::1`, and
+    /// `[::1]` as equivalent loopback hosts. Case-insensitive on the host.
+    static func matchesManagedRunner(_ url: URL) -> Bool {
+        guard let runnerURL = URL(string: LocalLobuRunner.baseURL),
+              let runnerScheme = runnerURL.scheme?.lowercased(),
+              let urlScheme = url.scheme?.lowercased(),
+              runnerScheme == urlScheme
+        else { return false }
+        let urlPort = url.port ?? defaultPort(for: urlScheme)
+        let runnerPort = runnerURL.port ?? defaultPort(for: runnerScheme)
+        guard urlPort == runnerPort else { return false }
+        return normalizedLoopback(url.host) != nil
+            && normalizedLoopback(url.host) == normalizedLoopback(runnerURL.host)
+    }
+
+    /// Map every loopback alias to one canonical form so `127.0.0.1:8787` and
+    /// `localhost:8787` and `[::1]:8787` all compare equal. Returns nil for
+    /// non-loopback hosts.
+    private static func normalizedLoopback(_ host: String?) -> String? {
+        let lowered = host?.lowercased()
+        switch lowered {
+        case "localhost", "127.0.0.1", "::1", "[::1]": return "localhost"
+        default: return nil
+        }
+    }
+
+    private static func defaultPort(for scheme: String) -> Int? {
+        switch scheme {
+        case "http":  return 80
+        case "https": return 443
+        default:      return nil
         }
     }
 
@@ -407,15 +480,6 @@ final class AppState: ObservableObject {
         serverReachable = await LocalLobuRunner.isLobuReachable(url)
     }
 
-    /// On the sign-in screen, look for a `lobu run` already up locally and
-    /// pre-fill the self-hosted field with it so the user doesn't have to type.
-    func suggestLocalServerIfPresent() async {
-        guard serverMode == .custom, customServerDraft.isEmpty else { return }
-        if await LocalLobuRunner.isLobuReachable(LocalLobuRunner.baseURL) {
-            customServerDraft = LocalLobuRunner.baseURL
-            serverReachable = true
-        }
-    }
 
     // MARK: - Auto-poll ---------------------------------------------------------
 
@@ -874,7 +938,7 @@ final class AppState: ObservableObject {
 
     // MARK: -
 
-    private func setStatus(_ message: String) {
+    func setStatus(_ message: String) {
         status = message
         NSLog("[Lobu] \(message)")
     }

@@ -13,9 +13,13 @@ import SwiftUI
 struct MenuBarContent: View {
     @ObservedObject var state: AppState
     @State private var integrationsExpanded = false
+    @State private var recentRunsExpanded = false
+    @State private var inboxExpanded = false
     @State private var accountExpanded = false
     @StateObject private var browserHub = BrowserProfilesHub()
     @FocusState private var searchFocused: Bool
+    @State private var localFolderRowAnchor: NSView?
+    @State private var obsidianRowAnchor: NSView?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -23,7 +27,7 @@ struct MenuBarContent: View {
             sectionDivider
 
             if state.credentials == nil {
-                signInSection
+                connectionCard
             } else {
                 userRow
                 sectionDivider
@@ -40,10 +44,13 @@ struct MenuBarContent: View {
                         sectionDivider
                         recentRunsSection
                     }
-                    sectionDivider
-                    integrationsDisclosure
                 }
             }
+
+            // Connectors visible regardless of sign-in so users can pre-configure
+            // their device sources before connecting.
+            sectionDivider
+            integrationsDisclosure
 
             sectionDivider
             footerRow
@@ -266,52 +273,41 @@ struct MenuBarContent: View {
 
     private var notificationsSection: some View {
         VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 6) {
-                Text("INBOX")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .fontWeight(.semibold)
-                    .tracking(0.4)
-                if state.unreadCount > 0 {
-                    Text("\(state.unreadCount)")
-                        .font(.caption2)
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .background(Capsule().fill(Color.red))
-                }
-                Spacer()
-            }
-            .padding(.horizontal, 6)
-            .padding(.bottom, 1)
-            ForEach(state.notifications.prefix(5)) { notification in
-                Button { handleNotificationTap(notification) } label: {
-                    HStack(alignment: .top, spacing: 8) {
-                        Circle()
-                            .fill(notification.is_read ? Color.clear : Color.accentColor)
-                            .frame(width: 6, height: 6)
-                            .padding(.top, 5)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(notification.title)
-                                .font(.caption)
-                                .fontWeight(notification.is_read ? .regular : .medium)
-                                .lineLimit(1)
-                            if let body = notification.body, !body.isEmpty {
-                                Text(body)
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(2)
+            disclosureHeader(
+                title: "Inbox",
+                count: state.unreadCount > 0 ? state.unreadCount : state.notifications.count,
+                expanded: $inboxExpanded
+            )
+            if inboxExpanded {
+                ForEach(state.notifications.prefix(5)) { notification in
+                    Button { handleNotificationTap(notification) } label: {
+                        HStack(alignment: .top, spacing: 8) {
+                            Circle()
+                                .fill(notification.is_read ? Color.clear : Color.accentColor)
+                                .frame(width: 6, height: 6)
+                                .padding(.top, 5)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(notification.title)
+                                    .font(.caption)
+                                    .fontWeight(notification.is_read ? .regular : .medium)
+                                    .lineLimit(1)
+                                if let body = notification.body, !body.isEmpty {
+                                    Text(body)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(2)
+                                }
                             }
+                            Spacer()
+                            Text(relativeTime(notification.created_at))
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
                         }
-                        Spacer()
-                        Text(relativeTime(notification.created_at))
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
+                        .contentShape(Rectangle())
                     }
-                    .contentShape(Rectangle())
+                    .buttonStyle(.plain)
+                    .menuRow()
                 }
-                .buttonStyle(.plain)
-                .menuRow()
             }
         }
     }
@@ -362,33 +358,39 @@ struct MenuBarContent: View {
 
     private var recentRunsSection: some View {
         VStack(alignment: .leading, spacing: 2) {
-            sectionLabel("Recent activity")
-            ForEach(state.recentRuns.prefix(5)) { run in
-                Button { openRun(run) } label: {
-                    HStack(spacing: 8) {
-                        Circle()
-                            .fill(runStatusColor(run.status))
-                            .frame(width: 6, height: 6)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(runDisplayLabel(run)).font(.caption).lineLimit(1)
-                            if let err = run.error_message, !err.isEmpty {
-                                Text(err)
+            disclosureHeader(
+                title: "Recent activity",
+                count: state.recentRuns.count,
+                expanded: $recentRunsExpanded
+            )
+            if recentRunsExpanded {
+                ForEach(state.recentRuns.prefix(5)) { run in
+                    Button { openRun(run) } label: {
+                        HStack(spacing: 8) {
+                            Circle()
+                                .fill(runStatusColor(run.status))
+                                .frame(width: 6, height: 6)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(runDisplayLabel(run)).font(.caption).lineLimit(1)
+                                if let err = run.error_message, !err.isEmpty {
+                                    Text(err)
+                                        .font(.caption2)
+                                        .foregroundStyle(.orange)
+                                        .lineLimit(1)
+                                }
+                            }
+                            Spacer()
+                            if let ts = run.completed_at ?? run.created_at {
+                                Text(relativeTime(ts))
                                     .font(.caption2)
-                                    .foregroundStyle(.orange)
-                                    .lineLimit(1)
+                                    .foregroundStyle(.tertiary)
                             }
                         }
-                        Spacer()
-                        if let ts = run.completed_at ?? run.created_at {
-                            Text(relativeTime(ts))
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
-                        }
+                        .contentShape(Rectangle())
                     }
-                    .contentShape(Rectangle())
+                    .buttonStyle(.plain)
+                    .menuRow()
                 }
-                .buttonStyle(.plain)
-                .menuRow()
             }
         }
     }
@@ -424,113 +426,74 @@ struct MenuBarContent: View {
     // MARK: 4. Sign-in
     // -------------------------------------------------------------------------
 
-    private var signInSection: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            sectionLabel("Connect to Lobu")
-
-            Picker("", selection: $state.serverMode) {
-                Text("Lobu Cloud").tag(ServerMode.cloud)
-                Text("Self-hosted").tag(ServerMode.custom)
-                Text("Run on this Mac").tag(ServerMode.local)
-            }
-            .pickerStyle(.radioGroup)
-            .labelsHidden()
-            .padding(.horizontal, 6)
-            .disabled(state.isLoggingIn)
-            .onChange(of: state.serverMode) { _, mode in
-                if mode == .custom { Task { await state.suggestLocalServerIfPresent() } }
-            }
-
-            modeDetail
-                .padding(.horizontal, 6)
+    /// Compact card shown in the popover when not signed in. URL field +
+    /// Connect button. Localhost URLs auto-start the embedded server inside
+    /// AppState.connect() — the user doesn't pick a "mode".
+    private var connectionCard: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            TextField("https://app.lobu.ai", text: $state.customServerDraft)
+                .textFieldStyle(.roundedBorder)
+                .font(.caption)
+                .disabled(state.isLoggingIn)
+                .onSubmit { Task { await state.connect() } }
 
             Button(connectButtonTitle) { Task { await state.connect() } }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
                 .frame(maxWidth: .infinity)
-                .disabled(connectDisabled)
-                .padding(.horizontal, 6)
-                .padding(.top, 2)
+                .disabled(state.isLoggingIn || state.localLobuStatus == .starting)
 
+            // Inline status only when there's something the user needs to know
+            // (CLI missing, runner failure, OAuth code). Otherwise the card
+            // stays a quiet two-row affair.
+            connectStatusLine
             if let code = state.loginCode {
                 HStack {
                     Text("Code").foregroundStyle(.secondary)
                     Spacer()
                     Text(code).monospaced()
                 }
-                .font(.caption)
-                .menuRow(interactive: false)
+                .font(.caption2)
             }
         }
-        .task { await state.suggestLocalServerIfPresent() }
-    }
-
-    @ViewBuilder private var modeDetail: some View {
-        switch state.serverMode {
-        case .cloud:
-            EmptyView()
-        case .custom:
-            VStack(alignment: .leading, spacing: 3) {
-                TextField("http://localhost:8787", text: $state.customServerDraft)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.caption)
-                    .disabled(state.isLoggingIn)
-                    .onSubmit { Task { await state.probeServer() } }
-                if let reachable = state.serverReachable, !state.customServerDraft.isEmpty {
-                    Label(
-                        reachable ? "Reachable" : "Couldn't reach a Lobu there",
-                        systemImage: reachable ? "checkmark.circle.fill" : "xmark.circle"
-                    )
-                    .font(.caption2)
-                    .foregroundStyle(reachable ? Color.green : Color.secondary)
-                }
-            }
-        case .local:
-            VStack(alignment: .leading, spacing: 3) {
-                switch state.localLobuStatus {
-                case .cliMissing:
-                    Text("Install the Lobu CLI first: npm i -g @lobu/cli")
-                        .font(.caption2)
-                        .foregroundStyle(.orange)
-                        .textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
-                case .starting:
-                    HStack(spacing: 4) {
-                        ProgressView().controlSize(.mini)
-                        Text("Starting…").font(.caption2).foregroundStyle(.secondary)
-                    }
-                case .running:
-                    Label("Running", systemImage: "checkmark.circle.fill")
-                        .font(.caption2)
-                        .foregroundStyle(.green)
-                case let .failed(message):
-                    Text(message)
-                        .font(.caption2)
-                        .foregroundStyle(.orange)
-                        .fixedSize(horizontal: false, vertical: true)
-                case .stopped:
-                    EmptyView()
-                }
-            }
-        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
     }
 
     private var connectButtonTitle: String {
         if state.isLoggingIn { return "Waiting for approval…" }
-        switch state.serverMode {
-        case .cloud:  return "Sign in with Lobu"
-        case .custom: return "Sign in"
-        case .local:  return state.localLobuStatus.isRunning ? "Sign in" : "Start & sign in"
+        let raw = state.customServerDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        // "Start & sign in" exactly when connect() would auto-start the runner.
+        // Anything else (other loopback ports, https-on-localhost, remote URLs)
+        // is just a plain "Sign in" because we won't spawn the runner.
+        let willStartRunner = URL(string: raw).map(AppState.matchesManagedRunner) ?? false
+        if willStartRunner && !state.localLobuStatus.isRunning {
+            return "Start & sign in"
         }
+        return "Sign in"
     }
 
-    private var connectDisabled: Bool {
-        if state.isLoggingIn || state.localLobuStatus == .starting { return true }
-        if state.serverMode == .custom,
-           state.customServerDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return true
+    @ViewBuilder private var connectStatusLine: some View {
+        switch state.localLobuStatus {
+        case .cliMissing:
+            Text("Install the Lobu CLI first: npm i -g @lobu/cli")
+                .font(.caption2)
+                .foregroundStyle(.orange)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+        case .starting:
+            HStack(spacing: 4) {
+                ProgressView().controlSize(.mini)
+                Text("Starting…").font(.caption2).foregroundStyle(.secondary)
+            }
+        case let .failed(message):
+            Text(message)
+                .font(.caption2)
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+        case .running, .stopped:
+            EmptyView()
         }
-        return false
     }
 
     // -------------------------------------------------------------------------
@@ -538,17 +501,28 @@ struct MenuBarContent: View {
     // -------------------------------------------------------------------------
 
     private var integrationsDisclosure: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            disclosureHeader(title: "Integrations", expanded: $integrationsExpanded)
+        let obsidianAvailable = ObsidianVaultManager.isInstalled()
+        let whatsAppAvailable = WhatsAppLocalSyncService.isAvailable()
+        let connectorCount = BrowserProfileManager.installedBrowsers().count
+            + 4 // Local folder, Screen Time, Apple Health, Apple Photos always count
+            + (obsidianAvailable ? 1 : 0)
+            + (whatsAppAvailable ? 1 : 0)
+        return VStack(alignment: .leading, spacing: 2) {
+            disclosureHeader(
+                title: "Device connectors",
+                count: connectorCount,
+                expanded: $integrationsExpanded
+            )
             if integrationsExpanded {
                 ForEach(BrowserProfileManager.installedBrowsers()) { browser in
                     SingleBrowserRow(state: state, browser: browser, hub: browserHub)
                 }
                 localFolderRows
+                if obsidianAvailable { obsidianRow }
                 screenTimeRow
                 healthKitRow
                 photosRow
-                whatsAppLocalRow
+                if whatsAppAvailable { whatsAppLocalRow }
             }
         }
         .task { await browserHub.loadIfNeeded(state: state) }
@@ -556,190 +530,127 @@ struct MenuBarContent: View {
 
     private var healthKitRow: some View {
         let enabled = state.healthKitAvailable && state.hasHealthKit && !state.healthKitDisabled
-        return VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 8) {
-                Image(systemName: "heart.fill")
-                    .foregroundStyle(.pink)
-                    .frame(width: 18)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Apple Health").font(.caption)
-                    if !state.healthKitAvailable {
-                        Text("Not available on this Mac.")
-                            .font(.caption2).foregroundStyle(.secondary)
-                    } else {
-                        Text("Daily activity + workouts, synced via iCloud Health.")
-                            .font(.caption2).foregroundStyle(.secondary)
-                    }
-                }
-                Spacer()
+        return integrationRow(
+            icon: "heart.fill",
+            iconColor: .pink,
+            title: "Apple Health",
+            subtitle: state.healthKitAvailable
+                ? "Daily activity + workouts, synced via iCloud Health."
+                : "Not available on this Mac.",
+            trailing: {
                 if !state.healthKitAvailable {
-                    Text("Unavailable").font(.caption2).foregroundStyle(.secondary)
-                } else if !enabled {
-                    Button(action: {
-                        if state.hasHealthKit { state.healthKitDisabled = false }
-                        else { Task { await state.requestHealthKitAccess() } }
-                    }) {
-                        HStack(spacing: 2) {
-                            Image(systemName: "plus").font(.caption2)
-                            Text("Add").font(.caption)
-                        }
-                        .foregroundStyle(.blue)
-                    }
-                    .buttonStyle(.plain)
+                    AnyView(Text("Unavailable").font(.caption2).foregroundStyle(.secondary))
+                } else {
+                    AnyView(integrationToggle(
+                        isOn: enabled,
+                        enable: {
+                            if state.hasHealthKit { state.healthKitDisabled = false }
+                            else { Task { await state.requestHealthKitAccess() } }
+                        },
+                        disable: { state.healthKitDisabled = true }
+                    ))
                 }
             }
-            .menuRow()
-            if enabled {
-                integrationSourceRow(
-                    path: "iCloud Health",
-                    onRemove: { state.healthKitDisabled = true }
-                )
-            }
-        }
+        )
     }
 
     private var photosRow: some View {
         let enabled = state.hasPhotos && !state.photosDisabled
-        return VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 8) {
-                Image(systemName: "photo.fill")
-                    .foregroundStyle(.orange)
-                    .frame(width: 18)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Apple Photos").font(.caption)
-                    Text("Library metadata: dates, location, albums.")
-                        .font(.caption2).foregroundStyle(.secondary)
-                }
-                Spacer()
-                if !enabled {
-                    Button(action: {
+        return integrationRow(
+            icon: "photo.fill",
+            iconColor: .orange,
+            title: "Apple Photos",
+            subtitle: "Library metadata: dates, location, albums.",
+            trailing: {
+                AnyView(integrationToggle(
+                    isOn: enabled,
+                    enable: {
                         if state.hasPhotos { state.photosDisabled = false }
                         else { Task { await state.requestPhotosAccess() } }
-                    }) {
-                        HStack(spacing: 2) {
-                            Image(systemName: "plus").font(.caption2)
-                            Text("Add").font(.caption)
-                        }
-                        .foregroundStyle(.blue)
-                    }
-                    .buttonStyle(.plain)
-                }
+                    },
+                    disable: { state.photosDisabled = true }
+                ))
             }
-            .menuRow()
-            if enabled {
-                integrationSourceRow(
-                    path: "Photos library",
-                    onRemove: { state.photosDisabled = true }
-                )
-            }
-        }
+        )
     }
 
     private var screenTimeRow: some View {
         let enabled = state.hasFDA && !state.screenTimeDisabled
-        return VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 8) {
-                Image(systemName: "clock.fill")
-                    .foregroundStyle(.purple)
-                    .frame(width: 18)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Screen Time").font(.caption)
-                    if !state.hasFDA {
-                        Text("Per-app usage. Needs Full Disk Access.")
-                            .font(.caption2).foregroundStyle(.secondary)
-                    } else {
-                        Text("Per-app usage, synced from your Mac.")
-                            .font(.caption2).foregroundStyle(.secondary)
-                    }
-                }
-                Spacer()
-                if !enabled {
-                    Button(action: { if state.hasFDA { state.screenTimeDisabled = false } else { openFDASettings() } }) {
-                        HStack(spacing: 2) {
-                            Image(systemName: "plus").font(.caption2)
-                            Text("Add").font(.caption)
-                        }
-                        .foregroundStyle(.blue)
-                    }
-                    .buttonStyle(.plain)
-                }
+        return integrationRow(
+            icon: "clock.fill",
+            iconColor: .purple,
+            title: "Screen Time",
+            subtitle: state.hasFDA
+                ? "Per-app usage, synced from your Mac."
+                : "Per-app usage. Needs Full Disk Access.",
+            trailing: {
+                AnyView(integrationToggle(
+                    isOn: enabled,
+                    enable: {
+                        if state.hasFDA { state.screenTimeDisabled = false }
+                        else { openFDASettings() }
+                    },
+                    disable: { state.screenTimeDisabled = true }
+                ))
             }
-            .menuRow()
-            if enabled {
-                integrationSourceRow(
-                    path: "~/Library/Application Support/Knowledge/",
-                    onRemove: { state.screenTimeDisabled = true }
-                )
-            }
-        }
+        )
     }
 
     private var whatsAppLocalRow: some View {
-        let available = WhatsAppLocalSyncService.isAvailable()
-        let enabled = state.hasFDA && available && !state.whatsAppDisabled
-        return VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 8) {
-                Image(systemName: "message.fill")
-                    .foregroundStyle(.green)
-                    .frame(width: 18)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("WhatsApp").font(.caption)
-                    if !available {
-                        Text("Install WhatsApp Desktop to enable.")
-                            .font(.caption2).foregroundStyle(.secondary)
-                    } else if !state.hasFDA {
-                        Text("Reads from WhatsApp Desktop. Needs Full Disk Access.")
-                            .font(.caption2).foregroundStyle(.secondary)
-                    } else {
-                        Text("Reads messages directly from WhatsApp Desktop.")
-                            .font(.caption2).foregroundStyle(.secondary)
-                    }
-                }
-                Spacer()
-                if !available {
-                    Text("Not installed").font(.caption2).foregroundStyle(.secondary)
-                } else if !enabled {
-                    Button(action: { if state.hasFDA { state.whatsAppDisabled = false } else { openFDASettings() } }) {
-                        HStack(spacing: 2) {
-                            Image(systemName: "plus").font(.caption2)
-                            Text("Add").font(.caption)
-                        }
-                        .foregroundStyle(.blue)
-                    }
-                    .buttonStyle(.plain)
-                }
+        let enabled = state.hasFDA && !state.whatsAppDisabled
+        return integrationRow(
+            icon: "message.fill",
+            iconColor: .green,
+            title: "WhatsApp",
+            subtitle: state.hasFDA
+                ? "Reads messages directly from WhatsApp Desktop."
+                : "Reads from WhatsApp Desktop. Needs Full Disk Access.",
+            trailing: {
+                AnyView(integrationToggle(
+                    isOn: enabled,
+                    enable: {
+                        if state.hasFDA { state.whatsAppDisabled = false }
+                        else { openFDASettings() }
+                    },
+                    disable: { state.whatsAppDisabled = true }
+                ))
             }
-            .menuRow()
-            if enabled {
-                integrationSourceRow(
-                    path: "~/Library/Group Containers/group.net.whatsapp.WhatsAppMac.shared/",
-                    onRemove: { state.whatsAppDisabled = true }
-                )
-            }
-        }
+        )
     }
 
-    private func integrationSourceRow(path: String, onRemove: @escaping () -> Void) -> some View {
-        HStack(spacing: 4) {
-            Image(systemName: "folder")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+    private func integrationRow<Trailing: View>(
+        icon: String,
+        iconColor: Color,
+        title: String,
+        subtitle: String,
+        @ViewBuilder trailing: () -> Trailing
+    ) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon)
+                .foregroundStyle(iconColor)
                 .frame(width: 18)
-            Text(path)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-            Spacer()
-            Button(action: onRemove) {
-                Image(systemName: "xmark")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title).font(.caption)
+                Text(subtitle).font(.caption2).foregroundStyle(.secondary)
             }
-            .buttonStyle(.plain)
+            Spacer()
+            trailing()
         }
-        .padding(.leading, 26)
         .menuRow()
+    }
+
+    private func integrationToggle(
+        isOn: Bool,
+        enable: @escaping () -> Void,
+        disable: @escaping () -> Void
+    ) -> some View {
+        Toggle("", isOn: Binding(
+            get: { isOn },
+            set: { newValue in newValue ? enable() : disable() }
+        ))
+        .labelsHidden()
+        .toggleStyle(.switch)
+        .controlSize(.small)
     }
 
     private func openFDASettings() {
@@ -748,61 +659,169 @@ struct MenuBarContent: View {
         }
     }
 
+    /// Collapse the user's home directory to `~`, but only when it actually
+    /// prefixes the path as a directory boundary. Plain substring replacement
+    /// would mangle `/Users/burakemre.backup/foo` into `~.backup/foo`.
+    private func abbreviatedHomePath(_ path: String) -> String {
+        let home = NSHomeDirectory()
+        if path == home { return "~" }
+        if path.hasPrefix(home + "/") {
+            return "~" + path.dropFirst(home.count)
+        }
+        return path
+    }
+
     private var localFolderRows: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        Button(action: showLocalFolderMenu) {
             HStack(spacing: 8) {
                 Image(systemName: "folder.fill")
                     .foregroundStyle(.blue)
                     .frame(width: 18)
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Local folder").font(.caption)
-                    Text("Syncs txt, md, json, csv, and html files.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                    Text(localFolderSubtitle)
+                        .font(.caption2).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button(action: { openFolderPanel() }) {
-                    HStack(spacing: 2) {
-                        Image(systemName: "plus").font(.caption2)
-                        Text("Add").font(.caption)
-                    }
-                    .foregroundStyle(.blue)
-                }
-                .buttonStyle(.plain)
+                Image(systemName: "chevron.right")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
             }
-            .menuRow()
-            ForEach(Array(state.localFolders.enumerated()), id: \.element.folderId) { idx, folder in
-                let path = state.resolvedURLForBookmark(at: idx)?
-                    .path.replacingOccurrences(of: NSHomeDirectory(), with: "~")
-                    ?? folder.displayName
-                HStack(spacing: 4) {
-                    Image(systemName: "folder")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .frame(width: 18)
-                    Text(path)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    if folder.feedId == nil {
-                        Text("(syncing…)")
-                            .font(.caption2).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Button {
-                        state.removeFolderBookmark(at: idx)
-                    } label: {
-                        Image(systemName: "xmark")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .menuRow()
+        .background(MenuAnchorView { localFolderRowAnchor = $0 })
+    }
+
+    private func showLocalFolderMenu() {
+        popUpNativeMenu(buildLocalFolderMenu(), anchoredTo: localFolderRowAnchor)
+    }
+
+    // -------------------------------------------------------------------------
+    // MARK: Obsidian vaults (reuses local-folder sync under the hood)
+    // -------------------------------------------------------------------------
+
+    private var obsidianRow: some View {
+        let vaults = ObsidianVaultManager.vaults()
+        let mirroredCount = vaults.filter { isVaultMirrored($0) }.count
+        return Button(action: showObsidianMenu) {
+            HStack(spacing: 8) {
+                Image(systemName: "doc.text.fill")
+                    .foregroundStyle(.purple)
+                    .frame(width: 18)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Obsidian").font(.caption)
+                    Text(obsidianSubtitle(mirrored: mirroredCount, total: vaults.count))
+                        .font(.caption2).foregroundStyle(.secondary)
                 }
-                .padding(.leading, 26)
-                .menuRow()
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .menuRow()
+        .background(MenuAnchorView { obsidianRowAnchor = $0 })
+    }
+
+    private func obsidianSubtitle(mirrored: Int, total: Int) -> String {
+        if total == 0 { return "No vaults found in Obsidian." }
+        let label = total == 1 ? "vault" : "vaults"
+        return "\(mirrored) of \(total) \(label) synced"
+    }
+
+    private func isVaultMirrored(_ vault: ObsidianVault) -> Bool {
+        let target = vault.url.standardizedFileURL.path
+        for idx in state.localFolders.indices {
+            if state.resolvedURLForBookmark(at: idx)?.standardizedFileURL.path == target {
+                return true
             }
         }
+        return false
+    }
+
+    private func indexOfMirroredFolder(for vault: ObsidianVault) -> Int? {
+        let target = vault.url.standardizedFileURL.path
+        for idx in state.localFolders.indices {
+            if state.resolvedURLForBookmark(at: idx)?.standardizedFileURL.path == target {
+                return idx
+            }
+        }
+        return nil
+    }
+
+    private func toggleVault(_ vault: ObsidianVault) {
+        if let idx = indexOfMirroredFolder(for: vault) {
+            state.removeFolderBookmark(at: idx)
+        } else if vault.isReadable {
+            state.addFolderBookmark(url: vault.url)
+        } else {
+            // iCloud or other TCC-protected location — bookmark would succeed
+            // but sync would silently fail later. Surface that now so the user
+            // doesn't think the toggle worked.
+            state.setStatus(
+                "Couldn't read \(vault.displayName). Grant Lobu Full Disk Access in System Settings → Privacy & Security to sync iCloud-backed vaults."
+            )
+        }
+    }
+
+    private func showObsidianMenu() {
+        let menu = NSMenu()
+        let vaults = ObsidianVaultManager.vaults()
+        if vaults.isEmpty {
+            let empty = NSMenuItem(title: "No Obsidian vaults found", action: nil, keyEquivalent: "")
+            empty.isEnabled = false
+            menu.addItem(empty)
+        } else {
+            for vault in vaults {
+                let mirrored = isVaultMirrored(vault)
+                let readable = vault.isReadable
+                // Show the full path (collapsed to ~) so the user can verify
+                // what they'd actually sync — vault names alone are too easy
+                // to mistake for an innocuous folder when obsidian.json points
+                // elsewhere. Prefix-only replacement so `/Users/x.backup/...`
+                // doesn't get mangled into `~.backup/...`.
+                let path = abbreviatedHomePath(vault.url.path)
+                let suffix = readable ? "" : "  (needs Full Disk Access)"
+                let title = "\(vault.displayName) — \(path)\(suffix)"
+                let item = ClosureMenuItem(
+                    title: title,
+                    state: mirrored ? .on : .off
+                ) { [self] in toggleVault(vault) }
+                menu.addItem(item)
+            }
+        }
+        popUpNativeMenu(menu, anchoredTo: obsidianRowAnchor)
+    }
+
+    private var localFolderSubtitle: String {
+        if state.localFolders.isEmpty {
+            return "Syncs txt, md, json, csv, and html files."
+        }
+        let n = state.localFolders.count
+        return n == 1 ? "1 folder" : "\(n) folders"
+    }
+
+    private func buildLocalFolderMenu() -> NSMenu {
+        let menu = NSMenu()
+        menu.addItem(ClosureMenuItem(title: "Add folder…") { [self] in
+            openFolderPanel()
+        })
+        if !state.localFolders.isEmpty {
+            menu.addItem(NSMenuItem.separator())
+            for (idx, folder) in state.localFolders.enumerated() {
+                let path = state.resolvedURLForBookmark(at: idx)
+                    .map { abbreviatedHomePath($0.path) }
+                    ?? folder.displayName
+                menu.addItem(ClosureMenuItem(title: path, state: .on) { [state] in
+                    state.removeFolderBookmark(at: idx)
+                })
+            }
+        }
+        return menu
     }
 
     // -------------------------------------------------------------------------
@@ -939,16 +958,25 @@ struct MenuBarContent: View {
             .padding(.bottom, 1)
     }
 
-    private func disclosureHeader(title: String, expanded: Binding<Bool>) -> some View {
+    private func disclosureHeader(
+        title: String,
+        count: Int? = nil,
+        expanded: Binding<Bool>
+    ) -> some View {
         Button {
             withAnimation(.easeInOut(duration: 0.15)) { expanded.wrappedValue.toggle() }
         } label: {
-            HStack {
+            HStack(spacing: 4) {
                 Text(title.uppercased())
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
                     .fontWeight(.semibold)
                     .tracking(0.4)
+                if let count, count > 0 {
+                    Text("\(count)")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
                 Spacer()
                 Image(systemName: "chevron.right")
                     .font(.caption2)
@@ -1014,5 +1042,61 @@ private extension View {
     /// hover highlight. Pass `interactive: false` for purely informational rows.
     func menuRow(interactive: Bool = true) -> some View {
         modifier(MenuRowStyle(interactive: interactive))
+    }
+}
+
+// -----------------------------------------------------------------------------
+// MARK: Native NSMenu flyout
+// -----------------------------------------------------------------------------
+
+/// NSMenuItem that runs a Swift closure on selection — lets us build menus
+/// declaratively without dragging target/action plumbing into every call site.
+final class ClosureMenuItem: NSMenuItem {
+    private var handler: (() -> Void)?
+
+    convenience init(
+        title: String,
+        state: NSControl.StateValue = .off,
+        keyEquivalent: String = "",
+        handler: @escaping () -> Void
+    ) {
+        self.init(title: title, action: #selector(invoke), keyEquivalent: keyEquivalent)
+        self.target = self
+        self.state = state
+        self.handler = handler
+    }
+
+    @objc private func invoke() { handler?() }
+}
+
+/// Show an NSMenu cascading from the right edge of an anchor view, matching
+/// the way macOS submenus open. Falls back to the cursor position if no
+/// anchor is wired in.
+func popUpNativeMenu(_ menu: NSMenu, anchoredTo view: NSView?) {
+    if let view {
+        let topRight = NSPoint(
+            x: view.bounds.maxX,
+            y: view.isFlipped ? view.bounds.minY : view.bounds.maxY
+        )
+        menu.popUp(positioning: nil, at: topRight, in: view)
+    } else {
+        menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
+    }
+}
+
+/// Invisible NSViewRepresentable that hands the parent its backing NSView via
+/// a callback. Used as a `.background` on rows that need to anchor a native
+/// NSMenu to themselves (so the menu cascades from the row's right edge).
+struct MenuAnchorView: NSViewRepresentable {
+    let onAttached: (NSView) -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let v = NSView()
+        DispatchQueue.main.async { onAttached(v) }
+        return v
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async { onAttached(nsView) }
     }
 }

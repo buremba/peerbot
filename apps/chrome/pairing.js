@@ -37,6 +37,12 @@ const STORAGE_KEYS = {
 // Matches apps/mac/Lobu/OAuthClient.swift:89.
 const SCOPE = "device_worker:run profile:read mcp:read";
 
+// Native-messaging host installed by the Owletto Mac app. When present, it
+// short-circuits the OAuth dance by minting a child device token through
+// POST /api/me/devices/mint-child-token using the Mac app's bearer.
+const NATIVE_HOST = "ai.owletto.bridge";
+const NATIVE_HANDSHAKE_TIMEOUT_MS = 2500;
+
 const setup = document.getElementById("setup");
 const setupStatus = document.getElementById("setup-status");
 const gatewayUrlInput = document.getElementById("gateway-url");
@@ -84,6 +90,18 @@ cancelBtn.addEventListener("click", () => {
 void initSetupStep();
 
 async function initSetupStep() {
+  // Auto-pair via the Mac bridge when present — skips both the URL-setup
+  // step and the OAuth dance.
+  const auto = await tryNativeAutoPair();
+  if (auto) {
+    pollStatus.textContent = "Paired automatically via Owletto Mac ✓";
+    welcome.hidden = true;
+    codeView.hidden = false;
+    codeEl.textContent = "··· auto ···";
+    setTimeout(() => window.close(), 800);
+    return;
+  }
+
   const existing = await getGatewayUrl();
   gatewayUrlInput.value = existing || DEFAULT_GATEWAY_URL;
   if (existing) {
@@ -94,6 +112,78 @@ async function initSetupStep() {
     gatewayUrlInput.focus();
     gatewayUrlInput.select();
   }
+}
+
+// Returns true if pairing completed via the Mac bridge; false otherwise.
+// Failures are silent — any "the Mac app isn't installed / isn't signed in"
+// path falls back to the regular URL+OAuth flow.
+async function tryNativeAutoPair() {
+  let port;
+  try {
+    port = chrome.runtime.connectNative(NATIVE_HOST);
+  } catch {
+    return false;
+  }
+  const response = await new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      try {
+        port.disconnect();
+      } catch {}
+      resolve(null);
+    }, NATIVE_HANDSHAKE_TIMEOUT_MS);
+    port.onMessage.addListener((msg) => {
+      clearTimeout(timer);
+      try {
+        port.disconnect();
+      } catch {}
+      resolve(msg);
+    });
+    port.onDisconnect.addListener(() => {
+      clearTimeout(timer);
+      resolve(null);
+    });
+    try {
+      port.postMessage({ op: "pair", platform: "chrome-extension" });
+    } catch {
+      clearTimeout(timer);
+      resolve(null);
+    }
+  });
+  if (
+    !response ||
+    typeof response !== "object" ||
+    !response.gateway_url ||
+    !response.worker_id ||
+    !response.access_token
+  ) {
+    return false;
+  }
+  // Request a Chrome host-permission grant for the returned gateway origin —
+  // /api/workers/poll calls from background.js need it (CORS).
+  let cleanBase;
+  try {
+    const url = new URL(response.gateway_url);
+    cleanBase = `${url.protocol}//${url.host}`;
+  } catch {
+    return false;
+  }
+  const granted = await chrome.permissions.request({
+    origins: [`${cleanBase}/*`],
+  });
+  if (!granted) {
+    return false;
+  }
+  const workerId = response.worker_id;
+  await chrome.storage.local.set({
+    [STORAGE_KEY_GATEWAY_URL]: cleanBase,
+    [STORAGE_KEYS.workerId]: workerId,
+    [STORAGE_KEYS.accessToken]: response.access_token,
+    [STORAGE_KEYS.refreshToken]: null,
+    [STORAGE_KEYS.clientId]: null,
+    [STORAGE_KEYS.clientSecret]: null,
+    [STORAGE_KEYS.pairedAt]: Date.now(),
+  });
+  return true;
 }
 
 function showWelcome() {

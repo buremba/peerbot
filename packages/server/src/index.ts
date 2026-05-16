@@ -544,6 +544,7 @@ import {
   listDeviceWorkers,
   listMyDeviceAuthProfiles,
   listMyDeviceFeeds,
+  mintDeviceChildToken,
   updateDeviceWorkerOrg,
   pollAuthSignal,
   pollWorkerJob,
@@ -664,6 +665,9 @@ app.delete('/api/workers/me/feeds/:id', deleteMyDeviceFeed);
 app.get('/api/me/devices', mcpAuth, listDeviceWorkers);
 app.patch('/api/me/devices/:id', mcpAuth, updateDeviceWorkerOrg);
 app.delete('/api/me/devices/:id', mcpAuth, deleteDeviceWorker);
+// Mint a child device-worker token for the caller — used by the Owletto Mac
+// bridge's native-messaging host to auto-pair Owletto for Chrome.
+app.post('/api/me/devices/mint-child-token', mcpAuth, mintDeviceChildToken);
 // UI → worker signal channel. Separate path prefix so the worker API auth
 // middleware above doesn't cover it (this one is hit from the web session).
 app.get('/api/auth-runs/active', getActiveAuthRun);

@@ -5,9 +5,10 @@
  * Updated for V1 integration platform: runs-based job model.
  */
 
-import { authorizeCapabilities } from '@lobu/core';
+import { authorizeCapabilities, isKnownPlatform } from '@lobu/core';
 import type { Context } from 'hono';
 import { createAuth } from './auth';
+import { PersonalAccessTokenService } from './auth/tokens';
 import { getDb, parsePgNumberArray, pgBigintArray, pgTextArray } from './db/client';
 import { emit } from './events/emitter';
 import type { Env } from './index';
@@ -1618,6 +1619,80 @@ export async function listDeviceWorkers(c: Context<{ Bindings: Env }>) {
   } catch (err: unknown) {
     logger.error({ error: errorMessage(err) }, '[listDeviceWorkers] Error');
     captureServerError(c, err, 'listDeviceWorkers');
+    return c.json({ error: errorMessage(err) }, 500);
+  }
+}
+
+/**
+ * POST /api/me/devices/mint-child-token  { platform, label? }
+ *
+ * Hand-off path for the Mac bridge to pair a sibling device (today: the
+ * Owletto Chrome extension) without a second OAuth dance. The Mac app's
+ * bearer authenticates the caller; we mint a fresh PAT in the same user's
+ * personal org, generate a new worker_id, and return both for the sibling
+ * to use as if it had completed device-authorization on its own.
+ *
+ * Scope of the child token is the same `device_worker:run` scope the
+ * regular Mac OAuth flow ends up with — capability authorization at
+ * /api/workers/poll still constrains what the child can advertise per its
+ * declared `platform` (see @lobu/core/capabilities).
+ */
+export async function mintDeviceChildToken(c: Context<{ Bindings: Env }>) {
+  const userId = c.var.user?.id;
+  if (!userId) {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
+
+  let body: { platform?: string; label?: string };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'Invalid or missing JSON body' }, 400);
+  }
+  const platform = (body.platform ?? '').trim();
+  if (!platform) {
+    return c.json({ error: 'platform is required' }, 400);
+  }
+  // Only known device platforms can mint children — keeps the surface tight.
+  // Today: chrome-extension. (The Mac app calling for itself would just use
+  // its existing OAuth token; macos/ios don't need this path.)
+  if (platform !== 'chrome-extension' || !isKnownPlatform(platform)) {
+    return c.json({ error: `platform '${platform}' is not eligible for child-token mint` }, 400);
+  }
+  const label = body.label?.toString().trim() || null;
+
+  try {
+    const sql = getDb();
+    // Same org-resolution rule as /api/workers/poll: prefer the calling
+    // token's org, fall back to the user's personal org.
+    const orgRows = (await sql`
+      SELECT id FROM organization
+      WHERE (metadata::jsonb)->>'personal_org_for_user_id' = ${userId}
+      LIMIT 1
+    `) as unknown as Array<{ id: string }>;
+    const organizationId =
+      (c.var.organizationId as string | null | undefined) ?? orgRows[0]?.id ?? null;
+
+    const workerId = crypto.randomUUID();
+    const patService = new PersonalAccessTokenService(sql);
+    const created = await patService.create(
+      userId,
+      organizationId,
+      `device:${platform}:${workerId.slice(0, 8)}`,
+      { scope: 'device_worker:run', description: label ?? undefined }
+    );
+
+    const gatewayUrl = new URL(c.req.url).origin;
+    return c.json({
+      worker_id: workerId,
+      access_token: created.token,
+      gateway_url: gatewayUrl,
+      label,
+      platform,
+    });
+  } catch (err) {
+    logger.error({ err: errorMessage(err) }, '[mintDeviceChildToken] failed');
+    captureServerError(c, err, 'mintDeviceChildToken');
     return c.json({ error: errorMessage(err) }, 500);
   }
 }

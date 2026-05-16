@@ -12,7 +12,8 @@
     "debugger",
     "storage",
     "sidePanel",
-    "alarms"
+    "alarms",
+    "nativeMessaging"
   ],
   "optional_permissions": [
     "history",

@@ -45,12 +45,25 @@
   natural next connectors are `chrome.page_text` (active-tab DOM scrape),
   `chrome.page_screenshot`, and `chrome.fill_form`. Each needs its own
   definition file and executor branch.
-- **Native-messaging SSO with the Mac bridge.** When the Owletto Mac app is
-  installed, skip the device-code typing step by minting a scoped child
-  worker token through `chrome.runtime.connectNative`. Adds one
-  gateway endpoint (mint-child-token) and a native-messaging host in the Mac
-  bundle. Re-add the `nativeMessaging` permission and `ai.owletto.bridge`
-  host name in `config.js` when this lands.
+- **Native-messaging SSO with the Mac bridge.** First cut landed:
+  * Gateway: `POST /api/me/devices/mint-child-token` mints a PAT bound to a
+    new `chrome-extension` worker_id (auth: caller's bearer).
+  * Mac app: `ChromeBridgeHost.swift` — `runHostIfRequested()` runs the
+    native-messaging stdin/stdout cycle on `--owletto-bridge`,
+    `installManifests(...)` drops `ai.owletto.bridge.json` into each
+    Chromium-family browser's `NativeMessagingHosts` dir. Reads existing
+    Mac creds from `KeychainTokenStore`.
+  * Extension: `pairing.js` attempts `chrome.runtime.connectNative` on
+    first run; succeeds → stores `{gateway_url, worker_id, access_token}`
+    and skips OAuth. Falls back to the URL + OAuth flow when native
+    messaging times out or returns an error.
+  * **Outstanding (next slice):** `ChromeBridgeHost.swift` needs to be
+    added to the Xcode project's Lobu target (drag-and-drop in Xcode).
+    Until then `LobuApp.swift`'s `init()` won't compile.
+  * **Outstanding:** Web Store extension ID isn't known yet; only the
+    `LOBU_OWLETTO_CHROME_EXTENSION_ID` env override drives the manifest's
+    `allowed_origins`. Once the extension is published we hardcode that ID
+    too.
 - **`browser.cookies` permission.** High-trust, low-ROI. Owletto-web has its
   own session — we don't need to forward the user's Chrome cookies to the
   agent.

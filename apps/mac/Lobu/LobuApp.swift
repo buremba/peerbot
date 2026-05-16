@@ -4,6 +4,25 @@ import SwiftUI
 struct LobuApp: App {
     @StateObject private var state = AppState()
 
+    init() {
+        // Owletto Chrome native-messaging host: when Chrome spawns this
+        // binary as a subprocess (extension calls chrome.runtime.connectNative),
+        // we ship a single request cycle on stdin/stdout and exit before any
+        // SwiftUI scene gets a chance to draw. Otherwise: install / refresh
+        // the host manifest in every Chromium-family browser's
+        // NativeMessagingHosts dir, idempotently, then continue normal launch.
+        ChromeBridgeHost.runHostIfRequested()
+        let envId = ProcessInfo.processInfo.environment["LOBU_OWLETTO_CHROME_EXTENSION_ID"]
+        var extensionIds: [String] = []
+        if let envId, !envId.isEmpty { extensionIds.append(envId) }
+        // TODO: append the Web Store extension ID once Owletto for Chrome is
+        // published. For now the env override is the only entry — unpacked
+        // dev builds set LOBU_OWLETTO_CHROME_EXTENSION_ID before launch.
+        if !extensionIds.isEmpty {
+            ChromeBridgeHost.installManifests(extensionIds: extensionIds)
+        }
+    }
+
     var body: some Scene {
         MenuBarExtra {
             MenuBarContent(state: state)

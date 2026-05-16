@@ -166,13 +166,21 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   // which means a bridge with no granted capabilities claims *nothing* instead
   // of hijacking-and-failing arbitrary embedded-server connector runs (e.g. hackernews).
   const isUserScopedWorker = c.var.workerAuthMode === 'user';
+  // User-scoped (device) callers must post a non-empty worker_id. An empty
+  // or missing id would otherwise let a bound PAT (see below) sidestep the
+  // binding check by claiming all worker rows under `(user_id, "")`.
+  if (isUserScopedWorker && (!worker_id || worker_id.length === 0)) {
+    return c.json({ error: 'worker_id is required' }, 400);
+  }
   // Worker-id binding: when the caller's PAT was minted via
   // /api/me/devices/mint-child-token, its row in personal_access_tokens
   // carries a non-NULL `worker_id`. The poll body must use the same id —
   // otherwise the caller could escape platform binding by registering
   // arbitrary fresh worker_ids and picking their own platform on each.
+  // Comparing unconditionally (not `&& worker_id`) catches the empty-string
+  // case too.
   const boundWorkerId = c.var.mcpAuthInfo?.workerId ?? null;
-  if (boundWorkerId && worker_id && boundWorkerId !== worker_id) {
+  if (boundWorkerId && boundWorkerId !== worker_id) {
     return c.json(
       {
         error: 'worker_id_mismatch',

@@ -222,6 +222,9 @@ final class OAuthClient {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        // No-auth CSRF middleware (when LOBU_NO_AUTH=1) requires this header
+        // on mutating requests that omit Origin. Harmless for remote/cloud.
+        request.setValue("menubar", forHTTPHeaderField: "X-Lobu-Client")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (data, response) = try await session.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }

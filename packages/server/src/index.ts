@@ -65,6 +65,7 @@ import { entityLinkMatchSql } from './utils/content-search';
 import { isValidFrameAncestor } from './utils/csp';
 import { errorMessage } from './utils/errors';
 import logger from './utils/logger';
+import { isLoopbackHost } from './utils/loopback';
 import { generateOpenAPISpec } from './utils/openapi-generator';
 import {
   extractSubdomainOrg,
@@ -298,11 +299,11 @@ app.use('/*', async (c, next) => {
   const lobuClient = c.req.header('x-lobu-client');
 
   // Host header must be one of the loopback aliases. Defeats DNS rebinding.
-  const hostOk =
-    /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}(?::\d+)?$/.test(hostHeader) ||
-    /^localhost(?::\d+)?$/.test(hostHeader) ||
-    /^\[::1\](?::\d+)?$/.test(hostHeader);
-  if (!hostOk) {
+  // Uses the shared isLoopbackHost helper so the alias set stays in lock-step
+  // with the bind-time enforcement in start-local.ts / server.ts. Strip the
+  // optional `:<port>` suffix and IPv6 brackets before checking.
+  const hostBare = hostHeader.replace(/^\[(.+)\](?::\d+)?$/, '$1').replace(/:\d+$/, '');
+  if (!isLoopbackHost(hostBare)) {
     return c.json({ error: 'forbidden', error_description: 'No-auth mode: bad Host header' }, 403);
   }
 
@@ -323,7 +324,9 @@ app.use('/*', async (c, next) => {
   // Content-Type for state-changing requests must be application/json.
   // Defeats CSRF "simple request" form posts that browsers allow without
   // preflight (application/x-www-form-urlencoded, text/plain, multipart).
-  if (ct && !ct.includes('application/json')) {
+  // Empty Content-Type is also rejected — a CSRF attacker omitting it
+  // would otherwise slip through.
+  if (!ct.includes('application/json')) {
     return c.json(
       { error: 'forbidden', error_description: 'No-auth mode: mutations must be application/json' },
       415

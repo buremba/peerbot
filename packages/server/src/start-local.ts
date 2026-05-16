@@ -377,27 +377,41 @@ async function ensureBootstrapPat(dbUrl: string): Promise<void> {
   const sql = pg.default(dbUrl, { max: 1 });
 
   try {
-    // Stale-file detection: previously this early-returned whenever the PAT
-    // file existed, but if LOBU_DATA_DIR was wiped between runs (or the user
-    // copied just the file across machines) the row is gone and no-auth mode
-    // would 503 forever. Trust the DB row, not the file. If the user already
-    // exists, treat the bootstrap as done and skip re-minting.
-    const userRows = await sql<[{ count: number }]>`
-      SELECT count(*)::int AS count FROM "user" WHERE id = ${BOOTSTRAP_USER_ID}
+    // Stale-state detection: previously this early-returned whenever the PAT
+    // file existed, but if LOBU_DATA_DIR was wiped between runs the row was
+    // gone and no-auth mode would 503 forever. Now we check all three rows
+    // (user + org + member) — if ANY is missing the bootstrap re-runs to
+    // restore consistency. Partial state could otherwise wedge getNoAuthUser
+    // forever.
+    const stateRows = await sql<
+      [{ user_exists: boolean; org_exists: boolean; member_exists: boolean }]
+    >`
+      SELECT
+        EXISTS(SELECT 1 FROM "user"         WHERE id = ${BOOTSTRAP_USER_ID})   AS user_exists,
+        EXISTS(SELECT 1 FROM "organization" WHERE id = ${BOOTSTRAP_ORG_ID})    AS org_exists,
+        EXISTS(SELECT 1 FROM "member"       WHERE id = ${BOOTSTRAP_MEMBER_ID}) AS member_exists
     `;
-    if ((userRows[0]?.count ?? 0) > 0) {
+    const allPresent =
+      stateRows[0]?.user_exists && stateRows[0]?.org_exists && stateRows[0]?.member_exists;
+    if (allPresent) {
       if (existsSync(patFilePath)) {
         logger.info(
           { path: patFilePath, org: BOOTSTRAP_ORG_SLUG },
-          'Bootstrap user + PAT already provisioned'
+          'Bootstrap user + org + member already provisioned'
         );
       } else {
         logger.warn(
           { org: BOOTSTRAP_ORG_SLUG },
-          'Bootstrap user exists in DB but PAT file is missing — token reuse for external CLI is broken; delete the user row to re-mint'
+          'Bootstrap rows exist but PAT file is missing — external-CLI token reuse is broken; delete the user row to re-mint'
         );
       }
       return;
+    }
+    if (stateRows[0]?.user_exists || stateRows[0]?.org_exists || stateRows[0]?.member_exists) {
+      logger.warn(
+        stateRows[0],
+        'Bootstrap state is partial — re-minting to restore consistency'
+      );
     }
 
     // Production safety: skip when OTHER users exist. A deployment that has

@@ -329,6 +329,9 @@ final class WorkerClient {
         request.httpMethod = "PATCH"
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         request.setValue("menubar", forHTTPHeaderField: "X-Lobu-Client")
+        // No-auth CSRF middleware rejects mutations without application/json
+        // even when the body is empty (defeats Content-Type-stripped CSRF).
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         let (_, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw WorkerClientError.http("/notifications/\(id)/read", (response as? HTTPURLResponse)?.statusCode ?? 0, "")

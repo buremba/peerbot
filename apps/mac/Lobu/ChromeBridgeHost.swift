@@ -175,6 +175,9 @@ private enum NativeMessagingLoop {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("Bearer \(creds.accessToken)", forHTTPHeaderField: "Authorization")
+        // No-auth CSRF middleware requires this on mutations when Origin is
+        // absent; harmless on remote/cloud where Origin would already pass.
+        request.setValue("menubar", forHTTPHeaderField: "X-Lobu-Client")
         request.httpBody = try? JSONSerialization.data(
             withJSONObject: ["platform": platform]
         )

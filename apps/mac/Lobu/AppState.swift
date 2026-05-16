@@ -223,6 +223,17 @@ final class AppState: ObservableObject {
             // reconnects if it's still running from a previous session.
             Task { @MainActor in
                 await startLocalLobu()
+                // No-auth credentials are only safe to keep using if we own
+                // the process. If LocalLobuRunner adopted a pre-existing
+                // server, that could be a squatter — drop the saved creds
+                // and surface the connection card again. The user can sign
+                // in via OAuth at that point if they trust whatever's there.
+                if credentials != nil && !localRunner.spawnedThisSession {
+                    NSLog("[Lobu] startup: didn't spawn local server; clearing no-auth credentials")
+                    credentialStore.clear()
+                    credentials = nil
+                    return
+                }
                 startAutoPollIfSignedIn()
             }
         } else {

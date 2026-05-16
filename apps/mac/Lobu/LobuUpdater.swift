@@ -56,8 +56,26 @@ extension LobuUpdater: SPUUpdaterDelegate {
     }
 
     nonisolated func updaterDidNotFindUpdate(_ updater: SPUUpdater) {
+        // Use the installed version as the "latest seen" so the menu-bar
+        // footer can flip from "Checking…" to "Up to date" — otherwise the
+        // status sticks at "Checking…" forever after a successful check that
+        // returned no newer release.
+        let current = Bundle.main
+            .infoDictionary?["CFBundleShortVersionString"] as? String
         Task { @MainActor in
             self.updateAvailable = false
+            self.latestVersion = current
+        }
+    }
+
+    nonisolated func updater(_ updater: SPUUpdater, didAbortWithError error: Error) {
+        // Same idea on network errors / appcast parse failures: surface "Up to
+        // date" rather than wedging the UI. Sparkle has already logged the
+        // detail; the menu-bar footer doesn't need to spell it out.
+        let current = Bundle.main
+            .infoDictionary?["CFBundleShortVersionString"] as? String
+        Task { @MainActor in
+            self.latestVersion = current
         }
     }
 }

@@ -61,6 +61,7 @@ struct SingleBrowserRow: View {
 
     @State private var sourceProfiles: [InstalledBrowserProfile] = []
     @State private var savingDir: String?
+    @State private var rowAnchor: NSView?
     /// Detected CDP port via DevToolsActivePort on view appear. Surfaced
     /// inline in the "Connect to my Chrome" menu row; nil when Chrome
     /// isn't exposing remote debugging.
@@ -86,41 +87,7 @@ struct SingleBrowserRow: View {
         let mirroredCount = sourceProfiles.filter { mirroredProfile(for: $0) != nil }.count
 
         return VStack(alignment: .leading, spacing: 2) {
-            Menu {
-                // CDP attach row — only when DevToolsActivePort detected a
-                // live Chrome listener. One Chrome process = one CDP server,
-                // so this is browser-wide, sits above the per-profile
-                // section. The label embeds the detected port so the user
-                // sees what they're attaching to without a separate textfield
-                // (NSMenu can't host one cleanly anyway).
-                if let port = detectedCdpPort {
-                    Section("Live browser session") {
-                        Toggle(
-                            "Connect to my Chrome (port \(port))",
-                            isOn: $allowCdp
-                        )
-                        if allowCdp {
-                            Button("Disconnect Chrome", role: .destructive) {
-                                allowCdp = false
-                            }
-                        }
-                    }
-                }
-
-                Section(sourceProfiles.isEmpty ? "" : "Profiles") {
-                    ForEach(sourceProfiles) { src in
-                        Toggle(
-                            isOn: profileBinding(for: src)
-                        ) {
-                            Text(src.displayName)
-                        }
-                        .disabled(savingDir == src.directoryName)
-                    }
-                    if sourceProfiles.isEmpty {
-                        Text("No \(browser.kind.displayName) profiles found")
-                    }
-                }
-            } label: {
+            Button(action: showChromeMenu) {
                 HStack(spacing: 8) {
                     Image(systemName: "globe")
                         .foregroundStyle(.blue)
@@ -138,13 +105,13 @@ struct SingleBrowserRow: View {
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
-                .padding(.vertical, 4)
-                .padding(.horizontal, 6)
-                .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
             }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)  // we draw our own chevron to match the other Integration rows
+            .buttonStyle(.plain)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 4)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(MenuAnchorView { rowAnchor = $0 })
 
             // Surface any save / fetch failure inline so the user sees
             // what's wrong instead of "I clicked Mirror and nothing
@@ -174,6 +141,54 @@ struct SingleBrowserRow: View {
                 detectedCdpPort = port
             }
         }
+    }
+
+    private func buildChromeMenu() -> NSMenu {
+        let menu = NSMenu()
+
+        if let port = detectedCdpPort {
+            let cdpItem = ClosureMenuItem(
+                title: "Connect to my Chrome (port \(port))",
+                state: allowCdp ? .on : .off
+            ) { [self] in
+                allowCdp.toggle()
+            }
+            menu.addItem(cdpItem)
+            menu.addItem(NSMenuItem.separator())
+        }
+
+        if sourceProfiles.isEmpty {
+            let empty = NSMenuItem(
+                title: "No \(browser.kind.displayName) profiles found",
+                action: nil,
+                keyEquivalent: ""
+            )
+            empty.isEnabled = false
+            menu.addItem(empty)
+        } else {
+            for src in sourceProfiles {
+                let isMirrored = mirroredProfile(for: src) != nil
+                let isSaving = savingDir == src.directoryName
+                let item = ClosureMenuItem(
+                    title: src.displayName,
+                    state: isMirrored ? .on : .off
+                ) { [self] in
+                    if isMirrored, let existing = mirroredProfile(for: src) {
+                        Task { await delete(existing) }
+                    } else {
+                        Task { await mirror(src) }
+                    }
+                }
+                item.isEnabled = !isSaving
+                menu.addItem(item)
+            }
+        }
+
+        return menu
+    }
+
+    private func showChromeMenu() {
+        popUpNativeMenu(buildChromeMenu(), anchoredTo: rowAnchor)
     }
 
     private func headerStatus(mirroredCount: Int, totalCount: Int) -> String {

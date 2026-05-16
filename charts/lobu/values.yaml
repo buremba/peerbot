@@ -64,27 +64,38 @@ app:
   env:
     NODE_ENV: production
 
+  # Opt-in to multi-replica / rolling deploys. DEFAULT FALSE — leaving
+  # this off keeps the safe `strategy: Recreate` behavior. Setting it
+  # true makes the chart pick `RollingUpdate` (maxSurge: 1,
+  # maxUnavailable: 0) when workspaces is RWX or disabled.
+  #
+  # Prerequisites BEFORE setting true — chart cannot detect these:
+  #   1. Workspaces volume must be RWX-capable:
+  #      `app.workspaces.accessModes: [ReadWriteMany]` + a storage class
+  #      that backs it (NFS, EFS, CephFS, Longhorn-RWX, …).
+  #   2. NO active Chat connections in `mode: "polling"` (Telegram).
+  #      Multiple replicas long-polling the same bot conflict. Use
+  #      webhook mode only — see
+  #      gateway/connections/chat-instance-manager.ts:610.
+  #   3. Acknowledge that the gateway has in-memory state for SSE
+  #      streams (gateway/services/sse-manager.ts) and AskUser
+  #      questions (gateway/connections/interaction-bridge.ts:193).
+  #      A request whose SSE stream / AskUser click lands on a
+  #      different replica than the one holding the state will be
+  #      silently dropped. Migrating these to Postgres LISTEN/NOTIFY +
+  #      durable storage is tracked as separate hardening work — until
+  #      then, occasional dropped streams / button clicks are the cost
+  #      of zero-downtime deploys on this configuration.
+  #
+  # Single-replica + RollingUpdate (replicaCount: 1, allowMultiReplica: true)
+  # still creates a brief overlap window where both pods are running.
+  # The same in-memory caveats apply during that window, just for a
+  # shorter span (~5-15s).
+  allowMultiReplica: false
+
   # Persistent workspaces volume. Embedded agent workers store session and
   # workspace state below /app/workspaces (watcher run scratch, agent panel
   # sessions, etc.).
-  #
-  # Deploy-strategy interaction: with `accessModes: [ReadWriteOnce]` (the
-  # default), only one pod can mount this volume at a time, so the chart
-  # forces `strategy: Recreate` — every rollout has a ~30s "no available
-  # server" window between old-pod-down and new-pod-up.
-  #
-  # To get zero-downtime rolling deploys (true blue/green):
-  #   1. Switch storage class to one that supports RWX (NFS, EFS, CephFS,
-  #      Longhorn-RWX, etc.).
-  #   2. Set `accessModes: [ReadWriteMany]` here.
-  #   3. Bump `app.replicaCount` to 2+.
-  #   4. (Optional) set `app.preStopDelaySeconds` to ~15 so Service
-  #      endpoint deregistration + downstream LB cache flush happens
-  #      before SIGTERM hits the draining pod.
-  # The chart auto-switches strategy to RollingUpdate (maxSurge: 1,
-  # maxUnavailable: 0) when RWX is configured. Concurrent gateway pods on
-  # RWX are safe because /app/workspaces paths are keyed by (agent, run)
-  # tuples and the runs queue uses FOR UPDATE SKIP LOCKED for claims.
   workspaces:
     enabled: true
     size: 20Gi

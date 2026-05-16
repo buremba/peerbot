@@ -2858,6 +2858,12 @@ CREATE INDEX agents_organization_id_idx ON public.agents USING btree (organizati
 CREATE INDEX auth_profiles_connector_kind_idx ON public.auth_profiles USING btree (organization_id, connector_key, profile_kind, status);
 
 --
+-- Name: auth_profiles_default_for_connector_unique; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX auth_profiles_default_for_connector_unique ON public.auth_profiles USING btree (organization_id, connector_key) WHERE (is_default_for_connector AND (profile_kind = 'oauth_app'::text));
+
+--
 -- Name: auth_profiles_device_worker_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2874,12 +2880,6 @@ CREATE UNIQUE INDEX auth_profiles_org_slug_unique ON public.auth_profiles USING 
 --
 
 CREATE UNIQUE INDEX auth_profiles_pending_unique ON public.auth_profiles USING btree (organization_id, connector_key, profile_kind, provider) WHERE (status = 'pending_auth'::text);
-
---
--- Name: auth_profiles_default_for_connector_unique; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX auth_profiles_default_for_connector_unique ON public.auth_profiles USING btree (organization_id, connector_key) WHERE (is_default_for_connector AND (profile_kind = 'oauth_app'::text));
 
 --
 -- Name: chat_user_identities_lobu_user_idx; Type: INDEX; Schema: public; Owner: -

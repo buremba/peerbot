@@ -9,7 +9,7 @@
 //   extension → iframe: { id, ok: true, result?: object }
 //                     | { id, ok: false, error: string }
 
-import { EMBEDDED_APP_URL } from "./config.js";
+import { getEmbeddedAppUrl } from "./config.js";
 
 const ALLOWED_OPS = new Set([
   "getActiveTabContext",
@@ -21,7 +21,10 @@ const ALLOWED_OPS = new Set([
   "requestOptionalPermission",
 ]);
 
-const EMBEDDED_ORIGIN = new URL(EMBEDDED_APP_URL).origin;
+async function expectedEmbeddedOrigin() {
+  const url = await getEmbeddedAppUrl();
+  return url ? new URL(url).origin : null;
+}
 
 export function installBridge() {
   chrome.runtime.onConnect.addListener((port) => {
@@ -33,7 +36,8 @@ export function installBridge() {
       if (typeof id !== "string" || typeof op !== "string") {
         return; // unsigned/malformed, drop silently
       }
-      if (origin !== EMBEDDED_ORIGIN) {
+      const expected = await expectedEmbeddedOrigin();
+      if (!expected || origin !== expected) {
         port.postMessage({ id, ok: false, error: "untrusted_origin" });
         return;
       }

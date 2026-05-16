@@ -15,8 +15,8 @@
 
 import {
   DEFAULT_CAPABILITIES,
-  GATEWAY_URL,
   OPTIONAL_CAPABILITIES,
+  getGatewayUrl,
 } from "./config.js";
 import { installBridge } from "./bridge.js";
 
@@ -65,11 +65,19 @@ installBridge();
 void ensureConnected();
 
 async function ensureConnected() {
+  const gatewayUrl = await getGatewayUrl();
   const stored = await chrome.storage.local.get([
     STORAGE_KEYS.workerId,
     STORAGE_KEYS.accessToken,
   ]);
-  if (!stored[STORAGE_KEYS.accessToken] || !stored[STORAGE_KEYS.workerId]) {
+  // Need a gateway URL AND a token. Either missing → user goes (back) to
+  // setup. pairing.html branches between the URL-setup step and the OAuth
+  // step based on what's already stored.
+  if (
+    !gatewayUrl ||
+    !stored[STORAGE_KEYS.accessToken] ||
+    !stored[STORAGE_KEYS.workerId]
+  ) {
     await openPairing();
     return;
   }
@@ -94,19 +102,20 @@ function stopPolling() {
 }
 
 async function pollOnce() {
+  const gatewayUrl = await getGatewayUrl();
   const stored = await chrome.storage.local.get([
     STORAGE_KEYS.workerId,
     STORAGE_KEYS.accessToken,
   ]);
   const workerId = stored[STORAGE_KEYS.workerId];
   const token = stored[STORAGE_KEYS.accessToken];
-  if (!workerId || !token) {
+  if (!gatewayUrl || !workerId || !token) {
     stopPolling();
     return;
   }
   const capabilities = await computeAdvertisedCapabilities();
   try {
-    const res = await fetch(`${GATEWAY_URL}/api/workers/poll`, {
+    const res = await fetch(`${gatewayUrl}/api/workers/poll`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -132,7 +141,7 @@ async function pollOnce() {
     }
     const body = await res.json().catch(() => null);
     if (body?.run_id) {
-      void executeRun(body, workerId, token);
+      void executeRun(body, workerId, token, gatewayUrl);
     }
   } catch (err) {
     console.warn("[owletto] poll failed", err);
@@ -143,12 +152,12 @@ async function pollOnce() {
 // fails any other claimed run with a clear marker so the gateway doesn't
 // keep retrying us. Real-deal execution (heartbeat, multi-batch streaming,
 // action runs, error classification) is in SCOPE.md's v2 backlog.
-async function executeRun(run, workerId, token) {
+async function executeRun(run, workerId, token, gatewayUrl) {
   const { run_id, connector_key } = run;
   console.log("[owletto] claimed run", { run_id, connector_key });
 
   if (connector_key !== "chrome.tabs") {
-    await postJson(`${GATEWAY_URL}/api/workers/complete`, token, {
+    await postJson(`${gatewayUrl}/api/workers/complete`, token, {
       run_id,
       worker_id: workerId,
       status: "failed",
@@ -182,7 +191,7 @@ async function executeRun(run, workerId, token) {
       }));
 
     if (items.length > 0) {
-      await postJson(`${GATEWAY_URL}/api/workers/stream`, token, {
+      await postJson(`${gatewayUrl}/api/workers/stream`, token, {
         type: "batch",
         run_id,
         worker_id: workerId,
@@ -190,7 +199,7 @@ async function executeRun(run, workerId, token) {
       });
     }
 
-    await postJson(`${GATEWAY_URL}/api/workers/complete`, token, {
+    await postJson(`${gatewayUrl}/api/workers/complete`, token, {
       run_id,
       worker_id: workerId,
       status: "success",
@@ -200,7 +209,7 @@ async function executeRun(run, workerId, token) {
   } catch (err) {
     console.error("[owletto] run failed", err);
     try {
-      await postJson(`${GATEWAY_URL}/api/workers/complete`, token, {
+      await postJson(`${gatewayUrl}/api/workers/complete`, token, {
         run_id,
         worker_id: workerId,
         status: "failed",

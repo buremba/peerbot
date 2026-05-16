@@ -3,7 +3,13 @@
 // apps/mac/Lobu/AppState.swift:signIn). No new gateway endpoint required —
 // the extension is just another OAuth public client.
 //
-// Steps:
+// Before pairing can begin, the user must tell the extension where their
+// Owletto gateway is hosted (no fixed origin — self-hosted product). The
+// setup step at the top of this file validates the URL by hitting the
+// well-known OAuth discovery doc, then requests a chrome.permissions origin
+// grant for that host so subsequent fetches don't hit CORS.
+//
+// Pairing steps once the gateway URL is locked in:
 //   1. GET  /.well-known/oauth-authorization-server  → discovery
 //   2. POST <registration_endpoint>                  → dynamic client registration
 //   3. POST <device_authorization_endpoint>          → device_code + user_code
@@ -13,7 +19,11 @@
 //      chrome.storage.local. background.js drives the worker poll loop with
 //      it from there.
 
-import { GATEWAY_URL } from "./config.js";
+import {
+  DEFAULT_GATEWAY_URL,
+  STORAGE_KEY_GATEWAY_URL,
+  getGatewayUrl,
+} from "./config.js";
 
 const STORAGE_KEYS = {
   workerId: "owletto.workerId",
@@ -27,15 +37,37 @@ const STORAGE_KEYS = {
 // Matches apps/mac/Lobu/OAuthClient.swift:89.
 const SCOPE = "device_worker:run profile:read mcp:read";
 
+const setup = document.getElementById("setup");
+const setupStatus = document.getElementById("setup-status");
+const gatewayUrlInput = document.getElementById("gateway-url");
+const verifyUrlBtn = document.getElementById("verify-url");
+
 const welcome = document.getElementById("welcome");
+const serverSummary = document.getElementById("server-summary");
 const codeView = document.getElementById("code-view");
 const codeEl = document.getElementById("code");
 const pollStatus = document.getElementById("poll-status");
 const status = document.getElementById("status");
 const startBtn = document.getElementById("start");
 const cancelBtn = document.getElementById("cancel");
+const changeServerBtn = document.getElementById("change-server");
 
 let pollTimer = null;
+let gatewayUrl = null;
+
+verifyUrlBtn.addEventListener("click", () => {
+  void verifyAndSaveGatewayUrl();
+});
+
+gatewayUrlInput.addEventListener("keydown", (ev) => {
+  if (ev.key === "Enter") void verifyAndSaveGatewayUrl();
+});
+
+changeServerBtn?.addEventListener("click", () => {
+  setup.hidden = false;
+  welcome.hidden = true;
+  setupStatus.textContent = "";
+});
 
 startBtn.addEventListener("click", () => {
   void pair().catch((err) => {
@@ -49,11 +81,96 @@ cancelBtn.addEventListener("click", () => {
   window.close();
 });
 
+void initSetupStep();
+
+async function initSetupStep() {
+  const existing = await getGatewayUrl();
+  gatewayUrlInput.value = existing || DEFAULT_GATEWAY_URL;
+  if (existing) {
+    gatewayUrl = existing;
+    showWelcome();
+  } else {
+    setup.hidden = false;
+    gatewayUrlInput.focus();
+    gatewayUrlInput.select();
+  }
+}
+
+function showWelcome() {
+  setup.hidden = true;
+  welcome.hidden = false;
+  serverSummary.textContent = `Server: ${gatewayUrl}`;
+}
+
+async function verifyAndSaveGatewayUrl() {
+  const raw = gatewayUrlInput.value.trim();
+  if (!raw) {
+    setupStatus.textContent = "Enter a URL.";
+    return;
+  }
+  let url;
+  try {
+    url = new URL(raw);
+  } catch {
+    setupStatus.textContent = "That doesn't look like a valid URL.";
+    return;
+  }
+  if (!/^https?:$/.test(url.protocol)) {
+    setupStatus.textContent = "URL must use http:// or https://.";
+    return;
+  }
+  const cleanBase = `${url.protocol}//${url.host}`;
+
+  verifyUrlBtn.disabled = true;
+  setupStatus.textContent = "Requesting permission to talk to that origin…";
+  const granted = await chrome.permissions.request({
+    origins: [`${cleanBase}/*`],
+  });
+  if (!granted) {
+    setupStatus.textContent =
+      "Permission declined. The extension can't talk to that server without it.";
+    verifyUrlBtn.disabled = false;
+    return;
+  }
+
+  setupStatus.textContent = "Checking that the server speaks Owletto…";
+  let discovery;
+  try {
+    const res = await fetch(
+      `${cleanBase}/.well-known/oauth-authorization-server`,
+      { headers: { accept: "application/json" } },
+    );
+    if (!res.ok) throw new Error(`${cleanBase} returned ${res.status}`);
+    discovery = await res.json();
+  } catch (err) {
+    setupStatus.textContent = `Couldn't reach an Owletto server at ${cleanBase}: ${
+      err instanceof Error ? err.message : String(err)
+    }`;
+    verifyUrlBtn.disabled = false;
+    return;
+  }
+  if (!discovery.device_authorization_endpoint) {
+    setupStatus.textContent =
+      "That server doesn't advertise device authorization — wrong URL?";
+    verifyUrlBtn.disabled = false;
+    return;
+  }
+
+  await chrome.storage.local.set({ [STORAGE_KEY_GATEWAY_URL]: cleanBase });
+  gatewayUrl = cleanBase;
+  setupStatus.textContent = "";
+  verifyUrlBtn.disabled = false;
+  showWelcome();
+}
+
 async function pair() {
+  if (!gatewayUrl) {
+    throw new Error("Owletto server URL not set.");
+  }
   startBtn.disabled = true;
   status.textContent = "Discovering Owletto…";
   const discovery = await getJson(
-    `${GATEWAY_URL}/.well-known/oauth-authorization-server`,
+    `${gatewayUrl}/.well-known/oauth-authorization-server`,
   );
 
   status.textContent = "Registering this extension…";

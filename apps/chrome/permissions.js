@@ -7,9 +7,40 @@
 // chrome.permissions.remove drops the permission for the duration of this
 // installation.
 
+import { STORAGE_KEY_GATEWAY_URL, getGatewayUrl } from "./config.js";
+
 const statusEl = document.getElementById("status");
 
-const rows = Array.from(document.querySelectorAll(".row[data-perm]"));
+// Render the configured gateway URL.
+const serverUrlDisplay = document.getElementById("server-url-display");
+const changeServerBtn = document.getElementById("change-server");
+
+async function refreshServerRow() {
+  const url = await getGatewayUrl();
+  serverUrlDisplay.textContent = url ?? "(not set)";
+}
+void refreshServerRow();
+
+changeServerBtn.addEventListener("click", async () => {
+  // Clear everything tied to the current pairing: token + URL. The pairing
+  // page will then re-prompt for both.
+  await chrome.storage.local.remove([
+    STORAGE_KEY_GATEWAY_URL,
+    "owletto.workerId",
+    "owletto.accessToken",
+    "owletto.refreshToken",
+    "owletto.clientId",
+    "owletto.clientSecret",
+    "owletto.pairedAt",
+  ]);
+  await chrome.tabs.create({ url: chrome.runtime.getURL("pairing.html") });
+  statusEl.textContent = "Stored credentials cleared. Set up the new server in the new tab.";
+  await refreshServerRow();
+});
+
+const rows = Array.from(
+  document.querySelectorAll(".row[data-perm]:not([data-perm='server'])"),
+);
 
 async function refreshRow(row) {
   const perm = row.dataset.perm;

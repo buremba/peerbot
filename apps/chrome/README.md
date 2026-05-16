@@ -23,22 +23,32 @@ capability set, and is gated by the platform allowlist in
 | `pairing.html`   | Device-code/QR pairing fallback when no Mac bridge is present.                            |
 | `pairing.js`     | OAuth device-authorization polling loop.                                                  |
 
-## Pairing flow
+## Setup + pairing flow
 
-Standard RFC 8628 OAuth device-authorization, identical to what the Owletto
-Mac app does (`apps/mac/Lobu/OAuthClient.swift` + `AppState.swift:signIn`).
-No new gateway endpoint required — the extension is just another OAuth
-public client.
+Lobu/Owletto is self-hosted, so the extension does not ship with a fixed
+gateway URL. First-run setup has two steps:
 
-1. GET `/.well-known/oauth-authorization-server` → discovery doc.
-2. POST `registration_endpoint` → dynamic client registration.
-3. POST `device_authorization_endpoint` → `device_code` + `user_code`.
-4. Open the verification URI in a tab; poll `token_endpoint` until it
-   returns an `access_token`.
-5. Persist `{workerId, accessToken, refreshToken, clientId, clientSecret?}`
-   in `chrome.storage.local`. The service worker drives the poll loop with
-   `{worker_id, bearer access_token, platform: "chrome-extension"}` from
-   there.
+1. **Pick a server.** The user enters their Lobu/Owletto URL. The extension
+   requests an origin-scoped Chrome host permission for that URL, then
+   verifies the server speaks Owletto by fetching
+   `/.well-known/oauth-authorization-server`. The URL is persisted to
+   `chrome.storage.local` under `owletto.gatewayUrl`.
+
+2. **OAuth device-authorization pairing** (standard RFC 8628, identical to
+   what the Mac app does in `apps/mac/Lobu/OAuthClient.swift`):
+   - GET `/.well-known/oauth-authorization-server` → discovery doc.
+   - POST `registration_endpoint` → dynamic client registration.
+   - POST `device_authorization_endpoint` → `device_code` + `user_code`.
+   - Open the verification URI in a tab; poll `token_endpoint` until it
+     returns an `access_token`.
+   - Persist `{workerId, accessToken, refreshToken, clientId,
+     clientSecret?}` in `chrome.storage.local`. The service worker drives
+     the poll loop with `{worker_id, bearer access_token,
+     platform: "chrome-extension"}` from there.
+
+The permissions page (`permissions.html`) shows the configured server and
+exposes a "Change" action that clears the URL + credentials and re-runs
+setup.
 
 Native-messaging SSO with the Mac bridge (skip the second login when Mac is
 installed) is a v2 backlog item — see `SCOPE.md`.
@@ -65,14 +75,11 @@ server side regardless of what the extension claims.
 
 This scaffold is not packaged for the Web Store yet. To load it unpacked:
 
-1. Build a sibling `dist/` if/when we add a bundler (none today — the source
-   is hand-rolled MV3-friendly JS).
-2. `chrome://extensions` → "Developer mode" → "Load unpacked" →
+1. `chrome://extensions` → "Developer mode" → "Load unpacked" →
    `apps/chrome/`.
-3. Point `config.js` at a local gateway URL (`http://localhost:8787`) and the
-   matching `EMBEDDED_APP_URL`.
-4. Either run the Owletto Mac bridge for SSO, or trigger the device-code
-   fallback by clicking the toolbar icon → "Pair this profile".
+2. Click the toolbar icon → "Pair this profile". On first run the pairing
+   page prompts for the gateway URL — `http://localhost:8787` is pre-filled
+   for local dev.
 
 ## See also
 

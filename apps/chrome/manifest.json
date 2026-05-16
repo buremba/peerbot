@@ -18,11 +18,6 @@
     "history",
     "bookmarks"
   ],
-  "host_permissions": [
-    "http://localhost:8787/*",
-    "https://gateway.owletto.ai/*",
-    "https://owletto.ai/*"
-  ],
   "optional_host_permissions": [
     "<all_urls>"
   ],

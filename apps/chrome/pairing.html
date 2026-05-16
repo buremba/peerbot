@@ -68,15 +68,48 @@
     </style>
   </head>
   <body>
-    <div class="card" id="welcome">
+    <div class="card" id="setup">
+      <h1>Where is your Owletto server?</h1>
+      <p>
+        Owletto is self-hosted — the extension connects to wherever your
+        Lobu/Owletto gateway lives. Paste the URL of your server below.
+        Lobu Cloud users: <code>https://gateway.owletto.ai</code>. Local
+        development: <code>http://localhost:8787</code>.
+      </p>
+      <input
+        id="gateway-url"
+        type="url"
+        autocomplete="off"
+        spellcheck="false"
+        style="
+          width: 100%;
+          box-sizing: border-box;
+          background: #1a1a1a;
+          color: #f5f5f5;
+          border: 1px solid #2a2a2a;
+          border-radius: 6px;
+          padding: 10px 12px;
+          font: inherit;
+          margin-bottom: 16px;
+        "
+      />
+      <div class="row">
+        <button id="verify-url">Continue</button>
+      </div>
+      <div class="status" id="setup-status"></div>
+    </div>
+
+    <div class="card" id="welcome" hidden>
       <h1>Pair this Chrome profile to Owletto</h1>
       <p>
         Owletto runs on your devices and uses your existing signed-in sessions.
         Pair this Chrome profile to let your agent see tabs and act on your
         behalf.
       </p>
+      <p class="status" id="server-summary"></p>
       <div class="row">
         <button id="start">Get pairing code</button>
+        <button class="secondary" id="change-server">Change server</button>
       </div>
       <div class="status" id="status"></div>
     </div>

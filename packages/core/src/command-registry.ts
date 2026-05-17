@@ -68,9 +68,21 @@ export class CommandRegistry {
         { command: name, error: String(error) },
         "Command handler failed"
       );
-      await ctx.reply(
-        "Sorry, something went wrong executing that command. Please try again."
-      );
+      // The fallback reply itself may throw (dead webhook, network error,
+      // bot kicked from the channel). The command was still handled — we
+      // logged the failure — so don't let a reply failure bubble out and
+      // make tryHandle reject, which would then double-report the original
+      // handler error to the caller.
+      try {
+        await ctx.reply(
+          "Sorry, something went wrong executing that command. Please try again."
+        );
+      } catch (replyError) {
+        logger.error(
+          { command: name, error: String(replyError) },
+          "Failed to send error reply for failed command"
+        );
+      }
       return true;
     }
   }

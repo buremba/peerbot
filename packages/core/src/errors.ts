@@ -96,12 +96,19 @@ export class OrchestratorError extends BaseError {
   }
 
   static fromDatabaseError(error: any): OrchestratorError {
+    // `error` can be null/undefined/primitive coming out of a rejected Promise
+    // chain (e.g. `throw null`, or a pg pool that rejects with no value when
+    // the connection is torn down mid-query). Reading `.code` / `.detail` off
+    // a non-object would TypeError here and replace the real DB failure with
+    // a confusing "Cannot read properties of null" stack.
+    const isObjectLike =
+      typeof error === "object" && error !== null;
     return new OrchestratorError(
       ErrorCode.DATABASE_CONNECTION_FAILED,
       `Database error: ${error instanceof Error ? error.message : String(error)}`,
-      { code: error.code, detail: error.detail },
+      isObjectLike ? { code: error.code, detail: error.detail } : undefined,
       true,
-      error
+      error instanceof Error ? error : undefined
     );
   }
 

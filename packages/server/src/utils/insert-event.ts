@@ -227,7 +227,11 @@ export async function insertEvent(
     const existing = await findCurrentEventByOrigin(sql, params);
     if (existing) {
       if (isSemanticallyEqual(existing, params)) {
-        await upsertEmbedding(existing.id, params.embedding, sql);
+        // Reread before touching the embedding. If the row got
+        // deleted / tombstoned between findCurrentEventByOrigin and
+        // here, upsertEmbedding would FK-fail instead of letting us
+        // fall through cleanly to a fresh insert (CodeRabbit catch
+        // on PR #780).
         const existingRows = await sql`
           SELECT id, entity_ids, origin_id, title, semantic_type, created_at
           FROM events
@@ -235,7 +239,10 @@ export async function insertEvent(
           LIMIT 1
         `;
         const existingRow = existingRows[0] as InsertedEvent | undefined;
-        if (existingRow) return existingRow;
+        if (existingRow) {
+          await upsertEmbedding(existingRow.id, params.embedding, sql);
+          return existingRow;
+        }
         // Race: the existing row was deleted/tombstoned between the
         // findCurrentEventByOrigin lookup above and the SELECT here. Fall
         // through into the INSERT path with `supersedesEventId` unset so we

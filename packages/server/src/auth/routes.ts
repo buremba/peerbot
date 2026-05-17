@@ -202,6 +202,24 @@ credentialRoutes.post('/:orgSlug/tokens', mcpAuth, async (c) => {
 });
 
 /**
+ * IPv4/IPv6 loopback peer check. Matches what
+ * `packages/server/src/utils/loopback.ts:isLoopbackHost` did before it
+ * was deleted in lobu#827, kept inline here so this file owns the
+ * `/local-init` trust boundary without depending on that helper file
+ * coming back.
+ *
+ * Accepts: 127.0.0.0/8, ::1, ::ffff:127.0.0.0/8 (IPv4-mapped IPv6).
+ */
+function isLoopbackAddress(addr: string): boolean {
+  if (!addr) return false;
+  const lower = addr.toLowerCase();
+  if (lower === '::1' || lower === '[::1]') return true;
+  // IPv4-mapped IPv6 form Node sometimes hands us when bound to ::
+  const ipv4 = lower.startsWith('::ffff:') ? lower.slice('::ffff:'.length) : lower;
+  return ipv4.startsWith('127.');
+}
+
+/**
  * Mint a Better Auth session for a user and return the Set-Cookie value.
  * Centralised so /exchange-token and /local-init produce identical cookies.
  */
@@ -332,6 +350,26 @@ const BOOTSTRAP_USER_ID = 'bootstrap-user';
 const BOOTSTRAP_ORG_ID = 'org-bootstrap-dev';
 
 credentialRoutes.post('/local-init', async (c) => {
+  // Defense-in-depth: the embedded runner defaults to a loopback bind,
+  // but an operator may override HOST=0.0.0.0 and accidentally expose
+  // /local-init to the LAN. Refuse any request whose actual TCP peer
+  // isn't loopback. This is the *primary* trust boundary; the
+  // forwarded-* + X-Lobu-Client checks below are extra layers.
+  //
+  // `peerRemoteAddress` is set by the env-swap middleware in server.ts /
+  // start-local.ts before c.env is replaced with the app config object.
+  const peer = c.var.peerRemoteAddress;
+  if (peer && !isLoopbackAddress(peer)) {
+    return c.json(
+      {
+        error: 'non_loopback_peer',
+        error_description:
+          '/api/local-init refuses non-loopback connections. The embedded runner should bind to 127.0.0.1; check HOST.',
+      },
+      403
+    );
+  }
+
   const proxied =
     c.req.header('x-forwarded-for') ||
     c.req.header('x-forwarded-host') ||

@@ -35,6 +35,14 @@ declare module 'hono' {
     mcpIsAuthenticated: boolean;
     subdomainOrg: string | null;
     /**
+     * TCP remote address of the actual peer, captured by the env-swap
+     * middleware in server.ts / start-local.ts before c.env's bindings
+     * (which include `incoming.socket`) are replaced with the app config.
+     * Loopback-trust endpoints like `/api/local-init` use this to enforce
+     * "real peer is loopback" regardless of what HOST the server bound to.
+     */
+    peerRemoteAddress: string | null;
+    /**
      * How the current request authenticated. Set by `mcpAuth` /
      * `MultiTenantProvider.resolveAuth`. Admin-tier routes that previously
      * implicitly assumed web-session auth use this to refuse weak PATs.

@@ -69,6 +69,15 @@ if (!process.env.LOBU_DEV_PROJECT_PATH) {
 // spreading it onto a fresh `c.env` object on every request.
 const env = getEnvFromProcess();
 app.use('*', async (c, next) => {
+  // @hono/node-server hands the request's IncomingMessage to handlers via
+  // c.env.incoming (so `getConnInfo` can read socket.remoteAddress). The
+  // assignment below replaces c.env with our app-wide config object, which
+  // would lose that reference; stash the peer address in c.var first so
+  // handlers that need the actual TCP peer (e.g. `/api/local-init`'s
+  // loopback-peer defense) can still get at it.
+  const incoming = (c.env as { incoming?: { socket?: { remoteAddress?: string } } })?.incoming;
+  const peerRemoteAddress = incoming?.socket?.remoteAddress ?? null;
+  if (peerRemoteAddress) c.set('peerRemoteAddress', peerRemoteAddress);
   c.env = env as Env;
   return next();
 });

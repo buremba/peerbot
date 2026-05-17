@@ -46,7 +46,12 @@ import logger from './utils/logger';
 
 const DATA_DIR = process.env.LOBU_DATA_DIR || join(homedir(), '.lobu', 'data');
 const PORT = parseInt(process.env.PORT || '8787', 10);
-const HOST = process.env.HOST?.trim() || '0.0.0.0';
+// Loopback-only by default: the embedded local-runner ships a
+// loopback-trust endpoint (`POST /api/local-init`) that mints worker-scoped
+// PATs for the bootstrap user with no auth challenge. Binding to 0.0.0.0
+// would expose that to anyone on the LAN. Operators who explicitly want
+// LAN/WAN reachability must set `HOST=0.0.0.0` themselves.
+const HOST = process.env.HOST?.trim() || '127.0.0.1';
 const EMBEDDINGS_PORT = parseInt(process.env.EMBEDDINGS_PORT || '0', 10);
 const APP_ROOT = join(fileURLToPath(new URL('.', import.meta.url)), '..');
 const require = createRequire(import.meta.url);
@@ -152,6 +157,14 @@ async function main() {
 
   const wrapper = new Hono<{ Bindings: Env }>();
   wrapper.use('*', async (c, next) => {
+    // Stash the peer TCP remote-address so handlers that need to enforce
+    // a loopback-peer trust boundary (e.g. `/api/local-init`) can read it
+    // from c.var. `Object.assign(c.env, env)` below preserves
+    // `c.env.incoming` (the IncomingMessage Hono's Node adapter set), so
+    // we read from there — same path `getConnInfo` uses.
+    const incoming = (c.env as { incoming?: { socket?: { remoteAddress?: string } } })?.incoming;
+    const peerRemoteAddress = incoming?.socket?.remoteAddress ?? null;
+    if (peerRemoteAddress) c.set('peerRemoteAddress', peerRemoteAddress);
     Object.assign(c.env, env);
     return next();
   });

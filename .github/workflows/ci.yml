@@ -392,3 +392,85 @@ jobs:
             echo "::error::db/schema.sql is stale. Regenerate with \`dbmate --migrations-dir db/migrations --schema-file db/schema.sql dump && scripts/normalize-schema.sh db/schema.sql\` and commit the result."
             exit 1
           fi
+
+  # Path-filter for the Mac smoke build, isolated to a cheap ubuntu runner
+  # so skipped PRs don't allocate a macOS runner just to evaluate the diff.
+  # `github.event.pull_request.changed_files` in the webhook payload is an
+  # integer (the count of changed files), not a list — `contains()` over it
+  # never matches. Use git diff against the PR base instead. On push events
+  # (main) there's no PR object, so default to running the smoke job.
+  mac-build-smoke-filter:
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.filter.outputs.run }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Need the PR base commit so we can diff against it. The default
+          # fetch-depth=1 only has HEAD.
+          fetch-depth: 0
+
+      - name: Decide whether to run the Mac smoke build
+        id: filter
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "${BASE_SHA:-}" ]; then
+            # push to main (or any non-PR trigger) — always run.
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          changed=$(git diff --name-only "$BASE_SHA"...HEAD)
+          if echo "$changed" | grep -E '^(packages/web($|/)|\.github/workflows/mac-release\.yml$|\.github/actions/setup-submodule(/|$)|\.gitmodules$)' >/dev/null; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No paths affecting the Mac build changed — skipping mac-build-smoke."
+          fi
+
+  # Cheap end-to-end Xcode build for the Mac app. `mac-release.yml` is
+  # workflow_dispatch only, so a rename or path move inside the owletto
+  # submodule (Mac source lives at `packages/web/apps/mac/`) can silently
+  # break the release pipeline and only surface the next time someone
+  # triggers a release. Build-only (no archive, no signing, no notarize)
+  # is enough to prove the Xcode project + submodule layout still compose.
+  #
+  # Runner cost is bounded by the filter job above — the macOS runner is
+  # only allocated when the submodule pointer, the release workflow, the
+  # submodule setup action, or `.gitmodules` changes.
+  mac-build-smoke:
+    needs: mac-build-smoke-filter
+    if: needs.mac-build-smoke-filter.outputs.run == 'true'
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: submodule
+        uses: ./.github/actions/setup-submodule
+        with:
+          deploy-key: ${{ secrets.OWLETTO_WEB_DEPLOY_KEY }}
+
+      # Forks (and any run where the secret isn't available) get a stub
+      # package.json from setup-submodule. There's no Mac source to build
+      # there, so skip the rest gracefully rather than fail. Same-repo PRs
+      # and push events both have the key, so a stub there means the secret
+      # is misconfigured — fail loudly.
+      - name: Fail fast if submodule is stubbed (same-repo PRs and push)
+        if: steps.submodule.outputs.stubbed == 'true' && !(github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)
+        run: |
+          echo "::error::Mac source unreachable — OWLETTO_WEB_DEPLOY_KEY missing or invalid."
+          exit 1
+
+      - name: Skip on fork PRs without submodule access
+        if: steps.submodule.outputs.stubbed == 'true' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+        run: echo "::notice::Submodule stubbed on fork PR — skipping Mac smoke build."
+
+      - name: Build (unsigned, no archive)
+        if: steps.submodule.outputs.stubbed != 'true'
+        run: |
+          xcodebuild \
+            -project packages/web/apps/mac/Lobu.xcodeproj \
+            -scheme Lobu -configuration Release build \
+            CODE_SIGNING_ALLOWED=NO

@@ -72,6 +72,12 @@ jobs:
       #      assumes must actually exist at the pinned SHA. Otherwise the
       #      `lobster-mark.svg` → `owletto-mark.svg` style of silent rename on
       #      the owletto side would only surface inside `xcodebuild`.
+      #   4-7. The scheme name, app display name, bundle identifier, and
+      #      Sparkle public key must match what the rest of the workflow and
+      #      installed apps depend on. A rename inside owletto (e.g. scheme
+      #      `Lobu` → `Owletto`, bundle id `ai.lobu.mac` → `ai.owletto.mac`)
+      #      would pass the path checks above but break the build or, worse,
+      #      silently break auto-update for installed users.
       - name: Verify release contract (submodule + Mac source layout)
         shell: bash
         run: |
@@ -98,6 +104,71 @@ jobs:
               exit 1
             fi
           done
+
+          # 4. The Xcode scheme must still be named 'Lobu'. The rest of this
+          #    workflow passes `-scheme Lobu` to xcodebuild; if owletto renames
+          #    the scheme (e.g. to 'Owletto') the path checks above still pass
+          #    and we'd only find out late inside xcodebuild.
+          #
+          #    Scope the check to the schemes list via `-list -json`. The plain
+          #    `-list` text output has both `Targets:` and `Schemes:` sections,
+          #    so a `grep '^  Lobu$'` could match a target named 'Lobu' even
+          #    after the scheme was renamed to 'Owletto'.
+          SCHEMES=$(xcodebuild -project packages/web/apps/mac/Lobu.xcodeproj -list -json 2>/dev/null \
+            | python3 -c "import json,sys; print('\n'.join(json.load(sys.stdin)['project']['schemes']))")
+          if ! echo "$SCHEMES" | grep -qE '^Lobu$'; then
+            echo "::error::Expected scheme 'Lobu' missing from project schemes (got: $SCHEMES)"
+            exit 1
+          fi
+
+          # 5. CFBundleName + CFBundleDisplayName must stay 'Owletto'. These
+          #    are what users see in Finder / the menu bar / "About"; a silent
+          #    rename here would ship a DMG that installs as a different app
+          #    next to existing installs.
+          EXPECTED_BUNDLE_NAME="Owletto"
+          for key in CFBundleName CFBundleDisplayName; do
+            actual=$(/usr/libexec/PlistBuddy -c "Print :$key" \
+              packages/web/apps/mac/Lobu/Info.plist 2>/dev/null || true)
+            if [ "$actual" != "$EXPECTED_BUNDLE_NAME" ]; then
+              echo "::error::Info.plist:$key is '$actual', expected '$EXPECTED_BUNDLE_NAME'"
+              exit 1
+            fi
+          done
+
+          # 6. PRODUCT_BUNDLE_IDENTIFIER in project.pbxproj must stay
+          #    ai.lobu.mac across ALL build configurations. CFBundleIdentifier
+          #    in Info.plist resolves to $(PRODUCT_BUNDLE_IDENTIFIER) at build
+          #    time, so the real value lives in the pbxproj build settings.
+          #    The URL scheme, Keychain service name, and Sparkle update path
+          #    are all keyed off this — a change here breaks the upgrade
+          #    contract for installed apps.
+          #
+          #    Assert the set of distinct values is exactly {ai.lobu.mac}, not
+          #    "some occurrence equals ai.lobu.mac". A simple grep would still
+          #    pass if one config drifted while another stale occurrence stayed
+          #    correct.
+          EXPECTED_BUNDLE_ID="ai.lobu.mac"
+          distinct_ids=$(grep -E 'PRODUCT_BUNDLE_IDENTIFIER = ' \
+            packages/web/apps/mac/Lobu.xcodeproj/project.pbxproj \
+            | sed -E 's/.*PRODUCT_BUNDLE_IDENTIFIER = ([^;]+);.*/\1/' \
+            | sort -u)
+          if [ "$distinct_ids" != "$EXPECTED_BUNDLE_ID" ]; then
+            echo "::error::PRODUCT_BUNDLE_IDENTIFIER must be exactly '${EXPECTED_BUNDLE_ID}' across all configs (got: $distinct_ids). Bundle id drift breaks installed-app upgrades."
+            exit 1
+          fi
+
+          # 7. Sparkle public key must still be in Info.plist. Installed apps
+          #    verify update signatures against SUPublicEDKey; if the key is
+          #    removed or rotated server-side without matching a key the
+          #    installed app trusts, auto-update breaks silently.
+          #
+          #    Use PlistBuddy so the check matches an actual plist key, not
+          #    text inside an XML comment.
+          if ! /usr/libexec/PlistBuddy -c "Print :SUPublicEDKey" \
+            packages/web/apps/mac/Lobu/Info.plist >/dev/null 2>&1; then
+            echo "::error::SUPublicEDKey missing from Info.plist — installed apps cannot verify updates"
+            exit 1
+          fi
 
       - name: Resolve version
         id: v

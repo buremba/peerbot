@@ -248,6 +248,13 @@ async function buildCustomCommands(
         } else if (ctx.env && typeof ctx.env === "object") {
           Object.assign(envRecord, ctx.env);
         }
+        // The agent can `export WORKER_TOKEN=...` inside just-bash to slip a
+        // value through `ctx.env`. Re-strip so spawned binaries (and anything
+        // that may echo or log env) never see a sensitive-shaped key, even an
+        // attacker-controlled one.
+        for (const key of SENSITIVE_WORKER_ENV_KEYS) {
+          delete envRecord[key];
+        }
 
         // Pin HOME / TMPDIR to dedicated subdirs so tool dotfiles (~/.gitconfig,
         // ~/.cache, ~/.config) and temp files don't collide with workspace
@@ -413,14 +420,39 @@ export async function createEmbeddedBashOps(
   }
   const bashFs = new ReadWriteFs({ root: workspaceDir });
 
-  // Parse allowed domains from env var (set by gateway)
+  // Parse allowed domains from env var (set by gateway).
+  // Defense-in-depth: the gateway is trusted, but a malformed env (non-array,
+  // non-string entries, embedded "/" or whitespace) would either crash
+  // `.flatMap(...)` or, worse, expand an "allow https://${domain}/" prefix
+  // into something attacker-shaped (`evil.com/ ` or `attacker.com/path`).
+  // Validate the parsed shape and the per-domain syntax explicitly.
+  const DOMAIN_PATTERN = /^[A-Za-z0-9.*_-]+(?::\d+)?$/;
   let allowedDomains: string[] = [];
   if (process.env.JUST_BASH_ALLOWED_DOMAINS) {
     try {
-      allowedDomains = JSON.parse(process.env.JUST_BASH_ALLOWED_DOMAINS);
-    } catch {
+      const parsed: unknown = JSON.parse(process.env.JUST_BASH_ALLOWED_DOMAINS);
+      if (!Array.isArray(parsed)) {
+        throw new Error("expected a JSON array of domain strings");
+      }
+      const accepted: string[] = [];
+      for (const entry of parsed) {
+        if (typeof entry !== "string") continue;
+        const trimmed = entry.trim();
+        if (!trimmed) continue;
+        if (!DOMAIN_PATTERN.test(trimmed)) {
+          console.warn(
+            `[embedded] Ignoring invalid JUST_BASH_ALLOWED_DOMAINS entry: ${JSON.stringify(entry)}`
+          );
+          continue;
+        }
+        accepted.push(trimmed);
+      }
+      allowedDomains = accepted;
+    } catch (err) {
       console.error(
-        `[embedded] Failed to parse JUST_BASH_ALLOWED_DOMAINS: ${process.env.JUST_BASH_ALLOWED_DOMAINS}`
+        `[embedded] Failed to parse JUST_BASH_ALLOWED_DOMAINS: ${
+          err instanceof Error ? err.message : String(err)
+        }`
       );
     }
   }

@@ -9,9 +9,11 @@ import {
   extractTraceId,
   flushTracing,
   SpanStatusCode,
+  stripEnv,
 } from "@lobu/core";
 import { z } from "zod";
 import type { WorkerConfig, WorkerExecutor } from "../core/types";
+import { SENSITIVE_WORKER_ENV_KEYS } from "../shared/worker-env-keys";
 import { HttpWorkerTransport } from "./gateway-integration";
 import { MessageBatcher } from "./message-batcher";
 import type { MessagePayload, QueuedMessage } from "./types";
@@ -576,10 +578,17 @@ export class GatewayClient {
     let completed = false;
 
     try {
-      // Spawn the command
+      // Strip the worker's own gateway credentials before handing the shell
+      // its env. An `exec` command is an arbitrary string from the gateway
+      // that ends up under `sh -c`; leaking WORKER_TOKEN / DISPATCHER_URL
+      // into that environment would let a malicious or buggy exec impersonate
+      // the worker against its own gateway. The bash-tool and just-bash
+      // spawners already apply the same filter (see openclaw/tools.ts and
+      // embedded/just-bash-bootstrap.ts) — keep parity here.
+      const baseEnv = stripEnv(process.env, SENSITIVE_WORKER_ENV_KEYS);
       const proc = spawn("sh", ["-c", execCommand], {
         cwd: workingDir,
-        env: { ...process.env, ...execEnv },
+        env: { ...baseEnv, ...execEnv },
         stdio: ["ignore", "pipe", "pipe"],
       });
 

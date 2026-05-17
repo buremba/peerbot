@@ -204,6 +204,21 @@ async function main() {
     logger.warn({ err }, 'Bootstrap PAT setup failed');
   }
 
+  // ─── Default agent (Mac-app onboarding) ──────────────────────
+  // Auto-provision the Owletto Personal agent for the bootstrap org
+  // the first time the deployment boots. Sticky against deletion via a
+  // sentinel in `organization.metadata` — if the user removes the agent
+  // through the web UI we do NOT recreate it on the next boot.
+  //
+  // Best-effort: failure here does not block boot. The Mac app degrades to
+  // an empty-agents state instead of failing to start the server.
+  try {
+    const { ensureDefaultAgent } = await import('./auth/default-provisioning');
+    await ensureDefaultAgent(BOOTSTRAP_ORG_ID);
+  } catch (err) {
+    logger.warn({ err }, 'Default-agent provisioning failed');
+  }
+
   // ─── Listen ──────────────────────────────────────────────────
 
   // No-auth mode is loopback-only by design. Refuse to listen on anything

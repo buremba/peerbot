@@ -28,7 +28,13 @@ import {
 import { captureServerError } from './sentry';
 import { autoLinkEvent } from './utils/auto-linker';
 import { nextRunAt as nextRunAtFromCron } from './utils/cron';
-import { advanceWatcherSchedule } from './watchers/automation';
+import { advanceWatcherSchedule, enqueueWatcherRunForWatcher } from './watchers/automation';
+import {
+  DEFAULT_AGENT_ID,
+  ensureDefaultWatcher,
+  hasOrgSentinel,
+  DEFAULT_AGENT_SENTINEL,
+} from './auth/default-provisioning';
 import { getNextNumericId } from './tools/admin/helpers/db-helpers';
 import { reconcileDeviceCapabilities } from './worker-api/device-reconcile';
 import { findBundledConnectorFile } from './utils/connector-catalog';
@@ -293,6 +299,37 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
           summary: `Device "${label ?? worker_id}" registered`,
           extra: { platform, worker_id, app_version },
         });
+
+        // Mac-app onboarding: when a device registers for the first time in an
+        // org that's a candidate for default provisioning (agent sentinel set
+        // → `ensureDefaultAgent` ran for this org at boot), provision a daily
+        // check-in watcher pinned to THIS device. The sentinel on
+        // `organization.metadata` makes this exactly-once even across multiple
+        // first-poll attempts. Deletion stickiness: if the user later removes
+        // the watcher via the web UI, the sentinel stays and we do NOT
+        // recreate.
+        const provisioningOrgId = upserted[0].organization_id;
+        const provisioningDeviceId = upserted[0].id;
+        try {
+          const isCandidateOrg = await hasOrgSentinel(
+            provisioningOrgId,
+            DEFAULT_AGENT_SENTINEL,
+            sql
+          );
+          if (isCandidateOrg) {
+            await ensureDefaultWatcher({
+              organizationId: provisioningOrgId,
+              agentId: DEFAULT_AGENT_ID,
+              deviceWorkerId: provisioningDeviceId,
+              sql,
+            });
+          }
+        } catch (err) {
+          logger.warn(
+            { err: errorMessage(err), organizationId: provisioningOrgId },
+            '[pollWorkerJob] default-watcher provisioning failed (non-fatal)'
+          );
+        }
       }
 
       // Reconcile this user's device connectors against the capabilities their
@@ -2902,6 +2939,144 @@ export async function deleteMyDeviceFeed(c: Context<{ Bindings: Env }>) {
     return c.json({ ok: true });
   } catch (err) {
     logger.error({ error: errorMessage(err) }, '[deleteMyDeviceFeed] Error');
+    return c.json({ error: errorMessage(err) }, 500);
+  }
+}
+
+/**
+ * POST /api/workers/me/watchers/:watcher_id/trigger
+ *
+ * Manually fire a watcher run from the device that owns it. The Mac app's
+ * "Run now" action posts here. Unlike the scheduled path, this:
+ *   - does NOT advance `watchers.next_run_at` (manual fires shouldn't shift
+ *     the cron schedule);
+ *   - is idempotent against active runs — re-trigger while a previous run is
+ *     pending/claimed/running returns the existing `run_id` with
+ *     `already_queued: true`;
+ *   - requires the calling token's bound `device_workers.id` to match
+ *     `watchers.device_worker_id`. No cross-device triggering.
+ *
+ * Auth: same `/api/workers/*` middleware. `device_worker:run` scope (granted
+ * to Mac-app PATs minted via the device-link flow).
+ */
+export async function triggerWatcherForDevice(c: Context<{ Bindings: Env }>) {
+  const watcherIdParam = c.req.param('watcher_id');
+  if (!watcherIdParam) {
+    return c.json({ error: 'watcher_id is required' }, 400);
+  }
+  const watcherId = Number(watcherIdParam);
+  if (!Number.isFinite(watcherId) || watcherId <= 0) {
+    return c.json({ error: 'Invalid watcher_id' }, 400);
+  }
+
+  // The middleware already verified the token has `device_worker:run` (or
+  // mcp:write/admin). The trigger surface is user-scoped only — trusted
+  // server workers shouldn't be triggering device-pinned watchers, that's
+  // what the scheduled path is for.
+  if (c.var.workerAuthMode !== 'user') {
+    return c.json({ error: 'Endpoint is user-scoped only' }, 403);
+  }
+  const workerUserId = c.var.workerUserId;
+  if (!workerUserId) {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
+  const scopes = c.var.mcpAuthInfo?.scopes ?? [];
+  if (
+    !scopes.includes('device_worker:run') &&
+    !scopes.includes('mcp:write') &&
+    !scopes.includes('mcp:admin')
+  ) {
+    return c.json({ error: 'Worker token missing device_worker:run scope' }, 403);
+  }
+
+  // Resolve the caller's bound device worker. mcpAuth populates
+  // `mcpAuthInfo.workerId` from the PAT row. Without a bound workerId there's
+  // no way to authorize the trigger — manual fires must come from a known
+  // physical device.
+  const boundWorkerId = c.var.mcpAuthInfo?.workerId ?? null;
+  if (!boundWorkerId) {
+    return c.json({ error: 'Token is not bound to a device worker' }, 403);
+  }
+
+  const sql = getDb();
+  let resolvedDeviceWorkerId: string;
+  try {
+    const deviceRows = (await sql`
+      SELECT id, organization_id
+      FROM device_workers
+      WHERE user_id = ${workerUserId} AND worker_id = ${boundWorkerId}
+      LIMIT 1
+    `) as unknown as Array<{ id: string; organization_id: string | null }>;
+    const device = deviceRows[0];
+    if (!device) {
+      return c.json({ error: 'Device not registered yet — poll first' }, 404);
+    }
+    resolvedDeviceWorkerId = device.id;
+  } catch (err) {
+    logger.error({ error: errorMessage(err) }, '[triggerWatcherForDevice] device lookup failed');
+    return c.json({ error: 'Internal error' }, 500);
+  }
+
+  // Load the watcher and enforce two checks:
+  //   (1) the watcher is in the caller's org scope (auth middleware computed
+  //       `workerOrgIds` from the token-bound org + the user's personal org);
+  //   (2) `watchers.device_worker_id` matches the caller's device. Even if
+  //       the user owns both devices, A cannot trigger a watcher pinned to B
+  //       — that's a different pairing in the UI.
+  const watcherRows = (await sql`
+    SELECT id, organization_id, agent_id, status, device_worker_id::text AS device_worker_id
+    FROM watchers
+    WHERE id = ${watcherId}
+    LIMIT 1
+  `) as unknown as Array<{
+    id: number;
+    organization_id: string;
+    agent_id: string | null;
+    status: string;
+    device_worker_id: string | null;
+  }>;
+  const watcher = watcherRows[0];
+  if (!watcher) {
+    return c.json({ error: 'Watcher not found' }, 404);
+  }
+
+  const orgIds = c.var.workerOrgIds ?? [];
+  if (!orgIds.includes(watcher.organization_id)) {
+    return c.json({ error: 'Forbidden' }, 403);
+  }
+  if (!watcher.device_worker_id || watcher.device_worker_id !== resolvedDeviceWorkerId) {
+    return c.json({ error: 'Watcher is not pinned to this device' }, 403);
+  }
+  if ((watcher.status ?? 'active') !== 'active') {
+    return c.json({ error: 'Watcher is not active' }, 409);
+  }
+  if (!watcher.agent_id) {
+    return c.json({ error: 'Watcher has no agent assigned' }, 409);
+  }
+
+  // Enqueue (or re-use) the run. `enqueueWatcherRunForWatcher` delegates to
+  // `createWatcherRun`, which checks for an active run in the same watcher_id
+  // lane and reuses it (returns `created: false`). That gives us broad
+  // idempotency across pending/claimed/running — re-trigger never starts a
+  // second run while the first is still in flight. We intentionally do NOT
+  // advance `watchers.next_run_at` here so a manual fire doesn't shift the
+  // cron schedule.
+  try {
+    const result = await enqueueWatcherRunForWatcher(watcherId, 'manual');
+    return c.json(
+      {
+        run_id: result.runId,
+        status: result.status,
+        already_queued: !result.created,
+        queued_at: new Date().toISOString(),
+      },
+      200
+    );
+  } catch (err) {
+    logger.error(
+      { error: errorMessage(err), watcherId },
+      '[triggerWatcherForDevice] enqueue failed'
+    );
     return c.json({ error: errorMessage(err) }, 500);
   }
 }

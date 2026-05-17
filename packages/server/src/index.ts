@@ -637,6 +637,7 @@ import {
   pollWorkerJob,
   postAuthSignal,
   streamContent,
+  triggerWatcherForDevice,
 } from './worker-api';
 
 // Worker API authentication.
@@ -691,11 +692,18 @@ app.use('/api/workers/*', async (c, next) => {
       // gate here would just block legitimate posts from the bound device.
       const isWatcherCompleteSubpath =
         /^\/api\/workers\/me\/runs\/\d+\/complete-watcher$/.test(requestPath);
+      // /api/workers/me/watchers/<watcher_id>/trigger — device-side manual
+      // re-run endpoint. The handler does its own bound-workerId →
+      // device_worker_id match, so the org-scope gate here would block
+      // legitimate triggers from the pinned device.
+      const isWatcherTriggerSubpath =
+        /^\/api\/workers\/me\/watchers\/\d+\/trigger$/.test(requestPath);
       if (
         !allowedPathsForUserWorker.has(requestPath) &&
         !isAuthProfileSubpath &&
         !isFeedSubpath &&
-        !isWatcherCompleteSubpath
+        !isWatcherCompleteSubpath &&
+        !isWatcherTriggerSubpath
       ) {
         return c.json({ error: 'Endpoint not available to user-scoped workers' }, 403);
       }
@@ -744,6 +752,7 @@ app.post('/api/workers/complete', completeWorkerJob);
 app.post('/api/workers/complete-action', completeActionRun);
 app.post('/api/workers/complete-embeddings', completeEmbeddings);
 app.post('/api/workers/me/runs/:runId/complete-watcher', completeWatcherRun);
+app.post('/api/workers/me/watchers/:watcher_id/trigger', triggerWatcherForDevice);
 app.post('/api/workers/fetch-events', fetchEventsForEmbedding);
 app.post('/api/workers/emit-auth-artifact', emitAuthArtifact);
 app.post('/api/workers/poll-auth-signal', pollAuthSignal);

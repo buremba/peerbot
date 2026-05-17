@@ -2293,6 +2293,7 @@ async function handleList(
       i.next_run_at,
       i.agent_id,
       i.device_worker_id,
+      i.last_fired_at,
       i.scheduler_client_id,
       i.model_config,
       i.sources,

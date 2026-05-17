@@ -204,7 +204,7 @@ async function enqueueWatcherRunForRecord(
   return queued;
 }
 
-async function enqueueWatcherRunForWatcher(
+export async function enqueueWatcherRunForWatcher(
   watcherId: number,
   dispatchSource: WatcherRunPayload['dispatch_source'],
   db?: DbClient

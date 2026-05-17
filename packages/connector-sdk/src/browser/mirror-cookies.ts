@@ -7,7 +7,7 @@
  * Playwright-ready Cookie[] to the runner. macOS only in v1.
  */
 
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -146,6 +146,25 @@ export async function decryptChromeCookiesMacOS(
     );
   }
 
+  // `sourceProfileDir` is supplied by the CLI/UI (user-picked Chrome
+  // profile slug like "Default" or "Profile 1"). Reject anything that
+  // contains path separators or parent-dir references so the join below
+  // can't escape `userDataRoot` and read an arbitrary SQLite file.
+  if (
+    typeof params.sourceProfileDir !== 'string' ||
+    params.sourceProfileDir.length === 0 ||
+    params.sourceProfileDir.includes('/') ||
+    params.sourceProfileDir.includes('\\') ||
+    params.sourceProfileDir.includes('\0') ||
+    params.sourceProfileDir === '.' ||
+    params.sourceProfileDir === '..' ||
+    params.sourceProfileDir.startsWith('..')
+  ) {
+    throw new Error(
+      `Invalid sourceProfileDir '${params.sourceProfileDir}': must be a single Chrome profile directory name (e.g. "Default", "Profile 1")`
+    );
+  }
+
   const cookiePath = join(params.userDataRoot, params.sourceProfileDir, 'Cookies');
   if (!existsSync(cookiePath)) {
     throw new Error(
@@ -174,8 +193,19 @@ export async function decryptChromeCookiesMacOS(
   try {
     let keychainKey: string | null = null;
     try {
-      keychainKey = execSync(
-        `security find-generic-password -w -s "${cfg.keychain.service}" -a "${cfg.keychain.account}"`,
+      // execFileSync (no shell) — keychain service/account are hardcoded today
+      // but if the browserConfig table ever grows from caller input, the shell
+      // form would be a command-injection foothold. Pass args explicitly.
+      keychainKey = execFileSync(
+        'security',
+        [
+          'find-generic-password',
+          '-w',
+          '-s',
+          cfg.keychain.service,
+          '-a',
+          cfg.keychain.account,
+        ],
         { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
       ).trim();
     } catch {

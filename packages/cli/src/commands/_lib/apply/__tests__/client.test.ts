@@ -40,7 +40,11 @@ describe("ApplyClient", () => {
     );
 
     const watchers = await client.listWatchers();
-    expect(calls[0]?.url).toBe("https://example.test/api/acme/watchers");
+    // `include_details=true` so the apply diff can see prompt /
+    // extraction_schema / reactions_guidance / etc. for drift detection.
+    expect(calls[0]?.url).toBe(
+      "https://example.test/api/acme/watchers?include_details=true"
+    );
     expect(calls[0]?.init?.method).toBe("GET");
     expect(watchers).toEqual([{ slug: "digest", name: "Digest" }]);
   });

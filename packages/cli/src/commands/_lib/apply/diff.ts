@@ -75,8 +75,19 @@ export interface WatcherDiffRow extends BaseRow {
   kind: "watcher";
   desired?: DesiredWatcher;
   remote?: RemoteWatcher;
-  /** Always absent — watchers are create-or-noop, never updated by apply. */
+  /** Per-field changes when verb === "update". */
   changedFields?: string[];
+  /**
+   * Field names that require a `create_version` + `upgrade` (vs a plain
+   * `update`). Apply uses this to route writes to the right admin action.
+   */
+  versionBoundFields?: string[];
+  /**
+   * True when the desired watcher declares a `reaction_script` — server stores
+   * it write-only, so the diff can't tell whether it changed; apply always
+   * re-pushes (idempotent). Matches the auth-profile credentials pattern.
+   */
+  reactionScriptDeclared?: boolean;
 }
 
 export interface ConnectorDefinitionDiffRow extends BaseRow {
@@ -422,25 +433,152 @@ function diffRelationshipType(
 }
 
 /**
- * Watchers are sync-on-create only: a model file declares a watcher, and the
- * first apply creates it. Subsequent applies see the slug remotely and noop.
- * Remote watchers without a desired model are reported as drift, never
- * deleted — and we deliberately don't diff prompt/schema/schedule changes in
- * v1, so editing a watcher in the UI won't be clobbered by apply.
+ * Watcher drift fields split into two routing categories:
+ *   - **scalar** lives on the `watchers` row → `manage_watchers update`.
+ *   - **version-bound** lives on the `watcher_versions` row → must go through
+ *     `create_version` + `upgrade` (server-side bumps `current_version_id`).
+ * The diff returns both lists; apply-cmd routes accordingly.
+ *
+ * Reaction scripts aren't returned by `list_watchers` (write-only on the row),
+ * so we can't compare them — apply always re-pushes when declared (idempotent).
+ * Remote watchers without a desired model are reported as drift, never deleted.
  */
 function diffWatcher(
   desired: DesiredWatcher,
   remote: RemoteWatcher | undefined
 ): WatcherDiffRow {
+  const reactionScriptDeclared = desired.reactionScript !== undefined;
   if (!remote) {
-    return { kind: "watcher", verb: "create", id: desired.slug, desired };
+    return {
+      kind: "watcher",
+      verb: "create",
+      id: desired.slug,
+      desired,
+      ...(reactionScriptDeclared ? { reactionScriptDeclared: true } : {}),
+    };
+  }
+
+  const scalar: string[] = [];
+  if ((desired.schedule ?? null) !== (remote.schedule ?? null)) {
+    scalar.push("schedule");
+  }
+  if (desired.agent !== (remote.agent_id ?? "")) {
+    scalar.push("agent_id");
+  }
+  if (
+    desired.deviceWorkerId !== undefined &&
+    desired.deviceWorkerId !== (remote.device_worker_id ?? undefined)
+  ) {
+    scalar.push("device_worker_id");
+  }
+  if (
+    desired.schedulerClientId !== undefined &&
+    desired.schedulerClientId !== (remote.scheduler_client_id ?? undefined)
+  ) {
+    scalar.push("scheduler_client_id");
+  }
+  if (
+    desired.notificationChannel !== undefined &&
+    desired.notificationChannel !== (remote.notification_channel ?? undefined)
+  ) {
+    scalar.push("notification_channel");
+  }
+  if (
+    desired.notificationPriority !== undefined &&
+    desired.notificationPriority !== (remote.notification_priority ?? undefined)
+  ) {
+    scalar.push("notification_priority");
+  }
+  if (
+    desired.minCooldownSeconds !== undefined &&
+    desired.minCooldownSeconds !== (remote.min_cooldown_seconds ?? undefined)
+  ) {
+    scalar.push("min_cooldown_seconds");
+  }
+  if (
+    desired.tags !== undefined &&
+    !deepEqual(desired.tags, remote.tags ?? [])
+  ) {
+    scalar.push("tags");
+  }
+  if (
+    desired.agentKind !== undefined &&
+    desired.agentKind !== (remote.agent_kind ?? undefined)
+  ) {
+    scalar.push("agent_kind");
+  }
+
+  const versionBound: string[] = [];
+  if (desired.prompt !== (remote.prompt ?? "")) {
+    versionBound.push("prompt");
+  }
+  if (
+    !deepEqual(desired.extractionSchema ?? {}, remote.extraction_schema ?? {})
+  ) {
+    versionBound.push("extraction_schema");
+  }
+  // Sources live on the watchers row but are written as part of create_version
+  // when changed (server copies them to the version's per-assignment scope).
+  // Diff against `remote.sources` (also from the row) and route through
+  // create_version so the version chain stays consistent.
+  if (
+    desired.sources !== undefined &&
+    !deepEqual(desired.sources, remote.sources ?? [])
+  ) {
+    versionBound.push("sources");
+  }
+  if (
+    desired.reactionsGuidance !== undefined &&
+    desired.reactionsGuidance !== (remote.reactions_guidance ?? "")
+  ) {
+    versionBound.push("reactions_guidance");
+  }
+  if (
+    desired.jsonTemplate !== undefined &&
+    !deepEqual(desired.jsonTemplate, remote.json_template)
+  ) {
+    versionBound.push("json_template");
+  }
+  if (
+    desired.keyingConfig !== undefined &&
+    !deepEqual(desired.keyingConfig, remote.keying_config ?? {})
+  ) {
+    versionBound.push("keying_config");
+  }
+  if (
+    desired.classifiers !== undefined &&
+    !deepEqual(desired.classifiers, remote.classifiers ?? [])
+  ) {
+    versionBound.push("classifiers");
+  }
+  if (
+    desired.condensationPrompt !== undefined &&
+    desired.condensationPrompt !== (remote.condensation_prompt ?? "")
+  ) {
+    versionBound.push("condensation_prompt");
+  }
+  if (
+    desired.condensationWindowCount !== undefined &&
+    desired.condensationWindowCount !==
+      (remote.condensation_window_count ?? undefined)
+  ) {
+    versionBound.push("condensation_window_count");
+  }
+
+  const changed = [...scalar, ...versionBound];
+  if (reactionScriptDeclared) changed.push("reaction_script");
+  if (changed.length === 0) {
+    return { kind: "watcher", verb: "noop", id: desired.slug, desired, remote };
   }
   return {
     kind: "watcher",
-    verb: "noop",
+    verb: "update",
     id: desired.slug,
     desired,
     remote,
+    changedFields: changed,
+    ...(versionBound.length > 0 ? { versionBoundFields: versionBound } : {}),
+    ...(reactionScriptDeclared ? { reactionScriptDeclared: true } : {}),
   };
 }
 
@@ -580,6 +718,11 @@ function diffConnection(
       {
         name: "config",
         changed: (d, r) => !deepEqual(d.config ?? {}, r.config ?? {}),
+      },
+      {
+        name: "device_worker_id",
+        changed: (d, r) =>
+          (d.deviceWorkerId ?? null) !== (r.device_worker_id ?? null),
       },
     ],
   }) as ConnectionDiffRow;

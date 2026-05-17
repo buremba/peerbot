@@ -343,6 +343,55 @@ Memory:
       }
     );
 
+  // ─── export ─────────────────────────────────────────────────────────
+  program
+    .command("export")
+    .description(
+      "Pull memory schema + connectors from the org into apply-compatible files"
+    )
+    .option(
+      "--out <dir>",
+      "Destination directory (defaults to cwd; creates models/, connectors/)"
+    )
+    .option("--force", "Overwrite existing models/connectors files")
+    .option("--org <slug>", "Org slug override (defaults to active session)")
+    .option("--url <url>", "Server URL override")
+    .option(
+      "--only <kind>",
+      "Restrict to one resource family: 'models' | 'connectors'"
+    )
+    .action(
+      async (options: {
+        out?: string;
+        force?: boolean;
+        org?: string;
+        url?: string;
+        only?: string;
+      }) => {
+        if (
+          options.only !== undefined &&
+          options.only !== "models" &&
+          options.only !== "connectors"
+        ) {
+          console.error(
+            chalk.red("\n  Error:"),
+            `--only must be 'models' or 'connectors' (got: ${options.only})`
+          );
+          process.exit(2);
+        }
+        const { exportCommand } = await import(
+          "./commands/_lib/export/export-cmd.js"
+        );
+        await exportCommand({
+          out: options.out,
+          force: options.force,
+          org: options.org,
+          url: options.url,
+          only: options.only as "models" | "connectors" | undefined,
+        });
+      }
+    );
+
   // ─── run / dev / start ──────────────────────────────────────────────
   program
     .command("run")

@@ -47,6 +47,28 @@ export interface RemoteWatcher {
   slug: string;
   name?: string;
   watcher_id?: string;
+  agent_id?: string | null;
+  schedule?: string | null;
+  device_worker_id?: string | null;
+  goal_id?: number | null;
+  scheduler_client_id?: string | null;
+  agent_kind?: string | null;
+  notification_channel?: string | null;
+  notification_priority?: string | null;
+  min_cooldown_seconds?: number | null;
+  tags?: string[] | null;
+  sources?: Array<{ name: string; query: string }> | null;
+  // include_details=true → version-bound fields
+  description?: string | null;
+  prompt?: string | null;
+  extraction_schema?: Record<string, unknown> | null;
+  classifiers?: unknown[] | null;
+  json_template?: unknown;
+  keying_config?: Record<string, unknown> | null;
+  condensation_prompt?: string | null;
+  condensation_window_count?: number | null;
+  reactions_guidance?: string | null;
+  // NB: reaction_script is NOT in list_watchers — push always (idempotent).
 }
 
 export interface UpsertPlatformResult {
@@ -99,6 +121,7 @@ export interface RemoteConnection {
   auth_profile_slug?: string | null;
   app_auth_profile_slug?: string | null;
   config?: Record<string, unknown> | null;
+  device_worker_id?: string | null;
 }
 
 export interface RemoteFeed {
@@ -528,10 +551,40 @@ export class ApplyClient {
 
   // ── Watchers ──────────────────────────────────────────────────────────────
 
+  /**
+   * Fetch a single watcher's full payload — `getWatcher` server-side, which
+   * returns reaction_script (not in the list response). Used by `lobu export`
+   * to round-trip reaction scripts back to sibling `.ts` files.
+   */
+  async getWatcherDetail(watcherId: string): Promise<{
+    reaction_script?: string | null;
+    description?: string | null;
+  } | null> {
+    try {
+      const { body } = await this.request<{
+        watcher?: {
+          reaction_script?: string | null;
+          description?: string | null;
+        };
+      }>(
+        "GET",
+        `/api/${this.orgSlug}/watchers?watcher_id=${encodeURIComponent(watcherId)}`
+      );
+      return body.watcher ?? null;
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) return null;
+      throw err;
+    }
+  }
+
   async listWatchers(): Promise<RemoteWatcher[]> {
+    // `include_details=true` pulls the version-bound fields (prompt,
+    // extraction_schema, classifiers, json_template, keying_config,
+    // condensation_*, reactions_guidance) too. Apply diffs against these to
+    // detect drift on the prompt / schema / sources / etc.
     const { body } = await this.request<{ watchers?: RemoteWatcher[] }>(
       "GET",
-      `/api/${this.orgSlug}/watchers`
+      `/api/${this.orgSlug}/watchers?include_details=true`
     );
     return body.watchers ?? [];
   }
@@ -551,17 +604,197 @@ export class ApplyClient {
     extraction_schema: Record<string, unknown>;
     schedule?: string;
     sources?: Array<{ name: string; query: string }>;
+    reactions_guidance?: string;
+    device_worker_id?: string;
+    scheduler_client_id?: string;
+    notification_channel?: "canvas" | "notification" | "both";
+    notification_priority?: "low" | "normal" | "high";
+    min_cooldown_seconds?: number;
+    tags?: string[];
+    agent_kind?: string;
+    json_template?: unknown;
+    keying_config?: Record<string, unknown>;
+    classifiers?: unknown[];
+    condensation_prompt?: string;
+    condensation_window_count?: number;
+  }): Promise<{ watcher_id?: string }> {
+    const { body } = await this.request<{ watcher_id?: string }>(
+      "POST",
+      `/api/${this.orgSlug}/manage_watchers`,
+      {
+        action: "create",
+        slug: payload.slug,
+        agent_id: payload.agentId,
+        ...(payload.name ? { name: payload.name } : {}),
+        ...(payload.description ? { description: payload.description } : {}),
+        prompt: payload.prompt,
+        extraction_schema: payload.extraction_schema,
+        ...(payload.schedule ? { schedule: payload.schedule } : {}),
+        ...(payload.sources?.length ? { sources: payload.sources } : {}),
+        ...(payload.reactions_guidance !== undefined
+          ? { reactions_guidance: payload.reactions_guidance }
+          : {}),
+        ...(payload.device_worker_id !== undefined
+          ? { device_worker_id: payload.device_worker_id }
+          : {}),
+        ...(payload.scheduler_client_id !== undefined
+          ? { scheduler_client_id: payload.scheduler_client_id }
+          : {}),
+        ...(payload.notification_channel !== undefined
+          ? { notification_channel: payload.notification_channel }
+          : {}),
+        ...(payload.notification_priority !== undefined
+          ? { notification_priority: payload.notification_priority }
+          : {}),
+        ...(payload.min_cooldown_seconds !== undefined
+          ? { min_cooldown_seconds: payload.min_cooldown_seconds }
+          : {}),
+        ...(payload.tags?.length ? { tags: payload.tags } : {}),
+        ...(payload.agent_kind !== undefined
+          ? { agent_kind: payload.agent_kind }
+          : {}),
+        ...(payload.json_template !== undefined
+          ? { json_template: payload.json_template }
+          : {}),
+        ...(payload.keying_config !== undefined
+          ? { keying_config: payload.keying_config }
+          : {}),
+        ...(payload.classifiers !== undefined
+          ? { classifiers: payload.classifiers }
+          : {}),
+        ...(payload.condensation_prompt !== undefined
+          ? { condensation_prompt: payload.condensation_prompt }
+          : {}),
+        ...(payload.condensation_window_count !== undefined
+          ? { condensation_window_count: payload.condensation_window_count }
+          : {}),
+      }
+    );
+    return { ...(body.watcher_id ? { watcher_id: body.watcher_id } : {}) };
+  }
+
+  /**
+   * Update the **scalar** fields on the `watchers` row — these don't require
+   * a new version. Version-bound fields (prompt / extraction_schema / sources
+   * / reactions_guidance / json_template / keying_config / classifiers /
+   * condensation_*) require `createWatcherVersion` instead.
+   *
+   * `null` clears nullable fields (device_worker_id, scheduler_client_id,
+   * goal_id, agent_kind) per the server contract.
+   */
+  async updateWatcher(payload: {
+    watcher_id: string;
+    schedule?: string | null;
+    agent_id?: string;
+    device_worker_id?: string | null;
+    scheduler_client_id?: string | null;
+    notification_channel?: "canvas" | "notification" | "both";
+    notification_priority?: "low" | "normal" | "high";
+    min_cooldown_seconds?: number;
+    tags?: string[];
+    agent_kind?: string | null;
+    goal_id?: number | null;
+    model_config?: Record<string, unknown>;
   }): Promise<void> {
     await this.request("POST", `/api/${this.orgSlug}/manage_watchers`, {
-      action: "create",
-      slug: payload.slug,
-      agent_id: payload.agentId,
-      ...(payload.name ? { name: payload.name } : {}),
-      ...(payload.description ? { description: payload.description } : {}),
-      prompt: payload.prompt,
-      extraction_schema: payload.extraction_schema,
-      ...(payload.schedule ? { schedule: payload.schedule } : {}),
-      ...(payload.sources?.length ? { sources: payload.sources } : {}),
+      action: "update",
+      watcher_id: payload.watcher_id,
+      ...(payload.schedule !== undefined ? { schedule: payload.schedule } : {}),
+      ...(payload.agent_id !== undefined ? { agent_id: payload.agent_id } : {}),
+      ...(payload.device_worker_id !== undefined
+        ? { device_worker_id: payload.device_worker_id }
+        : {}),
+      ...(payload.scheduler_client_id !== undefined
+        ? { scheduler_client_id: payload.scheduler_client_id }
+        : {}),
+      ...(payload.notification_channel !== undefined
+        ? { notification_channel: payload.notification_channel }
+        : {}),
+      ...(payload.notification_priority !== undefined
+        ? { notification_priority: payload.notification_priority }
+        : {}),
+      ...(payload.min_cooldown_seconds !== undefined
+        ? { min_cooldown_seconds: payload.min_cooldown_seconds }
+        : {}),
+      ...(payload.tags !== undefined ? { tags: payload.tags } : {}),
+      ...(payload.agent_kind !== undefined
+        ? { agent_kind: payload.agent_kind }
+        : {}),
+      ...(payload.goal_id !== undefined ? { goal_id: payload.goal_id } : {}),
+      ...(payload.model_config !== undefined
+        ? { model_config: payload.model_config }
+        : {}),
+    });
+  }
+
+  /**
+   * Create a new watcher_versions row carrying the version-bound fields, then
+   * upgrade the watcher's `current_version_id` to that new version. Server
+   * inherits unset fields from the previous version row.
+   */
+  async createWatcherVersion(payload: {
+    watcher_id: string;
+    prompt?: string;
+    extraction_schema?: Record<string, unknown>;
+    sources?: Array<{ name: string; query: string }>;
+    json_template?: unknown;
+    keying_config?: Record<string, unknown>;
+    classifiers?: unknown[];
+    reactions_guidance?: string;
+    condensation_prompt?: string;
+    condensation_window_count?: number;
+    change_notes?: string;
+  }): Promise<{ version?: number }> {
+    const { body } = await this.request<{ version?: number }>(
+      "POST",
+      `/api/${this.orgSlug}/manage_watchers`,
+      {
+        action: "create_version",
+        watcher_id: payload.watcher_id,
+        set_as_current: true,
+        ...(payload.prompt !== undefined ? { prompt: payload.prompt } : {}),
+        ...(payload.extraction_schema !== undefined
+          ? { extraction_schema: payload.extraction_schema }
+          : {}),
+        ...(payload.sources !== undefined ? { sources: payload.sources } : {}),
+        ...(payload.json_template !== undefined
+          ? { json_template: payload.json_template }
+          : {}),
+        ...(payload.keying_config !== undefined
+          ? { keying_config: payload.keying_config }
+          : {}),
+        ...(payload.classifiers !== undefined
+          ? { classifiers: payload.classifiers }
+          : {}),
+        ...(payload.reactions_guidance !== undefined
+          ? { reactions_guidance: payload.reactions_guidance }
+          : {}),
+        ...(payload.condensation_prompt !== undefined
+          ? { condensation_prompt: payload.condensation_prompt }
+          : {}),
+        ...(payload.condensation_window_count !== undefined
+          ? { condensation_window_count: payload.condensation_window_count }
+          : {}),
+        ...(payload.change_notes
+          ? { change_notes: payload.change_notes }
+          : { change_notes: "lobu apply" }),
+      }
+    );
+    return body.version !== undefined ? { version: body.version } : {};
+  }
+
+  /**
+   * Attach (or clear) a reaction script. Pass an empty string to remove it —
+   * matches the admin tool contract.
+   */
+  async setReactionScript(
+    watcherId: string,
+    reactionScript: string
+  ): Promise<void> {
+    await this.request("POST", `/api/${this.orgSlug}/manage_watchers`, {
+      action: "set_reaction_script",
+      watcher_id: watcherId,
+      reaction_script: reactionScript,
     });
   }
 
@@ -756,6 +989,7 @@ export class ApplyClient {
     authProfileSlug?: string;
     appAuthProfileSlug?: string;
     config?: Record<string, unknown>;
+    deviceWorkerId?: string;
   }): Promise<RemoteConnection> {
     const body = await this.connectionsTool<{ connection?: RemoteConnection }>({
       action: "create",
@@ -769,6 +1003,9 @@ export class ApplyClient {
         ? { app_auth_profile_slug: payload.appAuthProfileSlug }
         : {}),
       ...(payload.config ? { config: payload.config } : {}),
+      ...(payload.deviceWorkerId
+        ? { device_worker_id: payload.deviceWorkerId }
+        : {}),
     });
     if (!body.connection) {
       throw new ApiError(
@@ -785,6 +1022,7 @@ export class ApplyClient {
       authProfileSlug?: string | null;
       appAuthProfileSlug?: string | null;
       config?: Record<string, unknown>;
+      deviceWorkerId?: string | null;
     }
   ): Promise<RemoteConnection> {
     const body = await this.connectionsTool<{ connection?: RemoteConnection }>({
@@ -801,6 +1039,9 @@ export class ApplyClient {
       // manifest keys disappear remotely (server defaults to merge).
       ...(payload.config !== undefined
         ? { config: payload.config, replace_config: true }
+        : {}),
+      ...(payload.deviceWorkerId !== undefined
+        ? { device_worker_id: payload.deviceWorkerId }
         : {}),
     });
     if (!body.connection) {

@@ -411,6 +411,7 @@ describe("apply diff — empty container preservation", () => {
 describe("apply diff — watchers", () => {
   const desiredWatcher = {
     slug: "weekly-digest",
+    agent: "triage",
     name: "Weekly digest",
     prompt: "Produce a digest.",
     extractionSchema: { type: "object" as const },
@@ -425,16 +426,106 @@ describe("apply diff — watchers", () => {
     expect(row?.id).toBe("weekly-digest");
   });
 
-  test("noop when watcher already exists remotely", () => {
+  test("noop when remote matches every field the diff covers", () => {
     const desired = buildState([], { watchers: [desiredWatcher] });
     const remote: RemoteSnapshot = {
       ...emptyRemote(),
-      watchers: [{ slug: "weekly-digest", name: "Weekly digest" }],
+      watchers: [
+        {
+          slug: "weekly-digest",
+          name: "Weekly digest",
+          agent_id: "triage",
+          prompt: "Produce a digest.",
+          extraction_schema: { type: "object" },
+          schedule: "0 9 * * 1",
+        },
+      ],
     };
     const plan = computeDiff(desired, remote);
     const row = plan.rows.find((r) => r.kind === "watcher");
     expect(row?.verb).toBe("noop");
     expect(plan.counts.create).toBe(0);
+  });
+
+  test("update with scalar drift when schedule changes remotely", () => {
+    const desired = buildState([], { watchers: [desiredWatcher] });
+    const remote: RemoteSnapshot = {
+      ...emptyRemote(),
+      watchers: [
+        {
+          slug: "weekly-digest",
+          name: "Weekly digest",
+          agent_id: "triage",
+          prompt: "Produce a digest.",
+          extraction_schema: { type: "object" },
+          schedule: "0 10 * * 1",
+        },
+      ],
+    };
+    const plan = computeDiff(desired, remote);
+    const row = plan.rows.find((r) => r.kind === "watcher");
+    expect(row?.verb).toBe("update");
+    expect(row?.changedFields).toContain("schedule");
+    expect(
+      (row as { versionBoundFields?: string[] }).versionBoundFields
+    ).toBeUndefined();
+  });
+
+  test("update with version-bound drift when prompt changes remotely", () => {
+    const desired = buildState([], { watchers: [desiredWatcher] });
+    const remote: RemoteSnapshot = {
+      ...emptyRemote(),
+      watchers: [
+        {
+          slug: "weekly-digest",
+          name: "Weekly digest",
+          agent_id: "triage",
+          prompt: "Old prompt",
+          extraction_schema: { type: "object" },
+          schedule: "0 9 * * 1",
+        },
+      ],
+    };
+    const plan = computeDiff(desired, remote);
+    const row = plan.rows.find((r) => r.kind === "watcher");
+    expect(row?.verb).toBe("update");
+    expect(
+      (row as { versionBoundFields?: string[] }).versionBoundFields
+    ).toEqual(["prompt"]);
+  });
+
+  test("reaction_script declared → always re-pushed (idempotent)", () => {
+    const desired = buildState([], {
+      watchers: [
+        {
+          ...desiredWatcher,
+          reactionScript: {
+            sourcePath: "/abs/path/r.ts",
+            sourceCode: "export default async () => {};",
+          },
+        },
+      ],
+    });
+    const remote: RemoteSnapshot = {
+      ...emptyRemote(),
+      watchers: [
+        {
+          slug: "weekly-digest",
+          name: "Weekly digest",
+          agent_id: "triage",
+          prompt: "Produce a digest.",
+          extraction_schema: { type: "object" },
+          schedule: "0 9 * * 1",
+        },
+      ],
+    };
+    const plan = computeDiff(desired, remote);
+    const row = plan.rows.find((r) => r.kind === "watcher");
+    expect(row?.verb).toBe("update");
+    expect(row?.changedFields).toEqual(["reaction_script"]);
+    expect(
+      (row as { reactionScriptDeclared?: boolean }).reactionScriptDeclared
+    ).toBe(true);
   });
 
   test("drift when remote watcher not declared in models", () => {

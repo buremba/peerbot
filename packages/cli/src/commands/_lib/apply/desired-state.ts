@@ -117,6 +117,40 @@ export interface DesiredWatcher {
   extractionSchema: Record<string, unknown>;
   /** Optional SQL data sources; server applies a default when omitted. */
   sources?: Array<{ name: string; query: string }>;
+  /**
+   * Reaction script — TypeScript source compiled + executed in an isolate at
+   * watcher-firing time. Authored as a sibling `.ts` file (`reaction_script:
+   * ./funnel-digest.ts` in the YAML), the CLI reads it and pushes raw source
+   * via `set_reaction_script`. Inline strings are rejected so the IDE can
+   * type-check the script.
+   */
+  reactionScript?: { sourcePath: string; sourceCode: string };
+  /** LLM guidance for the watcher's downstream reaction agent. */
+  reactionsGuidance?: string;
+  /** UUID of a device worker to pin this watcher's runs to (see `device_workers.id`). */
+  deviceWorkerId?: string;
+  /** MCP client id that should auto-run this watcher. */
+  schedulerClientId?: string;
+  /** Where firings surface — defaults to canvas server-side. */
+  notificationChannel?: "canvas" | "notification" | "both";
+  /** Priority class used by the dispatcher interrupt budget. */
+  notificationPriority?: "low" | "normal" | "high";
+  /** Minimum seconds between two firings of this watcher (0 = no cooldown). */
+  minCooldownSeconds?: number;
+  /** Free-form tags for filtering. */
+  tags?: string[];
+  /** Optional agent-kind override (e.g. "background", "notifier"). */
+  agentKind?: string;
+  /** Optional JSON template for renderer. */
+  jsonTemplate?: unknown;
+  /** Stable key generation across windows. */
+  keyingConfig?: Record<string, unknown>;
+  /** Classifier definitions for extraction (server-side feature). */
+  classifiers?: unknown[];
+  /** Handlebars prompt for condensing windows into a rollup. */
+  condensationPrompt?: string;
+  /** How many leaf windows to condense into one rollup (default 4 server-side). */
+  condensationWindowCount?: number;
 }
 
 export interface DesiredFeed {
@@ -138,6 +172,12 @@ export interface DesiredConnection {
   /** Slug of the OAuth-app auth profile (`app_auth:` in the manifest). */
   appAuthProfileSlug?: string;
   config?: Record<string, unknown>;
+  /**
+   * Optional UUID pinning the connection's syncs/actions to a specific device
+   * worker (`device_workers.id`). Required for connectors that declare a
+   * `required_capability`; omit it for serverless-on-Lobu runs.
+   */
+  deviceWorkerId?: string;
   feeds: DesiredFeed[];
   /** Relative path of the YAML file the doc came from (for error messages). */
   sourceFile: string;
@@ -753,7 +793,12 @@ function parseEntityType(raw: unknown): DesiredEntityType {
   return out;
 }
 
-function parseWatcher(raw: unknown): DesiredWatcher {
+const NOTIFICATION_CHANNELS = new Set(["canvas", "notification", "both"]);
+const NOTIFICATION_PRIORITIES = new Set(["low", "normal", "high"]);
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function parseWatcher(raw: unknown, modelFileAbsPath: string): DesiredWatcher {
   if (!isRecord(raw) || typeof raw.slug !== "string") {
     throw new ValidationError(
       `watcher model files must be objects with a "slug" string field; got ${JSON.stringify(raw)}`
@@ -780,7 +825,13 @@ function parseWatcher(raw: unknown): DesiredWatcher {
   };
   if (typeof raw.name === "string") out.name = raw.name;
   if (typeof raw.description === "string") out.description = raw.description;
-  if (typeof raw.schedule === "string") out.schedule = raw.schedule;
+  if (typeof raw.schedule === "string") {
+    const err = cronError(raw.schedule);
+    if (err) {
+      throw new ValidationError(`watcher "${raw.slug}" ${err}`);
+    }
+    out.schedule = raw.schedule;
+  }
   if (Array.isArray(raw.sources)) {
     out.sources = raw.sources
       .filter(isRecord)
@@ -790,6 +841,167 @@ function parseWatcher(raw: unknown): DesiredWatcher {
       )
       .map((s) => ({ name: s.name, query: s.query }));
   }
+
+  // Reaction script — sibling `.ts` file, resolved relative to the YAML.
+  if (raw.reaction_script !== undefined) {
+    if (
+      typeof raw.reaction_script !== "string" ||
+      !raw.reaction_script.trim()
+    ) {
+      throw new ValidationError(
+        `watcher "${raw.slug}" \`reaction_script\` must be a path to a sibling .ts file (e.g. \`reaction_script: ./funnel-digest.ts\`). Inline scripts are not supported — keep the TypeScript in its own file so your IDE can type-check it.`
+      );
+    }
+    const rel = raw.reaction_script.trim();
+    const baseDir = resolve(modelFileAbsPath, "..");
+    const abs = resolve(baseDir, rel);
+    let sourceCode: string;
+    try {
+      sourceCode = readFileSync(abs, "utf-8");
+    } catch {
+      throw new ValidationError(
+        `watcher "${raw.slug}" \`reaction_script\` ${rel} does not exist (resolved to ${abs})`
+      );
+    }
+    out.reactionScript = { sourcePath: abs, sourceCode };
+  }
+
+  if (raw.reactions_guidance !== undefined) {
+    if (typeof raw.reactions_guidance !== "string") {
+      throw new ValidationError(
+        `watcher "${raw.slug}" \`reactions_guidance\` must be a string`
+      );
+    }
+    out.reactionsGuidance = raw.reactions_guidance;
+  }
+
+  if (raw.device_worker_id !== undefined) {
+    if (
+      typeof raw.device_worker_id !== "string" ||
+      !UUID_PATTERN.test(raw.device_worker_id.trim())
+    ) {
+      throw new ValidationError(
+        `watcher "${raw.slug}" \`device_worker_id\` must be a UUID string (the device_workers.id of the device this watcher should run on)`
+      );
+    }
+    out.deviceWorkerId = raw.device_worker_id.trim();
+  }
+
+  if (raw.scheduler_client_id !== undefined) {
+    if (
+      typeof raw.scheduler_client_id !== "string" ||
+      !raw.scheduler_client_id.trim()
+    ) {
+      throw new ValidationError(
+        `watcher "${raw.slug}" \`scheduler_client_id\` must be a non-empty string`
+      );
+    }
+    out.schedulerClientId = raw.scheduler_client_id.trim();
+  }
+
+  if (raw.notification_channel !== undefined) {
+    if (
+      typeof raw.notification_channel !== "string" ||
+      !NOTIFICATION_CHANNELS.has(raw.notification_channel)
+    ) {
+      throw new ValidationError(
+        `watcher "${raw.slug}" \`notification_channel\` must be one of: canvas, notification, both`
+      );
+    }
+    out.notificationChannel =
+      raw.notification_channel as DesiredWatcher["notificationChannel"];
+  }
+
+  if (raw.notification_priority !== undefined) {
+    if (
+      typeof raw.notification_priority !== "string" ||
+      !NOTIFICATION_PRIORITIES.has(raw.notification_priority)
+    ) {
+      throw new ValidationError(
+        `watcher "${raw.slug}" \`notification_priority\` must be one of: low, normal, high`
+      );
+    }
+    out.notificationPriority =
+      raw.notification_priority as DesiredWatcher["notificationPriority"];
+  }
+
+  if (raw.min_cooldown_seconds !== undefined) {
+    if (
+      typeof raw.min_cooldown_seconds !== "number" ||
+      !Number.isFinite(raw.min_cooldown_seconds) ||
+      raw.min_cooldown_seconds < 0
+    ) {
+      throw new ValidationError(
+        `watcher "${raw.slug}" \`min_cooldown_seconds\` must be a non-negative number`
+      );
+    }
+    out.minCooldownSeconds = raw.min_cooldown_seconds;
+  }
+
+  if (raw.tags !== undefined) {
+    if (
+      !Array.isArray(raw.tags) ||
+      !raw.tags.every((t) => typeof t === "string")
+    ) {
+      throw new ValidationError(
+        `watcher "${raw.slug}" \`tags\` must be an array of strings`
+      );
+    }
+    out.tags = raw.tags as string[];
+  }
+
+  if (raw.agent_kind !== undefined) {
+    if (typeof raw.agent_kind !== "string" || !raw.agent_kind.trim()) {
+      throw new ValidationError(
+        `watcher "${raw.slug}" \`agent_kind\` must be a non-empty string`
+      );
+    }
+    out.agentKind = raw.agent_kind.trim();
+  }
+
+  if (raw.json_template !== undefined) {
+    out.jsonTemplate = raw.json_template;
+  }
+
+  if (raw.keying_config !== undefined) {
+    if (!isRecord(raw.keying_config)) {
+      throw new ValidationError(
+        `watcher "${raw.slug}" \`keying_config\` must be an object`
+      );
+    }
+    out.keyingConfig = raw.keying_config;
+  }
+
+  if (raw.classifiers !== undefined) {
+    if (!Array.isArray(raw.classifiers)) {
+      throw new ValidationError(
+        `watcher "${raw.slug}" \`classifiers\` must be an array`
+      );
+    }
+    out.classifiers = raw.classifiers;
+  }
+
+  if (raw.condensation_prompt !== undefined) {
+    if (typeof raw.condensation_prompt !== "string") {
+      throw new ValidationError(
+        `watcher "${raw.slug}" \`condensation_prompt\` must be a string`
+      );
+    }
+    out.condensationPrompt = raw.condensation_prompt;
+  }
+
+  if (raw.condensation_window_count !== undefined) {
+    if (
+      typeof raw.condensation_window_count !== "number" ||
+      raw.condensation_window_count < 2
+    ) {
+      throw new ValidationError(
+        `watcher "${raw.slug}" \`condensation_window_count\` must be a number ≥ 2`
+      );
+    }
+    out.condensationWindowCount = raw.condensation_window_count;
+  }
+
   return out;
 }
 
@@ -890,7 +1102,13 @@ async function loadMemoryModels(
         } else if (model.modelType === "relationship") {
           relationshipTypes.push(parseRelationshipType(model.data));
         } else if (model.modelType === "watcher") {
-          watchers.push(parseWatcher(model.data));
+          // `model.file` is like `schema.yaml:watchers[0]` (optionally with
+          // `#docIdx` for multi-doc streams) — strip the synthetic suffix
+          // before resolving on disk, then map through `modelsPath` to the
+          // absolute YAML path. `parseWatcher` reads `reaction_script:`
+          // sibling .ts files relative to that.
+          const yamlRel = model.file.replace(/[:#].*$/, "");
+          watchers.push(parseWatcher(model.data, join(modelsPath, yamlRel)));
         }
       }
     }
@@ -986,6 +1204,17 @@ function parseConnectionDoc(
   if (auth) out.authProfileSlug = auth;
   const appAuth = asString(raw.app_auth);
   if (appAuth) out.appAuthProfileSlug = appAuth;
+  if (raw.device_worker_id !== undefined) {
+    if (
+      typeof raw.device_worker_id !== "string" ||
+      !UUID_PATTERN.test(raw.device_worker_id.trim())
+    ) {
+      throw new ValidationError(
+        `${file}: connection "${slug}" \`device_worker_id\` must be a UUID (the device_workers.id of the device this connection runs on)`
+      );
+    }
+    out.deviceWorkerId = raw.device_worker_id.trim();
+  }
   if (raw.config !== undefined) {
     if (!isRecord(raw.config)) {
       throw new ValidationError(

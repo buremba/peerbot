@@ -670,22 +670,141 @@ async function executePlan(
     printText(renderProgress(row.verb, "relationship-type", row.id));
   }
 
-  // 6) Watchers (create-only; drift ignored)
+  // 6) Watchers — create (full payload + reaction script) or update (scalar
+  //    row fields via `update`, version-bound fields via `create_version`,
+  //    reaction script via `set_reaction_script`). Drift detection lives in
+  //    `diffWatcher`; this loop just routes to the right admin action.
+  const remoteWatcherBySlug = new Map(
+    ctx.remote.watchers.map((w) => [w.slug, w])
+  );
   for (const row of rowsByKind("watcher")) {
     if (row.kind !== "watcher") continue;
     if (!row.desired) continue;
     const w = row.desired;
-    await ctx.client.createWatcher({
-      slug: w.slug,
-      agentId: w.agent,
-      name: w.name,
-      description: w.description,
-      prompt: w.prompt,
-      extraction_schema: w.extractionSchema,
-      schedule: w.schedule,
-      sources: w.sources,
-    });
-    printText(renderProgress(row.verb, "watcher", row.id));
+    let watcherId: string | undefined;
+    if (row.verb === "create") {
+      const created = await ctx.client.createWatcher({
+        slug: w.slug,
+        agentId: w.agent,
+        name: w.name,
+        description: w.description,
+        prompt: w.prompt,
+        extraction_schema: w.extractionSchema,
+        schedule: w.schedule,
+        sources: w.sources,
+        reactions_guidance: w.reactionsGuidance,
+        device_worker_id: w.deviceWorkerId,
+        scheduler_client_id: w.schedulerClientId,
+        notification_channel: w.notificationChannel,
+        notification_priority: w.notificationPriority,
+        min_cooldown_seconds: w.minCooldownSeconds,
+        tags: w.tags,
+        agent_kind: w.agentKind,
+        json_template: w.jsonTemplate,
+        keying_config: w.keyingConfig,
+        classifiers: w.classifiers,
+        condensation_prompt: w.condensationPrompt,
+        condensation_window_count: w.condensationWindowCount,
+      });
+      watcherId = created.watcher_id;
+    } else if (row.verb === "update") {
+      const remote = remoteWatcherBySlug.get(w.slug);
+      watcherId = remote?.watcher_id;
+      if (!watcherId) {
+        throw new ApiError(
+          `update watcher "${w.slug}" failed: remote row is missing watcher_id (refetch may be stale)`
+        );
+      }
+      const versionBound = new Set(row.versionBoundFields ?? []);
+      const changed = new Set(row.changedFields ?? []);
+      const scalarChanges = [...changed].filter(
+        (f) => !versionBound.has(f) && f !== "reaction_script"
+      );
+      // a) Scalar fields → manage_watchers update
+      if (scalarChanges.length > 0) {
+        await ctx.client.updateWatcher({
+          watcher_id: watcherId,
+          ...(scalarChanges.includes("schedule")
+            ? { schedule: w.schedule ?? null }
+            : {}),
+          ...(scalarChanges.includes("agent_id") ? { agent_id: w.agent } : {}),
+          ...(scalarChanges.includes("device_worker_id")
+            ? { device_worker_id: w.deviceWorkerId ?? null }
+            : {}),
+          ...(scalarChanges.includes("scheduler_client_id")
+            ? { scheduler_client_id: w.schedulerClientId ?? null }
+            : {}),
+          ...(scalarChanges.includes("notification_channel") &&
+          w.notificationChannel
+            ? { notification_channel: w.notificationChannel }
+            : {}),
+          ...(scalarChanges.includes("notification_priority") &&
+          w.notificationPriority
+            ? { notification_priority: w.notificationPriority }
+            : {}),
+          ...(scalarChanges.includes("min_cooldown_seconds") &&
+          w.minCooldownSeconds !== undefined
+            ? { min_cooldown_seconds: w.minCooldownSeconds }
+            : {}),
+          ...(scalarChanges.includes("tags") && w.tags ? { tags: w.tags } : {}),
+          ...(scalarChanges.includes("agent_kind")
+            ? { agent_kind: w.agentKind ?? null }
+            : {}),
+        });
+      }
+      // b) Version-bound fields → manage_watchers create_version (server
+      //    inherits unset fields from the previous version row, but we always
+      //    send the desired-side values for the changed keys).
+      if (row.versionBoundFields && row.versionBoundFields.length > 0) {
+        await ctx.client.createWatcherVersion({
+          watcher_id: watcherId,
+          ...(versionBound.has("prompt") ? { prompt: w.prompt } : {}),
+          ...(versionBound.has("extraction_schema")
+            ? { extraction_schema: w.extractionSchema }
+            : {}),
+          ...(versionBound.has("sources") && w.sources !== undefined
+            ? { sources: w.sources }
+            : {}),
+          ...(versionBound.has("reactions_guidance") &&
+          w.reactionsGuidance !== undefined
+            ? { reactions_guidance: w.reactionsGuidance }
+            : {}),
+          ...(versionBound.has("json_template") && w.jsonTemplate !== undefined
+            ? { json_template: w.jsonTemplate }
+            : {}),
+          ...(versionBound.has("keying_config") && w.keyingConfig !== undefined
+            ? { keying_config: w.keyingConfig }
+            : {}),
+          ...(versionBound.has("classifiers") && w.classifiers !== undefined
+            ? { classifiers: w.classifiers }
+            : {}),
+          ...(versionBound.has("condensation_prompt") &&
+          w.condensationPrompt !== undefined
+            ? { condensation_prompt: w.condensationPrompt }
+            : {}),
+          ...(versionBound.has("condensation_window_count") &&
+          w.condensationWindowCount !== undefined
+            ? { condensation_window_count: w.condensationWindowCount }
+            : {}),
+        });
+      }
+    }
+    // c) Reaction script — push when declared (idempotent server-side, no
+    //    drift signal available because it's not returned by list_watchers).
+    if (w.reactionScript && watcherId) {
+      await ctx.client.setReactionScript(
+        watcherId,
+        w.reactionScript.sourceCode
+      );
+    }
+    printText(
+      renderProgress(
+        row.verb,
+        "watcher",
+        row.id,
+        row.changedFields ? `(${row.changedFields.join(", ")})` : undefined
+      )
+    );
   }
 
   // Auth profiles (create / update; interactive kinds → punch-list)
@@ -743,6 +862,9 @@ async function executePlan(
         authProfileSlug: desired.authProfileSlug ?? null,
         appAuthProfileSlug: desired.appAuthProfileSlug ?? null,
         config: desired.config ?? {},
+        // Always pass — server treats undefined as "leave alone", null as
+        // "unpin to server", and a uuid as "move to that device".
+        deviceWorkerId: desired.deviceWorkerId ?? null,
       });
       connectionIdBySlug.set(desired.slug, updated.id);
     } else {
@@ -753,6 +875,9 @@ async function executePlan(
         authProfileSlug: desired.authProfileSlug,
         appAuthProfileSlug: desired.appAuthProfileSlug,
         config: desired.config,
+        ...(desired.deviceWorkerId
+          ? { deviceWorkerId: desired.deviceWorkerId }
+          : {}),
       });
       connectionIdBySlug.set(desired.slug, created.id);
     }

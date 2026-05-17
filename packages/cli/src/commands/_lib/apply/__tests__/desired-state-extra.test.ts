@@ -344,3 +344,188 @@ credentials:
     expect(state.connectors.authProfiles).toHaveLength(0);
   });
 });
+
+// ── Watcher admin-only fields ────────────────────────────────────────────────
+
+describe("loadDesiredState — watcher admin-only fields", () => {
+  test("watcher with reaction_script reads sibling .ts and resolves relative to YAML", async () => {
+    const dir = mkProjectWithModels({
+      "w.yaml": `version: 2
+watchers:
+  - slug: with-reaction
+    name: With Reaction
+    agent: triage
+    prompt: "Do work."
+    schedule: "0 9 * * 1"
+    reaction_script: ./funnel.reaction.ts
+`,
+      "funnel.reaction.ts": "export default async (ctx, client) => {};\n",
+    });
+    const { state } = await loadDesiredState({ cwd: dir });
+    expect(state.watchers).toHaveLength(1);
+    const w = state.watchers[0]!;
+    expect(w.reactionScript?.sourceCode).toContain("export default async");
+    expect(w.reactionScript?.sourcePath).toContain("funnel.reaction.ts");
+  });
+
+  test("watcher with reaction_script pointing at missing file → ValidationError", async () => {
+    const dir = mkProjectWithModels({
+      "w.yaml": `version: 2
+watchers:
+  - slug: bad-reaction
+    name: Bad
+    agent: triage
+    prompt: "Do work."
+    schedule: "0 9 * * 1"
+    reaction_script: ./nonexistent.ts
+`,
+    });
+    await expect(loadDesiredState({ cwd: dir })).rejects.toThrow(
+      /reaction_script.*does not exist/
+    );
+  });
+
+  test("inline reaction_script string (not a path) → ValidationError", async () => {
+    // The hint here is that inline scripts are rejected — they'd skip IDE
+    // type-checking and the path-vs-source ambiguity is the whole reason we
+    // require a sibling file.
+    const dir = mkProjectWithModels({
+      // smol-toml + yaml libraries can parse multiline literals fine; we just
+      // need a string that doesn't look like a path AND fails the file read.
+      "w.yaml": `version: 2
+watchers:
+  - slug: inline-reaction
+    name: Inline
+    agent: triage
+    prompt: "Do work."
+    schedule: "0 9 * * 1"
+    reaction_script: "export default async () => {};"
+`,
+    });
+    // Falls through to the "does not exist" branch since the source string
+    // is interpreted as a path.
+    await expect(loadDesiredState({ cwd: dir })).rejects.toThrow(
+      /reaction_script/
+    );
+  });
+
+  test("watcher with all admin-only scalar fields parses correctly", async () => {
+    const dir = mkProjectWithModels({
+      "w.yaml": `version: 2
+watchers:
+  - slug: full
+    name: Full watcher
+    agent: triage
+    prompt: "Do work."
+    schedule: "0 9 * * 1"
+    reactions_guidance: "Be terse."
+    device_worker_id: 550e8400-e29b-41d4-a716-446655440000
+    scheduler_client_id: mcp-client-1
+    notification_channel: both
+    notification_priority: high
+    min_cooldown_seconds: 60
+    tags: [crm, weekly]
+    agent_kind: notifier
+`,
+    });
+    const { state } = await loadDesiredState({ cwd: dir });
+    const w = state.watchers[0]!;
+    expect(w.reactionsGuidance).toBe("Be terse.");
+    expect(w.deviceWorkerId).toBe("550e8400-e29b-41d4-a716-446655440000");
+    expect(w.schedulerClientId).toBe("mcp-client-1");
+    expect(w.notificationChannel).toBe("both");
+    expect(w.notificationPriority).toBe("high");
+    expect(w.minCooldownSeconds).toBe(60);
+    expect(w.tags).toEqual(["crm", "weekly"]);
+    expect(w.agentKind).toBe("notifier");
+  });
+
+  test("watcher with non-UUID device_worker_id → ValidationError", async () => {
+    const dir = mkProjectWithModels({
+      "w.yaml": `version: 2
+watchers:
+  - slug: bad-device
+    name: Bad device
+    agent: triage
+    prompt: "Do work."
+    schedule: "0 9 * * 1"
+    device_worker_id: not-a-uuid
+`,
+    });
+    await expect(loadDesiredState({ cwd: dir })).rejects.toThrow(
+      /device_worker_id.*UUID/
+    );
+  });
+
+  test("watcher with invalid notification_priority → ValidationError", async () => {
+    const dir = mkProjectWithModels({
+      "w.yaml": `version: 2
+watchers:
+  - slug: bad-priority
+    name: Bad priority
+    agent: triage
+    prompt: "Do work."
+    schedule: "0 9 * * 1"
+    notification_priority: critical
+`,
+    });
+    await expect(loadDesiredState({ cwd: dir })).rejects.toThrow(
+      /notification_priority/
+    );
+  });
+
+  test("watcher with too-frequent cron → ValidationError", async () => {
+    const dir = mkProjectWithModels({
+      "w.yaml": `version: 2
+watchers:
+  - slug: too-frequent
+    name: Too frequent
+    agent: triage
+    prompt: "Do work."
+    schedule: "*/30 * * * * *"
+`,
+    });
+    // The 6-field cron is rejected as an invalid expression at validate time;
+    // the diagnostic should mention the schedule.
+    await expect(loadDesiredState({ cwd: dir })).rejects.toThrow(/schedule/i);
+  });
+});
+
+// ── Connection device_worker_id ──────────────────────────────────────────────
+
+describe("loadDesiredState — connection device_worker_id", () => {
+  test("connection with device_worker_id UUID parses correctly", async () => {
+    const dir = mkProject(BASE_TOML);
+    mkdirSync(join(dir, "connectors"), { recursive: true });
+    writeFileSync(
+      join(dir, "connectors", "c.yaml"),
+      `version: 1
+type: connection
+slug: my-conn
+connector: example
+device_worker_id: 550e8400-e29b-41d4-a716-446655440000
+`
+    );
+    const { state } = await loadDesiredState({ cwd: dir });
+    expect(state.connectors.connections[0]?.deviceWorkerId).toBe(
+      "550e8400-e29b-41d4-a716-446655440000"
+    );
+  });
+
+  test("connection with non-UUID device_worker_id → ValidationError", async () => {
+    const dir = mkProject(BASE_TOML);
+    mkdirSync(join(dir, "connectors"), { recursive: true });
+    writeFileSync(
+      join(dir, "connectors", "c.yaml"),
+      `version: 1
+type: connection
+slug: my-conn
+connector: example
+device_worker_id: not-a-uuid
+`
+    );
+    await expect(loadDesiredState({ cwd: dir })).rejects.toThrow(
+      /device_worker_id.*UUID/
+    );
+  });
+});

@@ -141,7 +141,16 @@ export const QUERYABLE_SCHEMA = {
         'reaction_script_compiled',
         'connection_id',
         'source_watcher_id',
-        'watcher_group_id'
+        'watcher_group_id',
+        // Scalar columns added in earlier features (device pinning, notification
+        // routing, run rate-limiting) that were missing from this list — drift
+        // test caught it.
+        'device_worker_id',
+        'agent_kind',
+        'notification_channel',
+        'notification_priority',
+        'min_cooldown_seconds',
+        'last_fired_at'
       ),
     },
     // event_classifications

@@ -160,6 +160,17 @@ jobs:
           --health-retries 10
     env:
       DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5433/lobu_test
+      # The integration suite runs all 70+ test files in a single forked
+      # process (vitest.config.ts: pool:'forks', singleFork:true). With the
+      # production default of `DB_POOL_MAX=20` plus the test pool's `max:5`
+      # the suite has ~26 sockets to play with — fine on its own, but
+      # `idle_timeout:0` in db/client.ts keeps every connection forever, so
+      # any transient burst across 750+ tests accumulates and the singleton
+      # pgvector image (max_connections=100) starts rejecting with
+      # "sorry, too many clients already" deep into the run.
+      # Capping the app pool to 5 keeps the worst-case socket count at
+      # 5 (app) + 5 (test) + 1 (LISTEN) = 11, well below the CI budget.
+      DB_POOL_MAX: '5'
     steps:
       - uses: actions/checkout@v4
 

@@ -44,15 +44,25 @@ export class CdpPage {
     const sendBrowser = (method: string, params: Record<string, unknown> = {}): Promise<any> => {
       return new Promise((resolve, reject) => {
         const id = Math.floor(Math.random() * 1e9);
-        const timer = setTimeout(() => reject(new Error(`${method} timeout`)), 15000);
         const handler = (event: MessageEvent) => {
-          const data = JSON.parse(event.data as string);
+          let data: any;
+          try {
+            data = JSON.parse(event.data as string);
+          } catch {
+            return;
+          }
           if (data.id === id) {
             clearTimeout(timer);
             ws.removeEventListener('message', handler);
             data.error ? reject(new Error(data.error.message)) : resolve(data.result);
           }
         };
+        // On timeout, detach the listener so it doesn't stay attached for the
+        // life of this WebSocket parsing every subsequent frame.
+        const timer = setTimeout(() => {
+          ws.removeEventListener('message', handler);
+          reject(new Error(`${method} timeout`));
+        }, 15000);
         ws.addEventListener('message', handler);
         ws.send(JSON.stringify({ id, method, params }));
       });
@@ -96,15 +106,25 @@ export class CdpPage {
   private send(method: string, params: Record<string, unknown> = {}): Promise<any> {
     return new Promise((resolve, reject) => {
       const id = this.msgId++;
-      const timer = setTimeout(() => reject(new Error(`${method} timeout`)), 30000);
       const handler = (event: MessageEvent) => {
-        const data = JSON.parse(event.data as string);
+        let data: any;
+        try {
+          data = JSON.parse(event.data as string);
+        } catch {
+          return;
+        }
         if (data.id === id) {
           clearTimeout(timer);
           this.ws.removeEventListener('message', handler);
           data.error ? reject(new Error(data.error.message)) : resolve(data.result);
         }
       };
+      // On timeout, detach the listener so it doesn't stay attached for the
+      // life of this (long-lived) CDP session parsing every subsequent frame.
+      const timer = setTimeout(() => {
+        this.ws.removeEventListener('message', handler);
+        reject(new Error(`${method} timeout`));
+      }, 30000);
       this.ws.addEventListener('message', handler);
       this.ws.send(JSON.stringify({ id, method, params, sessionId: this.sessionId }));
     });
@@ -118,7 +138,12 @@ export class CdpPage {
     // Wait for load event
     await new Promise<void>((resolve) => {
       const handler = (event: MessageEvent) => {
-        const data = JSON.parse(event.data as string);
+        let data: any;
+        try {
+          data = JSON.parse(event.data as string);
+        } catch {
+          return;
+        }
         if (data.method === 'Page.loadEventFired' && data.sessionId === this.sessionId) {
           clearTimeout(timer);
           this.ws.removeEventListener('message', handler);
@@ -138,17 +163,21 @@ export class CdpPage {
   /** Evaluate a JavaScript expression in the page and return the result. */
   async evaluate<T = unknown>(expression: string | (() => T)): Promise<T> {
     const code = typeof expression === 'function' ? `(${expression.toString()})()` : expression;
-    const { result, exceptionDetails } = await this.send('Runtime.evaluate', {
+    const response = await this.send('Runtime.evaluate', {
       expression: code,
       returnByValue: true,
       awaitPromise: true,
     });
+    const { result, exceptionDetails } = response ?? {};
     if (exceptionDetails) {
       throw new Error(
         `evaluate failed: ${exceptionDetails.text || exceptionDetails.exception?.description || 'unknown error'}`
       );
     }
-    return result.value as T;
+    // `result.value` is absent for `undefined`/JS objects without a JSON
+    // representation. Return undefined rather than dereferencing a possibly
+    // missing `result` object.
+    return (result?.value as T) ?? (undefined as unknown as T);
   }
 
   /**
@@ -192,17 +221,48 @@ export class CdpPage {
   async close(): Promise<void> {
     try {
       await this.send('Page.close').catch(() => {});
-      // Also close via Target API as fallback
-      const id = this.msgId++;
-      this.ws.send(
-        JSON.stringify({
-          id,
-          method: 'Target.closeTarget',
-          params: { targetId: this.targetId },
-        })
-      );
-      await new Promise((r) => setTimeout(r, 300));
-      this.ws.close();
+      // Also close via Target API as fallback. Round-trip through send() so
+      // we know the close has been acked before tearing down the WebSocket,
+      // instead of relying on a fixed 300ms sleep.
+      await new Promise<void>((resolve) => {
+        const id = this.msgId++;
+        const handler = (event: MessageEvent) => {
+          let data: any;
+          try {
+            data = JSON.parse(event.data as string);
+          } catch {
+            return;
+          }
+          if (data.id === id) {
+            clearTimeout(timer);
+            this.ws.removeEventListener('message', handler);
+            resolve();
+          }
+        };
+        const timer = setTimeout(() => {
+          this.ws.removeEventListener('message', handler);
+          resolve();
+        }, 2000);
+        this.ws.addEventListener('message', handler);
+        try {
+          this.ws.send(
+            JSON.stringify({
+              id,
+              method: 'Target.closeTarget',
+              params: { targetId: this.targetId },
+            })
+          );
+        } catch {
+          clearTimeout(timer);
+          this.ws.removeEventListener('message', handler);
+          resolve();
+        }
+      });
+      try {
+        this.ws.close();
+      } catch {
+        /* best-effort */
+      }
     } catch {
       // Best-effort cleanup
     }

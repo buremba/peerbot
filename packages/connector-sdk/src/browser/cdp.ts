@@ -88,19 +88,31 @@ export async function tryWebSocketCdp(
         const data = JSON.parse(event.data as string);
         const result = data?.result;
         if (!result?.product) {
-          ws.close();
+          try {
+            ws.close();
+          } catch {
+            /* best-effort */
+          }
           resolve(null);
           return;
         }
         const ua = result.userAgent as string | undefined;
-        ws.close();
+        try {
+          ws.close();
+        } catch {
+          /* best-effort */
+        }
         resolve({
           Browser: result.product,
           webSocketDebuggerUrl: wsUrl,
           isHeadless: ua ? /headless/i.test(ua) : false,
         });
       } catch {
-        ws.close();
+        try {
+          ws.close();
+        } catch {
+          /* best-effort */
+        }
         resolve(null);
       }
     };

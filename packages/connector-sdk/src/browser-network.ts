@@ -344,9 +344,15 @@ async function drainPromises(arr: Promise<void>[]): Promise<void> {
 }
 
 function compileGlob(pattern: string): RegExp {
+  // Use a sentinel for `**` so the subsequent `*` → `[^/]*` rewrite doesn't
+  // re-rewrite the `*` inside `.*` into `[^/]*` (which turned `**` into
+  // `.[^/]*` — match-any-single-char + non-slash run, wrong semantics).
+  const DOUBLE_STAR = '\x00DOUBLE_STAR\x00';
   const escaped = pattern
+    .replace(/\*\*/g, DOUBLE_STAR)
     .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-    .replace(/\*\*/g, '.*')
-    .replace(/\*/g, '[^/]*');
+    .replace(/\*/g, '[^/]*')
+    .split(DOUBLE_STAR)
+    .join('.*');
   return new RegExp(escaped);
 }

@@ -223,14 +223,7 @@ export async function decryptChromeCookiesMacOS(
     const derivedKey = pbkdf2Sync(keychainKey, 'saltysalt', 1003, 16, 'sha1');
 
     const db = new DatabaseSync(tmpCookiePath, { readOnly: true });
-    const rows = db
-      .prepare(
-        `SELECT name, host_key, path, encrypted_value,
-                CAST(expires_utc AS TEXT) as expires_utc_text,
-                is_httponly, is_secure, samesite
-         FROM cookies`
-      )
-      .all() as Array<{
+    let rows: Array<{
       name: string;
       host_key: string;
       path: string;
@@ -240,7 +233,25 @@ export async function decryptChromeCookiesMacOS(
       is_secure: number;
       samesite: number;
     }>;
-    db.close();
+    try {
+      rows = db
+        .prepare(
+          `SELECT name, host_key, path, encrypted_value,
+                  CAST(expires_utc AS TEXT) as expires_utc_text,
+                  is_httponly, is_secure, samesite
+           FROM cookies`
+        )
+        .all() as typeof rows;
+    } finally {
+      // Close the SQLite handle even if prepare/all throws — otherwise the
+      // temp DB stays open until the process exits, which on a hot reload
+      // path leaks one fd per sync.
+      try {
+        db.close();
+      } catch {
+        /* best-effort */
+      }
+    }
 
     const cookies: Cookie[] = [];
     let totalDecrypted = 0;
@@ -303,7 +314,7 @@ export async function decryptChromeCookiesMacOS(
         filtered += 1;
         continue;
       }
-      const cookiePath = row.path && row.path.length > 0 ? row.path : '/';
+      const rowPath = row.path && row.path.length > 0 ? row.path : '/';
 
       const expiresUtc = BigInt(row.expires_utc_text ?? '0');
       const expiresUnix =
@@ -323,7 +334,7 @@ export async function decryptChromeCookiesMacOS(
         name: row.name,
         value,
         domain: row.host_key,
-        path: cookiePath,
+        path: rowPath,
         expires: expiresUnix,
         httpOnly: row.is_httponly === 1,
         secure: row.is_secure === 1,

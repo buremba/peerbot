@@ -304,11 +304,9 @@ function normalizeMemoryBaseUrl(input: string): string {
     const url = new URL(input);
     url.hash = "";
     url.search = "";
-    if (!url.pathname || url.pathname === "/") {
-      url.pathname = "/mcp";
-    } else if (!url.pathname.startsWith("/mcp")) {
-      url.pathname = `${url.pathname.replace(/\/+$/, "")}/mcp`;
-    }
+    // Compare at the *base* MCP path (`/mcp`) so a context whose memoryUrl is
+    // org-scoped (`/mcp/<slug>`) still matches a bare-base search and vice
+    // versa — mirrors `baseMcpUrl()` in openclaw-auth.ts.
     url.pathname = "/mcp";
     return url.toString().replace(/\/+$/, "");
   } catch {

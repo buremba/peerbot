@@ -41,6 +41,13 @@ interface CredentialsStore {
 // Writes invalidate so refreshed tokens are visible immediately.
 const credentialsCache = new Map<string, Credentials | null>();
 
+// In-flight refresh dedupe. Two concurrent `getToken()` callers from the same
+// process would otherwise both hit the OAuth token endpoint with the same
+// refresh token — and many issuers rotate refresh tokens on use, so the
+// second call would land with a revoked token and force a re-login. Coalescing
+// per-context so different contexts can still refresh in parallel.
+const inFlightRefreshes = new Map<string, Promise<Credentials | null>>();
+
 export async function loadCredentials(
   contextName?: string
 ): Promise<Credentials | null> {
@@ -141,6 +148,23 @@ export async function refreshCredentials(
   contextName?: string
 ): Promise<Credentials | null> {
   const target = await resolveContext(contextName);
+
+  // Coalesce concurrent refresh attempts for the same context — see the
+  // `inFlightRefreshes` declaration for the rotation-race rationale.
+  const inFlight = inFlightRefreshes.get(target.name);
+  if (inFlight) return inFlight;
+
+  const promise = doRefreshCredentials(target, existing).finally(() => {
+    inFlightRefreshes.delete(target.name);
+  });
+  inFlightRefreshes.set(target.name, promise);
+  return promise;
+}
+
+async function doRefreshCredentials(
+  target: { name: string },
+  existing: Credentials | null | undefined
+): Promise<Credentials | null> {
   const creds = existing ?? (await loadCredentials(target.name));
   if (!creds) return null;
   if (!canRefresh(creds)) return creds;

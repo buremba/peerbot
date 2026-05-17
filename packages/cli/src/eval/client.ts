@@ -107,6 +107,11 @@ async function collectResponse(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   const start = Date.now();
+  // Tracked across the try/finally so we can cancel the body stream on early
+  // return. Without this, `return` inside the loop leaves the reader holding
+  // the lock and the underlying SSE connection open until the GC closes it
+  // — which manifests as test-process hangs and dangling fetches under load.
+  let readerForCleanup: { cancel(reason?: unknown): Promise<void> } | undefined;
 
   try {
     const res = await fetch(`${session.base}/events`, {
@@ -119,6 +124,7 @@ async function collectResponse(
     }
 
     const reader = res.body.getReader();
+    readerForCleanup = reader;
     const decoder = new TextDecoder();
     let buffer = "";
     let currentEvent = "";
@@ -193,6 +199,11 @@ async function collectResponse(
     throw err;
   } finally {
     clearTimeout(timer);
+    if (readerForCleanup) {
+      // Cancel the body stream so the underlying connection is released
+      // immediately on early return — otherwise the lock stays held until GC.
+      await readerForCleanup.cancel().catch(() => undefined);
+    }
   }
 }
 

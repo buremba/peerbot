@@ -392,6 +392,11 @@ async function streamResponse(
     idleTimer = setTimeout(() => controller.abort(), IDLE_TIMEOUT_MS);
   };
 
+  // Tracked across try/finally so we can cancel the body stream on early
+  // `return` paths (complete / error / ephemeral). Without this, the reader
+  // holds the lock and the SSE connection stays open until GC.
+  let readerForCleanup: { cancel(reason?: unknown): Promise<void> } | undefined;
+
   try {
     const res = await fetch(sseUrl, {
       headers: { Authorization: `Bearer ${token}` },
@@ -404,6 +409,7 @@ async function streamResponse(
     }
 
     const reader = res.body.getReader();
+    readerForCleanup = reader;
     const decoder = new TextDecoder();
     let buffer = "";
     let currentEvent = "";
@@ -594,6 +600,11 @@ async function streamResponse(
   } finally {
     clearTimeout(overallTimer);
     clearTimeout(idleTimer);
+    if (readerForCleanup) {
+      // Cancel the body stream so the underlying connection is released
+      // immediately on early return — otherwise the lock stays held until GC.
+      await readerForCleanup.cancel().catch(() => undefined);
+    }
   }
 }
 

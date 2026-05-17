@@ -28,6 +28,8 @@ import {
 import { captureServerError } from './sentry';
 import { autoLinkEvent } from './utils/auto-linker';
 import { nextRunAt as nextRunAtFromCron } from './utils/cron';
+import { advanceWatcherSchedule } from './watchers/automation';
+import { getNextNumericId } from './tools/admin/helpers/db-helpers';
 import { reconcileDeviceCapabilities } from './worker-api/device-reconcile';
 import { findBundledConnectorFile } from './utils/connector-catalog';
 import { resolveConnectorCode } from './utils/ensure-connector-installed';
@@ -1142,10 +1144,8 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
  * /api/workers/complete (status='running' AND claimed_by === worker_id).
  */
 export async function completeWatcherRun(c: Context<{ Bindings: Env }>) {
-  let runIdParam: string;
-  try {
-    runIdParam = c.req.param('runId');
-  } catch {
+  const runIdParam = c.req.param('runId');
+  if (!runIdParam) {
     return c.json({ error: 'runId is required' }, 400);
   }
   const runId = Number(runIdParam);
@@ -1172,12 +1172,12 @@ export async function completeWatcherRun(c: Context<{ Bindings: Env }>) {
   if (denied) return denied;
 
   const sql = getDb();
-  // Reload the row now that authorization has cleared. The claim gate above
-  // already verified status === 'running' AND claimed_by === worker_id, but
-  // we need the watcher_id + organization_id + approved_input to write the
-  // completion side-effects.
+  // Reload the row now that authorization has cleared. We need the watcher_id
+  // + organization_id + approved_input to write the completion side-effects.
+  // The transaction below will re-lock and re-check status under SELECT ...
+  // FOR UPDATE; this read just gates the cheap rejection paths.
   const runRows = (await sql`
-    SELECT id, organization_id, watcher_id, approved_input, run_type, claimed_at
+    SELECT id, organization_id, watcher_id, approved_input, run_type, claimed_at, status
     FROM runs
     WHERE id = ${runId}
     LIMIT 1
@@ -1188,6 +1188,7 @@ export async function completeWatcherRun(c: Context<{ Bindings: Env }>) {
     approved_input: Record<string, unknown> | null;
     run_type: string;
     claimed_at: string | Date | null;
+    status: string;
   }>;
   const run = runRows[0];
   if (!run) return c.json({ error: 'Run not found' }, 404);
@@ -1200,14 +1201,96 @@ export async function completeWatcherRun(c: Context<{ Bindings: Env }>) {
 
   const watcherId = Number(run.watcher_id);
   const approved = (run.approved_input ?? {}) as Record<string, unknown>;
-  const windowStart =
-    typeof approved.window_start === 'string'
-      ? (approved.window_start as string)
-      : new Date().toISOString();
-  const windowEnd =
-    typeof approved.window_end === 'string'
-      ? (approved.window_end as string)
-      : new Date().toISOString();
+
+  // Fix 2: device-identity binding (user-scoped workers only).
+  //
+  // `authorizeRunForWorker` already enforces `claimed_by === body.worker_id`,
+  // but `worker_id` is client-supplied. A different device with the same
+  // user's OAuth token could (a) post `/api/workers/poll` and claim a run
+  // under any worker_id it chooses, then (b) post here with that same id.
+  // Bind to the server-side identity instead: look up the caller's
+  // `device_workers.id` from (workerUserId, worker_id) and verify it matches
+  // the `device_worker_id` materializeDueWatcherRuns persisted on the run.
+  if (c.var.workerAuthMode === 'user') {
+    const workerUserId = c.var.workerUserId;
+    const pinnedDeviceWorkerId =
+      typeof approved.device_worker_id === 'string' ? approved.device_worker_id : null;
+    if (workerUserId && pinnedDeviceWorkerId) {
+      const deviceRows = (await sql`
+        SELECT id
+        FROM device_workers
+        WHERE user_id = ${workerUserId}
+          AND worker_id = ${body.worker_id}
+        LIMIT 1
+      `) as unknown as Array<{ id: string }>;
+      const callerDeviceWorkerId = deviceRows[0]?.id ?? null;
+      if (!callerDeviceWorkerId || callerDeviceWorkerId !== pinnedDeviceWorkerId) {
+        logger.warn(
+          {
+            run_id: runId,
+            worker_id: body.worker_id,
+            caller_device: callerDeviceWorkerId,
+            pinned_device: pinnedDeviceWorkerId,
+          },
+          '[completeWatcherRun] device_worker_id mismatch — rejecting'
+        );
+        return c.json({ error: 'Forbidden: device worker mismatch' }, 403);
+      }
+    }
+  }
+
+  // Fix 5: validate the window bounds BEFORE opening any transaction. The
+  // legacy code defaulted silently to `new Date().toISOString()` — that hid
+  // garbage payloads behind a fresh timestamp. If approved_input contains a
+  // bound, it must be a parseable ISO string; otherwise the run is
+  // unrecoverably malformed and we mark it failed up front (so it can't get
+  // stuck in `running` waiting for a stale-run sweep that may not exist).
+  const validateIsoBound = (
+    key: 'window_start' | 'window_end',
+    fallback: string
+  ): { value: string } | { error: string } => {
+    const raw = approved[key];
+    if (raw === undefined || raw === null) return { value: fallback };
+    if (typeof raw !== 'string') {
+      return { error: `approved_input.${key} must be an ISO timestamp string` };
+    }
+    const parsed = Date.parse(raw);
+    if (!Number.isFinite(parsed)) {
+      return { error: `approved_input.${key} is not a valid ISO timestamp` };
+    }
+    return { value: raw };
+  };
+
+  const nowIso = new Date().toISOString();
+  const startResult = validateIsoBound('window_start', nowIso);
+  const endResult = validateIsoBound('window_end', nowIso);
+  if ('error' in startResult || 'error' in endResult) {
+    const reason =
+      'error' in startResult ? startResult.error : (endResult as { error: string }).error;
+    // Mark the run failed so the watcher's `next_run_at` advances and the
+    // schedule doesn't loop on this poisoned payload forever. Outside any
+    // transaction — this is a one-shot terminal status flip.
+    try {
+      await sql`
+        UPDATE runs
+        SET status = 'failed',
+            completed_at = current_timestamp,
+            error_message = ${`Invalid completion payload: ${reason}`},
+            exit_reason = 'error_message'
+        WHERE id = ${runId}
+          AND status = 'running'
+      `;
+      await advanceWatcherSchedule(sql, watcherId);
+    } catch (err) {
+      logger.error(
+        { run_id: runId, err: errorMessage(err) },
+        '[completeWatcherRun] failed to mark run failed after validation error'
+      );
+    }
+    return c.json({ error: reason }, 400);
+  }
+  const windowStart = startResult.value;
+  const windowEnd = endResult.value;
   // Granularity isn't stored on watcher runs — infer once for the window
   // row. A blank string fails the NOT NULL constraint; default to "ad_hoc"
   // for device-driven runs (the dashboard's rollup logic treats this as a
@@ -1221,8 +1304,39 @@ export async function completeWatcherRun(c: Context<{ Bindings: Env }>) {
       ? Math.max(0, Math.floor(body.duration_ms))
       : null;
 
+  // Track whether the work was already done by a concurrent completion. Used
+  // after the transaction to return an idempotent 200 instead of failing the
+  // duplicate-INSERT path that pi-#3 flagged.
+  let alreadyCompleted = false;
+
   try {
     await sql.begin(async (tx) => {
+      // Fix 3: lock the run row inside the transaction. Without this, two
+      // concurrent POSTs can both pass `authorizeRunForWorker` (which reads
+      // without a lock), both enter the tx, both INSERT a watcher_windows
+      // row, and the second one's run-UPDATE fails the `status='running'`
+      // filter — leaving a duplicate window row and a 500.
+      const lockedRows = (await tx`
+        SELECT status
+        FROM runs
+        WHERE id = ${runId}
+        FOR UPDATE
+      `) as unknown as Array<{ status: string }>;
+      const currentStatus = lockedRows[0]?.status ?? null;
+      if (!currentStatus) {
+        // Disappeared between the pre-tx read and the lock — treat as 404 by
+        // throwing; outer catch surfaces as 500, callers will retry.
+        throw new Error('Run vanished while acquiring lock');
+      }
+      if (currentStatus !== 'running') {
+        // A concurrent caller already terminated this run. Idempotent path:
+        // do nothing here and let the outer code return 200 with the existing
+        // terminal status. This is safe because the duplicate write would
+        // either violate the watcher_windows PK or insert a phantom row.
+        alreadyCompleted = true;
+        return;
+      }
+
       if (hasError) {
         await tx`
           UPDATE runs
@@ -1236,14 +1350,15 @@ export async function completeWatcherRun(c: Context<{ Bindings: Env }>) {
             AND status = 'running'
         `;
       } else {
-        // Allocate a watcher_windows id first; embedded mode uses the helper
-        // pattern from manage_watchers. Two concurrent device completions for
-        // the same watcher are forbidden by `idx_runs_active_watcher_per_watcher`,
-        // so the racy COALESCE(MAX,...) here is safe in practice.
-        const windowIdRows = await tx.unsafe<{ next_id: number }>(
-          `SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM watcher_windows`
-        );
-        const windowId = Number(windowIdRows[0]?.next_id ?? 1);
+        // Fix 4: allocate the window id via the codebase's shared helper
+        // (whitelisted, same pattern used by manage_watchers). The
+        // `SELECT ... FOR UPDATE` on `runs.id` above + the
+        // `idx_runs_active_watcher_per_watcher` partial unique index together
+        // serialize this for a given watcher; cross-watcher concurrent
+        // completions are protected by the `watcher_windows_pkey` unique
+        // constraint, which would surface as a `23505` we'd surface as 500
+        // (caller retries).
+        const windowId = await getNextNumericId(tx, 'watcher_windows');
 
         const extractedData = {
           kind: 'device_cli_output',
@@ -1294,6 +1409,14 @@ export async function completeWatcherRun(c: Context<{ Bindings: Env }>) {
             updated_at = NOW()
         WHERE id = ${watcherId}
       `;
+
+      // Fix 1: advance `next_run_at` in the SAME transaction that recorded
+      // the completion. Without this the scheduled-jobs tick sees the
+      // watcher as still due (last_fired_at moved, next_run_at didn't) and
+      // re-materializes immediately — looping forever on every minute tick.
+      // The helper is shared with `manage_watchers(action="complete_window")`
+      // and the terminal-failure path in `automation.ts`.
+      await advanceWatcherSchedule(tx, watcherId);
     });
   } catch (err) {
     logger.error(
@@ -1301,6 +1424,17 @@ export async function completeWatcherRun(c: Context<{ Bindings: Env }>) {
       '[completeWatcherRun] Failed to record completion'
     );
     return c.json({ error: errorMessage(err) }, 500);
+  }
+
+  if (alreadyCompleted) {
+    // Re-read the terminal status so we echo back what actually landed (not
+    // what this request would have written). Don't fire the lifecycle event
+    // again — the winning concurrent caller already did.
+    const finalRows = (await sql`
+      SELECT status FROM runs WHERE id = ${runId} LIMIT 1
+    `) as unknown as Array<{ status: string }>;
+    const finalStatus = finalRows[0]?.status ?? (hasError ? 'failed' : 'completed');
+    return c.json({ ok: true, status: finalStatus, idempotent: true });
   }
 
   // Fire-and-forget: a "change" event so the dashboard's metric_series picks

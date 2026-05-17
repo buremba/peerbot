@@ -582,5 +582,175 @@ describe('watcher automation contract', () => {
       );
       expect(response.status).toBe(404);
     });
+
+    // Pi review #1: schedule must advance on completion or the scheduler
+    // re-fires the watcher every tick forever.
+    it('advances watchers.next_run_at on successful completion', async () => {
+      const { sql, dbClient, workspace, watcherId, agent } = await createAutomatedWatcher();
+      const granularity = inferWatcherGranularityFromSchedule('0 9 * * *');
+      const { windowStart, windowEnd } = await computePendingWindow(
+        dbClient,
+        watcherId,
+        granularity
+      );
+
+      const [before] = await sql`
+        SELECT next_run_at FROM watchers WHERE id = ${watcherId}
+      `;
+      const beforeNextRun = before.next_run_at as Date | string | null;
+
+      const queued = await createWatcherRun({
+        organizationId: workspace.org.id,
+        watcherId,
+        agentId: agent.agentId,
+        windowStart: windowStart.toISOString(),
+        windowEnd: windowEnd.toISOString(),
+        dispatchSource: 'scheduled',
+        deviceWorkerId: '22222222-2222-2222-2222-222222222222',
+        agentKind: 'claude-code',
+      });
+
+      const workerId = 'mac-device-advance-test';
+      await sql`
+        UPDATE runs
+        SET status = 'running', claimed_at = NOW(), claimed_by = ${workerId}
+        WHERE id = ${queued.runId}
+      `;
+
+      const response = await post(
+        `/api/workers/me/runs/${queued.runId}/complete-watcher`,
+        {
+          body: { worker_id: workerId, output: 'ok', duration_ms: 5 },
+        }
+      );
+      expect(response.status).toBe(200);
+
+      const [after] = await sql`
+        SELECT next_run_at FROM watchers WHERE id = ${watcherId}
+      `;
+      const afterNextRun = after.next_run_at as Date | string | null;
+      expect(afterNextRun).not.toBeNull();
+      // The cron is `0 9 * * *` (daily 9am); the new tick must be strictly in
+      // the future relative to the pre-completion value (which was forced
+      // 10min in the past by createAutomatedWatcher).
+      const beforeMs = beforeNextRun ? new Date(beforeNextRun).getTime() : 0;
+      const afterMs = new Date(afterNextRun as string | Date).getTime();
+      expect(afterMs).toBeGreaterThan(beforeMs);
+      // And strictly in the future relative to "now".
+      expect(afterMs).toBeGreaterThan(Date.now() - 1000);
+    });
+
+    // Pi review #3: a second concurrent completion must be idempotent — no
+    // duplicate watcher_windows row, no 500, status reflects the winner.
+    it('treats a double completion as idempotent (no duplicate window, no 500)', async () => {
+      const { sql, dbClient, workspace, watcherId, agent } = await createAutomatedWatcher();
+      const granularity = inferWatcherGranularityFromSchedule('0 9 * * *');
+      const { windowStart, windowEnd } = await computePendingWindow(
+        dbClient,
+        watcherId,
+        granularity
+      );
+
+      const queued = await createWatcherRun({
+        organizationId: workspace.org.id,
+        watcherId,
+        agentId: agent.agentId,
+        windowStart: windowStart.toISOString(),
+        windowEnd: windowEnd.toISOString(),
+        dispatchSource: 'scheduled',
+        deviceWorkerId: '33333333-3333-3333-3333-333333333333',
+        agentKind: 'claude-code',
+      });
+
+      const workerId = 'mac-device-idem-test';
+      await sql`
+        UPDATE runs
+        SET status = 'running', claimed_at = NOW(), claimed_by = ${workerId}
+        WHERE id = ${queued.runId}
+      `;
+
+      // First completion lands.
+      const first = await post(`/api/workers/me/runs/${queued.runId}/complete-watcher`, {
+        body: { worker_id: workerId, output: 'first', duration_ms: 11 },
+      });
+      expect(first.status).toBe(200);
+
+      // Second completion against the now-terminal row must NOT 500.
+      // `authorizeRunForWorker` will return 409 first (status no longer
+      // 'running'); the in-tx FOR UPDATE / idempotent branch is exercised by
+      // the truly-concurrent case (post-claim, pre-commit), which a single
+      // serialized test runner can't easily reproduce — but we DO assert
+      // that no extra watcher_windows row was created either way.
+      const second = await post(`/api/workers/me/runs/${queued.runId}/complete-watcher`, {
+        body: { worker_id: workerId, output: 'second', duration_ms: 12 },
+      });
+      expect([200, 409]).toContain(second.status);
+
+      const windowsForRun = await sql`
+        SELECT id FROM watcher_windows WHERE run_id = ${queued.runId}
+      `;
+      expect(windowsForRun).toHaveLength(1);
+
+      const [run] = await sql`
+        SELECT status FROM runs WHERE id = ${queued.runId}
+      `;
+      expect(String(run.status)).toBe('completed');
+    });
+
+    // Pi review #5: malformed window bounds in approved_input must fail the
+    // run and advance the schedule, not leave it stuck in 'running'.
+    it('marks run failed (not stuck running) on malformed approved_input', async () => {
+      const { sql, dbClient, workspace, watcherId, agent } = await createAutomatedWatcher();
+      const granularity = inferWatcherGranularityFromSchedule('0 9 * * *');
+      const { windowStart, windowEnd } = await computePendingWindow(
+        dbClient,
+        watcherId,
+        granularity
+      );
+      const queued = await createWatcherRun({
+        organizationId: workspace.org.id,
+        watcherId,
+        agentId: agent.agentId,
+        windowStart: windowStart.toISOString(),
+        windowEnd: windowEnd.toISOString(),
+        dispatchSource: 'scheduled',
+        deviceWorkerId: '44444444-4444-4444-4444-444444444444',
+        agentKind: 'claude-code',
+      });
+      const workerId = 'mac-device-malformed-test';
+      // Corrupt the approved_input window_start so completion validation
+      // rejects it. The run is still claimed/running.
+      await sql`
+        UPDATE runs
+        SET status = 'running',
+            claimed_at = NOW(),
+            claimed_by = ${workerId},
+            approved_input = approved_input || ${sql.json({ window_start: 'not-a-date' })}
+        WHERE id = ${queued.runId}
+      `;
+
+      const [before] = await sql`SELECT next_run_at FROM watchers WHERE id = ${watcherId}`;
+      const beforeNextRun = before.next_run_at as Date | string | null;
+
+      const response = await post(
+        `/api/workers/me/runs/${queued.runId}/complete-watcher`,
+        {
+          body: { worker_id: workerId, output: 'whatever', duration_ms: 1 },
+        }
+      );
+      expect(response.status).toBe(400);
+
+      const [run] = await sql`
+        SELECT status, error_message FROM runs WHERE id = ${queued.runId}
+      `;
+      expect(String(run.status)).toBe('failed');
+      expect(String(run.error_message)).toMatch(/window_start/);
+
+      const [after] = await sql`SELECT next_run_at FROM watchers WHERE id = ${watcherId}`;
+      const afterNextRun = after.next_run_at as Date | string | null;
+      const beforeMs = beforeNextRun ? new Date(beforeNextRun).getTime() : 0;
+      const afterMs = afterNextRun ? new Date(afterNextRun).getTime() : 0;
+      expect(afterMs).toBeGreaterThan(beforeMs);
+    });
   });
 });

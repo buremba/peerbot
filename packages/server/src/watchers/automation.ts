@@ -253,10 +253,21 @@ async function markWatcherRunFailedIdempotent(
   // broken watcher re-materializes + re-dispatches a fresh agent run every
   // single minute forever (token/worker burn). Mirrors the feeds model: a
   // failed run still moves the schedule forward by its normal cadence.
-  await advanceWatcherScheduleAfterTerminalFailure(sql, failedRows[0]?.watcher_id as number | undefined);
+  await advanceWatcherSchedule(sql, failedRows[0]?.watcher_id as number | undefined);
 }
 
-async function advanceWatcherScheduleAfterTerminalFailure(
+/**
+ * Move a watcher's `next_run_at` forward by one cron tick. Reused by:
+ *   - terminal-failure paths in this module (broken watcher shouldn't re-fire each minute)
+ *   - manage_watchers(action="complete_window") on successful completion
+ *   - the device-side `/api/workers/me/runs/:id/complete-watcher` endpoint
+ *
+ * Pass either the singleton `sql` client or a transaction handle from
+ * `sql.begin(...)` to advance inside the caller's transaction. Schedule-less
+ * watchers (manual-only) are no-ops. Read failures are logged and swallowed —
+ * a missed schedule tick is preferable to failing the surrounding write.
+ */
+export async function advanceWatcherSchedule(
   sql: DbClient,
   watcherId: number | undefined
 ): Promise<void> {
@@ -281,7 +292,7 @@ async function advanceWatcherScheduleAfterTerminalFailure(
       WHERE id = ${watcherId}
     `;
   } catch (err) {
-    logger.warn(`[watchers] failed to advance next_run_at after terminal failure: ${err}`);
+    logger.warn(`[watchers] failed to advance next_run_at: ${err}`);
   }
 }
 
@@ -521,7 +532,7 @@ export async function materializeDueWatcherRuns(
       );
       // Don't leave next_run_at in the past — that would re-select this watcher
       // on every 60s tick. Push it forward per the watcher's cron schedule.
-      await advanceWatcherScheduleAfterTerminalFailure(sql, watcher.id);
+      await advanceWatcherSchedule(sql, watcher.id);
     }
   }
 

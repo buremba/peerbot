@@ -55,6 +55,7 @@ import {
   processWatcherClassifications,
   stripFields,
 } from '../../watchers/classifier-extraction';
+import { advanceWatcherSchedule } from '../../watchers/automation';
 import { compileReactionScript, executeReaction } from '../../watchers/reaction-executor';
 import { validateTemplate } from '../../watchers/renderer';
 import { validateClassifierSourcePaths, validateExtractionSchema } from '../../watchers/validator';
@@ -1950,25 +1951,7 @@ async function handleCompleteWindow(
     // replays (no window created, no run transitioned) must not push
     // next_run_at forward, or each retry would shift the schedule.
     if (windowCreated || runMarkedCompleted) {
-      const watcherScheduleRows = await tx`
-        SELECT schedule, next_run_at
-        FROM watchers
-        WHERE id = ${watcherId}
-        LIMIT 1
-      `;
-      const watcherSchedule = (watcherScheduleRows[0]?.schedule as string | null) ?? null;
-      const currentNextRunAt = (watcherScheduleRows[0]?.next_run_at as string | null) ?? null;
-      if (watcherSchedule) {
-        const nextRunBase = currentNextRunAt
-          ? new Date(Math.max(Date.now(), new Date(currentNextRunAt).getTime()))
-          : new Date();
-        await tx`
-          UPDATE watchers
-          SET next_run_at = ${nextRunAt(watcherSchedule, nextRunBase)}::timestamptz,
-              updated_at = NOW()
-          WHERE id = ${watcherId}
-        `;
-      }
+      await advanceWatcherSchedule(tx, watcherId);
     }
 
     logger.info(

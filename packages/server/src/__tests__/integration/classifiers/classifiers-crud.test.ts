@@ -7,6 +7,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import {
   addUserToOrganization,
+  createTestAgent,
   createTestOrganization,
   createTestUser,
 } from '../../setup/test-fixtures';
@@ -36,6 +37,7 @@ describe('classifier CRUD', () => {
     })) as { entity: { id: number } };
     entityId = entity.entity.id;
 
+    const agent = await createTestAgent({ organizationId: org.id, ownerUserId: user.id });
     const w = (await owner.watchers.create({
       entity_id: entityId,
       slug: 'cls-watcher',
@@ -45,6 +47,7 @@ describe('classifier CRUD', () => {
         type: 'object',
         properties: { signal: { type: 'string' } },
       },
+      agent_id: agent.agentId,
     })) as { watcher_id: string };
     watcherId = Number(w.watcher_id);
   });

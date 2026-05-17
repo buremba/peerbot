@@ -9,6 +9,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import {
   addUserToOrganization,
+  createTestAgent,
   createTestOrganization,
   createTestUser,
 } from '../../setup/test-fixtures';
@@ -19,6 +20,7 @@ describe('watcher CRUD', () => {
   let owner: TestApiClient;
   let intruder: TestApiClient;
   let entityId: number;
+  let agentId: string;
 
   beforeAll(async () => {
     await cleanupTestDatabase();
@@ -30,6 +32,8 @@ describe('watcher CRUD', () => {
       userId: user.id,
       memberRole: 'owner',
     });
+    const agent = await createTestAgent({ organizationId: org.id, ownerUserId: user.id });
+    agentId = agent.agentId;
 
     const otherOrg = await createTestOrganization({ name: 'Watcher Other Org' });
     const otherUser = await createTestUser({ email: 'watcher-other@test.com' });
@@ -59,6 +63,7 @@ describe('watcher CRUD', () => {
         properties: { launches: { type: 'array', items: { type: 'string' } } },
       },
       schedule: '0 9 * * *',
+      agent_id: agentId,
     })) as { watcher_id: string };
     const watcherId = created.watcher_id;
     expect(watcherId).toBeDefined();
@@ -90,6 +95,7 @@ describe('watcher CRUD', () => {
         type: 'object',
         properties: { signals: { type: 'array', items: { type: 'string' } } },
       },
+      agent_id: agentId,
     })) as { watcher_id: string };
     expect(created.watcher_id).toBeDefined();
 
@@ -109,6 +115,7 @@ describe('watcher CRUD', () => {
         name: 'No Org',
         prompt: 'should fail',
         extraction_schema: { type: 'object', properties: {} },
+        agent_id: agentId,
       })
     ).rejects.toThrow(/organization|entity_id/i);
   });
@@ -122,6 +129,7 @@ describe('watcher CRUD', () => {
         type: 'object',
         properties: { signals: { type: 'array', items: { type: 'string' } } },
       },
+      agent_id: agentId,
     })) as { watcher_id: string };
 
     await expect(intruder.watchers.get(created.watcher_id)).rejects.toThrow(
@@ -155,6 +163,7 @@ describe('watcher CRUD', () => {
         type: 'object',
         properties: { signal: { type: 'string' } },
       },
+      agent_id: agentId,
     })) as { watcher_id: string };
 
     const member = owner.withAuth({ memberRole: 'member' });

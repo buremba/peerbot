@@ -22,7 +22,7 @@ import type { ToolContext } from '../../../tools/registry';
 import { createWatcherRun } from '../../../utils/queue-helpers';
 import { parseWatcherRunPayload } from '../../../watchers/automation';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
-import { createTestEntity } from '../../setup/test-fixtures';
+import { createTestAgent, createTestEntity } from '../../setup/test-fixtures';
 import { TestWorkspace } from '../../setup/test-mcp-client';
 
 function ownerCtx(workspace: TestWorkspace): ToolContext {
@@ -46,6 +46,10 @@ async function seedRootWatcher(workspace: TestWorkspace, suffix: string) {
     organization_id: workspace.org.id,
     created_by: workspace.users.owner.id,
   });
+  const agent = await createTestAgent({
+    organizationId: workspace.org.id,
+    ownerUserId: workspace.users.owner.id,
+  });
   const watcher = (await workspace.owner.watchers.create({
     entity_id: entity.id,
     slug: `digest-${suffix}`,
@@ -57,6 +61,7 @@ async function seedRootWatcher(workspace: TestWorkspace, suffix: string) {
       required: ['summary'],
     },
     schedule: '0 9 * * *',
+    agent_id: agent.agentId,
   })) as { watcher_id: string };
   return { watcherId: Number(watcher.watcher_id), entityId: entity.id };
 }

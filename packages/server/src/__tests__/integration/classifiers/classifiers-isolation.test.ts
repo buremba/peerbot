@@ -7,7 +7,7 @@
 
 import { beforeAll, describe, expect, it } from 'vitest';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
-import { createTestEvent } from '../../setup/test-fixtures';
+import { createTestAgent, createTestEvent } from '../../setup/test-fixtures';
 import { TestWorkspace } from '../../setup/test-mcp-client';
 
 const stubEmbedding = Array.from({ length: 768 }, () => 0);
@@ -35,12 +35,17 @@ async function seedClassifier(workspace: TestWorkspace, slug: string): Promise<S
     name: `${slug} Target`,
   })) as { entity: { id: number } };
 
+  const agent = await createTestAgent({
+    organizationId: workspace.org.id,
+    ownerUserId: workspace.users.owner.id,
+  });
   const watcher = (await workspace.owner.watchers.create({
     entity_id: entity.entity.id,
     slug: `${slug}-watcher`,
     name: `${slug} Watcher`,
     prompt: 'collect signals.',
     extraction_schema: { type: 'object', properties: { signal: { type: 'string' } } },
+    agent_id: agent.agentId,
   })) as { watcher_id: string };
 
   const created = (await workspace.owner.classifiers.create({

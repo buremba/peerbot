@@ -11,7 +11,7 @@ import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { manageWatchers } from '../../../tools/admin/manage_watchers';
 import type { ToolContext } from '../../../tools/registry';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
-import { createTestEntity } from '../../setup/test-fixtures';
+import { createTestAgent, createTestEntity } from '../../setup/test-fixtures';
 import { TestWorkspace } from '../../setup/test-mcp-client';
 
 function ownerCtx(workspace: TestWorkspace): ToolContext {
@@ -35,6 +35,10 @@ async function seedWatcher(workspace: TestWorkspace, suffix: string) {
     organization_id: workspace.org.id,
     created_by: workspace.users.owner.id,
   });
+  const agent = await createTestAgent({
+    organizationId: workspace.org.id,
+    ownerUserId: workspace.users.owner.id,
+  });
   const watcher = (await workspace.owner.watchers.create({
     entity_id: entity.id,
     slug: `feedback-watcher-${suffix}`,
@@ -52,6 +56,7 @@ async function seedWatcher(workspace: TestWorkspace, suffix: string) {
         },
       },
     },
+    agent_id: agent.agentId,
   })) as { watcher_id: string };
 
   const [window] = await getTestDb()`

@@ -57,6 +57,20 @@ export class WorkerConnectionManager {
     // reaches them on the loopback interface.
     const httpUrl = httpPort ? `http://127.0.0.1:${httpPort}` : undefined;
 
+    // If a prior connection exists for this deployment, clean up its reverse-index
+    // entry first. Otherwise re-registering under a different agentId leaves the
+    // old agentDeployments set pointing at a stale deployment name forever.
+    const prior = this.connections.get(deploymentName);
+    if (prior && prior.agentId !== agentId) {
+      const priorSet = this.agentDeployments.get(prior.agentId);
+      if (priorSet) {
+        priorSet.delete(deploymentName);
+        if (priorSet.size === 0) {
+          this.agentDeployments.delete(prior.agentId);
+        }
+      }
+    }
+
     const connection: WorkerConnection = {
       deploymentName,
       userId,

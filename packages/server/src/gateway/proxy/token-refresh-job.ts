@@ -44,9 +44,19 @@ export class TokenRefreshJob {
       agentId,
       organizationId,
     } of userAuthProfiles.scanAllOAuth()) {
-      await orgContext.run({ organizationId }, () =>
-        this.maybeRefresh(userId, agentId)
-      );
+      // Isolate per-(user, agent) failures so one bad row (expired refresh
+      // token, DB hiccup, provider 5xx) doesn't abort the entire scan and
+      // strand every later user's tokens until the next 30-min tick.
+      try {
+        await orgContext.run({ organizationId }, () =>
+          this.maybeRefresh(userId, agentId)
+        );
+      } catch (err) {
+        logger.warn(
+          { userId, agentId, organizationId, err: String(err) },
+          "Token refresh failed for user/agent — continuing scan"
+        );
+      }
     }
   }
 

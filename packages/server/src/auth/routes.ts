@@ -242,7 +242,7 @@ async function mintSessionCookieValue(
  * Accepts either a Personal Access Token (`owl_pat_*`, validated against
  * `personal_access_tokens`) or a Better Auth session token (looked up in
  * `session`). The session-token path lets the macOS menu bar — which holds
- * a session token from POST /api/auth/local-init — deep-link the user into
+ * a session token from POST /api/local-init — deep-link the user into
  * the SPA without ever issuing a PAT.
  */
 async function resolveDeepLinkToken(
@@ -331,7 +331,7 @@ credentialRoutes.get('/exchange-token', async (c) => {
 const BOOTSTRAP_USER_ID = 'bootstrap-user';
 const BOOTSTRAP_ORG_ID = 'org-bootstrap-dev';
 
-credentialRoutes.post('/auth/local-init', async (c) => {
+credentialRoutes.post('/local-init', async (c) => {
   const proxied =
     c.req.header('x-forwarded-for') ||
     c.req.header('x-forwarded-host') ||
@@ -343,7 +343,7 @@ credentialRoutes.post('/auth/local-init', async (c) => {
       {
         error: 'proxied_request_refused',
         error_description:
-          '/api/auth/local-init is for loopback callers only (Mac menu bar, local CLI). Forwarded-* headers are not allowed.',
+          '/api/local-init is for loopback callers only (Mac menu bar, local CLI). Forwarded-* headers are not allowed.',
       },
       403
     );
@@ -380,7 +380,7 @@ credentialRoutes.post('/auth/local-init', async (c) => {
       {
         error: 'not_a_bootstrap_deployment',
         error_description:
-          '/api/auth/local-init is only available before any real users sign up. Sign in normally.',
+          '/api/local-init is only available before any real users sign up. Sign in normally.',
       },
       404
     );

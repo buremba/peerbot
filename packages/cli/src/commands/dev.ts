@@ -253,7 +253,7 @@ export async function devCommand(
   });
 
   // Once the embedded server is reachable, fetch a session token via
-  // /api/auth/local-init and print a deep-link URL. The SPA hook accepts
+  // /api/local-init and print a deep-link URL. The SPA hook accepts
   // ?lobu_token=<session> and exchanges it for a cookie, so the user can
   // click the URL straight from their terminal and land logged in. Also
   // persists the session as the `local` CLI context so `lobu chat -c local`
@@ -360,7 +360,7 @@ export function resolveBackendBundle(
 }
 
 /**
- * After the embedded server is reachable, hit POST /api/auth/local-init for
+ * After the embedded server is reachable, hit POST /api/local-init for
  * a fresh session token, register a `local` CLI context pointing at the
  * gateway, persist the session as that context's bearer credential, and
  * print a deep-link URL the user can click to land logged into the SPA.
@@ -384,7 +384,7 @@ async function announceLocalSignIn(
   if (!pgLite) return;
 
   try {
-    const res = await fetch(`${gatewayUrl}/api/auth/local-init`, {
+    const res = await fetch(`${gatewayUrl}/api/local-init`, {
       method: "POST",
       headers: { "X-Lobu-Client": "lobu-run" },
     });

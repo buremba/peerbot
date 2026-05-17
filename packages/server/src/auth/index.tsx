@@ -219,7 +219,7 @@ export async function createAuth(env: Env, request?: Request) {
 		plugins: [
 			// Accept the Better Auth session token as Authorization: Bearer too.
 			// Used by the macOS menu bar and the CLI's `local` context — both hold
-			// a session token minted via POST /api/auth/local-init and prefer
+			// a session token minted via POST /api/local-init and prefer
 			// bearer headers to managing a cookie jar. Cookie auth still works
 			// for browser SPAs unchanged.
 			bearer(),

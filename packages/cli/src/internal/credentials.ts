@@ -123,7 +123,7 @@ export async function clearCredentials(contextName?: string): Promise<void> {
  * Automatically refreshes expired tokens and clears stale credentials.
  *
  * For loopback contexts with no stored creds, transparently POSTs
- * /api/auth/local-init to mint a fresh Better Auth session for the
+ * /api/local-init to mint a fresh Better Auth session for the
  * embedded-PGlite bootstrap user — `lobu chat -c local` works without a
  * prior `lobu login`.
  */
@@ -153,7 +153,7 @@ export async function getToken(contextName?: string): Promise<string | null> {
 
 /**
  * Attempt zero-config sign-in against a local embedded server. POST
- * /api/auth/local-init mints a Better Auth session for the bootstrap user
+ * /api/local-init mints a Better Auth session for the bootstrap user
  * when the deployment is empty (no real signups yet) and refuses
  * proxied requests via the forwarded-* header guard, so this is safe to
  * fire unconditionally against loopback contexts.
@@ -162,7 +162,7 @@ async function tryLocalInit(contextName?: string): Promise<Credentials | null> {
   const target = await resolveContext(contextName);
   if (!isLoopbackUrl(target.apiUrl)) return null;
   try {
-    const res = await fetch(`${target.apiUrl}/api/auth/local-init`, {
+    const res = await fetch(`${target.apiUrl}/api/local-init`, {
       method: "POST",
       headers: { "X-Lobu-Client": "cli" },
     });

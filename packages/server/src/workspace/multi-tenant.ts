@@ -349,7 +349,7 @@ export class MultiTenantProvider implements WorkspaceProvider {
         // fall through to the session-cookie branch below: the bearer()
         // plugin will translate Authorization: Bearer <session-token> into
         // a session lookup, so menu-bar / CLI clients holding a session
-        // token from POST /api/auth/local-init resolve there.
+        // token from POST /api/local-init resolve there.
         if (isPat) {
           return c.json(
             { error: 'invalid_token', error_description: 'Invalid or expired access token' },

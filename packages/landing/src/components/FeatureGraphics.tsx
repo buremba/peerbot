@@ -1,5 +1,3 @@
-import { messagingChannels } from "./platforms";
-
 function chatgptIcon(size = 12) {
   return (
     <svg

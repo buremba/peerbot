@@ -134,8 +134,9 @@ describe("lobu export", () => {
     expect(bundle.version).toBe(2);
     expect(bundle.entities?.length).toBe(1);
     expect(bundle.relationships?.length).toBe(1);
-    expect(bundle.watchers?.length).toBe(1);
-    const watcher = bundle.watchers?.[0]!;
+    const watchers = bundle.watchers ?? [];
+    expect(watchers.length).toBe(1);
+    const watcher = watchers[0];
     expect(watcher.slug).toBe("weekly-digest");
     expect(watcher.agent).toBe("triage");
     expect(watcher.prompt).toBe("Produce a digest.");
@@ -258,10 +259,11 @@ describe("lobu export", () => {
     // dropped when we don't overwrite, and a warning is printed.
     const out = mkTempDir();
     await mkdir(join(out, "models", "reactions"), { recursive: true });
-    const localScript = "// stale local version\nexport default async () => {};\n";
+    const localScript =
+      "// stale local version\nexport default async () => {};\n";
     writeFileSync(
       join(out, "models", "reactions", "with-reaction.reaction.ts"),
-      localScript,
+      localScript
     );
 
     const fetchImpl = buildFetch({
@@ -294,13 +296,13 @@ describe("lobu export", () => {
     expect(
       readFileSync(
         join(out, "models", "reactions", "with-reaction.reaction.ts"),
-        "utf-8",
-      ),
+        "utf-8"
+      )
     ).toBe(localScript);
 
     // YAML does NOT reference reaction_script.
     const bundle = parseYaml(
-      readFileSync(join(out, "models", "exported.yaml"), "utf-8"),
+      readFileSync(join(out, "models", "exported.yaml"), "utf-8")
     ) as { watchers: Array<Record<string, unknown>> };
     expect(bundle.watchers[0]?.reaction_script).toBeUndefined();
   });

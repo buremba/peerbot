@@ -192,7 +192,7 @@ async function main() {
   // guaranteed to exist before the first request lands — first-boot UI
   // calls would otherwise race the seed and 401 against a not-yet-
   // provisioned user. Auth credentials (Better Auth sessions) are minted
-  // on demand by `POST /api/auth/local-init` once the listener is up.
+  // on demand by `POST /api/local-init` once the listener is up.
   try {
     await ensureBootstrapUser(dbUrl);
   } catch (err) {
@@ -317,7 +317,7 @@ async function applyEmbeddedSchemaPatches(sql: MigrationSqlClient) {
 // real signups land via the web UI and own all subsequent boots).
 //
 // The auth credential itself (a Better Auth session token) is minted on
-// demand via `POST /api/auth/local-init` once the HTTP listener is up —
+// demand via `POST /api/local-init` once the HTTP listener is up —
 // CLI clients and the macOS menu bar both hit that endpoint instead of
 // reading a long-lived token from disk. PostgreSQL holds the truth: the
 // `session` table on issuance, the `user` row here on seeding.

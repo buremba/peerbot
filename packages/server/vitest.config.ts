@@ -34,5 +34,14 @@ export default defineConfig({
     // fixtures mid-run. Serialize files so fixtures stay stable.
     pool: "forks",
     poolOptions: { forks: { singleFork: true } },
+    // CRITICAL for the shared DB singleton in db/client.ts: with vitest's
+    // default `isolate: true`, each test file gets a fresh module registry —
+    // so each one re-runs `let dbSingleton = null` and opens its own pool.
+    // `idle_timeout: 0` in db/client.ts means those orphaned pools' sockets
+    // never close, and 70+ files × 5 connections each blew past the
+    // pgvector-image `max_connections=100` with the classic "sorry, too many
+    // clients already" error. Sharing the module graph (`isolate: false`)
+    // keeps the singleton truly singleton across the whole run.
+    isolate: false,
   },
 });

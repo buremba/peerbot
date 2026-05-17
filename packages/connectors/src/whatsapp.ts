@@ -424,11 +424,7 @@ export default class WhatsAppConnector extends ConnectorRuntime {
         },
       };
     } catch (error) {
-      try {
-        sock.end(undefined);
-      } catch {
-        /* ignore */
-      }
+      safeEnd(sock);
       throw error;
     }
   }
@@ -478,11 +474,7 @@ async function attemptPairing(
       sock.ev.off('connection.update', handler);
       sock.ev.off('creds.update', credsListener);
       ctx.signal.removeEventListener('abort', onAbort);
-      try {
-        sock.end(undefined);
-      } catch {
-        /* ignore */
-      }
+      safeEnd(sock);
       resolve(outcome);
     };
 
@@ -592,11 +584,7 @@ async function drainHistory(
     sock.ev.off('chats.upsert', chatsListener);
     sock.ev.off('messaging-history.set', historyListener);
     sock.ev.off('messages.upsert', messagesListener);
-    try {
-      sock.end(undefined);
-    } catch {
-      /* ignore */
-    }
+    safeEnd(sock);
   };
 
   try {
@@ -829,6 +817,14 @@ function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+function safeEnd(sock: ReturnType<typeof makeWASocket>): void {
+  try {
+    sock.end(undefined);
+  } catch {
+    /* ignore */
+  }
+}
+
 function waitForOpen(sock: ReturnType<typeof makeWASocket>, timeoutMs: number): Promise<boolean> {
   return new Promise((resolve) => {
     let newLogin = false;
@@ -963,12 +959,7 @@ export function toEvent(
   const text = extractText(m.message);
   if (!text) return null;
 
-  const tsRaw =
-    typeof m.messageTimestamp === 'number'
-      ? m.messageTimestamp
-      : ((m.messageTimestamp as { low?: number; toNumber?: () => number } | null)?.toNumber?.() ??
-        (m.messageTimestamp as { low?: number } | null)?.low ??
-        0);
+  const tsRaw = extractTs(m);
   if (!tsRaw) return null;
   const occurredAt = new Date(tsRaw * 1000);
 

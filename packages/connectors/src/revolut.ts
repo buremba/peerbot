@@ -142,12 +142,9 @@ function extractAmountAndCurrency(
 	const amt = record.amount;
 	if (amt && typeof amt === "object") {
 		const obj = amt as Record<string, unknown>;
-		const value =
-			typeof obj.value === "number"
-				? obj.value
-				: typeof obj.amount === "number"
-					? obj.amount
-					: null;
+		let value: number | null = null;
+		if (typeof obj.value === "number") value = obj.value;
+		else if (typeof obj.amount === "number") value = obj.amount;
 		const currency = typeof obj.currency === "string" ? obj.currency : null;
 		if (value !== null && currency) return { amount: value, currency };
 	}
@@ -200,13 +197,13 @@ function extractBalance(
 	record: Record<string, unknown>,
 	currency: string,
 ): number | undefined {
-	const raw =
-		typeof record.balance === "number"
-			? record.balance
-			: record.balance && typeof record.balance === "object"
-				? ((record.balance as Record<string, unknown>).value ??
-					(record.balance as Record<string, unknown>).amount)
-				: undefined;
+	let raw: unknown;
+	if (typeof record.balance === "number") {
+		raw = record.balance;
+	} else if (record.balance && typeof record.balance === "object") {
+		const obj = record.balance as Record<string, unknown>;
+		raw = obj.value ?? obj.amount;
+	}
 	if (typeof raw !== "number" || !Number.isFinite(raw)) return undefined;
 	return Number.isInteger(raw) ? minorUnitsToMajor(raw, currency) : raw;
 }

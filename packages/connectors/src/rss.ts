@@ -228,18 +228,13 @@ export default class RSSConnector extends ConnectorRuntime {
           Accept: 'application/rss+xml, application/atom+xml, application/xml, text/xml, */*',
         },
       });
-
-      clearTimeout(timeoutId);
-
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
-
       const xml = await response.text();
       return this.parseXml(xml, feedUrl, maxItems);
-    } catch (err) {
+    } finally {
       clearTimeout(timeoutId);
-      throw err;
     }
   }
 

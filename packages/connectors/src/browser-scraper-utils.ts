@@ -110,7 +110,7 @@ export function validatePublicUrl(url: string): void {
     throw new Error(`URL must not point to localhost: ${hostname}`);
   }
 
-  // IPv4 private/loopback/link-local/cloud-metadata ranges
+  // IPv4 private/loopback/link-local/cloud-metadata/CGNAT ranges
   const ipv4Match = hostname.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
   if (ipv4Match) {
     const [, a, b] = ipv4Match.map(Number);
@@ -120,6 +120,7 @@ export function validatePublicUrl(url: string): void {
       (a === 172 && b >= 16 && b <= 31) || // private
       (a === 192 && b === 168) || // private
       (a === 169 && b === 254) || // link-local incl. 169.254.169.254 cloud metadata
+      (a === 100 && b >= 64 && b <= 127) || // CGNAT 100.64.0.0/10
       a === 0
     ) {
       throw new Error(`URL must not point to a private/internal IP address: ${hostname}`);
@@ -129,10 +130,15 @@ export function validatePublicUrl(url: string): void {
   // IPv6 private ranges (bracketed notation)
   if (hostname.startsWith('[')) {
     const ipv6 = hostname.slice(1, -1).toLowerCase();
+    // Link-local fe80::/10 covers fe80:..fec0: (first byte 1111 1110 1x).
+    const linkLocalPrefix = /^fe[89ab][0-9a-f]?:/;
+    // Multicast ff00::/8 — any address starting with ff.
+    const multicastPrefix = /^ff[0-9a-f]{2}:/;
     if (
       ipv6 === '::1' ||
-      ipv6.startsWith('fe80:') || // link-local
-      ipv6.startsWith('fc') || // unique local
+      linkLocalPrefix.test(ipv6) ||
+      multicastPrefix.test(ipv6) ||
+      ipv6.startsWith('fc') || // unique local fc00::/7
       ipv6.startsWith('fd') ||
       ipv6 === '::' ||
       ipv6.startsWith('::ffff:') // IPv4-mapped IPv6

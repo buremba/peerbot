@@ -702,6 +702,7 @@ async function tryRefreshToken(mcpUrl: string): Promise<boolean> {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
+        signal: AbortSignal.timeout(30_000),
       });
 
       if (!response.ok) return false;

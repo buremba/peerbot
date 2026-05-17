@@ -576,12 +576,23 @@ async function claimWatcherRun(
 ): Promise<ClaimedWatcherRunRow | null> {
   return sql.begin(async (tx) => {
     const specificRunClause = runId ? tx`AND r.id = ${runId}` : tx``;
+    // Skip runs pinned to a device worker (#802): the user's Mac (or other
+    // device) will claim these via /api/workers/poll. Without this filter the
+    // server-side dispatcher races the device worker for the same row — the
+    // exact failure mode that caused the watcher-run silent-success bug.
+    // The pin currently lives in approved_input JSONB (issue #799 will add a
+    // proper column); both shapes are guarded here so the filter survives
+    // either schema.
     const claimed = await tx`
       WITH next_run AS (
         SELECT r.id
         FROM runs r
         WHERE r.run_type = 'watcher'
           AND r.status = 'pending'
+          AND (
+            r.approved_input->>'device_worker_id' IS NULL
+            OR r.approved_input->>'device_worker_id' = ''
+          )
           ${specificRunClause}
         ORDER BY r.created_at ASC
         FOR UPDATE SKIP LOCKED

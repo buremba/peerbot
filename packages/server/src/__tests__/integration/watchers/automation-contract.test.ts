@@ -200,6 +200,58 @@ describe('watcher automation contract', () => {
     expect(Number(run.window_id)).toBe(completion.window_id);
   });
 
+  it('skips watcher runs pinned to a device worker (#802)', async () => {
+    const { sql, dbClient, workspace, watcherId, agent } = await createAutomatedWatcher();
+
+    const granularity = inferWatcherGranularityFromSchedule('0 9 * * *');
+    const { windowStart, windowEnd } = await computePendingWindow(dbClient, watcherId, granularity);
+    const queued = await createWatcherRun({
+      organizationId: workspace.org.id,
+      watcherId,
+      agentId: agent.agentId,
+      windowStart: windowStart.toISOString(),
+      windowEnd: windowEnd.toISOString(),
+      dispatchSource: 'scheduled',
+    });
+
+    // Pin the run to a device worker — the dispatcher in #798 will set this
+    // when the watcher is bound to a Mac/CLI device. Until that lands the
+    // server-side claim path must already refuse to grab the row.
+    await sql`
+      UPDATE runs
+      SET approved_input = approved_input || ${sql.json({ device_worker_id: 'mac-device-abc' })}
+      WHERE id = ${queued.runId}
+    `;
+
+    const result = await dispatchPendingWatcherRuns({} as Env, { db: dbClient });
+
+    expect(result.claimed).toBe(0);
+    expect(result.dispatched).toBe(0);
+
+    const [run] = await sql`
+      SELECT status, claimed_by, claimed_at
+      FROM runs
+      WHERE id = ${queued.runId}
+    `;
+    expect(String(run.status)).toBe('pending');
+    expect(run.claimed_by).toBeNull();
+    expect(run.claimed_at).toBeNull();
+
+    // Explicit runIds path must also refuse to claim — the dispatcher's
+    // queueAndDispatchWatcherRun helper hits this branch when a watcher run
+    // is manually triggered.
+    const targeted = await dispatchPendingWatcherRuns({} as Env, {
+      db: dbClient,
+      runIds: [queued.runId],
+    });
+    expect(targeted.claimed).toBe(0);
+
+    const [stillPending] = await sql`
+      SELECT status FROM runs WHERE id = ${queued.runId}
+    `;
+    expect(String(stillPending.status)).toBe('pending');
+  });
+
   it('paginates watcher reads by cursor and completes from multiple page tokens', async () => {
     const { sql, workspace, api, entityId, watcherId } = await createAutomatedWatcher();
 

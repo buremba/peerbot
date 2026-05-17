@@ -8,7 +8,7 @@
 import * as Sentry from '@sentry/node';
 import type { Context } from 'hono';
 import { getDb } from './db/client';
-import * as invalidationEmitter from './events/emitter';
+import { streamInvalidationEvents } from './events/sse';
 import type { Env } from './index';
 import {
   EMPTY_SUMMARY,
@@ -613,47 +613,13 @@ export async function publicRestEventsStream(c: Context<{ Bindings: Env }>) {
   const organizationId = await resolvePublicOrganizationId(orgSlug);
   if (!organizationId) return c.json({ error: 'Not found' }, 404);
 
-  const encoder = new TextEncoder();
-  let cleanup: (() => void) | null = null;
-
-  const stream = new ReadableStream({
-    start(controller) {
-      controller.enqueue(encoder.encode('event: connected\ndata: {}\n\n'));
-
-      const unsubscribe = invalidationEmitter.subscribe(organizationId, (event) => {
-        const publicKeys = event.keys.filter((k) => PUBLIC_INVALIDATION_KEYS.has(k));
-        if (publicKeys.length === 0) return;
-        try {
-          const data = JSON.stringify({ ...event, keys: publicKeys });
-          controller.enqueue(encoder.encode(`event: invalidate\ndata: ${data}\n\n`));
-        } catch {
-          // Connection closed
-        }
-      });
-
-      const keepAlive = setInterval(() => {
-        try {
-          controller.enqueue(encoder.encode(': keepalive\n\n'));
-        } catch {
-          clearInterval(keepAlive);
-        }
-      }, 30000);
-
-      cleanup = () => {
-        unsubscribe();
-        clearInterval(keepAlive);
-      };
-    },
-    cancel() {
-      cleanup?.();
+  return streamInvalidationEvents(c, organizationId, {
+    filter: (event) => {
+      const publicKeys = event.keys.filter((k) => PUBLIC_INVALIDATION_KEYS.has(k));
+      if (publicKeys.length === 0) return null;
+      return { ...event, keys: publicKeys };
     },
   });
-
-  c.header('Content-Type', 'text/event-stream');
-  c.header('Cache-Control', 'no-cache');
-  c.header('Connection', 'keep-alive');
-
-  return c.body(stream);
 }
 
 /**

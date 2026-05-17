@@ -9,7 +9,7 @@
  *   3. Aborting without ever consuming or cancelling the stream.
  *   4. Asserting the listener stops receiving events and the interval is cleared.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import * as invalidationEmitter from '../../events/emitter';
 import { streamInvalidationEvents } from '../../events/sse';
 
@@ -128,5 +128,78 @@ describe('streamInvalidationEvents cleanup', () => {
     await reader.cancel();
 
     expect(activeTimers.size).toBe(0);
+  });
+
+  it('calls the emitter unsubscribe exactly once on abort', async () => {
+    // Pi-review nit #1: prove the stream's invalidation listener is
+    // unsubscribed, not just that an unrelated probe still receives events.
+    // Spy on subscribe so we can attribute the returned unsubscribe to the
+    // stream and count its invocations.
+    const realSubscribe = invalidationEmitter.subscribe;
+    let unsubscribeCalls = 0;
+    const subscribeSpy = spyOn(invalidationEmitter, 'subscribe').mockImplementation(
+      (organizationId, listener) => {
+        const inner = realSubscribe(organizationId, listener);
+        return () => {
+          unsubscribeCalls++;
+          inner();
+        };
+      }
+    );
+
+    try {
+      const orgId = 'org-unsub-' + Math.random().toString(36).slice(2);
+      const ctrl = new AbortController();
+      const ctx = buildContext(ctrl.signal);
+
+      const response = streamInvalidationEvents(
+        ctx as unknown as Parameters<typeof streamInvalidationEvents>[0],
+        orgId
+      );
+      const reader = response.body!.getReader();
+      await reader.read();
+
+      expect(subscribeSpy).toHaveBeenCalledTimes(1);
+      expect(unsubscribeCalls).toBe(0);
+
+      ctrl.abort();
+
+      expect(unsubscribeCalls).toBe(1);
+
+      // Idempotent: a follow-up cancel must NOT re-call unsubscribe.
+      await reader.cancel().catch(() => {});
+      expect(unsubscribeCalls).toBe(1);
+    } finally {
+      subscribeSpy.mockRestore();
+    }
+  });
+
+  it('does not register a listener or interval if the request is already aborted', async () => {
+    // Pi-review nit #2: cover the early-aborted-signal branch in
+    // streamInvalidationEvents.start(). With a pre-aborted signal, start()
+    // must close the controller without ever calling subscribe() or
+    // setInterval().
+    const subscribeSpy = spyOn(invalidationEmitter, 'subscribe');
+
+    try {
+      const orgId = 'org-preaborted-' + Math.random().toString(36).slice(2);
+      const ctrl = new AbortController();
+      ctrl.abort();
+      const ctx = buildContext(ctrl.signal);
+
+      const response = streamInvalidationEvents(
+        ctx as unknown as Parameters<typeof streamInvalidationEvents>[0],
+        orgId
+      );
+      const reader = response.body!.getReader();
+      // The stream should be closed immediately; first read resolves done.
+      const result = await reader.read();
+      expect(result.done).toBe(true);
+
+      expect(subscribeSpy).not.toHaveBeenCalled();
+      expect(activeTimers.size).toBe(0);
+    } finally {
+      subscribeSpy.mockRestore();
+    }
   });
 });

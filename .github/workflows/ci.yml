@@ -100,7 +100,7 @@ jobs:
           files: coverage/lcov.info
           fail_ci_if_error: false
 
-  # Frontend tests run under jsdom via vitest. owletto-web is a submodule;
+  # Frontend tests run under jsdom via vitest. owletto is a submodule;
   # forks without the deploy key get a stub package and skip these.
   frontend:
     runs-on: ubuntu-latest
@@ -121,7 +121,7 @@ jobs:
         if: steps.submodule.outputs.stubbed != 'true'
         run: bun install
 
-      - name: Build core + connector-sdk (owletto-web imports their compiled dist)
+      - name: Build core + connector-sdk (owletto imports their compiled dist)
         # connector-sdk imports @lobu/core; resolving the type-only barrel
         # import needs core/dist on disk first.
         if: steps.submodule.outputs.stubbed != 'true'
@@ -129,8 +129,8 @@ jobs:
           cd packages/core && bun run build && cd ../..
           cd packages/connector-sdk && bun run build && cd ../..
 
-      - name: owletto-web tests (vitest)
-        # owletto-web doesn't define a `test` script in its package.json yet
+      - name: owletto tests (vitest)
+        # owletto doesn't define a `test` script in its package.json yet
         # (that change ships as a separate submodule PR). Invoke vitest
         # directly via the workspace-installed binary so this works on
         # whatever submodule SHA the parent repo points at.

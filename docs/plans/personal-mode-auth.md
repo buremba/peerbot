@@ -1,5 +1,10 @@
 # Personal-mode auth for the Mac menu bar app
 
+> **Note:** The Mac app + Chrome extension live in `lobu-ai/owletto` as of
+> #TBD. Mac-side changes specified in this plan happen in that repo;
+> server/gateway/auth changes (the majority of this plan) still happen here
+> in lobu. Cross-repo paths below reference `lobu-ai/owletto: apps/mac/…`.
+
 ## Goal
 
 When the macOS menu bar app starts the embedded Lobu server on this Mac, replace the OAuth device flow with a frictionless local-only auth model. The Mac user becomes the Lobu user automatically. No sign-in screen, no device code, no email entry.
@@ -19,7 +24,7 @@ This section anchors the design to actual code so we don't propose duplicates.
 | Loopback validation | `packages/server/src/start-local.ts:82` checks `127.0.0.1` / `localhost` / `::1` | **Extend** — add bind+verify semantics, refuse `0.0.0.0`/external. |
 | Localhost URL validation | `packages/server/src/gateway/auth/oauth/utils.ts` | **Reuse** — same helper. |
 | User + org auto-provision | `ensurePersonalOrganization()` (in `personal-org-provisioning.ts`) — idempotent, slug collision + reserved names handled, anchors via `personal_org_for_user_id` metadata | **Reuse** — call from local-mode bootstrap with a synthesized user record instead of a Better-Auth-issued one. |
-| Keychain | `apps/mac/Lobu/KeychainTokenStore.swift` — service `ai.lobu.mac`, `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` | **Extend** — add a separate Keychain account key for the personal-mode secret, same service. |
+| Keychain | `lobu-ai/owletto: apps/mac/Lobu/KeychainTokenStore.swift` — service `ai.lobu.mac`, `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` | **Extend** — add a separate Keychain account key for the personal-mode secret, same service. |
 | CORS / cookie credentials | `packages/server/src/index.ts:266` — `isAllowedCorsOrigin()` checks localhost variants, `credentials: true` | **Extend** — fold CSRF middleware (Sec-Fetch-Site / Host / Content-Type / custom-header) into the same chain. |
 | Data dir | `LOBU_DATA_DIR` env (defaults `~/.lobu/data`), set by `LocalLobuRunner.swift:74` | **Extend** — switch menu bar to per-user subdir (`~/.lobu-menubar/<NSUserName>/data`). |
 | Bind port | `LocalLobuRunner` hardcodes `:8787` | **Replace** — per-user free port discovery. |
@@ -219,7 +224,7 @@ This is also what "Sign out" maps to in personal mode (the menu has no "Sign out
 - Tunnel detection: best-effort startup check, emits `LOBU_WARNING=…` to stdout.
 - Print `LOBU_LISTEN_PORT=<port>` to stdout as the first protocol line after handshake.
 
-### Mac app (`apps/mac/Lobu/`)
+### Mac app (`lobu-ai/owletto: apps/mac/Lobu/`)
 
 - `KeychainTokenStore.swift`: add a `personal-auth-token` account on the existing `ai.lobu.mac` service.
 - `LocalLobuRunner.swift`:

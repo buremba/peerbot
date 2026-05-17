@@ -12,7 +12,7 @@
  * `chrome-extension` device polls, and route runs to it.
  *
  * The cloud-side `sync()` / `execute()` throw — actual work happens in the
- * extension's service worker (apps/chrome/background.js).
+ * extension's service worker (lobu-ai/owletto: apps/chrome/background.js).
  */
 
 import {

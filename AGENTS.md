@@ -19,7 +19,7 @@
 - When fixing unused-parameter errors, delete the parameter rather than prefixing with `_`.
 
 ### Submodules
-`packages/web` is a submodule of `lobu-ai/owletto-web`. Push the submodule change to a reachable branch first (usually `main`), then bump the pointer in the parent — the parent must never point at an unreachable SHA, or production cloning will fail.
+`packages/web` is a submodule of `lobu-ai/owletto`. Push the submodule change to a reachable branch first (usually `main`), then bump the pointer in the parent — the parent must never point at an unreachable SHA, or production cloning will fail.
 
 ### Frontend (web)
 When editing UI under `packages/web`, follow the design rules in @packages/web/DESIGN_GUIDELINES.md — confirmations, surfaces, empty states, selection, forms, page copy, radius, Sheet vs Dialog. Match the existing components and exemplar files referenced there; do not introduce new primitives without updating the guideline in the same PR.

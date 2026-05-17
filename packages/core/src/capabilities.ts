@@ -41,7 +41,7 @@ export const IOS_CAPABILITIES = [
   "ios.files",
 ] as const;
 
-// Capabilities the Mac bridge advertises (apps/mac/Lobu/AppState.swift).
+// Capabilities the Mac bridge advertises (lobu-ai/owletto: apps/mac/Lobu/AppState.swift).
 // One entry per Mac connector that runs on-device — adding a new Mac
 // connector means adding its capability string here so the gateway lets
 // the device claim its runs.

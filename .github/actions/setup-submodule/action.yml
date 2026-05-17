@@ -6,7 +6,7 @@ description: >
 
 inputs:
   deploy-key:
-    description: "SSH deploy key with read access to lobu-ai/owletto-web"
+    description: "SSH deploy key with read access to lobu-ai/owletto"
     required: false
     default: ""
 
@@ -29,7 +29,7 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        git config --global url."git@github.com:lobu-ai/owletto-web.git".insteadOf "https://github.com/lobu-ai/owletto-web.git"
+        git config --global url."git@github.com:lobu-ai/owletto.git".insteadOf "https://github.com/lobu-ai/owletto.git"
         git submodule update --init --recursive packages/web
 
     - name: Write stub package.json when submodule is unavailable

@@ -67,7 +67,7 @@ jobs:
           echo "::error::OWLETTO_WEB_DEPLOY_KEY is missing for a same-repo run; drift check cannot run."
           exit 1
 
-      - name: Check for unmerged non-bot commits on owletto-web/main
+      - name: Check for unmerged non-bot commits on owletto/main
         if: steps.submodule.outputs.stubbed != 'true'
         shell: bash
         run: |
@@ -77,18 +77,18 @@ jobs:
           REMOTE=$(git -C packages/web rev-parse origin/main)
 
           echo "Pinned (parent):   $PINNED"
-          echo "owletto-web/main:  $REMOTE"
+          echo "owletto/main:  $REMOTE"
 
-          # Hard rule: parent must never pin a SHA that isn't on owletto-web/main.
-          # FluxCD reads charts from owletto-web/main; an off-main pin breaks deploy.
+          # Hard rule: parent must never pin a SHA that isn't on owletto/main.
+          # FluxCD reads charts from owletto/main; an off-main pin breaks deploy.
           if ! git -C packages/web merge-base --is-ancestor "$PINNED" origin/main; then
-            echo "::error::Pinned SHA $PINNED is not reachable from owletto-web/main."
+            echo "::error::Pinned SHA $PINNED is not reachable from owletto/main."
             echo "This violates the rule against pinning unmerged submodule SHAs (see AGENTS.md)."
             exit 1
           fi
 
           if [ "$PINNED" = "$REMOTE" ]; then
-            echo "Submodule pin matches owletto-web/main — no drift."
+            echo "Submodule pin matches owletto/main — no drift."
             exit 0
           fi
 
@@ -119,14 +119,14 @@ jobs:
           done <<< "$LOG"
 
           if [ -z "$DRIFT" ]; then
-            echo "owletto-web/main is ahead, but only by FluxCD image-tag commits — no parent bump needed."
+            echo "owletto/main is ahead, but only by FluxCD image-tag commits — no parent bump needed."
             exit 0
           fi
 
-          echo "::error::owletto-web/main has merged commits past the pinned SHA. The parent bump PR is missing."
+          echo "::error::owletto/main has merged commits past the pinned SHA. The parent bump PR is missing."
           echo ""
           echo "Pinned:           $PINNED"
-          echo "owletto-web/main: $REMOTE"
+          echo "owletto/main: $REMOTE"
           echo ""
           echo "Commits needing a parent bump:"
           printf '%s' "$DRIFT"
@@ -135,5 +135,5 @@ jobs:
           echo "  git -C packages/web fetch origin"
           echo "  git -C packages/web checkout origin/main"
           echo "  git add packages/web"
-          echo "  git commit -m 'chore(submodule): bump owletto-web to current main'"
+          echo "  git commit -m 'chore(submodule): bump owletto to current main'"
           exit 1

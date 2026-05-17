@@ -15,6 +15,7 @@ import {
   type SyncContext,
   type SyncResult,
 } from '@lobu/connector-sdk';
+import { validatePublicUrl } from './browser-scraper-utils.ts';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -211,6 +212,11 @@ export default class RSSConnector extends ConnectorRuntime {
   // -------------------------------------------------------------------------
 
   private async fetchAndParseFeed(feedUrl: string, maxItems: number): Promise<RSSFeedItem[]> {
+    // SSRF guard at the trust boundary. `feed_urls` is operator/user supplied
+    // via connector config and must not be allowed to target loopback, RFC1918,
+    // or cloud-metadata IPs from the gateway process.
+    validatePublicUrl(feedUrl);
+
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), this.FETCH_TIMEOUT_MS);
 

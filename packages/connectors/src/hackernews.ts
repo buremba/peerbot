@@ -16,6 +16,7 @@ import {
   type SyncContext,
   type SyncResult,
 } from '@lobu/connector-sdk';
+import { validatePublicUrl } from './browser-scraper-utils.ts';
 
 // ---------------------------------------------------------------------------
 // Algolia HN API types
@@ -404,6 +405,15 @@ export default class HackerNewsConnector extends ConnectorRuntime {
 
   private async fetchExternalContent(url: string): Promise<string | null> {
     try {
+      // SSRF guard — `url` is supplied by whoever submitted the HN story and
+      // is therefore attacker-controllable. Refuse to fetch private/internal
+      // addresses (loopback, 169.254.169.254 cloud metadata, RFC1918, etc.).
+      try {
+        validatePublicUrl(url);
+      } catch {
+        return null;
+      }
+
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), this.CONTENT_FETCH_TIMEOUT);
 

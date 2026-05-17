@@ -20,6 +20,7 @@ import {
   type SyncResult,
 } from '@lobu/connector-sdk';
 import type { Page } from 'playwright';
+import { validatePublicUrl } from './browser-scraper-utils.ts';
 
 interface PageSection {
   heading: string;
@@ -48,72 +49,6 @@ function shouldSkipCookieBannerText(text: string): boolean {
   const normalized = text.replace(/\s+/g, ' ').trim();
   if (!normalized) return false;
   return countPatternMatches(normalized, COOKIE_BANNER_PATTERNS) >= 3;
-}
-
-/**
- * Validates a URL is safe for server-side fetching.
- * Blocks private/internal network addresses to prevent SSRF attacks.
- */
-function validatePublicUrl(url: string): void {
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    throw new Error(`Invalid URL: ${url}`);
-  }
-
-  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
-    throw new Error(`URL must use http: or https: protocol, got ${parsed.protocol}`);
-  }
-
-  const hostname = parsed.hostname.toLowerCase();
-
-  // Block localhost variants
-  if (hostname === 'localhost' || hostname === '[::1]' || hostname.endsWith('.localhost')) {
-    throw new Error(`URL must not point to localhost: ${hostname}`);
-  }
-
-  // Block private/internal IP ranges
-  // IPv4 patterns: 127.x.x.x, 10.x.x.x, 192.168.x.x, 172.16-31.x.x, 169.254.x.x, 0.x.x.x
-  const ipv4Match = hostname.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (ipv4Match) {
-    const [, a, b] = ipv4Match.map(Number);
-    if (
-      a === 127 || // 127.0.0.0/8 loopback
-      a === 10 || // 10.0.0.0/8 private
-      (a === 172 && b >= 16 && b <= 31) || // 172.16.0.0/12 private
-      (a === 192 && b === 168) || // 192.168.0.0/16 private
-      (a === 169 && b === 254) || // 169.254.0.0/16 link-local
-      a === 0 // 0.0.0.0/8
-    ) {
-      throw new Error(`URL must not point to a private/internal IP address: ${hostname}`);
-    }
-  }
-
-  // Block IPv6 private ranges (bracketed notation in URLs)
-  if (hostname.startsWith('[')) {
-    const ipv6 = hostname.slice(1, -1).toLowerCase();
-    if (
-      ipv6 === '::1' ||
-      ipv6.startsWith('fe80:') || // link-local
-      ipv6.startsWith('fc') || // unique local (fc00::/7)
-      ipv6.startsWith('fd') || // unique local (fc00::/7)
-      ipv6 === '::' || // unspecified
-      ipv6.startsWith('::ffff:') // IPv4-mapped IPv6
-    ) {
-      throw new Error(`URL must not point to a private/internal IPv6 address: ${hostname}`);
-    }
-  }
-
-  // Block common internal hostnames
-  if (
-    hostname.endsWith('.internal') ||
-    hostname.endsWith('.local') ||
-    hostname.endsWith('.corp') ||
-    hostname.endsWith('.lan')
-  ) {
-    throw new Error(`URL must not point to an internal hostname: ${hostname}`);
-  }
 }
 
 export default class WebsiteConnector extends ConnectorRuntime {
@@ -457,7 +392,11 @@ export default class WebsiteConnector extends ConnectorRuntime {
     return result.join('\n');
   }
 
-  private async fetchSitemap(sitemapUrl: string): Promise<string[]> {
+  private async fetchSitemap(sitemapUrl: string, depth = 0): Promise<string[]> {
+    // Sitemap-index recursion bound — caps fan-out from a remote sitemap that
+    // links to a sitemap that links to a sitemap... untrusted XML must not
+    // drive unbounded outbound traffic.
+    if (depth > 2) return [];
     const response = await fetch(sitemapUrl, {
       headers: { 'User-Agent': 'Mozilla/5.0 (compatible; LobuBot/1.0)' },
     });
@@ -493,7 +432,7 @@ export default class WebsiteConnector extends ConnectorRuntime {
       }
       for (const childUrl of childSitemaps.slice(0, 5)) {
         validatePublicUrl(childUrl);
-        const childUrls = await this.fetchSitemap(childUrl);
+        const childUrls = await this.fetchSitemap(childUrl, depth + 1);
         urls.push(...childUrls);
       }
     }

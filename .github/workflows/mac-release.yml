@@ -109,9 +109,15 @@ jobs:
           #    workflow passes `-scheme Lobu` to xcodebuild; if owletto renames
           #    the scheme (e.g. to 'Owletto') the path checks above still pass
           #    and we'd only find out late inside xcodebuild.
-          if ! xcodebuild -project packages/web/apps/mac/Lobu.xcodeproj -list 2>/dev/null \
-            | grep -qE '^[[:space:]]+Lobu[[:space:]]*$'; then
-            echo "::error::Expected scheme 'Lobu' missing from Lobu.xcodeproj"
+          #
+          #    Scope the check to the schemes list via `-list -json`. The plain
+          #    `-list` text output has both `Targets:` and `Schemes:` sections,
+          #    so a `grep '^  Lobu$'` could match a target named 'Lobu' even
+          #    after the scheme was renamed to 'Owletto'.
+          SCHEMES=$(xcodebuild -project packages/web/apps/mac/Lobu.xcodeproj -list -json 2>/dev/null \
+            | python3 -c "import json,sys; print('\n'.join(json.load(sys.stdin)['project']['schemes']))")
+          if ! echo "$SCHEMES" | grep -qE '^Lobu$'; then
+            echo "::error::Expected scheme 'Lobu' missing from project schemes (got: $SCHEMES)"
             exit 1
           fi
 
@@ -130,15 +136,24 @@ jobs:
           done
 
           # 6. PRODUCT_BUNDLE_IDENTIFIER in project.pbxproj must stay
-          #    ai.lobu.mac. CFBundleIdentifier in Info.plist resolves to
-          #    $(PRODUCT_BUNDLE_IDENTIFIER) at build time, so the real value
-          #    lives in the pbxproj build settings. The URL scheme, Keychain
-          #    service name, and Sparkle update path are all keyed off this —
-          #    a change here breaks the upgrade contract for installed apps.
+          #    ai.lobu.mac across ALL build configurations. CFBundleIdentifier
+          #    in Info.plist resolves to $(PRODUCT_BUNDLE_IDENTIFIER) at build
+          #    time, so the real value lives in the pbxproj build settings.
+          #    The URL scheme, Keychain service name, and Sparkle update path
+          #    are all keyed off this — a change here breaks the upgrade
+          #    contract for installed apps.
+          #
+          #    Assert the set of distinct values is exactly {ai.lobu.mac}, not
+          #    "some occurrence equals ai.lobu.mac". A simple grep would still
+          #    pass if one config drifted while another stale occurrence stayed
+          #    correct.
           EXPECTED_BUNDLE_ID="ai.lobu.mac"
-          if ! grep -q "PRODUCT_BUNDLE_IDENTIFIER = ${EXPECTED_BUNDLE_ID};" \
-            packages/web/apps/mac/Lobu.xcodeproj/project.pbxproj; then
-            echo "::error::PRODUCT_BUNDLE_IDENTIFIER in project.pbxproj is not '${EXPECTED_BUNDLE_ID}'. Bundle id drift breaks installed-app upgrades."
+          distinct_ids=$(grep -E 'PRODUCT_BUNDLE_IDENTIFIER = ' \
+            packages/web/apps/mac/Lobu.xcodeproj/project.pbxproj \
+            | sed -E 's/.*PRODUCT_BUNDLE_IDENTIFIER = ([^;]+);.*/\1/' \
+            | sort -u)
+          if [ "$distinct_ids" != "$EXPECTED_BUNDLE_ID" ]; then
+            echo "::error::PRODUCT_BUNDLE_IDENTIFIER must be exactly '${EXPECTED_BUNDLE_ID}' across all configs (got: $distinct_ids). Bundle id drift breaks installed-app upgrades."
             exit 1
           fi
 
@@ -146,7 +161,11 @@ jobs:
           #    verify update signatures against SUPublicEDKey; if the key is
           #    removed or rotated server-side without matching a key the
           #    installed app trusts, auto-update breaks silently.
-          if ! grep -q "<key>SUPublicEDKey</key>" packages/web/apps/mac/Lobu/Info.plist; then
+          #
+          #    Use PlistBuddy so the check matches an actual plist key, not
+          #    text inside an XML comment.
+          if ! /usr/libexec/PlistBuddy -c "Print :SUPublicEDKey" \
+            packages/web/apps/mac/Lobu/Info.plist >/dev/null 2>&1; then
             echo "::error::SUPublicEDKey missing from Info.plist — installed apps cannot verify updates"
             exit 1
           fi

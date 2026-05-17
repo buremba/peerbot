@@ -7,9 +7,7 @@ interface OpenAIEmbeddingResponse {
 
 /**
  * Thrown when the upstream OpenAI-compatible API returns a non-2xx response.
- * Carries the upstream HTTP status so callers can map it to an appropriate
- * downstream status (e.g. 429 → 429, 5xx → 502) instead of collapsing every
- * upstream failure to a generic 500.
+ * Carries the upstream HTTP status so callers can map it appropriately.
  */
 export class OpenAIEmbeddingsHTTPError extends Error {
   readonly status: number;
@@ -21,9 +19,8 @@ export class OpenAIEmbeddingsHTTPError extends Error {
 }
 
 /**
- * Thrown when the upstream call times out (the local AbortController fires
- * before the response is received). Distinguishable from a client-cancelled
- * abort so the HTTP layer can map it to 504 Gateway Timeout.
+ * Thrown when the local AbortController fires before the upstream response,
+ * so the HTTP layer can map it to 504 Gateway Timeout.
  */
 export class OpenAIEmbeddingsTimeoutError extends Error {
   readonly timeoutMs: number;
@@ -36,18 +33,14 @@ export class OpenAIEmbeddingsTimeoutError extends Error {
 
 /**
  * Strip anything that looks like an API key / bearer token from an upstream
- * error body before it leaves the process. Compatible third-party "OpenAI"
- * endpoints occasionally echo the Authorization header value back in their
- * error payload — never let that surface in our logs or HTTP responses.
+ * error body before it leaves the process. Some "OpenAI-compatible" endpoints
+ * echo the Authorization header in error payloads.
  */
 function sanitizeUpstreamError(text: string, apiKey: string): string {
   let cleaned = text;
   if (apiKey) {
-    // Mask exact key matches anywhere in the body.
     cleaned = cleaned.split(apiKey).join('[redacted]');
   }
-  // Best-effort masking of common secret shapes (sk-..., bearer tokens,
-  // generic 24+ char alnum runs that look like keys).
   cleaned = cleaned
     .replace(/\b(sk|sk-proj|rk|pk|api[_-]?key)[-_][A-Za-z0-9_-]{12,}/gi, '[redacted]')
     .replace(/\bbearer\s+[A-Za-z0-9._-]+/gi, 'bearer [redacted]');
@@ -85,9 +78,6 @@ export async function generateOpenAIEmbeddings(config: {
       signal: controller.signal,
     });
   } catch (err) {
-    // The timeout fires by calling controller.abort(), which surfaces here as
-    // an AbortError. Translate to a typed timeout error so the HTTP layer can
-    // return 504 instead of mis-reporting it as a generic 500.
     if (timedOut) {
       throw new OpenAIEmbeddingsTimeoutError(config.timeoutMs);
     }
@@ -97,8 +87,8 @@ export async function generateOpenAIEmbeddings(config: {
   }
 
   if (!response.ok) {
-    // Read the body defensively — a truncated/aborted upstream may make
-    // response.text() throw; we still want a typed error with the status.
+    // A truncated/aborted upstream may make response.text() throw; still emit
+    // a typed error with the status.
     let errorText = '';
     try {
       errorText = await response.text();
@@ -111,9 +101,6 @@ export async function generateOpenAIEmbeddings(config: {
     );
   }
 
-  // Upstream advertised 2xx but may still ship a non-JSON body (HTML error
-  // page from a reverse proxy, truncated stream, etc). Guard the parse so we
-  // surface a clear error instead of an opaque SyntaxError.
   let payload: OpenAIEmbeddingResponse;
   try {
     payload = (await response.json()) as OpenAIEmbeddingResponse;
@@ -132,10 +119,8 @@ export async function generateOpenAIEmbeddings(config: {
     );
   }
 
-  // The OpenAI embeddings API does NOT guarantee response ordering — items
-  // carry an `index` field precisely so callers can reorder. Previously we
-  // mapped data in arrival order, which silently mis-aligned vectors with
-  // their inputs whenever the upstream returned them out of order.
+  // OpenAI does not guarantee response ordering — items carry an `index` field
+  // so callers can reorder. Reorder before returning to keep vectors aligned.
   const embeddings: number[][] = new Array(payload.data.length);
   for (const item of payload.data) {
     if (
@@ -147,24 +132,13 @@ export async function generateOpenAIEmbeddings(config: {
       throw new Error('OpenAI embeddings response item missing index/embedding');
     }
     if (embeddings[item.index] !== undefined) {
-      throw new Error(
-        `OpenAI embeddings response has duplicate index ${item.index}`
-      );
+      throw new Error(`OpenAI embeddings response has duplicate index ${item.index}`);
     }
     embeddings[item.index] = item.embedding;
   }
-  for (let i = 0; i < embeddings.length; i++) {
-    if (embeddings[i] === undefined) {
-      throw new Error(`OpenAI embeddings response missing index ${i}`);
-    }
-  }
 
   for (const embedding of embeddings) {
-    validateEmbeddingDimensions(
-      embedding,
-      config.expectedDimensions,
-      'OpenAI embeddings response'
-    );
+    validateEmbeddingDimensions(embedding, config.expectedDimensions, 'OpenAI embeddings response');
   }
 
   return config.normalize ? normalizeEmbeddings(embeddings) : embeddings;

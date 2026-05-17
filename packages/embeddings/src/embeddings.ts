@@ -1,14 +1,10 @@
-/**
- * Local embedding generation with @xenova/transformers.
- */
-
 import {
   type FeatureExtractionPipeline,
   pipeline,
   env as transformersEnv,
 } from '@xenova/transformers';
 
-export const DEFAULT_MODEL_NAME = 'Xenova/bge-base-en-v1.5';
+const DEFAULT_MODEL_NAME = 'Xenova/bge-base-en-v1.5';
 export const DEFAULT_DIMENSIONS = 768;
 const DEFAULT_BATCH_SIZE = 32;
 
@@ -21,43 +17,31 @@ function getModelName(): string {
   return process.env.EMBEDDINGS_MODEL || DEFAULT_MODEL_NAME;
 }
 
-export function getLocalModelInfo(): { model: string; dimensions: number } {
-  return { model: getModelName(), dimensions: DEFAULT_DIMENSIONS };
+export function getLocalModelName(): string {
+  return getModelName();
 }
 
 async function getExtractor(): Promise<FeatureExtractionPipeline> {
-  if (!extractorPromise) {
-    const modelName = getModelName();
-    console.log(`[EmbeddingsService] Loading model: ${modelName}...`);
-    const startTime = Date.now();
-
-    // Don't cache a rejected promise — a transient model-load failure would
-    // otherwise permanently brick the embeddings backend until process restart.
-    extractorPromise = pipeline('feature-extraction', modelName, {
-      quantized: true,
-    }).catch((err) => {
-      extractorPromise = null;
-      throw err;
-    });
-
-    const extractor = await extractorPromise;
-    const loadTime = Date.now() - startTime;
-    console.log(`[EmbeddingsService] Model loaded in ${loadTime}ms`);
-
-    return extractor;
+  if (extractorPromise) {
+    return extractorPromise;
   }
 
-  return extractorPromise;
-}
+  const modelName = getModelName();
+  console.log(`[EmbeddingsService] Loading model: ${modelName}...`);
+  const startTime = Date.now();
 
-export async function generateLocalEmbedding(text: string): Promise<number[]> {
-  const extractor = await getExtractor();
-  const output = await extractor(text, {
-    pooling: 'cls',
-    normalize: true,
+  // Don't cache a rejected promise — a transient model-load failure would
+  // otherwise permanently brick the embeddings backend until process restart.
+  extractorPromise = pipeline('feature-extraction', modelName, {
+    quantized: true,
+  }).catch((err) => {
+    extractorPromise = null;
+    throw err;
   });
 
-  return Array.from(output.data) as number[];
+  const extractor = await extractorPromise;
+  console.log(`[EmbeddingsService] Model loaded in ${Date.now() - startTime}ms`);
+  return extractor;
 }
 
 export async function batchGenerateLocalEmbeddings(
@@ -74,29 +58,18 @@ export async function batchGenerateLocalEmbeddings(
   for (let i = 0; i < texts.length; i += batchSize) {
     const batch = texts.slice(i, i + batchSize);
     // Pass the whole batch as an array — transformers.js runs a single padded,
-    // vectorized ONNX forward pass instead of N separate ones (the WASM backend
-    // is single-threaded, so the old `Promise.all` over per-text calls executed
-    // serially with full per-call tokenization/tensor-alloc overhead).
+    // vectorized ONNX forward pass instead of N separate ones.
     const output = await extractor(batch, {
       pooling: 'cls',
       normalize: true,
     });
 
-    // CLS-pooled + L2-normalized output is [batchSize, dim]; slice the flat
-    // Float32Array into per-row vectors. Prefer the tensor's reported dims;
-    // fall back to dividing the flat length by the batch size.
     const flat = output.data as Float32Array | number[];
     const dims = (output as { dims?: number[] }).dims;
     const dim =
-      dims && dims.length >= 2
-        ? dims[dims.length - 1]!
-        : batch.length > 0
-          ? flat.length / batch.length
-          : 0;
+      dims && dims.length >= 2 ? dims[dims.length - 1]! : flat.length / batch.length;
     for (let row = 0; row < batch.length; row++) {
-      results.push(
-        Array.from(flat.slice(row * dim, (row + 1) * dim)) as number[]
-      );
+      results.push(Array.from(flat.slice(row * dim, (row + 1) * dim)) as number[]);
     }
   }
 

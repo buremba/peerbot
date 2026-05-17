@@ -2,11 +2,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { validateEmbeddingDimensions } from './embedding-utils.js';
-import {
-  batchGenerateLocalEmbeddings,
-  generateLocalEmbedding,
-  getLocalModelInfo,
-} from './embeddings.js';
+import { batchGenerateLocalEmbeddings, getLocalModelName } from './embeddings.js';
 import {
   OpenAIEmbeddingsTimeoutError,
   generateOpenAIEmbeddings,
@@ -21,16 +17,11 @@ const DEFAULT_PORT = 8790;
 const DEFAULT_TIMEOUT_MS = 30000;
 const DEFAULT_DIMENSIONS = 768;
 const DEFAULT_BATCH_SIZE = 32;
-// Hard DoS limits. The local backend pads the batch to the longest input and
-// runs a single ONNX forward pass — one giant string can blow up memory; many
-// strings drive proportional wall-clock + cost (OpenAI backend).
+// Hard DoS limits per request.
 const MAX_TEXTS_PER_REQUEST = 256;
 const MAX_TEXT_BYTES = 32 * 1024;
-// Conservative allowlist for model identifiers we accept from a client.
-// Matches the shape of every real OpenAI / Anthropic / together / cohere
-// embedding model name, and rejects anything with whitespace, slashes that
-// look like paths, or shell metacharacters that have no business in a model
-// id even though the API call itself wouldn't interpret them.
+// Allowlist for client-supplied model identifiers — rejects whitespace, path
+// segments, and shell metacharacters.
 const MODEL_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/:-]{0,127}$/;
 
 const app = new Hono();
@@ -86,9 +77,8 @@ function parseTexts(payload: EmbeddingRequest): { texts: string[] } | { error: s
   return { texts };
 }
 
-// Constant-time bearer-token compare. `!==` leaks token length / prefix via
-// timing on each request; `timingSafeEqual` requires equal-length buffers, so
-// reject mismatched lengths up front (length itself is not secret here).
+// Constant-time bearer-token compare. timingSafeEqual requires equal-length
+// buffers; reject mismatched lengths up front (length itself isn't secret).
 function tokensMatch(provided: string, expected: string): boolean {
   const a = Buffer.from(provided, 'utf8');
   const b = Buffer.from(expected, 'utf8');
@@ -115,7 +105,7 @@ function requireAuth(request: Request): string | null {
 
 app.get('/health', (c) => {
   const backend = (process.env.EMBEDDINGS_BACKEND || 'local').toLowerCase();
-  const model = backend === 'openai' ? process.env.EMBEDDINGS_MODEL : getLocalModelInfo().model;
+  const model = backend === 'openai' ? process.env.EMBEDDINGS_MODEL : getLocalModelName();
   return c.json({ ok: true, backend, model });
 });
 
@@ -128,7 +118,7 @@ app.post('/api/embeddings', async (c) => {
   let payload: EmbeddingRequest;
   try {
     payload = (await c.req.json()) as EmbeddingRequest;
-  } catch (_error) {
+  } catch {
     return c.json({ error: 'Invalid JSON payload' }, 400);
   }
 
@@ -154,9 +144,7 @@ app.post('/api/embeddings', async (c) => {
       if (!model) {
         return c.json({ error: 'EMBEDDINGS_MODEL is required for openai backend' }, 500);
       }
-      // Reject client-controlled model strings that smuggle control chars,
-      // whitespace, or path segments. The env-var fallback bypasses this on
-      // purpose — operator-controlled values are trusted.
+      // Client-supplied model strings are validated; env-var fallback is trusted.
       if (payload.model && !MODEL_NAME_PATTERN.test(payload.model)) {
         return c.json({ error: 'invalid model identifier' }, 400);
       }
@@ -179,31 +167,22 @@ app.post('/api/embeddings', async (c) => {
     }
 
     const batchSize = resolveNumber(process.env.EMBEDDINGS_BATCH_SIZE, DEFAULT_BATCH_SIZE);
-
-    const embeddings =
-      parsed.texts.length === 1
-        ? [await generateLocalEmbedding(parsed.texts[0])]
-        : await batchGenerateLocalEmbeddings(parsed.texts, batchSize);
+    const embeddings = await batchGenerateLocalEmbeddings(parsed.texts, batchSize);
 
     for (const embedding of embeddings) {
       validateEmbeddingDimensions(embedding, expectedDimensions, 'Local embeddings response');
     }
 
-    const model = getLocalModelInfo().model;
     return c.json({
-      model,
+      model: getLocalModelName(),
       dimensions: expectedDimensions,
       embeddings,
     });
   } catch (error) {
     const rawMessage = error instanceof Error ? error.message : 'Embedding generation failed';
-    // Defense in depth: even if an upstream/library error message slipped a
-    // key-shaped string through, scrub before logging or returning.
+    // Defense-in-depth scrub before logging/returning.
     const message = scrubSecrets(rawMessage);
     console.error('[EmbeddingsService] Error:', message);
-    // Upstream timeouts used to surface as a generic "AbortError" — no way
-    // for the caller to tell a true upstream timeout from a programming
-    // error. Map the typed timeout to 504 so retry policies can react.
     if (error instanceof OpenAIEmbeddingsTimeoutError) {
       return c.json({ error: message }, 504);
     }

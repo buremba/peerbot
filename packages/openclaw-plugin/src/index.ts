@@ -145,12 +145,42 @@ async function mcpFetch(
     mcpSessionId = newSessionId;
   }
 
-  const data = await response.json();
+  // A misbehaving proxy can return HTML (502/504) or empty body — never let
+  // a non-JSON payload throw out of mcpFetch and bury the HTTP status. The
+  // caller inspects `response.ok` / `response.status` and `parseErrorMessage`
+  // tolerates `data` being null.
+  let data: unknown = null;
+  try {
+    data = await response.json();
+  } catch {
+    data = null;
+  }
   return { data, response };
 }
 
 // Worker daemon process (auto-started after login)
 let workerProcess: ChildProcess | null = null;
+let workerCleanupRegistered = false;
+
+function registerWorkerCleanupOnce(): void {
+  if (workerCleanupRegistered) return;
+  workerCleanupRegistered = true;
+  const cleanup = () => {
+    if (workerProcess && workerProcess.exitCode === null && !workerProcess.killed) {
+      try {
+        workerProcess.kill();
+      } catch {
+        // Best-effort cleanup
+      }
+    }
+  };
+  // Register once at module scope so repeated logins / re-registers don't
+  // pile listeners onto process and trip MaxListenersExceededWarning (which
+  // also masks legitimate listener leaks elsewhere).
+  process.on('exit', cleanup);
+  process.on('SIGINT', cleanup);
+  process.on('SIGTERM', cleanup);
+}
 
 // --- Token persistence (compatible with packages/cli/src/lib/openclaw-auth.ts) ---
 
@@ -445,21 +475,19 @@ function spawnWorkerDaemon(mcpUrl: string, accessToken: string, log: PluginLogge
 
     workerProcess.unref();
 
+    // `spawn()` can throw synchronously for some failures, but missing
+    // binaries / EACCES / EPERM surface as an async 'error' event. Without
+    // a listener Node treats the error as uncaught and crashes the gateway.
+    workerProcess.on('error', (err: unknown) => {
+      log.warn(
+        `lobu: worker daemon process error: ${err instanceof Error ? err.message : String(err)}`
+      );
+      workerProcess = null;
+    });
+
     log.info(`lobu: worker daemon spawned (pid=${workerProcess.pid})`);
 
-    // Clean up on process exit
-    const cleanup = () => {
-      if (workerProcess && workerProcess.exitCode === null && !workerProcess.killed) {
-        try {
-          workerProcess.kill();
-        } catch {
-          // Best-effort cleanup
-        }
-      }
-    };
-    process.on('exit', cleanup);
-    process.on('SIGINT', cleanup);
-    process.on('SIGTERM', cleanup);
+    registerWorkerCleanupOnce();
   } catch (err) {
     log.warn(
       `lobu: failed to spawn worker daemon: ${err instanceof Error ? err.message : String(err)}`
@@ -670,52 +698,64 @@ function refreshStoredTokenSync(mcpUrl: string): void {
   }
 }
 
+// Refresh tokens are single-use on most OAuth servers: if two concurrent
+// callers both hit a 401 they'd each post the same refresh_token and the
+// second request would fail (or worse, invalidate the just-issued access
+// token). Funnel concurrent refreshes through a single in-flight promise.
+let inFlightRefresh: Promise<boolean> | null = null;
+
 async function tryRefreshToken(mcpUrl: string): Promise<boolean> {
   if (!_sessionRefreshToken || !sessionClientId || !sessionIssuer) return false;
+  if (inFlightRefresh) return inFlightRefresh;
 
-  try {
-    const body: Record<string, string> = {
-      grant_type: 'refresh_token',
-      client_id: sessionClientId,
-      refresh_token: _sessionRefreshToken,
-    };
-    if (sessionClientSecret) {
-      body.client_secret = sessionClientSecret;
-    }
-
-    const response = await fetch(`${sessionIssuer}/oauth/token`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-
-    if (!response.ok) return false;
-
-    const data = (await response.json()) as Record<string, unknown>;
-    if (typeof data.access_token !== 'string') return false;
-
-    sessionToken = data.access_token;
-    if (typeof data.refresh_token === 'string') {
-      _sessionRefreshToken = data.refresh_token;
-    }
-
-    // Persist refreshed tokens
+  inFlightRefresh = (async () => {
     try {
-      saveStoredSession(mcpUrl, {
-        issuer: sessionIssuer,
-        clientId: sessionClientId,
-        clientSecret: sessionClientSecret,
-        refreshToken: _sessionRefreshToken!,
-        accessToken: sessionToken,
-      });
-    } catch {
-      // Best-effort persist
-    }
+      const body: Record<string, string> = {
+        grant_type: 'refresh_token',
+        client_id: sessionClientId!,
+        refresh_token: _sessionRefreshToken!,
+      };
+      if (sessionClientSecret) {
+        body.client_secret = sessionClientSecret;
+      }
 
-    return true;
-  } catch {
-    return false;
-  }
+      const response = await fetch(`${sessionIssuer}/oauth/token`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+
+      if (!response.ok) return false;
+
+      const data = (await response.json()) as Record<string, unknown>;
+      if (typeof data.access_token !== 'string') return false;
+
+      sessionToken = data.access_token;
+      if (typeof data.refresh_token === 'string') {
+        _sessionRefreshToken = data.refresh_token;
+      }
+
+      // Persist refreshed tokens
+      try {
+        saveStoredSession(mcpUrl, {
+          issuer: sessionIssuer!,
+          clientId: sessionClientId!,
+          clientSecret: sessionClientSecret,
+          refreshToken: _sessionRefreshToken!,
+          accessToken: sessionToken,
+        });
+      } catch {
+        // Best-effort persist
+      }
+
+      return true;
+    } catch {
+      return false;
+    } finally {
+      inFlightRefresh = null;
+    }
+  })();
+  return inFlightRefresh;
 }
 
 async function reinitializeMcpSession(config: ResolvedPluginConfig): Promise<boolean> {
@@ -790,8 +830,11 @@ async function callMcpTool(
 
   // Auto-refresh on 401/403 if we have a refresh token
   if ((response.status === 401 || response.status === 403) && config.mcpUrl) {
+    if (options?.signal?.aborted) {
+      throw new Error('aborted');
+    }
     const refreshed = await tryRefreshToken(config.mcpUrl);
-    if (refreshed && sessionToken) {
+    if (refreshed && sessionToken && !options?.signal?.aborted) {
       authHeaders.Authorization = `Bearer ${sessionToken}`;
       const retryBody = { ...rpcBody, id: `${rpcId}-retry` };
       const retry = await mcpFetch(config.mcpUrl, retryBody, authHeaders, options?.signal);
@@ -879,6 +922,11 @@ async function fetchWorkspaceInstructions(
   config: ResolvedPluginConfig,
   log: PluginLogger
 ): Promise<void> {
+  // Called fire-and-forget from `lobu_login_check`. Without a deadline a
+  // hanging MCP server keeps the awaiter alive indefinitely (and pins the
+  // plugin's auth state). Bound it the same way recall is bounded.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), RECALL_TIMEOUT_MS);
   try {
     const token = await resolveAuthToken(config);
     const authHeaders: Record<string, string> = { ...config.headers };
@@ -896,7 +944,8 @@ async function fetchWorkspaceInstructions(
           clientInfo: { name: 'openclaw-lobu', version: '1.0.0' },
         },
       },
-      authHeaders
+      authHeaders,
+      controller.signal
     );
 
     if (!response.ok) return;
@@ -913,6 +962,8 @@ async function fetchWorkspaceInstructions(
     log.warn(
       `lobu: failed to fetch workspace instructions: ${err instanceof Error ? err.message : String(err)}`
     );
+  } finally {
+    clearTimeout(timer);
   }
 }
 

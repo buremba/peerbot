@@ -17,6 +17,7 @@ export async function getLatestPosts(count = 3): Promise<LatestBlogPost[]> {
       dateLabel: post.data.date.toLocaleDateString("en-US", {
         month: "short",
         day: "numeric",
+        timeZone: "America/Los_Angeles",
       }),
       href: `/blog/${post.id}`,
       tag: post.data.tags?.[0],

@@ -23,6 +23,7 @@ const dateFormatted = post.data.date.toLocaleDateString("en-US", {
   year: "numeric",
   month: "short",
   day: "numeric",
+  timeZone: "America/Los_Angeles",
 });
 
 const dateISO = post.data.date.toISOString();

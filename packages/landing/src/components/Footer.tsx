@@ -110,7 +110,16 @@ export function Footer() {
             color: "var(--color-page-text-muted)",
           }}
         >
-          <div>© {new Date().getFullYear()} Lobu. All rights reserved.</div>
+          <div>
+            ©{" "}
+            {Number(
+              new Date().toLocaleDateString("en-US", {
+                year: "numeric",
+                timeZone: "America/Los_Angeles",
+              })
+            )}{" "}
+            Lobu. All rights reserved.
+          </div>
           <div class="flex items-center gap-4">
             <a
               href="/privacy"

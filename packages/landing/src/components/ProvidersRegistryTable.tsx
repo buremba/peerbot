@@ -80,7 +80,7 @@ export function ProvidersRegistryTable() {
         </thead>
         <tbody>
           {providerRows.map((provider) => (
-            <tr key={provider.id}>
+            <tr key={`${provider.id}:${provider.displayName}`}>
               <td
                 style={{
                   ...cellStyle,

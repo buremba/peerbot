@@ -2363,6 +2363,8 @@ async function handleList(
       i.schedule,
       i.next_run_at,
       i.agent_id,
+      i.goal_id,
+      i.device_worker_id,
       i.scheduler_client_id,
       i.model_config,
       i.sources,

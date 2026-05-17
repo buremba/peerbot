@@ -203,6 +203,7 @@ interface WatcherQueryRow {
   next_run_at: string | null;
   agent_id: string | null;
   goal_id: number | null;
+  device_worker_id: string | null;
   scheduler_client_id: string | null;
   version: number;
   current_version_id: number | null;
@@ -549,6 +550,7 @@ export async function getWatcher(
         i.next_run_at,
         i.agent_id,
         i.goal_id,
+        i.device_worker_id,
         i.scheduler_client_id,
         i.version,
         i.current_version_id,
@@ -811,6 +813,7 @@ export async function getWatcher(
       next_run_at: watcherRow.next_run_at,
       agent_id: watcherRow.agent_id,
       goal_id: watcherRow.goal_id ?? null,
+      device_worker_id: watcherRow.device_worker_id ?? null,
       scheduler_client_id: watcherRow.scheduler_client_id,
       version: pinnedVersion,
       sources: watcherSources,

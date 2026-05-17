@@ -133,6 +133,11 @@ export interface WatcherMetadata {
    * "ungrouped" — historical behavior. See manage_goals + #800.
    */
   goal_id?: number | null;
+  /**
+   * Optional FK into `device_workers.id` pinning this watcher (and its run)
+   * to a specific device worker. NULL/undefined means any worker can claim.
+   */
+  device_worker_id?: string | null;
   scheduler_client_id?: string | null;
   version: number;
   sources: WatcherSource[];

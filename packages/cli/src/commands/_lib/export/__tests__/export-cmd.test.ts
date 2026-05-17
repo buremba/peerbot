@@ -250,6 +250,61 @@ describe("lobu export", () => {
     expect(connDoc?.config).toEqual({ repo: "lobu-ai/lobu" });
   });
 
+  test("skips reaction file when it already exists AND omits the YAML reference", async () => {
+    // Regression: previously, export would skip overwriting an existing
+    // local reaction file but still emit `reaction_script: ./reactions/...`
+    // in the YAML — re-applying would then upload whatever stale code was
+    // on disk instead of the server's actual script. Now the reference is
+    // dropped when we don't overwrite, and a warning is printed.
+    const out = mkTempDir();
+    await mkdir(join(out, "models", "reactions"), { recursive: true });
+    const localScript = "// stale local version\nexport default async () => {};\n";
+    writeFileSync(
+      join(out, "models", "reactions", "with-reaction.reaction.ts"),
+      localScript,
+    );
+
+    const fetchImpl = buildFetch({
+      manage_entity_schema: () => ({
+        entity_types: [],
+        relationship_types: [],
+      }),
+      "watchers?watcher_id": () => ({
+        watcher: {
+          reaction_script: "export default async () => 'NEW SERVER VERSION';\n",
+          description: null,
+        },
+      }),
+      "watchers?include_details": () => ({
+        watchers: [
+          {
+            slug: "with-reaction",
+            watcher_id: "42",
+            agent_id: "triage",
+            prompt: "Work.",
+            extraction_schema: { type: "object" },
+          },
+        ],
+      }),
+    });
+
+    await exportCommand({ cwd: out, out, fetchImpl, only: "models" });
+
+    // Local script is untouched.
+    expect(
+      readFileSync(
+        join(out, "models", "reactions", "with-reaction.reaction.ts"),
+        "utf-8",
+      ),
+    ).toBe(localScript);
+
+    // YAML does NOT reference reaction_script.
+    const bundle = parseYaml(
+      readFileSync(join(out, "models", "exported.yaml"), "utf-8"),
+    ) as { watchers: Array<Record<string, unknown>> };
+    expect(bundle.watchers[0]?.reaction_script).toBeUndefined();
+  });
+
   test("does not clobber existing files unless --force", async () => {
     const out = mkTempDir();
     await mkdir(join(out, "models"), { recursive: true });

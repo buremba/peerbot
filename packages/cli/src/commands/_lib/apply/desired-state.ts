@@ -843,6 +843,13 @@ function parseWatcher(raw: unknown, modelFileAbsPath: string): DesiredWatcher {
   }
 
   // Reaction script — sibling `.ts` file, resolved relative to the YAML.
+  // Path constraints: must be a relative POSIX-style path that stays under
+  // the YAML's directory tree (no leading `/`, no `..` segments), must end
+  // in `.ts`, and the file must be ≤ 256 KiB. The server compiles and
+  // executes the source in an isolate, so the trust boundary is the
+  // operator's file system — this validation prevents a hostile YAML
+  // (e.g. a PR that touches an unrelated model file) from sucking in a
+  // sensitive file like `/etc/passwd` or `../../.ssh/id_rsa`.
   if (raw.reaction_script !== undefined) {
     if (
       typeof raw.reaction_script !== "string" ||
@@ -853,14 +860,42 @@ function parseWatcher(raw: unknown, modelFileAbsPath: string): DesiredWatcher {
       );
     }
     const rel = raw.reaction_script.trim();
+    if (rel.startsWith("/") || rel.includes("\\")) {
+      throw new ValidationError(
+        `watcher "${raw.slug}" \`reaction_script\` must be a relative POSIX path (./foo.ts) — absolute paths and backslashes are not allowed`
+      );
+    }
+    if (rel.split("/").some((seg) => seg === "..")) {
+      throw new ValidationError(
+        `watcher "${raw.slug}" \`reaction_script\` must not contain \`..\` segments — keep the script under the model file's directory tree`
+      );
+    }
+    if (!rel.endsWith(".ts")) {
+      throw new ValidationError(
+        `watcher "${raw.slug}" \`reaction_script\` must end in \`.ts\` (got ${JSON.stringify(rel)})`
+      );
+    }
     const baseDir = resolve(modelFileAbsPath, "..");
     const abs = resolve(baseDir, rel);
+    // Belt-and-braces — symlinks or unusual relative-path forms shouldn't
+    // escape the baseDir even if the above checks let one through.
+    if (!abs.startsWith(`${baseDir}/`) && abs !== baseDir) {
+      throw new ValidationError(
+        `watcher "${raw.slug}" \`reaction_script\` resolves outside the model directory (${abs})`
+      );
+    }
     let sourceCode: string;
     try {
       sourceCode = readFileSync(abs, "utf-8");
     } catch {
       throw new ValidationError(
         `watcher "${raw.slug}" \`reaction_script\` ${rel} does not exist (resolved to ${abs})`
+      );
+    }
+    const REACTION_SCRIPT_MAX_BYTES = 256 * 1024;
+    if (Buffer.byteLength(sourceCode, "utf8") > REACTION_SCRIPT_MAX_BYTES) {
+      throw new ValidationError(
+        `watcher "${raw.slug}" \`reaction_script\` exceeds the ${REACTION_SCRIPT_MAX_BYTES}-byte cap — reaction scripts should be a few hundred lines, not a vendored library`
       );
     }
     out.reactionScript = { sourcePath: abs, sourceCode };

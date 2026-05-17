@@ -529,3 +529,58 @@ device_worker_id: not-a-uuid
     );
   });
 });
+
+// ── Reaction script path traversal / size guards ────────────────────────────
+
+describe("loadDesiredState — reaction_script path validation", () => {
+  test("absolute path is rejected", async () => {
+    const dir = mkProjectWithModels({
+      "w.yaml": `version: 2
+watchers:
+  - slug: bad-reaction
+    name: Bad
+    agent: triage
+    prompt: "Do work."
+    schedule: "0 9 * * 1"
+    reaction_script: /etc/passwd
+`,
+    });
+    await expect(loadDesiredState({ cwd: dir })).rejects.toThrow(
+      /relative POSIX path/
+    );
+  });
+
+  test(".. segment is rejected", async () => {
+    const dir = mkProjectWithModels({
+      "w.yaml": `version: 2
+watchers:
+  - slug: bad-reaction
+    name: Bad
+    agent: triage
+    prompt: "Do work."
+    schedule: "0 9 * * 1"
+    reaction_script: ../../../etc/passwd
+`,
+    });
+    await expect(loadDesiredState({ cwd: dir })).rejects.toThrow(
+      /must not contain `\.\.`/
+    );
+  });
+
+  test("non-.ts extension is rejected", async () => {
+    const dir = mkProjectWithModels({
+      "w.yaml": `version: 2
+watchers:
+  - slug: bad-reaction
+    name: Bad
+    agent: triage
+    prompt: "Do work."
+    schedule: "0 9 * * 1"
+    reaction_script: ./reactions/funnel.js
+`,
+    });
+    await expect(loadDesiredState({ cwd: dir })).rejects.toThrow(
+      /must end in `\.ts`/
+    );
+  });
+});

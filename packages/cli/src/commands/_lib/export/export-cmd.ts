@@ -293,15 +293,44 @@ export async function exportCommand(opts: ExportOptions = {}): Promise<void> {
         const detail = await client.getWatcherDetail(w.watcher_id);
         const script = detail?.reaction_script ?? null;
         if (script) {
-          const rel = `reactions/${w.slug}.reaction.ts`;
-          const abs = join(out, "models", rel);
-          const res = await writeIfFreeOrForced(abs, script, force);
-          written.push({
-            path: join("models", rel),
-            body: script,
-            ...(res.skipped ? { skipped: true } : {}),
-          });
-          reactionScriptRelPath = `./${rel}`;
+          // Defensive slug sanitization — the watcher slug is used as a
+          // filesystem path component below. The server's slug constraint
+          // should already keep this safe, but a stale or corrupted row could
+          // contain `..` or `/`. Reject anything that isn't a tight basename.
+          const safeSlug = String(w.slug);
+          if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(safeSlug)) {
+            printText(
+              chalk.yellow(
+                `  ⚠ skipping reaction script for watcher slug "${safeSlug}" — slug is not a safe filename basename; export the watcher manually if needed.`
+              )
+            );
+          } else {
+            const rel = `reactions/${safeSlug}.reaction.ts`;
+            const abs = join(out, "models", rel);
+            const res = await writeIfFreeOrForced(abs, script, force);
+            // When the local file exists and --force isn't set, don't emit a
+            // `reaction_script:` reference — re-applying would otherwise
+            // upload whatever stale code happens to be on disk, masking the
+            // server's actual script. Loudly warn so the operator notices.
+            if (res.skipped) {
+              printText(
+                chalk.yellow(
+                  `  ⚠ keeping existing ${rel}; YAML will NOT reference the server script (re-run with --force to overwrite and re-link).`
+                )
+              );
+              written.push({
+                path: join("models", rel),
+                body: script,
+                skipped: true,
+              });
+            } else {
+              written.push({
+                path: join("models", rel),
+                body: script,
+              });
+              reactionScriptRelPath = `./${rel}`;
+            }
+          }
         }
         if (detail?.description && !w.description) {
           w.description = detail.description;

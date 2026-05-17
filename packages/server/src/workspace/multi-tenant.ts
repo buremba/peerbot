@@ -28,8 +28,14 @@ import {
 // Re-export the test-only cache clearer so existing imports
 // (`from '../workspace/multi-tenant'`) keep working; the cache instances
 // themselves live in `./multi-tenant-caches` to keep test cleanup off this
-// file's heavy import graph.
-export const clearMultiTenantCachesForTests = clearMultiTenantCachesForTestsShared;
+// file's heavy import graph. We wrap rather than re-export so we can also
+// reset the no-auth user cache that lives in THIS file (see `getNoAuthUser`
+// below) — tests that swap bootstrap rows or LOBU_NO_AUTH between cases
+// would otherwise see stale identity.
+export function clearMultiTenantCachesForTests(): void {
+  clearMultiTenantCachesForTestsShared();
+  noAuthUserCache = null;
+}
 
 /**
  * Path namespaces that don't carry an org context. Authenticated requests to

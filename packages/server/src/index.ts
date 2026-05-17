@@ -309,10 +309,17 @@ app.use('/*', async (c, next) => {
 
   // Origin / Sec-Fetch-Site: at least one must say "same-origin or none".
   // Native clients (Mac app) typically omit Origin but set X-Lobu-Client.
+  //
+  // The Origin match is exact-against-this-server, not any-loopback-shape.
+  // Previously we accepted any `http(s)://(127.x.x.x|localhost|[::1])(:port)?`
+  // which let a malicious tab loaded from e.g. `http://localhost:9999` send
+  // CSRF mutations to our `:8787`. Now we derive the canonical origin from
+  // the validated Host header above and require an exact string match.
+  const expectedOrigin = `http://${hostHeader}`;
   const sameOrigin =
     sfs === 'same-origin' ||
     sfs === 'none' ||
-    (origin !== undefined && /^https?:\/\/(?:127\.\d{1,3}\.\d{1,3}\.\d{1,3}|localhost|\[::1\])(?::\d+)?$/.test(origin));
+    origin === expectedOrigin;
   const trustedNative = lobuClient !== undefined && lobuClient.length > 0;
   if (!sameOrigin && !trustedNative) {
     return c.json(

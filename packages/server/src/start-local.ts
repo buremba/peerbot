@@ -422,6 +422,20 @@ async function ensureBootstrapPat(dbUrl: string): Promise<void> {
       SELECT count(*)::int AS count FROM "user" WHERE id <> ${BOOTSTRAP_USER_ID}
     `;
     if ((otherUserCountRows[0]?.count ?? 0) > 0) {
+      // If LOBU_NO_AUTH=1 is set, the auth bypass needs the bootstrap user
+      // to attribute every request to. Skipping bootstrap here while no-auth
+      // is on leaves resolveAuth() returning 503 forever — visible only at
+      // request time, when the user has no clear path to recover. Fail loud
+      // at startup instead so the operator sees the mismatch immediately.
+      if (process.env.LOBU_NO_AUTH === '1') {
+        logger.error(
+          { otherUserCount: otherUserCountRows[0]?.count },
+          'LOBU_NO_AUTH=1 requires the bootstrap user to exist, but this deployment ' +
+            'already has non-bootstrap users — no-auth mode would 503 every request. ' +
+            'Either unset LOBU_NO_AUTH for this deployment or use a clean LOBU_DATA_DIR.'
+        );
+        process.exit(1);
+      }
       logger.debug(
         { userCount: otherUserCountRows[0]?.count },
         'Skipping bootstrap PAT — deployment already has non-bootstrap users'

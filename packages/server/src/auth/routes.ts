@@ -349,6 +349,25 @@ credentialRoutes.post('/local-init', async (c) => {
     );
   }
 
+  // CSRF gate: require a custom header so the only callers that can hit
+  // this endpoint are ones that can mint custom headers AND survive a
+  // CORS preflight — i.e. native clients (menubar, CLI) and browser
+  // extensions with host_permissions (the Chrome extension). A random
+  // malicious web page firing a no-preflight simple POST against
+  // localhost:8787 from a victim's browser can't add this header, so the
+  // browser would issue a preflight, which we don't allow for foreign
+  // origins → request rejected before this handler runs.
+  if (!c.req.header('x-lobu-client')) {
+    return c.json(
+      {
+        error: 'missing_client_header',
+        error_description:
+          '/api/local-init requires the X-Lobu-Client header (CSRF mitigation). Native clients and browser extensions set it; plain web pages can\'t.',
+      },
+      403
+    );
+  }
+
   const sql = createDbClientFromEnv(c.env);
   const rows = (await sql`
     SELECT

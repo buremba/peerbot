@@ -626,7 +626,9 @@ CREATE TABLE public.device_workers (
     first_seen_at timestamp with time zone DEFAULT now() NOT NULL,
     last_seen_at timestamp with time zone DEFAULT now() NOT NULL,
     id uuid DEFAULT gen_random_uuid() NOT NULL,
-    organization_id text
+    organization_id text,
+    notification_budget_per_day integer DEFAULT 10 NOT NULL,
+    CONSTRAINT device_workers_notification_budget_per_day_nonneg CHECK ((notification_budget_per_day >= 0))
 );
 
 --
@@ -2002,7 +2004,16 @@ CREATE TABLE public.watchers (
     scheduler_client_id text,
     source_watcher_id integer,
     watcher_group_id integer NOT NULL,
-    CONSTRAINT insights_status_check CHECK ((status = ANY (ARRAY['active'::text, 'archived'::text])))
+    device_worker_id uuid,
+    agent_kind text,
+    notification_channel text DEFAULT 'canvas'::text NOT NULL,
+    notification_priority text DEFAULT 'normal'::text NOT NULL,
+    min_cooldown_seconds integer DEFAULT 0 NOT NULL,
+    last_fired_at timestamp with time zone,
+    CONSTRAINT insights_status_check CHECK ((status = ANY (ARRAY['active'::text, 'archived'::text]))),
+    CONSTRAINT watchers_min_cooldown_seconds_nonneg CHECK ((min_cooldown_seconds >= 0)),
+    CONSTRAINT watchers_notification_channel_check CHECK ((notification_channel = ANY (ARRAY['canvas'::text, 'notification'::text, 'both'::text]))),
+    CONSTRAINT watchers_notification_priority_check CHECK ((notification_priority = ANY (ARRAY['low'::text, 'normal'::text, 'high'::text])))
 );
 
 --
@@ -3801,6 +3812,12 @@ CREATE INDEX idx_watchers_connection_id ON public.watchers USING btree (connecti
 CREATE INDEX idx_watchers_created_by ON public.watchers USING btree (created_by);
 
 --
+-- Name: idx_watchers_device_worker_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_watchers_device_worker_id ON public.watchers USING btree (device_worker_id) WHERE (device_worker_id IS NOT NULL);
+
+--
 -- Name: idx_watchers_entity_ids; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -4920,6 +4937,13 @@ ALTER TABLE ONLY public.watchers
     ADD CONSTRAINT watchers_current_version_id_fkey FOREIGN KEY (current_version_id) REFERENCES public.watcher_versions(id) ON DELETE SET NULL;
 
 --
+-- Name: watchers watchers_device_worker_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.watchers
+    ADD CONSTRAINT watchers_device_worker_id_fkey FOREIGN KEY (device_worker_id) REFERENCES public.device_workers(id);
+
+--
 -- Name: watchers watchers_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -5003,4 +5027,5 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20260517020000'),
     ('20260517030000'),
     ('20260517040000'),
-    ('20260517050000');
+    ('20260517050000'),
+    ('20260517060000');

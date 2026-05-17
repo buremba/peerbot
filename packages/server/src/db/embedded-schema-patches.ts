@@ -697,4 +697,122 @@ export const EMBEDDED_SCHEMA_PATCHES: EmbeddedSchemaPatch[] = [
       `);
     },
   },
+  {
+    // Mirrors db/migrations/20260517060000_watcher_schema_additions.sql.
+    // Adds dispatcher-related columns to watchers (device_worker_id,
+    // agent_kind, notification_channel, notification_priority,
+    // min_cooldown_seconds, last_fired_at) plus the per-device daily
+    // notification budget on device_workers. Idempotent for replay on
+    // already-initialised embedded/PGlite databases — each ADD COLUMN is
+    // wrapped in a duplicate_column-tolerant DO block; constraint and index
+    // creation is gated on pg_constraint / IF NOT EXISTS.
+    id: 'watcher-schema-additions',
+    apply: async (sql) => {
+      const watcherColumns: Array<{ name: string; ddl: string }> = [
+        {
+          name: 'device_worker_id',
+          ddl: `ALTER TABLE public.watchers
+                  ADD COLUMN device_worker_id uuid REFERENCES public.device_workers(id)`,
+        },
+        {
+          name: 'agent_kind',
+          ddl: `ALTER TABLE public.watchers ADD COLUMN agent_kind text`,
+        },
+        {
+          name: 'notification_channel',
+          ddl: `ALTER TABLE public.watchers
+                  ADD COLUMN notification_channel text NOT NULL DEFAULT 'canvas'`,
+        },
+        {
+          name: 'notification_priority',
+          ddl: `ALTER TABLE public.watchers
+                  ADD COLUMN notification_priority text NOT NULL DEFAULT 'normal'`,
+        },
+        {
+          name: 'min_cooldown_seconds',
+          ddl: `ALTER TABLE public.watchers
+                  ADD COLUMN min_cooldown_seconds integer NOT NULL DEFAULT 0`,
+        },
+        {
+          name: 'last_fired_at',
+          ddl: `ALTER TABLE public.watchers
+                  ADD COLUMN last_fired_at timestamp with time zone`,
+        },
+      ];
+      for (const col of watcherColumns) {
+        await sql.unsafe(`
+          DO $$
+          BEGIN
+            ${col.ddl};
+          EXCEPTION WHEN duplicate_column THEN NULL;
+          END $$;
+        `);
+      }
+
+      await sql.unsafe(`
+        DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint WHERE conname = 'watchers_notification_channel_check'
+          ) THEN
+            ALTER TABLE public.watchers
+              ADD CONSTRAINT watchers_notification_channel_check
+              CHECK (notification_channel IN ('canvas', 'notification', 'both'));
+          END IF;
+        END $$;
+      `);
+      await sql.unsafe(`
+        DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint WHERE conname = 'watchers_notification_priority_check'
+          ) THEN
+            ALTER TABLE public.watchers
+              ADD CONSTRAINT watchers_notification_priority_check
+              CHECK (notification_priority IN ('low', 'normal', 'high'));
+          END IF;
+        END $$;
+      `);
+      await sql.unsafe(`
+        DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint WHERE conname = 'watchers_min_cooldown_seconds_nonneg'
+          ) THEN
+            ALTER TABLE public.watchers
+              ADD CONSTRAINT watchers_min_cooldown_seconds_nonneg
+              CHECK (min_cooldown_seconds >= 0);
+          END IF;
+        END $$;
+      `);
+
+      await sql.unsafe(`
+        CREATE INDEX IF NOT EXISTS idx_watchers_device_worker_id
+          ON public.watchers (device_worker_id)
+          WHERE device_worker_id IS NOT NULL
+      `);
+
+      await sql.unsafe(`
+        DO $$
+        BEGIN
+          ALTER TABLE public.device_workers
+            ADD COLUMN notification_budget_per_day integer NOT NULL DEFAULT 10;
+        EXCEPTION WHEN duplicate_column THEN NULL;
+        END $$;
+      `);
+      await sql.unsafe(`
+        DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint
+            WHERE conname = 'device_workers_notification_budget_per_day_nonneg'
+          ) THEN
+            ALTER TABLE public.device_workers
+              ADD CONSTRAINT device_workers_notification_budget_per_day_nonneg
+              CHECK (notification_budget_per_day >= 0);
+          END IF;
+        END $$;
+      `);
+    },
+  },
 ];

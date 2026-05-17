@@ -363,6 +363,47 @@ export const ManageWatchersSchema = Type.Object({
         '[create/update/create_version] Optional MCP client ID that should auto-run this watcher.',
     })
   ),
+  device_worker_id: Type.Optional(
+    Type.Union([Type.String(), Type.Null()], {
+      description:
+        '[create/update] Optional device worker UUID to pin this watcher to (when its inputs live on that device). Null clears the pin.',
+    })
+  ),
+  agent_kind: Type.Optional(
+    Type.Union([Type.String(), Type.Null()], {
+      description:
+        '[create/update] Optional agent kind override for this watcher (e.g. "background", "notifier"). Null clears the override.',
+    })
+  ),
+  notification_channel: Type.Optional(
+    Type.Union(
+      [
+        Type.Literal('canvas'),
+        Type.Literal('notification'),
+        Type.Literal('both'),
+      ],
+      {
+        description:
+          '[create/update] Where firings surface: "canvas" (default), "notification" (OS notification), or "both".',
+      }
+    )
+  ),
+  notification_priority: Type.Optional(
+    Type.Union(
+      [Type.Literal('low'), Type.Literal('normal'), Type.Literal('high')],
+      {
+        description:
+          '[create/update] Priority class used by the dispatcher interrupt budget. Default "normal".',
+      }
+    )
+  ),
+  min_cooldown_seconds: Type.Optional(
+    Type.Number({
+      description:
+        '[create/update] Minimum seconds between two firings of this watcher (0 = no cooldown).',
+      minimum: 0,
+    })
+  ),
   model_config: Type.Optional(Type.Any({ description: '[create/update] AI model configuration' })),
   tags: Type.Optional(Type.Array(Type.String(), { description: '[create] Tags for filtering' })),
 
@@ -1012,7 +1053,9 @@ async function handleCreate(
         id, name, slug, organization_id, entity_ids,
         schedule, next_run_at, agent_id, scheduler_client_id, model_config, sources, version,
         current_version_id, tags, status, created_by, created_at, updated_at,
-        watcher_group_id
+        watcher_group_id,
+        device_worker_id, agent_kind,
+        notification_channel, notification_priority, min_cooldown_seconds
       ) VALUES (
         ${watcherId}, ${args.name ?? args.slug}, ${args.slug}, ${organizationId},
         ${`{${entityIdsArray.join(',')}}`}::bigint[],
@@ -1021,7 +1064,11 @@ async function handleCreate(
         ${sql.json(args.model_config || {})}, ${sql.json(sources)},
         1, NULL, ${toTextArrayParam(args.tags || [])}::text[],
         'active', ${createdBy}, NOW(), NOW(),
-        ${watcherId}
+        ${watcherId},
+        ${args.device_worker_id ?? null}, ${args.agent_kind ?? null},
+        ${args.notification_channel ?? 'canvas'},
+        ${args.notification_priority ?? 'normal'},
+        ${args.min_cooldown_seconds ?? 0}
       )
     `;
 
@@ -1262,6 +1309,11 @@ async function handleUpdate(
   if (args.agent_id !== undefined) updatedFields.push('agent_id');
   if (args.scheduler_client_id !== undefined) updatedFields.push('scheduler_client_id');
   if (args.tags !== undefined) updatedFields.push('tags');
+  if (args.device_worker_id !== undefined) updatedFields.push('device_worker_id');
+  if (args.agent_kind !== undefined) updatedFields.push('agent_kind');
+  if (args.notification_channel !== undefined) updatedFields.push('notification_channel');
+  if (args.notification_priority !== undefined) updatedFields.push('notification_priority');
+  if (args.min_cooldown_seconds !== undefined) updatedFields.push('min_cooldown_seconds');
 
   if (updatedFields.length === 0) {
     return {
@@ -1282,7 +1334,12 @@ async function handleUpdate(
       next_run_at = CASE WHEN ${args.schedule !== undefined} THEN ${nextRunAtVal}::timestamptz ELSE next_run_at END,
       agent_id = CASE WHEN ${args.agent_id !== undefined} THEN ${args.agent_id ?? null} ELSE agent_id END,
       scheduler_client_id = CASE WHEN ${args.scheduler_client_id !== undefined} THEN ${args.scheduler_client_id ?? null} ELSE scheduler_client_id END,
-      tags = CASE WHEN ${args.tags !== undefined} THEN ${toTextArrayParam(args.tags || [])}::text[] ELSE tags END
+      tags = CASE WHEN ${args.tags !== undefined} THEN ${toTextArrayParam(args.tags || [])}::text[] ELSE tags END,
+      device_worker_id = CASE WHEN ${args.device_worker_id !== undefined} THEN ${args.device_worker_id ?? null}::uuid ELSE device_worker_id END,
+      agent_kind = CASE WHEN ${args.agent_kind !== undefined} THEN ${args.agent_kind ?? null} ELSE agent_kind END,
+      notification_channel = CASE WHEN ${args.notification_channel !== undefined} THEN ${args.notification_channel ?? 'canvas'} ELSE notification_channel END,
+      notification_priority = CASE WHEN ${args.notification_priority !== undefined} THEN ${args.notification_priority ?? 'normal'} ELSE notification_priority END,
+      min_cooldown_seconds = CASE WHEN ${args.min_cooldown_seconds !== undefined} THEN ${args.min_cooldown_seconds ?? 0} ELSE min_cooldown_seconds END
     WHERE id = ${args.watcher_id}
   `;
 

@@ -27,6 +27,7 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
+import { ensureDefaultAgent } from './auth/default-provisioning';
 import { generatePAT, getPATPrefix, hashToken } from './auth/oauth/utils';
 
 import { PGlite } from '@electric-sql/pglite';
@@ -213,7 +214,6 @@ async function main() {
   // Best-effort: failure here does not block boot. The Mac app degrades to
   // an empty-agents state instead of failing to start the server.
   try {
-    const { ensureDefaultAgent } = await import('./auth/default-provisioning');
     await ensureDefaultAgent(BOOTSTRAP_ORG_ID);
   } catch (err) {
     logger.warn({ err }, 'Default-agent provisioning failed');

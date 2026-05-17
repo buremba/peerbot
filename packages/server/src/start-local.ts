@@ -16,7 +16,7 @@ import './utils/assert-node-version';
 
 import { fork } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import http from 'node:http';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
@@ -28,7 +28,6 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 import { ensureDefaultAgent } from './auth/default-provisioning';
-import { generatePAT, getPATPrefix, hashToken } from './auth/oauth/utils';
 
 import { PGlite } from '@electric-sql/pglite';
 import { pg_trgm } from '@electric-sql/pglite/contrib/pg_trgm';
@@ -188,18 +187,16 @@ async function main() {
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
 
-  // ─── Bootstrap PAT ───────────────────────────────────────────
-  // Runs BEFORE listen so that:
-  //   (a) the bootstrap user / org / PAT row are guaranteed to exist before
-  //       the first request can land — first-boot UI calls would otherwise
-  //       race the bootstrap and 401 against a not-yet-provisioned user.
-  //   (b) a stale bootstrap-pat.txt (file exists, DB rows missing because
-  //       LOBU_DATA_DIR was wiped) gets re-minted now, while we still own
-  //       the boot sequence.
+  // ─── Bootstrap user ──────────────────────────────────────────
+  // Runs BEFORE listen so that the bootstrap user / org / member rows are
+  // guaranteed to exist before the first request lands — first-boot UI
+  // calls would otherwise race the seed and 401 against a not-yet-
+  // provisioned user. Auth credentials (Better Auth sessions) are minted
+  // on demand by `POST /api/auth/local-init` once the listener is up.
   try {
-    await ensureBootstrapPat(dbUrl);
+    await ensureBootstrapUser(dbUrl);
   } catch (err) {
-    logger.warn({ err }, 'Bootstrap PAT setup failed');
+    logger.warn({ err }, 'Bootstrap user seed failed');
   }
 
   // ─── Default agent (Mac-app onboarding) ──────────────────────
@@ -311,13 +308,19 @@ async function applyEmbeddedSchemaPatches(sql: MigrationSqlClient) {
   }
 }
 
-// ─── Bootstrap PAT ────────────────────────────────────────────────
+// ─── Bootstrap user ────────────────────────────────────────────────
 //
-// Mints a default user, personal org (slug `dev`), member, and PAT scoped to
-// both. Self-skips when (a) `bootstrap-pat.txt` already exists under
-// LOBU_DATA_DIR, or (b) the deployment already has users. The second guard
-// prevents auto-bootstrap from polluting a production deployment that already
-// has real users provisioned via the web UI.
+// Seeds a default user, personal org (slug `dev`), member, and credential
+// account so the embedded PGlite deployment has a signed-in identity from
+// first boot. Self-skips when the user/org/member trio is already present
+// or when the deployment has non-bootstrap users (production safety —
+// real signups land via the web UI and own all subsequent boots).
+//
+// The auth credential itself (a Better Auth session token) is minted on
+// demand via `POST /api/auth/local-init` once the HTTP listener is up —
+// CLI clients and the macOS menu bar both hit that endpoint instead of
+// reading a long-lived token from disk. PostgreSQL holds the truth: the
+// `session` table on issuance, the `user` row here on seeding.
 
 const BOOTSTRAP_USER_ID = 'bootstrap-user';
 // Needs a dotted domain — better-auth's email validator rejects bare `dev@local`.
@@ -328,7 +331,6 @@ const BOOTSTRAP_ORG_ID = 'org-bootstrap-dev';
 const BOOTSTRAP_ORG_SLUG = 'dev';
 const BOOTSTRAP_ORG_NAME = 'Local Dev';
 const BOOTSTRAP_MEMBER_ID = 'member-bootstrap-dev';
-const BOOTSTRAP_PAT_FILENAME = 'bootstrap-pat.txt';
 // Fixed credential-login password for the bootstrap user. Local PGlite only —
 // the user-count guard below means this never lands in a real deployment.
 // Must be >= 8 chars to satisfy the web login form's minlength validation.
@@ -344,21 +346,19 @@ function isLoopbackPgUrl(dbUrl: string): boolean {
   }
 }
 
-async function ensureBootstrapPat(dbUrl: string): Promise<void> {
+async function ensureBootstrapUser(dbUrl: string): Promise<void> {
   // Defense-in-depth: this entrypoint spawns its own PGlite at 127.0.0.1
   // (see line 120 above). If the dbUrl ever points elsewhere — someone
-  // refactors and reuses ensureBootstrapPat against a real DB — refuse
-  // to mint. The user-count guard below is the second layer; this catches
+  // refactors and reuses ensureBootstrapUser against a real DB — refuse
+  // to seed. The user-count guard below is the second layer; this catches
   // the case where a fresh prod DB hasn't had its first signup yet.
   if (!isLoopbackPgUrl(dbUrl)) {
     logger.warn(
       { dbUrl: dbUrl.replace(/:[^:@/]*@/, ':***@') },
-      'Skipping bootstrap PAT — dbUrl is not the local PGlite loopback'
+      'Skipping bootstrap user seed — dbUrl is not the local PGlite loopback'
     );
     return;
   }
-
-  const patFilePath = join(DATA_DIR, BOOTSTRAP_PAT_FILENAME);
 
   // Reuse the same dynamic-import shape `runMigrations` above uses so we share
   // postgres' module init cost with that path on first boot.
@@ -366,11 +366,10 @@ async function ensureBootstrapPat(dbUrl: string): Promise<void> {
   const sql = pg.default(dbUrl, { max: 1 });
 
   try {
-    // Stale-state detection: previously this early-returned whenever the PAT
-    // file existed, but if LOBU_DATA_DIR was wiped between runs the row was
-    // gone and clients holding the PAT file would see a missing-user 500. Now
-    // we check all three rows (user + org + member) — if ANY is missing the
-    // bootstrap re-runs to restore consistency.
+    // Stale-state detection: previously this early-returned whenever a PAT
+    // file existed on disk, but a wiped LOBU_DATA_DIR could leave rows
+    // missing. Check all three rows (user + org + member) — if ANY is
+    // missing, re-seed to restore consistency.
     const stateRows = await sql<
       [{ user_exists: boolean; org_exists: boolean; member_exists: boolean }]
     >`
@@ -382,23 +381,16 @@ async function ensureBootstrapPat(dbUrl: string): Promise<void> {
     const allPresent =
       stateRows[0]?.user_exists && stateRows[0]?.org_exists && stateRows[0]?.member_exists;
     if (allPresent) {
-      if (existsSync(patFilePath)) {
-        logger.info(
-          { path: patFilePath, org: BOOTSTRAP_ORG_SLUG },
-          'Bootstrap user + org + member already provisioned'
-        );
-      } else {
-        logger.warn(
-          { org: BOOTSTRAP_ORG_SLUG },
-          'Bootstrap rows exist but PAT file is missing — external-CLI token reuse is broken; delete the user row to re-mint'
-        );
-      }
+      logger.info(
+        { org: BOOTSTRAP_ORG_SLUG },
+        'Bootstrap user + org + member already provisioned'
+      );
       return;
     }
     if (stateRows[0]?.user_exists || stateRows[0]?.org_exists || stateRows[0]?.member_exists) {
       logger.warn(
         stateRows[0],
-        'Bootstrap state is partial — re-minting to restore consistency'
+        'Bootstrap state is partial — re-seeding to restore consistency'
       );
     }
 
@@ -412,7 +404,7 @@ async function ensureBootstrapPat(dbUrl: string): Promise<void> {
     if ((otherUserCountRows[0]?.count ?? 0) > 0) {
       logger.debug(
         { userCount: otherUserCountRows[0]?.count },
-        'Skipping bootstrap PAT — deployment already has non-bootstrap users'
+        'Skipping bootstrap user seed — deployment already has non-bootstrap users'
       );
       return;
     }
@@ -459,35 +451,6 @@ async function ensureBootstrapPat(dbUrl: string): Promise<void> {
       ON CONFLICT (id) DO NOTHING
     `;
 
-    // Mint the PAT. Reuse the auth utils so the hash + prefix shapes stay in
-    // lock-step with PersonalAccessTokenService.create().
-    const token = generatePAT();
-    const tokenHash = hashToken(token);
-    const tokenPrefix = getPATPrefix(token);
-
-    // Owner-tier scopes so admin-only tools (manage_entity_schema, etc.) work.
-    // The bootstrap user is the org owner — no separate consent step. This
-    // path is only reached on a deployment with no users; first real signup
-    // via the web UI takes precedence on every subsequent boot.
-    const bootstrapScope = 'mcp:read mcp:write mcp:admin';
-    await sql`
-      INSERT INTO personal_access_tokens (
-        token_hash, token_prefix, user_id, organization_id,
-        name, description, scope, expires_at
-      ) VALUES (
-        ${tokenHash},
-        ${tokenPrefix},
-        ${BOOTSTRAP_USER_ID},
-        ${BOOTSTRAP_ORG_ID},
-        'bootstrap',
-        'auto-minted on first boot of an empty deployment',
-        ${bootstrapScope},
-        NULL
-      )
-    `;
-
-    writeFileSync(patFilePath, `${token}\n`, { mode: 0o600 });
-
     // Credential login for the web UI — same user, fixed password. Uses
     // better-auth's default password hasher so `/api/auth/sign-in/email`
     // accepts it. `emailVerified` was set true above, so no verification gate.
@@ -508,21 +471,12 @@ async function ensureBootstrapPat(dbUrl: string): Promise<void> {
     `;
 
     const url = `http://localhost:${PORT}`;
-    // PAT printed once for dev bootstrap; do not redirect this log line through
-    // any remote sink (Sentry, OTEL exporter, etc.). The bootstrap PAT carries
-    // full mcp:admin scope — treat it like a password.
-    process.stdout.write(`[bootstrap PAT] ${token}\n`);
-    process.stdout.write(`[bootstrap PAT] org=${BOOTSTRAP_ORG_SLUG} url=${url}\n`);
-    process.stdout.write(`[bootstrap PAT] saved to ${patFilePath}\n`);
-    process.stdout.write(
-      `[bootstrap PAT] WARNING: this PAT has full mcp:admin scope. Treat it like a password.\n`
-    );
     process.stdout.write(
       `[bootstrap login] ${BOOTSTRAP_USER_EMAIL} / ${BOOTSTRAP_PASSWORD}  →  ${url}\n`
     );
     logger.info(
-      { path: patFilePath, org: BOOTSTRAP_ORG_SLUG, url },
-      'Bootstrap PAT + web login minted (printed once)'
+      { org: BOOTSTRAP_ORG_SLUG, url },
+      'Bootstrap user + web credential login seeded'
     );
   } finally {
     await sql.end();

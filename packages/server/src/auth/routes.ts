@@ -202,72 +202,213 @@ credentialRoutes.post('/:orgSlug/tokens', mcpAuth, async (c) => {
 });
 
 /**
- * Exchange a Personal Access Token for a Better Auth session cookie.
- *
- * Lets a holder of a valid PAT (CLI users, the macOS menu-bar app, deep links
- * from the operator's terminal) hop into the web UI without typing a password.
- * The endpoint validates the PAT, mints a fresh session row tied to the same
- * user, signs the session token with BETTER_AUTH_SECRET (matching what
- * Better Auth would set), and 302-redirects to `next` (default `/`).
- *
- * `next` is restricted to relative paths to prevent open-redirect abuse. The
- * Referrer-Policy header keeps the PAT out of the next page's Referer.
+ * Mint a Better Auth session for a user and return the Set-Cookie value.
+ * Centralised so /exchange-token and /local-init produce identical cookies.
  */
-credentialRoutes.get('/exchange-token', async (c) => {
-  // Don't leak the PAT into the next request's Referer header.
-  c.header('Referrer-Policy', 'no-referrer');
-
-  const token = c.req.query('token')?.trim();
-  if (!token) {
-    return c.json({ error: 'missing_token', error_description: 'token query param is required' }, 400);
-  }
-
-  const sql = createDbClientFromEnv(c.env);
-  const patService = new PersonalAccessTokenService(sql);
-  const authInfo = await patService.verify(token);
-  if (!authInfo) {
-    return c.json({ error: 'invalid_token', error_description: 'token is invalid, expired, or revoked' }, 401);
-  }
-
+async function mintSessionCookieValue(
+  c: Context<{ Bindings: Env }>,
+  userId: string
+): Promise<{ cookieName: string; cookieHeader: string; sessionToken: string } | { error: string }> {
   const secret = c.env.BETTER_AUTH_SECRET;
-  if (!secret) {
-    return c.json(
-      { error: 'server_misconfigured', error_description: 'BETTER_AUTH_SECRET not set' },
-      500
-    );
-  }
+  if (!secret) return { error: 'BETTER_AUTH_SECRET not set' };
 
   const auth = await createAuth(c.env, c.req.raw);
   const ctx = await auth.$context;
-  const session = await ctx.internalAdapter.createSession(authInfo.userId);
-  if (!session?.token) {
-    return c.json({ error: 'session_create_failed', error_description: 'failed to mint session' }, 500);
-  }
+  const session = await ctx.internalAdapter.createSession(userId);
+  if (!session?.token) return { error: 'failed to mint session' };
 
-  // Match Better Auth's cookie shape: `<token>.<base64(HMAC-SHA256(token, secret))>`,
-  // URL-encoded. Cookie name picks up the __Secure- prefix when the request
-  // arrived over HTTPS so it stays compatible with the prod baseURL rule.
+  // Cookie shape: `<token>.<base64(HMAC-SHA256(token, secret))>`, URL-encoded.
   const sig = createHmac('sha256', secret).update(session.token).digest('base64');
   const cookieValue = encodeURIComponent(`${session.token}.${sig}`);
-  // Match Better Auth's cookie-prefix rule: __Secure- iff the public baseURL
-  // is https. Resolve via the same helper used during sign-in so the prefix
-  // matches even when TLS is terminated by a reverse proxy (Tailscale Funnel,
-  // nginx, cloudflared) and the loopback bind itself speaks plain HTTP.
+  // __Secure- prefix iff the canonical baseURL is https — matches whatever
+  // Better Auth would set during normal sign-in even when TLS is terminated
+  // by a reverse proxy and the bind itself speaks plain HTTP.
   const isHttps = resolveBaseUrl({ request: c.req.raw }).startsWith('https://');
   const cookieName = isHttps ? '__Secure-better-auth.session_token' : 'better-auth.session_token';
-  const cookieParts = [
+  const parts = [
     `${cookieName}=${cookieValue}`,
     'Path=/',
     'HttpOnly',
     'SameSite=Lax',
     `Max-Age=${60 * 60 * 24 * 7}`,
   ];
-  if (isHttps) cookieParts.push('Secure');
-  c.header('Set-Cookie', cookieParts.join('; '));
+  if (isHttps) parts.push('Secure');
+  return { cookieName, cookieHeader: parts.join('; '), sessionToken: session.token };
+}
+
+/**
+ * Resolve a `?token=…` deep-link credential to a user id.
+ *
+ * Accepts either a Personal Access Token (`owl_pat_*`, validated against
+ * `personal_access_tokens`) or a Better Auth session token (looked up in
+ * `session`). The session-token path lets the macOS menu bar — which holds
+ * a session token from POST /api/auth/local-init — deep-link the user into
+ * the SPA without ever issuing a PAT.
+ */
+async function resolveDeepLinkToken(
+  c: Context<{ Bindings: Env }>,
+  token: string
+): Promise<string | null> {
+  if (token.startsWith('owl_pat_')) {
+    const sql = createDbClientFromEnv(c.env);
+    const authInfo = await new PersonalAccessTokenService(sql).verify(token);
+    return authInfo?.userId ?? null;
+  }
+  // Treat anything else as a session token. Better Auth's adapter looks it up
+  // by the raw token (the unsigned half of the cookie value).
+  const auth = await createAuth(c.env, c.req.raw);
+  const ctx = await auth.$context;
+  const session = await ctx.internalAdapter.findSession(token);
+  return session?.session?.userId ?? null;
+}
+
+/**
+ * Exchange a deep-link token (PAT or Better Auth session token) for a
+ * Better Auth session cookie scoped to the same user, then 302 to `next`.
+ *
+ * Lets a holder of a valid bootstrap PAT / menu-bar session hop into the
+ * web UI without typing a password. `next` is restricted to relative paths
+ * to prevent open-redirect abuse; Referrer-Policy keeps the token out of
+ * the next page's Referer.
+ */
+credentialRoutes.get('/exchange-token', async (c) => {
+  c.header('Referrer-Policy', 'no-referrer');
+
+  const token = c.req.query('token')?.trim();
+  if (!token) {
+    return c.json(
+      { error: 'missing_token', error_description: 'token query param is required' },
+      400
+    );
+  }
+
+  const userId = await resolveDeepLinkToken(c, token);
+  if (!userId) {
+    return c.json(
+      { error: 'invalid_token', error_description: 'token is invalid, expired, or revoked' },
+      401
+    );
+  }
+
+  const minted = await mintSessionCookieValue(c, userId);
+  if ('error' in minted) {
+    return c.json(
+      { error: 'session_create_failed', error_description: minted.error },
+      500
+    );
+  }
+  c.header('Set-Cookie', minted.cookieHeader);
 
   const rawNext = c.req.query('next') ?? '/';
   const safeNext = rawNext.startsWith('/') && !rawNext.startsWith('//') ? rawNext : '/';
   return c.redirect(safeNext, 302);
+});
+
+/**
+ * Mint a Better Auth session for the embedded-PGlite bootstrap user.
+ *
+ * Used by the macOS menu bar and the CLI's `local` context — both run on
+ * the same host as the server, both want a credential they can send as
+ * `Authorization: Bearer <session-token>` without prompting the user for
+ * an OAuth device flow.
+ *
+ * Trust model:
+ *   - Refuses when any `x-forwarded-*` / `forwarded` header is present. A
+ *     Tailscale Funnel / ngrok / cloudflared / nginx proxy fronting a
+ *     loopback bind sets these — the bind looks local but the *exposure*
+ *     isn't, so a public client could otherwise reach this endpoint.
+ *   - Refuses when the deployment has any non-bootstrap users. Real
+ *     deployments mint credentials through OAuth/email signup; the
+ *     bootstrap user only exists on a fresh PGlite install.
+ *   - Refuses when the bootstrap user/org/member trio is missing
+ *     (`ensureBootstrapUser` either hasn't run or the deployment isn't
+ *     bootstrap-shaped). Caller should retry once the server is ready.
+ *
+ * Returns the session token in the response body too, so non-cookie
+ * clients (CLI persisting to ~/.config/lobu/credentials.json, Mac app
+ * persisting in OAuthCredentials) can send it as Bearer next time.
+ */
+const BOOTSTRAP_USER_ID = 'bootstrap-user';
+const BOOTSTRAP_ORG_ID = 'org-bootstrap-dev';
+
+credentialRoutes.post('/auth/local-init', async (c) => {
+  const proxied =
+    c.req.header('x-forwarded-for') ||
+    c.req.header('x-forwarded-host') ||
+    c.req.header('x-forwarded-proto') ||
+    c.req.header('x-real-ip') ||
+    c.req.header('forwarded');
+  if (proxied) {
+    return c.json(
+      {
+        error: 'proxied_request_refused',
+        error_description:
+          '/api/auth/local-init is for loopback callers only (Mac menu bar, local CLI). Forwarded-* headers are not allowed.',
+      },
+      403
+    );
+  }
+
+  const sql = createDbClientFromEnv(c.env);
+  const rows = (await sql`
+    SELECT
+      EXISTS(SELECT 1 FROM "user"         WHERE id = ${BOOTSTRAP_USER_ID}) AS has_user,
+      EXISTS(SELECT 1 FROM "organization" WHERE id = ${BOOTSTRAP_ORG_ID})  AS has_org,
+      EXISTS(SELECT 1 FROM "member"
+             WHERE "userId" = ${BOOTSTRAP_USER_ID}
+               AND "organizationId" = ${BOOTSTRAP_ORG_ID})                 AS has_member,
+      (SELECT count(*)::int FROM "user" WHERE id <> ${BOOTSTRAP_USER_ID}) AS non_bootstrap_users
+  `) as unknown as Array<{
+    has_user: boolean;
+    has_org: boolean;
+    has_member: boolean;
+    non_bootstrap_users: number;
+  }>;
+  const state = rows[0];
+  if (!state || !state.has_user || !state.has_org || !state.has_member) {
+    return c.json(
+      {
+        error: 'bootstrap_not_provisioned',
+        error_description:
+          'bootstrap user/org/member not seeded — server may still be starting, or this is not a PGlite deployment.',
+      },
+      404
+    );
+  }
+  if (state.non_bootstrap_users > 0) {
+    return c.json(
+      {
+        error: 'not_a_bootstrap_deployment',
+        error_description:
+          '/api/auth/local-init is only available before any real users sign up. Sign in normally.',
+      },
+      404
+    );
+  }
+
+  const minted = await mintSessionCookieValue(c, BOOTSTRAP_USER_ID);
+  if ('error' in minted) {
+    return c.json(
+      { error: 'session_create_failed', error_description: minted.error },
+      500
+    );
+  }
+  c.header('Set-Cookie', minted.cookieHeader);
+
+  return c.json({
+    session_token: minted.sessionToken,
+    cookie_name: minted.cookieName,
+    user: {
+      id: BOOTSTRAP_USER_ID,
+      email: 'dev@lobu.local',
+      name: 'Local Developer',
+    },
+    organization: {
+      id: BOOTSTRAP_ORG_ID,
+      slug: 'dev',
+      name: 'Local Dev',
+    },
+  });
 });
 
 export { credentialRoutes };

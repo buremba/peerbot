@@ -9,6 +9,8 @@ import chalk from "chalk";
 import ora from "ora";
 import { isLoadError, loadConfig } from "../config/loader.js";
 import { resolveApiClient } from "../internal/api-client.js";
+import { addContext } from "../internal/context.js";
+import { type Credentials, saveCredentials } from "../internal/credentials.js";
 import { parseEnvContent } from "../internal/index.js";
 import { loadProjectLink } from "../internal/project-link.js";
 
@@ -250,6 +252,14 @@ export async function devCommand(
     process.exit(1);
   });
 
+  // Once the embedded server is reachable, fetch a session token via
+  // /api/auth/local-init and print a deep-link URL. The SPA hook accepts
+  // ?lobu_token=<session> and exchanges it for a cookie, so the user can
+  // click the URL straight from their terminal and land logged in. Also
+  // persists the session as the `local` CLI context so `lobu chat -c local`
+  // works without a separate `lobu login`.
+  void announceLocalSignIn(gatewayUrl, !hasDatabaseUrl);
+
   // Forward Ctrl+C to the child so it can clean up its own subprocess workers
   // before the parent exits. SIGKILL after a timeout in case it wedges.
   const forwardSignal = (signal: NodeJS.Signals) => {
@@ -347,6 +357,88 @@ export function resolveBackendBundle(
   }
 
   return null;
+}
+
+/**
+ * After the embedded server is reachable, hit POST /api/auth/local-init for
+ * a fresh session token, register a `local` CLI context pointing at the
+ * gateway, persist the session as that context's bearer credential, and
+ * print a deep-link URL the user can click to land logged into the SPA.
+ *
+ * Best-effort: a failure here (server not ready, /local-init refused
+ * because real users exist, etc.) just skips the banner. The endpoint is
+ * loopback-only and idempotent so it's safe to fire unconditionally.
+ */
+async function announceLocalSignIn(
+  gatewayUrl: string,
+  pgLite: boolean
+): Promise<void> {
+  // Poll briefly so the announce lands AFTER the server's own startup
+  // banner without racing it.
+  const reachable = await waitForServerReachable(gatewayUrl);
+  if (!reachable) return;
+
+  // Only the embedded PGlite path seeds the bootstrap user → /local-init
+  // will refuse on a Postgres-backed deployment with real signups. Skip
+  // the network call entirely in that case to keep the banner quiet.
+  if (!pgLite) return;
+
+  try {
+    const res = await fetch(`${gatewayUrl}/api/auth/local-init`, {
+      method: "POST",
+      headers: { "X-Lobu-Client": "lobu-run" },
+    });
+    if (!res.ok) return;
+    const body = (await res.json()) as {
+      session_token?: string;
+      user?: { id?: string; email?: string; name?: string };
+    };
+    if (!body.session_token) return;
+
+    const contextName = "local";
+    await addContext(contextName, gatewayUrl);
+    const creds: Credentials = {
+      accessToken: body.session_token,
+      ...(body.user?.email ? { email: body.user.email } : {}),
+      ...(body.user?.name ? { name: body.user.name } : {}),
+      ...(body.user?.id ? { userId: body.user.id } : {}),
+    };
+    await saveCredentials(creds, contextName);
+
+    const url = new URL(gatewayUrl);
+    url.searchParams.set("lobu_token", body.session_token);
+    console.log();
+    console.log(
+      chalk.green(`  Signed in as ${body.user?.email ?? "Local Developer"}.`)
+    );
+    console.log(chalk.dim(`    Web UI:   `) + chalk.cyan(url.toString()));
+    console.log(
+      chalk.dim(`    CLI:      `) +
+        chalk.cyan(`lobu chat -c ${contextName} "hello"`)
+    );
+    console.log();
+  } catch {
+    // Swallow — the banner is best-effort.
+  }
+}
+
+async function waitForServerReachable(
+  url: string,
+  timeoutMs = 30_000
+): Promise<boolean> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const res = await fetch(`${url}/health`, {
+        signal: AbortSignal.timeout(1_000),
+      });
+      if (res.ok) return true;
+    } catch {
+      // not up yet
+    }
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  return false;
 }
 
 export function isPortFree(port: number): Promise<boolean> {

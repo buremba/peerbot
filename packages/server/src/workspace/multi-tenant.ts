@@ -343,14 +343,24 @@ export class MultiTenantProvider implements WorkspaceProvider {
         : await new OAuthProvider(sql, baseUrl).verifyAccessToken(token);
 
       if (!authInfo) {
-        return c.json(
-          { error: 'invalid_token', error_description: 'Invalid or expired access token' },
-          401,
-          {
-            'WWW-Authenticate': `Bearer realm="${baseUrl}/.well-known/oauth-protected-resource", error="invalid_token"`,
-          }
-        );
-      }
+        // PATs are recognisable by their `owl_pat_` prefix — if one is sent
+        // and verify fails, it's truly invalid, refuse fast. For everything
+        // else (a bearer that's not a PAT and not an OAuth access token),
+        // fall through to the session-cookie branch below: the bearer()
+        // plugin will translate Authorization: Bearer <session-token> into
+        // a session lookup, so menu-bar / CLI clients holding a session
+        // token from POST /api/auth/local-init resolve there.
+        if (isPat) {
+          return c.json(
+            { error: 'invalid_token', error_description: 'Invalid or expired access token' },
+            401,
+            {
+              'WWW-Authenticate': `Bearer realm="${baseUrl}/.well-known/oauth-protected-resource", error="invalid_token"`,
+            }
+          );
+        }
+        // Fall through — DO NOT return.
+      } else {
 
       if (!authInfo.userId) {
         return c.json(
@@ -470,9 +480,13 @@ export class MultiTenantProvider implements WorkspaceProvider {
         authSource: isPat ? 'pat' : 'oauth',
       });
       return undefined;
+      } // end of `else` branch (PAT/OAuth verify hit)
     }
 
-    // 2) Session cookie auth (web app)
+    // 2) Session cookie auth (web app) — also handles
+    //    `Authorization: Bearer <session-token>` via Better Auth's bearer
+    //    plugin, which translates the header into a session lookup before
+    //    `auth.api.getSession` runs below.
     try {
       // Extract session token for cache key
       const cookieHeader = c.req.header('Cookie') || '';

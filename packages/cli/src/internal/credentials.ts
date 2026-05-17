@@ -121,12 +121,20 @@ export async function clearCredentials(contextName?: string): Promise<void> {
 /**
  * Get token from env var (CI/CD) or stored credentials.
  * Automatically refreshes expired tokens and clears stale credentials.
+ *
+ * For loopback contexts with no stored creds, transparently POSTs
+ * /api/auth/local-init to mint a fresh Better Auth session for the
+ * embedded-PGlite bootstrap user — `lobu chat -c local` works without a
+ * prior `lobu login`.
  */
 export async function getToken(contextName?: string): Promise<string | null> {
   const envToken = process.env.LOBU_API_TOKEN;
   if (envToken) return envToken;
 
-  const creds = await loadCredentials(contextName);
+  let creds = await loadCredentials(contextName);
+  if (!creds) {
+    creds = await tryLocalInit(contextName);
+  }
   if (!creds) return null;
   if (!needsRefresh(creds)) return creds.accessToken;
 
@@ -141,6 +149,51 @@ export async function getToken(contextName?: string): Promise<string | null> {
     return null;
   }
   return refreshed.accessToken;
+}
+
+/**
+ * Attempt zero-config sign-in against a local embedded server. POST
+ * /api/auth/local-init mints a Better Auth session for the bootstrap user
+ * when the deployment is empty (no real signups yet) and refuses
+ * proxied requests via the forwarded-* header guard, so this is safe to
+ * fire unconditionally against loopback contexts.
+ */
+async function tryLocalInit(contextName?: string): Promise<Credentials | null> {
+  const target = await resolveContext(contextName);
+  if (!isLoopbackUrl(target.apiUrl)) return null;
+  try {
+    const res = await fetch(`${target.apiUrl}/api/auth/local-init`, {
+      method: "POST",
+      headers: { "X-Lobu-Client": "cli" },
+    });
+    if (!res.ok) return null;
+    const body = (await res.json()) as {
+      session_token?: string;
+      user?: { id?: string; email?: string; name?: string };
+    };
+    if (!body.session_token) return null;
+    const creds: Credentials = {
+      accessToken: body.session_token,
+      ...(body.user?.email ? { email: body.user.email } : {}),
+      ...(body.user?.name ? { name: body.user.name } : {}),
+      ...(body.user?.id ? { userId: body.user.id } : {}),
+    };
+    await saveCredentials(creds, target.name);
+    return creds;
+  } catch {
+    return null;
+  }
+}
+
+function isLoopbackUrl(url: string): boolean {
+  try {
+    const { hostname } = new URL(url);
+    return (
+      hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1"
+    );
+  } catch {
+    return false;
+  }
 }
 
 export async function refreshCredentials(

@@ -119,6 +119,8 @@ export async function fetchAudioProviderSuggestions(params: {
       `${params.gatewayUrl}/internal/audio/capabilities`,
       {
         headers: { Authorization: `Bearer ${params.workerToken}` },
+        // Capability probing is best-effort; never block the agent turn on it.
+        signal: AbortSignal.timeout(15_000),
       }
     );
     if (!response.ok) {

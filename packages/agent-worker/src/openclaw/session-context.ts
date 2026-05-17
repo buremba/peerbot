@@ -231,6 +231,9 @@ export async function getOpenClawSessionContext(
       headers: {
         Authorization: `Bearer ${workerToken}`,
       },
+      // Session context is fetched once per turn; a stalled gateway here would
+      // otherwise hang the worker before the agent ever sees the prompt.
+      signal: AbortSignal.timeout(30_000),
     });
 
     if (!response.ok) {

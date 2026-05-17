@@ -576,6 +576,7 @@ export class GatewayClient {
     });
 
     let completed = false;
+    let sigkillTimer: NodeJS.Timeout | null = null;
 
     try {
       // Strip the worker's own gateway credentials before handing the shell
@@ -592,7 +593,10 @@ export class GatewayClient {
         stdio: ["ignore", "pipe", "pipe"],
       });
 
-      // Setup timeout
+      // Setup timeout. The SIGKILL escalation timer is tracked so the `close`
+      // handler can clear it when the child exits between SIGTERM and SIGKILL;
+      // otherwise the timer pins the event loop for an extra 5s after every
+      // timed-out exec and (worse) leaks if `close`/`error` never fires.
       const timeoutId = setTimeout(() => {
         if (!completed) {
           logger.warn(
@@ -600,7 +604,8 @@ export class GatewayClient {
             "Exec timeout reached, killing process"
           );
           proc.kill("SIGTERM");
-          setTimeout(() => {
+          sigkillTimer = setTimeout(() => {
+            sigkillTimer = null;
             if (!completed) {
               proc.kill("SIGKILL");
             }
@@ -609,7 +614,7 @@ export class GatewayClient {
       }, timeout);
 
       // Stream stdout
-      proc.stdout?.on("data", (chunk: Buffer) => {
+      const onStdout = (chunk: Buffer) => {
         const content = chunk.toString();
         transport.sendExecOutput(execId, "stdout", content).catch((err) => {
           logger.error(
@@ -617,10 +622,11 @@ export class GatewayClient {
             "Failed to send stdout"
           );
         });
-      });
+      };
+      proc.stdout?.on("data", onStdout);
 
       // Stream stderr
-      proc.stderr?.on("data", (chunk: Buffer) => {
+      const onStderr = (chunk: Buffer) => {
         const content = chunk.toString();
         transport.sendExecOutput(execId, "stderr", content).catch((err) => {
           logger.error(
@@ -628,19 +634,34 @@ export class GatewayClient {
             "Failed to send stderr"
           );
         });
-      });
+      };
+      proc.stderr?.on("data", onStderr);
 
       // Wait for process to complete
       const exitCode = await new Promise<number>((resolve, reject) => {
         proc.on("close", (code) => {
           completed = true;
           clearTimeout(timeoutId);
+          if (sigkillTimer) {
+            clearTimeout(sigkillTimer);
+            sigkillTimer = null;
+          }
+          // Stop accepting late `data` events so a chunk buffered after exit
+          // can't fire `sendExecOutput` AFTER we've signalled completion.
+          proc.stdout?.removeListener("data", onStdout);
+          proc.stderr?.removeListener("data", onStderr);
           resolve(code ?? 0);
         });
 
         proc.on("error", (error) => {
           completed = true;
           clearTimeout(timeoutId);
+          if (sigkillTimer) {
+            clearTimeout(sigkillTimer);
+            sigkillTimer = null;
+          }
+          proc.stdout?.removeListener("data", onStdout);
+          proc.stderr?.removeListener("data", onStderr);
           reject(error);
         });
       });
@@ -672,6 +693,13 @@ export class GatewayClient {
 
       logger.error({ traceId, execId, error: errorMessage }, "Exec failed");
     } finally {
+      // Defensive: if we threw before `close`/`error` fired (e.g. transport
+      // throwing during sendExecOutput on a long-running child), make sure
+      // the SIGKILL escalation timer doesn't outlive this exec.
+      if (sigkillTimer) {
+        clearTimeout(sigkillTimer);
+        sigkillTimer = null;
+      }
       this.currentJobId = undefined;
     }
   }

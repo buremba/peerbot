@@ -285,17 +285,30 @@ export async function uploadUserFile(
     const formDataBuffer = await formDataToBuffer(formData);
     const fdHeaders = formData.getHeaders();
 
-    const response = await fetch(`${gw.gatewayUrl}/internal/files/upload`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${gw.workerToken}`,
-        "X-Channel-Id": gw.channelId,
-        "X-Conversation-Id": gw.conversationId,
-        ...fdHeaders,
-        "Content-Length": formDataBuffer.length.toString(),
-      },
-      body: formDataBuffer,
-    });
+    let response: Response;
+    try {
+      response = await fetch(`${gw.gatewayUrl}/internal/files/upload`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${gw.workerToken}`,
+          "X-Channel-Id": gw.channelId,
+          "X-Conversation-Id": gw.conversationId,
+          ...fdHeaders,
+          "Content-Length": formDataBuffer.length.toString(),
+        },
+        body: formDataBuffer,
+        // A stalled gateway upload must not wedge the agent turn forever —
+        // a 5-minute ceiling is well above any legitimate file delivery.
+        signal: AbortSignal.timeout(300_000),
+      });
+    } catch (err) {
+      if (err instanceof Error && err.name === "TimeoutError") {
+        return textResult(
+          `Error: Failed to show file to user: upload timed out`
+        );
+      }
+      throw err;
+    }
 
     if (!response.ok) {
       const error = await response.text();
@@ -582,9 +595,9 @@ async function uploadGeneratedFile(
     const formDataBuffer = await formDataToBuffer(formData);
     const fdHeaders = formData.getHeaders();
 
-    const uploadResponse = await fetch(
-      `${gw.gatewayUrl}/internal/files/upload`,
-      {
+    let uploadResponse: Response;
+    try {
+      uploadResponse = await fetch(`${gw.gatewayUrl}/internal/files/upload`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${gw.workerToken}`,
@@ -595,8 +608,14 @@ async function uploadGeneratedFile(
           ...extraHeaders,
         },
         body: formDataBuffer,
+        signal: AbortSignal.timeout(300_000),
+      });
+    } catch (err) {
+      if (err instanceof Error && err.name === "TimeoutError") {
+        return textResult(`Generated content but upload timed out`);
       }
-    );
+      throw err;
+    }
 
     if (!uploadResponse.ok) {
       const uploadError = await uploadResponse.text();
@@ -638,6 +657,7 @@ export async function generateImage(
       `${gw.gatewayUrl}/internal/images/capabilities`,
       {
         headers: { Authorization: `Bearer ${gw.workerToken}` },
+        signal: AbortSignal.timeout(30_000),
       }
     );
 
@@ -668,6 +688,9 @@ export async function generateImage(
         background: args.background,
         format: args.format,
       }),
+      // Image gen can take a while at high quality, but never minutes — cap
+      // the wait so a stalled upstream provider doesn't hang the agent turn.
+      signal: AbortSignal.timeout(120_000),
     });
 
     if (!response.ok) {
@@ -758,6 +781,7 @@ export async function generateAudio(
         voice: args.voice,
         speed: args.speed,
       }),
+      signal: AbortSignal.timeout(120_000),
     });
 
     if (!response.ok) {
@@ -915,11 +939,28 @@ export async function callMcpTool(
       throw err;
     }
 
-    const data = (await response.json()) as {
+    // MCP proxy returns JSON on success, but a misbehaving upstream (502
+    // HTML, plain-text 500, empty body) would otherwise crash the tool call
+    // with "Unexpected token < in JSON". Treat parse failure as a transport
+    // error message instead of letting it bubble out as an unhandled throw.
+    let data: {
       content?: Array<{ type: string; text: string }>;
       error?: string;
       isError?: boolean;
     };
+    try {
+      data = (await response.json()) as {
+        content?: Array<{ type: string; text: string }>;
+        error?: string;
+        isError?: boolean;
+      };
+    } catch (parseErr) {
+      const parseMsg =
+        parseErr instanceof Error ? parseErr.message : String(parseErr);
+      return textResult(
+        `Error: ${toolName} returned a non-JSON response (status ${response.status}): ${parseMsg}`
+      );
+    }
 
     if (!response.ok || data.isError) {
       const contentText = data.content

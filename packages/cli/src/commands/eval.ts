@@ -2,6 +2,7 @@ import {
   access,
   constants,
   mkdir,
+  readdir,
   readFile,
   writeFile,
 } from "node:fs/promises";
@@ -326,22 +327,20 @@ async function discoverEvals(
   evalsDir: string,
   filterName?: string
 ): Promise<string[]> {
+  let entries: string[];
   try {
-    const { readdir } = await import("node:fs/promises");
-    const entries = await readdir(evalsDir);
-    const yamlFiles = entries
-      .filter((f) => f.endsWith(".yaml") || f.endsWith(".yml"))
-      .map((f) => join(evalsDir, f));
-
-    if (filterName) {
-      return yamlFiles.filter((f) => {
-        const base = basename(f, f.endsWith(".yaml") ? ".yaml" : ".yml");
-        return base === filterName || base.includes(filterName);
-      });
-    }
-
-    return yamlFiles;
+    entries = await readdir(evalsDir);
   } catch {
     return [];
   }
+
+  const yamlFiles = entries
+    .filter((f) => f.endsWith(".yaml") || f.endsWith(".yml"))
+    .map((f) => join(evalsDir, f));
+
+  if (!filterName) return yamlFiles;
+  return yamlFiles.filter((f) => {
+    const base = basename(f, f.endsWith(".yaml") ? ".yaml" : ".yml");
+    return base === filterName || base.includes(filterName);
+  });
 }

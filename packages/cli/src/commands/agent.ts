@@ -189,6 +189,15 @@ function printJson(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 }
 
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await access(path, constants.F_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export interface AgentScaffoldOptions {
   cwd?: string;
   name?: string;
@@ -213,15 +222,7 @@ export async function agentScaffoldCommand(
 
   const cwd = options.cwd ?? process.cwd();
   const lobuTomlPath = join(cwd, "lobu.toml");
-  let tomlExists = false;
-  try {
-    await access(lobuTomlPath, constants.F_OK);
-    tomlExists = true;
-  } catch {
-    tomlExists = false;
-  }
-
-  if (!tomlExists) {
+  if (!(await pathExists(lobuTomlPath))) {
     console.error(
       chalk.red(
         "\n  No lobu.toml in the current directory. Run `lobu init` first or `cd` into a Lobu project.\n"
@@ -231,16 +232,13 @@ export async function agentScaffoldCommand(
   }
 
   const agentDir = join(cwd, "agents", agentId);
-  try {
-    await access(agentDir, constants.F_OK);
+  if (await pathExists(agentDir)) {
     console.error(
       chalk.red(
         `\n  Directory ${agentDir} already exists. Pick a different agent id.\n`
       )
     );
     process.exit(1);
-  } catch {
-    // not present — what we want
   }
 
   const displayName = options.name ?? agentId;

@@ -54,7 +54,8 @@ export async function tokenCreateCommand(
     context: options.context,
     org: options.org,
   });
-  const name = options.name?.trim() || defaultTokenName();
+  const name =
+    options.name?.trim() || `lobu-cli-${new Date().toISOString().slice(0, 10)}`;
   const scope = options.scope?.trim() || "mcp:read mcp:write";
 
   const response = await client.post<{ token: CreatedPersonalAccessToken }>(
@@ -93,10 +94,6 @@ export async function tokenCreateCommand(
     chalk.yellow("\n  Save this token now; it will not be shown again:")
   );
   console.log(`  ${response.token.token}\n`);
-}
-
-function defaultTokenName(): string {
-  return `lobu-cli-${new Date().toISOString().slice(0, 10)}`;
 }
 
 /**

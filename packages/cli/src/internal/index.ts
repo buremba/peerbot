@@ -27,7 +27,6 @@ export {
 } from "./api-client.js";
 export {
   agentApiBase,
-  GATEWAY_AGENT_API_PREFIX,
   GATEWAY_DEFAULT_URL,
   resolveGatewayUrl,
 } from "./gateway-url.js";

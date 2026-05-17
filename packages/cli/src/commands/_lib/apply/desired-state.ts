@@ -1,3 +1,4 @@
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type {
@@ -846,8 +847,6 @@ async function loadMemoryModels(
   // Models directory (matches seed-cmd's resolution rules).
   const modelsRel = mem.models?.trim() || "./models";
   const modelsPath = resolve(projectRoot, modelsRel);
-
-  const { existsSync, readdirSync, readFileSync } = await import("node:fs");
 
   if (!existsSync(modelsPath)) return empty;
 

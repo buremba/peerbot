@@ -12,7 +12,6 @@ import {
 import {
   bumpInterval,
   DEVICE_CODE_GRANT_TYPE,
-  type DeviceAuthorization,
   discoverOAuth,
   fetchUserInfo,
   type OAuthDiscovery,
@@ -81,9 +80,10 @@ export async function loginCommand(options: LoginOptions): Promise<void> {
     return;
   }
 
+  const { deviceAuthorizationEndpoint, registrationEndpoint } = discovery;
   if (
-    !discovery.deviceAuthorizationEndpoint ||
-    !discovery.registrationEndpoint ||
+    !deviceAuthorizationEndpoint ||
+    !registrationEndpoint ||
     !discovery.grantTypesSupported.includes(DEVICE_CODE_GRANT_TYPE)
   ) {
     console.log(
@@ -101,29 +101,15 @@ export async function loginCommand(options: LoginOptions): Promise<void> {
   console.log(chalk.dim(`\n  Context: ${target.name}`));
   console.log(chalk.dim(`  Issuer:  ${discovery.issuer}`));
 
-  let client: RegisteredClient;
-  try {
-    client = await registerClient(
-      discovery.registrationEndpoint,
-      options.cliVersion ?? "unknown"
-    );
-  } catch (err) {
-    console.log(chalk.red(`\n  ${(err as Error).message}\n`));
-    process.exitCode = 1;
-    return;
-  }
+  const client = await tryOAuthStep(() =>
+    registerClient(registrationEndpoint, options.cliVersion ?? "unknown")
+  );
+  if (!client) return;
 
-  let authorization: DeviceAuthorization;
-  try {
-    authorization = await startDeviceAuthorization(
-      discovery.deviceAuthorizationEndpoint,
-      client
-    );
-  } catch (err) {
-    console.log(chalk.red(`\n  ${(err as Error).message}\n`));
-    process.exitCode = 1;
-    return;
-  }
+  const authorization = await tryOAuthStep(() =>
+    startDeviceAuthorization(deviceAuthorizationEndpoint, client)
+  );
+  if (!authorization) return;
 
   const verificationUrl =
     authorization.verificationUriComplete ?? authorization.verificationUri;
@@ -268,4 +254,14 @@ async function revokeExisting(existing: Credentials): Promise<void> {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function tryOAuthStep<T>(fn: () => Promise<T>): Promise<T | undefined> {
+  try {
+    return await fn();
+  } catch (err) {
+    console.log(chalk.red(`\n  ${(err as Error).message}\n`));
+    process.exitCode = 1;
+    return undefined;
+  }
 }

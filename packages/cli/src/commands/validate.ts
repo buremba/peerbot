@@ -17,7 +17,6 @@ export async function validateCommand(cwd: string): Promise<boolean> {
 
   const { config } = result;
   const warnings: string[] = [];
-  const errors: string[] = [];
 
   for (const [agentId, agentEntry] of Object.entries(config.agents)) {
     if (agentEntry.providers.length === 0) {
@@ -27,22 +26,14 @@ export async function validateCommand(cwd: string): Promise<boolean> {
     }
   }
 
+  const agentCount = Object.keys(config.agents).length;
   console.log();
-  if (errors.length === 0) {
-    const agentCount = Object.keys(config.agents).length;
-    console.log(chalk.green(`  lobu.toml is valid`));
-    console.log(chalk.dim(`  ${agentCount} agent(s) configured`));
-  } else {
-    console.log(chalk.red(`  Validation failed`));
-  }
-
-  for (const err of errors) {
-    console.log(chalk.red(`  ${err}`));
-  }
+  console.log(chalk.green(`  lobu.toml is valid`));
+  console.log(chalk.dim(`  ${agentCount} agent(s) configured`));
   for (const warn of warnings) {
     console.log(chalk.yellow(`  ${warn}`));
   }
   console.log();
 
-  return errors.length === 0;
+  return true;
 }

@@ -19,6 +19,7 @@ import { get as httpGet } from "node:http";
 import { createServer } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { createInterface } from "node:readline";
 import {
   type CdpVersionInfo,
   fetchCdpVersionInfo,
@@ -576,8 +577,7 @@ export async function captureBrowserAuth(
       );
     }
 
-    const readline = await import("node:readline");
-    const rl = readline.createInterface({
+    const rl = createInterface({
       input: process.stdin,
       output: process.stdout,
     });

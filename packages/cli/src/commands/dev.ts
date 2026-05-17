@@ -203,9 +203,7 @@ export async function devCommand(
     console.log();
   }
 
-  const logLevel =
-    options.logLevel ??
-    (options.quiet ? "warn" : options.verbose ? "debug" : undefined);
+  const logLevel = resolveLogLevel(options);
 
   // Pass-through env: process.env wins so users can override per-invocation,
   // .env values fill in the rest.
@@ -453,6 +451,13 @@ async function printPreviewInstructions(cwd: string): Promise<void> {
     }
   }
   console.log();
+}
+
+function resolveLogLevel(options: DevOptions): string | undefined {
+  if (options.logLevel) return options.logLevel;
+  if (options.quiet) return "warn";
+  if (options.verbose) return "debug";
+  return undefined;
 }
 
 function redactUrl(url: string): string {

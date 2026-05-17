@@ -163,10 +163,10 @@ function parseInlineResponse(response: CollectedResponse): {
       score?: number;
       reason?: string;
     };
+    const fallbackScore = parsed.passed ? 1 : 0;
     return {
       passed: Boolean(parsed.passed),
-      score:
-        typeof parsed.score === "number" ? parsed.score : parsed.passed ? 1 : 0,
+      score: typeof parsed.score === "number" ? parsed.score : fallbackScore,
       reason: String(parsed.reason ?? ""),
     };
   } catch {

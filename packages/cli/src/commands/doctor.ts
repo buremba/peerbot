@@ -1,7 +1,8 @@
 import { execFileSync } from "node:child_process";
-import { access, constants, readFile, stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import chalk from "chalk";
+import postgres from "postgres";
 import { checkMemoryHealth } from "./memory/_lib/openclaw-cmd.js";
 import { resolveServerUrl } from "./memory/_lib/openclaw-auth.js";
 import { isPortFree } from "./dev.js";
@@ -68,7 +69,6 @@ async function loadProjectEnv(cwd: string): Promise<Record<string, string>> {
 
 async function checkDatabaseAndPgvector(databaseUrl: string): Promise<Check[]> {
   const results: Check[] = [];
-  const { default: postgres } = await import("postgres");
   const sql = postgres(databaseUrl, {
     connect_timeout: 5,
     max: 1,
@@ -164,7 +164,6 @@ async function checkProviderKeys(
 async function checkWorkspaceDir(cwd: string): Promise<Check | null> {
   const dir = join(cwd, "workspaces");
   try {
-    await access(dir, constants.F_OK);
     const info = await stat(dir);
     return info.isDirectory()
       ? { name: "workspaces", status: "ok", detail: dir }

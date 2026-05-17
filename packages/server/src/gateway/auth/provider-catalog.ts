@@ -13,7 +13,7 @@ const logger = createLogger("provider-catalog");
 /**
  * Resolve an agent's installed providers.
  */
-export async function resolveInstalledProviders(
+async function resolveInstalledProviders(
   agentSettingsStore: AgentSettingsStore,
   agentId: string
 ): Promise<InstalledProvider[]> {

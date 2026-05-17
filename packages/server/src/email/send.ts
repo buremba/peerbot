@@ -3,9 +3,9 @@ import type { Env } from '@lobu/connector-sdk';
 import type { ReactElement } from 'react';
 import { Resend } from 'resend';
 
-export type EmailCategory = 'auth' | 'invite';
+type EmailCategory = 'auth' | 'invite';
 
-export interface TransactionalEmailInput {
+interface TransactionalEmailInput {
   env: Env;
   to: string;
   subject: string;
@@ -15,7 +15,7 @@ export interface TransactionalEmailInput {
   fromOverride?: string;
 }
 
-export interface TransactionalEmailResult {
+interface TransactionalEmailResult {
   id: string | null;
 }
 

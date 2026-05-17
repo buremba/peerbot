@@ -15,14 +15,6 @@ import { ApiResponseRenderer } from "./response-renderer.js";
 const logger = createLogger("api-platform");
 
 /**
- * API Platform configuration
- */
-export interface ApiPlatformConfig {
-  /** Whether the API platform is enabled */
-  enabled?: boolean;
-}
-
-/**
  * API Platform adapter for direct access via HTTP/SSE
  * This platform doesn't interact with external services like Slack or Discord.
  * Instead, it provides endpoints for:

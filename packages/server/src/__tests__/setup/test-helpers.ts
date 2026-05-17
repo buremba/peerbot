@@ -115,14 +115,7 @@ export const del = (path: string, options?: Omit<Parameters<typeof testRequest>[
 // MCP Session Management
 // ============================================
 
-import { clearMcpSessions as clearMcpSessionsShared, mcpSessions } from './mcp-session-cache';
-
-/**
- * Re-export so existing call sites (`import { clearMcpSessions } from
- * './test-helpers'`) keep working; the actual cache lives in
- * `./mcp-session-cache` to keep `test-db.ts` off the full-app import graph.
- */
-export const clearMcpSessions = clearMcpSessionsShared;
+import { mcpSessions } from './mcp-session-cache';
 
 /**
  * Get or create an initialized MCP session for the given auth token.

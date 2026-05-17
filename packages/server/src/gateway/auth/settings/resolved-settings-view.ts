@@ -24,38 +24,6 @@ interface ResolvedSettingsViewer {
   isAdmin?: boolean;
 }
 
-export function canViewSettingsSection(
-  section: SettingsSectionKey,
-  viewer?: ResolvedSettingsViewer
-): boolean {
-  if (!viewer || viewer.isAdmin || viewer.settingsMode === "admin") {
-    return true;
-  }
-
-  const allowedScopes = viewer.allowedScopes || [];
-  if (section === "model") {
-    return (
-      allowedScopes.includes("model") || allowedScopes.includes("view-model")
-    );
-  }
-
-  if (allowedScopes.includes(section)) {
-    return true;
-  }
-
-  if (section === "skills") {
-    return (
-      allowedScopes.includes("tools") || allowedScopes.includes("mcp-servers")
-    );
-  }
-
-  if (section === "permissions" || section === "packages") {
-    return allowedScopes.includes("tools");
-  }
-
-  return false;
-}
-
 /**
  * Definition-level sections are admin-only writes. Non-admins (org members)
  * cannot mutate the agent's identity, soulMd, userMd, skills, tools, plugins,

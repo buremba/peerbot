@@ -56,7 +56,7 @@ export function readExpectedSchemaVersion(migrationsDir: string): string | null 
  * `schema_migrations` table is empty (fresh install) — the caller decides
  * whether that's expected.
  */
-export async function readAppliedSchemaVersion(sql: DbClient): Promise<string | null> {
+async function readAppliedSchemaVersion(sql: DbClient): Promise<string | null> {
   const rows = (await sql`SELECT MAX(version) AS version FROM public.schema_migrations`) as Array<{
     version: string | null;
   }>;

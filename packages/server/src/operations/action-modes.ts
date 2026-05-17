@@ -10,11 +10,9 @@
 
 import type { OperationDescriptor } from './types';
 
-export type ActionMode = 'disabled' | 'approval' | 'auto';
+type ActionMode = 'disabled' | 'approval' | 'auto';
 
-export const ACTION_MODES: readonly ActionMode[] = ['disabled', 'approval', 'auto'] as const;
-
-export function isActionMode(value: unknown): value is ActionMode {
+function isActionMode(value: unknown): value is ActionMode {
   return value === 'disabled' || value === 'approval' || value === 'auto';
 }
 
@@ -23,7 +21,7 @@ export function isActionMode(value: unknown): value is ActionMode {
  * Anything that isn't a recognized mode is dropped silently — readers must
  * then fall back to {@link defaultModeFromOperation}.
  */
-export function getActionModes(
+function getActionModes(
   config: Record<string, unknown> | null | undefined
 ): Record<string, ActionMode> {
   if (!config || typeof config !== 'object') return {};
@@ -42,7 +40,7 @@ export function getActionModes(
  * approval still requires approval; anything else auto-approves.
  * `disabled` requires an explicit user opt-in.
  */
-export function defaultModeFromOperation(operation: {
+function defaultModeFromOperation(operation: {
   requires_approval: boolean;
 }): ActionMode {
   return operation.requires_approval ? 'approval' : 'auto';

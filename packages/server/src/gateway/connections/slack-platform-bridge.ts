@@ -148,7 +148,7 @@ type SlackActionEvent = {
 };
 
 /** Dependencies the App Home tab needs to render status and run OAuth. */
-export interface SlackAppHomeDeps {
+interface SlackAppHomeDeps {
   /**
    * The initialized Slack adapter — the one with the live `@slack/web-api`
    * client. The adapter handed to event handlers via `event.adapter` is the

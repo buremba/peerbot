@@ -16,7 +16,7 @@
 const SUPPORTED_NODE_MAJOR_MIN = 22;
 const SUPPORTED_NODE_MAJOR_MAX_EXCLUSIVE = 25;
 
-export function assertSupportedNodeVersion(): void {
+function assertSupportedNodeVersion(): void {
   const current = process.versions.node;
   const major = Number(current?.split('.')[0] ?? 0);
   if (

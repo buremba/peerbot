@@ -36,7 +36,7 @@ class JudgeTimeoutError extends Error {
   }
 }
 
-export interface EgressJudgeOptions {
+interface EgressJudgeOptions {
   client?: JudgeClient;
   /** Judge model identifier (overridable per-agent via `egressConfig.judgeModel`). */
   defaultModel?: string;

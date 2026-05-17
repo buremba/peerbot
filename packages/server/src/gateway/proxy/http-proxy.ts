@@ -76,14 +76,6 @@ let proxyPolicyStore: PolicyStore | null = null;
 let proxyEgressJudge: EgressJudge | null = null;
 
 /**
- * Set the grant store for the HTTP proxy to check domain grants.
- * Called during gateway initialization.
- */
-export function setProxyGrantStore(store: GrantStore): void {
-  proxyGrantStore = store;
-}
-
-/**
  * Set the policy store for the HTTP proxy to look up judged-domain rules.
  * Called during gateway initialization. Lazy-constructs the {@link EgressJudge}
  * on first configuration so tests can opt out by never calling this.

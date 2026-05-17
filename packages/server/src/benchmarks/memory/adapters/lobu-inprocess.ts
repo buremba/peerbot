@@ -12,7 +12,8 @@ import {
   createTestOrganization,
   createTestUser,
 } from '../../../__tests__/setup/test-fixtures';
-import { clearMcpSessions, post } from '../../../__tests__/setup/test-helpers';
+import { clearMcpSessions } from '../../../__tests__/setup/mcp-session-cache';
+import { post } from '../../../__tests__/setup/test-helpers';
 import { closeDbSingleton } from '../../../db/client';
 import { generateEmbeddings } from '../../../utils/embeddings';
 import type {

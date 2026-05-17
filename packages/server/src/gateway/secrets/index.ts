@@ -143,7 +143,7 @@ interface CacheEntry {
 const DEFAULT_SECRET_CACHE_TTL_MS = 60_000;
 const DEFAULT_SECRET_CACHE_MAX = 5_000;
 
-export interface SecretStoreRegistryOptions {
+interface SecretStoreRegistryOptions {
   cacheTtlMs?: number;
   cacheMax?: number;
   /** Read-only backends keyed by ref scheme (e.g. `aws-sm`). */

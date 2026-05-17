@@ -9,7 +9,7 @@ const logger = createLogger("policy-store");
  * manager when syncing agent settings; read by the HTTP proxy when a
  * request needs judge evaluation.
  */
-export interface JudgePolicyBundle {
+interface JudgePolicyBundle {
   /** Domain rules that require a judge verdict. */
   judgedDomains: DomainJudgeRule[];
   /** Named judge policy texts. Key "default" is used when a rule omits `judge`. */

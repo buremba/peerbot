@@ -11,7 +11,7 @@ export type MigrationSqlClient = {
   unsafe: (...args: any[]) => Promise<unknown>;
 };
 
-export interface EmbeddedSchemaPatch {
+interface EmbeddedSchemaPatch {
   id: string;
   apply: (sql: MigrationSqlClient) => Promise<void>;
 }

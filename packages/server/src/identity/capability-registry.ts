@@ -44,11 +44,11 @@ export interface ConnectorEmitParams {
  * On fetch failure (the caller MUST NOT call `ingestFacts` with a null
  * result, since that would tombstone everything on a transient outage).
  */
-export type ConnectorEmitter = (
+type ConnectorEmitter = (
 	params: ConnectorEmitParams,
 ) => Promise<ConnectorEmitResult | null>;
 
-export interface ConnectorRegistration {
+interface ConnectorRegistration {
 	capability: ConnectorIdentityCapability;
 	emit: ConnectorEmitter;
 }

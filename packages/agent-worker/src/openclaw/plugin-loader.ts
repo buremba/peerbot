@@ -99,16 +99,15 @@ async function loadSinglePlugin(
 ): Promise<LoadedPlugin | null> {
   const { source, slot, config: pluginConfig } = config;
 
-  let mod: Record<string, unknown>;
-  try {
-    mod = (await import(source)) as Record<string, unknown>;
-  } catch (err) {
+  const mod = await import(source).catch((err) => {
     throw new Error(
       `Cannot import "${source}": ${err instanceof Error ? err.message : String(err)}`
     );
-  }
+  });
 
-  const pluginEntrypoint = resolvePluginEntrypoint(mod);
+  const pluginEntrypoint = resolvePluginEntrypoint(
+    mod as Record<string, unknown>
+  );
   if (!pluginEntrypoint) {
     logger.warn(`Plugin "${source}" has no registerable entrypoint - skipping`);
     return null;
@@ -224,22 +223,19 @@ function createShimApi(params: {
     cwd,
   } = params;
   const noop = () => {
-    /* intentional no-op */
+    // No-op stub for shim plugin APIs that this loader does not implement.
   };
 
+  const prefix = `[plugin:${extractPluginName(source)}]`;
   const shimLogger = {
-    info(message: string, ...args: unknown[]) {
-      logger.info(`[plugin:${extractPluginName(source)}] ${message}`, ...args);
-    },
-    warn(message: string, ...args: unknown[]) {
-      logger.warn(`[plugin:${extractPluginName(source)}] ${message}`, ...args);
-    },
-    error(message: string, ...args: unknown[]) {
-      logger.error(`[plugin:${extractPluginName(source)}] ${message}`, ...args);
-    },
-    debug(message: string, ...args: unknown[]) {
-      logger.debug(`[plugin:${extractPluginName(source)}] ${message}`, ...args);
-    },
+    info: (message: string, ...args: unknown[]) =>
+      logger.info(`${prefix} ${message}`, ...args),
+    warn: (message: string, ...args: unknown[]) =>
+      logger.warn(`${prefix} ${message}`, ...args),
+    error: (message: string, ...args: unknown[]) =>
+      logger.error(`${prefix} ${message}`, ...args),
+    debug: (message: string, ...args: unknown[]) =>
+      logger.debug(`${prefix} ${message}`, ...args),
   };
 
   return {

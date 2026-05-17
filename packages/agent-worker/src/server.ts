@@ -3,7 +3,7 @@
  * Lightweight Hono server started before SSE gateway connection.
  */
 
-import { readFile } from "node:fs/promises";
+import { readdir, readFile, stat } from "node:fs/promises";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { getRequestListener } from "@hono/node-server";
@@ -20,7 +20,6 @@ const logger = createLogger("worker-http");
 const app = new Hono();
 
 async function findSessionFile(): Promise<string | null> {
-  const { readdir, stat } = await import("node:fs/promises");
   const workspaceDir = getOptionalEnv("WORKSPACE_DIR", "/workspace");
 
   // Direct path: {WORKSPACE_DIR}/.openclaw/session.jsonl
@@ -163,10 +162,8 @@ function entryToMessage(entry: SessionEntry): ParsedMessage | null {
   return null;
 }
 
-// Health check
 app.get("/health", (c) => c.json({ status: "ok" }));
 
-// Full session messages with cursor-based pagination
 app.get("/session/messages", async (c) => {
   const cursor = c.req.query("cursor");
   const limit = Math.min(parseInt(c.req.query("limit") || "50", 10), 200);
@@ -230,7 +227,6 @@ app.get("/session/messages", async (c) => {
   }
 });
 
-// Session stats
 app.get("/session/stats", async (c) => {
   try {
     const sessionPath = await findSessionFile();

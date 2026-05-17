@@ -281,22 +281,20 @@ export class OpenClawWorker implements WorkerExecutor {
     this.workspaceManager = new WorkspaceManager(config.workspace);
     this.progressProcessor = new OpenClawProgressProcessor();
 
-    // Verify required environment variables
     const gatewayUrl = process.env.DISPATCHER_URL;
     const workerToken = process.env.WORKER_TOKEN;
-
     if (!gatewayUrl || !workerToken) {
       throw new Error(
         "DISPATCHER_URL and WORKER_TOKEN environment variables are required"
       );
     }
-
     if (!config.teamId) {
       throw new Error("teamId is required for worker initialization");
     }
     if (!config.conversationId) {
       throw new Error("conversationId is required for worker initialization");
     }
+
     this.workerTransport = new HttpWorkerTransport({
       gatewayUrl,
       workerToken,
@@ -327,13 +325,11 @@ export class OpenClawWorker implements WorkerExecutor {
         `[TIMING] Worker execute() started at: ${new Date(executeStartTime).toISOString()}`
       );
 
-      // Decode user prompt
       const userPrompt = Buffer.from(this.config.userPrompt, "base64").toString(
         "utf-8"
       );
       logger.info(`User prompt: ${userPrompt.substring(0, 100)}...`);
 
-      // Setup workspace
       logger.info("Setting up workspace...");
 
       await Sentry.startSpan(
@@ -360,13 +356,9 @@ export class OpenClawWorker implements WorkerExecutor {
         }
       );
 
-      // Setup I/O directories for file handling
       await this.setupIODirectories();
-
-      // Download input files if any
       await this.downloadInputFiles();
 
-      // Generate custom instructions
       let customInstructions = await generateCustomInstructions(
         [
           new OpenClawCoreInstructionProvider(),
@@ -385,7 +377,7 @@ export class OpenClawWorker implements WorkerExecutor {
         }
       );
 
-      // Call module onSessionStart hooks to allow modules to modify system prompt
+      // Module hooks may modify the system prompt before agent execution.
       try {
         const { onSessionStart } = await import("../modules/lifecycle");
         const moduleContext = await onSessionStart({
@@ -407,7 +399,6 @@ export class OpenClawWorker implements WorkerExecutor {
       // Add file I/O instructions AFTER module hooks so they aren't overwritten
       customInstructions += this.getFileIOInstructions();
 
-      // Execute AI session
       logger.info(
         `[TIMING] Starting OpenClaw session at: ${new Date().toISOString()}`
       );
@@ -468,7 +459,6 @@ export class OpenClawWorker implements WorkerExecutor {
         }
       );
 
-      // Collect module data before sending final response
       const { collectModuleData } = await import("../modules/lifecycle");
       const moduleData = await collectModuleData({
         workspaceDir: this.workspaceManager.getCurrentWorkingDirectory(),
@@ -477,7 +467,6 @@ export class OpenClawWorker implements WorkerExecutor {
       });
       this.workerTransport.setModuleData(moduleData);
 
-      // Handle result
       if (result.success) {
         const outputSnapshot = this.progressProcessor.getOutputSnapshot();
         const hintGatewayUrl = process.env.DISPATCHER_URL;

@@ -2,10 +2,6 @@ import { createLogger, type WorkerTransport } from "@lobu/core";
 
 const logger = createLogger("worker");
 
-/**
- * Format error message for display
- * Generic error formatter that works for any AI agent
- */
 function formatErrorMessage(error: unknown): string {
   if (!(error instanceof Error)) {
     return `💥 Worker crashed: Unknown error`;
@@ -27,10 +23,6 @@ function classifyError(error: unknown): string | undefined {
   return undefined;
 }
 
-/**
- * Handle execution error - decides between authentication and generic errors
- * Generic error handler that works for any AI agent
- */
 export async function handleExecutionError(
   error: unknown,
   transport: WorkerTransport
@@ -38,25 +30,18 @@ export async function handleExecutionError(
   logger.error("Worker execution failed:", error);
 
   const code = classifyError(error);
+  const errorInstance =
+    error instanceof Error ? error : new Error(String(error));
 
   try {
     if (code) {
-      // Known error — clean message, no "Worker crashed" text
-      await transport.signalError(
-        error instanceof Error ? error : new Error(String(error)),
-        code
-      );
+      await transport.signalError(errorInstance, code);
     } else {
-      // Unknown error — existing behavior
-      const errorMsg = formatErrorMessage(error);
-      await transport.sendStreamDelta(errorMsg, true, true);
-      await transport.signalError(
-        error instanceof Error ? error : new Error(String(error))
-      );
+      await transport.sendStreamDelta(formatErrorMessage(error), true, true);
+      await transport.signalError(errorInstance);
     }
   } catch (gatewayError) {
     logger.error("Failed to send error via gateway:", gatewayError);
-    // Re-throw the original error
     throw error;
   }
 }

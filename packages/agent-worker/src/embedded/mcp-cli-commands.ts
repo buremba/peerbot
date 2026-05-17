@@ -16,7 +16,12 @@
 import type { McpStatus, McpToolDef } from "@lobu/core";
 import { createLogger } from "@lobu/core";
 import type { GatewayParams } from "../shared/tool-implementations";
-import { callMcpTool } from "../shared/tool-implementations";
+import {
+  callMcpTool,
+  checkMcpLogin,
+  logoutMcp,
+  startMcpLogin,
+} from "../shared/tool-implementations";
 import { isDirectPackageInstallCommand } from "../openclaw/tool-policy";
 
 const logger = createLogger("mcp-cli");
@@ -269,11 +274,9 @@ async function runAuthSubcommand(
   ref: McpRuntimeRef
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   const verb = args[0];
-  // Lazy import to avoid a heavy dependency cycle in tests.
-  const impl = await import("../shared/tool-implementations");
 
   if (verb === "login") {
-    const res = await impl.startMcpLogin(gw, { mcpId });
+    const res = await startMcpLogin(gw, { mcpId });
     const text = extractText(res.content);
     return {
       stdout: `${summariseAuthStart(text, mcpId)}\n`,
@@ -283,7 +286,7 @@ async function runAuthSubcommand(
   }
 
   if (verb === "check") {
-    const res = await impl.checkMcpLogin(gw, { mcpId });
+    const res = await checkMcpLogin(gw, { mcpId });
     const text = extractText(res.content);
     const parsed = tryJson(text);
     if (parsed?.authenticated === true) {
@@ -297,7 +300,7 @@ async function runAuthSubcommand(
   }
 
   if (verb === "logout") {
-    const res = await impl.logoutMcp(gw, { mcpId });
+    const res = await logoutMcp(gw, { mcpId });
     const text = extractText(res.content);
     // Tools that required auth are now unreachable — refresh so the next
     // invocation sees the empty state.

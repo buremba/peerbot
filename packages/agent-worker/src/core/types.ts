@@ -1,40 +1,15 @@
 #!/usr/bin/env bun
 
-/**
- * Consolidated types for worker package
- * Merged from: base/types.ts, types.ts, interfaces.ts
- */
-
 import type { WorkerTransport } from "@lobu/core";
 
-// ============================================================================
-// WORKER INTERFACES
-// ============================================================================
-
 /**
- * Interface for worker executors
- * Allows different agent implementations
+ * Interface for worker executors. Allows different agent implementations.
  */
 export interface WorkerExecutor {
-  /**
-   * Execute the worker job
-   */
   execute(): Promise<void>;
-
-  /**
-   * Cleanup worker resources
-   */
   cleanup(): Promise<void>;
-
-  /**
-   * Get the worker transport for sending updates to gateway
-   */
   getWorkerTransport(): WorkerTransport | null;
 }
-
-// ============================================================================
-// WORKER CONFIG & WORKSPACE
-// ============================================================================
 
 export interface WorkerConfig {
   sessionKey: string;
@@ -63,10 +38,6 @@ export interface WorkspaceInfo {
   baseDirectory: string;
   userDirectory: string;
 }
-
-// ============================================================================
-// PROGRESS & EXECUTION TYPES
-// ============================================================================
 
 /**
  * Progress update from AI agent execution
@@ -108,11 +79,6 @@ export type ProgressUpdate =
       };
       timestamp: number;
     };
-
-/**
- * Session context for AI execution
- * Contains information about the current session (platform, user, workspace)
- */
 
 /**
  * Result from session execution (includes session metadata)

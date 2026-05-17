@@ -86,10 +86,6 @@ export function isDirectPackageInstallCommand(command: string): boolean {
   );
 }
 
-function normalizePattern(pattern: string): string {
-  return pattern.trim();
-}
-
 function normalizeToolName(name: string): string {
   return name.trim().toLowerCase();
 }
@@ -108,16 +104,13 @@ export function normalizeToolList(value?: string | string[]): string[] {
 
 function parseBashFilter(pattern: string): string | null {
   const match = pattern.match(/^Bash\(([^:]+):\*\)$/i);
-  if (!match) {
-    return null;
-  }
-  const prefix = match[1]?.trim();
-  return prefix ? prefix : null;
+  const prefix = match?.[1]?.trim();
+  return prefix || null;
 }
 
 function matchesToolPattern(toolName: string, pattern: string): boolean {
   const normalizedTool = normalizeToolName(toolName);
-  const normalizedPattern = normalizePattern(pattern);
+  const normalizedPattern = pattern.trim();
   const normalizedPatternLower = normalizedPattern.toLowerCase();
 
   if (normalizedPattern === "*") {
@@ -145,11 +138,11 @@ export function buildToolPolicy(params: {
   const mergedAllowed = [
     ...(toolsConfig?.allowedTools ?? []),
     ...allowedPatterns,
-  ].map(normalizePattern);
+  ].map((p) => p.trim());
   const mergedDenied = [
     ...(toolsConfig?.deniedTools ?? []),
     ...deniedPatterns,
-  ].map(normalizePattern);
+  ].map((p) => p.trim());
 
   const bashAllowPrefixes = mergedAllowed
     .map((pattern) => parseBashFilter(pattern))

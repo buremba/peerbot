@@ -20,10 +20,9 @@ export async function generateCustomInstructions(
   context: InstructionContext
 ): Promise<string> {
   try {
+    const sorted = [...providers].sort((a, b) => a.priority - b.priority);
     const sections: string[] = [];
-    for (const provider of [...providers].sort(
-      (a, b) => a.priority - b.priority
-    )) {
+    for (const provider of sorted) {
       const instructions = await provider.getInstructions(context);
       if (instructions?.trim()) {
         sections.push(instructions.trim());

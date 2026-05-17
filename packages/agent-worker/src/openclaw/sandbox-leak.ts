@@ -89,12 +89,7 @@ export function checkSandboxLeak(
   );
   redacted = redacted.replace(
     DELIVERY_PHRASE_RE,
-    (_match, _path: string, _offset: number, _full: string) => {
-      // Reconstruct the phrase prefix (everything before the path) by
-      // re-matching on the original substring. Simpler: replace the whole
-      // match with a generic note.
-      return "[file was created but not uploaded — use `UploadUserFile` to deliver it]";
-    }
+    "[file was created but not uploaded — use `UploadUserFile` to deliver it]"
   );
 
   const note =

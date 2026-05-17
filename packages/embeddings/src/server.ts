@@ -7,7 +7,10 @@ import {
   generateLocalEmbedding,
   getLocalModelInfo,
 } from './embeddings.js';
-import { generateOpenAIEmbeddings } from './openai.js';
+import {
+  OpenAIEmbeddingsTimeoutError,
+  generateOpenAIEmbeddings,
+} from './openai.js';
 
 interface EmbeddingRequest {
   texts?: unknown;
@@ -198,6 +201,12 @@ app.post('/api/embeddings', async (c) => {
     // key-shaped string through, scrub before logging or returning.
     const message = scrubSecrets(rawMessage);
     console.error('[EmbeddingsService] Error:', message);
+    // Upstream timeouts used to surface as a generic "AbortError" — no way
+    // for the caller to tell a true upstream timeout from a programming
+    // error. Map the typed timeout to 504 so retry policies can react.
+    if (error instanceof OpenAIEmbeddingsTimeoutError) {
+      return c.json({ error: message }, 504);
+    }
     return c.json({ error: message }, 500);
   }
 });

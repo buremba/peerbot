@@ -22,18 +22,13 @@ export interface EnhancedBrowser {
   screenshotDir: string;
 }
 
-/**
- * Add Puppeteer-compatible methods to Playwright Page
- */
+/** Add Puppeteer-compatible `setUserAgent` to a Playwright Page. */
 function addCompatibilityMethods(page: any): any {
   if (!page.setUserAgent) {
     page.setUserAgent = async (userAgent: string) => {
-      await page.setExtraHTTPHeaders({
-        'User-Agent': userAgent,
-      });
+      await page.setExtraHTTPHeaders({ 'User-Agent': userAgent });
     };
   }
-
   return page;
 }
 

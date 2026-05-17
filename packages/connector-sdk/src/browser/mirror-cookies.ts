@@ -150,18 +150,17 @@ export async function decryptChromeCookiesMacOS(
   // profile slug like "Default" or "Profile 1"). Reject anything that
   // contains path separators or parent-dir references so the join below
   // can't escape `userDataRoot` and read an arbitrary SQLite file.
+  const profileDir = params.sourceProfileDir;
   if (
-    typeof params.sourceProfileDir !== 'string' ||
-    params.sourceProfileDir.length === 0 ||
-    params.sourceProfileDir.includes('/') ||
-    params.sourceProfileDir.includes('\\') ||
-    params.sourceProfileDir.includes('\0') ||
-    params.sourceProfileDir === '.' ||
-    params.sourceProfileDir === '..' ||
-    params.sourceProfileDir.startsWith('..')
+    typeof profileDir !== 'string' ||
+    profileDir.length === 0 ||
+    /[/\\\0]/.test(profileDir) ||
+    profileDir === '.' ||
+    profileDir === '..' ||
+    profileDir.startsWith('..')
   ) {
     throw new Error(
-      `Invalid sourceProfileDir '${params.sourceProfileDir}': must be a single Chrome profile directory name (e.g. "Default", "Profile 1")`
+      `Invalid sourceProfileDir '${profileDir}': must be a single Chrome profile directory name (e.g. "Default", "Profile 1")`
     );
   }
 
@@ -302,15 +301,7 @@ export async function decryptChromeCookiesMacOS(
       // handful of cookies decrypt to garbage (pre-M80 layout, legacy
       // v10 variants); reject anything with non-printable bytes since
       // those are clearly metadata leaking through, not a real value.
-      if (!row.name || row.name.length === 0) {
-        filtered += 1;
-        continue;
-      }
-      if (!row.host_key || row.host_key.length === 0) {
-        filtered += 1;
-        continue;
-      }
-      if (!isLikelyCookieValue(value)) {
+      if (!row.name || !row.host_key || !isLikelyCookieValue(value)) {
         filtered += 1;
         continue;
       }
@@ -362,22 +353,13 @@ function extractCookieValue(buf: Buffer): string {
   return buf.slice(32).toString('utf-8');
 }
 
-/** Build a host-matching predicate for an allow-list. Mirrors the SQL
- * the old CLI helper used: exact host match, leading-dot variant, or
- * subdomain wildcard. */
+/** Build a host-matching predicate for an allow-list: exact host match or
+ * subdomain match (matches `.example.com` and `sub.example.com`). */
 function buildAllowMatcher(domains: string[]): (host: string) => boolean {
-  const patterns = domains.map((d) => {
-    const clean = d.replace(/^\./, '').toLowerCase();
-    return { exact: clean, dotted: `.${clean}`, suffix: `.${clean}` };
-  });
+  const patterns = domains.map((d) => d.replace(/^\./, '').toLowerCase());
   return (host: string) => {
     const normalized = host.toLowerCase();
-    for (const p of patterns) {
-      if (normalized === p.exact) return true;
-      if (normalized === p.dotted) return true;
-      if (normalized.endsWith(p.suffix)) return true;
-    }
-    return false;
+    return patterns.some((p) => normalized === p || normalized.endsWith(`.${p}`));
   };
 }
 

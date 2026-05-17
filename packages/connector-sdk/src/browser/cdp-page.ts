@@ -219,52 +219,40 @@ export class CdpPage {
 
   /** Close the tab and disconnect. */
   async close(): Promise<void> {
-    try {
-      await this.send('Page.close').catch(() => {});
-      // Also close via Target API as fallback. Round-trip through send() so
-      // we know the close has been acked before tearing down the WebSocket,
-      // instead of relying on a fixed 300ms sleep.
-      await new Promise<void>((resolve) => {
-        const id = this.msgId++;
-        const handler = (event: MessageEvent) => {
-          let data: any;
-          try {
-            data = JSON.parse(event.data as string);
-          } catch {
-            return;
-          }
-          if (data.id === id) {
-            clearTimeout(timer);
-            this.ws.removeEventListener('message', handler);
-            resolve();
-          }
-        };
-        const timer = setTimeout(() => {
-          this.ws.removeEventListener('message', handler);
-          resolve();
-        }, 2000);
-        this.ws.addEventListener('message', handler);
+    await this.send('Page.close').catch(() => {});
+    // Also close via Target API as fallback. Round-trip so we know the close
+    // has been acked before tearing down the WebSocket. Target.closeTarget is
+    // a browser-level method so we send it raw (no sessionId).
+    await new Promise<void>((resolve) => {
+      const id = this.msgId++;
+      const cleanup = () => {
+        clearTimeout(timer);
+        this.ws.removeEventListener('message', handler);
+        resolve();
+      };
+      const handler = (event: MessageEvent) => {
+        let data: any;
         try {
-          this.ws.send(
-            JSON.stringify({
-              id,
-              method: 'Target.closeTarget',
-              params: { targetId: this.targetId },
-            })
-          );
+          data = JSON.parse(event.data as string);
         } catch {
-          clearTimeout(timer);
-          this.ws.removeEventListener('message', handler);
-          resolve();
+          return;
         }
-      });
+        if (data.id === id) cleanup();
+      };
+      const timer = setTimeout(cleanup, 2000);
+      this.ws.addEventListener('message', handler);
       try {
-        this.ws.close();
+        this.ws.send(
+          JSON.stringify({ id, method: 'Target.closeTarget', params: { targetId: this.targetId } })
+        );
       } catch {
-        /* best-effort */
+        cleanup();
       }
+    });
+    try {
+      this.ws.close();
     } catch {
-      // Best-effort cleanup
+      /* best-effort */
     }
     sdkLogger.info({ targetId: this.targetId }, '[CdpPage] Tab closed');
   }

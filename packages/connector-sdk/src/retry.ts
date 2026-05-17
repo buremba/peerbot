@@ -10,106 +10,63 @@
 import { retryWithBackoff } from '@lobu/core';
 import { sdkLogger } from './logger.js';
 
-/**
- * Error detection helpers
- */
+const TRANSIENT_KEYWORDS = [
+  // network
+  'network',
+  'econnrefused',
+  'etimedout',
+  'enotfound',
+  'econnreset',
+  'fetch failed',
+  'socket',
+  'dns',
+  // database
+  'connection pool',
+  'too many connections',
+  'connection limit',
+  'connection reset',
+  'connection refused',
+  'server closed',
+  'connection terminated',
+  'connection timeout',
+  'deadlock',
+  'lock timeout',
+  'query timeout',
+  'statement timeout',
+  'transaction',
+  'postgres',
+  'postgresql',
+  'pg_',
+  'relation does not exist',
+  'syntax error',
+  // rate limit
+  'rate limit',
+  '429',
+  'too many requests',
+  // server
+  '500',
+  '502',
+  '503',
+  '504',
+  'server error',
+  'service unavailable',
+  'gateway timeout',
+];
 
-function isNetworkError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  const lowerMessage = message.toLowerCase();
+const PERMANENT_KEYWORDS = [
+  'not found',
+  '404',
+  'unauthorized',
+  '401',
+  'forbidden',
+  '403',
+  'invalid',
+  'bad request',
+  '400',
+];
 
-  const networkKeywords = [
-    'network',
-    'econnrefused',
-    'etimedout',
-    'enotfound',
-    'econnreset',
-    'fetch failed',
-    'socket',
-    'dns',
-  ];
-
-  return networkKeywords.some((keyword) => lowerMessage.includes(keyword));
-}
-
-function isDatabaseError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  const lowerMessage = message.toLowerCase();
-
-  const databaseKeywords = [
-    'connection pool',
-    'too many connections',
-    'connection limit',
-    'connection reset',
-    'connection refused',
-    'server closed',
-    'connection terminated',
-    'connection timeout',
-    'deadlock',
-    'lock timeout',
-    'query timeout',
-    'statement timeout',
-    'transaction',
-    'postgres',
-    'postgresql',
-    'pg_',
-    'relation does not exist',
-    'syntax error',
-  ];
-
-  return databaseKeywords.some((keyword) => lowerMessage.includes(keyword));
-}
-
-function isRateLimitError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  const lowerMessage = message.toLowerCase();
-
-  return (
-    lowerMessage.includes('rate limit') ||
-    lowerMessage.includes('429') ||
-    lowerMessage.includes('too many requests')
-  );
-}
-
-function isServerError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  const lowerMessage = message.toLowerCase();
-
-  const serverErrorCodes = ['500', '502', '503', '504'];
-  const serverKeywords = ['server error', 'service unavailable', 'gateway timeout'];
-
-  return (
-    serverErrorCodes.some((code) => lowerMessage.includes(code)) ||
-    serverKeywords.some((keyword) => lowerMessage.includes(keyword))
-  );
-}
-
-function isRetryableError(error: unknown): boolean {
-  return (
-    isNetworkError(error) ||
-    isDatabaseError(error) ||
-    isRateLimitError(error) ||
-    isServerError(error)
-  );
-}
-
-function isPermanentError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  const lowerMessage = message.toLowerCase();
-
-  const permanentKeywords = [
-    'not found',
-    '404',
-    'unauthorized',
-    '401',
-    'forbidden',
-    '403',
-    'invalid',
-    'bad request',
-    '400',
-  ];
-
-  return permanentKeywords.some((keyword) => lowerMessage.includes(keyword));
+function errorMessage(error: unknown): string {
+  return (error instanceof Error ? error.message : String(error)).toLowerCase();
 }
 
 interface RetryOptions {
@@ -135,16 +92,12 @@ export async function withHttpRetry<T>(fn: () => Promise<T>, options?: RetryOpti
     strategy: 'exponential',
     jitter: 'full',
     shouldRetry: (error) => {
-      // Abort on permanent errors (404, 401, 403, etc.) or anything we don't
-      // recognise as transient.
-      if (isPermanentError(error)) return false;
-      return isRetryableError(error);
+      const msg = errorMessage(error);
+      if (PERMANENT_KEYWORDS.some((k) => msg.includes(k))) return false;
+      return TRANSIENT_KEYWORDS.some((k) => msg.includes(k));
     },
     onRetry: (attempt, error) => {
-      if (options?.onRetry) {
-        options.onRetry(error, attempt);
-      }
-
+      options?.onRetry?.(error, attempt);
       sdkLogger.debug(
         {
           operation,

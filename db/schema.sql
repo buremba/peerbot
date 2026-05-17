@@ -1445,6 +1445,12 @@ CREATE TABLE public.personal_access_tokens (
 COMMENT ON TABLE public.personal_access_tokens IS 'Personal Access Tokens for workers, CLI tools, and MCP clients';
 
 --
+-- Name: COLUMN personal_access_tokens.worker_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.personal_access_tokens.worker_id IS 'Optional binding to a specific device_workers.worker_id. Set by /api/me/devices/mint-child-token. When non-NULL, /api/workers/poll requires the request body''s worker_id to match.';
+
+--
 -- Name: personal_access_tokens_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
@@ -3597,6 +3603,12 @@ CREATE INDEX idx_notification_targets_user_all ON public.notification_targets US
 CREATE INDEX idx_notification_targets_user_unread ON public.notification_targets USING btree (user_id, delivered_at DESC) WHERE (read_at IS NULL);
 
 --
+-- Name: idx_personal_access_tokens_worker_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_personal_access_tokens_worker_id ON public.personal_access_tokens USING btree (worker_id) WHERE (worker_id IS NOT NULL);
+
+--
 -- Name: idx_runs_active_auth_per_profile; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3998,12 +4010,6 @@ CREATE INDEX personal_access_tokens_active_idx ON public.personal_access_tokens 
 
 CREATE INDEX personal_access_tokens_organization_id_idx ON public.personal_access_tokens USING btree (organization_id);
 
-
---
--- Name: idx_personal_access_tokens_worker_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_personal_access_tokens_worker_id ON public.personal_access_tokens USING btree (worker_id) WHERE (worker_id IS NOT NULL);
 
 --
 -- Name: personal_access_tokens_token_hash_idx; Type: INDEX; Schema: public; Owner: -

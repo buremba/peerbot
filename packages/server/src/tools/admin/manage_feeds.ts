@@ -153,10 +153,11 @@ async function handleListFeeds(
   const offset = args.offset ?? 0;
 
   // Build the filtered "page" of feeds first, then compute event_count in a
-  // single GROUP BY over the (connection_id, feed_key) pairs in that page.
-  // The previous shape ran a correlated `SELECT COUNT(*) FROM current_event_records`
-  // per row, which is O(N feeds) × an anti-join over the entire events table —
-  // ~880ms per feed on a busy connection. Batching collapses it to one scan.
+  // single GROUP BY restricted to the (connection_id, feed_key) tuples on
+  // that page. The previous shape ran a correlated
+  // `SELECT COUNT(*) FROM current_event_records` per row — O(N feeds) ×
+  // an anti-join over the entire events table — ~880ms per feed on a busy
+  // connection. Batching collapses it to one scan.
   let pageQuery = sql`
     SELECT f.*
     FROM feeds f
@@ -184,10 +185,14 @@ async function handleListFeeds(
       SELECT e.connection_id, e.feed_key, COUNT(*)::int AS event_count
       FROM events e
       WHERE e.organization_id = ${organizationId}
-        -- ANY(ARRAY(...)) keeps the planner on a single index scan per
-        -- distinct connection. IN (subquery) or a join causes Postgres to
-        -- re-scan the connection_id index per (connection, feed_key) pair.
+        -- ANY(ARRAY(...)) on each column lets the planner stay on
+        -- per-column index scans and intersect, rather than re-scanning
+        -- the connection_id index per (connection, feed_key) pair the
+        -- way IN (subquery) on a tuple would. The feed_key ANY narrows
+        -- the scan to the keys actually on this page; the final LEFT
+        -- JOIN drops any over-count from the cross-product.
         AND e.connection_id = ANY(ARRAY(SELECT DISTINCT connection_id FROM page))
+        AND e.feed_key = ANY(ARRAY(SELECT DISTINCT feed_key FROM page WHERE feed_key IS NOT NULL))
         AND NOT EXISTS (SELECT 1 FROM events n WHERE n.supersedes_event_id = e.id)
       GROUP BY e.connection_id, e.feed_key
     )

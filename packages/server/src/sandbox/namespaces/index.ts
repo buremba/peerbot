@@ -8,7 +8,6 @@ export { buildConnectionsNamespace } from "./connections";
 export { buildEntitiesNamespace } from "./entities";
 export { buildEntitySchemaNamespace } from "./entity-schema";
 export { buildFeedsNamespace } from "./feeds";
-export { buildGoalsNamespace } from "./goals";
 export { buildKnowledgeNamespace } from "./knowledge";
 export { buildOperationsNamespace } from "./operations";
 export { buildOrganizationsNamespace } from "./organizations";

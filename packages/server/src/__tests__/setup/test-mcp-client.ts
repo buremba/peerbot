@@ -32,7 +32,6 @@ import {
   buildEntitiesNamespace,
   buildEntitySchemaNamespace,
   buildFeedsNamespace,
-  buildGoalsNamespace,
   buildKnowledgeNamespace,
   buildOperationsNamespace,
   buildOrganizationsNamespace,
@@ -188,7 +187,6 @@ export class TestApiClient {
   readonly entities: ReturnType<typeof buildEntitiesNamespace>;
   readonly entity_schema: ReturnType<typeof buildEntitySchemaNamespace>;
   readonly feeds: ReturnType<typeof buildFeedsNamespace>;
-  readonly goals: ReturnType<typeof buildGoalsNamespace>;
   readonly knowledge: ReturnType<typeof buildKnowledgeNamespace>;
   readonly operations: ReturnType<typeof buildOperationsNamespace>;
   readonly organizations: ReturnType<typeof buildOrganizationsNamespace>;
@@ -205,7 +203,6 @@ export class TestApiClient {
     this.entities = buildEntitiesNamespace(ctx, env);
     this.entity_schema = buildEntitySchemaNamespace(ctx, env);
     this.feeds = buildFeedsNamespace(ctx, env);
-    this.goals = buildGoalsNamespace(ctx, env);
     this.knowledge = buildKnowledgeNamespace(ctx, env);
     this.operations = buildOperationsNamespace(ctx, env);
     this.organizations = buildOrganizationsNamespace(ctx);

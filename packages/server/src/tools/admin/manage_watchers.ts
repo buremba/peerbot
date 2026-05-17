@@ -358,12 +358,6 @@ export const ManageWatchersSchema = Type.Object({
       description: '[create/update] Agent ID that owns/executes this watcher.',
     })
   ),
-  goal_id: Type.Optional(
-    Type.Union([Type.Number(), Type.Null()], {
-      description:
-        '[create/update] Optional goal_id linking this watcher to a goal (manage_goals). Pass null to unlink.',
-    })
-  ),
   scheduler_client_id: Type.Optional(
     Type.String({
       description:
@@ -1054,31 +1048,11 @@ async function handleCreate(
 
     const nextRunAtVal = args.schedule ? nextRunAt(args.schedule) : null;
 
-    // Validate goal_id (if provided) belongs to the same org. The FK alone
-    // protects referential integrity but doesn't enforce org-scoping —
-    // without this check, a caller could attach a watcher to another org's
-    // goal id.
-    const goalIdValue =
-      args.goal_id === null || args.goal_id === undefined ? null : Number(args.goal_id);
-    if (goalIdValue !== null) {
-      const goalRows = await tx`
-        SELECT id FROM goals
-        WHERE id = ${goalIdValue} AND organization_id = ${organizationId}
-        LIMIT 1
-      `;
-      if (goalRows.length === 0) {
-        throw new ToolUserError(
-          `goal_id ${goalIdValue} not found in this organization`,
-          404
-        );
-      }
-    }
-
     // 1. Create watcher row
     await tx`
       INSERT INTO watchers (
         id, name, slug, organization_id, entity_ids,
-        schedule, next_run_at, agent_id, goal_id, scheduler_client_id, model_config, sources, version,
+        schedule, next_run_at, agent_id, scheduler_client_id, model_config, sources, version,
         current_version_id, tags, status, created_by, created_at, updated_at,
         watcher_group_id,
         device_worker_id, agent_kind,
@@ -1087,7 +1061,7 @@ async function handleCreate(
         ${watcherId}, ${args.name ?? args.slug}, ${args.slug}, ${organizationId},
         ${`{${entityIdsArray.join(',')}}`}::bigint[],
         ${args.schedule ?? null}, ${nextRunAtVal},
-        ${args.agent_id ?? null}, ${goalIdValue}, ${args.scheduler_client_id ?? null},
+        ${args.agent_id ?? null}, ${args.scheduler_client_id ?? null},
         ${sql.json(args.model_config || {})}, ${sql.json(sources)},
         1, NULL, ${toTextArrayParam(args.tags || [])}::text[],
         'active', ${createdBy}, NOW(), NOW(),
@@ -1330,37 +1304,10 @@ async function handleUpdate(
     }
   }
 
-  const hasGoalIdArg = Object.hasOwn(args, 'goal_id');
-  const goalIdValue =
-    hasGoalIdArg && args.goal_id !== null && args.goal_id !== undefined
-      ? Number(args.goal_id)
-      : null;
-  if (hasGoalIdArg && goalIdValue !== null) {
-    // Org-scope check on the target goal — see handleCreate's matching
-    // validation for the FK-vs-cross-org rationale.
-    const orgRows = await sql`
-      SELECT organization_id FROM watchers WHERE id = ${args.watcher_id} LIMIT 1
-    `;
-    const ownerOrg = (orgRows[0] as { organization_id: string | null } | undefined)
-      ?.organization_id;
-    const goalRows = await sql`
-      SELECT id FROM goals
-      WHERE id = ${goalIdValue} AND organization_id = ${ownerOrg ?? ''}
-      LIMIT 1
-    `;
-    if (goalRows.length === 0) {
-      throw new ToolUserError(
-        `goal_id ${goalIdValue} not found in this organization`,
-        404
-      );
-    }
-  }
-
   const updatedFields: string[] = [];
   if (args.model_config !== undefined) updatedFields.push('model_config');
   if (args.schedule !== undefined) updatedFields.push('schedule');
   if (args.agent_id !== undefined) updatedFields.push('agent_id');
-  if (hasGoalIdArg) updatedFields.push('goal_id');
   if (args.scheduler_client_id !== undefined) updatedFields.push('scheduler_client_id');
   if (args.tags !== undefined) updatedFields.push('tags');
   if (args.device_worker_id !== undefined) updatedFields.push('device_worker_id');
@@ -1387,7 +1334,6 @@ async function handleUpdate(
       schedule = CASE WHEN ${args.schedule !== undefined} THEN ${scheduleValue} ELSE schedule END,
       next_run_at = CASE WHEN ${args.schedule !== undefined} THEN ${nextRunAtVal}::timestamptz ELSE next_run_at END,
       agent_id = CASE WHEN ${args.agent_id !== undefined} THEN ${args.agent_id ?? null} ELSE agent_id END,
-      goal_id = CASE WHEN ${hasGoalIdArg} THEN ${goalIdValue}::bigint ELSE goal_id END,
       scheduler_client_id = CASE WHEN ${args.scheduler_client_id !== undefined} THEN ${args.scheduler_client_id ?? null} ELSE scheduler_client_id END,
       tags = CASE WHEN ${args.tags !== undefined} THEN ${toTextArrayParam(args.tags || [])}::text[] ELSE tags END,
       device_worker_id = CASE WHEN ${args.device_worker_id !== undefined} THEN ${args.device_worker_id ?? null}::uuid ELSE device_worker_id END,
@@ -2346,7 +2292,6 @@ async function handleList(
       i.schedule,
       i.next_run_at,
       i.agent_id,
-      i.goal_id,
       i.device_worker_id,
       i.scheduler_client_id,
       i.model_config,

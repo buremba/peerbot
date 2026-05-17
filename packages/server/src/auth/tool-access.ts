@@ -90,7 +90,6 @@ const OWNER_ADMIN_ACTIONS: Record<string, Set<string>> = {
     'classify',
   ]),
   manage_view_templates: new Set(['set', 'rollback', 'remove_tab']),
-  manage_goals: new Set(['create', 'update', 'archive', 'delete']),
 };
 
 const PUBLIC_READ_ACTIONS: Record<string, Set<string> | null> = {
@@ -117,7 +116,6 @@ const PUBLIC_READ_ACTIONS: Record<string, Set<string> | null> = {
   ]),
   manage_classifiers: new Set(['list', 'get_versions']),
   manage_view_templates: new Set(['get']),
-  manage_goals: new Set(['get', 'list']),
 };
 
 function getAction(args: unknown): string | null {

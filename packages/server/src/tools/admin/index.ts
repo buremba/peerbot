@@ -21,7 +21,6 @@ import { ManageConnectionsSchema, manageConnections } from './manage_connections
 import { ManageEntitySchema, manageEntity } from './manage_entity';
 import { ManageEntitySchemaSchema, manageEntitySchema } from './manage_entity_schema';
 import { ManageFeedsSchema, manageFeeds } from './manage_feeds';
-import { ManageGoalsSchema, manageGoals } from './manage_goals';
 import { NotifySchema, notify } from './notify';
 import { ManageOperationsSchema, manageOperations } from './manage_operations';
 import { ManageSchedulesSchema, manageSchedules } from './manage_schedules';
@@ -108,13 +107,6 @@ const ENTRIES: InternalToolEntry[] = [
     description: 'Watcher management. SDK alternative: client.watchers.',
     schema: ManageWatchersSchema,
     handler: manageWatchers,
-  },
-  {
-    name: 'manage_goals',
-    description:
-      'Goal primitive management (top-level handle that groups watchers). SDK alternative: client.goals.',
-    schema: ManageGoalsSchema,
-    handler: manageGoals,
   },
   {
     name: 'list_watchers',

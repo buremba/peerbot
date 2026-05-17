@@ -241,7 +241,10 @@ function saveStoredSession(
   // Keep legacy field for backward compat with older CLI versions
   (store as any).activeContext = key;
 
-  mkdirSync(dirname(storePath), { recursive: true });
+  // The store holds a refresh token + access token — tighten the parent dir to
+  // 0o700 so a wide-open umask can't make ~/.lobu world-readable. The file
+  // itself is already written with 0o600.
+  mkdirSync(dirname(storePath), { recursive: true, mode: 0o700 });
   writeFileSync(storePath, JSON.stringify(store, null, 2) + '\n', { mode: 0o600 });
 }
 
@@ -498,7 +501,7 @@ async function initiateDeviceLogin(
   });
 
   if (!regResponse.ok) {
-    const errText = await regResponse.text();
+    const errText = (await regResponse.text()).slice(0, 500);
     throw new Error(`Client registration failed: ${errText}`);
   }
 
@@ -519,7 +522,7 @@ async function initiateDeviceLogin(
   });
 
   if (!deviceResponse.ok) {
-    const errText = await deviceResponse.text();
+    const errText = (await deviceResponse.text()).slice(0, 500);
     throw new Error(`Device authorization failed: ${errText}`);
   }
 

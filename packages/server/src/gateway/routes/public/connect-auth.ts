@@ -29,7 +29,23 @@ function normalizeReturnUrl(
   returnUrl: string | null | undefined
 ): string | null {
   const value = returnUrl?.trim();
-  if (!value?.startsWith("/") || value.startsWith("//")) {
+  if (!value?.startsWith("/")) {
+    return null;
+  }
+  // Reject protocol-relative URLs and any second character that browsers
+  // normalise toward a host portion. `//evil.com`, `/\evil.com`, `/\/evil.com`
+  // all redirect off-origin once the browser collapses `\` → `/` in the path,
+  // so only allow values whose second character is a normal path segment.
+  if (value.length > 1) {
+    const second = value[1];
+    if (second === "/" || second === "\\") {
+      return null;
+    }
+  }
+  // CR/LF in a redirect target lets an attacker smuggle a header break into
+  // any caller that interpolates this into `Location:` without re-escaping.
+  // Hono escapes its own writes, but reject defensively at the trust boundary.
+  if (/[\r\n]/.test(value)) {
     return null;
   }
   return value;

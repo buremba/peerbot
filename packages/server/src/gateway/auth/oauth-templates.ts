@@ -5,6 +5,28 @@
 import { escapeHtml } from "../../utils/html.js";
 
 /**
+ * Allow http(s) absolute URLs and same-origin path-relative URLs. Reject
+ * anything that could redirect off-origin via backslash or evaluate as a
+ * `javascript:` / `data:` scheme inside an `href`.
+ */
+function isSafeHttpHref(url: string): boolean {
+  const trimmed = url.trim();
+  if (!trimmed) return false;
+  if (trimmed.startsWith("/")) {
+    if (trimmed.length > 1 && (trimmed[1] === "/" || trimmed[1] === "\\")) {
+      return false;
+    }
+    return !/[\r\n]/.test(trimmed);
+  }
+  try {
+    const parsed = new URL(trimmed);
+    return parsed.protocol === "https:" || parsed.protocol === "http:";
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Render a success page that auto-closes the tab (for in-app browsers)
  * and provides a fallback link to agent configuration when available.
  */
@@ -19,7 +41,11 @@ export function renderOAuthSuccessPage(
   }
 ): string {
   const safeName = escapeHtml(name);
-  const safeSettingsUrl = settingsUrl ? escapeHtml(settingsUrl) : "";
+  // `escapeHtml` keeps `javascript:` schemes intact, so the href would still
+  // execute script if a caller ever passed an untrusted URL. Only emit the
+  // button when the URL is http(s) or same-origin path-relative.
+  const safeSettingsUrl =
+    settingsUrl && isSafeHttpHref(settingsUrl) ? escapeHtml(settingsUrl) : "";
   const safeTitle = escapeHtml(options?.title || "Connected!");
   const safeDescription = escapeHtml(
     options?.description || `Successfully authenticated with ${name}`

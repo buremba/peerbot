@@ -26,14 +26,41 @@ describe("OAuth template escaping", () => {
     expect(html).toContain("&quot;&gt;&lt;svg onload=alert(1)&gt;");
   });
 
-  test("escapes settings URL on success page", () => {
+  test("drops unsafe settings URL on success page (does not render button)", () => {
     const html = renderOAuthSuccessPage(
       "Google",
       '"><script>alert(1)</script>'
     );
 
+    // Unsafe href shapes (script tags, javascript:, data:, protocol-relative
+    // `//evil.com`, backslash-prefixed paths) must not be rendered at all —
+    // escaping is not enough because `escapeHtml` keeps `javascript:` intact.
     expect(html).not.toContain('"><script>alert(1)</script>');
-    expect(html).toContain("&quot;&gt;&lt;script&gt;alert(1)&lt;/script&gt;");
-    expect(html).toContain("Open Configuration");
+    expect(html).not.toContain("Open Configuration");
+  });
+
+  test("renders safe http(s) and path-relative settings URLs", () => {
+    const httpsHtml = renderOAuthSuccessPage(
+      "Google",
+      "https://example.com/settings"
+    );
+    expect(httpsHtml).toContain("Open Configuration");
+    expect(httpsHtml).toContain("https://example.com/settings");
+
+    const pathHtml = renderOAuthSuccessPage("Google", "/agents/foo/config");
+    expect(pathHtml).toContain("Open Configuration");
+    expect(pathHtml).toContain("/agents/foo/config");
+  });
+
+  test("rejects javascript: and protocol-relative settings URLs", () => {
+    const jsHtml = renderOAuthSuccessPage("Google", "javascript:alert(1)");
+    expect(jsHtml).not.toContain("javascript:");
+    expect(jsHtml).not.toContain("Open Configuration");
+
+    const protoRelHtml = renderOAuthSuccessPage("Google", "//evil.com/x");
+    expect(protoRelHtml).not.toContain("Open Configuration");
+
+    const backslashHtml = renderOAuthSuccessPage("Google", "/\\evil.com");
+    expect(backslashHtml).not.toContain("Open Configuration");
   });
 });

@@ -43,9 +43,20 @@ export function createPublicFileRoutes(artifactStore: ArtifactStore): Hono {
 
     c.header("Content-Type", artifact.metadata.contentType);
     c.header("Content-Length", artifact.metadata.size.toString());
+    // `filename` is operator-/worker-supplied and survives only
+    // `path.basename()` in the store, so it may still contain quotes,
+    // backslashes, CR/LF, or non-ASCII. Quote it as a quoted-string per
+    // RFC 6266 + emit a UTF-8 `filename*` so non-ASCII names render correctly
+    // without letting a `"` break out and inject another header.
+    const rawName = artifact.metadata.filename;
+    const fallbackName = rawName.replace(/[\r\n\\"]+/g, "_") || "download";
+    const utf8Name = encodeURIComponent(rawName).replace(
+      /['()*]/g,
+      (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase()}`
+    );
     c.header(
       "Content-Disposition",
-      `attachment; filename="${artifact.metadata.filename}"`
+      `attachment; filename="${fallbackName}"; filename*=UTF-8''${utf8Name}`
     );
     c.header("Cache-Control", "private, max-age=60");
 

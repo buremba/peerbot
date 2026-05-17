@@ -308,6 +308,14 @@ export async function callTool(
 
 /**
  * Validate that a URL is safe for server-side fetching (SSRF prevention).
+ *
+ * This is a syntactic literal check: the connector_definitions auth_schema
+ * upstream URL is operator-supplied (org admin) so the threat model is
+ * "stop a misconfigured / malicious upstream literal", not "defeat a
+ * resolver that returns an internal address". Workers cannot edit these
+ * rows. DNS-rebinding defence for outbound fetches lives in the gateway
+ * HTTP egress proxy; this check just rejects the obvious cases at the
+ * trust boundary so a private IP in the literal never reaches `fetch`.
  */
 function assertSafeUrl(url: string): void {
   let parsed: URL;
@@ -319,12 +327,42 @@ function assertSafeUrl(url: string): void {
   if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
     throw new Error(`Unsupported protocol: ${parsed.protocol}`);
   }
-  const hostname = parsed.hostname;
+  // WHATWG URL keeps IPv6 hostnames bracketed (`[::1]`). Strip brackets so the
+  // string comparisons below match the bare literal.
+  let hostname = parsed.hostname.toLowerCase();
+  if (hostname.startsWith('[') && hostname.endsWith(']')) {
+    hostname = hostname.slice(1, -1);
+  }
+  // IPv6 zone identifiers (`fe80::1%eth0`) never change the routability
+  // decision; strip before pattern matching.
+  const zoneIdx = hostname.indexOf('%');
+  if (zoneIdx !== -1) hostname = hostname.slice(0, zoneIdx);
+
+  const isIpv4Loopback = /^127\./.test(hostname);
+  const isIpv6Loopback = hostname === '::1';
+  const isMappedLoopback =
+    hostname.startsWith('::ffff:127.') ||
+    hostname.startsWith('::ffff:7f') ||
+    hostname === '::ffff:0:0';
+  const isLinkLocalIpv6 = /^fe[89ab][0-9a-f]:/.test(hostname);
+  const isUniqueLocalIpv6 = /^f[cd][0-9a-f]{2}:/.test(hostname);
+  const isUnspecifiedIpv6 = hostname === '::' || hostname === '::0';
+  const isMulticastIpv6 = hostname.startsWith('ff');
+  // 100.64.0.0/10 (CGNAT) and 169.254.0.0/16 are routable but never to a
+  // service the gateway should be calling out to. 0.0.0.0/8 is "this network".
+  const isCgnat = /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(hostname);
+
   if (
     hostname === 'localhost' ||
-    hostname === '127.0.0.1' ||
-    hostname === '::1' ||
     hostname === '0.0.0.0' ||
+    isIpv4Loopback ||
+    isIpv6Loopback ||
+    isMappedLoopback ||
+    isLinkLocalIpv6 ||
+    isUniqueLocalIpv6 ||
+    isUnspecifiedIpv6 ||
+    isMulticastIpv6 ||
+    isCgnat ||
     hostname.startsWith('169.254.') ||
     hostname.startsWith('10.') ||
     hostname.startsWith('192.168.') ||

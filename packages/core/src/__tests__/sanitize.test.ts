@@ -162,11 +162,34 @@ describe("sanitizeForLogging", () => {
     expect(obj.apiKey).toBe("secret");
   });
 
-  test("only redacts string values of sensitive keys", () => {
-    const obj = { token: 12345 };
-    const result = sanitizeForLogging(obj);
-    // Non-string sensitive values are not redacted
-    expect(result.token).toBe(12345);
+  test("redacts non-string values under sensitive keys", () => {
+    // Numbers, buffers, and nested objects under sensitive keys were
+    // previously leaked because the redactor only triggered for string
+    // values. Hardened: any non-null/undefined value under a sensitive key
+    // is replaced with "[REDACTED]" (length-tagged for strings).
+    expect(sanitizeForLogging({ token: 12345 }).token).toBe("[REDACTED]");
+    expect(
+      sanitizeForLogging({ credentials: { raw: "abc", id: 1 } }).credentials
+    ).toBe("[REDACTED]");
+    // null/undefined preserved (no information to redact).
+    expect(sanitizeForLogging({ token: null }).token).toBe(null);
+    expect(sanitizeForLogging({ token: undefined }).token).toBe(undefined);
+  });
+
+  test("strips __proto__ / constructor / prototype keys", () => {
+    // Untrusted JSON.parse output can include `__proto__` as an own
+    // enumerable property. Even though our redactor builds a fresh object
+    // with `{...obj}`, propagating such keys through a logging helper would
+    // re-arm prototype pollution downstream if a consumer Object.assigned
+    // the result onto a target. Strip them.
+    const raw = JSON.parse('{"__proto__":{"polluted":true},"safe":1}');
+    const result = sanitizeForLogging(raw);
+    expect((result as Record<string, unknown>).__proto__).not.toEqual({
+      polluted: true,
+    });
+    expect(result.safe).toBe(1);
+    // Sanity: ensure no global pollution.
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
   });
 });
 

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { __resetEncryptionKeyCacheForTests } from "../utils/encryption";
+import { __resetEncryptionKeyCacheForTests, encrypt } from "../utils/encryption";
 import {
   generateWorkerToken,
   verifyWorkerToken,
@@ -117,6 +117,34 @@ describe("worker auth token", () => {
 
   test("verifyWorkerToken returns null for empty string", () => {
     expect(verifyWorkerToken("")).toBeNull();
+  });
+
+  test("verifyWorkerToken rejects non-object payloads encrypted under the key", () => {
+    // An attacker (or a buggy older gateway) that managed to encrypt a
+    // non-object payload would otherwise reach the field-presence checks
+    // with `parsed` being `null` / a number / an array. The `as` cast would
+    // happily hand a primitive to downstream consumers. Verify all of these
+    // are rejected before the field checks.
+    for (const payload of ["null", "42", '"a string"', "[1,2,3]"]) {
+      const token = encrypt(payload);
+      expect(verifyWorkerToken(token)).toBeNull();
+    }
+  });
+
+  test("verifyWorkerToken rejects payload with wrongly-typed required fields", () => {
+    // Payload is a valid object but conversationId is a number instead of
+    // a string. Without the typeof check, the truthy `data.conversationId`
+    // would pass and a downstream consumer would .substring() / .split() on
+    // a number and crash.
+    const token = encrypt(
+      JSON.stringify({
+        userId: "u",
+        conversationId: 12345,
+        deploymentName: "d",
+        timestamp: Date.now(),
+      })
+    );
+    expect(verifyWorkerToken(token)).toBeNull();
   });
 
   test("verifyWorkerToken returns null for tampered ciphertext", () => {

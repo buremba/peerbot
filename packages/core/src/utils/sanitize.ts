@@ -112,13 +112,33 @@ function sanitizeInner(
 
   const sanitized = Array.isArray(obj) ? [...obj] : { ...obj };
 
-  for (const key in sanitized) {
+  for (const key of Object.keys(sanitized)) {
+    // Drop `__proto__` / `constructor` / `prototype` keys entirely instead of
+    // reassigning — assignment via `sanitized[key] = ...` on a freshly-spread
+    // object normally creates an own data property and does not pollute
+    // Object.prototype, but consumers that later `Object.assign(target,
+    // sanitized)` would re-trigger the setter. Easier to never propagate
+    // these keys through a logging helper.
+    if (key === "__proto__" || key === "constructor" || key === "prototype") {
+      delete (sanitized as Record<string, unknown>)[key];
+      continue;
+    }
     const value = sanitized[key];
-    if (typeof value === "string") {
-      if (isSensitiveKey(key.toLowerCase(), additionalLowered)) {
+    const sensitive = isSensitiveKey(key.toLowerCase(), additionalLowered);
+    if (sensitive) {
+      // Redact regardless of value type. The previous version only redacted
+      // strings, so `{ token: 12345 }`, `{ credentials: { raw: "…" } }`, or
+      // a Buffer/Uint8Array under a sensitive key sailed through.
+      if (typeof value === "string") {
         sanitized[key] = `[REDACTED:${value.length}]`;
+      } else if (value === null || value === undefined) {
+        sanitized[key] = value;
+      } else {
+        sanitized[key] = "[REDACTED]";
       }
-    } else if (value && typeof value === "object") {
+      continue;
+    }
+    if (value && typeof value === "object") {
       sanitized[key] = sanitizeInner(value, additionalLowered, depth + 1, seen);
     }
   }

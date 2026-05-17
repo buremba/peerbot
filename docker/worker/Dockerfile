@@ -31,9 +31,9 @@ COPY packages/core/package.json packages/core/
 # Stub workspaces not needed at build time
 RUN mkdir -p packages/cli packages/landing \
                packages/server packages/lobu-cli \
-               packages/openclaw-plugin packages/web packages/agent-worker packages/mcpsandbox \
+               packages/openclaw-plugin packages/owletto packages/agent-worker packages/mcpsandbox \
     && for p in cli landing server \
-                openclaw-plugin web agent-worker mcpsandbox; do \
+                openclaw-plugin owletto agent-worker mcpsandbox; do \
         echo "{\"name\":\"@lobu/$p\",\"version\":\"0.0.0\",\"private\":true}" > "packages/$p/package.json"; \
       done \
     && echo '{"name":"@lobu/worker","version":"0.0.0","private":true}' > packages/agent-worker/package.json \

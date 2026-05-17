@@ -151,10 +151,10 @@ async function resolveWebDistDirectory(): Promise<string | null> {
 
   const candidates = [
     process.env.WEB_DIST_DIR?.trim(),
-    path.resolve(APP_ROOT, 'packages/web/dist'),
+    path.resolve(APP_ROOT, 'packages/owletto/dist'),
     path.resolve(APP_ROOT, '../web/dist'),
-    path.resolve(process.cwd(), 'packages/web/dist'),
-    path.resolve(process.cwd(), '../packages/web/dist'),
+    path.resolve(process.cwd(), 'packages/owletto/dist'),
+    path.resolve(process.cwd(), '../packages/owletto/dist'),
   ].filter((candidate): candidate is string => Boolean(candidate));
 
   for (const candidate of candidates) {
@@ -189,10 +189,10 @@ async function loadSpaHtmlTemplate(): Promise<string | null> {
 
 async function loadFallbackSpaHtmlTemplate(): Promise<string | null> {
   const candidates = [
-    path.resolve(APP_ROOT, 'packages/web/index.html'),
+    path.resolve(APP_ROOT, 'packages/owletto/index.html'),
     path.resolve(APP_ROOT, '../web/index.html'),
-    path.resolve(process.cwd(), 'packages/web/index.html'),
-    path.resolve(process.cwd(), '../packages/web/index.html'),
+    path.resolve(process.cwd(), 'packages/owletto/index.html'),
+    path.resolve(process.cwd(), '../packages/owletto/index.html'),
   ];
 
   for (const candidate of candidates) {
@@ -1288,7 +1288,7 @@ app.all('/mcp/:orgSlug/', handleMcp);
  * Catch-all route
  * Dev: Vite middleware handles source files/HMR before reaching here.
  *      This catch-all serves SPA index.html via Vite's transformIndexHtml.
- * Prod: Serves static files from packages/web/dist with SPA fallback.
+ * Prod: Serves static files from packages/owletto/dist with SPA fallback.
  */
 app.get('*', async (c) => {
   const requestPath = c.req.path;

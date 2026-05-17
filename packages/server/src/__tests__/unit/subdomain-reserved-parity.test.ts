@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 /**
  * Guard against drift between the SPA copy of RESERVED_SUBDOMAINS in
- * `packages/web/src/lib/subdomain.ts` and the backend canonical
+ * `packages/owletto/src/lib/subdomain.ts` and the backend canonical
  * list in `packages/server/src/index.ts`. Divergence would
  * silently break subdomain → org resolution on one side.
  *
@@ -14,7 +14,7 @@ import { describe, expect, it } from 'vitest';
  */
 
 const REPO_ROOT = join(__dirname, '..', '..', '..', '..', '..');
-const SPA_FILE = join(REPO_ROOT, 'packages/web/src/lib/subdomain.ts');
+const SPA_FILE = join(REPO_ROOT, 'packages/owletto/src/lib/subdomain.ts');
 const BACKEND_FILE = join(REPO_ROOT, 'packages/server/src/index.ts');
 
 function extractReservedSubdomains(filePath: string): string[] {

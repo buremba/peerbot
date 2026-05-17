@@ -2,19 +2,19 @@ import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
-// This test pulls a helper out of the `packages/web` git submodule. On fresh
+// This test pulls a helper out of the `packages/owletto` git submodule. On fresh
 // clones (or forks without the deploy key) the submodule isn't initialized,
 // so the import path doesn't exist. Detect that and skip the suite instead
 // of failing the whole vitest run.
 const targetsModulePath = fileURLToPath(
-  new URL('../../../../web/src/lib/mcp-install-targets.ts', import.meta.url),
+  new URL('../../../../owletto/src/lib/mcp-install-targets.ts', import.meta.url),
 );
 const submoduleAvailable = existsSync(targetsModulePath);
 
 const getMcpInstallTargets = submoduleAvailable
-  ? (await import('../../../../web/src/lib/mcp-install-targets')).getMcpInstallTargets
+  ? (await import('../../../../owletto/src/lib/mcp-install-targets')).getMcpInstallTargets
   : (() => {
-      throw new Error('packages/web submodule not initialized');
+      throw new Error('packages/owletto submodule not initialized');
     });
 
 const describeIfSubmodule = submoduleAvailable ? describe : describe.skip;

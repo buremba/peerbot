@@ -9,7 +9,7 @@
 #
 # Scope:
 #   - window.confirm / window.alert / window.prompt — banned by
-#     packages/web/DESIGN_GUIDELINES.md (confirmations are inline, not modal).
+#     packages/owletto/DESIGN_GUIDELINES.md (confirmations are inline, not modal).
 #   - SQL string-concatenation onto literal SQL fragments — heuristic for
 #     non-parameterized query construction.
 #   - The loose Nix charset regex `[A-Za-z0-9._-]+` re-introduced inside
@@ -56,8 +56,8 @@ echo "[check-security-patterns] scanning…"
 echo "  -> window.confirm / window.alert / window.prompt"
 HITS=$(
   git grep -nE 'window\.(confirm|alert|prompt)\(' -- \
-    'packages/web/*.ts' 'packages/web/*.tsx' \
-    'packages/web/**/*.ts' 'packages/web/**/*.tsx' \
+    'packages/owletto/*.ts' 'packages/owletto/*.tsx' \
+    'packages/owletto/**/*.ts' 'packages/owletto/**/*.tsx' \
     'packages/landing/**/*.ts' 'packages/landing/**/*.tsx' \
     2>/dev/null | filter_allowlist
 )

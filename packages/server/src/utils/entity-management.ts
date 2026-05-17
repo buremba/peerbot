@@ -109,7 +109,7 @@ export interface EntityData {
 
 /**
  * Generate a URL-safe slug from a string.
- * NOTE: duplicated in packages/web/src/lib/url.ts (separate package boundary).
+ * NOTE: duplicated in packages/owletto/src/lib/url.ts (separate package boundary).
  */
 export function generateSlug(name: string): string {
   return name

@@ -53,7 +53,7 @@ export const light = {
   "--color-page-meta-theme": "#ffffff",
 } as const;
 
-/** Dark palette — tweakcn "Retro" (aligned with packages/web/src/index.css .dark) */
+/** Dark palette — tweakcn "Retro" (aligned with packages/owletto/src/index.css .dark) */
 export const dark = {
   "--color-page-bg": "oklch(0.1700 0.0040 50)",
   "--color-page-bg-elevated": "oklch(0.2250 0.0050 50)",

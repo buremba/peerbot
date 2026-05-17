@@ -91,7 +91,7 @@ Sequence:
 1. User clicks "Open Lobu" in the menu bar.
 2. Menu bar app calls `POST /__local/bootstrap` (authenticated with the Keychain secret). Server generates a one-time bootstrap token (32 random bytes, base64), stores **the hash** (`sha256(token)`) in an in-memory map keyed by hash, with TTL 10 seconds and a single-use flag. Server returns the plaintext token to the menu bar.
 3. Menu bar app opens `http://127.0.0.1:<port>/?bootstrap=<token>` in the user's browser.
-4. The SPA's bootstrap handler (small new entry in `packages/web/src/`):
+4. The SPA's bootstrap handler (small new entry in `packages/owletto/src/`):
    1. Reads `?bootstrap=` from `window.location`.
    2. `history.replaceState()` immediately to strip the query (no history leakage).
    3. `POST /__local/exchange` with `{ token }` (no auth header — the token IS the auth).
@@ -237,7 +237,7 @@ This is also what "Sign out" maps to in personal mode (the menu has no "Sign out
 - `MenuBarContent.swift`:
   - When URL is loopback, skip the OAuth UI entirely. Button label becomes "Start" (the runner does the work; no separate sign-in step). Footer adds a "Reset Lobu…" inline-confirm action.
 
-### Web (`packages/web/src/`)
+### Web (`packages/owletto/src/`)
 
 - Small bootstrap handler in the SPA entry: reads `?bootstrap=`, `history.replaceState`, `POST /__local/exchange`, then proceeds. Treats the resulting Better Auth session like any other.
 - Existing routes unchanged.

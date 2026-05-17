@@ -1,5 +1,5 @@
 /* tweakcn "Retro" palette mapped onto Starlight tokens. Keep in sync with
-   packages/web/src/index.css and packages/landing/src/styles/theme-tokens.ts. */
+   packages/owletto/src/index.css and packages/landing/src/styles/theme-tokens.ts. */
 :root {
   --sl-color-bg: oklch(0.9808 0.0079 73.7452);
   --sl-color-bg-nav: oklch(0.9808 0.0079 73.7452);

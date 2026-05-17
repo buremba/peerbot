@@ -14,16 +14,16 @@ help:
 	@echo "  make test-e2e                              - Boot the dev server + run openclaw-plugin e2e against it"
 	@echo "  make eval                                  - Run agent evals"
 	@echo "  make clean-workers                         - Stop any running embedded worker subprocesses"
-	@echo "  make typecheck                             - Strict typecheck (same as Dockerfile) for server + web"
+	@echo "  make typecheck                             - Strict typecheck (same as Dockerfile) for server + owletto"
 
 # Strict typecheck — mirrors the Dockerfile so local matches CI. Catches
 # what `build-packages` (relaxed, bundler-only) misses.
 typecheck:
 	@echo "🔎 Strict typecheck: packages/server..."
 	@( cd packages/server && bunx tsc --noEmit ) || exit $$?
-	@if [ -d packages/web/src ]; then \
-		echo "🔎 Strict typecheck: packages/web..."; \
-		( cd packages/web && bunx tsc -b --noEmit ) || exit $$?; \
+	@if [ -d packages/owletto/src ]; then \
+		echo "🔎 Strict typecheck: packages/owletto..."; \
+		( cd packages/owletto && bunx tsc -b --noEmit ) || exit $$?; \
 	fi
 	@echo "✅ Typecheck clean."
 
@@ -40,16 +40,16 @@ build-packages:
 	@( cd packages/cli && bun run build ) || exit $$?
 	@echo "✅ All packages built successfully!"
 
-# Ensure packages/web is initialized; warn on drift but don't auto-fix
+# Ensure packages/owletto is initialized; warn on drift but don't auto-fix
 # (drift may be active feature-branch work — clobbering it silently is worse than the warning).
 ensure-submodule:
-	@status=$$(git submodule status packages/web 2>/dev/null || true); \
+	@status=$$(git submodule status packages/owletto 2>/dev/null || true); \
 	case "$$status" in \
-		'-'*) echo ">> web submodule not initialized — running git submodule update --init --recursive"; \
-		      git submodule update --init --recursive packages/web ;; \
-		'+'*) echo ">> WARNING: packages/web is at a different SHA than the parent pin:"; \
+		'-'*) echo ">> owletto submodule not initialized — running git submodule update --init --recursive"; \
+		      git submodule update --init --recursive packages/owletto ;; \
+		'+'*) echo ">> WARNING: packages/owletto is at a different SHA than the parent pin:"; \
 		      echo "   $$status"; \
-		      echo "   If this is unintentional, run: git submodule update packages/web" ;; \
+		      echo "   If this is unintentional, run: git submodule update packages/owletto" ;; \
 		*) ;; \
 	esac
 

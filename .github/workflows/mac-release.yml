@@ -6,7 +6,7 @@ name: mac-release
 # auto-update.
 #
 # The Mac source lives in the private `lobu-ai/owletto` repo, mounted here as
-# the `packages/web` submodule. Releases ship from this (public) repo so the
+# the `packages/owletto` submodule. Releases ship from this (public) repo so the
 # DMG download URL and Sparkle appcast URL stay reachable to anonymous users —
 # private-repo Releases would 404 without auth.
 #
@@ -31,7 +31,7 @@ name: mac-release
 #
 # No provisioning profile is required — the app ships only standard
 # entitlements (the HealthKit entitlement is disabled; see
-# packages/web/apps/mac/Lobu/Lobu.entitlements in the owletto submodule).
+# packages/owletto/apps/mac/Lobu/Lobu.entitlements in the owletto submodule).
 #
 # Sparkle auto-updates: `SPARKLE_ED_PRIVATE_KEY` (64-byte base64 of seed||pub)
 # is required. The job signs Lobu.dmg with `sign_update` and pushes a new
@@ -86,17 +86,17 @@ jobs:
             echo "::error::Submodule was stubbed — OWLETTO_WEB_DEPLOY_KEY is missing or invalid. Aborting release."
             exit 1
           fi
-          remote_url=$(git -C packages/web config --get remote.origin.url)
+          remote_url=$(git -C packages/owletto config --get remote.origin.url)
           case "$remote_url" in
             *lobu-ai/owletto.git|*lobu-ai/owletto) ;;
             *)
-              echo "::error::packages/web origin is '$remote_url' — expected lobu-ai/owletto. Aborting release."
+              echo "::error::packages/owletto origin is '$remote_url' — expected lobu-ai/owletto. Aborting release."
               exit 1
               ;;
           esac
           for required in \
-            packages/web/apps/mac/Lobu.xcodeproj \
-            packages/web/apps/mac/Lobu/Info.plist \
+            packages/owletto/apps/mac/Lobu.xcodeproj \
+            packages/owletto/apps/mac/Lobu/Info.plist \
             scripts/sparkle/update-appcast.py
           do
             if [ ! -e "$required" ]; then
@@ -114,7 +114,7 @@ jobs:
           #    `-list` text output has both `Targets:` and `Schemes:` sections,
           #    so a `grep '^  Lobu$'` could match a target named 'Lobu' even
           #    after the scheme was renamed to 'Owletto'.
-          SCHEMES=$(xcodebuild -project packages/web/apps/mac/Lobu.xcodeproj -list -json 2>/dev/null \
+          SCHEMES=$(xcodebuild -project packages/owletto/apps/mac/Lobu.xcodeproj -list -json 2>/dev/null \
             | python3 -c "import json,sys; print('\n'.join(json.load(sys.stdin)['project']['schemes']))")
           if ! echo "$SCHEMES" | grep -qE '^Lobu$'; then
             echo "::error::Expected scheme 'Lobu' missing from project schemes (got: $SCHEMES)"
@@ -128,7 +128,7 @@ jobs:
           EXPECTED_BUNDLE_NAME="Owletto"
           for key in CFBundleName CFBundleDisplayName; do
             actual=$(/usr/libexec/PlistBuddy -c "Print :$key" \
-              packages/web/apps/mac/Lobu/Info.plist 2>/dev/null || true)
+              packages/owletto/apps/mac/Lobu/Info.plist 2>/dev/null || true)
             if [ "$actual" != "$EXPECTED_BUNDLE_NAME" ]; then
               echo "::error::Info.plist:$key is '$actual', expected '$EXPECTED_BUNDLE_NAME'"
               exit 1
@@ -149,7 +149,7 @@ jobs:
           #    correct.
           EXPECTED_BUNDLE_ID="ai.lobu.mac"
           distinct_ids=$(grep -E 'PRODUCT_BUNDLE_IDENTIFIER = ' \
-            packages/web/apps/mac/Lobu.xcodeproj/project.pbxproj \
+            packages/owletto/apps/mac/Lobu.xcodeproj/project.pbxproj \
             | sed -E 's/.*PRODUCT_BUNDLE_IDENTIFIER = ([^;]+);.*/\1/' \
             | sort -u)
           if [ "$distinct_ids" != "$EXPECTED_BUNDLE_ID" ]; then
@@ -165,7 +165,7 @@ jobs:
           #    Use PlistBuddy so the check matches an actual plist key, not
           #    text inside an XML comment.
           if ! /usr/libexec/PlistBuddy -c "Print :SUPublicEDKey" \
-            packages/web/apps/mac/Lobu/Info.plist >/dev/null 2>&1; then
+            packages/owletto/apps/mac/Lobu/Info.plist >/dev/null 2>&1; then
             echo "::error::SUPublicEDKey missing from Info.plist — installed apps cannot verify updates"
             exit 1
           fi
@@ -209,7 +209,7 @@ jobs:
         if: steps.mode.outputs.signed == 'true'
         run: |
           xcodebuild \
-            -project packages/web/apps/mac/Lobu.xcodeproj -scheme Lobu -configuration Release \
+            -project packages/owletto/apps/mac/Lobu.xcodeproj -scheme Lobu -configuration Release \
             -archivePath "$RUNNER_TEMP/Lobu.xcarchive" archive \
             CODE_SIGN_STYLE=Manual \
             CODE_SIGN_IDENTITY="Developer ID Application" \
@@ -221,7 +221,7 @@ jobs:
         if: steps.mode.outputs.signed != 'true'
         run: |
           xcodebuild \
-            -project packages/web/apps/mac/Lobu.xcodeproj -scheme Lobu -configuration Release \
+            -project packages/owletto/apps/mac/Lobu.xcodeproj -scheme Lobu -configuration Release \
             -archivePath "$RUNNER_TEMP/Lobu.xcarchive" archive \
             CODE_SIGNING_ALLOWED=NO \
             MARKETING_VERSION="${{ steps.v.outputs.version }}"

@@ -46,9 +46,9 @@ let localFrontendCache: boolean | undefined;
  * decide whether to return the hosted UI fallback when PUBLIC_WEB_URL is not
  * configured.
  *
- * Always matches a built bundle (`packages/web/dist/index.html`). In
+ * Always matches a built bundle (`packages/owletto/dist/index.html`). In
  * development it additionally matches a source checkout
- * (`packages/web/index.html`), which is what the Vite middleware serves —
+ * (`packages/owletto/index.html`), which is what the Vite middleware serves —
  * gated on NODE_ENV so a stray source tree in a production image does not
  * cause request-origin links to leak out.
  */
@@ -59,14 +59,14 @@ export function hasLocalFrontend(): boolean {
   const isDevelopment = process.env.NODE_ENV === 'development';
   const candidates = [
     envDist ? path.join(envDist, 'index.html') : undefined,
-    path.resolve(APP_ROOT, 'packages/web/dist/index.html'),
+    path.resolve(APP_ROOT, 'packages/owletto/dist/index.html'),
     path.resolve(APP_ROOT, '../web/dist/index.html'),
-    path.resolve(process.cwd(), 'packages/web/dist/index.html'),
-    path.resolve(process.cwd(), '../packages/web/dist/index.html'),
-    isDevelopment ? path.resolve(APP_ROOT, 'packages/web/index.html') : undefined,
+    path.resolve(process.cwd(), 'packages/owletto/dist/index.html'),
+    path.resolve(process.cwd(), '../packages/owletto/dist/index.html'),
+    isDevelopment ? path.resolve(APP_ROOT, 'packages/owletto/index.html') : undefined,
     isDevelopment ? path.resolve(APP_ROOT, '../web/index.html') : undefined,
-    isDevelopment ? path.resolve(process.cwd(), 'packages/web/index.html') : undefined,
-    isDevelopment ? path.resolve(process.cwd(), '../packages/web/index.html') : undefined,
+    isDevelopment ? path.resolve(process.cwd(), 'packages/owletto/index.html') : undefined,
+    isDevelopment ? path.resolve(process.cwd(), '../packages/owletto/index.html') : undefined,
   ].filter((candidate): candidate is string => Boolean(candidate));
 
   for (const candidate of candidates) {

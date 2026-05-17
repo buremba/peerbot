@@ -4,7 +4,7 @@
  * Focuses on the public/private boundary and crawlable HTML payloads without
  * restoring the old large page suite verbatim.
  *
- * Skipped automatically when packages/web is not initialized — these tests
+ * Skipped automatically when packages/owletto is not initialized — these tests
  * render HTML produced by the web submodule. CI checks it out via
  * LOBU_WEB_DEPLOY_KEY; local clones without that key cannot, so we skip
  * rather than fail on missing assets.
@@ -26,7 +26,7 @@ import { get } from '../../setup/test-helpers';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const WEB_AVAILABLE = existsSync(
-  resolve(__dirname, '../../../../../web/src')
+  resolve(__dirname, '../../../../../owletto/src')
 );
 
 const publicWebUrl = 'https://www.lobu.test';

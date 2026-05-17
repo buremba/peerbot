@@ -28,7 +28,7 @@
       "!**/packages/connector-worker/**",
       "!**/packages/connectors/**",
       "!**/packages/embeddings/**",
-      "!**/packages/web/**",
+      "!**/packages/owletto/**",
       "!**/apps/**",
       "!**/scripts/lobu/**",
       "!**/benchmarks/**",

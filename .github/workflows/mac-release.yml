@@ -194,6 +194,9 @@ jobs:
         env:
           SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
         run: |
+          set -x  # echo every command so a failure (curl 404, tar layout
+                  # change, missing binary, gh-pages auth) surfaces by name
+                  # instead of as a bare "exit code 1".
           if [ -z "$SPARKLE_ED_PRIVATE_KEY" ]; then
             echo "::error::SPARKLE_ED_PRIVATE_KEY not set — add the 64-byte base64 Sparkle Ed25519 private key as a repo secret."
             exit 1

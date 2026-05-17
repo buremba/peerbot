@@ -9,14 +9,14 @@ import {
   type SkillWorkspacePreviewData,
 } from "./use-case-definitions";
 
-export type TraceRow = {
+type TraceRow = {
   kind: "skill" | "memory_recall" | "memory_upsert" | "memory_link";
   source: string;
   call: string;
   result: string;
 };
 
-export type WatcherEvent = {
+type WatcherEvent = {
   source: string;
   time: string;
   text: string;
@@ -58,17 +58,17 @@ type SurfaceHeroCopyConfig = {
   byUseCase?: Partial<Record<LandingUseCaseId, SurfaceHeroCopyOverride>>;
 };
 
-export type ShowcaseSkillWorkspacePreview = SkillWorkspacePreviewData & {
+type ShowcaseSkillWorkspacePreview = SkillWorkspacePreviewData & {
   useCaseId: LandingUseCaseId;
   examplePath: string;
 };
 
-export type ShowcaseMemoryExample = MemoryExample & {
+type ShowcaseMemoryExample = MemoryExample & {
   useCaseId: LandingUseCaseId;
   examplePath: string;
 };
 
-export type LandingUseCaseChatScenarios = {
+type LandingUseCaseChatScenarios = {
   permission: UseCase;
   skill: UseCase;
   settings: UseCase;

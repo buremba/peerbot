@@ -1,11 +1,11 @@
 import { generatedUseCaseModels } from "./generated/use-case-models";
 
-export type MemoryField = {
+type MemoryField = {
   label: string;
   value: string;
 };
 
-export type RecordNode = {
+type RecordNode = {
   id: string;
   label: string;
   kind: string;
@@ -14,7 +14,7 @@ export type RecordNode = {
   children?: RecordNode[];
 };
 
-export type ExampleRelation = {
+type ExampleRelation = {
   source: string;
   sourceType: string;
   label: string;
@@ -28,7 +28,7 @@ type ExampleLink = {
   href: string;
 };
 
-export type HowItWorksPanelItem = {
+type HowItWorksPanelItem = {
   label: string;
   detail: string;
   meta?: string;
@@ -38,18 +38,18 @@ export type HowItWorksPanelItem = {
   };
 };
 
-export type HowItWorksPanelTable = {
+type HowItWorksPanelTable = {
   columns: string[];
   rows: string[][];
 };
 
-export type HowItWorksPanelTraceEvent = {
+type HowItWorksPanelTraceEvent = {
   time: string;
   source: string;
   text: string;
 };
 
-export type HowItWorksPanelTraceMemory = {
+type HowItWorksPanelTraceMemory = {
   emoji?: string;
   text: string;
 };
@@ -71,7 +71,7 @@ export type HowItWorksPanel = {
   trace?: HowItWorksPanelTrace;
 };
 
-export type HowItWorksStep = {
+type HowItWorksStep = {
   id: "model" | "connect" | "auth" | "reuse" | "fresh";
   label: string;
   title: string;
@@ -120,17 +120,17 @@ export type SkillWorkspacePreviewData = {
   skillInstructions: string[];
 };
 
-export type LandingUseCaseAgentDefinition = {
+type LandingUseCaseAgentDefinition = {
   identity: string[];
   soul: string[];
   user: string[];
 };
 
-export type LandingUseCaseModelDefinition = {
+type LandingUseCaseModelDefinition = {
   entities: string[];
 };
 
-export type LandingUseCaseSkillsDefinition = {
+type LandingUseCaseSkillsDefinition = {
   description: string;
   agentId: string;
   skillId: string;
@@ -144,7 +144,7 @@ export type LandingUseCaseSkillsDefinition = {
   skillInstructions: string[];
 };
 
-export type LandingUseCaseMemoryDefinition = {
+type LandingUseCaseMemoryDefinition = {
   id: string;
   description: string;
   entitySelections?: Record<string, string>;

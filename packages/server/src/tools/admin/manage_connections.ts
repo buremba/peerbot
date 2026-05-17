@@ -1623,7 +1623,7 @@ async function handleUpdate(
 
   // Verify ownership
   const existingRows = await sql`
-    SELECT c.id, c.connector_key, c.auth_profile_id, c.app_auth_profile_id, cd.auth_schema, cd.feeds_schema
+    SELECT c.id, c.connector_key, c.auth_profile_id, c.app_auth_profile_id, c.created_by, cd.auth_schema, cd.feeds_schema
     FROM connections c
     LEFT JOIN LATERAL (
       SELECT auth_schema, feeds_schema
@@ -1649,11 +1649,55 @@ async function handleUpdate(
     feeds_schema: Record<string, unknown> | null;
     auth_profile_id: number | null;
     app_auth_profile_id: number | null;
+    created_by: string | null;
   };
 
   const hasAuthProfileArg = Object.hasOwn(args, 'auth_profile_slug');
   const hasAppAuthProfileArg = Object.hasOwn(args, 'app_auth_profile_slug');
   const hasDeviceWorkerArg = Object.hasOwn(args, 'device_worker_id');
+
+  // Role-gated profile changes. Resolved once and reused below; the target-
+  // profile ownership check runs after `resolveConnectionAuthSelection`.
+  const profileChanging = hasAuthProfileArg || hasAppAuthProfileArg;
+  const callerRole =
+    profileChanging && ctx.userId
+      ? await getWorkspaceRole(sql, organizationId, ctx.userId)
+      : null;
+  const callerIsAdmin = callerRole === 'admin' || callerRole === 'owner';
+
+  // App profile updates: non-admins may only set the connector's pinned
+  // default (mirrors handleCreate's gate). Clearing the app profile is
+  // admin-only — otherwise a member could strip the org default off a
+  // shared connection.
+  if (hasAppAuthProfileArg && !callerIsAdmin) {
+    const slug = args.app_auth_profile_slug;
+    if (!slug) {
+      return { error: 'Only admins can clear the OAuth app profile.' };
+    }
+    const picked = await getAuthProfileBySlug(organizationId, slug);
+    const pinned =
+      picked?.profile_kind === 'oauth_app' &&
+      picked.is_default_for_connector &&
+      picked.connector_key === existing.connector_key;
+    if (!pinned) {
+      return {
+        error: `Only admins can override the OAuth app profile. Ask an admin to pin '${slug}' as the default for this connector, or omit app_auth_profile_slug to use the org default.`,
+      };
+    }
+  }
+
+  // Account / runtime profile updates: only the connection's created_by
+  // (or an admin/owner) can rebind. Mirrors the reauthenticate gate so a
+  // peer member can't silently swap whose credentials a private
+  // connection runs under. Target-profile ownership is enforced separately
+  // after `authSelection` resolves the profile metadata.
+  if (hasAuthProfileArg && !callerIsAdmin) {
+    if (!ctx.userId || existing.created_by !== ctx.userId) {
+      return {
+        error: 'You can only change the auth profile of a connection you created.',
+      };
+    }
+  }
 
   // Resolve the new device-worker binding up front so a bad value rejects the
   // whole update.
@@ -1707,6 +1751,29 @@ async function handleUpdate(
     return {
       error: `App auth profile '${args.app_auth_profile_slug}' has status '${authSelection.appAuthProfile.status}' — must be active`,
     };
+  }
+
+  // Non-admins may only bind to a runtime profile they own. Mirrors the
+  // handleCreate target-profile guard so a member who created a connection
+  // can't pivot it onto another member's credentials. `env` profiles are
+  // admin-managed org-shared credentials — same rule as create.
+  if (hasAuthProfileArg && !callerIsAdmin && authSelection.authProfile) {
+    const profile = authSelection.authProfile;
+    if (profile.profile_kind === 'env') {
+      return {
+        error:
+          'Only admins can use env-credential auth profiles. Ask an admin to rebind this connection.',
+      };
+    }
+    if (
+      (profile.profile_kind === 'oauth_account' ||
+        profile.profile_kind === 'browser_session') &&
+      profile.created_by !== ctx.userId
+    ) {
+      return {
+        error: `Auth profile '${profile.slug}' belongs to another user. Create your own profile (action: 'create_auth_profile') and use its slug instead.`,
+      };
+    }
   }
 
   const currentAuthProfile = await getAuthProfileById(organizationId, existing.auth_profile_id);

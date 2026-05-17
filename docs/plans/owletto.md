@@ -30,7 +30,8 @@ Lobu's job is the trigger fabric and the eventual org-tier upgrade target.
   local CLI agent the user happens to run. Arms-dealer position; orthogonal
   to which CLI vendor wins. Compounds via open-source contributions to the
   connector library (Home Assistant playbook).
-- **Funnel:** owletto is OSS and free. Lobu org tier (multi-device, team
+- **Funnel:** owletto is closed-source but free (binary distribution).
+  Lobu engine underneath stays OSS. Lobu org tier (multi-device, team
   workflows, audit) is the monetized upgrade path. "Powered by Lobu"
   footer only — no hard push inside owletto.
 - **Marketing positioning:** *"Make your local CLI agent proactive."*
@@ -262,16 +263,21 @@ mirror written by `lobu pull`.
 
 ## Repository layout & migration
 
-### New public repo: `lobu-ai/owletto` (OSS, Apache-2.0)
+### Private repo: `lobu-ai/owletto`
+
+Closed-source product surface (Mac app + Chrome extension + web admin
+SPA). Free to use; binaries shipped from this (public) lobu repo's
+Releases so anonymous users can download.
 
 ```
-owletto/
-├── apps/mac/              # SwiftUI Mac app
-├── apps/extension/        # Chrome extension build (white-label)
-├── goals/                 # 5 curated goal templates (YAML)
-├── skills/                # owletto-specific bundled skills
-├── docs/
-└── README.md
+owletto/                   # private; renamed from owletto-web
+├── apps/mac/              # SwiftUI Mac app (was apps/mac/ in lobu)
+├── apps/chrome/           # MV3 Chrome extension (was apps/chrome/ in lobu)
+├── src/                   # web SPA (the existing React app)
+├── public/                # web SPA static assets (icons, favicon, etc.)
+├── deploy/                # K8s/Flux manifests for app.lobu.ai
+├── goals/                 # curated goal templates (future)
+└── skills/                # bundled skills (future)
 ```
 
 ### Lobu repo (`lobu-ai/lobu`) — additive changes only
@@ -350,18 +356,24 @@ build.** Re-evaluate if it starts hurting.
 
 ## License and IP
 
-- **License:** Apache-2.0 (same as Lobu).
-- **Trademark the brand:** "owletto" name + owl mark. Open-core lets
-  anyone fork code; no one forks the brand. Mozilla / Home Assistant
+- **Lobu engine** (gateway, agent-worker, core, CLI, SDK, connectors):
+  stays Apache-2.0 OSS. That's where the community moat lives — every
+  contributed connector compounds the surface across all consumers.
+- **Owletto product** (Mac app, Chrome extension, web SPA): closed
+  source, private repo. Free to use, binary distribution from lobu's
+  Releases. Rationale: SwiftUI/extension/SPA is product surface code,
+  not platform; SwiftUI contributors are rare; brand differentiation
+  beats forkability here.
+- **Trademark the brand:** "owletto" name + owl mark stay protected
+  regardless of source-availability. Same Mozilla / Home Assistant
   Inc model.
-- **Open-core delineation is structural, not feature-gated:**
-  - Owletto OSS = local-first slice (single user, single device,
-    local CLI executor, local store).
-  - Lobu org tier = networked slice (multi-device sync, team org,
-    audit logs, hosted gateway).
-  - The boundary is "is this single-user-local or cross-user-
-    networked," not "is this paid or free." Prevents openwashing
-    accusations.
+- **Boundary is structural, not feature-gated:**
+  - Lobu OSS engine — what makes everything run; community contributions
+    welcome.
+  - Owletto closed product — the polished, brand-controlled local
+    surface. Same engine underneath as any Lobu org deployment.
+  - Lobu org tier (commercial) — networked / multi-tenant slice
+    (multi-device sync, team org, audit logs, hosted gateway).
 
 ## Moat
 
@@ -409,7 +421,7 @@ menubar canvas. Not a feature tour, not a homepage video. Candidates:
 
 ### Channels, in order of leverage
 
-1. **Show HN** — textbook HN product (OSS, local-first, dev tool,
+1. **Show HN** — strong fit (local-first, dev tool, free, BYO-LLM,
    BYO-LLM). Land with binary + README + demo GIF.
 2. **Dev Twitter** — AI-coding-tools cluster.
 3. **Reddit:** r/LocalLLaMA, r/ClaudeAI, r/MacApps.

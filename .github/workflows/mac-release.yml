@@ -56,9 +56,48 @@ jobs:
       - uses: actions/checkout@v4
 
       # Mac source lives in the owletto submodule; need the deploy key to clone.
-      - uses: ./.github/actions/setup-submodule
+      - id: submodule
+        uses: ./.github/actions/setup-submodule
         with:
           deploy-key: ${{ secrets.OWLETTO_WEB_DEPLOY_KEY }}
+
+      # Release contract — fail fast rather than build a wrong/missing artifact:
+      #   1. The deploy key must work. The setup-submodule action writes a stub
+      #      package.json when the key is absent; that's fine for CI on forks but
+      #      catastrophic for a release (we'd ship an empty DMG or fail late on
+      #      a missing project). Make it fatal here.
+      #   2. The submodule must point at lobu-ai/owletto. If the URL drifted we
+      #      could be releasing the wrong codebase entirely.
+      #   3. The Mac Xcode project + bundle paths the rest of this workflow
+      #      assumes must actually exist at the pinned SHA. Otherwise the
+      #      `lobster-mark.svg` → `owletto-mark.svg` style of silent rename on
+      #      the owletto side would only surface inside `xcodebuild`.
+      - name: Verify release contract (submodule + Mac source layout)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.submodule.outputs.stubbed }}" = "true" ]; then
+            echo "::error::Submodule was stubbed — OWLETTO_WEB_DEPLOY_KEY is missing or invalid. Aborting release."
+            exit 1
+          fi
+          remote_url=$(git -C packages/web config --get remote.origin.url)
+          case "$remote_url" in
+            *lobu-ai/owletto.git|*lobu-ai/owletto) ;;
+            *)
+              echo "::error::packages/web origin is '$remote_url' — expected lobu-ai/owletto. Aborting release."
+              exit 1
+              ;;
+          esac
+          for required in \
+            packages/web/apps/mac/Lobu.xcodeproj \
+            packages/web/apps/mac/Lobu/Info.plist \
+            scripts/sparkle/update-appcast.py
+          do
+            if [ ! -e "$required" ]; then
+              echo "::error::Required release path missing: $required"
+              exit 1
+            fi
+          done
 
       - name: Resolve version
         id: v
@@ -187,7 +226,7 @@ jobs:
           git clone --depth 1 --branch gh-pages \
             "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" \
             "$RUNNER_TEMP/ghpages"
-          python3 packages/web/apps/mac/sparkle/update-appcast.py "$RUNNER_TEMP/ghpages/appcast.xml" \
+          python3 scripts/sparkle/update-appcast.py "$RUNNER_TEMP/ghpages/appcast.xml" \
             --version "$VERSION" \
             --build "$VERSION" \
             --dmg-url "https://github.com/${{ github.repository }}/releases/download/lobu-v${VERSION}/Lobu.dmg" \

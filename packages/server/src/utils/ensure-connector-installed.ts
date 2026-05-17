@@ -9,9 +9,12 @@
  * from source_path, so edits to .ts files take effect without reinstalling.
  */
 
-import { basename } from 'node:path';
 import { getDb } from '../db/client';
-import { compileConnectorFromFile, findBundledConnectorFile } from './connector-catalog';
+import {
+  bundledConnectorSourcePath,
+  compileConnectorFromFile,
+  findBundledConnectorFile,
+} from './connector-catalog';
 import { extractConnectorMetadata } from './connector-compiler';
 import { upsertConnectorDefinitionRecords } from './connector-definition-install';
 import logger from './logger';
@@ -65,7 +68,7 @@ export async function ensureConnectorInstalled(params: {
       throw new Error('Connector must have key, name, and version.');
     }
 
-    const sourcePath = basename(filePath);
+    const sourcePath = bundledConnectorSourcePath(filePath);
     await upsertConnectorDefinitionRecords({
       sql,
       organizationId: params.organizationId,

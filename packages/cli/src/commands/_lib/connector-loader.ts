@@ -44,13 +44,22 @@ const bundledFileCache = new Map<string, string | null>();
 export function findBundledConnectorFile(key: string): string | null {
   const cached = bundledFileCache.get(key);
   if (cached !== undefined) return cached;
-  const fileName = `${key.replace(/\./g, "_")}.ts`;
+  // Mirror the resolver in @lobu/connector-worker's compile-connector.ts:
+  // subdir layout (`browser.evaluate` → `browser/evaluate.ts`) first, then
+  // the flat underscore convention (`chrome.tabs` → `chrome_tabs.ts`).
+  const candidates = [
+    `${key.replace(/\./g, "/")}.ts`,
+    `${key.replace(/\./g, "_")}.ts`,
+  ];
   let found: string | null = null;
-  for (const candidate of SOURCE_DIR_CANDIDATES) {
-    const filePath = resolve(candidate, fileName);
-    if (existsSync(filePath)) {
-      found = filePath;
-      break;
+  outer: for (const dir of SOURCE_DIR_CANDIDATES) {
+    for (const fileName of candidates) {
+      const filePath = resolve(dir, fileName);
+      if (!filePath.startsWith(`${dir}/`)) continue;
+      if (existsSync(filePath)) {
+        found = filePath;
+        break outer;
+      }
     }
   }
   bundledFileCache.set(key, found);

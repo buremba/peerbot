@@ -41,6 +41,9 @@ export default class BrowserFillFormConnector extends ConnectorRuntime {
         name: 'Fill form',
         description:
           'Sets values on input/textarea/select elements matched by CSS selector.',
+        // Required url + fields; instances are minted by composing bridge
+        // connectors, not auto-wired by device-reconcile.
+        userManaged: true,
         configSchema: {
           type: 'object',
           required: ['url', 'fields'],

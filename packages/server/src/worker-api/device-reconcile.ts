@@ -9,10 +9,10 @@
  * creating runs nothing can claim.
  */
 
-import { basename } from 'node:path';
 import { getDb, pgTextArray } from '../db/client';
 import {
   type BundledDeviceConnector,
+  bundledConnectorSourcePath,
   compileConnectorFromFile,
   findBundledConnectorFile,
   getBundledDeviceConnectors,
@@ -158,7 +158,7 @@ async function ensureDeviceConnectorWired(
           compiledCode: null,
           compiledCodeHash: null,
           sourceCode: null,
-          sourcePath: basename(filePath),
+          sourcePath: bundledConnectorSourcePath(filePath),
         },
       });
 

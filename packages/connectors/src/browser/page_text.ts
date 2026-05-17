@@ -41,6 +41,9 @@ export default class BrowserPageTextConnector extends ConnectorRuntime {
         key: 'page',
         name: 'Page text',
         description: 'Snapshot of the text content of a single page.',
+        // Required url; instances are minted by composing bridge connectors,
+        // not auto-wired by device-reconcile.
+        userManaged: true,
         configSchema: {
           type: 'object',
           required: ['url'],

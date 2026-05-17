@@ -134,17 +134,40 @@ const bundledFileCache = new Map<string, string | null>();
 export function findBundledConnectorFile(key: string): string | null {
   const cached = bundledFileCache.get(key);
   if (cached !== undefined) return cached;
-  const fileName = `${key.replace(/\./g, '_')}.ts`;
+  // Mirror the worker-side resolver in compile-connector.ts: try the
+  // subdir layout first (`browser.evaluate` → `browser/evaluate.ts`) and
+  // fall back to the flat underscore convention (`chrome.tabs` →
+  // `chrome_tabs.ts`). Keep these in sync if either side changes.
+  const candidates = [`${key.replace(/\./g, '/')}.ts`, `${key.replace(/\./g, '_')}.ts`];
   let found: string | null = null;
-  for (const candidate of DEFAULT_CONNECTOR_DIR_CANDIDATES) {
-    const filePath = resolve(candidate, fileName);
-    if (existsSync(filePath)) {
-      found = filePath;
-      break;
+  outer: for (const dir of DEFAULT_CONNECTOR_DIR_CANDIDATES) {
+    for (const fileName of candidates) {
+      const filePath = resolve(dir, fileName);
+      if (!filePath.startsWith(`${dir}/`)) continue;
+      if (existsSync(filePath)) {
+        found = filePath;
+        break outer;
+      }
     }
   }
   bundledFileCache.set(key, found);
   return found;
+}
+
+// Derive the persisted source_path (relative to the bundled-connectors
+// catalog dir) for a file resolved by findBundledConnectorFile. Used by
+// auto-install / device-reconcile so subdir-grouped connectors
+// (`browser/evaluate.ts`) round-trip correctly through
+// `connectorSourcePathToUri`. Falls back to basename if the file lives
+// outside every known candidate (shouldn't happen in practice, but keeps
+// the call site simple).
+export function bundledConnectorSourcePath(filePath: string): string {
+  for (const dir of DEFAULT_CONNECTOR_DIR_CANDIDATES) {
+    if (filePath.startsWith(`${dir}/`)) {
+      return relative(dir, filePath);
+    }
+  }
+  return relative(resolve(filePath, '..'), filePath);
 }
 
 export function normalizeFileSourceUri(value: string): string | null {

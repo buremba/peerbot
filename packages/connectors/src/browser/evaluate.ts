@@ -47,6 +47,11 @@ export default class BrowserEvaluateConnector extends ConnectorRuntime {
         name: 'Evaluate JS',
         description:
           'Executes a JS expression in the page and emits one event with the JSON-serialised return value.',
+        // `script` is required and gateway-author-supplied. Auto-wire would
+        // insert a feed row with config=NULL and produce a runs-but-fails
+        // loop. Bridge connectors (Revolut, banking, etc.) compose by
+        // creating explicit feed instances per call site.
+        userManaged: true,
         configSchema: {
           type: 'object',
           required: ['script'],

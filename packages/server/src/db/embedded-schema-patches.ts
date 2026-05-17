@@ -464,15 +464,46 @@ export const EMBEDDED_SCHEMA_PATCHES: EmbeddedSchemaPatch[] = [
           )
         )
       `);
+      // Add the single-column FK only when `agents.id` still has a unique
+      // constraint to reference. The later `agents-per-org-pk-phase-c` patch
+      // swaps the PK to composite `(organization_id, id)` and installs
+      // `scheduled_jobs_org_agent_fkey` in place of this one — after that
+      // swap, re-adding the single-column FK fails with 42830 ("no unique
+      // constraint matching given keys for referenced table"). Skip when the
+      // composite FK is already present *or* when no single-column unique
+      // exists on agents(id). Issue lobu#787.
       await sql.unsafe(`
         DO $$
         BEGIN
-          IF EXISTS (SELECT 1 FROM pg_class WHERE relname = 'agents' AND relkind = 'r')
-             AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'scheduled_jobs_agent_fkey') THEN
-            ALTER TABLE public.scheduled_jobs
-              ADD CONSTRAINT scheduled_jobs_agent_fkey
-              FOREIGN KEY (created_by_agent) REFERENCES public.agents(id) ON DELETE CASCADE;
+          IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'agents' AND relkind = 'r') THEN
+            RETURN;
           END IF;
+          IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'scheduled_jobs_agent_fkey') THEN
+            RETURN;
+          END IF;
+          IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'scheduled_jobs_org_agent_fkey') THEN
+            -- Composite FK already installed by the later phase-c patch.
+            RETURN;
+          END IF;
+          -- Confirm a single-column unique/PK exists on agents(id) before
+          -- referencing it; otherwise the ADD CONSTRAINT will crash with 42830.
+          IF NOT EXISTS (
+            SELECT 1
+            FROM pg_constraint c
+            JOIN pg_class t ON t.oid = c.conrelid
+            JOIN pg_namespace n ON n.oid = t.relnamespace
+            JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)
+            WHERE n.nspname = 'public'
+              AND t.relname = 'agents'
+              AND c.contype IN ('p', 'u')
+              AND array_length(c.conkey, 1) = 1
+              AND a.attname = 'id'
+          ) THEN
+            RETURN;
+          END IF;
+          ALTER TABLE public.scheduled_jobs
+            ADD CONSTRAINT scheduled_jobs_agent_fkey
+            FOREIGN KEY (created_by_agent) REFERENCES public.agents(id) ON DELETE CASCADE;
         END$$;
       `);
       await sql.unsafe(`

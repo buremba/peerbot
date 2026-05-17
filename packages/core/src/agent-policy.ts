@@ -126,11 +126,8 @@ export function renderBaselineAgentPolicy(): string {
 
 function renderRule(rule: ToolIntentRule): string {
   const tools = rule.tools.map((tool) => `\`${tool}\``).join(", ");
-  const lines = [`### ${rule.title}`, `Tools: ${tools}`];
-  for (const line of rule.instructionLines) {
-    lines.push(`- ${line}`);
-  }
-  return lines.join("\n");
+  const body = rule.instructionLines.map((line) => `- ${line}`).join("\n");
+  return `### ${rule.title}\nTools: ${tools}\n${body}`;
 }
 
 export function renderAlwaysOnToolPolicyRules(): string {

@@ -1,6 +1,4 @@
-/**
- * Base error class for all lobu errors
- */
+/** Base error class for all lobu errors. */
 export abstract class BaseError extends Error {
   abstract readonly name: string;
   public operation?: string;
@@ -10,29 +8,20 @@ export abstract class BaseError extends Error {
     public cause?: Error
   ) {
     super(message);
-
-    // Maintain proper prototype chain for instanceof checks
+    // Maintain proper prototype chain for instanceof checks.
     Object.setPrototypeOf(this, new.target.prototype);
   }
 
-  /**
-   * Get the full error chain as a string
-   */
+  /** Render the error chain as a single string. */
   getFullMessage(): string {
-    let message = `${this.name}: ${this.message}`;
-    if (this.cause) {
-      if (this.cause instanceof BaseError) {
-        message += `\nCaused by: ${this.cause.getFullMessage()}`;
-      } else {
-        message += `\nCaused by: ${this.cause.message}`;
-      }
-    }
-    return message;
+    if (!this.cause) return `${this.name}: ${this.message}`;
+    const causeMsg =
+      this.cause instanceof BaseError
+        ? this.cause.getFullMessage()
+        : this.cause.message;
+    return `${this.name}: ${this.message}\nCaused by: ${causeMsg}`;
   }
 
-  /**
-   * Convert error to JSON for logging/serialization
-   */
   toJSON(): Record<string, any> {
     return {
       name: this.name,
@@ -47,9 +36,6 @@ export abstract class BaseError extends Error {
   }
 }
 
-/**
- * Error class for worker-related operations
- */
 export class WorkerError extends BaseError {
   override readonly name = "WorkerError";
 
@@ -59,9 +45,6 @@ export class WorkerError extends BaseError {
   }
 }
 
-/**
- * Error class for workspace-related operations
- */
 export class WorkspaceError extends BaseError {
   override readonly name = "WorkspaceError";
 
@@ -71,7 +54,6 @@ export class WorkspaceError extends BaseError {
   }
 }
 
-// ErrorCode enum for orchestration operations
 export enum ErrorCode {
   DATABASE_CONNECTION_FAILED = "DATABASE_CONNECTION_FAILED",
   DEPLOYMENT_CREATE_FAILED = "DEPLOYMENT_CREATE_FAILED",
@@ -79,9 +61,6 @@ export enum ErrorCode {
   QUEUE_JOB_PROCESSING_FAILED = "QUEUE_JOB_PROCESSING_FAILED",
 }
 
-/**
- * Error class for orchestrator-related operations
- */
 export class OrchestratorError extends BaseError {
   readonly name = "OrchestratorError";
 
@@ -96,16 +75,15 @@ export class OrchestratorError extends BaseError {
   }
 
   static fromDatabaseError(error: any): OrchestratorError {
-    // `error` can be null/undefined/primitive coming out of a rejected Promise
-    // chain (e.g. `throw null`, or a pg pool that rejects with no value when
-    // the connection is torn down mid-query). Reading `.code` / `.detail` off
-    // a non-object would TypeError here and replace the real DB failure with
-    // a confusing "Cannot read properties of null" stack.
-    const isObjectLike =
-      typeof error === "object" && error !== null;
+    // `error` can be null/undefined/primitive (e.g. `throw null`, or a pg pool
+    // that rejects with no value mid-query). Reading `.code`/`.detail` off a
+    // non-object would TypeError and replace the real DB failure with a
+    // confusing "Cannot read properties of null" stack.
+    const isObjectLike = typeof error === "object" && error !== null;
+    const message = error instanceof Error ? error.message : String(error);
     return new OrchestratorError(
       ErrorCode.DATABASE_CONNECTION_FAILED,
-      `Database error: ${error instanceof Error ? error.message : String(error)}`,
+      `Database error: ${message}`,
       isObjectLike ? { code: error.code, detail: error.detail } : undefined,
       true,
       error instanceof Error ? error : undefined
@@ -122,9 +100,6 @@ export class OrchestratorError extends BaseError {
   }
 }
 
-/**
- * Error class for configuration-related operations
- */
 export class ConfigError extends BaseError {
   readonly name = "ConfigError";
 }

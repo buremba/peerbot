@@ -143,25 +143,21 @@ export class ModuleRegistry implements IModuleRegistry {
 
   async initAll(): Promise<void> {
     for (const module of this.modules.values()) {
-      if (module.init) {
-        logger.debug(`Initializing module: ${module.name}`);
-        await module.init();
-        logger.debug(`Module ${module.name} initialized`);
-      }
+      logger.debug(`Initializing module: ${module.name}`);
+      await module.init();
+      logger.debug(`Module ${module.name} initialized`);
     }
   }
 
   registerEndpoints(app: any): void {
     for (const module of this.modules.values()) {
-      if (module.registerEndpoints) {
-        try {
-          module.registerEndpoints(app);
-        } catch (error) {
-          logger.error(
-            `Failed to register endpoints for module ${module.name}:`,
-            error
-          );
-        }
+      try {
+        module.registerEndpoints(app);
+      } catch (error) {
+        logger.error(
+          `Failed to register endpoints for module ${module.name}:`,
+          error
+        );
       }
     }
   }

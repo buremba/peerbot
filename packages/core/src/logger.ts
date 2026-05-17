@@ -243,6 +243,3 @@ export function createLogger(serviceName: string): Logger {
 
   return logger;
 }
-
-// Default logger instance for backward compatibility
-export const logger = createLogger("shared");

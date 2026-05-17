@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { __resetEncryptionKeyCacheForTests, encrypt } from "../utils/encryption";
+import {
+  __resetEncryptionKeyCacheForTests,
+  encrypt,
+} from "../utils/encryption";
 import {
   generateWorkerToken,
   verifyWorkerToken,

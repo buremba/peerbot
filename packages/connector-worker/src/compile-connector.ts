@@ -55,13 +55,26 @@ const CONNECTOR_KEY_RE = /^[a-z][a-z0-9]*(?:[._][a-z0-9]+)*$/;
 
 export function findBundledConnectorFile(key: string): string | null {
   if (!CONNECTOR_KEY_RE.test(key)) return null;
-  const fileName = `${key.replace(/\./g, '_')}.ts`;
-  for (const candidate of WORKER_CONNECTOR_DIR_CANDIDATES) {
-    const filePath = resolve(candidate, fileName);
-    // Belt-and-braces: assert the resolved path stays under the candidate
-    // dir even though CONNECTOR_KEY_RE already forbids the dangerous chars.
-    if (!filePath.startsWith(`${candidate}/`)) continue;
-    if (existsSync(filePath)) return filePath;
+  // Two filename conventions:
+  //  - Subdirectory layout (preferred for grouped primitives): the dot in
+  //    `browser.evaluate` maps to `browser/evaluate.ts`. Lets us co-locate
+  //    related connectors without renaming the key.
+  //  - Flat-with-underscores (existing convention): `chrome.tabs` →
+  //    `chrome_tabs.ts`, `apple_health` → `apple_health.ts`.
+  // Try subdirectory first so newer primitives win when both happen to exist.
+  const candidates = [
+    `${key.replace(/\./g, '/')}.ts`,
+    `${key.replace(/\./g, '_')}.ts`,
+  ];
+  for (const dir of WORKER_CONNECTOR_DIR_CANDIDATES) {
+    for (const fileName of candidates) {
+      const filePath = resolve(dir, fileName);
+      // Belt-and-braces: the resolved path must stay under the candidate
+      // dir. CONNECTOR_KEY_RE already forbids `..`, but the regex doesn't
+      // know about our path-joining choices.
+      if (!filePath.startsWith(`${dir}/`)) continue;
+      if (existsSync(filePath)) return filePath;
+    }
   }
   return null;
 }

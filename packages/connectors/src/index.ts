@@ -3,6 +3,13 @@ export * from './apple_photos.ts';
 export * from './apple_screen_time.ts';
 export * from './local_directory.ts';
 export * from './browser-scraper-utils.ts';
+// Browser primitives — connector definitions whose executors live in the
+// Owletto for Chrome extension (apps/chrome/executor.js). Kept under
+// browser/ so they're structurally distinct from third-party service
+// connectors (linkedin, revolut, github, etc.).
+export * from './browser/evaluate.ts';
+export * from './browser/fill_form.ts';
+export * from './browser/page_text.ts';
 export * from './capterra.ts';
 export * from './chrome_tabs.ts';
 export * from './g2.ts';

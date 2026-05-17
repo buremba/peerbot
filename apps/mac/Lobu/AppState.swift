@@ -236,6 +236,13 @@ final class AppState: ObservableObject {
                 }
                 startAutoPollIfSignedIn()
             }
+        } else if credentials == nil, shouldAutoConnectAtLaunch() {
+            // First launch with no stored creds AND the URL points at the
+            // embedded runner we manage → auto-connect. No need to surface
+            // a "Start" button: spawn the runner, adopt no-auth credentials,
+            // signed in within ~1 s. Failures (CLI missing, port conflict)
+            // leave `credentials` nil and the connection card surfaces.
+            Task { @MainActor in await connect() }
         } else {
             startAutoPollIfSignedIn()
         }
@@ -465,6 +472,16 @@ final class AppState: ObservableObject {
         setStatus("")
     }
 
+    /// True iff init() should auto-trigger connect() at launch instead of
+    /// showing the connection card. We only do this when the URL targets the
+    /// embedded runner we manage — auto-spawning a process for a URL the
+    /// user typed pointing at someone else's server would be surprising.
+    private func shouldAutoConnectAtLaunch() -> Bool {
+        let raw = customServerDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: raw) else { return false }
+        return AppState.matchesManagedRunner(url)
+    }
+
     // Contract with `ensureBootstrapPat` in packages/server/src/start-local.ts.
     // Changing either side without the other makes the menu bar's display
     // disagree with reality.
@@ -523,10 +540,16 @@ final class AppState: ObservableObject {
             setStatus("Lobu is running on this Mac (~/lobu).")
         } catch LocalLobuRunner.RunnerError.cliNotFound {
             localLobuStatus = .cliMissing
-            setStatus(LocalLobuRunner.RunnerError.cliNotFound.errorDescription ?? "Lobu CLI not installed.")
+            // The connection card surfaces `cliMissing` inline with the
+            // install hint — don't echo it into the header status too.
+            setStatus("")
         } catch {
             localLobuStatus = .failed(message: error.localizedDescription)
-            setStatus(error.localizedDescription)
+            // Same — connectionCard's `connectStatusLine` renders the failure
+            // in orange right under the Start button. Echoing it into
+            // `state.status` would also push it into the header, producing
+            // the duplicate the user saw.
+            setStatus("")
         }
     }
 

@@ -88,6 +88,18 @@ final class LocalLobuRunner {
         // bind. start-local.ts defaults HOST to 0.0.0.0, so we must pin it
         // explicitly here — otherwise the runner just crashes on boot.
         env["HOST"] = "127.0.0.1"
+        // The embedded gateway refuses to boot without an ENCRYPTION_KEY (used
+        // to encrypt at-rest connection secrets). For a personal-use install
+        // the only sensible default is an ephemeral key generated on first
+        // boot and persisted under LOBU_DATA_DIR — opt in here so the user
+        // doesn't have to manage a secret manually.
+        env["LOBU_ALLOW_EPHEMERAL_ENCRYPTION_KEY"] = "1"
+        // The embedded server requires Node 22.x–24.x (isolated-vm constraint).
+        // If the user's PATH leads with a newer Node (Homebrew often does
+        // `node` = latest), inject the keg-only Node 22 location first so
+        // `lobu` picks the right interpreter without forcing the user to
+        // manage PATH manually.
+        env["PATH"] = Self.preferredPath(currentPath: env["PATH"] ?? "")
         proc.environment = env
         proc.standardInput = FileHandle.nullDevice  // no TTY — any prompt gets EOF and fails fast
 
@@ -149,6 +161,29 @@ final class LocalLobuRunner {
             json["device_authorization_endpoint"] != nil
         else { return false }
         return true
+    }
+
+    /// Return a PATH that puts a known Node 22 install first if one exists,
+    /// so the spawned `lobu run` picks an interpreter the embedded server
+    /// supports (22.x–24.x; isolated-vm doesn't build on Node 25+).
+    ///
+    /// Looks in the obvious places: Homebrew keg-only `node@22`, plus the
+    /// version-manager shim paths the user might already have configured.
+    /// Order matters — Homebrew's keg-only formula is the most common case
+    /// on macOS, so it goes first.
+    private static func preferredPath(currentPath: String) -> String {
+        let candidates = [
+            "/opt/homebrew/opt/node@22/bin",
+            "/usr/local/opt/node@22/bin",
+            "/opt/homebrew/opt/node@24/bin",
+            "/usr/local/opt/node@24/bin",
+            "\(NSHomeDirectory())/.local/share/mise/installs/node/22/bin",
+            "\(NSHomeDirectory())/.local/share/fnm/aliases/default/bin",
+        ]
+        let fm = FileManager.default
+        let prefixes = candidates.filter { fm.isExecutableFile(atPath: "\($0)/node") }
+        if prefixes.isEmpty { return currentPath }
+        return (prefixes + [currentPath]).joined(separator: ":")
     }
 
     private static func locateLobuCLI() -> String? {

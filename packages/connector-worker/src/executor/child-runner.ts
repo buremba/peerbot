@@ -6,6 +6,7 @@
  * Streams normalized content chunks and checkpoint updates back via IPC.
  */
 
+import { randomBytes } from 'node:crypto';
 import { rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -310,13 +311,27 @@ async function main() {
     started = true;
 
     // Keep temp module under cwd so bare imports (e.g. lobu) resolve via local node_modules.
-    const tmpFile = join(process.cwd(), `.connector-child-${process.pid}-${Date.now()}.mjs`);
+    // Use a cryptographically random suffix (not pid+Date.now()) so a co-tenant
+    // can't pre-create or guess the path. Combined with the `wx` open flag below
+    // this prevents both symlink-swap (pointing tmpFile at another file the
+    // worker can write) and pre-creation of a malicious .mjs that the worker
+    // would otherwise overwrite then import.
+    const tmpFile = join(
+      process.cwd(),
+      `.connector-child-${process.pid}-${randomBytes(16).toString('hex')}.mjs`
+    );
 
     try {
       const { compiledCode, context } = msg as ChildMessage;
 
-      // Write compiled code to temp file for dynamic import
-      await writeFile(tmpFile, compiledCode, 'utf-8');
+      // Write compiled code to temp file for dynamic import.
+      // - `flag: 'wx'` fails if the file already exists (no symlink follow,
+      //   no clobber of an attacker-planted file under cwd).
+      // - `mode: 0o600` keeps the compiled bundle (which can contain
+      //   connector-baked secrets and the freshly-decrypted credentials in
+      //   process memory referenced by the bundle) unreadable by other
+      //   local users on shared hosts. Umask cannot widen this.
+      await writeFile(tmpFile, compiledCode, { encoding: 'utf-8', flag: 'wx', mode: 0o600 });
 
       // Import the compiled module
       const mod = await import(pathToFileURL(tmpFile).href);

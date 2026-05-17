@@ -257,8 +257,10 @@ export class SubprocessExecutor implements SyncExecutor {
         return 'crash';
       };
 
-      // Handle messages from child
+      // Handle messages from child. The child runs untrusted connector code,
+      // so validate shape at this trust boundary before dereferencing fields.
       const onMessage = (msg: any) => {
+        if (!msg || typeof msg !== 'object' || typeof msg.type !== 'string') return;
         if (msg.type === 'content_chunk') {
           const items = Array.isArray(msg.items) ? msg.items : [];
           queueTask(async () => {
@@ -363,7 +365,9 @@ export class SubprocessExecutor implements SyncExecutor {
           // (which is also written to gateway logs by upstream callers).
           const rawMessage = msg.error?.message ?? 'Subprocess reported error';
           const error = new SubprocessError(redactOutput(rawMessage), diagnostics);
-          error.name = msg.error?.name ?? 'SubprocessError';
+          // Redact `name` too — connector code can throw `class Err extends Error { name = '<secret>' }`
+          // and Error.toString() / log formatters print `${name}: ${message}`.
+          error.name = msg.error?.name ? redactOutput(String(msg.error.name)) : 'SubprocessError';
           if (msg.error?.stack) error.stack = redactOutput(msg.error.stack);
           settle(() => reject(error));
           return;

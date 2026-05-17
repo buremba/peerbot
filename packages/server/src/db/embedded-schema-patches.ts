@@ -464,15 +464,46 @@ export const EMBEDDED_SCHEMA_PATCHES: EmbeddedSchemaPatch[] = [
           )
         )
       `);
+      // Add the single-column FK only when `agents.id` still has a unique
+      // constraint to reference. The later `agents-per-org-pk-phase-c` patch
+      // swaps the PK to composite `(organization_id, id)` and installs
+      // `scheduled_jobs_org_agent_fkey` in place of this one — after that
+      // swap, re-adding the single-column FK fails with 42830 ("no unique
+      // constraint matching given keys for referenced table"). Skip when the
+      // composite FK is already present *or* when no single-column unique
+      // exists on agents(id). Issue lobu#787.
       await sql.unsafe(`
         DO $$
         BEGIN
-          IF EXISTS (SELECT 1 FROM pg_class WHERE relname = 'agents' AND relkind = 'r')
-             AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'scheduled_jobs_agent_fkey') THEN
-            ALTER TABLE public.scheduled_jobs
-              ADD CONSTRAINT scheduled_jobs_agent_fkey
-              FOREIGN KEY (created_by_agent) REFERENCES public.agents(id) ON DELETE CASCADE;
+          IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'agents' AND relkind = 'r') THEN
+            RETURN;
           END IF;
+          IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'scheduled_jobs_agent_fkey') THEN
+            RETURN;
+          END IF;
+          IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'scheduled_jobs_org_agent_fkey') THEN
+            -- Composite FK already installed by the later phase-c patch.
+            RETURN;
+          END IF;
+          -- Confirm a single-column unique/PK exists on agents(id) before
+          -- referencing it; otherwise the ADD CONSTRAINT will crash with 42830.
+          IF NOT EXISTS (
+            SELECT 1
+            FROM pg_constraint c
+            JOIN pg_class t ON t.oid = c.conrelid
+            JOIN pg_namespace n ON n.oid = t.relnamespace
+            JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)
+            WHERE n.nspname = 'public'
+              AND t.relname = 'agents'
+              AND c.contype IN ('p', 'u')
+              AND array_length(c.conkey, 1) = 1
+              AND a.attname = 'id'
+          ) THEN
+            RETURN;
+          END IF;
+          ALTER TABLE public.scheduled_jobs
+            ADD CONSTRAINT scheduled_jobs_agent_fkey
+            FOREIGN KEY (created_by_agent) REFERENCES public.agents(id) ON DELETE CASCADE;
         END$$;
       `);
       await sql.unsafe(`
@@ -694,6 +725,202 @@ export const EMBEDDED_SCHEMA_PATCHES: EmbeddedSchemaPatch[] = [
         ALTER TABLE public.scheduled_jobs
           ADD CONSTRAINT scheduled_jobs_org_agent_fkey
           FOREIGN KEY (organization_id, created_by_agent) REFERENCES public.agents(organization_id, id) ON DELETE CASCADE
+      `);
+    },
+  },
+  {
+    // Mirrors db/migrations/20260517060000_watcher_schema_additions.sql.
+    // Adds dispatcher-related columns to watchers (device_worker_id,
+    // agent_kind, notification_channel, notification_priority,
+    // min_cooldown_seconds, last_fired_at) plus the per-device daily
+    // notification budget on device_workers. Idempotent for replay on
+    // already-initialised embedded/PGlite databases — each ADD COLUMN is
+    // wrapped in a duplicate_column-tolerant DO block; constraint and index
+    // creation is gated on pg_constraint / IF NOT EXISTS.
+    id: 'watcher-schema-additions',
+    apply: async (sql) => {
+      const watcherColumns: Array<{ name: string; ddl: string }> = [
+        {
+          name: 'device_worker_id',
+          ddl: `ALTER TABLE public.watchers
+                  ADD COLUMN device_worker_id uuid REFERENCES public.device_workers(id)`,
+        },
+        {
+          name: 'agent_kind',
+          ddl: `ALTER TABLE public.watchers ADD COLUMN agent_kind text`,
+        },
+        {
+          name: 'notification_channel',
+          ddl: `ALTER TABLE public.watchers
+                  ADD COLUMN notification_channel text NOT NULL DEFAULT 'canvas'`,
+        },
+        {
+          name: 'notification_priority',
+          ddl: `ALTER TABLE public.watchers
+                  ADD COLUMN notification_priority text NOT NULL DEFAULT 'normal'`,
+        },
+        {
+          name: 'min_cooldown_seconds',
+          ddl: `ALTER TABLE public.watchers
+                  ADD COLUMN min_cooldown_seconds integer NOT NULL DEFAULT 0`,
+        },
+        {
+          name: 'last_fired_at',
+          ddl: `ALTER TABLE public.watchers
+                  ADD COLUMN last_fired_at timestamp with time zone`,
+        },
+      ];
+      for (const col of watcherColumns) {
+        await sql.unsafe(`
+          DO $$
+          BEGIN
+            ${col.ddl};
+          EXCEPTION WHEN duplicate_column THEN NULL;
+          END $$;
+        `);
+      }
+
+      await sql.unsafe(`
+        DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint WHERE conname = 'watchers_notification_channel_check'
+          ) THEN
+            ALTER TABLE public.watchers
+              ADD CONSTRAINT watchers_notification_channel_check
+              CHECK (notification_channel IN ('canvas', 'notification', 'both'));
+          END IF;
+        END $$;
+      `);
+      await sql.unsafe(`
+        DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint WHERE conname = 'watchers_notification_priority_check'
+          ) THEN
+            ALTER TABLE public.watchers
+              ADD CONSTRAINT watchers_notification_priority_check
+              CHECK (notification_priority IN ('low', 'normal', 'high'));
+          END IF;
+        END $$;
+      `);
+      await sql.unsafe(`
+        DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint WHERE conname = 'watchers_min_cooldown_seconds_nonneg'
+          ) THEN
+            ALTER TABLE public.watchers
+              ADD CONSTRAINT watchers_min_cooldown_seconds_nonneg
+              CHECK (min_cooldown_seconds >= 0);
+          END IF;
+        END $$;
+      `);
+
+      await sql.unsafe(`
+        CREATE INDEX IF NOT EXISTS idx_watchers_device_worker_id
+          ON public.watchers (device_worker_id)
+          WHERE device_worker_id IS NOT NULL
+      `);
+
+      await sql.unsafe(`
+        DO $$
+        BEGIN
+          ALTER TABLE public.device_workers
+            ADD COLUMN notification_budget_per_day integer NOT NULL DEFAULT 10;
+        EXCEPTION WHEN duplicate_column THEN NULL;
+        END $$;
+      `);
+      await sql.unsafe(`
+        DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint
+            WHERE conname = 'device_workers_notification_budget_per_day_nonneg'
+          ) THEN
+            ALTER TABLE public.device_workers
+              ADD CONSTRAINT device_workers_notification_budget_per_day_nonneg
+              CHECK (notification_budget_per_day >= 0);
+          END IF;
+        END $$;
+      `);
+    },
+  },
+  {
+    // Mirrors db/migrations/20260517150000_goals_primitive.sql.
+    //
+    // Creates the `goals` table (top-level handle that groups watchers under
+    // a single user intent) and adds `watchers.goal_id` as a nullable FK
+    // with ON DELETE SET NULL. Idempotent — all DDL uses IF NOT EXISTS, and
+    // the watcher column is only added when missing.
+    //
+    // Sequenced after `watcher-schema-additions` (#799); the only watcher-side
+    // change here is the new column, which composes cleanly with the columns
+    // added by that patch.
+    id: 'goals-primitive',
+    apply: async (sql) => {
+      await sql.unsafe(`
+        CREATE TABLE IF NOT EXISTS public.goals (
+          id              bigserial PRIMARY KEY,
+          organization_id text NOT NULL REFERENCES public.organization(id) ON DELETE CASCADE,
+          slug            text NOT NULL,
+          name            text NOT NULL,
+          description     text,
+          status          text NOT NULL DEFAULT 'active',
+          template_key    text,
+          metadata        jsonb NOT NULL DEFAULT '{}'::jsonb,
+          created_at      timestamp with time zone NOT NULL DEFAULT now(),
+          updated_at      timestamp with time zone NOT NULL DEFAULT now()
+        )
+      `);
+      await sql.unsafe(`
+        DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint WHERE conname = 'goals_status_check'
+          ) THEN
+            ALTER TABLE public.goals
+              ADD CONSTRAINT goals_status_check
+              CHECK (status IN ('active', 'paused', 'archived'));
+          END IF;
+        END$$;
+      `);
+      await sql.unsafe(`
+        DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint WHERE conname = 'goals_org_slug_unique'
+          ) THEN
+            ALTER TABLE public.goals
+              ADD CONSTRAINT goals_org_slug_unique UNIQUE (organization_id, slug);
+          END IF;
+        END$$;
+      `);
+      await sql.unsafe(`
+        CREATE INDEX IF NOT EXISTS idx_goals_organization_id
+          ON public.goals (organization_id)
+      `);
+
+      await sql.unsafe(`
+        ALTER TABLE public.watchers
+          ADD COLUMN IF NOT EXISTS goal_id bigint
+      `);
+      await sql.unsafe(`
+        DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint WHERE conname = 'watchers_goal_id_fkey'
+          ) THEN
+            ALTER TABLE public.watchers
+              ADD CONSTRAINT watchers_goal_id_fkey
+              FOREIGN KEY (goal_id) REFERENCES public.goals(id) ON DELETE SET NULL;
+          END IF;
+        END$$;
+      `);
+      await sql.unsafe(`
+        CREATE INDEX IF NOT EXISTS idx_watchers_goal_id
+          ON public.watchers (goal_id)
+          WHERE goal_id IS NOT NULL
       `);
     },
   },

@@ -30,7 +30,7 @@ function resolveWebSourceRoot(): string {
   }
 
   const projectRoot = process.env.LOBU_DEV_PROJECT_PATH || PACKAGE_REPO_ROOT;
-  const webSourceDir = path.resolve(projectRoot, 'packages/web');
+  const webSourceDir = path.resolve(projectRoot, 'packages/owletto');
   if (!existsSync(path.join(webSourceDir, 'index.html'))) {
     throw new Error(
       `Lobu web source directory not found: ${webSourceDir}. ` +

@@ -1,7 +1,7 @@
 -- migrate:up
 
 -- Partial index for the dashboard's 14-day lifecycle-cumulative-stats query
--- (lifecycleCumulativeStatsSql in packages/web/src/lib/api/metric-series.ts).
+-- (lifecycleCumulativeStatsSql in packages/owletto/src/lib/api/metric-series.ts).
 --
 -- The query reads events older than `now() - interval '14 days'` and
 -- aggregates by date_trunc('day', created_at), with every COUNT FILTER

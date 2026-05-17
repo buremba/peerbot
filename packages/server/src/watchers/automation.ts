@@ -31,6 +31,10 @@ interface DueWatcherRow {
   agent_id: string;
   schedule: string | null;
   status?: string;
+  /** Watcher is pinned to a user-owned device worker (e.g. Lobu Mac app). */
+  device_worker_id?: string | null;
+  /** Preferred local agent kind on the pinned device (e.g. 'claude-code'). */
+  agent_kind?: string | null;
 }
 
 interface ClaimedWatcherRunRow {
@@ -117,6 +121,17 @@ export function parseWatcherRunPayload(value: unknown): WatcherRunPayload | null
         ? Number(rawVersionId)
         : null;
 
+  const rawDeviceWorkerId = payload.device_worker_id;
+  const deviceWorkerId =
+    typeof rawDeviceWorkerId === 'string' && rawDeviceWorkerId.trim() !== ''
+      ? rawDeviceWorkerId.trim()
+      : null;
+  const rawAgentKind = payload.agent_kind;
+  const agentKind =
+    typeof rawAgentKind === 'string' && rawAgentKind.trim() !== ''
+      ? rawAgentKind.trim()
+      : null;
+
   return {
     watcher_id: watcherId,
     agent_id: agentId,
@@ -124,6 +139,8 @@ export function parseWatcherRunPayload(value: unknown): WatcherRunPayload | null
     window_end: windowEnd,
     dispatch_source: dispatchSource,
     version_id: Number.isFinite(versionId as number) ? (versionId as number) : null,
+    device_worker_id: deviceWorkerId,
+    agent_kind: agentKind,
   };
 }
 
@@ -144,7 +161,8 @@ async function loadWatcherForAutomation(
   watcherId: number
 ): Promise<DueWatcherRow | null> {
   const rows = await sql<DueWatcherRow>`
-    SELECT id, organization_id, agent_id, schedule, status
+    SELECT id, organization_id, agent_id, schedule, status,
+           device_worker_id::text AS device_worker_id, agent_kind
     FROM watchers
     WHERE id = ${watcherId}
     LIMIT 1
@@ -177,6 +195,8 @@ async function enqueueWatcherRunForRecord(
       windowStart: windowStart.toISOString(),
       windowEnd: windowEnd.toISOString(),
       dispatchSource,
+      deviceWorkerId: watcher.device_worker_id ?? null,
+      agentKind: watcher.agent_kind ?? null,
     },
     sql
   );
@@ -233,10 +253,21 @@ async function markWatcherRunFailedIdempotent(
   // broken watcher re-materializes + re-dispatches a fresh agent run every
   // single minute forever (token/worker burn). Mirrors the feeds model: a
   // failed run still moves the schedule forward by its normal cadence.
-  await advanceWatcherScheduleAfterTerminalFailure(sql, failedRows[0]?.watcher_id as number | undefined);
+  await advanceWatcherSchedule(sql, failedRows[0]?.watcher_id as number | undefined);
 }
 
-async function advanceWatcherScheduleAfterTerminalFailure(
+/**
+ * Move a watcher's `next_run_at` forward by one cron tick. Reused by:
+ *   - terminal-failure paths in this module (broken watcher shouldn't re-fire each minute)
+ *   - manage_watchers(action="complete_window") on successful completion
+ *   - the device-side `/api/workers/me/runs/:id/complete-watcher` endpoint
+ *
+ * Pass either the singleton `sql` client or a transaction handle from
+ * `sql.begin(...)` to advance inside the caller's transaction. Schedule-less
+ * watchers (manual-only) are no-ops. Read failures are logged and swallowed —
+ * a missed schedule tick is preferable to failing the surrounding write.
+ */
+export async function advanceWatcherSchedule(
   sql: DbClient,
   watcherId: number | undefined
 ): Promise<void> {
@@ -261,7 +292,7 @@ async function advanceWatcherScheduleAfterTerminalFailure(
       WHERE id = ${watcherId}
     `;
   } catch (err) {
-    logger.warn(`[watchers] failed to advance next_run_at after terminal failure: ${err}`);
+    logger.warn(`[watchers] failed to advance next_run_at: ${err}`);
   }
 }
 
@@ -463,7 +494,8 @@ export async function materializeDueWatcherRuns(
   const sql = db ?? getDb();
 
   const dueWatchers = await sql<DueWatcherRow>`
-    SELECT w.id, w.organization_id, w.agent_id, w.schedule
+    SELECT w.id, w.organization_id, w.agent_id, w.schedule,
+           w.device_worker_id::text AS device_worker_id, w.agent_kind
     FROM watchers w
     WHERE w.status = 'active'
       AND w.agent_id IS NOT NULL
@@ -500,7 +532,7 @@ export async function materializeDueWatcherRuns(
       );
       // Don't leave next_run_at in the past — that would re-select this watcher
       // on every 60s tick. Push it forward per the watcher's cron schedule.
-      await advanceWatcherScheduleAfterTerminalFailure(sql, watcher.id);
+      await advanceWatcherSchedule(sql, watcher.id);
     }
   }
 

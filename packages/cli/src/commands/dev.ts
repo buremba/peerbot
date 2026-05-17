@@ -212,7 +212,7 @@ export async function devCommand(
   //
   // LOBU_DEV_PROJECT_PATH points the embedded server at the monorepo root so
   // it can find the `packages/agent-worker/src/index.ts` worker entry (and
-  // packages/web). When `lobu run` is invoked from a project subdir inside the
+  // packages/owletto). When `lobu run` is invoked from a project subdir inside the
   // monorepo, cwd is *not* the root — walk up to the enclosing workspace root.
   const enclosingRoot = findEnclosingMonorepoRoot(cwd);
   const projectPath =

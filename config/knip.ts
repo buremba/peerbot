@@ -3,7 +3,7 @@ import type { KnipConfig } from "knip";
 const config: KnipConfig = {
   ignore: [
     // Submodule — cleaned up via its own repo / PR.
-    "packages/web/**",
+    "packages/owletto/**",
   ],
   // Bun-style "npm:foo@x" import specifiers used by connectors.
   ignoreUnresolved: ["^npm:"],

@@ -18,9 +18,39 @@ import {
   dispatchPendingWatcherRuns,
   materializeDueWatcherRuns,
 } from '../../../watchers/automation';
+import { generateSecureToken, hashToken } from '../../../auth/oauth/utils';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import { createTestAgent, createTestEntity, createTestEvent } from '../../setup/test-fixtures';
+import { post } from '../../setup/test-helpers';
 import { TestApiClient, TestWorkspace } from '../../setup/test-mcp-client';
+
+/**
+ * Mint a PAT bound to a specific device worker_id and `device_worker:run`
+ * scope. Mirrors PersonalAccessTokenService.create but inlined so the test
+ * can pre-set the binding without going through the route.
+ */
+async function createWorkerBoundPat(
+  userId: string,
+  organizationId: string,
+  workerId: string,
+  scope = 'device_worker:run'
+): Promise<{ token: string }> {
+  const sql = getTestDb();
+  const token = `owl_pat_${generateSecureToken(24)}`;
+  const tokenHash = hashToken(token);
+  const tokenPrefix = token.substring(0, 12);
+  await sql`
+    INSERT INTO personal_access_tokens (
+      token_hash, token_prefix, user_id, organization_id, name, scope, worker_id,
+      created_at, updated_at
+    ) VALUES (
+      ${tokenHash}, ${tokenPrefix}, ${userId}, ${organizationId},
+      ${`Test worker PAT (${workerId})`}, ${scope}, ${workerId},
+      NOW(), NOW()
+    )
+  `;
+  return { token };
+}
 
 async function createAutomatedWatcher() {
   const sql = getTestDb();
@@ -365,5 +395,652 @@ describe('watcher automation contract', () => {
     expect(completion.content_linked).toBe(1);
     expect(Number(window.content_analyzed)).toBe(1);
     expect(links.map((row) => Number(row.event_id))).toEqual([event.id]);
+  });
+
+  // #798 — device-pinned watcher execution end-to-end:
+  //
+  //   watcher.device_worker_id set
+  //     → materializeDueWatcherRuns persists the pin into approved_input
+  //     → server-side dispatcher refuses to claim (#802 covers this; checked
+  //       above by the "skips watcher runs pinned to a device worker" test)
+  //     → device posts to /api/workers/me/runs/:id/complete-watcher
+  //         which writes the watcher_windows row + advances last_fired_at.
+  describe('device-pinned execution (#798)', () => {
+    it('persists watchers.device_worker_id and agent_kind into approved_input on materialization', async () => {
+      const { sql, watcherId } = await createAutomatedWatcher();
+
+      // Register a device worker to anchor the foreign key.
+      const [device] = await sql`
+        INSERT INTO device_workers (user_id, worker_id, platform, capabilities, label)
+        VALUES ('user-watcher-pin', 'device-pin-1', 'macos', ${sql.json({})}, 'My Mac')
+        RETURNING id
+      `;
+      const deviceWorkerId = String((device as { id: unknown }).id);
+
+      await sql`
+        UPDATE watchers
+        SET device_worker_id = ${deviceWorkerId}::uuid,
+            agent_kind = 'claude-code'
+        WHERE id = ${watcherId}
+      `;
+
+      const result = await materializeDueWatcherRuns({} as Env);
+      expect(result.runsCreated).toBe(1);
+
+      const [run] = await sql`
+        SELECT approved_input
+        FROM runs
+        WHERE watcher_id = ${watcherId}
+          AND run_type = 'watcher'
+      `;
+      const payload = run.approved_input as Record<string, unknown>;
+      expect(payload.device_worker_id).toBe(deviceWorkerId);
+      expect(payload.agent_kind).toBe('claude-code');
+    });
+
+    it('complete-watcher endpoint records a completed run + window + last_fired_at', async () => {
+      const { sql, dbClient, workspace, watcherId, agent } = await createAutomatedWatcher();
+      const granularity = inferWatcherGranularityFromSchedule('0 9 * * *');
+      const { windowStart, windowEnd } = await computePendingWindow(
+        dbClient,
+        watcherId,
+        granularity
+      );
+
+      const queued = await createWatcherRun({
+        organizationId: workspace.org.id,
+        watcherId,
+        agentId: agent.agentId,
+        windowStart: windowStart.toISOString(),
+        windowEnd: windowEnd.toISOString(),
+        dispatchSource: 'scheduled',
+        deviceWorkerId: '11111111-1111-1111-1111-111111111111',
+        agentKind: 'claude-code',
+      });
+
+      // Move the run into `running` claimed by a specific worker — the device
+      // path normally claims via /api/workers/poll; we shortcut here.
+      const workerId = 'mac-device-cli-test';
+      await sql`
+        UPDATE runs
+        SET status = 'running',
+            claimed_at = NOW(),
+            claimed_by = ${workerId}
+        WHERE id = ${queued.runId}
+      `;
+
+      const response = await post(
+        `/api/workers/me/runs/${queued.runId}/complete-watcher`,
+        {
+          body: {
+            worker_id: workerId,
+            output: 'CLI says: looked at 5 events, no anomalies.',
+            duration_ms: 1234,
+          },
+        }
+      );
+      expect(response.status).toBe(200);
+      const json = (await response.json()) as { ok: boolean; status: string };
+      expect(json.ok).toBe(true);
+      expect(json.status).toBe('completed');
+
+      const [run] = await sql`
+        SELECT status, completed_at, window_id, exit_reason
+        FROM runs
+        WHERE id = ${queued.runId}
+      `;
+      expect(String(run.status)).toBe('completed');
+      expect(run.completed_at).not.toBeNull();
+      expect(Number(run.window_id)).toBeGreaterThan(0);
+
+      const [window] = await sql`
+        SELECT extracted_data, run_metadata, execution_time_ms, model_used, granularity
+        FROM watcher_windows
+        WHERE id = ${run.window_id}
+      `;
+      const extracted = window.extracted_data as Record<string, unknown>;
+      expect(extracted.kind).toBe('device_cli_output');
+      expect(extracted.output).toBe('CLI says: looked at 5 events, no anomalies.');
+      expect(extracted.agent_kind).toBe('claude-code');
+      expect(Number(window.execution_time_ms)).toBe(1234);
+      expect(String(window.model_used)).toBe('device-cli');
+      expect(String(window.granularity)).toBe('ad_hoc');
+      const metadata = window.run_metadata as Record<string, unknown>;
+      expect(metadata.source).toBe('device_worker');
+      expect(metadata.watcher_run_id).toBe(queued.runId);
+
+      const [watcher] = await sql`
+        SELECT last_fired_at
+        FROM watchers
+        WHERE id = ${watcherId}
+      `;
+      expect(watcher.last_fired_at).not.toBeNull();
+    });
+
+    it('complete-watcher endpoint marks the run failed when error is supplied', async () => {
+      const { sql, dbClient, workspace, watcherId, agent } = await createAutomatedWatcher();
+      const granularity = inferWatcherGranularityFromSchedule('0 9 * * *');
+      const { windowStart, windowEnd } = await computePendingWindow(
+        dbClient,
+        watcherId,
+        granularity
+      );
+
+      const queued = await createWatcherRun({
+        organizationId: workspace.org.id,
+        watcherId,
+        agentId: agent.agentId,
+        windowStart: windowStart.toISOString(),
+        windowEnd: windowEnd.toISOString(),
+        dispatchSource: 'scheduled',
+        deviceWorkerId: '11111111-1111-1111-1111-111111111111',
+        agentKind: 'claude-code',
+      });
+
+      const workerId = 'mac-device-cli-fail';
+      await sql`
+        UPDATE runs
+        SET status = 'running',
+            claimed_at = NOW(),
+            claimed_by = ${workerId}
+        WHERE id = ${queued.runId}
+      `;
+
+      const response = await post(
+        `/api/workers/me/runs/${queued.runId}/complete-watcher`,
+        {
+          body: {
+            worker_id: workerId,
+            error: 'claude binary not found',
+            duration_ms: 12,
+            exit_reason: 'crash',
+            exit_code: 127,
+          },
+        }
+      );
+      expect(response.status).toBe(200);
+      const json = (await response.json()) as { ok: boolean; status: string };
+      expect(json.status).toBe('failed');
+
+      const [run] = await sql`
+        SELECT status, error_message, window_id, exit_code, exit_reason
+        FROM runs
+        WHERE id = ${queued.runId}
+      `;
+      expect(String(run.status)).toBe('failed');
+      expect(String(run.error_message)).toBe('claude binary not found');
+      // No watcher_windows row on failure.
+      expect(run.window_id).toBeNull();
+      expect(Number(run.exit_code)).toBe(127);
+      expect(String(run.exit_reason)).toBe('crash');
+
+      const windows = await sql`
+        SELECT id FROM watcher_windows WHERE run_id = ${queued.runId}
+      `;
+      expect(windows).toHaveLength(0);
+    });
+
+    it('complete-watcher endpoint refuses non-watcher run types', async () => {
+      const sql = getTestDb();
+      const { workspace } = await createAutomatedWatcher();
+
+      const [authRun] = await sql`
+        INSERT INTO runs (organization_id, run_type, approval_status, status, created_at)
+        VALUES (${workspace.org.id}, 'sync', 'auto', 'running', current_timestamp)
+        RETURNING id
+      `;
+      const runId = Number((authRun as { id: unknown }).id);
+
+      const response = await post(
+        `/api/workers/me/runs/${runId}/complete-watcher`,
+        {
+          body: { worker_id: 'any', output: '', duration_ms: 1 },
+        }
+      );
+      expect(response.status).toBe(409);
+      const body = (await response.json()) as { error: string };
+      expect(body.error).toMatch(/watcher/i);
+    });
+
+    it('complete-watcher endpoint returns 404 for an unknown run id', async () => {
+      const response = await post(
+        '/api/workers/me/runs/999999999/complete-watcher',
+        {
+          body: { worker_id: 'any', output: '', duration_ms: 1 },
+        }
+      );
+      expect(response.status).toBe(404);
+    });
+
+    // Pi review #1: schedule must advance on completion or the scheduler
+    // re-fires the watcher every tick forever.
+    it('advances watchers.next_run_at on successful completion', async () => {
+      const { sql, dbClient, workspace, watcherId, agent } = await createAutomatedWatcher();
+      const granularity = inferWatcherGranularityFromSchedule('0 9 * * *');
+      const { windowStart, windowEnd } = await computePendingWindow(
+        dbClient,
+        watcherId,
+        granularity
+      );
+
+      const [before] = await sql`
+        SELECT next_run_at FROM watchers WHERE id = ${watcherId}
+      `;
+      const beforeNextRun = before.next_run_at as Date | string | null;
+
+      const queued = await createWatcherRun({
+        organizationId: workspace.org.id,
+        watcherId,
+        agentId: agent.agentId,
+        windowStart: windowStart.toISOString(),
+        windowEnd: windowEnd.toISOString(),
+        dispatchSource: 'scheduled',
+        deviceWorkerId: '22222222-2222-2222-2222-222222222222',
+        agentKind: 'claude-code',
+      });
+
+      const workerId = 'mac-device-advance-test';
+      await sql`
+        UPDATE runs
+        SET status = 'running', claimed_at = NOW(), claimed_by = ${workerId}
+        WHERE id = ${queued.runId}
+      `;
+
+      const response = await post(
+        `/api/workers/me/runs/${queued.runId}/complete-watcher`,
+        {
+          body: { worker_id: workerId, output: 'ok', duration_ms: 5 },
+        }
+      );
+      expect(response.status).toBe(200);
+
+      const [after] = await sql`
+        SELECT next_run_at FROM watchers WHERE id = ${watcherId}
+      `;
+      const afterNextRun = after.next_run_at as Date | string | null;
+      expect(afterNextRun).not.toBeNull();
+      // The cron is `0 9 * * *` (daily 9am); the new tick must be strictly in
+      // the future relative to the pre-completion value (which was forced
+      // 10min in the past by createAutomatedWatcher).
+      const beforeMs = beforeNextRun ? new Date(beforeNextRun).getTime() : 0;
+      const afterMs = new Date(afterNextRun as string | Date).getTime();
+      expect(afterMs).toBeGreaterThan(beforeMs);
+      // And strictly in the future relative to "now".
+      expect(afterMs).toBeGreaterThan(Date.now() - 1000);
+    });
+
+    // Pi review #3: a second concurrent completion must be idempotent — no
+    // duplicate watcher_windows row, no 500, status reflects the winner.
+    it('treats a double completion as idempotent (no duplicate window, no 500)', async () => {
+      const { sql, dbClient, workspace, watcherId, agent } = await createAutomatedWatcher();
+      const granularity = inferWatcherGranularityFromSchedule('0 9 * * *');
+      const { windowStart, windowEnd } = await computePendingWindow(
+        dbClient,
+        watcherId,
+        granularity
+      );
+
+      const queued = await createWatcherRun({
+        organizationId: workspace.org.id,
+        watcherId,
+        agentId: agent.agentId,
+        windowStart: windowStart.toISOString(),
+        windowEnd: windowEnd.toISOString(),
+        dispatchSource: 'scheduled',
+        deviceWorkerId: '33333333-3333-3333-3333-333333333333',
+        agentKind: 'claude-code',
+      });
+
+      const workerId = 'mac-device-idem-test';
+      await sql`
+        UPDATE runs
+        SET status = 'running', claimed_at = NOW(), claimed_by = ${workerId}
+        WHERE id = ${queued.runId}
+      `;
+
+      // First completion lands.
+      const first = await post(`/api/workers/me/runs/${queued.runId}/complete-watcher`, {
+        body: { worker_id: workerId, output: 'first', duration_ms: 11 },
+      });
+      expect(first.status).toBe(200);
+
+      // Second completion against the now-terminal row must NOT 500.
+      // `authorizeRunForWorker` will return 409 first (status no longer
+      // 'running'); the in-tx FOR UPDATE / idempotent branch is exercised by
+      // the truly-concurrent case (post-claim, pre-commit), which a single
+      // serialized test runner can't easily reproduce — but we DO assert
+      // that no extra watcher_windows row was created either way.
+      const second = await post(`/api/workers/me/runs/${queued.runId}/complete-watcher`, {
+        body: { worker_id: workerId, output: 'second', duration_ms: 12 },
+      });
+      expect([200, 409]).toContain(second.status);
+
+      const windowsForRun = await sql`
+        SELECT id FROM watcher_windows WHERE run_id = ${queued.runId}
+      `;
+      expect(windowsForRun).toHaveLength(1);
+
+      const [run] = await sql`
+        SELECT status FROM runs WHERE id = ${queued.runId}
+      `;
+      expect(String(run.status)).toBe('completed');
+    });
+
+    // Pi review #5: malformed window bounds in approved_input must fail the
+    // run and advance the schedule, not leave it stuck in 'running'.
+    it('marks run failed (not stuck running) on malformed approved_input', async () => {
+      const { sql, dbClient, workspace, watcherId, agent } = await createAutomatedWatcher();
+      const granularity = inferWatcherGranularityFromSchedule('0 9 * * *');
+      const { windowStart, windowEnd } = await computePendingWindow(
+        dbClient,
+        watcherId,
+        granularity
+      );
+      const queued = await createWatcherRun({
+        organizationId: workspace.org.id,
+        watcherId,
+        agentId: agent.agentId,
+        windowStart: windowStart.toISOString(),
+        windowEnd: windowEnd.toISOString(),
+        dispatchSource: 'scheduled',
+        deviceWorkerId: '44444444-4444-4444-4444-444444444444',
+        agentKind: 'claude-code',
+      });
+      const workerId = 'mac-device-malformed-test';
+      // Corrupt the approved_input window_start so completion validation
+      // rejects it. The run is still claimed/running.
+      await sql`
+        UPDATE runs
+        SET status = 'running',
+            claimed_at = NOW(),
+            claimed_by = ${workerId},
+            approved_input = approved_input || ${sql.json({ window_start: 'not-a-date' })}
+        WHERE id = ${queued.runId}
+      `;
+
+      const [before] = await sql`SELECT next_run_at FROM watchers WHERE id = ${watcherId}`;
+      const beforeNextRun = before.next_run_at as Date | string | null;
+
+      const response = await post(
+        `/api/workers/me/runs/${queued.runId}/complete-watcher`,
+        {
+          body: { worker_id: workerId, output: 'whatever', duration_ms: 1 },
+        }
+      );
+      expect(response.status).toBe(400);
+
+      const [run] = await sql`
+        SELECT status, error_message FROM runs WHERE id = ${queued.runId}
+      `;
+      expect(String(run.status)).toBe('failed');
+      expect(String(run.error_message)).toMatch(/window_start/);
+
+      const [after] = await sql`SELECT next_run_at FROM watchers WHERE id = ${watcherId}`;
+      const afterNextRun = after.next_run_at as Date | string | null;
+      const beforeMs = beforeNextRun ? new Date(beforeNextRun).getTime() : 0;
+      const afterMs = afterNextRun ? new Date(afterNextRun).getTime() : 0;
+      expect(afterMs).toBeGreaterThan(beforeMs);
+    });
+
+    // Pi review round-2 #A: device spoof — a same-user token bound to worker
+    // A cannot complete a run pinned to worker B by lying in body.worker_id.
+    // Previously the binding check was `(user_id, body.worker_id)`, which a
+    // same-user attacker could satisfy by registering worker B and POSTing
+    // worker B's id. The fix anchors on the OAuth-token-bound workerId.
+    it('rejects device spoof — token bound to worker A cannot complete worker B run', async () => {
+      const { sql, dbClient, workspace, watcherId, agent } = await createAutomatedWatcher();
+
+      // Two registered device workers under the SAME user.
+      const ownerUserId = workspace.users.owner.id;
+      const [deviceA] = await sql`
+        INSERT INTO device_workers (user_id, worker_id, platform, capabilities, label)
+        VALUES (${ownerUserId}, 'worker-A', 'macos', ${sql.json({})}, 'Mac A')
+        RETURNING id
+      `;
+      const [deviceB] = await sql`
+        INSERT INTO device_workers (user_id, worker_id, platform, capabilities, label)
+        VALUES (${ownerUserId}, 'worker-B', 'macos', ${sql.json({})}, 'Mac B')
+        RETURNING id
+      `;
+      const deviceBId = String((deviceB as { id: unknown }).id);
+      // deviceA.id is referenced via the bound PAT — no further use here.
+      void deviceA;
+
+      // Token bound to worker A.
+      const { token: patForA } = await createWorkerBoundPat(
+        ownerUserId,
+        workspace.org.id,
+        'worker-A'
+      );
+
+      // Watcher run pinned to worker B (via approved_input.device_worker_id).
+      const granularity = inferWatcherGranularityFromSchedule('0 9 * * *');
+      const { windowStart, windowEnd } = await computePendingWindow(
+        dbClient,
+        watcherId,
+        granularity
+      );
+      const queued = await createWatcherRun({
+        organizationId: workspace.org.id,
+        watcherId,
+        agentId: agent.agentId,
+        windowStart: windowStart.toISOString(),
+        windowEnd: windowEnd.toISOString(),
+        dispatchSource: 'scheduled',
+        deviceWorkerId: deviceBId,
+        agentKind: 'claude-code',
+      });
+      // Claim the run as worker B so `authorizeRunForWorker` passes its
+      // claimed_by check when the body posts worker_id=worker-B. The new
+      // bound-workerId check (Fix A) is what should fire instead.
+      await sql`
+        UPDATE runs
+        SET status = 'running', claimed_at = NOW(), claimed_by = 'worker-B'
+        WHERE id = ${queued.runId}
+      `;
+
+      const response = await post(
+        `/api/workers/me/runs/${queued.runId}/complete-watcher`,
+        {
+          token: patForA,
+          body: { worker_id: 'worker-B', output: 'spoofed', duration_ms: 1 },
+        }
+      );
+      expect(response.status).toBe(403);
+      const body = (await response.json()) as { error: string };
+      expect(body.error).toMatch(/worker_id_mismatch|Forbidden/);
+
+      // Run must still be 'running' — nothing was completed.
+      const [run] = await sql`
+        SELECT status, window_id FROM runs WHERE id = ${queued.runId}
+      `;
+      expect(String(run.status)).toBe('running');
+      expect(run.window_id).toBeNull();
+      // No watcher_windows row was created.
+      const windows = await sql`
+        SELECT id FROM watcher_windows WHERE run_id = ${queued.runId}
+      `;
+      expect(windows).toHaveLength(0);
+    });
+
+    // Pi review round-2 #B: concurrent allocation race — two completions on
+    // DIFFERENT watcher runs must both succeed with distinct window ids.
+    // Pre-fix, both could compute the same MAX(id)+1 and the second INSERT
+    // would 500 on the watcher_windows PK conflict. The advisory lock inside
+    // getNextNumericId serializes them.
+    it('serializes concurrent watcher_windows allocations across different runs', async () => {
+      const { sql, dbClient, workspace, watcherId, agent } = await createAutomatedWatcher();
+
+      // A second watcher in the same org so the two runs touch different
+      // `runs.id` rows AND different `watchers.id` (the SELECT … FOR UPDATE
+      // in the completeWatcherRun tx is per-row, so cross-watcher concurrent
+      // completions only collide on the watcher_windows allocator).
+      const secondEntity = await createTestEntity({
+        name: 'Second Entity',
+        organization_id: workspace.org.id,
+        created_by: workspace.users.owner.id,
+      });
+      const secondWatcher = (await workspace.owner.watchers.create({
+        entity_id: secondEntity.id,
+        slug: 'automation-watcher-2',
+        name: 'Automation Watcher 2',
+        prompt: 'Summarize content for {{entities}}.',
+        extraction_schema: {
+          type: 'object',
+          properties: { summary: { type: 'string' } },
+          required: ['summary'],
+        },
+        schedule: '0 9 * * *',
+        agent_id: agent.agentId,
+      })) as { watcher_id: string };
+      const watcherId2 = Number(secondWatcher.watcher_id);
+
+      const granularity = inferWatcherGranularityFromSchedule('0 9 * * *');
+      const { windowStart, windowEnd } = await computePendingWindow(
+        dbClient,
+        watcherId,
+        granularity
+      );
+      const queuedA = await createWatcherRun({
+        organizationId: workspace.org.id,
+        watcherId,
+        agentId: agent.agentId,
+        windowStart: windowStart.toISOString(),
+        windowEnd: windowEnd.toISOString(),
+        dispatchSource: 'scheduled',
+        deviceWorkerId: '55555555-5555-5555-5555-555555555555',
+        agentKind: 'claude-code',
+      });
+      const queuedB = await createWatcherRun({
+        organizationId: workspace.org.id,
+        watcherId: watcherId2,
+        agentId: agent.agentId,
+        windowStart: windowStart.toISOString(),
+        windowEnd: windowEnd.toISOString(),
+        dispatchSource: 'scheduled',
+        deviceWorkerId: '66666666-6666-6666-6666-666666666666',
+        agentKind: 'claude-code',
+      });
+
+      const workerIdA = 'mac-device-concurrent-A';
+      const workerIdB = 'mac-device-concurrent-B';
+      await sql`
+        UPDATE runs
+        SET status = 'running', claimed_at = NOW(), claimed_by = ${workerIdA}
+        WHERE id = ${queuedA.runId}
+      `;
+      await sql`
+        UPDATE runs
+        SET status = 'running', claimed_at = NOW(), claimed_by = ${workerIdB}
+        WHERE id = ${queuedB.runId}
+      `;
+
+      // Fire both completions concurrently. With the per-table advisory lock
+      // they serialize on the SELECT MAX(id) and INSERT, so both succeed.
+      const [respA, respB] = await Promise.all([
+        post(`/api/workers/me/runs/${queuedA.runId}/complete-watcher`, {
+          body: { worker_id: workerIdA, output: 'A', duration_ms: 1 },
+        }),
+        post(`/api/workers/me/runs/${queuedB.runId}/complete-watcher`, {
+          body: { worker_id: workerIdB, output: 'B', duration_ms: 1 },
+        }),
+      ]);
+      expect(respA.status).toBe(200);
+      expect(respB.status).toBe(200);
+
+      // Both runs completed.
+      const runs = await sql`
+        SELECT id, status, window_id
+        FROM runs
+        WHERE id IN (${queuedA.runId}, ${queuedB.runId})
+        ORDER BY id
+      `;
+      expect(runs).toHaveLength(2);
+      for (const row of runs) {
+        expect(String(row.status)).toBe('completed');
+        expect(Number(row.window_id)).toBeGreaterThan(0);
+      }
+
+      // Window ids are distinct (no PK conflict, no two rows under the same id).
+      const windows = await sql`
+        SELECT id, run_id
+        FROM watcher_windows
+        WHERE run_id IN (${queuedA.runId}, ${queuedB.runId})
+        ORDER BY id
+      `;
+      expect(windows).toHaveLength(2);
+      const ids = windows.map((w) => Number((w as { id: unknown }).id));
+      expect(new Set(ids).size).toBe(2);
+    });
+
+    // Pi review round-2 #C: malformed-completion double-advance — two
+    // concurrent malformed POSTs against the same run must only advance the
+    // schedule once. Without the RETURNING-gated advance, the second POST's
+    // UPDATE matches zero rows (status already 'failed') but still ticked
+    // next_run_at forward.
+    it('does not double-advance next_run_at on concurrent malformed completions', async () => {
+      const { sql, dbClient, workspace, watcherId, agent } = await createAutomatedWatcher();
+      const granularity = inferWatcherGranularityFromSchedule('0 9 * * *');
+      const { windowStart, windowEnd } = await computePendingWindow(
+        dbClient,
+        watcherId,
+        granularity
+      );
+      const queued = await createWatcherRun({
+        organizationId: workspace.org.id,
+        watcherId,
+        agentId: agent.agentId,
+        windowStart: windowStart.toISOString(),
+        windowEnd: windowEnd.toISOString(),
+        dispatchSource: 'scheduled',
+        deviceWorkerId: '77777777-7777-7777-7777-777777777777',
+        agentKind: 'claude-code',
+      });
+      const workerId = 'mac-device-double-advance';
+      // Poison window_start and claim the run.
+      await sql`
+        UPDATE runs
+        SET status = 'running',
+            claimed_at = NOW(),
+            claimed_by = ${workerId},
+            approved_input = approved_input || ${sql.json({ window_start: 'not-a-date' })}
+        WHERE id = ${queued.runId}
+      `;
+
+      // Capture next_run_at after the FIRST malformed completion lands.
+      const first = await post(
+        `/api/workers/me/runs/${queued.runId}/complete-watcher`,
+        {
+          body: { worker_id: workerId, output: 'x', duration_ms: 1 },
+        }
+      );
+      expect(first.status).toBe(400);
+      const [afterFirst] = await sql`
+        SELECT next_run_at FROM watchers WHERE id = ${watcherId}
+      `;
+      const firstNextRunMs = new Date(
+        afterFirst.next_run_at as string | Date
+      ).getTime();
+
+      // Second malformed completion against the now-failed row. The validation
+      // error still fires (approved_input.window_start is still garbage), but
+      // the UPDATE … WHERE status='running' matches zero rows, so the schedule
+      // must NOT advance again.
+      const second = await post(
+        `/api/workers/me/runs/${queued.runId}/complete-watcher`,
+        {
+          body: { worker_id: workerId, output: 'x2', duration_ms: 1 },
+        }
+      );
+      expect(second.status).toBe(400);
+      const [afterSecond] = await sql`
+        SELECT next_run_at FROM watchers WHERE id = ${watcherId}
+      `;
+      const secondNextRunMs = new Date(
+        afterSecond.next_run_at as string | Date
+      ).getTime();
+
+      expect(secondNextRunMs).toBe(firstNextRunMs);
+    });
   });
 });

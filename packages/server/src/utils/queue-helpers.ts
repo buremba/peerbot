@@ -30,6 +30,22 @@ export interface WatcherRunPayload {
    * against v2's schema.
    */
   version_id: number | null;
+  /**
+   * When non-null, the watcher is pinned to a user-owned device worker.
+   * The server-side dispatcher (`packages/server/src/watchers/automation.ts`)
+   * MUST refuse to claim such rows — they are claimed exclusively by the
+   * matching device worker via `/api/workers/poll`. Mirrors the
+   * `connections.device_worker_id` lane that the worker poll already
+   * supports for sync runs.
+   */
+  device_worker_id?: string | null;
+  /**
+   * Hint to the device-side dispatcher (Owletto Mac app, etc.) for which
+   * local CLI executor to spawn (e.g. `claude-code`, `codex`, `gemini`).
+   * Free-form string. Empty / null means "use the device's configured
+   * default agent".
+   */
+  agent_kind?: string | null;
 }
 
 // ============================================
@@ -216,6 +232,8 @@ async function createWatcherRunWithClient(
     windowStart: string;
     windowEnd: string;
     dispatchSource: WatcherDispatchSource;
+    deviceWorkerId?: string | null;
+    agentKind?: string | null;
   }
 ): Promise<{ runId: number; status: string; created: boolean }> {
   const existing = await findActiveWatcherRun(sql, params.watcherId);
@@ -236,6 +254,20 @@ async function createWatcherRunWithClient(
       ? Number(versionRows[0].current_version_id)
       : null;
 
+  // device_worker_id + agent_kind get persisted into approved_input so the
+  // server-side dispatcher (#802) can skip device-pinned rows from the SQL
+  // side, and so /api/workers/poll can claim them with a parallel CTE
+  // branch without a runs-schema migration. Empty strings are normalized to
+  // null so the dispatcher's `OR '' = ''` guard treats them as un-pinned.
+  const normalizedDeviceWorkerId =
+    typeof params.deviceWorkerId === 'string' && params.deviceWorkerId.trim() !== ''
+      ? params.deviceWorkerId.trim()
+      : null;
+  const normalizedAgentKind =
+    typeof params.agentKind === 'string' && params.agentKind.trim() !== ''
+      ? params.agentKind.trim()
+      : null;
+
   const payload: WatcherRunPayload = {
     watcher_id: params.watcherId,
     agent_id: params.agentId,
@@ -243,6 +275,8 @@ async function createWatcherRunWithClient(
     window_end: params.windowEnd,
     dispatch_source: params.dispatchSource,
     version_id: snapshotVersionId,
+    device_worker_id: normalizedDeviceWorkerId,
+    agent_kind: normalizedAgentKind,
   };
 
   const inserted = await sql`
@@ -284,6 +318,8 @@ export async function createWatcherRun(
     windowStart: string;
     windowEnd: string;
     dispatchSource: WatcherDispatchSource;
+    deviceWorkerId?: string | null;
+    agentKind?: string | null;
   },
   db?: DbClient
 ): Promise<{ runId: number; status: string; created: boolean }> {

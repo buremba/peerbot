@@ -31,9 +31,9 @@ COPY packages/openclaw-plugin/package.json packages/openclaw-plugin/
 COPY packages/connectors/package.json packages/connectors/
 COPY packages/embeddings/package.json packages/embeddings/
 COPY packages/connector-worker/package.json packages/connector-worker/
-# packages/web is a private git submodule. The glob lets the copy succeed
+# packages/owletto is a private git submodule. The glob lets the copy succeed
 # when the submodule is not initialized (external contributors / backend-only builds).
-COPY packages/web/package.jso[n] packages/web/
+COPY packages/owletto/package.jso[n] packages/owletto/
 
 # Stub out workspace packages we don't build in this image so bun install doesn't
 # error on missing manifests.
@@ -66,7 +66,7 @@ COPY packages/embeddings/ packages/embeddings/
 COPY packages/connector-worker/ packages/connector-worker/
 COPY packages/server/ packages/server/
 # Copy the private frontend submodule when present.
-COPY packages/web packages/web
+COPY packages/owletto packages/owletto
 
 # Build dist for shared workspace packages whose `exports` map points at
 # dist subpaths. server imports @lobu/core from its dist barrel,
@@ -90,10 +90,10 @@ RUN cd packages/server && bun run build:server
 ARG VITE_API_URL=
 ENV VITE_API_URL=$VITE_API_URL
 ARG SKIP_WEB_BUILD=false
-RUN if [ "$SKIP_WEB_BUILD" = "false" ] && [ -f packages/web/package.json ]; then \
-      cd packages/web && bun run build; \
+RUN if [ "$SKIP_WEB_BUILD" = "false" ] && [ -f packages/owletto/package.json ]; then \
+      cd packages/owletto && bun run build; \
     else \
-      mkdir -p /app/packages/web/dist; \
+      mkdir -p /app/packages/owletto/dist; \
     fi
 
 # ===========================================
@@ -130,7 +130,7 @@ COPY --from=builder /app/packages/connectors ./packages/connectors
 COPY --from=builder /app/packages/embeddings ./packages/embeddings
 COPY --from=builder /app/packages/connector-worker ./packages/connector-worker
 COPY --from=builder /app/packages/server ./packages/server
-COPY --from=builder /app/packages/web ./packages/web
+COPY --from=builder /app/packages/owletto ./packages/owletto
 
 # Database migrations
 COPY db/migrations ./db/migrations

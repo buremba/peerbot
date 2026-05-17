@@ -151,10 +151,10 @@ async function resolveWebDistDirectory(): Promise<string | null> {
 
   const candidates = [
     process.env.WEB_DIST_DIR?.trim(),
-    path.resolve(APP_ROOT, 'packages/web/dist'),
+    path.resolve(APP_ROOT, 'packages/owletto/dist'),
     path.resolve(APP_ROOT, '../web/dist'),
-    path.resolve(process.cwd(), 'packages/web/dist'),
-    path.resolve(process.cwd(), '../packages/web/dist'),
+    path.resolve(process.cwd(), 'packages/owletto/dist'),
+    path.resolve(process.cwd(), '../packages/owletto/dist'),
   ].filter((candidate): candidate is string => Boolean(candidate));
 
   for (const candidate of candidates) {
@@ -189,10 +189,10 @@ async function loadSpaHtmlTemplate(): Promise<string | null> {
 
 async function loadFallbackSpaHtmlTemplate(): Promise<string | null> {
   const candidates = [
-    path.resolve(APP_ROOT, 'packages/web/index.html'),
+    path.resolve(APP_ROOT, 'packages/owletto/index.html'),
     path.resolve(APP_ROOT, '../web/index.html'),
-    path.resolve(process.cwd(), 'packages/web/index.html'),
-    path.resolve(process.cwd(), '../packages/web/index.html'),
+    path.resolve(process.cwd(), 'packages/owletto/index.html'),
+    path.resolve(process.cwd(), '../packages/owletto/index.html'),
   ];
 
   for (const candidate of candidates) {
@@ -616,6 +616,7 @@ import {
   completeActionRun,
   completeAuthRun,
   completeEmbeddings,
+  completeWatcherRun,
   completeWorkerJob,
   createMyDeviceAuthProfile,
   createMyDeviceFeed,
@@ -684,10 +685,17 @@ app.use('/api/workers/*', async (c, next) => {
       const requestPath = new URL(c.req.url).pathname;
       const isAuthProfileSubpath = requestPath.startsWith('/api/workers/me/auth-profiles');
       const isFeedSubpath = requestPath.startsWith('/api/workers/me/feeds');
+      // /api/workers/me/runs/<runId>/complete-watcher — device-side watcher
+      // completion endpoint added in #798. The handler does its own
+      // `authorizeRunForWorker` claim-ownership check, so an org-scope
+      // gate here would just block legitimate posts from the bound device.
+      const isWatcherCompleteSubpath =
+        /^\/api\/workers\/me\/runs\/\d+\/complete-watcher$/.test(requestPath);
       if (
         !allowedPathsForUserWorker.has(requestPath) &&
         !isAuthProfileSubpath &&
-        !isFeedSubpath
+        !isFeedSubpath &&
+        !isWatcherCompleteSubpath
       ) {
         return c.json({ error: 'Endpoint not available to user-scoped workers' }, 403);
       }
@@ -735,6 +743,7 @@ app.post('/api/workers/stream', streamContent);
 app.post('/api/workers/complete', completeWorkerJob);
 app.post('/api/workers/complete-action', completeActionRun);
 app.post('/api/workers/complete-embeddings', completeEmbeddings);
+app.post('/api/workers/me/runs/:runId/complete-watcher', completeWatcherRun);
 app.post('/api/workers/fetch-events', fetchEventsForEmbedding);
 app.post('/api/workers/emit-auth-artifact', emitAuthArtifact);
 app.post('/api/workers/poll-auth-signal', pollAuthSignal);
@@ -1279,7 +1288,7 @@ app.all('/mcp/:orgSlug/', handleMcp);
  * Catch-all route
  * Dev: Vite middleware handles source files/HMR before reaching here.
  *      This catch-all serves SPA index.html via Vite's transformIndexHtml.
- * Prod: Serves static files from packages/web/dist with SPA fallback.
+ * Prod: Serves static files from packages/owletto/dist with SPA fallback.
  */
 app.get('*', async (c) => {
   const requestPath = c.req.path;

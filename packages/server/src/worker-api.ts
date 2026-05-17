@@ -28,6 +28,8 @@ import {
 import { captureServerError } from './sentry';
 import { autoLinkEvent } from './utils/auto-linker';
 import { nextRunAt as nextRunAtFromCron } from './utils/cron';
+import { advanceWatcherSchedule } from './watchers/automation';
+import { getNextNumericId } from './tools/admin/helpers/db-helpers';
 import { reconcileDeviceCapabilities } from './worker-api/device-reconcile';
 import { findBundledConnectorFile } from './utils/connector-catalog';
 import { resolveConnectorCode } from './utils/ensure-connector-installed';
@@ -341,48 +343,65 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
           LIMIT 1
         ) cd ON true
         WHERE r.status = 'pending'
-          -- Connector worker only ever claims its own lanes. The lobu-queue
-          -- run types (chat_message, schedule, agent_run, internal) are
-          -- claimed in-process by the gateway's RunsQueue; an explicit
-          -- allow-list keeps the lanes separated.
-          AND r.run_type IN ('sync', 'action', 'embed_backfill', 'auth')
           AND (r.approval_status = 'auto' OR r.approval_status = 'approved')
-          AND (${hasBrowser} OR COALESCE(cd.api_type, 'api') = 'api')
           AND (
-            -- (A) trusted/anonymous fleet worker: the no-capability cloud
-            --     connectors plus any capability it happens to advertise, in
-            --     any org — but NEVER a connection pinned to a device.
+            -- (1) Connector-worker lanes: sync / action / embed_backfill / auth.
+            --     Browser-only connectors require the browser capability.
             (
-              ${!isUserScopedWorker}
-              AND COALESCE(cd.required_capability, '') = ANY(${pgTextArray(capabilityMatchSet)}::text[])
-              AND con.device_worker_id IS NULL
-            )
-            -- (B) user-scoped device worker: an unpinned capability-matched
-            --     device connector in an org this worker can see. Capability
-            --     match goes through the authorized set — a chrome-extension
-            --     claiming os.shell is dropped server-side (see
-            --     @lobu/core/capabilities), and that dropped string MUST NOT
-            --     match a connectors required_capability here either.
-            OR (
-              ${isUserScopedWorker}
-              AND cd.required_capability IS NOT NULL
-              AND cd.required_capability = ANY(${pgTextArray(authorizedCapabilities)}::text[])
-              AND con.device_worker_id IS NULL
-              AND r.organization_id = ANY(${pgTextArray(orgScopeIds)}::text[])
-            )
-            -- ... or any connection explicitly pinned to THIS device (this is
-            --     "run the Reddit connector on my Mac"). Still: a device-only
-            --     connector needs the capability currently advertised, and the
-            --     pin only counts in an org this worker can see (which includes
-            --     the org the device is attached to).
-            OR (
-              ${isUserScopedWorker}
-              AND ${deviceWorkerId}::uuid IS NOT NULL
-              AND con.device_worker_id = ${deviceWorkerId}::uuid
+              r.run_type IN ('sync', 'action', 'embed_backfill', 'auth')
+              AND (${hasBrowser} OR COALESCE(cd.api_type, 'api') = 'api')
               AND (
-                cd.required_capability IS NULL
-                OR cd.required_capability = ANY(${pgTextArray(authorizedCapabilities)}::text[])
+                -- (1A) trusted/anonymous fleet worker: the no-capability cloud
+                --      connectors plus any capability it happens to advertise,
+                --      in any org — but NEVER a connection pinned to a device.
+                (
+                  ${!isUserScopedWorker}
+                  AND COALESCE(cd.required_capability, '') = ANY(${pgTextArray(capabilityMatchSet)}::text[])
+                  AND con.device_worker_id IS NULL
+                )
+                -- (1B) user-scoped device worker: an unpinned capability-matched
+                --      device connector in an org this worker can see. Capability
+                --      match goes through the authorized set — a chrome-extension
+                --      claiming os.shell is dropped server-side (see
+                --      @lobu/core/capabilities), and that dropped string MUST NOT
+                --      match a connectors required_capability here either.
+                OR (
+                  ${isUserScopedWorker}
+                  AND cd.required_capability IS NOT NULL
+                  AND cd.required_capability = ANY(${pgTextArray(authorizedCapabilities)}::text[])
+                  AND con.device_worker_id IS NULL
+                  AND r.organization_id = ANY(${pgTextArray(orgScopeIds)}::text[])
+                )
+                -- ... or any connection explicitly pinned to THIS device (this is
+                --     "run the Reddit connector on my Mac"). Still: a device-only
+                --     connector needs the capability currently advertised, and the
+                --     pin only counts in an org this worker can see (which includes
+                --     the org the device is attached to).
+                OR (
+                  ${isUserScopedWorker}
+                  AND ${deviceWorkerId}::uuid IS NOT NULL
+                  AND con.device_worker_id = ${deviceWorkerId}::uuid
+                  AND (
+                    cd.required_capability IS NULL
+                    OR cd.required_capability = ANY(${pgTextArray(authorizedCapabilities)}::text[])
+                  )
+                  AND r.organization_id = ANY(${pgTextArray(orgScopeIds)}::text[])
+                )
               )
+            )
+            -- (2) Watcher lane: a watcher run with approved_input.device_worker_id
+            --     matching this device. Watchers don't carry a connection_id and
+            --     don't gate on capabilities — the matching device's local CLI
+            --     executor handles the work (Owletto's WatcherDispatcher routes
+            --     by approved_input.agent_kind). The server-side dispatcher
+            --     (#802) already refuses to claim rows with this pin set, so
+            --     this branch is the only legal claim path for them.
+            OR (
+              ${isUserScopedWorker}
+              AND r.run_type = 'watcher'
+              AND ${deviceWorkerId}::uuid IS NOT NULL
+              AND r.approved_input ? 'device_worker_id'
+              AND r.approved_input->>'device_worker_id' = ${deviceWorkerId}::text
               AND r.organization_id = ANY(${pgTextArray(orgScopeIds)}::text[])
             )
           )
@@ -421,6 +440,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         r.watcher_id,
         r.window_id,
         r.organization_id,
+        r.created_at AS run_created_at,
         r.auth_profile_id AS run_auth_profile_id,
         f.feed_key,
         f.config AS feed_config,
@@ -431,13 +451,19 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         conn.config AS connection_config,
         conn.device_worker_id AS connection_device_worker_id,
         cv.compiled_code,
-        ap.auth_data AS auth_profile_auth_data
+        ap.auth_data AS auth_profile_auth_data,
+        w.name AS watcher_name,
+        w.slug AS watcher_slug,
+        w.agent_kind AS watcher_agent_kind,
+        w.notification_channel AS watcher_notification_channel,
+        w.notification_priority AS watcher_notification_priority
       FROM runs r
       LEFT JOIN feeds f ON f.id = r.feed_id
       LEFT JOIN connections conn ON conn.id = r.connection_id
       LEFT JOIN connector_versions cv ON cv.connector_key = r.connector_key
         AND cv.version = r.connector_version
       LEFT JOIN auth_profiles ap ON ap.id = r.auth_profile_id
+      LEFT JOIN watchers w ON w.id = r.watcher_id
       WHERE r.id = ${runId}
       LIMIT 1
     `;
@@ -481,6 +507,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     connector_version: string | null;
     action_key: string | null;
     action_input: Record<string, unknown> | null;
+    approved_input: Record<string, unknown> | null;
     feed_key: string | null;
     feed_config: Record<string, unknown> | null;
     checkpoint: Record<string, unknown> | null;
@@ -490,14 +517,70 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     connection_config: Record<string, unknown> | null;
     connection_device_worker_id: string | null;
     compiled_code: string | null;
+    run_created_at: string | Date | null;
     // Watcher run fields (populated via LEFT JOINs)
     watcher_id: number | null;
     window_id: number | null;
     organization_id: string;
+    watcher_name: string | null;
+    watcher_slug: string | null;
+    watcher_agent_kind: string | null;
+    watcher_notification_channel: string | null;
+    watcher_notification_priority: string | null;
     // Auth run fields
     run_auth_profile_id: number | null;
     auth_profile_auth_data: Record<string, unknown> | null;
   };
+
+  // Watcher run: device worker is going to spawn a local CLI executor and
+  // return the result via /api/workers/me/runs/:runId/complete-watcher. No
+  // connector code, no connection credentials, no compiled_code lookup —
+  // just the payload envelope the dispatcher needs to build a prompt. The
+  // server-side claim filter (#802 + this PR) already guarantees only the
+  // matching device can land on this row.
+  if (row.run_type === 'watcher') {
+    const approved = (row.approved_input ?? {}) as Record<string, unknown>;
+    const firedAtRaw = row.run_created_at;
+    const firedAt =
+      firedAtRaw instanceof Date
+        ? firedAtRaw.toISOString()
+        : typeof firedAtRaw === 'string' && firedAtRaw.trim()
+          ? firedAtRaw
+          : new Date().toISOString();
+    const watcherIdStr = row.watcher_id != null ? String(row.watcher_id) : '';
+    const agentKindFromPayload =
+      typeof approved['agent_kind'] === 'string' && (approved['agent_kind'] as string).trim()
+        ? (approved['agent_kind'] as string).trim()
+        : null;
+    return c.json({
+      run_id: row.run_id,
+      run_type: row.run_type,
+      organization_id: row.organization_id,
+      payload: {
+        watcher: {
+          id: watcherIdStr,
+          name: row.watcher_name ?? null,
+          slug: row.watcher_slug ?? null,
+          agent_kind: agentKindFromPayload ?? row.watcher_agent_kind ?? null,
+          notification_channel: row.watcher_notification_channel ?? 'canvas',
+          notification_priority: row.watcher_notification_priority ?? 'normal',
+        },
+        event: {
+          trigger_event_id: null,
+          fired_at: firedAt,
+          payload: approved,
+        },
+        context: {
+          device: {
+            worker_id: deviceWorkerId,
+          },
+          user: {
+            user_id: workerUserId ?? null,
+          },
+        },
+      },
+    });
+  }
 
   // Connector code delivery:
   //   - Fleet workers (server pods, embedded mode) ship the same bundled
@@ -1042,6 +1125,400 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
     logger.error({ error: errorMessage(err) }, '[completeWorkerJob] Error');
     return c.json({ error: errorMessage(err) }, 500);
   }
+}
+
+/**
+ * POST /api/workers/me/runs/:runId/complete-watcher
+ *
+ * Device-side completion path for a watcher run that was executed by a local
+ * CLI agent (Claude Code, Codex, etc.) on the user's machine. The Owletto
+ * Mac app's `WatcherDispatcher` posts here once the subprocess exits.
+ *
+ * Unlike the MCP-resident `manage_watchers(action="complete_window")` path,
+ * the device flow has no JWT window token, no extraction schema validation,
+ * and no entity-link resolution — the CLI output is free-form text. We
+ * still write a `watcher_windows` row so the dashboard surfaces the run
+ * the same way as a server-side watcher completion.
+ *
+ * Authorization: the caller must own the claim — same gate as
+ * /api/workers/complete (status='running' AND claimed_by === worker_id).
+ */
+export async function completeWatcherRun(c: Context<{ Bindings: Env }>) {
+  const runIdParam = c.req.param('runId');
+  if (!runIdParam) {
+    return c.json({ error: 'runId is required' }, 400);
+  }
+  const runId = Number(runIdParam);
+  if (!Number.isFinite(runId) || runId <= 0) {
+    return c.json({ error: 'Invalid runId' }, 400);
+  }
+
+  let body: {
+    worker_id: string;
+    output?: string;
+    error?: string;
+    duration_ms?: number;
+    exit_code?: number | null;
+    exit_signal?: string | null;
+    exit_reason?: 'ok' | 'error_message' | 'timeout' | 'oom' | 'crash';
+  };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'Invalid or missing JSON body' }, 400);
+  }
+
+  const denied = await authorizeRunForWorker(c, runId, body.worker_id);
+  if (denied) return denied;
+
+  const sql = getDb();
+  // Reload the row now that authorization has cleared. We need the watcher_id
+  // + organization_id + approved_input to write the completion side-effects.
+  // The transaction below will re-lock and re-check status under SELECT ...
+  // FOR UPDATE; this read just gates the cheap rejection paths.
+  const runRows = (await sql`
+    SELECT id, organization_id, watcher_id, approved_input, run_type, claimed_at, status
+    FROM runs
+    WHERE id = ${runId}
+    LIMIT 1
+  `) as unknown as Array<{
+    id: number;
+    organization_id: string;
+    watcher_id: number | null;
+    approved_input: Record<string, unknown> | null;
+    run_type: string;
+    claimed_at: string | Date | null;
+    status: string;
+  }>;
+  const run = runRows[0];
+  if (!run) return c.json({ error: 'Run not found' }, 404);
+  if (run.run_type !== 'watcher') {
+    return c.json({ error: 'Not a watcher run' }, 409);
+  }
+  if (run.watcher_id == null) {
+    return c.json({ error: 'Watcher run missing watcher_id' }, 500);
+  }
+
+  const watcherId = Number(run.watcher_id);
+  const approved = (run.approved_input ?? {}) as Record<string, unknown>;
+
+  // Fix 2 (pi round-2): device-identity binding pinned to the OAuth token, not
+  // the request body.
+  //
+  // The previous version looked up `(workerUserId, body.worker_id)` in
+  // `device_workers`, but `body.worker_id` is client-supplied. A same-user
+  // token could complete as a different registered worker by posting that
+  // worker's id. The fix is the same trick `pollWorkerJob` already uses: if
+  // the token was minted with a `workerId` binding (`device_worker:run`
+  // PATs/OAuth tokens always are), require `body.worker_id === boundWorkerId`
+  // AND, if the run is pinned to a device, the bound worker's
+  // `device_workers.id` matches `approved_input.device_worker_id`.
+  //
+  // For legacy/admin tokens with no `workerId` binding we fall through to the
+  // old user_id+worker_id lookup, but emit a warning so the audit trail can
+  // catch this path if it ever fires in production (Lobu for Mac always
+  // mints worker-bound tokens via /api/me/devices/mint-child-token).
+  if (c.var.workerAuthMode === 'user') {
+    const workerUserId = c.var.workerUserId;
+    const boundWorkerId = c.var.mcpAuthInfo?.workerId ?? null;
+    const pinnedDeviceWorkerId =
+      typeof approved.device_worker_id === 'string' ? approved.device_worker_id : null;
+
+    if (boundWorkerId) {
+      if (boundWorkerId !== body.worker_id) {
+        logger.warn(
+          { run_id: runId, body_worker_id: body.worker_id, bound_worker_id: boundWorkerId },
+          '[completeWatcherRun] body.worker_id != token-bound worker_id — rejecting'
+        );
+        return c.json(
+          {
+            error: 'worker_id_mismatch',
+            error_description: `this token is bound to worker_id '${boundWorkerId}'`,
+          },
+          403
+        );
+      }
+      if (pinnedDeviceWorkerId && workerUserId) {
+        const deviceRows = (await sql`
+          SELECT id
+          FROM device_workers
+          WHERE user_id = ${workerUserId}
+            AND worker_id = ${boundWorkerId}
+          LIMIT 1
+        `) as unknown as Array<{ id: string }>;
+        const callerDeviceWorkerId = deviceRows[0]?.id ?? null;
+        if (!callerDeviceWorkerId || callerDeviceWorkerId !== pinnedDeviceWorkerId) {
+          logger.warn(
+            {
+              run_id: runId,
+              bound_worker_id: boundWorkerId,
+              caller_device: callerDeviceWorkerId,
+              pinned_device: pinnedDeviceWorkerId,
+            },
+            '[completeWatcherRun] device_worker_id mismatch — rejecting'
+          );
+          return c.json({ error: 'Forbidden: device worker mismatch' }, 403);
+        }
+      }
+    } else if (workerUserId && pinnedDeviceWorkerId) {
+      // Legacy/admin path: no worker-bound token. Fall back to the
+      // (user_id, body.worker_id) lookup; this is weaker than the bound path
+      // but still gates on user ownership. Emit a warning so prod telemetry
+      // can flag if any non-Mac caller hits this branch.
+      logger.warn(
+        { run_id: runId, worker_user_id: workerUserId, body_worker_id: body.worker_id },
+        '[completeWatcherRun] no token-bound workerId — falling back to user_id+worker_id check'
+      );
+      const deviceRows = (await sql`
+        SELECT id
+        FROM device_workers
+        WHERE user_id = ${workerUserId}
+          AND worker_id = ${body.worker_id}
+        LIMIT 1
+      `) as unknown as Array<{ id: string }>;
+      const callerDeviceWorkerId = deviceRows[0]?.id ?? null;
+      if (!callerDeviceWorkerId || callerDeviceWorkerId !== pinnedDeviceWorkerId) {
+        logger.warn(
+          {
+            run_id: runId,
+            body_worker_id: body.worker_id,
+            caller_device: callerDeviceWorkerId,
+            pinned_device: pinnedDeviceWorkerId,
+          },
+          '[completeWatcherRun] device_worker_id mismatch (legacy path) — rejecting'
+        );
+        return c.json({ error: 'Forbidden: device worker mismatch' }, 403);
+      }
+    }
+  }
+
+  // Fix 5: validate the window bounds BEFORE opening any transaction. The
+  // legacy code defaulted silently to `new Date().toISOString()` — that hid
+  // garbage payloads behind a fresh timestamp. If approved_input contains a
+  // bound, it must be a parseable ISO string; otherwise the run is
+  // unrecoverably malformed and we mark it failed up front (so it can't get
+  // stuck in `running` waiting for a stale-run sweep that may not exist).
+  const validateIsoBound = (
+    key: 'window_start' | 'window_end',
+    fallback: string
+  ): { value: string } | { error: string } => {
+    const raw = approved[key];
+    if (raw === undefined || raw === null) return { value: fallback };
+    if (typeof raw !== 'string') {
+      return { error: `approved_input.${key} must be an ISO timestamp string` };
+    }
+    const parsed = Date.parse(raw);
+    if (!Number.isFinite(parsed)) {
+      return { error: `approved_input.${key} is not a valid ISO timestamp` };
+    }
+    return { value: raw };
+  };
+
+  const nowIso = new Date().toISOString();
+  const startResult = validateIsoBound('window_start', nowIso);
+  const endResult = validateIsoBound('window_end', nowIso);
+  if ('error' in startResult || 'error' in endResult) {
+    const reason =
+      'error' in startResult ? startResult.error : (endResult as { error: string }).error;
+    // Mark the run failed so the watcher's `next_run_at` advances and the
+    // schedule doesn't loop on this poisoned payload forever.
+    //
+    // Pi round-2 #C: only advance the schedule when the UPDATE actually
+    // changed a row. Without `RETURNING id`, two concurrent malformed
+    // completions would BOTH advance the schedule — the second one's UPDATE
+    // matches zero rows (status already 'failed') but we'd still tick
+    // `next_run_at` forward, potentially skipping a window.
+    try {
+      const failedRows = (await sql`
+        UPDATE runs
+        SET status = 'failed',
+            completed_at = current_timestamp,
+            error_message = ${`Invalid completion payload: ${reason}`},
+            exit_reason = 'error_message'
+        WHERE id = ${runId}
+          AND status = 'running'
+        RETURNING id
+      `) as unknown as Array<{ id: number }>;
+      if (failedRows.length > 0) {
+        await advanceWatcherSchedule(sql, watcherId);
+      }
+    } catch (err) {
+      logger.error(
+        { run_id: runId, err: errorMessage(err) },
+        '[completeWatcherRun] failed to mark run failed after validation error'
+      );
+    }
+    return c.json({ error: reason }, 400);
+  }
+  const windowStart = startResult.value;
+  const windowEnd = endResult.value;
+  // Granularity isn't stored on watcher runs — infer once for the window
+  // row. A blank string fails the NOT NULL constraint; default to "ad_hoc"
+  // for device-driven runs (the dashboard's rollup logic treats this as a
+  // leaf window with no parent).
+  const granularity = 'ad_hoc';
+
+  const hasError = typeof body.error === 'string' && body.error.trim() !== '';
+  const output = typeof body.output === 'string' ? body.output : '';
+  const durationMs =
+    typeof body.duration_ms === 'number' && Number.isFinite(body.duration_ms)
+      ? Math.max(0, Math.floor(body.duration_ms))
+      : null;
+
+  // Track whether the work was already done by a concurrent completion. Used
+  // after the transaction to return an idempotent 200 instead of failing the
+  // duplicate-INSERT path that pi-#3 flagged.
+  let alreadyCompleted = false;
+
+  try {
+    await sql.begin(async (tx) => {
+      // Fix 3: lock the run row inside the transaction. Without this, two
+      // concurrent POSTs can both pass `authorizeRunForWorker` (which reads
+      // without a lock), both enter the tx, both INSERT a watcher_windows
+      // row, and the second one's run-UPDATE fails the `status='running'`
+      // filter — leaving a duplicate window row and a 500.
+      const lockedRows = (await tx`
+        SELECT status
+        FROM runs
+        WHERE id = ${runId}
+        FOR UPDATE
+      `) as unknown as Array<{ status: string }>;
+      const currentStatus = lockedRows[0]?.status ?? null;
+      if (!currentStatus) {
+        // Disappeared between the pre-tx read and the lock — treat as 404 by
+        // throwing; outer catch surfaces as 500, callers will retry.
+        throw new Error('Run vanished while acquiring lock');
+      }
+      if (currentStatus !== 'running') {
+        // A concurrent caller already terminated this run. Idempotent path:
+        // do nothing here and let the outer code return 200 with the existing
+        // terminal status. This is safe because the duplicate write would
+        // either violate the watcher_windows PK or insert a phantom row.
+        alreadyCompleted = true;
+        return;
+      }
+
+      if (hasError) {
+        await tx`
+          UPDATE runs
+          SET status = 'failed',
+              completed_at = current_timestamp,
+              error_message = ${body.error ?? null},
+              exit_code = ${body.exit_code ?? null},
+              exit_signal = ${body.exit_signal ?? null},
+              exit_reason = ${body.exit_reason ?? 'error_message'}
+          WHERE id = ${runId}
+            AND status = 'running'
+        `;
+      } else {
+        // Fix 4 (pi round-2 #B): allocate the window id via the shared
+        // helper, which now takes a per-table `pg_advisory_xact_lock` keyed
+        // on `hashtext('watcher_windows_id_alloc')`. Because this runs inside
+        // `sql.begin`, the lock is held until tx commit — bracketing the
+        // SELECT MAX + INSERT, so two concurrent completions on DIFFERENT
+        // watcher runs serialize on allocation and never collide on the
+        // watcher_windows PK. (Same-watcher concurrent completions are
+        // already serialized by the SELECT … FOR UPDATE on runs.id above.)
+        const windowId = await getNextNumericId(tx, 'watcher_windows');
+
+        const extractedData = {
+          kind: 'device_cli_output',
+          output,
+          agent_kind:
+            typeof approved.agent_kind === 'string' && (approved.agent_kind as string).trim()
+              ? (approved.agent_kind as string).trim()
+              : null,
+        } as Record<string, unknown>;
+        const runMetadata = {
+          source: 'device_worker',
+          device_worker_id:
+            typeof approved.device_worker_id === 'string'
+              ? approved.device_worker_id
+              : null,
+          watcher_run_id: runId,
+        } as Record<string, unknown>;
+
+        await tx`
+          INSERT INTO watcher_windows (
+            id, watcher_id, version_id, window_start, window_end, granularity,
+            extracted_data, content_analyzed, model_used, client_id, run_metadata,
+            is_rollup, depth, source_window_ids, run_id, execution_time_ms, created_at
+          ) VALUES (
+            ${windowId}, ${watcherId}, NULL, ${windowStart}, ${windowEnd}, ${granularity},
+            ${tx.json(extractedData)}, 0, 'device-cli', NULL, ${tx.json(runMetadata)},
+            false, 0, NULL, ${runId}, ${durationMs}, current_timestamp
+          )
+        `;
+
+        await tx`
+          UPDATE runs
+          SET status = 'completed',
+              completed_at = current_timestamp,
+              window_id = ${windowId},
+              error_message = NULL,
+              exit_code = ${body.exit_code ?? null},
+              exit_signal = ${body.exit_signal ?? null},
+              exit_reason = ${body.exit_reason ?? 'ok'}
+          WHERE id = ${runId}
+            AND status = 'running'
+        `;
+      }
+
+      await tx`
+        UPDATE watchers
+        SET last_fired_at = NOW(),
+            updated_at = NOW()
+        WHERE id = ${watcherId}
+      `;
+
+      // Fix 1: advance `next_run_at` in the SAME transaction that recorded
+      // the completion. Without this the scheduled-jobs tick sees the
+      // watcher as still due (last_fired_at moved, next_run_at didn't) and
+      // re-materializes immediately — looping forever on every minute tick.
+      // The helper is shared with `manage_watchers(action="complete_window")`
+      // and the terminal-failure path in `automation.ts`.
+      await advanceWatcherSchedule(tx, watcherId);
+    });
+  } catch (err) {
+    logger.error(
+      { error: errorMessage(err), run_id: runId, watcher_id: watcherId },
+      '[completeWatcherRun] Failed to record completion'
+    );
+    return c.json({ error: errorMessage(err) }, 500);
+  }
+
+  if (alreadyCompleted) {
+    // Re-read the terminal status so we echo back what actually landed (not
+    // what this request would have written). Don't fire the lifecycle event
+    // again — the winning concurrent caller already did.
+    const finalRows = (await sql`
+      SELECT status FROM runs WHERE id = ${runId} LIMIT 1
+    `) as unknown as Array<{ status: string }>;
+    const finalStatus = finalRows[0]?.status ?? (hasError ? 'failed' : 'completed');
+    return c.json({ ok: true, status: finalStatus, idempotent: true });
+  }
+
+  // Fire-and-forget: a "change" event so the dashboard's metric_series picks
+  // up the device-CLI completion the same way it picks up server-side ones.
+  // LifecycleOp is restricted to created/updated/deleted — we use 'updated'
+  // and put the actual ran/errored detail under `extra`.
+  recordLifecycleEvent({
+    organizationId: run.organization_id,
+    entityType: 'watcher',
+    op: 'updated',
+    entityId: String(watcherId),
+    summary: hasError
+      ? `Watcher run ${runId} failed on device CLI: ${body.error ?? 'unknown error'}`
+      : `Watcher run ${runId} completed via device CLI`,
+    extra: {
+      run_id: runId,
+      source: 'device_worker',
+      outcome: hasError ? 'failed' : 'completed',
+      duration_ms: durationMs,
+    },
+  });
+
+  return c.json({ ok: true, status: hasError ? 'failed' : 'completed' });
 }
 
 /**

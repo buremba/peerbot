@@ -2,7 +2,7 @@
 
 Extends `docs/mcp-search-execute-design-doc.md` (lobu proper, status "Planned, not yet implemented") with two scopes the original didn't fully land: (1) cross-org addressing inside `execute`, and (2) the full frontend + UX surface the new tools imply. Language decision: **TypeScript over a typed `ClientSDK` in `isolated-vm`** — reviewed by a second and third opinion (codex, pi), both concurred. Bash-as-primary was evaluated and rejected because reactions are the real workload and shell quoting degrades stored user code.
 
-Target repo for implementation: `packages/server` + `packages/web` in the `lobu` monorepo. The lobu repo is deprecated.
+Target repo for implementation: `packages/server` + `packages/owletto` in the `lobu` monorepo. The lobu repo is deprecated.
 
 ## Decisions locked in
 
@@ -96,7 +96,7 @@ These make "LLMs write bash more fluently than typed SDKs" a non-concern:
 
 ## Frontend plan
 
-Two new surfaces in `packages/web`, plus two upgrades.
+Two new surfaces in `packages/owletto`, plus two upgrades.
 
 ### New: `/[owner]/tools/execute` — script console
 
@@ -228,7 +228,7 @@ Deleted:
 - `src/tools/admin/` MCP registrations for the 14 `manage_*` tools — handlers stay, MCP-surface entries go.
 - `src/tools/admin/index.ts` after `query_sql` registration moves.
 
-### `packages/web`
+### `packages/owletto`
 
 New:
 - `src/app/[owner]/tools/execute/page.tsx`

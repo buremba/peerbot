@@ -507,6 +507,36 @@ export default async (_ctx, client) => {
     access: "write",
   },
 
+  // goals — top-level handles that group watchers under a single intent.
+  "goals.manage": {
+    summary: "Raw manage_goals action wrapper. Prefer named methods.",
+    access: "write",
+  },
+  "goals.create": {
+    summary: "Create a goal (slug + name; optional description / status / template_key / metadata).",
+    access: "write",
+  },
+  "goals.update": {
+    summary: "Update a goal's name / description / status / template_key / metadata.",
+    access: "write",
+  },
+  "goals.get": {
+    summary: "Fetch a single goal by id or slug.",
+    access: "read",
+  },
+  "goals.list": {
+    summary: "List goals in the current organization (optional status filter).",
+    access: "read",
+  },
+  "goals.archive": {
+    summary: "Set a goal's status to 'archived'. Linked watchers keep running.",
+    access: "write",
+  },
+  "goals.delete": {
+    summary: "Delete a goal row. Linked watchers survive via ON DELETE SET NULL.",
+    access: "write",
+  },
+
   // top-level
   query: {
     summary:

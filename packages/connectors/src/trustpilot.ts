@@ -98,7 +98,11 @@ export default class TrustpilotConnector extends ConnectorRuntime {
       throw new Error('Either business_url or business_name is required');
     }
 
-    const baseUrl = businessUrl || `https://www.trustpilot.com/review/${businessName}`;
+    // encodeURIComponent the user-supplied businessName so a value like
+    // "../search?foo=bar" can't escape the /review/ path on trustpilot.com.
+    const baseUrl =
+      businessUrl ||
+      `https://www.trustpilot.com/review/${encodeURIComponent(businessName ?? '')}`;
     validateUrlDomain(baseUrl, 'trustpilot.com');
 
     const userDataDir = getBrowserUserDataDir(ctx.sessionState);
@@ -161,27 +165,34 @@ export default class TrustpilotConnector extends ConnectorRuntime {
       // Filter reviews with meaningful content (more than 10 chars)
       const reviews: TrustpilotReview[] = rawReviews.filter((r) => r.text && r.text.length > 10);
 
-      // Transform to EventEnvelope format
-      const events: EventEnvelope[] = reviews.map((review) => {
+      // Transform to EventEnvelope format. Drop rows whose `date` attribute
+      // was missing/invalid in the DOM — `new Date("")` yields an Invalid
+      // Date, which downstream sorting/checkpointing then can't compare, and
+      // an empty `date` made `origin_id` collide on `-<author>` across rows.
+      const events: EventEnvelope[] = reviews.flatMap((review) => {
         const content = review.title ? `${review.title}\n\n${review.text}` : review.text;
+        const parsedDate = review.date ? new Date(review.date) : null;
+        if (!parsedDate || Number.isNaN(parsedDate.getTime())) return [];
 
-        return {
-          origin_id: `${review.date}-${review.author}`,
-          payload_text: content,
-          author_name: review.author,
-          occurred_at: new Date(review.date),
-          origin_type: 'review',
-          score: calculateEngagementScore('trustpilot', {
-            rating: review.rating,
-            helpful_count: 0,
-          }),
-          source_url: baseUrl,
-          metadata: {
-            rating: review.rating,
-            helpful_count: 0,
-            title: review.title,
+        return [
+          {
+            origin_id: `${review.date}-${review.author}`,
+            payload_text: content,
+            author_name: review.author,
+            occurred_at: parsedDate,
+            origin_type: 'review',
+            score: calculateEngagementScore('trustpilot', {
+              rating: review.rating,
+              helpful_count: 0,
+            }),
+            source_url: baseUrl,
+            metadata: {
+              rating: review.rating,
+              helpful_count: 0,
+              title: review.title,
+            },
           },
-        };
+        ];
       });
 
       return {

@@ -136,6 +136,12 @@ async function fetchReviewsPage(
 
   if (!res.ok) {
     if (res.status === 404) throw new Error('App not found (404)');
+    if (res.status === 429) {
+      const retryAfter = res.headers.get('Retry-After');
+      throw new Error(
+        `Google Play rate limit (429). Retry after ${retryAfter ?? 'unknown'} seconds.`
+      );
+    }
     throw new Error(`Google Play request failed: ${res.status} ${res.statusText}`);
   }
 
@@ -143,14 +149,28 @@ async function fetchReviewsPage(
 
   // Response starts with ")]}'" (security prefix), then a newline, then JSON.
   // The library skips the first 5 characters.
-  const outer = JSON.parse(text.substring(5));
+  // Wrap parse in try/catch — Google sometimes returns an HTML interstitial
+  // (captcha / geo-block / maintenance) with status 200, which would bubble up
+  // as an unhelpful SyntaxError otherwise.
+  let outer: any;
+  try {
+    outer = JSON.parse(text.substring(5));
+  } catch {
+    const preview = text.substring(0, 120).replace(/\s+/g, ' ');
+    throw new Error(`Google Play returned non-JSON response: ${preview}`);
+  }
   const innerJson: string | null = outer?.[0]?.[2];
 
   if (innerJson === null || innerJson === undefined) {
     return { reviews: [], nextToken: null };
   }
 
-  const data = JSON.parse(innerJson);
+  let data: any;
+  try {
+    data = JSON.parse(innerJson);
+  } catch {
+    throw new Error('Google Play returned malformed inner JSON payload');
+  }
   return {
     reviews: extractReviews(data, appId),
     nextToken: extractPaginationToken(data),

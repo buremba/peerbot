@@ -255,7 +255,14 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
     let pageToken: string | undefined;
     let nextSyncToken: string | undefined;
 
-    while (true) {
+    // Safety bound — at 250 events/page, 200 pages = 50k events, more than
+    // any reasonable calendar window. Stops a runaway loop if the upstream
+    // ever returns a self-referential page token.
+    const MAX_PAGES = 200;
+    let pages = 0;
+
+    while (pages < MAX_PAGES) {
+      pages++;
       // Always request a full page — `maxResults` is a soft cap on *stored*
       // events, not a reason to shrink the request size (shrinking to 1 once the
       // cap is hit would crawl a busy calendar one event per round-trip).
@@ -350,7 +357,12 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
     let pageToken: string | undefined;
     let nextSyncToken: string | undefined;
 
-    while (true) {
+    // Same hard ceiling as the full-sync path — defensive only.
+    const MAX_PAGES = 200;
+    let pages = 0;
+
+    while (pages < MAX_PAGES) {
+      pages++;
       const params = new URLSearchParams({
         maxResults: String(Math.max(1, Math.min(250, maxResults - events.length))),
         syncToken,

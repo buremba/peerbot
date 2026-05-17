@@ -419,8 +419,32 @@ export default class RSSConnector extends ConnectorRuntime {
           case '#39':
             return "'";
           default:
-            if (hex) return String.fromCharCode(parseInt(hex, 16));
-            if (decimal) return String.fromCharCode(parseInt(decimal, 10));
+            // Use fromCodePoint, not fromCharCode — astral-plane characters
+            // (emoji, CJK extension B+, etc.) have code points > 0xFFFF which
+            // fromCharCode silently truncates, producing mojibake in feed
+            // titles. Guard the range so a malformed entity doesn't throw.
+            if (hex) {
+              const cp = parseInt(hex, 16);
+              if (Number.isFinite(cp) && cp >= 0 && cp <= 0x10ffff) {
+                try {
+                  return String.fromCodePoint(cp);
+                } catch {
+                  return _match;
+                }
+              }
+              return _match;
+            }
+            if (decimal) {
+              const cp = parseInt(decimal, 10);
+              if (Number.isFinite(cp) && cp >= 0 && cp <= 0x10ffff) {
+                try {
+                  return String.fromCodePoint(cp);
+                } catch {
+                  return _match;
+                }
+              }
+              return _match;
+            }
             return _match;
         }
       }

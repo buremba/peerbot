@@ -81,11 +81,7 @@ export async function runWithAbortDeadline<T>(
   }
 }
 
-// Minimal fallback context used before the workspace instructions are fetched.
-// Initialized lazily per mode (gateway vs standalone) in register().
 let FALLBACK_SYSTEM_CONTEXT: string | null = null;
-
-// Workspace instructions fetched from MCP server (includes entity types, event kinds, schemas).
 let cachedWorkspaceInstructions: string | null = null;
 
 const DEFAULT_RPC_VERSION = '2.0';
@@ -103,15 +99,11 @@ const PLUGIN_VERSION = (() => {
   }
 })();
 
-// Session-level token obtained via device code login flow
 let sessionToken: string | null = null;
-// Session-level refresh token for token renewal
-let _sessionRefreshToken: string | null = null;
+let sessionRefreshToken: string | null = null;
 let sessionClientId: string | null = null;
 let sessionClientSecret: string | null = null;
 let sessionIssuer: string | null = null;
-
-// MCP Streamable HTTP session ID (obtained from initialize handshake)
 let mcpSessionId: string | null = null;
 
 const MCP_PROTOCOL_VERSION = '2025-03-26';
@@ -169,14 +161,11 @@ function registerWorkerCleanupOnce(): void {
     if (workerProcess && workerProcess.exitCode === null && !workerProcess.killed) {
       try {
         workerProcess.kill();
-      } catch {
-        // Best-effort cleanup
-      }
+      } catch {}
     }
   };
-  // Register once at module scope so repeated logins / re-registers don't
-  // pile listeners onto process and trip MaxListenersExceededWarning (which
-  // also masks legitimate listener leaks elsewhere).
+  // Module-scope registration prevents listener accumulation across re-registers
+  // (would otherwise trip MaxListenersExceededWarning).
   process.on('exit', cleanup);
   process.on('SIGINT', cleanup);
   process.on('SIGTERM', cleanup);
@@ -268,12 +257,9 @@ function saveStoredSession(
     updatedAt: new Date().toISOString(),
   };
   store.activeServer = key;
-  // Keep legacy field for backward compat with older CLI versions
-  (store as any).activeContext = key;
+  store.activeContext = key;
 
-  // The store holds a refresh token + access token — tighten the parent dir to
-  // 0o700 so a wide-open umask can't make ~/.lobu world-readable. The file
-  // itself is already written with 0o600.
+  // 0o700 on the parent dir, 0o600 on the file — both hold OAuth tokens.
   mkdirSync(dirname(storePath), { recursive: true, mode: 0o700 });
   writeFileSync(storePath, JSON.stringify(store, null, 2) + '\n', { mode: 0o600 });
 }
@@ -316,19 +302,14 @@ function getLogger(api: Record<string, unknown>): PluginLogger {
   return fallbackLogger;
 }
 
-function getHookRegistrar(
-  api: Record<string, unknown>
-): (
+type HookRegistrar = (
   event: string,
   handler: (event: Record<string, unknown>, ctx: Record<string, unknown>) => unknown
-) => void {
+) => void;
+
+function getHookRegistrar(api: Record<string, unknown>): HookRegistrar {
   const on = api.on;
-  if (typeof on === 'function') {
-    return on as any;
-  }
-  return () => {
-    /* no-op */
-  };
+  return typeof on === 'function' ? (on as HookRegistrar) : () => {};
 }
 
 function readPluginConfig(api: Record<string, unknown>, pluginId: string): PluginConfig {
@@ -443,7 +424,7 @@ function getWorkerToken(): string | null {
 
 function clearSessionTokens(): void {
   sessionToken = null;
-  _sessionRefreshToken = null;
+  sessionRefreshToken = null;
 }
 
 function deriveOAuthBaseUrl(mcpUrl: string): string {
@@ -640,12 +621,12 @@ async function pollDeviceLogin(
  * the script source.
  */
 function refreshStoredTokenSync(mcpUrl: string): void {
-  if (!_sessionRefreshToken || !sessionClientId || !sessionIssuer) return;
+  if (!sessionRefreshToken || !sessionClientId || !sessionIssuer) return;
 
   const body: Record<string, string> = {
     grant_type: 'refresh_token',
     client_id: sessionClientId,
-    refresh_token: _sessionRefreshToken,
+    refresh_token: sessionRefreshToken,
   };
   if (sessionClientSecret) body.client_secret = sessionClientSecret;
 
@@ -681,20 +662,18 @@ function refreshStoredTokenSync(mcpUrl: string): void {
     if (typeof tokens.access_token !== 'string') return;
 
     sessionToken = tokens.access_token;
-    if (typeof tokens.refresh_token === 'string') _sessionRefreshToken = tokens.refresh_token;
+    if (typeof tokens.refresh_token === 'string') sessionRefreshToken = tokens.refresh_token;
     try {
       saveStoredSession(mcpUrl, {
         issuer: sessionIssuer,
         clientId: sessionClientId,
         clientSecret: sessionClientSecret,
-        refreshToken: _sessionRefreshToken!,
+        refreshToken: sessionRefreshToken!,
         accessToken: sessionToken,
       });
-    } catch {
-      // Best-effort persist.
-    }
+    } catch {}
   } catch {
-    // Best-effort refresh — fall back to the persisted (possibly stale) token.
+    // Fall back to the persisted (possibly stale) token.
   }
 }
 
@@ -705,7 +684,7 @@ function refreshStoredTokenSync(mcpUrl: string): void {
 let inFlightRefresh: Promise<boolean> | null = null;
 
 async function tryRefreshToken(mcpUrl: string): Promise<boolean> {
-  if (!_sessionRefreshToken || !sessionClientId || !sessionIssuer) return false;
+  if (!sessionRefreshToken || !sessionClientId || !sessionIssuer) return false;
   if (inFlightRefresh) return inFlightRefresh;
 
   inFlightRefresh = (async () => {
@@ -713,7 +692,7 @@ async function tryRefreshToken(mcpUrl: string): Promise<boolean> {
       const body: Record<string, string> = {
         grant_type: 'refresh_token',
         client_id: sessionClientId!,
-        refresh_token: _sessionRefreshToken!,
+        refresh_token: sessionRefreshToken!,
       };
       if (sessionClientSecret) {
         body.client_secret = sessionClientSecret;
@@ -732,21 +711,18 @@ async function tryRefreshToken(mcpUrl: string): Promise<boolean> {
 
       sessionToken = data.access_token;
       if (typeof data.refresh_token === 'string') {
-        _sessionRefreshToken = data.refresh_token;
+        sessionRefreshToken = data.refresh_token;
       }
 
-      // Persist refreshed tokens
       try {
         saveStoredSession(mcpUrl, {
           issuer: sessionIssuer!,
           clientId: sessionClientId!,
           clientSecret: sessionClientSecret,
-          refreshToken: _sessionRefreshToken!,
+          refreshToken: sessionRefreshToken!,
           accessToken: sessionToken,
         });
-      } catch {
-        // Best-effort persist
-      }
+      } catch {}
 
       return true;
     } catch {
@@ -819,14 +795,12 @@ async function callMcpTool(
     params: { name: toolName, arguments: args },
   };
 
-  let result: { data: unknown; response: Response };
-  try {
-    result = await mcpFetch(config.mcpUrl, rpcBody, authHeaders, options?.signal);
-  } catch (err) {
-    throw new Error(`MCP fetch failed: ${err instanceof Error ? err.message : String(err)}`);
-  }
-
-  let { data, response } = result;
+  let { data, response } = await mcpFetch(
+    config.mcpUrl,
+    rpcBody,
+    authHeaders,
+    options?.signal
+  );
 
   // Auto-refresh on 401/403 if we have a refresh token
   if ((response.status === 401 || response.status === 403) && config.mcpUrl) {
@@ -1096,14 +1070,11 @@ const plugin = {
       log.warn('lobu: missing config.mcpUrl (plugins.entries.openclaw-lobu.config.mcpUrl)');
     }
 
-    // Initialize fallback system context based on mode
     FALLBACK_SYSTEM_CONTEXT = renderFallbackSystemContext({
       gatewayMode: !!config.gatewayAuthUrl,
     });
 
-    // Gateway mode: proxy handles auth + tools. Nothing to check at startup.
-
-    // Load persisted token if no auth is configured via config/env (standalone mode only)
+    // Load persisted token in standalone mode when no auth is configured via config/env.
     if (
       config.mcpUrl &&
       !config.gatewayAuthUrl &&
@@ -1114,7 +1085,7 @@ const plugin = {
       const stored = loadStoredSession(config.mcpUrl);
       if (stored?.accessToken) {
         sessionToken = stored.accessToken;
-        _sessionRefreshToken = stored.refreshToken || null;
+        sessionRefreshToken = stored.refreshToken || null;
         sessionClientId = stored.clientId || null;
         sessionClientSecret = stored.clientSecret || null;
         sessionIssuer = stored.issuer || null;
@@ -1231,7 +1202,7 @@ const plugin = {
 
             if (result.status === 'complete') {
               sessionToken = result.accessToken;
-              _sessionRefreshToken = result.refreshToken || null;
+              sessionRefreshToken = result.refreshToken || null;
               sessionClientId = activeDeviceLogin.clientId;
               sessionClientSecret = activeDeviceLogin.clientSecret || null;
               sessionIssuer = activeDeviceLogin.issuer;
@@ -1484,30 +1455,23 @@ const plugin = {
         if (!Array.isArray(messages) || messages.length < 2) return;
         if (messages.length <= lastCapturedLen) return;
 
-        // Find the last assistant message, then the user message immediately
-        // before it — pairing the answer with the question that prompted it
-        // (not a trailing unanswered user message with the previous reply).
-        let assistantIdx = -1;
-        for (let i = messages.length - 1; i >= 0; i--) {
-          if (isRecord(messages[i]) && (messages[i] as Record<string, unknown>).role === 'assistant') {
-            const t = messageText(messages[i]);
-            if (t.trim()) { assistantIdx = i; break; }
+        // Pair the last non-empty assistant message with the user message immediately
+        // before it (the question that prompted it).
+        const findLast = (role: 'user' | 'assistant', upTo: number): number => {
+          for (let i = upTo; i >= 0; i--) {
+            const m = messages[i];
+            if (isRecord(m) && m.role === role && messageText(m).trim()) return i;
           }
-        }
-        if (assistantIdx < 1) return;
+          return -1;
+        };
 
-        let userIdx = -1;
-        for (let i = assistantIdx - 1; i >= 0; i--) {
-          if (isRecord(messages[i]) && (messages[i] as Record<string, unknown>).role === 'user') {
-            const t = messageText(messages[i]);
-            if (t.trim()) { userIdx = i; break; }
-          }
-        }
+        const assistantIdx = findLast('assistant', messages.length - 1);
+        if (assistantIdx < 1) return;
+        const userIdx = findLast('user', assistantIdx - 1);
         if (userIdx < 0) return;
 
         const lastUser = messageText(messages[userIdx]).trim();
         const lastAssistant = messageText(messages[assistantIdx]).trim();
-        if (!lastUser || !lastAssistant) return;
 
         const combined = `User: ${lastUser}\nAssistant: ${lastAssistant}`;
         if (combined.length < 16 || combined.includes('<lobu-memory>')) return;

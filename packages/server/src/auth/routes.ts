@@ -414,9 +414,32 @@ credentialRoutes.post('/local-init', async (c) => {
   }
   c.header('Set-Cookie', minted.cookieHeader);
 
+  // The session token alone is not enough for native worker callers — the
+  // /api/workers/* middleware checks for `device_worker:run` / `mcp:admin`
+  // in mcpAuthInfo.scopes, and a Better Auth session carries no scopes.
+  // Mint a worker-scoped PAT alongside the session so the menu bar's
+  // watcher poll loop and the Chrome extension's device-worker poll both
+  // work zero-config. PostgreSQL still holds the truth (PAT hash in
+  // `personal_access_tokens`, session row in `session`); nothing on disk.
+  const workerPat = await new PersonalAccessTokenService(sql).create(
+    BOOTSTRAP_USER_ID,
+    BOOTSTRAP_ORG_ID,
+    'local-init',
+    {
+      description: 'Auto-minted by POST /api/local-init for local-runner clients.',
+      scope: 'device_worker:run mcp:read mcp:write mcp:admin',
+    }
+  );
+
   return c.json({
     session_token: minted.sessionToken,
     cookie_name: minted.cookieName,
+    // PAT plaintext — clients use this as `Authorization: Bearer <token>`
+    // for everything (`/api/workers/poll`, MCP, REST). Long-lived; clients
+    // are expected to persist in OS-level secure storage (Keychain,
+    // chrome.storage.local, ~/.config/lobu/credentials.json).
+    device_token: workerPat.token,
+    device_token_scope: workerPat.scope,
     user: {
       id: BOOTSTRAP_USER_ID,
       email: 'dev@lobu.local',

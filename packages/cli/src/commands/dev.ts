@@ -390,15 +390,23 @@ async function announceLocalSignIn(
     });
     if (!res.ok) return;
     const body = (await res.json()) as {
+      device_token?: string;
       session_token?: string;
       user?: { id?: string; email?: string; name?: string };
     };
-    if (!body.session_token) return;
+    // CLI gets the worker-scoped PAT — works against /api/workers/* (used
+    // by lobu apply / lobu eval) and everything else. The session_token is
+    // for the browser deep-link URL: exchange-token validates either, but
+    // the cookie path needs a session (we pass session_token in the URL
+    // so the SPA hook reaches /api/exchange-token → Better Auth session
+    // cookie).
+    const cliToken = body.device_token ?? body.session_token;
+    if (!cliToken) return;
 
     const contextName = "local";
     await addContext(contextName, gatewayUrl);
     const creds: Credentials = {
-      accessToken: body.session_token,
+      accessToken: cliToken,
       ...(body.user?.email ? { email: body.user.email } : {}),
       ...(body.user?.name ? { name: body.user.name } : {}),
       ...(body.user?.id ? { userId: body.user.id } : {}),
@@ -406,7 +414,7 @@ async function announceLocalSignIn(
     await saveCredentials(creds, contextName);
 
     const url = new URL(gatewayUrl);
-    url.searchParams.set("lobu_token", body.session_token);
+    url.searchParams.set("lobu_token", body.session_token ?? cliToken);
     console.log();
     console.log(
       chalk.green(`  Signed in as ${body.user?.email ?? "Local Developer"}.`)

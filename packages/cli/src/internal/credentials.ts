@@ -168,12 +168,18 @@ async function tryLocalInit(contextName?: string): Promise<Credentials | null> {
     });
     if (!res.ok) return null;
     const body = (await res.json()) as {
+      device_token?: string;
       session_token?: string;
       user?: { id?: string; email?: string; name?: string };
     };
-    if (!body.session_token) return null;
+    // Prefer device_token (PAT scoped with device_worker:run + mcp:*) so
+    // `lobu chat` / `lobu apply` / worker poll all pass the scope gate on
+    // /api/workers/*. Fall back to session_token only against older
+    // servers that don't issue a PAT.
+    const token = body.device_token ?? body.session_token;
+    if (!token) return null;
     const creds: Credentials = {
-      accessToken: body.session_token,
+      accessToken: token,
       ...(body.user?.email ? { email: body.user.email } : {}),
       ...(body.user?.name ? { name: body.user.name } : {}),
       ...(body.user?.id ? { userId: body.user.id } : {}),

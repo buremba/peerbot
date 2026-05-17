@@ -1656,14 +1656,22 @@ async function handleUpdate(
   const hasAppAuthProfileArg = Object.hasOwn(args, 'app_auth_profile_slug');
   const hasDeviceWorkerArg = Object.hasOwn(args, 'device_worker_id');
 
-  // Role-gated profile changes. Resolved once and reused below; the target-
-  // profile ownership check runs after `resolveConnectionAuthSelection`.
-  const profileChanging = hasAuthProfileArg || hasAppAuthProfileArg;
-  const callerRole =
-    profileChanging && ctx.userId
-      ? await getWorkspaceRole(sql, organizationId, ctx.userId)
-      : null;
+  // `update` is now member-writable so members can edit their own
+  // connection. Resolve the caller's role once up front and gate every
+  // member action on "I created this connection" — admins/owners are
+  // unrestricted.
+  const callerRole = ctx.userId
+    ? await getWorkspaceRole(sql, organizationId, ctx.userId)
+    : null;
   const callerIsAdmin = callerRole === 'admin' || callerRole === 'owner';
+
+  if (!callerIsAdmin) {
+    if (!ctx.userId || existing.created_by !== ctx.userId) {
+      return {
+        error: 'You can only update connections you created.',
+      };
+    }
+  }
 
   // App profile updates: non-admins may only set the connector's pinned
   // default (mirrors handleCreate's gate). Clearing the app profile is
@@ -1686,18 +1694,10 @@ async function handleUpdate(
     }
   }
 
-  // Account / runtime profile updates: only the connection's created_by
-  // (or an admin/owner) can rebind. Mirrors the reauthenticate gate so a
-  // peer member can't silently swap whose credentials a private
-  // connection runs under. Target-profile ownership is enforced separately
-  // after `authSelection` resolves the profile metadata.
-  if (hasAuthProfileArg && !callerIsAdmin) {
-    if (!ctx.userId || existing.created_by !== ctx.userId) {
-      return {
-        error: 'You can only change the auth profile of a connection you created.',
-      };
-    }
-  }
+  // Account / runtime profile target-profile ownership is enforced after
+  // `authSelection` resolves the profile metadata (below). Connection
+  // ownership for the rebind itself is covered by the top-level
+  // member-write gate above.
 
   // Resolve the new device-worker binding up front so a bad value rejects the
   // whole update.

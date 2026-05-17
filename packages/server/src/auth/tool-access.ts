@@ -23,10 +23,11 @@ const MEMBER_WRITE_ACTIONS: Record<string, Set<string> | null> = {
   // these tables to fire the same per-action access decisions.
   manage_entity: new Set(['create', 'update', 'link', 'unlink', 'update_link']),
   // Members can install connections that bind to their own OAuth account
-  // grant. The handler gates `app_auth_profile_slug` overrides against the
-  // org default + caller role, so members can't pick a non-default app
-  // profile.
-  manage_connections: new Set(['create', 'reauthenticate']),
+  // grant. `update` is here so members can rebind their own connection's
+  // auth profile / display name / device pin; the handler enforces
+  // `created_by === ctx.userId` plus the same per-field role gates as
+  // create (app_auth_profile pinned-default, target-profile ownership).
+  manage_connections: new Set(['create', 'update', 'reauthenticate']),
   // Members create / reconnect their own oauth_account profile. The handler
   // gates `profile_kind` against role so env / oauth_app / browser_session
   // stay admin-only.
@@ -42,10 +43,10 @@ const OWNER_ADMIN_ACTIONS: Record<string, Set<string>> = {
   manage_entity: new Set(['delete']),
   manage_entity_schema: new Set(['create', 'update', 'delete', 'add_rule', 'remove_rule']),
   manage_connections: new Set([
-    // `create` and `reauthenticate` are in MEMBER_WRITE_ACTIONS — members
-    // install their own connections (handler enforces app_auth_profile slug
-    // override + role gates).
-    'update',
+    // `create`, `update`, `reauthenticate` are in MEMBER_WRITE_ACTIONS —
+    // members install / edit their own connections (handler enforces
+    // created_by === ctx.userId + app_auth_profile slug override + role
+    // gates).
     'delete',
     'connect',
     'test',

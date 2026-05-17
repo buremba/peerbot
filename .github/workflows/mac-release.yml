@@ -194,9 +194,11 @@ jobs:
         env:
           SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
         run: |
-          set -x  # echo every command so a failure (curl 404, tar layout
-                  # change, missing binary, gh-pages auth) surfaces by name
-                  # instead of as a bare "exit code 1".
+          # `set +x` around secret handling — GitHub Actions masks known
+          # secret strings in logs, but we don't want correctness to rely on
+          # that masking. Trace only the non-secret commands (curl, tar, git
+          # clone-with-token-URL is also non-traced for the same reason).
+          set -e
           if [ -z "$SPARKLE_ED_PRIVATE_KEY" ]; then
             echo "::error::SPARKLE_ED_PRIVATE_KEY not set — add the 64-byte base64 Sparkle Ed25519 private key as a repo secret."
             exit 1
@@ -207,28 +209,36 @@ jobs:
           # Fetch Sparkle's binary tools (sign_update). The SPM artifact bundle
           # ships them under `bin/`, but the Sparkle GitHub release tarball is
           # the easier source from CI.
+          set -x
           SPARKLE_VERSION="2.9.1"
           curl -fsSL -o "$RUNNER_TEMP/sparkle.tar.xz" \
             "https://github.com/sparkle-project/Sparkle/releases/download/${SPARKLE_VERSION}/Sparkle-${SPARKLE_VERSION}.tar.xz"
           mkdir -p "$RUNNER_TEMP/sparkle" && tar -xJf "$RUNNER_TEMP/sparkle.tar.xz" -C "$RUNNER_TEMP/sparkle"
           SIGN_UPDATE="$RUNNER_TEMP/sparkle/bin/sign_update"
           test -x "$SIGN_UPDATE" || { echo "::error::sign_update missing from Sparkle archive"; exit 1; }
+          set +x
 
-          # sign_update prints: sparkle:edSignature="..." length="..."
+          # Secret handling: drop xtrace so the key file path + sign_update
+          # invocation aren't echoed to the log next to the (masked) secret.
           KEY_FILE="$RUNNER_TEMP/sparkle_ed_private.b64"
           printf '%s' "$SPARKLE_ED_PRIVATE_KEY" > "$KEY_FILE"
           chmod 600 "$KEY_FILE"
           SIGN_OUTPUT=$("$SIGN_UPDATE" -f "$KEY_FILE" "$DMG")
           rm -f "$KEY_FILE"
           echo "sign_update output: $SIGN_OUTPUT"
+
+          set -x
           ED_SIG=$(echo "$SIGN_OUTPUT" | sed -E 's/.*sparkle:edSignature="([^"]+)".*/\1/')
           LENGTH=$(echo "$SIGN_OUTPUT" | sed -E 's/.*length="([^"]+)".*/\1/')
           test -n "$ED_SIG" && test -n "$LENGTH" || { echo "::error::failed to parse sign_update output"; exit 1; }
+          set +x
 
-          # Clone gh-pages, append the new <item>, push back.
+          # Clone gh-pages — token-bearing URL must not be traced.
           git clone --depth 1 --branch gh-pages \
             "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" \
             "$RUNNER_TEMP/ghpages"
+
+          set -x
           python3 scripts/sparkle/update-appcast.py "$RUNNER_TEMP/ghpages/appcast.xml" \
             --version "$VERSION" \
             --build "$VERSION" \

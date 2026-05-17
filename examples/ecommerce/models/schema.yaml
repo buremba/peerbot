@@ -111,6 +111,9 @@ watchers:
     agent: ecommerce-ops
     name: Customer activity tracker
     schedule: 0 */6 * * *
+    notification_priority: normal
+    tags: [ecommerce, customer-ops]
+    min_cooldown_seconds: 300
     prompt: |
       Monitor customers for new orders, subscription changes, delivery requests, and support interactions.
     extraction_schema:

@@ -153,3 +153,43 @@ entities:
         homepage_url:
           type: string
           format: uri
+
+watchers:
+  # Demo watcher exercising the file-first apply surface: tags, notification
+  # routing, cooldowns, and a sibling reaction script. Atlas is a reference
+  # catalog (cities, countries, industries, universities, …) — once a week
+  # we sweep for entries that haven't been touched in 90+ days and flag them
+  # for re-verification.
+  - slug: catalog-staleness-checker
+    agent: atlas-curator
+    name: Catalog staleness checker
+    schedule: 0 4 * * 1
+    notification_priority: low
+    tags: [atlas, reference, weekly]
+    min_cooldown_seconds: 3600
+    reaction_script: ./reactions/catalog-staleness-checker.reaction.ts
+    prompt: |
+      Sweep the atlas reference catalog for entries that haven't been
+      updated in 90+ days. List the stalest 10 across cities, countries,
+      industries, technologies, and universities. Suggest a re-verification
+      action for each (e.g. "country/PL: confirm population from latest census").
+    extraction_schema:
+      type: object
+      required:
+        - stale_entries
+      properties:
+        stale_entries:
+          type: array
+          items:
+            type: object
+            properties:
+              entity_type:
+                type: string
+              slug:
+                type: string
+              last_updated:
+                type: string
+              suggested_action:
+                type: string
+        total_stale_count:
+          type: integer

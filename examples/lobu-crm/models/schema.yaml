@@ -111,6 +111,11 @@ watchers:
     agent: crm
     name: Weekly funnel digest
     schedule: 0 9 * * 1
+    notification_priority: high
+    notification_channel: both
+    tags: [crm, weekly]
+    min_cooldown_seconds: 3600
+    reaction_script: ./reactions/funnel-digest.reaction.ts
     prompt: |
       Produce the weekly funnel digest and post it to Slack. Keep it short.
 
@@ -173,6 +178,10 @@ watchers:
     agent: crm
     name: Inbound triage
     schedule: 0 8-22/2 * * *
+    notification_priority: normal
+    tags: [crm, triage]
+    min_cooldown_seconds: 300
+    reaction_script: ./reactions/inbound-triage.reaction.ts
     prompt: |
       Look for new top-of-funnel signals since the last run, across the connectors
       in this org:

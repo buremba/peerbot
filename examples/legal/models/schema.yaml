@@ -114,6 +114,13 @@ watchers:
     agent: legal-review
     name: Contract review tracker
     schedule: 0 8 * * 1-5
+    notification_priority: high
+    tags: [legal, contract, daily]
+    min_cooldown_seconds: 1800
+    reactions_guidance: |
+      For any contract with `status: needs_counsel`, route an entity-scoped event
+      to the assigned reviewer. For contracts >90 days unsigned, escalate to the
+      counterparty owner; never auto-resolve risk items.
     prompt: |
       Review active contracts for approaching deadlines, unsigned agreements, and unresolved risk items. Flag any clauses that still need counsel approval.
     extraction_schema:

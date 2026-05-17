@@ -89,6 +89,10 @@ watchers:
     agent: agent-community
     name: Opportunity matcher
     schedule: 0 */12 * * *
+    notification_priority: normal
+    tags: [community, matching]
+    min_cooldown_seconds: 300
+    reaction_script: ./reactions/opportunity-matcher.reaction.ts
     prompt: |
       Monitor connected profiles, newsletters, websites, and member updates for new launches, posts, hiring signals, funding news, and project changes. Identify which members are likely to care, explain why, and queue approved intro or outreach drafts.
     extraction_schema:

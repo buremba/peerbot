@@ -1,0 +1,44 @@
+/**
+ * Reaction for the `account-health-monitor` watcher.
+ *
+ * When the watcher detects a material risk-level change on a tracked account,
+ * persist a `health_change` event so the renewal-risk view + weekly digest
+ * have a stable record without re-extracting from the CRM stream.
+ */
+import type { ReactionContext } from "@lobu/connector-sdk";
+
+interface HealthData {
+  account_changes?: Array<{
+    account: string;
+    previous_risk: "low" | "medium" | "high";
+    current_risk: "low" | "medium" | "high";
+    signals: string[];
+  }>;
+}
+
+const RISK_ORDER = { low: 0, medium: 1, high: 2 } as const;
+
+export default async (ctx: ReactionContext, client: any): Promise<void> => {
+  const data = ctx.extracted_data as HealthData;
+  const changes = data.account_changes ?? [];
+  // Only persist *worsening* transitions — improvements are visible in the
+  // CRM stream and don't need a durable flag.
+  const escalations = changes.filter(
+    (c) => RISK_ORDER[c.current_risk] > RISK_ORDER[c.previous_risk]
+  );
+  if (escalations.length === 0) return;
+
+  for (const c of escalations) {
+    await client.knowledge.save({
+      entity_ids: ctx.entities.map((e) => e.id),
+      content: `Account ${c.account}: risk ${c.previous_risk} → ${c.current_risk}\nSignals: ${c.signals.join("; ")}`,
+      semantic_type: "health_change",
+      metadata: {
+        account: c.account,
+        from: c.previous_risk,
+        to: c.current_risk,
+        window_id: ctx.window.id,
+      },
+    });
+  }
+};

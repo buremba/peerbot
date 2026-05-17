@@ -534,6 +534,10 @@ watchers:
     agent: vc-tracking
     name: Founder Activity Tracker
     schedule: 0 10 * * *
+    notification_priority: normal
+    tags: [vc, founders, daily]
+    min_cooldown_seconds: 600
+    reaction_script: ./reactions/founder-activity-tracker.reaction.ts
     prompt: |
       You are a venture capital analyst tracking the public activity of startup founders in your portfolio.
 
@@ -647,6 +651,9 @@ watchers:
     agent: vc-tracking
     name: Opportunity Matcher
     schedule: 0 */12 * * *
+    notification_priority: normal
+    tags: [vc, matching]
+    min_cooldown_seconds: 600
     prompt: |
       You are a community intelligence agent for a private founder community managed by a venture capital fund.
       Your job is to monitor founder activity and identify high-quality introduction opportunities between portfolio founders.

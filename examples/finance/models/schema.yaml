@@ -111,6 +111,11 @@ watchers:
     agent: finance
     name: Reconciliation monitor
     schedule: 0 6 * * 1-5
+    notification_priority: high
+    notification_channel: both
+    tags: [finance, reconciliation, daily]
+    min_cooldown_seconds: 3600
+    reaction_script: ./reactions/reconciliation-monitor.reaction.ts
     prompt: |
       Check accounts for unreconciled transactions, new variances, and approaching reporting deadlines. Lead with exceptions that need review.
     extraction_schema:

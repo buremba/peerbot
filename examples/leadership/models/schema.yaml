@@ -134,6 +134,10 @@ watchers:
     agent: leadership
     name: Board action tracker
     schedule: 0 8 * * *
+    notification_priority: high
+    notification_channel: both
+    tags: [leadership, daily, board]
+    agent_kind: notifier
     prompt: |
       Track board action items: check task delivery status, blocker resolution progress, and approaching deadlines for the next board packet.
     extraction_schema:

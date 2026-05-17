@@ -110,6 +110,10 @@ watchers:
     agent: delivery
     name: Phoenix rollout tracker
     schedule: 0 9 * * 1
+    notification_priority: high
+    notification_channel: both
+    tags: [delivery, weekly, rollout]
+    min_cooldown_seconds: 3600
     prompt: |
       Check project blockers, milestone progress, and generate the weekly risk summary for leadership.
     extraction_schema:

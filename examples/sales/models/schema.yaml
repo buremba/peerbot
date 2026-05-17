@@ -134,6 +134,11 @@ watchers:
     agent: sales
     name: Account health monitor
     schedule: 0 */12 * * *
+    notification_priority: high
+    notification_channel: both
+    tags: [sales, health, renewals]
+    min_cooldown_seconds: 1800
+    reaction_script: ./reactions/account-health-monitor.reaction.ts
     prompt: |
       Poll CRM data for tracked accounts. Track expansion progress, risk level changes, and renewal timeline.
     extraction_schema:

@@ -2297,7 +2297,13 @@ async function handleList(
       i.scheduler_client_id,
       i.model_config,
       i.sources,
-      i.tags,
+      -- text[] is returned as the Postgres array literal "{a,b}" by PGlite's
+      -- TCP socket; wrap in to_jsonb so clients get a real JSON array.
+      to_jsonb(i.tags) AS tags,
+      i.notification_channel,
+      i.notification_priority,
+      i.min_cooldown_seconds,
+      i.agent_kind,
       i.watcher_group_id,
       i.source_watcher_id,
       wr.id as watcher_run_id,

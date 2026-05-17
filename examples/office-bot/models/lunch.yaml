@@ -60,6 +60,10 @@ watchers:
     name: Open the lunch run
     # Workdays 11:00 Europe/London — post the lunch call and open the thread.
     schedule: "0 11 * * 1-5"
+    notification_priority: high
+    notification_channel: both
+    tags: [lunch, daily]
+    min_cooldown_seconds: 600
     prompt: |
       Open today's office lunch run (step 1 in your instructions):
 
@@ -95,6 +99,13 @@ watchers:
     # Workdays 11:35 Europe/London — read the thread, post options/collect orders,
     # build the Deliveroo basket, post the summary, hand off to a human.
     schedule: "35 11 * * 1-5"
+    notification_priority: high
+    tags: [lunch, daily]
+    min_cooldown_seconds: 600
+    reactions_guidance: |
+      When the run ends in `placed` or `manual`, store the basket link + per-head cost
+      back into a `lunch:placed` event on the lunch-run entity so the next day's
+      lunch-open can read the most-recent restaurant.
     prompt: |
       Finalize today's office lunch run (step 2 in your instructions):
 

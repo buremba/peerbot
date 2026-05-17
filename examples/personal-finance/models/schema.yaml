@@ -1162,6 +1162,9 @@ watchers:
     agent: personal-finance
     name: Gmail financial-event extractor
     schedule: '*/30 * * * *'
+    notification_priority: low
+    tags: [personal-finance, gmail, ingestion]
+    min_cooldown_seconds: 300
     prompt: |
       You are a private financial accountant scanning the user's forwarded Gmail messages for events that matter to a UK Self Assessment return.
 

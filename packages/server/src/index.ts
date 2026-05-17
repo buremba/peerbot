@@ -616,6 +616,7 @@ import {
   completeActionRun,
   completeAuthRun,
   completeEmbeddings,
+  completeWatcherRun,
   completeWorkerJob,
   createMyDeviceAuthProfile,
   createMyDeviceFeed,
@@ -684,10 +685,17 @@ app.use('/api/workers/*', async (c, next) => {
       const requestPath = new URL(c.req.url).pathname;
       const isAuthProfileSubpath = requestPath.startsWith('/api/workers/me/auth-profiles');
       const isFeedSubpath = requestPath.startsWith('/api/workers/me/feeds');
+      // /api/workers/me/runs/<runId>/complete-watcher — device-side watcher
+      // completion endpoint added in #798. The handler does its own
+      // `authorizeRunForWorker` claim-ownership check, so an org-scope
+      // gate here would just block legitimate posts from the bound device.
+      const isWatcherCompleteSubpath =
+        /^\/api\/workers\/me\/runs\/\d+\/complete-watcher$/.test(requestPath);
       if (
         !allowedPathsForUserWorker.has(requestPath) &&
         !isAuthProfileSubpath &&
-        !isFeedSubpath
+        !isFeedSubpath &&
+        !isWatcherCompleteSubpath
       ) {
         return c.json({ error: 'Endpoint not available to user-scoped workers' }, 403);
       }
@@ -735,6 +743,7 @@ app.post('/api/workers/stream', streamContent);
 app.post('/api/workers/complete', completeWorkerJob);
 app.post('/api/workers/complete-action', completeActionRun);
 app.post('/api/workers/complete-embeddings', completeEmbeddings);
+app.post('/api/workers/me/runs/:runId/complete-watcher', completeWatcherRun);
 app.post('/api/workers/fetch-events', fetchEventsForEmbedding);
 app.post('/api/workers/emit-auth-artifact', emitAuthArtifact);
 app.post('/api/workers/poll-auth-signal', pollAuthSignal);

@@ -31,6 +31,10 @@ interface DueWatcherRow {
   agent_id: string;
   schedule: string | null;
   status?: string;
+  /** Watcher is pinned to a user-owned device worker (e.g. Lobu Mac app). */
+  device_worker_id?: string | null;
+  /** Preferred local agent kind on the pinned device (e.g. 'claude-code'). */
+  agent_kind?: string | null;
 }
 
 interface ClaimedWatcherRunRow {
@@ -117,6 +121,17 @@ export function parseWatcherRunPayload(value: unknown): WatcherRunPayload | null
         ? Number(rawVersionId)
         : null;
 
+  const rawDeviceWorkerId = payload.device_worker_id;
+  const deviceWorkerId =
+    typeof rawDeviceWorkerId === 'string' && rawDeviceWorkerId.trim() !== ''
+      ? rawDeviceWorkerId.trim()
+      : null;
+  const rawAgentKind = payload.agent_kind;
+  const agentKind =
+    typeof rawAgentKind === 'string' && rawAgentKind.trim() !== ''
+      ? rawAgentKind.trim()
+      : null;
+
   return {
     watcher_id: watcherId,
     agent_id: agentId,
@@ -124,6 +139,8 @@ export function parseWatcherRunPayload(value: unknown): WatcherRunPayload | null
     window_end: windowEnd,
     dispatch_source: dispatchSource,
     version_id: Number.isFinite(versionId as number) ? (versionId as number) : null,
+    device_worker_id: deviceWorkerId,
+    agent_kind: agentKind,
   };
 }
 
@@ -144,7 +161,8 @@ async function loadWatcherForAutomation(
   watcherId: number
 ): Promise<DueWatcherRow | null> {
   const rows = await sql<DueWatcherRow>`
-    SELECT id, organization_id, agent_id, schedule, status
+    SELECT id, organization_id, agent_id, schedule, status,
+           device_worker_id::text AS device_worker_id, agent_kind
     FROM watchers
     WHERE id = ${watcherId}
     LIMIT 1
@@ -177,6 +195,8 @@ async function enqueueWatcherRunForRecord(
       windowStart: windowStart.toISOString(),
       windowEnd: windowEnd.toISOString(),
       dispatchSource,
+      deviceWorkerId: watcher.device_worker_id ?? null,
+      agentKind: watcher.agent_kind ?? null,
     },
     sql
   );
@@ -463,7 +483,8 @@ export async function materializeDueWatcherRuns(
   const sql = db ?? getDb();
 
   const dueWatchers = await sql<DueWatcherRow>`
-    SELECT w.id, w.organization_id, w.agent_id, w.schedule
+    SELECT w.id, w.organization_id, w.agent_id, w.schedule,
+           w.device_worker_id::text AS device_worker_id, w.agent_kind
     FROM watchers w
     WHERE w.status = 'active'
       AND w.agent_id IS NOT NULL

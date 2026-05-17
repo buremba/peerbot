@@ -47,6 +47,8 @@ export interface WatcherCreateInput {
   condensation_window_count?: number;
   reactions_guidance?: string;
   agent_id?: string;
+  /** Optional goal_id linking this watcher to a goal (see client.goals). */
+  goal_id?: number | null;
   scheduler_client_id?: string;
   model_config?: Record<string, unknown>;
   tags?: string[];
@@ -56,6 +58,8 @@ export interface WatcherUpdateInput {
   watcher_id: WatcherId;
   schedule?: string;
   agent_id?: string;
+  /** Optional goal_id linking this watcher to a goal. Pass null to unlink. */
+  goal_id?: number | null;
   scheduler_client_id?: string;
   model_config?: Record<string, unknown>;
   sources?: Source[];

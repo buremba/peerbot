@@ -24,6 +24,7 @@ import {
   buildEntitiesNamespace,
   buildEntitySchemaNamespace,
   buildFeedsNamespace,
+  buildGoalsNamespace,
   buildKnowledgeNamespace,
   buildOperationsNamespace,
   buildOrganizationsNamespace,
@@ -36,6 +37,7 @@ import type { ConnectionsNamespace } from "./namespaces/connections";
 import type { EntitiesNamespace } from "./namespaces/entities";
 import type { EntitySchemaNamespace } from "./namespaces/entity-schema";
 import type { FeedsNamespace } from "./namespaces/feeds";
+import type { GoalsNamespace } from "./namespaces/goals";
 import type { KnowledgeNamespace } from "./namespaces/knowledge";
 import type { OperationsNamespace } from "./namespaces/operations";
 import type { OrganizationsNamespace } from "./namespaces/organizations";
@@ -50,6 +52,7 @@ export interface ClientSDK {
   authProfiles: AuthProfilesNamespace;
   operations: OperationsNamespace;
   watchers: WatchersNamespace;
+  goals: GoalsNamespace;
   classifiers: ClassifiersNamespace;
   viewTemplates: ViewTemplatesNamespace;
   knowledge: KnowledgeNamespace;
@@ -165,6 +168,7 @@ export function buildClientSDK(
     authProfiles: buildAuthProfilesNamespace(ctx, env),
     operations: buildOperationsNamespace(ctx, env),
     watchers: buildWatchersNamespace(ctx, env),
+    goals: buildGoalsNamespace(ctx, env),
     classifiers: buildClassifiersNamespace(ctx, env),
     viewTemplates: buildViewTemplatesNamespace(ctx, env),
     knowledge: buildKnowledgeNamespace(ctx, env),

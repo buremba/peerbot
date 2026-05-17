@@ -1102,6 +1102,41 @@ CREATE SEQUENCE public.feeds_id_seq
 ALTER SEQUENCE public.feeds_id_seq OWNED BY public.feeds.id;
 
 --
+-- Name: goals; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.goals (
+    id bigint NOT NULL,
+    organization_id text NOT NULL,
+    slug text NOT NULL,
+    name text NOT NULL,
+    description text,
+    status text DEFAULT 'active'::text NOT NULL,
+    template_key text,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT goals_status_check CHECK ((status = ANY (ARRAY['active'::text, 'paused'::text, 'archived'::text])))
+);
+
+--
+-- Name: goals_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.goals_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+--
+-- Name: goals_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.goals_id_seq OWNED BY public.goals.id;
+
+--
 -- Name: grants; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2002,6 +2037,7 @@ CREATE TABLE public.watchers (
     scheduler_client_id text,
     source_watcher_id integer,
     watcher_group_id integer NOT NULL,
+    goal_id bigint,
     CONSTRAINT insights_status_check CHECK ((status = ANY (ARRAY['active'::text, 'archived'::text])))
 );
 
@@ -2141,6 +2177,12 @@ ALTER TABLE ONLY public.events ALTER COLUMN id SET DEFAULT nextval('public.conte
 --
 
 ALTER TABLE ONLY public.feeds ALTER COLUMN id SET DEFAULT nextval('public.feeds_id_seq'::regclass);
+
+--
+-- Name: goals id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.goals ALTER COLUMN id SET DEFAULT nextval('public.goals_id_seq'::regclass);
 
 --
 -- Name: personal_access_tokens id; Type: DEFAULT; Schema: public; Owner: -
@@ -2425,6 +2467,20 @@ ALTER TABLE ONLY public.events
 
 ALTER TABLE ONLY public.feeds
     ADD CONSTRAINT feeds_pkey PRIMARY KEY (id);
+
+--
+-- Name: goals goals_org_slug_unique; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.goals
+    ADD CONSTRAINT goals_org_slug_unique UNIQUE (organization_id, slug);
+
+--
+-- Name: goals goals_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.goals
+    ADD CONSTRAINT goals_pkey PRIMARY KEY (id);
 
 --
 -- Name: grants grants_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -3561,6 +3617,12 @@ CREATE INDEX idx_feeds_org ON public.feeds USING btree (organization_id);
 CREATE INDEX idx_feeds_status ON public.feeds USING btree (status);
 
 --
+-- Name: idx_goals_organization_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_goals_organization_id ON public.goals USING btree (organization_id);
+
+--
 -- Name: idx_latest_ec_classifier_id; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3805,6 +3867,12 @@ CREATE INDEX idx_watchers_created_by ON public.watchers USING btree (created_by)
 --
 
 CREATE INDEX idx_watchers_entity_ids ON public.watchers USING gin (entity_ids);
+
+--
+-- Name: idx_watchers_goal_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_watchers_goal_id ON public.watchers USING btree (goal_id) WHERE (goal_id IS NOT NULL);
 
 --
 -- Name: idx_watchers_next_run_at; Type: INDEX; Schema: public; Owner: -
@@ -4549,6 +4617,13 @@ ALTER TABLE ONLY public.event_classifiers
     ADD CONSTRAINT fk_event_classifiers_insight FOREIGN KEY (watcher_id) REFERENCES public.watchers(id) ON DELETE SET NULL;
 
 --
+-- Name: goals goals_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.goals
+    ADD CONSTRAINT goals_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organization(id) ON DELETE CASCADE;
+
+--
 -- Name: grants grants_org_agent_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -4920,6 +4995,13 @@ ALTER TABLE ONLY public.watchers
     ADD CONSTRAINT watchers_current_version_id_fkey FOREIGN KEY (current_version_id) REFERENCES public.watcher_versions(id) ON DELETE SET NULL;
 
 --
+-- Name: watchers watchers_goal_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.watchers
+    ADD CONSTRAINT watchers_goal_id_fkey FOREIGN KEY (goal_id) REFERENCES public.goals(id) ON DELETE SET NULL;
+
+--
 -- Name: watchers watchers_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -5003,4 +5085,5 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20260517020000'),
     ('20260517030000'),
     ('20260517040000'),
-    ('20260517050000');
+    ('20260517050000'),
+    ('20260517150000');

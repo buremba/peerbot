@@ -1202,20 +1202,73 @@ export async function completeWatcherRun(c: Context<{ Bindings: Env }>) {
   const watcherId = Number(run.watcher_id);
   const approved = (run.approved_input ?? {}) as Record<string, unknown>;
 
-  // Fix 2: device-identity binding (user-scoped workers only).
+  // Fix 2 (pi round-2): device-identity binding pinned to the OAuth token, not
+  // the request body.
   //
-  // `authorizeRunForWorker` already enforces `claimed_by === body.worker_id`,
-  // but `worker_id` is client-supplied. A different device with the same
-  // user's OAuth token could (a) post `/api/workers/poll` and claim a run
-  // under any worker_id it chooses, then (b) post here with that same id.
-  // Bind to the server-side identity instead: look up the caller's
-  // `device_workers.id` from (workerUserId, worker_id) and verify it matches
-  // the `device_worker_id` materializeDueWatcherRuns persisted on the run.
+  // The previous version looked up `(workerUserId, body.worker_id)` in
+  // `device_workers`, but `body.worker_id` is client-supplied. A same-user
+  // token could complete as a different registered worker by posting that
+  // worker's id. The fix is the same trick `pollWorkerJob` already uses: if
+  // the token was minted with a `workerId` binding (`device_worker:run`
+  // PATs/OAuth tokens always are), require `body.worker_id === boundWorkerId`
+  // AND, if the run is pinned to a device, the bound worker's
+  // `device_workers.id` matches `approved_input.device_worker_id`.
+  //
+  // For legacy/admin tokens with no `workerId` binding we fall through to the
+  // old user_id+worker_id lookup, but emit a warning so the audit trail can
+  // catch this path if it ever fires in production (Lobu for Mac always
+  // mints worker-bound tokens via /api/me/devices/mint-child-token).
   if (c.var.workerAuthMode === 'user') {
     const workerUserId = c.var.workerUserId;
+    const boundWorkerId = c.var.mcpAuthInfo?.workerId ?? null;
     const pinnedDeviceWorkerId =
       typeof approved.device_worker_id === 'string' ? approved.device_worker_id : null;
-    if (workerUserId && pinnedDeviceWorkerId) {
+
+    if (boundWorkerId) {
+      if (boundWorkerId !== body.worker_id) {
+        logger.warn(
+          { run_id: runId, body_worker_id: body.worker_id, bound_worker_id: boundWorkerId },
+          '[completeWatcherRun] body.worker_id != token-bound worker_id — rejecting'
+        );
+        return c.json(
+          {
+            error: 'worker_id_mismatch',
+            error_description: `this token is bound to worker_id '${boundWorkerId}'`,
+          },
+          403
+        );
+      }
+      if (pinnedDeviceWorkerId && workerUserId) {
+        const deviceRows = (await sql`
+          SELECT id
+          FROM device_workers
+          WHERE user_id = ${workerUserId}
+            AND worker_id = ${boundWorkerId}
+          LIMIT 1
+        `) as unknown as Array<{ id: string }>;
+        const callerDeviceWorkerId = deviceRows[0]?.id ?? null;
+        if (!callerDeviceWorkerId || callerDeviceWorkerId !== pinnedDeviceWorkerId) {
+          logger.warn(
+            {
+              run_id: runId,
+              bound_worker_id: boundWorkerId,
+              caller_device: callerDeviceWorkerId,
+              pinned_device: pinnedDeviceWorkerId,
+            },
+            '[completeWatcherRun] device_worker_id mismatch — rejecting'
+          );
+          return c.json({ error: 'Forbidden: device worker mismatch' }, 403);
+        }
+      }
+    } else if (workerUserId && pinnedDeviceWorkerId) {
+      // Legacy/admin path: no worker-bound token. Fall back to the
+      // (user_id, body.worker_id) lookup; this is weaker than the bound path
+      // but still gates on user ownership. Emit a warning so prod telemetry
+      // can flag if any non-Mac caller hits this branch.
+      logger.warn(
+        { run_id: runId, worker_user_id: workerUserId, body_worker_id: body.worker_id },
+        '[completeWatcherRun] no token-bound workerId — falling back to user_id+worker_id check'
+      );
       const deviceRows = (await sql`
         SELECT id
         FROM device_workers
@@ -1228,11 +1281,11 @@ export async function completeWatcherRun(c: Context<{ Bindings: Env }>) {
         logger.warn(
           {
             run_id: runId,
-            worker_id: body.worker_id,
+            body_worker_id: body.worker_id,
             caller_device: callerDeviceWorkerId,
             pinned_device: pinnedDeviceWorkerId,
           },
-          '[completeWatcherRun] device_worker_id mismatch — rejecting'
+          '[completeWatcherRun] device_worker_id mismatch (legacy path) — rejecting'
         );
         return c.json({ error: 'Forbidden: device worker mismatch' }, 403);
       }
@@ -1268,10 +1321,15 @@ export async function completeWatcherRun(c: Context<{ Bindings: Env }>) {
     const reason =
       'error' in startResult ? startResult.error : (endResult as { error: string }).error;
     // Mark the run failed so the watcher's `next_run_at` advances and the
-    // schedule doesn't loop on this poisoned payload forever. Outside any
-    // transaction — this is a one-shot terminal status flip.
+    // schedule doesn't loop on this poisoned payload forever.
+    //
+    // Pi round-2 #C: only advance the schedule when the UPDATE actually
+    // changed a row. Without `RETURNING id`, two concurrent malformed
+    // completions would BOTH advance the schedule — the second one's UPDATE
+    // matches zero rows (status already 'failed') but we'd still tick
+    // `next_run_at` forward, potentially skipping a window.
     try {
-      await sql`
+      const failedRows = (await sql`
         UPDATE runs
         SET status = 'failed',
             completed_at = current_timestamp,
@@ -1279,8 +1337,11 @@ export async function completeWatcherRun(c: Context<{ Bindings: Env }>) {
             exit_reason = 'error_message'
         WHERE id = ${runId}
           AND status = 'running'
-      `;
-      await advanceWatcherSchedule(sql, watcherId);
+        RETURNING id
+      `) as unknown as Array<{ id: number }>;
+      if (failedRows.length > 0) {
+        await advanceWatcherSchedule(sql, watcherId);
+      }
     } catch (err) {
       logger.error(
         { run_id: runId, err: errorMessage(err) },
@@ -1350,14 +1411,14 @@ export async function completeWatcherRun(c: Context<{ Bindings: Env }>) {
             AND status = 'running'
         `;
       } else {
-        // Fix 4: allocate the window id via the codebase's shared helper
-        // (whitelisted, same pattern used by manage_watchers). The
-        // `SELECT ... FOR UPDATE` on `runs.id` above + the
-        // `idx_runs_active_watcher_per_watcher` partial unique index together
-        // serialize this for a given watcher; cross-watcher concurrent
-        // completions are protected by the `watcher_windows_pkey` unique
-        // constraint, which would surface as a `23505` we'd surface as 500
-        // (caller retries).
+        // Fix 4 (pi round-2 #B): allocate the window id via the shared
+        // helper, which now takes a per-table `pg_advisory_xact_lock` keyed
+        // on `hashtext('watcher_windows_id_alloc')`. Because this runs inside
+        // `sql.begin`, the lock is held until tx commit — bracketing the
+        // SELECT MAX + INSERT, so two concurrent completions on DIFFERENT
+        // watcher runs serialize on allocation and never collide on the
+        // watcher_windows PK. (Same-watcher concurrent completions are
+        // already serialized by the SELECT … FOR UPDATE on runs.id above.)
         const windowId = await getNextNumericId(tx, 'watcher_windows');
 
         const extractedData = {

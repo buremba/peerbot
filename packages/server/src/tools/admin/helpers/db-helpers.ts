@@ -58,12 +58,29 @@ export type NumericIdTable = (typeof NUMERIC_ID_TABLES)[number];
 
 /**
  * Allocate the next numeric id for a whitelisted table (`COALESCE(MAX(id), 0) + 1`).
- * Callers that need this to be race-free must hold an appropriate lock.
+ *
+ * Race-free across concurrent transactions via a per-table Postgres advisory
+ * lock keyed on `hashtext('<table>_id_alloc')`. The lock is acquired with
+ * `pg_advisory_xact_lock`, so it's released automatically when the calling
+ * transaction commits or rolls back. To get serialization across the
+ * subsequent INSERT, the caller MUST invoke this from within a transaction
+ * (otherwise each statement is its own implicit tx and the lock releases
+ * before the INSERT executes — same race as without the lock).
+ *
+ * Without the advisory lock, two concurrent completions on DIFFERENT rows
+ * (e.g. two device workers completing two different watcher runs) can both
+ * compute the same `MAX(id)+1` and one will fail on the watcher_windows PK
+ * conflict. With the lock + caller-side tx, the second caller blocks until
+ * the first commits (and thus sees the first INSERT in its `MAX(id)`).
  */
 export async function getNextNumericId(sql: DbClient, table: NumericIdTable): Promise<number> {
   if (!NUMERIC_ID_TABLES.includes(table)) {
     throw new Error(`Invalid table name: ${table}`);
   }
+  // Per-table key: `hashtext` returns a stable int4 derived from the string.
+  // Same table → same key → serialized allocation; different tables → distinct
+  // keys → no false sharing.
+  await sql.unsafe(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`${table}_id_alloc`]);
   const rows = await sql.unsafe<{ next_id: number }>(
     `SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM ${table}`
   );

@@ -336,7 +336,18 @@ async function handleUpdate(
     throw new Error(`Goal ${existing.id} not found`);
   }
 
-  return { action: 'update', goal: mapGoalRow(updated[0] as Record<string, unknown>) };
+  const goal = mapGoalRow(updated[0] as Record<string, unknown>);
+
+  recordLifecycleEvent({
+    organizationId: ctx.organizationId!,
+    entityType: 'goal',
+    op: 'updated',
+    entityId: goal.id,
+    summary: `Goal '${goal.name}' updated`,
+    createdBy: ctx.userId,
+  });
+
+  return { action: 'update', goal };
 }
 
 async function handleGet(

@@ -280,8 +280,27 @@ function installUncaughtHandlers(): void {
   });
 }
 
+/**
+ * If the parent dies without sending SIGKILL, the IPC channel disconnects
+ * but the child keeps running connector code (especially a chatty HTTP loop
+ * or a Playwright session) — leaving zombie subprocesses behind that nothing
+ * cleans up until OOM. Exit promptly on parent disconnect so the OS reaps us.
+ */
+function installParentDeathHandlers(): void {
+  const exitOnParentDeath = () => {
+    // Best-effort: don't bother flushing IPC, the channel is already gone.
+    try {
+      process.exit(143); // 128 + SIGTERM, conventional for "killed externally"
+    } catch {
+      /* ignore */
+    }
+  };
+  process.on('disconnect', exitOnParentDeath);
+}
+
 async function main() {
   installUncaughtHandlers();
+  installParentDeathHandlers();
   let started = false;
   // Wait for message from parent
   process.on('message', async (msg: any) => {

@@ -308,13 +308,21 @@ export class SubprocessExecutor implements SyncExecutor {
               const signal = await hooks.onAwaitAuthSignal(name, {
                 timeoutMs: timeoutMs ?? undefined,
               });
-              child.send({ type: 'await_signal_response', requestId, signal });
+              try {
+                child.send({ type: 'await_signal_response', requestId, signal });
+              } catch {
+                /* IPC closed — child already exited. */
+              }
             } catch (err) {
-              child.send({
-                type: 'await_signal_response',
-                requestId,
-                error: err instanceof Error ? err.message : String(err),
-              });
+              try {
+                child.send({
+                  type: 'await_signal_response',
+                  requestId,
+                  error: err instanceof Error ? err.message : String(err),
+                });
+              } catch {
+                /* IPC closed — child already exited. */
+              }
             }
           });
           return;
@@ -443,17 +451,45 @@ export class SubprocessExecutor implements SyncExecutor {
       child.stdout?.on('data', onStdout);
       child.stderr?.on('data', onStderr);
 
-      // Send the compiled code and context to the child
-      child.send({
-        compiledCode,
-        context: {
-          options: context.options,
-          checkpoint: context.checkpoint,
-          env: context.env,
-          sessionState: context.sessionState,
-          apiType: context.apiType,
+      // Send the compiled code and context to the child. Use the callback
+      // form so a failed send (e.g. child died before IPC handshake, or fork
+      // resolved to a non-existent file) rejects the executor promise
+      // instead of going unhandled on the IPC channel.
+      child.send(
+        {
+          compiledCode,
+          context: {
+            options: context.options,
+            checkpoint: context.checkpoint,
+            env: context.env,
+            sessionState: context.sessionState,
+            apiType: context.apiType,
+          },
         },
-      });
+        (err) => {
+          if (err) {
+            const tail = redactOutput(combinedTail());
+            const diagnostics: SubprocessDiagnostics = {
+              exitCode: null,
+              exitSignal: null,
+              outputTail: tail,
+              exitReason: 'crash',
+            };
+            settle(() => {
+              try {
+                child.kill('SIGKILL');
+              } catch {
+                /* already dead */
+              }
+              reject(
+                new SubprocessError(`Subprocess IPC send failed: ${err.message}`, diagnostics, {
+                  cause: err,
+                })
+              );
+            });
+          }
+        }
+      );
     });
   }
 }

@@ -169,7 +169,14 @@ export class WorkerDaemon {
 export async function startDaemon(config: DaemonConfig, env: Env): Promise<WorkerDaemon> {
   const daemon = new WorkerDaemon(config, env);
 
+  let shuttingDown = false;
   const gracefulShutdown = async (signal: string) => {
+    if (shuttingDown) {
+      // Second signal — operator wants out now. Hard exit.
+      console.error(`[daemon] Received ${signal} during shutdown, forcing exit`);
+      process.exit(130);
+    }
+    shuttingDown = true;
     console.error(`\n[daemon] Received ${signal}, shutting down...`);
     daemon.stop();
     const allDone = await daemon.waitForActiveJobs();
@@ -180,8 +187,12 @@ export async function startDaemon(config: DaemonConfig, env: Env): Promise<Worke
   };
 
   // Handle shutdown signals
-  process.on('SIGINT', () => gracefulShutdown('SIGINT'));
-  process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+  process.on('SIGINT', () => {
+    void gracefulShutdown('SIGINT');
+  });
+  process.on('SIGTERM', () => {
+    void gracefulShutdown('SIGTERM');
+  });
 
   await daemon.start();
   return daemon;

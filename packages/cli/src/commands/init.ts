@@ -1,6 +1,13 @@
 import { randomBytes } from "node:crypto";
 import { constants } from "node:fs";
-import { access, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import {
+  access,
+  chmod,
+  mkdir,
+  readdir,
+  readFile,
+  writeFile,
+} from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { confirm, input, password, select } from "@inquirer/prompts";
 import chalk from "chalk";
@@ -455,6 +462,10 @@ export async function initCommand(
     };
 
     await renderTemplate(".env.tmpl", variables, join(projectDir, ".env"));
+    // `.env` carries ENCRYPTION_KEY + provider API keys / OAuth tokens
+    // appended via setLocalEnvValue below. Tighten now so the initial
+    // write isn't world-readable on multi-user hosts (default umask 022).
+    await chmod(join(projectDir, ".env"), 0o600).catch(() => undefined);
 
     const envVarsToFill = new Set<string>();
     if (selectedProvider?.providers?.[0]?.envVarName) {

@@ -1,4 +1,4 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { chmod, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 export async function setLocalEnvValue(
@@ -27,7 +27,14 @@ export async function setLocalEnvValue(
   });
 
   if (!found) updated.push(serialized);
-  await writeFile(envPath, updated.join("\n"));
+  // `.env` holds provider API keys, bot tokens, OAuth refresh tokens —
+  // anything `lobu init` / `lobu memory ...` writes back. Default umask
+  // (022) would leave the file world-readable; clamp to 0600 so other
+  // local accounts can't lift secrets off a shared host.
+  await writeFile(envPath, updated.join("\n"), { mode: 0o600 });
+  // `mode:` only applies on file creation. If `.env` already existed
+  // (e.g. user created it before running `lobu init`), tighten now.
+  await chmod(envPath, 0o600).catch(() => undefined);
 }
 
 function formatEnvValue(value: string): string {

@@ -4010,7 +4010,6 @@ CREATE INDEX personal_access_tokens_active_idx ON public.personal_access_tokens 
 
 CREATE INDEX personal_access_tokens_organization_id_idx ON public.personal_access_tokens USING btree (organization_id);
 
-
 --
 -- Name: personal_access_tokens_token_hash_idx; Type: INDEX; Schema: public; Owner: -
 --

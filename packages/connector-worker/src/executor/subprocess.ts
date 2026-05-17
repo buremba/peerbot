@@ -158,19 +158,8 @@ export class SubprocessExecutor implements SyncExecutor {
       }
 
       // Node subprocess execution is process isolation, not a security sandbox.
-      // Keep permission flags disabled unless the connector runtime is made compatible.
-      try {
-        const nodeVersion = parseInt(process.versions.node.split('.')[0], 10);
-        if (nodeVersion >= 20) {
-          // Uncomment only when the connector runtime is compatible with Node permissions:
-          // execArgv.push('--experimental-permission');
-          // execArgv.push(`--allow-fs-read=/tmp/*,${__dirname}/*`);
-          // execArgv.push('--allow-fs-write=/tmp/*');
-        }
-      } catch {
-        // Ignore - permissions are best-effort
-      }
-
+      // Node --experimental-permission flags intentionally NOT enabled — the
+      // connector runtime isn't compatible. Revisit if that changes.
       const child = fork(childRunnerPath, [], {
         stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
         execArgv,
@@ -245,10 +234,10 @@ export class SubprocessExecutor implements SyncExecutor {
       const combinedTail = (): string => {
         const out = stdoutTail.toString();
         const err = stderrTail.toString();
-        if (!out && !err) return '';
-        if (!out) return `[stderr]\n${err}`;
-        if (!err) return `[stdout]\n${out}`;
-        return `[stdout]\n${out}\n[stderr]\n${err}`;
+        const parts: string[] = [];
+        if (out) parts.push(`[stdout]\n${out}`);
+        if (err) parts.push(`[stderr]\n${err}`);
+        return parts.join('\n');
       };
 
       const computeExitReason = (tail: string): SubprocessExitReason => {

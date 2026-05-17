@@ -242,11 +242,10 @@ export class WorkerClient implements ExecutorClient {
   }
 
   private authHeaders(): Record<string, string> {
-    if (!this.authToken) return {};
-    return { Authorization: `Bearer ${this.authToken}` };
+    return this.authToken ? { Authorization: `Bearer ${this.authToken}` } : {};
   }
 
-  private async requestJson<T>(path: string, body: Record<string, unknown>): Promise<T> {
+  private async post(path: string, body: Record<string, unknown>): Promise<Response> {
     const response = await fetch(`${this.apiUrl}${path}`, {
       method: 'POST',
       headers: {
@@ -255,29 +254,20 @@ export class WorkerClient implements ExecutorClient {
       },
       body: JSON.stringify(body),
     });
-
     if (!response.ok) {
       const responseText = await response.text();
       throw new Error(`${path} failed: ${response.status} ${response.statusText} ${responseText}`);
     }
+    return response;
+  }
 
+  private async requestJson<T>(path: string, body: Record<string, unknown>): Promise<T> {
+    const response = await this.post(path, body);
     return response.json() as Promise<T>;
   }
 
   private async requestVoid(path: string, body: Record<string, unknown>): Promise<void> {
-    const response = await fetch(`${this.apiUrl}${path}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...this.authHeaders(),
-      },
-      body: JSON.stringify(body),
-    });
-
-    if (!response.ok) {
-      const responseText = await response.text();
-      throw new Error(`${path} failed: ${response.status} ${response.statusText} ${responseText}`);
-    }
+    await this.post(path, body);
   }
 
   /**

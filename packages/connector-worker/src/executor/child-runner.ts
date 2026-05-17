@@ -69,28 +69,27 @@ function awaitAuthSignal(
 ): Promise<Record<string, unknown>> {
   return new Promise<Record<string, unknown>>((resolve, reject) => {
     const requestId = nextSignalRequestId++;
-    pendingSignalWaiters.set(requestId, { resolve, reject });
-
     let timer: NodeJS.Timeout | undefined;
+    const clearTimer = () => {
+      if (timer) clearTimeout(timer);
+    };
+
+    pendingSignalWaiters.set(requestId, {
+      resolve: (v) => {
+        clearTimer();
+        resolve(v);
+      },
+      reject: (e) => {
+        clearTimer();
+        reject(e);
+      },
+    });
+
     if (options?.timeoutMs && options.timeoutMs > 0) {
       timer = setTimeout(() => {
         pendingSignalWaiters.delete(requestId);
         reject(new Error(`awaitSignal('${name}') timed out after ${options.timeoutMs}ms`));
       }, options.timeoutMs);
-    }
-
-    const wrap = pendingSignalWaiters.get(requestId);
-    if (wrap) {
-      pendingSignalWaiters.set(requestId, {
-        resolve: (v) => {
-          if (timer) clearTimeout(timer);
-          wrap.resolve(v);
-        },
-        reject: (e) => {
-          if (timer) clearTimeout(timer);
-          wrap.reject(e);
-        },
-      });
     }
 
     void sendIPC({
@@ -176,7 +175,7 @@ async function executeConnectorRuntime(instance: any, context: ChildMessage['con
   }
 
   const emitEvents = async (events: unknown[]) => {
-    const normalized = normalizeEvents(events);
+    const normalized = events.map((event: any) => normalizeEventEnvelope(event));
     for (let index = 0; index < normalized.length; index += CONTENT_CHUNK_SIZE) {
       await sendIPC({
         type: 'content_chunk',
@@ -219,10 +218,6 @@ async function executeConnectorRuntime(instance: any, context: ChildMessage['con
     },
   };
   return result;
-}
-
-function normalizeEvents(events: unknown[]) {
-  return events.map((event: any) => normalizeEventEnvelope(event));
 }
 
 /** Send an IPC message and wait for it to be flushed to the parent. */
@@ -287,15 +282,9 @@ function installUncaughtHandlers(): void {
  * cleans up until OOM. Exit promptly on parent disconnect so the OS reaps us.
  */
 function installParentDeathHandlers(): void {
-  const exitOnParentDeath = () => {
-    // Best-effort: don't bother flushing IPC, the channel is already gone.
-    try {
-      process.exit(143); // 128 + SIGTERM, conventional for "killed externally"
-    } catch {
-      /* ignore */
-    }
-  };
-  process.on('disconnect', exitOnParentDeath);
+  // Best-effort: don't bother flushing IPC, the channel is already gone.
+  // Exit code 143 = 128 + SIGTERM, conventional for "killed externally".
+  process.on('disconnect', () => process.exit(143));
 }
 
 async function main() {

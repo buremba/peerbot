@@ -88,27 +88,25 @@ export async function executeRun(
   config: Partial<ExecutorConfig> = {}
 ): Promise<{ itemsCollected: number; error?: string }> {
   const cfg = { ...DEFAULT_CONFIG, ...config };
-  if (job.run_type === 'action') {
-    return executeActionRun(client, job, env, cfg);
+  switch (job.run_type) {
+    case 'action':
+      return executeActionRun(client, job, env, cfg);
+    case 'watcher':
+      // Watcher reactions execute inline in the API process (complete_window) and
+      // the poll endpoint's run_type allowlist should never hand a watcher run to
+      // this daemon. If one slips through (deploy skew, regression), do NOT mark
+      // it success — that would stomp a live watcher run and prevent any retry.
+      console.error(
+        `[executor] Refusing to handle watcher run ${job.run_id} — watcher runs must not reach the connector-worker daemon`
+      );
+      return { itemsCollected: 0, error: 'watcher run not handled by daemon' };
+    case 'embed_backfill':
+      return executeEmbedBackfillRun(client, job, env);
+    case 'auth':
+      return executeAuthRun(client, job, env, cfg);
+    default:
+      return executeSyncRun(client, job, env, cfg);
   }
-  if (job.run_type === 'watcher') {
-    // Watcher reactions execute inline in the API process (complete_window) and
-    // the poll endpoint's run_type allowlist should never hand a watcher run to
-    // this daemon. If one slips through (deploy skew, regression), do NOT mark
-    // it success — that would stomp a live watcher run and prevent any retry.
-    // Log loudly and skip; the server's heartbeat reaper / inline path owns it.
-    console.error(
-      `[executor] Refusing to handle watcher run ${job.run_id} — watcher runs must not reach the connector-worker daemon`
-    );
-    return { itemsCollected: 0, error: 'watcher run not handled by daemon' };
-  }
-  if (job.run_type === 'embed_backfill') {
-    return executeEmbedBackfillRun(client, job, env);
-  }
-  if (job.run_type === 'auth') {
-    return executeAuthRun(client, job, env, cfg);
-  }
-  return executeSyncRun(client, job, env, cfg);
 }
 
 /**
@@ -550,14 +548,15 @@ async function executeEmbedBackfillRun(
       input = JSON.parse(action_input);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      const errorMessage = `Invalid action_input JSON: ${msg}`;
       console.error(`[executor] Embed backfill run ${run_id}: invalid action_input JSON:`, msg);
       await client.complete({
         run_id,
         worker_id: client.id,
         status: 'failed',
-        error_message: `Invalid action_input JSON: ${msg}`,
+        error_message: errorMessage,
       });
-      return { itemsCollected: 0, error: `Invalid action_input JSON: ${msg}` };
+      return { itemsCollected: 0, error: errorMessage };
     }
   } else {
     input = action_input;

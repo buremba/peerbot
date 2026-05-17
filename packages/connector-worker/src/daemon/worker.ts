@@ -30,24 +30,20 @@ const DEFAULT_EXECUTOR_TIMEOUT_MS = 600000;
 export class WorkerDaemon {
   private client: WorkerClient;
   private env: Env;
-  private config: Required<
-    Omit<
-      DaemonConfig,
-      'apiUrl' | 'workerId' | 'workerApiToken' | 'capabilities' | 'executor' | 'version'
-    >
-  > & {
+  private config: {
+    pollIntervalMs: number;
+    maxConcurrentJobs: number;
     executor: Partial<ExecutorConfig>;
   };
   private running = false;
   private activeJobs = 0;
 
   constructor(daemonConfig: DaemonConfig, env: Env) {
-    const capabilities = daemonConfig.capabilities ?? DEFAULT_CAPABILITIES;
     this.client = new WorkerClient({
       apiUrl: daemonConfig.apiUrl,
       workerId: daemonConfig.workerId,
       authToken: daemonConfig.workerApiToken ?? env.WORKER_API_TOKEN,
-      capabilities,
+      capabilities: daemonConfig.capabilities ?? DEFAULT_CAPABILITIES,
       version: daemonConfig.version,
     });
 

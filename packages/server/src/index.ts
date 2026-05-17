@@ -65,7 +65,6 @@ import { entityLinkMatchSql } from './utils/content-search';
 import { isValidFrameAncestor } from './utils/csp';
 import { errorMessage } from './utils/errors';
 import logger from './utils/logger';
-import { isLoopbackHost } from './utils/loopback';
 import { generateOpenAPISpec } from './utils/openapi-generator';
 import {
   extractSubdomainOrg,
@@ -277,71 +276,6 @@ app.use(
     credentials: true, // Required for better-auth cookies
   })
 );
-
-// CSRF defense for no-auth mode. With LOBU_NO_AUTH=1 the server attributes
-// every request to the local user without checking any token — so any
-// website you visit in your browser could `fetch('http://localhost:8787/...')`
-// from a tab and side-effect the API. Block that by requiring same-origin
-// markers on every mutating method. CORS preflights already deny foreign
-// origins from carrying `Authorization`, but they don't prevent simple-
-// request POSTs that side-effect without reading the response, so we need
-// these checks on top.
-app.use('/*', async (c, next) => {
-  if (process.env.LOBU_NO_AUTH !== '1') return next();
-  const method = c.req.method.toUpperCase();
-  if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') {
-    return next();
-  }
-  const origin = c.req.header('origin');
-  const sfs = c.req.header('sec-fetch-site');
-  const hostHeader = (c.req.header('host') ?? '').toLowerCase();
-  const ct = (c.req.header('content-type') ?? '').toLowerCase();
-  const lobuClient = c.req.header('x-lobu-client');
-
-  // Host header must be one of the loopback aliases. Defeats DNS rebinding.
-  // Uses the shared isLoopbackHost helper so the alias set stays in lock-step
-  // with the bind-time enforcement in start-local.ts / server.ts. Strip the
-  // optional `:<port>` suffix and IPv6 brackets before checking.
-  const hostBare = hostHeader.replace(/^\[(.+)\](?::\d+)?$/, '$1').replace(/:\d+$/, '');
-  if (!isLoopbackHost(hostBare)) {
-    return c.json({ error: 'forbidden', error_description: 'No-auth mode: bad Host header' }, 403);
-  }
-
-  // Origin / Sec-Fetch-Site: at least one must say "same-origin or none".
-  // Native clients (Mac app) typically omit Origin but set X-Lobu-Client.
-  //
-  // The Origin match is exact-against-this-server, not any-loopback-shape.
-  // Previously we accepted any `http(s)://(127.x.x.x|localhost|[::1])(:port)?`
-  // which let a malicious tab loaded from e.g. `http://localhost:9999` send
-  // CSRF mutations to our `:8787`. Now we derive the canonical origin from
-  // the validated Host header above and require an exact string match.
-  const expectedOrigin = `http://${hostHeader}`;
-  const sameOrigin =
-    sfs === 'same-origin' ||
-    sfs === 'none' ||
-    origin === expectedOrigin;
-  const trustedNative = lobuClient !== undefined && lobuClient.length > 0;
-  if (!sameOrigin && !trustedNative) {
-    return c.json(
-      { error: 'forbidden', error_description: 'No-auth mode: cross-origin mutation rejected' },
-      403
-    );
-  }
-
-  // Content-Type for state-changing requests must be application/json.
-  // Defeats CSRF "simple request" form posts that browsers allow without
-  // preflight (application/x-www-form-urlencoded, text/plain, multipart).
-  // Empty Content-Type is also rejected — a CSRF attacker omitting it
-  // would otherwise slip through.
-  if (!ct.includes('application/json')) {
-    return c.json(
-      { error: 'forbidden', error_description: 'No-auth mode: mutations must be application/json' },
-      415
-    );
-  }
-
-  return next();
-});
 
 // Add Pino logger middleware
 app.use(

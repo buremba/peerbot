@@ -7,10 +7,13 @@
  * - POST /api/:orgSlug/tokens - Create org-scoped personal access tokens
  */
 
+import { createHmac } from 'node:crypto';
 import { type Context, Hono } from 'hono';
 import { createDbClientFromEnv } from '../db/client';
 import type { Env } from '../index';
 import { errorMessage } from '../utils/errors';
+import { resolveBaseUrl } from './base-url';
+import { createAuth } from './index';
 import { mcpAuth, requireAuth } from './middleware';
 import { OAuthClientsStore } from './oauth/clients';
 import { PersonalAccessTokenService } from './tokens';
@@ -196,6 +199,75 @@ credentialRoutes.post('/:orgSlug/tokens', mcpAuth, async (c) => {
   } catch (error) {
     return c.json({ error: errorMessage(error) }, 400);
   }
+});
+
+/**
+ * Exchange a Personal Access Token for a Better Auth session cookie.
+ *
+ * Lets a holder of a valid PAT (CLI users, the macOS menu-bar app, deep links
+ * from the operator's terminal) hop into the web UI without typing a password.
+ * The endpoint validates the PAT, mints a fresh session row tied to the same
+ * user, signs the session token with BETTER_AUTH_SECRET (matching what
+ * Better Auth would set), and 302-redirects to `next` (default `/`).
+ *
+ * `next` is restricted to relative paths to prevent open-redirect abuse. The
+ * Referrer-Policy header keeps the PAT out of the next page's Referer.
+ */
+credentialRoutes.get('/exchange-token', async (c) => {
+  // Don't leak the PAT into the next request's Referer header.
+  c.header('Referrer-Policy', 'no-referrer');
+
+  const token = c.req.query('token')?.trim();
+  if (!token) {
+    return c.json({ error: 'missing_token', error_description: 'token query param is required' }, 400);
+  }
+
+  const sql = createDbClientFromEnv(c.env);
+  const patService = new PersonalAccessTokenService(sql);
+  const authInfo = await patService.verify(token);
+  if (!authInfo) {
+    return c.json({ error: 'invalid_token', error_description: 'token is invalid, expired, or revoked' }, 401);
+  }
+
+  const secret = c.env.BETTER_AUTH_SECRET;
+  if (!secret) {
+    return c.json(
+      { error: 'server_misconfigured', error_description: 'BETTER_AUTH_SECRET not set' },
+      500
+    );
+  }
+
+  const auth = await createAuth(c.env, c.req.raw);
+  const ctx = await auth.$context;
+  const session = await ctx.internalAdapter.createSession(authInfo.userId);
+  if (!session?.token) {
+    return c.json({ error: 'session_create_failed', error_description: 'failed to mint session' }, 500);
+  }
+
+  // Match Better Auth's cookie shape: `<token>.<base64(HMAC-SHA256(token, secret))>`,
+  // URL-encoded. Cookie name picks up the __Secure- prefix when the request
+  // arrived over HTTPS so it stays compatible with the prod baseURL rule.
+  const sig = createHmac('sha256', secret).update(session.token).digest('base64');
+  const cookieValue = encodeURIComponent(`${session.token}.${sig}`);
+  // Match Better Auth's cookie-prefix rule: __Secure- iff the public baseURL
+  // is https. Resolve via the same helper used during sign-in so the prefix
+  // matches even when TLS is terminated by a reverse proxy (Tailscale Funnel,
+  // nginx, cloudflared) and the loopback bind itself speaks plain HTTP.
+  const isHttps = resolveBaseUrl({ request: c.req.raw }).startsWith('https://');
+  const cookieName = isHttps ? '__Secure-better-auth.session_token' : 'better-auth.session_token';
+  const cookieParts = [
+    `${cookieName}=${cookieValue}`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+    `Max-Age=${60 * 60 * 24 * 7}`,
+  ];
+  if (isHttps) cookieParts.push('Secure');
+  c.header('Set-Cookie', cookieParts.join('; '));
+
+  const rawNext = c.req.query('next') ?? '/';
+  const safeNext = rawNext.startsWith('/') && !rawNext.startsWith('//') ? rawNext : '/';
+  return c.redirect(safeNext, 302);
 });
 
 export { credentialRoutes };

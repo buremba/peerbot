@@ -44,7 +44,6 @@ import { listMigrationFiles, loadMigrationUpSection } from './db/migration-loade
 import type { Env } from './index';
 import { getEnvFromProcess } from './utils/env';
 import logger from './utils/logger';
-import { isLoopbackHost } from './utils/loopback';
 
 const DATA_DIR = process.env.LOBU_DATA_DIR || join(homedir(), '.lobu', 'data');
 const PORT = parseInt(process.env.PORT || '8787', 10);
@@ -72,8 +71,6 @@ function readPositiveIntEnv(name: string, fallback: number): number {
 function isTruthyEnv(name: string): boolean {
   return /^(1|true|yes|on)$/i.test(process.env[name]?.trim() ?? '');
 }
-
-// `isLoopbackHost` lives in `./utils/loopback` so `server.ts` can share it.
 
 async function main() {
   mkdirSync(DATA_DIR, { recursive: true });
@@ -194,8 +191,8 @@ async function main() {
   // ─── Bootstrap PAT ───────────────────────────────────────────
   // Runs BEFORE listen so that:
   //   (a) the bootstrap user / org / PAT row are guaranteed to exist before
-  //       the first request can land — no-auth mode would otherwise 503
-  //       during the gap between listen() and ensureBootstrapPat()'s await.
+  //       the first request can land — first-boot UI calls would otherwise
+  //       race the bootstrap and 401 against a not-yet-provisioned user.
   //   (b) a stale bootstrap-pat.txt (file exists, DB rows missing because
   //       LOBU_DATA_DIR was wiped) gets re-minted now, while we still own
   //       the boot sequence.
@@ -221,32 +218,9 @@ async function main() {
 
   // ─── Listen ──────────────────────────────────────────────────
 
-  // No-auth mode is loopback-only by design. Refuse to listen on anything
-  // other than the IPv4 loopback /8 / ::1 (matches isLoopbackHost) — both
-  // via the configured HOST (early fail) and via a post-listen
-  // `server.address()` check that catches DNS / hostname surprises.
-  const noAuth = process.env.LOBU_NO_AUTH === '1';
-  if (noAuth && !isLoopbackHost(HOST)) {
-    logger.error(
-      { host: HOST },
-      'LOBU_NO_AUTH=1 requires loopback bind (127.0.0.0/8 or ::1). Refusing to start.'
-    );
-    process.exit(1);
-  }
   httpServer.listen(PORT, HOST, () => {
-    if (noAuth) {
-      const addr = httpServer.address();
-      if (typeof addr === 'object' && addr && !isLoopbackHost(addr.address)) {
-        logger.error(
-          { address: addr.address },
-          'LOBU_NO_AUTH=1 server bound to a non-loopback address after listen() — refusing to serve.'
-        );
-        process.exit(1);
-      }
-    }
     logger.info(`Lobu running at http://${HOST}:${PORT}`);
     logger.info(`Data: ${DATA_DIR}`);
-    if (noAuth) logger.info('No-auth mode active (LOBU_NO_AUTH=1) — every request attributed to local user');
   });
 }
 
@@ -394,10 +368,9 @@ async function ensureBootstrapPat(dbUrl: string): Promise<void> {
   try {
     // Stale-state detection: previously this early-returned whenever the PAT
     // file existed, but if LOBU_DATA_DIR was wiped between runs the row was
-    // gone and no-auth mode would 503 forever. Now we check all three rows
-    // (user + org + member) — if ANY is missing the bootstrap re-runs to
-    // restore consistency. Partial state could otherwise wedge getNoAuthUser
-    // forever.
+    // gone and clients holding the PAT file would see a missing-user 500. Now
+    // we check all three rows (user + org + member) — if ANY is missing the
+    // bootstrap re-runs to restore consistency.
     const stateRows = await sql<
       [{ user_exists: boolean; org_exists: boolean; member_exists: boolean }]
     >`
@@ -437,20 +410,6 @@ async function ensureBootstrapPat(dbUrl: string): Promise<void> {
       SELECT count(*)::int AS count FROM "user" WHERE id <> ${BOOTSTRAP_USER_ID}
     `;
     if ((otherUserCountRows[0]?.count ?? 0) > 0) {
-      // If LOBU_NO_AUTH=1 is set, the auth bypass needs the bootstrap user
-      // to attribute every request to. Skipping bootstrap here while no-auth
-      // is on leaves resolveAuth() returning 503 forever — visible only at
-      // request time, when the user has no clear path to recover. Fail loud
-      // at startup instead so the operator sees the mismatch immediately.
-      if (process.env.LOBU_NO_AUTH === '1') {
-        logger.error(
-          { otherUserCount: otherUserCountRows[0]?.count },
-          'LOBU_NO_AUTH=1 requires the bootstrap user to exist, but this deployment ' +
-            'already has non-bootstrap users — no-auth mode would 503 every request. ' +
-            'Either unset LOBU_NO_AUTH for this deployment or use a clean LOBU_DATA_DIR.'
-        );
-        process.exit(1);
-      }
       logger.debug(
         { userCount: otherUserCountRows[0]?.count },
         'Skipping bootstrap PAT — deployment already has non-bootstrap users'

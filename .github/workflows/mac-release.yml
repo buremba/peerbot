@@ -23,15 +23,34 @@ name: mac-release
 #       Program membership + Developer ID cert exist.
 #
 # ── To switch to SIGNED: add these repo secrets, that's it ──────────────────
-#   APPLE_CERT_P12_BASE64   base64 of a "Developer ID Application" .p12
-#   APPLE_CERT_PASSWORD     password for that .p12
-#   APPLE_TEAM_ID           10-char Apple Developer team id
-#   APPLE_ID                Apple ID email used for notarization
-#   APPLE_APP_PASSWORD      app-specific password for that Apple ID
+#   APPLE_CERT_P12_BASE64            base64 of a "Developer ID Application" .p12
+#   APPLE_CERT_PASSWORD              password for that .p12
+#   APPLE_TEAM_ID                    10-char Apple Developer team id
+#   APPLE_ID                         Apple ID email used for notarization
+#   APPLE_APP_PASSWORD               app-specific password for that Apple ID
 #
-# No provisioning profile is required — the app ships only standard
-# entitlements (the HealthKit entitlement is disabled; see
-# packages/owletto/apps/mac/Lobu/Lobu.entitlements in the owletto submodule).
+#
+# ── Optional: when shipping a restricted entitlement (e.g. HealthKit) ───────
+#   APPLE_PROVISION_PROFILE_BASE64   base64 of a Developer ID .provisionprofile
+#                                    issued for com.owletto.mac, carrying the
+#                                    restricted capability
+#   APPLE_PROVISION_PROFILE_NAME     the profile's exact name as shown in the
+#                                    Apple Developer portal (Profiles list).
+#                                    Passed to xcodebuild as
+#                                    PROVISIONING_PROFILE_SPECIFIER.
+#
+# Current Owletto.entitlements carries no restricted entitlements, so the
+# provisioning-profile secrets are optional. To add HealthKit (or another
+# restricted entitlement) later:
+#   1. Submit a Capability Request to Apple
+#      (https://developer.apple.com/contact/request/capability-request/) —
+#      the App ID checkbox alone isn't enough; the profile won't carry the
+#      entitlement until Apple approves.
+#   2. Re-issue the Developer ID profile (it gets the entitlement only after
+#      approval is on file).
+#   3. Set APPLE_PROVISION_PROFILE_BASE64 + APPLE_PROVISION_PROFILE_NAME.
+# The "Install provisioning profile" step is skipped automatically when
+# APPLE_PROVISION_PROFILE_BASE64 is empty.
 #
 # Sparkle auto-updates: `SPARKLE_ED_PRIVATE_KEY` (64-byte base64 of seed||pub)
 # is required. The job signs Owletto.dmg with `sign_update` and pushes a new
@@ -75,7 +94,7 @@ jobs:
       #   4-7. The scheme name, app display name, bundle identifier, and
       #      Sparkle public key must match what the rest of the workflow and
       #      installed apps depend on. A rename inside owletto (e.g. scheme
-      #      `Lobu` → `Owletto`, bundle id `ai.lobu.mac` → `ai.owletto.mac`)
+      #      target renames, bundle id `com.owletto.mac` drift)
       #      would pass the path checks above but break the build or, worse,
       #      silently break auto-update for installed users.
       - name: Verify release contract (submodule + Mac source layout)
@@ -95,8 +114,8 @@ jobs:
               ;;
           esac
           for required in \
-            packages/owletto/apps/mac/Lobu.xcodeproj \
-            packages/owletto/apps/mac/Lobu/Info.plist \
+            packages/owletto/apps/mac/Owletto.xcodeproj \
+            packages/owletto/apps/mac/Owletto/Info.plist \
             scripts/sparkle/update-appcast.py
           do
             if [ ! -e "$required" ]; then
@@ -105,19 +124,19 @@ jobs:
             fi
           done
 
-          # 4. The Xcode scheme must still be named 'Lobu'. The rest of this
-          #    workflow passes `-scheme Lobu` to xcodebuild; if owletto renames
-          #    the scheme (e.g. to 'Owletto') the path checks above still pass
-          #    and we'd only find out late inside xcodebuild.
+          # 4. The Xcode scheme must still be named 'Owletto'. The rest of
+          #    this workflow passes `-scheme Owletto` to xcodebuild; if a rename
+          #    happens upstream, the path checks above still pass and we'd only
+          #    find out late inside xcodebuild.
           #
           #    Scope the check to the schemes list via `-list -json`. The plain
           #    `-list` text output has both `Targets:` and `Schemes:` sections,
-          #    so a `grep '^  Lobu$'` could match a target named 'Lobu' even
-          #    after the scheme was renamed to 'Owletto'.
-          SCHEMES=$(xcodebuild -project packages/owletto/apps/mac/Lobu.xcodeproj -list -json 2>/dev/null \
+          #    so a `grep '^  Owletto$'` could match a target named 'Owletto'
+          #    even after the scheme was renamed.
+          SCHEMES=$(xcodebuild -project packages/owletto/apps/mac/Owletto.xcodeproj -list -json 2>/dev/null \
             | python3 -c "import json,sys; print('\n'.join(json.load(sys.stdin)['project']['schemes']))")
-          if ! echo "$SCHEMES" | grep -qE '^Lobu$'; then
-            echo "::error::Expected scheme 'Lobu' missing from project schemes (got: $SCHEMES)"
+          if ! echo "$SCHEMES" | grep -qE '^Owletto$'; then
+            echo "::error::Expected scheme 'Owletto' missing from project schemes (got: $SCHEMES)"
             exit 1
           fi
 
@@ -128,7 +147,7 @@ jobs:
           EXPECTED_BUNDLE_NAME="Owletto"
           for key in CFBundleName CFBundleDisplayName; do
             actual=$(/usr/libexec/PlistBuddy -c "Print :$key" \
-              packages/owletto/apps/mac/Lobu/Info.plist 2>/dev/null || true)
+              packages/owletto/apps/mac/Owletto/Info.plist 2>/dev/null || true)
             if [ "$actual" != "$EXPECTED_BUNDLE_NAME" ]; then
               echo "::error::Info.plist:$key is '$actual', expected '$EXPECTED_BUNDLE_NAME'"
               exit 1
@@ -136,20 +155,20 @@ jobs:
           done
 
           # 6. PRODUCT_BUNDLE_IDENTIFIER in project.pbxproj must stay
-          #    ai.lobu.mac across ALL build configurations. CFBundleIdentifier
+          #    com.owletto.mac across ALL build configurations. CFBundleIdentifier
           #    in Info.plist resolves to $(PRODUCT_BUNDLE_IDENTIFIER) at build
           #    time, so the real value lives in the pbxproj build settings.
           #    The URL scheme, Keychain service name, and Sparkle update path
           #    are all keyed off this — a change here breaks the upgrade
           #    contract for installed apps.
           #
-          #    Assert the set of distinct values is exactly {ai.lobu.mac}, not
-          #    "some occurrence equals ai.lobu.mac". A simple grep would still
-          #    pass if one config drifted while another stale occurrence stayed
-          #    correct.
-          EXPECTED_BUNDLE_ID="ai.lobu.mac"
+          #    Assert the set of distinct values is exactly {com.owletto.mac},
+          #    not "some occurrence equals com.owletto.mac". A simple grep
+          #    would still pass if one config drifted while another stale
+          #    occurrence stayed correct.
+          EXPECTED_BUNDLE_ID="com.owletto.mac"
           distinct_ids=$(grep -E 'PRODUCT_BUNDLE_IDENTIFIER = ' \
-            packages/owletto/apps/mac/Lobu.xcodeproj/project.pbxproj \
+            packages/owletto/apps/mac/Owletto.xcodeproj/project.pbxproj \
             | sed -E 's/.*PRODUCT_BUNDLE_IDENTIFIER = ([^;]+);.*/\1/' \
             | sort -u)
           if [ "$distinct_ids" != "$EXPECTED_BUNDLE_ID" ]; then
@@ -165,7 +184,7 @@ jobs:
           #    Use PlistBuddy so the check matches an actual plist key, not
           #    text inside an XML comment.
           if ! /usr/libexec/PlistBuddy -c "Print :SUPublicEDKey" \
-            packages/owletto/apps/mac/Lobu/Info.plist >/dev/null 2>&1; then
+            packages/owletto/apps/mac/Owletto/Info.plist >/dev/null 2>&1; then
             echo "::error::SUPublicEDKey missing from Info.plist — installed apps cannot verify updates"
             exit 1
           fi
@@ -205,15 +224,61 @@ jobs:
           security list-keychains -d user -s "$KEYCHAIN"
           security default-keychain -s "$KEYCHAIN"
 
+      # Install the Developer ID provisioning profile so Xcode embeds it
+      # during the archive step. Only needed when Owletto.entitlements
+      # carries a restricted entitlement (HealthKit, Family Controls, etc.)
+      # — otherwise notarization rejects the build with "App is using a
+      # restricted entitlement without a matching provisioning profile."
+      # Skipped silently when APPLE_PROVISION_PROFILE_BASE64 isn't set, so
+      # builds with only standard entitlements just work.
+      #
+      # Xcode looks in ~/Library/MobileDevice/Provisioning Profiles. The
+      # filename should match the profile's UUID; we extract it from the
+      # decoded plist so the same secret keeps working across re-issues.
+      - name: Install provisioning profile
+        id: profile
+        if: steps.mode.outputs.signed == 'true' && env.PROFILE_BASE64 != ''
+        env:
+          PROFILE_BASE64: ${{ secrets.APPLE_PROVISION_PROFILE_BASE64 }}
+          PROFILE_NAME: ${{ secrets.APPLE_PROVISION_PROFILE_NAME }}
+        run: |
+          if [ -z "$PROFILE_NAME" ]; then
+            echo "::error::APPLE_PROVISION_PROFILE_BASE64 is set but APPLE_PROVISION_PROFILE_NAME is missing."
+            exit 1
+          fi
+          DEST_DIR="$HOME/Library/MobileDevice/Provisioning Profiles"
+          mkdir -p "$DEST_DIR"
+          TMP_PROFILE="$RUNNER_TEMP/profile.provisionprofile"
+          echo "$PROFILE_BASE64" | base64 --decode > "$TMP_PROFILE"
+          # Extract UUID from the CMS-wrapped plist inside the .provisionprofile.
+          security cms -D -i "$TMP_PROFILE" > "$RUNNER_TEMP/profile.plist"
+          UUID=$(/usr/libexec/PlistBuddy -c "Print :UUID" "$RUNNER_TEMP/profile.plist")
+          if [ -z "$UUID" ]; then
+            echo "::error::Could not extract UUID from provisioning profile."
+            exit 1
+          fi
+          cp "$TMP_PROFILE" "$DEST_DIR/$UUID.provisionprofile"
+          echo "installed=true" >> "$GITHUB_OUTPUT"
+          echo "::notice::Installed provisioning profile '$PROFILE_NAME' ($UUID)"
+
+      # PROVISIONING_PROFILE_SPECIFIER is only passed when a profile was
+      # installed in the previous step. Without it, xcodebuild defaults to
+      # no embedded profile, which is correct for builds using only standard
+      # entitlements.
       - name: Archive (signed)
         if: steps.mode.outputs.signed == 'true'
         run: |
+          PP_ARG=""
+          if [ "${{ steps.profile.outputs.installed }}" = "true" ]; then
+            PP_ARG=PROVISIONING_PROFILE_SPECIFIER="${{ secrets.APPLE_PROVISION_PROFILE_NAME }}"
+          fi
           xcodebuild \
-            -project packages/owletto/apps/mac/Lobu.xcodeproj -scheme Lobu -configuration Release \
-            -archivePath "$RUNNER_TEMP/Lobu.xcarchive" archive \
+            -project packages/owletto/apps/mac/Owletto.xcodeproj -scheme Owletto -configuration Release \
+            -archivePath "$RUNNER_TEMP/Owletto.xcarchive" archive \
             CODE_SIGN_STYLE=Manual \
             CODE_SIGN_IDENTITY="Developer ID Application" \
             DEVELOPMENT_TEAM="${{ secrets.APPLE_TEAM_ID }}" \
+            $PP_ARG \
             ENABLE_HARDENED_RUNTIME=YES \
             MARKETING_VERSION="${{ steps.v.outputs.version }}"
 
@@ -221,18 +286,18 @@ jobs:
         if: steps.mode.outputs.signed != 'true'
         run: |
           xcodebuild \
-            -project packages/owletto/apps/mac/Lobu.xcodeproj -scheme Lobu -configuration Release \
-            -archivePath "$RUNNER_TEMP/Lobu.xcarchive" archive \
+            -project packages/owletto/apps/mac/Owletto.xcodeproj -scheme Owletto -configuration Release \
+            -archivePath "$RUNNER_TEMP/Owletto.xcarchive" archive \
             CODE_SIGNING_ALLOWED=NO \
             MARKETING_VERSION="${{ steps.v.outputs.version }}"
           # arm64 apps must carry at least an ad-hoc signature to launch at all;
           # this also lets users do right-click → Open past "unidentified
           # developer". A real Developer ID + notarization removes that prompt.
-          codesign --force --deep --sign - "$RUNNER_TEMP/Lobu.xcarchive/Products/Applications/Owletto.app"
+          codesign --force --deep --sign - "$RUNNER_TEMP/Owletto.xcarchive/Products/Applications/Owletto.app"
 
       - name: Build DMG
         run: |
-          APP="$RUNNER_TEMP/Lobu.xcarchive/Products/Applications/Owletto.app"
+          APP="$RUNNER_TEMP/Owletto.xcarchive/Products/Applications/Owletto.app"
           test -d "$APP" || { echo "::error::Owletto.app missing from archive"; exit 1; }
           STAGE="$RUNNER_TEMP/dmg-stage"; mkdir -p "$STAGE"; cp -R "$APP" "$STAGE/"
           brew install create-dmg

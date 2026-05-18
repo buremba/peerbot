@@ -222,19 +222,68 @@ export class ChatInstanceManager {
       }
 
       try {
-        if (connection.status === "active") {
+        // Retry `error` rows alongside `active`: a previous boot's failure
+        // (transient deploy issue, temporary env breakage like the #692
+        // encryption-key parser regression) leaves the row stuck in `error`
+        // forever even after the underlying bug is fixed, because nothing
+        // else flips it back. `stopped` is operator-driven so we still
+        // skip those. On success startInstance() clears the error state
+        // when persistConnection() runs through a later restart/update.
+        if (connection.status === "active" || connection.status === "error") {
           // Boot runs without an HTTP request, so AsyncLocalStorage has
           // no orgId. startInstance() now self-binds the connection's
           // agent org so PostgresSecretStore.get() resolves per-org
           // refs correctly; see comment on startInstance().
           await this.startInstance(connection);
+          if (connection.status === "error") {
+            // Recovered from a previous boot's failure — clear the error
+            // marker so the UI reflects reality. Bound to the connection's
+            // own org so the per-tenant WHERE predicate is satisfied.
+            const recoveryOrgId = connection.organizationId;
+            const clearError = () =>
+              this.connectionStore.updateConnection(connection.id, {
+                status: "active",
+                errorMessage: undefined,
+              });
+            if (recoveryOrgId) {
+              await orgContext.run(
+                { organizationId: recoveryOrgId },
+                clearError
+              );
+            } else {
+              await clearError();
+            }
+            logger.info(
+              { id: connection.id },
+              "Recovered previously-errored connection"
+            );
+          }
         }
       } catch (error) {
         logger.error({ id: connection.id, error: String(error) }, "Failed to load connection");
-        await this.connectionStore.updateConnection(connection.id, {
-          status: "error",
-          errorMessage: `Startup failed: ${error instanceof Error ? error.message : String(error)}`,
-        });
+        // Mark the row errored under the connection's own org context:
+        // boot has no HTTP request and no ALS org id, and the postgres
+        // store's saveConnection() requires getOrgId() — without the
+        // wrap the error-marker write itself throws and the row is left
+        // in `active`, masking the failure.
+        const errOrgId = connection.organizationId;
+        const markErrored = () =>
+          this.connectionStore.updateConnection(connection.id, {
+            status: "error",
+            errorMessage: `Startup failed: ${error instanceof Error ? error.message : String(error)}`,
+          });
+        try {
+          if (errOrgId) {
+            await orgContext.run({ organizationId: errOrgId }, markErrored);
+          } else {
+            await markErrored();
+          }
+        } catch (markErr) {
+          logger.error(
+            { id: connection.id, error: String(markErr) },
+            "Failed to mark connection as errored"
+          );
+        }
       }
     }
   }
@@ -628,19 +677,21 @@ export class ChatInstanceManager {
     // here with org context already bound (HTTP routes via agent-routes
     // middleware); others don't (boot-time initialize(), the public
     // /slack/events webhook, anywhere ensureConnectionRunning() is
-    // triggered without an HTTP request). Self-binding the connection's
-    // owning org keeps per-org secret refs resolvable from every entry
-    // point — no caller has to remember.
-    const callerOrgId = tryGetOrgId();
-    if (!callerOrgId && connection.organizationId) {
-      // Connection rows now carry their owning org id directly — use it
-      // to set up the AsyncLocalStorage scope before resolving any
-      // org-scoped secret refs.
+    // triggered without an HTTP request). Always rebind to the
+    // connection's owning org id so the per-tenant secret-store query
+    // hits the right bucket — including when a caller's org happens to
+    // differ from the connection's (a Slack webhook resolved by team_id
+    // can land in an admin's session context whose org doesn't match
+    // the connection's row).
+    if (connection.organizationId) {
       return orgContext.run(
         { organizationId: connection.organizationId },
         () => this.startInstanceUnscoped(connection)
       );
     }
+    // Pre-org-scoping rows (legacy connections without organizationId)
+    // fall through to the caller's context. PostgresSecretStore.get()
+    // accepts the global bucket too, so legacy secrets keep resolving.
     return this.startInstanceUnscoped(connection);
   }
 

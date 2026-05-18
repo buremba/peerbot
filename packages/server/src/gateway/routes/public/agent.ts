@@ -13,6 +13,7 @@ import {
 } from "@lobu/core";
 import type { Context } from "hono";
 import { streamSSE } from "hono/streaming";
+import { bindRequestAbortToStream } from "../../../events/sse-abort-bridge.js";
 import { z } from "zod";
 import type { AgentMetadataStore } from "../../auth/agent-metadata-store.js";
 import { getRevokedTokenStore } from "../../auth/revoked-token-store.js";
@@ -869,8 +870,25 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
       );
     }
 
-    // Return SSE stream
+    // Return SSE stream.
+    //
+    // Hono's `streamSSE` only fires `stream.onAbort()` when the underlying
+    // `ReadableStream.cancel()` runs — which doesn't happen on abnormal
+    // disconnects (LB idle timeout, intermediate proxy kill, client hard
+    // close). On Node + current Bun, `signal.abort` is the only reliable
+    // trigger. Without it the heartbeat interval keeps firing, the
+    // `sseManager` retains the dead connection, and the `while !aborted`
+    // loop never exits — the same retain pattern fixed for the invalidation
+    // streams in #833. Refs #782.
+    const requestSignal = c.req.raw.signal;
+
     return streamSSE(c, async (stream) => {
+      // If the client already aborted between handler invocation and stream
+      // body execution, bail out before registering anything.
+      if (requestSignal?.aborted) {
+        return;
+      }
+
       sseManager.addConnection(sseKey, stream);
 
       await stream.writeSSE({
@@ -899,14 +917,25 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
         }
       }, 30000);
 
-      stream.onAbort(() => {
+      let cleanedUp = false;
+      const cleanup = () => {
+        if (cleanedUp) return;
+        cleanedUp = true;
         clearInterval(heartbeatInterval);
         sseManager.removeConnection(sseKey, stream);
         logger.info(`SSE connection closed for session ${sseKey}`);
-      });
+      };
 
-      while (true) {
-        await stream.sleep(1000);
+      stream.onAbort(cleanup);
+      const detachAbortBridge = bindRequestAbortToStream(requestSignal, stream);
+
+      try {
+        while (!stream.aborted && !stream.closed) {
+          await stream.sleep(1000);
+        }
+      } finally {
+        detachAbortBridge();
+        cleanup();
       }
     });
   });

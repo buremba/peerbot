@@ -9,6 +9,7 @@ import { createLogger, encrypt, verifyWorkerToken } from "@lobu/core";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { stream } from "hono/streaming";
+import { bindRequestAbortToStream } from "../../events/sse-abort-bridge.js";
 import type { ApiKeyProviderModule } from "../auth/api-key-provider-module.js";
 import { getRevokedTokenStore } from "../auth/revoked-token-store.js";
 import type { McpConfigService } from "../auth/mcp/config-service.js";
@@ -189,9 +190,26 @@ export class WorkerGateway {
     const httpPortParam = c.req.query("httpPort");
     const httpPort = httpPortParam ? parseInt(httpPortParam, 10) : undefined;
 
-    // Create an SSE stream
+    // Create an SSE stream.
+    //
+    // Hono's `stream()` only fires `streamWriter.onAbort()` from
+    // `ReadableStream.cancel()` — which doesn't run on abnormal disconnects
+    // (LB idle timeout, intermediate proxy kill, worker pod hard exit). On
+    // Node + current Bun the per-request `AbortSignal` is the only reliable
+    // trigger. Without bridging it, a stale worker SSE leaks the writer
+    // closure + `while !isClosed` loop until the 10-minute stale-cleanup
+    // sweep catches up. Same retain pattern fixed for the invalidation
+    // streams in #833. Refs #782.
+    const requestSignal = c.req.raw.signal;
+
     return stream(c, async (streamWriter) => {
       let isClosed = false;
+
+      // If the client already aborted between handler invocation and stream
+      // body execution, bail out before registering anything.
+      if (requestSignal?.aborted) {
+        return;
+      }
 
       // Create an SSE writer adapter
       const sseWriter: SSEWriter = {
@@ -217,6 +235,11 @@ export class WorkerGateway {
           });
         },
       };
+
+      const detachAbortBridge = bindRequestAbortToStream(
+        requestSignal,
+        streamWriter
+      );
 
       // Set SSE headers
       c.header("Content-Type", "text/event-stream");
@@ -269,8 +292,12 @@ export class WorkerGateway {
       });
 
       // Keep the connection open until the stream is actually aborted.
-      while (!isClosed) {
-        await streamWriter.sleep(1000);
+      try {
+        while (!isClosed) {
+          await streamWriter.sleep(1000);
+        }
+      } finally {
+        detachAbortBridge();
       }
     });
   }

@@ -162,7 +162,7 @@ webhook/OAuth-callback testing actually needs the public URL.
 2. Apply the fix.
 3. Re-run the reproducer. Capture output.
 4. Paste both in the PR body under a "Reproducer" section.
-5. **If you can't reproduce the original failure, BAIL** — post the dead-end on the issue, do not open a PR. Pi approval validates code shape, not that the fix hits the actual smoking gun.
+5. **If you can't reproduce the original failure, BAIL** — post the dead-end on the issue, do not open a PR. Pi (the project's automated PR-review CLI, run as `pi -p <PR>`) validates code shape, not that the fix hits the actual smoking gun.
 
 Exception: changes that require dev environments the agent can't reach (Mac/Xcode, iOS, hardware). Call it out in the PR body ("Untested — requires Xcode") and leave the PR in draft until a human validates.
 

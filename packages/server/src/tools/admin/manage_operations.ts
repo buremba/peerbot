@@ -119,6 +119,12 @@ type ManageOperationsResult =
       metadata?: Record<string, unknown>;
     }
   | { action: 'execute'; run_id: number; status: 'failed'; error_message: string }
+  | {
+      action: 'execute';
+      run_id: number;
+      status: 'timeout';
+      error_message: string;
+    }
   | { action: 'list_runs'; runs: any[]; total: number; limit: number; offset: number }
   | { action: 'get_run'; run: any }
   | { action: 'approve'; approved: true; run_id: number; event_id?: number; message: string }
@@ -432,6 +438,77 @@ async function handleListAvailable(
   };
 }
 
+// Poll `runs` until status flips to completed/failed/timeout or we hit
+// the timeout deadline. Used by handleExecute when the connector is
+// device-bound — the gateway can't execute inline; it inserts a pending
+// run and waits for the device worker (chrome extension / mac bridge /
+// etc.) to claim, run, and POST /api/workers/complete-action.
+async function waitForDeviceActionRun(
+  runId: number,
+  organizationId: string
+): Promise<{
+  status: 'completed' | 'failed' | 'timeout';
+  output?: Record<string, unknown>;
+  error_message?: string;
+}> {
+  const sql = getDb();
+  // Hard cap chosen to fit comfortably inside the chrome extension's
+  // 90s per-run watchdog (tools.js RUN_TIMEOUT_MS) plus a 5s buffer for
+  // poll + claim + complete round-trip.
+  const TIMEOUT_MS = 100_000;
+  const POLL_MS = 500;
+  const deadline = Date.now() + TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const rows = (await sql`
+      SELECT status, action_output, error_message
+      FROM runs
+      WHERE id = ${runId} AND organization_id = ${organizationId}
+      LIMIT 1
+    `) as Array<{
+      status: string;
+      action_output: Record<string, unknown> | null;
+      error_message: string | null;
+    }>;
+    const row = rows[0];
+    if (!row) {
+      return {
+        status: 'failed',
+        error_message: `Run ${runId} disappeared from runs table while waiting.`,
+      };
+    }
+    if (row.status === 'completed') {
+      return {
+        status: 'completed',
+        output: (row.action_output ?? {}) as Record<string, unknown>,
+      };
+    }
+    if (row.status === 'failed' || row.status === 'timeout') {
+      return {
+        status: row.status as 'failed' | 'timeout',
+        error_message: row.error_message ?? `Run ${runId} ${row.status}`,
+      };
+    }
+    await new Promise((r) => setTimeout(r, POLL_MS));
+  }
+  // Best-effort: mark the run as timeout so the next poll doesn't
+  // re-claim it. The device worker's own timeout will eventually post
+  // failed; if it gets there first, this UPDATE is a no-op on a
+  // terminal row.
+  await sql`
+    UPDATE runs
+    SET status = 'timeout',
+        completed_at = current_timestamp,
+        error_message = ${`waitForDeviceActionRun: ${TIMEOUT_MS}ms exceeded`}
+    WHERE id = ${runId}
+      AND organization_id = ${organizationId}
+      AND status IN ('pending', 'claimed', 'running')
+  `;
+  return {
+    status: 'timeout',
+    error_message: `Run ${runId} did not complete within ${TIMEOUT_MS}ms — the chrome-extension / device worker may be offline.`,
+  };
+}
+
 async function handleExecute(
   args: Extract<OperationsArgs, { action: 'execute' }>,
   env: Env,
@@ -461,13 +538,35 @@ async function handleExecute(
   }
   const shouldQueue = mode === 'approval';
 
+  // Detect device-bound connector by reading the connector definition's
+  // `runtime` field. When set (e.g. chrome-extension, macos, ios), the
+  // connector's execute() lives on a device worker, not on the gateway.
+  // Inline execution would hit the BRIDGE_ONLY throw. Instead, create a
+  // status='pending' run + wait for the worker to claim, complete it,
+  // and persist action_output via /api/workers/complete-action.
+  const defRows = (await sql`
+    SELECT runtime FROM connector_definitions
+    WHERE key = ${connection.connector_key}
+      AND organization_id = ${ctx.organizationId}
+      AND status = 'active'
+    ORDER BY updated_at DESC, id DESC
+    LIMIT 1
+  `) as Array<{ runtime: Record<string, unknown> | null }>;
+  const isDeviceBound = defRows[0]?.runtime != null;
+
+  const approvalMode: 'inline' | 'queued' | 'device' = shouldQueue
+    ? 'queued'
+    : isDeviceBound
+      ? 'device'
+      : 'inline';
+
   const runId = await createConnectorOperationRun({
     organizationId: ctx.organizationId,
     connectionId: connection.id,
     connectorKey: connection.connector_key,
     operationKey: operation.operation_key,
     operationInput: input,
-    approvalMode: shouldQueue ? 'queued' : 'inline',
+    approvalMode,
     requireCompiledCode: operation.backend === 'local_action',
   });
 
@@ -554,6 +653,37 @@ async function handleExecute(
       approval_url: approvalUrl,
       status: 'pending_approval',
       message: `Operation '${operation.name}' requires approval. Share the approval_url with the user to confirm.`,
+    };
+  }
+
+  // Device-bound branch: the run is pending; a device worker (chrome
+  // extension, mac bridge, ...) will claim it via /api/workers/poll and
+  // post completion to /api/workers/complete-action. Poll runs.status
+  // here until it flips to completed/failed/timeout, or we hit the
+  // device-action timeout. Returns action_output on success.
+  if (approvalMode === 'device') {
+    const result = await waitForDeviceActionRun(runId, ctx.organizationId);
+    if (result.status === 'completed') {
+      return {
+        action: 'execute',
+        run_id: runId,
+        status: 'completed',
+        output: result.output ?? {},
+      };
+    }
+    if (result.status === 'timeout') {
+      return {
+        action: 'execute',
+        run_id: runId,
+        status: 'timeout',
+        error_message: result.error_message ?? 'Device action run timed out.',
+      };
+    }
+    return {
+      action: 'execute',
+      run_id: runId,
+      status: 'failed',
+      error_message: result.error_message ?? 'Device action run failed.',
     };
   }
 

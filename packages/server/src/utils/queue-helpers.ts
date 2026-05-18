@@ -445,13 +445,24 @@ export async function createConnectorOperationRun(params: {
   connectorKey: string;
   operationKey: string;
   operationInput: Record<string, unknown>;
-  approvalMode: 'inline' | 'queued';
+  /**
+   * - 'inline'  → status='running', approval='auto'. Caller executes
+   *               the connector inline on the gateway (server-side
+   *               connectors only).
+   * - 'queued'  → status='pending', approval='pending'. Waits for human
+   *               approval before any worker can claim.
+   * - 'device'  → status='pending', approval='auto'. Skips human gate,
+   *               waits for a device worker to claim via /poll. Used
+   *               for connectors with `runtime` set (chrome-extension,
+   *               macos bridge, ios bridge). No gateway-side execution.
+   */
+  approvalMode: 'inline' | 'queued' | 'device';
   requireCompiledCode?: boolean;
 }): Promise<number> {
   const sql = getDb();
 
   const approvalStatus = params.approvalMode === 'queued' ? 'pending' : 'auto';
-  const status = params.approvalMode === 'queued' ? 'pending' : 'running';
+  const status = params.approvalMode === 'inline' ? 'running' : 'pending';
 
   // Resolve connector version from connector_definitions
   const defRows = await sql`

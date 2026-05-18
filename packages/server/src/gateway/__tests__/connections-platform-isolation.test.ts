@@ -47,6 +47,10 @@ function makeConnection(
 ): PlatformConnection {
   return {
     id: connectionId,
+    // Required by the bridge's per-tenant `pending_interactions` write —
+    // a connection without an org would be dropped before `resolveThread`
+    // (where `instanceChat.channel()` is asserted).
+    organizationId: "test-org",
     platform,
     config: { platform } as PlatformAdapterConfig,
     settings: {},

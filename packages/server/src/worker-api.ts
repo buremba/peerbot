@@ -2329,10 +2329,32 @@ export async function mintDeviceChildToken(c: Context<{ Bindings: Env }>) {
       ON CONFLICT (user_id, worker_id) DO NOTHING
     `;
 
+    // Also mint a Better Auth session token for the same user. The sibling
+    // device's iframe needs a session cookie (not a PAT) to land signed-in;
+    // the extension installs this via /api/exchange-token. Without it the
+    // user has to type their password a second time after auto-pair.
+    let sessionToken: string | null = null;
+    try {
+      const auth = await createAuth(c.env, c.req.raw);
+      const ctx = await auth.$context;
+      const session = await ctx.internalAdapter.createSession(userId);
+      sessionToken = session?.token ?? null;
+    } catch (err) {
+      // Session mint is best-effort — child PAT is the primary credential.
+      // Falling back to no session_token means the iframe shows sign-in,
+      // matching pre-existing behaviour for siblings that haven't adopted
+      // the handoff.
+      logger.warn(
+        { err: errorMessage(err), userId },
+        '[mintDeviceChildToken] session mint failed; returning child PAT only'
+      );
+    }
+
     const gatewayUrl = new URL(c.req.url).origin;
     return c.json({
       worker_id: workerId,
       access_token: created.token,
+      session_token: sessionToken,
       gateway_url: gatewayUrl,
       label,
       platform,

@@ -1,0 +1,81 @@
+# Lobu — sample docker-compose for self-hosting
+#
+# Quick start:
+#   1. cp docker-compose.example.yml docker-compose.yml
+#   2. Set required env vars below (especially ENCRYPTION_KEY + BETTER_AUTH_SECRET).
+#    3. docker compose up -d
+#   4. Open http://localhost:8787, sign in.
+#
+# See docs/DOCKER.md for the full guide, including env-var meanings and the
+# minimum-to-boot vs nice-to-have split.
+#
+# Note: the published image (ghcr.io/lobu-ai/lobu-app) is the same artifact
+# that runs in Lobu Cloud's k8s clusters; it's not Docker-specific. Lobu Cloud
+# is the operator-managed option if you don't want to run this yourself.
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg18-trixie
+    container_name: lobu-postgres
+    environment:
+      POSTGRES_USER: lobu
+      POSTGRES_PASSWORD: change_me_in_real_compose
+      POSTGRES_DB: lobu
+    ports:
+      - "5433:5432"
+    volumes:
+      - lobu_pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lobu -d lobu"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  lobu:
+    image: ghcr.io/lobu-ai/lobu-app:latest
+    container_name: lobu-app
+    ports:
+      - "8787:8787"
+    environment:
+      # ---- Required to boot ------------------------------------------------
+      DATABASE_URL: postgresql://lobu:change_me_in_real_compose@postgres:5432/lobu?sslmode=disable
+      # 32-byte base64 — generate with: openssl rand -base64 32
+      # Loses every encrypted secret in Postgres if you change it after first boot.
+      ENCRYPTION_KEY: REPLACE_ME_openssl_rand_base64_32
+      # 32-byte base64 — generate with: openssl rand -base64 32
+      BETTER_AUTH_SECRET: REPLACE_ME_openssl_rand_base64_32
+      PUBLIC_WEB_URL: http://localhost:8787
+
+      # ---- Recommended -----------------------------------------------------
+      NODE_ENV: production
+      LOG_LEVEL: INFO
+
+      # ---- Provider keys (set ONLY the providers you want available) -------
+      # None are required at boot. Lobu picks up whichever you set and
+      # exposes them as choices in the settings UI. You can also add provider
+      # API keys through the admin UI at runtime — no env-var required.
+      # Full list of bundled providers (anthropic + 16 OpenAI-compatible) is
+      # in config/providers.json.
+      # ANTHROPIC_API_KEY: sk-ant-...
+      # OPENAI_API_KEY: sk-...
+      # GROQ_API_KEY: gsk_...
+      # GEMINI_API_KEY: AIza...
+      # OPENROUTER_API_KEY: sk-or-...
+
+      # ---- Worker network policy (default: deny all) -----------------------
+      # Workers run sandboxed and reach the internet only via a filtering
+      # proxy. Default empty = full isolation. For most self-host use cases
+      # the allowlist below is a reasonable starting point.
+      WORKER_ALLOWED_DOMAINS: "api.anthropic.com,api.openai.com,registry.npmjs.org,.npmjs.org,github.com,.github.com,.githubusercontent.com"
+
+    volumes:
+      - lobu_workspaces:/app/workspaces
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  lobu_pgdata:
+  lobu_workspaces:

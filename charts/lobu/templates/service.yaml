@@ -7,6 +7,16 @@ metadata:
     app.kubernetes.io/component: api
 spec:
   type: {{ .Values.service.type }}
+  {{- with .Values.service.sessionAffinity }}
+  {{- if ne . "None" }}
+  sessionAffinity: {{ . }}
+  {{- if eq . "ClientIP" }}
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: {{ $.Values.service.sessionAffinityTimeoutSeconds | default 10800 }}
+  {{- end }}
+  {{- end }}
+  {{- end }}
   ports:
     - port: {{ .Values.service.port }}
       targetPort: http

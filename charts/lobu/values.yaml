@@ -167,6 +167,20 @@ embeddings:
 service:
   type: ClusterIP
   port: 8787
+  # Pin each client to the same pod for the lifetime of the affinity
+  # window. Required when running >1 app replica: SSE streams
+  # (`/api/v1/agents/<id>/events`) and the per-pod backlog in
+  # `SseManager` are not cross-pod — a client whose first SSE chunk
+  # lands on pod A and whose later run claim lands on pod B would
+  # silently miss events. ClientIP affinity works at kube-proxy
+  # without any ingress controller config. Disabled by default; the
+  # helmrelease in deploy/k8s opts in alongside `replicaCount: 2`.
+  #
+  # `sessionAffinity` accepts "None" (default) or "ClientIP". The
+  # timeout is the affinity window in seconds (default 10800 = 3h);
+  # set lower if NAT churn is a concern.
+  sessionAffinity: None
+  sessionAffinityTimeoutSeconds: 10800
 
 # Optional Ingress for public webhooks and the admin UI. When hosts are set,
 # the app Deployment derives PUBLIC_WEB_URL from the first host unless you set

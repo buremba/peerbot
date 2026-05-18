@@ -71,20 +71,25 @@ async function isRunOwnedByJwtScope(
   conversationId: string
 ): Promise<boolean> {
   const sql = getDb();
-  // Reads from real columns instead of the legacy `action_input ->> 'agentId'`
-  // / `... ->> 'conversationId'` JSONB extraction. The columns are populated
-  // by the runs-queue producer on insert (see RunsQueue.send) and backfilled
-  // for historical rows by migration `runs_denormalize_agent_conversation`.
-  // The partial index `runs_agent_conv_idx` covers this exact predicate
-  // shape so the planner serves it as an index-only seek instead of the
-  // 10-100ms seq-scan over millions of rows we used to pay per snapshot
-  // POST.
+  // Primary check reads the scalar `agent_id` / `conversation_id` columns
+  // populated by `RunsQueue.send` and backfilled for historical rows by
+  // migration `runs_denormalize_agent_conversation`. `runs_pkey` already
+  // serves the single-row lookup on `id`; the win is removing the JSONB
+  // extraction operator from the predicate and lifting the routing keys
+  // into typed columns.
+  //
+  // COALESCE-fallback to the JSONB extraction protects the deploy-order
+  // crossover window: if the migration has landed but an old gateway is
+  // still inserting rows that only populate `action_input`, the verifier
+  // still authorizes those rows correctly. The fallback adds one JSONB
+  // lookup on the single PK-matched row (not a scan) so the cost is
+  // microseconds. Codex P1#1 on PR #870.
   const rows = await sql<{ ok: boolean }>`
     SELECT 1 AS ok FROM public.runs
     WHERE id = ${runId}
       AND organization_id = ${organizationId}
-      AND agent_id = ${agentId}
-      AND conversation_id = ${conversationId}
+      AND COALESCE(agent_id, action_input ->> 'agentId') = ${agentId}
+      AND COALESCE(conversation_id, action_input ->> 'conversationId') = ${conversationId}
     LIMIT 1
   `;
   return rows.length > 0;

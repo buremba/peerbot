@@ -4156,7 +4156,7 @@ CREATE INDEX rate_limits_expires_at_idx ON public.rate_limits USING btree (expir
 -- Name: runs_agent_conv_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX runs_agent_conv_idx ON public.runs USING btree (id, organization_id, agent_id, conversation_id) WHERE ((agent_id IS NOT NULL) AND (conversation_id IS NOT NULL));
+CREATE INDEX runs_agent_conv_idx ON public.runs USING btree (agent_id, conversation_id, id DESC) WHERE ((agent_id IS NOT NULL) AND (conversation_id IS NOT NULL));
 
 --
 -- Name: runs_expires_at_idx; Type: INDEX; Schema: public; Owner: -

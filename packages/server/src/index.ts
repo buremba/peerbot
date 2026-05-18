@@ -73,6 +73,7 @@ import {
   getConfiguredPublicOrigin,
   getSubdomainZone,
 } from './utils/public-origin';
+import { getReservedLockCount } from './gateway/orchestration/impl/embedded-deployment';
 import { getSchedulerHealth } from './scheduled/scheduler-health';
 import { getClientIP, getRateLimiter, RateLimitPresets } from './utils/rate-limiter';
 import { getRuntimeInfo } from './utils/runtime-info';
@@ -431,6 +432,33 @@ app.get('/health/ready', async (c) => {
       503
     );
   }
+});
+
+/**
+ * Orchestrator health / metric endpoint.
+ *
+ * Exposes the live count of `sql.reserve()` connections held by
+ * `acquireConversationLock` (snapshot-mode per-conversation locks) so an
+ * operator can spot pool pressure before it manifests as gateway query
+ * starvation. Returns `near_cap: true` once the count crosses 80% of the
+ * configured cap (LOBU_MAX_RESERVED_LOCKS, default 50). The endpoint is
+ * cheap and dependency-free; safe to scrape every few seconds.
+ */
+app.get('/health/orchestrator', (c) => {
+  const count = getReservedLockCount();
+  const rawCap = process.env.LOBU_MAX_RESERVED_LOCKS;
+  const parsedCap =
+    rawCap && Number.isFinite(Number.parseInt(rawCap, 10))
+      ? Number.parseInt(rawCap, 10)
+      : 50;
+  const cap = parsedCap < 0 ? 50 : parsedCap;
+  const nearCap = cap > 0 && count >= Math.ceil(cap * 0.8);
+  return c.json({
+    status: 'ok',
+    reserved_conversation_locks: count,
+    reserved_conversation_locks_cap: cap,
+    near_cap: nearCap,
+  });
 });
 
 /**

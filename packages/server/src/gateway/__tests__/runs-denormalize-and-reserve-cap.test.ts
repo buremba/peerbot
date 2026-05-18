@@ -148,6 +148,53 @@ describe("runs: agent_id / conversation_id denormalization", () => {
     expect(await verify(runId, "org-b", "agent-a", "conv-a")).toBe(false);
   });
 
+  test("crossover fallback: verifier accepts rows where only action_input is populated", async () => {
+    // Simulates the deploy-order race: migration ran, app rolled, but an
+    // old gateway pod that hasn't picked up the new code is still
+    // inserting rows that only populate `action_input`. The verifier's
+    // COALESCE fallback must authorize the snapshot POST for those rows.
+    await ensureOrg("org-c");
+    const sql = getDb();
+    const rows = (await sql`
+      INSERT INTO public.runs (
+        organization_id, run_type, status, action_input,
+        queue_name, run_at, created_at
+      ) VALUES (
+        'org-c',
+        'chat_message',
+        'running',
+        ${sql.json({ agentId: "agent-c", conversationId: "conv-c" })},
+        'chat_message',
+        NOW(),
+        NOW()
+      )
+      RETURNING id
+    `) as Array<{ id: number }>;
+    const runId = rows[0]!.id;
+
+    // Verifier with COALESCE fallback (same shape as transcript-routes.ts):
+    const ok = await sql<{ ok: boolean }>`
+      SELECT 1 AS ok FROM public.runs
+      WHERE id = ${runId}
+        AND organization_id = 'org-c'
+        AND COALESCE(agent_id, action_input ->> 'agentId') = 'agent-c'
+        AND COALESCE(conversation_id, action_input ->> 'conversationId') = 'conv-c'
+      LIMIT 1
+    `;
+    expect(ok.length).toBe(1);
+
+    // Wrong scope still rejected even with fallback active.
+    const wrong = await sql<{ ok: boolean }>`
+      SELECT 1 AS ok FROM public.runs
+      WHERE id = ${runId}
+        AND organization_id = 'org-c'
+        AND COALESCE(agent_id, action_input ->> 'agentId') = 'agent-wrong'
+        AND COALESCE(conversation_id, action_input ->> 'conversationId') = 'conv-c'
+      LIMIT 1
+    `;
+    expect(wrong.length).toBe(0);
+  });
+
   test("backfill: rows inserted with NULL columns get populated from action_input", async () => {
     await ensureOrg("org-old");
     const sql = getDb();
@@ -193,11 +240,13 @@ describe("runs: agent_id / conversation_id denormalization", () => {
     expect(after[0]!.conversation_id).toBe("legacy-conv");
   });
 
-  test("partial index is present and covers the verifier predicate", async () => {
-    // We can't assert planner choice on PGlite (the planner is minimal and
-    // doesn't honor index hints the same way as real PG), but we can prove
-    // the index exists with the expected shape — its presence in prod is
-    // what makes the verifier index-only.
+  test("partial index is present and covers (agent_id, conversation_id) lookups", async () => {
+    // `runs_pkey` already serves the single-row verifier path on `id`. This
+    // index is for queries that look up runs by the (agent_id,
+    // conversation_id) pair without specifying id (diagnostics, history
+    // pruning, scheduled cleanup sweeps). Test asserts the index exists
+    // with the leading columns ordered correctly and the partial WHERE
+    // clause that keeps it narrow.
     const sql = getDb();
     const rows = (await sql`
       SELECT indexdef
@@ -210,7 +259,6 @@ describe("runs: agent_id / conversation_id denormalization", () => {
     const def = rows[0]!.indexdef.toLowerCase();
     expect(def).toContain("agent_id");
     expect(def).toContain("conversation_id");
-    expect(def).toContain("organization_id");
     // The WHERE clause keeps the index narrow.
     expect(def).toContain("where");
     expect(def).toContain("not null");

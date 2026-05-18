@@ -9,8 +9,15 @@
  * reaper those rows sit "running" forever and the feed never gets a retry.
  *
  * Scope:
- *  - `sync`, `action`, `embed_backfill`, `auth` — driven by the out-of-process
- *    connector-worker daemon. These are reaped here.
+ *  - `sync`, `auth` — driven by the out-of-process connector-worker daemon
+ *    and emit `client.heartbeat()` from their executors. These are the only
+ *    lanes safe to reap on a heartbeat-staleness basis today.
+ *  - `action`, `embed_backfill` — also connector-worker lanes, but their
+ *    executors (`executeActionRun`, `executeEmbedBackfillRun` in
+ *    packages/connector-worker/src/daemon/executor.ts) do NOT heartbeat.
+ *    Reaping them on `last_heartbeat_at` would kill in-flight runs the
+ *    moment they exceed the stale threshold. Tracked as a follow-up — once
+ *    those lanes heartbeat, fold them back into the WHERE clause + index.
  *  - `watcher` — driven in-process by the embedded gateway. Lifecycle is
  *    handled by WatcherRunTracker + the dedicated `sweepStaleWatcherRuns` /
  *    `resetOrphanedWatcherRuns` helpers in watchers/automation.ts.
@@ -99,7 +106,7 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
         SET status = 'timeout',
             completed_at = current_timestamp,
             error_message = ${errorMessage}
-        WHERE run_type IN ('sync', 'action', 'embed_backfill', 'auth')
+        WHERE run_type IN ('sync', 'auth')
           AND status IN ('claimed', 'running')
           AND (
             (last_heartbeat_at IS NULL

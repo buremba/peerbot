@@ -862,4 +862,22 @@ export const EMBEDDED_SCHEMA_PATCHES: EmbeddedSchemaPatch[] = [
       `);
     },
   },
+  {
+    id: 'runs-heartbeat-inflight-narrow',
+    apply: async (sql) => {
+      // Mirrors db/migrations/20260518020000_runs_heartbeat_inflight_narrow.sql.
+      // Narrows the partial index + reaper WHERE clause to the lanes that
+      // actually heartbeat today (sync + auth). The previous wide set
+      // (sync, action, embed_backfill, auth) caused in-flight action and
+      // embed_backfill runs to be marked `timeout` after 120s because their
+      // executors never call client.heartbeat().
+      await sql.unsafe(`DROP INDEX IF EXISTS public.idx_runs_heartbeat_inflight`);
+      await sql.unsafe(`
+        CREATE INDEX IF NOT EXISTS idx_runs_heartbeat_inflight
+          ON public.runs (last_heartbeat_at)
+          WHERE status IN ('claimed', 'running')
+            AND run_type IN ('sync', 'auth')
+      `);
+    },
+  },
 ];

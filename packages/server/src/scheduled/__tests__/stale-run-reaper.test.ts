@@ -166,16 +166,9 @@ describe('reapStaleRuns — connector lanes', () => {
     expect(await statusOf(staleId)).toBe('timeout');
   });
 
-  test('action and auth lanes are reaped (parity with sync/embed_backfill)', async () => {
-    // These lanes were missing from the legacy checkStalledExecutions sweep
-    // — only `sync` + `embed_backfill` were covered. The new reaper covers
-    // all four connector lanes uniformly.
-    const actionId = await seedRun({
-      status: 'running',
-      lastHeartbeatAgoSeconds: STALE_THRESHOLD_SECONDS * 3,
-      claimedAtAgoSeconds: STALE_THRESHOLD_SECONDS * 3,
-      runType: 'action',
-    });
+  test('auth lane is reaped (parity with sync)', async () => {
+    // `auth` heartbeats from executeAuthRun in the connector-worker daemon, so
+    // staleness on `last_heartbeat_at` is a real failure signal there too.
     const authId = await seedRun({
       status: 'running',
       lastHeartbeatAgoSeconds: STALE_THRESHOLD_SECONDS * 3,
@@ -184,8 +177,32 @@ describe('reapStaleRuns — connector lanes', () => {
     });
 
     const result = await reapStaleRuns();
-    expect(result.reaped).toBe(2);
-    expect(await statusOf(actionId)).toBe('timeout');
+    expect(result.reaped).toBe(1);
     expect(await statusOf(authId)).toBe('timeout');
+  });
+
+  test('action and embed_backfill lanes are NOT reaped (they do not heartbeat today)', async () => {
+    // executeActionRun and executeEmbedBackfillRun in
+    // packages/connector-worker/src/daemon/executor.ts never call
+    // client.heartbeat(), so reaping them on `last_heartbeat_at` would kill
+    // in-flight runs after the stale threshold elapses. Until those lanes
+    // emit heartbeats, the reaper must leave them alone.
+    const actionId = await seedRun({
+      status: 'running',
+      lastHeartbeatAgoSeconds: STALE_THRESHOLD_SECONDS * 3,
+      claimedAtAgoSeconds: STALE_THRESHOLD_SECONDS * 3,
+      runType: 'action',
+    });
+    const embedId = await seedRun({
+      status: 'running',
+      lastHeartbeatAgoSeconds: STALE_THRESHOLD_SECONDS * 3,
+      claimedAtAgoSeconds: STALE_THRESHOLD_SECONDS * 3,
+      runType: 'embed_backfill',
+    });
+
+    const result = await reapStaleRuns();
+    expect(result.reaped).toBe(0);
+    expect(await statusOf(actionId)).toBe('running');
+    expect(await statusOf(embedId)).toBe('running');
   });
 });

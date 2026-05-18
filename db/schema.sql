@@ -3704,7 +3704,7 @@ CREATE INDEX idx_runs_feed ON public.runs USING btree (feed_id);
 -- Name: idx_runs_heartbeat_inflight; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX idx_runs_heartbeat_inflight ON public.runs USING btree (last_heartbeat_at) WHERE ((status = ANY (ARRAY['claimed'::text, 'running'::text])) AND (run_type = ANY (ARRAY['sync'::text, 'action'::text, 'embed_backfill'::text, 'auth'::text])));
+CREATE INDEX idx_runs_heartbeat_inflight ON public.runs USING btree (last_heartbeat_at) WHERE ((status = ANY (ARRAY['claimed'::text, 'running'::text])) AND (run_type = ANY (ARRAY['sync'::text, 'auth'::text])));
 
 --
 -- Name: idx_runs_org; Type: INDEX; Schema: public; Owner: -
@@ -5078,4 +5078,5 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20260517150000'),
     ('20260517160000'),
     ('20260518000000'),
-    ('20260518010000');
+    ('20260518010000'),
+    ('20260518020000');

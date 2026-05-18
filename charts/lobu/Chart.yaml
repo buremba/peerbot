@@ -2,8 +2,8 @@ apiVersion: v2
 name: lobu
 description: Lobu self-hosted AI agent platform
 type: application
-version: 7.0.0
-appVersion: 7.0.0
+version: 7.1.0
+appVersion: 7.1.0
 keywords:
   - lobu
   - agents

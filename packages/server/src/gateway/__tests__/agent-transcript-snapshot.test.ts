@@ -64,15 +64,12 @@ async function insertRun(opts: {
   const rows = (await sql`
     INSERT INTO public.runs (
       organization_id, run_type, status, action_input,
-      agent_id, conversation_id,
       queue_name, run_at, created_at
     ) VALUES (
       ${opts.organizationId},
       ${runType},
       ${status},
       ${sql.json({ agentId: opts.agentId, conversationId: opts.conversationId })},
-      ${opts.agentId},
-      ${opts.conversationId},
       ${runType},
       NOW(),
       NOW()

@@ -1573,8 +1573,6 @@ CREATE TABLE public.runs (
     priority integer DEFAULT 0 NOT NULL,
     expires_at timestamp with time zone,
     retry_delay_seconds integer,
-    agent_id text,
-    conversation_id text,
     CONSTRAINT runs_approval_status_check CHECK ((approval_status = ANY (ARRAY['pending'::text, 'approved'::text, 'rejected'::text, 'auto'::text]))),
     CONSTRAINT runs_legacy_org_required CHECK (((run_type <> ALL (ARRAY['sync'::text, 'action'::text, 'embed_backfill'::text, 'watcher'::text, 'auth'::text])) OR (organization_id IS NOT NULL))),
     CONSTRAINT runs_run_type_check CHECK ((run_type = ANY (ARRAY['sync'::text, 'action'::text, 'embed_backfill'::text, 'watcher'::text, 'auth'::text, 'chat_message'::text, 'schedule'::text, 'agent_run'::text, 'internal'::text, 'task'::text]))),
@@ -5157,4 +5155,5 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20260518010000'),
     ('20260518020000'),
     ('20260518040000'),
-    ('20260518050000');
+    ('20260518050000'),
+    ('20260518060000');

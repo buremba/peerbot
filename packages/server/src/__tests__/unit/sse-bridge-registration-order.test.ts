@@ -355,6 +355,40 @@ describe('withSSEHeartbeat — abort signal clears heartbeat interval', () => {
     }
   });
 
+  it('does not leave a live interval when the signal is already aborted at bind time', async () => {
+    // Regression for the codex audit follow-up: bindRequestAbortToStream fires
+    // abortWriter() synchronously when the signal is pre-aborted, so the
+    // setInterval call MUST happen before the bind for clearInterval() to see
+    // a defined intervalId. If the order is wrong, the interval keeps firing
+    // even though `terminated` is already true.
+    const ctrl = new AbortController();
+    ctrl.abort();
+
+    const source = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('event: connected\ndata: {}\n\n'));
+      },
+    });
+    const response = new Response(source, {
+      headers: { 'content-type': 'text/event-stream' },
+    });
+
+    const wrapped = withSSEHeartbeat(response, ctrl.signal);
+
+    // Give the pre-abort bind a microtask to fire.
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(activeTimers.size).toBe(0);
+
+    // Drain (will be empty or aborted; either way no leak).
+    try {
+      const reader = wrapped.body!.getReader();
+      await reader.cancel();
+    } catch {
+      /* ignore */
+    }
+  });
+
   it('passes through normal close path (no abort signal) without leaking', async () => {
     // Sanity check: the abort-bridge code path must not break the existing
     // pipe-close cleanup that PR #845's predecessor relied on.

@@ -516,11 +516,14 @@ export function withSSEHeartbeat(response: Response, signal?: AbortSignal): Resp
       abortWriter(new Error('Request aborted'));
     },
   };
-  const detachAbortBridge = bindRequestAbortToStream(signal, adapter);
-
+  // Create the interval BEFORE binding the abort signal so that a pre-aborted
+  // signal triggers abortWriter() → clearInterval(intervalId) instead of
+  // leaving the timer running forever (codex audit, follow-up to #864).
   intervalId = setInterval(() => {
     writer.write(heartbeat).catch(() => abortWriter(new Error('SSE heartbeat write failed')));
   }, SSE_HEARTBEAT_INTERVAL_MS);
+
+  const detachAbortBridge = bindRequestAbortToStream(signal, adapter);
 
   response.body
     .pipeTo(

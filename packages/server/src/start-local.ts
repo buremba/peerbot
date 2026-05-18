@@ -29,9 +29,15 @@ dotenv.config();
 
 import { applyUserServerConfigToEnv } from './utils/user-config';
 
-// After dotenv (project .env) so .env wins; before any env reads below so the
-// module-level DATA_DIR / PORT / HOST constants pick up Mac-app overrides
-// written to ~/.config/lobu/config.json.
+// After dotenv (project .env) so .env wins; before the module-level DATA_DIR
+// / PORT / HOST reads below so user-config overrides from
+// ~/.config/lobu/config.json land in time.
+//
+// DATABASE_URL is also filled in, but this bundle always boots PGlite and
+// overwrites it (line ~141). External-Postgres routing happens upstream in
+// `lobu run` (packages/cli/src/commands/dev.ts), which switches bundles when
+// the user config or env pins DATABASE_URL. So in practice only LOBU_DATA_DIR
+// / PORT / HOST flow through this call.
 applyUserServerConfigToEnv();
 
 import { ensureDefaultAgent } from './auth/default-provisioning';

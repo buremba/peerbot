@@ -117,4 +117,12 @@ if command -v lobu >/dev/null 2>&1; then
   fi
 fi
 
+# If this worktree was the active target for the Chrome/Mac symlinks, fall
+# back to 'main' so the symlinks don't dangle into a deleted directory.
+active_name_file="$HOME/.config/lobu-dev/active/.active-name"
+if [[ -f "$active_name_file" ]] && [[ "$(cat "$active_name_file")" == "$name" ]]; then
+  "$repo/scripts/task-use.sh" main >/dev/null && \
+    echo "→ active worktree was '$name'; reset to 'main'"
+fi
+
 echo "✓ cleaned up task '$name'"

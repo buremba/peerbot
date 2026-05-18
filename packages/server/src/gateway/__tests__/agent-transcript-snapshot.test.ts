@@ -820,76 +820,84 @@ describe("agent_transcript_snapshot — codex P1/P2 regressions", () => {
     expect(count[0]!.n).toBe(0);
   });
 
-  test("P1#2 lock released on pre-spawn throw: a sibling acquire succeeds without waiting for gateway recycle", async () => {
-    // PRE-FIX behavior: if generateEnvironmentVariables() or any other
-    // step between acquireConversationLock() and `spawn()` threw, the
-    // reserved connection (and the advisory lock) leaked until the
-    // gateway process recycled. The fix: wrap the spawn-prep block in
-    // try/catch with the lock release in the catch.
+  test("P1#2 lock released on pre-spawn throw: spawnDeployment wraps spawn-prep in try/catch with release", async () => {
+    // PRE-FIX behavior: lock acquired ~line 465, then several throwing
+    // operations (generateEnvironmentVariables at ~494, nix package
+    // validation, synchronous spawn() failure) had no release in their
+    // error paths — the reserved connection and advisory lock leaked
+    // until the gateway recycled.
     //
-    // In embedded mode (PGlite, LOBU_DISABLE_PREPARE=1) the lock helper
-    // returns a no-op sentinel, so this test asserts the *release-path
-    // contract* rather than the real-pg blocking semantics. Specifically:
-    // when the spawn-prep work throws, the same lock key can be re-
-    // acquired immediately by a subsequent call — no leftover sentinel
-    // is in the way. The genuine real-pg leak repro is covered by the
-    // manual dual-psql script in the PR body.
-    const a = await acquireConversationLock(
-      "org_leak",
-      "agent-leak",
-      "conv-leak"
+    // Asserting against `embedded-deployment.ts` source: we expect a
+    // try/catch wrapping the spawn-prep block, with `convLock.release()`
+    // (or the idempotent wrapper) called from the catch. Reading source
+    // here is the only way to assert this without forcing a real
+    // subprocess spawn from a test — `spawnDeployment` has no test seam
+    // for "force generateEnvironmentVariables to throw, observe lock".
+    const { readFile } = await import("node:fs/promises");
+    const src = await readFile(
+      new URL(
+        "../orchestration/impl/embedded-deployment.ts",
+        import.meta.url
+      ),
+      "utf-8"
     );
-    expect(a).not.toBeNull();
 
-    // Simulate the spawn-prep throw path: caller's try/finally releases
-    // the lock (which is what spawnDeployment's new catch block does).
-    let threw = false;
-    try {
-      throw new Error("simulated generateEnvironmentVariables failure");
-    } catch {
-      threw = true;
-      await a!.release();
-    }
-    expect(threw).toBe(true);
-
-    // Sibling acquire on the same key succeeds — no leak.
-    const b = await acquireConversationLock(
-      "org_leak",
-      "agent-leak",
-      "conv-leak"
+    // Locate the spawnDeployment method body so the assertions don't
+    // accidentally match the same pattern elsewhere in the file.
+    const spawnMatch = src.match(
+      /protected async spawnDeployment\([\s\S]*?\n  \}/
     );
-    expect(b).not.toBeNull();
-    await b!.release();
+    expect(spawnMatch).not.toBeNull();
+    const spawnBody = spawnMatch![0];
+
+    // Pre-fix: `const commonEnvVars = await this.generateEnvironmentVariables`
+    // (declared inline as a const) followed by the spawn() in the same
+    // top-level block with no try wrap. Post-fix: `let child: ChildProcess`
+    // declared outside a try, then assigned inside try, then catch that
+    // releases convLock and re-throws.
+    expect(spawnBody).toMatch(/let child: ChildProcess;/);
+    expect(spawnBody).toMatch(/let commonEnvVars: Record<string, string>;/);
+
+    // The catch block must release the lock and re-throw.
+    expect(spawnBody).toMatch(
+      /catch \(err\) \{[\s\S]*?convLock\.release\(\);[\s\S]*?throw err;/
+    );
   });
 
-  test("P1#3 lock released on child exit, not on killWorker entry — idempotent release", async () => {
-    // PRE-FIX behavior: killWorker released the conv lock at line 729
-    // BEFORE SIGTERM at line 745 and BEFORE awaiting exit at line 756.
-    // During the SIGTERM → exit window the worker was still flushing its
-    // snapshot, but a sibling pod could already claim the same conv
-    // lock, hydrate from a stale snapshot, and race.
+  test("P1#3 lock released on child exit, not on killWorker entry: killWorker no longer references the release", async () => {
+    // PRE-FIX behavior: killWorker released the conv lock BEFORE SIGTERM
+    // and BEFORE awaiting exit. During the SIGTERM → exit window the
+    // worker was still flushing its snapshot, but a sibling pod could
+    // already claim the same conv lock, hydrate from a stale snapshot,
+    // and race.
     //
     // The fix: spawnDeployment owns the release via an idempotent
     // closure shared by the error and exit handlers; killWorker no
-    // longer touches the lock. We can't easily spawn a real subprocess
-    // here, but we CAN assert the idempotency of the release pattern
-    // that backs it.
-    let releaseCallCount = 0;
-    let released = false;
-    const releaseLockOnce = async (): Promise<void> => {
-      if (released) return;
-      released = true;
-      releaseCallCount++;
-    };
+    // longer touches the lock at all. Asserting against source because
+    // killWorker's actual subprocess path can't be unit-tested.
+    const { readFile } = await import("node:fs/promises");
+    const src = await readFile(
+      new URL(
+        "../orchestration/impl/embedded-deployment.ts",
+        import.meta.url
+      ),
+      "utf-8"
+    );
+    // Extract just the killWorker function body via a defensive regex.
+    const killWorkerMatch = src.match(
+      /private async killWorker\([\s\S]*?\n  \}/
+    );
+    expect(killWorkerMatch).not.toBeNull();
+    const killBody = killWorkerMatch![0];
+    // The pre-fix version contained `entry.releaseConvLock` (the early
+    // release call). The fix removed it entirely from killWorker.
+    expect(killBody).not.toMatch(/releaseConvLock/);
+    expect(killBody).not.toMatch(/convLock\.release/);
 
-    // Two paths racing (kill + exit) both call release; only the first
-    // takes effect.
-    await Promise.all([releaseLockOnce(), releaseLockOnce()]);
-    expect(releaseCallCount).toBe(1);
-
-    // A third call (some defensive cleanup code) is still a no-op.
-    await releaseLockOnce();
-    expect(releaseCallCount).toBe(1);
+    // The exit handler must use an idempotent shared closure so the
+    // error path + exit path can both fire safely.
+    expect(src).toMatch(/releaseLockOnce/);
+    expect(src).toMatch(/let lockReleased = false/);
   });
 
   test("P2 tenant isolation: readLatestSnapshotJsonl(agentId, orgA) returns orgA's bytes, not orgB's, when both share the agentId", async () => {

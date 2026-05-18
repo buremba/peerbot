@@ -80,6 +80,7 @@ function rowToMetadata(row: Record<string, any>): AgentMetadata {
     },
     isWorkspaceAgent: row.is_workspace_agent ?? undefined,
     workspaceId: row.workspace_id ?? undefined,
+    organizationId: row.organization_id ?? undefined,
     createdAt:
       row.created_at instanceof Date ? row.created_at.getTime() : (row.created_at ?? Date.now()),
     lastUsedAt:
@@ -266,14 +267,14 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
       const orgId = tryGetOrgId();
       const rows = orgId
         ? await sql`
-            SELECT id, name, description, owner_platform, owner_user_id,
+            SELECT id, organization_id, name, description, owner_platform, owner_user_id,
                    is_workspace_agent, workspace_id,
                    created_at, last_used_at
             FROM agents
             WHERE id = ${agentId} AND organization_id = ${orgId}
           `
         : await sql`
-            SELECT id, name, description, owner_platform, owner_user_id,
+            SELECT id, organization_id, name, description, owner_platform, owner_user_id,
                    is_workspace_agent, workspace_id,
                    created_at, last_used_at
             FROM agents
@@ -357,7 +358,7 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
       const sql = getDb();
       const orgId = getOrgId();
       const rows = await sql`
-        SELECT id, name, description, owner_platform, owner_user_id,
+        SELECT id, organization_id, name, description, owner_platform, owner_user_id,
                is_workspace_agent, workspace_id,
                created_at, last_used_at
         FROM agents

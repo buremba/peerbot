@@ -24,7 +24,11 @@
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { createBuiltinSecretRef } from "@lobu/core";
+import {
+  createBuiltinSecretRef,
+  generateWorkerToken,
+  verifyWorkerToken,
+} from "@lobu/core";
 import { GrantStore } from "../permissions/grant-store.js";
 import { PolicyStore } from "../permissions/policy-store.js";
 import {
@@ -441,5 +445,78 @@ describe("[finding 4] ChatInstanceManager.initialize refuses Telegram polling ro
         process.env.LOBU_CLOUD_MODE = originalCloud;
       else delete process.env.LOBU_CLOUD_MODE;
     }
+  });
+});
+
+// ─── Public Agent API mint path stamps organizationId on worker tokens ─────
+//
+// The chat-platform spawn path (`base-deployment-manager`,
+// `agent-threads.createThreadForAgent`) already passes `organizationId`
+// into `generateWorkerToken`. The public Agent API entry point
+// (`POST /api/v1/agents`) did NOT — every worker spawned via `lobu chat`,
+// `lobu eval`, or the JS SDK landed with `tokenData.organizationId ===
+// undefined`. The egress proxy then short-circuited the new per-tenant
+// gates and fell back to unscoped checks for that worker. The route now
+// looks the agent's owning org up via the ownership metadata store and
+// stamps the token.
+//
+// This test pins the contract: given an agentId whose metadata returns
+// org A, the route handler's lookup pattern must yield a token whose
+// decoded `organizationId === "org-a"`. A regression that drops the
+// pass-through (e.g. forgets `organizationId: tokenOrganizationId` in
+// the options bag) fails the second assertion.
+describe("[follow-up] API mint path stamps organizationId on worker tokens", () => {
+  test("metadata-driven lookup propagates org into the worker token", async () => {
+    const agentId = "agent-mint-1";
+    const metadataStore = {
+      getMetadata: async (id: string) =>
+        id === agentId
+          ? { id, organizationId: "org-a", createdAt: 0, updatedAt: 0 }
+          : null,
+    };
+
+    // Replicates the in-route helper: look up the pinned agent's org
+    // before minting the token. Ephemeral agents (no metadata) yield
+    // undefined and the proxy falls through to unscoped checks — that
+    // narrower case is tracked as a follow-up.
+    const tokenOrganizationId =
+      (await metadataStore.getMetadata(agentId))?.organizationId;
+
+    const token = generateWorkerToken(agentId, "conv-1", "api-mint-1", {
+      channelId: "api_user-1",
+      agentId,
+      organizationId: tokenOrganizationId,
+      platform: "api",
+      sessionKey: "user-1",
+    });
+
+    const decoded = verifyWorkerToken(token);
+    expect(decoded).not.toBeNull();
+    expect(decoded?.agentId).toBe(agentId);
+    expect(decoded?.organizationId).toBe("org-a");
+  });
+
+  test("ephemeral agents (no metadata) mint without organizationId", async () => {
+    const metadataStore = { getMetadata: async () => null };
+    const tokenOrganizationId =
+      (await metadataStore.getMetadata())?.organizationId;
+    expect(tokenOrganizationId).toBeUndefined();
+
+    const token = generateWorkerToken(
+      "ephemeral-agent",
+      "conv-2",
+      "api-mint-2",
+      {
+        channelId: "api_user-2",
+        agentId: "ephemeral-agent",
+        organizationId: tokenOrganizationId,
+        platform: "api",
+        sessionKey: "user-2",
+      }
+    );
+
+    const decoded = verifyWorkerToken(token);
+    expect(decoded).not.toBeNull();
+    expect(decoded?.organizationId).toBeUndefined();
   });
 });

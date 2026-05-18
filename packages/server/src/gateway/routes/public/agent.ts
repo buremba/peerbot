@@ -633,6 +633,17 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
       if (denial) return denial;
     }
 
+    // Stamp the worker token with the agent's owning org so the egress
+    // proxy's per-tenant gates (grant/deny, judge cache, judge policy)
+    // can scope decisions by org. Ephemeral agents have no preexisting
+    // metadata; their token mints without orgId and the proxy falls
+    // through to unscoped checks for that worker — flagged for a
+    // future fix that derives org from the auth session.
+    const tokenOrganizationId =
+      !isEphemeral && ownershipMetadataStore
+        ? (await ownershipMetadataStore.getMetadata(agentId))?.organizationId
+        : undefined;
+
     // For ephemeral agents, auto-provision settings from system-key
     // providers (env-var-based API keys). No more template-agent fallback —
     // there are no template/sandbox agents anymore.
@@ -689,6 +700,7 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
           {
             channelId,
             agentId,
+            organizationId: tokenOrganizationId,
             platform: "api",
             sessionKey: userId,
           }
@@ -718,6 +730,7 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
     const token = generateWorkerToken(agentId, conversationId, deploymentName, {
       channelId,
       agentId,
+      organizationId: tokenOrganizationId,
       platform: "api",
       sessionKey: userId,
     });

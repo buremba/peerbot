@@ -91,6 +91,14 @@ export interface AgentMetadata {
   owner: { platform: string; userId: string };
   isWorkspaceAgent?: boolean;
   workspaceId?: string;
+  /**
+   * Owning organization id. Optional in the type for back-compat with
+   * in-memory stores that predate per-tenant scoping; populated by the
+   * postgres-backed store. The public Agent API route reads this to stamp
+   * worker tokens with the agent's org so the egress proxy can scope
+   * per-tenant gates (grants, judge cache, judge policy).
+   */
+  organizationId?: string;
   createdAt: number;
   lastUsedAt?: number;
 }

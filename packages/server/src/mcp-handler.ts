@@ -16,6 +16,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import type { Context } from 'hono';
+import { bindRequestAbortToStream, type AbortableStream } from './events/sse-abort-bridge';
 import { OAuthClientsStore } from './auth/oauth/clients';
 import { isPublicReadable } from './auth/tool-access';
 import { createDbClientFromEnv } from './db/client';
@@ -471,7 +472,7 @@ async function sseToJson(response: Response): Promise<Response> {
 // -----------------------------------------------------------------------------
 const SSE_HEARTBEAT_INTERVAL_MS = 15_000;
 
-function withSSEHeartbeat(response: Response): Response {
+export function withSSEHeartbeat(response: Response, signal?: AbortSignal): Response {
   if (!response.headers.get('content-type')?.includes('text/event-stream') || !response.body) {
     return response;
   }
@@ -479,10 +480,11 @@ function withSSEHeartbeat(response: Response): Response {
   const writer = writable.getWriter();
   const heartbeat = new TextEncoder().encode(': ping\n\n');
 
-  // The heartbeat, the pipe, the source close handler, and the pipe error
-  // handler can all race to terminate the writer. Once it transitions
-  // closed/aborted any further close()/abort() throws "Invalid state"
-  // (Sentry: LOBU-30). Latch on the first terminal call.
+  // The heartbeat, the pipe, the source close handler, the pipe error
+  // handler, AND the per-request AbortSignal can all race to terminate the
+  // writer. Once it transitions closed/aborted any further close()/abort()
+  // throws "Invalid state" (Sentry: LOBU-30). Latch on the first terminal
+  // call.
   let terminated = false;
   let intervalId: NodeJS.Timeout | undefined;
   const closeWriter = () => {
@@ -498,6 +500,24 @@ function withSSEHeartbeat(response: Response): Response {
     writer.abort(reason).catch(() => undefined);
   };
 
+  // Bridge the per-request AbortSignal so abnormal disconnects (LB idle
+  // timeout, proxy kill, client hard-close) actually clear the heartbeat
+  // interval. The pre-existing close/error path on the source pipe only
+  // catches normal pipe-through closure — same root cause as #833/#845.
+  // Reuse the central abort-bridge so the pattern doesn't drift.
+  const adapter: AbortableStream = {
+    get aborted() {
+      return terminated;
+    },
+    get closed() {
+      return terminated;
+    },
+    abort() {
+      abortWriter(new Error('Request aborted'));
+    },
+  };
+  const detachAbortBridge = bindRequestAbortToStream(signal, adapter);
+
   intervalId = setInterval(() => {
     writer.write(heartbeat).catch(() => abortWriter(new Error('SSE heartbeat write failed')));
   }, SSE_HEARTBEAT_INTERVAL_MS);
@@ -509,14 +529,17 @@ function withSSEHeartbeat(response: Response): Response {
           return writer.write(chunk);
         },
         close() {
+          detachAbortBridge();
           closeWriter();
         },
         abort(reason) {
+          detachAbortBridge();
           abortWriter(reason);
         },
       })
     )
     .catch(() => {
+      detachAbortBridge();
       abortWriter(new Error('Source SSE stream error'));
     });
 
@@ -534,8 +557,10 @@ async function handleAndMaybeConvert(
   if (!wantsSSE && response.headers.get('content-type')?.includes('text/event-stream')) {
     return sseToJson(response);
   }
-  // Inject SSE heartbeat pings to keep the stream alive through proxies
-  return withSSEHeartbeat(response);
+  // Inject SSE heartbeat pings to keep the stream alive through proxies.
+  // Thread the inbound request's AbortSignal so abnormal disconnects clear
+  // the interval (same root cause as PR #833/#845).
+  return withSSEHeartbeat(response, req.signal);
 }
 
 // ---------------------------------------------------------------------------

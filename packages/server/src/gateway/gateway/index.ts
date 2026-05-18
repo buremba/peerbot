@@ -236,6 +236,44 @@ export class WorkerGateway {
         },
       };
 
+      // Idempotent cleanup latch. The `onClose` subscriber must be registered
+      // BEFORE the async pauseWorker/addConnection/registerWorker block so an
+      // abort fired during that window can't leave a dead writer registered
+      // in the connection manager. `connectionAdded` flips true the instant
+      // we hand the writer to `addConnection`; the cleanup latch reads it and
+      // either removes the registration (post-add) or no-ops (pre-add). The
+      // `aborted` flag short-circuits the async setup so we don't even add a
+      // dead writer.
+      let connectionAdded = false;
+      let cleanupRan = false;
+      let aborted = false;
+      const runCleanup = () => {
+        if (cleanupRan) return;
+        cleanupRan = true;
+        aborted = true;
+        if (!connectionAdded) {
+          // Aborted before we registered; nothing to remove.
+          return;
+        }
+        const current = this.connectionManager.getConnection(deploymentName);
+        if (current && current.writer !== sseWriter) {
+          logger.debug(
+            `Ignoring stale disconnect for ${deploymentName} (replaced by newer SSE)`
+          );
+          return;
+        }
+        this.jobRouter.pauseWorker(deploymentName).catch((err) => {
+          logger.error(`Failed to pause worker ${deploymentName}:`, err);
+        });
+        this.connectionManager.removeConnection(deploymentName);
+      };
+
+      // Register the disconnect subscriber FIRST so an abort during the
+      // async setup block below routes through the same idempotent latch.
+      sseWriter.onClose(runCleanup);
+
+      // Bridge per-request AbortSignal to the stream so abnormal disconnects
+      // tear the writer down (Hono's onAbort alone doesn't fire on those).
       const detachAbortBridge = bindRequestAbortToStream(
         requestSignal,
         streamWriter
@@ -254,6 +292,16 @@ export class WorkerGateway {
       // then remove the stale connection so any in-flight handleJob will
       // fail and trigger a retry against the new connection.
       await this.jobRouter.pauseWorker(deploymentName);
+
+      // If the request aborted during the await above, bail before touching
+      // the connection manager. The cleanup latch already fired via the
+      // abort bridge → onAbort → onClose path.
+      if (aborted || requestSignal?.aborted) {
+        detachAbortBridge();
+        runCleanup();
+        return;
+      }
+
       if (this.connectionManager.isConnected(deploymentName)) {
         logger.info(
           `Cleaning up stale connection for ${deploymentName} before new SSE`
@@ -271,25 +319,19 @@ export class WorkerGateway {
         sseWriter,
         httpPort
       );
+      connectionAdded = true;
+
+      // If we lost the race — abort fired between the pre-check above and
+      // here — drop the writer we just registered.
+      if (aborted || requestSignal?.aborted) {
+        detachAbortBridge();
+        runCleanup();
+        return;
+      }
 
       // Register BullMQ worker (idempotent) and resume job processing
       await this.jobRouter.registerWorker(deploymentName);
       await this.jobRouter.resumeWorker(deploymentName);
-
-      // Handle client disconnect — only act if this is still the active writer
-      sseWriter.onClose(() => {
-        const current = this.connectionManager.getConnection(deploymentName);
-        if (current && current.writer !== sseWriter) {
-          logger.debug(
-            `Ignoring stale disconnect for ${deploymentName} (replaced by newer SSE)`
-          );
-          return;
-        }
-        this.jobRouter.pauseWorker(deploymentName).catch((err) => {
-          logger.error(`Failed to pause worker ${deploymentName}:`, err);
-        });
-        this.connectionManager.removeConnection(deploymentName);
-      });
 
       // Keep the connection open until the stream is actually aborted.
       try {

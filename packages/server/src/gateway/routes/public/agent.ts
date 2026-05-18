@@ -902,47 +902,57 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
         return;
       }
 
-      sseManager.addConnection(sseKey, stream);
-
-      await stream.writeSSE({
-        event: "connected",
-        data: JSON.stringify({
-          agentId: session.agentId || sessionKey,
-          timestamp: Date.now(),
-        }),
-      });
-
-      for (const entry of sseManager.getRecentEvents(sseKey)) {
-        await stream.writeSSE({
-          event: entry.event,
-          data: JSON.stringify(entry.data),
-        });
-      }
-
-      const heartbeatInterval = setInterval(async () => {
-        try {
-          await stream.writeSSE({
-            event: "ping",
-            data: JSON.stringify({ timestamp: Date.now() }),
-          });
-        } catch {
-          clearInterval(heartbeatInterval);
-        }
-      }, 30000);
-
+      // Idempotent cleanup latch wired up FIRST so an abort during the
+      // initial writeSSE / backlog-replay window below routes through the
+      // same teardown path. Without this, an abort between
+      // `sseManager.addConnection` and `stream.onAbort(cleanup)` would leak
+      // the registration in the manager.
+      let heartbeatInterval: ReturnType<typeof setInterval> | undefined;
+      let connectionAdded = false;
       let cleanedUp = false;
       const cleanup = () => {
         if (cleanedUp) return;
         cleanedUp = true;
-        clearInterval(heartbeatInterval);
-        sseManager.removeConnection(sseKey, stream);
+        if (heartbeatInterval) clearInterval(heartbeatInterval);
+        if (connectionAdded) {
+          sseManager.removeConnection(sseKey, stream);
+        }
         logger.info(`SSE connection closed for session ${sseKey}`);
       };
 
       stream.onAbort(cleanup);
       const detachAbortBridge = bindRequestAbortToStream(requestSignal, stream);
 
+      sseManager.addConnection(sseKey, stream);
+      connectionAdded = true;
+
       try {
+        await stream.writeSSE({
+          event: "connected",
+          data: JSON.stringify({
+            agentId: session.agentId || sessionKey,
+            timestamp: Date.now(),
+          }),
+        });
+
+        for (const entry of sseManager.getRecentEvents(sseKey)) {
+          await stream.writeSSE({
+            event: entry.event,
+            data: JSON.stringify(entry.data),
+          });
+        }
+
+        heartbeatInterval = setInterval(async () => {
+          try {
+            await stream.writeSSE({
+              event: "ping",
+              data: JSON.stringify({ timestamp: Date.now() }),
+            });
+          } catch {
+            if (heartbeatInterval) clearInterval(heartbeatInterval);
+          }
+        }, 30000);
+
         while (!stream.aborted && !stream.closed) {
           await stream.sleep(1000);
         }

@@ -32,6 +32,27 @@ function assertSafeLinkButtonUrl(url: string): void {
 }
 
 /**
+ * Refuse to post an interaction event without a non-empty `connectionId`.
+ *
+ * `connectionId` is the *only* routing key that prevents cross-tenant /
+ * cross-connection event leakage: the interaction bridge's `shouldHandle`
+ * filter falls through when `event.connectionId` is falsy, which means any
+ * bridge on the matching platform will pick the event up. Fail closed at
+ * post-time so a missing connection id surfaces as an error rather than
+ * silently routing to the wrong tenant.
+ */
+function assertConnectionId(
+  connectionId: string | undefined,
+  kind: string
+): asserts connectionId is string {
+  if (!connectionId) {
+    throw new Error(
+      `Refusing to post ${kind}: connectionId is required to prevent cross-platform event leakage`
+    );
+  }
+}
+
+/**
  * Payload emitted on "question:created" — platform renderers listen for this.
  */
 export interface PostedQuestion extends BaseMessage {
@@ -114,6 +135,7 @@ export class InteractionService extends EventEmitter {
     question: string,
     options: string[]
   ): Promise<PostedQuestion> {
+    assertConnectionId(connectionId, "question");
     if (this.beforeCreateHook) {
       await this.beforeCreateHook(userId, conversationId);
     }
@@ -160,6 +182,7 @@ export class InteractionService extends EventEmitter {
     args: Record<string, unknown>,
     grantPattern: string
   ): Promise<PostedToolApproval> {
+    assertConnectionId(connectionId, "tool approval");
     if (this.beforeCreateHook) {
       await this.beforeCreateHook(userId, conversationId);
     }
@@ -203,6 +226,7 @@ export class InteractionService extends EventEmitter {
     linkType: "settings" | "install" | "oauth",
     body?: string
   ): Promise<PostedLinkButton> {
+    assertConnectionId(connectionId, "link button");
     assertSafeLinkButtonUrl(url);
     if (this.beforeCreateHook) {
       await this.beforeCreateHook(userId, conversationId);
@@ -270,6 +294,7 @@ export class InteractionService extends EventEmitter {
     platform: string,
     text: string
   ): Promise<PostedStatusMessage> {
+    assertConnectionId(connectionId, "status message");
     if (this.beforeCreateHook) {
       await this.beforeCreateHook("", conversationId);
     }

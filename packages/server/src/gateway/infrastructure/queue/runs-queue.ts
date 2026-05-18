@@ -311,6 +311,31 @@ export class RunsQueue implements IMessageQueue {
     const sql = getDb();
     const actionInput = JSON.stringify(data ?? {});
 
+    // Extract `agentId` / `conversationId` from the payload (when present) so
+    // we can write them into the dedicated columns added by migration
+    // `runs_denormalize_agent_conversation`. The verifier function
+    // `isRunOwnedByJwtScope` reads these columns directly instead of probing
+    // `action_input->>'agentId'` — a partial index over the column pair turns
+    // a 10-100ms seq scan on a multi-million-row runs table into an
+    // index-only seek. Older insert paths that don't carry these keys
+    // (sync/action/auth/watcher lanes) leave the columns NULL, and the
+    // index's `WHERE agent_id IS NOT NULL` predicate keeps it small.
+    const payload = (data ?? {}) as Record<string, unknown>;
+    const agentId =
+      typeof payload.agentId === "string" && payload.agentId.length > 0
+        ? payload.agentId
+        : null;
+    const conversationId =
+      typeof payload.conversationId === "string" &&
+      payload.conversationId.length > 0
+        ? payload.conversationId
+        : null;
+    const organizationIdFromPayload =
+      typeof payload.organizationId === "string" &&
+      payload.organizationId.length > 0
+        ? payload.organizationId
+        : null;
+
     // Insert + ON-CONFLICT-fallback inside a single transaction so a race
     // between two enqueues with the same idempotency key resolves cleanly.
     // pg_notify happens AFTER commit (otherwise listeners may wake before
@@ -340,9 +365,12 @@ export class RunsQueue implements IMessageQueue {
           run_at,
           priority,
           expires_at,
-          retry_delay_seconds
+          retry_delay_seconds,
+          agent_id,
+          conversation_id,
+          organization_id
         ) VALUES (
-          $1, $2, $3, $4::jsonb, $5, $6, 0, 'pending', ${runAtSql}, $7, ${expiresAtSql}, $8
+          $1, $2, $3, $4::jsonb, $5, $6, 0, 'pending', ${runAtSql}, $7, ${expiresAtSql}, $8, $9, $10, $11
         )
         ON CONFLICT (idempotency_key)
           WHERE idempotency_key IS NOT NULL
@@ -358,6 +386,9 @@ export class RunsQueue implements IMessageQueue {
           maxAttempts,
           priority,
           retryDelaySeconds,
+          agentId,
+          conversationId,
+          organizationIdFromPayload,
         ],
       );
 

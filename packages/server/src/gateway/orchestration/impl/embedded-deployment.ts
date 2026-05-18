@@ -137,6 +137,65 @@ interface EmbeddedWorkerEntry {
 /** Stable namespace id for `pg_advisory_lock(key1, key2)` per-conversation locks. */
 const CONV_LOCK_KEY1 = 0x6c6f6275; // "lobu" in ASCII, signed int32-safe.
 
+/** Default cap for reserved Postgres connections held by
+ *  acquireConversationLock. Overridable via `LOBU_MAX_RESERVED_LOCKS`. The cap
+ *  exists because each reserved connection pins one slot in the postgres-js
+ *  pool (default max 20) for the entire worker subprocess lifetime — 10s for a
+ *  tiny chat, 1h+ for a long task. Multi-pod × multi-conversation pressure
+ *  blows the pool well before any per-conversation lock contention. 50 is a
+ *  conservative starting point; real prod tuning happens by env after we
+ *  observe the metric below. */
+const DEFAULT_MAX_RESERVED_LOCKS = 50;
+
+function getMaxReservedLocks(): number {
+  const raw = process.env.LOBU_MAX_RESERVED_LOCKS;
+  if (!raw) return DEFAULT_MAX_RESERVED_LOCKS;
+  const n = Number.parseInt(raw, 10);
+  // Unparseable / negative / non-finite → fall back to default. `0` is
+  // honored as an explicit "block all reservations" value (useful for
+  // failover drains and load tests; the runs queue will retry).
+  if (!Number.isFinite(n) || n < 0) return DEFAULT_MAX_RESERVED_LOCKS;
+  return n;
+}
+
+/**
+ * In-process counter of currently-held reserved connections from
+ * `acquireConversationLock`. Single-process JS is single-threaded so a plain
+ * mutable number is "atomic enough" for increment/decrement against this
+ * counter — there's no true parallelism inside the gateway event loop. The
+ * functions below are exported so tests can assert the counter without
+ * reaching into module internals.
+ *
+ * The counter is incremented BEFORE the `await sql.reserve()` call so the
+ * cap check accounts for in-flight acquisitions; decremented in the release
+ * path so the slot becomes available the moment the worker exits.
+ */
+let reservedLockCount = 0;
+/** Tracks whether we've already emitted the 80% warning so we don't spam
+ *  every acquisition once we're operating near the ceiling. Reset when the
+ *  count drops back below the threshold. */
+let warnedNearCap = false;
+
+export function getReservedLockCount(): number {
+  return reservedLockCount;
+}
+
+export function resetReservedLockCountForTests(): void {
+  reservedLockCount = 0;
+  warnedNearCap = false;
+}
+
+/**
+ * Force the internal counter to a specific value. Test-only — production
+ * code MUST go through `acquireConversationLock` so increment+decrement
+ * pair via the canonical path. Used by the cap-enforcement test which
+ * needs to stage the counter without actually consuming PG connections
+ * (PGlite pins us to a single shared connection).
+ */
+export function setReservedLockCountForTests(value: number): void {
+  reservedLockCount = Math.max(0, value);
+}
+
 /**
  * Acquire a session-level (NOT transaction-level) advisory lock on
  * `(org, agent, conversationId)`. Returns a release function that drops the
@@ -169,6 +228,43 @@ export async function acquireConversationLock(
     return { release: async () => {} };
   }
 
+  // Hard cap on reserved connections held across all live workers. Each lock
+  // pins one postgres-js pool slot for the worker's lifetime; without a cap
+  // multi-pod × multi-conversation pressure exhausts the pool and stalls
+  // every gateway query. Returning `null` here surfaces as a re-queueable
+  // failure in `spawnDeployment` (same code path as a contended advisory
+  // lock), so the runs queue retries with a delay on this pod or another.
+  const max = getMaxReservedLocks();
+  if (reservedLockCount >= max) {
+    logger.warn(
+      `Reserved-lock cap reached (${reservedLockCount}/${max}); deferring spawn for ${organizationId}/${agentId}/${conversationId}`
+    );
+    return null;
+  }
+
+  // Reserve the slot up-front so concurrent acquirers can see the increment
+  // before this one's `await sql.reserve()` settles. Without this an
+  // unbounded number of concurrent callers could each observe
+  // `reservedLockCount < max` and pile through.
+  reservedLockCount += 1;
+  // 80% threshold one-shot warn. Re-armed once the count drops back below.
+  if (!warnedNearCap && reservedLockCount >= Math.ceil(max * 0.8)) {
+    logger.warn(
+      `Reserved-lock count near cap: ${reservedLockCount}/${max}. Tune via LOBU_MAX_RESERVED_LOCKS or scale pods.`
+    );
+    warnedNearCap = true;
+  }
+
+  let decremented = false;
+  const decrementOnce = (): void => {
+    if (decremented) return;
+    decremented = true;
+    reservedLockCount = Math.max(0, reservedLockCount - 1);
+    if (warnedNearCap && reservedLockCount < Math.ceil(max * 0.8)) {
+      warnedNearCap = false;
+    }
+  };
+
   // `getDb()` returns the wrapped tagged-template client; `.reserve()` is on
   // the raw `postgres()` client. We access it via the shared singleton —
   // same pattern better-auth uses for its dedicated connection (see
@@ -183,16 +279,24 @@ export async function acquireConversationLock(
       }
     >;
   };
-  const reserved = await sql.reserve();
+  let reserved: Awaited<ReturnType<typeof sql.reserve>>;
+  try {
+    reserved = await sql.reserve();
+  } catch (err) {
+    decrementOnce();
+    throw err;
+  }
   const key2 = hashConvKey2(organizationId, agentId, conversationId);
   try {
     const rows = (await reserved`SELECT pg_try_advisory_lock(${CONV_LOCK_KEY1}, ${key2}) AS acquired`) as Array<{ acquired: boolean }>;
     if (!rows[0]?.acquired) {
       reserved.release();
+      decrementOnce();
       return null;
     }
   } catch (err) {
     reserved.release();
+    decrementOnce();
     throw err;
   }
   return {
@@ -235,6 +339,10 @@ export async function acquireConversationLock(
       } catch {
         /* postgres.js release is sync best-effort */
       }
+      // Decrement after release so a metric snapshot taken mid-release
+      // never undercounts. Idempotent — the helper guards against
+      // double-decrement if the release path runs twice.
+      decrementOnce();
     },
   };
 }

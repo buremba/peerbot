@@ -1573,6 +1573,8 @@ CREATE TABLE public.runs (
     priority integer DEFAULT 0 NOT NULL,
     expires_at timestamp with time zone,
     retry_delay_seconds integer,
+    agent_id text,
+    conversation_id text,
     CONSTRAINT runs_approval_status_check CHECK ((approval_status = ANY (ARRAY['pending'::text, 'approved'::text, 'rejected'::text, 'auto'::text]))),
     CONSTRAINT runs_legacy_org_required CHECK (((run_type <> ALL (ARRAY['sync'::text, 'action'::text, 'embed_backfill'::text, 'watcher'::text, 'auth'::text])) OR (organization_id IS NOT NULL))),
     CONSTRAINT runs_run_type_check CHECK ((run_type = ANY (ARRAY['sync'::text, 'action'::text, 'embed_backfill'::text, 'watcher'::text, 'auth'::text, 'chat_message'::text, 'schedule'::text, 'agent_run'::text, 'internal'::text, 'task'::text]))),
@@ -4151,6 +4153,12 @@ CREATE INDEX personal_access_tokens_user_id_idx ON public.personal_access_tokens
 CREATE INDEX rate_limits_expires_at_idx ON public.rate_limits USING btree (expires_at);
 
 --
+-- Name: runs_agent_conv_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX runs_agent_conv_idx ON public.runs USING btree (id, organization_id, agent_id, conversation_id) WHERE ((agent_id IS NOT NULL) AND (conversation_id IS NOT NULL));
+
+--
 -- Name: runs_expires_at_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -5154,4 +5162,5 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20260518000000'),
     ('20260518010000'),
     ('20260518020000'),
-    ('20260518040000');
+    ('20260518040000'),
+    ('20260518050000');

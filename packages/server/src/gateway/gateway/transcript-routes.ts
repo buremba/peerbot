@@ -71,12 +71,20 @@ async function isRunOwnedByJwtScope(
   conversationId: string
 ): Promise<boolean> {
   const sql = getDb();
+  // Reads from real columns instead of the legacy `action_input ->> 'agentId'`
+  // / `... ->> 'conversationId'` JSONB extraction. The columns are populated
+  // by the runs-queue producer on insert (see RunsQueue.send) and backfilled
+  // for historical rows by migration `runs_denormalize_agent_conversation`.
+  // The partial index `runs_agent_conv_idx` covers this exact predicate
+  // shape so the planner serves it as an index-only seek instead of the
+  // 10-100ms seq-scan over millions of rows we used to pay per snapshot
+  // POST.
   const rows = await sql<{ ok: boolean }>`
     SELECT 1 AS ok FROM public.runs
     WHERE id = ${runId}
       AND organization_id = ${organizationId}
-      AND (action_input ->> 'agentId') = ${agentId}
-      AND (action_input ->> 'conversationId') = ${conversationId}
+      AND agent_id = ${agentId}
+      AND conversation_id = ${conversationId}
     LIMIT 1
   `;
   return rows.length > 0;

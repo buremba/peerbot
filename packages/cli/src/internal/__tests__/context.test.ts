@@ -9,6 +9,7 @@ import {
 } from "bun:test";
 import * as fs from "node:fs/promises";
 import {
+  addContext,
   DEFAULT_CONTEXT_NAME,
   findContextByMemoryUrl,
   findContextByUrl,
@@ -140,6 +141,39 @@ describe("context management", () => {
     expect(saved.contexts.local.server).toEqual({
       databaseUrl: "postgres://new/db",
       port: 8788,
+    });
+  });
+
+  test("addContext stores optional server config (port + cwd + lifecycle)", async () => {
+    readFileSpy.mockResolvedValue(JSON.stringify({ contexts: {} }));
+
+    await addContext("verify-flow", "http://localhost:8788", {
+      port: 8788,
+      cwd: "/Users/me/Code/lobu/.claude/worktrees/verify-flow",
+      lifecycle: "managed",
+    });
+
+    const [, written] = writeFileSpy.mock.calls.at(-1)!;
+    const saved = JSON.parse(written as string);
+    expect(saved.contexts["verify-flow"]).toEqual({
+      apiUrl: "http://localhost:8788",
+      server: {
+        port: 8788,
+        cwd: "/Users/me/Code/lobu/.claude/worktrees/verify-flow",
+        lifecycle: "managed",
+      },
+    });
+  });
+
+  test("addContext without server keeps shape backwards-compatible", async () => {
+    readFileSpy.mockResolvedValue(JSON.stringify({ contexts: {} }));
+
+    await addContext("plain", "https://example.com/api/v1");
+
+    const [, written] = writeFileSpy.mock.calls.at(-1)!;
+    const saved = JSON.parse(written as string);
+    expect(saved.contexts.plain).toEqual({
+      apiUrl: "https://example.com/api/v1",
     });
   });
 

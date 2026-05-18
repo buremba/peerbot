@@ -543,10 +543,60 @@ Memory:
     .command("add <name>")
     .description("Add a named context")
     .requiredOption("--api-url <url>", "API base URL for this context")
-    .action(async (name: string, options: { apiUrl: string }) => {
-      const { contextAddCommand } = await import("./commands/context.js");
-      await contextAddCommand({ name, apiUrl: options.apiUrl });
-    });
+    .option(
+      "--port <port>",
+      "Server port (when this context owns a managed lobu server)",
+      (value) => Number.parseInt(value, 10)
+    )
+    .option("--host <host>", "Server host (default: 127.0.0.1)")
+    .option(
+      "--database-url <url>",
+      "Postgres DATABASE_URL for the managed server"
+    )
+    .option(
+      "--data-dir <path>",
+      "LOBU_DATA_DIR for the managed server (state, PGlite)"
+    )
+    .option(
+      "--cwd <path>",
+      "Working directory the lifecycle owner cd's into before spawning `lobu run` (used by per-worktree contexts)"
+    )
+    .option(
+      "--lifecycle <mode>",
+      "managed | external — managed means the menubar spawns `lobu run`",
+      (value: string) => {
+        if (value !== "managed" && value !== "external") {
+          throw new Error(`--lifecycle must be 'managed' or 'external'`);
+        }
+        return value;
+      }
+    )
+    .action(
+      async (
+        name: string,
+        options: {
+          apiUrl: string;
+          port?: number;
+          host?: string;
+          databaseUrl?: string;
+          dataDir?: string;
+          cwd?: string;
+          lifecycle?: "managed" | "external";
+        }
+      ) => {
+        const { contextAddCommand } = await import("./commands/context.js");
+        await contextAddCommand({
+          name,
+          apiUrl: options.apiUrl,
+          port: options.port,
+          host: options.host,
+          databaseUrl: options.databaseUrl,
+          dataDir: options.dataDir,
+          cwd: options.cwd,
+          lifecycle: options.lifecycle,
+        });
+      }
+    );
 
   context
     .command("use <name>")

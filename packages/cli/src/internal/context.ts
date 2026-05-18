@@ -15,6 +15,11 @@ export interface LobuServerConfig {
   port?: number;
   host?: string;
   dataDir?: string;
+  // Directory the lifecycle owner should `cd` into before spawning
+  // `lobu run`. Used by per-worktree contexts so the menubar launches
+  // the server against the worktree's source (hot-reload on the right
+  // checkout). Absent → spawner uses its own cwd.
+  cwd?: string;
   // "managed" → the Mac menubar (or another lifecycle owner) spawns
   // `lobu run` for this context. "external" → just connect; never
   // spawn or kill. Absent → infer from apiUrl: loopback ⇒ managed,
@@ -174,7 +179,8 @@ export async function resolveContext(
 
 export async function addContext(
   name: string,
-  apiUrl: string
+  apiUrl: string,
+  server?: LobuServerConfig
 ): Promise<LobuContextConfig> {
   const trimmedName = name.trim();
   if (!trimmedName) {
@@ -182,9 +188,14 @@ export async function addContext(
   }
 
   const config = await loadContextConfig();
-  config.contexts[trimmedName] = {
+  const entry: LobuContextEntry = {
     apiUrl: normalizeAndValidateApiUrl(apiUrl),
   };
+  const normalizedServer = server ? normalizeServerConfig(server) : undefined;
+  if (normalizedServer) {
+    entry.server = normalizedServer;
+  }
+  config.contexts[trimmedName] = entry;
   await saveContextConfig(config);
   return config;
 }
@@ -263,6 +274,9 @@ function normalizeServerConfig(raw: unknown): LobuServerConfig | undefined {
   }
   if (typeof src.dataDir === "string" && src.dataDir.trim()) {
     out.dataDir = src.dataDir.trim();
+  }
+  if (typeof src.cwd === "string" && src.cwd.trim()) {
+    out.cwd = src.cwd.trim();
   }
   if (src.lifecycle === "managed" || src.lifecycle === "external") {
     out.lifecycle = src.lifecycle;

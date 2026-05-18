@@ -6,6 +6,7 @@ import {
   resolveContext,
   setCurrentContext,
 } from "../internal/index.js";
+import type { LobuServerConfig } from "../internal/context.js";
 
 export async function contextListCommand(): Promise<void> {
   const config = await loadContextConfig();
@@ -45,8 +46,26 @@ export async function contextCurrentCommand(): Promise<void> {
 export async function contextAddCommand(options: {
   name: string;
   apiUrl: string;
+  port?: number;
+  host?: string;
+  databaseUrl?: string;
+  dataDir?: string;
+  cwd?: string;
+  lifecycle?: "managed" | "external";
 }): Promise<void> {
-  await addContext(options.name, options.apiUrl);
+  const server: LobuServerConfig = {};
+  if (options.port !== undefined) server.port = options.port;
+  if (options.host) server.host = options.host;
+  if (options.databaseUrl) server.databaseUrl = options.databaseUrl;
+  if (options.dataDir) server.dataDir = options.dataDir;
+  if (options.cwd) server.cwd = options.cwd;
+  if (options.lifecycle) server.lifecycle = options.lifecycle;
+
+  await addContext(
+    options.name,
+    options.apiUrl,
+    Object.keys(server).length === 0 ? undefined : server
+  );
   console.log(
     chalk.green(`\n  Saved context ${options.name} -> ${options.apiUrl}\n`)
   );

@@ -1,7 +1,7 @@
 name: mac-release
 
-# Builds and ships Lobu for Mac, then attaches Lobu.dmg to the existing
-# `lobu-v<version>` GitHub Release (so releases/latest/download/Lobu.dmg always
+# Builds and ships Owletto for Mac, then attaches Owletto.dmg to the existing
+# `lobu-v<version>` GitHub Release (so releases/latest/download/Owletto.dmg always
 # resolves) and signs an entry into the Sparkle appcast so installed apps can
 # auto-update.
 #
@@ -34,7 +34,7 @@ name: mac-release
 # packages/owletto/apps/mac/Lobu/Lobu.entitlements in the owletto submodule).
 #
 # Sparkle auto-updates: `SPARKLE_ED_PRIVATE_KEY` (64-byte base64 of seed||pub)
-# is required. The job signs Lobu.dmg with `sign_update` and pushes a new
+# is required. The job signs Owletto.dmg with `sign_update` and pushes a new
 # <item> into appcast.xml on the gh-pages branch (served at
 # https://lobu-ai.github.io/lobu/appcast.xml — that URL is in Info.plist as
 # SUFeedURL). Public key is in Info.plist:SUPublicEDKey.
@@ -228,37 +228,37 @@ jobs:
           # arm64 apps must carry at least an ad-hoc signature to launch at all;
           # this also lets users do right-click → Open past "unidentified
           # developer". A real Developer ID + notarization removes that prompt.
-          codesign --force --deep --sign - "$RUNNER_TEMP/Lobu.xcarchive/Products/Applications/Lobu.app"
+          codesign --force --deep --sign - "$RUNNER_TEMP/Lobu.xcarchive/Products/Applications/Owletto.app"
 
       - name: Build DMG
         run: |
-          APP="$RUNNER_TEMP/Lobu.xcarchive/Products/Applications/Lobu.app"
-          test -d "$APP" || { echo "::error::Lobu.app missing from archive"; exit 1; }
+          APP="$RUNNER_TEMP/Lobu.xcarchive/Products/Applications/Owletto.app"
+          test -d "$APP" || { echo "::error::Owletto.app missing from archive"; exit 1; }
           STAGE="$RUNNER_TEMP/dmg-stage"; mkdir -p "$STAGE"; cp -R "$APP" "$STAGE/"
           brew install create-dmg
           # create-dmg can exit non-zero on cosmetic AppleScript hiccups while
           # still producing the image, so verify the artifact instead of $?.
           create-dmg \
-            --volname "Lobu" --window-size 540 380 --icon-size 100 \
-            --icon "Lobu.app" 140 190 --app-drop-link 400 190 \
-            "$RUNNER_TEMP/Lobu.dmg" "$STAGE" || true
-          test -f "$RUNNER_TEMP/Lobu.dmg" || { echo "::error::DMG was not created"; exit 1; }
+            --volname "Owletto" --window-size 540 380 --icon-size 100 \
+            --icon "Owletto.app" 140 190 --app-drop-link 400 190 \
+            "$RUNNER_TEMP/Owletto.dmg" "$STAGE" || true
+          test -f "$RUNNER_TEMP/Owletto.dmg" || { echo "::error::DMG was not created"; exit 1; }
 
       - name: Notarize and staple
         if: steps.mode.outputs.signed == 'true'
         run: |
-          xcrun notarytool submit "$RUNNER_TEMP/Lobu.dmg" \
+          xcrun notarytool submit "$RUNNER_TEMP/Owletto.dmg" \
             --apple-id "${{ secrets.APPLE_ID }}" \
             --team-id "${{ secrets.APPLE_TEAM_ID }}" \
             --password "${{ secrets.APPLE_APP_PASSWORD }}" \
             --wait
-          xcrun stapler staple "$RUNNER_TEMP/Lobu.dmg"
+          xcrun stapler staple "$RUNNER_TEMP/Owletto.dmg"
 
       - name: Attach DMG to the release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: lobu-v${{ steps.v.outputs.version }}
-          files: ${{ runner.temp }}/Lobu.dmg
+          files: ${{ runner.temp }}/Owletto.dmg
           fail_on_unmatched_files: true
 
       - name: Sign update with Sparkle and publish appcast
@@ -275,7 +275,7 @@ jobs:
             exit 1
           fi
           VERSION="${{ steps.v.outputs.version }}"
-          DMG="$RUNNER_TEMP/Lobu.dmg"
+          DMG="$RUNNER_TEMP/Owletto.dmg"
 
           # Fetch Sparkle's binary tools (sign_update). The SPM artifact bundle
           # ships them under `bin/`, but the Sparkle GitHub release tarball is
@@ -313,7 +313,7 @@ jobs:
           python3 scripts/sparkle/update-appcast.py "$RUNNER_TEMP/ghpages/appcast.xml" \
             --version "$VERSION" \
             --build "$VERSION" \
-            --dmg-url "https://github.com/${{ github.repository }}/releases/download/lobu-v${VERSION}/Lobu.dmg" \
+            --dmg-url "https://github.com/${{ github.repository }}/releases/download/lobu-v${VERSION}/Owletto.dmg" \
             --signature "$ED_SIG" \
             --length "$LENGTH" \
             --release-notes "https://github.com/${{ github.repository }}/releases/tag/lobu-v${VERSION}" \

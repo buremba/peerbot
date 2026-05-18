@@ -2748,7 +2748,7 @@ function ConnectorsLanding({
       action: {
         kind: "link",
         label: "Download .dmg",
-        href: "https://github.com/lobu-ai/lobu/releases/latest/download/Lobu.dmg",
+        href: "https://github.com/lobu-ai/lobu/releases/latest/download/Owletto.dmg",
       },
     },
     {

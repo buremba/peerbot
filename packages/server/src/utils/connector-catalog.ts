@@ -385,6 +385,11 @@ export async function listCatalogConnectorDefinitions(
         continue;
       }
       if (entry.isDirectory()) {
+        // Skip private / non-connector folders. `__tests__` ships test files
+        // that import `bun:test`, which esbuild can't resolve and which
+        // surface as catalog-cold-scan warnings; any leading-underscore name
+        // is by convention not a connector grouping.
+        if (entry.name === '__tests__' || entry.name.startsWith('_')) continue;
         try {
           const subEntries = await readdir(entryPath, { withFileTypes: true });
           for (const sub of subEntries.sort((a, b) => a.name.localeCompare(b.name))) {

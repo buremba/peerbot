@@ -574,13 +574,14 @@ describe("agent_transcript_snapshot — /agent-history fallback", () => {
 });
 
 describe("agent_transcript_snapshot — advisory lock helper", () => {
-  test("lock-no-op-in-embedded-mode: PGlite-pinned pool returns sentinel without reserving", async () => {
+  test.skipIf(process.env.LOBU_DISABLE_PREPARE !== "1")("lock-no-op-in-embedded-mode: PGlite-pinned pool returns sentinel without reserving", async () => {
     // Embedded mode pins the postgres.js pool to a single connection; the
     // real reserve()-based path would block forever. The helper detects
     // LOBU_DISABLE_PREPARE=1 (set by ensurePgliteForGatewayTests) and
     // returns a no-op release. The genuine cross-pod path is asserted in
-    // the PR body's dual-psql repro.
-    expect(process.env.LOBU_DISABLE_PREPARE).toBe("1");
+    // the PR body's dual-psql repro. Skipped against real Postgres
+    // (CI integration job) — the sentinel-mode assertion does not hold
+    // there since sequential acquires on the same key would block.
 
     const a = await acquireConversationLock("org_lock_a", "agent-x", "conv-x");
     expect(a).not.toBeNull();

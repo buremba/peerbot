@@ -2111,7 +2111,6 @@ ALTER SEQUENCE public.watchers_id_seq OWNED BY public.watchers.id;
 
 ALTER TABLE ONLY public.agent_transcript_snapshot ALTER COLUMN id SET DEFAULT nextval('public.agent_transcript_snapshot_id_seq'::regclass);
 
-
 --
 -- Name: connect_tokens id; Type: DEFAULT; Schema: public; Owner: -
 --

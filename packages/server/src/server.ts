@@ -303,8 +303,60 @@ async function main() {
   });
 }
 
+/**
+ * Defensive error → plain-object serializer for the top-level boot catch.
+ *
+ * pino's logger registers `err` / `error` serializers (see utils/logger.ts),
+ * but `JSON.stringify(new Error('boom'))` returns `{}` because Error's own
+ * properties are non-enumerable. If anything ever drops the pino serializer
+ * config (older image, bundler tree-shake, etc.), Docker users see only
+ * `"error":{}` with zero signal — exactly what issue #766 reported. Walk
+ * the error manually so the log line always carries message + stack
+ * regardless of pino config, ZodError `issues`, AggregateError children,
+ * or wrapped `cause` chains.
+ */
+function serializeBootError(err: unknown): Record<string, unknown> {
+  if (err === null || err === undefined) return { value: String(err) };
+  if (typeof err !== 'object') return { value: String(err), type: typeof err };
+  const e = err as Error & {
+    code?: unknown;
+    cause?: unknown;
+    issues?: unknown;
+    errors?: unknown;
+  };
+  const out: Record<string, unknown> = {
+    type: e?.constructor?.name ?? 'Error',
+    message: typeof e.message === 'string' ? e.message : String(e),
+  };
+  if (typeof e.stack === 'string') out.stack = e.stack;
+  if (e.code !== undefined) out.code = e.code;
+  // ZodError surfaces failing field paths in `issues`; preserve them so the
+  // log shows *which* env var or config field failed validation.
+  if (Array.isArray(e.issues)) out.issues = e.issues;
+  // AggregateError stashes children in `errors`.
+  if (Array.isArray(e.errors)) {
+    out.errors = e.errors.map((child) => serializeBootError(child));
+  }
+  if (e.cause !== undefined && e.cause !== err) {
+    out.cause = serializeBootError(e.cause);
+  }
+  return out;
+}
+
 // Start the server
 main().catch((error) => {
-  logger.error({ error }, 'Failed to start server');
+  const serialized = serializeBootError(error);
+  // Log under both `err` (pino convention) and `error` (legacy key) so the
+  // line is useful whether or not the pino error serializer is wired.
+  logger.error({ err: serialized, error: serialized }, 'Failed to start server');
+  // Also print a plain-text line to stderr as a last-resort fallback for
+  // anyone whose log shipper drops structured fields — `docker logs` users
+  // hit this in #766.
+  process.stderr.write(
+    `Failed to start server: ${serialized.type ?? 'Error'}: ${serialized.message ?? ''}\n`
+  );
+  if (typeof serialized.stack === 'string') {
+    process.stderr.write(`${serialized.stack}\n`);
+  }
   process.exit(1);
 });

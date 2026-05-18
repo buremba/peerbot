@@ -55,6 +55,15 @@ async function ensureDeviceConnectorWired(
 ): Promise<void> {
   const sql = getDb();
 
+  // Primitive connectors (every feed marked `userManaged`, e.g. browser/*)
+  // have nothing to auto-wire — feeds are minted by composing bridge
+  // connectors via /api/workers/me/feeds, not by device-reconcile. Skip
+  // before doing any DB or compile work so each Chrome poll doesn't pay
+  // the cost. The connector_definition + version row will be installed
+  // lazily by ensureConnectorInstalled when a composing connector
+  // actually runs one of these primitives.
+  if (declaredFeedKeys.length === 0) return;
+
   // Self-heal the device pin against the user's current fleet. Cheap, idempotent
   // (the WHERE matches nothing when the pin is already a valid fresh device), and
   // runs even on the fast path so a stale pin doesn't silently strand the feeds.

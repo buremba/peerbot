@@ -574,6 +574,22 @@ export class MultiTenantProvider implements WorkspaceProvider {
       // Session validation failed, continue to anonymous
     }
 
+    // If the client sent `Authorization: Bearer …` and we got here, it
+    // wasn't a valid PAT, OAuth access token, or Better Auth session token —
+    // all three resolution paths above bailed. Return the RFC 6750
+    // `invalid_token` error (not the generic anonymous fall-through), so
+    // standards-compliant clients surface "bad token" rather than mistaking
+    // it for "no auth needed."
+    if (authHeader?.startsWith('Bearer ')) {
+      return c.json(
+        { error: 'invalid_token', error_description: 'Invalid or expired access token' },
+        401,
+        {
+          'WWW-Authenticate': `Bearer realm="${baseUrl}/.well-known/oauth-protected-resource", error="invalid_token"`,
+        }
+      );
+    }
+
     // 3) Anonymous: allow through with null org for discovery (tools/list, initialize)
     //    tools/call will enforce org context at the handler level.
     if (!requestedOrgId) {

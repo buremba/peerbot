@@ -4,6 +4,7 @@ import { Hono } from "hono";
 import type { AuthProfilesManager } from "../auth/settings/auth-profiles-manager.js";
 import type { ProviderCredentialContext } from "../embedded.js";
 import type { ProviderUpstreamConfig } from "../modules/module-system.js";
+import { orgContext } from "../../lobu/stores/org-context.js";
 import type { SecretStore } from "../secrets/index.js";
 import { getClientIp } from "../utils/rate-limiter.js";
 
@@ -646,18 +647,36 @@ export class SecretProxy {
     if (urlAgentId && resolvedSlug && this.authProfilesManager) {
       const providerId = this.slugToProviderId.get(resolvedSlug);
       if (providerId) {
-        const profile = await this.authProfilesManager.getBestProfile(
-          urlAgentId,
-          providerId,
-          undefined,
-          providerContext
+        // Run the credential lookup under the caller's expected org context
+        // when we have one. Without this wrapper, `AuthProfilesManager`
+        // calls its OWN `agentOrgResolver` to derive the org — and on a
+        // transient DB error that resolver logs a warning and returns
+        // undefined, then falls through to unscoped credential reads
+        // (`auth-profiles-manager.ts:251-275`). Wrapping here makes the
+        // org explicit so the resolver short-circuits and a DB hiccup
+        // cannot downgrade scoping for a request whose org we already
+        // know from the worker token / URL.
+        const runWithOrg = <T>(fn: () => Promise<T>): Promise<T> =>
+          expectedOrganizationId
+            ? orgContext.run({ organizationId: expectedOrganizationId }, fn)
+            : fn();
+        const authProfilesManager = this.authProfilesManager;
+        const profile = await runWithOrg(() =>
+          authProfilesManager.getBestProfile(
+            urlAgentId,
+            providerId,
+            undefined,
+            providerContext
+          )
         );
         const userIdForRefresh = providerContext?.userId;
         const credential = profile && userIdForRefresh
-          ? await this.authProfilesManager.ensureFreshCredential(profile, {
-              userId: userIdForRefresh,
-              agentId: urlAgentId,
-            })
+          ? await runWithOrg(() =>
+              authProfilesManager.ensureFreshCredential(profile, {
+                userId: userIdForRefresh,
+                agentId: urlAgentId,
+              })
+            )
           : profile?.credential;
         if (credential) {
           headers.authorization = `Bearer ${credential}`;

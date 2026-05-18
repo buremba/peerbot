@@ -16,13 +16,14 @@
  */
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { getDb } from "../../db/client.js";
+import { registerInteractionBridge } from "../connections/interaction-bridge.js";
 import {
   claimPendingQuestion,
   deletePendingQuestion,
   storePendingQuestion,
   sweepStalePendingInteractions,
 } from "../connections/pending-interaction-store.js";
-import type { PostedQuestion } from "../interactions.js";
+import { InteractionService, type PostedQuestion } from "../interactions.js";
 import {
   ensurePgliteForGatewayTests,
   resetTestDatabase,
@@ -169,6 +170,113 @@ describe("pending-interaction-store cleanup paths", () => {
     `;
     expect(afterDrop[0]!.c).toBe(0);
     expect(await claimPendingQuestion(q.id, ORG_A, CONN_A, USER_A)).toBeNull();
+  });
+
+  // Production-call-site test for Fix #7.
+  //
+  // The unit tests above prove `deletePendingQuestion` is correct in
+  // isolation, but they would still pass if `registerInteractionBridge`
+  // kept calling `claimPendingQuestion` on post failure. Drive the
+  // bridge end-to-end here: emit `question:created`, force the thread
+  // post to fail, then assert the row is gone (not just claimed_at-set).
+  test("interaction-bridge: post-failure path DELETEs the pending row (not claim-only)", async () => {
+    const sql = getDb();
+    const connectionId = CONN_A;
+    const questionId = "q-bridge-postfail";
+
+    // Mocked ChatInstanceManager: `has` says yes, `getInstance` returns a
+    // stub whose chat.channel() yields a thread whose .post() rejects —
+    // forces the bridge into the post-failure branch in
+    // `interaction-bridge.ts:onQuestionCreated`.
+    const postSpy = {
+      calls: 0,
+      lastError: undefined as unknown,
+    };
+    const mockThread = {
+      post: async () => {
+        postSpy.calls += 1;
+        const err = new Error("simulated post failure");
+        postSpy.lastError = err;
+        throw err;
+      },
+    };
+    const mockChat = {
+      channel: () => mockThread,
+      // registerActionHandlers wires `chat.onAction(...)`. We don't care
+      // about action dispatch for this test (we drive question:created
+      // directly); just make it a no-op so registration succeeds.
+      onAction: () => undefined,
+    };
+    const manager = {
+      has: (id: string) => id === connectionId,
+      getInstance: (id: string) =>
+        id === connectionId
+          ? {
+              chat: mockChat,
+              connection: {
+                id: connectionId,
+                platform: "slack",
+                organizationId: ORG_A,
+              },
+            }
+          : undefined,
+    } as any;
+    const connection = {
+      id: connectionId,
+      platform: "slack",
+      organizationId: ORG_A,
+    } as any;
+
+    const interactionService = new InteractionService();
+    const unregister = registerInteractionBridge(
+      interactionService,
+      manager,
+      connection,
+      mockChat as any
+    );
+
+    try {
+      // Drive a question through the bridge. Use the bare emit (rather
+      // than postQuestion) so the test doesn't depend on the public
+      // factory's id-generation; we want a known id we can SELECT for.
+      const event: PostedQuestion = {
+        id: questionId,
+        teamId: undefined,
+        channelId: "C1",
+        conversationId: "C1",
+        userId: USER_A,
+        connectionId,
+        platform: "slack",
+        question: "go?",
+        options: ["yes", "no"],
+      } as PostedQuestion;
+      interactionService.emit("question:created", event);
+
+      // The handler is async (store → dynamic-import → post → fail →
+      // delete). Wait for `thread.post` to be called first, then poll
+      // for the row to disappear.
+      const start = Date.now();
+      while (postSpy.calls === 0 && Date.now() - start < 5000) {
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      let remaining = 1;
+      while (Date.now() - start < 5000) {
+        const rows = await sql<{ c: number }>`
+          SELECT COUNT(*)::int AS c
+          FROM pending_interactions WHERE id = ${questionId}
+        `;
+        remaining = rows[0]!.c;
+        if (remaining === 0) break;
+        await new Promise((r) => setTimeout(r, 25));
+      }
+
+      expect(postSpy.calls).toBeGreaterThan(0);
+      // Row must be GONE — pre-fix, this assertion fails because
+      // claimPendingQuestion only sets claimed_at and leaves the row.
+      expect(remaining).toBe(0);
+    } finally {
+      unregister();
+    }
   });
 
   // Scoping invariant of deletePendingQuestion — same safety as claim.

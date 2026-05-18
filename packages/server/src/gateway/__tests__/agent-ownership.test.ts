@@ -16,6 +16,8 @@ const stubUserAgentsStore = (owner: {
   platform: string;
   userId: string;
   agentId: string;
+  /** Org returned by findAgentOrganizations; defaults to "test-org". */
+  organizationId?: string;
 }) => ({
   async ownsAgent(platform: string, userId: string, agentId: string) {
     return (
@@ -26,6 +28,23 @@ const stubUserAgentsStore = (owner: {
   },
   async addAgent() {
     // no-op: only used for best-effort reconciliation in verifyOwnedAgentAccess
+  },
+  // New per-org-authoritative resolver (codex round 2 finding B). Returns
+  // a single-element array when the (platform, userId, agentId) triple
+  // matches the stub's owner — same key shape as `agent_users`.
+  async findAgentOrganizations(
+    platform: string,
+    userId: string,
+    agentId: string
+  ) {
+    if (
+      platform === owner.platform &&
+      userId === owner.userId &&
+      agentId === owner.agentId
+    ) {
+      return [owner.organizationId ?? "test-org"];
+    }
+    return [];
   },
 });
 

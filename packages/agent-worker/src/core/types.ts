@@ -37,6 +37,15 @@ export interface WorkerConfig {
    * with legacy direct-enqueue paths that don't go through the runs queue.
    */
   runId?: number;
+  /**
+   * Per-run worker JWT bound to `runId`. Set by MessageConsumer at
+   * dispatch time and used by cleanup()'s writeSnapshot call as the
+   * Authorization bearer — replaces the deployment-lifetime WORKER_TOKEN
+   * for the snapshot path so the gateway's route can require token-runId
+   * equality with body.runId (codex round 2 finding A on PR #865).
+   * When absent (legacy direct-enqueue), the snapshot write is skipped.
+   */
+  runJobToken?: string;
 }
 
 export interface WorkspaceSetupConfig {

@@ -31,6 +31,16 @@ export interface WorkerTokenData {
   traceId?: string;
   /** Unique token ID — enables targeted revocation. */
   jti?: string;
+  /**
+   * Optional `runs.id` this token is scoped to. Present only on per-job
+   * tokens minted by the runs queue dispatcher at thread-message time;
+   * the deployment-lifetime WORKER_TOKEN minted at spawn time does NOT
+   * carry it. The snapshot route requires equality between this field
+   * and the request body's `runId` so a worker bearing a same-(org,
+   * agent, conv) token cannot POST under a different run's slot —
+   * codex round 2, finding A on PR #865.
+   */
+  runId?: number;
 }
 
 export function generateWorkerToken(
@@ -46,6 +56,14 @@ export function generateWorkerToken(
     platform?: string;
     sessionKey?: string;
     traceId?: string;
+    /**
+     * Bind the token to a single `runs.id`. Set only by the runs-queue
+     * dispatcher's per-job token mint (MessageConsumer.handleMessage on
+     * the gateway side). Long-lived deployment tokens must NOT pass this
+     * — they'd be wrong for subsequent runs. See WorkerTokenData.runId
+     * for the consumption contract.
+     */
+    runId?: number;
   }
 ): string {
   if (!options.channelId) {
@@ -66,6 +84,7 @@ export function generateWorkerToken(
     sessionKey: options.sessionKey,
     traceId: options.traceId,
     jti: randomUUID(),
+    runId: options.runId,
   };
 
   return encrypt(JSON.stringify(payload));
@@ -113,6 +132,20 @@ export function verifyWorkerToken(token: string): WorkerTokenData | null {
         "Worker token rejected: missing or wrongly-typed required fields"
       );
       return null;
+    }
+    // `runId` is optional but must be a positive integer when present.
+    // A forged token with `runId: "*"` (or NaN, or negative) would pass
+    // the verification check and then defeat the snapshot route's
+    // equality check below if downstream code compared loosely.
+    if (data.runId !== undefined) {
+      if (
+        typeof data.runId !== "number" ||
+        !Number.isInteger(data.runId) ||
+        data.runId <= 0
+      ) {
+        logger.error("Worker token rejected: runId must be a positive integer");
+        return null;
+      }
     }
 
     // Default TTL 2h (was 24h — a leaked token had no revocation path for a

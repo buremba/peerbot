@@ -173,8 +173,26 @@ export function createTranscriptRoutes(): Hono {
       return c.json({ error: "Missing or invalid runId" }, 400);
     }
 
+    // The JWT must itself be bound to this exact runId. The deployment-
+    // lifetime WORKER_TOKEN carries no `runId`, so it can never satisfy
+    // this check — only the per-run JWT that MessageConsumer mints
+    // alongside the runs-queue dispatch can. Without this, a worker
+    // bearing a valid same-(org, agent, conv) deployment token could
+    // POST under ANY same-scope run's slot, including the next pending
+    // run, and overwrite a sibling worker's snapshot. Codex round 2
+    // finding A on PR #865.
+    if (token.runId !== runId) {
+      logger.warn(
+        `Token runId mismatch: token.runId=${token.runId ?? "<absent>"} body.runId=${runId}; rejecting snapshot`
+      );
+      return c.json({ error: "runId out of scope" }, 403);
+    }
+
     // Tenant safety: verify the claimed runId actually belongs to the
-    // JWT's scope. Otherwise a misbehaving worker could write its
+    // JWT's scope. The token.runId === body.runId check above is a
+    // necessary condition; this is the sufficient one. (A leaked or
+    // mis-minted token whose runId points at a row in a different scope
+    // gets caught here.) Otherwise a misbehaving worker could write its
     // snapshot under another conversation's run row.
     if (
       !(await isRunOwnedByJwtScope(

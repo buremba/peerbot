@@ -1,5 +1,4 @@
 import type { AgentConfigStore } from "@lobu/core";
-import { getDb } from "../../../db/client.js";
 import type { SettingsTokenPayload } from "../../auth/settings/token-service.js";
 import type { UserAgentsStore } from "../../auth/user-agents-store.js";
 
@@ -49,43 +48,43 @@ function sessionMatchesMetadataOwner(
 }
 
 /**
- * Resolve the org id for an agent the caller is verified to own.
+ * Resolve the authorised organization id for `(session, agentId)`.
  *
- * Filtered by `(id, owner_platform, owner_user_id)` so a different org's
- * row that happens to share an agent id cannot be returned. Falls back to
- * `id`-only when owner is unknown (admin sessions where the caller is
- * trusted globally) — caller should treat that as a best-effort pin and
- * not rely on it for tenant isolation. Returns `undefined` if no matching
- * row exists, which collapses into the existing "no snapshot found" path
- * upstream.
+ * Reads `agent_users` directly via `UserAgentsStore.findAgentOrganizations`
+ * — that table IS the per-org owner mapping. Prior versions of this code
+ * resolved org from `agents` via `(id, owner_platform, owner_user_id)`,
+ * but those columns are legacy and only unique by convention; a single
+ * human owning the same agentId across two orgs would get the wrong
+ * row. Codex round 2 finding B on PR #865.
+ *
+ * Returns `undefined` if no `agent_users` row matches — the caller's
+ * authorisation already required `ownsAgent` to be true, so this only
+ * triggers for the admin / session.agentId paths where ownership isn't
+ * enforced. Downstream code (snapshot fallback) treats `undefined` as
+ * "no scope to query under" and returns null rather than serving cross-
+ * tenant bytes.
+ *
+ * When `agent_users` has multiple rows (same user, same agentId,
+ * multiple orgs) we deliberately take none — there's no way to pick
+ * tenant-safely from a session that doesn't carry an org id. The HTTP
+ * URL has no org slug for this route, so the only safe behaviour is to
+ * decline and let the snapshot path fall through to the on-disk file
+ * (which is already pinned to the deployment's single workspace).
  */
 async function resolveAuthorizedOrgId(
+  store: UserAgentsStore | undefined,
   agentId: string,
   ownerPlatform: string | undefined,
   ownerUserId: string | undefined
 ): Promise<string | undefined> {
-  const sql = getDb();
-  if (ownerPlatform && ownerUserId) {
-    const rows = await sql<{ organization_id: string }>`
-      SELECT organization_id FROM public.agents
-      WHERE id = ${agentId}
-        AND owner_platform = ${ownerPlatform}
-        AND owner_user_id = ${ownerUserId}
-      LIMIT 1
-    `;
-    return rows[0]?.organization_id;
-  }
-  // No owner-keyed filter to apply (e.g. admin session). Take the first
-  // row by deterministic order. This is the only branch where a different
-  // org's row could be returned — accepted because admin-level callers
-  // are trusted, and the URL doesn't carry an org slug.
-  const rows = await sql<{ organization_id: string }>`
-    SELECT organization_id FROM public.agents
-    WHERE id = ${agentId}
-    ORDER BY organization_id
-    LIMIT 1
-  `;
-  return rows[0]?.organization_id;
+  if (!store || !ownerPlatform || !ownerUserId) return undefined;
+  const orgs = await store.findAgentOrganizations(
+    ownerPlatform,
+    ownerUserId,
+    agentId
+  );
+  if (orgs.length !== 1) return undefined;
+  return orgs[0];
 }
 
 export async function verifyOwnedAgentAccess(
@@ -94,30 +93,25 @@ export async function verifyOwnedAgentAccess(
   config: AgentOwnershipConfig
 ): Promise<AgentOwnershipResult> {
   if (session.isAdmin) {
-    // Admin: ownership not required. Best-effort org resolution still
-    // happens so downstream code paths (transcript snapshot fallback)
-    // can scope their queries.
-    return {
-      authorized: true,
-      organizationId: await resolveAuthorizedOrgId(
-        agentId,
-        undefined,
-        undefined
-      ),
-    };
+    // Admin: ownership not required. We don't have a session-bound org
+    // for this case, and resolving from `agents` alone risks the same
+    // cross-tenant leak the rest of this file just got fixed for. Leave
+    // organizationId undefined; downstream snapshot reads will decline
+    // rather than serve arbitrary tenant bytes.
+    return { authorized: true };
   }
 
   if (session.agentId) {
     if (session.agentId !== agentId) {
       return { authorized: false };
     }
-    // The session is bound to a single agent; the agent's org is whichever
-    // owner-matched row exists. The agentId match alone isn't tenant-safe
-    // because agentId is per-org-unique not globally unique — fall through
-    // to the same owner-keyed lookup the non-admin path uses below if the
-    // session carries owner identity, otherwise admin-style best-effort.
+    // The session is bound to a single agent. Pin the org via the same
+    // agent_users authoritative source the non-admin path uses below;
+    // if the session predates that mapping the org stays undefined and
+    // the snapshot fallback declines.
     const lookupUserId = resolveSettingsLookupUserId(session);
     const organizationId = await resolveAuthorizedOrgId(
+      config.userAgentsStore,
       agentId,
       session.platform,
       lookupUserId || undefined
@@ -134,6 +128,7 @@ export async function verifyOwnedAgentAccess(
     );
     if (owns) {
       const organizationId = await resolveAuthorizedOrgId(
+        config.userAgentsStore,
         agentId,
         session.platform,
         lookupUserId
@@ -171,11 +166,18 @@ export async function verifyOwnedAgentAccess(
       });
   }
 
-  const organizationId = await resolveAuthorizedOrgId(
-    agentId,
-    metadata.owner.platform,
-    metadata.owner.userId
-  );
+  // Prefer `metadata.organizationId` — postgres-backed AgentConfigStore
+  // populates it from the same row that vouched for ownership above, so
+  // it's tenant-safe by construction. Fall back to the agent_users
+  // mapping if the in-memory store didn't set it.
+  const organizationId =
+    metadata.organizationId ??
+    (await resolveAuthorizedOrgId(
+      config.userAgentsStore,
+      agentId,
+      metadata.owner.platform,
+      metadata.owner.userId
+    ));
   return {
     authorized: true,
     ownerPlatform: metadata.owner.platform,

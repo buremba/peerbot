@@ -4,6 +4,7 @@ import {
   ErrorCode,
   extractTraceId,
   generateTraceId,
+  generateWorkerToken,
   getTraceparent,
   OrchestratorError,
   retryWithBackoff,
@@ -171,6 +172,30 @@ export class MessageConsumer {
         channelId: data.channelId,
         conversationId: effectiveConversationId,
       });
+
+      // Mint a per-run worker JWT bound to this exact `runs.id` and pass
+      // it to the worker via the message payload. The snapshot route uses
+      // it to enforce `tokenData.runId === body.runId`, so a worker
+      // bearing a same-(org, agent, conv) deployment-lifetime token
+      // cannot POST under a different run's slot. Codex round 2 finding
+      // A on PR #865. Without a parsed runId (legacy direct-enqueue
+      // path) we skip the mint; the snapshot path then declines to write
+      // (worker-side runId is undefined and writeSnapshot bails).
+      if (data.runId !== undefined) {
+        data.runJobToken = generateWorkerToken(
+          data.userId,
+          effectiveConversationId,
+          deploymentName,
+          {
+            channelId: data.channelId,
+            teamId: data.teamId,
+            agentId: data.agentId,
+            organizationId: data.organizationId,
+            platform: data.platform,
+            runId: data.runId,
+          }
+        );
+      }
 
       logger.info(
         `Conversation routing - effectiveConversationId: ${effectiveConversationId}, canonicalKey: ${canonicalConversationKey}, deploymentName: ${deploymentName}`

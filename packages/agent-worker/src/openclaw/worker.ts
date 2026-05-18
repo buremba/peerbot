@@ -338,6 +338,25 @@ export class OpenClawWorker implements WorkerExecutor {
     // throws and is reassigned in the catch block.
     this.terminalStatus = "failed";
 
+    // Fail loud when snapshot mode is enabled but the per-run scope the
+    // gateway is supposed to provide hasn't reached this job. A silent
+    // skip in cleanup() would hide a configuration bug across many
+    // turns; throwing here surfaces it on the first turn and the runs
+    // queue's retry path handles re-delivery. Codex round 2 quality
+    // win D on PR #865.
+    if (process.env.LOBU_SESSION_STORE === "snapshot") {
+      if (typeof this.config.runId !== "number") {
+        throw new Error(
+          "LOBU_SESSION_STORE=snapshot but WorkerConfig.runId is missing — runs-queue dispatch did not stamp runId on the job payload"
+        );
+      }
+      if (!this.config.runJobToken) {
+        throw new Error(
+          "LOBU_SESSION_STORE=snapshot but WorkerConfig.runJobToken is missing — MessageConsumer did not mint a per-run worker token"
+        );
+      }
+    }
+
     try {
       this.progressProcessor.reset();
 
@@ -585,10 +604,11 @@ export class OpenClawWorker implements WorkerExecutor {
 
   async cleanup(): Promise<void> {
     // Snapshot the post-run session.jsonl to Postgres so the next worker
-    // (possibly on a different pod) can hydrate from it. Runs on every
-    // terminal status — `completed`, `failed`, `timeout`, `cancelled` —
-    // with the discriminator stored so the next hydrate can skip a
-    // dangling tool_use trace. Opt-in via LOBU_SESSION_STORE=snapshot.
+    // (possibly on a different pod) can hydrate from it. Hydrate filters
+    // `terminal_status='completed'`, so we ONLY POST on the success path
+    // — writing `failed`/`timeout`/`cancelled` rows is pure network
+    // waste (codex round 2 quality win C on PR #865). Opt-in via
+    // LOBU_SESSION_STORE=snapshot.
     //
     // The runs queue has already moved this run to a terminal state by
     // the time cleanup() fires (sse-client.ts:865 finally block runs
@@ -596,30 +616,39 @@ export class OpenClawWorker implements WorkerExecutor {
     // breath; the gateway-side advisory lock held by the spawner is
     // released when the subprocess exits, so by the next claim's boot
     // this snapshot is the visible "latest" row.
-    if (process.env.LOBU_SESSION_STORE === "snapshot" && this.sessionFilePath) {
+    if (
+      process.env.LOBU_SESSION_STORE === "snapshot" &&
+      this.sessionFilePath &&
+      this.terminalStatus === "completed"
+    ) {
       const gatewayUrl = process.env.DISPATCHER_URL;
-      const workerToken = process.env.WORKER_TOKEN;
       const runId = this.config.runId;
-      if (gatewayUrl && workerToken && typeof runId === "number") {
+      // Per-run JWT minted by the gateway's MessageConsumer alongside
+      // `runId`. The snapshot route requires `tokenData.runId ===
+      // body.runId`, so the deployment-lifetime WORKER_TOKEN cannot be
+      // used here — it would carry no `runId` and the route would 403.
+      // Codex round 2 finding A.
+      const runJobToken = this.config.runJobToken;
+      if (gatewayUrl && runJobToken && typeof runId === "number") {
         await writeSnapshot({
           sessionFile: this.sessionFilePath,
           gatewayUrl,
-          workerToken,
+          workerToken: runJobToken,
           terminalStatus: this.terminalStatus,
-          // The runs.id this worker claimed. The route uses this to
-          // attribute the snapshot row unambiguously — fixes codex P1#1
-          // where a "latest run for (org, agent, conv)" lookup at write
-          // time would mis-attribute when a follow-up run had already
-          // been enqueued.
           runId,
         });
-      } else if (gatewayUrl && workerToken) {
-        // No runId on the config — legacy direct-enqueue path. Skip the
-        // snapshot rather than risk a mis-attributed row; the next run
-        // will hydrate from the previous completed snapshot the next time
-        // a normal runs-queue dispatch comes through.
+      } else if (gatewayUrl) {
+        // Missing per-run scope (legacy direct-enqueue path or token
+        // mint failure on the gateway). Skip the snapshot rather than
+        // risk a mis-attributed row; the next run will hydrate from
+        // the previous completed snapshot the next time a normal
+        // runs-queue dispatch comes through.
         logger.warn(
-          "Skipping transcript snapshot: WorkerConfig.runId is missing (legacy enqueue path)"
+          `Skipping transcript snapshot: ${
+            typeof runId !== "number"
+              ? "WorkerConfig.runId is missing"
+              : "WorkerConfig.runJobToken is missing"
+          } (legacy enqueue path)`
         );
       }
     }

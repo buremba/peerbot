@@ -90,4 +90,37 @@ export class UserAgentsStore {
     const agents = await this.listAgents(platform, userId, organizationId);
     return agents.includes(agentId);
   }
+
+  /**
+   * Resolve the orgs in which `(platform, userId)` owns `agentId`.
+   *
+   * Reads `agent_users` directly, which IS the per-org owner mapping —
+   * unlike `agents.{owner_platform, owner_user_id}` (used by the prior
+   * `resolveAuthorizedOrgId` in agent-ownership.ts) those columns are
+   * legacy and unique on `(owner_platform, owner_user_id, id)` only by
+   * convention; they can return the wrong org when the same human owns
+   * the same agentId across two orgs. The authoritative mapping for
+   * "this user is allowed to read this agent's snapshot in org X" lives
+   * here. Codex round 2 finding B on PR #865.
+   *
+   * Returns an empty array if the user owns no instance of `agentId`.
+   * Typically returns 1 element; >1 means the same user has the same
+   * agentId in multiple orgs (rare but legal).
+   */
+  async findAgentOrganizations(
+    platform: string,
+    userId: string,
+    agentId: string
+  ): Promise<string[]> {
+    const sql = getDb();
+    const rows = await sql`
+      SELECT organization_id
+      FROM agent_users
+      WHERE platform = ${platform}
+        AND user_id = ${userId}
+        AND agent_id = ${agentId}
+      ORDER BY organization_id
+    `;
+    return rows.map((r: any) => r.organization_id as string);
+  }
 }

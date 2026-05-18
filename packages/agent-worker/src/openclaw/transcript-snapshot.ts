@@ -125,6 +125,19 @@ export async function writeSnapshot(
     runId: number;
   }
 ): Promise<void> {
+  // Hydrate filters `terminal_status='completed'` — failed/timeout/cancelled
+  // snapshots are never used. POSTing them is pure network waste; the
+  // route would store them but no future hydrate would pick them up.
+  // Skip at the source so any caller (cleanup() today, future paths
+  // tomorrow) stays out of the wasteful write. Codex round 2 quality
+  // win C on PR #865.
+  if (opts.terminalStatus !== "completed") {
+    logger.debug(
+      `Skipping snapshot POST: terminal_status='${opts.terminalStatus}' is never read by hydrate`
+    );
+    return;
+  }
+
   let body: string;
   try {
     body = await fs.readFile(opts.sessionFile, "utf-8");

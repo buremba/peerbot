@@ -48,6 +48,14 @@ export interface MessagePayload {
   // see codex P1#1 on PR #865.
   runId?: number;
 
+  // Per-run worker JWT bound to `runId` above. Minted by MessageConsumer
+  // and threaded into WorkerConfig.runJobToken. The worker uses THIS
+  // token (not the deployment-lifetime WORKER_TOKEN) when calling the
+  // snapshot endpoint, so the route's `tokenData.runId === body.runId`
+  // equality check can reject any cross-run impersonation — codex round
+  // 2 finding A on PR #865.
+  runJobToken?: string;
+
   // Job type (default: "message")
   jobType?: JobType;
 

@@ -153,29 +153,33 @@ describe("writeSnapshot", () => {
     expect(parsed.runId).toBe(42);
   });
 
-  test("cleanup-snapshots-on-error: terminalStatus=failed propagates", async () => {
-    // Models the worker.execute() catch path: terminal status is `failed`
-    // when an exception escapes, and cleanup() forwards that discriminator
-    // to the gateway so the next hydrate skips the row.
+  test("non-completed terminalStatus is skipped (no POST, no waste)", async () => {
+    // Hydrate filters terminal_status='completed' — writing failed/
+    // timeout/cancelled rows is pure network waste. Codex round 2
+    // quality win C on PR #865. The cleanup() path is also gated on
+    // `terminalStatus === "completed"`, but writeSnapshot defends in
+    // depth so any future caller can't accidentally write a row that
+    // hydrate will never read.
     const sessionFile = join(tmp, ".openclaw", "session.jsonl");
     await fs.mkdir(join(tmp, ".openclaw"), { recursive: true });
     await fs.writeFile(sessionFile, `{"type":"session"}\n`, "utf-8");
 
-    let posted: { terminalStatus?: string } | null = null;
-    stubFetch((_url, init) => {
-      posted = JSON.parse(init.body as string);
+    let calls = 0;
+    stubFetch(() => {
+      calls++;
       return new Response("{}", { status: 200 });
     });
 
-    await writeSnapshot({
-      sessionFile,
-      gatewayUrl: "http://gw.test/lobu",
-      workerToken: "test-jwt",
-      terminalStatus: "failed",
-      runId: 42,
-    });
-    expect(posted).not.toBeNull();
-    expect(posted!.terminalStatus).toBe("failed");
+    for (const terminalStatus of ["failed", "timeout", "cancelled"] as const) {
+      await writeSnapshot({
+        sessionFile,
+        gatewayUrl: "http://gw.test/lobu",
+        workerToken: "test-jwt",
+        terminalStatus,
+        runId: 42,
+      });
+    }
+    expect(calls).toBe(0);
   });
 
   test("race-win-409 is benign — no throw", async () => {

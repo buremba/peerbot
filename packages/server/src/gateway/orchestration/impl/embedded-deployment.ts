@@ -197,14 +197,43 @@ export async function acquireConversationLock(
   }
   return {
     async release() {
-      try {
-        await reserved`SELECT pg_advisory_unlock(${CONV_LOCK_KEY1}, ${key2})`;
-      } catch (err) {
-        logger.warn(
-          `Failed to release advisory lock for ${organizationId}/${agentId}/${conversationId}: ${err instanceof Error ? err.message : String(err)}`
+      // Retry the unlock query up to 3× with linear-ish backoff. A
+      // transient DB hiccup mid-release would otherwise leave the
+      // conversation locked until the gateway recycles — every
+      // subsequent dispatch for that conv would `pg_try_advisory_lock`
+      // → false → DEPLOYMENT_CREATE_FAILED → runs-queue retry → repeat.
+      // Codex round 2 quality win E on PR #865.
+      const MAX_ATTEMPTS = 3;
+      const BACKOFF_MS = 100;
+      let lastErr: unknown = null;
+      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        try {
+          await reserved`SELECT pg_advisory_unlock(${CONV_LOCK_KEY1}, ${key2})`;
+          lastErr = null;
+          break;
+        } catch (err) {
+          lastErr = err;
+          if (attempt < MAX_ATTEMPTS) {
+            await new Promise((r) => setTimeout(r, BACKOFF_MS * attempt));
+          }
+        }
+      }
+      if (lastErr) {
+        // Log loudly so an operator notices — a stuck lock blocks every
+        // subsequent dispatch for the conversation. Includes the lock
+        // key triple so the operator can target a manual
+        // pg_advisory_unlock from psql if needed.
+        logger.error(
+          `Failed to release advisory lock after ${MAX_ATTEMPTS} attempts for ${organizationId}/${agentId}/${conversationId}: ${lastErr instanceof Error ? lastErr.message : String(lastErr)}`
         );
-      } finally {
+      }
+      // ALWAYS return the reserved connection to the pool — keeping it
+      // pinned would starve the pool faster than the stuck lock starves
+      // any one conversation.
+      try {
         reserved.release();
+      } catch {
+        /* postgres.js release is sync best-effort */
       }
     },
   };

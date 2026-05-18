@@ -926,6 +926,14 @@ export class GatewayClient {
         typeof payload.runId === "number" && Number.isFinite(payload.runId)
           ? payload.runId
           : undefined,
+      // Per-run JWT minted by MessageConsumer alongside runId. Worker
+      // uses this for the snapshot POST instead of the deployment-
+      // lifetime WORKER_TOKEN, so the gateway can enforce
+      // tokenData.runId === body.runId — codex round 2 finding A.
+      runJobToken:
+        typeof payload.runJobToken === "string" && payload.runJobToken
+          ? payload.runJobToken
+          : undefined,
     };
   }
 

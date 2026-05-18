@@ -2312,18 +2312,18 @@ ALTER TABLE ONLY public.agent_secrets
     ADD CONSTRAINT agent_secrets_pkey PRIMARY KEY (organization_id, name);
 
 --
+-- Name: agent_transcript_snapshot agent_transcript_snapshot_organization_id_agent_id_conversa_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.agent_transcript_snapshot
+    ADD CONSTRAINT agent_transcript_snapshot_organization_id_agent_id_conversa_key UNIQUE (organization_id, agent_id, conversation_id, run_id);
+
+--
 -- Name: agent_transcript_snapshot agent_transcript_snapshot_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.agent_transcript_snapshot
     ADD CONSTRAINT agent_transcript_snapshot_pkey PRIMARY KEY (id);
-
---
--- Name: agent_transcript_snapshot agent_transcript_snapshot_org_agent_conv_run_key; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.agent_transcript_snapshot
-    ADD CONSTRAINT agent_transcript_snapshot_org_agent_conv_run_key UNIQUE (organization_id, agent_id, conversation_id, run_id);
 
 --
 -- Name: agent_users agent_users_pkey; Type: CONSTRAINT; Schema: public; Owner: -

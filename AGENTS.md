@@ -121,6 +121,8 @@ When the user pivots mid-session, the default failure mode is piling unrelated w
 - **Never `git stash`.** Stashes are invisible, easy to lose, and collide across agents. If you need to pivot without finishing, commit WIP to the current branch (`git add -A && git commit -m "wip"`) and squash later. WIP commits are visible, pushable, recoverable.
 - **Per-agent isolation:** when launching a parallel Claude Code session, use `claude --worktree <name>` so each agent gets its own checkout + branch. No shared working dir = no cross-agent collisions.
 - **Subagent isolation (mandatory):** any spawned subagent that may `git switch`, commit, push, or run a destructive command MUST run with `isolation: "worktree"`. Read-only research/exploration agents may share the parent checkout. If unsure, use a worktree — the cost is a temp checkout, the cost of skipping is overwriting the user's working tree.
+- **Cross-repo dispatch:** owletto changes go through a **standalone clone at `~/Code/owletto`**, not `packages/owletto/`. The submodule worktree inherits the parent's `.git` and pushes to the wrong remote; an isolation worktree of lobu that needs to edit owletto code ends up with `origin = lobu-ai/owletto` and can't push to lobu. After an owletto PR merges, bump the submodule pointer in lobu in a separate small PR.
+- **Don't pass `"REPO: /absolute/path"` in dispatch prompts.** Agents take it as a cwd directive and `cd` out of their isolation worktree onto the main checkout. Say "the lobu repo" / "the owletto repo" instead and let `isolation: "worktree"` do its job.
 - **If a branch has already gotten mixed**, recover with `git rebase -i` + `git reset HEAD~N` and re-commit in clean groups before opening PRs.
 
 ## Development
@@ -153,6 +155,16 @@ are reachable on `http://localhost:8788` etc. — fine for UI work; only
 webhook/OAuth-callback testing actually needs the public URL.
 
 ### Validation after code changes
+
+**E2E before merge (hard gate).** For any bug-fix PR, do a red → fix → green cycle before opening:
+
+1. Reproduce the failure first (boot PGlite for SQL bugs, the gateway for SSE/runtime bugs, the actual binary for CLI bugs). Capture output.
+2. Apply the fix.
+3. Re-run the reproducer. Capture output.
+4. Paste both in the PR body under a "Reproducer" section.
+5. **If you can't reproduce the original failure, BAIL** — post the dead-end on the issue, do not open a PR. Pi approval validates code shape, not that the fix hits the actual smoking gun.
+
+Exception: changes that require dev environments the agent can't reach (Mac/Xcode, iOS, hardware). Call it out in the PR body ("Untested — requires Xcode") and leave the PR in draft until a human validates.
 
 Run the validation that matches what you touched:
 

@@ -471,6 +471,6 @@ jobs:
         if: steps.submodule.outputs.stubbed != 'true'
         run: |
           xcodebuild \
-            -project packages/owletto/apps/mac/Lobu.xcodeproj \
-            -scheme Lobu -configuration Release build \
+            -project packages/owletto/apps/mac/Owletto.xcodeproj \
+            -scheme Owletto -configuration Release build \
             CODE_SIGNING_ALLOWED=NO

@@ -1419,7 +1419,6 @@ CREATE TABLE public.organization_lobu_links (
     updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
-
 --
 -- Name: pending_interactions; Type: TABLE; Schema: public; Owner: -
 --
@@ -1433,7 +1432,6 @@ CREATE TABLE public.pending_interactions (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     claimed_at timestamp with time zone
 );
-
 
 --
 -- Name: personal_access_tokens; Type: TABLE; Schema: public; Owner: -
@@ -2649,14 +2647,12 @@ ALTER TABLE ONLY public.organization
 ALTER TABLE ONLY public.organization
     ADD CONSTRAINT organization_slug_key UNIQUE (slug);
 
-
 --
 -- Name: pending_interactions pending_interactions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.pending_interactions
     ADD CONSTRAINT pending_interactions_pkey PRIMARY KEY (id);
-
 
 --
 -- Name: personal_access_tokens personal_access_tokens_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -3638,20 +3634,17 @@ CREATE INDEX idx_notification_targets_user_all ON public.notification_targets US
 
 CREATE INDEX idx_notification_targets_user_unread ON public.notification_targets USING btree (user_id, delivered_at DESC) WHERE (read_at IS NULL);
 
-
 --
 -- Name: idx_pending_interactions_created_at; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_pending_interactions_created_at ON public.pending_interactions USING btree (created_at);
 
-
 --
 -- Name: idx_pending_interactions_unclaimed; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_pending_interactions_unclaimed ON public.pending_interactions USING btree (id, organization_id, connection_id, expected_user_id) WHERE (claimed_at IS NULL);
-
 
 --
 -- Name: idx_personal_access_tokens_worker_id; Type: INDEX; Schema: public; Owner: -
@@ -4808,14 +4801,12 @@ ALTER TABLE ONLY public.organization_lobu_links
 ALTER TABLE ONLY public.organization_lobu_links
     ADD CONSTRAINT organization_lobu_links_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organization(id) ON DELETE CASCADE;
 
-
 --
 -- Name: pending_interactions pending_interactions_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.pending_interactions
     ADD CONSTRAINT pending_interactions_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organization(id) ON DELETE CASCADE;
-
 
 --
 -- Name: personal_access_tokens personal_access_tokens_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -

@@ -254,14 +254,15 @@ describe("agent_transcript_snapshot — snapshot route", () => {
     expect(out).toBe(big);
   });
 
-  test("default-off: no snapshot rows ever created when LOBU_SESSION_STORE is unset", async () => {
-    // Asserts the env gate at the resolver level. The route layer doesn't
+  test("opt-out: no snapshot rows ever created when LOBU_SESSION_STORE=file", async () => {
+    // Phase 5 flipped the default: snapshot mode is on unless explicitly
+    // opted out via LOBU_SESSION_STORE=file. The route layer doesn't
     // check the env (writes are always honoured if the JWT is valid), but
-    // /agent-history's readLatestSnapshotJsonl is the consumer of that env
-    // gate. With no snapshot row, the resolver returns null and the
-    // existing disk-read fallback path runs.
+    // /agent-history's readLatestSnapshotJsonl is the consumer of that
+    // env gate via its callers. With no snapshot row in either mode, the
+    // resolver returns null and the existing disk-read fallback runs.
     const previous = process.env.LOBU_SESSION_STORE;
-    delete process.env.LOBU_SESSION_STORE;
+    process.env.LOBU_SESSION_STORE = "file";
     try {
       const orgId = await seedAgentRow("agent-off", {
         organizationId: "org_off",
@@ -276,7 +277,11 @@ describe("agent_transcript_snapshot — snapshot route", () => {
       const out = await readLatestSnapshotJsonl("agent-off", orgId);
       expect(out).toBeNull();
     } finally {
-      if (previous !== undefined) process.env.LOBU_SESSION_STORE = previous;
+      if (previous === undefined) {
+        delete process.env.LOBU_SESSION_STORE;
+      } else {
+        process.env.LOBU_SESSION_STORE = previous;
+      }
     }
   });
 

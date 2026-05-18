@@ -40,12 +40,10 @@ app:
   # is going away, so in-flight requests during the deregistration lag
   # still hit a live process.
   #
-  # Default 0 (preStop hook NOT emitted). Set to ~15 only when running
-  # with `app.strategy.type: RollingUpdate` and replicaCount > 1.
-  # Under the default Recreate strategy (workspaces PVC is RWO), the
-  # new pod doesn't start until the old one terminates, so adding a
-  # preStop sleep would EXTEND the no-available-server window — the
-  # opposite of what we want.
+  # Default 0 (preStop hook NOT emitted). Set to ~15 when running with
+  # `app.strategy.type: RollingUpdate` and replicaCount > 1. The
+  # workspaces PVC is OFF by default in Phase 5 so the chart now picks
+  # RollingUpdate automatically when `allowMultiReplica: true`.
   preStopDelaySeconds: 0
   # Total time k8s waits for the pod to stop before SIGKILL. Must be
   # > preStopDelaySeconds + actual shutdown time. The gateway's graceful
@@ -67,17 +65,15 @@ app:
   # Opt-in to multi-replica / rolling deploys. DEFAULT FALSE — leaving
   # this off keeps the safe `strategy: Recreate` behavior. Setting it
   # true makes the chart pick `RollingUpdate` (maxSurge: 1,
-  # maxUnavailable: 0) when workspaces is RWX or disabled.
+  # maxUnavailable: 0) as long as `app.workspaces.enabled` is false (the
+  # Phase 5 default) or workspaces is RWX-configured.
   #
   # Prerequisites BEFORE setting true — chart cannot detect these:
-  #   1. Workspaces volume must be RWX-capable:
-  #      `app.workspaces.accessModes: [ReadWriteMany]` + a storage class
-  #      that backs it (NFS, EFS, CephFS, Longhorn-RWX, …).
-  #   2. NO active Chat connections in `mode: "polling"` (Telegram).
+  #   1. NO active Chat connections in `mode: "polling"` (Telegram).
   #      Multiple replicas long-polling the same bot conflict. Use
   #      webhook mode only — see
   #      gateway/connections/chat-instance-manager.ts:610.
-  #   3. Acknowledge that the gateway has in-memory state for SSE
+  #   2. Acknowledge that the gateway has in-memory state for SSE
   #      streams (gateway/services/sse-manager.ts) and AskUser
   #      questions (gateway/connections/interaction-bridge.ts:193).
   #      A request whose SSE stream / AskUser click lands on a
@@ -87,17 +83,28 @@ app:
   #      then, occasional dropped streams / button clicks are the cost
   #      of zero-downtime deploys on this configuration.
   #
+  # If you re-enable the workspaces PVC (legacy path), you must either
+  # provision RWX-capable storage (NFS / EFS / CephFS / Longhorn-RWX)
+  # or leave `allowMultiReplica: false` — RWO + multi-replica is
+  # rejected by the chart's strategy helper and falls back to Recreate.
+  #
   # Single-replica + RollingUpdate (replicaCount: 1, allowMultiReplica: true)
   # still creates a brief overlap window where both pods are running.
   # The same in-memory caveats apply during that window, just for a
   # shorter span (~5-15s).
   allowMultiReplica: false
 
-  # Persistent workspaces volume. Embedded agent workers store session and
-  # workspace state below /app/workspaces (watcher run scratch, agent panel
-  # sessions, etc.).
+  # Persistent workspaces volume. Embedded agent workers used to store
+  # session and workspace state below /app/workspaces (session.jsonl,
+  # input/output/temp scratch). Phase 5 moved session.jsonl to Postgres
+  # (`agent_transcript_snapshot`) and made input/output/temp pod-local
+  # ephemeral storage — a per-conversation advisory lock pins all turns
+  # of one conversation to a single pod for its run lifetime, so no PVC
+  # is required for correctness. Set `enabled: true` only if you have a
+  # specific reason to persist scratch files across pod restarts; the
+  # PVC blocks rolling deploys on the default RWO storage class.
   workspaces:
-    enabled: true
+    enabled: false
     size: 20Gi
     storageClass: ""
     accessModes:

@@ -129,7 +129,8 @@ interface EmbeddedWorkerEntry {
    * Release the cross-pod advisory lock held for this conversation while the
    * worker is alive. Called from the `exit` handler so the lock survives the
    * entire subprocess lifetime, not just the spawn transaction. Undefined
-   * when `LOBU_SESSION_STORE=snapshot` is unset (no PG lock taken).
+   * when `LOBU_SESSION_STORE=file` opts out of snapshot mode (no PG lock
+   * taken on the legacy single-replica / RWO-PVC path).
    */
   releaseConvLock?: () => Promise<void>;
 }
@@ -597,9 +598,10 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
     // Only enforced when the gateway is in snapshot mode (the env flag is
     // read from the gateway process, not from the worker env that's still
     // being assembled below). PVC-based legacy behaviour keeps single-
-    // writer at the kernel level via the RWO mount.
+    // writer at the kernel level via the RWO mount. Phase 5: snapshot
+    // mode is the default; LOBU_SESSION_STORE=file opts out.
     const snapshotModeEnabled =
-      process.env.LOBU_SESSION_STORE === "snapshot";
+      process.env.LOBU_SESSION_STORE !== "file";
     const conversationId =
       typeof messageData?.conversationId === "string"
         ? messageData.conversationId
@@ -661,9 +663,11 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
       // Forward the snapshot-mode flag so workers know to hydrate from
       // Postgres and write back on cleanup. Mirrors gateway-side
       // process.env so the lock acquisition above and the worker's
-      // session-store selection stay in lockstep.
-      if (snapshotModeEnabled) {
-        commonEnvVars.LOBU_SESSION_STORE = "snapshot";
+      // session-store selection stay in lockstep. Phase 5: snapshot is
+      // the default; only forward LOBU_SESSION_STORE=file (the opt-out)
+      // so the worker sees the same mode the gateway picked.
+      if (!snapshotModeEnabled) {
+        commonEnvVars.LOBU_SESSION_STORE = "file";
       }
       const embeddedPath = buildEmbeddedWorkerPath(
         this.config.worker.binPathEntries,

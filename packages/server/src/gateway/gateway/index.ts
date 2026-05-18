@@ -107,9 +107,10 @@ export class WorkerGateway {
 
     // Per-run transcript snapshots — backs the multi-replica unblock.
     // Workers hydrate from the latest completed snapshot on boot and POST
-    // a new snapshot on every terminal state. Opt-in via
-    // `LOBU_SESSION_STORE=snapshot` on the worker side; the routes
-    // themselves are always mounted (gated by the JWT scope check inside).
+    // a new snapshot on every terminal state. Phase 5: snapshot is the
+    // default; LOBU_SESSION_STORE=file opts out on the worker side. The
+    // routes themselves are always mounted (gated by the JWT scope check
+    // inside).
     this.app.route("/transcript", createTranscriptRoutes());
 
     logger.debug("Worker gateway routes registered");

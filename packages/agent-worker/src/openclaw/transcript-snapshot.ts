@@ -23,9 +23,9 @@
  *     hydrate, `POST /worker/transcript/snapshot` for write. (org, agent,
  *     conv) are pulled from the worker JWT on the gateway side, so the
  *     worker can't impersonate another conversation.
- *   - Selection is opt-in via `LOBU_SESSION_STORE=snapshot`. Default unset
- *     preserves today's file-only behavior. Phase 5 flips the default,
- *     Phase 6 drops the env var.
+ *   - Phase 5: snapshot mode is the default. `LOBU_SESSION_STORE=file`
+ *     opts out for legacy/local-dev single-replica deploys. Phase 6
+ *     drops the env var entirely.
  *
  * Trade-off accepted: a mid-run crash loses the partial transcript for that
  * run. The next attempt re-runs from the previous user message. Tools must

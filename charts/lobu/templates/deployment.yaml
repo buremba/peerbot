@@ -15,9 +15,14 @@ spec:
        This is the operator opt-in path for true blue/green deploys.
     3. Else → Recreate (the safe default).
 
-  Why `allowMultiReplica` is an explicit flag, not auto-detected from
-  RWX: even with RWX storage, several in-memory components break with
-  >1 gateway replicas OR during the brief RollingUpdate overlap:
+  Phase 5 (workspaces PVC is OFF by default + LOBU_SESSION_STORE
+  defaults to snapshot mode) means most deploys naturally land on the
+  rolling-update branch as soon as `allowMultiReplica: true` is set.
+  The RWX check still applies for self-hosters who re-enable the PVC.
+
+  Why `allowMultiReplica` is an explicit flag, not auto-detected:
+  several in-memory components break with >1 gateway replicas OR
+  during the brief RollingUpdate overlap:
     * `SseManager` (gateway/services/sse-manager.ts) — SSE streams are
       pod-local; a job claimed by pod B broadcasts to no-one if the
       client is on pod A.
@@ -28,9 +33,10 @@ spec:
     * Telegram polling mode (gateway/connections/chat-instance-manager
       .ts:610-613) — every replica long-polls the same bot, causing
       conflicts.
-  RWX is necessary but not sufficient. The flag forces operators to
-  acknowledge "I have only webhook-mode Chat connections AND no
-  AskUser/SSE flows in flight" before opting in.
+  Snapshot-mode session state and the per-conversation advisory lock
+  are necessary but not sufficient. The flag forces operators to
+  acknowledge "I have only webhook-mode Chat connections AND accept
+  the SSE / AskUser handoff caveats" before opting in.
   */}}
   {{- $rwxConfigured := has "ReadWriteMany" (.Values.app.workspaces.accessModes | default (list)) }}
   {{- $rollSafe := and .Values.app.allowMultiReplica (or (not .Values.app.workspaces.enabled) $rwxConfigured) }}
@@ -139,12 +145,12 @@ spec:
           already serving, so deregistering the old pod via Service
           endpoint removal + giving downstream caches time to notice it
           shrinks the "old pod kept getting traffic during drain" window).
-          Under `Recreate` (the workspaces-RWO default), the new pod
-          doesn't start until the old one fully terminates — adding a
-          preStop sleep would EXTEND the no-available-server window by
-          its duration. We only emit the hook when preStopDelaySeconds
-          is explicitly > 0; ops repos using RollingUpdate set it,
-          Recreate-mode deploys leave it at the default 0.
+          Under `Recreate`, the new pod doesn't start until the old one
+          fully terminates — adding a preStop sleep would EXTEND the
+          no-available-server window by its duration. We only emit the
+          hook when preStopDelaySeconds is explicitly > 0; ops repos
+          using RollingUpdate set it, Recreate-mode deploys leave it at
+          the default 0.
           */ -}}
           {{- if gt (int (.Values.app.preStopDelaySeconds | default 0)) 0 }}
           lifecycle:

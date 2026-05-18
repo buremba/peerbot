@@ -81,20 +81,33 @@ const AgentOptionsSchema = z
   .passthrough();
 
 const JobEventSchema = z.object({
-  payload: z.object({
-    botId: z.string(),
-    userId: z.string(),
-    agentId: z.string(),
-    conversationId: z.string(),
-    platform: z.string(),
-    channelId: z.string(),
-    messageId: z.string(),
-    messageText: z.string(),
-    platformMetadata: PlatformMetadataSchema,
-    agentOptions: AgentOptionsSchema,
-    jobId: z.string().optional(),
-    teamId: z.string().optional(), // Optional for WhatsApp (top-level) and Slack (in platformMetadata)
-  }),
+  payload: z
+    .object({
+      botId: z.string(),
+      userId: z.string(),
+      agentId: z.string(),
+      conversationId: z.string(),
+      platform: z.string(),
+      channelId: z.string(),
+      messageId: z.string(),
+      messageText: z.string(),
+      platformMetadata: PlatformMetadataSchema,
+      agentOptions: AgentOptionsSchema,
+      jobId: z.string().optional(),
+      teamId: z.string().optional(), // Optional for WhatsApp (top-level) and Slack (in platformMetadata)
+      // Threaded through from MessageConsumer's runs-queue claim. The worker
+      // asserts these in snapshot mode (LOBU_SESSION_STORE != "file") — see
+      // worker.ts:353-360. The default zod object mode strips unknown keys,
+      // which silently dropped these fields and broke every Telegram chat
+      // when snapshot mode became the default in PR #871. Declare them
+      // explicitly so they survive parsing, and `.passthrough()` keeps any
+      // future MessagePayload field (mcpConfig, nixConfig, egressConfig,
+      // preApprovedTools, exec* fields, organizationId, networkConfig...)
+      // from regressing the same way.
+      runId: z.number().optional(),
+      runJobToken: z.string().optional(),
+    })
+    .passthrough(),
   processedIds: z.array(z.string()).optional(),
 });
 

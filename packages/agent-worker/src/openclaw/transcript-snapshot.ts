@@ -197,5 +197,42 @@ export async function writeSnapshot(
     logger.error(
       `Snapshot POST threw: ${err instanceof Error ? err.message : String(err)}`
     );
+    return;
+  }
+}
+
+/**
+ * Purge all snapshot rows for this worker's (org, agent, conv). Called
+ * by the session-reset path so the next boot doesn't rehydrate the
+ * conversation from Postgres after a `/new`. Idempotent — a 404 / empty
+ * result is treated as success.
+ *
+ * Failures are logged but not thrown — reset is best-effort; if the
+ * purge HTTP call fails the worst case is the next boot hydrates from
+ * the previous transcript (the legacy file-mode behaviour). The local
+ * session.jsonl unlink is the primary signal; this is the multi-replica
+ * complement to it.
+ */
+export async function clearSnapshots(
+  opts: Pick<TranscriptSnapshotOptions, "gatewayUrl" | "workerToken">
+): Promise<void> {
+  const url = `${opts.gatewayUrl}/worker/transcript/snapshot`;
+  try {
+    const res = await fetch(url, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${opts.workerToken}` },
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!res.ok) {
+      logger.warn(
+        `Snapshot DELETE failed: ${res.status} ${res.statusText} — next boot may rehydrate stale history`
+      );
+      return;
+    }
+    logger.info("Purged conversation snapshots for session reset");
+  } catch (err) {
+    logger.warn(
+      `Snapshot DELETE threw: ${err instanceof Error ? err.message : String(err)} — next boot may rehydrate stale history`
+    );
   }
 }

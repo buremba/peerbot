@@ -14,6 +14,7 @@
 import { unlink } from "node:fs/promises";
 import { resolve } from "node:path";
 import { createLogger } from "@lobu/core";
+import { getDb } from "../../db/client.js";
 import type { ThreadResponsePayload } from "../infrastructure/queue/index.js";
 import { extractSettingsLinkButtons } from "../platform/link-buttons.js";
 import type { ResponseRenderer } from "../platform/response-renderer.js";
@@ -245,6 +246,39 @@ export class ChatResponseBridge implements ResponseRenderer {
             { agentId, error: String(error) },
             "No session file to delete on reset"
           );
+        }
+
+        // Phase 5: in snapshot mode the next worker boot would rehydrate
+        // from Postgres unless we also purge the snapshot rows for this
+        // conversation. The worker's reset path does the same purge via
+        // the `/worker/transcript/snapshot` DELETE endpoint, but we
+        // belt-and-suspenders here in case the worker exited before it
+        // got to that step. Resolve the org via `agents.organization_id`
+        // — the bridge doesn't carry org on the response payload.
+        if (process.env.LOBU_SESSION_STORE !== "file") {
+          try {
+            const sql = getDb();
+            const deleted = await sql<{ id: number }>`
+              DELETE FROM public.agent_transcript_snapshot s
+              USING public.agents a
+              WHERE s.agent_id = ${agentId}
+                AND s.conversation_id = ${payload.conversationId}
+                AND a.id = s.agent_id
+                AND a.organization_id = s.organization_id
+              RETURNING s.id
+            `;
+            if (deleted.length > 0) {
+              logger.info(
+                { agentId, conversationId: payload.conversationId, count: deleted.length },
+                "Purged agent_transcript_snapshot rows for session reset"
+              );
+            }
+          } catch (error) {
+            logger.warn(
+              { agentId, conversationId: payload.conversationId, error: String(error) },
+              "Failed to purge transcript snapshots on session reset (next boot may rehydrate stale history)"
+            );
+          }
         }
       }
     }

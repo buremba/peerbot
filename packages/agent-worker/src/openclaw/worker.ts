@@ -55,6 +55,7 @@ import {
 } from "./model-resolver";
 import { checkSandboxLeak } from "./sandbox-leak";
 import {
+  clearSnapshots,
   hydrateFromSnapshot,
   type TerminalStatus,
   writeSnapshot,
@@ -1548,6 +1549,21 @@ Use it when the user references past discussions or you need context.`);
           logger.info("Deleted session file for session reset");
         } catch {
           // File may not exist
+        }
+
+        // Also purge the Postgres snapshots for this (org, agent, conv)
+        // — in snapshot mode (the Phase 5 default) the next worker boot
+        // would otherwise rehydrate from the now-flushed conversation
+        // and the user-visible "Starting fresh" would be a lie. Best-
+        // effort: a failure here is logged but doesn't block the reset
+        // since the local unlink already happened and the snapshot
+        // helper is a no-op in file mode.
+        if (process.env.LOBU_SESSION_STORE !== "file") {
+          const gatewayUrl = process.env.DISPATCHER_URL;
+          const workerToken = process.env.WORKER_TOKEN;
+          if (gatewayUrl && workerToken) {
+            await clearSnapshots({ gatewayUrl, workerToken });
+          }
         }
 
         // Send visible confirmation to user

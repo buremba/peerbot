@@ -254,5 +254,47 @@ export function createTranscriptRoutes(): Hono {
     }
   });
 
+  /**
+   * DELETE — purge all snapshot rows for this worker's (org, agent, conv).
+   *
+   * Called by the worker's session-reset path so the next boot doesn't
+   * rehydrate the now-flushed conversation from Postgres. The local
+   * session.jsonl is still unlinked separately by the reset handler;
+   * this endpoint covers the second leg now that snapshot mode is the
+   * default.
+   *
+   * Scope comes from the JWT; no body. Idempotent — deleting zero rows
+   * is success.
+   */
+  app.delete("/snapshot", async (c) => {
+    const token = authenticate(c);
+    if (!token) return c.json({ error: "Invalid token" }, 401);
+
+    const { organizationId, agentId, conversationId } = token;
+    if (!organizationId || !agentId || !conversationId) {
+      return c.json({ error: "Token missing required scope" }, 400);
+    }
+
+    const sql = getDb();
+    try {
+      const deleted = await sql<{ id: number }>`
+        DELETE FROM public.agent_transcript_snapshot
+        WHERE organization_id = ${organizationId}
+          AND agent_id = ${agentId}
+          AND conversation_id = ${conversationId}
+        RETURNING id
+      `;
+      logger.info(
+        `Purged ${deleted.length} snapshot row(s) for (${organizationId}, ${agentId}, ${conversationId}) on session reset`
+      );
+      return c.json({ deleted: deleted.length });
+    } catch (err) {
+      logger.error(
+        `Snapshot DELETE failed: ${err instanceof Error ? err.message : String(err)}`
+      );
+      return c.json({ error: "Internal error" }, 500);
+    }
+  });
+
   return app;
 }

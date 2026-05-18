@@ -1198,6 +1198,102 @@ describe("agent_transcript_snapshot — codex P1/P2 regressions", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]!.run_id).toBe(claimedByA);
   });
+
+  test("session-reset purges all snapshot rows for this conversation only", async () => {
+    // Phase 5: workers (and the gateway-side bridge) must purge PG
+    // snapshots on /new, otherwise the next pod boot rehydrates the
+    // flushed conversation and the user-visible "Starting fresh" is a
+    // lie. This test exercises the worker-side DELETE endpoint.
+    const orgId = await seedAgentRow("agent-reset", {
+      organizationId: "org_reset",
+    });
+    const agentId = "agent-reset";
+    const conversationId = "conv-reset";
+
+    // Seed 3 completed snapshots for this (org, agent, conv).
+    for (let i = 0; i < 3; i++) {
+      const runId = await insertRun({
+        organizationId: orgId,
+        agentId,
+        conversationId,
+      });
+      const token = mintWorkerToken({
+        organizationId: orgId,
+        agentId,
+        conversationId,
+        runId,
+      });
+      const jsonl = `{"type":"message","id":"m${i}"}\n`;
+      const res = await callRoute("POST", "/snapshot", token, {
+        terminalStatus: "completed",
+        snapshotJsonl: jsonl,
+        runId,
+      });
+      expect(res.status).toBe(200);
+    }
+
+    // Seed an unrelated row in a SIBLING conversation that must NOT be
+    // touched by the reset.
+    const siblingConv = "conv-sibling";
+    const siblingRun = await insertRun({
+      organizationId: orgId,
+      agentId,
+      conversationId: siblingConv,
+    });
+    const siblingToken = mintWorkerToken({
+      organizationId: orgId,
+      agentId,
+      conversationId: siblingConv,
+      runId: siblingRun,
+    });
+    let res = await callRoute("POST", "/snapshot", siblingToken, {
+      terminalStatus: "completed",
+      snapshotJsonl: `{"type":"sibling"}\n`,
+      runId: siblingRun,
+    });
+    expect(res.status).toBe(200);
+
+    // DELETE under a per-run token for the reset conversation.
+    const resetRunId = await insertRun({
+      organizationId: orgId,
+      agentId,
+      conversationId,
+    });
+    const resetToken = mintWorkerToken({
+      organizationId: orgId,
+      agentId,
+      conversationId,
+      runId: resetRunId,
+    });
+    res = await callRoute("DELETE", "/snapshot", resetToken);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { deleted: number };
+    expect(body.deleted).toBe(3);
+
+    // Sibling conversation row survives; reset conversation has zero rows.
+    const sql = getDb();
+    const resetRows = (await sql`
+      SELECT id FROM public.agent_transcript_snapshot
+      WHERE organization_id = ${orgId}
+        AND agent_id = ${agentId}
+        AND conversation_id = ${conversationId}
+    `) as Array<{ id: number }>;
+    expect(resetRows).toHaveLength(0);
+
+    const siblingRows = (await sql`
+      SELECT id FROM public.agent_transcript_snapshot
+      WHERE organization_id = ${orgId}
+        AND agent_id = ${agentId}
+        AND conversation_id = ${siblingConv}
+    `) as Array<{ id: number }>;
+    expect(siblingRows).toHaveLength(1);
+
+    // Second DELETE is idempotent — returns 200 with deleted=0.
+    res = await callRoute("DELETE", "/snapshot", resetToken);
+    expect(res.status).toBe(200);
+    const body2 = (await res.json()) as { deleted: number };
+    expect(body2.deleted).toBe(0);
+  });
 });
 
 // Drop the auth-provider stub between tests so other suites that share the

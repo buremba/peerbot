@@ -131,7 +131,10 @@ describe("context management", () => {
       dataDir: "/tmp/lobu-data",
     });
 
-    await setServerConfig({ databaseUrl: "postgres://new/db", port: 8788 }, "local");
+    await setServerConfig(
+      { databaseUrl: "postgres://new/db", port: 8788 },
+      "local"
+    );
     const [, written] = writeFileSpy.mock.calls.at(-1)!;
     const saved = JSON.parse(written as string) as typeof configData;
     expect(saved.contexts.local.server).toEqual({

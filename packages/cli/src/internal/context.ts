@@ -246,7 +246,11 @@ function normalizeServerConfig(raw: unknown): LobuServerConfig | undefined {
   if (typeof src.databaseUrl === "string" && src.databaseUrl.trim()) {
     out.databaseUrl = src.databaseUrl.trim();
   }
-  if (typeof src.port === "number" && Number.isInteger(src.port) && src.port > 0) {
+  if (
+    typeof src.port === "number" &&
+    Number.isInteger(src.port) &&
+    src.port > 0
+  ) {
     out.port = src.port;
   }
   if (typeof src.host === "string" && src.host.trim()) {

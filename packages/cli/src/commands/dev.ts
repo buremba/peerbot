@@ -76,10 +76,13 @@ export async function devCommand(
   // Precedence: shell > project .env > user config > defaults.
   const userServerConfig = await getServerConfig().catch(() => undefined);
   const userServerEnv: Record<string, string> = {};
-  if (userServerConfig?.databaseUrl) userServerEnv.DATABASE_URL = userServerConfig.databaseUrl;
-  if (userServerConfig?.port) userServerEnv.PORT = String(userServerConfig.port);
+  if (userServerConfig?.databaseUrl)
+    userServerEnv.DATABASE_URL = userServerConfig.databaseUrl;
+  if (userServerConfig?.port)
+    userServerEnv.PORT = String(userServerConfig.port);
   if (userServerConfig?.host) userServerEnv.HOST = userServerConfig.host;
-  if (userServerConfig?.dataDir) userServerEnv.LOBU_DATA_DIR = userServerConfig.dataDir;
+  if (userServerConfig?.dataDir)
+    userServerEnv.LOBU_DATA_DIR = userServerConfig.dataDir;
 
   const mergedEnv = {
     ...userServerEnv,

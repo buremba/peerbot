@@ -962,31 +962,35 @@ describe("agent_transcript_snapshot — codex P1/P2 regressions", () => {
     const sharedAgentId = "agent-shared";
     const orgA = "org_p2_a";
     const orgB = "org_p2_b";
-    await seedAgentRow(sharedAgentId, {
-      organizationId: orgA,
-      ownerPlatform: "external",
-      ownerUserId: "u-shared",
-    });
+    // Seed orgB FIRST so that under the round 1 bug the unscoped
+    // `SELECT FROM agents WHERE id=? AND owner_*=? LIMIT 1` lookup
+    // returns orgB (PG typically returns inserted-first rows first
+    // without an ORDER BY). Both rows have the same owner so the
+    // filter doesn't discriminate.
     await seedAgentRow(sharedAgentId, {
       organizationId: orgB,
       ownerPlatform: "external",
       ownerUserId: "u-shared",
     });
+    await seedAgentRow(sharedAgentId, {
+      organizationId: orgA,
+      ownerPlatform: "external",
+      ownerUserId: "u-shared",
+    });
 
-    // Map ownership in agent_users for BOTH orgs — same user, same
-    // agentId, two orgs. This is the exact race shape.
+    // Map ownership in agent_users for ORG A ONLY. The race shape is:
+    // BOTH `agents` rows (orgA, orgB) match `(id, owner_platform,
+    // owner_user_id)`, but the user actually owns the agent only in
+    // orgA (the orgB row was created by someone else with the same
+    // owner_user_id). Round 1 resolves org via `agents` and can pick
+    // orgB → leaks orgB's snapshot. Round 2 resolves via
+    // `agent_users` (this row only) → correctly pins orgA.
     const userAgentsStore = new UserAgentsStore();
     await userAgentsStore.addAgent(
       "external",
       "u-shared",
       sharedAgentId,
       orgA
-    );
-    await userAgentsStore.addAgent(
-      "external",
-      "u-shared",
-      sharedAgentId,
-      orgB
     );
 
     // Seed runs + completed snapshots in BOTH orgs. Sort run ids so the
@@ -1006,8 +1010,16 @@ describe("agent_transcript_snapshot — codex P1/P2 regressions", () => {
     });
     expect(runB).toBeGreaterThan(runA);
 
-    const aJsonl = `{"type":"session","id":"org-A-only"}\n`;
-    const bJsonl = `{"type":"session","id":"org-B-only"}\n`;
+    // Distinguishable JSONL: each org's snapshot contains a single
+    // message entry whose `text` carries the org id. The /history
+    // route parses these into the response, so a cross-tenant leak
+    // shows up as the wrong text payload — not just byte mismatch.
+    const aJsonl =
+      `{"type":"session","version":3,"id":"sess-A","timestamp":"2026-05-18T10:00:00Z","cwd":"/w"}\n` +
+      `{"type":"message","id":"m-A","parentId":null,"timestamp":"2026-05-18T10:00:01Z","message":{"role":"user","content":[{"type":"text","text":"FROM-ORG-A"}]}}\n`;
+    const bJsonl =
+      `{"type":"session","version":3,"id":"sess-B","timestamp":"2026-05-18T10:00:00Z","cwd":"/w"}\n` +
+      `{"type":"message","id":"m-B","parentId":null,"timestamp":"2026-05-18T10:00:01Z","message":{"role":"user","content":[{"type":"text","text":"FROM-ORG-B"}]}}\n`;
     await sql`
       INSERT INTO public.agent_transcript_snapshot
         (organization_id, agent_id, conversation_id, run_id,
@@ -1055,8 +1067,8 @@ describe("agent_transcript_snapshot — codex P1/P2 regressions", () => {
       );
 
       // Multiple calls — flush any nondeterministic row-order
-      // sampling. Under the round 1 bug roughly half would return
-      // orgB's bytes.
+      // sampling. Under the round 1 bug roughly half would resolve
+      // to orgB and return "FROM-ORG-B".
       for (let i = 0; i < 5; i++) {
         const response = await app.request(
           "/api/v1/agents/agent-shared/history/session/messages",
@@ -1067,22 +1079,20 @@ describe("agent_transcript_snapshot — codex P1/P2 regressions", () => {
         );
         expect(response.status).toBe(200);
         const body = (await response.json()) as {
-          messages: unknown[];
+          messages: Array<{
+            content: Array<{ type: string; text: string }>;
+          }>;
         };
-        // The route serves messages parsed from the snapshot JSONL.
-        // orgA's snapshot ("org-A-only") has no message rows, so
-        // messages should be empty. orgB's snapshot has the same
-        // shape — both are header-only — but the absence of a leak
-        // is asserted by counting rows the route DIDN'T see. We
-        // additionally use the resolver directly with the resolved
-        // orgA to compare bytes.
-        expect(body.messages).toEqual([]);
+        // The route MUST return orgA's content because that's the
+        // org the (user, agent) pair resolves to via the round 2
+        // fix's findAgentOrganizations. Under the round 1 bug the
+        // unscoped `agents` lookup picked whichever row sorted first
+        // and could return orgB's "FROM-ORG-B" text.
+        expect(body.messages).toHaveLength(1);
+        const text = body.messages[0]?.content?.[0]?.text;
+        expect(text).toBe("FROM-ORG-A");
+        expect(text).not.toBe("FROM-ORG-B");
       }
-
-      // Belt-and-braces: the resolver, with the same orgA pin the
-      // route used internally, returns orgA's bytes.
-      const out = await readLatestSnapshotJsonl(sharedAgentId, orgA);
-      expect(out).toBe(aJsonl);
     } finally {
       setAuthProvider(null);
       if (previousMode === undefined) {

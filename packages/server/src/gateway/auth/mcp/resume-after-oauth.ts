@@ -67,15 +67,22 @@ export async function postOAuthCompletionPrompt(
 
   // Re-fetch conversation history so the worker session can warm-start with
   // full context even if it got evicted since the 401 was returned.
-  const conversationState = connectionId
-    ? chatInstanceManager?.getInstance(connectionId)?.conversationState
+  const instance = connectionId
+    ? chatInstanceManager?.getInstance(connectionId)
     : undefined;
+  const conversationState = instance?.conversationState;
   const conversationHistory =
     connectionId && conversationState
       ? await conversationState
           .getHistory(connectionId, channelId)
           .catch(() => [])
       : [];
+  // Derive the connection's owning org so the enqueued resume run carries
+  // organization_id — verifier in transcript-routes.ts denies snapshots on
+  // NULL org. Falls through to undefined if the connection isn't currently
+  // tracked (legacy / cross-pod), in which case the resume run lands NULL
+  // and its snapshot is denied; the user can re-send manually.
+  const organizationId = instance?.connection.organizationId ?? undefined;
 
   const scopeSuffix = scope ? ` (granted scopes: ${scope})` : "";
   const messageText =
@@ -92,6 +99,7 @@ export async function postOAuthCompletionPrompt(
     conversationId: conversationId || channelId,
     teamId: teamId ?? platform,
     agentId,
+    organizationId,
     messageId,
     messageText,
     channelId,

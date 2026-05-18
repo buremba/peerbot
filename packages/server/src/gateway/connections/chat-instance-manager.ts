@@ -1549,6 +1549,7 @@ export class ChatInstanceManager {
       channelId: options.channelId,
       teamId: options.teamId,
       agentId: options.agentId,
+      organizationId: connection.organizationId,
       botId: `${name}-platform`,
       platform: name,
       messageText: message,

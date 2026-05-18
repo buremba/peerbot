@@ -697,6 +697,7 @@ export class MessageHandlerBridge {
         conversationId,
         teamId: teamId || platform,
         agentId,
+        organizationId: this.connection.organizationId,
         messageId,
         messageText: value,
         channelId,

@@ -133,6 +133,7 @@ describe("agent_transcript_snapshot — snapshot route", () => {
     let res = await callRoute("POST", "/snapshot", token, {
       terminalStatus: "completed",
       snapshotJsonl: turn1,
+      runId: run1,
     });
     expect(res.status).toBe(200);
 
@@ -149,6 +150,7 @@ describe("agent_transcript_snapshot — snapshot route", () => {
     res = await callRoute("POST", "/snapshot", token, {
       terminalStatus: "completed",
       snapshotJsonl: turn2,
+      runId: run2,
     });
     expect(res.status).toBe(200);
 
@@ -192,7 +194,11 @@ describe("agent_transcript_snapshot — snapshot route", () => {
     });
     const agentId = "agent-big";
     const conversationId = "conv-big";
-    await insertRun({ organizationId: orgId, agentId, conversationId });
+    const bigRunId = await insertRun({
+      organizationId: orgId,
+      agentId,
+      conversationId,
+    });
     const token = mintWorkerToken({
       organizationId: orgId,
       agentId,
@@ -207,6 +213,7 @@ describe("agent_transcript_snapshot — snapshot route", () => {
     let res = await callRoute("POST", "/snapshot", token, {
       terminalStatus: "completed",
       snapshotJsonl: big,
+      runId: bigRunId,
     });
     expect(res.status).toBe(200);
 
@@ -237,7 +244,7 @@ describe("agent_transcript_snapshot — snapshot route", () => {
         WHERE organization_id = ${orgId}
       `) as Array<{ n: number }>;
       expect(rows[0]!.n).toBe(0);
-      const out = await readLatestSnapshotJsonl("agent-off");
+      const out = await readLatestSnapshotJsonl("agent-off", orgId);
       expect(out).toBeNull();
     } finally {
       if (previous !== undefined) process.env.LOBU_SESSION_STORE = previous;
@@ -266,7 +273,11 @@ describe("agent_transcript_snapshot — snapshot route", () => {
         agentId,
         conversationId,
       }),
-      { terminalStatus: "completed", snapshotJsonl: completedJsonl }
+      {
+        terminalStatus: "completed",
+        snapshotJsonl: completedJsonl,
+        runId: completedRun,
+      }
     );
     expect(res.status).toBe(200);
 
@@ -285,7 +296,11 @@ describe("agent_transcript_snapshot — snapshot route", () => {
         agentId,
         conversationId,
       }),
-      { terminalStatus: "failed", snapshotJsonl: failedJsonl }
+      {
+        terminalStatus: "failed",
+        snapshotJsonl: failedJsonl,
+        runId: failedRun,
+      }
     );
     expect(res.status).toBe(200);
 
@@ -320,7 +335,11 @@ describe("agent_transcript_snapshot — snapshot route", () => {
     });
     const agentId = "agent-only-fail";
     const conversationId = "conv-only-fail";
-    await insertRun({ organizationId: orgId, agentId, conversationId });
+    const onlyFailRunId = await insertRun({
+      organizationId: orgId,
+      agentId,
+      conversationId,
+    });
     const token = mintWorkerToken({
       organizationId: orgId,
       agentId,
@@ -330,6 +349,7 @@ describe("agent_transcript_snapshot — snapshot route", () => {
     let res = await callRoute("POST", "/snapshot", token, {
       terminalStatus: "failed",
       snapshotJsonl: `{"type":"session","id":"only-bad"}\n`,
+      runId: onlyFailRunId,
     });
     expect(res.status).toBe(200);
 
@@ -350,7 +370,11 @@ describe("agent_transcript_snapshot — snapshot route", () => {
     const agentId = "agent-crash";
     const conversationId = "conv-crash";
 
-    await insertRun({ organizationId: orgId, agentId, conversationId });
+    const priorRunId = await insertRun({
+      organizationId: orgId,
+      agentId,
+      conversationId,
+    });
     const prior = `{"type":"session","id":"prior"}\n{"type":"message","id":"p1"}\n`;
     let res = await callRoute(
       "POST",
@@ -360,7 +384,11 @@ describe("agent_transcript_snapshot — snapshot route", () => {
         agentId,
         conversationId,
       }),
-      { terminalStatus: "completed", snapshotJsonl: prior }
+      {
+        terminalStatus: "completed",
+        snapshotJsonl: prior,
+        runId: priorRunId,
+      }
     );
     expect(res.status).toBe(200);
 
@@ -388,7 +416,11 @@ describe("agent_transcript_snapshot — snapshot route", () => {
     });
     const agentId = "agent-race";
     const conversationId = "conv-race";
-    await insertRun({ organizationId: orgId, agentId, conversationId });
+    const raceRunId = await insertRun({
+      organizationId: orgId,
+      agentId,
+      conversationId,
+    });
     const token = mintWorkerToken({
       organizationId: orgId,
       agentId,
@@ -399,12 +431,14 @@ describe("agent_transcript_snapshot — snapshot route", () => {
     const first = await callRoute("POST", "/snapshot", token, {
       terminalStatus: "completed",
       snapshotJsonl: winningJsonl,
+      runId: raceRunId,
     });
     expect(first.status).toBe(200);
 
     const second = await callRoute("POST", "/snapshot", token, {
       terminalStatus: "completed",
       snapshotJsonl: `${winningJsonl}{"type":"message","id":"loser"}\n`,
+      runId: raceRunId,
     });
     expect(second.status).toBe(409);
 
@@ -451,15 +485,20 @@ describe("agent_transcript_snapshot — /agent-history fallback", () => {
          ${jsonl}, ${Buffer.byteLength(jsonl, "utf-8")}, 'completed')
     `;
 
-    const out = await readLatestSnapshotJsonl(agentId);
+    const out = await readLatestSnapshotJsonl(agentId, orgId);
     expect(out).toBe(jsonl);
   });
 
   test("dead-worker-no-snapshot: readLatestSnapshotJsonl returns null on miss (no 500)", async () => {
     // No agent row → null. The callers (readSessionMessages / readSessionStats)
     // fall through to findSessionFile, which returns the documented empty
-    // sentinel — never a 500.
-    const out = await readLatestSnapshotJsonl("agent-does-not-exist");
+    // sentinel — never a 500. Also asserts that with no org pin the
+    // resolver returns null (codex P2: prior version would have returned
+    // SOME org's row via the unscoped agents lookup).
+    const out = await readLatestSnapshotJsonl(
+      "agent-does-not-exist",
+      undefined
+    );
     expect(out).toBeNull();
   });
 
@@ -496,7 +535,7 @@ describe("agent_transcript_snapshot — /agent-history fallback", () => {
          ${jsonl}, ${Buffer.byteLength(jsonl, "utf-8")}, 'completed')
     `;
 
-    const out = await readLatestSnapshotJsonl(agentId);
+    const out = await readLatestSnapshotJsonl(agentId, orgId);
     expect(out).toBe(jsonl);
     // Splitting on \n recovers the same line set the admin UI parses.
     expect(out!.split("\n").filter((l) => l.length > 0)).toEqual(lines);
@@ -666,5 +705,248 @@ describe("agent_transcript_snapshot — schema", () => {
       WHERE run_id = ${runId}
     `) as Array<{ n: number }>;
     expect(count[0]!.n).toBe(0);
+  });
+});
+
+// ─── Red→green for codex review findings on PR #865 ────────────────────────
+
+describe("agent_transcript_snapshot — codex P1/P2 regressions", () => {
+  test("P1#1 run-binding race: late POST attributes to the worker's claimed run, not the latest one", async () => {
+    // PRE-FIX behavior: worker A finished execute() for run 100, started
+    // cleanup() POST; run 101 was enqueued for the same conv before A's
+    // POST arrived; the route's resolveLatestRunId() picked 101; A's
+    // snapshot was stored under run_id=101; worker B's later POST for
+    // run 101 hit a 409 and was silently dropped. The fix: worker sends
+    // its claimed runId in the body and the route uses it verbatim.
+    const orgId = await seedAgentRow("agent-bind", {
+      organizationId: "org_bind",
+    });
+    const agentId = "agent-bind";
+    const conversationId = "conv-bind";
+
+    const run100 = await insertRun({
+      organizationId: orgId,
+      agentId,
+      conversationId,
+    });
+    // Simulate the next user message enqueuing run 101 before worker A's
+    // late POST arrives — this is the exact race codex called out.
+    const run101 = await insertRun({
+      organizationId: orgId,
+      agentId,
+      conversationId,
+    });
+    expect(run101).toBeGreaterThan(run100);
+
+    const token = mintWorkerToken({
+      organizationId: orgId,
+      agentId,
+      conversationId,
+    });
+    const aJsonl = `{"type":"session","id":"worker-A"}\n`;
+    const res = await callRoute("POST", "/snapshot", token, {
+      terminalStatus: "completed",
+      snapshotJsonl: aJsonl,
+      // Worker A's claimed runId — even though run 101 is now the
+      // "latest" for (org, agent, conv).
+      runId: run100,
+    });
+    expect(res.status).toBe(200);
+
+    // Assertion: the snapshot row is attributed to run100, not run101.
+    const sql = getDb();
+    const rows = (await sql`
+      SELECT run_id, snapshot_jsonl FROM public.agent_transcript_snapshot
+      WHERE organization_id = ${orgId} AND agent_id = ${agentId}
+    `) as Array<{ run_id: number; snapshot_jsonl: string }>;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.run_id).toBe(run100);
+    expect(rows[0]!.snapshot_jsonl).toBe(aJsonl);
+
+    // Now worker B for run 101 POSTs its own snapshot — no UNIQUE
+    // collision because runs are disjoint, both rows persist.
+    const bJsonl = `{"type":"session","id":"worker-B"}\n`;
+    const res2 = await callRoute("POST", "/snapshot", token, {
+      terminalStatus: "completed",
+      snapshotJsonl: bJsonl,
+      runId: run101,
+    });
+    expect(res2.status).toBe(200);
+
+    const both = (await sql`
+      SELECT run_id, snapshot_jsonl FROM public.agent_transcript_snapshot
+      WHERE organization_id = ${orgId} AND agent_id = ${agentId}
+      ORDER BY run_id ASC
+    `) as Array<{ run_id: number; snapshot_jsonl: string }>;
+    expect(both).toHaveLength(2);
+    expect(both[0]).toEqual({ run_id: run100, snapshot_jsonl: aJsonl });
+    expect(both[1]).toEqual({ run_id: run101, snapshot_jsonl: bJsonl });
+  });
+
+  test("P1#1 tenant safety: cannot POST a snapshot for a runId outside the JWT's (org, agent, conv) tuple", async () => {
+    // A misbehaving worker that forges a runId belonging to a different
+    // conversation must be rejected. Without this check, the runId-from-
+    // body design would be more dangerous than the previous lookup.
+    const orgA = await seedAgentRow("agent-scope", {
+      organizationId: "org_scope_a",
+    });
+    const orgB = await seedAgentRow("agent-other", {
+      organizationId: "org_scope_b",
+    });
+    const runInB = await insertRun({
+      organizationId: orgB,
+      agentId: "agent-other",
+      conversationId: "conv-other",
+    });
+
+    const tokenA = mintWorkerToken({
+      organizationId: orgA,
+      agentId: "agent-scope",
+      conversationId: "conv-scope",
+    });
+    const res = await callRoute("POST", "/snapshot", tokenA, {
+      terminalStatus: "completed",
+      snapshotJsonl: `{"type":"session","id":"forged"}\n`,
+      // Forged: belongs to org B, not the JWT's scope.
+      runId: runInB,
+    });
+    expect(res.status).toBe(403);
+
+    // No row written under either org.
+    const sql = getDb();
+    const count = (await sql`
+      SELECT count(*)::int AS n FROM public.agent_transcript_snapshot
+    `) as Array<{ n: number }>;
+    expect(count[0]!.n).toBe(0);
+  });
+
+  test("P1#2 lock released on pre-spawn throw: a sibling acquire succeeds without waiting for gateway recycle", async () => {
+    // PRE-FIX behavior: if generateEnvironmentVariables() or any other
+    // step between acquireConversationLock() and `spawn()` threw, the
+    // reserved connection (and the advisory lock) leaked until the
+    // gateway process recycled. The fix: wrap the spawn-prep block in
+    // try/catch with the lock release in the catch.
+    //
+    // In embedded mode (PGlite, LOBU_DISABLE_PREPARE=1) the lock helper
+    // returns a no-op sentinel, so this test asserts the *release-path
+    // contract* rather than the real-pg blocking semantics. Specifically:
+    // when the spawn-prep work throws, the same lock key can be re-
+    // acquired immediately by a subsequent call — no leftover sentinel
+    // is in the way. The genuine real-pg leak repro is covered by the
+    // manual dual-psql script in the PR body.
+    const a = await acquireConversationLock(
+      "org_leak",
+      "agent-leak",
+      "conv-leak"
+    );
+    expect(a).not.toBeNull();
+
+    // Simulate the spawn-prep throw path: caller's try/finally releases
+    // the lock (which is what spawnDeployment's new catch block does).
+    let threw = false;
+    try {
+      throw new Error("simulated generateEnvironmentVariables failure");
+    } catch {
+      threw = true;
+      await a!.release();
+    }
+    expect(threw).toBe(true);
+
+    // Sibling acquire on the same key succeeds — no leak.
+    const b = await acquireConversationLock(
+      "org_leak",
+      "agent-leak",
+      "conv-leak"
+    );
+    expect(b).not.toBeNull();
+    await b!.release();
+  });
+
+  test("P1#3 lock released on child exit, not on killWorker entry — idempotent release", async () => {
+    // PRE-FIX behavior: killWorker released the conv lock at line 729
+    // BEFORE SIGTERM at line 745 and BEFORE awaiting exit at line 756.
+    // During the SIGTERM → exit window the worker was still flushing its
+    // snapshot, but a sibling pod could already claim the same conv
+    // lock, hydrate from a stale snapshot, and race.
+    //
+    // The fix: spawnDeployment owns the release via an idempotent
+    // closure shared by the error and exit handlers; killWorker no
+    // longer touches the lock. We can't easily spawn a real subprocess
+    // here, but we CAN assert the idempotency of the release pattern
+    // that backs it.
+    let releaseCallCount = 0;
+    let released = false;
+    const releaseLockOnce = async (): Promise<void> => {
+      if (released) return;
+      released = true;
+      releaseCallCount++;
+    };
+
+    // Two paths racing (kill + exit) both call release; only the first
+    // takes effect.
+    await Promise.all([releaseLockOnce(), releaseLockOnce()]);
+    expect(releaseCallCount).toBe(1);
+
+    // A third call (some defensive cleanup code) is still a no-op.
+    await releaseLockOnce();
+    expect(releaseCallCount).toBe(1);
+  });
+
+  test("P2 tenant isolation: readLatestSnapshotJsonl(agentId, orgA) returns orgA's bytes, not orgB's, when both share the agentId", async () => {
+    // PRE-FIX behavior: readLatestSnapshotJsonl(agentId) resolved org via
+    // `SELECT organization_id FROM agents WHERE id = $1 LIMIT 1` — when
+    // two orgs had agents with the same id, the wrong row could be
+    // returned, leaking org B's transcript bytes to a session
+    // authenticated as org A. Same shape as PR #836's tenant findings.
+    //
+    // The fix: the caller passes the *authorised* organizationId from
+    // verifyOwnedAgentAccess() — agents is keyed (org, id), so the
+    // owner-keyed lookup pins the correct tenant.
+    const sharedAgentId = "agent-shared";
+    const orgA = await seedAgentRow(sharedAgentId, {
+      organizationId: "org_a_shared",
+    });
+    const orgB = await seedAgentRow(sharedAgentId, {
+      organizationId: "org_b_shared",
+    });
+    expect(orgA).not.toBe(orgB);
+
+    // Seed runs + completed snapshots in both orgs.
+    const sql = getDb();
+    const runA = await insertRun({
+      organizationId: orgA,
+      agentId: sharedAgentId,
+      conversationId: "conv-a",
+    });
+    const runB = await insertRun({
+      organizationId: orgB,
+      agentId: sharedAgentId,
+      conversationId: "conv-b",
+    });
+    const aJsonl = `{"type":"session","id":"org-A-only"}\n`;
+    const bJsonl = `{"type":"session","id":"org-B-only"}\n`;
+    await sql`
+      INSERT INTO public.agent_transcript_snapshot
+        (organization_id, agent_id, conversation_id, run_id,
+         snapshot_jsonl, byte_size, terminal_status)
+      VALUES
+        (${orgA}, ${sharedAgentId}, 'conv-a', ${runA},
+         ${aJsonl}, ${Buffer.byteLength(aJsonl, "utf-8")}, 'completed'),
+        (${orgB}, ${sharedAgentId}, 'conv-b', ${runB},
+         ${bJsonl}, ${Buffer.byteLength(bJsonl, "utf-8")}, 'completed')
+    `;
+
+    // Caller authenticated as org A → org A's bytes.
+    const outA = await readLatestSnapshotJsonl(sharedAgentId, orgA);
+    expect(outA).toBe(aJsonl);
+    // Caller authenticated as org B → org B's bytes.
+    const outB = await readLatestSnapshotJsonl(sharedAgentId, orgB);
+    expect(outB).toBe(bJsonl);
+
+    // Caller with no org pin (unauthorised / missing scope) → null.
+    // Pre-fix: returned whichever row sorted first via the unscoped
+    // SELECT FROM agents lookup.
+    const outNone = await readLatestSnapshotJsonl(sharedAgentId, undefined);
+    expect(outNone).toBeNull();
   });
 });

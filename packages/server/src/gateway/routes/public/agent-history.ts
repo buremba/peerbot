@@ -14,7 +14,7 @@ import type { UserAgentsStore } from "../../auth/user-agents-store.js";
 import { getDb } from "../../../db/client.js";
 import type { WorkerConnectionManager } from "../../gateway/connection-manager.js";
 import { errorResponse } from "../shared/helpers.js";
-import { createTokenVerifier } from "../shared/agent-ownership.js";
+import { createOwnershipResolver } from "../shared/agent-ownership.js";
 import { verifySettingsSession } from "./settings-auth.js";
 
 /**
@@ -22,29 +22,27 @@ import { verifySettingsSession } from "./settings-auth.js";
  * conversation. Returns the raw JSONL content + sessionId-equivalent, or
  * null when no snapshot exists.
  *
- * This is the snapshot-mode replacement for `readFile(sessionPath)`. It only
- * fires when LOBU_SESSION_STORE=snapshot — file-mode keeps reading
+ * The `organizationId` MUST be the authorised org id resolved by the caller
+ * (typically via `verifyOwnedAgentAccess` → `AgentOwnershipResult.
+ * organizationId`). Agents are keyed `(organization_id, id)` — the SAME
+ * agentId can exist across orgs — so a prior version that resolved org
+ * from agentId alone could serve a different org's bytes to a wrongly-
+ * cookied session. Codex P2 on PR #865, same shape as PR #836's tenant-
+ * isolation findings.
+ *
+ * Returns null when:
+ *   - `organizationId` is empty / undefined (no scope to query under)
+ *   - no completed snapshot exists for `(org, agent)`
+ *
+ * Only fires when LOBU_SESSION_STORE=snapshot — file-mode keeps reading
  * workspaces/* untouched, so existing deploys see no behaviour change.
  */
 export async function readLatestSnapshotJsonl(
-  agentId: string
+  agentId: string,
+  organizationId: string | undefined
 ): Promise<string | null> {
-  const sql = getDb();
-  // Two-step query: resolve the agent's org (one row even when multi-org
-  // sees the same agentId, since we accept the latest snapshot regardless),
-  // then look up the latest completed snapshot for the agent across any
-  // conversation. The (org, agent, conv, run_id DESC) index supports the
-  // second query as an index-only scan after we strip the org_id filter
-  // (still required for tenant safety — never serve a different org's
-  // bytes back to a wrongly-cookied session).
-  const orgRows = await sql<{ organization_id: string }>`
-    SELECT organization_id FROM public.agents
-    WHERE id = ${agentId}
-    LIMIT 1
-  `;
-  const organizationId = orgRows[0]?.organization_id;
   if (!organizationId) return null;
-
+  const sql = getDb();
   const snapshotRows = await sql<{ snapshot_jsonl: string }>`
     SELECT snapshot_jsonl
     FROM public.agent_transcript_snapshot
@@ -211,7 +209,8 @@ function entryToMessage(entry: SessionEntry): ParsedMessage | null {
 async function readSessionMessages(
   agentId: string,
   cursorParam: string,
-  limit: number
+  limit: number,
+  organizationId: string | undefined
 ) {
   // In snapshot mode, the disk file may be empty (a fresh pod has no
   // workspaces/ tree on a multi-replica gateway). Try the PG snapshot
@@ -219,7 +218,7 @@ async function readSessionMessages(
   // local-dev workspaces/* trees keep working without DB migrations.
   let content: string | null = null;
   if (process.env.LOBU_SESSION_STORE === "snapshot") {
-    content = await readLatestSnapshotJsonl(agentId);
+    content = await readLatestSnapshotJsonl(agentId, organizationId);
   }
   if (content === null) {
     const sessionPath = await findSessionFile(agentId);
@@ -259,12 +258,15 @@ async function readSessionMessages(
   };
 }
 
-async function readSessionStats(agentId: string) {
+async function readSessionStats(
+  agentId: string,
+  organizationId: string | undefined
+) {
   // Same fallback shape as readSessionMessages — DB first in snapshot mode,
   // disk read if absent.
   let content: string | null = null;
   if (process.env.LOBU_SESSION_STORE === "snapshot") {
-    content = await readLatestSnapshotJsonl(agentId);
+    content = await readLatestSnapshotJsonl(agentId, organizationId);
   }
   if (content === null) {
     const sessionPath = await findSessionFile(agentId);
@@ -325,18 +327,27 @@ export function createAgentHistoryRoutes(deps: {
 }) {
   const app = new Hono();
   const { connectionManager } = deps;
-  const verifyToken = createTokenVerifier({
+  const resolveOwnership = createOwnershipResolver({
     userAgentsStore: deps.userAgentsStore,
     agentMetadataStore: deps.agentConfigStore,
   });
 
-  async function getAuthorizedAgentId(c: Context): Promise<string | null> {
+  /**
+   * Returns the agentId AND the authorised organizationId so the snapshot
+   * fallback (which queries by `(org, agent)`) cannot cross tenants. agents
+   * is keyed (organization_id, id) — different orgs can share an agentId —
+   * so the agent-id alone is not a tenant boundary. Codex P2 on PR #865.
+   */
+  async function getAuthorizedAgentScope(
+    c: Context
+  ): Promise<{ agentId: string; organizationId: string | undefined } | null> {
     const session = await verifySettingsSession(c);
     if (!session) return null;
     const agentId = c.req.param("agentId") || session.agentId || null;
     if (!agentId || !isSafeAgentId(agentId)) return null;
-    const verified = await verifyToken(session, agentId);
-    return verified ? agentId : null;
+    const result = await resolveOwnership(session, agentId);
+    if (!result.authorized) return null;
+    return { agentId, organizationId: result.organizationId };
   }
 
   /**
@@ -391,10 +402,12 @@ export function createAgentHistoryRoutes(deps: {
 
   // Agent status
   app.get("/status", async (c) => {
-    const agentId = await getAuthorizedAgentId(c);
-    if (!agentId) return errorResponse(c, "Unauthorized", 401);
+    const scope = await getAuthorizedAgentScope(c);
+    if (!scope) return errorResponse(c, "Unauthorized", 401);
 
-    const { connected, resolvedAgentId } = await resolveActiveAgent(agentId);
+    const { connected, resolvedAgentId } = await resolveActiveAgent(
+      scope.agentId
+    );
 
     // Even if worker HTTP is unreachable, check if session content exists.
     // Same fallback shape as readSessionMessages: snapshot first, disk
@@ -402,7 +415,11 @@ export function createAgentHistoryRoutes(deps: {
     // but a PG snapshot is recoverable.
     let hasSessionFile = false;
     if (process.env.LOBU_SESSION_STORE === "snapshot") {
-      hasSessionFile = (await readLatestSnapshotJsonl(resolvedAgentId)) !== null;
+      hasSessionFile =
+        (await readLatestSnapshotJsonl(
+          resolvedAgentId,
+          scope.organizationId
+        )) !== null;
     }
     if (!hasSessionFile) {
       hasSessionFile = !!(await findSessionFile(resolvedAgentId));
@@ -418,16 +435,17 @@ export function createAgentHistoryRoutes(deps: {
 
   // Session messages
   app.get("/session/messages", async (c) => {
-    const agentId = await getAuthorizedAgentId(c);
-    if (!agentId) return errorResponse(c, "Unauthorized", 401);
+    const scope = await getAuthorizedAgentScope(c);
+    if (!scope) return errorResponse(c, "Unauthorized", 401);
 
     const cursor = c.req.query("cursor") || "";
     const limit = Math.min(parseInt(c.req.query("limit") || "50", 10), 200);
 
     const result = await proxyOrFallback(
-      agentId,
+      scope.agentId,
       `/session/messages?cursor=${cursor}&limit=${limit}`,
-      (resolved) => readSessionMessages(resolved, cursor, limit)
+      (resolved) =>
+        readSessionMessages(resolved, cursor, limit, scope.organizationId)
     );
 
     if (!result) {
@@ -448,13 +466,13 @@ export function createAgentHistoryRoutes(deps: {
 
   // Session stats
   app.get("/session/stats", async (c) => {
-    const agentId = await getAuthorizedAgentId(c);
-    if (!agentId) return errorResponse(c, "Unauthorized", 401);
+    const scope = await getAuthorizedAgentScope(c);
+    if (!scope) return errorResponse(c, "Unauthorized", 401);
 
     const result = await proxyOrFallback(
-      agentId,
+      scope.agentId,
       "/session/stats",
-      readSessionStats
+      (resolved) => readSessionStats(resolved, scope.organizationId)
     );
 
     if (!result) {

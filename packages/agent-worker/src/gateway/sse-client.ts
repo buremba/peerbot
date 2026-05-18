@@ -919,6 +919,13 @@ export class GatewayClient {
       workspace: {
         baseDirectory: process.env.WORKSPACE_DIR || "/workspace",
       },
+      // Threaded through from MessageConsumer (set from the runs-queue
+      // claim's job.id). Used by cleanup() to attribute the snapshot to
+      // the correct run; codex P1#1 on PR #865.
+      runId:
+        typeof payload.runId === "number" && Number.isFinite(payload.runId)
+          ? payload.runId
+          : undefined,
     };
   }
 

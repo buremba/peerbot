@@ -51,6 +51,15 @@ export interface MessagePayload {
   // Per-agent network configuration for sandbox isolation
   networkConfig?: NetworkConfig;
 
+  // The runs.id of the row the runs-queue claimed when this message was
+  // dispatched. Threaded all the way to the worker so the per-run
+  // agent_transcript_snapshot POST can attribute the snapshot to the
+  // correct run unambiguously. Without this, the snapshot route would
+  // have to guess via "latest run for (org, agent, conv)", which races
+  // with the next user message enqueuing a fresh run while the previous
+  // worker is still in cleanup() — see codex P1#1 on PR #865.
+  runId?: number;
+
   // Per-agent egress judge configuration (operator-level overrides for the LLM egress judge).
   egressConfig?: AgentEgressConfig;
 

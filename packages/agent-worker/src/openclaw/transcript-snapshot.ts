@@ -112,7 +112,18 @@ export async function hydrateFromSnapshot(
  * The next attempt will hydrate from the previous successful snapshot.
  */
 export async function writeSnapshot(
-  opts: TranscriptSnapshotOptions & { terminalStatus: TerminalStatus }
+  opts: TranscriptSnapshotOptions & {
+    terminalStatus: TerminalStatus;
+    /**
+     * The runs.id this worker claimed. Sent in the POST body so the route
+     * binds the snapshot to the correct run unambiguously; the route then
+     * verifies the runId actually belongs to the JWT's (org, agent, conv)
+     * tuple before INSERTing. Codex P1#1 on PR #865 — without this, the
+     * route fell back to a "latest run for (org, agent, conv)" lookup
+     * which raced with the next user message enqueuing a fresh run.
+     */
+    runId: number;
+  }
 ): Promise<void> {
   let body: string;
   try {
@@ -148,6 +159,7 @@ export async function writeSnapshot(
       body: JSON.stringify({
         terminalStatus: opts.terminalStatus,
         snapshotJsonl: body,
+        runId: opts.runId,
       }),
       // Snapshots can be large (633 KB max measured); 60s timeout covers
       // slow links + PG TOAST writes.

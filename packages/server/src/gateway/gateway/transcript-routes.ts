@@ -49,35 +49,37 @@ function authenticate(c: Context): WorkerTokenData | null {
 }
 
 /**
- * Resolve the run_id this worker should write a snapshot for. The worker
- * doesn't know its run id directly — it has `(org, agent, conv)` from the
- * JWT and the runs table records the most recent `claimed|running` row
- * for that conversation in `action_input.conversationId`. We pick the
- * latest such row.
+ * Verify the `runId` the worker claims belongs to the JWT's (org, agent,
+ * conv) tuple. The worker can't lie its way into another conversation's
+ * row: the runId is authoritatively set by the gateway's MessageConsumer
+ * from the runs-queue claim and threaded into the worker via WorkerConfig.
+ * A misbehaving worker that POSTs a forged runId either targets one of its
+ * own runs (allowed) or a run owned by a different (org, agent, conv) —
+ * this function returns false in the latter case so the route rejects with
+ * 403.
  *
- * Returns null if no in-flight run is found. That can happen when:
- *   - the run was already reaped (heartbeat timeout)
- *   - the snapshot fires after the run row moved to `completed` and the
- *     reaper has since pruned it
- * In both cases dropping the snapshot is correct — the run is no longer
- * recoverable so persisting its transcript wouldn't help.
+ * Codex P1#1 on PR #865 — the previous "latest run for (org, agent, conv)"
+ * lookup at write time raced: worker A finishes execute() for run 100,
+ * cleanup() POST is in flight; meanwhile run 101 is enqueued for the same
+ * conv; A's POST hits the gateway and gets mis-attributed to run 101,
+ * stealing the slot from worker B.
  */
-async function resolveLatestRunId(
+async function isRunOwnedByJwtScope(
+  runId: number,
   organizationId: string,
   agentId: string,
   conversationId: string
-): Promise<number | null> {
+): Promise<boolean> {
   const sql = getDb();
-  const rows = await sql<{ id: number }>`
-    SELECT id FROM public.runs
-    WHERE organization_id = ${organizationId}
-      AND run_type IN ('chat_message', 'agent_run', 'schedule', 'task')
+  const rows = await sql<{ ok: boolean }>`
+    SELECT 1 AS ok FROM public.runs
+    WHERE id = ${runId}
+      AND organization_id = ${organizationId}
       AND (action_input ->> 'agentId') = ${agentId}
       AND (action_input ->> 'conversationId') = ${conversationId}
-    ORDER BY id DESC
     LIMIT 1
   `;
-  return rows[0]?.id ?? null;
+  return rows.length > 0;
 }
 
 export function createTranscriptRoutes(): Hono {
@@ -126,7 +128,11 @@ export function createTranscriptRoutes(): Hono {
       return c.json({ error: "Token missing required scope" }, 400);
     }
 
-    let body: { terminalStatus?: string; snapshotJsonl?: string };
+    let body: {
+      terminalStatus?: string;
+      snapshotJsonl?: string;
+      runId?: unknown;
+    };
     try {
       body = (await c.req.json()) as typeof body;
     } catch {
@@ -154,16 +160,34 @@ export function createTranscriptRoutes(): Hono {
       return c.json({ error: "Snapshot too large" }, 413);
     }
 
-    const runId = await resolveLatestRunId(
-      organizationId,
-      agentId,
-      conversationId
-    );
+    // The worker MUST send the runId it claimed. Without it, we can't
+    // safely attribute the snapshot — see codex P1#1 on PR #865 for why
+    // the previous "resolve latest run for (org, agent, conv)" lookup
+    // was unsound.
+    const rawRunId = body.runId;
+    const runId =
+      typeof rawRunId === "number" && Number.isFinite(rawRunId) && rawRunId > 0
+        ? rawRunId
+        : null;
     if (runId === null) {
+      return c.json({ error: "Missing or invalid runId" }, 400);
+    }
+
+    // Tenant safety: verify the claimed runId actually belongs to the
+    // JWT's scope. Otherwise a misbehaving worker could write its
+    // snapshot under another conversation's run row.
+    if (
+      !(await isRunOwnedByJwtScope(
+        runId,
+        organizationId,
+        agentId,
+        conversationId
+      ))
+    ) {
       logger.warn(
-        `No in-flight run for (${organizationId}, ${agentId}, ${conversationId}); dropping snapshot`
+        `Run ${runId} does not belong to (${organizationId}, ${agentId}, ${conversationId}); rejecting snapshot`
       );
-      return c.json({ error: "No run to attach snapshot to" }, 404);
+      return c.json({ error: "runId out of scope" }, 403);
     }
 
     const sql = getDb();

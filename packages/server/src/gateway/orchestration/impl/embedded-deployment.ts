@@ -491,101 +491,136 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
       }
     }
 
-    const commonEnvVars = await this.generateEnvironmentVariables(
-      username,
-      userId,
-      deploymentName,
-      messageData,
-      true
-    );
-
-    commonEnvVars.WORKSPACE_DIR = workspaceDir;
-    // Forward the snapshot-mode flag so workers know to hydrate from
-    // Postgres and write back on cleanup. Mirrors gateway-side
-    // process.env so the lock acquisition above and the worker's
-    // session-store selection stay in lockstep.
-    if (snapshotModeEnabled) {
-      commonEnvVars.LOBU_SESSION_STORE = "snapshot";
-    }
-    const embeddedPath = buildEmbeddedWorkerPath(
-      this.config.worker.binPathEntries,
-      commonEnvVars.PATH || process.env.PATH
-    );
-    if (embeddedPath) {
-      commonEnvVars.PATH = embeddedPath;
-    }
-
-    // Serialize allowed domains for worker-side just-bash bootstrap
-    const allowedDomains = messageData?.networkConfig?.allowedDomains ?? [];
-    if (allowedDomains.length > 0) {
-      commonEnvVars.JUST_BASH_ALLOWED_DOMAINS = JSON.stringify(allowedDomains);
-    }
-
-    // Determine spawn command based on nix packages. Monorepo development
-    // runs the TypeScript worker via Bun; published CLI installs resolve the
-    // compiled @lobu/worker dist entry and can run it with Node.
-    const nixPackages = messageData?.nixConfig?.packages ?? [];
-    const workerEntryPoint = this.getWorkerEntryPoint();
-    const workerInvocation = buildWorkerInvocation(workerEntryPoint);
-
-    let command: string;
-    let spawnArgs: string[];
-
-    if (nixPackages.length > 0) {
-      // `nix-shell -p <arg>` evaluates each <arg> as a Nix *expression*, so a
-      // bare package string like `pkgs.fetchurl; builtins.exec …` or
-      // `import ./evil.nix` would run code at evaluation time. Never forward
-      // the raw skill string: validate it to a strict leaf (or known
-      // `<namespace>.<leaf>`) identifier and re-emit an explicit `pkgs.<name>`
-      // attribute reference instead.
-      const packageRefs = nixPackages.map(nixPackageAttrRef);
-      // Wrap in nix-shell so nix binaries are on PATH. `-E` takes a single
-      // expression that resolves to the build inputs; `pkgs` is bound to the
-      // nixpkgs set via a `let` and every ref was validated above.
-      command = "nix-shell";
-      spawnArgs = [
-        "-E",
-        `let pkgs = import <nixpkgs> {}; in pkgs.mkShell { buildInputs = [ ${packageRefs.join(" ")} ]; }`,
-        "--run",
-        buildShellCommand(workerInvocation.command, workerInvocation.args),
-      ];
-      logger.info(
-        `Spawning embedded worker ${deploymentName} with nix packages: ${nixPackages.join(", ")}`
+    // Ownership of `convLock` transfers from this local scope to the
+    // child's exit handler closure ONLY after `spawn()` returns and the
+    // exit handler is wired. Until then, any throw in the spawn-prep
+    // block must release the lock (and the underlying reserved pg
+    // connection) to avoid leaking a per-conversation lock until the
+    // gateway recycles. Codex P1#2 on PR #865.
+    let child: ChildProcess;
+    let commonEnvVars: Record<string, string>;
+    try {
+      commonEnvVars = await this.generateEnvironmentVariables(
+        username,
+        userId,
+        deploymentName,
+        messageData,
+        true
       );
-    } else {
-      command = workerInvocation.command;
-      spawnArgs = workerInvocation.args;
-    }
 
-    // On Linux production hosts, wrap the worker in a transient systemd
-    // user scope: cgroup limits + IPAddressDeny + capability drops. Falls
-    // back transparently on macOS / Linux hosts without user systemd.
-    const systemdRun = locateSystemdRun();
-    if (systemdRun) {
-      const unitName = makeUnitName(deploymentName);
-      const innerCommand = command;
-      const innerArgs = spawnArgs;
-      command = systemdRun;
-      spawnArgs = [
-        ...buildSystemdRunArgs({ unitName, workspaceDir }),
-        "--",
-        innerCommand,
-        ...innerArgs,
-      ];
-      logger.info(
-        `Spawning embedded worker ${deploymentName} under systemd-run scope ${unitName}`
+      commonEnvVars.WORKSPACE_DIR = workspaceDir;
+      // Forward the snapshot-mode flag so workers know to hydrate from
+      // Postgres and write back on cleanup. Mirrors gateway-side
+      // process.env so the lock acquisition above and the worker's
+      // session-store selection stay in lockstep.
+      if (snapshotModeEnabled) {
+        commonEnvVars.LOBU_SESSION_STORE = "snapshot";
+      }
+      const embeddedPath = buildEmbeddedWorkerPath(
+        this.config.worker.binPathEntries,
+        commonEnvVars.PATH || process.env.PATH
       );
+      if (embeddedPath) {
+        commonEnvVars.PATH = embeddedPath;
+      }
+
+      // Serialize allowed domains for worker-side just-bash bootstrap
+      const allowedDomains = messageData?.networkConfig?.allowedDomains ?? [];
+      if (allowedDomains.length > 0) {
+        commonEnvVars.JUST_BASH_ALLOWED_DOMAINS =
+          JSON.stringify(allowedDomains);
+      }
+
+      // Determine spawn command based on nix packages. Monorepo development
+      // runs the TypeScript worker via Bun; published CLI installs resolve the
+      // compiled @lobu/worker dist entry and can run it with Node.
+      const nixPackages = messageData?.nixConfig?.packages ?? [];
+      const workerEntryPoint = this.getWorkerEntryPoint();
+      const workerInvocation = buildWorkerInvocation(workerEntryPoint);
+
+      let command: string;
+      let spawnArgs: string[];
+
+      if (nixPackages.length > 0) {
+        // `nix-shell -p <arg>` evaluates each <arg> as a Nix *expression*, so a
+        // bare package string like `pkgs.fetchurl; builtins.exec …` or
+        // `import ./evil.nix` would run code at evaluation time. Never forward
+        // the raw skill string: validate it to a strict leaf (or known
+        // `<namespace>.<leaf>`) identifier and re-emit an explicit `pkgs.<name>`
+        // attribute reference instead.
+        const packageRefs = nixPackages.map(nixPackageAttrRef);
+        // Wrap in nix-shell so nix binaries are on PATH. `-E` takes a single
+        // expression that resolves to the build inputs; `pkgs` is bound to the
+        // nixpkgs set via a `let` and every ref was validated above.
+        command = "nix-shell";
+        spawnArgs = [
+          "-E",
+          `let pkgs = import <nixpkgs> {}; in pkgs.mkShell { buildInputs = [ ${packageRefs.join(" ")} ]; }`,
+          "--run",
+          buildShellCommand(workerInvocation.command, workerInvocation.args),
+        ];
+        logger.info(
+          `Spawning embedded worker ${deploymentName} with nix packages: ${nixPackages.join(", ")}`
+        );
+      } else {
+        command = workerInvocation.command;
+        spawnArgs = workerInvocation.args;
+      }
+
+      // On Linux production hosts, wrap the worker in a transient systemd
+      // user scope: cgroup limits + IPAddressDeny + capability drops. Falls
+      // back transparently on macOS / Linux hosts without user systemd.
+      const systemdRun = locateSystemdRun();
+      if (systemdRun) {
+        const unitName = makeUnitName(deploymentName);
+        const innerCommand = command;
+        const innerArgs = spawnArgs;
+        command = systemdRun;
+        spawnArgs = [
+          ...buildSystemdRunArgs({ unitName, workspaceDir }),
+          "--",
+          innerCommand,
+          ...innerArgs,
+        ];
+        logger.info(
+          `Spawning embedded worker ${deploymentName} under systemd-run scope ${unitName}`
+        );
+      }
+
+      child = spawn(command, spawnArgs, {
+        // Workers must not inherit gateway-only secrets or telemetry settings
+        // (DATABASE_URL, SENTRY_DSN, OAuth secrets, etc.). Everything a worker
+        // needs is assembled explicitly above, with optional operator-provided
+        // values forwarded only via WORKER_ENV_*.
+        env: commonEnvVars,
+        cwd: workspaceDir,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (err) {
+      // Pre-spawn throw (generateEnvironmentVariables, nix package
+      // validation, getWorkerEntryPoint, synchronous spawn() failure).
+      // No child process exists, so no exit handler will fire to release
+      // the lock — release it here before re-throwing.
+      if (convLock) {
+        void convLock.release();
+      }
+      throw err;
     }
 
-    const child = spawn(command, spawnArgs, {
-      // Workers must not inherit gateway-only secrets or telemetry settings
-      // (DATABASE_URL, SENTRY_DSN, OAuth secrets, etc.). Everything a worker
-      // needs is assembled explicitly above, with optional operator-provided
-      // values forwarded only via WORKER_ENV_*.
-      env: commonEnvVars,
-      cwd: workspaceDir,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    // Idempotent lock release. Captured by both the error and exit
+    // handlers below; killWorker no longer touches the lock directly so
+    // the lock survives until the child actually exits (codex P1#3 on
+    // PR #865 — the prior killWorker released BEFORE SIGTERM, letting a
+    // sibling pod claim the conversation while the dying worker was
+    // still flushing its snapshot).
+    let lockReleased = false;
+    const releaseLockOnce = async (): Promise<void> => {
+      if (lockReleased) return;
+      lockReleased = true;
+      if (convLock) {
+        await convLock.release();
+      }
+    };
 
     // Spawn errors (binary missing, EACCES, fork failure) fire on the child
     // *after* spawn() returns, so without an "error" listener Node would
@@ -596,12 +631,7 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
         `Embedded worker ${deploymentName} spawn error: ${err.message}`
       );
       this.workers.delete(deploymentName);
-      // Release the conversation lock if we ever acquired one — otherwise
-      // a spawn-time crash would pin the reserved connection (and the
-      // (org, agent, conv) lock) until the gateway recycles.
-      if (convLock) {
-        void convLock.release();
-      }
+      releaseLockOnce();
     });
 
     child.stdout?.on("data", (data: Buffer) => {
@@ -616,16 +646,12 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
     });
 
     child.once("exit", (code, signal) => {
-      const entry = this.workers.get(deploymentName);
-      if (entry) {
-        this.workers.delete(deploymentName);
-        // Release in the entry (not the local closure) so killWorker /
-        // scaleDeployment paths that delete the entry directly stay
-        // consistent — they no longer need to know about the lock.
-        if (entry.releaseConvLock) {
-          void entry.releaseConvLock();
-        }
-      }
+      // Always release the lock here. The killWorker path may have
+      // already deleted the map entry (to short-circuit duplicate
+      // deletes), but the lock release is gated on its own idempotency
+      // flag and is the authoritative release point — codex P1#3.
+      this.workers.delete(deploymentName);
+      releaseLockOnce();
       if (signal) {
         logger.info(
           `Embedded worker ${deploymentName} exited with signal ${signal}`
@@ -644,9 +670,10 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
       env: commonEnvVars,
       lastActivity: new Date(),
       workspaceDir,
-      // Attach the lock release so the exit handler (and killWorker, for
-      // scale-down paths) can drop it without re-deriving the key.
-      ...(convLock ? { releaseConvLock: convLock.release } : {}),
+      // Expose the idempotent release on the entry for introspection /
+      // tests. The exit handler is the authoritative release site;
+      // killWorker no longer touches this field.
+      ...(convLock ? { releaseConvLock: releaseLockOnce } : {}),
     });
 
     logger.info(
@@ -711,26 +738,24 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
     }
   }
 
-  /** Send SIGTERM, then SIGKILL after timeout. Resolves on child exit. */
+  /** Send SIGTERM, then SIGKILL after timeout. Resolves on child exit.
+   *
+   * Does NOT release the conversation lock — the child's exit handler is
+   * the authoritative release site, and the release call there is
+   * idempotent. Releasing here before `await exited` (as a prior version
+   * did) lets a sibling pod claim the conversation while this worker is
+   * still flushing its cleanup() snapshot. Codex P1#3 on PR #865.
+   */
   private async killWorker(
     entry: EmbeddedWorkerEntry,
     deploymentName: string
   ): Promise<void> {
     const child = entry.process;
 
-    // Delete from map first to prevent race with the exit handler.
-    this.workers.delete(deploymentName);
-
-    // Release the cross-pod conversation lock here too. The exit handler
-    // races with this code path: deleting the map entry means the exit
-    // handler's `this.workers.get(...)` returns undefined and it never
-    // calls release. Clear the field on the entry so we don't double-
-    // release when both paths fire.
-    const release = entry.releaseConvLock;
-    if (release) {
-      entry.releaseConvLock = undefined;
-      void release();
-    }
+    // Don't delete from the map up front and don't release the lock —
+    // both happen in `child.once("exit", ...)` (wired in spawnDeployment)
+    // when the child actually exits. That handler is idempotent so the
+    // duplicate `workers.delete()` from a stale path is fine.
 
     // Already exited — `exitCode`/`signalCode` are the only reliable
     // indicators here. `child.killed` is set the moment we *send* a signal,

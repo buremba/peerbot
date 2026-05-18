@@ -599,13 +599,28 @@ export class OpenClawWorker implements WorkerExecutor {
     if (process.env.LOBU_SESSION_STORE === "snapshot" && this.sessionFilePath) {
       const gatewayUrl = process.env.DISPATCHER_URL;
       const workerToken = process.env.WORKER_TOKEN;
-      if (gatewayUrl && workerToken) {
+      const runId = this.config.runId;
+      if (gatewayUrl && workerToken && typeof runId === "number") {
         await writeSnapshot({
           sessionFile: this.sessionFilePath,
           gatewayUrl,
           workerToken,
           terminalStatus: this.terminalStatus,
+          // The runs.id this worker claimed. The route uses this to
+          // attribute the snapshot row unambiguously — fixes codex P1#1
+          // where a "latest run for (org, agent, conv)" lookup at write
+          // time would mis-attribute when a follow-up run had already
+          // been enqueued.
+          runId,
         });
+      } else if (gatewayUrl && workerToken) {
+        // No runId on the config — legacy direct-enqueue path. Skip the
+        // snapshot rather than risk a mis-attributed row; the next run
+        // will hydrate from the previous completed snapshot the next time
+        // a normal runs-queue dispatch comes through.
+        logger.warn(
+          "Skipping transcript snapshot: WorkerConfig.runId is missing (legacy enqueue path)"
+        );
       }
     }
     logger.info("Worker cleanup completed");

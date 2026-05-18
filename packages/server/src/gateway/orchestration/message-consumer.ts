@@ -135,6 +135,19 @@ export class MessageConsumer {
     );
 
     try {
+      // The runs-queue claim sets `job.id = String(runId)` when it
+      // dispatches into this handler. Stamp the runId onto the payload so
+      // it survives the thread_message_{deployment} hop and reaches the
+      // worker — the per-run agent_transcript_snapshot POST needs it to
+      // attribute snapshots to the right run (codex P1#1 on PR #865).
+      // Best-effort parse; non-numeric ids (legacy direct enqueue paths)
+      // leave the field undefined and the snapshot path falls back to
+      // skipping the write.
+      const parsedRunId = Number(jobId);
+      if (Number.isFinite(parsedRunId) && parsedRunId > 0) {
+        data.runId = parsedRunId;
+      }
+
       // CRITICAL: For consistent worker naming, conversationId must be the root conversation ID
       // (e.g., Slack thread root ts), not individual message timestamps.
       const effectiveConversationId = data.conversationId;

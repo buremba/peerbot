@@ -141,11 +141,16 @@ describe("writeSnapshot", () => {
       gatewayUrl: "http://gw.test/lobu",
       workerToken: "test-jwt",
       terminalStatus: "completed",
+      runId: 42,
     });
     expect(postedBody).not.toBeNull();
     const parsed = JSON.parse(postedBody!);
     expect(parsed.snapshotJsonl).toBe(body);
     expect(parsed.terminalStatus).toBe("completed");
+    // P1#1: runId MUST be on the POST body so the route attributes the
+    // snapshot to the exact run this worker claimed, not "latest run for
+    // (org, agent, conv)".
+    expect(parsed.runId).toBe(42);
   });
 
   test("cleanup-snapshots-on-error: terminalStatus=failed propagates", async () => {
@@ -167,6 +172,7 @@ describe("writeSnapshot", () => {
       gatewayUrl: "http://gw.test/lobu",
       workerToken: "test-jwt",
       terminalStatus: "failed",
+      runId: 42,
     });
     expect(posted).not.toBeNull();
     expect(posted!.terminalStatus).toBe("failed");
@@ -186,6 +192,7 @@ describe("writeSnapshot", () => {
       gatewayUrl: "http://gw.test/lobu",
       workerToken: "test-jwt",
       terminalStatus: "completed",
+      runId: 42,
     });
   });
 
@@ -202,6 +209,7 @@ describe("writeSnapshot", () => {
       gatewayUrl: "http://gw.test/lobu",
       workerToken: "test-jwt",
       terminalStatus: "failed",
+      runId: 42,
     });
     expect(calls).toBe(0);
   });
@@ -221,6 +229,7 @@ describe("writeSnapshot", () => {
       gatewayUrl: "http://gw.test/lobu",
       workerToken: "test-jwt",
       terminalStatus: "completed",
+      runId: 42,
     });
     expect(calls).toBe(0);
   });
@@ -238,6 +247,7 @@ describe("writeSnapshot", () => {
       gatewayUrl: "http://gw.test/lobu",
       workerToken: "test-jwt",
       terminalStatus: "completed",
+      runId: 42,
     });
   });
 
@@ -255,6 +265,7 @@ describe("writeSnapshot", () => {
       gatewayUrl: "http://gw.test/lobu",
       workerToken: "test-jwt",
       terminalStatus: "completed",
+      runId: 42,
     });
   });
 });

@@ -162,6 +162,45 @@ describe("RunsQueue — caller options", () => {
   });
 });
 
+describe("RunsQueue — action_input JSONB shape", () => {
+  test("send() persists action_input as a JSONB object, not a double-encoded JSONB string", async () => {
+    // Regression: pre-fix, the INSERT bound `JSON.stringify(data)` to a
+    // `$4::jsonb` parameter via `tx.unsafe()`. Postgres stored that as a
+    // JSONB *string* (jsonb_typeof = 'string'), not a JSONB object, which
+    // made every downstream `action_input ->> 'field'` reader silently
+    // return NULL — including the snapshot-route ownership verifier in
+    // gateway/transcript-routes.ts. Assert the new shape end-to-end so a
+    // future refactor can't re-introduce the bug.
+    if (!queue) throw new Error("queue not started");
+    const payload = {
+      agentId: "marketing",
+      conversationId: "telegram:6570514069",
+      userId: "u1",
+    };
+    await queue.send("test-jsonb-shape", payload);
+
+    const sql = getDb();
+    const rows = (await sql`
+      SELECT jsonb_typeof(action_input) AS shape,
+             action_input ->> 'agentId' AS extracted_agent_id,
+             action_input ->> 'conversationId' AS extracted_conv_id
+      FROM runs
+      WHERE queue_name = 'test-jsonb-shape'
+    `) as Array<{
+      shape: string;
+      extracted_agent_id: string | null;
+      extracted_conv_id: string | null;
+    }>;
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.shape).toBe("object");
+    // Direct `->>` extraction works on the object shape — the exact
+    // accessor the snapshot-route verifier relies on.
+    expect(rows[0]!.extracted_agent_id).toBe("marketing");
+    expect(rows[0]!.extracted_conv_id).toBe("telegram:6570514069");
+  });
+});
+
 describe("RunsQueue — graceful shutdown", () => {
   test("stop() releases claimed rows back to pending", async () => {
     if (!queue) throw new Error("queue not started");

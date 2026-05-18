@@ -493,6 +493,133 @@ describe("agent_transcript_snapshot — snapshot route", () => {
     const res = await callRoute("GET", "/snapshot", token);
     expect(res.status).toBe(400);
   });
+
+  test("authorises legacy runs whose action_input is a JSONB *string* (double-encoded)", async () => {
+    // Live prod regression: pre-fix dispatch wrote `action_input` as
+    // `'"{\\"agentId\\":...}"'` (jsonb_typeof = 'string') because the
+    // RunsQueue INSERT did `JSON.stringify(data)` bound to a `$1::jsonb`
+    // parameter via `tx.unsafe()`. Postgres then stored it as a JSONB
+    // string, not a JSONB object. The verifier's `action_input ->> 'agentId'`
+    // returned NULL on those rows → 403 every snapshot POST. We hand-roll
+    // both row shapes here and assert the verifier accepts both — the
+    // backward-compat path must keep working until existing in-flight
+    // legacy rows drain.
+    const orgId = await seedAgentRow("agent-jsonb-shape", {
+      organizationId: "org_jsonb_shape",
+    });
+    const agentId = "agent-jsonb-shape";
+    const conversationId = "conv-jsonb-shape";
+    const sql = getDb();
+
+    // Insert ONE legacy row (jsonb string) and ONE current row (jsonb object).
+    // sql.unsafe with JSON.stringify + $1::jsonb reproduces the broken
+    // production shape; sql.json reproduces the post-fix shape.
+    const legacyJsonString = JSON.stringify({ agentId, conversationId });
+    const legacyRows = await sql.unsafe<{ id: number }>(
+      `INSERT INTO public.runs (
+         organization_id, run_type, status, action_input,
+         queue_name, run_at, created_at
+       ) VALUES ($1, 'chat_message', 'running', $2::jsonb, 'chat_message', NOW(), NOW())
+       RETURNING id`,
+      [orgId, legacyJsonString]
+    );
+    const legacyRunId = Number(legacyRows[0]!.id);
+
+    const objectRows = (await sql`
+      INSERT INTO public.runs (
+        organization_id, run_type, status, action_input,
+        queue_name, run_at, created_at
+      ) VALUES (
+        ${orgId}, 'chat_message', 'running', ${sql.json({ agentId, conversationId })},
+        'chat_message', NOW(), NOW()
+      )
+      RETURNING id
+    `) as Array<{ id: number }>;
+    const objectRunId = Number(objectRows[0]!.id);
+
+    // Sanity-check the shapes — without this the test could pass for the
+    // wrong reasons if a future Postgres-client release silently normalises
+    // the string-shape on insert.
+    const shapes = (await sql`
+      SELECT id, jsonb_typeof(action_input) AS t
+      FROM public.runs WHERE id IN (${legacyRunId}, ${objectRunId})
+      ORDER BY id ASC
+    `) as Array<{ id: number; t: string }>;
+    const byId = new Map(shapes.map((r) => [Number(r.id), r.t]));
+    expect(byId.get(legacyRunId)).toBe("string");
+    expect(byId.get(objectRunId)).toBe("object");
+
+    // Verifier accepts the legacy `string`-shape row.
+    let res = await callRoute(
+      "POST",
+      "/snapshot",
+      mintWorkerToken({
+        organizationId: orgId,
+        agentId,
+        conversationId,
+        runId: legacyRunId,
+      }),
+      {
+        terminalStatus: "completed",
+        snapshotJsonl: `{"type":"session","id":"legacy"}\n`,
+        runId: legacyRunId,
+      }
+    );
+    expect(res.status).toBe(200);
+
+    // Verifier accepts the `object`-shape row.
+    res = await callRoute(
+      "POST",
+      "/snapshot",
+      mintWorkerToken({
+        organizationId: orgId,
+        agentId,
+        conversationId,
+        runId: objectRunId,
+      }),
+      {
+        terminalStatus: "completed",
+        snapshotJsonl: `{"type":"session","id":"modern"}\n`,
+        runId: objectRunId,
+      }
+    );
+    expect(res.status).toBe(200);
+
+    // Verifier REJECTS when scope mismatches, regardless of row shape.
+    res = await callRoute(
+      "POST",
+      "/snapshot",
+      mintWorkerToken({
+        organizationId: orgId,
+        agentId: "wrong-agent",
+        conversationId,
+        runId: legacyRunId,
+      }),
+      {
+        terminalStatus: "completed",
+        snapshotJsonl: `{"type":"session","id":"x"}\n`,
+        runId: legacyRunId,
+      }
+    );
+    expect(res.status).toBe(403);
+
+    res = await callRoute(
+      "POST",
+      "/snapshot",
+      mintWorkerToken({
+        organizationId: orgId,
+        agentId,
+        conversationId: "wrong-conv",
+        runId: objectRunId,
+      }),
+      {
+        terminalStatus: "completed",
+        snapshotJsonl: `{"type":"session","id":"x"}\n`,
+        runId: objectRunId,
+      }
+    );
+    expect(res.status).toBe(403);
+  });
 });
 
 describe("agent_transcript_snapshot — /agent-history fallback", () => {

@@ -309,7 +309,14 @@ export class RunsQueue implements IMessageQueue {
       : "NULL";
 
     const sql = getDb();
-    const actionInput = JSON.stringify(data ?? {});
+    // Pass the payload object through postgres-js's `sql.json()` helper so
+    // the driver sends it as a single-encoded JSONB value. The previous
+    // shape — `JSON.stringify(data)` bound to a `$4::jsonb` parameter via
+    // `tx.unsafe()` — round-tripped through Postgres as a JSONB *string*
+    // (jsonb_typeof = 'string'), not a JSONB object. That broke every
+    // downstream reader using `action_input ->> 'field'`, including the
+    // snapshot-route ownership verifier in transcript-routes.ts.
+    const actionInput = sql.json(data ?? {});
 
     // Insert + ON-CONFLICT-fallback inside a single transaction so a race
     // between two enqueues with the same idempotency key resolves cleanly.
@@ -342,7 +349,7 @@ export class RunsQueue implements IMessageQueue {
           expires_at,
           retry_delay_seconds
         ) VALUES (
-          $1, $2, $3, $4::jsonb, $5, $6, 0, 'pending', ${runAtSql}, $7, ${expiresAtSql}, $8
+          $1, $2, $3, $4, $5, $6, 0, 'pending', ${runAtSql}, $7, ${expiresAtSql}, $8
         )
         ON CONFLICT (idempotency_key)
           WHERE idempotency_key IS NOT NULL

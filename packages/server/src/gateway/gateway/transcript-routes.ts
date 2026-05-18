@@ -71,12 +71,29 @@ async function isRunOwnedByJwtScope(
   conversationId: string
 ): Promise<boolean> {
   const sql = getDb();
+  // `runs.action_input` is `jsonb` typed, but rows written before the
+  // dispatch-path fix below stored a double-encoded JSON *string* (e.g.
+  // `'"{\\"agentId\\":\\"marketing\\",...}"'`) instead of a JSONB object.
+  // `action_input ->> 'agentId'` returns NULL on a JSONB string, which
+  // would 403 every snapshot POST on rows enqueued before the fix rolled.
+  // CASE on `jsonb_typeof` so both shapes authorize identically: object
+  // rows use the direct `->>` accessor; string rows unwrap one layer via
+  // `(action_input #>> '{}')::jsonb ->>` first. New rows (post fix below)
+  // always take the 'object' branch; legacy in-flight rows take 'string'.
   const rows = await sql<{ ok: boolean }>`
     SELECT 1 AS ok FROM public.runs
     WHERE id = ${runId}
       AND organization_id = ${organizationId}
-      AND (action_input ->> 'agentId') = ${agentId}
-      AND (action_input ->> 'conversationId') = ${conversationId}
+      AND CASE jsonb_typeof(action_input)
+            WHEN 'object' THEN action_input ->> 'agentId'
+            WHEN 'string' THEN (action_input #>> '{}')::jsonb ->> 'agentId'
+            ELSE NULL
+          END = ${agentId}
+      AND CASE jsonb_typeof(action_input)
+            WHEN 'object' THEN action_input ->> 'conversationId'
+            WHEN 'string' THEN (action_input #>> '{}')::jsonb ->> 'conversationId'
+            ELSE NULL
+          END = ${conversationId}
     LIMIT 1
   `;
   return rows.length > 0;

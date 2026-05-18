@@ -277,11 +277,14 @@ describe("acquireConversationLock: reserved-connection cap and metric", () => {
   });
 
   test("embedded mode returns a no-op sentinel without touching the counter", async () => {
-    // The gateway harness sets LOBU_DISABLE_PREPARE=1, which is the embedded
-    // mode signal. The lock function must return a no-op sentinel and leave
-    // the counter at 0 — counter is only meaningful for the multi-pod
-    // postgres-backed path.
-    expect(process.env.LOBU_DISABLE_PREPARE).toBe("1");
+    // Only meaningful under PGlite (`LOBU_DISABLE_PREPARE=1`). Real-PG CI
+    // runs this same suite against a postgres container without the
+    // embedded mode signal, in which case `acquireConversationLock` falls
+    // through to the cap+reserve path and the assertions below don't
+    // apply.
+    if (process.env.LOBU_DISABLE_PREPARE !== "1") {
+      return;
+    }
     const lock = await acquireConversationLock("org-a", "agent-a", "conv-a");
     expect(lock).not.toBeNull();
     expect(getReservedLockCount()).toBe(0);

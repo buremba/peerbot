@@ -4,6 +4,11 @@ node_modules
 **/.claude/settings.local.json
 .claude/worktrees/
 
+# Marker file written by scripts/task-setup.sh at each worktree root. Untracked
+# inside the worktree's own checkout, so it must be ignored to keep `git status`
+# clean (otherwise `make task-clean` would always refuse without FORCE=1).
+.task
+
 # Environment files
 .env
 .env.*

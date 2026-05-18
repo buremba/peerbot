@@ -59,6 +59,17 @@ if ! [[ "$name" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
   exit 1
 fi
 
+# Reserve names that match the built-in Lobu CLI contexts so `task-setup` never
+# clobbers a global context (it calls `lobu context add <name>`, which would
+# overwrite the entry — and `lobu context rm` refuses the default, so cleanup
+# wouldn't recover). Keep this list in sync with the contexts most users have.
+case "$name" in
+  lobu|dev|local)
+    echo "error: '$name' is a reserved CLI context name; pick a feature slug" >&2
+    exit 1
+    ;;
+esac
+
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="$(cd "$script_dir/.." && pwd)"
 worktree_dir="$repo/.claude/worktrees/$name"
@@ -81,6 +92,9 @@ if [[ $refresh_only -eq 0 ]]; then
 
   echo "→ preparing packages/owletto submodule on $branch (real branch, not detached)"
   (cd "$worktree_dir" && git submodule update --init packages/owletto)
+  # Branch from the submodule HEAD (the SHA the parent pins), NOT origin/main —
+  # the pin and origin/main can differ, and using origin/main here would
+  # silently bump the submodule pointer in the new worktree.
   (
     cd "$worktree_dir/packages/owletto"
     git fetch origin --quiet
@@ -89,7 +103,7 @@ if [[ $refresh_only -eq 0 ]]; then
     elif git show-ref --verify --quiet "refs/heads/$branch"; then
       git switch "$branch"
     else
-      git switch -c "$branch" origin/main
+      git switch -c "$branch" HEAD
     fi
   )
 

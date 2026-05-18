@@ -57,6 +57,14 @@ ahead_of() {
 }
 
 if [[ $force -eq 0 ]]; then
+  # Refresh remote-tracking refs so the "ahead of origin/<branch>" check below
+  # doesn't trust a stale local ref (e.g. branch deleted on remote → we'd see
+  # origin/<branch> at its old position and conclude 0 unpushed commits).
+  (cd "$worktree_dir" && git fetch origin --prune --quiet) || true
+  if [[ -d "$worktree_dir/packages/owletto" ]]; then
+    (cd "$worktree_dir/packages/owletto" && git fetch origin --prune --quiet) || true
+  fi
+
   if [[ -n "$(git -C "$worktree_dir" status --porcelain)" ]]; then
     echo "error: uncommitted changes in $worktree_dir (pass --force to discard)" >&2
     exit 1

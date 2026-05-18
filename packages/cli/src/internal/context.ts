@@ -186,6 +186,11 @@ export async function addContext(
   if (!trimmedName) {
     throw new Error("Context name cannot be empty.");
   }
+  if (trimmedName === DEFAULT_CONTEXT_NAME) {
+    throw new Error(
+      `Cannot overwrite the default context "${trimmedName}". Pick a different name.`
+    );
+  }
 
   const config = await loadContextConfig();
   const entry: LobuContextEntry = {
@@ -200,9 +205,7 @@ export async function addContext(
   return config;
 }
 
-export async function removeContext(
-  name: string
-): Promise<LobuContextConfig> {
+export async function removeContext(name: string): Promise<LobuContextConfig> {
   const trimmedName = name.trim();
   if (!trimmedName) {
     throw new Error("Context name cannot be empty.");

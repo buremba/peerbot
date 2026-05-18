@@ -83,7 +83,7 @@ task-setup:
 
 task-clean:
 	@: $${NAME?Usage: make task-clean NAME=<name> [FORCE=1]}
-	@./scripts/task-clean.sh "$(NAME)" $$( [ -n "$(FORCE)" ] && echo --force )
+	@./scripts/task-clean.sh "$(NAME)" $$( [ "$(FORCE)" = "1" ] && echo --force )
 
 # --- Test pipelines ---------------------------------------------------------
 # These mirror what CI runs (.github/workflows/ci.yml) so a passing local run

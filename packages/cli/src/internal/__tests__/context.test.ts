@@ -166,6 +166,21 @@ describe("context management", () => {
     });
   });
 
+  test("addContext refuses to overwrite the default context", async () => {
+    readFileSpy.mockResolvedValue(
+      JSON.stringify({
+        contexts: {
+          [DEFAULT_CONTEXT_NAME]: { apiUrl: "https://app.lobu.ai/api/v1" },
+        },
+      })
+    );
+
+    await expect(
+      addContext(DEFAULT_CONTEXT_NAME, "http://localhost:8788")
+    ).rejects.toThrow(/Cannot overwrite the default context/);
+    expect(writeFileSpy.mock.calls.length).toBe(0);
+  });
+
   test("addContext without server keeps shape backwards-compatible", async () => {
     readFileSpy.mockResolvedValue(JSON.stringify({ contexts: {} }));
 

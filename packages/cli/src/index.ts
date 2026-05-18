@@ -546,7 +546,16 @@ Memory:
     .option(
       "--port <port>",
       "Server port (when this context owns a managed lobu server)",
-      (value) => Number.parseInt(value, 10)
+      (value: string) => {
+        if (!/^\d+$/.test(value)) {
+          throw new Error(`--port must be an integer, got "${value}"`);
+        }
+        const n = Number.parseInt(value, 10);
+        if (n < 1 || n > 65535) {
+          throw new Error(`--port must be in 1-65535, got ${n}`);
+        }
+        return n;
+      }
     )
     .option("--host <host>", "Server host (default: 127.0.0.1)")
     .option(

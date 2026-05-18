@@ -752,10 +752,13 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
   ): Promise<void> {
     const child = entry.process;
 
-    // Don't delete from the map up front and don't release the lock —
-    // both happen in `child.once("exit", ...)` (wired in spawnDeployment)
-    // when the child actually exits. That handler is idempotent so the
-    // duplicate `workers.delete()` from a stale path is fine.
+    // Delete from the map up front so callers see an empty
+    // listDeployments() the moment kill returns — the public contract
+    // hasn't changed. The lock release is deliberately NOT touched here
+    // (codex P1#3): the exit handler in spawnDeployment is the
+    // authoritative release site, and the release helper is idempotent
+    // so a duplicate `workers.delete()` is harmless.
+    this.workers.delete(deploymentName);
 
     // Already exited — `exitCode`/`signalCode` are the only reliable
     // indicators here. `child.killed` is set the moment we *send* a signal,

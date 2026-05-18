@@ -203,17 +203,36 @@ jobs:
       # runs carry it on github.event.release.tag_name in the form
       # `lobu-v<X.Y.Z>` (set by release-please). Strip the prefix so the
       # value matches the dispatch input shape.
+      #
+      # Untrusted inputs are passed through `env:` (never interpolated
+      # straight into a `run:` block) and validated against a strict semver
+      # regex before they reach $GITHUB_OUTPUT — a tag like
+      # `lobu-v7.2.0;rm -rf /` would pass the prefix-only job guard but is
+      # rejected here, so downstream steps that interpolate `steps.v.outputs.version`
+      # (notarytool, the release-attach action, the appcast publisher) can't
+      # be tricked into executing shell.
       - name: Resolve version
         id: v
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_VERSION: ${{ github.event.inputs.version }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            VERSION="${{ github.event.inputs.version }}"
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            VERSION="$DISPATCH_VERSION"
           else
-            TAG="${{ github.event.release.tag_name }}"
-            VERSION="${TAG#lobu-v}"
+            VERSION="${RELEASE_TAG#lobu-v}"
           fi
           if [ -z "$VERSION" ]; then
-            echo "::error::Could not resolve a version (event=${{ github.event_name }})"
+            echo "::error::Could not resolve a version (event=$EVENT_NAME)"
+            exit 1
+          fi
+          # Strict semver-ish: digits.digits.digits with an optional `-prerelease`
+          # suffix of alphanum / dot / hyphen. Anything else (shell metachars,
+          # path traversal, whitespace) is rejected.
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::Refusing to use version '$VERSION' — not a valid semver."
             exit 1
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"

@@ -1,4 +1,4 @@
-import { createLogger, type SecretRef } from "@lobu/core";
+import { createLogger, type SecretRef, verifyWorkerToken } from "@lobu/core";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import type { AuthProfilesManager } from "../auth/settings/auth-profiles-manager.js";
@@ -6,6 +6,17 @@ import type { ProviderCredentialContext } from "../embedded.js";
 import type { ProviderUpstreamConfig } from "../modules/module-system.js";
 import type { SecretStore } from "../secrets/index.js";
 import { getClientIp } from "../utils/rate-limiter.js";
+
+/**
+ * Caller-supplied resolver: agentId → orgId of the agent's owning org.
+ *
+ * The proxy needs an independent source of the caller's org to compare
+ * against `SecretMapping.organizationId` — without it the org-scoping
+ * guard on `lookupPlaceholderMapping` has nothing to enforce against and
+ * collapses to dead code. The deployment manager wires a DB-backed
+ * resolver with a small TTL cache at boot.
+ */
+export type AgentOrgResolver = (agentId: string) => Promise<string | null>;
 
 const logger = createLogger("secret-proxy");
 
@@ -247,6 +258,7 @@ export class SecretProxy {
   private authProfilesManager?: AuthProfilesManager;
   private readonly secretStore: SecretStore;
   private systemKeyResolver?: (providerId: string) => string | undefined;
+  private agentOrgResolver?: AgentOrgResolver;
 
   constructor(config: SecretProxyConfig, secretStore: SecretStore) {
     this.config = config;
@@ -274,6 +286,16 @@ export class SecretProxy {
     resolver: (providerId: string) => string | undefined
   ): void {
     this.systemKeyResolver = resolver;
+  }
+
+  /**
+   * Wire in a resolver that maps a URL-encoded agentId to its owning org
+   * id. Used to compute the `expectedOrganizationId` we hand to
+   * `lookupPlaceholderMapping` — without it the org-scoping guard has no
+   * independent source of truth and can't enforce anything.
+   */
+  setAgentOrgResolver(resolver: AgentOrgResolver): void {
+    this.agentOrgResolver = resolver;
   }
 
   /**
@@ -322,9 +344,19 @@ export class SecretProxy {
    * Resolve a placeholder token to its real value via the in-memory cache.
    * Handles both plain (`lobu_secret_<uuid>`) and prefixed
    * (`sk-ant-oat01-lobu_secret_<uuid>`) placeholders.
+   *
+   * `expectedOrganizationId` is forwarded to {@link lookupPlaceholderMapping}
+   * so a worker carrying another tenant's placeholder cannot resolve it
+   * even on the legacy header-swap path.
    */
-  private async resolveSecret(placeholder: string): Promise<string | null> {
-    const mapping = this.lookupPlaceholderMapping(placeholder);
+  private async resolveSecret(
+    placeholder: string,
+    expectedOrganizationId?: string
+  ): Promise<string | null> {
+    const mapping = this.lookupPlaceholderMapping(
+      placeholder,
+      expectedOrganizationId
+    );
     if (!mapping) return null;
     return this.secretStore.get(mapping.secretRef);
   }
@@ -346,6 +378,44 @@ export class SecretProxy {
     expectedOrganizationId?: string
   ): SecretMapping | null {
     return lookupPlaceholderMapping(placeholder, expectedOrganizationId);
+  }
+
+  /**
+   * Extract the worker token from a dedicated `x-lobu-worker-token` header
+   * (or query param of the same name — useful for SSE that can't set
+   * headers), verify it, and return the bound `organizationId`. Falls back
+   * to verifying the bearer credential when it isn't a placeholder.
+   *
+   * Returns `undefined` when no verifiable token is present — the caller
+   * then relies on `agentOrgResolver` (DB lookup keyed by URL agentId) to
+   * fill in the expected org.
+   */
+  private extractWorkerTokenOrg(c: Context): string | undefined {
+    const header =
+      c.req.header("x-lobu-worker-token") ||
+      c.req.header("X-Lobu-Worker-Token");
+    const candidate = header || c.req.query("worker_token") || undefined;
+    if (candidate) {
+      const data = verifyWorkerToken(candidate);
+      if (data?.organizationId) return data.organizationId;
+    }
+    // The bearer credential is normally a `lobu_secret_<uuid>` placeholder
+    // but legacy callers may pass the worker JWT directly. Verify if it
+    // looks like one (long, no placeholder prefix).
+    const auth =
+      c.req.header("authorization") || c.req.header("Authorization");
+    if (auth) {
+      const parts = auth.split(" ");
+      const tok =
+        parts.length === 2 && parts[0]?.toLowerCase() === "bearer"
+          ? parts[1]
+          : null;
+      if (tok && !tok.includes(PLACEHOLDER_PREFIX)) {
+        const data = verifyWorkerToken(tok);
+        if (data?.organizationId) return data.organizationId;
+      }
+    }
+    return undefined;
   }
 
   /**
@@ -371,14 +441,18 @@ export class SecretProxy {
    * `source` identifies the caller (best available identity: bound agentId or
    * remote address) for per-source failed-resolution rate limiting.
    */
-  private async swap(value: string, source: string): Promise<string> {
+  private async swap(
+    value: string,
+    source: string,
+    expectedOrganizationId?: string
+  ): Promise<string> {
     if (value.includes(PLACEHOLDER_PREFIX)) {
       if (resolutionFailureLimiter.isThrottled(source)) {
         // Source has burned through its failure budget — hard-fail without
         // touching the cache or logging another line.
         return "";
       }
-      const resolved = await this.resolveSecret(value);
+      const resolved = await this.resolveSecret(value, expectedOrganizationId);
       if (!resolved) {
         // Fail closed: forwarding the literal placeholder upstream would
         // surface it in the provider's error response (and thus in worker
@@ -456,6 +530,26 @@ export class SecretProxy {
       body = await c.req.text();
     }
 
+    // Derive the caller's expected org from the verified worker token
+    // (preferred — it's signed) and fall back to a DB lookup keyed by the
+    // URL agentId. Either source becomes the `expectedOrganizationId`
+    // we hand to placeholder + secret lookups so a worker bearing org A's
+    // placeholder cannot resolve it under org B's URL.
+    const callerToken = this.extractCallerToken(c);
+    let expectedOrganizationId: string | undefined =
+      this.extractWorkerTokenOrg(c);
+    if (!expectedOrganizationId && urlAgentId && this.agentOrgResolver) {
+      try {
+        const orgId = await this.agentOrgResolver(urlAgentId);
+        if (orgId) expectedOrganizationId = orgId;
+      } catch (err) {
+        logger.warn(
+          { urlAgentId, err: String(err) },
+          "agentOrgResolver failed — falling through without org expectation"
+        );
+      }
+    }
+
     // Bind the calling worker (identified by its placeholder credential) to
     // the agentId in the URL. Without this, anyone with network access to the
     // gateway could harvest another agent's credentials by changing the URL
@@ -463,9 +557,11 @@ export class SecretProxy {
     // bound (logged as a warning) but reject any request whose placeholder
     // resolves to a different agent than the URL claims.
     if (urlAgentId) {
-      const callerToken = this.extractCallerToken(c);
       if (callerToken?.includes(PLACEHOLDER_PREFIX)) {
-        const mapping = this.lookupPlaceholderMapping(callerToken);
+        const mapping = this.lookupPlaceholderMapping(
+          callerToken,
+          expectedOrganizationId
+        );
         if (!mapping) {
           logger.warn(
             { urlAgentId },
@@ -587,7 +683,11 @@ export class SecretProxy {
         });
       const apiKey = c.req.header("x-api-key");
       if (apiKey) {
-        headers["x-api-key"] = await this.swap(apiKey, source);
+        headers["x-api-key"] = await this.swap(
+          apiKey,
+          source,
+          expectedOrganizationId
+        );
       }
 
       const auth =
@@ -595,7 +695,11 @@ export class SecretProxy {
       if (auth) {
         const parts = auth.split(" ");
         if (parts.length === 2 && parts[0]?.toLowerCase() === "bearer") {
-          const swapped = await this.swap(parts[1]!, source);
+          const swapped = await this.swap(
+            parts[1]!,
+            source,
+            expectedOrganizationId
+          );
           headers.authorization = `Bearer ${swapped}`;
         }
       }

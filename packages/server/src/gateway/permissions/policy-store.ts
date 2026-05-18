@@ -49,14 +49,28 @@ interface PreparedBundle {
  *
  * Composed policy text and its hash are computed once at `set()` time and
  * reused on every `resolve()` so the hot path does no SHA256 work.
+ *
+ * Keyed by `(organizationId, agentId)`. Agent ids are per-org-unique on
+ * paper but bugs in upstream code (or a malicious sync from another tenant)
+ * must never overwrite policy across orgs — that turns the verdict-cache
+ * org scoping into theatre. The key here is the safety net.
  */
 export class PolicyStore {
   private readonly policies = new Map<string, PreparedBundle>();
 
-  set(agentId: string, bundle: JudgePolicyBundle): void {
-    const prepared = prepareBundle(agentId, bundle);
-    this.policies.set(agentId, prepared);
+  private static composeKey(organizationId: string, agentId: string): string {
+    return `${organizationId}|${agentId}`;
+  }
+
+  set(
+    organizationId: string,
+    agentId: string,
+    bundle: JudgePolicyBundle
+  ): void {
+    const prepared = prepareBundle(organizationId, agentId, bundle);
+    this.policies.set(PolicyStore.composeKey(organizationId, agentId), prepared);
     logger.debug("Set egress policy bundle", {
+      organizationId,
       agentId,
       domains: prepared.judgedDomains.length,
       judges: Object.keys(prepared.preparedJudges).length,
@@ -64,17 +78,24 @@ export class PolicyStore {
     });
   }
 
-  clear(agentId: string): void {
-    this.policies.delete(agentId);
+  clear(organizationId: string, agentId: string): void {
+    this.policies.delete(PolicyStore.composeKey(organizationId, agentId));
   }
 
   /**
-   * Resolve a judge rule for a hostname under an agent. Rules use the same
-   * domain pattern format as allow/deny lists. Exact match is preferred;
-   * wildcard patterns (`.example.com`) match the root plus any subdomain.
+   * Resolve a judge rule for a hostname under an `(org, agent)` pair.
+   * Rules use the same domain pattern format as allow/deny lists. Exact
+   * match is preferred; wildcard patterns (`.example.com`) match the root
+   * plus any subdomain.
    */
-  resolve(agentId: string, hostname: string): ResolvedJudgeRule | undefined {
-    const prepared = this.policies.get(agentId);
+  resolve(
+    organizationId: string,
+    agentId: string,
+    hostname: string
+  ): ResolvedJudgeRule | undefined {
+    const prepared = this.policies.get(
+      PolicyStore.composeKey(organizationId, agentId)
+    );
     if (!prepared || prepared.judgedDomains.length === 0) {
       return undefined;
     }
@@ -89,7 +110,7 @@ export class PolicyStore {
     if (!judge) {
       logger.warn(
         "Judge rule matched but named policy not found — failing closed",
-        { agentId, hostname, judgeName }
+        { organizationId, agentId, hostname, judgeName }
       );
       return undefined;
     }
@@ -143,6 +164,7 @@ export function buildPolicyBundle(input: {
 }
 
 function prepareBundle(
+  organizationId: string,
   agentId: string,
   bundle: JudgePolicyBundle
 ): PreparedBundle {
@@ -153,7 +175,7 @@ function prepareBundle(
       : rawPolicy.trim();
     preparedJudges[name] = {
       policy: composed,
-      policyHash: hashPolicy(agentId, name, composed),
+      policyHash: hashPolicy(organizationId, agentId, name, composed),
     };
   }
   return {
@@ -188,13 +210,14 @@ function findMatchingRule(
 }
 
 function hashPolicy(
+  organizationId: string,
   agentId: string,
   judgeName: string,
   policy: string
 ): string {
   return crypto
     .createHash("sha256")
-    .update(`${agentId} ${judgeName} ${policy}`)
+    .update(`${organizationId} ${agentId} ${judgeName} ${policy}`)
     .digest("hex")
     .slice(0, 16);
 }

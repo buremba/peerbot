@@ -160,7 +160,7 @@ describe("BaseDeploymentManager.syncNetworkConfigGrants", () => {
       })
     );
 
-    let resolved = policyStore.resolve("agent-1", "api.example.com");
+    let resolved = policyStore.resolve("test-org", "agent-1", "api.example.com");
     expect(resolved?.policy).toContain("initial policy");
     expect(resolved?.policy).toContain("operator policy");
 
@@ -173,12 +173,12 @@ describe("BaseDeploymentManager.syncNetworkConfigGrants", () => {
       })
     );
 
-    resolved = policyStore.resolve("agent-1", "api.example.com");
+    resolved = policyStore.resolve("test-org", "agent-1", "api.example.com");
     expect(resolved?.policy).toContain("updated policy");
     expect(resolved?.policy).not.toContain("initial policy");
 
     await barebones.syncNetworkConfigGrants(buildPayload({}));
-    expect(policyStore.resolve("agent-1", "api.example.com")).toBeUndefined();
+    expect(policyStore.resolve("test-org", "agent-1", "api.example.com")).toBeUndefined();
   });
 
   test("skips redundant writes when the pattern set has not changed", async () => {

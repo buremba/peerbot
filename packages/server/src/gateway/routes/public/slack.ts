@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { createLogger } from "@lobu/core";
 import type { Context } from "hono";
 import { Hono } from "hono";
+import { getDb } from "../../../db/client.js";
 import { createSlackInstallStateStore } from "../../auth/oauth/state-store.js";
 import {
   renderOAuthErrorPage,
@@ -24,7 +25,9 @@ const logger = createLogger("slack-routes");
  *  2. `c.get('session')?.activeOrganizationId` — better-auth's stamped
  *     active org, used when the wrapper hasn't run (rare; defensive).
  *
- * Returns `null` if neither is present — caller must reject the request.
+ * Returns `null` if neither is present — caller must reject the request
+ * (after consulting {@link resolveSingleTenantOrgId} for the self-host
+ * fallback).
  */
 function readSessionOrgId(c: Context): string | null {
   const fromContext = c.get("organizationId" as never) as
@@ -43,6 +46,43 @@ function readSessionOrgId(c: Context): string | null {
     return fromSession;
   }
   return null;
+}
+
+/**
+ * Self-host fallback: when there's exactly one organization row in the
+ * database, return its id. This keeps `/slack/install` usable on
+ * single-tenant deployments where the route is mounted without the
+ * lobuApp session middleware that populates `c.get('organizationId')`.
+ *
+ * Returns `null` when zero or more than one org rows exist — in those
+ * cases the caller must reject; we won't silently pick a tenant.
+ */
+async function resolveSingleTenantOrgId(): Promise<string | null> {
+  try {
+    const sql = getDb();
+    const rows = (await sql`
+      SELECT id FROM organization LIMIT 2
+    `) as Array<{ id: string }>;
+    if (rows.length === 1) return rows[0]!.id;
+    return null;
+  } catch (err) {
+    logger.warn(
+      { err: String(err) },
+      "Single-tenant org lookup failed — treating as ambiguous"
+    );
+    return null;
+  }
+}
+
+/**
+ * Resolve the install-flow org for the current request: session-bound first,
+ * then the self-host single-tenant fallback. Returns `null` only when
+ * neither path yields a definite org — at which point the route must reject.
+ */
+async function resolveInstallOrgId(c: Context): Promise<string | null> {
+  const sessionOrgId = readSessionOrgId(c);
+  if (sessionOrgId) return sessionOrgId;
+  return resolveSingleTenantOrgId();
 }
 
 const DEFAULT_SLACK_BOT_SCOPES = [
@@ -125,9 +165,11 @@ export function createSlackRoutes(manager: ChatInstanceManager): Hono {
 
     // Bind the install to the initiating session's active org. Without this
     // an OAuth link minted under org A's session can be opened from org B's
-    // browser and the resulting connection lands in the wrong tenant.
-    const sessionOrgId = readSessionOrgId(c);
-    if (!sessionOrgId) {
+    // browser and the resulting connection lands in the wrong tenant. On
+    // self-host (no session middleware mounted), fall back to the sole org
+    // row when exactly one exists — see {@link resolveSingleTenantOrgId}.
+    const installOrgId = await resolveInstallOrgId(c);
+    if (!installOrgId) {
       return c.html(
         renderOAuthErrorPage(
           "unauthorized",
@@ -145,7 +187,7 @@ export function createSlackRoutes(manager: ChatInstanceManager): Hono {
     const scopes = await loadSlackBotScopes();
     const state = await stateStore.create({
       redirectUri,
-      organizationId: sessionOrgId,
+      organizationId: installOrgId,
     });
 
     const oauthUrl = new URL("https://slack.com/oauth/v2/authorize");
@@ -171,7 +213,11 @@ export function createSlackRoutes(manager: ChatInstanceManager): Hono {
     }
 
     const stateStore = createSlackInstallStateStore();
-    const oauthState = await stateStore.consume(state);
+    // Peek (non-destructive) before validating side-channel context so a
+    // cross-org or unauthenticated hit doesn't burn the install link.
+    // Consume only after the org check passes — the row stays available
+    // for the legitimate caller to retry.
+    const oauthState = await stateStore.peek(state);
 
     if (!oauthState) {
       return c.html(
@@ -186,8 +232,9 @@ export function createSlackRoutes(manager: ChatInstanceManager): Hono {
     // Reject the callback if the session that's completing the install
     // belongs to a different org than the one that started it. Prevents
     // an attacker who phishes the install link from landing a connection
-    // in their own org under a victim's authorization.
-    const callbackOrgId = readSessionOrgId(c);
+    // in their own org under a victim's authorization. Self-host falls
+    // back to the single-tenant resolver (same as `/slack/install`).
+    const callbackOrgId = await resolveInstallOrgId(c);
     if (!callbackOrgId || callbackOrgId !== oauthState.organizationId) {
       logger.warn(
         {
@@ -205,10 +252,24 @@ export function createSlackRoutes(manager: ChatInstanceManager): Hono {
       );
     }
 
+    // Org check passed — now atomically consume so the link can't be
+    // replayed. If the row is gone between peek and consume (another
+    // tab raced), fall through to the same invalid_state response.
+    const consumed = await stateStore.consume(state);
+    if (!consumed) {
+      return c.html(
+        renderOAuthErrorPage(
+          "invalid_state",
+          "This Slack install link is invalid or has expired."
+        ),
+        400
+      );
+    }
+
     try {
       const result = await manager.completeSlackOAuthInstall(
         c.req.raw,
-        oauthState.redirectUri
+        consumed.redirectUri
       );
       return c.html(
         renderOAuthSuccessPage(result.teamName || result.teamId, undefined, {

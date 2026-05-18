@@ -88,6 +88,16 @@ export function setProxyPolicyStore(store: PolicyStore): void {
 }
 
 /**
+ * Set the grant store the proxy consults when resolving per-agent
+ * allow/deny grants. Production wires this from `CoreServices`; tests use
+ * it to install a mock or a fresh DB-backed store so the cross-org leakage
+ * fixed in this PR can be exercised end-to-end.
+ */
+export function setProxyGrantStore(store: GrantStore): void {
+  proxyGrantStore = store;
+}
+
+/**
  * Replace the lazy {@link EgressJudge} — tests inject a fake client here
  * so the proxy can be exercised end-to-end without hitting a real model.
  */
@@ -151,9 +161,17 @@ async function checkDomainAccess(
   );
 
   if (globallyAllowed) {
-    // Even if globally allowed, a per-agent deny grant can override
+    // Even if globally allowed, a per-agent deny grant can override.
+    // Pass `organizationId` explicitly — `GrantStore` falls back to the ALS
+    // org context when omitted, but the raw Node HTTP proxy never sets ALS
+    // and the WHERE clause would drop its `organization_id` predicate,
+    // leaking grants/denies across tenants that share an agent id.
     if (proxyGrantStore && agentId) {
-      const denied = await proxyGrantStore.isDenied(agentId, hostname);
+      const denied = await proxyGrantStore.isDenied(
+        agentId,
+        hostname,
+        organizationId
+      );
       if (denied) {
         logger.debug(`Domain ${hostname} denied via grant (agent: ${agentId})`);
         return { allowed: false, source: "grant" };
@@ -164,7 +182,11 @@ async function checkDomainAccess(
 
   // Not globally allowed — check grant store for per-agent access
   if (proxyGrantStore && agentId) {
-    const granted = await proxyGrantStore.hasGrant(agentId, hostname);
+    const granted = await proxyGrantStore.hasGrant(
+      agentId,
+      hostname,
+      organizationId
+    );
     if (granted) {
       logger.debug(`Domain ${hostname} allowed via grant (agent: ${agentId})`);
       return { allowed: true, source: "grant" };
@@ -172,16 +194,16 @@ async function checkDomainAccess(
   }
 
   // Fall through to the LLM egress judge when a matching rule exists.
-  if (proxyPolicyStore && proxyEgressJudge && agentId) {
-    const rule = proxyPolicyStore.resolve(agentId, hostname);
+  // PolicyStore is keyed by `(orgId, agentId)`; without an org id we refuse
+  // to consult it — falling through to an unkeyed lookup would let another
+  // tenant's policy decide our verdict.
+  if (proxyPolicyStore && proxyEgressJudge && agentId && organizationId) {
+    const rule = proxyPolicyStore.resolve(organizationId, agentId, hostname);
     if (rule) {
       const decision = await proxyEgressJudge.decide(
         {
           agentId,
-          // `organizationId` may be empty when an older token (minted before
-          // the org-id pivot) is still in flight. The cache uses it as part
-          // of the key — empty string and a real UUID never collide.
-          organizationId: organizationId ?? "",
+          organizationId,
           hostname,
           method: requestContext?.method,
           path: requestContext?.path,

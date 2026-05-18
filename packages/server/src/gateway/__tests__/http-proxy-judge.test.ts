@@ -52,7 +52,7 @@ beforeAll(async () => {
   // `example.com` is used for the allow-path HTTP tests because its real
   // server closes the socket after responding — tests that use hosts with
   // keep-alive (api.github.com, etc.) hang the raw socket reader.
-  policyStore.set("agent-a", {
+  policyStore.set("org-a", "agent-a", {
     judgedDomains: [
       { domain: "example.com" },
       { domain: ".slack.com", judge: "strict" },
@@ -86,6 +86,7 @@ function createValidToken(deploymentName: string): string {
     channelId: "test-channel",
     platform: "test",
     agentId: "agent-a",
+    organizationId: "org-a",
   });
 }
 

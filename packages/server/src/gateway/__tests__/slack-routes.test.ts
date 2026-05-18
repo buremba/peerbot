@@ -183,11 +183,13 @@ describe("slack routes", () => {
     expect(response.status).toBe(403);
     expect(body).toContain("different organization");
     expect(completeSlackOAuthInstall).not.toHaveBeenCalled();
-    // State is consumed regardless — replay protection still holds.
+    // State is preserved for the legitimate caller to retry (peek-before-
+    // consume). The previous behavior burned the row on every failed
+    // org check and forced the user to restart the OAuth flow.
     const remaining = await sql`
       SELECT 1 FROM oauth_states WHERE id = 'cross-org-state'
     `;
-    expect(remaining.length).toBe(0);
+    expect(remaining.length).toBe(1);
   });
 
   test("POST /slack/events forwards requests to the chat manager", async () => {

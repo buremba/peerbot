@@ -1,0 +1,445 @@
+/**
+ * Red→green reproducers for the four critical multi-tenant isolation gaps
+ * surfaced on PR #836:
+ *
+ *   - Finding 1: secret-proxy `lookupPlaceholderMapping` was dead-code —
+ *     no production call site passed `expectedOrganizationId`, so a worker
+ *     bound to org-A could resolve its placeholder under org-B's URL.
+ *   - Finding 2: `checkDomainAccess()` had `organizationId` on its frame
+ *     but never threaded it into `GrantStore.isDenied/hasGrant`. The store
+ *     fell back to ALS (empty in the raw HTTP proxy hot path) and matched
+ *     grants by `agent_id` alone — cross-org leakage when an agent id is
+ *     reused.
+ *   - Finding 3: `PolicyStore` was keyed by `agentId` alone, so the last
+ *     `set()` across orgs won. Cache scoping became theatre because the
+ *     policy fed into the verdict was already wrong.
+ *   - Finding 6 — peek-before-consume — is covered by `slack-routes.test.ts`
+ *     ("rejects when callback session org differs from install state"
+ *     asserts the row is preserved for a legitimate retry).
+ *
+ * Each test in this file asserts the post-fix behaviour. The PR description
+ * pastes the corresponding pre-fix `bun test` output so the reproducer
+ * doubles as a regression gate — flip a single fix line and the listed
+ * assertion fails.
+ */
+
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { createBuiltinSecretRef } from "@lobu/core";
+import { GrantStore } from "../permissions/grant-store.js";
+import { PolicyStore } from "../permissions/policy-store.js";
+import {
+  __resetPlaceholderCacheForTests,
+  generatePlaceholder,
+  lookupPlaceholderMapping,
+  SecretProxy,
+} from "../proxy/secret-proxy.js";
+import type { SecretStore } from "../secrets/index.js";
+import {
+  ensurePgliteForGatewayTests,
+  resetTestDatabase,
+  seedAgentRow,
+} from "./helpers/db-setup.js";
+
+// ─── Finding 3: PolicyStore cross-tenant clobbering ──────────────────────────
+
+describe("[finding 3] PolicyStore is keyed by (orgId, agentId)", () => {
+  test("org A's policy survives org B's set under the same agent id", () => {
+    const store = new PolicyStore();
+    // Org A sets a policy for `shared-agent-id`.
+    store.set("org-a", "shared-agent-id", {
+      judgedDomains: [{ domain: "api.example.com" }],
+      judges: { default: "ORG A: deny by default" },
+    });
+    // Org B reuses the same agent id — under the old keying this overwrote
+    // org A's bundle. Now both must coexist.
+    store.set("org-b", "shared-agent-id", {
+      judgedDomains: [{ domain: "api.example.com" }],
+      judges: { default: "ORG B: allow reads" },
+    });
+
+    const aResolved = store.resolve("org-a", "shared-agent-id", "api.example.com");
+    const bResolved = store.resolve("org-b", "shared-agent-id", "api.example.com");
+
+    expect(aResolved?.policy).toBe("ORG A: deny by default");
+    expect(bResolved?.policy).toBe("ORG B: allow reads");
+    // policyHash diverges so the verdict cache cannot collide either.
+    expect(aResolved?.policyHash).not.toBe(bResolved?.policyHash);
+  });
+
+  test("resolve refuses cross-org reads — no fall-through to a sibling tenant's bundle", () => {
+    const store = new PolicyStore();
+    store.set("org-a", "agent-1", {
+      judgedDomains: [{ domain: "api.example.com" }],
+      judges: { default: "ORG A only" },
+    });
+    // Org B has no bundle for `agent-1` — must return undefined, not
+    // org A's bundle.
+    expect(
+      store.resolve("org-b", "agent-1", "api.example.com")
+    ).toBeUndefined();
+  });
+
+  test("clear(orgA, agentId) does not affect orgB's bundle for the same agent id", () => {
+    const store = new PolicyStore();
+    store.set("org-a", "shared", {
+      judgedDomains: [{ domain: "x.com" }],
+      judges: { default: "A" },
+    });
+    store.set("org-b", "shared", {
+      judgedDomains: [{ domain: "x.com" }],
+      judges: { default: "B" },
+    });
+    store.clear("org-a", "shared");
+    expect(store.resolve("org-a", "shared", "x.com")).toBeUndefined();
+    expect(store.resolve("org-b", "shared", "x.com")?.policy).toBe("B");
+  });
+});
+
+// ─── Finding 1: secret-proxy placeholder cross-org leak ──────────────────────
+
+describe("[finding 1] lookupPlaceholderMapping enforces caller's expected org", () => {
+  beforeEach(() => {
+    __resetPlaceholderCacheForTests();
+  });
+
+  test("org-A placeholder resolved under org-B context returns null", () => {
+    // Org A mints a placeholder for one of its agents.
+    const placeholder = generatePlaceholder(
+      "agent-1",
+      "API_KEY",
+      createBuiltinSecretRef("deployments/agent-1/API_KEY"),
+      "deploy-A",
+      { organizationId: "org-a" }
+    );
+    // A caller bound to org B presents the placeholder. Pre-fix the lookup
+    // had no `expectedOrganizationId` plumbed through any production call
+    // site, so the mapping resolved and org B could spend org A's
+    // upstream credential. Post-fix: null.
+    expect(lookupPlaceholderMapping(placeholder, "org-b")).toBeNull();
+  });
+
+  test("a matching expected org still resolves cleanly", () => {
+    const placeholder = generatePlaceholder(
+      "agent-1",
+      "API_KEY",
+      createBuiltinSecretRef("deployments/agent-1/API_KEY"),
+      "deploy-A",
+      { organizationId: "org-a" }
+    );
+    const mapping = lookupPlaceholderMapping(placeholder, "org-a");
+    expect(mapping?.agentId).toBe("agent-1");
+    expect(mapping?.organizationId).toBe("org-a");
+  });
+
+  test("SecretProxy.forward rejects an org-A placeholder used on an org-B agent's URL", async () => {
+    // Mint a placeholder for org A's `agent-A1`. Pre-fix, no production call
+    // site supplied `expectedOrganizationId`, so `lookupPlaceholderMapping`
+    // returned the org-A mapping even when the URL named an org-B agent —
+    // the `mapping.agentId === urlAgentId` check downstream then tripped at
+    // 403, but only because the agent ids differed. If two orgs happened
+    // to use the same `agentId` (per-org-unique on paper, but a stale dump
+    // or hand-edit can violate this), no 403 fires and the credential
+    // leaks. The proxy's `agentOrgResolver` is the independent source of
+    // truth this test exercises end-to-end.
+    const placeholder = generatePlaceholder(
+      "shared-id",
+      "OPENAI_API_KEY",
+      createBuiltinSecretRef("deployments/orgA/shared-id/OPENAI_API_KEY"),
+      "deploy-A",
+      { organizationId: "org-a" }
+    );
+
+    const stubStore: SecretStore = { get: async () => "real-secret-A" };
+    const proxy = new SecretProxy(
+      { defaultUpstreamUrl: "https://upstream.example.com" },
+      stubStore
+    );
+    proxy.registerUpstream(
+      { slug: "openai", upstreamBaseUrl: "https://api.openai.example.com" },
+      "openai"
+    );
+    // Wire an `agentOrgResolver` that says `shared-id` belongs to org B
+    // when looked up via the URL. The mapping's org is `org-a` → mismatch.
+    proxy.setAgentOrgResolver(async () => "org-b");
+
+    let upstreamCalled = false;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => {
+      upstreamCalled = true;
+      return new Response("{}", { status: 200 });
+    };
+
+    try {
+      const res = await proxy
+        .getApp()
+        .request("/api/proxy/openai/a/shared-id/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: `Bearer ${placeholder}`,
+          },
+          body: JSON.stringify({ prompt: "leak" }),
+        });
+      expect(res.status).toBe(401);
+      expect(upstreamCalled).toBe(false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+// ─── Finding 2: GrantStore agent-id collision across orgs ────────────────────
+
+describe("[finding 2] GrantStore queries scope to caller's organization id", () => {
+  beforeAll(async () => {
+    await ensurePgliteForGatewayTests();
+  });
+
+  beforeEach(async () => {
+    await resetTestDatabase();
+    // Seed both orgs and the shared agent id under each — the grants table
+    // has a FK on `(organization_id, agent_id)` and needs both rows in
+    // `agents` to exist before we can grant.
+    await seedAgentRow("shared-agent-id", { organizationId: "org-a" });
+    await seedAgentRow("shared-agent-id", { organizationId: "org-b" });
+  });
+
+  test("org A's grant for `shared-agent-id` is invisible to org B's lookup", async () => {
+    const store = new GrantStore();
+    // Org A grants `api.example.com` to its agent.
+    await store.grant(
+      "shared-agent-id",
+      "api.example.com",
+      null,
+      false,
+      "org-a"
+    );
+    // Org B reuses the same agent id (it's per-org-unique on paper; this
+    // tests that a buggy seed or hand-edited row cannot leak across orgs).
+    // Without org plumbing the WHERE clause would lose `organization_id`
+    // and find org A's row.
+    const orgBSeesGrant = await store.hasGrant(
+      "shared-agent-id",
+      "api.example.com",
+      "org-b"
+    );
+    expect(orgBSeesGrant).toBe(false);
+
+    // Org A still sees its own grant.
+    expect(
+      await store.hasGrant("shared-agent-id", "api.example.com", "org-a")
+    ).toBe(true);
+  });
+
+  test("org A's DENY grant for `shared-agent-id` does not block org B", async () => {
+    const store = new GrantStore();
+    await store.grant(
+      "shared-agent-id",
+      "api.example.com",
+      null,
+      true, // denied
+      "org-a"
+    );
+    // Org B's isDenied check must see no row.
+    const orgBDenied = await store.isDenied(
+      "shared-agent-id",
+      "api.example.com",
+      "org-b"
+    );
+    expect(orgBDenied).toBe(false);
+
+    // Org A's isDenied sees its own denial.
+    expect(
+      await store.isDenied("shared-agent-id", "api.example.com", "org-a")
+    ).toBe(true);
+  });
+
+  test("HTTP proxy's checkDomainAccess passes the token's orgId into GrantStore", async () => {
+    // End-to-end exercise of the call-site plumbing: install a real
+    // GrantStore in the http-proxy, grant `api.example.com` to org A's
+    // copy of `shared-agent-id`, then hit the proxy with an org-B worker
+    // token. Pre-fix, the call site dropped the `organizationId` argument
+    // and the WHERE clause matched org A's grant (the only one with that
+    // agent id). Post-fix, the predicate now scopes by org and the request
+    // is blocked.
+    const { generateWorkerToken } = await import("@lobu/core");
+    const {
+      __testOnly,
+      setProxyGrantStore,
+      startHttpProxy,
+      stopHttpProxy,
+    } = await import("../proxy/http-proxy.js");
+    const crypto = await import("node:crypto");
+    const net = await import("node:net");
+
+    const TEST_ENCRYPTION_KEY = crypto.randomBytes(32).toString("base64");
+    process.env.ENCRYPTION_KEY = TEST_ENCRYPTION_KEY;
+    process.env.WORKER_ALLOWED_DOMAINS = ""; // deny-all globally → grant path
+    __testOnly.reset();
+
+    const store = new GrantStore();
+    await store.grant(
+      "shared-agent-id",
+      "api.example.com",
+      null,
+      false,
+      "org-a"
+    );
+    setProxyGrantStore(store);
+
+    const proxyPort = 10000 + Math.floor(Math.random() * 50000);
+    const proxyServer = await startHttpProxy(proxyPort, "127.0.0.1");
+
+    try {
+      // Mint an org-B token claiming `shared-agent-id`.
+      const token = generateWorkerToken(
+        "test-user",
+        "test-conv",
+        "deploy-B",
+        {
+          channelId: "test-channel",
+          platform: "test",
+          agentId: "shared-agent-id",
+          organizationId: "org-b",
+        }
+      );
+      const auth = `Basic ${Buffer.from(`deploy-B:${token}`).toString("base64")}`;
+
+      // Fire a raw HTTP request through the proxy targeting api.example.com.
+      // We can't fetch() with HTTP_PROXY in bun-test, so we hand-roll the
+      // proxy request and parse the status line out of the raw bytes.
+      const status = await new Promise<number>((resolve, reject) => {
+        const socket = new net.Socket();
+        socket.connect(proxyPort, "127.0.0.1", () => {
+          socket.write(
+            `GET http://api.example.com/v1/x HTTP/1.1\r\n` +
+              `Host: api.example.com\r\n` +
+              `Proxy-Authorization: ${auth}\r\n` +
+              `Connection: close\r\n\r\n`
+          );
+        });
+        let data = "";
+        let resolved = false;
+        const tryParse = () => {
+          if (resolved) return;
+          const idx = data.indexOf("\r\n");
+          if (idx === -1) return;
+          const m = data.substring(0, idx).match(/HTTP\/\d\.\d (\d+)/);
+          if (!m) return;
+          resolved = true;
+          socket.destroy();
+          resolve(Number(m[1]));
+        };
+        socket.on("data", (chunk: Buffer) => {
+          data += chunk.toString();
+          tryParse();
+        });
+        socket.on("end", () => {
+          if (!resolved) {
+            resolved = true;
+            resolve(0);
+          }
+        });
+        socket.on("error", (err) => {
+          if (!resolved) reject(err);
+        });
+        socket.setTimeout(3000, () => {
+          if (!resolved) {
+            resolved = true;
+            socket.destroy();
+            resolve(0);
+          }
+        });
+      });
+
+      // Pre-fix: 200 — org A's grant matched because no org was passed.
+      // Post-fix: 403 — grant lookup scoped to org B finds nothing,
+      // global allowlist denies, judge has no rule for this agent.
+      expect(status).toBe(403);
+    } finally {
+      await stopHttpProxy(proxyServer);
+      __testOnly.reset();
+      delete process.env.ENCRYPTION_KEY;
+      delete process.env.WORKER_ALLOWED_DOMAINS;
+    }
+  });
+
+  afterAll(async () => {
+    await resetTestDatabase();
+  });
+});
+
+// ─── Finding 4: Telegram cloud-mode polling guard at boot ────────────────────
+
+describe("[finding 4] ChatInstanceManager.initialize refuses Telegram polling rows in cloud", () => {
+  beforeAll(async () => {
+    await ensurePgliteForGatewayTests();
+  });
+
+  beforeEach(async () => {
+    await resetTestDatabase();
+    await seedAgentRow("agent-1", { organizationId: "test-org" });
+  });
+
+  test("a persisted `mode: polling` Telegram row is errored out at boot, not booted", async () => {
+    const originalKey = process.env.ENCRYPTION_KEY;
+    const originalCloud = process.env.LOBU_CLOUD_MODE;
+    process.env.ENCRYPTION_KEY =
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa=";
+    process.env.LOBU_CLOUD_MODE = "1";
+
+    try {
+      const { orgContext } = await import("../../lobu/stores/org-context.js");
+      const { createPostgresAgentConnectionStore } = await import(
+        "../../lobu/stores/postgres-stores.js"
+      );
+      const connectionStore = createPostgresAgentConnectionStore();
+
+      await orgContext.run({ organizationId: "test-org" }, async () => {
+        await connectionStore.saveConnection({
+          id: "telegram-poll-1",
+          platform: "telegram",
+          agentId: "agent-1",
+          config: {
+            platform: "telegram",
+            botToken: "111:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            mode: "polling",
+          },
+          settings: { allowGroups: true },
+          metadata: {},
+          status: "active",
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        });
+      });
+
+      const mod = await import("../connections/chat-instance-manager.js");
+      const services = {
+        getQueue: () => ({}),
+        getPublicGatewayUrl: () => "https://gw.example.com",
+        getSecretStore: () => ({ get: async () => null, put: async () => "" }),
+        getConnectionStore: () => connectionStore,
+        getChannelBindingService: () => ({ getBinding: async () => null }),
+      } as any;
+      const manager = new mod.ChatInstanceManager() as any;
+      // initialize() consults isCloudMode + isPollingTelegramMode pre-
+      // startInstance; the row must end up `status='error'` without a
+      // running instance.
+      await manager.initialize(services);
+
+      const stored = await orgContext.run(
+        { organizationId: "test-org" },
+        () => connectionStore.getConnection("telegram-poll-1")
+      );
+      expect(stored?.status).toBe("error");
+      expect(stored?.errorMessage ?? "").toContain("Polling mode");
+      expect(manager.instances.has("telegram-poll-1")).toBe(false);
+    } finally {
+      if (originalKey !== undefined) process.env.ENCRYPTION_KEY = originalKey;
+      else delete process.env.ENCRYPTION_KEY;
+      if (originalCloud !== undefined)
+        process.env.LOBU_CLOUD_MODE = originalCloud;
+      else delete process.env.LOBU_CLOUD_MODE;
+    }
+  });
+});

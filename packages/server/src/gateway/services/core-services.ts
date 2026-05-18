@@ -658,6 +658,12 @@ export class CoreServices {
     // Register provider upstream configs with the secret proxy for path-based routing
     if (this.secretProxy) {
       this.secretProxy.setAuthProfilesManager(this.authProfilesManager);
+      // Independent source of the caller's expected org for placeholder
+      // lookups — without this the org-scoping guard on
+      // `lookupPlaceholderMapping` has nothing to enforce against.
+      this.secretProxy.setAgentOrgResolver((agentId) =>
+        this.resolveAgentOrgId(agentId)
+      );
       for (const provider of getModelProviderModules()) {
         const upstream = provider.getUpstreamConfig?.();
         if (upstream) {
@@ -912,6 +918,21 @@ export class CoreServices {
 
   getSecretProxy(): SecretProxy | undefined {
     return this.secretProxy;
+  }
+
+  /**
+   * Resolve an agent's owning organization id from `public.agents`. Used by
+   * the secret proxy to compute the `expectedOrganizationId` it hands to
+   * placeholder lookups. No cache — the SecretProxy is called once per
+   * upstream request, and a SELECT by primary key on `agents.id` is cheap
+   * enough that we'd rather avoid the staleness window of a TTL cache.
+   */
+  private async resolveAgentOrgId(agentId: string): Promise<string | null> {
+    const sql = getDb();
+    const rows = (await sql`
+      SELECT organization_id FROM agents WHERE id = ${agentId} LIMIT 1
+    `) as Array<{ organization_id?: string }>;
+    return rows[0]?.organization_id ?? null;
   }
 
   getSecretStore(): SecretStoreRegistry {

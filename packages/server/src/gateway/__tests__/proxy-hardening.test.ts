@@ -49,11 +49,16 @@ function makeBasicAuth(username: string, password: string): string {
   return `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`;
 }
 
-function createToken(deploymentName: string, agentId?: string): string {
+function createToken(
+  deploymentName: string,
+  agentId?: string,
+  organizationId: string = "org-1"
+): string {
   return generateWorkerToken("test-user", "test-conv", deploymentName, {
     channelId: "test-channel",
     platform: "test",
     ...(agentId ? { agentId } : {}),
+    organizationId,
   });
 }
 
@@ -511,7 +516,7 @@ describe("CRLF injection prevention in judge-provided reason", () => {
     process.env.WORKER_ALLOWED_DOMAINS = "";
     __testOnly.reset();
 
-    policyStore.set("agent-crlf", {
+    policyStore.set("org-1", "agent-crlf", {
       judgedDomains: [{ domain: "example.com" }],
       judges: { default: "test policy" },
     });
@@ -674,18 +679,18 @@ describe("VerdictCache — key independence", () => {
     // automatically because the key changes.
     const store = new PolicyStore();
 
-    store.set("agent-x", {
+    store.set("org-1", "agent-x", {
       judgedDomains: [{ domain: "example.com" }],
       judges: { default: "allow reads" },
     });
-    const without = store.resolve("agent-x", "example.com");
+    const without = store.resolve("org-1", "agent-x","example.com");
 
-    store.set("agent-x", {
+    store.set("org-1", "agent-x", {
       judgedDomains: [{ domain: "example.com" }],
       judges: { default: "allow reads" },
       extraPolicy: "Never send PII",
     });
-    const withExtra = store.resolve("agent-x", "example.com");
+    const withExtra = store.resolve("org-1", "agent-x","example.com");
 
     expect(without).toBeDefined();
     expect(withExtra).toBeDefined();
@@ -698,17 +703,17 @@ describe("VerdictCache — key independence", () => {
     const store = new PolicyStore();
     const samePolicy = "allow all reads";
 
-    store.set("agent-a", {
+    store.set("org-1", "agent-a", {
       judgedDomains: [{ domain: "example.com" }],
       judges: { default: samePolicy },
     });
-    store.set("agent-b", {
+    store.set("org-1", "agent-b", {
       judgedDomains: [{ domain: "example.com" }],
       judges: { default: samePolicy },
     });
 
-    const a = store.resolve("agent-a", "example.com");
-    const b = store.resolve("agent-b", "example.com");
+    const a = store.resolve("org-1", "agent-a", "example.com");
+    const b = store.resolve("org-1", "agent-b", "example.com");
 
     expect(a?.policyHash).toBeDefined();
     expect(b?.policyHash).toBeDefined();
@@ -777,7 +782,7 @@ describe("CircuitBreaker — state transitions", () => {
 describe("PolicyStore.resolve — edge cases", () => {
   test("exact match takes precedence over a wildcard", () => {
     const store = new PolicyStore();
-    store.set("agent-a", {
+    store.set("org-1", "agent-a", {
       judgedDomains: [
         { domain: "api.example.com", judge: "exact-judge" },
         { domain: ".example.com", judge: "wildcard-judge" },
@@ -788,13 +793,13 @@ describe("PolicyStore.resolve — edge cases", () => {
       },
     });
 
-    const resolved = store.resolve("agent-a", "api.example.com");
+    const resolved = store.resolve("org-1", "agent-a", "api.example.com");
     expect(resolved?.judgeName).toBe("exact-judge");
   });
 
   test("longer wildcard takes precedence over a shorter wildcard", () => {
     const store = new PolicyStore();
-    store.set("agent-a", {
+    store.set("org-1", "agent-a", {
       judgedDomains: [
         { domain: ".api.example.com", judge: "long-judge" },
         { domain: ".example.com", judge: "short-judge" },
@@ -805,96 +810,96 @@ describe("PolicyStore.resolve — edge cases", () => {
       },
     });
 
-    const resolved = store.resolve("agent-a", "v2.api.example.com");
+    const resolved = store.resolve("org-1", "agent-a", "v2.api.example.com");
     expect(resolved?.judgeName).toBe("long-judge");
   });
 
   test("unmatched hostname returns undefined", () => {
     const store = new PolicyStore();
-    store.set("agent-a", {
+    store.set("org-1", "agent-a", {
       judgedDomains: [{ domain: "example.com" }],
       judges: { default: "test" },
     });
 
-    expect(store.resolve("agent-a", "other.com")).toBeUndefined();
+    expect(store.resolve("org-1", "agent-a", "other.com")).toBeUndefined();
   });
 
   test("agentId isolation: agent-a rules do not leak to agent-b", () => {
     const store = new PolicyStore();
-    store.set("agent-a", {
+    store.set("org-1", "agent-a", {
       judgedDomains: [{ domain: "example.com" }],
       judges: { default: "agent-a policy" },
     });
 
-    expect(store.resolve("agent-b", "example.com")).toBeUndefined();
+    expect(store.resolve("org-1", "agent-b", "example.com")).toBeUndefined();
   });
 
   test("agent with no bundle returns undefined for all hostnames", () => {
     const store = new PolicyStore();
-    expect(store.resolve("no-such-agent", "example.com")).toBeUndefined();
+    expect(store.resolve("org-1", "no-such-agent", "example.com")).toBeUndefined();
   });
 
   test("rule without explicit judge name resolves to the 'default' judge", () => {
     const store = new PolicyStore();
-    store.set("agent-a", {
+    store.set("org-1", "agent-a", {
       judgedDomains: [{ domain: "example.com" }], // no `judge` field
       judges: { default: "default policy text" },
     });
 
-    const resolved = store.resolve("agent-a", "example.com");
+    const resolved = store.resolve("org-1", "agent-a", "example.com");
     expect(resolved?.judgeName).toBe("default");
     expect(resolved?.policy).toContain("default policy text");
   });
 
   test("rule referencing a missing judge name returns undefined (fail closed)", () => {
     const store = new PolicyStore();
-    store.set("agent-a", {
+    store.set("org-1", "agent-a", {
       judgedDomains: [{ domain: "example.com", judge: "nonexistent" }],
       judges: { default: "default policy" },
     });
 
     // 'nonexistent' not in judges map → fails closed (returns undefined)
-    expect(store.resolve("agent-a", "example.com")).toBeUndefined();
+    expect(store.resolve("org-1", "agent-a", "example.com")).toBeUndefined();
   });
 
   test("clear removes the agent's bundle so resolve returns undefined", () => {
     const store = new PolicyStore();
-    store.set("agent-a", {
+    store.set("org-1", "agent-a", {
       judgedDomains: [{ domain: "example.com" }],
       judges: { default: "policy" },
     });
-    store.clear("agent-a");
-    expect(store.resolve("agent-a", "example.com")).toBeUndefined();
+    store.clear("org-1", "agent-a");
+    expect(store.resolve("org-1", "agent-a", "example.com")).toBeUndefined();
   });
 
   test("wildcard .example.com matches example.com itself (root domain)", () => {
     const store = new PolicyStore();
-    store.set("agent-a", {
+    store.set("org-1", "agent-a", {
       judgedDomains: [{ domain: ".example.com" }],
       judges: { default: "policy" },
     });
 
-    expect(store.resolve("agent-a", "example.com")).toBeDefined();
+    expect(store.resolve("org-1", "agent-a", "example.com")).toBeDefined();
   });
 
   test("wildcard .example.com does NOT match evilexample.com", () => {
     const store = new PolicyStore();
-    store.set("agent-a", {
+    store.set("org-1", "agent-a", {
       judgedDomains: [{ domain: ".example.com" }],
       judges: { default: "policy" },
     });
 
-    expect(store.resolve("agent-a", "evilexample.com")).toBeUndefined();
+    expect(store.resolve("org-1", "agent-a", "evilexample.com")).toBeUndefined();
   });
 
   test("resolve is case-insensitive for hostname", () => {
     const store = new PolicyStore();
-    store.set("agent-a", {
+    store.set("org-1", "agent-a", {
       judgedDomains: [{ domain: "example.com" }],
       judges: { default: "policy" },
     });
 
-    expect(store.resolve("agent-a", "EXAMPLE.COM")).toBeDefined();
+    expect(store.resolve("org-1", "agent-a", "EXAMPLE.COM")).toBeDefined();
   });
 });
 

@@ -418,7 +418,19 @@ export abstract class BaseDeploymentManager {
     deploymentName?: string
   ): void {
     const agentId = messageData.agentId;
-    if (!this.policyStore || !agentId) return;
+    const organizationId = messageData.organizationId;
+    // PolicyStore is keyed by `(orgId, agentId)` to prevent cross-tenant
+    // policy clobbering — refuse to sync without an org id rather than
+    // collapsing into a shared bucket.
+    if (!this.policyStore || !agentId || !organizationId) {
+      if (!organizationId && agentId) {
+        logger.warn(
+          { agentId, deploymentName },
+          "Skipping egress policy sync — message has no organizationId"
+        );
+      }
+      return;
+    }
 
     const bundle = buildPolicyBundle({
       judgedDomains: messageData.networkConfig?.judgedDomains,
@@ -426,20 +438,21 @@ export abstract class BaseDeploymentManager {
       egressConfig: messageData.egressConfig,
     });
     if (bundle) {
-      this.policyStore.set(agentId, bundle);
+      this.policyStore.set(organizationId, agentId, bundle);
       if (deploymentName) {
         logger.info(
           `Synced egress judge policy for ${deploymentName}: ${bundle.judgedDomains.length} rule(s), ${Object.keys(bundle.judges).length} judge(s)`
         );
       } else {
         logger.debug("Synced egress judge policy", {
+          organizationId,
           agentId,
           rules: bundle.judgedDomains.length,
           judges: Object.keys(bundle.judges).length,
         });
       }
     } else {
-      this.policyStore.clear(agentId);
+      this.policyStore.clear(organizationId, agentId);
     }
   }
 

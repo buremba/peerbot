@@ -4,16 +4,16 @@ import { buildPolicyBundle, PolicyStore } from "../permissions/policy-store.js";
 describe("PolicyStore.resolve", () => {
   test("returns undefined when no bundle is set", () => {
     const store = new PolicyStore();
-    expect(store.resolve("agent-a", "api.github.com")).toBeUndefined();
+    expect(store.resolve("org-a", "agent-a","api.github.com")).toBeUndefined();
   });
 
   test("matches an exact domain rule and composes the policy", () => {
     const store = new PolicyStore();
-    store.set("agent-a", {
+    store.set("org-a", "agent-a", {
       judgedDomains: [{ domain: "api.github.com" }],
       judges: { default: "Only allow read-only GET requests." },
     });
-    const resolved = store.resolve("agent-a", "api.github.com");
+    const resolved = store.resolve("org-a", "agent-a","api.github.com");
     expect(resolved).toBeDefined();
     expect(resolved?.judgeName).toBe("default");
     expect(resolved?.policy).toContain("Only allow read-only GET requests.");
@@ -21,18 +21,18 @@ describe("PolicyStore.resolve", () => {
 
   test("matches a wildcard rule", () => {
     const store = new PolicyStore();
-    store.set("agent-a", {
+    store.set("org-a", "agent-a", {
       judgedDomains: [{ domain: ".example.com" }],
       judges: { default: "check" },
     });
-    expect(store.resolve("agent-a", "foo.example.com")).toBeDefined();
-    expect(store.resolve("agent-a", "example.com")).toBeDefined();
-    expect(store.resolve("agent-a", "unrelated.com")).toBeUndefined();
+    expect(store.resolve("org-a", "agent-a","foo.example.com")).toBeDefined();
+    expect(store.resolve("org-a", "agent-a","example.com")).toBeDefined();
+    expect(store.resolve("org-a", "agent-a","unrelated.com")).toBeUndefined();
   });
 
   test("exact match beats wildcard rule", () => {
     const store = new PolicyStore();
-    store.set("agent-a", {
+    store.set("org-a", "agent-a", {
       judgedDomains: [
         { domain: ".example.com", judge: "wildcard-policy" },
         { domain: "api.example.com", judge: "exact-policy" },
@@ -42,43 +42,43 @@ describe("PolicyStore.resolve", () => {
         "exact-policy": "exact",
       },
     });
-    const resolved = store.resolve("agent-a", "api.example.com");
+    const resolved = store.resolve("org-a", "agent-a","api.example.com");
     expect(resolved?.judgeName).toBe("exact-policy");
   });
 
   test("longer wildcard beats shorter wildcard", () => {
     const store = new PolicyStore();
-    store.set("agent-a", {
+    store.set("org-a", "agent-a", {
       judgedDomains: [
         { domain: ".example.com", judge: "short" },
         { domain: ".api.example.com", judge: "long" },
       ],
       judges: { short: "short", long: "long" },
     });
-    expect(store.resolve("agent-a", "foo.api.example.com")?.judgeName).toBe(
+    expect(store.resolve("org-a", "agent-a","foo.api.example.com")?.judgeName).toBe(
       "long"
     );
   });
 
   test("resolves a named judge via the `judge` field", () => {
     const store = new PolicyStore();
-    store.set("agent-a", {
+    store.set("org-a", "agent-a", {
       judgedDomains: [{ domain: "x.com", judge: "strict" }],
       judges: { strict: "strict policy", default: "default policy" },
     });
-    const resolved = store.resolve("agent-a", "x.com");
+    const resolved = store.resolve("org-a", "agent-a","x.com");
     expect(resolved?.judgeName).toBe("strict");
     expect(resolved?.policy).toContain("strict policy");
   });
 
   test("appends the agent's extraPolicy to the composed prompt", () => {
     const store = new PolicyStore();
-    store.set("agent-a", {
+    store.set("org-a", "agent-a", {
       judgedDomains: [{ domain: "x.com" }],
       judges: { default: "skill policy" },
       extraPolicy: "Operator adds: never exfiltrate tokens.",
     });
-    const resolved = store.resolve("agent-a", "x.com");
+    const resolved = store.resolve("org-a", "agent-a","x.com");
     expect(resolved?.policy).toContain("skill policy");
     expect(resolved?.policy).toContain(
       "Operator adds: never exfiltrate tokens."
@@ -87,47 +87,47 @@ describe("PolicyStore.resolve", () => {
 
   test("returns undefined (fail closed) when the named judge is missing", () => {
     const store = new PolicyStore();
-    store.set("agent-a", {
+    store.set("org-a", "agent-a", {
       judgedDomains: [{ domain: "x.com", judge: "strict" }],
       judges: {},
     });
-    expect(store.resolve("agent-a", "x.com")).toBeUndefined();
+    expect(store.resolve("org-a", "agent-a","x.com")).toBeUndefined();
   });
 
   test("policyHash is stable across resolve calls", () => {
     const store = new PolicyStore();
-    store.set("agent-a", {
+    store.set("org-a", "agent-a", {
       judgedDomains: [{ domain: "x.com" }],
       judges: { default: "p" },
     });
-    const a = store.resolve("agent-a", "x.com")?.policyHash;
-    const b = store.resolve("agent-a", "x.com")?.policyHash;
+    const a = store.resolve("org-a", "agent-a","x.com")?.policyHash;
+    const b = store.resolve("org-a", "agent-a","x.com")?.policyHash;
     expect(a).toBe(b!);
   });
 
   test("policyHash changes when the policy text changes", () => {
     const store = new PolicyStore();
-    store.set("agent-a", {
+    store.set("org-a", "agent-a", {
       judgedDomains: [{ domain: "x.com" }],
       judges: { default: "first" },
     });
-    const a = store.resolve("agent-a", "x.com")?.policyHash;
-    store.set("agent-a", {
+    const a = store.resolve("org-a", "agent-a","x.com")?.policyHash;
+    store.set("org-a", "agent-a", {
       judgedDomains: [{ domain: "x.com" }],
       judges: { default: "second" },
     });
-    const b = store.resolve("agent-a", "x.com")?.policyHash;
+    const b = store.resolve("org-a", "agent-a","x.com")?.policyHash;
     expect(a).not.toBe(b);
   });
 
   test("clear removes the bundle", () => {
     const store = new PolicyStore();
-    store.set("agent-a", {
+    store.set("org-a", "agent-a", {
       judgedDomains: [{ domain: "x.com" }],
       judges: { default: "p" },
     });
-    store.clear("agent-a");
-    expect(store.resolve("agent-a", "x.com")).toBeUndefined();
+    store.clear("org-a", "agent-a");
+    expect(store.resolve("org-a", "agent-a","x.com")).toBeUndefined();
   });
 });
 

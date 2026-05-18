@@ -181,6 +181,46 @@ export class ChatInstanceManager {
       // errored so an operator can repair or remove it.
       const connection = storedToPlatform(stored);
 
+      // Apply the cloud-mode polling guard before startInstance — otherwise
+      // a previously-persisted `mode: "polling"` Telegram row would silently
+      // start at boot and bypass the create-time rejection added in
+      // `addConnection()`. Mark the row errored so an operator notices.
+      if (
+        connection.status === "active" &&
+        connection.platform === "telegram" &&
+        isCloudMode() &&
+        isPollingTelegramMode(connection.config as { mode?: string })
+      ) {
+        const message =
+          "Polling mode is not supported in Lobu Cloud — use webhook mode, or self-host.";
+        logger.warn(
+          { id: connection.id, agentId: connection.agentId },
+          `Refusing to boot Telegram polling connection in cloud mode: ${message}`
+        );
+        // Self-bind the connection's owning org so the PostgreSQL-backed
+        // store's per-tenant predicate is satisfied — boot has no HTTP
+        // request and thus no ALS org context.
+        try {
+          const orgId = connection.organizationId;
+          const markErrored = () =>
+            this.connectionStore.updateConnection(connection.id, {
+              status: "error",
+              errorMessage: message,
+            });
+          if (orgId) {
+            await orgContext.run({ organizationId: orgId }, markErrored);
+          } else {
+            await markErrored();
+          }
+        } catch (markErr) {
+          logger.error(
+            { id: connection.id, error: String(markErr) },
+            "Failed to mark Telegram polling connection as errored"
+          );
+        }
+        continue;
+      }
+
       try {
         if (connection.status === "active") {
           // Boot runs without an HTTP request, so AsyncLocalStorage has

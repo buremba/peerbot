@@ -2,9 +2,13 @@
 # task-setup.sh — prepare a paired-branch worktree for a new task.
 #
 # Usage:
-#   scripts/task-setup.sh <name>
+#   make task-setup NAME=<name>       (recommended, team-friendly)
+#   scripts/task-setup.sh <name>      (direct invocation)
 #
 #   <name>  kebab-case task slug (e.g. fix-sse-leak)
+#
+# Companion: `make task-clean NAME=<name> [FORCE=1]` removes the worktree,
+# its branches in both repos, and the Lobu CLI context.
 #
 # Behavior (idempotent — re-running on an existing worktree refreshes .env
 # and .env.local only):
@@ -19,24 +23,25 @@
 #   6. Drops a .task marker file at the worktree root so `git worktree list`
 #      can distinguish human task-worktrees from agent-* isolation worktrees.
 #
-# Companion shell functions (add to ~/.zshrc — NOT auto-installed):
+# Optional shell-function sugar — `make task-setup` does the setup, then you
+# still have to `cd <path> && claude` by hand. If you want one command that
+# also moves your shell and launches claude, add this to ~/.zshrc:
 #
 #   task-start() {
-#     local name="$1"
-#     local repo="$HOME/Code/lobu"
+#     local name="$1"; local repo="$HOME/Code/lobu"
 #     "$repo/scripts/task-setup.sh" "$name" || return $?
 #     cd "$repo/.claude/worktrees/$name" && exec claude
 #   }
 #   task-resume() {
-#     local name="$1"
-#     local repo="$HOME/Code/lobu"
+#     local name="$1"; local repo="$HOME/Code/lobu"
 #     [[ -d "$repo/.claude/worktrees/$name" ]] \
 #       || { echo "no such worktree: $name"; return 1; }
 #     cd "$repo/.claude/worktrees/$name" && exec claude
 #   }
 #
-# The cd + exec must live in the shell function (not this script) so that the
-# parent terminal actually moves and Warp/iTerm detect the new working dir.
+# The cd + exec must live in the shell function (not a Makefile target or this
+# script) so that the parent terminal actually moves and Warp/iTerm detect the
+# new working directory.
 
 set -euo pipefail
 

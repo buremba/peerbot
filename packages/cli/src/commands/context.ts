@@ -3,6 +3,7 @@ import {
   addContext,
   getCurrentContextName,
   loadContextConfig,
+  removeContext,
   resolveContext,
   setCurrentContext,
 } from "../internal/index.js";
@@ -69,6 +70,11 @@ export async function contextAddCommand(options: {
   console.log(
     chalk.green(`\n  Saved context ${options.name} -> ${options.apiUrl}\n`)
   );
+}
+
+export async function contextRmCommand(name: string): Promise<void> {
+  await removeContext(name);
+  console.log(chalk.dim(`\n  Removed context ${name}\n`));
 }
 
 export async function contextUseCommand(name: string): Promise<void> {

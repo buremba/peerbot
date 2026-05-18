@@ -200,6 +200,31 @@ export async function addContext(
   return config;
 }
 
+export async function removeContext(
+  name: string
+): Promise<LobuContextConfig> {
+  const trimmedName = name.trim();
+  if (!trimmedName) {
+    throw new Error("Context name cannot be empty.");
+  }
+
+  const config = await loadContextConfig();
+  if (!config.contexts[trimmedName]) {
+    // Idempotent: removing a non-existent context is a no-op.
+    return config;
+  }
+  if (trimmedName === DEFAULT_CONTEXT_NAME) {
+    throw new Error(`Cannot remove the default context "${trimmedName}".`);
+  }
+
+  delete config.contexts[trimmedName];
+  if (config.currentContext === trimmedName) {
+    config.currentContext = DEFAULT_CONTEXT_NAME;
+  }
+  await saveContextConfig(config);
+  return config;
+}
+
 export async function setCurrentContext(
   name: string
 ): Promise<LobuContextConfig> {

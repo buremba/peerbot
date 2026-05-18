@@ -606,6 +606,14 @@ Memory:
       await contextUseCommand(name);
     });
 
+  context
+    .command("rm <name>")
+    .description("Remove a named context (idempotent)")
+    .action(async (name: string) => {
+      const { contextRmCommand } = await import("./commands/context.js");
+      await contextRmCommand(name);
+    });
+
   // ─── status ─────────────────────────────────────────────────────────
   withCommonOpts(
     program

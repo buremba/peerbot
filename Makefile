@@ -1,6 +1,6 @@
 # Development Makefile for Lobu
 
-.PHONY: help setup build test eval clean dev build-packages ensure-submodule clean-workers test-unit test-integration test-e2e typecheck
+.PHONY: help setup build test eval clean dev build-packages ensure-submodule clean-workers test-unit test-integration test-e2e typecheck task-setup task-clean
 
 # Default target
 help:
@@ -15,6 +15,8 @@ help:
 	@echo "  make eval                                  - Run agent evals"
 	@echo "  make clean-workers                         - Stop any running embedded worker subprocesses"
 	@echo "  make typecheck                             - Strict typecheck (same as Dockerfile) for server + owletto"
+	@echo "  make task-setup NAME=<name>                - Create a paired worktree at .claude/worktrees/<name> (lobu + submodule on real branch, .env copied, ports auto-assigned, Lobu context registered)"
+	@echo "  make task-clean NAME=<name> [FORCE=1]      - Remove the worktree, both branches, and the Lobu context (refuses if there's uncommitted/unpushed work unless FORCE=1)"
 
 # Strict typecheck — mirrors the Dockerfile so local matches CI. Catches
 # what `build-packages` (relaxed, bundler-only) misses.
@@ -69,6 +71,19 @@ test:
 # Run agent evals
 eval:
 	@npx @lobu/cli@latest eval
+
+# --- Task worktrees ---------------------------------------------------------
+# Paired-branch worktrees for parallel work without losing changes to the
+# packages/owletto submodule. See scripts/task-setup.sh header for details
+# (the script also documents an optional `task-start` shell function alias).
+
+task-setup:
+	@: $${NAME?Usage: make task-setup NAME=<kebab-case-name>}
+	@./scripts/task-setup.sh "$(NAME)"
+
+task-clean:
+	@: $${NAME?Usage: make task-clean NAME=<name> [FORCE=1]}
+	@./scripts/task-clean.sh "$(NAME)" $$( [ -n "$(FORCE)" ] && echo --force )
 
 # --- Test pipelines ---------------------------------------------------------
 # These mirror what CI runs (.github/workflows/ci.yml) so a passing local run

@@ -5,6 +5,7 @@ export {
   getCurrentContextName,
   getMemoryUrl,
   loadContextConfig,
+  removeContext,
   resolveContext,
   setActiveOrg,
   setCurrentContext,

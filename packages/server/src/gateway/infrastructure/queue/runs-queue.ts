@@ -311,22 +311,16 @@ export class RunsQueue implements IMessageQueue {
     const sql = getDb();
     const actionInput = JSON.stringify(data ?? {});
 
-    // Extract `agentId` / `conversationId` from the payload (when present) so
-    // we can write them into the dedicated columns added by migration
+    // Extract `agentId` / `conversationId` from the payload (when present)
+    // so we can write them into the dedicated columns added by migration
     // `runs_denormalize_agent_conversation`. The verifier function
-    // `isRunOwnedByJwtScope` reads these columns instead of probing
-    // `action_input->>'agentId'` — the win is removing the JSONB
-    // extraction operator from the predicate and lifting routing keys
-    // into typed columns. The `runs_pkey` on `id` already serves the
-    // single-row lookup; the partial index over (agent_id,
-    // conversation_id) earns its keep on queries that look up runs by the
-    // (agent, conversation) pair without specifying id (diagnostics,
-    // history pruning). Codex round 2 planner-note on PR #870 — the
-    // previous comment over-claimed an index-only seek win for the
-    // verifier specifically.
-    // Older insert paths that don't carry these keys (sync/action/auth/
-    // watcher lanes) leave the columns NULL, and the index's
-    // `WHERE agent_id IS NOT NULL` predicate keeps it small.
+    // `isRunOwnedByJwtScope` reads these columns (with a COALESCE
+    // fallback onto the legacy `action_input->>'key'` extraction so
+    // historical NULL-column rows still authorize). Cleaner shape and
+    // useful for future diagnostic queries; the verifier's hot-path lookup
+    // uses `runs_pkey` on `id` regardless. Older insert paths that don't
+    // carry these keys (sync/action/auth/watcher lanes) leave the columns
+    // NULL.
     const payload = (data ?? {}) as Record<string, unknown>;
     const agentId =
       typeof payload.agentId === "string" && payload.agentId.length > 0

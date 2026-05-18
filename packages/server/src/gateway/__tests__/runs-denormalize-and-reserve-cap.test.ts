@@ -195,10 +195,14 @@ describe("runs: agent_id / conversation_id denormalization", () => {
     expect(wrong.length).toBe(0);
   });
 
-  test("backfill: rows inserted with NULL columns get populated from action_input", async () => {
+  test("historical rows with NULL scalar columns + JSONB keys still verify (via COALESCE)", async () => {
+    // The migration deliberately does NOT backfill historical rows (a
+    // single-shot UPDATE over a multi-million-row hot queue table is
+    // unsafe; codex round 4 P1 on PR #870). Instead the verifier
+    // `isRunOwnedByJwtScope` uses COALESCE so legacy rows with only
+    // `action_input` populated keep authorizing correctly.
     await ensureOrg("org-old");
     const sql = getDb();
-    // Simulate a pre-migration insert: action_input has the keys, columns NULL.
     const rows = (await sql`
       INSERT INTO public.runs (
         organization_id, run_type, status, action_input,
@@ -216,52 +220,23 @@ describe("runs: agent_id / conversation_id denormalization", () => {
     `) as Array<{ id: number }>;
     const runId = rows[0]!.id;
 
-    // Confirm columns are NULL pre-backfill (the production migration ran but
-    // this row was written directly without populating them).
-    const before = (await sql`
+    // Columns are NULL — migration is no-backfill by design.
+    const cols = (await sql`
       SELECT agent_id, conversation_id FROM public.runs WHERE id = ${runId}
     `) as Array<{ agent_id: string | null; conversation_id: string | null }>;
-    expect(before[0]!.agent_id).toBeNull();
-    expect(before[0]!.conversation_id).toBeNull();
+    expect(cols[0]!.agent_id).toBeNull();
+    expect(cols[0]!.conversation_id).toBeNull();
 
-    // Run the same backfill statement the migration uses.
-    await sql`
-      UPDATE public.runs
-         SET agent_id = action_input->>'agentId',
-             conversation_id = action_input->>'conversationId'
-       WHERE agent_id IS NULL
-         AND action_input ? 'agentId'
-    `;
-
-    const after = (await sql`
-      SELECT agent_id, conversation_id FROM public.runs WHERE id = ${runId}
-    `) as Array<{ agent_id: string | null; conversation_id: string | null }>;
-    expect(after[0]!.agent_id).toBe("legacy-agent");
-    expect(after[0]!.conversation_id).toBe("legacy-conv");
-  });
-
-  test("partial index is present and covers (agent_id, conversation_id) lookups", async () => {
-    // `runs_pkey` already serves the single-row verifier path on `id`. This
-    // index is for queries that look up runs by the (agent_id,
-    // conversation_id) pair without specifying id (diagnostics, history
-    // pruning, scheduled cleanup sweeps). Test asserts the index exists
-    // with the leading columns ordered correctly and the partial WHERE
-    // clause that keeps it narrow.
-    const sql = getDb();
-    const rows = (await sql`
-      SELECT indexdef
-        FROM pg_indexes
-       WHERE schemaname = 'public'
-         AND tablename = 'runs'
-         AND indexname = 'runs_agent_conv_idx'
-    `) as Array<{ indexdef: string }>;
-    expect(rows.length).toBe(1);
-    const def = rows[0]!.indexdef.toLowerCase();
-    expect(def).toContain("agent_id");
-    expect(def).toContain("conversation_id");
-    // The WHERE clause keeps the index narrow.
-    expect(def).toContain("where");
-    expect(def).toContain("not null");
+    // Verifier query (with COALESCE) still authorizes.
+    const ok = (await sql`
+      SELECT 1 AS ok FROM public.runs
+      WHERE id = ${runId}
+        AND organization_id = 'org-old'
+        AND COALESCE(agent_id, action_input ->> 'agentId') = 'legacy-agent'
+        AND COALESCE(conversation_id, action_input ->> 'conversationId') = 'legacy-conv'
+      LIMIT 1
+    `) as Array<{ ok: number }>;
+    expect(ok.length).toBe(1);
   });
 });
 

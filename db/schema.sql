@@ -4153,12 +4153,6 @@ CREATE INDEX personal_access_tokens_user_id_idx ON public.personal_access_tokens
 CREATE INDEX rate_limits_expires_at_idx ON public.rate_limits USING btree (expires_at);
 
 --
--- Name: runs_agent_conv_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX runs_agent_conv_idx ON public.runs USING btree (agent_id, conversation_id, id DESC) WHERE ((agent_id IS NOT NULL) AND (conversation_id IS NOT NULL));
-
---
 -- Name: runs_expires_at_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -5163,5 +5157,4 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20260518010000'),
     ('20260518020000'),
     ('20260518040000'),
-    ('20260518050000'),
-    ('20260518050001');
+    ('20260518050000');

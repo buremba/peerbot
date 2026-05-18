@@ -13,6 +13,26 @@ const logger = createLogger("interactions");
 const SAFE_LINK_BUTTON_SCHEMES = new Set(["http:", "https:"]);
 
 /**
+ * Every event emitted by InteractionService MUST carry a non-empty
+ * `connectionId`. Bridges route by connectionId; an event with no
+ * connectionId would be picked up by every registered bridge regardless of
+ * platform, causing cross-platform leakage (e.g. a Slack tool-approval card
+ * also rendered in Telegram for an unrelated tenant). See #690.
+ */
+function assertNonEmptyConnectionId(
+  connectionId: string | undefined,
+  method: string
+): asserts connectionId is string {
+  if (typeof connectionId !== "string" || connectionId.length === 0) {
+    throw new Error(
+      `InteractionService.${method}: connectionId is required (got ${
+        connectionId === undefined ? "undefined" : JSON.stringify(connectionId)
+      }) — events without a connectionId would cross platforms`
+    );
+  }
+}
+
+/**
  * Reject URLs whose scheme could be used to execute code in the user's
  * client (e.g. `javascript:`, `data:`, `vbscript:`, `file:`) when posted
  * as a link button. We only accept normal web URLs.
@@ -114,6 +134,7 @@ export class InteractionService extends EventEmitter {
     question: string,
     options: string[]
   ): Promise<PostedQuestion> {
+    assertNonEmptyConnectionId(connectionId, "postQuestion");
     if (this.beforeCreateHook) {
       await this.beforeCreateHook(userId, conversationId);
     }
@@ -160,6 +181,7 @@ export class InteractionService extends EventEmitter {
     args: Record<string, unknown>,
     grantPattern: string
   ): Promise<PostedToolApproval> {
+    assertNonEmptyConnectionId(connectionId, "postToolApproval");
     if (this.beforeCreateHook) {
       await this.beforeCreateHook(userId, conversationId);
     }
@@ -204,6 +226,7 @@ export class InteractionService extends EventEmitter {
     body?: string
   ): Promise<PostedLinkButton> {
     assertSafeLinkButtonUrl(url);
+    assertNonEmptyConnectionId(connectionId, "postLinkButton");
     if (this.beforeCreateHook) {
       await this.beforeCreateHook(userId, conversationId);
     }
@@ -270,6 +293,7 @@ export class InteractionService extends EventEmitter {
     platform: string,
     text: string
   ): Promise<PostedStatusMessage> {
+    assertNonEmptyConnectionId(connectionId, "postStatusMessage");
     if (this.beforeCreateHook) {
       await this.beforeCreateHook("", conversationId);
     }

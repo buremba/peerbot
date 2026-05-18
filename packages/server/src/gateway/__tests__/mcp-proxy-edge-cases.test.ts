@@ -611,6 +611,51 @@ describe("tool approval — onToolBlocked and wildcard grants", () => {
     expect(blockedCount).toBe(1);
   });
 
+  test("fails closed when tool annotations cannot be discovered (empty tool list)", async () => {
+    // Regression for #688: previously, if tool discovery returned `{tools: []}`
+    // (because the upstream MCP was unreachable, SSRF-blocked, or timed out),
+    // `evaluateToolApproval` treated `found=false` as "allow" and let every
+    // tool call through without an approval check. Must fail closed instead.
+    const toolCache = new McpToolCache();
+    const grantStore = new GrantStore();
+
+    const configSource = createConfigSource({
+      "unreachable-mcp": {
+        id: "unreachable-mcp",
+        upstreamUrl: "http://unreachable.example.com/mcp",
+      },
+    });
+
+    let blockedCount = 0;
+    const proxy = new McpProxy(configSource, {
+      secretStore: new InMemoryWritableStore(),
+      toolCache,
+      grantStore,
+    });
+    proxy.onToolBlocked = async () => {
+      blockedCount++;
+    };
+
+    // No toolCache entry, and upstream tools/list returns an empty list —
+    // discovery yields `{ tools: [] }` ⇒ `found=false` ⇒ must require approval.
+    successFetch({ jsonrpc: "2.0", id: 1, result: { tools: [] } });
+
+    const app = proxy.getApp();
+    const res = await app.request("/unreachable-mcp/tools/anything", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${agent1Token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({}),
+    });
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.content[0].text).toContain("requires approval");
+    expect(blockedCount).toBe(1);
+  });
+
   test("wildcard grant /mcp/<id>/tools/* covers all tools of that server", async () => {
     const toolCache = new McpToolCache();
     const grantStore = new GrantStore();

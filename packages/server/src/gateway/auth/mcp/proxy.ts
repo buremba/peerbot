@@ -1070,7 +1070,11 @@ export class McpProxy {
       tokenData,
       token
     );
-    if (!found || !requiresToolApproval(annotations)) return "allow";
+    // Fail closed: if tool annotations couldn't be discovered (upstream MCP
+    // unreachable, SSRF block, fetch timeout, empty tool list, …) we can't
+    // determine whether the call needs approval, so require approval rather
+    // than silently allowing every tool to bypass the gate.
+    if (found && !requiresToolApproval(annotations)) return "allow";
 
     const pattern = `/mcp/${mcpId}/tools/${toolName}`;
     if (await this.grantStore.hasGrant(agentId, pattern)) return "allow";

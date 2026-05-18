@@ -1,7 +1,4 @@
 import { getDb, pgTextArray } from '../db/client';
-import { isLobuGatewayRunning } from '../lobu/gateway';
-import { getLobuServiceToken } from '../lobu/service-token';
-import logger from '../utils/logger';
 
 interface CreateNotificationParams {
   organizationId: string;
@@ -34,88 +31,6 @@ interface NotificationRow {
   resource_url: string | null;
   is_read: boolean;
   created_at: string;
-}
-
-/**
- * Forward a notification to active bot connections via Lobu's messaging API.
- *
- * Fetches active connections and their default targets from Lobu's internal API,
- * then sends via /api/v1/messaging/send with platform-specific routing.
- */
-async function deliverToBotConnections(
-  params: Omit<CreateNotificationParams, 'userId'>
-): Promise<void> {
-  if (!isLobuGatewayRunning()) return;
-
-  const port = process.env.PORT || '8787';
-  const lobuBaseUrl = `http://127.0.0.1:${port}/lobu`;
-
-  const text = params.body ? `${params.title}\n\n${params.body}` : params.title;
-
-  try {
-    // Fetch connections and targets in parallel
-    const [connRes, targetsRes] = await Promise.all([
-      fetch(`${lobuBaseUrl}/api/internal/connections`),
-      fetch(`${lobuBaseUrl}/api/internal/connections/test-targets`),
-    ]);
-    if (!connRes.ok) return;
-
-    const connBody = (await connRes.json()) as {
-      connections: Array<{
-        id: string;
-        platform: string;
-        agentId: string;
-        status: string;
-      }>;
-    };
-    const targets = targetsRes.ok
-      ? ((await targetsRes.json()) as Array<{ platform: string; defaultTarget: string }>)
-      : [];
-
-    const targetMap = new Map(targets.map((t) => [t.platform, t.defaultTarget]));
-
-    let connections = connBody.connections.filter((c) => c.status === 'active');
-    if (params.connectionId) {
-      connections = connections.filter((c) => c.id === params.connectionId);
-    }
-    if (connections.length === 0) return;
-
-    // Mint the service token once per org (it's org-scoped, not per-connection).
-    const token = await getLobuServiceToken(params.organizationId);
-
-    await Promise.allSettled(
-      connections.map((conn) => {
-        const target = targetMap.get(conn.platform);
-        // Platform-specific routing
-        const routing: Record<string, unknown> = {};
-        if (conn.platform === 'telegram' && target) {
-          routing.telegram = { chatId: target };
-        } else if (conn.platform === 'slack' && target) {
-          routing.slack = { channel: target };
-        }
-        return fetch(`${lobuBaseUrl}/api/v1/messaging/send`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(token ? { Authorization: `Bearer ${token}` } : {}),
-          },
-          body: JSON.stringify({
-            agentId: conn.agentId,
-            message: text,
-            platform: conn.platform,
-            ...routing,
-          }),
-        }).catch((err) =>
-          logger.warn(
-            { err, connectionId: conn.id },
-            '[Notifications] Failed to send via Lobu connection'
-          )
-        );
-      })
-    );
-  } catch (err) {
-    logger.warn({ err }, '[Notifications] Failed to deliver to embedded Lobu');
-  }
 }
 
 /**
@@ -168,13 +83,6 @@ export async function createNotificationForUsers(
       ON CONFLICT DO NOTHING
     `;
   });
-
-  // Deliver to bot connections (fire-and-forget). The bot delivery targets
-  // the org's connection default channels and is identical for every user in
-  // this call, so fan it out once — not once per user.
-  deliverToBotConnections(params).catch((err) =>
-    logger.warn({ err }, '[Notifications] Failed to deliver to bot connections')
-  );
 }
 
 export async function listNotifications(opts: {

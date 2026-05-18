@@ -146,14 +146,14 @@ describe("InteractionService.postLinkButton — URL scheme guard", () => {
 
   test("accepts https:// URLs", async () => {
     await expect(
-      svc.postLinkButton("u", "conv", "ch", undefined, undefined, "slack",
+      svc.postLinkButton("u", "conv", "ch", undefined, "conn-1", "slack",
         "https://example.com/auth", "Connect", "oauth")
     ).resolves.toBeDefined();
   });
 
   test("accepts http:// URLs", async () => {
     await expect(
-      svc.postLinkButton("u", "conv", "ch", undefined, undefined, "slack",
+      svc.postLinkButton("u", "conv", "ch", undefined, "conn-1", "slack",
         "http://example.com/auth", "Connect", "oauth")
     ).resolves.toBeDefined();
   });
@@ -197,7 +197,7 @@ describe("InteractionService — platform field on emitted events", () => {
     const received: any[] = [];
     svc.on("question:created", (e) => received.push(e));
 
-    await svc.postQuestion("u", "conv", "ch", undefined, undefined, "telegram",
+    await svc.postQuestion("u", "conv", "ch", undefined, "conn-tg", "telegram",
       "Pick one?", ["A", "B"]);
 
     expect(received).toHaveLength(1);
@@ -209,7 +209,7 @@ describe("InteractionService — platform field on emitted events", () => {
     const received: any[] = [];
     svc.on("link-button:created", (e) => received.push(e));
 
-    await svc.postLinkButton("u", "conv", "ch", undefined, undefined, "slack",
+    await svc.postLinkButton("u", "conv", "ch", undefined, "conn-slack", "slack",
       "https://example.com", "Open", "oauth");
 
     expect(received).toHaveLength(1);
@@ -222,7 +222,7 @@ describe("InteractionService — platform field on emitted events", () => {
     svc.on("tool:approval-needed", (e) => received.push(e));
 
     await svc.postToolApproval("req-1", "agent-1", "u", "conv", "ch", undefined,
-      undefined, "discord", "mcp-id", "tool_name", {}, "/mcp/mcp-id/tools/tool_name");
+      "conn-discord", "discord", "mcp-id", "tool_name", {}, "/mcp/mcp-id/tools/tool_name");
 
     expect(received).toHaveLength(1);
     expect(received[0].platform).toBe("discord");
@@ -233,10 +233,36 @@ describe("InteractionService — platform field on emitted events", () => {
     const received: any[] = [];
     svc.on("status-message:created", (e) => received.push(e));
 
-    await svc.postStatusMessage("conv", "ch", undefined, undefined, "teams", "Working...");
+    await svc.postStatusMessage("conv", "ch", undefined, "conn-teams", "teams", "Working...");
 
     expect(received).toHaveLength(1);
     expect(received[0].platform).toBe("teams");
+  });
+
+  test("post* methods throw when connectionId is missing (cross-platform leak guard)", async () => {
+    const svc = new InteractionService();
+
+    await expect(
+      svc.postQuestion("u", "conv", "ch", undefined, undefined, "telegram", "?", ["A"])
+    ).rejects.toThrow(/connectionId is required/);
+
+    await expect(
+      svc.postQuestion("u", "conv", "ch", undefined, "", "telegram", "?", ["A"])
+    ).rejects.toThrow(/connectionId is required/);
+
+    await expect(
+      svc.postLinkButton("u", "conv", "ch", undefined, undefined, "slack",
+        "https://example.com", "Open", "oauth")
+    ).rejects.toThrow(/connectionId is required/);
+
+    await expect(
+      svc.postToolApproval("req-1", "agent-1", "u", "conv", "ch", undefined,
+        undefined, "discord", "mcp", "t", {}, "/mcp/mcp/tools/t")
+    ).rejects.toThrow(/connectionId is required/);
+
+    await expect(
+      svc.postStatusMessage("conv", "ch", undefined, undefined, "teams", "...")
+    ).rejects.toThrow(/connectionId is required/);
   });
 });
 
@@ -755,9 +781,9 @@ describe("InteractionService — unique event ids", () => {
     const ids: string[] = [];
     svc.on("status-message:created", (e) => ids.push(e.id));
 
-    await svc.postStatusMessage("conv", "ch", undefined, undefined, "slack", "A");
-    await svc.postStatusMessage("conv", "ch", undefined, undefined, "slack", "B");
-    await svc.postStatusMessage("conv", "ch", undefined, undefined, "slack", "C");
+    await svc.postStatusMessage("conv", "ch", undefined, "conn-1", "slack", "A");
+    await svc.postStatusMessage("conv", "ch", undefined, "conn-1", "slack", "B");
+    await svc.postStatusMessage("conv", "ch", undefined, "conn-1", "slack", "C");
 
     expect(ids).toHaveLength(3);
     expect(new Set(ids).size).toBe(3);
@@ -768,9 +794,9 @@ describe("InteractionService — unique event ids", () => {
     const ids: string[] = [];
     svc.on("link-button:created", (e) => ids.push(e.id));
 
-    await svc.postLinkButton("u", "conv", "ch", undefined, undefined, "slack",
+    await svc.postLinkButton("u", "conv", "ch", undefined, "conn-1", "slack",
       "https://a.com", "A", "oauth");
-    await svc.postLinkButton("u", "conv", "ch", undefined, undefined, "slack",
+    await svc.postLinkButton("u", "conv", "ch", undefined, "conn-1", "slack",
       "https://b.com", "B", "oauth");
 
     expect(ids).toHaveLength(2);
@@ -792,7 +818,7 @@ describe("InteractionService — beforeCreateHook ordering", () => {
     });
     svc.on("question:created", () => log.push("event"));
 
-    await svc.postQuestion("u", "conv", "ch", undefined, undefined, "slack", "?", ["Y", "N"]);
+    await svc.postQuestion("u", "conv", "ch", undefined, "conn-1", "slack", "?", ["Y", "N"]);
 
     expect(log).toEqual(["hook", "event"]);
   });
@@ -837,7 +863,7 @@ describe("InteractionService.postLinkButton — body field", () => {
     const received: PostedLinkButton[] = [];
     svc.on("link-button:created", (e) => received.push(e));
 
-    await svc.postLinkButton("u", "conv", "ch", undefined, undefined, "slack",
+    await svc.postLinkButton("u", "conv", "ch", undefined, "conn-1", "slack",
       "https://example.com", "Connect", "oauth", "Authorize access to GitHub.");
 
     expect(received[0]!.body).toBe("Authorize access to GitHub.");
@@ -848,7 +874,7 @@ describe("InteractionService.postLinkButton — body field", () => {
     const received: PostedLinkButton[] = [];
     svc.on("link-button:created", (e) => received.push(e));
 
-    await svc.postLinkButton("u", "conv", "ch", undefined, undefined, "slack",
+    await svc.postLinkButton("u", "conv", "ch", undefined, "conn-1", "slack",
       "https://example.com", "Connect", "oauth");
 
     expect(received[0]!.body).toBeUndefined();
@@ -859,7 +885,7 @@ describe("InteractionService.postLinkButton — body field", () => {
     const received: PostedLinkButton[] = [];
     svc.on("link-button:created", (e) => received.push(e));
 
-    await svc.postOauthLink("u", "conv", "ch", undefined, undefined, "telegram",
+    await svc.postOauthLink("u", "conv", "ch", undefined, "conn-1", "telegram",
       "https://oauth.example.com/auth", "Sign in", "Please sign in.");
 
     expect(received[0]!.linkType).toBe("oauth");

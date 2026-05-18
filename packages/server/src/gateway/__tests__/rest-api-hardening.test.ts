@@ -714,28 +714,16 @@ describe("connection routes: access control", () => {
   });
 
   /**
-   * SUSPECTED BUG: GET /internal/connections has no authentication.
-   *
-   * The createConnectionCrudRoutes function registers:
-   *   app.get("/internal/connections", listAllConnections)
-   * with no auth middleware. Any unauthenticated caller can enumerate all
-   * platform connections and their agentId associations.
-   *
-   * This test documents the current (insecure) behavior.
-   * The endpoint should either be removed, moved behind auth, or restricted
-   * to same-process callers only (e.g., localhost-only binding).
+   * Regression: `GET /internal/connections` previously had no auth, leaking
+   * the full connection list (including agentId associations) to any
+   * unauthenticated caller. The route is removed entirely — the only caller
+   * was dead code referencing a non-existent `/api/v1/messaging/send`.
    */
-  test("[KNOWN GAP] GET /internal/connections requires no auth — documents unauthenticated access", async () => {
-    // No session set — completely unauthenticated
+  test("GET /internal/connections is removed — no unauthenticated tenant enumeration", async () => {
     const response = await orgContext.run({ organizationId: ORG_A }, () =>
       buildConnectionApp().request("/internal/connections")
     );
-    // Current behavior: 200 with connection data, no auth required.
-    // This is a security gap — internal routes should not be reachable without auth.
-    expect(response.status).toBe(200);
-    const data = (await response.json()) as any;
-    // Data leaks connection details to unauthenticated callers:
-    expect(Array.isArray(data.connections)).toBe(true);
+    expect(response.status).toBe(404);
   });
 });
 

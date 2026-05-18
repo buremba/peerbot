@@ -33,6 +33,12 @@ export class OpenClawProgressProcessor {
           return false;
         }
         const assistantEvent = event.assistantMessageEvent;
+        // Defensive: malformed events (null/missing assistantMessageEvent) used
+        // to null-deref on `.type`. Treat as a no-op instead of crashing the
+        // streaming pipeline. See #691.
+        if (!assistantEvent) {
+          return false;
+        }
 
         if (assistantEvent.type === "text_delta") {
           this.hasStreamedText = true;

@@ -814,7 +814,19 @@ function shouldHandle(
     );
     return false;
   }
-  if (event.connectionId && event.connectionId !== connectionId) {
+  // Fail closed when the event omits a connectionId: without an explicit
+  // routing key every registered bridge would handle the same event, leaking
+  // it across platforms / tenants. InteractionService.post* now rejects
+  // empty connectionIds at the source; this defends against direct
+  // svc.emit() callers (tests, future code paths). See #690.
+  if (!event.connectionId) {
+    logger.debug(
+      { connectionId, platform },
+      "shouldHandle: event missing connectionId — refusing to route"
+    );
+    return false;
+  }
+  if (event.connectionId !== connectionId) {
     return false;
   }
   const instance = manager.getInstance(connectionId);

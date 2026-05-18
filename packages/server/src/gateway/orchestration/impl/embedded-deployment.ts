@@ -137,24 +137,36 @@ interface EmbeddedWorkerEntry {
 /** Stable namespace id for `pg_advisory_lock(key1, key2)` per-conversation locks. */
 const CONV_LOCK_KEY1 = 0x6c6f6275; // "lobu" in ASCII, signed int32-safe.
 
-/** Default cap for reserved Postgres connections held by
- *  acquireConversationLock. Overridable via `LOBU_MAX_RESERVED_LOCKS`. The cap
- *  exists because each reserved connection pins one slot in the postgres-js
- *  pool (default max 20) for the entire worker subprocess lifetime — 10s for a
- *  tiny chat, 1h+ for a long task. Multi-pod × multi-conversation pressure
- *  blows the pool well before any per-conversation lock contention. 50 is a
- *  conservative starting point; real prod tuning happens by env after we
- *  observe the metric below. */
-const DEFAULT_MAX_RESERVED_LOCKS = 50;
+/** Reserve this many connections in the postgres-js pool for non-locked
+ *  query traffic (health probes, runs-queue claim, secret-proxy lookups,
+ *  every gateway tagged-template query). Sustained pressure here is small
+ *  and shorter-lived than the per-worker locks, but the queries can't be
+ *  starved entirely or the gateway stops responding. */
+const POOL_HEADROOM = 5;
 
-function getMaxReservedLocks(): number {
+/** Default cap for reserved Postgres connections held by
+ *  acquireConversationLock. Derived from `DB_POOL_MAX` so the cap CAN'T
+ *  exceed available connections — otherwise callers above the pool size
+ *  would block inside `sql.reserve()` instead of returning null at this
+ *  cap, defeating the cap's whole purpose. Operators can still raise the
+ *  cap with `LOBU_MAX_RESERVED_LOCKS` if they've bumped DB_POOL_MAX
+ *  accordingly. Codex round 2 P1#2 on PR #870. */
+function getDefaultMaxReservedLocks(): number {
+  const poolMax = Number.parseInt(process.env.DB_POOL_MAX || "20", 10);
+  if (!Number.isFinite(poolMax) || poolMax <= 0) {
+    return Math.max(1, 20 - POOL_HEADROOM);
+  }
+  return Math.max(1, poolMax - POOL_HEADROOM);
+}
+
+export function getMaxReservedLocks(): number {
   const raw = process.env.LOBU_MAX_RESERVED_LOCKS;
-  if (!raw) return DEFAULT_MAX_RESERVED_LOCKS;
+  if (!raw) return getDefaultMaxReservedLocks();
   const n = Number.parseInt(raw, 10);
   // Unparseable / negative / non-finite → fall back to default. `0` is
   // honored as an explicit "block all reservations" value (useful for
   // failover drains and load tests; the runs queue will retry).
-  if (!Number.isFinite(n) || n < 0) return DEFAULT_MAX_RESERVED_LOCKS;
+  if (!Number.isFinite(n) || n < 0) return getDefaultMaxReservedLocks();
   return n;
 }
 

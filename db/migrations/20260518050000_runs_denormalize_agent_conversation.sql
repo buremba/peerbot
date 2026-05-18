@@ -37,23 +37,25 @@ ALTER TABLE public.runs
 -- Step 2: chunked backfill historical rows from action_input. A single
 -- unbounded UPDATE over millions of rows would (a) hold many row locks at
 -- once, (b) bloat the WAL with one massive transaction, and (c) fight live
--- INSERTs for tuple locks. Chunked + committed in small batches keeps
--- contention bounded.
+-- INSERTs for tuple locks for the entire duration.
 --
--- DO blocks each commit by hand via SAVEPOINT/COMMIT-equivalent; under
--- transaction:false the function runs as its own transaction per statement
--- but the LOOP body sees a single transaction, so we explicitly commit by
--- exiting and re-entering the loop via DO.
+-- PG11+ stored procedures (CREATE PROCEDURE) support `COMMIT` inside the
+-- loop body — a DO block does NOT (it runs as a single implicit
+-- transaction). We create the procedure, CALL it, then drop it. Codex
+-- round 2 P1#1 on PR #870 — the previous DO-block version did not actually
+-- chunk-commit.
 --
 -- The `agent_id IS NULL` guard makes the backfill safe to interrupt and
--- resume: re-running picks up only rows still NULL.
+-- resume: a re-CALL picks up only rows still NULL.
 --
 -- Tunable: bump the chunk size (default 5000) by setting the GUC
--- `lobu.backfill_chunk` in a deploy env. Keep <= 50k to avoid long
--- single-statement UPDATEs.
+-- `lobu.backfill_chunk` before the migration runs. Keep <= 50k to avoid
+-- long single-statement UPDATEs holding too many row locks per commit.
 SET lock_timeout = 0;
 
-DO $do$
+CREATE OR REPLACE PROCEDURE pg_temp.lobu_backfill_runs_agent_conv()
+LANGUAGE plpgsql
+AS $proc$
 DECLARE
     chunk_size int := COALESCE(
         NULLIF(current_setting('lobu.backfill_chunk', true), '')::int,
@@ -73,9 +75,17 @@ BEGIN
          );
         GET DIAGNOSTICS rows_updated = ROW_COUNT;
         EXIT WHEN rows_updated = 0;
+        -- COMMIT releases the row locks taken by this chunk's UPDATE and
+        -- starts a fresh transaction for the next chunk. Only legal
+        -- inside a PROCEDURE (not a DO block) and only when the procedure
+        -- was invoked at the top level (which CALL does under
+        -- transaction:false).
+        COMMIT;
     END LOOP;
 END
-$do$;
+$proc$;
+
+CALL pg_temp.lobu_backfill_runs_agent_conv();
 
 SET lock_timeout = '30s';
 

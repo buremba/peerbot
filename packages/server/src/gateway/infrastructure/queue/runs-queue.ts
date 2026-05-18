@@ -314,12 +314,19 @@ export class RunsQueue implements IMessageQueue {
     // Extract `agentId` / `conversationId` from the payload (when present) so
     // we can write them into the dedicated columns added by migration
     // `runs_denormalize_agent_conversation`. The verifier function
-    // `isRunOwnedByJwtScope` reads these columns directly instead of probing
-    // `action_input->>'agentId'` — a partial index over the column pair turns
-    // a 10-100ms seq scan on a multi-million-row runs table into an
-    // index-only seek. Older insert paths that don't carry these keys
-    // (sync/action/auth/watcher lanes) leave the columns NULL, and the
-    // index's `WHERE agent_id IS NOT NULL` predicate keeps it small.
+    // `isRunOwnedByJwtScope` reads these columns instead of probing
+    // `action_input->>'agentId'` — the win is removing the JSONB
+    // extraction operator from the predicate and lifting routing keys
+    // into typed columns. The `runs_pkey` on `id` already serves the
+    // single-row lookup; the partial index over (agent_id,
+    // conversation_id) earns its keep on queries that look up runs by the
+    // (agent, conversation) pair without specifying id (diagnostics,
+    // history pruning). Codex round 2 planner-note on PR #870 — the
+    // previous comment over-claimed an index-only seek win for the
+    // verifier specifically.
+    // Older insert paths that don't carry these keys (sync/action/auth/
+    // watcher lanes) leave the columns NULL, and the index's
+    // `WHERE agent_id IS NOT NULL` predicate keeps it small.
     const payload = (data ?? {}) as Record<string, unknown>;
     const agentId =
       typeof payload.agentId === "string" && payload.agentId.length > 0

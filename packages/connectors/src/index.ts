@@ -11,7 +11,13 @@ export * from './capterra.ts';
 // dispatcher executes via chrome.debugger + a custom DOM accessibility
 // snapshot). Replaces the four prior standalone connectors
 // (chrome.tabs / browser.evaluate / browser.page_text / browser.fill_form).
+// chrome.history / chrome.bookmarks / chrome.downloads are opt-in
+// ambient feeds that auto-wire when the user grants the corresponding
+// optional permission in the extension's Permissions panel.
 export * from './chrome.ts';
+export * from './chrome_history.ts';
+export * from './chrome_bookmarks.ts';
+export * from './chrome_downloads.ts';
 export * from './g2.ts';
 export * from './github.ts';
 export * from './glassdoor.ts';

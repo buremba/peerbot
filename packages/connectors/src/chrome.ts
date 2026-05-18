@@ -120,6 +120,38 @@ export default class ChromeConnector extends ConnectorRuntime {
           },
         },
       },
+      tab_events: {
+        key: 'tab_events',
+        name: 'Tab events',
+        description:
+          'Live stream of tab creates / closes / URL changes / focus changes. Each event has a timestamp, so this is the lossless "browsing timeline" companion to the open_tabs snapshot. No extra permission required (baseline `tabs`).',
+        configSchema: { type: 'object', properties: {} },
+        eventKinds: {
+          tab_event: {
+            description:
+              'One row per tab lifecycle event. event_type is one of: created, removed, updated, activated.',
+            metadataSchema: {
+              type: 'object',
+              required: ['source', 'origin_id', 'event_type'],
+              properties: {
+                source: { type: 'string', const: 'chrome_tab_events' },
+                origin_id: { type: 'string' },
+                event_type: {
+                  enum: ['created', 'removed', 'updated', 'activated'],
+                },
+                tab_id: { type: 'integer' },
+                url: { type: 'string' },
+                title: { type: 'string' },
+                window_id: { type: 'integer' },
+                from_url: {
+                  type: 'string',
+                  description: 'For updated events, the URL the tab was on before the change.',
+                },
+              },
+            },
+          },
+        },
+      },
     },
     actions: {
       navigate: {

@@ -36,6 +36,10 @@ That's it. Sign up via the admin UI, add provider API keys from the settings pag
 | `OPENAI_API_KEY` / `GROQ_API_KEY` / etc. | No | Same as Anthropic — set only the providers you want available, or add them via the admin UI at runtime. |
 | `WORKER_ALLOWED_DOMAINS` | Optional | Default empty = workers have no internet. Comma-separated allowlist, or `*` for unrestricted (not recommended in prod). See `.env.example` for the full pattern. |
 
+## Apple Silicon (M1/M2/M3) note
+
+The published image is currently amd64-only. Docker on Apple Silicon refuses to pull mismatched-architecture images unless you opt into emulation. Uncomment the `platform: linux/amd64` line in `docker-compose.example.yml` to run it via Rosetta — slightly slower but functional. A multi-arch image is planned; once published, drop the override.
+
 ## Boot errors and how to read them
 
 A failing boot now prints the actual error (type, message, stack, and Zod-validation issues). If you see:

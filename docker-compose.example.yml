@@ -16,6 +16,7 @@
 services:
   postgres:
     image: pgvector/pgvector:pg18-trixie
+    # platform: linux/amd64  # uncomment on Apple Silicon if pgvector arm64 build is missing
     container_name: lobu-postgres
     environment:
       POSTGRES_USER: lobu
@@ -24,7 +25,7 @@ services:
     ports:
       - "5433:5432"
     volumes:
-      - lobu_pgdata:/var/lib/postgresql/data
+      - lobu_pgdata:/var/lib/postgresql
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U lobu -d lobu"]
@@ -34,6 +35,7 @@ services:
 
   lobu:
     image: ghcr.io/lobu-ai/lobu-app:latest
+    # platform: linux/amd64  # required on Apple Silicon until multi-arch image lands (see GitHub Issues)
     container_name: lobu-app
     ports:
       - "8787:8787"

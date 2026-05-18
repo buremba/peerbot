@@ -2,6 +2,7 @@ import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { createLogger, ErrorCode, OrchestratorError } from "@lobu/core";
+import { getDb } from "../../../db/client.js";
 import type { ModelProviderModule } from "../../modules/module-system.js";
 import {
   BaseDeploymentManager,
@@ -124,6 +125,114 @@ interface EmbeddedWorkerEntry {
   env: Record<string, string>;
   lastActivity: Date;
   workspaceDir: string;
+  /**
+   * Release the cross-pod advisory lock held for this conversation while the
+   * worker is alive. Called from the `exit` handler so the lock survives the
+   * entire subprocess lifetime, not just the spawn transaction. Undefined
+   * when `LOBU_SESSION_STORE=snapshot` is unset (no PG lock taken).
+   */
+  releaseConvLock?: () => Promise<void>;
+}
+
+/** Stable namespace id for `pg_advisory_lock(key1, key2)` per-conversation locks. */
+const CONV_LOCK_KEY1 = 0x6c6f6275; // "lobu" in ASCII, signed int32-safe.
+
+/**
+ * Acquire a session-level (NOT transaction-level) advisory lock on
+ * `(org, agent, conversationId)`. Returns a release function that drops the
+ * lock and the underlying reserved connection. Returns `null` if the lock is
+ * held by another pod — caller should bail and let the runs queue re-deliver.
+ *
+ * Why session-level (`pg_try_advisory_lock`) over transaction-level: the
+ * lock has to outlive any single query — it spans the entire worker
+ * subprocess lifetime, which can be tens of minutes. A transaction-scoped
+ * lock would release at the next commit/rollback and let a sibling pod
+ * steal the conversation mid-run. The `sql.reserve()` connection is
+ * dedicated and lock state survives until we explicitly release.
+ *
+ * No-op in embedded mode (`LOBU_DISABLE_PREPARE=1`). Embedded mode pins the
+ * pg pool to a single connection (see `createDbClient` in db/client.ts), so
+ * `reserve()` would block any sibling query forever. Embedded also can't
+ * have multi-pod races by definition — the in-process `workers` Map (see
+ * `spawnDeployment` above) already gates per-conversation concurrency.
+ * Returning a no-op release lets the caller treat all modes uniformly.
+ */
+export async function acquireConversationLock(
+  organizationId: string,
+  agentId: string,
+  conversationId: string
+): Promise<{ release: () => Promise<void> } | null> {
+  if (process.env.LOBU_DISABLE_PREPARE === "1") {
+    // Embedded mode: in-process Map is the sole gate. Return a sentinel so
+    // the caller's wiring (entry.releaseConvLock, exit handler, etc.)
+    // stays uniform.
+    return { release: async () => {} };
+  }
+
+  // `getDb()` returns the wrapped tagged-template client; `.reserve()` is on
+  // the raw `postgres()` client. We access it via the shared singleton —
+  // same pattern better-auth uses for its dedicated connection (see
+  // `getAuthDialect()` in db/client.ts).
+  const sql = getDb() as unknown as {
+    reserve: () => Promise<
+      ((
+        strings: TemplateStringsArray,
+        ...values: unknown[]
+      ) => Promise<unknown[]>) & {
+        release: () => void;
+      }
+    >;
+  };
+  const reserved = await sql.reserve();
+  const key2 = hashConvKey2(organizationId, agentId, conversationId);
+  try {
+    const rows = (await reserved`SELECT pg_try_advisory_lock(${CONV_LOCK_KEY1}, ${key2}) AS acquired`) as Array<{ acquired: boolean }>;
+    if (!rows[0]?.acquired) {
+      reserved.release();
+      return null;
+    }
+  } catch (err) {
+    reserved.release();
+    throw err;
+  }
+  return {
+    async release() {
+      try {
+        await reserved`SELECT pg_advisory_unlock(${CONV_LOCK_KEY1}, ${key2})`;
+      } catch (err) {
+        logger.warn(
+          `Failed to release advisory lock for ${organizationId}/${agentId}/${conversationId}: ${err instanceof Error ? err.message : String(err)}`
+        );
+      } finally {
+        reserved.release();
+      }
+    },
+  };
+}
+
+/**
+ * Derive a 32-bit signed integer from `(org, agent, conv)` for the second
+ * advisory-lock key. Postgres takes (int32, int32); we want a stable hash
+ * over a string triple. Same shape as the existing
+ * `hashtext('lobu:autowire', ${userId}:${connectorKey})` pattern in
+ * worker-api/device-reconcile.ts but computed in Node so we don't pay a
+ * round-trip just to feed the lock.
+ */
+function hashConvKey2(
+  organizationId: string,
+  agentId: string,
+  conversationId: string
+): number {
+  // FNV-1a 32-bit. Cheap, no extra deps, stable across Node versions.
+  const input = `${organizationId}:${agentId}:${conversationId}`;
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < input.length; i++) {
+    hash ^= input.charCodeAt(i);
+    hash = (hash + ((hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24))) | 0;
+  }
+  // pg_advisory_lock takes a signed int32; |0 already brings the value into
+  // that range. Return as-is.
+  return hash;
 }
 
 function buildEmbeddedWorkerPath(
@@ -324,6 +433,64 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
     const workspaceDir = path.resolve(`workspaces/${agentId}`);
     fs.mkdirSync(workspaceDir, { recursive: true, mode: 0o700 });
 
+    // Cross-pod gate for snapshot mode: only one pod at a time may run a
+    // worker for a given (org, agent, conversationId). Without this two
+    // pods that both claim chat_message runs for the same conversation
+    // would hydrate from the same `completed` snapshot, run independently,
+    // and produce divergent next snapshots — one reply silently wins.
+    //
+    // The lock is held by a reserved Postgres connection for the lifetime
+    // of the worker subprocess (released in the `exit` handler below). If
+    // another pod has the lock we surface a re-queueable failure so the
+    // runs queue retries on a different pod or after the current holder
+    // releases.
+    //
+    // Only enforced when the gateway is in snapshot mode (the env flag is
+    // read from the gateway process, not from the worker env that's still
+    // being assembled below). PVC-based legacy behaviour keeps single-
+    // writer at the kernel level via the RWO mount.
+    const snapshotModeEnabled =
+      process.env.LOBU_SESSION_STORE === "snapshot";
+    const conversationId =
+      typeof messageData?.conversationId === "string"
+        ? messageData.conversationId
+        : null;
+    const organizationId =
+      typeof messageData?.organizationId === "string"
+        ? messageData.organizationId
+        : null;
+    let convLock: { release: () => Promise<void> } | null = null;
+    if (snapshotModeEnabled && organizationId && conversationId) {
+      try {
+        convLock = await acquireConversationLock(
+          organizationId,
+          agentId,
+          conversationId
+        );
+      } catch (err) {
+        logger.error(
+          `Failed to acquire conversation lock: ${err instanceof Error ? err.message : String(err)}`
+        );
+        throw new OrchestratorError(
+          ErrorCode.DEPLOYMENT_CREATE_FAILED,
+          "Could not acquire per-conversation lock"
+        );
+      }
+      if (!convLock) {
+        // Another pod is running this conversation. Surface as a
+        // re-queueable failure — the runs queue's standard retry path
+        // re-delivers with a delay (`retry_delay_seconds` set per
+        // run_type). No need to special-case here.
+        logger.info(
+          `Conversation lock busy for ${organizationId}/${agentId}/${conversationId}; deferring spawn`
+        );
+        throw new OrchestratorError(
+          ErrorCode.DEPLOYMENT_CREATE_FAILED,
+          "Conversation lock busy on another pod"
+        );
+      }
+    }
+
     const commonEnvVars = await this.generateEnvironmentVariables(
       username,
       userId,
@@ -333,6 +500,13 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
     );
 
     commonEnvVars.WORKSPACE_DIR = workspaceDir;
+    // Forward the snapshot-mode flag so workers know to hydrate from
+    // Postgres and write back on cleanup. Mirrors gateway-side
+    // process.env so the lock acquisition above and the worker's
+    // session-store selection stay in lockstep.
+    if (snapshotModeEnabled) {
+      commonEnvVars.LOBU_SESSION_STORE = "snapshot";
+    }
     const embeddedPath = buildEmbeddedWorkerPath(
       this.config.worker.binPathEntries,
       commonEnvVars.PATH || process.env.PATH
@@ -422,6 +596,12 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
         `Embedded worker ${deploymentName} spawn error: ${err.message}`
       );
       this.workers.delete(deploymentName);
+      // Release the conversation lock if we ever acquired one — otherwise
+      // a spawn-time crash would pin the reserved connection (and the
+      // (org, agent, conv) lock) until the gateway recycles.
+      if (convLock) {
+        void convLock.release();
+      }
     });
 
     child.stdout?.on("data", (data: Buffer) => {
@@ -439,6 +619,12 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
       const entry = this.workers.get(deploymentName);
       if (entry) {
         this.workers.delete(deploymentName);
+        // Release in the entry (not the local closure) so killWorker /
+        // scaleDeployment paths that delete the entry directly stay
+        // consistent — they no longer need to know about the lock.
+        if (entry.releaseConvLock) {
+          void entry.releaseConvLock();
+        }
       }
       if (signal) {
         logger.info(
@@ -458,6 +644,9 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
       env: commonEnvVars,
       lastActivity: new Date(),
       workspaceDir,
+      // Attach the lock release so the exit handler (and killWorker, for
+      // scale-down paths) can drop it without re-deriving the key.
+      ...(convLock ? { releaseConvLock: convLock.release } : {}),
     });
 
     logger.info(
@@ -531,6 +720,17 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
 
     // Delete from map first to prevent race with the exit handler.
     this.workers.delete(deploymentName);
+
+    // Release the cross-pod conversation lock here too. The exit handler
+    // races with this code path: deleting the map entry means the exit
+    // handler's `this.workers.get(...)` returns undefined and it never
+    // calls release. Clear the field on the entry so we don't double-
+    // release when both paths fire.
+    const release = entry.releaseConvLock;
+    if (release) {
+      entry.releaseConvLock = undefined;
+      void release();
+    }
 
     // Already exited — `exitCode`/`signalCode` are the only reliable
     // indicators here. `child.killed` is set the moment we *send* a signal,

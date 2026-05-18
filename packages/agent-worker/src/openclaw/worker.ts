@@ -55,6 +55,11 @@ import {
 } from "./model-resolver";
 import { checkSandboxLeak } from "./sandbox-leak";
 import {
+  hydrateFromSnapshot,
+  type TerminalStatus,
+  writeSnapshot,
+} from "./transcript-snapshot";
+import {
   loadPlugins,
   runPluginHooks,
   startPluginServices,
@@ -275,6 +280,20 @@ export class OpenClawWorker implements WorkerExecutor {
   public workerTransport: WorkerTransport;
   private config: WorkerConfig;
   private progressProcessor: OpenClawProgressProcessor;
+  /**
+   * Terminal status for the current run, used by `cleanup()` to discriminate
+   * the snapshot row. Defaults to `failed` (pessimistic) so an early crash
+   * before any return-path assignment is recorded as a failure, not silently
+   * accepted as a completion. Set to `completed` only on the success path
+   * in `execute()`. Resets on every `execute()` invocation.
+   */
+  private terminalStatus: TerminalStatus = "failed";
+  /**
+   * Path to the OpenClaw session file for the current run. Captured in
+   * `runAISession()` (where SessionManager opens it) so `cleanup()` can
+   * read it back for the snapshot without re-deriving the path.
+   */
+  private sessionFilePath: string | null = null;
 
   constructor(config: WorkerConfig) {
     this.config = config;
@@ -314,6 +333,10 @@ export class OpenClawWorker implements WorkerExecutor {
    */
   async execute(): Promise<void> {
     const executeStartTime = Date.now();
+    // Reset terminal status for this run. Defaults to `failed` (pessimistic);
+    // assigned to `completed` only on the success path below. SESSION_TIMEOUT
+    // throws and is reassigned in the catch block.
+    this.terminalStatus = "failed";
 
     try {
       this.progressProcessor.reset();
@@ -468,6 +491,10 @@ export class OpenClawWorker implements WorkerExecutor {
       this.workerTransport.setModuleData(moduleData);
 
       if (result.success) {
+        // Snapshot writer in cleanup() reads this to discriminate the row.
+        // Hydrate skips non-completed snapshots, so getting this right is
+        // what stops a failed turn from poisoning the next attempt.
+        this.terminalStatus = "completed";
         const outputSnapshot = this.progressProcessor.getOutputSnapshot();
         const hintGatewayUrl = process.env.DISPATCHER_URL;
         const hintWorkerToken = process.env.WORKER_TOKEN;
@@ -521,6 +548,12 @@ export class OpenClawWorker implements WorkerExecutor {
         const isTimeout = result.exitCode === 124;
 
         if (isTimeout) {
+          // Mark the snapshot as `timeout` instead of `failed` so operators
+          // can distinguish runaway agents from genuine failures in the
+          // dashboard. The catch block below sees `SESSION_TIMEOUT` and
+          // keeps this assignment intact (it only forces `failed` on
+          // exceptions that aren't already marked).
+          this.terminalStatus = "timeout";
           logger.info(
             `Session timed out (exit code 124) - will be retried automatically, not showing error to user`
           );
@@ -551,6 +584,30 @@ export class OpenClawWorker implements WorkerExecutor {
   }
 
   async cleanup(): Promise<void> {
+    // Snapshot the post-run session.jsonl to Postgres so the next worker
+    // (possibly on a different pod) can hydrate from it. Runs on every
+    // terminal status — `completed`, `failed`, `timeout`, `cancelled` —
+    // with the discriminator stored so the next hydrate can skip a
+    // dangling tool_use trace. Opt-in via LOBU_SESSION_STORE=snapshot.
+    //
+    // The runs queue has already moved this run to a terminal state by
+    // the time cleanup() fires (sse-client.ts:865 finally block runs
+    // after execute() returns). We POST in the worker's own dying
+    // breath; the gateway-side advisory lock held by the spawner is
+    // released when the subprocess exits, so by the next claim's boot
+    // this snapshot is the visible "latest" row.
+    if (process.env.LOBU_SESSION_STORE === "snapshot" && this.sessionFilePath) {
+      const gatewayUrl = process.env.DISPATCHER_URL;
+      const workerToken = process.env.WORKER_TOKEN;
+      if (gatewayUrl && workerToken) {
+        await writeSnapshot({
+          sessionFile: this.sessionFilePath,
+          gatewayUrl,
+          workerToken,
+          terminalStatus: this.terminalStatus,
+        });
+      }
+    }
     logger.info("Worker cleanup completed");
   }
 
@@ -855,11 +912,54 @@ export class OpenClawWorker implements WorkerExecutor {
     await fs.mkdir(path.join(workspaceDir, ".openclaw"), { recursive: true });
 
     const sessionFile = path.join(workspaceDir, ".openclaw", "session.jsonl");
+    // Capture for cleanup() — it reads the file back to write the snapshot
+    // at terminal time. Set unconditionally so non-snapshot deployments
+    // still get a defined value (snapshot writer no-ops when LOBU_SESSION_STORE
+    // is unset).
+    this.sessionFilePath = sessionFile;
     const providerStateFile = path.join(
       workspaceDir,
       ".openclaw",
       "provider.json"
     );
+
+    // Hydrate from the latest completed Postgres snapshot BEFORE the
+    // provider-state check or SessionManager.open(). Opt-in via
+    // LOBU_SESSION_STORE=snapshot — default unset preserves today's
+    // file-only behavior. Phase 5 flips the default.
+    //
+    // Order matters: hydrate → provider check (may unlink) →
+    // SessionManager.open(). The provider-change unlink at line ~925 still
+    // does the right thing after hydrate: it drops the file we just wrote
+    // and SessionManager creates a fresh one, exactly like a first-turn
+    // boot. The next snapshot will have its own run_id, so the historical
+    // PG rows remain readable without poisoning the new conversation
+    // (hydrate would only resurrect them if a subsequent run completes
+    // successfully and overwrites the latest pointer).
+    if (process.env.LOBU_SESSION_STORE === "snapshot") {
+      const gatewayUrl = process.env.DISPATCHER_URL;
+      const workerToken = process.env.WORKER_TOKEN;
+      if (gatewayUrl && workerToken) {
+        try {
+          await hydrateFromSnapshot({
+            sessionFile,
+            gatewayUrl,
+            workerToken,
+          });
+        } catch (err) {
+          // Hydrate failure is non-fatal — fall back to whatever's on disk.
+          // Worst case the worker boots without history and the user re-
+          // grounds the conversation. Better than refusing to start.
+          logger.warn(
+            `Snapshot hydrate failed; continuing with local session file: ${err instanceof Error ? err.message : String(err)}`
+          );
+        }
+      } else {
+        logger.warn(
+          "LOBU_SESSION_STORE=snapshot set but DISPATCHER_URL or WORKER_TOKEN missing; snapshot disabled"
+        );
+      }
+    }
 
     // Detect provider change and reset session if needed
     let sessionSummary: string | undefined;

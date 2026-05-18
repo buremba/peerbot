@@ -183,6 +183,40 @@ CREATE TABLE public.agent_secrets (
 COMMENT ON TABLE public.agent_secrets IS 'Encrypted secret values referenced via secret:// refs. Backs the PostgresSecretStore implementation of @lobu/gateway WritableSecretStore.';
 
 --
+-- Name: agent_transcript_snapshot; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.agent_transcript_snapshot (
+    id bigint NOT NULL,
+    organization_id text NOT NULL,
+    agent_id text NOT NULL,
+    conversation_id text NOT NULL,
+    run_id bigint NOT NULL,
+    snapshot_jsonl text NOT NULL,
+    byte_size integer NOT NULL,
+    terminal_status text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT agent_transcript_snapshot_terminal_status_check CHECK ((terminal_status = ANY (ARRAY['completed'::text, 'failed'::text, 'timeout'::text, 'cancelled'::text])))
+);
+
+--
+-- Name: agent_transcript_snapshot_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.agent_transcript_snapshot_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+--
+-- Name: agent_transcript_snapshot_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.agent_transcript_snapshot_id_seq OWNED BY public.agent_transcript_snapshot.id;
+
+--
 -- Name: agent_users; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2072,6 +2106,13 @@ CREATE SEQUENCE public.watchers_id_seq
 ALTER SEQUENCE public.watchers_id_seq OWNED BY public.watchers.id;
 
 --
+-- Name: agent_transcript_snapshot id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.agent_transcript_snapshot ALTER COLUMN id SET DEFAULT nextval('public.agent_transcript_snapshot_id_seq'::regclass);
+
+
+--
 -- Name: connect_tokens id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -2268,6 +2309,20 @@ ALTER TABLE ONLY public.agent_grants
 
 ALTER TABLE ONLY public.agent_secrets
     ADD CONSTRAINT agent_secrets_pkey PRIMARY KEY (organization_id, name);
+
+--
+-- Name: agent_transcript_snapshot agent_transcript_snapshot_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.agent_transcript_snapshot
+    ADD CONSTRAINT agent_transcript_snapshot_pkey PRIMARY KEY (id);
+
+--
+-- Name: agent_transcript_snapshot agent_transcript_snapshot_org_agent_conv_run_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.agent_transcript_snapshot
+    ADD CONSTRAINT agent_transcript_snapshot_org_agent_conv_run_key UNIQUE (organization_id, agent_id, conversation_id, run_id);
 
 --
 -- Name: agent_users agent_users_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -2877,6 +2932,12 @@ CREATE INDEX agent_secrets_name_prefix_idx ON public.agent_secrets USING btree (
 --
 
 CREATE INDEX agent_secrets_org_id_idx ON public.agent_secrets USING btree (organization_id);
+
+--
+-- Name: agent_transcript_snapshot_latest; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX agent_transcript_snapshot_latest ON public.agent_transcript_snapshot USING btree (organization_id, agent_id, conversation_id, run_id DESC);
 
 --
 -- Name: agent_users_org_agent_idx; Type: INDEX; Schema: public; Owner: -
@@ -4185,6 +4246,20 @@ ALTER TABLE ONLY public.agent_grants
     ADD CONSTRAINT agent_grants_org_agent_fkey FOREIGN KEY (organization_id, agent_id) REFERENCES public.agents(organization_id, id) ON DELETE CASCADE;
 
 --
+-- Name: agent_transcript_snapshot agent_transcript_snapshot_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.agent_transcript_snapshot
+    ADD CONSTRAINT agent_transcript_snapshot_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organization(id) ON DELETE CASCADE;
+
+--
+-- Name: agent_transcript_snapshot agent_transcript_snapshot_run_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.agent_transcript_snapshot
+    ADD CONSTRAINT agent_transcript_snapshot_run_id_fkey FOREIGN KEY (run_id) REFERENCES public.runs(id) ON DELETE CASCADE;
+
+--
 -- Name: agent_users agent_users_org_agent_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -5079,4 +5154,5 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20260517160000'),
     ('20260518000000'),
     ('20260518010000'),
-    ('20260518020000');
+    ('20260518020000'),
+    ('20260518040000');

@@ -27,6 +27,7 @@ import {
   WorkerConnectionManager,
 } from "./connection-manager.js";
 import { WorkerJobRouter } from "./job-router.js";
+import { createTranscriptRoutes } from "./transcript-routes.js";
 
 const logger = createLogger("worker-gateway");
 
@@ -103,6 +104,13 @@ export class WorkerGateway {
     this.app.get("/session-context", (c) =>
       this.handleSessionContextRequest(c)
     );
+
+    // Per-run transcript snapshots — backs the multi-replica unblock.
+    // Workers hydrate from the latest completed snapshot on boot and POST
+    // a new snapshot on every terminal state. Opt-in via
+    // `LOBU_SESSION_STORE=snapshot` on the worker side; the routes
+    // themselves are always mounted (gated by the JWT scope check inside).
+    this.app.route("/transcript", createTranscriptRoutes());
 
     logger.debug("Worker gateway routes registered");
   }

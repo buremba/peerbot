@@ -11,10 +11,51 @@ import { createLogger } from "@lobu/core";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import type { UserAgentsStore } from "../../auth/user-agents-store.js";
+import { getDb } from "../../../db/client.js";
 import type { WorkerConnectionManager } from "../../gateway/connection-manager.js";
 import { errorResponse } from "../shared/helpers.js";
 import { createTokenVerifier } from "../shared/agent-ownership.js";
 import { verifySettingsSession } from "./settings-auth.js";
+
+/**
+ * Read the latest completed transcript snapshot for an agent's most-recent
+ * conversation. Returns the raw JSONL content + sessionId-equivalent, or
+ * null when no snapshot exists.
+ *
+ * This is the snapshot-mode replacement for `readFile(sessionPath)`. It only
+ * fires when LOBU_SESSION_STORE=snapshot — file-mode keeps reading
+ * workspaces/* untouched, so existing deploys see no behaviour change.
+ */
+export async function readLatestSnapshotJsonl(
+  agentId: string
+): Promise<string | null> {
+  const sql = getDb();
+  // Two-step query: resolve the agent's org (one row even when multi-org
+  // sees the same agentId, since we accept the latest snapshot regardless),
+  // then look up the latest completed snapshot for the agent across any
+  // conversation. The (org, agent, conv, run_id DESC) index supports the
+  // second query as an index-only scan after we strip the org_id filter
+  // (still required for tenant safety — never serve a different org's
+  // bytes back to a wrongly-cookied session).
+  const orgRows = await sql<{ organization_id: string }>`
+    SELECT organization_id FROM public.agents
+    WHERE id = ${agentId}
+    LIMIT 1
+  `;
+  const organizationId = orgRows[0]?.organization_id;
+  if (!organizationId) return null;
+
+  const snapshotRows = await sql<{ snapshot_jsonl: string }>`
+    SELECT snapshot_jsonl
+    FROM public.agent_transcript_snapshot
+    WHERE organization_id = ${organizationId}
+      AND agent_id = ${agentId}
+      AND terminal_status = 'completed'
+    ORDER BY run_id DESC
+    LIMIT 1
+  `;
+  return snapshotRows[0]?.snapshot_jsonl ?? null;
+}
 
 const logger = createLogger("agent-history-routes");
 
@@ -172,16 +213,26 @@ async function readSessionMessages(
   cursorParam: string,
   limit: number
 ) {
-  const sessionPath = await findSessionFile(agentId);
-  if (!sessionPath) {
-    return {
-      messages: [],
-      nextCursor: null,
-      hasMore: false,
-      sessionId: "none",
-    };
+  // In snapshot mode, the disk file may be empty (a fresh pod has no
+  // workspaces/ tree on a multi-replica gateway). Try the PG snapshot
+  // first; fall through to the disk read if the snapshot is missing so
+  // local-dev workspaces/* trees keep working without DB migrations.
+  let content: string | null = null;
+  if (process.env.LOBU_SESSION_STORE === "snapshot") {
+    content = await readLatestSnapshotJsonl(agentId);
   }
-  const content = await readFile(sessionPath, "utf-8");
+  if (content === null) {
+    const sessionPath = await findSessionFile(agentId);
+    if (!sessionPath) {
+      return {
+        messages: [],
+        nextCursor: null,
+        hasMore: false,
+        sessionId: "none",
+      };
+    }
+    content = await readFile(sessionPath, "utf-8");
+  }
   const { entries, sessionId } = parseSessionEntries(content);
 
   const allMessages: ParsedMessage[] = [];
@@ -209,18 +260,26 @@ async function readSessionMessages(
 }
 
 async function readSessionStats(agentId: string) {
-  const sessionPath = await findSessionFile(agentId);
-  if (!sessionPath) {
-    return {
-      sessionId: "none",
-      messageCount: 0,
-      userMessages: 0,
-      assistantMessages: 0,
-      totalInputTokens: 0,
-      totalOutputTokens: 0,
-    };
+  // Same fallback shape as readSessionMessages — DB first in snapshot mode,
+  // disk read if absent.
+  let content: string | null = null;
+  if (process.env.LOBU_SESSION_STORE === "snapshot") {
+    content = await readLatestSnapshotJsonl(agentId);
   }
-  const content = await readFile(sessionPath, "utf-8");
+  if (content === null) {
+    const sessionPath = await findSessionFile(agentId);
+    if (!sessionPath) {
+      return {
+        sessionId: "none",
+        messageCount: 0,
+        userMessages: 0,
+        assistantMessages: 0,
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+      };
+    }
+    content = await readFile(sessionPath, "utf-8");
+  }
   const { entries, sessionId } = parseSessionEntries(content);
 
   let messageCount = 0;
@@ -337,8 +396,17 @@ export function createAgentHistoryRoutes(deps: {
 
     const { connected, resolvedAgentId } = await resolveActiveAgent(agentId);
 
-    // Even if worker HTTP is unreachable, check if session file exists on disk
-    const hasSessionFile = !!(await findSessionFile(resolvedAgentId));
+    // Even if worker HTTP is unreachable, check if session content exists.
+    // Same fallback shape as readSessionMessages: snapshot first, disk
+    // second. Avoids reporting `connected: false` when the worker is dead
+    // but a PG snapshot is recoverable.
+    let hasSessionFile = false;
+    if (process.env.LOBU_SESSION_STORE === "snapshot") {
+      hasSessionFile = (await readLatestSnapshotJsonl(resolvedAgentId)) !== null;
+    }
+    if (!hasSessionFile) {
+      hasSessionFile = !!(await findSessionFile(resolvedAgentId));
+    }
 
     return c.json({
       connected: connected || hasSessionFile,

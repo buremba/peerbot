@@ -101,7 +101,7 @@ export async function executeRun(
       );
       return { itemsCollected: 0, error: 'watcher run not handled by daemon' };
     case 'embed_backfill':
-      return executeEmbedBackfillRun(client, job, env);
+      return executeEmbedBackfillRun(client, job, env, cfg);
     case 'auth':
       return executeAuthRun(client, job, env, cfg);
     default:
@@ -352,6 +352,21 @@ async function executeActionRun(
 
   console.error(`[executor] Starting action run ${run_id} (${connector_key}/${action_key})`);
 
+  // Heartbeat so the gateway's stale-run reaper doesn't write us off
+  // mid-action. Action runs can legitimately take minutes (LLM calls,
+  // long Playwright sessions, third-party API rate-limit waits); the
+  // reaper's default threshold is 120s, so a 30s heartbeat gives ~3
+  // ticks of grace. Without this the row sits "running" until the worker
+  // process dies, and the lane was previously excluded from the reaper
+  // (lobu#859) because the heartbeat was missing.
+  const heartbeatInterval = setInterval(async () => {
+    try {
+      await client.heartbeat(run_id);
+    } catch (err) {
+      console.error('[executor] Action heartbeat failed:', err);
+    }
+  }, cfg.heartbeatIntervalMs);
+
   try {
     const result = await executeCompiledConnector({
       mode: 'action',
@@ -390,6 +405,8 @@ async function executeActionRun(
     });
 
     return { itemsCollected: 0, error: errorMessage };
+  } finally {
+    clearInterval(heartbeatInterval);
   }
 }
 
@@ -533,7 +550,8 @@ function delay(ms: number): Promise<void> {
 async function executeEmbedBackfillRun(
   client: ExecutorClient,
   job: PollResponse,
-  _env: Env
+  _env: Env,
+  cfg: ExecutorConfig
 ): Promise<{ itemsCollected: number; error?: string }> {
   const { run_id, action_input } = job;
 
@@ -575,6 +593,20 @@ async function executeEmbedBackfillRun(
   }
 
   console.error(`[executor] Starting embed_backfill run ${run_id} for ${eventIds.length} events`);
+
+  // Heartbeat so the gateway's stale-run reaper doesn't time us out.
+  // Embed backfills can run for minutes on large batches (each embedding
+  // call is a network round-trip + GPU/CPU work); the reaper threshold
+  // is 120s, so a 30s heartbeat gives ~3 ticks of grace. This lane was
+  // excluded from the reaper in lobu#859 because the heartbeat was
+  // missing — now folded back in.
+  const heartbeatInterval = setInterval(async () => {
+    try {
+      await client.heartbeat(run_id);
+    } catch (err) {
+      console.error('[executor] Embed backfill heartbeat failed:', err);
+    }
+  }, cfg.heartbeatIntervalMs);
 
   try {
     // Fetch event content from the API
@@ -637,6 +669,8 @@ async function executeEmbedBackfillRun(
     });
 
     return { itemsCollected: 0, error: errorMessage };
+  } finally {
+    clearInterval(heartbeatInterval);
   }
 }
 

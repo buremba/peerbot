@@ -880,4 +880,22 @@ export const EMBEDDED_SCHEMA_PATCHES: EmbeddedSchemaPatch[] = [
       `);
     },
   },
+  {
+    id: 'runs-heartbeat-inflight-widen',
+    apply: async (sql) => {
+      // Mirrors db/migrations/20260518070000_runs_heartbeat_inflight_widen.sql.
+      // Widens the partial index + reaper WHERE clause back to all four
+      // connector lanes now that the action + embed_backfill executors
+      // emit client.heartbeat() (lobu#860). Same wide predicate as the
+      // original 20260518010000 patch; the intermediate narrow was a
+      // hotfix for the heartbeat-blind reaping window.
+      await sql.unsafe(`DROP INDEX IF EXISTS public.idx_runs_heartbeat_inflight`);
+      await sql.unsafe(`
+        CREATE INDEX IF NOT EXISTS idx_runs_heartbeat_inflight
+          ON public.runs (last_heartbeat_at)
+          WHERE status IN ('claimed', 'running')
+            AND run_type IN ('sync', 'action', 'embed_backfill', 'auth')
+      `);
+    },
+  },
 ];

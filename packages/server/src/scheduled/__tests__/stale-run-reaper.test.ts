@@ -69,6 +69,25 @@ async function seedRun(opts: SeedRunOpts): Promise<number> {
   return Number(rows[0].id);
 }
 
+async function seedFeed(feedId: number): Promise<void> {
+  const sql = getDb();
+  // Seed an org-scoped connection + feed at the requested id so the
+  // runs.feed_id FK is satisfied. Each test bumps the id so the
+  // partial-unique-index dedup logic exercises real rows.
+  await sql.unsafe(
+    `INSERT INTO connections (id, organization_id, connector_key, slug, status, created_at)
+     VALUES ($1, $2, 'fake', $3, 'active', current_timestamp)
+     ON CONFLICT (id) DO NOTHING`,
+    [feedId, ORG_ID, `fake-${feedId}`],
+  );
+  await sql.unsafe(
+    `INSERT INTO feeds (id, organization_id, connection_id, feed_key, status, created_at, updated_at)
+     VALUES ($1, $2, $1, 'data', 'active', current_timestamp, current_timestamp)
+     ON CONFLICT (id) DO NOTHING`,
+    [feedId, ORG_ID],
+  );
+}
+
 async function statusOf(runId: number): Promise<string> {
   const sql = getDb();
   const rows = (await sql`SELECT status FROM runs WHERE id = ${runId}`) as unknown as Array<{
@@ -166,27 +185,12 @@ describe('reapStaleRuns — connector lanes', () => {
     expect(await statusOf(staleId)).toBe('timeout');
   });
 
-  test('auth lane is reaped (parity with sync)', async () => {
-    // `auth` heartbeats from executeAuthRun in the connector-worker daemon, so
-    // staleness on `last_heartbeat_at` is a real failure signal there too.
-    const authId = await seedRun({
-      status: 'running',
-      lastHeartbeatAgoSeconds: STALE_THRESHOLD_SECONDS * 3,
-      claimedAtAgoSeconds: STALE_THRESHOLD_SECONDS * 3,
-      runType: 'auth',
-    });
-
-    const result = await reapStaleRuns();
-    expect(result.reaped).toBe(1);
-    expect(await statusOf(authId)).toBe('timeout');
-  });
-
-  test('action and embed_backfill lanes are NOT reaped (they do not heartbeat today)', async () => {
-    // executeActionRun and executeEmbedBackfillRun in
-    // packages/connector-worker/src/daemon/executor.ts never call
-    // client.heartbeat(), so reaping them on `last_heartbeat_at` would kill
-    // in-flight runs after the stale threshold elapses. Until those lanes
-    // emit heartbeats, the reaper must leave them alone.
+  test('action, embed_backfill, auth lanes are reaped (parity with sync)', async () => {
+    // All four connector lanes now emit `client.heartbeat()` from the
+    // out-of-process executor (lobu#860 wired action + embed_backfill;
+    // sync + auth already did). The reaper's WHERE clause covers all
+    // four; staleness on `last_heartbeat_at` is a real failure signal
+    // everywhere.
     const actionId = await seedRun({
       status: 'running',
       lastHeartbeatAgoSeconds: STALE_THRESHOLD_SECONDS * 3,
@@ -199,10 +203,195 @@ describe('reapStaleRuns — connector lanes', () => {
       claimedAtAgoSeconds: STALE_THRESHOLD_SECONDS * 3,
       runType: 'embed_backfill',
     });
+    const authId = await seedRun({
+      status: 'running',
+      lastHeartbeatAgoSeconds: STALE_THRESHOLD_SECONDS * 3,
+      claimedAtAgoSeconds: STALE_THRESHOLD_SECONDS * 3,
+      runType: 'auth',
+    });
 
     const result = await reapStaleRuns();
-    expect(result.reaped).toBe(0);
-    expect(await statusOf(actionId)).toBe('running');
-    expect(await statusOf(embedId)).toBe('running');
+    expect(result.reaped).toBe(3);
+    expect(await statusOf(actionId)).toBe('timeout');
+    expect(await statusOf(embedId)).toBe('timeout');
+    expect(await statusOf(authId)).toBe('timeout');
+  });
+});
+
+describe('reapStaleRuns — atomic timeout + retry (lobu#862)', () => {
+  test('a stale sync run gets timed out AND a retry queued in one statement', async () => {
+    // Seed a stale sync run for a feed. After reapStaleRuns runs, we
+    // should see exactly one timeout + one pending retry for the same
+    // feed — both written in the same CTE so a process crash cannot
+    // leave the row timed out with no retry queued.
+    const feedId = 4242;
+    await seedFeed(feedId);
+    const staleId = await seedRun({
+      status: 'running',
+      lastHeartbeatAgoSeconds: STALE_THRESHOLD_SECONDS * 3,
+      claimedAtAgoSeconds: STALE_THRESHOLD_SECONDS * 3,
+      runType: 'sync',
+      feedId,
+    });
+
+    const result = await reapStaleRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.retriesCreated).toBe(1);
+    expect(await statusOf(staleId)).toBe('timeout');
+
+    const sql = getDb();
+    const retries = (await sql`
+      SELECT id, status FROM runs
+      WHERE feed_id = ${feedId} AND run_type = 'sync' AND status = 'pending'
+    `) as unknown as Array<{ id: number | string; status: string }>;
+    expect(retries.length).toBe(1);
+  });
+
+  test('non-sync stale runs do NOT produce retries (action/embed_backfill/auth)', async () => {
+    // Only sync runs need a re-queue; the other lanes are reaped but
+    // not retried.
+    await seedRun({
+      status: 'running',
+      lastHeartbeatAgoSeconds: STALE_THRESHOLD_SECONDS * 3,
+      claimedAtAgoSeconds: STALE_THRESHOLD_SECONDS * 3,
+      runType: 'action',
+    });
+    await seedRun({
+      status: 'running',
+      lastHeartbeatAgoSeconds: STALE_THRESHOLD_SECONDS * 3,
+      claimedAtAgoSeconds: STALE_THRESHOLD_SECONDS * 3,
+      runType: 'embed_backfill',
+    });
+    await seedRun({
+      status: 'running',
+      lastHeartbeatAgoSeconds: STALE_THRESHOLD_SECONDS * 3,
+      claimedAtAgoSeconds: STALE_THRESHOLD_SECONDS * 3,
+      runType: 'auth',
+    });
+
+    const result = await reapStaleRuns();
+    expect(result.reaped).toBe(3);
+    expect(result.retriesCreated).toBe(0);
+  });
+
+  test('two stale sync runs on the SAME feed produce exactly one retry (dedup via NOT EXISTS)', async () => {
+    // Two stale runs that share a feed_id can only exist if one is in a
+    // terminal status — the partial unique index `idx_runs_active_sync_per_feed`
+    // forbids two simultaneously active syncs per feed. Simulate the
+    // realistic case: a previously-completed sync, plus a stale running
+    // one. The reaper should reap the running one and queue exactly
+    // ONE retry for that feed (not two — the completed one is not
+    // touched).
+    //
+    // This also exercises the dedup-against-itself trap: if the NOT
+    // EXISTS predicate didn't exclude `timed_out.id`, the running row
+    // would dedupe against itself and no retries would be queued.
+    const feedId = 5151;
+    await seedFeed(feedId);
+    // First run already finished — terminal, not in the active set.
+    await seedRun({
+      status: 'completed',
+      lastHeartbeatAgoSeconds: STALE_THRESHOLD_SECONDS * 10,
+      claimedAtAgoSeconds: STALE_THRESHOLD_SECONDS * 10,
+      runType: 'sync',
+      feedId,
+    });
+    const staleId = await seedRun({
+      status: 'running',
+      lastHeartbeatAgoSeconds: STALE_THRESHOLD_SECONDS * 3,
+      claimedAtAgoSeconds: STALE_THRESHOLD_SECONDS * 3,
+      runType: 'sync',
+      feedId,
+    });
+
+    const result = await reapStaleRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.retriesCreated).toBe(1);
+    expect(await statusOf(staleId)).toBe('timeout');
+
+    // Exactly one pending row queued.
+    const sql = getDb();
+    const pending = (await sql`
+      SELECT id FROM runs
+      WHERE feed_id = ${feedId} AND run_type = 'sync' AND status = 'pending'
+    `) as unknown as Array<{ id: number | string }>;
+    expect(pending.length).toBe(1);
+  });
+
+  test('a pending sync that pre-exists prevents a duplicate retry being inserted', async () => {
+    // Edge case: a pending sync exists for the feed, and an unrelated
+    // stale auth run (no feed) is reaped in the same sweep. We should
+    // reap the auth row, and NOT insert any sync retry — the pending
+    // sync already covers the feed.
+    //
+    // (We can't co-exist a stale sync + a pending sync on the same
+    // feed; the partial unique index forbids it. This test uses a
+    // different lane to exercise the negative path.)
+    const feedId = 6262;
+    await seedFeed(feedId);
+    await seedRun({
+      status: 'pending',
+      lastHeartbeatAgoSeconds: null,
+      runType: 'sync',
+      feedId,
+    });
+    const authId = await seedRun({
+      status: 'running',
+      lastHeartbeatAgoSeconds: STALE_THRESHOLD_SECONDS * 3,
+      claimedAtAgoSeconds: STALE_THRESHOLD_SECONDS * 3,
+      runType: 'auth',
+    });
+
+    const result = await reapStaleRuns();
+    expect(result.reaped).toBe(1);
+    // No retry insert: auth lane doesn't queue retries.
+    expect(result.retriesCreated).toBe(0);
+    expect(await statusOf(authId)).toBe('timeout');
+
+    // The pre-existing pending sync stays intact, no duplicates.
+    const sql = getDb();
+    const pending = (await sql`
+      SELECT id FROM runs
+      WHERE feed_id = ${feedId} AND run_type = 'sync' AND status = 'pending'
+    `) as unknown as Array<{ id: number | string }>;
+    expect(pending.length).toBe(1);
+  });
+
+  test('reaper output count and DB state agree (no UPDATE-without-INSERT gap)', async () => {
+    // Reproducer for lobu#862: the previous shape (bulk UPDATE RETURNING
+    // followed by a per-row INSERT loop) could leave a row timed-out
+    // with no retry queued if the process crashed mid-loop. The CTE
+    // version writes both in the same statement, so the SQL engine
+    // guarantees they land together or not at all.
+    //
+    // Seed three stale sync runs for three different feeds. After the
+    // reap there must be exactly three timeouts AND three retries —
+    // observable atomicity from the caller's perspective.
+    const feedIds = [9001, 9002, 9003];
+    for (const feedId of feedIds) {
+      await seedFeed(feedId);
+      await seedRun({
+        status: 'running',
+        lastHeartbeatAgoSeconds: STALE_THRESHOLD_SECONDS * 3,
+        claimedAtAgoSeconds: STALE_THRESHOLD_SECONDS * 3,
+        runType: 'sync',
+        feedId,
+      });
+    }
+
+    const result = await reapStaleRuns();
+    expect(result.reaped).toBe(3);
+    expect(result.retriesCreated).toBe(3);
+
+    const sql = getDb();
+    const counts = (await sql`
+      SELECT status, count(*)::int AS n FROM runs
+      WHERE feed_id IN ${sql(feedIds)} AND run_type = 'sync'
+      GROUP BY status
+      ORDER BY status
+    `) as unknown as Array<{ status: string; n: number }>;
+    const byStatus = Object.fromEntries(counts.map((r) => [r.status, r.n]));
+    expect(byStatus.pending).toBe(3);
+    expect(byStatus.timeout).toBe(3);
   });
 });

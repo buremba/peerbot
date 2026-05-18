@@ -9,15 +9,16 @@
  * reaper those rows sit "running" forever and the feed never gets a retry.
  *
  * Scope:
- *  - `sync`, `auth` — driven by the out-of-process connector-worker daemon
- *    and emit `client.heartbeat()` from their executors. These are the only
- *    lanes safe to reap on a heartbeat-staleness basis today.
- *  - `action`, `embed_backfill` — also connector-worker lanes, but their
- *    executors (`executeActionRun`, `executeEmbedBackfillRun` in
- *    packages/connector-worker/src/daemon/executor.ts) do NOT heartbeat.
- *    Reaping them on `last_heartbeat_at` would kill in-flight runs the
- *    moment they exceed the stale threshold. Tracked as a follow-up — once
- *    those lanes heartbeat, fold them back into the WHERE clause + index.
+ *  - `sync`, `action`, `embed_backfill`, `auth` — all driven by the
+ *    out-of-process connector-worker daemon and all emit
+ *    `client.heartbeat()` from their executors in
+ *    packages/connector-worker/src/daemon/executor.ts. PR lobu#859
+ *    temporarily narrowed this set to `sync` + `auth` because the action
+ *    and embed_backfill executors were silent; lobu#860 wired heartbeats
+ *    into both, so the WHERE clause + partial index widen back to the
+ *    full four-lane set here. The browser-worker (Chrome) lane runs out
+ *    of a service-worker and also heartbeats now (owletto#186) but uses
+ *    its own `chrome.alarms` cadence — it shares this WHERE clause.
  *  - `watcher` — driven in-process by the embedded gateway. Lifecycle is
  *    handled by WatcherRunTracker + the dedicated `sweepStaleWatcherRuns` /
  *    `resetOrphanedWatcherRuns` helpers in watchers/automation.ts.
@@ -40,7 +41,6 @@ import { getDb } from '../db/client';
 import type { Env } from '../index';
 import { expireStaleConnectTokens } from '../utils/connect-tokens';
 import logger from '../utils/logger';
-import { isUniqueViolation } from '../utils/pg-errors';
 import { reconcileWatcherRuns, sweepStaleWatcherRuns } from '../watchers/automation';
 
 /** Advisory-lock key for cross-pod coordination of the stale-run reaper.
@@ -98,77 +98,115 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
 
     try {
       const errorMessage = 'worker_heartbeat_lost';
-      // Reap in a single UPDATE so concurrent SELECT-then-UPDATE races inside
-      // the same pod cannot double-fail a row. The advisory lock makes the
-      // cross-pod race impossible too, but belt-and-braces.
+      // Reap + re-queue in a single statement using a CTE: the UPDATE
+      // writes the timeout, and `INSERT ... SELECT ... FROM timed_out`
+      // queues a fresh `pending` sync retry for every reaped `sync` row
+      // that still has a `feed_id`. Doing both in one statement makes
+      // the timeout + retry atomic — if the process crashes after the
+      // statement returns, both writes are durable; if it crashes
+      // before, neither is. The previous shape (bulk UPDATE RETURNING +
+      // per-row INSERT loop) could leave a row in `timeout` with no
+      // retry queued when a crash landed between the two writes (lobu#862).
+      //
+      // The retry INSERT uses `WHERE NOT EXISTS (SELECT 1 FROM runs ...)`
+      // to dedupe against any currently-active sync run on the same
+      // feed. The partial unique index `idx_runs_active_sync_per_feed`
+      // still backs this (it's the same predicate, and the index is
+      // what makes the check cheap); the NOT EXISTS shape avoids
+      // PostgreSQL `ON CONFLICT` inference quirks against partial
+      // unique indexes inside a CTE — which can throw the constraint
+      // violation instead of DO NOTHING. NOT EXISTS evaluates the
+      // dedup predicate against the same snapshot as the surrounding
+      // CTE, so the cross-CTE visibility rule that breaks ON CONFLICT
+      // doesn't apply here.
+      //
+      // The advisory lock still serialises cross-pod sweeps — the CTE
+      // narrows the window to "one transaction tick" but doesn't replace
+      // the lock.
       const reaped = (await reserved`
-        UPDATE public.runs
-        SET status = 'timeout',
-            completed_at = current_timestamp,
-            error_message = ${errorMessage}
-        WHERE run_type IN ('sync', 'auth')
-          AND status IN ('claimed', 'running')
-          AND (
-            (last_heartbeat_at IS NULL
-             AND COALESCE(claimed_at, created_at)
-                 < current_timestamp - (${thresholdSeconds}::int * interval '1 second'))
-            OR
-            (last_heartbeat_at IS NOT NULL
-             AND last_heartbeat_at
-                 < current_timestamp - (${thresholdSeconds}::int * interval '1 second'))
+        WITH timed_out AS (
+          UPDATE public.runs
+          SET status = 'timeout',
+              completed_at = current_timestamp,
+              error_message = ${errorMessage}
+          WHERE run_type IN ('sync', 'action', 'embed_backfill', 'auth')
+            AND status IN ('claimed', 'running')
+            AND (
+              (last_heartbeat_at IS NULL
+               AND COALESCE(claimed_at, created_at)
+                   < current_timestamp - (${thresholdSeconds}::int * interval '1 second'))
+              OR
+              (last_heartbeat_at IS NOT NULL
+               AND last_heartbeat_at
+                   < current_timestamp - (${thresholdSeconds}::int * interval '1 second'))
+            )
+          RETURNING id, run_type, feed_id, connection_id, connector_key, connector_version, organization_id
+        ),
+        retries AS (
+          INSERT INTO public.runs (
+            organization_id, run_type, feed_id, connection_id,
+            connector_key, connector_version, status, approval_status, created_at
           )
-        RETURNING id, run_type, feed_id, connection_id, connector_key, connector_version, organization_id
+          SELECT
+            t.organization_id, 'sync', t.feed_id, t.connection_id,
+            t.connector_key, t.connector_version, 'pending', 'auto', current_timestamp
+          FROM timed_out t
+          WHERE t.run_type = 'sync'
+            AND t.feed_id IS NOT NULL
+            AND NOT EXISTS (
+              -- Look for an unrelated active sync run on the same feed.
+              -- Exclude timed_out.id because in PostgreSQL the sibling
+              -- CTE UPDATE is not visible here (all CTEs see the same
+              -- snapshot), so the row we just reaped still appears as
+              -- running. Without this exclusion, every reap would
+              -- dedupe against itself and no retries would ever land.
+              SELECT 1 FROM public.runs r
+              WHERE r.feed_id = t.feed_id
+                AND r.run_type = 'sync'
+                AND r.status IN ('pending', 'claimed', 'running')
+                AND r.id NOT IN (SELECT id FROM timed_out)
+            )
+          RETURNING id, feed_id
+        )
+        SELECT
+          (SELECT count(*)::int FROM timed_out) AS reaped,
+          (SELECT count(*)::int FROM retries) AS retries_created,
+          (SELECT count(*)::int FROM timed_out
+            WHERE run_type = 'sync' AND feed_id IS NOT NULL) AS sync_eligible
       `) as unknown as Array<{
-        id: number | string;
-        run_type: string;
-        feed_id: number | null;
-        connection_id: number | null;
-        connector_key: string | null;
-        connector_version: string | null;
-        organization_id: string | null;
+        reaped: number;
+        retries_created: number;
+        sync_eligible: number;
       }>;
 
-      if (reaped.length === 0) {
+      const reapedRow = reaped[0];
+      const reapedCount = reapedRow?.reaped ?? 0;
+      const retriesCreated = reapedRow?.retries_created ?? 0;
+      const syncEligible = reapedRow?.sync_eligible ?? 0;
+
+      if (reapedCount === 0) {
         return { acquired: true, reaped: 0, retriesCreated: 0 };
       }
 
       logger.warn(
-        { reaped: reaped.length, thresholdSeconds },
+        { reaped: reapedCount, retriesCreated, thresholdSeconds },
         '[reaper] Marked stale connector runs as timeout (worker_heartbeat_lost)'
       );
 
-      // Re-queue stalled `sync` runs so the feed picks itself back up on the
-      // next worker poll. Same retry semantics as the legacy
-      // checkStalledExecutions path. Unique-violation on the partial
-      // `idx_runs_active_sync_per_feed` index is benign — it means another
-      // active sync row already exists for this feed.
-      let retriesCreated = 0;
-      for (const row of reaped) {
-        if (row.run_type !== 'sync' || !row.feed_id) continue;
-        try {
-          await reserved`
-            INSERT INTO runs (
-              organization_id, run_type, feed_id, connection_id,
-              connector_key, connector_version, status, approval_status, created_at
-            ) VALUES (
-              ${row.organization_id}, 'sync', ${row.feed_id}, ${row.connection_id},
-              ${row.connector_key}, ${row.connector_version}, 'pending', 'auto', current_timestamp
-            )
-          `;
-          retriesCreated += 1;
-        } catch (err) {
-          if (isUniqueViolation(err, 'idx_runs_active_sync_per_feed')) {
-            logger.info(
-              { feedId: row.feed_id },
-              '[reaper] Skipped sync retry — another active sync run exists'
-            );
-          } else {
-            logger.error({ err, runId: row.id }, '[reaper] Failed to insert sync retry');
-          }
-        }
+      // Surface the conflict-dedup count so operators can spot when two
+      // pods are competing for the same stale row across an advisory-
+      // lock release boundary (the only case where `ON CONFLICT DO
+      // NOTHING` should fire on the partial unique index). The delta is
+      // sync-eligible reaped rows that did not produce a retry insert.
+      const skippedRetries = syncEligible - retriesCreated;
+      if (skippedRetries > 0) {
+        logger.info(
+          { count: skippedRetries },
+          '[reaper] Skipped sync retries — another active sync run exists (ON CONFLICT DO NOTHING)'
+        );
       }
 
-      return { acquired: true, reaped: reaped.length, retriesCreated };
+      return { acquired: true, reaped: reapedCount, retriesCreated };
     } finally {
       await reserved`SELECT pg_advisory_unlock(${REAPER_ADVISORY_LOCK_KEY})`;
     }

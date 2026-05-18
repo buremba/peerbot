@@ -193,10 +193,16 @@ export function lookupPlaceholderMapping(
   const mapping = placeholderCache.get(uuid);
   if (!mapping) return null;
   if (
-    expectedOrganizationId &&
-    mapping.organizationId &&
+    expectedOrganizationId !== undefined &&
     mapping.organizationId !== expectedOrganizationId
   ) {
+    // Force the check whenever the caller supplied an expected org.
+    // Pre-fix this also gated on `mapping.organizationId` being set,
+    // which let a legacy mapping (minted before the org-id pivot) sail
+    // through whenever the caller's URL named any org — a worker from
+    // org B could resolve a legacy unscoped mapping owned by org A under
+    // org B's request. Now: if the caller has an org expectation, the
+    // mapping must match it, including refusing to match `undefined`.
     logger.warn(
       {
         mappingAgentId: mapping.agentId,
@@ -206,6 +212,18 @@ export function lookupPlaceholderMapping(
       "Placeholder mapping rejected: organization mismatch"
     );
     return null;
+  }
+  // Surface every legacy unscoped access so the deprecation can be
+  // planned. A mapping with no `organizationId` is from before the pivot
+  // and should disappear once all in-flight placeholders rotate.
+  if (!mapping.organizationId) {
+    logger.warn(
+      {
+        mappingAgentId: mapping.agentId,
+        expectedOrg: expectedOrganizationId,
+      },
+      "Placeholder mapping accessed without organizationId — legacy row, schedule rotation"
+    );
   }
   return mapping;
 }
@@ -543,9 +561,20 @@ export class SecretProxy {
         const orgId = await this.agentOrgResolver(urlAgentId);
         if (orgId) expectedOrganizationId = orgId;
       } catch (err) {
-        logger.warn(
+        // Fail closed. Falling through with `expectedOrganizationId =
+        // undefined` on a transient DB error downgrades the placeholder /
+        // secret-lookup org checks for the entire request — a window where
+        // a worker bound to org A could resolve a placeholder pointed at
+        // org B's URL because the binding step lost its expected-org
+        // anchor. The isolation invariant matters more than the brief
+        // 503 window during a DB hiccup.
+        logger.error(
           { urlAgentId, err: String(err) },
-          "agentOrgResolver failed — falling through without org expectation"
+          "agentOrgResolver failed — rejecting request to preserve org isolation"
+        );
+        return c.json(
+          { error: "Service Unavailable: failed to resolve agent organization" },
+          503
         );
       }
     }

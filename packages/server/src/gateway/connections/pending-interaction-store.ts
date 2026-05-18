@@ -56,9 +56,13 @@ export async function storePendingQuestion(
       connection_id    = EXCLUDED.connection_id,
       expected_user_id = EXCLUDED.expected_user_id,
       entry_payload    = EXCLUDED.entry_payload,
-      created_at       = now(),
       claimed_at       = NULL
   `;
+  // Note: `created_at` intentionally NOT touched on conflict — webhook
+  // retries that re-stash the same id must NOT reset the 24h TTL clock,
+  // or a misbehaving retry loop could keep the row alive indefinitely.
+  // `claimed_at = NULL` is still reset so an unclaimed retry can still
+  // be claimed by a legitimate click.
 }
 
 /**
@@ -95,20 +99,62 @@ export async function claimPendingQuestion(
 }
 
 /**
+ * Default cap on rows deleted per sweep call. The sweep runs every ~5
+ * minutes via the scheduled `sweepEphemeralTables` task — a hard cap
+ * keeps a stale-row backlog (mass-retry storm, paused sweep, etc.) from
+ * locking the table with a multi-million-row delete. Remaining rows wait
+ * for the next cycle.
+ */
+const DEFAULT_SWEEP_LIMIT = 1000;
+
+/**
  * Delete pending_interactions rows older than `maxAgeMs` and return their
  * ids. The bridge calls this from the scheduled sweep so it can also evict
  * the corresponding per-pod `SentMessage` cache entries — otherwise that
  * Map would grow unbounded for questions that are never clicked.
+ *
+ * Bounded by `limit` (default 1000) per call to avoid a long lock under
+ * a backlog. The next scheduled cycle picks up where this one left off.
  */
 export async function sweepStalePendingInteractions(
   maxAgeMs = 24 * 60 * 60 * 1000,
+  limit: number = DEFAULT_SWEEP_LIMIT,
 ): Promise<string[]> {
   const sql = getDb();
   const cutoff = new Date(Date.now() - maxAgeMs);
   const rows = await sql<{ id: string }>`
     DELETE FROM pending_interactions
-     WHERE created_at < ${cutoff}
+     WHERE id IN (
+       SELECT id FROM pending_interactions
+        WHERE created_at < ${cutoff}
+        LIMIT ${limit}
+     )
     RETURNING id
   `;
   return rows.map((r) => r.id);
+}
+
+/**
+ * Hard-delete a pending row. Used by the bridge's drop-on-post-failure
+ * path so a stale row doesn't sit around with `claimed_at` set, waiting
+ * 24h for the sweep. Scoped by the same four-field tuple as
+ * `claimPendingQuestion` so the safety invariant is identical: a leaked
+ * id alone cannot delete another tenant's row.
+ */
+export async function deletePendingQuestion(
+  questionId: string,
+  organizationId: string,
+  connectionId: string,
+  expectedUserId: string,
+): Promise<boolean> {
+  const sql = getDb();
+  const rows = await sql<{ id: string }>`
+    DELETE FROM pending_interactions
+     WHERE id               = ${questionId}
+       AND organization_id  = ${organizationId}
+       AND connection_id    = ${connectionId}
+       AND expected_user_id = ${expectedUserId}
+    RETURNING id
+  `;
+  return rows.length > 0;
 }

@@ -135,6 +135,103 @@ describe("[finding 1] lookupPlaceholderMapping enforces caller's expected org", 
     expect(mapping?.organizationId).toBe("org-a");
   });
 
+  // Fix #2 — legacy mapping bypass.
+  //
+  // Pre-fix: the org check was gated on `mapping.organizationId` being set,
+  // so a legacy mapping minted before the org-id pivot (no organizationId)
+  // sailed through under any expected org. A worker from org B could
+  // resolve a legacy mapping owned by org A under org B's request URL.
+  // Post-fix: presence-on-either-side forces a match — a legacy mapping
+  // can no longer be resolved under any expected-org context.
+  test("legacy mapping (no organizationId) is rejected when expected org is set", () => {
+    // Mint a "legacy" placeholder — no organizationId option. Pre-pivot
+    // shape that may still be in flight from older mint sites.
+    const placeholder = generatePlaceholder(
+      "agent-legacy",
+      "OPENAI_API_KEY",
+      createBuiltinSecretRef("deployments/agent-legacy/OPENAI_API_KEY"),
+      "deploy-legacy"
+      // no { organizationId } — this is the legacy shape.
+    );
+    // A caller from org B presents this legacy placeholder. Pre-fix the
+    // check skipped entirely because `mapping.organizationId` was
+    // undefined. Post-fix: the check fires and the lookup rejects.
+    expect(lookupPlaceholderMapping(placeholder, "org-b")).toBeNull();
+  });
+
+  // Legacy-mapping access with no expected org still resolves (so existing
+  // call sites that don't yet thread expectedOrganizationId aren't broken).
+  // The WARN log is the deprecation signal — we don't assert on it here,
+  // but it's emitted on every such call.
+  test("legacy mapping with no expected org still resolves (warn path)", () => {
+    const placeholder = generatePlaceholder(
+      "agent-legacy-2",
+      "OPENAI_API_KEY",
+      createBuiltinSecretRef("deployments/agent-legacy-2/OPENAI_API_KEY"),
+      "deploy-legacy-2"
+    );
+    const mapping = lookupPlaceholderMapping(placeholder);
+    expect(mapping?.agentId).toBe("agent-legacy-2");
+    expect(mapping?.organizationId).toBeUndefined();
+  });
+
+  // Fix #1 — fail-closed on agentOrgResolver DB error.
+  //
+  // Pre-fix the catch block logged a warning and fell through with
+  // `expectedOrganizationId = undefined`. A worker from any org could
+  // present a placeholder during a transient DB error window and the
+  // downstream binding step would never get its org-anchor → potential
+  // cross-tenant access. Post-fix: 503 on resolver error.
+  test("SecretProxy.forward rejects with 503 when agentOrgResolver throws", async () => {
+    const placeholder = generatePlaceholder(
+      "agent-x",
+      "OPENAI_API_KEY",
+      createBuiltinSecretRef("deployments/agent-x/OPENAI_API_KEY"),
+      "deploy-x",
+      { organizationId: "org-a" }
+    );
+
+    const stubStore: SecretStore = { get: async () => "real-secret-x" };
+    const proxy = new SecretProxy(
+      { defaultUpstreamUrl: "https://upstream.example.com" },
+      stubStore
+    );
+    proxy.registerUpstream(
+      { slug: "openai", upstreamBaseUrl: "https://api.openai.example.com" },
+      "openai"
+    );
+    // The resolver throws — simulates a transient DB error in
+    // `agentOrgResolver`. Pre-fix: warning + fall through, request
+    // forwarded with no org expectation. Post-fix: 503.
+    proxy.setAgentOrgResolver(async () => {
+      throw new Error("simulated DB hiccup");
+    });
+
+    let upstreamCalled = false;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => {
+      upstreamCalled = true;
+      return new Response("{}", { status: 200 });
+    };
+
+    try {
+      const res = await proxy
+        .getApp()
+        .request("/api/proxy/openai/a/agent-x/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: `Bearer ${placeholder}`,
+          },
+          body: JSON.stringify({ prompt: "test" }),
+        });
+      expect(res.status).toBe(503);
+      expect(upstreamCalled).toBe(false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test("SecretProxy.forward rejects an org-A placeholder used on an org-B agent's URL", async () => {
     // Mint a placeholder for org A's `agent-A1`. Pre-fix, no production call
     // site supplied `expectedOrganizationId`, so `lookupPlaceholderMapping`

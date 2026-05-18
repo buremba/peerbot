@@ -14,8 +14,8 @@ import type { GrantStore } from "../permissions/grant-store.js";
 import type { ChatInstanceManager } from "./chat-instance-manager.js";
 import {
   claimPendingQuestion,
+  deletePendingQuestion,
   storePendingQuestion,
-  sweepStalePendingInteractions,
 } from "./pending-interaction-store.js";
 import type { PlatformConnection } from "./types.js";
 
@@ -201,11 +201,12 @@ export function registerInteractionBridge(
   // `SentMessage` (used to strip card buttons on click) — losing it
   // cross-pod is best-effort UX, not correctness.
   //
-  // Each entry remembers `registeredAt` so the periodic sweep can evict
-  // stale handles that match the 24h DB-row TTL. Without this the Map would
-  // grow unbounded for questions that are never clicked. The sweep also
-  // removes the local handle for any row the DB sweeper actually deleted,
-  // so the two stay in sync.
+  // DB-row sweeping is owned globally by `coreServices.sweepEphemeralTables`
+  // (scheduled every 5 minutes in `packages/server/src/scheduled/jobs.ts`).
+  // We do NOT call `sweepStalePendingInteractions` per-bridge — N bridges
+  // hitting the same table N times is wasted work. The local sweep below
+  // is in-memory only: it evicts cache entries past their TTL so the Map
+  // doesn't grow unbounded for questions that are never clicked.
   const PENDING_SENT_TTL_MS = 24 * 60 * 60 * 1000;
   const PENDING_SENT_SWEEP_INTERVAL_MS = 60 * 60 * 1000;
   interface CachedSent {
@@ -214,37 +215,14 @@ export function registerInteractionBridge(
   }
   const pendingSentMessages = new Map<string, CachedSent>();
   const pendingSentSweepTimer = setInterval(() => {
-    sweepPendingSent().catch((error) => {
-      logger.warn(
-        { connectionId, error: String(error) },
-        "pendingSentMessages sweep failed"
-      );
-    });
-  }, PENDING_SENT_SWEEP_INTERVAL_MS);
-  pendingSentSweepTimer.unref?.();
-  async function sweepPendingSent(): Promise<void> {
     const ttlCutoff = Date.now() - PENDING_SENT_TTL_MS;
     for (const [id, entry] of pendingSentMessages) {
       if (entry.registeredAt <= ttlCutoff) {
         pendingSentMessages.delete(id);
       }
     }
-    // Also drop local handles for any DB rows the scheduled sweeper just
-    // deleted — keeps the local cache from outliving its DB row.
-    let deletedIds: string[] = [];
-    try {
-      deletedIds = await sweepStalePendingInteractions();
-    } catch (error) {
-      // The store logs its own DB errors; treat as best-effort here.
-      logger.debug(
-        { connectionId, error: String(error) },
-        "sweepStalePendingInteractions failed during local sweep"
-      );
-    }
-    for (const id of deletedIds) {
-      pendingSentMessages.delete(id);
-    }
-  }
+  }, PENDING_SENT_SWEEP_INTERVAL_MS);
+  pendingSentSweepTimer.unref?.();
   /**
    * Persist a pending question row, then cache its SentMessage handle so a
    * click on this pod can edit the card. The persist happens first — see
@@ -356,11 +334,15 @@ export function registerInteractionBridge(
       );
       if (!sent) {
         // Post failed entirely. The row exists but no card was rendered,
-        // so a click can never come — drop the row to keep the table
-        // clean. The DB sweep would catch it eventually; doing it now is
-        // cheaper and avoids a 24h-stale row.
+        // so a click can never come — DELETE the row to keep the table
+        // clean. Pre-fix used `claimPendingQuestion` (UPDATE setting
+        // claimed_at), which leaves a phantom row sitting around with
+        // claimed_at set until the 24h sweep. Hard-delete is the
+        // semantically correct end state, and the four-field scoping
+        // matches the claim path's safety invariant: a leaked id alone
+        // cannot delete another tenant's row.
         try {
-          await claimPendingQuestion(
+          await deletePendingQuestion(
             event.id,
             organizationId,
             connectionId,

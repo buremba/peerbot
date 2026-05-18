@@ -135,16 +135,35 @@ describe("lookupPlaceholderMapping org scoping", () => {
     expect(mapping).toBeNull();
   });
 
-  test("falls through when mapping has no org tag (legacy)", () => {
+  test("rejects when mapping has no org tag (legacy) and caller has an expected org", () => {
     const placeholder = generatePlaceholder(
       "agent-1",
       "API_KEY",
       createBuiltinSecretRef("deployments/agent-1/API_KEY"),
       "deploy-1"
     );
-    // Mapping has no org → caller's expectation isn't enforceable.
-    const mapping = lookupPlaceholderMapping(placeholder, "org-a");
+    // Previously this fell through ("legacy mapping isn't enforceable") —
+    // that was the bypass that let a caller from any org resolve a
+    // legacy unscoped mapping. With an expected org supplied, the check
+    // now fires and rejects regardless of whether the mapping has its
+    // own org tag.
+    expect(lookupPlaceholderMapping(placeholder, "org-a")).toBeNull();
+  });
+
+  test("legacy mapping resolves when no expected org is supplied (warn path)", () => {
+    const placeholder = generatePlaceholder(
+      "agent-1",
+      "API_KEY",
+      createBuiltinSecretRef("deployments/agent-1/API_KEY"),
+      "deploy-1"
+    );
+    // A caller that doesn't pass `expectedOrganizationId` still resolves
+    // the legacy mapping (so existing un-org-scoped call sites aren't
+    // broken). The WARN log emitted on every such call is the
+    // deprecation signal.
+    const mapping = lookupPlaceholderMapping(placeholder);
     expect(mapping?.agentId).toBe("agent-1");
+    expect(mapping?.organizationId).toBeUndefined();
   });
 });
 

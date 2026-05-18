@@ -112,6 +112,17 @@ export class AuthProfilesManager {
   >();
   private static readonly AGENT_OWNER_CACHE_TTL_MS = 60_000;
   private static readonly AGENT_ORG_CACHE_TTL_MS = 60_000;
+  /** Hard cap on either cache to bound retention if many distinct agents are
+   *  looked up but never re-queried. When set() crosses this, the oldest
+   *  insertion is evicted (Maps iterate in insertion order). */
+  private static readonly AGENT_CACHE_MAX_ENTRIES = 1024;
+  private cacheSet<V>(cache: Map<string, V>, key: string, value: V): void {
+    if (cache.size >= AuthProfilesManager.AGENT_CACHE_MAX_ENTRIES && !cache.has(key)) {
+      const oldest = cache.keys().next().value;
+      if (oldest !== undefined) cache.delete(oldest);
+    }
+    cache.set(key, value);
+  }
   private lazyRefreshHooks?: LazyRefreshHooks;
 
   constructor(options: AuthProfilesManagerOptions) {
@@ -230,7 +241,7 @@ export class AuthProfilesManager {
       );
       return undefined;
     }
-    this.agentOwnerCache.set(agentId, {
+    this.cacheSet(this.agentOwnerCache, agentId, {
       ownerUserId,
       expiresAt: Date.now() + AuthProfilesManager.AGENT_OWNER_CACHE_TTL_MS,
     });
@@ -256,7 +267,7 @@ export class AuthProfilesManager {
       );
       return undefined;
     }
-    this.agentOrgCache.set(agentId, {
+    this.cacheSet(this.agentOrgCache, agentId, {
       organizationId,
       expiresAt: Date.now() + AuthProfilesManager.AGENT_ORG_CACHE_TTL_MS,
     });

@@ -3,15 +3,15 @@ export * from './apple_photos.ts';
 export * from './apple_screen_time.ts';
 export * from './local_directory.ts';
 export * from './browser-scraper-utils.ts';
-// Browser primitives — connector definitions whose executors live in the
-// Owletto for Chrome extension (apps/chrome/executor.js). Kept under
-// browser/ so they're structurally distinct from third-party service
-// connectors (linkedin, revolut, github, etc.).
-export * from './browser/evaluate.ts';
-export * from './browser/fill_form.ts';
-export * from './browser/page_text.ts';
 export * from './capterra.ts';
-export * from './chrome_tabs.ts';
+// Chrome — paired Chrome profile via the Owletto for Chrome extension.
+// One connector exposing feeds.open_tabs (auto-wired tab snapshot) +
+// actions.{navigate, get_accessibility_tree, click_ref, type_ref,
+// wait_for_selector, screenshot, evaluate} (one-shot tools the extension
+// dispatcher executes via chrome.debugger + a custom DOM accessibility
+// snapshot). Replaces the four prior standalone connectors
+// (chrome.tabs / browser.evaluate / browser.page_text / browser.fill_form).
+export * from './chrome.ts';
 export * from './g2.ts';
 export * from './github.ts';
 export * from './glassdoor.ts';

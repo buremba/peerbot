@@ -69,7 +69,7 @@ export async function createThreadForAgent(
   args: CreateThreadForAgentArgs
 ): Promise<CreateThreadForAgentResult> {
   const { sessionManager } = deps;
-  const { agentId, reason, externalThreadId } = args;
+  const { agentId, organizationId, reason, externalThreadId } = args;
   const userId = args.userId || args.createdByUserId || agentId;
 
   const threadId = externalThreadId || randomUUID();
@@ -80,6 +80,7 @@ export async function createThreadForAgent(
   const token = generateWorkerToken(agentId, conversationId, deploymentName, {
     channelId,
     agentId,
+    organizationId,
     platform: "api",
     sessionKey: userId,
   });

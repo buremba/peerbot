@@ -3,6 +3,7 @@ import { createBuiltinSecretRef } from "@lobu/core";
 import {
   __resetPlaceholderCacheForTests,
   generatePlaceholder,
+  lookupPlaceholderMapping,
   SecretProxy,
   type SecretMapping,
   storeSecretMapping,
@@ -88,6 +89,62 @@ describe("generatePlaceholder", () => {
       "d"
     );
     expect(p1).not.toBe(p2);
+  });
+});
+
+describe("lookupPlaceholderMapping org scoping", () => {
+  beforeEach(() => {
+    __resetPlaceholderCacheForTests();
+  });
+
+  test("returns the mapping when no expected org is supplied", () => {
+    const placeholder = generatePlaceholder(
+      "agent-1",
+      "API_KEY",
+      createBuiltinSecretRef("deployments/agent-1/API_KEY"),
+      "deploy-1",
+      { organizationId: "org-a" }
+    );
+    const mapping = lookupPlaceholderMapping(placeholder);
+    expect(mapping?.agentId).toBe("agent-1");
+    expect(mapping?.organizationId).toBe("org-a");
+  });
+
+  test("returns the mapping when expected org matches", () => {
+    const placeholder = generatePlaceholder(
+      "agent-1",
+      "API_KEY",
+      createBuiltinSecretRef("deployments/agent-1/API_KEY"),
+      "deploy-1",
+      { organizationId: "org-a" }
+    );
+    const mapping = lookupPlaceholderMapping(placeholder, "org-a");
+    expect(mapping?.agentId).toBe("agent-1");
+  });
+
+  test("returns null when expected org mismatches the mapping's org", () => {
+    const placeholder = generatePlaceholder(
+      "agent-1",
+      "API_KEY",
+      createBuiltinSecretRef("deployments/agent-1/API_KEY"),
+      "deploy-1",
+      { organizationId: "org-a" }
+    );
+    // org-b tries to claim a placeholder minted for org-a — must fail closed.
+    const mapping = lookupPlaceholderMapping(placeholder, "org-b");
+    expect(mapping).toBeNull();
+  });
+
+  test("falls through when mapping has no org tag (legacy)", () => {
+    const placeholder = generatePlaceholder(
+      "agent-1",
+      "API_KEY",
+      createBuiltinSecretRef("deployments/agent-1/API_KEY"),
+      "deploy-1"
+    );
+    // Mapping has no org → caller's expectation isn't enforceable.
+    const mapping = lookupPlaceholderMapping(placeholder, "org-a");
+    expect(mapping?.agentId).toBe("agent-1");
   });
 });
 

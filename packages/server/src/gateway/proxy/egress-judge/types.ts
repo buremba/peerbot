@@ -6,6 +6,13 @@
  */
 export interface JudgeRequest {
   agentId: string;
+  /**
+   * Owning organization of the worker making this request. The verdict
+   * cache is scoped by `orgId` so verdicts cannot leak across tenants —
+   * see `VerdictCache.key`. Empty string is treated as an "unknown org"
+   * bucket of its own (still isolated from real orgs).
+   */
+  organizationId: string;
   hostname: string;
   method?: string;
   path?: string;

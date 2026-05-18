@@ -93,6 +93,32 @@ function configsEqual(
 
 const logger = createLogger("chat-instance-manager");
 
+/**
+ * Read `LOBU_CLOUD_MODE` from the env. Truthy values (`1`, `true`, `yes`,
+ * case-insensitive) enable cloud-mode guardrails that don't apply to
+ * self-hosters running the same gateway in a single-tenant install.
+ *
+ * Re-read on every call so a process running in a test harness can flip
+ * the flag without restart. Embedded gateways check it on every
+ * connection-create, which is cold-path enough to skip caching.
+ */
+function isCloudMode(): boolean {
+  const raw = process.env.LOBU_CLOUD_MODE;
+  if (!raw) return false;
+  const v = raw.trim().toLowerCase();
+  return v === "1" || v === "true" || v === "yes";
+}
+
+/**
+ * `mode: "polling"` is the only config that forces long-polling regardless
+ * of whether the gateway has a public webhook URL. `mode: "auto"` resolves
+ * to webhook on cloud (publicGatewayUrl is always set there), so it's fine
+ * to allow. Only the explicit polling opt-in is rejected in cloud.
+ */
+function isPollingTelegramMode(config: { mode?: string }): boolean {
+  return config.mode === "polling";
+}
+
 const ADAPTER_FACTORIES: Record<string, (config: any) => Promise<any>> = {
   telegram: async (c) =>
     (await import("@chat-adapter/telegram")).createTelegramAdapter(c),
@@ -209,6 +235,24 @@ export class ChatInstanceManager {
     if (config.platform !== platform) {
       throw new Error(
         `Config platform mismatch: expected ${platform}, got ${config.platform}`
+      );
+    }
+
+    // `mode: "polling"` long-polls Telegram's edge from the gateway pod and
+    // bypasses the per-tenant webhook URL we issue. On Lobu Cloud — where
+    // the same gateway serves many tenants — that means one org's connection
+    // can starve every other tenant's webhook delivery (and produces no
+    // audit trail tied to the inbound HTTP request). Refuse the explicit
+    // polling opt-in up front; self-hosters (LOBU_CLOUD_MODE unset/0) still
+    // get polling for tunnel-less dev. `mode: "auto"` is fine — it resolves
+    // to webhook whenever `publicGatewayUrl` is set, which cloud always has.
+    if (
+      platform === "telegram" &&
+      isCloudMode() &&
+      isPollingTelegramMode(config as { mode?: string })
+    ) {
+      throw new Error(
+        "Polling mode is not supported in Lobu Cloud — use webhook mode, or self-host."
       );
     }
 

@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { createLogger } from "@lobu/core";
+import type { Context } from "hono";
 import { Hono } from "hono";
 import { createSlackInstallStateStore } from "../../auth/oauth/state-store.js";
 import {
@@ -10,6 +11,39 @@ import type { ChatInstanceManager } from "../../connections/chat-instance-manage
 import { resolvePublicUrl } from "../../utils/public-url.js";
 
 const logger = createLogger("slack-routes");
+
+/**
+ * Resolve the active organization id for the current request.
+ *
+ * Priority:
+ *  1. `c.get('organizationId')` — set by the lobuApp wrapper after
+ *     `resolveDefaultOrgId(user.id)` (see `lobu/gateway.ts`). This is the
+ *     value Postgres-backed stores read via AsyncLocalStorage, so binding
+ *     install state to it keeps the OAuth flow aligned with where the
+ *     resulting connection row will be written.
+ *  2. `c.get('session')?.activeOrganizationId` — better-auth's stamped
+ *     active org, used when the wrapper hasn't run (rare; defensive).
+ *
+ * Returns `null` if neither is present — caller must reject the request.
+ */
+function readSessionOrgId(c: Context): string | null {
+  const fromContext = c.get("organizationId" as never) as
+    | string
+    | null
+    | undefined;
+  if (typeof fromContext === "string" && fromContext.length > 0) {
+    return fromContext;
+  }
+  const session = c.get("session" as never) as
+    | { activeOrganizationId?: string | null }
+    | null
+    | undefined;
+  const fromSession = session?.activeOrganizationId;
+  if (typeof fromSession === "string" && fromSession.length > 0) {
+    return fromSession;
+  }
+  return null;
+}
 
 const DEFAULT_SLACK_BOT_SCOPES = [
   "app_mentions:read",
@@ -89,13 +123,30 @@ export function createSlackRoutes(manager: ChatInstanceManager): Hono {
       );
     }
 
+    // Bind the install to the initiating session's active org. Without this
+    // an OAuth link minted under org A's session can be opened from org B's
+    // browser and the resulting connection lands in the wrong tenant.
+    const sessionOrgId = readSessionOrgId(c);
+    if (!sessionOrgId) {
+      return c.html(
+        renderOAuthErrorPage(
+          "unauthorized",
+          "Sign in to an organization before starting Slack install."
+        ),
+        401
+      );
+    }
+
     const stateStore = createSlackInstallStateStore();
     const redirectUri = resolvePublicUrl("/slack/oauth_callback", {
       configuredUrl: manager.getServices().getPublicGatewayUrl?.(),
       requestUrl: c.req.url,
     });
     const scopes = await loadSlackBotScopes();
-    const state = await stateStore.create({ redirectUri });
+    const state = await stateStore.create({
+      redirectUri,
+      organizationId: sessionOrgId,
+    });
 
     const oauthUrl = new URL("https://slack.com/oauth/v2/authorize");
     oauthUrl.searchParams.set("client_id", clientId);
@@ -129,6 +180,28 @@ export function createSlackRoutes(manager: ChatInstanceManager): Hono {
           "This Slack install link is invalid or has expired."
         ),
         400
+      );
+    }
+
+    // Reject the callback if the session that's completing the install
+    // belongs to a different org than the one that started it. Prevents
+    // an attacker who phishes the install link from landing a connection
+    // in their own org under a victim's authorization.
+    const callbackOrgId = readSessionOrgId(c);
+    if (!callbackOrgId || callbackOrgId !== oauthState.organizationId) {
+      logger.warn(
+        {
+          stateOrg: oauthState.organizationId,
+          callbackOrg: callbackOrgId ?? null,
+        },
+        "Rejecting Slack OAuth callback: session org does not match install state"
+      );
+      return c.html(
+        renderOAuthErrorPage(
+          "org_mismatch",
+          "This Slack install link was started in a different organization. Sign in to that organization and try again."
+        ),
+        403
       );
     }
 

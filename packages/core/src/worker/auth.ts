@@ -15,6 +15,14 @@ export interface WorkerTokenData {
   channelId: string;
   teamId?: string;
   agentId?: string;
+  /**
+   * Owning organization of the agent the token was minted for. Used by the
+   * HTTP proxy to scope per-tenant caches (e.g. egress-judge verdict cache)
+   * so org A's decisions can never satisfy org B's requests. Optional only
+   * because some internal/preflight call sites mint tokens before the owning
+   * org has been resolved; production agent runs always set it.
+   */
+  organizationId?: string;
   connectionId?: string;
   deploymentName: string;
   timestamp: number;
@@ -33,6 +41,7 @@ export function generateWorkerToken(
     channelId: string;
     teamId?: string;
     agentId?: string;
+    organizationId?: string;
     connectionId?: string;
     platform?: string;
     sessionKey?: string;
@@ -49,6 +58,7 @@ export function generateWorkerToken(
     channelId: options.channelId,
     teamId: options.teamId,
     agentId: options.agentId,
+    organizationId: options.organizationId,
     connectionId: options.connectionId,
     deploymentName,
     timestamp: Date.now(),

@@ -606,12 +606,14 @@ describe("CRLF injection prevention in judge-provided reason", () => {
 describe("VerdictCache — key independence", () => {
   test("different methods produce different cache keys", () => {
     const a = VerdictCache.key({
+      orgId: "org-1",
       policyHash: "h",
       hostname: "example.com",
       method: "GET",
       path: "/foo",
     });
     const b = VerdictCache.key({
+      orgId: "org-1",
       policyHash: "h",
       hostname: "example.com",
       method: "POST",
@@ -622,12 +624,14 @@ describe("VerdictCache — key independence", () => {
 
   test("different paths produce different cache keys", () => {
     const a = VerdictCache.key({
+      orgId: "org-1",
       policyHash: "h",
       hostname: "example.com",
       method: "GET",
       path: "/foo",
     });
     const b = VerdictCache.key({
+      orgId: "org-1",
       policyHash: "h",
       hostname: "example.com",
       method: "GET",
@@ -638,10 +642,12 @@ describe("VerdictCache — key independence", () => {
 
   test("CONNECT (no method/path) and GET / produce different cache keys", () => {
     const connect = VerdictCache.key({
+      orgId: "org-1",
       policyHash: "h",
       hostname: "example.com",
     });
     const get = VerdictCache.key({
+      orgId: "org-1",
       policyHash: "h",
       hostname: "example.com",
       method: "GET",
@@ -652,8 +658,8 @@ describe("VerdictCache — key independence", () => {
 
   test("changing policyHash invalidates previously-set entry", () => {
     const cache = new VerdictCache(60_000, 100);
-    const key1 = VerdictCache.key({ policyHash: "old-hash", hostname: "x.com" });
-    const key2 = VerdictCache.key({ policyHash: "new-hash", hostname: "x.com" });
+    const key1 = VerdictCache.key({ orgId: "org-1", policyHash: "old-hash", hostname: "x.com" });
+    const key2 = VerdictCache.key({ orgId: "org-1", policyHash: "new-hash", hostname: "x.com" });
 
     cache.set(key1, { verdict: "allow", reason: "ok" });
     // key2 (new policy hash) must miss — cache isolates by policyHash
@@ -906,7 +912,7 @@ describe("EgressJudge — additional behavioral coverage", () => {
 
     const judge = new EgressJudge({ client });
     await judge.decide(
-      { agentId: "a", hostname: "example.com" },
+      { agentId: "a", organizationId: "org-1", hostname: "example.com" },
       rule({ policyHash: "unique-model-1" })
     );
     expect(capturedModel).toBe("claude-haiku-4-5-20251001");
@@ -923,7 +929,7 @@ describe("EgressJudge — additional behavioral coverage", () => {
 
     const judge = new EgressJudge({ client, defaultModel: "default-model" });
     await judge.decide(
-      { agentId: "a", hostname: "example.com" },
+      { agentId: "a", organizationId: "org-1", hostname: "example.com" },
       rule({ policyHash: "unique-model-2", judgeModel: "override-model" })
     );
     expect(capturedModel).toBe("override-model");
@@ -945,14 +951,14 @@ describe("EgressJudge — additional behavioral coverage", () => {
 
     // Trip the breaker — threshold=1, one failure suffices
     await judge.decide(
-      { agentId: "a", hostname: "h1.example.com" },
+      { agentId: "a", organizationId: "org-1", hostname: "h1.example.com" },
       rule({ policyHash: "brk-coverage" })
     );
     expect(calls).toBe(1);
 
     // Next request: circuit open → short-circuit
     const d = await judge.decide(
-      { agentId: "a", hostname: "h2.example.com" },
+      { agentId: "a", organizationId: "org-1", hostname: "h2.example.com" },
       rule({ policyHash: "brk-coverage" })
     );
     expect(calls).toBe(1); // no extra call
@@ -967,7 +973,7 @@ describe("EgressJudge — additional behavioral coverage", () => {
       },
     };
     const judge = new EgressJudge({ client });
-    const req = { agentId: "a", hostname: "example.com" };
+    const req = { agentId: "a", organizationId: "org-1", hostname: "example.com" };
     const r = rule({ policyHash: "p-cache-meta", judgeName: "my-judge" });
 
     await judge.decide(req, r);
@@ -992,7 +998,7 @@ describe("EgressJudge — additional behavioral coverage", () => {
     });
 
     const d = await judge.decide(
-      { agentId: "a", hostname: "x.com" },
+      { agentId: "a", organizationId: "org-1", hostname: "x.com" },
       rule({ policyHash: "single-fail-coverage" })
     );
     expect(d.verdict).toBe("deny");

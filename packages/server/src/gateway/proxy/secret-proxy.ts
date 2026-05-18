@@ -163,6 +163,42 @@ class PlaceholderCache {
 /** Module-level singleton: gateway has one secret proxy and one mapping cache. */
 const placeholderCache = new PlaceholderCache();
 
+/**
+ * Resolve a placeholder string (`lobu_secret_<uuid>` or a prefixed variant)
+ * to its stored {@link SecretMapping}. Returns `null` if the placeholder is
+ * malformed, expired, missing, or — when `expectedOrganizationId` is supplied
+ * — pinned to a different tenant.
+ *
+ * Exported for tests so the org-scoping guard can be exercised without
+ * spinning up the full HTTP proxy.
+ */
+export function lookupPlaceholderMapping(
+  placeholder: string,
+  expectedOrganizationId?: string
+): SecretMapping | null {
+  const prefixIdx = placeholder.indexOf(PLACEHOLDER_PREFIX);
+  if (prefixIdx === -1) return null;
+  const uuid = placeholder.slice(prefixIdx + PLACEHOLDER_PREFIX.length);
+  const mapping = placeholderCache.get(uuid);
+  if (!mapping) return null;
+  if (
+    expectedOrganizationId &&
+    mapping.organizationId &&
+    mapping.organizationId !== expectedOrganizationId
+  ) {
+    logger.warn(
+      {
+        mappingAgentId: mapping.agentId,
+        mappingOrg: mapping.organizationId,
+        expectedOrg: expectedOrganizationId,
+      },
+      "Placeholder mapping rejected: organization mismatch"
+    );
+    return null;
+  }
+  return mapping;
+}
+
 function safeDecodePathSegment(value: string | undefined): string | undefined {
   if (!value) return undefined;
   try {
@@ -174,6 +210,15 @@ function safeDecodePathSegment(value: string | undefined): string | undefined {
 
 export interface SecretMapping {
   agentId: string;
+  /**
+   * Owning organization of the agent the placeholder was minted for.
+   * `lookupPlaceholderMapping()` rejects the lookup when the caller's
+   * org doesn't match — defense-in-depth against a compromised worker
+   * presenting another tenant's placeholder. Optional only because
+   * older mappings minted before the org-id pivot can still be in
+   * flight; production-minted mappings always set it.
+   */
+  organizationId?: string;
   envVarName: string;
   secretRef: SecretRef;
   deploymentName: string;
@@ -288,12 +333,19 @@ export class SecretProxy {
    * Look up just the SecretMapping (without resolving the secret value)
    * for a placeholder. Used to verify the calling worker's bound agentId
    * matches the agentId in the request URL.
+   *
+   * If `expectedOrganizationId` is supplied and the stored mapping is
+   * tagged with a different org, treat it the same as a missing mapping —
+   * log and return null. This is defense-in-depth on top of the existing
+   * `mapping.agentId === urlAgentId` check: if a future code path
+   * resolves placeholders under a different tenant's context (e.g.
+   * cross-tenant header forwarding), the mismatch here blocks it.
    */
-  private lookupPlaceholderMapping(placeholder: string): SecretMapping | null {
-    const prefixIdx = placeholder.indexOf(PLACEHOLDER_PREFIX);
-    if (prefixIdx === -1) return null;
-    const uuid = placeholder.slice(prefixIdx + PLACEHOLDER_PREFIX.length);
-    return placeholderCache.get(uuid);
+  private lookupPlaceholderMapping(
+    placeholder: string,
+    expectedOrganizationId?: string
+  ): SecretMapping | null {
+    return lookupPlaceholderMapping(placeholder, expectedOrganizationId);
   }
 
   /**
@@ -636,13 +688,19 @@ export function generatePlaceholder(
   envVarName: string,
   secretRef: SecretRef,
   deploymentName: string,
-  ttlSeconds?: number
+  options?: { ttlSeconds?: number; organizationId?: string }
 ): string {
   const uuid = crypto.randomUUID();
   storeSecretMapping(
     uuid,
-    { agentId, envVarName, secretRef, deploymentName },
-    ttlSeconds
+    {
+      agentId,
+      envVarName,
+      secretRef,
+      deploymentName,
+      organizationId: options?.organizationId,
+    },
+    options?.ttlSeconds
   );
   return `${PLACEHOLDER_PREFIX}${uuid}`;
 }

@@ -762,7 +762,10 @@ export abstract class BaseDeploymentManager {
             key,
             secretRef,
             deploymentName,
-            SECRET_PLACEHOLDER_TTL_SECONDS
+            {
+              ttlSeconds: SECRET_PLACEHOLDER_TTL_SECONDS,
+              organizationId: context?.organizationId,
+            }
           );
           envVars[key] = placeholder;
           hasSecrets = true;
@@ -819,6 +822,7 @@ export abstract class BaseDeploymentManager {
         teamId,
         platform,
         agentId,
+        organizationId: validated.organizationId,
         connectionId:
           typeof platformMetadata?.connectionId === "string"
             ? platformMetadata.connectionId

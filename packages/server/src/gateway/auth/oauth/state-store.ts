@@ -135,6 +135,13 @@ export function createOAuthStateStore(
 
 interface SlackInstallStateData {
   redirectUri: string;
+  /**
+   * Active org of the session that initiated the install. The callback
+   * verifies the callback-side session's active org matches; mismatch
+   * rejects the install so an OAuth link minted under org A's session can
+   * never plant a connection into org B.
+   */
+  organizationId: string;
 }
 
 export function createSlackInstallStateStore(): OAuthStateStore<SlackInstallStateData> {

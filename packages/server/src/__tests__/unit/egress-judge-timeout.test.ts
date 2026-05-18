@@ -40,7 +40,7 @@ describe("EgressJudge timeout", () => {
     const judge = new EgressJudge({ client, judgeTimeoutMs: 30 });
     const started = Date.now();
     const decision = await judge.decide(
-      { agentId: "agent-a", hostname: "api.github.com" },
+      { agentId: "agent-a", organizationId: "org-1", hostname: "api.github.com" },
       rule()
     );
     const elapsed = Date.now() - started;
@@ -62,7 +62,7 @@ describe("EgressJudge timeout", () => {
     // Distinct hostnames so the verdict cache never short-circuits the path.
     for (let i = 0; i < 5; i++) {
       const decision = await judge.decide(
-        { agentId: "agent-a", hostname: `h${i}.example.com` },
+        { agentId: "agent-a", organizationId: "org-1", hostname: `h${i}.example.com` },
         rule()
       );
       expect(decision.verdict).toBe("deny");
@@ -72,7 +72,7 @@ describe("EgressJudge timeout", () => {
     expect(client.calls).toBe(2);
 
     const afterOpen = await judge.decide(
-      { agentId: "agent-a", hostname: "another.example.com" },
+      { agentId: "agent-a", organizationId: "org-1", hostname: "another.example.com" },
       rule()
     );
     expect(afterOpen.verdict).toBe("deny");
@@ -88,7 +88,7 @@ describe("EgressJudge timeout", () => {
       const judge = new EgressJudge({ client });
       const started = Date.now();
       const decision = await judge.decide(
-        { agentId: "agent-a", hostname: "api.github.com" },
+        { agentId: "agent-a", organizationId: "org-1", hostname: "api.github.com" },
         rule()
       );
       expect(decision.verdict).toBe("deny");

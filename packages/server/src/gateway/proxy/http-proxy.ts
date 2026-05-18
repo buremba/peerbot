@@ -130,6 +130,7 @@ interface AccessDecision {
 async function checkDomainAccess(
   hostname: string,
   agentId: string | undefined,
+  organizationId: string | undefined,
   requestContext?: { method?: string; path?: string }
 ): Promise<AccessDecision> {
   const global = getGlobalConfig();
@@ -177,6 +178,10 @@ async function checkDomainAccess(
       const decision = await proxyEgressJudge.decide(
         {
           agentId,
+          // `organizationId` may be empty when an older token (minted before
+          // the org-id pivot) is still in flight. The cache uses it as part
+          // of the key — empty string and a real UUID never collide.
+          organizationId: organizationId ?? "",
           hostname,
           method: requestContext?.method,
           path: requestContext?.path,
@@ -742,7 +747,11 @@ async function handleConnect(
   // Check domain access: global config → grant store → LLM egress judge.
   // TLS CONNECT tunneling means we cannot see the method or path — the
   // judge decides on hostname alone.
-  const decision = await checkDomainAccess(hostname, tokenData.agentId);
+  const decision = await checkDomainAccess(
+    hostname,
+    tokenData.agentId,
+    tokenData.organizationId
+  );
   logAccessDecision(
     "CONNECT",
     hostname,
@@ -887,7 +896,7 @@ async function handleProxyRequest(
   // Check domain access: global config → grant store → LLM egress judge.
   // Plain HTTP: method and path are visible and are passed through to the
   // judge so policies can reason about specific endpoints.
-  const decision = await checkDomainAccess(hostname, tokenData.agentId, {
+  const decision = await checkDomainAccess(hostname, tokenData.agentId, tokenData.organizationId, {
     method: req.method,
     path: parsedUrl.pathname + parsedUrl.search,
   });

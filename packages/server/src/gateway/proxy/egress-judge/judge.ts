@@ -103,6 +103,7 @@ export class EgressJudge {
     rule: ResolvedJudgeRule
   ): Promise<JudgeDecision> {
     const cacheKey = VerdictCache.key({
+      orgId: request.organizationId,
       policyHash: rule.policyHash,
       hostname: request.hostname,
       method: request.method,

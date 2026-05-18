@@ -31,6 +31,8 @@ All chat platforms (Telegram, Slack, Discord, WhatsApp, Teams) run through Chat 
 
 **Webhooks via the Chat SDK adapter are the default transport.** Don't add new per-platform alternative transports (Slack Socket Mode, Discord Gateway WebSocket bridges, etc.) or extra runtime SDKs. The lone exception is Telegram, whose connection config exposes an optional `polling` mode (`mode: "auto" | "webhook" | "polling"`) implemented inside the Chat SDK adapter — still no extra SDK. Local dev for webhook-only platforms uses a tunnel (cloudflared / ngrok / Tailscale Funnel); Lobu Cloud users get a public URL for free. Sticking to the Chat SDK keeps one delivery story, one set of retries, and zero extra dependencies.
 
+`mode: "polling"` is rejected at connection-create time when `LOBU_CLOUD_MODE=1` — a polling worker long-polls Telegram's edge from the gateway pod and shares that connection across tenants, so a misbehaving polling connection in one org degrades delivery for every other tenant. Self-hosters (`LOBU_CLOUD_MODE` unset/0) keep the polling option for tunnel-less dev.
+
 #### Orchestration
 - **Embedded-only deployment.** Gateway, workers, embeddings, and the Lobu memory backend run in a single Node process (`lobu run`, or `bun run dev` in the monorepo). Workers spawn as `child_process.spawn` subprocesses on the same host; on Linux the spawn path uses `systemd-run --user --scope` for cgroup limits + IPAddressDeny + capability drops. There is no Docker or Kubernetes deployment manager.
 - Postgres (with `pgvector`; optionally `postgis` for geo enrichment) is the only user-provided external. The Node process connects out via `DATABASE_URL`. Runtime state — queues, chat connection rows, grant cache, MCP proxy sessions — lives in dedicated Postgres tables.

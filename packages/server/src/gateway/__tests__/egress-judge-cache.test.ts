@@ -10,6 +10,7 @@ describe("VerdictCache", () => {
   test("stores and retrieves a verdict", () => {
     const cache = new VerdictCache(60_000, 100);
     const key = VerdictCache.key({
+      orgId: "org-1",
       policyHash: "abc",
       hostname: "example.com",
       method: "GET",
@@ -21,11 +22,13 @@ describe("VerdictCache", () => {
 
   test("key is case-insensitive for hostname and method", () => {
     const a = VerdictCache.key({
+      orgId: "org-1",
       policyHash: "h",
       hostname: "Example.COM",
       method: "get",
     });
     const b = VerdictCache.key({
+      orgId: "org-1",
       policyHash: "h",
       hostname: "example.com",
       method: "GET",
@@ -34,14 +37,20 @@ describe("VerdictCache", () => {
   });
 
   test("different policy hashes do not collide", () => {
-    const a = VerdictCache.key({ policyHash: "h1", hostname: "x.com" });
-    const b = VerdictCache.key({ policyHash: "h2", hostname: "x.com" });
+    const a = VerdictCache.key({ orgId: "org-1", policyHash: "h1", hostname: "x.com" });
+    const b = VerdictCache.key({ orgId: "org-1", policyHash: "h2", hostname: "x.com" });
+    expect(a).not.toBe(b);
+  });
+
+  test("different orgIds do not collide even for identical policy+request", () => {
+    const a = VerdictCache.key({ orgId: "org-a", policyHash: "h", hostname: "x.com" });
+    const b = VerdictCache.key({ orgId: "org-b", policyHash: "h", hostname: "x.com" });
     expect(a).not.toBe(b);
   });
 
   test("expires entries after the TTL", async () => {
     const cache = new VerdictCache(10, 100);
-    const key = VerdictCache.key({ policyHash: "h", hostname: "x.com" });
+    const key = VerdictCache.key({ orgId: "org-1", policyHash: "h", hostname: "x.com" });
     cache.set(key, { verdict: "allow", reason: "ok" });
     expect(cache.get(key)).toBeDefined();
     await new Promise((r) => setTimeout(r, 20));

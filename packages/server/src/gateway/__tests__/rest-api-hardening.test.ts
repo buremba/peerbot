@@ -748,6 +748,8 @@ describe("slack routes: OAuth callback and replay protection", () => {
   let completeSlackOAuthInstall: ReturnType<typeof mock>;
   let handleSlackAppWebhook: ReturnType<typeof mock>;
   let router: ReturnType<typeof createSlackRoutes>;
+  let app: Hono;
+  let sessionOrgId: string | null;
 
   beforeAll(async () => {
     await ensurePgliteForGatewayTests();
@@ -772,6 +774,14 @@ describe("slack routes: OAuth callback and replay protection", () => {
       completeSlackOAuthInstall,
       handleSlackAppWebhook,
     } as any);
+
+    sessionOrgId = "org-default";
+    app = new Hono();
+    app.use("*", async (c, next) => {
+      if (sessionOrgId !== null) c.set("organizationId" as never, sessionOrgId);
+      await next();
+    });
+    app.route("", router);
   });
 
   afterEach(() => {
@@ -788,7 +798,7 @@ describe("slack routes: OAuth callback and replay protection", () => {
   });
 
   test("callback with missing state parameter returns 400", async () => {
-    const response = await router.request(
+    const response = await app.request(
       "/slack/oauth_callback?code=test-code"
       // state is absent
     );
@@ -799,7 +809,7 @@ describe("slack routes: OAuth callback and replay protection", () => {
   });
 
   test("callback with missing code parameter returns 400", async () => {
-    const response = await router.request(
+    const response = await app.request(
       "/slack/oauth_callback?state=some-state"
       // code is absent
     );
@@ -808,7 +818,7 @@ describe("slack routes: OAuth callback and replay protection", () => {
   });
 
   test("callback with unknown state (not in DB) returns 400 — no install proceeds", async () => {
-    const response = await router.request(
+    const response = await app.request(
       "/slack/oauth_callback?code=test-code&state=does-not-exist-in-db"
     );
     expect(response.status).toBe(400);
@@ -833,7 +843,7 @@ describe("slack routes: OAuth callback and replay protection", () => {
       )
     `;
 
-    const response = await router.request(
+    const response = await app.request(
       "/slack/oauth_callback?code=test-code&state=expired-state"
     );
     expect(response.status).toBe(400);
@@ -850,20 +860,21 @@ describe("slack routes: OAuth callback and replay protection", () => {
         ${sql.json({
           createdAt: Date.now(),
           redirectUri: "https://gateway.example.com/slack/oauth_callback",
+          organizationId: "org-default",
         })},
         ${new Date(Date.now() + 600_000)}
       )
     `;
 
     // First request should succeed
-    const first = await router.request(
+    const first = await app.request(
       "/slack/oauth_callback?code=test-code&state=one-time-state"
     );
     expect(first.status).toBe(200);
     expect(completeSlackOAuthInstall).toHaveBeenCalledTimes(1);
 
     // Second request with the same state must fail — state already consumed
-    const second = await router.request(
+    const second = await app.request(
       "/slack/oauth_callback?code=test-code&state=one-time-state"
     );
     expect(second.status).toBe(400);
@@ -873,7 +884,7 @@ describe("slack routes: OAuth callback and replay protection", () => {
   test("Slack install returns 503 when SLACK_CLIENT_ID is not set", async () => {
     delete process.env.SLACK_CLIENT_ID;
 
-    const response = await router.request("/slack/install");
+    const response = await app.request("/slack/install");
     expect(response.status).toBe(503);
     const body = await response.text();
     expect(body).toContain("not configured");

@@ -1,4 +1,5 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import { Hono } from "hono";
 import { getDb } from "../../db/client.js";
 import { createSlackRoutes } from "../routes/public/slack.js";
 import { ensurePgliteForGatewayTests, resetTestDatabase } from "./helpers/db-setup.js";
@@ -10,6 +11,12 @@ describe("slack routes", () => {
   let completeSlackOAuthInstall: ReturnType<typeof mock>;
   let handleSlackAppWebhook: ReturnType<typeof mock>;
   let router: ReturnType<typeof createSlackRoutes>;
+  let app: Hono;
+  // Per-test org id injected into the Hono context — mirrors what
+  // `lobuApp.use('*', ...)` sets in production (see lobu/gateway.ts). The
+  // /slack/install + /slack/oauth_callback handlers require a non-empty
+  // value to scope install state to the initiating tenant.
+  let sessionOrgId: string | null;
 
   beforeAll(async () => {
     await ensurePgliteForGatewayTests();
@@ -37,6 +44,14 @@ describe("slack routes", () => {
       completeSlackOAuthInstall,
       handleSlackAppWebhook,
     } as any);
+
+    sessionOrgId = "org-default";
+    app = new Hono();
+    app.use("*", async (c, next) => {
+      if (sessionOrgId !== null) c.set("organizationId" as never, sessionOrgId);
+      await next();
+    });
+    app.route("", router);
   });
 
   afterEach(() => {
@@ -54,7 +69,7 @@ describe("slack routes", () => {
   });
 
   test("GET /slack/install redirects to Slack OAuth and stores state", async () => {
-    const response = await router.request("/slack/install");
+    const response = await app.request("/slack/install");
 
     expect(response.status).toBe(302);
 
@@ -83,11 +98,20 @@ describe("slack routes", () => {
     expect(payload.redirectUri).toBe(
       "https://gateway.example.com/slack/oauth_callback"
     );
+    expect(payload.organizationId).toBe("org-default");
     expect(typeof payload.createdAt).toBe("number");
   });
 
+  test("GET /slack/install rejects when no session org is bound", async () => {
+    sessionOrgId = null;
+    const response = await app.request("/slack/install");
+    const body = await response.text();
+    expect(response.status).toBe(401);
+    expect(body).toContain("Sign in to an organization");
+  });
+
   test("GET /slack/oauth_callback rejects invalid state", async () => {
-    const response = await router.request(
+    const response = await app.request(
       "/slack/oauth_callback?code=test-code&state=missing"
     );
     const body = await response.text();
@@ -109,12 +133,13 @@ describe("slack routes", () => {
         ${sql.json({
           createdAt: Date.now(),
           redirectUri: "https://gateway.example.com/slack/oauth_callback",
+          organizationId: "org-default",
         })},
         ${expiresAt}
       )
     `;
 
-    const response = await router.request(
+    const response = await app.request(
       "/slack/oauth_callback?code=test-code&state=test-state"
     );
     const body = await response.text();
@@ -133,8 +158,40 @@ describe("slack routes", () => {
     expect(remaining.length).toBe(0);
   });
 
+  test("GET /slack/oauth_callback rejects when callback session org differs from install state", async () => {
+    const sql = getDb();
+    const expiresAt = new Date(Date.now() + 600_000);
+    await sql`
+      INSERT INTO oauth_states (id, scope, payload, expires_at)
+      VALUES (
+        'cross-org-state',
+        'slack:oauth:state',
+        ${sql.json({
+          createdAt: Date.now(),
+          redirectUri: "https://gateway.example.com/slack/oauth_callback",
+          organizationId: "org-a",
+        })},
+        ${expiresAt}
+      )
+    `;
+    // Caller signs in to org-b — must be rejected with 403.
+    sessionOrgId = "org-b";
+    const response = await app.request(
+      "/slack/oauth_callback?code=test-code&state=cross-org-state"
+    );
+    const body = await response.text();
+    expect(response.status).toBe(403);
+    expect(body).toContain("different organization");
+    expect(completeSlackOAuthInstall).not.toHaveBeenCalled();
+    // State is consumed regardless — replay protection still holds.
+    const remaining = await sql`
+      SELECT 1 FROM oauth_states WHERE id = 'cross-org-state'
+    `;
+    expect(remaining.length).toBe(0);
+  });
+
   test("POST /slack/events forwards requests to the chat manager", async () => {
-    const response = await router.request("/slack/events", {
+    const response = await app.request("/slack/events", {
       method: "POST",
       headers: {
         "content-type": "application/json",

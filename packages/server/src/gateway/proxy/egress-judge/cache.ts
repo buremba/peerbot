@@ -8,9 +8,11 @@ interface Entry {
 }
 
 /**
- * Small LRU with absolute TTL. Keyed by `(policyHash, request signature)`,
- * so a policy edit invalidates prior verdicts automatically — the hash
- * changes, the cache misses.
+ * Small LRU with absolute TTL. Keyed by `(orgId, policyHash, request
+ * signature)` — the orgId scopes verdicts to a tenant so org A's "allow"
+ * for `api.example.com` cannot satisfy org B's identical request, even when
+ * the composed policy text hashes the same. A policy edit invalidates
+ * prior verdicts automatically — the hash changes, the cache misses.
  *
  * Scale budget: expected to sit in the low thousands of entries. When the
  * map grows past `maxEntries`, the oldest-touched key is evicted.
@@ -25,12 +27,14 @@ export class VerdictCache {
   ) {}
 
   static key(parts: {
+    orgId: string;
     policyHash: string;
     hostname: string;
     method?: string;
     path?: string;
   }): string {
     return [
+      parts.orgId,
       parts.policyHash,
       parts.hostname.toLowerCase(),
       parts.method?.toUpperCase() ?? "",

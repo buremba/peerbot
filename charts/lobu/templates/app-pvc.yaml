@@ -8,9 +8,9 @@ metadata:
     app.kubernetes.io/component: api
 spec:
   accessModes:
-    {{- toYaml .Values.app.workspaces.accessModes | nindent 4 }}
+    - ReadWriteOnce
   {{- if .Values.app.workspaces.storageClass }}
-  storageClassName: {{ .Values.app.workspaces.storageClass | quote }}
+  storageClassName: {{ .Values.app.workspaces.storageClass }}
   {{- end }}
   resources:
     requests:

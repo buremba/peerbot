@@ -24,10 +24,6 @@ spec:
     metadata:
       labels:
         {{- include "lobu.embeddingsSelectorLabels" . | nindent 8 }}
-      {{- with .Values.embeddings.podAnnotations }}
-      annotations:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
     spec:
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
@@ -41,13 +37,8 @@ spec:
         - name: embeddings
           image: {{ include "lobu.embeddingsImage" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          {{- with .Values.embeddings.securityContext }}
-          securityContext:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
           ports:
-            - name: http
-              containerPort: {{ .Values.embeddings.service.port }}
+            - containerPort: {{ .Values.embeddings.service.port }}
               protocol: TCP
           env:
             - name: PORT
@@ -58,16 +49,15 @@ spec:
             - name: {{ $key }}
               value: {{ $value | quote }}
             {{- end }}
-          {{- $secretName := include "lobu.secretName" . }}
-          {{- if $secretName }}
+          {{- if .Values.secretName }}
           envFrom:
             - secretRef:
-                name: {{ $secretName }}
+                name: {{ .Values.secretName }}
           {{- end }}
           readinessProbe:
             httpGet:
               path: /health
-              port: http
+              port: {{ .Values.embeddings.service.port }}
             initialDelaySeconds: {{ .Values.healthCheck.readinessProbe.initialDelaySeconds }}
             periodSeconds: {{ .Values.healthCheck.readinessProbe.periodSeconds }}
             timeoutSeconds: {{ .Values.healthCheck.readinessProbe.timeoutSeconds }}
@@ -75,7 +65,7 @@ spec:
           livenessProbe:
             httpGet:
               path: /health
-              port: http
+              port: {{ .Values.embeddings.service.port }}
             initialDelaySeconds: {{ .Values.healthCheck.livenessProbe.initialDelaySeconds }}
             periodSeconds: {{ .Values.healthCheck.livenessProbe.periodSeconds }}
             timeoutSeconds: {{ .Values.healthCheck.livenessProbe.timeoutSeconds }}

@@ -5,7 +5,6 @@ metadata:
   name: {{ include "lobu.fullname" . }}-migrate
   labels:
     {{- include "lobu.labels" . | nindent 4 }}
-    app.kubernetes.io/component: migrate
   annotations:
     "helm.sh/hook": pre-install,pre-upgrade
     "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
@@ -72,10 +71,6 @@ spec:
             - name: DB_PREFLIGHT_TIMEOUT_SECONDS
               value: {{ .Values.releaseGates.databasePreflight.timeoutSeconds | quote }}
             {{- end }}
-            {{- if and .Values.secrets.create (hasKey .Values.secrets.stringData "DATABASE_URL") (not .Values.migrations.database.existingSecret) (not (hasKey .Values.app.env "DATABASE_URL")) }}
-            - name: DATABASE_URL
-              value: {{ index .Values.secrets.stringData "DATABASE_URL" | quote }}
-            {{- end }}
             {{- if .Values.migrations.database.existingSecret }}
             {{- if .Values.migrations.database.usePooler }}
             - name: DB_USER
@@ -98,10 +93,9 @@ spec:
                   key: {{ .Values.migrations.database.existingSecretKey }}
             {{- end }}
             {{- end }}
-          {{- $secretName := include "lobu.secretName" . }}
-          {{- if and $secretName (not .Values.secrets.create) }}
+          {{- if .Values.secretName }}
           envFrom:
             - secretRef:
-                name: {{ $secretName }}
+                name: {{ .Values.secretName }}
           {{- end }}
 {{- end }}

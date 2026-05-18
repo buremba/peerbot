@@ -40,9 +40,6 @@ jobs:
       - name: Render default values
         run: helm template lobu charts/lobu --namespace lobu >/tmp/lobu-default.yaml
 
-      - name: Render install example
-        run: helm template lobu charts/lobu --namespace lobu -f charts/lobu/values.example.yaml >/tmp/lobu-example.yaml
-
   publish:
     needs: lint
     if: ${{ github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.publish) }}

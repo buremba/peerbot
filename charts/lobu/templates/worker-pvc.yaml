@@ -5,12 +5,11 @@ metadata:
   name: {{ include "lobu.fullname" . }}-worker-cache
   labels:
     {{- include "lobu.labels" . | nindent 4 }}
-    app.kubernetes.io/component: worker
 spec:
   accessModes:
-    {{- toYaml .Values.worker.cache.accessModes | nindent 4 }}
+    - ReadWriteOnce
   {{- if .Values.worker.cache.storageClass }}
-  storageClassName: {{ .Values.worker.cache.storageClass | quote }}
+  storageClassName: {{ .Values.worker.cache.storageClass }}
   {{- end }}
   resources:
     requests:

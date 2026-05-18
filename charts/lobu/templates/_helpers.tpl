@@ -22,14 +22,14 @@ Create a default fully qualified app name.
 {{- end }}
 
 {{/*
-Create chart name and version as used by labels.
+Create chart name and version as used by the chart label.
 */}}
 {{- define "lobu.chart" -}}
 {{- printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
 {{/*
-Common labels.
+Common labels
 */}}
 {{- define "lobu.labels" -}}
 helm.sh/chart: {{ include "lobu.chart" . }}
@@ -41,54 +41,57 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end }}
 
 {{/*
-Selector labels.
+Selector labels
 */}}
 {{- define "lobu.selectorLabels" -}}
 app.kubernetes.io/name: {{ include "lobu.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
+{{/*
+App selector labels
+*/}}
 {{- define "lobu.appSelectorLabels" -}}
 {{ include "lobu.selectorLabels" . }}
 app.kubernetes.io/component: api
 {{- end }}
 
+{{/*
+Worker selector labels
+*/}}
 {{- define "lobu.workerSelectorLabels" -}}
 {{ include "lobu.selectorLabels" . }}
 app.kubernetes.io/component: worker
 {{- end }}
 
+{{/*
+Embeddings selector labels
+*/}}
 {{- define "lobu.embeddingsSelectorLabels" -}}
 {{ include "lobu.selectorLabels" . }}
 app.kubernetes.io/component: embeddings
 {{- end }}
 
 {{/*
-Resolve the image tag.
+Create the app image name
 */}}
-{{- define "lobu.imageTag" -}}
-{{- default .Chart.AppVersion .Values.image.tag }}
-{{- end }}
-
 {{- define "lobu.appImage" -}}
-{{- printf "%s/%s-app:%s" .Values.image.registry .Values.image.repository (include "lobu.imageTag" .) }}
-{{- end }}
-
-{{- define "lobu.workerImage" -}}
-{{- printf "%s/%s-worker:%s" .Values.image.registry .Values.image.repository (include "lobu.imageTag" .) }}
-{{- end }}
-
-{{- define "lobu.embeddingsImage" -}}
-{{- printf "%s/%s-embeddings:%s" .Values.image.registry .Values.image.repository (include "lobu.imageTag" .) }}
+{{- $tag := .Values.image.tag | default .Chart.AppVersion }}
+{{- printf "%s/%s-app:%s" .Values.image.registry .Values.image.repository $tag }}
 {{- end }}
 
 {{/*
-The Secret loaded into pods via envFrom, if configured.
+Create the worker image name
 */}}
-{{- define "lobu.secretName" -}}
-{{- if .Values.secrets.create }}
-{{- default (printf "%s-secrets" (include "lobu.fullname" .)) .Values.secrets.name }}
-{{- else }}
-{{- .Values.secretName }}
+{{- define "lobu.workerImage" -}}
+{{- $tag := .Values.image.tag | default .Chart.AppVersion }}
+{{- printf "%s/%s-worker:%s" .Values.image.registry .Values.image.repository $tag }}
 {{- end }}
+
+{{/*
+Create the embeddings service image name
+*/}}
+{{- define "lobu.embeddingsImage" -}}
+{{- $tag := .Values.image.tag | default .Chart.AppVersion }}
+{{- printf "%s/%s-embeddings:%s" .Values.image.registry .Values.image.repository $tag }}
 {{- end }}

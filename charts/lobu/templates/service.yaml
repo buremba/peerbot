@@ -4,7 +4,6 @@ metadata:
   name: {{ include "lobu.fullname" . }}-app
   labels:
     {{- include "lobu.labels" . | nindent 4 }}
-    app.kubernetes.io/component: api
 spec:
   type: {{ .Values.service.type }}
   {{- with .Values.service.sessionAffinity }}
@@ -19,7 +18,7 @@ spec:
   {{- end }}
   ports:
     - port: {{ .Values.service.port }}
-      targetPort: http
+      targetPort: 8787
       protocol: TCP
       name: http
   selector:

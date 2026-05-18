@@ -5,12 +5,11 @@ metadata:
   name: {{ include "lobu.fullname" . }}-embeddings-cache
   labels:
     {{- include "lobu.labels" . | nindent 4 }}
-    app.kubernetes.io/component: embeddings
 spec:
   accessModes:
-    {{- toYaml .Values.embeddings.cache.accessModes | nindent 4 }}
+    - ReadWriteOnce
   {{- if .Values.embeddings.cache.storageClass }}
-  storageClassName: {{ .Values.embeddings.cache.storageClass | quote }}
+  storageClassName: {{ .Values.embeddings.cache.storageClass }}
   {{- end }}
   resources:
     requests:

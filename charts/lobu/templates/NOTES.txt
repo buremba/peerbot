@@ -1,35 +1,33 @@
-Lobu has been installed.
+Insights Platform has been deployed!
 
+1. Application URL:
 {{- if .Values.ingress.enabled }}
-Application URL:
-{{- range .Values.ingress.hosts }}
-  https://{{ . }}
-{{- end }}
+   https://{{ .Values.ingress.host }}
 {{- else }}
-Port-forward the app service:
-  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "lobu.fullname" . }}-app {{ .Values.service.port }}:{{ .Values.service.port }}
-  open http://localhost:{{ .Values.service.port }}
+   kubectl port-forward svc/{{ include "lobu.fullname" . }}-app {{ .Values.service.port }}:{{ .Values.service.port }}
 {{- end }}
 
-Secrets:
-{{- $secretName := include "lobu.secretName" . }}
-{{- if $secretName }}
-  Using runtime secret: {{ $secretName }}
+2. Worker Status:
+{{- if .Values.worker.enabled }}
+   Worker is enabled with {{ .Values.worker.replicaCount }} replica(s)
+   kubectl get pods -l app.kubernetes.io/component=worker
 {{- else }}
-  No runtime secret configured. Create a Secret with JWT_SECRET, BETTER_AUTH_SECRET,
-  provider API keys, and other Lobu settings, then set secretName.
+   Worker is disabled
 {{- end }}
 
-Database:
+3. Database:
 {{- if .Values.database.existingSecret }}
-  DATABASE_URL comes from Secret {{ .Values.database.existingSecret }} key {{ .Values.database.existingSecretKey }}.
+   Using credentials from secret: {{ .Values.database.existingSecret }}
 {{- else }}
-  Ensure DATABASE_URL is present in the runtime secret.
+   Ensure DATABASE_URL is set in your secrets
 {{- end }}
 
-Useful checks:
-  kubectl -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/instance={{ .Release.Name }}
-  kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "lobu.fullname" . }}-app
+4. Secrets:
+{{- if .Values.secretName }}
+   Using secret: {{ .Values.secretName }}
+{{- else }}
+   WARNING: No secretName configured. Ensure all required env vars are set.
+{{- end }}
 
 {{- if and (gt (int (.Values.app.replicaCount | default 1)) 1) (or (not .Values.service.sessionAffinity) (eq (.Values.service.sessionAffinity | default "None") "None")) }}
 

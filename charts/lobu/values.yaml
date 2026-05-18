@@ -1,125 +1,67 @@
-# Default values for the public Lobu chart.
-# See values.example.yaml for a minimal copy/paste install template.
+# Default values for lobu chart
 
+# Global settings
 nameOverride: ""
 fullnameOverride: ""
 
+# Image settings (shared between app, worker, and embeddings)
 image:
   registry: ghcr.io
-  # The chart appends -app, -worker, and -embeddings for the three images.
   repository: lobu-ai/lobu
-  pullPolicy: IfNotPresent
-  # The image pipeline publishes timestamp tags plus latest. Pin a timestamp
-  # tag for production upgrades; latest keeps first-time installs simple.
+  pullPolicy: Always
+  # Tag defaults to chart appVersion
   tag: "latest"
 
-# Public images do not require pull secrets. Set this if your cluster must
-# authenticate to GHCR or you mirror images into a private registry.
-imagePullSecrets: []
+imagePullSecrets:
+  - name: ghcr-credentials
 
-# Existing Kubernetes Secret loaded into app, worker, embeddings, and migration
-# pods via envFrom. It commonly contains DATABASE_URL, JWT_SECRET,
-# BETTER_AUTH_SECRET, provider API keys, and integration OAuth credentials.
-secretName: ""
-
-# Optional chart-managed Secret. Prefer an external secret manager for
-# production; this is here for small test clusters and quick demos.
-secrets:
-  create: false
-  name: ""
-  stringData: {}
-
+# App deployment settings (API backend)
 app:
   replicaCount: 1
+  # With workspaces.enabled=false (Phase 5 default), the chart leaves
+  # strategy unset so the Deployment uses kube-default RollingUpdate.
+  # Setting `workspaces.enabled: true` (legacy RWO path) still pins to
+  # Recreate below.
   strategy: {}
-  podAnnotations: {}
-  podSecurityContext: {}
-  securityContext: {}
-  # Seconds the preStop hook sleeps before SIGTERM is sent. Gives Service
-  # endpoint deregistration + downstream LB cache time to notice the pod
-  # is going away, so in-flight requests during the deregistration lag
-  # still hit a live process.
-  #
-  # Default 0 (preStop hook NOT emitted). Set to ~15 when running with
-  # `app.strategy.type: RollingUpdate` and replicaCount > 1. The
-  # workspaces PVC is OFF by default in Phase 5 so the chart now picks
-  # RollingUpdate automatically when `allowMultiReplica: true`.
-  preStopDelaySeconds: 0
-  # Total time k8s waits for the pod to stop before SIGKILL. Must be
-  # > preStopDelaySeconds + actual shutdown time. The gateway's graceful
-  # shutdown closes the HTTP server, stops the task scheduler, drains the
-  # DB pool — empirically ~5s.
-  terminationGracePeriodSeconds: 45
 
   resources:
     requests:
       cpu: 100m
-      memory: 512Mi
+      memory: 256Mi
     limits:
-      cpu: 2000m
-      memory: 2Gi
+      cpu: 1000m
+      memory: 1Gi
 
+  # Non-secret environment variables
   env:
     NODE_ENV: production
 
-  # Opt-in to multi-replica / rolling deploys. DEFAULT FALSE — leaving
-  # this off keeps the safe `strategy: Recreate` behavior. Setting it
-  # true makes the chart pick `RollingUpdate` (maxSurge: 1,
-  # maxUnavailable: 0) as long as `app.workspaces.enabled` is false (the
-  # Phase 5 default) or workspaces is RWX-configured.
-  #
-  # Prerequisites BEFORE setting true — chart cannot detect these:
-  #   1. NO active Chat connections in `mode: "polling"` (Telegram).
-  #      Multiple replicas long-polling the same bot conflict. Use
-  #      webhook mode only — see
-  #      gateway/connections/chat-instance-manager.ts:610.
-  #   2. Acknowledge that the gateway has in-memory state for SSE
-  #      streams (gateway/services/sse-manager.ts) and AskUser
-  #      questions (gateway/connections/interaction-bridge.ts:193).
-  #      A request whose SSE stream / AskUser click lands on a
-  #      different replica than the one holding the state will be
-  #      silently dropped. Migrating these to Postgres LISTEN/NOTIFY +
-  #      durable storage is tracked as separate hardening work — until
-  #      then, occasional dropped streams / button clicks are the cost
-  #      of zero-downtime deploys on this configuration.
-  #
-  # If you re-enable the workspaces PVC (legacy path), you must either
-  # provision RWX-capable storage (NFS / EFS / CephFS / Longhorn-RWX)
-  # or leave `allowMultiReplica: false` — RWO + multi-replica is
-  # rejected by the chart's strategy helper and falls back to Recreate.
-  #
-  # Single-replica + RollingUpdate (replicaCount: 1, allowMultiReplica: true)
-  # still creates a brief overlap window where both pods are running.
-  # The same in-memory caveats apply during that window, just for a
-  # shorter span (~5-15s).
-  allowMultiReplica: false
-
-  # Persistent workspaces volume. Embedded agent workers used to store
-  # session and workspace state below /app/workspaces (session.jsonl,
-  # input/output/temp scratch). Phase 5 moved session.jsonl to Postgres
-  # (`agent_transcript_snapshot`) and made input/output/temp pod-local
-  # ephemeral storage — a per-conversation advisory lock pins all turns
-  # of one conversation to a single pod for its run lifetime, so no PVC
-  # is required for correctness. Set `enabled: true` only if you have a
-  # specific reason to persist scratch files across pod restarts; the
-  # PVC blocks rolling deploys on the default RWO storage class.
+  # Persistent workspaces volume. The embedded worker used to store
+  # session state below /app/workspaces/<agentId>/.openclaw/session.jsonl,
+  # but Phase 5 (LOBU_SESSION_STORE default-on, snapshot mode) moved
+  # the durable transcript into Postgres (`agent_transcript_snapshot`)
+  # and made the rest of {WORKSPACE_DIR} (input/output/temp) pod-local
+  # ephemeral — a per-conversation advisory lock pins runs to one pod
+  # for the run lifetime. Disable by default so the deployment can
+  # roll across replicas; flip to `true` only if you have a specific
+  # reason to persist scratch files across restarts.
   workspaces:
     enabled: false
     size: 20Gi
     storageClass: ""
-    accessModes:
-      - ReadWriteOnce
 
+# Worker deployment settings
 worker:
-  # Connector ingestion worker. Disable if you only need the API/chat gateway.
   enabled: true
   replicaCount: 1
+  # RWO cache PVCs cannot be mounted by old and new pods at once.
+  # Defaults to Recreate when cache.enabled; override for RWX/no-cache deployments.
   strategy: {}
-  podAnnotations: {}
+
+  # Cache PVCs are mounted as root-owned by default; grant the image user group write access.
   podSecurityContext:
     fsGroup: 1001
     fsGroupChangePolicy: OnRootMismatch
-  securityContext: {}
 
   resources:
     requests:
@@ -132,24 +74,25 @@ worker:
   env:
     POLL_INTERVAL_MS: "10000"
 
+  # Transformer model cache volume
   cache:
     enabled: true
     size: 5Gi
     storageClass: ""
-    accessModes:
-      - ReadWriteOnce
 
+# Embeddings service deployment settings
 embeddings:
   enabled: true
   replicaCount: 1
+  # RWO cache PVCs cannot be mounted by old and new pods at once.
+  # Defaults to Recreate when cache.enabled; override for RWX/no-cache deployments.
   strategy: {}
-  podAnnotations: {}
+
+  # Cache PVCs are mounted as root-owned by default; grant the image user group write access.
   podSecurityContext:
     fsGroup: 1001
     fsGroupChangePolicy: OnRootMismatch
-  securityContext: {}
 
-  # If set, app and worker use this URL instead of the in-chart service.
   serviceUrl: ""
 
   resources:
@@ -168,9 +111,8 @@ embeddings:
     enabled: true
     size: 5Gi
     storageClass: ""
-    accessModes:
-      - ReadWriteOnce
 
+# Service settings
 service:
   type: ClusterIP
   port: 8787
@@ -189,35 +131,38 @@ service:
   sessionAffinity: None
   sessionAffinityTimeoutSeconds: 10800
 
-# Optional Ingress for public webhooks and the admin UI. When hosts are set,
-# the app Deployment derives PUBLIC_WEB_URL from the first host unless you set
-# app.env.PUBLIC_WEB_URL explicitly.
+# Ingress settings
 ingress:
-  enabled: false
-  className: ""
+  enabled: true
+  className: traefik
   annotations: {}
-  hosts: []
+  hosts: []  # List of hosts (e.g., [summaries.now, app.lobu.ai])
   tls: []
 
-# Database configuration. For most installs, create a Secret with DATABASE_URL
-# and set database.existingSecret below. Alternatively, keep database empty and
-# provide DATABASE_URL through secretName/secrets. When migrations.enabled and
-# secrets.create are both true, put DATABASE_URL in secrets.stringData or set
-# migrations.database.existingSecret so the hook does not depend on a Secret
-# that Helm has not created yet.
-database:
-  existingSecret: ""
-  existingSecretKey: uri
-  name: app
-  usePooler: false
-  poolerService: ""
+# Secret reference (must exist in namespace)
+# Contains: JWT_SECRET, GITHUB_TOKEN, etc.
+secretName: ""
 
+# Database settings (for connecting to CNPG cluster)
+database:
+  # If set, overrides DATABASE_URL from secret
+  host: ""
+  port: 5432
+  name: "app"  # Database name (required when usePooler=true)
+  # Secret containing database credentials (from CNPG)
+  existingSecret: ""
+  existingSecretKey: "uri"
+  # Use PgBouncer pooler instead of direct connection
+  usePooler: false
+  poolerService: ""  # e.g., "db-pooler-rw"
+
+# Health check settings
 healthCheck:
   readinessProbe:
     initialDelaySeconds: 10
     periodSeconds: 10
     timeoutSeconds: 3
-    failureThreshold: 6
+    failureThreshold: 3
   livenessProbe:
     initialDelaySeconds: 30
     periodSeconds: 20
@@ -225,80 +170,52 @@ healthCheck:
     failureThreshold: 3
 
 migrations:
-  # When enabled, Helm runs migrations as a pre-install/pre-upgrade Job and you
-  # should set app.env.SKIP_MIGRATIONS: "1" so app pods do not repeat them. If
-  # secrets.create is true and DATABASE_URL lives in that chart-managed Secret,
-  # the Job reads secrets.stringData.DATABASE_URL directly because normal chart
-  # resources are not created before pre-install hooks run.
   enabled: false
   database:
     existingSecret: ""
-    existingSecretKey: uri
-    name: app
+    existingSecretKey: "uri"
+    name: "app"
     usePooler: false
     poolerService: ""
 
 releaseGates:
   databasePreflight:
+    # When migrations are enabled, verify the target database is reachable
+    # before invoking dbmate. This fails fast on wrong DB names instead of
+    # letting dbmate attempt to create a missing production database.
     enabled: true
     timeoutSeconds: 10
   smokeTest:
+    # Helm post-install/post-upgrade hook. The release is not considered
+    # healthy until the in-cluster app Service responds successfully.
     enabled: true
     path: /api/health
     timeoutSeconds: 300
     intervalSeconds: 2
-    # Post-migration schema verification. Each entry is `<table>.<column>`;
-    # the smoke job fails the rollout if any listed column is missing from
-    # `information_schema.columns`. Catches the case where a migration was
-    # edited after it was first applied to prod — the new ALTER never re-runs
-    # (its version is already in `schema_migrations`), but `dbmate up` on a
-    # fresh DB applies the edited file cleanly, so PR CI stays green.
-    # Add a column here whenever a new migration introduces one that app
-    # routes assume exists.
-    requiredSchema:
-      - device_workers.id
-      - device_workers.organization_id
-      - connections.device_worker_id
-      - connections.organization_id
 
-    # Phase 3 of the smoke job — drive an actual worker run end-to-end.
+    # Phase 3 — drive an actual worker run end-to-end.
     #
-    # When enabled, the Job POSTs to the internal /api/internal/smoke/dispatch
-    # endpoint, which inserts a synthetic chat_message run. The runs-queue
-    # MessageConsumer in the app pod claims it, spawns a worker subprocess,
-    # the worker runs, and on terminal cleanup writes a row into
-    # `agent_transcript_snapshot`. The Job polls that row and fails the
-    # deploy if `terminal_status='completed'` doesn't materialise inside
-    # `workerSmokeTimeoutSeconds`. This makes the recurring class of
-    # "gateway boots fine but workers can't process a single message"
-    # regressions un-shippable.
+    # When enabled, the Job POSTs to /api/internal/smoke/dispatch, which
+    # inserts a synthetic chat_message run. The runs-queue MessageConsumer
+    # claims it, spawns a worker subprocess, and on completion writes a
+    # row into `agent_transcript_snapshot`. The Job polls for that row
+    # and fails the deploy if `terminal_status='completed'` doesn't
+    # materialise within `timeoutSeconds`.
     #
-    # Default OFF: the chart cannot preprovision the synthetic agent for
-    # you. Operators MUST add three keys to the deployment Secret before
-    # enabling, AND preprovision a matching agent row:
+    # Default OFF. Operators MUST add three keys to the deployment Secret
+    # before enabling, AND preprovision a matching agent row:
     #
-    #   1. Generate a random token (≥32 chars) and add to the Secret:
-    #        SMOKE_TEST_TOKEN=<random>
-    #        SMOKE_TEST_AGENT_ID=<your-smoke-agent-id>
-    #        SMOKE_TEST_ORG_ID=<your-smoke-org-id>
-    #      The gateway PINS the smoke agentId + organizationId from the
-    #      env at dispatch time — caller-supplied values are ignored.
-    #      This makes it structurally impossible for a leaked
-    #      SMOKE_TEST_TOKEN to dispatch a synthetic run against a real
-    #      tenant's agent.
-    #   2. Preprovision the synthetic agent. The simplest path is
-    #      `lobu apply` against a dedicated "smoke" org/agent project
-    #      whose only agent.id matches `SMOKE_TEST_AGENT_ID`.
-    #   3. Bump this stanza to `enabled: true` and roll the chart.
+    #   SMOKE_TEST_TOKEN=<random ≥32 chars>
+    #   SMOKE_TEST_AGENT_ID=<your-smoke-agent-id>
+    #   SMOKE_TEST_ORG_ID=<your-smoke-org-id>
+    #
+    # The gateway PINS the smoke agentId + organizationId from the env
+    # at dispatch time — caller-supplied values in the dispatch body are
+    # ignored. This makes a leaked SMOKE_TEST_TOKEN structurally unable
+    # to dispatch a synthetic run against a real tenant. Mirrored from
+    # lobu#878.
     workerSmoke:
       enabled: false
-      # The smoke Job appends a release-scoped suffix so each helm
-      # upgrade gets its own conversation id within this prefix.
       conversationIdPrefix: "smoke-"
-      # How long to wait for the snapshot row to appear with
-      # `terminal_status='completed'`. Worker spawn + LLM round-trip +
-      # snapshot POST is ~10-30s on the prod cluster; 90s leaves
-      # headroom for a cold image pull on the worker subprocess.
       timeoutSeconds: 90
-      # DB poll interval inside the Job.
       intervalSeconds: 3

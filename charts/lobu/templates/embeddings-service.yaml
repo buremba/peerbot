@@ -5,12 +5,11 @@ metadata:
   name: {{ include "lobu.fullname" . }}-embeddings
   labels:
     {{- include "lobu.labels" . | nindent 4 }}
-    app.kubernetes.io/component: embeddings
 spec:
   type: ClusterIP
   ports:
     - port: {{ .Values.embeddings.service.port }}
-      targetPort: http
+      targetPort: {{ .Values.embeddings.service.port }}
       protocol: TCP
       name: http
   selector:

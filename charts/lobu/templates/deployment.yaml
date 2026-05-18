@@ -7,54 +7,14 @@ metadata:
     app.kubernetes.io/component: api
 spec:
   replicas: {{ .Values.app.replicaCount }}
-  {{- /*
-  Deploy strategy resolution:
-    1. Explicit `app.strategy` override always wins.
-    2. Else if `app.allowMultiReplica: true` AND workspaces is RWX
-       (or disabled) → RollingUpdate (maxSurge: 1, maxUnavailable: 0).
-       This is the operator opt-in path for true blue/green deploys.
-    3. Else → Recreate (the safe default).
-
-  Phase 5 (workspaces PVC is OFF by default + LOBU_SESSION_STORE
-  defaults to snapshot mode) means most deploys naturally land on the
-  rolling-update branch as soon as `allowMultiReplica: true` is set.
-  The RWX check still applies for self-hosters who re-enable the PVC.
-
-  Why `allowMultiReplica` is an explicit flag, not auto-detected:
-  several in-memory components break with >1 gateway replicas OR
-  during the brief RollingUpdate overlap:
-    * `SseManager` (gateway/services/sse-manager.ts) — SSE streams are
-      pod-local; a job claimed by pod B broadcasts to no-one if the
-      client is on pod A.
-    * AskUser question routing
-      (gateway/connections/interaction-bridge.ts:193-214) — pending
-      questions live in a per-pod Map, button clicks can land on the
-      wrong pod and be dropped.
-    * Telegram polling mode (gateway/connections/chat-instance-manager
-      .ts:610-613) — every replica long-polls the same bot, causing
-      conflicts.
-  Snapshot-mode session state and the per-conversation advisory lock
-  are necessary but not sufficient. The flag forces operators to
-  acknowledge "I have only webhook-mode Chat connections AND accept
-  the SSE / AskUser handoff caveats" before opting in.
-  */}}
-  {{- $rwxConfigured := has "ReadWriteMany" (.Values.app.workspaces.accessModes | default (list)) }}
-  {{- $rollSafe := and .Values.app.allowMultiReplica (or (not .Values.app.workspaces.enabled) $rwxConfigured) }}
-  {{- if .Values.app.strategy }}
+  {{- with .Values.app.strategy }}
   strategy:
-    {{- toYaml .Values.app.strategy | nindent 4 }}
-  {{- else if $rollSafe }}
-  # Operator opted in via app.allowMultiReplica + RWX workspaces.
-  strategy:
-    type: RollingUpdate
-    rollingUpdate:
-      maxSurge: 1
-      maxUnavailable: 0
+    {{- toYaml . | nindent 4 }}
   {{- else }}
-  # Safe default. RWO PVC + in-memory SSE/AskUser/Telegram-polling
-  # state make rolling overlap unsafe — see comment above.
+  {{- if .Values.app.workspaces.enabled }}
   strategy:
     type: Recreate
+  {{- end }}
   {{- end }}
   selector:
     matchLabels:
@@ -63,56 +23,34 @@ spec:
     metadata:
       labels:
         {{- include "lobu.appSelectorLabels" . | nindent 8 }}
-      {{- with .Values.app.podAnnotations }}
-      annotations:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
     spec:
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.app.podSecurityContext }}
-      securityContext:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      # Grace period must exceed preStopDelaySeconds + reasonable shutdown
-      # time for the gateway (graceful_shutdown in server.ts cleans up
-      # task scheduler, embedded gateway, DB pool, HTTP server). Default
-      # k8s grace period is 30s; bump so the preStop sleep doesn't eat
-      # the whole window.
-      terminationGracePeriodSeconds: {{ .Values.app.terminationGracePeriodSeconds | default 45 }}
       containers:
         - name: app
           image: {{ include "lobu.appImage" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          {{- with .Values.app.securityContext }}
-          securityContext:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
           ports:
-            - name: http
-              containerPort: 8787
+            - containerPort: 8787
               protocol: TCP
           env:
             {{- range $key, $value := .Values.app.env }}
             - name: {{ $key }}
               value: {{ $value | quote }}
             {{- end }}
-            {{- if and .Values.ingress.hosts (not (hasKey .Values.app.env "PUBLIC_WEB_URL")) }}
-            - name: PUBLIC_WEB_URL
+            {{- if .Values.ingress.hosts }}
+            - name: BASE_URL
               value: {{ printf "https://%s" (first .Values.ingress.hosts) | quote }}
             {{- end }}
             {{- $workerSmoke := .Values.releaseGates.smokeTest.workerSmoke | default dict }}
             {{- if and $workerSmoke (hasKey $workerSmoke "enabled") $workerSmoke.enabled }}
-            # Pin SMOKE_TEST_ALLOWED_HOST to the in-cluster app Service DNS
-            # name so /api/internal/smoke/dispatch refuses any request
-            # whose Host header is not the cluster-internal service. The
-            # smoke Job hits this exact hostname via its curl URL; public
-            # ingress traffic always carries the operator's external host
-            # in Host, so this is the second layer of ingress-bypass
-            # defense (the first is the x-forwarded-* refusal in the
-            # route handler).
+            # Pin SMOKE_TEST_ALLOWED_HOST to the in-cluster app Service
+            # DNS name so /api/internal/smoke/dispatch refuses any
+            # request whose Host header is the operator's public
+            # ingress hostname. Belt-and-braces with the
+            # x-forwarded-* refusal in the route handler.
             - name: SMOKE_TEST_ALLOWED_HOST
               value: {{ printf "%s-app" (include "lobu.fullname" .) | quote }}
             {{- end }}
@@ -147,29 +85,10 @@ spec:
                   key: {{ .Values.database.existingSecretKey }}
             {{- end }}
             {{- end }}
-          {{- $secretName := include "lobu.secretName" . }}
-          {{- if $secretName }}
+          {{- if .Values.secretName }}
           envFrom:
             - secretRef:
-                name: {{ $secretName }}
-          {{- end }}
-          {{- /*
-          PreStop hook is only useful under RollingUpdate (the new pod is
-          already serving, so deregistering the old pod via Service
-          endpoint removal + giving downstream caches time to notice it
-          shrinks the "old pod kept getting traffic during drain" window).
-          Under `Recreate`, the new pod doesn't start until the old one
-          fully terminates — adding a preStop sleep would EXTEND the
-          no-available-server window by its duration. We only emit the
-          hook when preStopDelaySeconds is explicitly > 0; ops repos
-          using RollingUpdate set it, Recreate-mode deploys leave it at
-          the default 0.
-          */ -}}
-          {{- if gt (int (.Values.app.preStopDelaySeconds | default 0)) 0 }}
-          lifecycle:
-            preStop:
-              exec:
-                command: ["sh", "-c", "sleep {{ .Values.app.preStopDelaySeconds }}"]
+                name: {{ .Values.secretName }}
           {{- end }}
           # Readiness probes the DB too (/health/ready does SELECT 1).
           # Failing readiness pulls the pod out of the Service endpoint set
@@ -179,7 +98,7 @@ spec:
           readinessProbe:
             httpGet:
               path: /health/ready
-              port: http
+              port: 8787
             initialDelaySeconds: {{ .Values.healthCheck.readinessProbe.initialDelaySeconds }}
             periodSeconds: {{ .Values.healthCheck.readinessProbe.periodSeconds }}
             timeoutSeconds: {{ .Values.healthCheck.readinessProbe.timeoutSeconds }}
@@ -187,7 +106,7 @@ spec:
           livenessProbe:
             httpGet:
               path: /health
-              port: http
+              port: 8787
             initialDelaySeconds: {{ .Values.healthCheck.livenessProbe.initialDelaySeconds }}
             periodSeconds: {{ .Values.healthCheck.livenessProbe.periodSeconds }}
             timeoutSeconds: {{ .Values.healthCheck.livenessProbe.timeoutSeconds }}

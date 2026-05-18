@@ -52,8 +52,11 @@ Single-process Node remains the simplest deployment: run it with `node`, `pm2`, 
   ```bash
   helm install lobu oci://ghcr.io/lobu-ai/charts/lobu \
     --namespace lobu --create-namespace \
-    -f charts/lobu/values.example.yaml
+    -f your-values.yaml
   ```
+  See `charts/lobu/values.yaml` for the full set of tunables. At minimum supply an
+  ingress host, a `secretName` Secret containing `DATABASE_URL` + `JWT_SECRET` +
+  `BETTER_AUTH_SECRET` + provider API keys, and a `database.existingSecret`.
 
 ## Architecture
 

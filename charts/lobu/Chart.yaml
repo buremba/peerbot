@@ -1,17 +1,16 @@
 apiVersion: v2
 name: lobu
-description: Lobu self-hosted AI agent platform
+description: Lobu Platform - Never forget anything. User content analysis with AI.
 type: application
 version: 7.1.0
 appVersion: 7.1.0
 keywords:
   - lobu
-  - agents
-  - ai
-  - memory
+  - content
+  - analytics
 home: https://github.com/lobu-ai/lobu
 sources:
   - https://github.com/lobu-ai/lobu
 maintainers:
   - name: lobu-ai
-    email: emre@lobu.ai
+    email: emrekabakci@gmail.com

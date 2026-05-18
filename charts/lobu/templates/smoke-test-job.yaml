@@ -31,36 +31,23 @@ spec:
         - name: smoke-test
           image: {{ include "lobu.appImage" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          {{- if $workerSmokeEnabled }}
-          {{- $secretName := include "lobu.secretName" . }}
-          {{- if $secretName }}
+          {{- if and $workerSmokeEnabled .Values.secretName }}
           envFrom:
             - secretRef:
-                # Phase 3 needs SMOKE_TEST_TOKEN from the deployment Secret
-                # to authenticate against /api/internal/smoke/dispatch.
-                # DATABASE_URL also comes from the same Secret on production
-                # installs (chart-managed secrets.create path also exposes it
-                # via the inline `env` block below).
-                name: {{ $secretName }}
+                # Phase 3 needs SMOKE_TEST_TOKEN + DATABASE_URL from the
+                # deployment Secret to authenticate against
+                # /api/internal/smoke/dispatch and poll the snapshot row.
+                name: {{ .Values.secretName }}
           {{- end }}
-          {{- end }}
+          {{- if $workerSmokeEnabled }}
           env:
-            {{- if and .Values.secrets.create (hasKey .Values.secrets.stringData "DATABASE_URL") }}
-            - name: DATABASE_URL
-              value: {{ index .Values.secrets.stringData "DATABASE_URL" | quote }}
-            {{- end }}
-            - name: REQUIRED_SCHEMA
-              value: {{ join "," (default (list) .Values.releaseGates.smokeTest.requiredSchema) | quote }}
-            {{- if $workerSmokeEnabled }}
             - name: WORKER_SMOKE_ENABLED
               value: "1"
-            # NOTE: the smoke agentId and organizationId are NOT passed
-            # to the dispatch endpoint — the gateway pins them
-            # server-side from SMOKE_TEST_AGENT_ID / SMOKE_TEST_ORG_ID
-            # in the deployment Secret so a leaked SMOKE_TEST_TOKEN
-            # cannot target a real tenant. The chart values below are
-            # only here so operators can keep the chart-side knobs in
-            # sync with what they configure in the Secret.
+            # The smoke agentId + organizationId are NOT passed to the
+            # dispatch endpoint — the gateway pins them server-side from
+            # SMOKE_TEST_AGENT_ID / SMOKE_TEST_ORG_ID in the deployment
+            # Secret. This makes a leaked SMOKE_TEST_TOKEN unable to
+            # target real tenants. See lobu#878 for the codex finding.
             - name: WORKER_SMOKE_CONV_PREFIX
               value: {{ default "smoke-" $workerSmoke.conversationIdPrefix | quote }}
             - name: WORKER_SMOKE_TIMEOUT
@@ -71,14 +58,14 @@ spec:
               value: {{ .Release.Name | quote }}
             - name: WORKER_SMOKE_REVISION
               value: {{ .Release.Revision | quote }}
-            {{- end }}
+          {{- end }}
           command:
             - /bin/bash
             - -ec
             - |
               url="http://{{ include "lobu.fullname" . }}-app:{{ .Values.service.port }}{{ .Values.releaseGates.smokeTest.path }}"
               deadline=$((SECONDS + {{ .Values.releaseGates.smokeTest.timeoutSeconds | int }}))
-              echo "waiting for $url"
+              echo "phase 1: waiting for $url"
 
               while true; do
                 if curl -fsS --max-time 5 "$url" >/tmp/lobu-smoke-response 2>/tmp/lobu-smoke-error; then
@@ -97,75 +84,16 @@ spec:
                 sleep {{ .Values.releaseGates.smokeTest.intervalSeconds | int }}
               done
 
-              if [ -z "${REQUIRED_SCHEMA}" ]; then
-                echo "no requiredSchema configured — skipping schema check"
-                exit 0
-              fi
-              if [ -z "${DATABASE_URL}" ]; then
-                echo "DATABASE_URL not set in smoke-test env — skipping schema check" >&2
-                exit 0
-              fi
-
-              echo "checking required schema columns: ${REQUIRED_SCHEMA}"
-              node --input-type=module <<'NODE'
-              import postgres from "postgres";
-
-              const required = (process.env.REQUIRED_SCHEMA || "")
-                .split(",")
-                .map((s) => s.trim())
-                .filter(Boolean)
-                .map((entry) => {
-                  const [table, column] = entry.split(".");
-                  if (!table || !column) {
-                    console.error(`ERROR: bad requiredSchema entry "${entry}" — must be table.column`);
-                    process.exit(2);
-                  }
-                  return { table, column };
-                });
-
-              const sql = postgres(process.env.DATABASE_URL, {
-                max: 1,
-                connect_timeout: 10,
-                idle_timeout: 1,
-                onnotice: () => {},
-              });
-
-              try {
-                const missing = [];
-                for (const { table, column } of required) {
-                  const rows = await sql`
-                    SELECT 1 FROM information_schema.columns
-                    WHERE table_schema = 'public'
-                      AND table_name = ${table}
-                      AND column_name = ${column}
-                    LIMIT 1
-                  `;
-                  if (rows.length === 0) {
-                    missing.push(`${table}.${column}`);
-                  }
-                }
-                if (missing.length > 0) {
-                  console.error("ERROR: required schema columns missing after migrate:");
-                  for (const m of missing) console.error(`  - ${m}`);
-                  console.error(
-                    "This usually means a migration in db/migrations/ was edited after\n" +
-                    "it was first applied to this database. Ship a new dated migration\n" +
-                    "instead of editing an existing one."
-                  );
-                  process.exit(1);
-                }
-                console.log(`schema check passed — all ${required.length} required column(s) present`);
-              } finally {
-                await sql.end({ timeout: 1 }).catch(() => {});
-              }
-              NODE
-
               if [ -z "${WORKER_SMOKE_ENABLED:-}" ]; then
-                echo "workerSmoke disabled — skipping phase 3"
+                echo "workerSmoke disabled — gateway-only smoke check passed"
                 exit 0
               fi
               if [ -z "${SMOKE_TEST_TOKEN:-}" ]; then
                 echo "SMOKE_TEST_TOKEN env not set — cannot run worker smoke" >&2
+                exit 1
+              fi
+              if [ -z "${DATABASE_URL:-}" ]; then
+                echo "DATABASE_URL env not set — cannot poll snapshot" >&2
                 exit 1
               fi
 

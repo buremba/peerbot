@@ -24,10 +24,6 @@ spec:
     metadata:
       labels:
         {{- include "lobu.workerSelectorLabels" . | nindent 8 }}
-      {{- with .Values.worker.podAnnotations }}
-      annotations:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
     spec:
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
@@ -38,6 +34,10 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       initContainers:
+        # Wait for the app pod's /health before starting the worker daemon.
+        # Without this the daemon's hard health check (worker.ts:77) crashes
+        # the container when both pods restart simultaneously, costing
+        # 30-60s of connector ingestion downtime per deploy.
         - name: wait-for-app
           image: {{ include "lobu.workerImage" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
@@ -67,10 +67,6 @@ spec:
         - name: worker
           image: {{ include "lobu.workerImage" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          {{- with .Values.worker.securityContext }}
-          securityContext:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
           env:
             - name: API_URL
               value: http://{{ include "lobu.fullname" . }}-app:{{ .Values.service.port }}
@@ -115,11 +111,10 @@ spec:
                   key: {{ .Values.database.existingSecretKey }}
             {{- end }}
             {{- end }}
-          {{- $secretName := include "lobu.secretName" . }}
-          {{- if $secretName }}
+          {{- if .Values.secretName }}
           envFrom:
             - secretRef:
-                name: {{ $secretName }}
+                name: {{ .Values.secretName }}
           {{- end }}
           {{- if .Values.worker.cache.enabled }}
           volumeMounts:

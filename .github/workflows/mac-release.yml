@@ -264,23 +264,29 @@ jobs:
       # PROVISIONING_PROFILE_SPECIFIER is only passed when a profile was
       # installed in the previous step. Without it, xcodebuild defaults to
       # no embedded profile, which is correct for builds using only standard
-      # entitlements.
+      # entitlements. Use a bash array so profile names with spaces
+      # (e.g. "Owletto Developer ID") survive word-splitting.
       - name: Archive (signed)
         if: steps.mode.outputs.signed == 'true'
+        env:
+          PROFILE_NAME: ${{ secrets.APPLE_PROVISION_PROFILE_NAME }}
         run: |
-          PP_ARG=""
+          ARGS=(
+            -project packages/owletto/apps/mac/Owletto.xcodeproj
+            -scheme Owletto
+            -configuration Release
+            -archivePath "$RUNNER_TEMP/Owletto.xcarchive"
+            archive
+            CODE_SIGN_STYLE=Manual
+            "CODE_SIGN_IDENTITY=Developer ID Application"
+            "DEVELOPMENT_TEAM=${{ secrets.APPLE_TEAM_ID }}"
+            ENABLE_HARDENED_RUNTIME=YES
+            "MARKETING_VERSION=${{ steps.v.outputs.version }}"
+          )
           if [ "${{ steps.profile.outputs.installed }}" = "true" ]; then
-            PP_ARG=PROVISIONING_PROFILE_SPECIFIER="${{ secrets.APPLE_PROVISION_PROFILE_NAME }}"
+            ARGS+=("PROVISIONING_PROFILE_SPECIFIER=$PROFILE_NAME")
           fi
-          xcodebuild \
-            -project packages/owletto/apps/mac/Owletto.xcodeproj -scheme Owletto -configuration Release \
-            -archivePath "$RUNNER_TEMP/Owletto.xcarchive" archive \
-            CODE_SIGN_STYLE=Manual \
-            CODE_SIGN_IDENTITY="Developer ID Application" \
-            DEVELOPMENT_TEAM="${{ secrets.APPLE_TEAM_ID }}" \
-            $PP_ARG \
-            ENABLE_HARDENED_RUNTIME=YES \
-            MARKETING_VERSION="${{ steps.v.outputs.version }}"
+          xcodebuild "${ARGS[@]}"
 
       - name: Archive (unsigned, ad-hoc)
         if: steps.mode.outputs.signed != 'true'

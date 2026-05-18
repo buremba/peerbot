@@ -81,6 +81,7 @@ describe('executor heartbeats (lobu#860)', () => {
   // biome-ignore lint/suspicious/noExplicitAny: spy refs
   let setIntervalSpy: any;
   let scheduledIntervals: Array<{ fn: () => Promise<void> | void; ms: number; id: number }>;
+  let intervalsEverScheduledMs: number[];
   let nextId: number;
 
   beforeEach(() => {
@@ -89,11 +90,13 @@ describe('executor heartbeats (lobu#860)', () => {
     executeCompiledConnectorMock.mockClear();
     batchGenerateEmbeddingsMock.mockClear();
 
+    intervalsEverScheduledMs = [];
     setIntervalSpy = spyOn(globalThis, 'setInterval').mockImplementation(
       // biome-ignore lint/suspicious/noExplicitAny: test seam
       ((fn: any, ms: number) => {
         const id = nextId++;
         scheduledIntervals.push({ fn, ms, id });
+        intervalsEverScheduledMs.push(ms);
         return id;
         // biome-ignore lint/suspicious/noExplicitAny: cast for setInterval typing
       }) as any
@@ -148,8 +151,13 @@ describe('executor heartbeats (lobu#860)', () => {
     expect(result.error).toBeUndefined();
     expect(client.__heartbeats).toBeGreaterThanOrEqual(2);
 
-    // 30s cadence: at least one setInterval was registered with ms === 30_000.
-    expect(scheduledIntervals.map((s) => s.ms).concat([30_000])).toContain(30_000);
+    // 30s cadence is the contract with the gateway reaper (default
+    // RUNS_REAPER_STALE_AFTER_SECONDS=120 ÷ 4 ≈ 30s). Assert that
+    // executeActionRun actually used 30_000ms for its setInterval.
+    // `intervalsEverScheduledMs` accumulates across the run, so even
+    // after `finally` clears the interval the registration is still
+    // recorded here.
+    expect(intervalsEverScheduledMs).toContain(30_000);
   });
 
   test('executeEmbedBackfillRun heartbeats at least twice over a 70s simulated run', async () => {

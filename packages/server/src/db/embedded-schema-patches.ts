@@ -849,7 +849,7 @@ export const EMBEDDED_SCHEMA_PATCHES: EmbeddedSchemaPatch[] = [
   {
     id: 'runs-heartbeat-reaper-index',
     apply: async (sql) => {
-      // Mirrors db/migrations/20260518000000_runs_heartbeat_reaper_index.sql.
+      // Mirrors db/migrations/20260518010000_runs_heartbeat_reaper_index.sql.
       // Supports the connector-lane stale-run reaper in
       // scheduled/check-stalled-executions.ts. Restricted to the connector
       // lanes; the lobu-queue lanes have their own sweep in RunsQueue and

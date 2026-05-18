@@ -1,4 +1,8 @@
 {{- if .Values.releaseGates.smokeTest.enabled }}
+{{- $workerSmoke := .Values.releaseGates.smokeTest.workerSmoke | default dict -}}
+{{- $workerSmokeEnabled := and $workerSmoke (hasKey $workerSmoke "enabled") $workerSmoke.enabled -}}
+{{- $workerSmokeTimeout := default 90 $workerSmoke.timeoutSeconds | int -}}
+{{- $totalTimeout := add (.Values.releaseGates.smokeTest.timeoutSeconds | int) (ternary $workerSmokeTimeout 0 $workerSmokeEnabled) -}}
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -11,7 +15,7 @@ metadata:
     "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
 spec:
   backoffLimit: 0
-  activeDeadlineSeconds: {{ add (.Values.releaseGates.smokeTest.timeoutSeconds | int) 30 }}
+  activeDeadlineSeconds: {{ add $totalTimeout 30 }}
   template:
     metadata:
       labels:
@@ -27,6 +31,19 @@ spec:
         - name: smoke-test
           image: {{ include "lobu.appImage" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- if $workerSmokeEnabled }}
+          {{- $secretName := include "lobu.secretName" . }}
+          {{- if $secretName }}
+          envFrom:
+            - secretRef:
+                # Phase 3 needs SMOKE_TEST_TOKEN from the deployment Secret
+                # to authenticate against /api/internal/smoke/dispatch.
+                # DATABASE_URL also comes from the same Secret on production
+                # installs (chart-managed secrets.create path also exposes it
+                # via the inline `env` block below).
+                name: {{ $secretName }}
+          {{- end }}
+          {{- end }}
           env:
             {{- if and .Values.secrets.create (hasKey .Values.secrets.stringData "DATABASE_URL") }}
             - name: DATABASE_URL
@@ -34,6 +51,27 @@ spec:
             {{- end }}
             - name: REQUIRED_SCHEMA
               value: {{ join "," (default (list) .Values.releaseGates.smokeTest.requiredSchema) | quote }}
+            {{- if $workerSmokeEnabled }}
+            - name: WORKER_SMOKE_ENABLED
+              value: "1"
+            # NOTE: the smoke agentId and organizationId are NOT passed
+            # to the dispatch endpoint — the gateway pins them
+            # server-side from SMOKE_TEST_AGENT_ID / SMOKE_TEST_ORG_ID
+            # in the deployment Secret so a leaked SMOKE_TEST_TOKEN
+            # cannot target a real tenant. The chart values below are
+            # only here so operators can keep the chart-side knobs in
+            # sync with what they configure in the Secret.
+            - name: WORKER_SMOKE_CONV_PREFIX
+              value: {{ default "smoke-" $workerSmoke.conversationIdPrefix | quote }}
+            - name: WORKER_SMOKE_TIMEOUT
+              value: {{ $workerSmokeTimeout | quote }}
+            - name: WORKER_SMOKE_INTERVAL
+              value: {{ default 3 $workerSmoke.intervalSeconds | int | quote }}
+            - name: WORKER_SMOKE_RELEASE
+              value: {{ .Release.Name | quote }}
+            - name: WORKER_SMOKE_REVISION
+              value: {{ .Release.Revision | quote }}
+            {{- end }}
           command:
             - /bin/bash
             - -ec
@@ -121,4 +159,96 @@ spec:
                 await sql.end({ timeout: 1 }).catch(() => {});
               }
               NODE
+
+              if [ -z "${WORKER_SMOKE_ENABLED:-}" ]; then
+                echo "workerSmoke disabled — skipping phase 3"
+                exit 0
+              fi
+              if [ -z "${SMOKE_TEST_TOKEN:-}" ]; then
+                echo "SMOKE_TEST_TOKEN env not set — cannot run worker smoke" >&2
+                exit 1
+              fi
+
+              conv_id="${WORKER_SMOKE_CONV_PREFIX}${WORKER_SMOKE_RELEASE}-${WORKER_SMOKE_REVISION}"
+              dispatch_url="http://{{ include "lobu.fullname" . }}-app:{{ .Values.service.port }}/api/internal/smoke/dispatch"
+              echo "phase 3: dispatching smoke run to $dispatch_url (conversation_id=$conv_id)"
+
+              http_status=$(curl -sS --max-time 10 -o /tmp/lobu-smoke-dispatch -w '%{http_code}' \
+                -H "Authorization: Bearer ${SMOKE_TEST_TOKEN}" \
+                -H 'Content-Type: application/json' \
+                -X POST "$dispatch_url" \
+                --data "$(printf '{"conversationId":"%s","messageText":"smoke ping"}' \
+                  "${conv_id}")" \
+                || echo "000")
+
+              if [ "${http_status}" != "200" ]; then
+                echo "smoke dispatch returned HTTP ${http_status}" >&2
+                cat /tmp/lobu-smoke-dispatch >&2 || true
+                exit 1
+              fi
+
+              run_id=$(node --input-type=module <<'NODE'
+              import fs from "node:fs";
+              try {
+                const body = JSON.parse(fs.readFileSync("/tmp/lobu-smoke-dispatch", "utf8"));
+                if (typeof body.runId === "number" && body.runId > 0) {
+                  process.stdout.write(String(body.runId));
+                } else {
+                  process.exit(2);
+                }
+              } catch {
+                process.exit(3);
+              }
+              NODE
+              )
+              if [ -z "${run_id}" ]; then
+                echo "smoke dispatch did not return a runId" >&2
+                cat /tmp/lobu-smoke-dispatch >&2 || true
+                exit 1
+              fi
+              echo "smoke dispatch enqueued run_id=${run_id}, polling for completion"
+
+              deadline=$((SECONDS + WORKER_SMOKE_TIMEOUT))
+              while true; do
+                terminal=$(WORKER_SMOKE_RUN_ID="${run_id}" node --input-type=module <<'NODE'
+              import postgres from "postgres";
+              const sql = postgres(process.env.DATABASE_URL, {
+                max: 1,
+                connect_timeout: 10,
+                idle_timeout: 1,
+                onnotice: () => {},
+              });
+              try {
+                const rows = await sql`
+                  SELECT terminal_status
+                  FROM public.agent_transcript_snapshot
+                  WHERE run_id = ${Number(process.env.WORKER_SMOKE_RUN_ID)}
+                  LIMIT 1
+                `;
+                if (rows.length > 0) {
+                  process.stdout.write(String(rows[0].terminal_status || ""));
+                }
+              } finally {
+                await sql.end({ timeout: 1 }).catch(() => {});
+              }
+              NODE
+                )
+
+                if [ "${terminal}" = "completed" ]; then
+                  echo "worker smoke run completed (run_id=${run_id})"
+                  exit 0
+                fi
+
+                if [ -n "${terminal}" ] && [ "${terminal}" != "completed" ]; then
+                  echo "worker smoke run terminated with status='${terminal}' (run_id=${run_id})" >&2
+                  exit 1
+                fi
+
+                if [ "$SECONDS" -ge "$deadline" ]; then
+                  echo "worker smoke timed out after ${WORKER_SMOKE_TIMEOUT}s waiting for run_id=${run_id}" >&2
+                  exit 1
+                fi
+
+                sleep "${WORKER_SMOKE_INTERVAL}"
+              done
 {{- end }}

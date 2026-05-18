@@ -583,6 +583,13 @@ app.get('/legal', (c) => {
 // Health check and worker endpoints must be before mcpAuth middleware
 app.get('/api/health', restHealth);
 
+// Internal smoke-test dispatch. Authentication is a shared bearer
+// (`SMOKE_TEST_TOKEN`) loaded into the pod via the deployment Secret —
+// not exposed to public ingress consumers. Mounted before mcpAuth so the
+// route handles its own auth without falling into the OAuth-bearer path.
+import { createSmokeRoutes } from './gateway/routes/internal/smoke';
+app.route('/api/internal/smoke', createSmokeRoutes());
+
 import {
   completeActionRun,
   completeAuthRun,

@@ -103,6 +103,19 @@ spec:
             - name: PUBLIC_WEB_URL
               value: {{ printf "https://%s" (first .Values.ingress.hosts) | quote }}
             {{- end }}
+            {{- $workerSmoke := .Values.releaseGates.smokeTest.workerSmoke | default dict }}
+            {{- if and $workerSmoke (hasKey $workerSmoke "enabled") $workerSmoke.enabled }}
+            # Pin SMOKE_TEST_ALLOWED_HOST to the in-cluster app Service DNS
+            # name so /api/internal/smoke/dispatch refuses any request
+            # whose Host header is not the cluster-internal service. The
+            # smoke Job hits this exact hostname via its curl URL; public
+            # ingress traffic always carries the operator's external host
+            # in Host, so this is the second layer of ingress-bypass
+            # defense (the first is the x-forwarded-* refusal in the
+            # route handler).
+            - name: SMOKE_TEST_ALLOWED_HOST
+              value: {{ printf "%s-app" (include "lobu.fullname" .) | quote }}
+            {{- end }}
             {{- if .Values.embeddings.service.port }}
             {{- if .Values.embeddings.serviceUrl }}
             - name: EMBEDDINGS_SERVICE_URL

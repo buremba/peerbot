@@ -260,3 +260,45 @@ releaseGates:
       - device_workers.organization_id
       - connections.device_worker_id
       - connections.organization_id
+
+    # Phase 3 of the smoke job — drive an actual worker run end-to-end.
+    #
+    # When enabled, the Job POSTs to the internal /api/internal/smoke/dispatch
+    # endpoint, which inserts a synthetic chat_message run. The runs-queue
+    # MessageConsumer in the app pod claims it, spawns a worker subprocess,
+    # the worker runs, and on terminal cleanup writes a row into
+    # `agent_transcript_snapshot`. The Job polls that row and fails the
+    # deploy if `terminal_status='completed'` doesn't materialise inside
+    # `workerSmokeTimeoutSeconds`. This makes the recurring class of
+    # "gateway boots fine but workers can't process a single message"
+    # regressions un-shippable.
+    #
+    # Default OFF: the chart cannot preprovision the synthetic agent for
+    # you. Operators MUST add three keys to the deployment Secret before
+    # enabling, AND preprovision a matching agent row:
+    #
+    #   1. Generate a random token (≥32 chars) and add to the Secret:
+    #        SMOKE_TEST_TOKEN=<random>
+    #        SMOKE_TEST_AGENT_ID=<your-smoke-agent-id>
+    #        SMOKE_TEST_ORG_ID=<your-smoke-org-id>
+    #      The gateway PINS the smoke agentId + organizationId from the
+    #      env at dispatch time — caller-supplied values are ignored.
+    #      This makes it structurally impossible for a leaked
+    #      SMOKE_TEST_TOKEN to dispatch a synthetic run against a real
+    #      tenant's agent.
+    #   2. Preprovision the synthetic agent. The simplest path is
+    #      `lobu apply` against a dedicated "smoke" org/agent project
+    #      whose only agent.id matches `SMOKE_TEST_AGENT_ID`.
+    #   3. Bump this stanza to `enabled: true` and roll the chart.
+    workerSmoke:
+      enabled: false
+      # The smoke Job appends a release-scoped suffix so each helm
+      # upgrade gets its own conversation id within this prefix.
+      conversationIdPrefix: "smoke-"
+      # How long to wait for the snapshot row to appear with
+      # `terminal_status='completed'`. Worker spawn + LLM round-trip +
+      # snapshot POST is ~10-30s on the prod cluster; 90s leaves
+      # headroom for a cold image pull on the worker subprocess.
+      timeoutSeconds: 90
+      # DB poll interval inside the Job.
+      intervalSeconds: 3

@@ -30,3 +30,12 @@ Database:
 Useful checks:
   kubectl -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/instance={{ .Release.Name }}
   kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "lobu.fullname" . }}-app
+
+{{- if and (gt (int (.Values.app.replicaCount | default 1)) 1) (or (not .Values.service.sessionAffinity) (eq (.Values.service.sessionAffinity | default "None") "None")) }}
+
+WARNING: app.replicaCount = {{ .Values.app.replicaCount }} but service.sessionAffinity
+is "None". The SSE manager and its 100-event backlog live in memory per pod
+(packages/server/src/gateway/services/sse-manager.ts), so a client whose stream
+lands on pod A while the worker run is claimed by pod B will silently miss
+events. Set service.sessionAffinity: ClientIP to pin each client to one pod.
+{{- end }}

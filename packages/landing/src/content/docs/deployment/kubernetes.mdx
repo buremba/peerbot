@@ -35,14 +35,7 @@ Add any other provider, platform, or OAuth secrets your deployment needs to `lob
 
 ## Prepare values
 
-Start from the chart's example values file:
-
-```bash
-curl -fsSLo values.yaml \
-  https://raw.githubusercontent.com/lobu-ai/lobu/main/charts/lobu/values.example.yaml
-```
-
-Edit at least these fields:
+Start a `values.yaml` with at least these fields:
 
 ```yaml
 secretName: lobu-secrets
@@ -51,11 +44,22 @@ database:
   existingSecret: lobu-db
   existingSecretKey: uri
 
+# Run migrations as a Helm pre-install/pre-upgrade Job. SKIP_MIGRATIONS
+# below stops app pods from also trying — the Job is the single writer.
+migrations:
+  enabled: true
+  database:
+    existingSecret: lobu-db
+    existingSecretKey: uri
+
 app:
   env:
     NODE_ENV: production
     SKIP_MIGRATIONS: "1"
     WORKER_ALLOWED_DOMAINS: ""
+    # Read by server.ts to mint OAuth redirect URIs, webhook callbacks,
+    # and invite links. MUST match your public origin.
+    PUBLIC_WEB_URL: "https://lobu.example.com"
 
 ingress:
   enabled: true
@@ -64,7 +68,18 @@ ingress:
     - lobu.example.com
 ```
 
-When `ingress.hosts` is set, the app derives `PUBLIC_WEB_URL` from the first host. If your public URL differs from that host, set `app.env.PUBLIC_WEB_URL` explicitly.
+Create the referenced secrets before installing:
+
+```bash
+kubectl -n lobu create secret generic lobu-db \
+  --from-literal=uri='postgresql://USER:PASSWORD@HOST:5432/lobu?sslmode=require'
+kubectl -n lobu create secret generic lobu-secrets \
+  --from-literal=JWT_SECRET='replace-with-a-long-random-value' \
+  --from-literal=BETTER_AUTH_SECRET='replace-with-a-long-random-value' \
+  --from-literal=ANTHROPIC_API_KEY='sk-ant-...'
+```
+
+Always set `app.env.PUBLIC_WEB_URL` to your public origin (e.g. `https://lobu.example.com`). The server reads this to mint OAuth redirect URIs, webhook callbacks, and invite links; without it those URLs default to `http://localhost:8787` and the install will be broken end-to-end.
 
 ## Install
 
@@ -108,12 +123,6 @@ helm upgrade lobu oci://ghcr.io/lobu-ai/charts/lobu \
   --namespace lobu \
   -f values.yaml
 ```
-
-## Chart-managed secrets
-
-For production, prefer an external secret manager or pre-created Kubernetes Secrets. For demos, the chart can create a Secret with `secrets.create: true`.
-
-If you enable both `secrets.create` and `migrations.enabled` and put `DATABASE_URL` in `secrets.stringData`, leave `migrations.database.existingSecret` empty. Pre-install hooks run before normal Helm resources are created, so the migration job reads `secrets.stringData.DATABASE_URL` directly in that setup.
 
 ## Next steps
 

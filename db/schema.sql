@@ -3701,16 +3701,16 @@ CREATE UNIQUE INDEX idx_runs_dispatched_message_id ON public.runs USING btree (d
 CREATE INDEX idx_runs_feed ON public.runs USING btree (feed_id);
 
 --
--- Name: idx_runs_org; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_runs_org ON public.runs USING btree (organization_id);
-
---
 -- Name: idx_runs_heartbeat_inflight; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_runs_heartbeat_inflight ON public.runs USING btree (last_heartbeat_at) WHERE ((status = ANY (ARRAY['claimed'::text, 'running'::text])) AND (run_type = ANY (ARRAY['sync'::text, 'action'::text, 'embed_backfill'::text, 'auth'::text])));
+
+--
+-- Name: idx_runs_org; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_runs_org ON public.runs USING btree (organization_id);
 
 --
 -- Name: idx_runs_pending; Type: INDEX; Schema: public; Owner: -

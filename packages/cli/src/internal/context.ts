@@ -10,10 +10,18 @@ const CONTEXTS_FILE = join(LOBU_CONFIG_DIR, "config.json");
 
 export const DEFAULT_MEMORY_URL = "https://lobu.ai/mcp";
 
+export interface LobuServerConfig {
+  databaseUrl?: string;
+  port?: number;
+  host?: string;
+  dataDir?: string;
+}
+
 interface LobuContextEntry {
   apiUrl: string;
   activeOrg?: string;
   memoryUrl?: string;
+  server?: LobuServerConfig;
 }
 
 interface LobuContextConfig {
@@ -215,6 +223,7 @@ function normalizeContextConfig(raw: StoredContextConfig): LobuContextConfig {
         typeof value.memoryUrl === "string"
           ? value.memoryUrl.trim()
           : undefined,
+      server: normalizeServerConfig(value.server),
     };
   }
 
@@ -227,6 +236,51 @@ function normalizeContextConfig(raw: StoredContextConfig): LobuContextConfig {
     currentContext,
     contexts,
   };
+}
+
+function normalizeServerConfig(raw: unknown): LobuServerConfig | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const src = raw as Record<string, unknown>;
+  const out: LobuServerConfig = {};
+
+  if (typeof src.databaseUrl === "string" && src.databaseUrl.trim()) {
+    out.databaseUrl = src.databaseUrl.trim();
+  }
+  if (typeof src.port === "number" && Number.isInteger(src.port) && src.port > 0) {
+    out.port = src.port;
+  }
+  if (typeof src.host === "string" && src.host.trim()) {
+    out.host = src.host.trim();
+  }
+  if (typeof src.dataDir === "string" && src.dataDir.trim()) {
+    out.dataDir = src.dataDir.trim();
+  }
+
+  return Object.keys(out).length === 0 ? undefined : out;
+}
+
+export async function getServerConfig(
+  contextName?: string
+): Promise<LobuServerConfig | undefined> {
+  const config = await loadContextConfig();
+  const name = contextName || config.currentContext;
+  return config.contexts[name]?.server;
+}
+
+export async function setServerConfig(
+  server: LobuServerConfig | undefined,
+  contextName?: string
+): Promise<LobuContextConfig> {
+  const config = await loadContextConfig();
+  const name = contextName || config.currentContext;
+  const context = config.contexts[name];
+  if (!context) {
+    throw new Error(`Unknown context "${name}".`);
+  }
+
+  context.server = server ? normalizeServerConfig(server) : undefined;
+  await saveContextConfig(config);
+  return config;
 }
 
 function normalizeAndValidateApiUrl(apiUrl: string): string {

@@ -9,7 +9,7 @@ import chalk from "chalk";
 import ora from "ora";
 import { isLoadError, loadConfig } from "../config/loader.js";
 import { resolveApiClient } from "../internal/api-client.js";
-import { addContext } from "../internal/context.js";
+import { addContext, getServerConfig } from "../internal/context.js";
 import { type Credentials, saveCredentials } from "../internal/credentials.js";
 import { parseEnvContent } from "../internal/index.js";
 import { loadProjectLink } from "../internal/project-link.js";
@@ -71,16 +71,32 @@ export async function devCommand(
     envVars = {};
   }
 
-  const mergedEnv = { ...envVars, ...(process.env as Record<string, string>) };
+  // User-level server config from ~/.config/lobu/config.json (Mac-app
+  // settings pane writes here; CLI users can also `lobu context server ...`).
+  // Precedence: shell > project .env > user config > defaults.
+  const userServerConfig = await getServerConfig().catch(() => undefined);
+  const userServerEnv: Record<string, string> = {};
+  if (userServerConfig?.databaseUrl) userServerEnv.DATABASE_URL = userServerConfig.databaseUrl;
+  if (userServerConfig?.port) userServerEnv.PORT = String(userServerConfig.port);
+  if (userServerConfig?.host) userServerEnv.HOST = userServerConfig.host;
+  if (userServerConfig?.dataDir) userServerEnv.LOBU_DATA_DIR = userServerConfig.dataDir;
+
+  const mergedEnv = {
+    ...userServerEnv,
+    ...envVars,
+    ...(process.env as Record<string, string>),
+  };
   const hasDatabaseUrl = Boolean(mergedEnv.DATABASE_URL?.trim());
 
   // Refuse to boot against a shared/non-local DATABASE_URL that came from the
-  // parent shell rather than the project's own .env — a common footgun where
-  // "local lobu run" silently writes into prod / a teammate's tailnet DB.
-  // The project pinning its own DATABASE_URL is treated as explicit consent.
+  // parent shell rather than the project's own .env or the user's config.
+  // A common footgun: "local lobu run" silently writes into prod / a
+  // teammate's tailnet DB. The project pinning its own DATABASE_URL, or the
+  // user persisting one in ~/.config/lobu/config.json, is explicit consent.
   if (
     hasDatabaseUrl &&
     !envVars.DATABASE_URL?.trim() &&
+    !userServerEnv.DATABASE_URL?.trim() &&
     isSharedDatabaseUrl(mergedEnv.DATABASE_URL!) &&
     !options.unsafeSharedDb
   ) {

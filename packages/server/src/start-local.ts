@@ -27,6 +27,13 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
+import { applyUserServerConfigToEnv } from './utils/user-config';
+
+// After dotenv (project .env) so .env wins; before any env reads below so the
+// module-level DATA_DIR / PORT / HOST constants pick up Mac-app overrides
+// written to ~/.config/lobu/config.json.
+applyUserServerConfigToEnv();
+
 import { ensureDefaultAgent } from './auth/default-provisioning';
 
 import { PGlite } from '@electric-sql/pglite';

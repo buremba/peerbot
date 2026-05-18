@@ -13,8 +13,10 @@ import {
   findContextByMemoryUrl,
   findContextByUrl,
   getActiveOrg,
+  getServerConfig,
   loadContextConfig,
   setActiveOrg,
+  setServerConfig,
 } from "../context";
 
 describe("context management", () => {
@@ -103,5 +105,60 @@ describe("context management", () => {
     const matched = await findContextByMemoryUrl("http://localhost:8787/mcp");
 
     expect(matched?.name).toBe("local");
+  });
+
+  test("reads and persists the server block per context", async () => {
+    const configData = {
+      currentContext: "local",
+      contexts: {
+        local: {
+          apiUrl: "http://localhost:8787/api/v1",
+          server: {
+            databaseUrl: "postgres://burakemre@localhost:5432/lobu",
+            port: 9000,
+            host: "0.0.0.0",
+            dataDir: "/tmp/lobu-data",
+          },
+        },
+      },
+    };
+    readFileSpy.mockResolvedValue(JSON.stringify(configData));
+
+    expect(await getServerConfig("local")).toEqual({
+      databaseUrl: "postgres://burakemre@localhost:5432/lobu",
+      port: 9000,
+      host: "0.0.0.0",
+      dataDir: "/tmp/lobu-data",
+    });
+
+    await setServerConfig({ databaseUrl: "postgres://new/db", port: 8788 }, "local");
+    const [, written] = writeFileSpy.mock.calls.at(-1)!;
+    const saved = JSON.parse(written as string) as typeof configData;
+    expect(saved.contexts.local.server).toEqual({
+      databaseUrl: "postgres://new/db",
+      port: 8788,
+    });
+  });
+
+  test("drops invalid server fields during normalization", async () => {
+    const configData = {
+      currentContext: "local",
+      contexts: {
+        local: {
+          apiUrl: "http://localhost:8787/api/v1",
+          server: {
+            databaseUrl: "  ",
+            port: -1,
+            host: "   ",
+            dataDir: "/cfg/data",
+            // unknown field — should be ignored
+            phaserBank: 5,
+          },
+        },
+      },
+    };
+    readFileSpy.mockResolvedValue(JSON.stringify(configData));
+
+    expect(await getServerConfig("local")).toEqual({ dataDir: "/cfg/data" });
   });
 });

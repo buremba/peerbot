@@ -1426,7 +1426,9 @@ CREATE TABLE public.organization_lobu_links (
 
 CREATE TABLE public.pending_interactions (
     id text NOT NULL,
-    organization_id text,
+    organization_id text NOT NULL,
+    connection_id text NOT NULL,
+    expected_user_id text NOT NULL,
     entry_payload jsonb NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     claimed_at timestamp with time zone
@@ -3648,7 +3650,7 @@ CREATE INDEX idx_pending_interactions_created_at ON public.pending_interactions 
 -- Name: idx_pending_interactions_unclaimed; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX idx_pending_interactions_unclaimed ON public.pending_interactions USING btree (id) WHERE (claimed_at IS NULL);
+CREATE INDEX idx_pending_interactions_unclaimed ON public.pending_interactions USING btree (id, organization_id, connection_id, expected_user_id) WHERE (claimed_at IS NULL);
 
 
 --

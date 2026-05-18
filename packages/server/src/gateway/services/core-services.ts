@@ -267,7 +267,7 @@ export class CoreServices {
    *  make this a hygiene task — running ~5 minutes apart is plenty. */
   async sweepEphemeralTables(): Promise<void> {
     try {
-      const [oauthStates, rate, grants, completedRuns, pendingInteractions] =
+      const [oauthStates, rate, grants, completedRuns, pendingIds] =
         await Promise.all([
           sweepExpiredOAuthStates(),
           sweepExpiredRateLimits(),
@@ -275,6 +275,7 @@ export class CoreServices {
           sweepCompletedRuns(),
           sweepStalePendingInteractions(),
         ]);
+      const pendingInteractions = pendingIds.length;
       if (
         oauthStates + rate + grants + completedRuns + pendingInteractions >
         0

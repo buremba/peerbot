@@ -14,8 +14,8 @@ import type { GrantStore } from "../permissions/grant-store.js";
 import type { ChatInstanceManager } from "./chat-instance-manager.js";
 import {
   claimPendingQuestion,
-  restashPendingQuestion,
   storePendingQuestion,
+  sweepStalePendingInteractions,
 } from "./pending-interaction-store.js";
 import type { PlatformConnection } from "./types.js";
 
@@ -200,73 +200,113 @@ export function registerInteractionBridge(
   // `pendingSentMessages` map holds the non-serializable platform
   // `SentMessage` (used to strip card buttons on click) — losing it
   // cross-pod is best-effort UX, not correctness.
-  const pendingSentMessages = new Map<string, SentMessage>();
-  async function trackQuestion(entry: PendingQuestionEntry): Promise<void> {
-    if (entry.sent) {
-      pendingSentMessages.set(entry.question.id, entry.sent);
+  //
+  // Each entry remembers `registeredAt` so the periodic sweep can evict
+  // stale handles that match the 24h DB-row TTL. Without this the Map would
+  // grow unbounded for questions that are never clicked. The sweep also
+  // removes the local handle for any row the DB sweeper actually deleted,
+  // so the two stay in sync.
+  const PENDING_SENT_TTL_MS = 24 * 60 * 60 * 1000;
+  const PENDING_SENT_SWEEP_INTERVAL_MS = 60 * 60 * 1000;
+  interface CachedSent {
+    sent: SentMessage;
+    registeredAt: number;
+  }
+  const pendingSentMessages = new Map<string, CachedSent>();
+  const pendingSentSweepTimer = setInterval(() => {
+    sweepPendingSent().catch((error) => {
+      logger.warn(
+        { connectionId, error: String(error) },
+        "pendingSentMessages sweep failed"
+      );
+    });
+  }, PENDING_SENT_SWEEP_INTERVAL_MS);
+  pendingSentSweepTimer.unref?.();
+  async function sweepPendingSent(): Promise<void> {
+    const ttlCutoff = Date.now() - PENDING_SENT_TTL_MS;
+    for (const [id, entry] of pendingSentMessages) {
+      if (entry.registeredAt <= ttlCutoff) {
+        pendingSentMessages.delete(id);
+      }
     }
+    // Also drop local handles for any DB rows the scheduled sweeper just
+    // deleted — keeps the local cache from outliving its DB row.
+    let deletedIds: string[] = [];
     try {
-      await storePendingQuestion(
-        entry.question.id,
-        connection.organizationId,
-        { question: entry.question }
-      );
+      deletedIds = await sweepStalePendingInteractions();
     } catch (error) {
-      pendingSentMessages.delete(entry.question.id);
-      logger.error(
-        { connectionId, questionId: entry.question.id, error: String(error) },
-        "Failed to persist pending question"
+      // The store logs its own DB errors; treat as best-effort here.
+      logger.debug(
+        { connectionId, error: String(error) },
+        "sweepStalePendingInteractions failed during local sweep"
       );
+    }
+    for (const id of deletedIds) {
+      pendingSentMessages.delete(id);
     }
   }
+  /**
+   * Persist a pending question row, then cache its SentMessage handle so a
+   * click on this pod can edit the card. The persist happens first — see
+   * `onQuestionCreated` for the post-then-persist policy that wraps the
+   * card-post; this function is invoked only after the row is durable.
+   */
+  function rememberSentMessage(
+    questionId: string,
+    sent: SentMessage | undefined
+  ): void {
+    if (!sent) return;
+    pendingSentMessages.set(questionId, {
+      sent,
+      registeredAt: Date.now(),
+    });
+  }
   async function claimQuestion(
-    questionId: string
+    questionId: string,
+    organizationId: string,
+    expectedUserId: string
   ): Promise<PendingQuestionEntry | undefined> {
-    const stored = await claimPendingQuestion(questionId).catch((error) => {
+    const stored = await claimPendingQuestion(
+      questionId,
+      organizationId,
+      connectionId,
+      expectedUserId
+    ).catch((error) => {
       logger.error(
         { connectionId, questionId, error: String(error) },
         "Failed to claim pending question"
       );
       return null;
     });
-    if (!stored) {
-      // Whoever won the race already took the SentMessage entry on their pod.
-      pendingSentMessages.delete(questionId);
-      return undefined;
-    }
-    const sent = pendingSentMessages.get(questionId);
+    if (!stored) return undefined;
+    const cached = pendingSentMessages.get(questionId);
     pendingSentMessages.delete(questionId);
-    return { question: stored.question, sent };
-  }
-  /**
-   * Put a previously-claimed entry back. Used when a click is rejected
-   * (e.g. wrong user) so the rightful owner can still answer later.
-   */
-  async function restashQuestion(
-    questionId: string,
-    entry: PendingQuestionEntry
-  ): Promise<void> {
-    if (entry.sent) {
-      pendingSentMessages.set(questionId, entry.sent);
-    }
-    try {
-      await restashPendingQuestion(
-        questionId,
-        connection.organizationId,
-        { question: entry.question }
-      );
-    } catch (error) {
-      logger.error(
-        { connectionId, questionId, error: String(error) },
-        "Failed to restash pending question"
-      );
-    }
+    return { question: stored.question, sent: cached?.sent };
   }
   const onQuestionCreated = async (event: PostedQuestion) => {
     try {
       if (!shouldHandle(event, platform, connectionId, manager)) return;
       if (handledEvents.has(event.id)) return;
       markHandled(event.id);
+
+      // Cross-tenant scoping: every pending row must carry the bridge's
+      // org. Without a known org we can't safely persist or claim, so
+      // drop the event rather than write an un-scoped row.
+      const organizationId = connection.organizationId;
+      if (!organizationId) {
+        logger.warn(
+          { connectionId, questionId: event.id },
+          "Skipping question:created — connection has no organizationId"
+        );
+        return;
+      }
+      if (!event.userId) {
+        logger.warn(
+          { connectionId, questionId: event.id },
+          "Skipping question:created — event has no userId"
+        );
+        return;
+      }
 
       const thread = await resolveThread(
         manager,
@@ -275,6 +315,26 @@ export function registerInteractionBridge(
         event.conversationId
       );
       if (!thread) return;
+
+      // Persist the pending row BEFORE posting the card. If the persist
+      // fails we never show buttons that would no-op on click. If the row
+      // is written but the post fails, we delete it on the way out so a
+      // stale row doesn't sit waiting for a click that will never arrive.
+      try {
+        await storePendingQuestion(
+          event.id,
+          organizationId,
+          connectionId,
+          event.userId,
+          { question: event }
+        );
+      } catch (error) {
+        logger.error(
+          { connectionId, questionId: event.id, error: String(error) },
+          "Failed to persist pending question — not posting card"
+        );
+        return;
+      }
 
       const { Card, CardText, Actions, Button } = await import("chat");
       const buttons = event.options.map((option, i) =>
@@ -294,7 +354,27 @@ export function registerInteractionBridge(
         connectionId,
         "question interaction"
       );
-      await trackQuestion({ question: event, sent: sent ?? undefined });
+      if (!sent) {
+        // Post failed entirely. The row exists but no card was rendered,
+        // so a click can never come — drop the row to keep the table
+        // clean. The DB sweep would catch it eventually; doing it now is
+        // cheaper and avoids a 24h-stale row.
+        try {
+          await claimPendingQuestion(
+            event.id,
+            organizationId,
+            connectionId,
+            event.userId
+          );
+        } catch (error) {
+          logger.debug(
+            { connectionId, questionId: event.id, error: String(error) },
+            "Failed to drop pending row after post failure"
+          );
+        }
+        return;
+      }
+      rememberSentMessage(event.id, sent);
     } catch (error) {
       logger.error(
         { connectionId, error: String(error) },
@@ -465,11 +545,37 @@ export function registerInteractionBridge(
       // The claim is a single `UPDATE … RETURNING` on a PK and stays well
       // under the budget; the slow platform API calls (post receipt, edit
       // card, enqueue worker turn) still fire-and-forget below.
-      const entry = await claimQuestion(questionId);
-      if (!entry) {
+      //
+      // Authorisation lives INSIDE the SQL claim: the row only matches when
+      // `(organization_id, connection_id, expected_user_id)` line up with
+      // the clicker's context. Wrong-user / cross-connection / cross-tenant
+      // clicks return null without consuming the row — no claim-then-auth
+      // race, no restash needed.
+      const organizationId = connection.organizationId;
+      if (!organizationId) {
+        logger.warn(
+          { connectionId, questionId },
+          "Question click on connection with no organizationId — ignoring"
+        );
+        return;
+      }
+      if (!author?.userId) {
         logger.debug(
           { connectionId, questionId },
-          "Question click with no pending entry — ignoring"
+          "Question click without author.userId — ignoring"
+        );
+        return;
+      }
+
+      const entry = await claimQuestion(
+        questionId,
+        organizationId,
+        author.userId
+      );
+      if (!entry) {
+        logger.debug(
+          { connectionId, questionId, clickerUserId: author.userId },
+          "Question click did not match any pending row — ignoring"
         );
         return;
       }
@@ -484,28 +590,6 @@ export function registerInteractionBridge(
       }
 
       const { question } = entry;
-
-      // Only the user who was originally asked may answer. Without this,
-      // anyone in a Slack/Telegram channel could click another user's
-      // approval/question buttons and silently impersonate them. Re-stash
-      // the entry so the rightful owner can still click later.
-      if (
-        author?.userId &&
-        question.userId &&
-        author.userId !== question.userId
-      ) {
-        logger.warn(
-          {
-            connectionId,
-            questionId,
-            clickerUserId: author.userId,
-            originalUserId: question.userId,
-          },
-          "Question click ignored: clicker is not the original requester"
-        );
-        await restashQuestion(questionId, entry);
-        return;
-      }
       const receiptText = value
         ? `*You submitted:* ${value}`
         : "*You submitted a response.*";
@@ -583,6 +667,7 @@ export function registerInteractionBridge(
     }
     pendingApprovalTimers.clear();
     pendingApprovalCards.clear();
+    clearInterval(pendingSentSweepTimer);
     pendingSentMessages.clear();
     logger.info({ connectionId, platform }, "Interaction bridge unregistered");
   };

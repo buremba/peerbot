@@ -318,6 +318,24 @@ export class RunsQueue implements IMessageQueue {
     // snapshot-route ownership verifier in transcript-routes.ts.
     const actionInput = sql.json(data ?? {});
 
+    // Populate runs.organization_id from the payload. This column is
+    // preexisting (NOT from PR #870's denormalization — that one removed
+    // agent_id+conversation_id only) and is the column the snapshot
+    // verifier checks via `WHERE organization_id = $X` in
+    // isRunOwnedByJwtScope. PR #873's denormalize revert accidentally
+    // dropped organization_id from the INSERT alongside agent_id/
+    // conversation_id, leaving the column NULL on every new chat_message
+    // row. Result: verifier returned false for every snapshot POST,
+    // workers rejected with 403 the moment Phase 5 flipped snapshot
+    // mode to default. Re-add organization_id only.
+    const organizationIdFromPayload =
+      typeof (data as { organizationId?: unknown })?.organizationId ===
+        "string" &&
+      ((data as { organizationId?: string }).organizationId as string).length >
+        0
+        ? (data as { organizationId: string }).organizationId
+        : null;
+
     // Insert + ON-CONFLICT-fallback inside a single transaction so a race
     // between two enqueues with the same idempotency key resolves cleanly.
     // pg_notify happens AFTER commit (otherwise listeners may wake before
@@ -347,9 +365,10 @@ export class RunsQueue implements IMessageQueue {
           run_at,
           priority,
           expires_at,
-          retry_delay_seconds
+          retry_delay_seconds,
+          organization_id
         ) VALUES (
-          $1, $2, $3, $4, $5, $6, 0, 'pending', ${runAtSql}, $7, ${expiresAtSql}, $8
+          $1, $2, $3, $4, $5, $6, 0, 'pending', ${runAtSql}, $7, ${expiresAtSql}, $8, $9
         )
         ON CONFLICT (idempotency_key)
           WHERE idempotency_key IS NOT NULL
@@ -365,6 +384,7 @@ export class RunsQueue implements IMessageQueue {
           maxAttempts,
           priority,
           retryDelaySeconds,
+          organizationIdFromPayload,
         ],
       );
 

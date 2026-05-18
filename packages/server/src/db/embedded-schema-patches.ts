@@ -846,4 +846,20 @@ export const EMBEDDED_SCHEMA_PATCHES: EmbeddedSchemaPatch[] = [
       `);
     },
   },
+  {
+    id: 'runs-heartbeat-reaper-index',
+    apply: async (sql) => {
+      // Mirrors db/migrations/20260518000000_runs_heartbeat_reaper_index.sql.
+      // Supports the connector-lane stale-run reaper in
+      // scheduled/check-stalled-executions.ts. Restricted to the connector
+      // lanes; the lobu-queue lanes have their own sweep in RunsQueue and
+      // the watcher lane is handled by watchers/automation.ts.
+      await sql.unsafe(`
+        CREATE INDEX IF NOT EXISTS idx_runs_heartbeat_inflight
+          ON public.runs (last_heartbeat_at)
+          WHERE status IN ('claimed', 'running')
+            AND run_type IN ('sync', 'action', 'embed_backfill', 'auth')
+      `);
+    },
+  },
 ];

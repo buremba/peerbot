@@ -451,6 +451,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
       UPDATE runs r
       SET status = 'running',
           claimed_at = current_timestamp,
+          last_heartbeat_at = current_timestamp,
           claimed_by = ${worker_id}
       FROM next_run nr
       WHERE r.id = nr.id

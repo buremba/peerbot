@@ -168,6 +168,12 @@ async function main() {
   const taskScheduler = await bootTaskScheduler(getLobuCoreServices(), env);
   const stopScheduler = () => taskScheduler.stop();
 
+  // 30s connector-run heartbeat-lost reaper (see check-stalled-executions.ts).
+  // Same module used by the production server entrypoint; advisory lock makes
+  // it safe to also have the 5min TaskScheduler cron firing the same sweep.
+  const { startStaleRunReaper } = await import('./scheduled/check-stalled-executions');
+  const stopReaper = startStaleRunReaper();
+
   const wrapper = new Hono<{ Bindings: Env }>();
   wrapper.use('*', async (c, next) => {
     // Stash the peer TCP remote-address so handlers that need to enforce
@@ -202,6 +208,7 @@ async function main() {
 
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutting down');
+    stopReaper();
     stopScheduler();
     await vite?.close();
     httpServer.close();

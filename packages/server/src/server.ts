@@ -38,6 +38,7 @@ import {
   initLobuGateway,
   stopLobuGateway,
 } from './lobu/gateway';
+import { startStaleRunReaper } from './scheduled/check-stalled-executions';
 import { bootTaskScheduler } from './scheduled/jobs';
 import * as Sentry from '@sentry/node';
 import { assertExternalDepsResolvable } from '../../connector-worker/src/runtime-deps';
@@ -209,6 +210,12 @@ async function main() {
   // Cross-pod coordination is the runs-queue claim path.
   const taskScheduler = await bootTaskScheduler(getLobuCoreServices(), env);
 
+  // 30s interval that reaps connector runs whose worker missed heartbeat past
+  // RUNS_REAPER_STALE_AFTER_SECONDS. Cross-pod coordinated via advisory lock.
+  // The TaskScheduler cron also calls reapStaleRuns() every 5min as a
+  // backstop — the lock keeps the two cadences from double-failing rows.
+  const stopReaper = startStaleRunReaper();
+
   const port = parseInt(process.env.PORT || '8787', 10);
   const host = process.env.HOST?.trim() || '0.0.0.0';
 
@@ -232,6 +239,7 @@ async function main() {
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Received shutdown signal, stopping gracefully...');
     await vite?.close();
+    stopReaper();
     taskScheduler.stop();
     await stopLobuGateway();
     await closeDbSingleton();

@@ -370,18 +370,27 @@ export class WorkerGateway {
     try {
       const body = await c.req.json();
       const { jobId, ...responseData } = body;
+      // Stamp the worker token's owning org onto the response so the row
+      // landed in `thread_response` carries organization_id — the snapshot
+      // ownership verifier in transcript-routes.ts denies POSTs to NULL-org
+      // rows. The worker doesn't know its org (token-scoped, not payload-
+      // scoped) so it relies on the gateway to inject it from the auth.
+      const orgEnriched =
+        auth.tokenData.organizationId && !responseData.organizationId
+          ? { ...responseData, organizationId: auth.tokenData.organizationId }
+          : responseData;
       const enrichedResponse =
         auth.tokenData.connectionId &&
-        (!responseData.platformMetadata ||
-          typeof responseData.platformMetadata === "object")
+        (!orgEnriched.platformMetadata ||
+          typeof orgEnriched.platformMetadata === "object")
           ? {
-              ...responseData,
+              ...orgEnriched,
               platformMetadata: {
-                ...(responseData.platformMetadata || {}),
+                ...(orgEnriched.platformMetadata || {}),
                 connectionId: auth.tokenData.connectionId,
               },
             }
-          : responseData;
+          : orgEnriched;
 
       // Acknowledge job completion if jobId provided
       if (jobId) {

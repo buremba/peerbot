@@ -653,6 +653,12 @@ app.use('/api/workers/*', async (c, next) => {
         '/api/workers/heartbeat',
         '/api/workers/stream',
         '/api/workers/complete',
+        // Action runs (run_type='action') finalize via /complete-action,
+        // which persists action_output. The handler still goes through
+        // authorizeRunForWorker so a user worker can only finalize runs
+        // it claimed. Required for chrome-extension action tools to
+        // return their observation back to the gateway.
+        '/api/workers/complete-action',
       ]);
       const requestPath = new URL(c.req.url).pathname;
       const isAuthProfileSubpath = requestPath.startsWith('/api/workers/me/auth-profiles');

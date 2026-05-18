@@ -76,14 +76,13 @@ const tabIdSchema = {
 
 const refIdSchema = {
   type: 'object',
-  required: ['frame_id', 'document_epoch', 'ref_id'],
+  required: ['document_epoch', 'ref_id'],
   properties: {
-    frame_id: { type: 'string' },
     document_epoch: { type: 'integer' },
     ref_id: { type: 'integer' },
   },
   description:
-    'Element reference returned by a prior get_accessibility_tree call on the same tab + document.',
+    'Element reference returned by a prior get_accessibility_tree call on the same tab + document. frame_id is reserved for future iframe support; v1 dispatches against the main frame.',
 } as const;
 
 export default class ChromeConnector extends ConnectorRuntime {
@@ -267,6 +266,18 @@ export default class ChromeConnector extends ConnectorRuntime {
             width: { type: 'integer' },
             height: { type: 'integer' },
           },
+        },
+      },
+      close_tab: {
+        key: 'close_tab',
+        name: 'Close tab',
+        description:
+          'Close a tab the extension created for this connector. Required at the end of any multi-step session — tabs the extension owned across navigate / get_accessibility_tree / click_ref / etc. are NOT auto-disposed (that would break the natural flow). A reaper closes orphaned owned tabs after 30 minutes.',
+        requiresApproval: false,
+        inputSchema: {
+          type: 'object',
+          required: ['tab_id'],
+          properties: { tab_id: { type: 'integer' } },
         },
       },
       evaluate: {

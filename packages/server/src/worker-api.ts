@@ -2064,6 +2064,12 @@ export async function completeActionRun(c: Context<{ Bindings: Env }>) {
       error_message?: string;
     }>();
 
+    // Same ownership check as the other /complete endpoints — a worker
+    // can only finalize runs it claimed. Without this, a leaked worker
+    // token could overwrite action_output on arbitrary runs.
+    const denied = await authorizeRunForWorker(c, req.run_id, req.worker_id);
+    if (denied) return denied;
+
     const sql = getDb();
 
     const updatedRuns = await sql`

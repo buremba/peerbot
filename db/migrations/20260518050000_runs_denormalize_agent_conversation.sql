@@ -63,6 +63,14 @@ DECLARE
     );
     rows_updated int;
 BEGIN
+    -- Predicate uses `->> 'agentId' IS NOT NULL` rather than `? 'agentId'`
+    -- so rows with `{"agentId": null}` or other JSON-null shapes are
+    -- excluded from the chunk set entirely. Without this guard a single
+    -- malformed row stays eligible forever — `agent_id IS NULL AND ? key`
+    -- always true, `SET agent_id = NULL` is a no-op — and the LOOP never
+    -- terminates because ROW_COUNT keeps reporting `chunk_size` until
+    -- the residual NULL set is empty (which never happens). Codex round
+    -- 3 P1#1 on PR #870.
     LOOP
         UPDATE public.runs
            SET agent_id = action_input->>'agentId',
@@ -70,7 +78,7 @@ BEGIN
          WHERE id IN (
              SELECT id FROM public.runs
               WHERE agent_id IS NULL
-                AND action_input ? 'agentId'
+                AND action_input->>'agentId' IS NOT NULL
               LIMIT chunk_size
          );
         GET DIAGNOSTICS rows_updated = ROW_COUNT;
@@ -87,23 +95,15 @@ $proc$;
 
 CALL pg_temp.lobu_backfill_runs_agent_conv();
 
-SET lock_timeout = '30s';
-
--- Step 3: index on (agent_id, conversation_id) for queries that look up
--- runs by the (agent, conversation) pair without specifying id (e.g.
--- diagnostics, history pruning, scheduled cleanup sweeps). The verifier
--- `isRunOwnedByJwtScope` does NOT need this index — `runs_pkey` on `id`
--- already serves its single-row lookup. The win there is removing the
--- JSONB extraction operator from the predicate and lifting the routing
--- keys into typed columns.
-CREATE INDEX IF NOT EXISTS runs_agent_conv_idx
-    ON public.runs (agent_id, conversation_id, id DESC)
-    WHERE agent_id IS NOT NULL AND conversation_id IS NOT NULL;
+-- The (agent_id, conversation_id) index is created in a separate
+-- migration (20260518050001_runs_agent_conv_index.sql) so the build can
+-- use CREATE INDEX CONCURRENTLY against the hot multi-million-row runs
+-- table without taking a write-blocking lock. Codex round 3 P1#2 on
+-- PR #870.
 
 -- migrate:down transaction:false
 
 SET lock_timeout = '30s';
-DROP INDEX IF EXISTS public.runs_agent_conv_idx;
 ALTER TABLE public.runs
     DROP COLUMN IF EXISTS conversation_id,
     DROP COLUMN IF EXISTS agent_id;

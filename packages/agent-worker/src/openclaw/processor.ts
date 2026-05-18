@@ -33,6 +33,7 @@ export class OpenClawProgressProcessor {
           return false;
         }
         const assistantEvent = event.assistantMessageEvent;
+        if (!assistantEvent) return false;
 
         if (assistantEvent.type === "text_delta") {
           this.hasStreamedText = true;

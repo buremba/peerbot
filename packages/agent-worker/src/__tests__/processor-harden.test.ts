@@ -45,29 +45,19 @@ function makeMessageEnd(opts: {
 // ---------------------------------------------------------------------------
 
 describe("OpenClawProgressProcessor — malformed events don't throw", () => {
-  test("message_update with null assistantMessageEvent returns false", () => {
+  test("message_update with null assistantMessageEvent returns false without throwing", () => {
     const p = new OpenClawProgressProcessor();
     const event = {
       type: "message_update",
       message: { role: "assistant" },
       assistantMessageEvent: null,
     };
-    // Should not throw; null.type throws TypeError — this exposes a real gap.
-    // The processor currently does not guard against null assistantMessageEvent.
-    // We wrap in try/catch to record the actual behavior without crashing the suite.
-    let threw = false;
-    try {
-      p.processEvent(event as any);
-    } catch {
-      threw = true;
-    }
-    // Whether it throws or returns false, the processor must leave itself in a clean state
+    let result: boolean | undefined;
+    expect(() => {
+      result = p.processEvent(event as any);
+    }).not.toThrow();
+    expect(result).toBe(false);
     expect(p.getDelta()).toBeNull();
-    // Flag the gap: ideally threw === false (defensive guard)
-    if (threw) {
-      // Known gap: null assistantMessageEvent causes unhandled TypeError
-      expect(threw).toBe(true); // document rather than mask
-    }
   });
 
   test("tool_execution_start with null args does not throw", () => {

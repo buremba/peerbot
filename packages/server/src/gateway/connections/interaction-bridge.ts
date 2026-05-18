@@ -12,6 +12,11 @@ import type {
 } from "../interactions.js";
 import type { GrantStore } from "../permissions/grant-store.js";
 import type { ChatInstanceManager } from "./chat-instance-manager.js";
+import {
+  claimPendingQuestion,
+  restashPendingQuestion,
+  storePendingQuestion,
+} from "./pending-interaction-store.js";
 import type { PlatformConnection } from "./types.js";
 
 const logger = createLogger("chat-interaction-bridge");
@@ -190,42 +195,71 @@ export function registerInteractionBridge(
     return sent;
   }
 
-  // Tracks posted question cards + their original routing context so a click
-  // can (a) strip the buttons via SentMessage.edit and (b) feed the clicked
-  // value back through the inbound-enqueue pipeline.
-  const pendingQuestions = new Map<string, PendingQuestionEntry>();
-  const pendingQuestionTimers = new Map<string, NodeJS.Timeout>();
-  function trackQuestion(entry: PendingQuestionEntry): void {
-    pendingQuestions.set(entry.question.id, entry);
-    const timer = setTimeout(() => {
-      pendingQuestions.delete(entry.question.id);
-      pendingQuestionTimers.delete(entry.question.id);
-    }, 300_000);
-    pendingQuestionTimers.set(entry.question.id, timer);
-  }
-  function claimQuestion(questionId: string): PendingQuestionEntry | undefined {
-    const entry = pendingQuestions.get(questionId);
-    pendingQuestions.delete(questionId);
-    const timer = pendingQuestionTimers.get(questionId);
-    if (timer) {
-      clearTimeout(timer);
-      pendingQuestionTimers.delete(questionId);
+  // Pending questions are persisted in `public.pending_interactions` so a
+  // click landing on a different pod can still claim the entry. The local
+  // `pendingSentMessages` map holds the non-serializable platform
+  // `SentMessage` (used to strip card buttons on click) — losing it
+  // cross-pod is best-effort UX, not correctness.
+  const pendingSentMessages = new Map<string, SentMessage>();
+  async function trackQuestion(entry: PendingQuestionEntry): Promise<void> {
+    if (entry.sent) {
+      pendingSentMessages.set(entry.question.id, entry.sent);
     }
-    return entry;
+    try {
+      await storePendingQuestion(
+        entry.question.id,
+        connection.organizationId,
+        { question: entry.question }
+      );
+    } catch (error) {
+      pendingSentMessages.delete(entry.question.id);
+      logger.error(
+        { connectionId, questionId: entry.question.id, error: String(error) },
+        "Failed to persist pending question"
+      );
+    }
+  }
+  async function claimQuestion(
+    questionId: string
+  ): Promise<PendingQuestionEntry | undefined> {
+    const stored = await claimPendingQuestion(questionId).catch((error) => {
+      logger.error(
+        { connectionId, questionId, error: String(error) },
+        "Failed to claim pending question"
+      );
+      return null;
+    });
+    if (!stored) {
+      // Whoever won the race already took the SentMessage entry on their pod.
+      pendingSentMessages.delete(questionId);
+      return undefined;
+    }
+    const sent = pendingSentMessages.get(questionId);
+    pendingSentMessages.delete(questionId);
+    return { question: stored.question, sent };
   }
   /**
    * Put a previously-claimed entry back. Used when a click is rejected
    * (e.g. wrong user) so the rightful owner can still answer later.
    */
-  function restashQuestion(
+  async function restashQuestion(
     questionId: string,
     entry: PendingQuestionEntry
-  ): void {
-    if (pendingQuestions.has(questionId)) return;
-    trackQuestion(entry);
-    if (entry.question.id !== questionId) {
-      pendingQuestions.delete(entry.question.id);
-      pendingQuestions.set(questionId, entry);
+  ): Promise<void> {
+    if (entry.sent) {
+      pendingSentMessages.set(questionId, entry.sent);
+    }
+    try {
+      await restashPendingQuestion(
+        questionId,
+        connection.organizationId,
+        { question: entry.question }
+      );
+    } catch (error) {
+      logger.error(
+        { connectionId, questionId, error: String(error) },
+        "Failed to restash pending question"
+      );
     }
   }
   const onQuestionCreated = async (event: PostedQuestion) => {
@@ -260,7 +294,7 @@ export function registerInteractionBridge(
         connectionId,
         "question interaction"
       );
-      trackQuestion({ question: event, sent: sent ?? undefined });
+      await trackQuestion({ question: event, sent: sent ?? undefined });
     } catch (error) {
       logger.error(
         { connectionId, error: String(error) },
@@ -428,9 +462,10 @@ export function registerInteractionBridge(
     claimApprovalCard,
     async (questionId, value, thread, author) => {
       // Fast path — Slack's block_actions webhook requires a <3s response.
-      // Claim synchronously (Map.delete), then fire-and-forget the slow
-      // platform API calls (post receipt, edit card, enqueue worker turn).
-      const entry = claimQuestion(questionId);
+      // The claim is a single `UPDATE … RETURNING` on a PK and stays well
+      // under the budget; the slow platform API calls (post receipt, edit
+      // card, enqueue worker turn) still fire-and-forget below.
+      const entry = await claimQuestion(questionId);
       if (!entry) {
         logger.debug(
           { connectionId, questionId },
@@ -468,7 +503,7 @@ export function registerInteractionBridge(
           },
           "Question click ignored: clicker is not the original requester"
         );
-        restashQuestion(questionId, entry);
+        await restashQuestion(questionId, entry);
         return;
       }
       const receiptText = value
@@ -548,11 +583,7 @@ export function registerInteractionBridge(
     }
     pendingApprovalTimers.clear();
     pendingApprovalCards.clear();
-    for (const timer of pendingQuestionTimers.values()) {
-      clearTimeout(timer);
-    }
-    pendingQuestionTimers.clear();
-    pendingQuestions.clear();
+    pendingSentMessages.clear();
     logger.info({ connectionId, platform }, "Interaction bridge unregistered");
   };
 }

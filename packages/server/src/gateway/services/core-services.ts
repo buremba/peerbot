@@ -29,6 +29,7 @@ import {
 import { sweepExpiredRateLimits } from "../utils/rate-limiter.js";
 import { sweepExpiredGrants } from "../permissions/grant-store.js";
 import { sweepCompletedRuns } from "../infrastructure/queue/runs-queue.js";
+import { sweepStalePendingInteractions } from "../connections/pending-interaction-store.js";
 import { ProviderCatalogService } from "../auth/provider-catalog.js";
 import { AgentSettingsStore } from "../auth/settings/agent-settings-store.js";
 import { AuthProfilesManager } from "../auth/settings/auth-profiles-manager.js";
@@ -266,15 +267,20 @@ export class CoreServices {
    *  make this a hygiene task — running ~5 minutes apart is plenty. */
   async sweepEphemeralTables(): Promise<void> {
     try {
-      const [oauthStates, rate, grants, completedRuns] = await Promise.all([
-        sweepExpiredOAuthStates(),
-        sweepExpiredRateLimits(),
-        sweepExpiredGrants(),
-        sweepCompletedRuns(),
-      ]);
-      if (oauthStates + rate + grants + completedRuns > 0) {
+      const [oauthStates, rate, grants, completedRuns, pendingInteractions] =
+        await Promise.all([
+          sweepExpiredOAuthStates(),
+          sweepExpiredRateLimits(),
+          sweepExpiredGrants(),
+          sweepCompletedRuns(),
+          sweepStalePendingInteractions(),
+        ]);
+      if (
+        oauthStates + rate + grants + completedRuns + pendingInteractions >
+        0
+      ) {
         logger.debug(
-          { oauthStates, rate, grants, completedRuns },
+          { oauthStates, rate, grants, completedRuns, pendingInteractions },
           "Ephemeral table sweeper deleted expired rows"
         );
       }

@@ -1,5 +1,40 @@
 # Changelog
 
+## [7.2.0](https://github.com/lobu-ai/lobu/compare/lobu-v7.1.0...lobu-v7.2.0) (2026-05-18)
+
+
+### Features
+
+* **chart:** real-worker smoke test gates Helm upgrades on actual run completion ([#878](https://github.com/lobu-ai/lobu/issues/878)) ([48ee1ed](https://github.com/lobu-ai/lobu/commit/48ee1ed23b3190c694e945556255bc4fc5d4efbe))
+* **cli,server:** LOBU_CONTEXT + lifecycle tag, bump owletto submodule ([#889](https://github.com/lobu-ai/lobu/issues/889)) ([137d8fe](https://github.com/lobu-ai/lobu/commit/137d8fea2de847f500e1f382d06b65f6d7442b52))
+* **cli:** task-setup.sh + per-worktree context registration ([#891](https://github.com/lobu-ai/lobu/issues/891)) ([a8e4a35](https://github.com/lobu-ai/lobu/commit/a8e4a358ada6aeb697e3d82bd83a32947e4c6335))
+* **connector-worker,server:** heartbeat action+embed_backfill, atomic reaper retries ([#893](https://github.com/lobu-ai/lobu/issues/893)) ([568f989](https://github.com/lobu-ai/lobu/commit/568f9892e52f2673eb9c81852333dd95d913d4e9))
+* **connectors:** chrome connector — tool dispatcher v1 ([#872](https://github.com/lobu-ai/lobu/issues/872)) ([6b2a32b](https://github.com/lobu-ai/lobu/commit/6b2a32b40ab716306e740d5f3420970d6d3d025e))
+* **mac-release:** auto-fire on release-please published releases ([#895](https://github.com/lobu-ai/lobu/issues/895)) ([4c16f1b](https://github.com/lobu-ai/lobu/commit/4c16f1b46ee8027d8d59b6527d7ec051e93d2643))
+* **mac-release:** Developer ID signing + Owletto rebrand + submodule bump ([#894](https://github.com/lobu-ai/lobu/issues/894)) ([d3591b1](https://github.com/lobu-ai/lobu/commit/d3591b1b8c42735bc03c4d2609634da576de04ad))
+* **operations:** async device-action scheduling for chrome / device-bound connectors ([#879](https://github.com/lobu-ai/lobu/issues/879)) ([c3d7aad](https://github.com/lobu-ai/lobu/commit/c3d7aad4a26a2cb005c987f947074338379267db))
+* **server,chart:** flip snapshot default + drop workspaces PVC (Phase 5) ([#871](https://github.com/lobu-ai/lobu/issues/871)) ([9484be3](https://github.com/lobu-ai/lobu/commit/9484be39ed2cbc31a9688ac2a99cd92676081ebb))
+* **server:** broaden CSP frame-ancestors to allow owletto extension to embed the whole app ([#884](https://github.com/lobu-ai/lobu/issues/884)) ([458f37e](https://github.com/lobu-ai/lobu/commit/458f37eab898efc09c1b76e9ed2c1c9773e9d954))
+* **worker:** PG-backed agent_transcript_snapshot (multi-replica unblock) ([#865](https://github.com/lobu-ai/lobu/issues/865)) ([8d1beee](https://github.com/lobu-ai/lobu/commit/8d1beeedd3540baef99237079536cc951fc9075f))
+
+
+### Bug Fixes
+
+* **agent-worker:** propagate runId + runJobToken through JobEventSchema ([#874](https://github.com/lobu-ai/lobu/issues/874)) ([d6b3b68](https://github.com/lobu-ai/lobu/commit/d6b3b68c80092cf53f86088ae9f26136963ee6ad))
+* **reaper:** narrow stale-run reaper to lanes that actually heartbeat (sync + auth) ([#859](https://github.com/lobu-ai/lobu/issues/859)) ([cc4dbe3](https://github.com/lobu-ai/lobu/commit/cc4dbe36632728e64559d4cdfaec9ef67e8eb46a))
+* **server:** close SSE bridge registration-order races + wire abort into MCP heartbeat ([#864](https://github.com/lobu-ai/lobu/issues/864)) ([110c046](https://github.com/lobu-ai/lobu/commit/110c0461d1dce6e105590f269fafff8c93c09e2c))
+* **server:** handle action_input JSONB-string shape + write JSONB objects for new runs ([#877](https://github.com/lobu-ai/lobu/issues/877)) ([683481c](https://github.com/lobu-ai/lobu/commit/683481c654b8ba5a99f4cfc5cabe434c667b8470))
+* **server:** inject organizationId from worker token onto worker-response payloads (4th writer) ([#888](https://github.com/lobu-ai/lobu/issues/888)) ([cd31882](https://github.com/lobu-ai/lobu/commit/cd3188231ce67a01ca22476e531f6173ad1e97db))
+* **server:** pass organizationId on continuation chat_message enqueues ([#887](https://github.com/lobu-ai/lobu/issues/887)) ([7cfeac6](https://github.com/lobu-ai/lobu/commit/7cfeac6c5f7302a6a160deba64cb2ee43e11852b))
+* **server:** post-review cleanup of multi-tenant isolation + pending interactions ([#867](https://github.com/lobu-ai/lobu/issues/867)) ([907bdd8](https://github.com/lobu-ai/lobu/commit/907bdd88411fe6d515413b629627bf66b9c7dd0d))
+* **server:** restore organization_id INSERT in runs-queue ([#883](https://github.com/lobu-ai/lobu/issues/883)) ([0c32c18](https://github.com/lobu-ai/lobu/commit/0c32c1816d8def0063117ff8258a86f4df8386e1))
+* **server:** wrap connection-boot secret resolution in orgContext to fix Slack ([#881](https://github.com/lobu-ai/lobu/issues/881)) ([ad75eb9](https://github.com/lobu-ai/lobu/commit/ad75eb9fc138ce0935b917165e2edd3483fdbe65))
+
+
+### Performance Improvements
+
+* **server:** denormalize runs.agent_id+conversation_id + reserve-connection cap ([#870](https://github.com/lobu-ai/lobu/issues/870)) ([d4691a7](https://github.com/lobu-ai/lobu/commit/d4691a73a7678e7c2555e01ea315a4b9a0b1d37e))
+
 ## [7.1.0](https://github.com/lobu-ai/lobu/compare/lobu-v7.0.0...lobu-v7.1.0) (2026-05-18)
 
 

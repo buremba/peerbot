@@ -151,9 +151,9 @@ async function resolveWebDistDirectory(): Promise<string | null> {
   const candidates = [
     process.env.WEB_DIST_DIR?.trim(),
     path.resolve(APP_ROOT, 'packages/owletto/dist'),
-    path.resolve(APP_ROOT, '../web/dist'),
+    path.resolve(APP_ROOT, '../owletto/dist'),
     path.resolve(process.cwd(), 'packages/owletto/dist'),
-    path.resolve(process.cwd(), '../packages/owletto/dist'),
+    path.resolve(process.cwd(), '../owletto/dist'),
   ].filter((candidate): candidate is string => Boolean(candidate));
 
   for (const candidate of candidates) {
@@ -187,11 +187,19 @@ async function loadSpaHtmlTemplate(): Promise<string | null> {
 }
 
 async function loadFallbackSpaHtmlTemplate(): Promise<string | null> {
+  // APP_ROOT is the server package dir (packages/server). The sibling
+  // candidate must walk one level up first to land in `packages/`, then
+  // into `owletto/`. The previous `../packages/owletto/...` form here and
+  // in resolveWebDistDirectory was a copy-paste from when this file was
+  // working from a different anchor — it resolves to
+  // `packages/packages/owletto/...` and silently misses every time.
+  // Same story for `../web/...` which was left over from the
+  // packages/web → packages/owletto rename (#817).
   const candidates = [
     path.resolve(APP_ROOT, 'packages/owletto/index.html'),
-    path.resolve(APP_ROOT, '../web/index.html'),
+    path.resolve(APP_ROOT, '../owletto/index.html'),
     path.resolve(process.cwd(), 'packages/owletto/index.html'),
-    path.resolve(process.cwd(), '../packages/owletto/index.html'),
+    path.resolve(process.cwd(), '../owletto/index.html'),
   ];
 
   for (const candidate of candidates) {

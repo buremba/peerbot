@@ -57,16 +57,20 @@ export function hasLocalFrontend(): boolean {
 
   const envDist = process.env.WEB_DIST_DIR?.trim();
   const isDevelopment = process.env.NODE_ENV === 'development';
+  // Sibling-walk candidates must go through `../owletto/`, not
+  // `../packages/owletto/` (resolves to `packages/packages/owletto/`).
+  // `../web/...` is a leftover from the packages/web → packages/owletto
+  // rename in #817.
   const candidates = [
     envDist ? path.join(envDist, 'index.html') : undefined,
     path.resolve(APP_ROOT, 'packages/owletto/dist/index.html'),
-    path.resolve(APP_ROOT, '../web/dist/index.html'),
+    path.resolve(APP_ROOT, '../owletto/dist/index.html'),
     path.resolve(process.cwd(), 'packages/owletto/dist/index.html'),
-    path.resolve(process.cwd(), '../packages/owletto/dist/index.html'),
+    path.resolve(process.cwd(), '../owletto/dist/index.html'),
     isDevelopment ? path.resolve(APP_ROOT, 'packages/owletto/index.html') : undefined,
-    isDevelopment ? path.resolve(APP_ROOT, '../web/index.html') : undefined,
+    isDevelopment ? path.resolve(APP_ROOT, '../owletto/index.html') : undefined,
     isDevelopment ? path.resolve(process.cwd(), 'packages/owletto/index.html') : undefined,
-    isDevelopment ? path.resolve(process.cwd(), '../packages/owletto/index.html') : undefined,
+    isDevelopment ? path.resolve(process.cwd(), '../owletto/index.html') : undefined,
   ].filter((candidate): candidate is string => Boolean(candidate));
 
   for (const candidate of candidates) {

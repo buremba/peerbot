@@ -22,6 +22,12 @@ export interface UserServerConfig {
   port?: number;
   host?: string;
   dataDir?: string;
+  /// "managed" → the Mac menubar (or another lifecycle owner) spawns
+  /// `lobu run` for this context. "external" → just connect; never
+  /// spawn or kill. Absent → infer from apiUrl: loopback ⇒ managed,
+  /// remote ⇒ external. Today only the Mac menubar reads this; the
+  /// CLI's `lobu run` ignores it.
+  lifecycle?: "managed" | "external";
 }
 
 interface StoredEntry {
@@ -80,6 +86,9 @@ function normalizeServerConfig(raw: unknown): UserServerConfig | undefined {
   }
   if (typeof src.dataDir === 'string' && src.dataDir.trim()) {
     out.dataDir = src.dataDir.trim();
+  }
+  if (src.lifecycle === 'managed' || src.lifecycle === 'external') {
+    out.lifecycle = src.lifecycle;
   }
 
   return Object.keys(out).length === 0 ? undefined : out;

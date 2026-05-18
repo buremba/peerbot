@@ -15,6 +15,11 @@ export interface LobuServerConfig {
   port?: number;
   host?: string;
   dataDir?: string;
+  // "managed" → the Mac menubar (or another lifecycle owner) spawns
+  // `lobu run` for this context. "external" → just connect; never
+  // spawn or kill. Absent → infer from apiUrl: loopback ⇒ managed,
+  // remote ⇒ external. Today only the Mac menubar reads this.
+  lifecycle?: "managed" | "external";
 }
 
 interface LobuContextEntry {
@@ -259,6 +264,9 @@ function normalizeServerConfig(raw: unknown): LobuServerConfig | undefined {
   if (typeof src.dataDir === "string" && src.dataDir.trim()) {
     out.dataDir = src.dataDir.trim();
   }
+  if (src.lifecycle === "managed" || src.lifecycle === "external") {
+    out.lifecycle = src.lifecycle;
+  }
 
   return Object.keys(out).length === 0 ? undefined : out;
 }
@@ -267,7 +275,14 @@ export async function getServerConfig(
   contextName?: string
 ): Promise<LobuServerConfig | undefined> {
   const config = await loadContextConfig();
-  const name = contextName || config.currentContext;
+  // Honor LOBU_CONTEXT the same way resolveContext() does — without this,
+  // a caller that sets the env var to pin a context (e.g. the Mac menubar
+  // spawning `lobu run` with LOBU_CONTEXT=local) gets the server block
+  // from `currentContext` instead, because no contextName was passed.
+  const name =
+    contextName?.trim() ||
+    process.env.LOBU_CONTEXT?.trim() ||
+    config.currentContext;
   return config.contexts[name]?.server;
 }
 

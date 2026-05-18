@@ -1,8 +1,8 @@
 Insights Platform has been deployed!
 
 1. Application URL:
-{{- if .Values.ingress.enabled }}
-   https://{{ .Values.ingress.host }}
+{{- if and .Values.ingress.enabled (gt (len .Values.ingress.hosts) 0) }}
+   https://{{ index .Values.ingress.hosts 0 }}
 {{- else }}
    kubectl port-forward svc/{{ include "lobu.fullname" . }}-app {{ .Values.service.port }}:{{ .Values.service.port }}
 {{- end }}

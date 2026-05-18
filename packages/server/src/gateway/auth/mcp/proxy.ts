@@ -1070,7 +1070,12 @@ export class McpProxy {
       tokenData,
       token
     );
-    if (!found || !requiresToolApproval(annotations)) return "allow";
+    // Fail closed: when tool annotations can't be fetched (upstream error,
+    // SSRF block, timeout, etc.), `found` is false. The previous behaviour
+    // returned "allow" here, which let destructive tools bypass approval
+    // whenever discovery failed. Require approval unless we have annotations
+    // that explicitly say the tool is safe.
+    if (found && !requiresToolApproval(annotations)) return "allow";
 
     const pattern = `/mcp/${mcpId}/tools/${toolName}`;
     if (await this.grantStore.hasGrant(agentId, pattern)) return "allow";

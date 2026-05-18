@@ -673,6 +673,56 @@ describe("tool approval — onToolBlocked and wildcard grants", () => {
     expect(r2.status).toBe(200);
   });
 
+  test("fails closed when tool annotations cannot be fetched (issue #688)", async () => {
+    // Regression: when `fetchToolsForMcp` returns `{ tools: [] }` because
+    // discovery failed (upstream error, SSRF block, timeout, ...), the
+    // approval gate must NOT default to allow. A destructive tool on a
+    // protected MCP would otherwise be invocable without approval whenever
+    // discovery failed.
+    const grantStore = new GrantStore();
+
+    const configSource = createConfigSource({
+      "destructive-mcp": {
+        id: "destructive-mcp",
+        upstreamUrl: "http://destructive.example.com/mcp",
+      },
+    });
+
+    let blockedCount = 0;
+    const proxy = new McpProxy(configSource, {
+      secretStore: new InMemoryWritableStore(),
+      // No toolCache — forces fetchToolsForMcp to be called.
+      grantStore,
+    });
+    proxy.onToolBlocked = async () => {
+      blockedCount++;
+    };
+
+    const app = proxy.getApp();
+
+    // Simulate annotation-fetch failure: fetch always throws, so the MCP
+    // initialize/tools-list calls fail and fetchToolsForMcp resolves to
+    // { tools: [] }.
+    globalThis.fetch = async () => {
+      throw new Error("upstream unreachable");
+    };
+
+    const res = await app.request("/destructive-mcp/tools/wipe_database", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${agent1Token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ confirm: true }),
+    });
+
+    // Must be blocked, not allowed through.
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.content[0].text).toContain("requires approval");
+    expect(blockedCount).toBe(1);
+  });
+
   test("onToolBlocked receives correct agentId and tool metadata", async () => {
     const toolCache = new McpToolCache();
     const grantStore = new GrantStore();

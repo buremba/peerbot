@@ -325,12 +325,27 @@ app.use('/*', async (c, next) => {
           .filter((entry) => isValidFrameAncestor(entry))
           .join(' ')
       : 'https://lobu.ai https://*.lobu.ai';
-    // /embedded is the Chrome-extension sidepanel target — it must be framable
-    // from any chrome-extension:// origin. Other routes keep the default
-    // 'self' + lobu.ai allowlist so the rest of the app can't be embedded by
-    // arbitrary extensions.
-    const path = new URL(c.req.url).pathname;
-    const extensionAllowed = path === '/embedded' ? ' chrome-extension:' : '';
+    // Owletto for Chrome embeds the whole app in its sidepanel iframe —
+    // not just a stub route, the same UI users get in a regular tab. To
+    // allow that without opening clickjacking risk to every extension on
+    // the user's machine, we narrow the allow to OUR extension ID
+    // (pinned via apps/chrome/manifest.json's `key` field; see
+    // lobu-ai/owletto:apps/chrome/manifest.json).
+    // LOBU_OWLETTO_EXTENSION_IDS takes a comma-separated list so a dev
+    // build with a different manifest key can be allowed alongside the
+    // canonical published one.
+    const extraExtensionIds = (c.env.LOBU_OWLETTO_EXTENSION_IDS ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => /^[a-p]{32}$/.test(s));
+    const ownedExtensionIds = [
+      // canonical, derived from apps/chrome/manifest.json's `key`
+      'amnnhclgmbldmfcfamonoggjhfidemmm',
+      ...extraExtensionIds,
+    ];
+    const extensionAllowed = ownedExtensionIds
+      .map((id) => ` chrome-extension://${id}`)
+      .join('');
     c.header(
       'Content-Security-Policy',
       `frame-ancestors 'self' ${frameAncestors}${extensionAllowed}`

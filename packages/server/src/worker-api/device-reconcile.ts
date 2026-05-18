@@ -60,12 +60,19 @@ async function ensureDeviceConnectorWired(
   // runs even on the fast path so a stale pin doesn't silently strand the feeds.
   const reconcilePin = async (db: typeof sql, connectionId: number) => {
     const target = matchingDeviceIds.length === 1 ? matchingDeviceIds[0] : null;
+    // Compare via text on both sides — passing a `pgTextArray(...)` literal
+    // through a `::uuid[]` cast trips a postgres "malformed array literal"
+    // failure under the extended-protocol path postgres.js uses (the bound
+    // text parameter never gets re-parsed as an array before the uuid[] cast
+    // runs). `device_worker_id::text = ANY(text[])` sidesteps the cast
+    // entirely; UUIDs are canonical lowercase so text equality matches the
+    // uuid form 1:1.
     await db`
       UPDATE connections
       SET device_worker_id = ${target}::uuid, updated_at = NOW()
       WHERE id = ${connectionId}
         AND device_worker_id IS DISTINCT FROM ${target}::uuid
-        AND (device_worker_id IS NULL OR NOT (device_worker_id = ANY(${pgTextArray(matchingDeviceIds)}::uuid[])))
+        AND (device_worker_id IS NULL OR NOT (device_worker_id::text = ANY(${pgTextArray(matchingDeviceIds)}::text[])))
     `;
   };
 

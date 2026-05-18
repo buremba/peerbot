@@ -65,3 +65,8 @@ set_link "mac"    "$source_root/packages/owletto/apps/mac"    "$active_dir/mac"
 # to know whether to reset to 'main' when cleaning the active worktree).
 echo "$name" > "$active_dir/.active-name"
 echo "✓ active worktree: $name"
+echo ""
+echo "  ↳ Chrome will not auto-reload the extension when the symlink retargets."
+echo "    Click 'Reload' on the owletto extension in chrome://extensions to pick"
+echo "    up the new source. (MV3 service workers re-register on extension reload,"
+echo "    not on symlink change.)"

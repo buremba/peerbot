@@ -2072,6 +2072,13 @@ export async function completeActionRun(c: Context<{ Bindings: Env }>) {
 
     const sql = getDb();
 
+    // Atomic terminal-state transition. The WHERE clause makes the
+    // UPDATE no-op if the row has already been finalized by another
+    // path (e.g. waitForDeviceActionRun timed out and marked it
+    // 'timeout'). Without this guard, a slow worker could overwrite a
+    // gateway-side timeout decision with success — and the caller has
+    // already returned timeout to its caller, so the action would
+    // double-finalize.
     const updatedRuns = await sql`
       UPDATE runs
       SET status = ${req.status === 'success' ? 'completed' : 'failed'},
@@ -2079,8 +2086,21 @@ export async function completeActionRun(c: Context<{ Bindings: Env }>) {
           action_output = ${req.action_output ? sql.json(req.action_output) : null},
           error_message = ${req.error_message ?? null}
       WHERE id = ${req.run_id}
+        AND status = 'running'
+        AND claimed_by = ${req.worker_id}
       RETURNING organization_id, action_key
     `;
+    if (updatedRuns.length === 0) {
+      // Either the run was already finalized (timeout race) or the
+      // worker isn't the claimant. authorizeRunForWorker already gated
+      // ownership, so this is almost always the timeout race; return
+      // a clear status so the worker's logs are informative.
+      logger.info(
+        { run_id: req.run_id, worker_id: req.worker_id, claimed_status: req.status },
+        '[completeActionRun] no-op: run already in terminal state (likely gateway timeout)'
+      );
+      return c.json({ success: false, reason: 'already_finalized' });
+    }
 
     const organizationId = (updatedRuns[0] as any)?.organization_id;
     const actionKey = (updatedRuns[0] as any)?.action_key ?? 'Action';

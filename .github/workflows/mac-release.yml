@@ -266,6 +266,15 @@ jobs:
       # no embedded profile, which is correct for builds using only standard
       # entitlements. Use a bash array so profile names with spaces
       # (e.g. "Owletto Developer ID") survive word-splitting.
+      #
+      # SPM-vendored Sparkle ships nested helpers (Updater.app, Autoupdate,
+      # Downloader.xpc, Installer.xpc) that Xcode's archive does NOT sign
+      # with Developer ID / secure timestamp — Apple's notary then rejects
+      # the bundle with "binary not signed with valid Developer ID" /
+      # "signature does not include a secure timestamp" errors. The "Re-sign
+      # Sparkle helpers" step after archive re-signs each helper leaf-first
+      # with --options runtime + --timestamp, then re-signs the umbrella
+      # Owletto.app so the new helper signatures are sealed into the parent.
       - name: Archive (signed)
         if: steps.mode.outputs.signed == 'true'
         env:
@@ -287,6 +296,48 @@ jobs:
             ARGS+=("PROVISIONING_PROFILE_SPECIFIER=$PROFILE_NAME")
           fi
           xcodebuild "${ARGS[@]}"
+
+      # Re-sign Sparkle's nested helpers — Xcode's archive doesn't apply
+      # Developer ID + secure-timestamp to them when Sparkle is integrated
+      # via SPM, and notarytool rejects the bundle on that basis. Sign
+      # leaf-first (innermost binaries → enclosing bundles → framework →
+      # umbrella app) so each enclosing seal includes the new inner
+      # signatures. --options runtime is required because the parent app
+      # uses Hardened Runtime; --timestamp is required for notarization.
+      - name: Re-sign Sparkle helpers
+        if: steps.mode.outputs.signed == 'true'
+        run: |
+          set -e
+          APP="$RUNNER_TEMP/Owletto.xcarchive/Products/Applications/Owletto.app"
+          SPARKLE="$APP/Contents/Frameworks/Sparkle.framework/Versions/B"
+          OPTS=(--force --options runtime --timestamp --sign "Developer ID Application")
+
+          # XPC services (each has an inner Mach-O + an outer bundle).
+          if [ -d "$SPARKLE/XPCServices/Downloader.xpc" ]; then
+            codesign "${OPTS[@]}" "$SPARKLE/XPCServices/Downloader.xpc/Contents/MacOS/Downloader"
+            codesign "${OPTS[@]}" "$SPARKLE/XPCServices/Downloader.xpc"
+          fi
+          if [ -d "$SPARKLE/XPCServices/Installer.xpc" ]; then
+            codesign "${OPTS[@]}" "$SPARKLE/XPCServices/Installer.xpc/Contents/MacOS/Installer"
+            codesign "${OPTS[@]}" "$SPARKLE/XPCServices/Installer.xpc"
+          fi
+
+          # Updater.app and standalone Autoupdate Mach-O.
+          if [ -d "$SPARKLE/Updater.app" ]; then
+            codesign "${OPTS[@]}" "$SPARKLE/Updater.app/Contents/MacOS/Updater"
+            codesign "${OPTS[@]}" "$SPARKLE/Updater.app"
+          fi
+          if [ -f "$SPARKLE/Autoupdate" ]; then
+            codesign "${OPTS[@]}" "$SPARKLE/Autoupdate"
+          fi
+
+          # Framework itself + umbrella app last, so they seal the
+          # updated inner signatures.
+          codesign "${OPTS[@]}" "$APP/Contents/Frameworks/Sparkle.framework"
+          codesign "${OPTS[@]}" "$APP"
+
+          # Verify before we hand it to notarytool.
+          codesign --verify --deep --strict --verbose=2 "$APP"
 
       - name: Archive (unsigned, ad-hoc)
         if: steps.mode.outputs.signed != 'true'

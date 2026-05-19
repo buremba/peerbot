@@ -119,7 +119,8 @@ export class GitFileSource implements FileSystemSource {
     const ref = await git.resolveRef({ fs: nodeFs, dir, ref: 'HEAD' });
     await writeMeta(this.#paths.metaPath, { uri: this.#uri, kind: 'git' });
 
-    return new DirectorySnapshot(dir, ref);
+    // Hide `.git/` from the connector — repo metadata is implementation detail.
+    return new DirectorySnapshot(dir, ref, { exclude: isGitInternalPath });
   }
 
   diffSinceRef(prevRef: string): Promise<FileDelta> {
@@ -178,6 +179,11 @@ export class GitFileSource implements FileSystemSource {
 
     return { added, modified, removed };
   }
+}
+
+/** Filter for git internals — matches `.git` itself and anything under it. */
+function isGitInternalPath(rel: string): boolean {
+  return rel === '.git' || rel.startsWith('.git/');
 }
 
 async function pathExists(p: string): Promise<boolean> {

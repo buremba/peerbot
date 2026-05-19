@@ -40,6 +40,14 @@ export class LocalFileSource implements FileSystemSource {
   readonly #uri: string;
   readonly #rootDir: string;
   readonly #paths: CachePaths;
+  /**
+   * When the local source root happens to *contain* the SDK cache dir
+   * (`.lobu-cache/`) — typical when the source is the workspace root — we
+   * must NOT ingest our own cache files, or every fetch() would mutate the
+   * ref and self-pollute. This predicate hides them from manifest, walk,
+   * and read.
+   */
+  readonly #exclude: (relativePath: string) => boolean;
 
   constructor(uri: string) {
     if (!uri.startsWith('file://')) {
@@ -48,6 +56,7 @@ export class LocalFileSource implements FileSystemSource {
     this.#uri = uri;
     this.#rootDir = fileURLToPath(uri);
     this.#paths = cachePathsFor(uri);
+    this.#exclude = (rel) => rel === '.lobu-cache' || rel.startsWith('.lobu-cache/');
   }
 
   fetch(): Promise<Snapshot> {
@@ -62,7 +71,7 @@ export class LocalFileSource implements FileSystemSource {
       await mkdir(this.#paths.root, { recursive: true });
       await readAndVerifyMeta(this.#paths.metaPath, this.#uri);
 
-      const files = await collectFiles(this.#rootDir);
+      const files = await collectFiles(this.#rootDir, this.#exclude);
       const ref = canonicalManifestRef(files);
       const manifest: Manifest = {
         ref,
@@ -75,13 +84,13 @@ export class LocalFileSource implements FileSystemSource {
       // Also persist a per-ref copy so diffSinceRef can look up prior refs.
       await writePerRefManifest(this.#paths.root, manifest);
 
-      return new DirectorySnapshot(this.#rootDir, ref);
+      return new DirectorySnapshot(this.#rootDir, ref, { exclude: this.#exclude });
     });
   }
 
   diffSinceRef(prevRef: string): Promise<FileDelta> {
     return withSourceLock(this.#uri, async () => {
-      const files = await collectFiles(this.#rootDir);
+      const files = await collectFiles(this.#rootDir, this.#exclude);
       const curRef = canonicalManifestRef(files);
       if (curRef === prevRef) return { added: [], modified: [], removed: [] };
 
@@ -99,9 +108,13 @@ export class LocalFileSource implements FileSystemSource {
   }
 }
 
-async function collectFiles(rootDir: string): Promise<ManifestEntry[]> {
+async function collectFiles(
+  rootDir: string,
+  exclude: (rel: string) => boolean,
+): Promise<ManifestEntry[]> {
   const out: ManifestEntry[] = [];
   for await (const rel of walkDirectoryRelative(rootDir)) {
+    if (exclude(rel)) continue;
     const abs = join(rootDir, rel);
     const buf = await readFile(abs);
     const sha = createHash('sha256').update(buf).digest('hex');

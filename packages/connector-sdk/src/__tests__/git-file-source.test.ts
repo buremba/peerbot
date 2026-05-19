@@ -152,6 +152,55 @@ describe('GitFileSource diffSinceRef', () => {
   });
 });
 
+describe('GitFileSource hides .git from the connector', () => {
+  let cacheRoot: string;
+  let originalWorkspaceDir: string | undefined;
+
+  beforeEach(async () => {
+    cacheRoot = await mkdtemp(join(tmpdir(), 'lobu-git-hide-'));
+    originalWorkspaceDir = process.env.WORKSPACE_DIR;
+    process.env.WORKSPACE_DIR = cacheRoot;
+  });
+
+  afterEach(async () => {
+    if (originalWorkspaceDir === undefined) delete process.env.WORKSPACE_DIR;
+    else process.env.WORKSPACE_DIR = originalWorkspaceDir;
+    await rm(cacheRoot, { recursive: true, force: true });
+  });
+
+  test('walkFiles + readFile do not expose .git internals', async () => {
+    // Build a tiny clone-shaped fixture on disk, then construct the snapshot
+    // directly so we exercise the exclude predicate without a real fetch().
+    const uri = 'git+https://example.invalid/test/exclude.git@main';
+    const { createHash } = await import('node:crypto');
+    const hash = createHash('sha256').update(uri).digest('hex').slice(0, 32);
+    const workdir = join(cacheRoot, '.lobu-cache', 'sources', hash, 'snapshot');
+    await mkdir(workdir, { recursive: true });
+    await git.init({ fs: nodeFs, dir: workdir, defaultBranch: 'main' });
+    await writeFile(join(workdir, 'a.json'), '{"x":1}');
+    await git.add({ fs: nodeFs, dir: workdir, filepath: 'a.json' });
+    await git.commit({
+      fs: nodeFs,
+      dir: workdir,
+      message: 'init',
+      author: { name: 't', email: 't@e.com' },
+    });
+
+    // The snapshot constructed by GitFileSource.fetch() uses
+    // `exclude: isGitInternalPath`. Mirror that here:
+    const snap = new DirectorySnapshot(workdir, 'whatever', {
+      exclude: (rel) => rel === '.git' || rel.startsWith('.git/'),
+    });
+
+    const found: string[] = [];
+    for await (const rel of snap.walkFiles('**')) found.push(rel);
+    expect(found.some((p) => p === '.git' || p.startsWith('.git/'))).toBe(false);
+    expect(found).toContain('a.json');
+
+    await expect(snap.readText('.git/HEAD')).rejects.toThrow(/excluded/i);
+  });
+});
+
 describe('DirectorySnapshot security', () => {
   test('relative readFile inside snapshot works', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'lobu-snap-'));

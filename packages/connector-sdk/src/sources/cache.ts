@@ -84,23 +84,26 @@ export async function readAndVerifyMeta(
 }
 
 /**
- * Per-source mutex. Same URI -> shared `Promise` chain so concurrent
+ * Per-source mutex. Same URI → shared `Promise` chain so concurrent
  * `fetch()` calls serialize. Process-local only — fine for the embedded
  * worker model where one worker subprocess owns its cache.
+ *
+ * The map stores the *guarded* (error-swallowed) promise so a rejection in
+ * `fn` doesn't poison the chain. Identity comparison in `finally` uses the
+ * same stored reference, so cleanup actually removes the entry — an
+ * earlier draft created a fresh `.catch()` inside `finally` and leaked one
+ * entry per distinct URI.
  */
 const _sourceLocks = new Map<string, Promise<unknown>>();
 export async function withSourceLock<T>(uri: string, fn: () => Promise<T>): Promise<T> {
   const prev = _sourceLocks.get(uri) ?? Promise.resolve();
   const next = prev.then(fn, fn);
-  _sourceLocks.set(
-    uri,
-    next.catch(() => undefined),
-  );
+  const guarded = next.catch(() => undefined);
+  _sourceLocks.set(uri, guarded);
   try {
     return await next;
   } finally {
-    // Best-effort cleanup once the chain is idle.
-    if (_sourceLocks.get(uri) === next.catch(() => undefined)) {
+    if (_sourceLocks.get(uri) === guarded) {
       _sourceLocks.delete(uri);
     }
   }

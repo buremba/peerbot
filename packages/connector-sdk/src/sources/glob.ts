@@ -60,9 +60,21 @@ export function globToRegExp(glob: string): RegExp {
     const c = glob[i];
     if (c === '*') {
       if (glob[i + 1] === '*') {
-        // `**` — match any run (including `/`).
-        re += '.*';
-        i++;
+        // `**` — match any run (including `/`). When followed by `/`, the
+        // whole `**/` consumes zero or more directory segments so e.g.
+        // `**/*.md` matches `foo.md` AND `a/b/foo.md`. Same on the trailing
+        // boundary so `foo/**` matches `foo` itself.
+        if (glob[i + 2] === '/') {
+          re += '(?:.*/)?';
+          i += 2; // skip `**` and the slash
+        } else if (i === 0 && glob[i + 2] === undefined) {
+          // bare `**` — match anything (including empty).
+          re += '.*';
+          i++;
+        } else {
+          re += '.*';
+          i++;
+        }
       } else {
         // `*` — match any run not containing `/`.
         re += '[^/]*';

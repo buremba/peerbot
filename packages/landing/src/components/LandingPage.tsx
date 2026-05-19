@@ -33,35 +33,16 @@ const PIVOT_USE_CASES: Array<{ id: LandingUseCaseId; label: string }> = [
   { id: "market", label: "Market" },
 ];
 
-const SETUP_PROMPT = `Build me a working Lobu agent end-to-end. Lobu is an open-source event-sourced backend for AI agents (connectors emit events, memory keeps the structured record, agents react in real time and dream on cron).
+const SETUP_PROMPT = `I want to build a Lobu agent.
 
-Repo: https://github.com/lobu-ai/lobu
-Docs: https://lobu.ai/docs/
+1. Install the Lobu skill so you have the project conventions and tooling:
+   /plugin install lobu
 
-Phase 1 — Environment
-1. Verify Node 22-24 and Postgres+pgvector are available; install if missing.
-2. Clone https://github.com/lobu-ai/lobu, run \`bun install\`, copy \`.env.example\` to \`.env\` and fill in DATABASE_URL + a model API key (Anthropic / OpenAI / Z.ai — your choice).
-3. Run \`make dev\` to boot the gateway + workers on :8787. Confirm the web UI loads.
+2. Walk me through the skill's onboarding interview (it asks what the agent should do, who uses it, where data comes from, where I'll talk to it, what should run on a schedule). Pause at every real decision and ask me — don't fake credentials, don't guess.
 
-Phase 2 — Interview me
-Ask short, concrete questions one at a time:
-  - What is the agent for? (one sentence)
-  - Who uses it? (just me / my team / customers each with their own data)
-  - What does it need to remember? (we'll turn this into 1-3 entity types in models/schema.yaml)
-  - Where does the data come from? (Slack, Gmail, GitHub, Linear, Stripe, a CSV — pick 1 to start)
-  - Where do people talk to it? (Slack, Telegram, web, MCP-only)
-  - What should it do on a schedule, if anything? (1 dreaming watcher max for v1)
+3. Scaffold the project per my answers (lobu.toml, models/schema.yaml, connectors/, models/reactions/), boot it locally, send a test message via the chosen channel, and show me the memory event that was written.
 
-Phase 3 — Scaffold and run
-Based on my answers, generate the project:
-  - lobu.toml with one agent + provider + memory pointer
-  - models/schema.yaml with entity types + (optional) one watcher with cron + extraction_schema
-  - connectors/<name>.yaml for the chosen data source
-  - models/reactions/<name>.reaction.ts for the watcher's reaction
-
-Boot the agent locally, send a test message via the chosen channel, confirm the agent replies and the watcher fires. Show me the memory event that was written.
-
-Rules: pause at every real decision (connector choice, model provider, OAuth flow, schedule cadence) and ask me. Don't fake credentials — if a real OAuth or API key is needed, walk me through getting it. Cite docs links instead of guessing.`;
+Lobu is an open-source event-sourced backend for AI agents — connectors emit events, memory keeps the structured record, agents react in real time and dream on cron. Repo: https://github.com/lobu-ai/lobu — Docs: https://lobu.ai/docs/`;
 
 const GITHUB_URL = "https://github.com/lobu-ai/lobu";
 

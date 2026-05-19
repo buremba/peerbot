@@ -72,7 +72,16 @@ const PORT = parseInt(process.env.PORT || '8787', 10);
 const HOST = process.env.HOST?.trim() || '127.0.0.1';
 const EMBEDDINGS_PORT = parseInt(process.env.EMBEDDINGS_PORT || '0', 10);
 const APP_ROOT = join(fileURLToPath(new URL('.', import.meta.url)), '..');
+const PACKAGE_REPO_ROOT = join(APP_ROOT, '..', '..');
 const require = createRequire(import.meta.url);
+
+// Mirror server.ts: downstream `buildGatewayConfig()` in the embedded
+// gateway derives worker paths from LOBU_DEV_PROJECT_PATH. Without this
+// fallback, users running `lobu run` from a project subdir get a wrong
+// cwd-relative resolve (see CLAUDE.md: "lobu run from a project subdir").
+if (!process.env.LOBU_DEV_PROJECT_PATH) {
+  process.env.LOBU_DEV_PROJECT_PATH = PACKAGE_REPO_ROOT;
+}
 
 function resolveExistingPath(...candidates: Array<string | undefined>): string | null {
   for (const candidate of candidates) {

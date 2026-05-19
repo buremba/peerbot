@@ -174,14 +174,16 @@ psql "$DATABASE_URL" -c \
 
 ## Agent evaluations
 
-For automated quality checks, use the `eval` command:
+For automated quality checks, use [promptfoo](https://www.promptfoo.dev) via the [`@lobu/promptfoo-provider`](https://www.npmjs.com/package/@lobu/promptfoo-provider) package. The provider drives any Lobu agent end-to-end through the gateway's public Agent API.
 
 ```bash
-npx @lobu/cli@latest eval                              # run all evals
-npx @lobu/cli@latest eval basic-qa                     # run a specific eval
-npx @lobu/cli@latest eval --model claude/sonnet        # eval with a specific model
-npx @lobu/cli@latest eval --list                       # list available evals
-npx @lobu/cli@latest eval --ci --output results.json   # CI mode
+bun add -D promptfoo @lobu/promptfoo-provider
+export LOBU_TOKEN=$(npx @lobu/cli@latest token)
+
+bunx promptfoo eval -c agents/<agent-id>/evals/promptfooconfig.yaml
+bunx promptfoo eval -c <config> --filter-pattern basic-qa
+bunx promptfoo eval -c <config> --output results.json --no-share   # CI mode
+bunx promptfoo view                                                   # comparison grid
 ```
 
-Eval files live in the agent directory and define test cases with expected outcomes. Use `--ci` for non-zero exit codes on failure in CI/CD pipelines.
+Eval configs live in the agent directory (`agents/<agent-id>/evals/promptfooconfig.yaml`) and define test cases with expected outcomes. promptfoo exits non-zero on failed assertions — wire that into CI. See the [Evaluations guide](/guides/evals/) for the full format.

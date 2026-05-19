@@ -1,222 +1,117 @@
 ---
 title: Evaluations
-description: Define automated quality checks for your agent with YAML eval files.
+description: Run automated quality checks against your Lobu agent using promptfoo + @lobu/promptfoo-provider.
 ---
 
-Evals are automated test cases that verify your agent behaves correctly. They live in your agent directory and run via the CLI.
+Evals for Lobu agents run through [promptfoo](https://www.promptfoo.dev) — a mature, vendor-neutral LLM eval framework — via the published `@lobu/promptfoo-provider` package. promptfoo handles the runner, assertion library (regex / contains / `llm-rubric` / `factuality` / `context-recall` / etc.), reporter, web viewer, and CI integration. Our provider connects it to your Lobu agent.
+
+> Lobu previously shipped an in-house YAML eval runner (`lobu eval`). It has been removed in favour of promptfoo. The shape of the YAML config is similar — assertions, parametric tests, llm-rubric grading — so migration is mostly a mechanical translation.
 
 ## Quick start
 
 ```bash
-# Run all evals for the default agent
-npx @lobu/cli@latest eval
+# 1. Install promptfoo + the Lobu provider in your project.
+bun add -D promptfoo @lobu/promptfoo-provider
 
-# Run a specific eval
-npx @lobu/cli@latest eval ping
+# 2. Boot your gateway (in another terminal).
+npx @lobu/cli@latest run
 
-# Run with a different model
-npx @lobu/cli@latest eval --model claude/sonnet-4-5
-
-# CI mode (JSON output, exit 1 on failure)
-npx @lobu/cli@latest eval --ci --output results.json
+# 3. Mint a token + run evals.
+export LOBU_TOKEN=$(npx @lobu/cli@latest token)
+bunx promptfoo eval -c agents/<agent-id>/evals/promptfooconfig.yaml
+bunx promptfoo view
 ```
 
-The gateway must be running (`npx @lobu/cli@latest run`) before running evals.
+`promptfoo view` opens a comparison grid in your browser — useful for both debugging individual cases and for screen-shared demos.
 
-## Eval file format
-
-Eval files are YAML, stored in `agents/{name}/evals/`. Each file defines a test case with one or more conversational turns and assertions.
-
-### Minimal example
+## Minimal `promptfooconfig.yaml`
 
 ```yaml
-# agents/my-agent/evals/ping.yaml
-name: ping
-description: Agent responds to a greeting
+# agents/<agent-id>/evals/promptfooconfig.yaml
+description: Smoke evals
 
-turns:
-  - content: "Hello, are you there?"
-    assert:
-      - type: contains
-        value: "hello"
-        options: { case_insensitive: true }
-```
+providers:
+  - id: 'package:@lobu/promptfoo-provider:LobuProvider'
+    config:
+      agent: <agent-id>
+      # gateway: http://localhost:8787      # defaults to LOBU_GATEWAY env
+      # token: ...                          # defaults to LOBU_TOKEN env
 
-### Full example
+defaultTest:
+  options:
+    provider: anthropic:messages:claude-haiku-4-5-20251001
 
-```yaml
-name: follows-instructions
-description: Agent follows formatting instructions without adding unrequested content
-trials: 3
-timeout: 60
-tags: [behavioral]
-rubric: follows-instructions.rubric.md
+prompts:
+  - '{{query}}'
 
-scoring:
-  pass_threshold: 0.8
-
-turns:
-  - content: "List exactly 3 benefits of remote work. Use bullet points."
+tests:
+  - description: ping
+    vars:
+      query: 'Hello, are you there?'
     assert:
       - type: regex
-        value: "^[\\s\\S]*[-•].*[-•].*[-•]"
-        weight: 0.5
+        value: 'hello|hi\b|hey|yes|here|ready'
+        weight: 0.3
       - type: llm-rubric
-        value: "Lists exactly 3 benefits (not 2, not 4+), uses bullet points"
-        weight: 0.5
+        value: 'Response is friendly, acknowledges the greeting, and matches the agent persona.'
+        weight: 0.7
 ```
 
-### Multi-turn example
+`providers[].id` uses promptfoo's `package:` protocol — `package:<npm-name>:<exported-class>`. With `@lobu/promptfoo-provider` resolved on the module path, this loads the `LobuProvider` class.
 
-Test context retention across multiple messages:
+## Provider configuration
+
+| key | env fallback | required | notes |
+| --- | --- | --- | --- |
+| `agent` | `LOBU_AGENT` | yes | agent id registered with the gateway |
+| `gateway` | `LOBU_GATEWAY` | no | defaults to `http://localhost:8787` |
+| `token` | `LOBU_TOKEN` | yes | bearer token from `lobu token` |
+| `provider` | — | no | override the LLM provider for this session |
+| `model` | — | no | override the LLM model |
+| `timeoutMs` | — | no | per-call timeout (default 120000) |
+
+## Assertion types
+
+promptfoo ships a large assertion library; the ones most useful for Lobu agent evals:
+
+| Assertion | When to use |
+| --- | --- |
+| `contains` / `icontains` / `regex` | Deterministic checks for required tokens, IDs, dates, names |
+| `equals` / `is-json` | Strict output shape |
+| `llm-rubric` | Behavioural grading: tone, format compliance, instruction following |
+| `factuality` | Output factually consistent with a reference answer |
+| `similar` / `levenshtein` | Fuzzy match against expected output |
+| `cost` / `latency` | Budget enforcement |
+
+See [promptfoo's assertions docs](https://www.promptfoo.dev/docs/configuration/expected-outputs/) for the full set.
+
+## Parametric tests
+
+promptfoo expands `tests:` into one test case per entry. Load test data from a JSONL file for many cases:
 
 ```yaml
-name: context-retention
-description: Agent remembers context across turns
-trials: 3
-timeout: 60
-tags: [behavioral, multi-turn]
-
-turns:
-  - content: "My name is Alice and I work at Acme Corp."
-
-  - content: "What company do I work at?"
-    assert:
-      - type: contains
-        value: "Acme"
-        weight: 0.5
-      - type: llm-rubric
-        value: "Correctly recalls Acme Corp from the previous message"
-        weight: 0.5
-
-  - content: "And what's my name?"
-    assert:
-      - type: contains
-        value: "Alice"
+tests: file://./cases/specific.jsonl
 ```
 
-Turns without `assert` are sent but not graded — useful for setup messages.
+Each row's fields become `vars` available as `{{var_name}}` substitutions in prompts and in the assertion `value`.
 
-## Schema reference
+## A worked example in the repo
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `name` | string | required | Eval name (used in reports) |
-| `description` | string | — | What this eval tests |
-| `trials` | number | 3 | Number of times to run (for statistical confidence) |
-| `timeout` | number | 120 | Per-turn timeout in seconds |
-| `tags` | string[] | — | Tags for filtering (e.g., `smoke`, `behavioral`) |
-| `rubric` | string | — | Path to a rubric markdown file (relative to eval file) |
-| `scoring.pass_threshold` | number | 0.8 | Minimum score (0–1) for a trial to pass |
-| `turns` | array | required | Conversational turns (min 1) |
+The canonical reference is [`examples/personal-finance/agents/personal-finance/evals/promptfooconfig.yaml`](https://github.com/lobu-ai/lobu/blob/main/examples/personal-finance/agents/personal-finance/evals/promptfooconfig.yaml). It exercises a real agent with two single-turn evals — `ping` (persona check) and `tax-year-anchoring` (UK fiscal-year boundary — two independent cases).
 
-### Turn
+## Known limitations
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `content` | string | The user message to send |
-| `assert` | array | Assertions to check against the agent's response |
+- **Multi-turn evals are not yet first-class.** `@lobu/promptfoo-provider` invokes the agent with a single user message per test case. For sequential conversations, either flatten the transcript into one prompt ("user said earlier: X; now they say: Y") or wait for a planned `vars.transcript` extension to the provider.
+- **RAG-specific assertions (`context-recall`, `context-faithfulness`, custom tool-call checks) are not wired up.** The gateway's SSE protocol doesn't surface tool calls yet, so the provider can't populate `metadata.toolCalls` / `metadata.retrievedContext`. Tracked as a follow-up gateway change.
 
-### Assertion
+## Reporting and CI
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `type` | string | required | `contains`, `regex`, or `llm-rubric` |
-| `value` | string | required | The value to check (substring, regex pattern, or grading criteria) |
-| `weight` | number | 1 | Relative weight in scoring |
-| `options.case_insensitive` | boolean | false | Case-insensitive match (for `contains`) |
+promptfoo writes JSON / JUnit / HTML reports — see [`promptfoo eval --output`](https://www.promptfoo.dev/docs/configuration/output/). The [GitHub Action reporter](https://www.promptfoo.dev/docs/integrations/github-action/) annotates failing assertions on pull requests.
 
-### Assertion types
+For CI:
 
-**`contains`** — checks if the agent's response includes a substring.
-```yaml
-- type: contains
-  value: "Acme Corp"
-  options: { case_insensitive: true }
-```
-
-**`regex`** — tests the response against a regular expression (case-insensitive by default).
-```yaml
-- type: regex
-  value: "\\d{3}-\\d{4}"  # matches a phone number pattern
-```
-
-**`llm-rubric`** — sends the response to an LLM for qualitative grading. Use this for subjective criteria that can't be captured with string matching.
-```yaml
-- type: llm-rubric
-  value: "Response is friendly, acknowledges the user's question, and provides a helpful answer"
-```
-
-## Rubrics
-
-For more detailed grading, create a rubric file. It's a markdown document with criteria the LLM evaluates against.
-
-```markdown
-<!-- agents/my-agent/evals/follows-instructions.rubric.md -->
-# Instruction Following
-
-## Direct Compliance
-- Agent addresses the specific request, not a tangential topic
-- Response format matches the formatting instructions given
-- Exact count requested is respected (no more, no fewer)
-
-## Boundary Respect
-- Agent does not add unrequested features or disclaimers
-- No unsolicited follow-up questions
-
-## Tone
-- Professional and helpful
-- No unnecessary apologies or hedging
-```
-
-Reference it from your eval:
-```yaml
-rubric: follows-instructions.rubric.md
-```
-
-When a rubric is present, its score is weighted 50% alongside assertion scores (50%).
-
-## Scoring
-
-- Each assertion produces a score of 0 or 1, weighted by `weight`
-- Trial score = weighted average of all assertion scores (+ rubric if present)
-- A trial **passes** if score >= `pass_threshold` (default 0.8)
-- The eval **pass rate** = fraction of trials that passed
-- Multiple trials (default 3) provide statistical confidence against non-deterministic responses
-
-## CLI options
-
-| Flag | Description |
-|------|-------------|
-| `-a, --agent <id>` | Agent ID (defaults to first in `lobu.toml`) |
-| `-g, --gateway <url>` | Gateway URL (default: from `.env` or `http://localhost:8787`) |
-| `-m, --model <model>` | Model to evaluate (e.g., `claude/sonnet-4-5`) |
-| `--trials <n>` | Override trial count for all evals |
-| `--ci` | CI mode: JSON output, exit code 1 on any failure |
-| `--output <file>` | Write results to a JSON file |
-| `--list` | List available evals without running them |
-
-## Results and reports
-
-Results are automatically saved to `agents/{name}/evals/.results/` as JSON after each run. A comparison report is generated at `agents/{name}/evals/evals-report.md` showing:
-
-- Model comparison table (pass rate, avg score, latency, tokens)
-- Rubric details per model
-- Failed trial transcripts with trace IDs (for debugging via [observability](/guides/observability/))
-
-Run evals with different `--model` values to build a comparison across providers.
-
-## Directory structure
-
-```
-agents/my-agent/
-  evals/
-    ping.yaml
-    context-retention.yaml
-    follows-instructions.yaml
-    follows-instructions.rubric.md
-    .results/                          # auto-generated
-      openrouter-claude-sonnet_1234.json
-      gemini-gemini-pro_5678.json
-    evals-report.md                    # auto-generated comparison
+```bash
+bunx promptfoo eval -c agents/<agent-id>/evals/promptfooconfig.yaml \
+  --output results.json --no-share
+# exits non-zero on any failed assertion
 ```

@@ -550,8 +550,8 @@ describe("[finding 4] ChatInstanceManager.initialize refuses Telegram polling ro
 // The chat-platform spawn path (`base-deployment-manager`,
 // `agent-threads.createThreadForAgent`) already passes `organizationId`
 // into `generateWorkerToken`. The public Agent API entry point
-// (`POST /api/v1/agents`) did NOT — every worker spawned via `lobu chat`,
-// `lobu eval`, or the JS SDK landed with `tokenData.organizationId ===
+// (`POST /api/v1/agents`) did NOT — every worker spawned via `lobu chat`
+// or the JS SDK landed with `tokenData.organizationId ===
 // undefined`. The egress proxy then short-circuited the new per-tenant
 // gates and fell back to unscoped checks for that worker. The route now
 // looks the agent's owning org up via the ownership metadata store and

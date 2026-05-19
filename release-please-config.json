@@ -57,6 +57,11 @@
           "jsonpath": "$.version"
         },
         {
+          "type": "json",
+          "path": "packages/promptfoo-provider/package.json",
+          "jsonpath": "$.version"
+        },
+        {
           "type": "yaml",
           "path": "charts/lobu/Chart.yaml",
           "jsonpath": "$.version"

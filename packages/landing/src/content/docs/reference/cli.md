@@ -167,41 +167,15 @@ npx @lobu/cli@latest chat "Status update" -c staging
 
 ---
 
-### `eval [name]`
+### Evaluations
 
-Run local agent evaluations. Eval files live in the agent directory and define test cases with expected outcomes.
-
-```bash
-npx @lobu/cli@latest eval
-npx @lobu/cli@latest eval basic-qa
-npx @lobu/cli@latest eval --model claude/sonnet
-npx @lobu/cli@latest eval --ci --output results.json
-```
-
-| Flag | Description |
-|------|-------------|
-| `-a, --agent <id>` | Agent ID (defaults to first in local `lobu.toml`) |
-| `-g, --gateway <url>` | Gateway URL (default: `http://localhost:8787`) |
-| `-m, --model <model>` | Model to evaluate (e.g. `claude/sonnet`, `openai/gpt-4.1`) |
-| `--trials <n>` | Override trial count |
-| `--ci` | CI mode: JSON output, non-zero exit on failure |
-| `--output <file>` | Write results to JSON file |
-| `--list` | List available evals without running them |
-| `-c, --context <name>` | Use a named context |
-
-#### `eval new <name>`
-
-Scaffold a new YAML eval into the agent's `evals/` directory.
+Lobu does not ship its own eval runner. Use [promptfoo](https://www.promptfoo.dev) with [`@lobu/promptfoo-provider`](https://www.npmjs.com/package/@lobu/promptfoo-provider) — see the [Evaluations guide](/guides/evals/) for the full pattern.
 
 ```bash
-npx @lobu/cli@latest eval new smoke-test --description "Quick smoke test" --trials 3
+bun add -D promptfoo @lobu/promptfoo-provider
+LOBU_TOKEN=$(npx @lobu/cli@latest token) \
+  bunx promptfoo eval -c agents/<agent-id>/evals/promptfooconfig.yaml
 ```
-
-| Flag | Description |
-|------|-------------|
-| `-a, --agent <id>` | Agent ID (defaults to first in local `lobu.toml`) |
-| `--description <text>` | Eval description |
-| `--trials <n>` | Trial count |
 
 ---
 

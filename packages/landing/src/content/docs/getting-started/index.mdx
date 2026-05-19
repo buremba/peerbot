@@ -20,8 +20,10 @@ npx @lobu/cli@latest run
 # 3. Chat with your agent (in another terminal)
 npx @lobu/cli@latest chat "Hello, what can you do?"
 
-# 4. Run evals to measure quality
-npx @lobu/cli@latest eval
+# 4. Run evals to measure quality (uses promptfoo via @lobu/promptfoo-provider)
+bun add -D promptfoo @lobu/promptfoo-provider
+LOBU_TOKEN=$(npx @lobu/cli@latest token) bunx promptfoo eval \
+  -c agents/my-agent/evals/promptfooconfig.yaml
 ```
 
 ## Project structure
@@ -39,7 +41,7 @@ my-agent/
 │   ├── USER.md                # per-user context and preferences
 │   ├── skills/                # skills scoped to this agent only
 │   └── evals/
-│       └── ping.yaml          # test cases for agent quality
+│       └── promptfooconfig.yaml  # test cases for agent quality (promptfoo)
 ├── data/                      # local runtime data; memory seeds when enabled
 └── skills/                    # skills shared across all agents
 ```
@@ -63,7 +65,7 @@ Install the Lobu skill into your coding agent so it already understands the proj
 npx skills add lobu-ai/lobu --skill lobu
 ```
 
-See [Skills](/getting-started/skills/) for which coding agents this supports and how to scope it. With the skill installed, open your coding agent in the project and shape behavior by editing `agents/my-agent/{IDENTITY,SOUL,USER}.md`, `lobu.toml`, and `agents/my-agent/evals/` — then re-run `npx @lobu/cli@latest chat "…"` and `npx @lobu/cli@latest eval` after each change.
+See [Skills](/getting-started/skills/) for which coding agents this supports and how to scope it. With the skill installed, open your coding agent in the project and shape behavior by editing `agents/my-agent/{IDENTITY,SOUL,USER}.md`, `lobu.toml`, and `agents/my-agent/evals/promptfooconfig.yaml` — then re-run `npx @lobu/cli@latest chat "…"` and `bunx promptfoo eval -c agents/my-agent/evals/promptfooconfig.yaml` after each change.
 
 | File | What to ask for |
 |------|----------------|

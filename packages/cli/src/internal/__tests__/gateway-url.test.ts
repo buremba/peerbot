@@ -2,8 +2,8 @@
  * Tests for the `agentApiBase` helper and `resolveGatewayUrl`.
  *
  * These functions determine the `/lobu` API prefix that `lobu chat` and
- * `lobu eval` use to construct their endpoint URLs — a regression here
- * silently breaks all chat/eval connections.
+ * other CLI commands use to construct their endpoint URLs — a regression
+ * here silently breaks all chat connections.
  */
 
 import { afterEach, describe, expect, test } from "bun:test";

@@ -32,6 +32,7 @@ const PACKAGES = [
   },
   { dir: "packages/connectors", transform: rewriteWorkspaceRefs },
   { dir: "packages/connector-worker", transform: rewriteWorkspaceRefs },
+  { dir: "packages/promptfoo-provider", transform: rewriteWorkspaceRefs },
 ];
 
 const CLAWHUB_SOURCE_REPO = "lobu-ai/lobu";

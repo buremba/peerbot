@@ -987,7 +987,7 @@ function RunAnywhereSection() {
         {cards.map((card) => (
           <div
             key={card.title}
-            class="rounded-lg border p-6 shadow-[0_1px_3px_rgba(0,0,0,0.03),0_8px_24px_-12px_rgba(0,0,0,0.08)]"
+            class="flex min-w-0 flex-col rounded-lg border p-6"
             style={{
               borderColor: "var(--color-page-border)",
               backgroundColor: "var(--color-page-surface)",
@@ -1007,7 +1007,7 @@ function RunAnywhereSection() {
               {card.body}
             </p>
             <pre
-              class="overflow-hidden rounded-lg px-3 py-2.5 font-mono text-[12.5px] leading-[1.65]"
+              class="overflow-x-auto rounded-lg px-3 py-2.5 font-mono text-[12.5px] leading-[1.65]"
               style={{
                 backgroundColor: "var(--color-landing-code-bg)",
                 color: "var(--color-landing-code-text)",

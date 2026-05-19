@@ -38,7 +38,6 @@ export type {
   EventEnvelope,
   Feed,
   FeedDefinition,
-  FeedMode,
   IdentityNamespace,
   Run,
   RunStatus,
@@ -62,10 +61,8 @@ export {
   DerivedRelationshipMetadata,
   FactEventMetadata,
   IDENTITY_FACT_SEMANTIC_TYPE,
-  MatchStrategy,
   RelationshipTypeIdentityMetadata,
 } from './identity-types.js';
-export { isSourceNativeEventType, SOURCE_NATIVE_EVENT_TYPES } from './event-taxonomy.js';
 export {
   normalizeAuthUserId,
   normalizeEmail,
@@ -108,31 +105,18 @@ export type { AcquireBrowserOptions, AcquiredBrowser } from './browser/acquire.j
 export { acquireBrowser, BrowserAuthCascadeError } from './browser/acquire.js';
 export type { CdpVersionInfo, ResolveCdpOptions } from './browser/cdp.js';
 export {
-  discoverChromeListeningPorts,
-  discoverChromeProcessCdpUrls,
   fetchCdpVersionInfo,
-  normalizeCdpUrl,
   resolveCdpUrl,
-  tryWebSocketCdp,
 } from './browser/cdp.js';
 export { CdpPage } from './browser/cdp-page.js';
 export type { BrowserLaunchOptions, EnhancedBrowser } from './browser/launcher.js';
 export {
   captureErrorArtifacts,
   launchBrowser,
-  withErrorCapture,
 } from './browser/launcher.js';
-export type { StealthBrowser, StealthBrowserOptions } from './browser/stealth.js';
-export {
-  getRandomDelay,
-  humanWait,
-  launchStealthBrowser,
-  randomScroll,
-  testBotDetection,
-} from './browser/stealth.js';
 export type { BrowserNetworkConfig, BrowserNetworkResult } from './browser-network.js';
 export { browserNetworkSync } from './browser-network.js';
-export type { ReactionContext, ReactionEntity } from './reaction-sdk.js';
+export type { ReactionContext } from './reaction-sdk.js';
 export type {
   Checkpoint,
   Content,

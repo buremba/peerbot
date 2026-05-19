@@ -315,13 +315,6 @@ export const IDENTITY = {
 
 export type IdentityNamespace = (typeof IDENTITY)[keyof typeof IDENTITY];
 
-export enum FeedMode {
-  /** Connector code runs on worker, syncs data */
-  sync = 'sync',
-  /** Virtual feed backed by saved queries (future) */
-  virtual = 'virtual',
-}
-
 // =============================================================================
 // Action Definition
 // =============================================================================

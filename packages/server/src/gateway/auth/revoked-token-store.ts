@@ -22,34 +22,13 @@ interface CacheEntry {
  * Backed by `public.revoked_tokens(jti text primary key, expires_at
  * timestamptz not null)`. Mirrors the shape of `grant-store.ts`: a Postgres
  * table, a small in-memory TTL cache, and a lazy GC sweep of expired rows.
- * The table is created on first use (embedded deployments have no separate
- * migration step for it).
+ * Schema lives in `db/migrations/20260519020001_revoked_tokens.sql` and is
+ * mirrored in `db/embedded-schema-patches.ts` for pre-initialized embedded
+ * databases.
  */
 export class RevokedTokenStore {
   private readonly cache = new Map<string, CacheEntry>();
-  private schemaReady: Promise<void> | null = null;
   private lastGcAt = 0;
-
-  private async ensureSchema(): Promise<void> {
-    if (!this.schemaReady) {
-      const sql = getDb();
-      this.schemaReady = (async () => {
-        await sql.unsafe(`
-          CREATE TABLE IF NOT EXISTS public.revoked_tokens (
-            jti text PRIMARY KEY,
-            expires_at timestamptz NOT NULL
-          )
-        `);
-        await sql.unsafe(
-          `CREATE INDEX IF NOT EXISTS revoked_tokens_expires_at_idx ON public.revoked_tokens (expires_at)`
-        );
-      })().catch((error) => {
-        this.schemaReady = null;
-        throw error;
-      });
-    }
-    return this.schemaReady;
-  }
 
   /**
    * Revoke a token by its `jti`. `expiresAt` is the original token's
@@ -57,7 +36,6 @@ export class RevokedTokenStore {
    * dead anyway.
    */
   async revoke(jti: string, expiresAt: number): Promise<void> {
-    await this.ensureSchema();
     const sql = getDb();
     await sql`
       INSERT INTO revoked_tokens (jti, expires_at)
@@ -97,7 +75,6 @@ export class RevokedTokenStore {
     }
 
     try {
-      await this.ensureSchema();
       const sql = getDb();
       const rows = await sql<{ jti: string }>`
         SELECT jti FROM revoked_tokens
@@ -132,7 +109,6 @@ export class RevokedTokenStore {
    * stale in-memory cache entries.
    */
   async sweepExpired(): Promise<number> {
-    await this.ensureSchema();
     const sql = getDb();
     const rows = await sql`
       WITH deleted AS (

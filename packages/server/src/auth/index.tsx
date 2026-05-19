@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { passkey } from "@better-auth/passkey";
 import { APIError, betterAuth } from "better-auth";
 import { magicLink, organization, phoneNumber } from "better-auth/plugins";
 import { bearer } from "better-auth/plugins/bearer";
@@ -512,6 +513,41 @@ export async function createAuth(env: Env, request?: Request) {
 				},
 				otpLength: 6,
 				expiresIn: 60 * 5, // 5 minutes
+			}),
+			// WebAuthn / passkey support. Especially useful in local-mode
+			// (LOBU_SINGLE_USER=1) where Touch ID / Face ID is a much cleaner
+			// auth than "remember the password you typed at /sign-up." Default
+			// `requireSession: true` for registration means the operator
+			// signs up with email+password first, then enrolls a passkey from
+			// settings (or a post-signup prompt). Sign-in then offers
+			// "Sign in with passkey" as a one-tap biometric option.
+			//
+			// rpID = the hostname WebAuthn binds the credential to. Pulled
+			// from PUBLIC_WEB_URL (env), NOT from resolveBaseUrl(request) —
+			// resolveBaseUrl reflects the request that happened to construct
+			// this BA instance, and createAuth() is cached for 60s, so a
+			// request from one host could freeze the rpID for the next host's
+			// request. PUBLIC_WEB_URL is stable per-deployment.
+			//
+			// origin defaults to the request Origin header — handled by the
+			// plugin itself when we pass `null`. That keeps WebAuthn-side
+			// origin verification accurate for Vite dev (SPA on a different
+			// port than the API) and prod.
+			passkey({
+				rpID: (() => {
+					const publicWebUrl = process.env.PUBLIC_WEB_URL?.trim();
+					if (publicWebUrl) {
+						try {
+							const host = new URL(publicWebUrl).hostname;
+							if (host) return host;
+						} catch {
+							/* fallthrough to default */
+						}
+					}
+					return "localhost";
+				})(),
+				rpName: "Lobu",
+				origin: null,
 			}),
 		],
 

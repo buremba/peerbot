@@ -9,6 +9,15 @@ interface AuthConfig {
   magicLink: boolean;
   phone: boolean;
   emailPassword: boolean;
+  passkey: boolean;
+  // True iff this deployment runs in single-user mode (LOBU_SINGLE_USER=1).
+  // The SPA branches signup/sign-in copy on this — "Set up your local install"
+  // vs "Sign up for Lobu" — and skips affordances that don't apply.
+  singleUserMode: boolean;
+  // True iff at least one (non-legacy-bootstrap) user already exists. The SPA
+  // routes `/` → /sign-up when this is false in single-user mode, so the
+  // operator lands on the right page on first launch without typing a URL.
+  hasUser: boolean;
 }
 
 type TokenEndpointAuthMethod = 'client_secret_post' | 'client_secret_basic' | 'none';
@@ -400,6 +409,28 @@ export async function getAuthConfig(
   const hasProviderAuthEnabled = Object.values(social).some(Boolean) || phone;
   const emailPassword =
     hasValue(env.BETTER_AUTH_SECRET) || (!isProduction && !hasProviderAuthEnabled);
+  // Passkey plugin is always wired (auth/index.tsx) — the gateway can verify
+  // WebAuthn ceremonies regardless of env config.
+  const passkey = true;
+  const singleUserMode = env.LOBU_SINGLE_USER === '1';
+  // Filter out the legacy bootstrap-user (pre-PR #902) — it doesn't count as
+  // "the install has a user." Real users include anyone signed up via the web
+  // UI after that PR.
+  let hasUser = false;
+  try {
+    const sql = getDb();
+    const rows = (await sql`
+      SELECT EXISTS(
+        SELECT 1 FROM "user" WHERE id <> 'bootstrap-user'
+      ) AS has_user
+    `) as unknown as Array<{ has_user: boolean }>;
+    hasUser = !!rows[0]?.has_user;
+  } catch {
+    // If the DB isn't reachable (very early boot / migrations still running),
+    // fail closed: treat as "no user yet" so the SPA shows /sign-up. Worst
+    // case is one extra page transition when the operator clicks something.
+    hasUser = false;
+  }
 
-  return { social, magicLink, phone, emailPassword };
+  return { social, magicLink, phone, emailPassword, passkey, singleUserMode, hasUser };
 }

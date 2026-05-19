@@ -141,12 +141,7 @@ function buildForUseCase(useCase: string): UseCaseSnippets {
     throw new Error(`Missing ${schemaPath}`);
   }
 
-  const agentToml = buildSnippet(
-    useCase,
-    tomlPath,
-    "lobu.toml",
-    "toml"
-  );
+  const agentToml = buildSnippet(useCase, tomlPath, "lobu.toml", "toml");
 
   const memorySchemaYaml = buildSnippet(
     useCase,
@@ -174,10 +169,7 @@ function buildForUseCase(useCase: string): UseCaseSnippets {
     reactionTs = buildSnippet(useCase, reactionPath, rel, "typescript");
   }
 
-  const connectorPath = firstFile(
-    resolve(root, "connectors"),
-    ".connector.ts"
-  );
+  const connectorPath = firstFile(resolve(root, "connectors"), ".connector.ts");
   let connectorTs: Snippet | undefined;
   if (connectorPath) {
     const rel = `connectors/${connectorPath.split("/").pop()}`;

@@ -44,8 +44,7 @@ export default class QuickBooksTransactionsConnector extends ConnectorRuntime {
   readonly definition: ConnectorDefinition = {
     key: "quickbooks-transactions",
     name: "QuickBooks transactions",
-    description:
-      "Streams new bank-feed transactions out of QuickBooks Online.",
+    description: "Streams new bank-feed transactions out of QuickBooks Online.",
     version: "1.0.0",
     authSchema: { methods: [{ type: "oauth", provider: "intuit" }] },
     feeds: {

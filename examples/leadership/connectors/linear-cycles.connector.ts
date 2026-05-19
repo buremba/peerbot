@@ -88,7 +88,10 @@ export default class LinearCyclesConnector extends ConnectorRuntime {
       updated_at: "2000-01-01T00:00:00Z",
     };
 
-    const issues = await this.fetchIssues(config.team_id, checkpoint.updated_at);
+    const issues = await this.fetchIssues(
+      config.team_id,
+      checkpoint.updated_at
+    );
     const events: EventEnvelope[] = issues.map((issue) => ({
       origin_id: `${issue.id}:${issue.state.name}:${issue.updatedAt}`,
       origin_type: "issue_state_changed",

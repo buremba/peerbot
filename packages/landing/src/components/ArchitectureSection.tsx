@@ -1,9 +1,6 @@
-import type { LandingUseCaseId } from "../use-case-definitions";
 import { ArchitectureDiagram } from "./ArchitectureDiagram";
 
-export function ArchitectureSection(props: {
-  activeUseCaseId?: LandingUseCaseId;
-}) {
+export function ArchitectureSection() {
   return (
     <section
       id="architecture"
@@ -44,7 +41,7 @@ export function ArchitectureSection(props: {
 
         <div class="px-6 sm:px-10 pt-4 pb-10 overflow-x-auto">
           <div class="min-w-[44rem] md:min-w-0">
-            <ArchitectureDiagram useCaseId={props.activeUseCaseId} />
+            <ArchitectureDiagram />
           </div>
         </div>
       </div>

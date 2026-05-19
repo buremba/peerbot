@@ -1,0 +1,38 @@
+version: 1
+name: sa108-cgt
+description: Agent captures a share disposal for SA108 with acquisition + disposal details
+trials: 3
+timeout: 120
+tags: [sa108, cgt, entity-creation, behavioral]
+
+turns:
+  - content: |
+      I sold 500 shares of VWRP on 14 February 2025 for £11,500. I bought them on 3 June 2022 at £82 per share.
+      Broker commission was £12 on the buy and £12 on the sell. This was in a taxable brokerage account (not an ISA).
+    assert:
+      - type: llm-rubric
+        value: |
+          The agent should create or describe creating a `cgt_event` with:
+          - asset_description mentioning VWRP (and ideally noting it's a listed share)
+          - asset_class="listed_shares"
+          - acquisition_date 2022-06-03
+          - acquisition_cost = 500 × £82 = £41,000 (plus buy-side commission is debatable — accepting either
+            £41,000 or £41,012)
+          - disposal_date 2025-02-14
+          - disposal_proceeds £11,500
+          - incidental_costs covering the commissions
+          The agent should identify this as a LOSS (cost well above proceeds) — a disposal for £11,500 of
+          something costing at least £41,000. A computed loss of approximately -£29,500 (±broker fees).
+        weight: 1.0
+
+  - content: "Is this loss taxable? Can I use it elsewhere?"
+    assert:
+      - type: llm-rubric
+        value: |
+          The agent correctly explains that (a) the loss is reportable on SA108, (b) it can be offset against
+          other gains in the same tax year before the annual exempt amount is applied, (c) any unused loss can
+          be carried forward to future years (must be claimed within 4 years of the end of the tax year in which
+          it arose). Should NOT say it can be offset against income tax (losses on shares generally can't be
+          except for specific reliefs like SEIS loss relief, which doesn't apply to a passive ETF). Accepting
+          a caveat that SEIS/EIS loss relief exists for separate situations is fine.
+        weight: 1.0

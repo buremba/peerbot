@@ -1,0 +1,32 @@
+version: 1
+name: sa105-property
+description: Agent handles UK residential let property with correct SA105 treatment
+trials: 3
+timeout: 120
+tags: [sa105, entity-creation, behavioral]
+
+turns:
+  - content: |
+      I rent out a flat at 12 Rose Lane, Manchester. Got £14,400 in rent over the 2024-25 tax year. My allowable
+      expenses were: £1,200 to the letting agent, £480 insurance, £300 repairs. The mortgage interest for the year
+      was £3,800.
+    assert:
+      - type: llm-rubric
+        value: |
+          The agent should capture this as a UK residential property on SA105. It should NOT treat the £3,800
+          mortgage interest as a simple allowable expense — residential finance costs are restricted to a 20%
+          basic-rate tax credit, not a deduction. The agent either (a) says so explicitly, (b) creates a distinct
+          `finance_costs` record separate from `expenses`, or (c) asks whether the property is residential (since
+          the rule differs for FHL/commercial). Raw allowable expenses should be £1,200 + £480 + £300 = £1,980.
+        weight: 1.0
+
+  - content: "What's my rental profit before any finance cost credit?"
+    assert:
+      - type: llm-rubric
+        value: |
+          Agent reports £14,400 - £1,980 = £12,420 as the rental profit before the basic-rate finance-cost tax
+          credit. The finance cost of £3,800 should NOT have been subtracted. Off-by-one-penny rounding acceptable.
+        weight: 0.7
+      - type: regex
+        value: '12,420(?:\.\d+)?|12420(?:\.\d+)?'
+        weight: 0.3

@@ -134,6 +134,10 @@ Memory:
       "Enable public Lobu Developer Slack Preview in lobu.toml"
     )
     .option("--no-slack-preview", "Disable Slack Preview without prompting")
+    .option(
+      "--list-providers",
+      "Print available provider ids from config/providers.json and exit"
+    )
     .action(
       async (
         name: string | undefined,
@@ -151,6 +155,7 @@ Memory:
           otelEndpoint?: string;
           sentry?: boolean;
           slackPreview?: boolean;
+          listProviders?: boolean;
         }
       ) => {
         try {
@@ -172,6 +177,7 @@ Memory:
             sentry: options.sentry === true,
             noSentry: options.sentry === false,
             slackPreview: options.slackPreview,
+            listProviders: options.listProviders,
           });
         } catch (error) {
           console.error(chalk.red("\n  Error:"), error);
@@ -374,11 +380,16 @@ Memory:
       .option("--token <token>", "Use API token directly (CI/CD)")
   )
     .option("-f, --force", "Re-authenticate (revokes existing session)")
+    .option(
+      "-q, --quiet",
+      "Suppress spinner; bail immediately if non-interactive (CI / backgrounded shells)"
+    )
     .action(
       async (options: {
         token?: string;
         context?: string;
         force?: boolean;
+        quiet?: boolean;
       }) => {
         const { loginCommand } = await import("./commands/login.js");
         await loginCommand({ ...options, cliVersion: version });

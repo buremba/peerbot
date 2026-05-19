@@ -1,0 +1,33 @@
+version: 1
+name: sa102-employment
+description: Agent captures an employer + employment income from a chat description for SA102
+trials: 3
+timeout: 90
+tags: [sa102, entity-creation, behavioral]
+
+turns:
+  - content: |
+      My employer is Acme Ltd, PAYE reference 123/AB456. On my 2024-25 P60 the gross pay was £82,400 and the tax deducted was £19,860. I'm a director.
+    assert:
+      - type: llm-rubric
+        value: |
+          The agent either creates the entities or explicitly states it would, and the response should mention or imply
+          creation of: an `employer` entity for "Acme Ltd" with paye_reference "123/AB456" and director_flag=true;
+          an `income_source` of type employment linked to that employer; a gross pay figure of £82,400 linked to the
+          active tax year (2024-25). If the agent asks for clarification first instead of creating, that's acceptable
+          as long as the questions are narrowly about missing fields (P60 tax year boundaries, cessation date, etc.),
+          not re-asking what was already provided.
+        weight: 0.7
+      - type: regex
+        value: "(acme|employer).*(paye|reference|123/AB456)|(paye|reference|123/AB456).*acme"
+        weight: 0.3
+
+  - content: "What's missing from my SA102 for Acme?"
+    assert:
+      - type: llm-rubric
+        value: |
+          The agent lists what's still needed for SA102 beyond what was captured. Reasonable mentions include: benefits
+          in kind (P11D — company car, fuel, medical, vouchers, accommodation), expenses claimed (business travel,
+          professional subs, WFH), student loan deductions, tips/other payments not on P60, cessation date (if left
+          mid-year). The agent should NOT suggest personal allowance or dividend info (those are SA100 main, not SA102).
+        weight: 1.0

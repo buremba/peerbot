@@ -156,6 +156,29 @@ worktree owns `:8787` is what `https://...ts.net:8443` serves. Other worktrees
 are reachable on `http://localhost:8788` etc. — fine for UI work; only
 webhook/OAuth-callback testing actually needs the public URL.
 
+### bun lockfile + owletto submodule
+
+CI initialises `packages/owletto` via the deploy key before `bun install --frozen-lockfile`, so the lockfile that lands on `main` always reflects an *initialised* submodule. Locally, `bun install --frozen-lockfile` only matches that state if your checkout also has the submodule initialised — an uninitialised submodule prunes the owletto half of the dependency graph and Bun rewrites the lockfile, which then fails CI's frozen check on the next push.
+
+Before pushing changes that touch `bun.lock` or any `package.json`, run:
+
+```bash
+git submodule update --init packages/owletto
+bun install --frozen-lockfile
+```
+
+If the second command rewrites `bun.lock`, that's the drift CI would have caught — commit the regenerated lockfile in the same change.
+
+### Biome / IDE setup
+
+Husky's pre-commit hook runs `biome check --write`, so the canonical formatter is biome and not whatever your editor ships by default. To keep your editor and the hook from fighting:
+
+- **VS Code:** install the official [Biome extension](https://marketplace.visualstudio.com/items?itemName=biomejs.biome) and set it as the default formatter for TS/JS/JSON in workspace settings.
+- **JetBrains (WebStorm/IDEA):** install the Biome plugin, *or* wire a File Watcher that runs `bunx biome check --write $FilePath$` on save.
+- **Other editors:** point your save-time formatter at `bunx biome check --write` so the pre-commit hook's auto-fixes match what's already on disk.
+
+Without an editor integration, biome's `--write` still rewrites files at commit time — you just don't see the diff until `git status` surprises you.
+
 ### Validation after code changes
 
 **E2E before merge (hard gate).** For any bug-fix PR, do a red → fix → green cycle before opening:

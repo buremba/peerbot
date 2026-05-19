@@ -307,6 +307,15 @@ async function runMigrations(dbUrl: string) {
     )) as Array<{ version: string }>;
     const applied = new Set(appliedRows.map((r) => r.version));
 
+    // Versions whose contents are known to be fully covered by an existing
+    // schema (i.e. the squashed baseline). When one of these errors with a
+    // duplicate-object SQLSTATE the DB is already at the target state and we
+    // can safely record the version as applied. This is intentionally narrow:
+    // any future delta migration must use `IF NOT EXISTS` discipline rather
+    // than relying on this fallback, or its mid-file failures could mask
+    // schema drift.
+    const IDEMPOTENT_BASELINE_VERSIONS = new Set(['00000000000000']);
+
     logger.info('Running migrations...');
     for (const file of listMigrationFiles(migrationsDir)) {
       // Filename convention is `<version>_<slug>.sql`; the version is the
@@ -319,7 +328,28 @@ async function runMigrations(dbUrl: string) {
       if (!migrationSql) continue;
 
       await sql.unsafe('SET search_path TO public');
-      await sql.unsafe(migrationSql);
+      try {
+        await sql.unsafe(migrationSql);
+      } catch (err) {
+        // The squashed baseline uses plain `CREATE FUNCTION` / `CREATE TABLE`
+        // for cleanliness, so replaying it against a DB that already has the
+        // schema raises `42723` (duplicate function) / `42P07` (duplicate
+        // table) / `42710` (duplicate object). When the failing file is the
+        // baseline, that's exactly the no-op case `lobu run` should treat as
+        // success. For any other migration the duplicate error is surfaced
+        // unchanged so partial failures cannot silently advance the ledger
+        // (see `IDEMPOTENT_BASELINE_VERSIONS` above).
+        const code = (err as { code?: string } | null)?.code;
+        const isDuplicateObject =
+          code === '42723' || code === '42P07' || code === '42710';
+        if (!isDuplicateObject || !IDEMPOTENT_BASELINE_VERSIONS.has(version)) {
+          throw err;
+        }
+        logger.info(
+          { migration: file, version, pgErrorCode: code },
+          'Migration already applied (idempotent skip)'
+        );
+      }
       await sql`
         INSERT INTO public.schema_migrations (version) VALUES (${version})
         ON CONFLICT DO NOTHING

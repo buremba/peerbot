@@ -1,6 +1,6 @@
 # Evals
 
-All evals live in [`promptfooconfig.yaml`](./promptfooconfig.yaml) and are run via [promptfoo](https://www.promptfoo.dev) + [`@lobu/promptfoo-provider`](../../../../../packages/promptfoo-provider).
+The active evals live in [`promptfooconfig.yaml`](./promptfooconfig.yaml) and are run via [promptfoo](https://www.promptfoo.dev) + [`@lobu/promptfoo-provider`](../../../../../packages/promptfoo-provider).
 
 ```bash
 cd examples/personal-finance
@@ -10,13 +10,13 @@ bun run evals
 bun run evals:view
 ```
 
-## Coverage
-
-Six checks, two shapes:
-
-- **Single-turn** (`vars.query`): `ping`, `tax-year-anchoring` (2024-25 boundary, 2025-26 boundary).
-- **Multi-turn** (`vars.transcript` — sequential user turns replayed in one Lobu thread; assertions evaluate the final response): `gap-surfacing`, `sa102-employment`, `sa105-property`, `sa108-cgt`. See `packages/promptfoo-provider/README.md` for the transcript protocol.
-
 ## Dormant YAML files
 
-`ping.yaml` and `tax-year-anchoring.yaml` still exist alongside `promptfooconfig.yaml` for reference. They are not run by `bun run evals` — promptfoo only reads the single config file. Drop them in a follow-up cleanup.
+`ping.yaml` and `tax-year-anchoring.yaml` have been **migrated** into `promptfooconfig.yaml` above and can be deleted in a follow-up.
+
+The remaining YAMLs — `gap-surfacing.yaml`, `sa102-employment.yaml`, `sa105-property.yaml`, `sa108-cgt.yaml` — are still on the old format and **not currently executable**. They are multi-turn conversational tests (e.g. `gap-surfacing.yaml` relies on context established in turn 1 to evaluate turn 2's behaviour) and promptfoo's parametric `tests:` model is single-turn by default. Porting needs either:
+
+- Provider extension: `LobuProvider` learns to replay a `vars.transcript` array as multiple messages in one Lobu thread, returning the final turn's response for assertions. ~30 LOC change.
+- Or: flatten each conversation into a single richer prompt ("user said earlier: X; now they say: Y"). Loses fidelity but works today.
+
+Tracked as a follow-up migration.

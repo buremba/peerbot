@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { renderSkillMemorySection } from '../../packages/openclaw-plugin/src/lobu-guidance.ts';
+import { renderSkillMemorySection } from '../../packages/core/src/lobu-guidance.ts';
 
 const SKILL_PATH = resolve(process.cwd(), 'skills/lobu/SKILL.md');
 const START_MARKER = '<!-- lobu-memory-guidance:start -->';

@@ -112,6 +112,118 @@ describe('LocalFileSource', () => {
   });
 });
 
+describe('LocalFileSource snapshot ref / bytes consistency under concurrent writes', () => {
+  let fixtureDir: string;
+  let workspaceDir: string;
+  let originalWorkspaceDir: string | undefined;
+
+  beforeEach(async () => {
+    fixtureDir = await mkdtemp(join(tmpdir(), 'lobu-localfs-race-'));
+    workspaceDir = await mkdtemp(join(tmpdir(), 'lobu-localfs-race-ws-'));
+    originalWorkspaceDir = process.env.WORKSPACE_DIR;
+    process.env.WORKSPACE_DIR = workspaceDir;
+  });
+
+  afterEach(async () => {
+    if (originalWorkspaceDir === undefined) delete process.env.WORKSPACE_DIR;
+    else process.env.WORKSPACE_DIR = originalWorkspaceDir;
+    await rm(fixtureDir, { recursive: true, force: true });
+    await rm(workspaceDir, { recursive: true, force: true });
+  });
+
+  test('snapshot.readFile bytes match the bytes that snapshot.ref was computed over, even with mid-fetch writes', async () => {
+    // Bias the race: seed with a payload large enough that copy + hash take
+    // long enough that a write fired off concurrently is likely to land
+    // *somewhere* in the middle. We're not relying on the race firing —
+    // the post-fix code makes this irrelevant: the staging copy is the
+    // source of both the hash and the snapshot bytes, so they always
+    // agree regardless of the source's state during the fetch.
+    const big = 'x'.repeat(256 * 1024);
+    const { writeFile: wf } = await import('node:fs/promises');
+    for (let i = 0; i < 8; i++) await wf(join(fixtureDir, `f${i}.txt`), `${big}-v1-${i}`);
+
+    const uri = pathToFileURL(`${fixtureDir}/`).toString();
+    const source = new LocalFileSource(uri);
+
+    // Kick off a concurrent rewrite of one file while fetch() is running.
+    const racer = (async () => {
+      // Tiny delay to land between the listing and the copy.
+      await new Promise((r) => setTimeout(r, 1));
+      for (let i = 0; i < 8; i++) await wf(join(fixtureDir, `f${i}.txt`), `${big}-v2-${i}`);
+    })();
+
+    const snap = await source.fetch();
+    await racer;
+
+    // Re-hash every file the snapshot exposes, build the canonical ref
+    // externally, compare to `snap.ref`. If the implementation hashed live
+    // bytes and copied different bytes, these would disagree.
+    const { createHash } = await import('node:crypto');
+    const seen: Array<{ path: string; sha256: string }> = [];
+    for await (const rel of snap.walkFiles('**')) {
+      const buf = await snap.readFile(rel);
+      seen.push({ path: rel, sha256: createHash('sha256').update(buf).digest('hex') });
+    }
+    seen.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+    const h = createHash('sha256');
+    for (const f of seen) {
+      h.update(f.path);
+      h.update('\0');
+      h.update(f.sha256);
+      h.update('\n');
+    }
+    expect(h.digest('hex')).toBe(snap.ref);
+  });
+});
+
+describe('LocalFileSource per-ref cache pruning', () => {
+  let fixtureDir: string;
+  let workspaceDir: string;
+  let originalWorkspaceDir: string | undefined;
+
+  beforeEach(async () => {
+    fixtureDir = await mkdtemp(join(tmpdir(), 'lobu-localfs-prune-'));
+    workspaceDir = await mkdtemp(join(tmpdir(), 'lobu-localfs-prune-ws-'));
+    originalWorkspaceDir = process.env.WORKSPACE_DIR;
+    process.env.WORKSPACE_DIR = workspaceDir;
+  });
+
+  afterEach(async () => {
+    if (originalWorkspaceDir === undefined) delete process.env.WORKSPACE_DIR;
+    else process.env.WORKSPACE_DIR = originalWorkspaceDir;
+    await rm(fixtureDir, { recursive: true, force: true });
+    await rm(workspaceDir, { recursive: true, force: true });
+  });
+
+  test('keeps only the 3 most recent per-ref dirs across 4 fetches', async () => {
+    const { writeFile: wf, readdir, stat: statFs } = await import('node:fs/promises');
+    const { createHash } = await import('node:crypto');
+    const uri = pathToFileURL(`${fixtureDir}/`).toString();
+    const source = new LocalFileSource(uri);
+
+    // 4 distinct contents → 4 distinct refs.
+    for (let i = 0; i < 4; i++) {
+      await wf(join(fixtureDir, 'a.txt'), `v${i}`);
+      await source.fetch();
+      // Bump mtime ordering for deterministic prune across fast clocks.
+      await new Promise((r) => setTimeout(r, 5));
+    }
+
+    const hash = createHash('sha256').update(uri).digest('hex').slice(0, 32);
+    const refsDir = join(workspaceDir, '.lobu-cache', 'sources', hash, 'refs');
+    const ents = await readdir(refsDir, { withFileTypes: true });
+    const dirs = ents.filter((e) => e.isDirectory() && !e.name.startsWith('.staging.'));
+    // Sanity: any staging dirs should have been moved/rm'd by now.
+    expect(ents.filter((e) => e.isDirectory() && e.name.startsWith('.staging.'))).toEqual([]);
+    expect(dirs).toHaveLength(3);
+    // Don't pin which 3 — clock granularity can blur mtime ordering across
+    // very fast successive writes — but assert the bound is held.
+    // Per-ref manifest JSON files are kept indefinitely (used by diff).
+    const jsons = ents.filter((e) => e.isFile() && e.name.endsWith('.json'));
+    expect(jsons.length).toBeGreaterThanOrEqual(3);
+  });
+});
+
 describe('LocalFileSource snapshot immutability', () => {
   let fixtureDir: string;
   let workspaceDir: string;

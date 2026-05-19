@@ -138,29 +138,45 @@ export class LobuProvider {
 
   async callApi(
     prompt: string,
-    _context?: PromptfooContext
+    context?: PromptfooContext
   ): Promise<LobuProviderResponse> {
     const thread = this.explicitThread ?? `promptfoo-${randomUUID()}`;
     const session = await this.createSession(thread);
 
-    try {
-      const response = await this.sendAndCollect(
-        session,
-        prompt,
-        this.defaultTimeoutMs
-      );
+    // Multi-turn mode: `vars.transcript` is a string[] of sequential user
+    // turns replayed in one Lobu thread. Only the final turn's response is
+    // returned for assertion. When set, `prompt` is ignored — the transcript
+    // is the source of truth for what the user said.
+    const turns = extractTranscript(context) ?? [prompt];
 
-      if (response.error) {
-        return {
-          output: response.text,
-          error: response.error,
-          metadata: {
-            agent: this.agent,
-            thread,
-            traceId: response.traceId,
-          },
-        };
+    try {
+      let lastResponse: CollectedResponse | undefined;
+
+      for (const turn of turns) {
+        lastResponse = await this.sendAndCollect(
+          session,
+          turn,
+          this.defaultTimeoutMs
+        );
+
+        // Bail on the first turn that errors — subsequent assertions would
+        // be meaningless against a broken thread.
+        if (lastResponse.error) {
+          return {
+            output: lastResponse.text,
+            error: lastResponse.error,
+            metadata: {
+              agent: this.agent,
+              thread,
+              traceId: lastResponse.traceId,
+            },
+          };
+        }
       }
+
+      // `turns` is always non-empty (defaults to `[prompt]`), so lastResponse
+      // is defined here.
+      const response = lastResponse as CollectedResponse;
 
       return {
         output: response.text,
@@ -412,6 +428,23 @@ interface Session {
   agentId: string;
   sessionToken: string;
   base: string;
+}
+
+/**
+ * Pull a multi-turn transcript out of the promptfoo test context. Expects
+ * `vars.transcript` to be a non-empty `string[]`; anything else falls back
+ * to single-turn mode (returns undefined). Empty strings are filtered out
+ * so an accidental trailing newline in YAML doesn't send a blank turn.
+ */
+function extractTranscript(
+  context: PromptfooContext | undefined
+): string[] | undefined {
+  const raw = context?.vars?.transcript;
+  if (!Array.isArray(raw)) return undefined;
+  const turns = raw.filter(
+    (t): t is string => typeof t === "string" && t.trim().length > 0
+  );
+  return turns.length > 0 ? turns : undefined;
 }
 
 function parseJSON(str: string): Record<string, unknown> | null {

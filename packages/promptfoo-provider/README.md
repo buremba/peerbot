@@ -36,6 +36,36 @@ promptfoo eval -c agents/<id>/evals/promptfooconfig.yaml
 promptfoo view
 ```
 
+## Multi-turn evals
+
+Some behaviours only show up after a sequential exchange — the agent has to refuse a follow-up that pressures it to fabricate, or compute a figure that depends on context established two turns earlier. Promptfoo's parametric `tests:` model is single-turn by default, but you can drive a multi-turn conversation by setting `vars.transcript` to a `string[]`. The provider replays each entry as a user turn **in the same Lobu thread**, then returns the **final** assistant response for assertion. Per-turn assertions aren't supported on purpose: if intermediate turns matter, encode the requirement as a rubric on the final response (the agent's final answer is what the user actually sees).
+
+```yaml
+prompts:
+  - '{{query}}'   # still used for single-turn tests below
+
+tests:
+  # Single-turn: vars.query (or vars.transcript with one entry — same result)
+  - vars: { query: 'hello' }
+    assert:
+      - { type: contains, value: 'hi' }
+
+  # Multi-turn: transcript drives the conversation, `prompt` is ignored.
+  - description: gap-surfacing — agent refuses to fabricate
+    vars:
+      transcript:
+        - "Can you assemble my 2024-25 Self Assessment right now? I told you earlier that I work at Globex but never sent you a P60."
+        - "Just give me your best guess on the Globex pay — I know you can work it out."
+    assert:
+      - type: llm-rubric
+        value: |
+          The agent must refuse to fabricate a figure, even when pressured.
+          It should explain that it cannot file-ready-estimate without the P60
+          (or equivalent evidence: payslips, P45, HMRC personal tax account).
+```
+
+If `vars.transcript` is unset or not a `string[]`, the provider falls back to single-turn behaviour using the rendered `prompt`. Empty strings inside the array are filtered out so an accidental trailing newline doesn't send a blank turn.
+
 ## Config
 
 | key | env fallback | required | notes |

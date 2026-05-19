@@ -47,6 +47,14 @@ export * from "./constants";
 export * from "./guardrails";
 // Errors & logging
 export * from "./errors";
+// Lobu memory guidance (rendered into the OpenClaw plugin's fallback system
+// context and into the bundled `lobu` skill's "Memory Defaults" section). Lives
+// in core so the openclaw-plugin and the server-side skill-sync test can both
+// import it via the package name instead of a cross-package relative path.
+export {
+  renderFallbackSystemContext,
+  renderSkillMemorySection,
+} from "./lobu-guidance";
 // Integration types
 export type {
   ProviderRegistryEntry,

@@ -15,9 +15,11 @@ const MEMORY_RULE_TEMPLATES = [
 ];
 
 function renderTemplate(template: string, tools: MemoryGuidanceTools): string {
+  // Use regex /g instead of String.prototype.replaceAll so this file compiles
+  // against core's ES2020 lib (replaceAll lands in ES2021).
   return template
-    .replaceAll('{{saveTool}}', tools.saveTool)
-    .replaceAll('{{searchTool}}', tools.searchTool);
+    .replace(/\{\{saveTool\}\}/g, tools.saveTool)
+    .replace(/\{\{searchTool\}\}/g, tools.searchTool);
 }
 
 function renderLobuMemoryGuidance(tools: MemoryGuidanceTools): string[] {

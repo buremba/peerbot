@@ -10,7 +10,7 @@ import { homedir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { renderFallbackSystemContext } from './lobu-guidance.js';
+import { renderFallbackSystemContext } from '@lobu/core';
 import type {
   McpToolDefinition,
   McpToolResponse,

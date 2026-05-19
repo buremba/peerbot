@@ -34,6 +34,9 @@
       "openclawVersion": "2026.5.7"
     }
   },
+  "dependencies": {
+    "@lobu/core": "workspace:*"
+  },
   "devDependencies": {
     "@types/node": "^20.10.0",
     "postgres": "^3.4.7",

@@ -10,6 +10,17 @@
 #   -- Dumped by pg_dump version <...>
 #   SET transaction_timeout = 0;   — emitted only by pg17+
 #
+# Lines patched:
+#   schema_migrations.version  — pg18's pg_dump emits this column as bare
+#                                `character varying`, dropping the explicit
+#                                length dbmate declared. The committed form
+#                                (and what CI keeps) is `character varying(128)`.
+#                                Restoring the (128) here lets local regen
+#                                under pg18 produce a byte-identical file.
+#                                Other columns are unaffected — they have
+#                                explicit lengths in migrations and pg18
+#                                preserves them.
+#
 # Adjacent blank lines that result from deletions are collapsed and any
 # leading blanks at the top of the file are dropped, so the output is the
 # same regardless of which lines were originally present.
@@ -31,6 +42,10 @@ awk '
     if (!seen) next
     pending_blank = 1
     next
+  }
+  # Restore schema_migrations.version length stripped by pg18 pg_dump.
+  /^    version character varying NOT NULL$/ {
+    sub(/character varying/, "character varying(128)")
   }
   {
     if (pending_blank) { print ""; pending_blank = 0 }

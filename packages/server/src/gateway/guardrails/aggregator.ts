@@ -159,27 +159,24 @@ function materializeSkillPreTool(
         );
         return null;
       }
-      // Built-ins don't honor per-tool narrowing -- the discriminated union
-      // shape doesn't even expose `tools` on this arm, so skill authors are
-      // pushed toward the `judge` arm when they need it. The check below
-      // belt-and-braces against a `as any` cast bypassing the type system.
+      // Built-ins don't honor per-tool narrowing — the discriminated union
+      // doesn't expose `tools` on this arm, pushing skill authors to the
+      // `judge` arm when they need it.
       return found;
     }
     case "judge":
       return createJudgeGuardrail("pre-tool", entry.policy, {
-        // Name the skill-inline judge with a stable prefix so operators can
-        // disable it via `guardrails_disabled`. Skill name is included so
-        // two skills with identical policy text don't collide. `tools` is
-        // threaded into the hash so the same skill declaring the same
-        // English policy twice with different tool narrowings produces two
-        // distinct guardrails (otherwise the aggregator's dedup would
-        // silently drop the second narrowing).
+        // Stable prefix so operators can disable via `guardrails_disabled`.
+        // Skill name + `tools` are part of the hash so two skills with
+        // identical policy text don't collide, and the same policy with
+        // different tool narrowings produces distinct guardrails (otherwise
+        // the aggregator's dedup would drop the second narrowing).
         name: `skill:${skill.name}:inline:pre-tool:${inlineJudgeHash(entry.policy, entry.tools)}`,
         tools: entry.tools,
       });
     default: {
-      // Exhaustiveness guard -- TS will flag any new variant added to
-      // SkillPreToolGuardrail that isn't handled above.
+      // Exhaustiveness guard — TS errors if `SkillPreToolGuardrail` grows
+      // a new variant not handled above.
       const _exhaustive: never = entry;
       logger.warn(
         { skill: skill.name, entry: _exhaustive },

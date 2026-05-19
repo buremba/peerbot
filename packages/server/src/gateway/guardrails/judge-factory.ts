@@ -47,10 +47,8 @@ function extractText<S extends GuardrailStage>(
       return (ctx as OutputGuardrailContext).text;
     case "pre-tool": {
       const c = ctx as PreToolGuardrailContext;
-      // safeStringify so BigInt / circular tool args don't throw. A thrown
-      // guardrail is treated as a pass by the runner, which would silently
-      // weaken the judge for the very case (weird arg shape) we want it
-      // looking at.
+      // safeStringify so BigInt / circular args don't throw — a thrown
+      // guardrail is treated as a pass by the runner.
       return `tool: ${c.toolName}\narguments: ${safeStringify(c.arguments)}`;
     }
     default:
@@ -59,21 +57,16 @@ function extractText<S extends GuardrailStage>(
 }
 
 /**
- * Short stable id for an inline judge -- first 8 chars of
- * sha256(policy + "\u001F" + sortedTools.join(",")). Used in the generated
- * guardrail name (`inline:<stage>:<hash8>`) so the operator's
- * `guardrails_disabled` list can target a specific inline judge.
+ * Short stable id for an inline judge — first 8 chars of
+ * sha256(policy +"\u001F" + sortedTools.join(",")). Used in the generated `inline:<stage>:<hash8>`
+ * name so operators can target it via `guardrails_disabled`.
  *
- * Including `tools` in the hash is load-bearing: two inline judges with the
- * same English policy but different tool scopes (e.g. one narrowed to
- * `["fs.write"]` and another to `["fs.delete"]`) must produce DIFFERENT
- * names so the dedup pass in the aggregator doesn't collapse them and
- * silently drop the second narrowing. Tools are sorted before hashing so
- * `["a","b"]` and `["b","a"]` produce the same name (same effective scope).
- *
- * Pass `undefined` (or omit) when no tool scoping applies -- input/output
- * stages and pre-tool entries without a `tools` field. An empty array is
- * normalized to `undefined` to keep "no narrowing" canonical.
+ * `tools` is part of the hash so two inline judges with the same English
+ * policy but different tool scopes (e.g. `["fs.write"]` vs `["fs.delete"]`)
+ * get distinct names — otherwise the aggregator's name-keyed dedup would
+ * silently drop the second narrowing. Tools are sorted so `["a","b"]` and
+ * `["b","a"]` collapse to the same name. Empty / undefined `tools` are
+ * canonically equivalent.
  */
 export function inlineJudgeHash(
   policy: string,
@@ -83,8 +76,8 @@ export function inlineJudgeHash(
   h.update(policy);
   const normalizedTools =
     tools && tools.length > 0 ? [...tools].sort().join(",") : "";
-  // U+001F (Unit Separator) -- same separator the TextJudge cache uses for
-  // policy/text. Won't appear in normal policy or tool-name content.
+  // U+001F separator (matches TextJudge's cache hash); won't appear in
+  // normal policy or tool-name content.
   h.update("\u001F");
   h.update(normalizedTools);
   return h.digest("hex").slice(0, 8);
@@ -125,11 +118,9 @@ export function createJudgeGuardrail<S extends GuardrailStage>(
   policy: string,
   options: JudgeGuardrailOptions = {}
 ): Guardrail<S> {
-  // Default name includes `tools` in the hash so two judges with the same
-  // English policy but different tool scopes (e.g. one for `["fs.write"]`,
-  // one for `["fs.delete"]`) get distinct names and don't collapse in the
-  // aggregator's name-keyed dedup. Caller-supplied `options.name` wins
-  // (used by the aggregator to give skill-inline judges a stable prefix).
+  // See `inlineJudgeHash` for why `tools` factors into the default name.
+  // Caller-supplied `options.name` wins (aggregator gives skill-inline
+  // judges a stable prefix).
   const name =
     options.name ?? `inline:${stage}:${inlineJudgeHash(policy, options.tools)}`;
   const toolFilter =

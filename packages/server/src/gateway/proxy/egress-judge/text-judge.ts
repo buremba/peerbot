@@ -18,15 +18,11 @@ const DEFAULT_JUDGE_MODEL = "claude-haiku-4-5-20251001";
 const DEFAULT_JUDGE_TIMEOUT_MS = 8_000;
 
 /**
- * Single-byte separator used between policy and text when hashing the
- * cache key. ASCII 0x1F (Unit Separator) -- a control byte that won't
- * appear in normal policy/text content, so a policy ending in "foo" and
- * text "bar" can't collide with policy "f" and text "oobar".
- *
- * Written as the JS escape "\u001F" rather than a literal control
- * character so the source file stays pure printable ASCII -- a literal
- * 0x1F byte in source makes git treat the file as binary, which made
- * the original PR diff unreviewable.
+ * Separator between policy and text when hashing the cache key. ASCII 0x1F
+ * (Unit Separator) so a policy ending in "foo" + text "bar" can't collide
+ * with policy "f" + text "oobar". Written as the JS escape "\u001F" rather than a literal
+ * control byte so the file stays plain ASCII (a literal 0x1F makes git
+ * treat the source as binary).
  */
 const HASH_SEPARATOR = "\u001F";
 
@@ -149,6 +145,10 @@ export class TextJudge {
     const cacheKey = VerdictCache.key({
       orgId: "text-judge",
       policyHash,
+      // VerdictCache uses `hostname` as its third component but treats it as
+      // an opaque string (lowercase + join). Here we pass a sha256 of the
+      // (policy, text) pair — the field name is borrowed from the egress
+      // judge, not load-bearing here.
       hostname: hashTextJudgeKey(policy, text),
     });
 

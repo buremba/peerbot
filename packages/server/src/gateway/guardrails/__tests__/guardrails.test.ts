@@ -1,5 +1,5 @@
 /**
- * Tests for the guardrails extensions in PR B:
+ * Tests for the guardrails extensions:
  *  - `pii-scan` regex built-in (input, output, pre-tool) + Luhn filter
  *  - `safeStringify` helper (BigInt, circular refs)
  *  - `TextJudge` with a fake LLM client (cache hit, fail closed)
@@ -104,40 +104,23 @@ describe("safeStringify", () => {
     expect(safeStringify(bad)).toBe("<unserializable>");
   });
 
-  // -- top-level non-object guards (codex r2 finding #1) --
+  // JSON.stringify returns `undefined` (not a string) for top-level
+  // non-serializable primitives. Downstream callers `.match()` the result,
+  // so safeStringify must hand back a string regardless.
   test("always returns a string for top-level undefined", () => {
-    // JSON.stringify(undefined) === undefined (not a string). pii-scan
-    // would then crash on `.match()`, the runner would log+swallow, and
-    // the guardrail would silently fail-open.
-    const out = safeStringify(undefined);
-    expect(typeof out).toBe("string");
-    expect(out).toBe("<unserializable>");
+    expect(safeStringify(undefined)).toBe("<unserializable>");
   });
 
   test("always returns a string for top-level function", () => {
-    const out = safeStringify(() => 42);
-    expect(typeof out).toBe("string");
-    expect(out).toBe("<unserializable>");
+    expect(safeStringify(() => 42)).toBe("<unserializable>");
   });
 
   test("always returns a string for top-level symbol", () => {
-    const out = safeStringify(Symbol("x"));
-    expect(typeof out).toBe("string");
-    // Either the replacer/stringify throws (caught -> <unserializable>) or
-    // returns undefined (typeof guard -> <unserializable>). Either path
-    // must produce a string, not crash.
-    expect(out).toBe("<unserializable>");
+    expect(safeStringify(Symbol("x"))).toBe("<unserializable>");
   });
 
   test("always returns a string for top-level bigint", () => {
-    // JSON.stringify with a replacer that converts bigint inside an object
-    // still throws when bigint is the TOP-level value (the replacer's
-    // first call has _key === "" and v === the bigint; even returning a
-    // string from the replacer makes JSON.stringify happy here, so this
-    // is the lucky case -- but the typeof guard still protects against
-    // engine drift).
-    const out = safeStringify(10n);
-    expect(typeof out).toBe("string");
+    expect(typeof safeStringify(10n)).toBe("string");
   });
 });
 
@@ -202,11 +185,10 @@ describe("pii-scan builtin", () => {
     expect(r.tripped).toBe(false);
   });
 
-  // -- multi-PAN scan (codex r2 finding #2) --
+  // Guards against the single-match regression: if the scan stopped at the
+  // first 16-digit candidate (Luhn-fails), the trailing real PAN would
+  // escape detection. `matchAll` must walk every candidate.
   test("finds a real PAN that follows a non-Luhn 16-digit run", async () => {
-    // The old single-match implementation would match the first candidate
-    // (1234567890123456, Luhn-fails), return no-trip, and let the real
-    // Visa PAN escape. The matchAll-based scan must catch the second.
     const g = createPiiScanGuardrail("output");
     const r = await g.run({
       agentId: "a",
@@ -450,7 +432,8 @@ describe("createJudgeGuardrail", () => {
     expect(g.name).toBe(`inline:input:${inlineJudgeHash("policy text")}`);
   });
 
-  // -- tool-scope hash isolation (codex r2 finding #3) --
+  // Tool scope must factor into the hash so the aggregator's name-keyed
+  // dedup doesn't collapse two narrowings of the same English policy.
   test("same policy with different tool scopes yields distinct names", () => {
     const g1 = createJudgeGuardrail("pre-tool", "no destructive ops", {
       tools: ["fs.write"],
@@ -622,7 +605,6 @@ describe("resolveAgentGuardrails (aggregator)", () => {
     expect(excluded.names.output).not.toContain(expectedName);
   });
 
-  // -- skill inline judges with different tool scopes (codex r2 finding #3) --
   test("skill inline judges: same policy, different tool scopes -> two distinct guardrails", () => {
     const reg = setupRegistry();
     const policy = "Block destructive ops";
@@ -641,9 +623,9 @@ describe("resolveAgentGuardrails (aggregator)", () => {
     const skillInlineNames = out.names["pre-tool"].filter((n) =>
       n.startsWith("skill:github:inline:pre-tool:")
     );
-    // The old hash(policy)-only naming collapsed these into ONE entry,
-    // silently dropping the second tool narrowing. The hash(policy, tools)
-    // naming keeps them distinct.
+    // Hash must factor in `tools` — otherwise the aggregator's name-keyed
+    // dedup would collapse these into one entry and silently drop the
+    // second tool narrowing.
     expect(skillInlineNames.length).toBe(2);
     expect(new Set(skillInlineNames).size).toBe(2);
   });

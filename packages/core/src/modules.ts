@@ -26,7 +26,6 @@ export interface ModuleInterface<_TModuleData = unknown> {
 
 export interface IModuleRegistry {
   register(module: ModuleInterface): void;
-  registerAvailableModules(modulePackages?: string[]): Promise<void>;
   initAll(): Promise<void>;
   registerEndpoints(app: any): void;
   /** Return all registered modules as base ModuleInterface array. */
@@ -59,48 +58,6 @@ export class ModuleRegistry implements IModuleRegistry {
   register(module: ModuleInterface): void {
     if (module.isEnabled()) {
       this.modules.set(module.name, module);
-    }
-  }
-
-  /**
-   * Automatically discover and register available modules.
-   * Tries to import module packages and registers them if available.
-   *
-   * @param modulePackages - List of module package names to try loading.
-   *                         Users can provide custom modules to register.
-   *
-   * @example
-   * // Register custom modules
-   * await moduleRegistry.registerAvailableModules([
-   *   '@mycompany/slack-module',
-   *   '@mycompany/jira-module'
-   * ]);
-   */
-  async registerAvailableModules(modulePackages: string[] = []): Promise<void> {
-    for (const packageName of modulePackages) {
-      try {
-        // Dynamic import to avoid build-time dependencies
-        const moduleExports = await import(packageName);
-
-        // Try common export patterns
-        const ModuleClass =
-          moduleExports.default ||
-          Object.values(moduleExports).find(
-            (exp) => typeof exp === "function" && exp.name.endsWith("Module")
-          );
-
-        if (ModuleClass && typeof ModuleClass === "function") {
-          const moduleInstance = new (ModuleClass as any)();
-          if (!this.modules.has(moduleInstance.name)) {
-            this.register(moduleInstance);
-            logger.debug(`${packageName} registered`);
-          }
-        } else {
-          logger.debug(`${packageName}: No module class found in exports`);
-        }
-      } catch {
-        logger.debug(`${packageName} not available`);
-      }
     }
   }
 

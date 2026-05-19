@@ -840,8 +840,7 @@ export class CoreServices {
     );
     logger.debug("Worker gateway initialized");
 
-    // Discover and initialize all available modules
-    await moduleRegistry.registerAvailableModules();
+    // Initialize all registered modules
     await moduleRegistry.initAll();
     logger.debug("Modules initialized");
   }

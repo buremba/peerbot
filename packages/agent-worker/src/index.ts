@@ -39,7 +39,6 @@ async function main() {
     logger.info(`Tracing initialized: lobu-worker -> ${otlpEndpoint}`);
   }
 
-  await moduleRegistry.registerAvailableModules();
   await moduleRegistry.initAll();
   logger.info("✅ Modules initialized");
 

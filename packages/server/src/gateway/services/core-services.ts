@@ -6,9 +6,11 @@ import {
   type AgentConnectionStore,
   CommandRegistry,
   createLogger,
+  GuardrailRegistry,
   moduleRegistry,
   type ProviderRegistryEntry,
 } from "@lobu/core";
+import { registerBuiltinGuardrails } from "../guardrails/builtins.js";
 import { AgentMetadataStore } from "../auth/agent-metadata-store.js";
 import { ApiKeyProviderModule } from "../auth/api-key-provider-module.js";
 import { BedrockProviderModule } from "../auth/bedrock/provider-module.js";
@@ -165,6 +167,13 @@ export class CoreServices {
   private commandRegistry?: CommandRegistry;
 
   // ============================================================================
+  // Guardrails — runtime registry of input/output/pre-tool checks. Populated
+  // with built-ins at boot; downstream packages can register more by calling
+  // `getGuardrailRegistry().register(...)` after `initialize()` returns.
+  // ============================================================================
+  private guardrailRegistry?: GuardrailRegistry;
+
+  // ============================================================================
   // Ephemeral-table sweeper — now scheduler-driven, no per-instance state.
   // See `sweepEphemeralTables` (public method) registered as a periodic task.
   // ============================================================================
@@ -228,6 +237,12 @@ export class CoreServices {
    */
   async initialize(): Promise<void> {
     logger.debug("Initializing core services...");
+
+    // 0. Guardrail registry — populated before any service that may invoke
+    // `runGuardrails()` is constructed (McpProxy, MessageConsumer, etc.).
+    this.guardrailRegistry = new GuardrailRegistry();
+    registerBuiltinGuardrails(this.guardrailRegistry);
+    logger.debug("Guardrail registry initialized with built-ins");
 
     // 1. Queue (foundation for everything else)
     await this.initializeQueue();
@@ -743,6 +758,8 @@ export class CoreServices {
       toolCache: mcpToolCache,
       grantStore: this.grantStore,
       publicGatewayUrl: this.config.mcp.publicGatewayUrl,
+      agentSettingsStore: this.agentSettingsStore,
+      guardrailRegistry: this.guardrailRegistry,
     });
     this.mcpProxy.onToolBlocked = async (
       requestId,
@@ -1037,6 +1054,10 @@ export class CoreServices {
     if (!this.agentMetadataStore)
       throw new Error("Agent metadata store not initialized");
     return this.agentMetadataStore;
+  }
+
+  getGuardrailRegistry(): GuardrailRegistry | undefined {
+    return this.guardrailRegistry;
   }
 
   getCommandRegistry(): CommandRegistry {

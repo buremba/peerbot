@@ -176,7 +176,9 @@ export async function initLobuGateway(): Promise<Hono | null> {
       coreServices.getSecretStore(),
       coreServices.getProviderCatalogService(),
       coreServices.getGrantStore() ?? undefined,
-      coreServices.getPolicyStore() ?? undefined
+      coreServices.getPolicyStore() ?? undefined,
+      coreServices.getGuardrailRegistry() ?? undefined,
+      coreServices.getAgentSettingsStore() ?? undefined
     );
     logger.info('[Lobu] Embedded orchestrator injected core services');
 
@@ -193,6 +195,10 @@ export async function initLobuGateway(): Promise<Hono | null> {
       const unifiedConsumer = gateway.getUnifiedConsumer();
       if (unifiedConsumer) {
         const bridge = new ChatResponseBridge(chatInstanceManager);
+        bridge.setGuardrails(
+          coreServices.getGuardrailRegistry(),
+          coreServices.getAgentSettingsStore()
+        );
         unifiedConsumer.setChatResponseBridge(bridge);
       }
     } catch (error) {

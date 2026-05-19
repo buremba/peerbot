@@ -13,8 +13,14 @@
 
 import { unlink } from "node:fs/promises";
 import { resolve } from "node:path";
-import { createLogger } from "@lobu/core";
+import {
+  createLogger,
+  type GuardrailRegistry,
+  runGuardrails,
+} from "@lobu/core";
 import { getDb } from "../../db/client.js";
+import type { AgentSettingsStore } from "../auth/settings/agent-settings-store.js";
+import { recordGuardrailTrip } from "../guardrails/audit.js";
 import type { ThreadResponsePayload } from "../infrastructure/queue/index.js";
 import { extractSettingsLinkButtons } from "../platform/link-buttons.js";
 import type { ResponseRenderer } from "../platform/response-renderer.js";
@@ -72,14 +78,107 @@ interface ResponseContext {
  */
 export class ChatResponseBridge implements ResponseRenderer {
   private streams = new Map<string, StreamState>();
+  /**
+   * Tracks streams that an output guardrail already blocked. A stream that
+   * trips mid-flight must not have any further deltas (or the final
+   * completion buffer) reach the platform.
+   */
+  private blockedStreams = new Set<string>();
+  private guardrailRegistry?: GuardrailRegistry;
+  private agentSettingsStore?: AgentSettingsStore;
 
   constructor(private manager: ChatInstanceManager) {}
 
-  // TODO(#254): output-stage guardrail hook. Before emitting a delta to the
-  // platform strategy, call runGuardrails("output", registry, settings.guardrails,
-  // { text: payload.delta, ... }). On trip: redact or replace the delta per
-  // guardrail policy. Wiring deferred to the PR that registers the first
-  // real output guardrail (#253 secret/PII scan).
+  /**
+   * Wire output-stage guardrails. Both must be set for guardrails to run;
+   * with neither, the bridge behaves as before.
+   */
+  setGuardrails(
+    registry?: GuardrailRegistry,
+    settingsStore?: AgentSettingsStore
+  ): void {
+    this.guardrailRegistry = registry;
+    this.agentSettingsStore = settingsStore;
+  }
+
+  /**
+   * Resolve the agentId for a given response payload. Workers attach it on
+   * `platformMetadata.agentId`; for cases where it's missing we fall back
+   * to the bound connection's agent. Returns `null` when neither is known —
+   * the caller should treat that as "skip guardrails" rather than block.
+   */
+  private resolveAgentId(
+    payload: ThreadResponsePayload,
+    ctx: ResponseContext
+  ): string | null {
+    const fromMetadata = (payload.platformMetadata as any)?.agentId;
+    if (typeof fromMetadata === "string" && fromMetadata) return fromMetadata;
+    const fromConnection = ctx.instance?.connection?.agentId;
+    if (typeof fromConnection === "string" && fromConnection)
+      return fromConnection;
+    return null;
+  }
+
+  /**
+   * Run output-stage guardrails for a single delta. Returns the trip outcome
+   * (already audited) when blocked, `null` when the delta is safe to send.
+   * Failures inside the runner are logged and treated as a pass.
+   */
+  private async runOutputGuardrails(
+    text: string,
+    payload: ThreadResponsePayload,
+    ctx: ResponseContext
+  ): Promise<{ guardrail: string; reason?: string } | null> {
+    if (!this.guardrailRegistry || !this.agentSettingsStore) return null;
+    if (!text) return null;
+    const agentId = this.resolveAgentId(payload, ctx);
+    if (!agentId) return null;
+
+    try {
+      const settings = await this.agentSettingsStore.getSettings(agentId);
+      const enabled = settings?.guardrails ?? [];
+      if (enabled.length === 0) return null;
+      const outcome = await runGuardrails(
+        this.guardrailRegistry,
+        "output",
+        enabled,
+        {
+          agentId,
+          userId: payload.userId,
+          text,
+          platform: ctx.platform,
+          conversationId: payload.conversationId,
+        }
+      );
+      if (!outcome.tripped) return null;
+      const orgIdFromMetadata = (payload.platformMetadata as any)
+        ?.organizationId;
+      recordGuardrailTrip({
+        organizationId:
+          typeof orgIdFromMetadata === "string" ? orgIdFromMetadata : undefined,
+        agentId,
+        userId: payload.userId,
+        conversationId: payload.conversationId,
+        stage: "output",
+        guardrail: outcome.tripped.guardrail,
+        reason: outcome.tripped.reason,
+        metadata: outcome.tripped.metadata,
+      });
+      return {
+        guardrail: outcome.tripped.guardrail,
+        reason: outcome.tripped.reason,
+      };
+    } catch (err) {
+      logger.warn(
+        {
+          err: err instanceof Error ? err.message : String(err),
+        },
+        "Output guardrail check failed — proceeding without guardrails"
+      );
+      return null;
+    }
+  }
+
   private extractResponseContext(
     payload: ThreadResponsePayload
   ): ResponseContext | null {
@@ -126,6 +225,60 @@ export class ChatResponseBridge implements ResponseRenderer {
 
     const { strategy, instance, channelId } = ctx;
     const key = `${channelId}:${payload.conversationId}`;
+
+    // If a prior delta in this stream tripped a guardrail, drop everything
+    // else for the rest of the message. We've already posted the block
+    // notice; the worker may keep streaming because trip handling here is
+    // async to the worker — silently swallowing the tail is correct.
+    if (this.blockedStreams.has(key)) return null;
+
+    // Per-delta output guardrails. Regex-shaped checks are cheap enough to
+    // run on every chunk; LLM-judge guardrails should batch upstream
+    // (PR B). On trip, emit a generic block message in-place instead of
+    // the model output and mark the stream blocked.
+    const trip = await this.runOutputGuardrails(payload.delta, payload, ctx);
+    if (trip) {
+      this.blockedStreams.add(key);
+      // Close any in-flight strategy stream so the partial output that
+      // already shipped to the platform terminates cleanly. We can't
+      // unsend bytes already delivered, but for the default strategy
+      // (Telegram buffers a single edit) the block message will replace
+      // the partial; for Slack, the user sees the partial followed by
+      // the block notice. Closing here also prevents further deltas from
+      // being appended.
+      const existingStream = this.streams.get(key);
+      if (existingStream) {
+        try {
+          await strategy.disposeOnFullReplacement(existingStream);
+        } catch (err) {
+          logger.debug(
+            { err: String(err) },
+            "Failed to dispose stream on guardrail block (continuing)"
+          );
+        }
+        this.streams.delete(key);
+      }
+      const blockText = `Message blocked by guardrail: ${trip.reason ?? trip.guardrail}`;
+      try {
+        const target = await this.resolveTarget(
+          instance,
+          channelId,
+          payload.conversationId,
+          (payload.platformMetadata as any)?.responseThreadId,
+          payload.platformMetadata as Record<string, unknown> | undefined
+        );
+        if (target) {
+          await target.post(blockText);
+        }
+      } catch (err) {
+        logger.error(
+          { err: String(err) },
+          "Failed to post guardrail block message"
+        );
+      }
+      return null;
+    }
+
     const existing = this.streams.get(key);
 
     // Full replacement: ask the strategy to dispose the prior stream (the
@@ -170,6 +323,19 @@ export class ChatResponseBridge implements ResponseRenderer {
 
     const { connectionId, strategy, channelId } = ctx;
     const key = `${channelId}:${payload.conversationId}`;
+
+    // If a guardrail blocked this stream mid-flight, skip completion
+    // entirely: stream was disposed at trip time, the block message was
+    // posted, and we don't want the partial buffer landing in history.
+    if (this.blockedStreams.has(key)) {
+      this.blockedStreams.delete(key);
+      this.streams.delete(key);
+      logger.info(
+        { connectionId, channelId, conversationId: payload.conversationId },
+        "Completion suppressed — stream was blocked by guardrail"
+      );
+      return;
+    }
 
     const stream = this.streams.get(key);
     if (stream) {

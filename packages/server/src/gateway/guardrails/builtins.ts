@@ -1,6 +1,7 @@
 import type {
   Guardrail,
   GuardrailContext,
+  GuardrailRegistry,
   GuardrailStage,
   InputGuardrailContext,
   OutputGuardrailContext,
@@ -9,7 +10,10 @@ import type {
 import { safeStringify } from "./safe-stringify.js";
 
 /**
- * Built-in guardrails registered by the gateway at startup.
+ * Built-in guardrails registered by the gateway at startup. Three primitives:
+ *  - `secret-scan`     (output, stage-locked)  — credential-shape regex scan
+ *  - `pii-scan`        (any stage)             — emails / phones / Luhn PANs
+ *  - `forbidden-tools` (pre-tool, stage-locked) — destructive-tool deny list
  */
 
 // -- pii-scan ---------------------------------------------------------------
@@ -47,14 +51,10 @@ function scanCreditCard(text: string): { kind: string; match: string } | null {
 }
 
 /**
- * Standard Luhn (mod-10) check. Strips spaces/hyphens, requires 13-19
- * digits, then walks right-to-left doubling every second digit. Real PANs
- * satisfy this; random 13-19 digit runs (invoice/tracking numbers) almost
- * never do.
+ * Standard Luhn check on a 13-19 digit string, separators stripped.
  */
-export function luhnValid(raw: string): boolean {
-  const digits = raw.replace(/[ -]/g, "");
-  if (!/^\d+$/.test(digits)) return false;
+export function luhnValid(candidate: string): boolean {
+  const digits = candidate.replace(/[^\d]/g, "");
   if (digits.length < 13 || digits.length > 19) return false;
   let sum = 0;
   let alt = false;
@@ -98,12 +98,6 @@ function extractTextForPii<S extends GuardrailStage>(
   }
 }
 
-/**
- * Regex-backed PII scanner: emails, US-shaped phones, Luhn-valid 13-19
- * digit credit-card numbers. Trips on first pattern match. `metadata.kind`
- * identifies the family; the raw match is intentionally not surfaced in the
- * trip reason since it may end up in user-facing audit copy.
- */
 export function createPiiScanGuardrail<S extends GuardrailStage>(
   stage: S,
   name = "pii-scan"
@@ -124,13 +118,89 @@ export function createPiiScanGuardrail<S extends GuardrailStage>(
   };
 }
 
+// -- secret-scan (output, stage-locked) -------------------------------------
+
+const SECRET_PATTERNS: Array<{ name: string; re: RegExp }> = [
+  { name: "openai-key", re: /sk-[a-zA-Z0-9]{20,}/ },
+  { name: "github-pat", re: /ghp_[a-zA-Z0-9]{36}/ },
+  { name: "aws-access-key", re: /AKIA[0-9A-Z]{16}/ },
+  {
+    name: "jwt",
+    re: /eyJ[A-Za-z0-9_-]{40,}\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/,
+  },
+];
+
+export const secretScanGuardrail: Guardrail<"output"> = {
+  name: "secret-scan",
+  stage: "output",
+  async run(ctx: OutputGuardrailContext) {
+    const text = ctx.text;
+    if (!text) return { tripped: false };
+    for (const { name, re } of SECRET_PATTERNS) {
+      if (re.test(text)) {
+        return {
+          tripped: true,
+          reason: `Output contains a value that looks like a ${name}`,
+          metadata: { pattern: name },
+        };
+      }
+    }
+    return { tripped: false };
+  },
+};
+
+// -- forbidden-tools (pre-tool, stage-locked) -------------------------------
+
+const FORBIDDEN_TOOLS = new Set<string>([
+  "delete_repo",
+  "delete_branch",
+  "drop_table",
+]);
+
+export const forbiddenToolsGuardrail: Guardrail<"pre-tool"> = {
+  name: "forbidden-tools",
+  stage: "pre-tool",
+  async run(ctx: PreToolGuardrailContext) {
+    if (FORBIDDEN_TOOLS.has(ctx.toolName)) {
+      return {
+        tripped: true,
+        // Internal-only reason; proxy MUST surface a generic block message
+        // to the worker (leaking specifics is an evasion surface).
+        reason: `Tool "${ctx.toolName}" is on the built-in deny list`,
+        metadata: { toolName: ctx.toolName },
+      };
+    }
+    return { tripped: false };
+  },
+};
+
+// -- lookup tables ----------------------------------------------------------
+
 /**
- * Names of all built-in guardrail factories exported here. Lookup table for
- * the aggregator when a skill or agent references a builtin by name.
+ * Factory map used by the aggregator to instantiate built-ins by name.
+ * Stage-locked builtins (secret-scan, forbidden-tools) ignore the stage
+ * parameter and return their canonical stage instance cast to the caller's
+ * generic; the aggregator only requests them at their natural stage.
  */
 export const BUILTIN_GUARDRAIL_FACTORIES: Record<
   string,
   <S extends GuardrailStage>(stage: S, name?: string) => Guardrail<S>
 > = {
   "pii-scan": createPiiScanGuardrail,
+  "secret-scan": <S extends GuardrailStage>(_stage: S, _name?: string) =>
+    secretScanGuardrail as unknown as Guardrail<S>,
+  "forbidden-tools": <S extends GuardrailStage>(_stage: S, _name?: string) =>
+    forbiddenToolsGuardrail as unknown as Guardrail<S>,
 };
+
+/**
+ * Register all gateway built-ins on the shared registry exactly once at boot.
+ * Duplicate registration is a programmer error (the registry throws).
+ */
+export function registerBuiltinGuardrails(registry: GuardrailRegistry): void {
+  registry.register(secretScanGuardrail);
+  registry.register(forbiddenToolsGuardrail);
+  registry.register(createPiiScanGuardrail("input"));
+  registry.register(createPiiScanGuardrail("output"));
+  registry.register(createPiiScanGuardrail("pre-tool"));
+}

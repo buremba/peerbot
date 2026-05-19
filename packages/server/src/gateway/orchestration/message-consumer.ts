@@ -6,11 +6,15 @@ import {
   generateTraceId,
   generateWorkerToken,
   getTraceparent,
+  type GuardrailRegistry,
   OrchestratorError,
   retryWithBackoff,
+  runGuardrails,
   SpanStatusCode,
 } from "@lobu/core";
 import * as Sentry from "@sentry/node";
+import type { AgentSettingsStore } from "../auth/settings/agent-settings-store.js";
+import { recordGuardrailTrip } from "../guardrails/audit.js";
 import type {
   IMessageQueue,
   QueueJob as SharedQueueJob,
@@ -39,6 +43,8 @@ export class MessageConsumer {
    * has cross-process workers.
    */
   private deploymentLocks = new Map<string, Promise<unknown>>();
+  private agentSettingsStore?: AgentSettingsStore;
+  private guardrailRegistry?: GuardrailRegistry;
   constructor(
     config: OrchestratorConfig,
     deploymentManager: BaseDeploymentManager,
@@ -46,6 +52,21 @@ export class MessageConsumer {
     this.config = config;
     this.deploymentManager = deploymentManager;
     this.queue = new RunsQueue();
+  }
+
+  /**
+   * Inject guardrail infrastructure post-construction. Called by the
+   * Orchestrator after CoreServices has built the registry — the consumer
+   * is constructed earlier than CoreServices is wired up, so a setter
+   * matches the existing `injectCoreServices` pattern on the orchestrator.
+   * Calling with no args is a no-op (guardrails simply don't run).
+   */
+  setGuardrails(
+    registry?: GuardrailRegistry,
+    settingsStore?: AgentSettingsStore
+  ): void {
+    this.guardrailRegistry = registry;
+    this.agentSettingsStore = settingsStore;
   }
 
   async start(): Promise<void> {
@@ -201,12 +222,94 @@ export class MessageConsumer {
         `Conversation routing - effectiveConversationId: ${effectiveConversationId}, canonicalKey: ${canonicalConversationKey}, deploymentName: ${deploymentName}`
       );
 
-      // TODO(#254): input-stage guardrail hook. When a GuardrailRegistry is
-      // injected here, call runGuardrails("input", registry, settings.guardrails, ctx)
-      // before sendToWorkerQueue. On trip: skip dispatch, surface trip.reason
-      // to the user via the response bridge. Lookup of settings.guardrails
-      // requires threading an AgentConfigStore into MessageConsumer; deferred
-      // to the PR that registers the first real input guardrail (#251).
+      // Input-stage guardrails: short-circuit dispatch when an enabled
+      // guardrail trips. We surface the trip reason to the user via the
+      // `thread_response` queue (same path `trackFailedDeployment` uses)
+      // and skip both the worker queue enqueue and the deployment ensure.
+      if (
+        this.guardrailRegistry &&
+        this.agentSettingsStore &&
+        data.agentId &&
+        data.messageText
+      ) {
+        try {
+          const settings = await this.agentSettingsStore.getSettings(
+            data.agentId
+          );
+          const enabled = settings?.guardrails ?? [];
+          if (enabled.length > 0) {
+            const outcome = await runGuardrails(
+              this.guardrailRegistry,
+              "input",
+              enabled,
+              {
+                agentId: data.agentId,
+                userId: data.userId,
+                message: data.messageText,
+                platform: data.platform,
+                conversationId: effectiveConversationId,
+              }
+            );
+            if (outcome.tripped) {
+              recordGuardrailTrip({
+                organizationId: data.organizationId,
+                agentId: data.agentId,
+                userId: data.userId,
+                conversationId: effectiveConversationId,
+                stage: "input",
+                guardrail: outcome.tripped.guardrail,
+                reason: outcome.tripped.reason,
+                metadata: outcome.tripped.metadata,
+              });
+              const reasonText =
+                outcome.tripped.reason ?? "blocked by policy";
+              const blockMessage = `Message rejected: ${reasonText}`;
+              try {
+                const responseQueue = "thread_response";
+                await this.queue.createQueue(responseQueue);
+                await this.queue.send(responseQueue, {
+                  messageId: data.messageId,
+                  userId: data.userId,
+                  channelId: data.channelId,
+                  conversationId: data.conversationId,
+                  platform: data.platform,
+                  platformMetadata: data.platformMetadata,
+                  content: blockMessage,
+                  processedMessageIds: [data.messageId],
+                });
+              } catch (notifyError) {
+                logger.error(
+                  { notifyError: String(notifyError) },
+                  "Failed to send guardrail block message to user"
+                );
+              }
+              logger.info(
+                {
+                  agentId: data.agentId,
+                  guardrail: outcome.tripped.guardrail,
+                  conversationId: effectiveConversationId,
+                },
+                "Input guardrail tripped — message dropped"
+              );
+              queueSpan?.setStatus({ code: SpanStatusCode.OK });
+              queueSpan?.end();
+              return;
+            }
+          }
+        } catch (err) {
+          // Fail open on guardrail infra errors — same rationale as the
+          // pre-tool path in McpProxy. The runner already fail-opens on
+          // per-guardrail throws; this catches store/registry-level issues.
+          logger.warn(
+            {
+              agentId: data.agentId,
+              err: err instanceof Error ? err.message : String(err),
+            },
+            "Input guardrail check failed — proceeding without guardrails"
+          );
+        }
+      }
+
       // 1) Send to thread queue immediately (queue persists; worker will drain on attach)
       await Sentry.startSpan(
         {

@@ -49,7 +49,11 @@ All chat platforms (Telegram, Slack, Discord, WhatsApp, Teams) run through Chat 
 #### Guardrails
 - Primitive lives in `packages/core/src/guardrails/`: `Guardrail<stage>`, `GuardrailRegistry`, `runGuardrails()`. Stages: `input` (user message → worker), `output` (worker text → user), `pre-tool` (tool call authorization).
 - Each guardrail's `run(ctx)` returns `{ tripped, reason?, metadata? }`. The runner races all enabled guardrails at a stage; the first trip short-circuits (later results are discarded) and a thrown guardrail is logged and treated as a pass.
-- Built-in: `createNoopGuardrail(stage, name?)` for tests and as a template. Real built-ins ship from `packages/server/src/gateway/guardrails/builtins.ts` — currently `pii-scan` (regex sweep for emails / US phones / 13–19 digit card-shaped runs across input, output, and serialized pre-tool args). Plugin-provided guardrails (prompt-injection classifier, secret scanner, …) live in downstream packages that call `registry.register(...)` during gateway boot.
+- Built-ins ship from `packages/server/src/gateway/guardrails/builtins.ts` and are wired during `CoreServices.initialize`:
+  - `secret-scan` (output) — regex scan for OpenAI keys (`sk-…`), GitHub PATs (`ghp_…`), AWS access keys (`AKIA…`), JWT-shaped tokens. Cheap enough to run per streaming delta.
+  - `pii-scan` (input / output / pre-tool) — regex sweep for emails, US-shaped phones, and Luhn-valid 13–19 digit card-shaped runs across the user message, worker output, or serialized pre-tool args.
+  - `forbidden-tools` (pre-tool) — hardcoded deny-list (`delete_repo`, `delete_branch`, `drop_table`).
+- `createNoopGuardrail(stage, name?)` remains a template for downstream packages (prompt-injection classifier, custom PII scrubbers, etc.) that call `registry.register(...)` after `getCoreServices().getGuardrailRegistry()`.
 
 ##### Configuration
 
@@ -95,6 +99,15 @@ Names match the resolved `Guardrail.name` — including the synthesized inline n
 ##### LLM judge engine
 
 `createJudgeGuardrail(stage, policy, options?)` from `packages/server/src/gateway/guardrails/judge-factory.ts` wraps `TextJudge` (extracted from the egress judge — same Haiku client, 5-min verdict cache keyed by `(policyHash, textHash)`, circuit breaker 5 failures → 30s cooldown, fail closed). Requires `ANTHROPIC_API_KEY` at the gateway. Reuses the egress judge's primitives so behavior is identical: cache, breaker, timeout, fail-closed posture.
+
+##### Runtime wiring
+
+- Wired call sites: `MessageConsumer.handleMessage` (input), `ChatResponseBridge.handleDelta` (output, runs per streaming delta), and `McpProxy.handleProxyRequest` (pre-tool, before the approval check). All three fail open on infrastructure errors — guardrails are a safety net, not a hard dependency.
+- Trip handling per stage:
+  - **Input** → dispatch is skipped and `Message rejected: <reason>` is pushed to the `thread_response` queue so the user sees a rejection in-thread.
+  - **Output** → the in-flight platform stream is disposed, `Message blocked by guardrail: <reason>` is posted, and the rest of the worker's stream for that conversation is suppressed. The partial buffer is NOT written to history.
+  - **Pre-tool** → the worker receives a JSON-RPC `isError: true` reply with the literal text `Tool call blocked by policy.`. The specific reason is intentionally NOT surfaced to the worker — leaking it is an evasion surface.
+- Every trip writes one `events` row with `semantic_type='guardrail-trip'`, `origin_type='guardrail-<stage>'`, and metadata `{guardrail, stage, reason, agent_id, user_id, conversation_id, guardrail_metadata?}`. Append-only — operators can dashboard these in the same place lifecycle events live.
 
 #### Network
 - Gateway runs a Node HTTP proxy on `127.0.0.1:8118`; worker subprocesses get `HTTP_PROXY=http://localhost:8118` for all outbound (curl/wget/npm/git). The proxy enforces domain allowlist/blocklist + LLM egress judge.

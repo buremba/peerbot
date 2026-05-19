@@ -160,3 +160,5 @@ export type {
   WorkerTransport,
   WorkerTransportConfig,
 } from "./worker/transport";
+// Gateway ↔ worker wire contract (MessagePayload, JobType, QueuedMessage).
+export type { JobType, MessagePayload, QueuedMessage } from "./worker/wire";

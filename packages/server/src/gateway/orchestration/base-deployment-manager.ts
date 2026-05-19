@@ -637,7 +637,11 @@ export abstract class BaseDeploymentManager {
       DEPLOYMENT_NAME: deploymentName,
       CHANNEL_ID: channelId,
       ORIGINAL_MESSAGE_TS:
-        platformMetadata?.originalMessageTs || messageData.messageId || "",
+        (typeof platformMetadata?.originalMessageTs === "string"
+          ? platformMetadata.originalMessageTs
+          : "") ||
+        messageData.messageId ||
+        "",
       LOG_LEVEL: "info",
       WORKSPACE_DIR: "/workspace",
       CONVERSATION_ID: conversationId,
@@ -659,7 +663,7 @@ export abstract class BaseDeploymentManager {
       XDG_CACHE_HOME: "/workspace/.cache",
     };
 
-    if (platformMetadata?.botResponseTs) {
+    if (typeof platformMetadata?.botResponseTs === "string") {
       envVars.BOT_RESPONSE_TS = platformMetadata.botResponseTs;
     }
 
@@ -811,7 +815,11 @@ export abstract class BaseDeploymentManager {
     const validated = this.validateMessageData(deploymentName, messageData);
     const { conversationId, channelId, platformMetadata, agentId, platform } =
       validated;
-    const teamId = validated.teamId || platformMetadata?.teamId;
+    const teamId =
+      validated.teamId ||
+      (typeof platformMetadata?.teamId === "string"
+        ? platformMetadata.teamId
+        : undefined);
     const traceId = extractTraceId(validated);
     const providerContext: ProviderCredentialContext = {
       userId,

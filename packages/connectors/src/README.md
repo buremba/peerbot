@@ -10,8 +10,6 @@ import {
   ConnectorRuntime,
   type SyncContext,
   type SyncResult,
-  type ActionContext,
-  type ActionResult,
   type EventEnvelope,
 } from '@lobu/connector-sdk';
 
@@ -62,10 +60,6 @@ export default class MyConnector extends ConnectorRuntime {
       checkpoint: { last_sync_at: new Date().toISOString() },
       metadata: { items_found: events.length },
     };
-  }
-
-  async execute(_ctx: ActionContext): Promise<ActionResult> {
-    return { success: false, error: 'Actions not supported' };
   }
 }
 ```

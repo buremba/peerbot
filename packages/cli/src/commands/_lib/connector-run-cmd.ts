@@ -341,7 +341,7 @@ export async function connectorRun(
   printText(`Compiling ${connectorKey} from ${sourcePath}...`);
   const compiledCode = await compileConnectorFromFile(sourcePath);
 
-  // Build the SyncContext shape that executeCompiledConnector expects.
+  // Build the ExecutorJob shape that executeCompiledConnector expects.
   // For mirror profiles we layer two acquisition paths:
   //   1. DevToolsActivePort lookup against the source Chrome's
   //      user-data root. If the file is there, Chrome is exposing a

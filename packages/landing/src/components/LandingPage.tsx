@@ -339,13 +339,12 @@ function UseCaseGrid() {
     link: { href: string; label: string };
   }> = [
     {
-      eyebrow: "For your team",
-      title: "An internal Slack bot.",
+      eyebrow: "Reactive bot",
+      title: "A chat-driven agent.",
       body: (
         <>
-          Lunch ordering, Linear triage, standup digests. Add the bot to Slack
-          from the admin UI; the same agent also runs on Telegram, Discord, or
-          MS Teams.
+          Fires per message in Slack, Telegram, Discord, MS Teams, WhatsApp, or
+          HTTP. Recalls memory, calls tools, replies.
         </>
       ),
       snippetLines: [
@@ -355,7 +354,7 @@ function UseCaseGrid() {
         </>,
         <>
           <span style={{ color: "var(--color-landing-code-string)" }}>→</span>{" "}
-          agent: lunch ready
+          agent: office-bot ready
         </>,
         <>
           <span style={{ color: "var(--color-landing-code-string)" }}>→</span>{" "}
@@ -371,13 +370,12 @@ function UseCaseGrid() {
       },
     },
     {
-      eyebrow: "For your org",
-      title: "A knowledge graph from your team's data.",
+      eyebrow: "Cron digest",
+      title: "A dreaming watcher.",
       body: (
         <>
-          Pull from Slack, Notion, Gmail, GitHub, Linear. Declare entity types
-          once. Watchers run on cron to add structure overnight, so the schema
-          grows with your data.
+          Runs on a schedule (cron). Aggregates the previous day's events into
+          higher-level entities your team can read in the morning.
         </>
       ),
       snippetLines: [
@@ -386,7 +384,7 @@ function UseCaseGrid() {
         </span>,
         <>
           <span style={{ color: "var(--color-landing-code-key)" }}>
-            entities
+            watchers
           </span>
           :
         </>,
@@ -394,53 +392,57 @@ function UseCaseGrid() {
           {"  - "}
           <span style={{ color: "var(--color-landing-code-key)" }}>slug</span>:{" "}
           <span style={{ color: "var(--color-landing-code-string)" }}>
-            customer
+            month-end-variance
           </span>
         </>,
         <>
-          {"  - "}
-          <span style={{ color: "var(--color-landing-code-key)" }}>slug</span>:{" "}
-          <span style={{ color: "var(--color-landing-code-string)" }}>
-            incident
+          {"    "}
+          <span style={{ color: "var(--color-landing-code-key)" }}>
+            schedule
           </span>
-        </>,
-        <>
-          {"  - "}
-          <span style={{ color: "var(--color-landing-code-key)" }}>slug</span>:{" "}
+          :{" "}
           <span style={{ color: "var(--color-landing-code-string)" }}>
-            order
+            "0 9 * * 1"
           </span>
         </>,
       ],
       link: {
-        href: "https://github.com/lobu-ai/lobu/tree/main/examples/lobu-crm",
-        label: "See lobu-crm example",
+        href: "https://github.com/lobu-ai/lobu/tree/main/examples/finance",
+        label: "See finance example",
       },
     },
     {
-      eyebrow: "For your users",
-      title: "An agent inside your product.",
+      eyebrow: "Event automation",
+      title: "A connector → watcher → reaction pipeline.",
       body: (
         <>
-          Sandbox + memory per customer. Per-user OAuth, workers never see the
-          tokens. Integrate via HTTP API or MCP.
+          An external event lands in the stream, a watcher extracts structured
+          data, an optional reaction calls Slack / Linear / Salesforce / etc.
         </>
       ),
       snippetLines: [
         <span style={{ color: "var(--color-landing-code-comment)" }}>
-          POST /agents/assistant/run
+          # salesforce.opportunity.updated
         </span>,
         <>
+          <span style={{ color: "var(--color-landing-code-string)" }}>→</span>{" "}
+          watcher:{" "}
           <span style={{ color: "var(--color-landing-code-key)" }}>
-            x-lobu-user
+            renewal-risk
           </span>
-          :{" "}
-          <span style={{ color: "var(--color-landing-code-string)" }}>
-            "acme_user_42"
+        </>,
+        <>
+          <span style={{ color: "var(--color-landing-code-string)" }}>→</span>{" "}
+          reaction:{" "}
+          <span style={{ color: "var(--color-landing-code-key)" }}>
+            ping_csm
           </span>
         </>,
       ],
-      link: { href: "/getting-started/", label: "See multi-tenant SDK" },
+      link: {
+        href: "https://github.com/lobu-ai/lobu/tree/main/examples/sales",
+        label: "See sales example",
+      },
     },
   ];
 
@@ -453,7 +455,7 @@ function UseCaseGrid() {
         <div class="mb-10 text-center">
           <Eyebrow>What you'd build</Eyebrow>
           <SectionHeading className="mx-auto">
-            Three ways teams ship Lobu agents.
+            Three shapes. Three working examples.
           </SectionHeading>
         </div>
         <div class="grid gap-5 md:grid-cols-3">

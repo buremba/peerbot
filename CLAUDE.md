@@ -1,8 +1,6 @@
+<!-- Per-repo agent rules loaded into every Claude Code session in this repo. Inlines AGENTS.md (shared project rules) first, then layers local-only notes below. User memory entries live under ~/.claude/projects/.../memory/. -->
+
 @AGENTS.md
-
-## Local-only references
-
-- `../lobu` (i.e. `/Users/burakemre/Code/lobu`) is the Lobu source repo. The OpenClaw memory plugin published as `@lobu/openclaw-plugin` lives in `packages/openclaw-plugin` there.
 
 ## Lobu
 

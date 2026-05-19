@@ -1,6 +1,6 @@
 # Lobu CLI → `lobu memory`: collapse the second binary
 
-Sequel to `lobu-absorption.md`. That plan said flattening the `lobu-*` prefix was deferred until "the brand goes too." The brand is going. This plan kills the standalone `lobu` bin and folds its 13 commands into `lobu memory <verb>`.
+Kills the standalone `lobu` bin and folds its 13 commands into `lobu memory <verb>`. The `lobu-*` package prefix flattens at the same time — the separate brand is going.
 
 ## Why
 

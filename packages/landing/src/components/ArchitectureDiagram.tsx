@@ -5,14 +5,16 @@ import { messagingChannels } from "./platforms";
  * Architecture diagram — layered stream story (NOT cycling pairs).
  *
  *   ┌────────────┐         ┌────────────┐         ┌────────────┐
- *   │ Connectors │ events  │  Watchers  │  chat   │   Agents   │
+ *   │ Connectors │ events  │   Memory   │  chat   │   Agents   │
  *   │   (logos)  │ ──────► │  events    │ ──────► │  chat bots │
- *   │ sdk pill   │         │  ↓         │  read   │  other     │
+ *   │ sdk pill   │         │  ↓ cron·LLM│  read   │  other     │
  *   │            │         │  entities  │ ──────► │  agents    │
+ *   │            │         │  (table)   │         │  sdk pill  │
  *   └────────────┘         └────────────┘         └────────────┘
  *
  * Continuous stream pulse in the `events` box telegraphs "live stream";
- * a second dot animates events → entities to telegraph derivation.
+ * the entities widget renders as a small table grid to signal structured
+ * data rather than a freeform blob.
  * Honors prefers-reduced-motion (drops animations entirely).
  */
 
@@ -94,13 +96,13 @@ function Header() {
         class="font-display text-[1.85rem] font-bold leading-[1.1] tracking-tight sm:text-[2.25rem]"
         style={{ color: "var(--color-page-text)" }}
       >
-        Connect data. Derive entities. Expose agents.
+        Stream events. Derive entities. Expose agents.
       </h2>
       <p
         class="mt-3 max-w-2xl text-[15px] leading-relaxed"
         style={{ color: "var(--color-page-text-muted)" }}
       >
-        Connectors stream events. Watchers shape them into typed entities. Agents read memory or talk to users.
+        Connectors stream events into memory. Watchers derive typed entities. Agents read that memory or talk to users.
       </p>
     </div>
   );
@@ -135,7 +137,7 @@ function DesktopBoard() {
     <div class="grid grid-cols-[1fr_auto_1.1fr_auto_1.1fr] items-stretch gap-x-2">
       <ConnectorsColumn />
       <ColumnArrow label="events" />
-      <WatchersColumn />
+      <MemoryColumn />
       <ColumnArrow label="chat" sublabel="read" split />
       <AgentsColumn />
     </div>
@@ -147,7 +149,7 @@ function MobileBoard() {
     <div class="flex flex-col gap-4">
       <ConnectorsColumn />
       <VerticalArrow label="events" />
-      <WatchersColumn />
+      <MemoryColumn />
       <VerticalArrow label="chat · read" />
       <AgentsColumn />
     </div>
@@ -180,15 +182,14 @@ function ConnectorsColumn() {
   );
 }
 
-function WatchersColumn() {
+function MemoryColumn() {
   return (
-    <ColumnCard heading="Watchers" footer="derived + actionable">
+    <ColumnCard heading="Memory" footer="append-only · typed entities">
       <div class="flex flex-col">
-        <StreamBox label="events" animated="stream" />
+        <StreamBox label="events" />
         <DerivationArrow />
-        <StreamBox label="entities" animated="receiver" />
+        <EntitiesTable />
       </div>
-      <SdkPill label="@lobu/reaction-sdk" caption="automate actions — TypeScript" />
     </ColumnCard>
   );
 }
@@ -238,6 +239,7 @@ function AgentsColumn() {
           >
             read memory programmatically
           </div>
+          <SdkPill label="@lobu/reaction-sdk" caption="automate actions — TypeScript" />
         </SubBlock>
       </div>
     </ColumnCard>
@@ -334,13 +336,7 @@ function SubBlock({
  * are gated by `@media (prefers-reduced-motion: reduce)` so reduced-motion
  * sessions see a static frame.
  */
-function StreamBox({
-  label,
-  animated,
-}: {
-  label: string;
-  animated: "stream" | "receiver";
-}) {
+function StreamBox({ label }: { label: string }) {
   return (
     <div
       class="relative flex items-center overflow-hidden rounded-lg border px-3 py-2.5"
@@ -356,16 +352,89 @@ function StreamBox({
         {label}
       </span>
       <span class="ml-auto inline-flex items-center gap-1.5">
-        {animated === "stream" ? (
-          <>
-            <span class="lobu-pulse-dot lobu-pulse-dot--a" aria-hidden="true" />
-            <span class="lobu-pulse-dot lobu-pulse-dot--b" aria-hidden="true" />
-            <span class="lobu-pulse-dot lobu-pulse-dot--c" aria-hidden="true" />
-          </>
-        ) : (
-          <span class="lobu-pulse-dot lobu-pulse-dot--in" aria-hidden="true" />
-        )}
+        <span class="lobu-pulse-dot lobu-pulse-dot--a" aria-hidden="true" />
+        <span class="lobu-pulse-dot lobu-pulse-dot--b" aria-hidden="true" />
+        <span class="lobu-pulse-dot lobu-pulse-dot--c" aria-hidden="true" />
       </span>
+    </div>
+  );
+}
+
+/**
+ * Entities widget — small table grid. Header row + 3 placeholder rows
+ * to signal "structured records, not freeform text". Cells use neutral
+ * monospace dashes/blocks so the table reads as a schema preview rather
+ * than fake data. Sits in the same box family as StreamBox.
+ */
+function EntitiesTable() {
+  const HEADERS = ["name", "type", "updated"] as const;
+  const ROWS: ReadonlyArray<readonly [string, string, string]> = [
+    ["acme corp", "company", "2d"],
+    ["jane doe", "person", "5h"],
+    ["q3 review", "meeting", "1h"],
+  ];
+  return (
+    <div
+      class="relative overflow-hidden rounded-lg border"
+      style={{
+        borderColor: "var(--color-page-border)",
+        backgroundColor: "var(--color-page-surface-dim)",
+      }}
+    >
+      <div
+        class="flex items-center justify-between border-b px-3 py-1.5"
+        style={{ borderColor: "var(--color-page-border)" }}
+      >
+        <span
+          class="font-mono text-[12px]"
+          style={{ color: "var(--color-page-text)" }}
+        >
+          entities
+        </span>
+        <span
+          class="font-mono text-[10px] uppercase tracking-[0.14em]"
+          style={{ color: "var(--color-page-text-muted)" }}
+        >
+          table
+        </span>
+      </div>
+      <div class="px-2 py-1.5">
+        <div
+          class="grid grid-cols-3 gap-x-2 px-1 pb-1 font-mono text-[10px] uppercase tracking-[0.1em]"
+          style={{ color: "var(--color-page-text-muted)" }}
+        >
+          {HEADERS.map((h) => (
+            <span key={h}>{h}</span>
+          ))}
+        </div>
+        <div class="flex flex-col">
+          {ROWS.map((row, idx) => (
+            <div
+              key={row[0]}
+              class="grid grid-cols-3 gap-x-2 px-1 py-1 font-mono text-[10.5px]"
+              style={{
+                color: "var(--color-page-text)",
+                borderTop:
+                  idx === 0 ? undefined : "1px solid var(--color-page-border)",
+              }}
+            >
+              {row.map((cell, i) => (
+                <span
+                  key={`${row[0]}-${i}`}
+                  style={{
+                    color:
+                      i === row.length - 1
+                        ? "var(--color-page-text-muted)"
+                        : "var(--color-page-text)",
+                  }}
+                >
+                  {cell}
+                </span>
+              ))}
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
@@ -490,10 +559,9 @@ function VerticalArrow({ label }: { label: string }) {
 }
 
 /**
- * Pure-CSS pulse animations. Three small dots in the `events` box pulse
- * on a stagger to telegraph "live stream"; a single dot inside `entities`
- * fades in on a slower loop to telegraph derivation. Reduced motion drops
- * all keyframes and leaves the dots at a static rest opacity.
+ * Pure-CSS pulse animation. Three small dots in the `events` box pulse on
+ * a stagger to telegraph "live stream". Reduced motion drops the keyframes
+ * and leaves the dots at a static rest opacity.
  */
 function PulseStyles() {
   return (
@@ -510,16 +578,10 @@ function PulseStyles() {
         .lobu-pulse-dot--a { animation: lobu-pulse 1.8s ease-in-out infinite; animation-delay: 0s; }
         .lobu-pulse-dot--b { animation: lobu-pulse 1.8s ease-in-out infinite; animation-delay: 0.3s; }
         .lobu-pulse-dot--c { animation: lobu-pulse 1.8s ease-in-out infinite; animation-delay: 0.6s; }
-        .lobu-pulse-dot--in { animation: lobu-derive 3s ease-in-out infinite; }
       }
       @keyframes lobu-pulse {
         0%, 100% { opacity: 0.2; transform: scale(0.9); }
         50%       { opacity: 1;   transform: scale(1.15); }
-      }
-      @keyframes lobu-derive {
-        0%   { opacity: 0.15; transform: translateY(-4px); }
-        50%  { opacity: 1;    transform: translateY(0); }
-        100% { opacity: 0.15; transform: translateY(4px); }
       }
     `}</style>
   );

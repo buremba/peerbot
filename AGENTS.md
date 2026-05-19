@@ -175,6 +175,7 @@ Rules for agents:
   - `packages/cli/src/commands/memory/_lib/browser-auth-cmd.ts` — two heavy lazy loads:
     - `decryptChromeCookiesMacOS` from `@lobu/connector-sdk/browser-mirror` — only on macOS, only after the user explicitly invoked `lobu memory browser-auth`. Triggers a Keychain access prompt; pulling it at startup would also trip the prompt on unrelated commands.
     - `chromium` from `playwright` — only in the CDP cookie-extraction fallback path. Playwright is a ~50 MB install; the lazy load is what keeps `npx @lobu/cli`'s install footprint sane for the common case.
+  - **Tests (`**/__tests__/**.ts`, `**/*.test.ts`, `**/*.integration.test.ts`)** — `await import(...)` is allowed inside `beforeAll` / `beforeEach` / `test()` blocks specifically to load a module *after* `vi.mock(...)` / env-var setup has been wired up. Static imports run before the test runner installs mocks, so the un-mocked module gets cached and the rest of the test sees the wrong dependency. This is the standard vitest/jest pattern; do not add the entry here for the production code path it tests — only for the test file itself.
 
 ## Scope discipline and branch hygiene
 

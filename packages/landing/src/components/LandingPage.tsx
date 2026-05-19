@@ -368,9 +368,9 @@ function BrowseExamplesSection() {
             class="mx-auto mt-3 max-w-[42rem] text-[14.5px]"
             style={{ color: "var(--color-page-text-muted)" }}
           >
-            Every example below is a working Lobu project. Clone any of them,
-            <code class="font-mono text-[13.5px]"> lobu apply</code>, and you
-            have a running agent.
+            Clone any one, run{" "}
+            <code class="font-mono text-[13.5px]">lobu apply</code>, and you
+            have a working agent.
           </p>
         </div>
         <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3">
@@ -520,7 +520,6 @@ function ConnectorsSection() {
             >
               YAML to configure. TypeScript to extend, via{" "}
               <code class="font-mono text-[14px]">@lobu/connector-sdk</code>.
-              Every connector emits typed events into one stream.
             </p>
             <FeatureList
               items={[
@@ -588,11 +587,11 @@ function MemorySection() {
               items={[
                 <>
                   <b>Entity types &amp; relationships</b> — declare what your
-                  agent should remember; link entities to build a graph.
+                  agent should remember; link entities with typed relations.
                 </>,
                 <>
-                  <b>Event-sourced &amp; append-only</b> — every fact is an
-                  event. Tombstones supersede; nothing is destroyed.
+                  <b>Append-only</b> — every change is a new event. Tombstones
+                  supersede; nothing is destroyed.
                 </>,
                 <>
                   <b>Agent-assisted modeling</b> — paste the setup prompt into
@@ -754,6 +753,13 @@ function SkillsSection() {
         code={
           <div>
             <CodeBlock badge="skill" snippet={snippets.skill} />
+            <p
+              class="mt-2 text-[13px]"
+              style={{ color: "var(--color-page-text-muted)" }}
+            >
+              Plus the markdown body — instructions for when and how the agent
+              should use this skill.
+            </p>
             <ExampleFooterLink slug="office-bot" />
           </div>
         }
@@ -777,8 +783,7 @@ function AgentsSection() {
             >
               Declare your agent in{" "}
               <code class="font-mono text-[14px]">lobu.toml</code> — provider,
-              model, skills, platforms. Same agent across Slack, Telegram,
-              Discord, MS Teams, WhatsApp, HTTP API, MCP.
+              model, skills. One config, every surface below.
             </p>
             <FeatureList
               items={[
@@ -898,8 +903,8 @@ function RunAnywhereSection() {
       title: "Managed runtime.",
       body: (
         <>
-          Same code, fully managed. Multi-tenant per-user isolation, secret
-          proxy, automatic upgrades. Usage-based pricing.
+          Same code, run by Lobu. Per-user isolation, secret proxy, automatic
+          upgrades.
         </>
       ),
       code: (
@@ -948,8 +953,8 @@ function RunAnywhereSection() {
           <code class="font-mono text-[13px]">models/</code> +{" "}
           <code class="font-mono text-[13px]">connectors/</code> +{" "}
           <code class="font-mono text-[13px]">agents/</code>. One command to
-          boot embedded; Docker images and a Helm chart for self-hosting; a
-          managed runtime when you want someone else to keep it up.
+          boot embedded; Docker + Helm for self-hosting; Lobu Cloud when you
+          don't want to run it yourself.
         </p>
       </div>
       <div class="grid gap-6 md:grid-cols-3">

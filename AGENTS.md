@@ -166,6 +166,7 @@ Rules for agents:
 - After editing `packages/agent-worker/*`, run `make clean-workers` so new workers pick up the change.
 - When the user pastes a Slack link (`slack.com/archives/…?thread_ts=`), call `./scripts/slack-thread-viewer.js "<link>"` first.
 - In planning mode, when unsure, ask: `codex exec "QUESTION" --config model_reasoning_effort="high"`.
+- **No dynamic imports** — use static `import` everywhere; never `await import(...)`. Use side-effect imports + boot-time assertion for registries. **One documented exception:** `packages/cli/src/index.ts` lazy-loads subcommand handlers (`await import("./commands/<name>.js")` inside the `.action(...)` callback) because the static-import variant regresses `lobu --help` boot from ~60ms → ~500ms (CLI command graph pulls postgres / playwright / chat adapters). See the comment block at the top of `packages/cli/src/index.ts` for the measurement and the rules for new subcommands.
 
 ## Scope discipline and branch hygiene
 

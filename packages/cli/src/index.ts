@@ -1,3 +1,31 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// AGENTS.md exception: the subcommand handlers below are lazy-loaded via
+// `await import("./commands/...")` rather than static imports. This is the
+// single, documented exemption to AGENTS.md's "no dynamic imports" rule.
+//
+// Why: the CLI's command graph pulls in `postgres`, `playwright`, every
+// `@chat-adapter/*`, the bundled server, etc. Measured boot times on a 2026
+// macOS host:
+//
+//   lazy (current)   `lobu --help` / `--version` : ~60ms
+//   static import    same invocations           : ~470-540ms (8x slower)
+//
+// `lobu --help` runs every time a user TAB-completes or pokes the CLI; the
+// 400ms penalty is paid on every shell hit even when the user never runs the
+// subcommand whose module would have been loaded. Dynamic import keeps the
+// hot path (commander parses argv, prints help) free of any module the user
+// didn't actually invoke. The measurement was redone after the round-2 audit
+// (REPORT.md → "CLI dynamic-imports rule conflict") so future contributors
+// have a fresh data point before re-litigating the rule.
+//
+// Rules for adding a new subcommand:
+//   1. Put the handler in `./commands/<name>.ts`.
+//   2. Register it with `.command(...).action(async (...) => { … })`.
+//   3. Inside the action, do `const { fooCommand } = await import("./commands/foo.js");`
+//      then call `fooCommand(...)`.
+//   4. Do NOT hoist the import to the top of this file.
+// ─────────────────────────────────────────────────────────────────────────────
+
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";

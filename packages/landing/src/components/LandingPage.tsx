@@ -141,20 +141,6 @@ function SectionHeading(props: {
   );
 }
 
-function Callout(props: { children: preact.ComponentChildren }) {
-  return (
-    <div
-      class="mt-4 border-l-[2px] px-4 py-2 text-[14px] leading-[1.55]"
-      style={{
-        borderColor: "var(--color-page-text)",
-        color: "var(--color-page-text-muted)",
-      }}
-    >
-      {props.children}
-    </div>
-  );
-}
-
 /* -------------------------------------------------------------------------- */
 /*  Hero                                                                      */
 /* -------------------------------------------------------------------------- */

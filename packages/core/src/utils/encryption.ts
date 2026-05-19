@@ -13,14 +13,15 @@ const IV_LENGTH = 12; // 96-bit nonce for AES-GCM
 // encrypt/decrypt call (these run on per-request / per-worker-RPC hot paths).
 let cachedKey: Buffer | undefined;
 
-function getEncryptionKey(): Buffer {
-  if (cachedKey) return cachedKey;
-  const key = process.env.ENCRYPTION_KEY || "";
-  if (!key) {
-    throw new Error(
-      "ENCRYPTION_KEY environment variable is required for secure operation"
-    );
-  }
+/**
+ * Decode a candidate ENCRYPTION_KEY string into 32 canonical bytes, or
+ * return null if it doesn't satisfy the canonical base64 / base64url /
+ * hex 32-byte format. Pure (no env, no cache, no throw) so callers like
+ * the install-operator bootstrap can fail-fast with a clear message
+ * before any side effect.
+ */
+export function decodeEncryptionKey(key: string): Buffer | null {
+  if (!key) return null;
 
   // Try to decode as base64 first (most common format). `Buffer.from(x,
   // "base64")` silently drops non-base64 chars rather than throwing, so a
@@ -29,7 +30,6 @@ function getEncryptionKey(): Buffer {
   if (/^[A-Za-z0-9+/]+={0,2}$/.test(key) && key.length % 4 === 0) {
     const base64Buffer = Buffer.from(key, "base64");
     if (base64Buffer.length === 32 && base64Buffer.toString("base64") === key) {
-      cachedKey = base64Buffer;
       return base64Buffer;
     }
   }
@@ -44,7 +44,6 @@ function getEncryptionKey(): Buffer {
       urlsafeBuffer.length === 32 &&
       urlsafeBuffer.toString("base64url") === key
     ) {
-      cachedKey = urlsafeBuffer;
       return urlsafeBuffer;
     }
   }
@@ -57,15 +56,54 @@ function getEncryptionKey(): Buffer {
       hexBuffer.length === 32 &&
       hexBuffer.toString("hex") === key.toLowerCase()
     ) {
-      cachedKey = hexBuffer;
       return hexBuffer;
     }
   }
 
-  throw new Error(
-    "ENCRYPTION_KEY must be a canonical base64 or hex encoded 32-byte key. " +
-      "Generate a valid key with: openssl rand -base64 32 (or openssl rand -hex 32)"
-  );
+  return null;
+}
+
+/**
+ * Canonical error message for a malformed ENCRYPTION_KEY. Centralised so
+ * the install-operator bootstrap and any other upstream validator emit
+ * the exact same actionable text the runtime encrypt/decrypt path would.
+ */
+export const ENCRYPTION_KEY_FORMAT_ERROR =
+  "ENCRYPTION_KEY must be a canonical base64 or hex encoded 32-byte key. " +
+  "Generate a valid key with: openssl rand -base64 32 (or openssl rand -hex 32)";
+
+/**
+ * Validate `process.env.ENCRYPTION_KEY` (or an explicit override) without
+ * caching. Throws with an actionable message if the value is missing or
+ * not a canonical 32-byte encoding. Use at boot to fail fast instead of
+ * letting later encrypt/decrypt calls return 500s.
+ */
+export function assertEncryptionKey(value?: string): void {
+  const key = value ?? process.env.ENCRYPTION_KEY ?? "";
+  if (!key) {
+    throw new Error(
+      "ENCRYPTION_KEY environment variable is required for secure operation"
+    );
+  }
+  if (!decodeEncryptionKey(key)) {
+    throw new Error(ENCRYPTION_KEY_FORMAT_ERROR);
+  }
+}
+
+function getEncryptionKey(): Buffer {
+  if (cachedKey) return cachedKey;
+  const key = process.env.ENCRYPTION_KEY || "";
+  if (!key) {
+    throw new Error(
+      "ENCRYPTION_KEY environment variable is required for secure operation"
+    );
+  }
+  const decoded = decodeEncryptionKey(key);
+  if (!decoded) {
+    throw new Error(ENCRYPTION_KEY_FORMAT_ERROR);
+  }
+  cachedKey = decoded;
+  return decoded;
 }
 
 /**

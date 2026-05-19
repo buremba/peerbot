@@ -14,6 +14,7 @@
 
 import { hostname } from 'node:os';
 import { hashPassword } from 'better-auth/crypto';
+import { assertEncryptionKey } from '@lobu/core';
 import { getDb } from '../db/client';
 import { generateSecureToken } from './oauth/utils';
 import { ensurePersonalOrganization } from './personal-org-provisioning';
@@ -49,6 +50,13 @@ export async function ensureInstallOperator(): Promise<{
       'ensureInstallOperator: ENCRYPTION_KEY is required. Set it in .env or opt into ephemeral keys with LOBU_ALLOW_EPHEMERAL_ENCRYPTION_KEY=1 (which gateway.ts will generate before this is called).'
     );
   }
+  // Validate shape NOW, not later. `hashPassword` happily accepts any
+  // string, so a malformed key would bootstrap the operator fine — but
+  // then every encrypt/decrypt call (saving a provider API key, etc.)
+  // would 500 with the same canonical message. Fail at install instead
+  // of leaving a half-broken operator that can sign in but can't
+  // persist any encrypted secret.
+  assertEncryptionKey(encryptionKey);
 
   const sql = getDb();
 

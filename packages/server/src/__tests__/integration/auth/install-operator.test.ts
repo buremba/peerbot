@@ -18,10 +18,15 @@ import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 describe('ensureInstallOperator', () => {
   const originalEncryptionKey = process.env.ENCRYPTION_KEY;
 
+  // Canonical 32-byte hex (64 chars) so it passes `assertEncryptionKey`
+  // — `ensureInstallOperator` now refuses to bootstrap with a malformed
+  // key, since the runtime encryption path would reject it later.
+  const VALID_KEY = 'a'.repeat(64);
+
   beforeEach(async () => {
     await cleanupTestDatabase();
     // Stable, deterministic test secret so verifyPassword can be checked.
-    process.env.ENCRYPTION_KEY = 'test-encryption-key-not-a-real-secret';
+    process.env.ENCRYPTION_KEY = VALID_KEY;
   });
 
   it('creates the install_operator user + credential account on a fresh DB', async () => {
@@ -76,7 +81,28 @@ describe('ensureInstallOperator', () => {
     delete process.env.ENCRYPTION_KEY;
     await expect(ensureInstallOperator()).rejects.toThrow(/ENCRYPTION_KEY is required/);
     // Restore for any cleanup hook that needs it.
-    process.env.ENCRYPTION_KEY = originalEncryptionKey ?? 'test-encryption-key';
+    process.env.ENCRYPTION_KEY = originalEncryptionKey ?? VALID_KEY;
+  });
+
+  it('refuses to bootstrap when ENCRYPTION_KEY is malformed', async () => {
+    // 24-byte base64 (length 32 chars) — passes `hashPassword` but the
+    // runtime encrypt/decrypt path requires a canonical 32-byte key.
+    // The bootstrap must reject the same shape so the user isn't left
+    // with an operator that can sign in but can't save any encrypted
+    // secret (every save would 500 with the same canonical message).
+    process.env.ENCRYPTION_KEY = 'not-a-canonical-32-byte-key';
+    await expect(ensureInstallOperator()).rejects.toThrow(
+      /canonical base64 or hex encoded 32-byte key/
+    );
+
+    // No user/account rows should have been created.
+    const sql = getTestDb();
+    const users = (await sql`
+      SELECT id FROM "user" WHERE principal_kind = ${INSTALL_OPERATOR_KIND}
+    `) as unknown as Array<unknown>;
+    expect(users).toHaveLength(0);
+
+    process.env.ENCRYPTION_KEY = VALID_KEY;
   });
 
   it('provisions a personal organization for the operator', async () => {

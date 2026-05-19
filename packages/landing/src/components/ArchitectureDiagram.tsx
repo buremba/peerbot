@@ -107,7 +107,7 @@ function BrandGlyph({ brand, size = 26 }: { brand: Brand; size?: number }) {
 
 function InputsColumn() {
   return (
-    <ColumnFrame title="Inputs" footer={<span>events stream into the graph</span>}>
+    <ColumnFrame title="Connectors" footer={<span>events stream into memory</span>}>
       <Pill label="@lobu/connector-sdk" />
       <div class="text-[12.5px]" style={{ color: "var(--color-page-text-muted)" }}>
         50+ bundled integrations
@@ -222,7 +222,7 @@ function ReactionsCallout() {
 
 function KnowledgeColumn() {
   return (
-    <ColumnFrame title="Knowledge graph">
+    <ColumnFrame title="Memory">
       <Layer label="relationships" sub="entity → entity" />
       <LayerConnector />
       <Layer label="entities" sub="typed records" />
@@ -275,7 +275,7 @@ function AgentsColumn() {
           ))}
         </ul>
       </SubBlock>
-      <SubBlock title="api readers" caption="agents read the graph">
+      <SubBlock title="api readers" caption="agents read memory">
         <ul class="grid grid-cols-3 gap-2 text-[11.5px]" style={{ color: "var(--color-page-text-muted)" }}>
           {["HTTP", "MCP", "SDK"].map((label) => (
             <li

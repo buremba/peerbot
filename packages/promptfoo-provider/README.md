@@ -67,16 +67,20 @@ promptfoo view
 `toolCalls` mirrors Anthropic's tool-use blocks (`{ name, input, isError?, result_summary? }`) and is populated from the gateway's `tool_use` SSE event. For retrieval tools (`search_memory` / `lobu_search_memory`) the `result_summary` includes the matched event IDs plus the snippet text content, and the provider joins those texts into `metadata.retrievedContext` so promptfoo's RAG assertions can use it directly:
 
 ```yaml
+# RAG assertion — promptfoo's `contextTransform` reads from the provider
+# response's `metadata` field.
 - type: context-recall
   contextTransform: 'metadata.retrievedContext'
   threshold: 0.5
   value: "the expected fact the agent should have grounded its answer in"
 
+# Verify a specific tool was called. JS assertions receive the full provider
+# response on `context.providerResponse`.
 - type: javascript
-  contextTransform: 'metadata.toolCalls'
   value: |
-    Array.isArray(context.context) &&
-      context.context.some((c) => c.name === 'search_memory')
+    const meta = context.providerResponse?.metadata ?? {};
+    const calls = Array.isArray(meta.toolCalls) ? meta.toolCalls : [];
+    return calls.some((c) => c.name === 'search_memory');
 ```
 
 For non-retrieval tools the provider still records the call (name + input) so `javascript` assertions can verify that, e.g., the agent did or didn't call a destructive tool.

@@ -82,6 +82,9 @@ tests:
   # `metadata.retrievedContext` (joined snippet text from search_memory). For
   # personal-finance, a prompt that references the workspace's saved facts
   # should trigger at least one `search_memory` call.
+  #
+  # The metadata is on the provider response (returned from `LobuProvider`).
+  # promptfoo surfaces it to JS assertions via `context.providerResponse`.
 
   - description: retrieval — recent activity question triggers search_memory
     vars:
@@ -91,8 +94,9 @@ tests:
       # produce a search_memory call before answering.
       - type: javascript
         value: |
-          const calls = context.vars.metadata?.toolCalls ?? [];
-          return Array.isArray(calls) && calls.some((c) =>
+          const meta = context.providerResponse?.metadata ?? {};
+          const calls = Array.isArray(meta.toolCalls) ? meta.toolCalls : [];
+          return calls.some((c) =>
             c && (c.name === 'search_memory' || c.name === 'lobu_search_memory')
           );
         weight: 0.5

@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { buildToolUseEventPayload } from "../openclaw/tool-use-events";
 
+// pi-agent's `tool_execution_end` event omits `args` (those live on the
+// matching `tool_execution_start`); worker.ts re-attaches them from a Map
+// before calling buildToolUseEventPayload. Tests mirror that — pass args
+// explicitly to validate the merged shape.
 const baseEvent = {
   toolCallId: "call_1",
   toolName: "search_memory",

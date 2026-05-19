@@ -1443,6 +1443,15 @@ Use it when the user references past discussions or you need context.`);
         }
       };
 
+      // Track tool-call input args across tool_execution_start → _end. pi-agent
+      // only includes `args` on the start event; the end event carries
+      // `toolCallId`, `toolName`, `result`, `isError`. The worker emits one
+      // SSE `tool_use` per finished call, so it needs to remember the input.
+      const pendingToolArgs = new Map<string, unknown>();
+      // Tool-use SSE emits are awaited at agent_end so the `complete` event
+      // can't race ahead of late tool_use events on slow networks.
+      const inFlightToolUse: Set<Promise<void>> = new Set();
+
       session.subscribe((event) => {
         if (suppressProgressOutput) {
           if (event.type === "agent_end") {
@@ -1460,12 +1469,26 @@ Use it when the user references past discussions or you need context.`);
           }
         }
 
+        // Capture the input args at tool start so we can attach them when the
+        // matching end event fires.
+        if (event.type === "tool_execution_start") {
+          pendingToolArgs.set(event.toolCallId, event.args);
+        }
+
         // Surface tool-use traces to SSE clients (promptfoo provider, CLI eval,
         // any client subscribed via `event: tool_use`). Worker emits one record
         // per tool call at `tool_execution_end` so the result is included.
         if (event.type === "tool_execution_end") {
-          const payload = buildToolUseEventPayload(event);
-          onProgress({
+          const args = pendingToolArgs.get(event.toolCallId);
+          pendingToolArgs.delete(event.toolCallId);
+          const payload = buildToolUseEventPayload({
+            toolCallId: event.toolCallId,
+            toolName: event.toolName,
+            args,
+            result: event.result,
+            isError: event.isError,
+          });
+          const promise = onProgress({
             type: "custom_event",
             data: {
               name: "tool_use",
@@ -1478,11 +1501,22 @@ Use it when the user references past discussions or you need context.`);
               err
             );
           });
+          inFlightToolUse.add(promise);
+          promise.finally(() => inFlightToolUse.delete(promise));
         }
 
         if (event.type === "agent_end") {
           flushDelta()
-            .then(() => resolveTurnDone?.())
+            .then(async () => {
+              // Wait for any pending tool_use emits so clients don't see
+              // `complete` arrive before all tool_use records (the provider
+              // returns on `complete`, and a slow tool_use POST mid-flight
+              // would otherwise be lost).
+              if (inFlightToolUse.size > 0) {
+                await Promise.allSettled(Array.from(inFlightToolUse));
+              }
+              resolveTurnDone?.();
+            })
             .catch((err) => {
               logger.error("Failed to flush final delta:", err);
               resolveTurnDone?.();

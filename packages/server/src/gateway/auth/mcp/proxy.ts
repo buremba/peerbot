@@ -740,6 +740,16 @@ export class McpProxy {
         id: 1,
       });
 
+      // Forward the caller's `x-mcp-format` opt-in so internal MCPs (the
+      // embedded lobu-memory server) can return raw JSON instead of formatted
+      // markdown. The worker uses this for retrieval tools to surface
+      // structured `result_summary` (event ids + snippet text) through the
+      // `tool_use` SSE event.
+      const callerFormat = c.req.header("x-mcp-format");
+      const extraHeaders = callerFormat
+        ? { "x-mcp-format": callerFormat }
+        : undefined;
+
       let response = await this.sendUpstreamRequest(
         httpServer,
         agentId,
@@ -747,7 +757,8 @@ export class McpProxy {
         "POST",
         jsonRpcBody,
         scopeKey,
-        auth.token
+        auth.token,
+        extraHeaders
       );
 
       // Detect HTTP 401 + WWW-Authenticate → start MCP OAuth 2.1 auth-code flow.
@@ -1255,7 +1266,8 @@ export class McpProxy {
     method: string,
     body?: string,
     scopeKey?: string,
-    directAuthToken?: string
+    directAuthToken?: string,
+    extraHeaders?: Record<string, string>
   ): Promise<Response> {
     const sessionKey = this.buildSessionKey(agentId, mcpId, scopeKey);
     const sessionId = this.getSession(sessionKey);
@@ -1280,6 +1292,11 @@ export class McpProxy {
       credentialToken,
       httpServer.internal === true
     );
+    if (extraHeaders) {
+      for (const [key, value] of Object.entries(extraHeaders)) {
+        headers[key] = value;
+      }
+    }
 
     const response = await fetch(httpServer.upstreamUrl, {
       method,

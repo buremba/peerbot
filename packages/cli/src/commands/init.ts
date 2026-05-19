@@ -57,10 +57,16 @@ export interface InitOptions {
   listProviders?: boolean;
 }
 
-async function pickFreePort(start: number, max = 100): Promise<number> {
+async function pickFreePort(
+  start: number,
+  opts: { max?: number; avoid?: number[] } = {}
+): Promise<number> {
+  const max = opts.max ?? 100;
+  const avoid = new Set(opts.avoid ?? []);
   for (let i = 0; i < max; i++) {
     const candidate = start + i;
     if (candidate > 65535) break;
+    if (avoid.has(candidate)) continue;
     if (await isPortFree(candidate)) return candidate;
   }
   // Fall back to the starting port — the user can resolve the collision at
@@ -68,8 +74,51 @@ async function pickFreePort(start: number, max = 100): Promise<number> {
   return start;
 }
 
+/**
+ * The hardcoded `ClaudeOAuthModule` (providerId="claude") on the gateway
+ * already handles both Anthropic OAuth tokens AND raw ANTHROPIC_API_KEY via
+ * the same upstream slug. We surface it as a synthetic `--provider claude`
+ * choice (with `anthropic` accepted as an alias) so scaffold users can pick
+ * Claude without having to know about openrouter or the OAuth flow.
+ */
+const SYNTHETIC_CLAUDE_PROVIDER: RegistryProvider = {
+  id: "claude",
+  name: "Claude (Anthropic)",
+  description: "Claude models via the native Anthropic API",
+  providers: [
+    {
+      displayName: "Claude (Anthropic)",
+      envVarName: "ANTHROPIC_API_KEY",
+      upstreamBaseUrl: "https://api.anthropic.com",
+      defaultModel: "claude-sonnet-4-20250514",
+      apiKeyInstructions:
+        "Get your API key from https://console.anthropic.com/settings/keys",
+    },
+  ],
+};
+
+const PROVIDER_ALIASES: Record<string, string> = {
+  anthropic: "claude",
+};
+
+function resolveProviderAlias(id: string): string {
+  return PROVIDER_ALIASES[id] ?? id;
+}
+
+function getAllProviders(): RegistryProvider[] {
+  return [SYNTHETIC_CLAUDE_PROVIDER, ...loadProviderRegistry()];
+}
+
+function getProviderByIdWithSynth(id: string): RegistryProvider | undefined {
+  const resolved = resolveProviderAlias(id);
+  if (resolved === SYNTHETIC_CLAUDE_PROVIDER.id) {
+    return SYNTHETIC_CLAUDE_PROVIDER;
+  }
+  return getProviderById(resolved);
+}
+
 function printProviderList(): void {
-  const providers = loadProviderRegistry();
+  const providers = getAllProviders();
   if (providers.length === 0) {
     console.log(
       chalk.yellow(
@@ -78,14 +127,19 @@ function printProviderList(): void {
     );
     return;
   }
-  console.log(chalk.bold("\nAvailable providers (config/providers.json):\n"));
+  console.log(chalk.bold("\nAvailable providers:\n"));
   const idCol = Math.max(...providers.map((p) => p.id.length));
   for (const p of providers) {
     const first = p.providers?.[0];
     const env = first?.envVarName ?? "";
     const model = first?.defaultModel ? ` — ${first.defaultModel}` : "";
+    const aliases = Object.entries(PROVIDER_ALIASES)
+      .filter(([, target]) => target === p.id)
+      .map(([alias]) => alias);
+    const aliasSuffix =
+      aliases.length > 0 ? chalk.dim(`  (alias: ${aliases.join(", ")})`) : "";
     console.log(
-      `  ${chalk.cyan(p.id.padEnd(idCol))}  ${chalk.dim(env)}${chalk.dim(model)}`
+      `  ${chalk.cyan(p.id.padEnd(idCol))}  ${chalk.dim(env)}${chalk.dim(model)}${aliasSuffix}`
     );
   }
   console.log(
@@ -225,8 +279,14 @@ export async function initCommand(
 
   // WORKER_PROXY_PORT is the gateway's outbound HTTP proxy that workers route
   // through (default 8118). Scaffold a non-colliding port so co-resident
-  // projects don't fight over it.
-  const workerProxyPort = String(await pickFreePort(8118));
+  // projects don't fight over it. Avoid the gateway port too — if the user
+  // passed `--port 8118` we don't want both vars pointing at the same number.
+  const gatewayPortNum = Number(gatewayPort);
+  const workerProxyPort = String(
+    await pickFreePort(8118, {
+      avoid: Number.isFinite(gatewayPortNum) ? [gatewayPortNum] : [],
+    })
+  );
 
   const publicGatewayUrl = await promptOrDefault({
     flag: options.publicUrl,
@@ -266,7 +326,7 @@ export async function initCommand(
       }),
   })) as NetworkChoice;
 
-  const providerSkills = loadProviderRegistry();
+  const providerSkills = getAllProviders();
   const providerChoices = [
     { name: "Skip — I'll add a provider later", value: "" },
     ...providerSkills.map((s) => ({
@@ -274,13 +334,17 @@ export async function initCommand(
       value: s.id,
     })),
   ];
+  const validProviderIds = new Set([
+    ...providerChoices.map((c) => c.value),
+    ...Object.keys(PROVIDER_ALIASES),
+  ]);
 
-  const providerId = await promptOrDefault({
+  const providerIdRaw = await promptOrDefault({
     flag: options.provider,
     useDefaults,
     defaultValue: "",
     validate: (v: string) =>
-      v === "" || providerChoices.some((c) => c.value === v)
+      v === "" || validProviderIds.has(v)
         ? true
         : `Unknown provider "${v}". Run \`lobu init --list-providers\` to see the full list (also at config/providers.json).`,
     prompt: () =>
@@ -290,11 +354,14 @@ export async function initCommand(
         default: "",
       }),
   });
+  // Resolve aliases (e.g. `--provider anthropic` → "claude") before any
+  // downstream use so the synthesized lobu.toml references the real id.
+  const providerId = providerIdRaw ? resolveProviderAlias(providerIdRaw) : "";
 
   let providerApiKey = "";
   let selectedProvider: RegistryProvider | undefined;
   if (providerId) {
-    selectedProvider = getProviderById(providerId);
+    selectedProvider = getProviderByIdWithSynth(providerId);
     const p = selectedProvider?.providers?.[0];
     if (p) {
       if (options.providerKey) {

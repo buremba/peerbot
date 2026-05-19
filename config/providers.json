@@ -1,22 +1,6 @@
 {
   "providers": [
     {
-      "id": "anthropic",
-      "name": "Anthropic",
-      "description": "Claude models via the native Anthropic API",
-      "providers": [
-        {
-          "displayName": "Anthropic",
-          "iconUrl": "https://www.google.com/s2/favicons?domain=anthropic.com&sz=128",
-          "envVarName": "ANTHROPIC_API_KEY",
-          "upstreamBaseUrl": "https://api.anthropic.com",
-          "apiKeyInstructions": "Get your API key from <a href=\"https://console.anthropic.com/settings/keys\" target=\"_blank\" class=\"text-blue-600 hover:underline\">Anthropic Console</a>",
-          "apiKeyPlaceholder": "sk-ant-...",
-          "defaultModel": "claude-sonnet-4-20250514"
-        }
-      ]
-    },
-    {
       "id": "groq",
       "name": "Groq",
       "description": "Fast LLM inference via Groq",

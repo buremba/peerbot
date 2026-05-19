@@ -625,16 +625,6 @@ export class CoreServices {
     const registeredIds = new Set(
       getModelProviderModules().map((m) => m.providerId)
     );
-    // Slugs already claimed by hardcoded modules (e.g. ClaudeOAuthModule
-    // owns slug "anthropic" for proxy routing). When a config-driven
-    // provider's id matches a registered slug, give it a `<id>-api` slug
-    // suffix so both modules can coexist without overwriting each other's
-    // entry in the secret proxy's slug→providerId map.
-    const registeredSlugs = new Set(
-      getModelProviderModules()
-        .map((m) => m.getUpstreamConfig?.()?.slug)
-        .filter((s): s is string => !!s)
-    );
     for (const [id, entry] of Object.entries(configProviders)) {
       if (registeredIds.has(id)) {
         logger.info(
@@ -642,18 +632,12 @@ export class CoreServices {
         );
         continue;
       }
-      const slug = registeredSlugs.has(id) ? `${id}-api` : id;
-      if (slug !== id) {
-        logger.info(
-          `Config-driven provider "${id}" uses slug "${slug}" to avoid collision with hardcoded module`
-        );
-      }
       const module = new ApiKeyProviderModule({
         providerId: id,
         providerDisplayName: entry.displayName,
         providerIconUrl: entry.iconUrl,
         envVarName: entry.envVarName,
-        slug,
+        slug: id,
         upstreamBaseUrl: entry.upstreamBaseUrl,
         modelsEndpoint: entry.modelsEndpoint,
         sdkCompat: entry.sdkCompat,
